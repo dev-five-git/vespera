@@ -16,7 +16,180 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege by default: every job only reads the repository. Jobs that
+# need more (the PR-comment and release jobs below) grant it explicitly.
+permissions:
+  contents: read
+
+# Every third-party action is pinned to a full commit SHA (the trailing
+# comment names the tag/branch it was resolved from). Tags are mutable — the
+# release job holds crates.io / Maven Central / GPG / Plugin Portal secrets,
+# so a re-pointed tag must never be able to run code with them. Bump a pin
+# with `git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>`.
+
 jobs:
+  # Local-only gates made mandatory: the `prelint` / `lint` / `test` root
+  # scripts (cargo fmt + both clippy feature sets + oxlint + front tests) used
+  # to run only through the husky pre-commit hook, which a contributor can
+  # skip. Mirrors `bun run lint` + `bun test` exactly.
+  lint:
+    name: Lint (fmt, clippy, oxlint, front tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: clippy, rustfmt
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+      - name: cargo fmt
+        run: cargo fmt --all --check
+      - name: cargo clippy (all targets, all features)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: cargo clippy (workspace, no default features)
+        run: cargo clippy --workspace --no-default-features -- -D warnings
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+      - name: oxlint
+        # `bun run lint` would re-run the `prelint` cargo gates above; call
+        # the linter it wraps directly.
+        run: bunx oxlint
+      - name: Front tests
+        # Root bunfig.toml preloads @devup-ui/bun-plugin + bun-test-env-dom
+        # (see AGENTS.md "Front tests need the bun preloads").
+        run: bun test
+
+  # Minimum supported Rust version of the PUBLISHED crates
+  # ([workspace.package] rust-version). Examples are deliberately not held to
+  # it — axum-example's sea-orm 2 / sqlx 0.9 need Rust 1.94 — so the check is
+  # scoped to the five crates.io packages instead of `--workspace`.
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          # Keep in sync with `rust-version` in the root Cargo.toml.
+          toolchain: '1.88'
+      - name: cargo check (published crates, all features)
+        run: >-
+          cargo check --all-features
+          -p vespera -p vespera_core -p vespera_macro
+          -p vespera_inprocess -p vespera_jni
+
+  # Supply-chain gate: RustSec advisories, license allowlist, banned /
+  # duplicate crates and allowed sources — configured in deny.toml.
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-deny
+      - name: cargo deny check
+        run: cargo deny check
+
+  # Public-API semver gate for the crates.io library packages, against their
+  # latest published release. Blocking — but a PR that INTENTIONALLY breaks
+  # an API declares it the changepacks way: a `.changepacks/changepack_log_*.json`
+  # bumping that crate's Cargo.toml to Minor (0.x: minor = breaking) or Major.
+  # The declared bump is translated into cargo-semver-checks' `release-type`,
+  # so a declared breaking change passes while an undeclared one fails.
+  #
+  # cargo-semver-checks names release types after the semver component that
+  # changes in 1.x terms; for 0.y.z crates that is shifted by one position
+  # (0.5 -> 0.6 is its breaking "major", 0.5.0 -> 0.5.1 may add API = "minor"):
+  #
+  #   changepack   0.y.z crate   >=1.0 crate
+  #   Major        major         major
+  #   Minor        major         minor
+  #   Patch        minor         patch
+  #   (none)       patch         patch
+  #
+  # vespera_macro is deliberately NOT checked: it is a proc-macro crate with
+  # no library target, which cargo-semver-checks rejects ("no crates with
+  # library targets selected"). Its public surface is the macro expansion,
+  # covered by the trybuild / insta suites instead of rustdoc JSON.
+  semver:
+    name: cargo-semver-checks
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Derive release type per crate from changepacks
+        id: bump
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(.changepacks/changepack_log_*.json)
+          # Resolved package versions (handles `version.workspace = true`).
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          for crate in vespera vespera_core vespera_inprocess vespera_jni; do
+            version=$(jq -r --arg n "$crate" '.packages[] | select(.name == $n) | .version' <<<"$metadata")
+            if [[ -z "$version" ]]; then
+              echo "::error::crate $crate not found in cargo metadata"
+              exit 1
+            fi
+            bump=none
+            if (( ${#files[@]} )); then
+              bumps=$(jq -r --arg p "crates/$crate/Cargo.toml" '.changes[$p] // empty' "${files[@]}")
+              if grep -qx Major <<<"$bumps"; then bump=Major
+              elif grep -qx Minor <<<"$bumps"; then bump=Minor
+              elif grep -qx Patch <<<"$bumps"; then bump=Patch
+              fi
+            fi
+            if [[ "$version" == 0.* ]]; then
+              case "$bump" in
+                Major|Minor) level=major ;;
+                Patch) level=minor ;;
+                *) level=patch ;;
+              esac
+            else
+              case "$bump" in
+                Major) level=major ;;
+                Minor) level=minor ;;
+                *) level=patch ;;
+              esac
+            fi
+            echo "$crate $version (changepack: $bump) -> release-type $level"
+            echo "$crate=$level" >> "$GITHUB_OUTPUT"
+          done
+      - name: vespera_core
+        uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2.9
+        with:
+          package: vespera_core
+          release-type: ${{ steps.bump.outputs.vespera_core }}
+          shared-key: semver
+      - name: vespera_inprocess
+        if: ${{ !cancelled() }}
+        uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2.9
+        with:
+          package: vespera_inprocess
+          release-type: ${{ steps.bump.outputs.vespera_inprocess }}
+          shared-key: semver
+      - name: vespera_jni
+        if: ${{ !cancelled() }}
+        uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2.9
+        with:
+          package: vespera_jni
+          release-type: ${{ steps.bump.outputs.vespera_jni }}
+          shared-key: semver
+      - name: vespera
+        if: ${{ !cancelled() }}
+        uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2.9
+        with:
+          package: vespera
+          release-type: ${{ steps.bump.outputs.vespera }}
+          shared-key: semver
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -24,13 +197,13 @@ jobs:
       image: xd009642/tarpaulin:develop-nightly
       options: --security-opt seccomp=unconfined
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
-      - uses: actions-rust-lang/setup-rust-toolchain@v2
+      - uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
       - name: Install
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: clippy, rustfmt
       - name: Build
@@ -58,12 +231,31 @@ jobs:
           cargo fmt
           cargo tarpaulin --out Lcov Stdout --engine llvm --fail-under 100
       - name: Upload to codecov.io
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@f9fe539f5290016afa014f8ef31597d3a61c2dea # v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: true
           files: lcov.info
         if: github.ref == 'refs/heads/main'
+
+  # The coverage job above runs only on Linux (tarpaulin container). Path
+  # handling, line endings, the trybuild UI suite and the JNI/inprocess
+  # runtime all have platform-specific behaviour, so the plain test suite
+  # also runs on the other two host OSes (macos-latest is arm64, so this
+  # also covers aarch64).
+  test-os:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
+      - name: cargo test
+        run: cargo test --workspace
 
   # OBSERVATIONAL PERCENTAGE ONLY — this job never gates on the percentage.
   # "observational" applies only to the percentage: instrumented test failures
@@ -87,12 +279,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04 # nightly
         with:
           toolchain: nightly-2026-08-29
           components: llvm-tools-preview
-      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-llvm-cov
       - name: Run instrumented tests
         # Pinned nightly keeps branch instrumentation reproducible. The
         # trybuild UI suite is blessed against stable, whose diagnostic
@@ -124,33 +318,57 @@ jobs:
             --ignore-filename-regex '(benches|examples|vespera_jni)'
       - name: Upload branch coverage report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rust-branch-coverage
           path: |
             branch-coverage.txt
             branch-lcov.info
 
-  # publish
+  # Pull requests: changepacks only posts/updates its status comment
+  # (`changepacks check --remote`). It never publishes on a PR, so this job
+  # gets NO registry / signing secrets — only the token scope the comment
+  # needs.
+  changepacks-pr:
+    name: changepacks (PR status)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # create / update the changepacks PR comment
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # changepacks diffs against the merge-base with baseBranch (main);
+          # a shallow clone has no merge-base, which breaks stacked PRs.
+          fetch-depth: 0
+      - uses: changepacks/action@d83fb1ec3f8844ee2726a7b8b43a8786e9a528a2 # main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # publish — runs ONLY for main (push, or a manual re-run via
+  # workflow_dispatch on main), the only refs on which changepacks opens the
+  # version PR / creates releases / publishes. Restricting it here means the
+  # publishing secrets below are never materialised in a PR run at all.
   changepacks:
     name: changepacks
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    # jni-e2e gates publishing: a release must never ship with a broken
-    # JNI dispatch path on any supported OS.
-    needs: [test, jni-e2e]
+    # Every gate must pass before a release: a release must never ship with
+    # unformatted/lint-failing code, a broken MSRV, a disallowed dependency,
+    # a platform-specific test failure, or a broken JNI dispatch path on any
+    # supported OS.
+    needs: [lint, msrv, deny, test, test-os, jni-e2e]
     permissions:
-      # create pull request comments
-      pull-requests: write
-
-      # Actions > General > Workflow permissions for creating pull request
-      # Create branch to create pull request
+      # Actions > General > Workflow permissions for creating pull request:
+      # push the version branch + create GitHub releases / tags
       contents: write
-
-      # Publish to GitHub Packages
-      packages: write
+      # open the version PR / comment on it
+      pull-requests: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-java@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -160,7 +378,7 @@ jobs:
         run: |
           chmod +x libs/vespera-bridge/gradlew
           chmod +x libs/vespera-bridge-gradle-plugin/gradlew
-      - uses: changepacks/action@main
+      - uses: changepacks/action@d83fb1ec3f8844ee2726a7b8b43a8786e9a528a2 # main
         id: changepacks
         with:
           publish: true
@@ -194,25 +412,56 @@ jobs:
   # run without a JVM, so this job is its coverage — not the Rust line
   # coverage number.
   #
+  # Matrix: every host OS on JDK 17 (the bridge's baseline), plus
+  #   - JDK 21 / 25 (current LTS releases) on ubuntu only, to keep cost sane.
+  #     The bridge itself still COMPILES for 17 (its Gradle toolchain), but
+  #     demo-app has no toolchain pin, so its tests — i.e. the bridge JAR and
+  #     the JNI cdylib — RUN on the matrix JDK.
+  #   - ubuntu-24.04-arm: Linux aarch64 (macos-latest already covers macOS
+  #     arm64), and macos-15-intel: macOS x86_64.
+  #
   # Runs unconditionally on every push/PR (matching the existing CI job's
   # style — no per-job paths-filter). The whole workflow already inherits
   # the workflow-level `paths-ignore` for docs-only changes.
   jni-e2e:
-    name: JNI E2E (${{ matrix.os }})
+    name: JNI E2E (${{ matrix.os }}, JDK ${{ matrix.java }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        java: ['17']
+        include:
+          - os: ubuntu-latest
+            java: '21'
+          - os: ubuntu-latest
+            java: '25'
+          - os: ubuntu-24.04-arm
+            java: '17'
+          - os: macos-15-intel
+            java: '17'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-java@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: 'temurin'
-          java-version: '17'
+          # JDK 17 is always installed for the bridge/plugin Gradle
+          # toolchains (languageVersion 17); the LAST entry becomes JAVA_HOME
+          # and therefore the JVM Gradle and demo-app's tests run on.
+          java-version: |
+            17
+            ${{ matrix.java }}
           cache: 'gradle'
-      - uses: actions-rust-lang/setup-rust-toolchain@v2
+      - name: Expose JDK 17 to Gradle toolchain detection
+        # setup-java installs into the tool cache, which Gradle's toolchain
+        # auto-detection does not scan; point it at the env vars setup-java
+        # exports (whichever arch exists on this runner).
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.gradle"
+          echo 'org.gradle.java.installations.fromEnv=JAVA_HOME_17_X64,JAVA_HOME_17_ARM64' >> "$HOME/.gradle/gradle.properties"
+      - uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
       - name: Build rust-jni-demo cdylib (release)
         # The vespera-bridge Gradle plugin's bundleNativeLib task copies
         # this cdylib from target/release into demo-app's resources, so it
@@ -226,8 +475,11 @@ jobs:
           chmod +x examples/rust-jni-demo/java/gradlew
       - name: Publish vespera-bridge Gradle plugin to mavenLocal
         # demo-app's plugins block resolves kr.devfive.vespera-bridge from
-        # mavenLocal (settings.gradle.kts pluginManagement) — the plugin is
-        # not on the Gradle Plugin Portal.
+        # mavenLocal first (settings.gradle.kts pluginManagement), pinned to
+        # the version in libs/vespera-bridge-gradle-plugin/build.gradle.kts —
+        # the plugin IS released to the Gradle Plugin Portal by changepacks
+        # (`publishPlugins`), but CI must test the in-repo source, not the
+        # last published release.
         shell: bash
         working-directory: libs/vespera-bridge-gradle-plugin
         run: ./gradlew publishToMavenLocal --console=plain --no-daemon
@@ -269,9 +521,9 @@ jobs:
         run: ./gradlew jacocoTestReport --console=plain --no-daemon
       - name: Upload Java test results and coverage
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: jni-e2e-${{ matrix.os }}-test-results
+          name: jni-e2e-${{ matrix.os }}-jdk${{ matrix.java }}-test-results
           path: |
             examples/rust-jni-demo/java/demo-app/build/test-results/test/*.xml
             libs/vespera-bridge/build/test-results/test/*.xml

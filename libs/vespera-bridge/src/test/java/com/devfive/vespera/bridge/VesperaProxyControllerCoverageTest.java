@@ -31,7 +31,7 @@ class VesperaProxyControllerCoverageTest {
 
     @AfterEach
     void cleanThreadStateAndProperties() {
-        VesperaProxyController.clearCurrentThreadBuffers();
+        VesperaDirectBufferPool.clearCurrentThreadBuffers();
         VesperaBridge.clearCurrentThreadBuffers();
         if (previousOversizePolicy == null) {
             System.clearProperty("vespera.direct.oversize-policy");
@@ -67,7 +67,7 @@ class VesperaProxyControllerCoverageTest {
         assertEquals(
                 DispatchMode.SYNC,
                 VesperaProxyController.effectiveMode(DispatchMode.SYNC, true));
-        assertEquals(0, VesperaProxyController.initialSmallWriteStreak());
+        assertEquals(0, VesperaDirectBufferPool.initialSmallWriteStreak());
     }
 
     @Test
@@ -168,28 +168,25 @@ class VesperaProxyControllerCoverageTest {
     void completeWireWriterOwnsFramingForGetHeadAndNoBodyStatus() throws Exception {
         byte[] ok = heapWire(200, "hello");
         MockHttpServletResponse get = new MockHttpServletResponse();
-        VesperaProxyController.writeWireResponse(ok, get);
+        WireResponseWriter.writeWireResponse(ok, get);
         assertEquals(200, get.getStatus());
         assertEquals(5, get.getContentLength());
         assertEquals("hello", get.getContentAsString(StandardCharsets.UTF_8));
 
         MockHttpServletResponse head = new MockHttpServletResponse();
-        VesperaProxyController.writeWireResponse(ok, head, "HEAD");
+        WireResponseWriter.writeWireResponse(ok, head, "HEAD");
         assertEquals(5, head.getContentLength());
         assertEquals(0, head.getContentAsByteArray().length);
 
         MockHttpServletResponse noContent = new MockHttpServletResponse();
-        VesperaProxyController.writeWireResponse(heapWire(204, "ignored"), noContent, "GET");
+        WireResponseWriter.writeWireResponse(heapWire(204, "ignored"), noContent, "GET");
         assertEquals(0, noContent.getContentLength());
         assertEquals(0, noContent.getContentAsByteArray().length);
 
-        var statusPermitsBody = VesperaProxyController.class
-                .getDeclaredMethod("responseStatusPermitsBody", int.class);
-        statusPermitsBody.setAccessible(true);
-        assertEquals(true, statusPermitsBody.invoke(null, 99));
+        assertTrue(WireResponseWriter.responseStatusPermitsBody(99));
 
         MockHttpServletResponse informational = new MockHttpServletResponse();
-        VesperaProxyController.writeWireResponse(
+        WireResponseWriter.writeWireResponse(
                 heapWire(199, "ignored"), informational, "GET");
         assertEquals(0, informational.getContentLength());
         assertEquals(0, informational.getContentAsByteArray().length);
@@ -217,7 +214,7 @@ class VesperaProxyControllerCoverageTest {
         byte[] header = heapWire(200, "represented");
         MockHttpServletResponse response = new MockHttpServletResponse();
 
-        assertFalse(VesperaProxyController.applyDecodedHeader(header, response, "HEAD"));
+        assertFalse(WireResponseWriter.applyDecodedHeader(header, response, "HEAD"));
         assertEquals(200, response.getStatus());
     }
 
@@ -309,16 +306,16 @@ class VesperaProxyControllerCoverageTest {
 
     @Test
     void directBodyScratchGrowsResetsAndShrinksWhilePreservingBytes() throws Exception {
-        VesperaProxyController.clearCurrentThreadBuffers();
+        VesperaDirectBufferPool.clearCurrentThreadBuffers();
         byte[] large = new byte[300 * 1024];
         java.util.Arrays.fill(large, (byte) 7);
         ByteArrayOutputStream largeOut = new ByteArrayOutputStream();
-        VesperaProxyController.writeDirectBody(ByteBuffer.wrap(large), largeOut);
+        VesperaDirectBufferPool.writeDirectBody(ByteBuffer.wrap(large), largeOut);
         assertArrayEquals(large, largeOut.toByteArray());
 
         for (int i = 0; i < 8; i++) {
             ByteArrayOutputStream smallOut = new ByteArrayOutputStream();
-            VesperaProxyController.writeDirectBody(
+            VesperaDirectBufferPool.writeDirectBody(
                     ByteBuffer.wrap(new byte[] {(byte) i}), smallOut);
             assertArrayEquals(new byte[] {(byte) i}, smallOut.toByteArray());
         }
@@ -327,8 +324,8 @@ class VesperaProxyControllerCoverageTest {
     @Test
     void bodyPermittingStreamCoversSingleByteSuppressionAndFlush() throws Exception {
         ByteArrayOutputStream sink = new ByteArrayOutputStream();
-        VesperaProxyController.BodyPermittingOutputStream out =
-                new VesperaProxyController.BodyPermittingOutputStream(sink, "GET");
+        WireResponseWriter.BodyPermittingOutputStream out =
+                new WireResponseWriter.BodyPermittingOutputStream(sink, "GET");
 
         out.write('a');
         out.applyPermitsBody(false);
@@ -342,7 +339,7 @@ class VesperaProxyControllerCoverageTest {
     @Test
     void convenienceAsyncBuilderExposesAReadableResource() throws Exception {
         ResponseEntity<?> response =
-                VesperaProxyController.buildResponseEntityFromWire(heapWire(200, "resource"));
+                WireResponseWriter.buildResponseEntityFromWire(heapWire(200, "resource"));
         Resource resource = (Resource) response.getBody();
 
         assertEquals(200, response.getStatusCode().value());
@@ -353,7 +350,7 @@ class VesperaProxyControllerCoverageTest {
                 resource.getInputStream().readAllBytes());
 
         ResponseEntity<?> noContent =
-                VesperaProxyController.buildResponseEntityFromWire(heapWire(204, "ignored"));
+                WireResponseWriter.buildResponseEntityFromWire(heapWire(204, "ignored"));
         assertEquals(0, noContent.getHeaders().getContentLength());
         assertEquals(0, ((Resource) noContent.getBody()).contentLength());
     }

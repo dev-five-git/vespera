@@ -2,7 +2,7 @@
 //!
 //! The `dispatchDirect0` JNI symbol and its helpers, split out of
 //! `jni_impl.rs` to keep that file within the project's 1000-line
-//! source cap.  Semantics are unchanged; `block_on_sync_runtime` is
+//! source cap.  Semantics are unchanged; `block_on_shared_runtime` is
 //! reused from the parent module.
 
 use jni::EnvUnowned;
@@ -10,7 +10,9 @@ use jni::errors::ThrowRuntimeExAndDefault;
 use jni::objects::{JByteBuffer, JClass};
 use jni::sys::jint;
 
-use super::{block_on_sync_runtime, clear_pending_exception, panic_wire, runtime_unavailable_wire};
+use super::{
+    block_on_shared_runtime, clear_pending_exception, panic_wire, runtime_unavailable_wire,
+};
 
 /// Sentinel for [`Java_..._dispatchDirect`]: the response (or its
 /// required size) cannot be represented in the `jint` return value
@@ -259,7 +261,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                         // and never escapes this synchronous `block_on`.
                         let input = unsafe { std::slice::from_raw_parts(in_addr, in_len) };
                         let out = unsafe { std::slice::from_raw_parts_mut(out_addr, out_cap) };
-                        block_on_sync_runtime(vespera_inprocess::dispatch_into_async_borrowed(
+                        block_on_shared_runtime(vespera_inprocess::dispatch_into_async_borrowed(
                             input, out,
                         ))
                     }) else {

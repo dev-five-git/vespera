@@ -2,6 +2,8 @@ package com.devfive.vespera.bridge;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.time.Duration;
+
 /**
  * Properties for the autoconfigured vespera-bridge defaults.
  * Prefix: {@code vespera.bridge}.
@@ -23,6 +25,14 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *     max-buffered-request-bytes: 10485760 # cap SYNC/ASYNC/DIRECT/STREAMING request buffering
  *     max-buffered-response-bytes: 67108864 # cap SYNC heap-buffered response bodies
  *     clear-threadlocals-after-request: false # clear per-thread buffers after each proxied request
+ *     native:                     # Rust-side knobs, applied before the first dispatch
+ *       worker-threads: 8
+ *       max-blocking-threads: 256
+ *       max-request-bytes: 67108864
+ *       max-streaming-request-bytes: 0
+ *       max-buffered-response-bytes: 268435456
+ *       dispatch-timeout: 30s
+ *       async-max-in-flight: 4096
  * }</pre>
  */
 @ConfigurationProperties(prefix = "vespera.bridge")
@@ -119,6 +129,13 @@ public class VesperaBridgeProperties {
      */
     private boolean clearThreadlocalsAfterRequest = false;
 
+    /**
+     * Rust-side runtime knobs forwarded to {@link VesperaBridge}'s
+     * {@code configure*} methods when the autoconfiguration starts.  Unset
+     * values leave the native defaults (or sysprop/env overrides) in place.
+     */
+    private final Native nativeSettings = new Native();
+
     public String getAppHeader() {
         return appHeader;
     }
@@ -181,5 +198,121 @@ public class VesperaBridgeProperties {
 
     public void setClearThreadlocalsAfterRequest(boolean clearThreadlocalsAfterRequest) {
         this.clearThreadlocalsAfterRequest = clearThreadlocalsAfterRequest;
+    }
+
+    public Native getNative() {
+        return nativeSettings;
+    }
+
+    /**
+     * Rust-side knobs under {@code vespera.bridge.native.*}.  Every field is
+     * nullable: {@code null} means "not configured here".  They only take
+     * effect before the first native dispatch; a late value is logged and
+     * ignored by {@link VesperaBridge}.
+     */
+    public static class Native {
+
+        /** Shared Tokio runtime worker threads (1–1024). */
+        private Integer workerThreads;
+
+        /** Shared Tokio runtime blocking-pool cap (1–8192, native default 512). */
+        private Integer maxBlockingThreads;
+
+        /** Buffered request-body cap in bytes ({@code 0} = unlimited, native default 64 MiB). */
+        private Long maxRequestBytes;
+
+        /** Streamed request-body cap in bytes ({@code 0} = unlimited, the native default). */
+        private Long maxStreamingRequestBytes;
+
+        /** Buffered response-body cap in bytes ({@code 0} = unlimited, native default 256 MiB). */
+        private Long maxBufferedResponseBytes;
+
+        /** Per-dispatch deadline ({@code 0} = disabled, the native default). */
+        private Duration dispatchTimeout;
+
+        /** {@code dispatchAsync} in-flight cap ({@code 0} = unlimited, native default 4096). */
+        private Integer asyncMaxInFlight;
+
+        public Integer getWorkerThreads() {
+            return workerThreads;
+        }
+
+        public void setWorkerThreads(Integer workerThreads) {
+            this.workerThreads = workerThreads;
+        }
+
+        public Integer getMaxBlockingThreads() {
+            return maxBlockingThreads;
+        }
+
+        public void setMaxBlockingThreads(Integer maxBlockingThreads) {
+            this.maxBlockingThreads = maxBlockingThreads;
+        }
+
+        public Long getMaxRequestBytes() {
+            return maxRequestBytes;
+        }
+
+        public void setMaxRequestBytes(Long maxRequestBytes) {
+            this.maxRequestBytes = maxRequestBytes;
+        }
+
+        public Long getMaxStreamingRequestBytes() {
+            return maxStreamingRequestBytes;
+        }
+
+        public void setMaxStreamingRequestBytes(Long maxStreamingRequestBytes) {
+            this.maxStreamingRequestBytes = maxStreamingRequestBytes;
+        }
+
+        public Long getMaxBufferedResponseBytes() {
+            return maxBufferedResponseBytes;
+        }
+
+        public void setMaxBufferedResponseBytes(Long maxBufferedResponseBytes) {
+            this.maxBufferedResponseBytes = maxBufferedResponseBytes;
+        }
+
+        public Duration getDispatchTimeout() {
+            return dispatchTimeout;
+        }
+
+        public void setDispatchTimeout(Duration dispatchTimeout) {
+            this.dispatchTimeout = dispatchTimeout;
+        }
+
+        public Integer getAsyncMaxInFlight() {
+            return asyncMaxInFlight;
+        }
+
+        public void setAsyncMaxInFlight(Integer asyncMaxInFlight) {
+            this.asyncMaxInFlight = asyncMaxInFlight;
+        }
+
+        /**
+         * Forward every configured value to {@link VesperaBridge}.  Unset
+         * values are passed as that method's "leave untouched" sentinel
+         * ({@code 0} for the runtime pair, {@code -1} otherwise).
+         */
+        void apply() {
+            if (workerThreads != null || maxBlockingThreads != null) {
+                VesperaBridge.configureRuntime(
+                        workerThreads == null ? 0 : workerThreads,
+                        maxBlockingThreads == null ? 0 : maxBlockingThreads);
+            }
+            if (maxRequestBytes != null || maxStreamingRequestBytes != null
+                    || maxBufferedResponseBytes != null) {
+                VesperaBridge.configureLimits(
+                        maxRequestBytes == null ? -1 : maxRequestBytes,
+                        maxStreamingRequestBytes == null ? -1 : maxStreamingRequestBytes,
+                        maxBufferedResponseBytes == null ? -1 : maxBufferedResponseBytes);
+            }
+            if (dispatchTimeout != null) {
+                VesperaBridge.configureDispatchTimeout(dispatchTimeout.toMillis());
+            }
+            if (asyncMaxInFlight != null) {
+                VesperaBridge.configureAsyncMaxInFlight(asyncMaxInFlight);
+            }
+        }
     }
 }

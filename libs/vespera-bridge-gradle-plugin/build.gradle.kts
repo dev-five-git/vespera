@@ -9,20 +9,27 @@ plugins {
     id("com.gradle.plugin-publish") version "2.2.1"
 }
 
-tasks.named("publishPlugins") {
-    onlyIf("Gradle Plugin Portal credentials are present") {
-        val publishKey = providers.environmentVariable("GRADLE_PUBLISH_KEY").orNull
-        val publishSecret = providers.environmentVariable("GRADLE_PUBLISH_SECRET").orNull
-        val hasCredentials = !publishKey.isNullOrBlank() && !publishSecret.isNullOrBlank()
+// Fail LOUDLY when the Plugin Portal release is actually requested without
+// credentials. The previous `onlyIf` silently SKIPPED `publishPlugins`, so a
+// release with missing secrets reported success while never reaching the
+// Portal. The check runs only when `publishPlugins` executes, so local builds,
+// tests and `publishToMavenLocal` (the demo-app dogfooding path) are unaffected.
+// Credentials: GRADLE_PUBLISH_KEY / GRADLE_PUBLISH_SECRET env vars (CI) or the
+// `gradle.publish.key` / `gradle.publish.secret` Gradle properties.
+val pluginPortalKey = providers.environmentVariable("GRADLE_PUBLISH_KEY")
+    .orElse(providers.gradleProperty("gradle.publish.key"))
+val pluginPortalSecret = providers.environmentVariable("GRADLE_PUBLISH_SECRET")
+    .orElse(providers.gradleProperty("gradle.publish.secret"))
 
-        if (!hasCredentials) {
-            logger.lifecycle(
-                "Skipping publishPlugins: GRADLE_PUBLISH_KEY and GRADLE_PUBLISH_SECRET " +
-                    "must both be set and non-blank."
+tasks.named("publishPlugins") {
+    doFirst("require Gradle Plugin Portal credentials") {
+        if (pluginPortalKey.orNull.isNullOrBlank() || pluginPortalSecret.orNull.isNullOrBlank()) {
+            throw GradleException(
+                "publishPlugins requires Gradle Plugin Portal credentials: set " +
+                    "GRADLE_PUBLISH_KEY and GRADLE_PUBLISH_SECRET (or the gradle.publish.key / " +
+                    "gradle.publish.secret Gradle properties) to non-blank values.",
             )
         }
-
-        hasCredentials
     }
 }
 

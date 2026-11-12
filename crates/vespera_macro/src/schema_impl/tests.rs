@@ -23,10 +23,93 @@ fn build_struct_metadata_attaches_identity_from_call_site_file() {
     let metadata = build_struct_metadata(&input, "UserSchema".to_string(), Some(call_site_file));
 
     assert_eq!(metadata.name, "UserSchema");
-    assert_eq!(
-        metadata.source_identity.as_deref(),
-        Some("some/path.rs::User")
+    let identity = metadata.source_identity.expect("identity");
+    assert!(
+        identity.starts_with("some/path.rs::User@"),
+        "identity carries the ident position: {identity}"
     );
+}
+
+/// Same-named structs in two inline `mod`s of ONE file get distinct
+/// identities (span position), so the second registration is rejected as a
+/// duplicate instead of silently replacing the first.
+#[test]
+fn same_named_structs_in_inline_mods_of_one_file_conflict() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("models.rs");
+    let source =
+        "mod a {\n    struct User { id: i32 }\n}\nmod b {\n    struct User { name: String }\n}\n";
+    std::fs::write(&file, source).unwrap();
+    let parsed: syn::File = syn::parse_str(source).unwrap();
+    let structs: Vec<syn::DeriveInput> = parsed
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Mod(module) => module.content.as_ref().map(|(_, items)| &items[0]),
+            _ => None,
+        })
+        .map(|item| syn::parse2(quote::quote!(#item)).unwrap())
+        .collect();
+    let key = "__test_inline_mod_duplicate__".to_string();
+    remove_current_crate_schema(&key);
+
+    let first = build_struct_metadata(&structs[0], key.clone(), Some(&file));
+    let second = build_struct_metadata(&structs[1], key.clone(), Some(&file));
+    assert_ne!(first.source_identity, second.source_identity);
+    assert!(register_schema(key.clone(), first).is_ok());
+    assert!(
+        register_schema(key.clone(), second).is_err(),
+        "two different `User` structs in one file must conflict"
+    );
+    remove_current_crate_schema(&key);
+}
+
+/// A single item whose position changed (IDE edit) is still a replacement;
+/// when the file holds zero (not locatable) or several items of that name,
+/// the move is ambiguous and the strict `line:column` identity applies.
+#[rstest::rstest]
+#[case::single_item("\n\nstruct User { id: i64 }\n", true)]
+#[case::not_found("\n\nstruct Other { id: i64 }\n", false)]
+#[case::second_in_fn_body("fn f() { struct User; }\nstruct User { id: i64 }\n", false)]
+fn moved_item_replacement(#[case] source: &str, #[case] replaced: bool) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("models.rs");
+    std::fs::write(&file, source).unwrap();
+    let path = file.display();
+    let key = format!("__test_moved_item_{replaced}_{}__", source.len());
+    remove_current_crate_schema(&key);
+
+    assert!(
+        register_schema(
+            key.clone(),
+            StructMetadata::new(key.clone(), "struct User { id: i32 }".to_string())
+                .with_source_identity(format!("{path}::User@1:7")),
+        )
+        .is_ok()
+    );
+    let second = register_schema(
+        key.clone(),
+        StructMetadata::new(key.clone(), "struct User { id: i64 }".to_string())
+            .with_source_identity(format!("{path}::User@3:7")),
+    );
+    assert_eq!(second.is_ok(), replaced);
+    assert_eq!(
+        current_crate_schemas()[&key].definition.contains("i64"),
+        replaced
+    );
+    remove_current_crate_schema(&key);
+}
+
+#[rstest::rstest]
+#[case::nested_mods("mod a { struct X; mod b { enum X {} } } struct X;", 3)]
+#[case::other_names("struct Y; mod a { struct Z; }", 0)]
+#[case::external_mod("mod a; struct X;", 1)]
+#[case::fn_body("fn f() { struct X; } struct X;", 2)]
+#[case::impl_and_const("impl T { fn g() { enum X {} } } const C: () = { struct X; };", 2)]
+#[case::static_and_nested_block("static S: u8 = { if true { struct X; } 0 };", 1)]
+fn count_items_named_descends_into_nested_items(#[case] source: &str, #[case] expected: usize) {
+    let parsed: syn::File = syn::parse_str(source).unwrap();
+    assert_eq!(count_items_named(&parsed.items, "X"), expected);
 }
 
 #[test]
@@ -689,10 +772,77 @@ fn schema_attribute_summary_stops_after_name_and_ref_are_found() {
         struct User { id: i32 }
     };
 
-    let summary = collect_schema_attribute_summary(&input.attrs);
+    let summary = collect_schema_attribute_summary(&input.attrs).expect("valid attrs");
 
     assert_eq!(summary.name.as_deref(), Some("ExternalUser"));
     assert!(summary.has_ref_override);
+}
+
+/// Malformed container `#[schema(...)]` attributes are compile errors
+/// instead of being silently ignored.
+#[rstest::rstest]
+#[case::name_not_string("name_not_string", quote::quote!(#[schema(name = Foo)]))]
+#[case::ref_not_string("ref_not_string", quote::quote!(#[schema(ref = 42)]))]
+#[case::name_missing_value("name_missing_value", quote::quote!(#[schema(name)]))]
+#[case::garbage("garbage", quote::quote!(#[schema(name = "A" "B")]))]
+fn malformed_container_schema_attr_is_compile_error(
+    #[case] case: &str,
+    #[case] attr: proc_macro2::TokenStream,
+) {
+    let input: syn::DeriveInput = syn::parse_quote! {
+        #attr
+        struct User { id: i32 }
+    };
+    let (metadata, tokens) = process_derive_schema(&input);
+    assert!(metadata.is_none(), "{case}: must not register");
+    insta::assert_snapshot!(
+        format!("malformed_container_schema_attr_{case}"),
+        tokens.to_string()
+    );
+}
+
+#[rstest::rstest]
+#[case::unknown_key_value(quote::quote!(#[schema(other = "x", name = "N")]), Some("N"))]
+#[case::unknown_key_list(quote::quote!(#[schema(extra(a = 1), name = "M")]), Some("M"))]
+#[case::bare(quote::quote!(#[schema]), None)]
+fn container_schema_attr_tolerates_unknown_keys(
+    #[case] attr: proc_macro2::TokenStream,
+    #[case] expected: Option<&str>,
+) {
+    let input: syn::DeriveInput = syn::parse_quote! {
+        #attr
+        struct User { id: i32 }
+    };
+    let summary = collect_schema_attribute_summary(&input.attrs).expect("tolerated");
+    assert_eq!(summary.name.as_deref(), expected);
+}
+
+/// `#[serde(tag = "...")]` newtype variants wrapping a non-object value are
+/// rejected at derive time; struct / map inner values are accepted.
+#[rstest::rstest]
+#[case::string_inner("string_inner", quote::quote!(Text(String)), true)]
+#[case::vec_inner("vec_inner", quote::quote!(List(Vec<i32>)), true)]
+#[case::tuple_inner("tuple_inner", quote::quote!(Pair((i32, i32))), true)]
+#[case::struct_inner("struct_inner", quote::quote!(Detail(Payload)), false)]
+#[case::map_inner("map_inner", quote::quote!(Meta(std::collections::HashMap<String, i32>)), false)]
+#[case::skipped_variant("skipped_variant", quote::quote!(#[serde(skip)] Text(String)), false)]
+fn internally_tagged_newtype_validation(
+    #[case] case: &str,
+    #[case] variant: proc_macro2::TokenStream,
+    #[case] is_error: bool,
+) {
+    let input: syn::DeriveInput = syn::parse_quote! {
+        #[serde(tag = "type")]
+        enum Event { Ping, #variant }
+    };
+    let (metadata, tokens) = process_derive_schema(&input);
+    assert_eq!(metadata.is_none(), is_error, "{case}");
+    if is_error {
+        insta::assert_snapshot!(
+            format!("internally_tagged_newtype_error_{case}"),
+            tokens.to_string()
+        );
+    }
 }
 
 #[test]
@@ -832,4 +982,11 @@ fn cached_default_functions_reuses_the_cached_arc_for_unchanged_files() {
 
     assert_eq!(first.get("default_count"), Some(&serde_json::json!(42)));
     assert!(Arc::ptr_eq(&first, &second));
+}
+
+/// An identity without a `file::Ident` part (never produced by `derive`, e.g.
+/// hand-built metadata) can never be proven to be the same item that moved.
+#[test]
+fn identity_without_file_component_is_never_a_move() {
+    assert!(!is_same_item_moved(Some("User@1:7"), Some("User@3:7")));
 }

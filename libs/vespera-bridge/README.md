@@ -6,15 +6,27 @@ JNI bridge that lets a Java/Spring application embed a Rust [`vespera`](../../) 
 <dependency>
   <groupId>kr.devfive</groupId>
   <artifactId>vespera-bridge</artifactId>
-  <version>0.2.0</version>
+  <version>0.5.0</version>
 </dependency>
 ```
 
 ```kotlin
 dependencies {
-    implementation("kr.devfive:vespera-bridge:0.2.0")
+    implementation("kr.devfive:vespera-bridge:0.5.0")
 }
 ```
+
+### Version compatibility
+
+- **Bridge ↔ Rust crate:** the `vespera-bridge` version must match the **minor** version of the `vespera` crate your cdylib is built with (bridge `0.5.x` ↔ `vespera = "0.5"`). The JNI symbol set and the binary wire format are only guaranteed stable within a minor line.
+- **Spring Boot:** compiled against Spring Boot 4.1 / Spring Framework 7.0; supported on **Spring Boot 3.5.x and 4.x** (Spring Framework 6.2 / 7.0, Jakarta Servlet 6.0+). The Boot 3.5 runtime is verified by the `testBoot3` Gradle task (run automatically after `./gradlew test`), which runs the unit suite against a Spring Boot 3.5 classpath. Spring Boot ≤ 3.4 / `javax.servlet` is not supported.
+- **Java:** 17+.
+
+### Dependencies — Spring is provided by your app
+
+`vespera-bridge` declares **no transitive dependencies** (its POM is empty): Spring Boot, Spring MVC, the servlet API and SLF4J are compile-only and must come from the application. Every Spring Boot web app already has them through `spring-boot-starter-web` (Boot 3) / `spring-boot-starter-webmvc` (Boot 4), so nothing changes there. The autoconfiguration only activates in a servlet web application with Spring MVC on the classpath (`@ConditionalOnClass` + `@ConditionalOnWebApplication(type = SERVLET)`), and the non-Spring API (`VesperaBridge` dispatch / `encodeRequest` / `decodeResponse`) runs with no Spring jars at all.
+
+> Up to and including 0.5.0 the bridge exported `spring-boot-starter-web` and `jackson-databind` as `api` dependencies. If your build relied on getting either of them transitively from the bridge, declare it yourself.
 
 ### One-line setup via the Gradle plugin (recommended)
 
@@ -22,13 +34,13 @@ For Spring Boot apps the [`kr.devfive.vespera-bridge`](../vespera-bridge-gradle-
 
 ```kotlin
 plugins {
-    id("kr.devfive.vespera-bridge") version "0.1.1"
+    id("kr.devfive.vespera-bridge") version "0.4.1"
 }
 
 vespera {
     crateName.set("my_rust_lib")
     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
-    bridgeVersion.set("0.2.0")
+    bridgeVersion.set("0.5.0")
 }
 ```
 
@@ -103,8 +115,41 @@ vespera:
     app-header: X-My-App        # change the header that selects the app
     controller-enabled: true     # set false to disable our controller
     direct-retry-on-overflow: true # set false to avoid DIRECT retry double-execution
-    max-buffered-request-bytes: 0 # 0 = unlimited; cap SYNC/ASYNC/DIRECT request buffering
+    max-buffered-request-bytes: 67108864 # default 64 MiB; 0 = unlimited
+    native:                      # Rust-side knobs, applied before the first dispatch
+      max-request-bytes: 67108864           # buffered request cap → 413 (0 = unlimited)
+      max-streaming-request-bytes: 0        # streamed upload cap → 413 (0 = unlimited, default)
+      max-buffered-response-bytes: 268435456 # buffered response cap → 500 (default 256 MiB)
+      dispatch-timeout: 30s                 # deadline → 504 (default: disabled); see below
+      async-max-in-flight: 4096             # dispatchAsync concurrency cap → 503
+      worker-threads: 8                     # shared Tokio runtime workers (default: CPUs)
+      max-blocking-threads: 512             # shared runtime blocking pool
 ```
+
+`vespera.bridge.native.*` is forwarded to the `VesperaBridge.configure*`
+methods during context startup, before the proxy serves a request. Unset keys
+keep the native default (or the `vespera.limits.*` / `vespera.dispatch.*` /
+`vespera.async.*` / `vespera.runtime.*` system properties and their `VESPERA_*`
+environment variables). A value that arrives after the first native dispatch is
+logged and ignored.
+
+Precedence for every native knob (first hit wins, then process-fixed):
+**programmatic `VesperaBridge.configure*` / `vespera.bridge.native.*`** &gt;
+**system property** &gt; **`VESPERA_*` environment variable** &gt; built-in
+default. Spring values only take effect when they are applied before the first
+dispatch (the autoconfiguration does this during context startup). A
+programmatic value equal to a knob's "unset" sentinel — `<= 0` for
+`worker-threads` / `max-blocking-threads`, `< 0` for the limits, timeout and
+async cap — is ignored and never shadows the system property or environment
+variable (e.g. `configureRuntime(8, 0)` keeps
+`-Dvespera.runtime.maxBlockingThreads`).
+
+`dispatch-timeout` bounds the **whole dispatch** (handler + body) for the
+buffered modes (`SYNC`, `ASYNC`, `DIRECT`) — expiry answers `504`. For the
+streaming modes (`STREAMING`, `BIDIRECTIONAL_STREAMING`) it bounds only the
+**time to the response header**: a handler that has not produced its header in
+time answers `504`; once the header is committed the body streams without a
+total deadline, so a long download that keeps making progress is never cut off.
 
 `vespera.bridge.direct-retry-on-overflow` defaults to `true` for backward
 compatibility with the 0.2.x DIRECT fast path.  When `false`, a DIRECT response
@@ -112,10 +157,10 @@ overflow raises the existing `BufferTooSmallException` path in the proxy (HTTP
 500 with the required size) instead of growing the response buffer and re-running
 the Rust handler.
 
-`vespera.bridge.max-buffered-request-bytes` defaults to `0` (unlimited) for
-backward compatibility, matching the Rust-side `VESPERA_MAX_REQUEST_BYTES`
-convention.  Set it to a positive byte count to reject SYNC/ASYNC/DIRECT
-requests whose buffered body exceeds the cap with HTTP 413.  Bidirectional
+`vespera.bridge.max-buffered-request-bytes` defaults to 64 MiB (`0` =
+unlimited), matching the Rust-side `VESPERA_MAX_REQUEST_BYTES` default.  The
+proxy rejects SYNC/ASYNC/DIRECT/STREAMING requests whose buffered body exceeds
+the cap with HTTP 413.  Bidirectional
 streaming is exempt and remains the path for large or unknown-size uploads.
 
 ### 2. Custom app-selection strategy
@@ -403,24 +448,21 @@ and handles all payload sizes without pooling.
 
 ### Synchronous dispatch runtime semantics (background tasks)
 
-`SYNC` and `DIRECT` drive each request on a **per-calling-thread
-current-thread Tokio runtime** (one runtime per Java request thread,
-created lazily, blocking pool capped at 4 threads). The request future and
-any task the handler `.await`s run to completion normally. The one caveat:
-a handler that **detaches** background work with `tokio::spawn(...)` and
-returns *without awaiting it* makes progress on that detached task only
-while a later request reuses the same Java thread's runtime in a
-`block_on` — there are no dedicated worker threads on this path.
+Every dispatch mode runs on the **same shared multi-threaded Tokio
+runtime**. `SYNC` and `DIRECT` `block_on` it from the calling Java thread,
+so the request future runs on that thread while I/O, timers and any
+`tokio::spawn`ed task use the shared drivers and workers. Connection pools
+(sqlx / sea-orm, reqwest, hyper) created in one request keep working from
+every other request and mode, and fire-and-forget `tokio::spawn` tasks make
+progress on their own.
 
-If your handlers fire-and-forget background tasks, route them through a
-mode backed by the shared multi-threaded runtime instead:
+Worker count: `vespera.runtime.workerThreads` / `VESPERA_RUNTIME_WORKERS`;
+blocking pool: `vespera.runtime.maxBlockingThreads` /
+`VESPERA_RUNTIME_MAX_BLOCKING_THREADS` (default 512).
 
-- `dispatchAsync` / the `CompletableFuture` API, or
-- `vespera.bridge.dispatch-mode=bidirectional-streaming`
-
-(both use the shared `RUNTIME`, whose worker count is tunable via
-`vespera.runtime.workerThreads` / `VESPERA_RUNTIME_WORKERS`). Handlers that
-only `.await` their own work are unaffected.
+> Up to 0.5.x, `SYNC`/`DIRECT` used a per-Java-thread
+> current-thread runtime; runtime-bound resources shared across requests
+> could stall or fail with "runtime is shutting down".
 
 ### Operational sizing (threads & off-heap)
 
@@ -554,7 +596,7 @@ Backpressure is enforced naturally — if axum reads slowly,
 Both knobs are fixed for the process lifetime once the first dispatch
 runs. Configuration precedence (first hit wins, then cached):
 
-1. **Programmatic setter** — `VesperaBridge.configureStreaming(chunkBytes, channelCapacity)` (Java API, call before or after init)
+1. **Programmatic setter** — `VesperaBridge.configureStreaming(chunkBytes, channelCapacity)` (Java API, call before or after init; returns `void` for 0.5.x binary compatibility — a value the native side already fixed is logged as a warning)
 2. **System properties** — `vespera.streaming.chunkBytes`, `vespera.streaming.channelCapacity`
 3. **Environment variables** — `VESPERA_STREAMING_CHUNK_BYTES`, `VESPERA_STREAMING_CHANNEL_CAPACITY`
 4. **Built-in defaults** — 256 KiB chunk size, 16 channel slots
@@ -665,12 +707,15 @@ A Rust handler returning a binary response (e.g. `image/png`) flows the same way
 2. Asks the configured `DispatchModeResolver` which mode serves this request (default since 0.2.0: `SmartDispatchModeResolver` — DIRECT for small/bodyless safe requests, SYNC for small unsafe requests, BIDIRECTIONAL_STREAMING for everything else; opt out with `vespera.bridge.dispatch-mode=bidirectional-streaming`).
 3. For `SYNC` / `ASYNC` / `STREAMING` / `DIRECT` modes the body is read into `byte[]` first (bodyless requests — explicit `Content-Length: 0`, e.g. the small safe GETs the SmartDispatch resolver routes through DIRECT — skip the read and reuse a shared empty array), then encoded via `VesperaBridge.encodeRequest(...)` and dispatched through the matching native method.
 4. Sync/async responses are parsed straight from the wire response via the allocation-lean `WireHeaderReader` (status + headers) and returned as `ResponseEntity<byte[]>` for **every** `Content-Type` — the body is sliced once from the wire tail; the `Content-Type` header is carried verbatim, so no text/binary branching is needed.  Streaming and DIRECT modes write status/headers and body straight to the servlet response.
+5. `BIDIRECTIONAL_STREAMING` hands Rust a gated wrapper of the servlet `InputStream`. A handler that returns without draining the request body can leave the Rust request producer parked in `read()` (it is detached after a bounded join); once the native call returns, the gate makes every further read return `-1` without touching the servlet stream, and if a read was still in flight the proxy sets `Connection: close` (when the response is not committed yet; otherwise best effort — the container sees that read finish on its own) so a keep-alive connection is never reused at an unknown stream position.
 
 ## Native library loading
 
 `VesperaBridge.init("crateName")` tries two paths in order:
 
-1. **Bundled** — looks up `native/{os}-{arch}/{libname}` inside the running JAR's classpath. If present, the file is extracted to a temp file (auto-deleted on JVM exit) and loaded via `System.load`.
+1. **Bundled** — looks up `native/{os}-{arch}/{libname}` inside the running JAR's classpath. If present, it is extracted **content-addressed** to `<dir>/vespera-native-<sha256-prefix>/<libname>` and loaded via `System.load`. `<dir>` is the first of: system property `vespera.native.dir`, environment variable `VESPERA_NATIVE_DIR`, or the per-user default `<java.io.tmpdir>/vespera-<user.name>` (sanitized to `[A-Za-z0-9._-]`). A restart reuses the existing file when its SHA-256 matches the bundled library (no new copy per JVM start, nothing left to clean up on exit); a new extraction is written to a temp file in that directory and published with an atomic rename, so concurrent JVMs never load a half-written file. Point `vespera.native.dir` at an exec-permitted, persistent directory when `/tmp` is mounted `noexec` (or is wiped). Older bridge versions left `vespera-<random>.(dll|so|dylib)` copies in `java.io.tmpdir`; those older than one hour are removed best-effort on load (files still in use are skipped) — disable with `-Dvespera.native.cleanupLegacy=false`. Directories of previous library versions (`vespera-native-<other hash>`) are not deleted automatically.
+
+   **Directory safety (POSIX).** The base and hash directories are created with mode `0700` and, before a cached copy is trusted, verified to be real directories (symbolic links are rejected), owned by the current user, and not group- or other-writable; an explicit `vespera.native.dir` / `VESPERA_NATIVE_DIR` is subject to the same checks. The extracted library is made owner read/execute only (`0500`). If verification fails — for example a squatted, shared (`1777`-style) or symlinked directory — the library is extracted into a fresh private `vespera-native-*` temp directory for this JVM only (no reuse, removed on exit where possible) and a warning is logged. On Windows (no POSIX attributes) the directories are used as-is; the default already sits under the per-user `%TEMP%`.
 2. **Fallback** — `System.loadLibrary("crateName")` searches `java.library.path`.
 
 The supported triples are `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-aarch64`, `windows-x86_64`. Place the cdylib at `src/main/resources/native/{os}-{arch}/` to bundle it; see [`examples/rust-jni-demo/java/demo-app/build.gradle.kts`](../../examples/rust-jni-demo/java/demo-app/build.gradle.kts) for a working Gradle task.
@@ -678,6 +723,18 @@ The supported triples are `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `maco
 ## End-to-end example
 
 See [`examples/rust-jni-demo`](../../examples/rust-jni-demo/) for a complete Rust + Spring Boot integration including build scripts, native bundling, and a curl smoke test.
+
+## Breaking changes after 0.5.0
+
+1. **Spring is a provided dependency.** The bridge no longer exports `spring-boot-starter-web` / `jackson-databind`; see [Dependencies](#dependencies--spring-is-provided-by-your-app). Apps that got Spring MVC or Jackson only through the bridge must declare them.
+2. **`HEAD` responses advertise the real representation length.** axum answers `HEAD` with an empty body but the `content-length` of the matching `GET`; the proxy now forwards that value (in every dispatch mode) instead of `Content-Length: 0`. When Rust declares no length and sends no body, `Content-Length` is left unset rather than `0`.
+3. **Native library extraction location.** The bundled cdylib is extracted to `vespera-native-<sha256-prefix>/` under `vespera.native.dir` / `VESPERA_NATIVE_DIR` / the per-user `<java.io.tmpdir>/vespera-<user.name>` and kept for reuse (only from a verified-private directory on POSIX), instead of a fresh `deleteOnExit` temp file per start; see [Native library loading](#native-library-loading).
+4. **Autoconfiguration guard.** `VesperaBridgeAutoConfiguration` is now an `@AutoConfiguration` that also requires Spring MVC (`DispatcherServlet`) and the servlet API on the classpath.
+5. **Native defaults now bound resources.** Buffered request bodies are capped at 64 MiB (`413`), buffered responses at 256 MiB (`500`), and `dispatchAsync` at 4096 in-flight calls (`503`). Raise or disable them (`0`) via `vespera.bridge.native.*` or the `vespera.limits.*` / `vespera.async.*` system properties. A per-dispatch deadline is available (`dispatch-timeout`, off by default).
+6. **`SYNC`/`DIRECT` run on the shared runtime** (see [Synchronous dispatch runtime semantics](#synchronous-dispatch-runtime-semantics-background-tasks)).
+7. **`dispatchStreaming` / `dispatchFullStreaming` throw `IOException`** when the response fails after body bytes were written (previously a synthetic 500 header after a partial body), and `dispatchStreaming` now hoists 422 `validation_errors`.
+8. **The new `configure*` methods return `boolean`** (`false` + a logged warning when the native side already fixed the value). `configureStreaming(int, int)` keeps its 0.5.x `void` signature for binary compatibility (a not-applied value is logged).
+9. **The bridge JAR and the native library must come from the same release.** The `configure*0` JNI hooks now return `boolean`; a new JAR paired with an older native library would bind them to `void` symbols. Rebuild the cdylib against the matching `vespera` crate version whenever you upgrade `vespera-bridge`.
 
 ## 0.2.0 breaking changes
 

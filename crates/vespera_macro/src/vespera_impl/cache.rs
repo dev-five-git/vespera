@@ -260,11 +260,14 @@ pub(super) fn compute_config_hash_with_merge_cache(
         Some(security) => {
             "security:some".hash(&mut hasher);
             security.len().hash(&mut hasher);
+            // Hash each requirement's scheme names AND scopes (BTreeMap →
+            // sorted, deterministic). Scopes alone changing (`oauth2:
+            // ["read"]` → `["read", "write"]`) must invalidate the cache.
             for requirement in security {
-                let mut names: Vec<_> = requirement.keys().collect();
-                names.sort_unstable();
-                for name in names {
+                requirement.len().hash(&mut hasher);
+                for (name, scopes) in requirement {
                     name.hash(&mut hasher);
+                    scopes.hash(&mut hasher);
                 }
             }
         }
@@ -817,6 +820,28 @@ mod tests {
         assert_ne!(
             compute_config_hash(&base_processed()),
             compute_config_hash(&secured)
+        );
+    }
+
+    /// Changing only a requirement's scopes must invalidate the cache.
+    #[rstest::rstest]
+    #[case::added_scope(vec!["read"], vec!["read", "write"])]
+    #[case::replaced_scope(vec!["read"], vec!["admin"])]
+    #[case::empty_vs_some(vec![], vec!["read"])]
+    fn security_requirement_scopes_affect_config_hash(
+        #[case] before: Vec<&str>,
+        #[case] after: Vec<&str>,
+    ) {
+        let with_scopes = |scopes: Vec<&str>| ProcessedVesperaInput {
+            security: Some(vec![BTreeMap::from([(
+                "oauth2".to_string(),
+                scopes.into_iter().map(str::to_string).collect(),
+            )])]),
+            ..base_processed()
+        };
+        assert_ne!(
+            compute_config_hash(&with_scopes(before)),
+            compute_config_hash(&with_scopes(after))
         );
     }
 

@@ -1,0 +1,63 @@
+# cargo-deny configuration — run locally with `cargo deny check`
+# (install: `cargo install cargo-deny --locked`). Enforced by the `deny`
+# job in .github/workflows/CI.yml.
+#
+# Scope: every workspace member (published crates, examples, benches) on
+# every target platform, so a dependency pulled in only on Windows/macOS
+# (e.g. windows-sys) is still license/advisory-checked.
+
+[graph]
+all-features = true
+
+[advisories]
+# RustSec advisory DB. Vulnerabilities always fail; unmaintained /
+# unsound / yanked crates are reported for the whole dependency graph.
+version = 2
+yanked = "deny"
+ignore = [
+    # libsqlite3-sys 0.37 (bundled SQLite < 3.54) reaches the graph ONLY via
+    # examples/axum-example -> sea-orm 2 -> sqlx 0.9 -> sqlx-sqlite, which
+    # pins 0.37 (no compatible 0.39 exists for sqlx 0.9). The example is
+    # unpublished (publish = false) and never opens attacker-supplied
+    # database/WAL files. No published vespera crate depends on SQLite.
+    # Drop this once sqlx ships a release on libsqlite3-sys >= 0.39.
+    { id = "RUSTSEC-2026-0459", reason = "example-only (axum-example via sqlx-sqlite); no published crate links SQLite" },
+]
+
+[licenses]
+version = 2
+# Allowlist derived from the actual dependency graph
+# (`cargo metadata` license fields). Add a license here only after
+# confirming it is compatible with vespera's Apache-2.0 distribution.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+# Unpublished workspace members (examples, bench harnesses) are not
+# distributed, so their own (absent) license fields are not checked.
+ignore = true
+
+[bans]
+# Duplicate versions are common in a large graph (e.g. windows-sys,
+# hashbrown) and rarely actionable from here — surface, don't fail.
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies between workspace members carry no version
+# requirement on purpose; only registry wildcards are banned.
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

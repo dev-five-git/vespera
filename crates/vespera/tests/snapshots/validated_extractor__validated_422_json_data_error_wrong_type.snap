@@ -1,0 +1,6 @@
+---
+source: crates/vespera/tests/validated_extractor.rs
+assertion_line: 500
+expression: body
+---
+{"errors":[{"message":"invalid type: integer `1`, expected a string at line 1 column 10","path":"title"}]}

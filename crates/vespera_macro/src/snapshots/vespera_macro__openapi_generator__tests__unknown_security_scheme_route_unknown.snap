@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/openapi_generator.rs
+assertion_line: 361
+expression: error.to_string()
+---
+route `routes::secure::secure_route` (`GET /secure`) references unknown security scheme `apiKey`; declared in `vespera!(security_schemes = [...])`: `bearerAuth`

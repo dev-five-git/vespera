@@ -102,6 +102,26 @@ class VesperaBridgeAutoConfigurationTest {
     }
 
     @Test
+    void autoConfigurationBacksOffWithoutSpringMvc() {
+        // Spring MVC is a provided dependency: an app without it (e.g. a
+        // WebFlux or non-web app that only uses VesperaBridge directly) must
+        // not get the servlet proxy wired in.
+        runner.withClassLoader(new org.springframework.boot.test.context.FilteredClassLoader(
+                        "org.springframework.web.servlet.DispatcherServlet"))
+                .run(ctx -> {
+                    assertTrue(ctx.getBeansOfType(VesperaProxyController.class).isEmpty());
+                    assertTrue(ctx.getBeansOfType(DispatchModeResolver.class).isEmpty());
+                });
+    }
+
+    @Test
+    void autoConfigurationBacksOffOutsideServletWebApps() {
+        new org.springframework.boot.test.context.runner.ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(VesperaBridgeAutoConfiguration.class))
+                .run(ctx -> assertTrue(ctx.getBeansOfType(VesperaProxyController.class).isEmpty()));
+    }
+
+    @Test
     void controllerDisabledPropertyStillWorks() {
         runner.withPropertyValues("vespera.bridge.controller-enabled=false")
                 .run(ctx -> assertTrue(ctx.getBeansOfType(VesperaProxyController.class).isEmpty()));
@@ -324,6 +344,50 @@ class VesperaBridgeAutoConfigurationTest {
         AppNameResolver customAppNameResolver() {
             return RESOLVER;
         }
+    }
+
+    @Test
+    void nativePropertiesBindAndAreForwardedBeforeTheController() {
+        try {
+            runner.withPropertyValues(
+                            "vespera.bridge.native.worker-threads=3",
+                            "vespera.bridge.native.max-blocking-threads=64",
+                            "vespera.bridge.native.max-request-bytes=1048576",
+                            "vespera.bridge.native.max-streaming-request-bytes=0",
+                            "vespera.bridge.native.max-buffered-response-bytes=2097152",
+                            "vespera.bridge.native.dispatch-timeout=30s",
+                            "vespera.bridge.native.async-max-in-flight=128")
+                    .run(ctx -> {
+                        assertTrue(ctx.containsBean("vesperaBridgeNativeSettings"));
+                        VesperaBridgeProperties.Native n =
+                                ctx.getBean(VesperaBridgeProperties.class).getNative();
+                        assertEquals(3, n.getWorkerThreads());
+                        assertEquals(64, n.getMaxBlockingThreads());
+                        assertEquals(1048576L, n.getMaxRequestBytes());
+                        assertEquals(0L, n.getMaxStreamingRequestBytes());
+                        assertEquals(2097152L, n.getMaxBufferedResponseBytes());
+                        assertEquals(30_000L, n.getDispatchTimeout().toMillis());
+                        assertEquals(128, n.getAsyncMaxInFlight());
+                    });
+        } finally {
+            VesperaNativeConfig.RUNTIME_WORKER_THREADS.clearPendingForTest();
+            VesperaNativeConfig.RUNTIME_MAX_BLOCKING_THREADS.clearPendingForTest();
+            VesperaNativeConfig.MAX_REQUEST_BYTES.clearPendingForTest();
+            VesperaNativeConfig.MAX_STREAMING_REQUEST_BYTES.clearPendingForTest();
+            VesperaNativeConfig.MAX_BUFFERED_RESPONSE_BYTES.clearPendingForTest();
+            VesperaNativeConfig.DISPATCH_TIMEOUT_MILLIS.clearPendingForTest();
+            VesperaNativeConfig.ASYNC_MAX_IN_FLIGHT.clearPendingForTest();
+        }
+    }
+
+    @Test
+    void unsetNativePropertiesStayNull() {
+        runner.run(ctx -> {
+            VesperaBridgeProperties.Native n =
+                    ctx.getBean(VesperaBridgeProperties.class).getNative();
+            assertEquals(null, n.getMaxRequestBytes());
+            assertEquals(null, n.getDispatchTimeout());
+        });
     }
 
     @Configuration(proxyBeanMethods = false)

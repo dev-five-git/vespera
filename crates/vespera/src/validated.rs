@@ -200,13 +200,14 @@ impl<S, T> FromRequest<S> for Validated<T>
 where
     S: Send + Sync,
     T: FromRequest<S> + ValidatePayload + Send,
+    T::Rejection: 'static,
 {
     type Rejection = Response;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let extracted = T::from_request(req, state)
             .await
-            .map_err(IntoResponse::into_response)?;
+            .map_err(rejection_response)?;
         match extracted.payload().validate() {
             Ok(()) => Ok(Self(extracted)),
             Err(report) => Err(build_validation_response(&report)),
@@ -218,13 +219,14 @@ impl<S, T> FromRequestParts<S> for Validated<T>
 where
     S: Send + Sync,
     T: FromRequestParts<S> + ValidatePayload + Send,
+    T::Rejection: 'static,
 {
     type Rejection = Response;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let extracted = T::from_request_parts(parts, state)
             .await
-            .map_err(IntoResponse::into_response)?;
+            .map_err(rejection_response)?;
         match extracted.payload().validate() {
             Ok(()) => Ok(Self(extracted)),
             Err(report) => Err(build_validation_response(&report)),
@@ -237,13 +239,14 @@ where
     S: Send + Sync + ValidationContext<C>,
     C: Send + Sync + 'static,
     T: FromRequest<S> + ValidatePayloadWith<C> + Send,
+    T::Rejection: 'static,
 {
     type Rejection = Response;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let extracted = T::from_request(req, state)
             .await
-            .map_err(IntoResponse::into_response)?;
+            .map_err(rejection_response)?;
         match extracted
             .payload()
             .validate_with(state.validation_context())
@@ -259,13 +262,14 @@ where
     S: Send + Sync + ValidationContext<C>,
     C: Send + Sync + 'static,
     T: FromRequestParts<S> + ValidatePayloadWith<C> + Send,
+    T::Rejection: 'static,
 {
     type Rejection = Response;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let extracted = T::from_request_parts(parts, state)
             .await
-            .map_err(IntoResponse::into_response)?;
+            .map_err(rejection_response)?;
         match extracted
             .payload()
             .validate_with(state.validation_context())
@@ -274,6 +278,170 @@ where
             Err(report) => Err(build_validation_response(&report)),
         }
     }
+}
+
+/// Turn an inner-extractor rejection into the response `Validated` returns.
+///
+/// Input that is well-formed but does not deserialize into the target type is
+/// a *validation* failure of the same kind as a `garde` rule violation, so it
+/// is reported through the SAME `422` `{"errors":[{"message","path"}]}`
+/// envelope (the JNI bridge hoists exactly this shape):
+///
+/// * `Json` — `JsonDataError` (wrong type / missing field; axum: 422 text)
+/// * `Form` — `FailedToDeserializeForm` / `FailedToDeserializeFormBody`
+/// * `Query` — `FailedToDeserializeQueryString`
+/// * `Path` — per-parameter parse / deserialize errors
+///
+/// `path` is the serde field path (`user.tags[1]` style, `""` at the root).
+/// Everything else — JSON syntax errors (400), a missing/unsupported
+/// `Content-Type` (415), body-limit errors, server-side `Path` misuse (500),
+/// custom extractors — passes through unchanged.
+fn rejection_response<R>(rejection: R) -> Response
+where
+    R: IntoResponse + 'static,
+{
+    use ::axum::extract::{
+        path::ErrorKind,
+        rejection::{FormRejection, JsonRejection, PathRejection, QueryRejection},
+    };
+    use std::any::Any;
+
+    fn deserialize_error_entry(any: &dyn Any) -> Option<EnvelopeEntry> {
+        if let Some(json) = any.downcast_ref::<JsonRejection>() {
+            return match json {
+                JsonRejection::JsonDataError(error) => {
+                    Some(serde_error_entry(error, error.body_text()))
+                }
+                _ => None,
+            };
+        }
+        if let Some(form) = any.downcast_ref::<FormRejection>() {
+            return match form {
+                FormRejection::FailedToDeserializeForm(error) => {
+                    Some(serde_error_entry(error, error.body_text()))
+                }
+                FormRejection::FailedToDeserializeFormBody(error) => {
+                    Some(serde_error_entry(error, error.body_text()))
+                }
+                _ => None,
+            };
+        }
+        if let Some(QueryRejection::FailedToDeserializeQueryString(error)) =
+            any.downcast_ref::<QueryRejection>()
+        {
+            return Some(serde_error_entry(error, error.body_text()));
+        }
+        let Some(PathRejection::FailedToDeserializePathParams(error)) =
+            any.downcast_ref::<PathRejection>()
+        else {
+            return None;
+        };
+        let kind = error.kind();
+        let path = match kind {
+            ErrorKind::ParseErrorAtKey { key, .. }
+            | ErrorKind::InvalidUtf8InPathParam { key }
+            | ErrorKind::DeserializeError { key, .. } => key.clone(),
+            ErrorKind::ParseErrorAtIndex { index, .. } => index.to_string(),
+            ErrorKind::ParseError { .. } | ErrorKind::Message(_) => String::new(),
+            // Route/extractor mismatches are server bugs (500): pass through.
+            _ => return None,
+        };
+        Some(EnvelopeEntry {
+            message: kind.to_string(),
+            path,
+        })
+    }
+
+    deserialize_error_entry(&rejection).map_or_else(
+        || rejection.into_response(),
+        |entry| envelope_response(&[entry]),
+    )
+}
+
+/// One `{"message","path"}` entry of the 422 envelope.
+struct EnvelopeEntry {
+    message: String,
+    path: String,
+}
+
+impl Serialize for EnvelopeEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut error = serializer.serialize_struct("ValidationError", 2)?;
+        // Same field order as the `garde` report serializer below.
+        error.serialize_field("message", &self.message)?;
+        error.serialize_field("path", &self.path)?;
+        error.end()
+    }
+}
+
+/// Recover `(path, message)` from axum's `serde_path_to_error`-backed
+/// deserialization rejections; falls back to the rejection text at the root.
+fn serde_error_entry(error: &dyn std::error::Error, fallback: String) -> EnvelopeEntry {
+    type JsonPathError = ::serde_path_to_error::Error<::serde_json::Error>;
+    type UrlencodedPathError = ::serde_path_to_error::Error<::serde::de::value::Error>;
+
+    // serde reports `missing field `x`` at the PARENT path; point at the field.
+    let entry = |path: &::serde_path_to_error::Path, message: String| {
+        let rendered = path.to_string();
+        let mut path = if rendered == "." || rendered == "?" {
+            String::new()
+        } else {
+            rendered
+        };
+        if let Some(field) = message
+            .strip_prefix("missing field `")
+            .and_then(|rest| rest.split_once('`'))
+            .map(|(field, _)| field)
+        {
+            if !path.is_empty() {
+                path.push('.');
+            }
+            path.push_str(field);
+        }
+        EnvelopeEntry { message, path }
+    };
+    let mut source = error.source();
+    while let Some(current) = source {
+        if let Some(inner) = current.downcast_ref::<JsonPathError>() {
+            return entry(inner.path(), inner.inner().to_string());
+        }
+        if let Some(inner) = current.downcast_ref::<UrlencodedPathError>() {
+            return entry(inner.path(), inner.inner().to_string());
+        }
+        source = current.source();
+    }
+    EnvelopeEntry {
+        message: fallback,
+        path: String::new(),
+    }
+}
+
+/// `422` + `application/json` `{"errors":[...]}` from pre-built entries.
+fn envelope_response(entries: &[EnvelopeEntry]) -> Response {
+    struct Envelope<'a>(&'a [EnvelopeEntry]);
+
+    impl Serialize for Envelope<'_> {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let mut envelope = serializer.serialize_struct("ValidationEnvelope", 1)?;
+            envelope.serialize_field("errors", self.0)?;
+            envelope.end()
+        }
+    }
+
+    let body = ::serde_json::to_vec(&Envelope(entries))
+        .unwrap_or_else(|_| FALLBACK_VALIDATION_ENVELOPE.to_vec());
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        [(CONTENT_TYPE, HeaderValue::from_static("application/json"))],
+        body,
+    )
+        .into_response()
 }
 
 /// Build the canonical `422 Unprocessable Entity` response from a
@@ -387,7 +555,18 @@ fn build_validation_response(report: &::garde::Report) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::FALLBACK_VALIDATION_ENVELOPE;
+    use super::{FALLBACK_VALIDATION_ENVELOPE, serde_error_entry};
+
+    /// A rejection whose source chain carries no `serde_path_to_error` error
+    /// (every axum extractor wraps one today, so this guards against axum
+    /// changing that) reports the rejection's own text at the root path.
+    #[test]
+    fn serde_error_without_path_source_falls_back_to_root_entry() {
+        let error = std::io::Error::other("opaque rejection");
+        let entry = serde_error_entry(&error, "fallback text".to_owned());
+        assert_eq!(entry.message, "fallback text");
+        assert_eq!(entry.path, "");
+    }
 
     #[test]
     fn fallback_envelope_matches_the_snapshot_locked_shape() {

@@ -215,28 +215,26 @@ pub fn build_operation_from_function(
             .and_then(|(_, resp)| resp.content.as_ref()?.iter().next())
             .map(|(content_type, media)| (content_type.clone(), media.schema.clone()));
 
-        if let Some((content_type, schema)) = error_media {
-            for &status_code in status_codes {
-                let status_str = status_code.to_string();
-                // Only add if not already present
-                responses.entry(status_str).or_insert_with(|| {
-                    let mut err_content = BTreeMap::new();
-                    err_content.insert(
-                        content_type.clone(),
-                        MediaType {
-                            schema: schema.clone(),
-                            example: None,
-                            examples: None,
-                        },
-                    );
-
-                    Response {
-                        description: error_response_description(),
-                        headers: None,
-                        content: Some(err_content),
-                    }
+        for &status_code in status_codes {
+            // Only add if not already present. When the error type carries no
+            // body (`Result<_, StatusCode>`, plain non-`Result` returns) the
+            // declared status is still documented — description only.
+            responses
+                .entry(status_code.to_string())
+                .or_insert_with(|| Response {
+                    description: response_description_for_status(status_code),
+                    headers: None,
+                    content: error_media.as_ref().map(|(content_type, schema)| {
+                        BTreeMap::from([(
+                            content_type.clone(),
+                            MediaType {
+                                schema: schema.clone(),
+                                example: None,
+                                examples: None,
+                            },
+                        )])
+                    }),
                 });
-            }
         }
     }
 

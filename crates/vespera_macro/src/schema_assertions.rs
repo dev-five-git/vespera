@@ -201,9 +201,16 @@ fn collect_leaf_custom_types(ty: &Type) -> Vec<(Type, String)> {
     // hot per-field leaf walker doesn't allocate an owned `String` per
     // call — same pattern `is_serde_json_value_leaf` below uses for the
     // `Value` check.
+    // `first_generic_type_arg` skips lifetimes, so `Cow<'a, T>` yields `T`.
     if segment.ident == "Vec"
+        || segment.ident == "VecDeque"
+        || segment.ident == "LinkedList"
         || segment.ident == "Option"
         || segment.ident == "Box"
+        || segment.ident == "Arc"
+        || segment.ident == "Rc"
+        || segment.ident == "Cow"
+        || segment.ident == "NonZero"
         || segment.ident == "HashSet"
         || segment.ident == "BTreeSet"
     {
@@ -386,6 +393,29 @@ mod tests {
     #[test]
     fn leaf_of_btreeset_unwraps_inner() {
         assert_eq!(leaves_of("BTreeSet<MyType>"), vec!["MyType"]);
+    }
+
+    /// Smart pointers / extra std collections are transparent like `Box`/`Vec`.
+    #[rstest::rstest]
+    #[case::arc("Arc<MyType>")]
+    #[case::rc("std::rc::Rc<MyType>")]
+    #[case::cow("Cow<'static, MyType>")]
+    #[case::vec_deque("VecDeque<MyType>")]
+    #[case::linked_list("LinkedList<MyType>")]
+    #[case::nested("Arc<Vec<Cow<'a, MyType>>>")]
+    fn leaf_of_smart_pointers_and_collections_unwraps_inner(#[case] src: &str) {
+        assert_eq!(leaves_of(src), vec!["MyType"]);
+    }
+
+    #[rstest::rstest]
+    #[case::non_zero_u32("NonZeroU32")]
+    #[case::non_zero_generic("NonZero<u64>")]
+    #[case::cow_str("Cow<'a, str>")]
+    #[case::arc_string("Arc<String>")]
+    fn builtin_wrapped_leaves_need_no_assertion(#[case] src: &str) {
+        for (_, ident) in collect_leaf_custom_types(&parse_ty(src)) {
+            assert!(is_builtin_openapi_type(&ident), "{src}: {ident}");
+        }
     }
 
     #[test]

@@ -24,7 +24,10 @@ pub(super) fn parse_option_typed_header(param_name: &str, ty: &Type) -> Option<V
         return None;
     };
     let inner_segment = inner_type_path.path.segments.last()?;
-    (inner_segment.ident == "TypedHeader").then(|| vec![typed_header_parameter(param_name, false)])
+    if inner_segment.ident != "TypedHeader" {
+        return None;
+    }
+    typed_header_parameter(param_name, inner_segment, false).map(|param| vec![param])
 }
 
 pub(super) fn parse_header_extractor(
@@ -39,7 +42,7 @@ pub(super) fn parse_header_extractor(
     let segment = type_path.path.segments.last()?;
     match segment.ident.to_string().as_str() {
         "Header" => parse_header(param_name, segment, known_schemas, struct_definitions),
-        "TypedHeader" => Some(vec![typed_header_parameter(param_name, true)]),
+        "TypedHeader" => typed_header_parameter(param_name, segment, true).map(|param| vec![param]),
         _ => None,
     }
 }
@@ -73,19 +76,99 @@ fn parse_header(
     }])
 }
 
-fn typed_header_parameter(param_name: &str, required: bool) -> Parameter {
-    Parameter {
-        name: param_name.replace('_', "-"),
+/// Wire names of the well-known `headers::*` typed headers.  Any other type is
+/// treated as a custom header and named after its Rust binding instead.
+fn known_typed_header_name(ident: &str) -> Option<&'static str> {
+    Some(match ident {
+        "Authorization" => "Authorization",
+        "ContentType" => "Content-Type",
+        "Accept" => "Accept",
+        "UserAgent" => "User-Agent",
+        "Cookie" => "Cookie",
+        "Host" => "Host",
+        "Origin" => "Origin",
+        "Referer" => "Referer",
+        "IfNoneMatch" => "If-None-Match",
+        "IfMatch" => "If-Match",
+        "IfModifiedSince" => "If-Modified-Since",
+        "IfUnmodifiedSince" => "If-Unmodified-Since",
+        "IfRange" => "If-Range",
+        "ContentLength" => "Content-Length",
+        "ContentEncoding" => "Content-Encoding",
+        "ContentRange" => "Content-Range",
+        "ContentLocation" => "Content-Location",
+        "ContentDisposition" => "Content-Disposition",
+        "CacheControl" => "Cache-Control",
+        "Connection" => "Connection",
+        "Date" => "Date",
+        "ETag" => "ETag",
+        "Expect" => "Expect",
+        "Pragma" => "Pragma",
+        "ProxyAuthorization" => "Proxy-Authorization",
+        "Range" => "Range",
+        "Te" => "TE",
+        "TransferEncoding" => "Transfer-Encoding",
+        "Upgrade" => "Upgrade",
+        "AccessControlRequestMethod" => "Access-Control-Request-Method",
+        "AccessControlRequestHeaders" => "Access-Control-Request-Headers",
+        "SecWebsocketKey" => "Sec-WebSocket-Key",
+        "SecWebsocketVersion" => "Sec-WebSocket-Version",
+        _ => return None,
+    })
+}
+
+/// Header names OpenAPI says a header parameter MUST NOT use: they are
+/// described by `securitySchemes` (`Authorization`) or by the request /
+/// response media types (`Accept`, `Content-Type`), and tooling ignores them.
+fn is_reserved_header_name(name: &str) -> bool {
+    ["accept", "content-type", "authorization"]
+        .iter()
+        .any(|reserved| name.eq_ignore_ascii_case(reserved))
+}
+
+/// The header parameter for `TypedHeader<T>`: named after the HEADER when `T`
+/// is a known `headers::*` type, otherwise after the Rust binding
+/// (`_` → `-`). Returns `None` for headers that
+/// OpenAPI forbids as header parameters (`Authorization`, `Accept`,
+/// `Content-Type`).
+fn typed_header_parameter(
+    param_name: &str,
+    typed_header: &syn::PathSegment,
+    required: bool,
+) -> Option<Parameter> {
+    // `TypedHeader<T>` has exactly one (type) parameter.
+    let header_ident = if let syn::PathArguments::AngleBracketed(args) = &typed_header.arguments
+        && let Some(syn::GenericArgument::Type(Type::Path(path))) = args.args.first()
+    {
+        path.path.segments.last().map(|seg| seg.ident.to_string())
+    } else {
+        None
+    };
+    // Only the well-known `headers::*` types have a wire name we can trust.
+    // A custom `headers::Header` impl declares its name in `Header::name()`,
+    // which a macro cannot see — fall back to the binding name (the pre-0.x
+    // behaviour) instead of guessing from the type name.
+    let name = header_ident
+        .as_deref()
+        .and_then(known_typed_header_name)
+        .map_or_else(|| param_name.replace('_', "-"), str::to_string);
+    if is_reserved_header_name(&name) {
+        return None;
+    }
+    Some(Parameter {
+        name,
         r#in: ParameterLocation::Header,
         description: None,
         required: Some(required),
         schema: Some(SchemaRef::Inline(Box::new(Schema::string()))),
         example: None,
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
     #[test]
@@ -94,6 +177,10 @@ mod tests {
         assert!(parse_option_typed_header("x", &bare_option).is_none());
         let lifetime_option: Type = syn::parse_quote!(Option<'static>);
         assert!(parse_option_typed_header("x", &lifetime_option).is_none());
+        // An `Option` of anything but `TypedHeader` is left to the other
+        // extractor parsers.
+        let plain_option: Type = syn::parse_quote!(Option<String>);
+        assert!(parse_option_typed_header("x", &plain_option).is_none());
 
         let bare_header: Type = syn::parse_quote!(Header);
         assert!(
@@ -104,5 +191,37 @@ mod tests {
             parse_header_extractor("x", &lifetime_header, &HashSet::new(), &HashMap::new())
                 .is_none()
         );
+    }
+
+    /// Known `headers::*` types are named after the header; custom types fall
+    /// back to the Rust binding name; OpenAPI-reserved names
+    /// (`Authorization`/`Accept`/`Content-Type`) are not emitted.
+    #[rstest]
+    #[case::user_agent("TypedHeader<UserAgent>", Some("User-Agent"))]
+    #[case::qualified("TypedHeader<headers::IfNoneMatch>", Some("If-None-Match"))]
+    #[case::etag("TypedHeader<ETag>", Some("ETag"))]
+    #[case::te("TypedHeader<Te>", Some("TE"))]
+    #[case::custom("TypedHeader<XRequestId>", Some("my-binding"))]
+    #[case::custom_qualified("TypedHeader<my_headers::TenantId>", Some("my-binding"))]
+    #[case::cookie("TypedHeader<Cookie>", Some("Cookie"))]
+    #[case::authorization("TypedHeader<Authorization<Bearer>>", None)]
+    #[case::content_type("TypedHeader<ContentType>", None)]
+    #[case::accept("TypedHeader<Accept>", None)]
+    #[case::bare("TypedHeader", Some("my-binding"))]
+    fn typed_header_names(#[case] ty_src: &str, #[case] expected: Option<&str>) {
+        let ty: Type = syn::parse_str(ty_src).unwrap();
+        let required = parse_header_extractor("my_binding", &ty, &HashSet::new(), &HashMap::new())
+            .map(|params| params[0].name.clone());
+        assert_eq!(required.as_deref(), expected, "{ty_src}");
+
+        let optional: Type = syn::parse_str(&format!("Option<{ty_src}>")).unwrap();
+        let optional = parse_option_typed_header("my_binding", &optional);
+        assert_eq!(
+            optional.as_ref().map(|params| params[0].name.as_str()),
+            expected
+        );
+        if let Some(params) = optional {
+            assert_eq!(params[0].required, Some(false));
+        }
     }
 }

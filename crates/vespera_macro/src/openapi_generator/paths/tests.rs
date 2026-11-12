@@ -100,6 +100,187 @@ fn duplicate_method_and_path_is_a_compile_error() {
     );
 }
 
+/// `(module_path, path, explicit operation_id)` → metadata + file cache where
+/// every handler is `pub fn list()` in its own virtual file.
+fn list_routes(
+    routes: &[(&str, &str, Option<&str>)],
+) -> (CollectedMetadata, HashMap<String, syn::File>) {
+    let mut metadata = CollectedMetadata::new();
+    let mut file_cache: HashMap<String, syn::File> = HashMap::new();
+    for (module_path, path, explicit) in routes {
+        let file_path = format!("/virtual/{}.rs", module_path.replace("::", "/"));
+        file_cache.insert(
+            file_path.clone(),
+            syn::parse_str("pub fn list() -> String { String::new() }").unwrap(),
+        );
+        let mut route = route_meta("GET", path, "list", &file_path);
+        route.module_path = (*module_path).to_string();
+        route.operation_id = explicit.map(str::to_string);
+        metadata.routes.push(route);
+    }
+    (metadata, file_cache)
+}
+
+/// An explicit `operation_id` that collides — with another explicit id, or
+/// with a default fn-name id — is rejected with a message naming both.
+#[rstest]
+#[case::explicit("explicit", Some("listItems"), Some("listItems"))]
+#[case::explicit_vs_default("explicit_vs_default", Some("list"), None)]
+fn duplicate_operation_id_is_a_compile_error(
+    #[case] name: &str,
+    #[case] first_override: Option<&str>,
+    #[case] second_override: Option<&str>,
+) {
+    let (metadata, file_cache) = list_routes(&[
+        ("routes::users", "/users", first_override),
+        ("routes::posts", "/posts", second_override),
+    ]);
+    let err = super::build_path_items(
+        &metadata,
+        &std::collections::HashSet::new(),
+        &HashMap::new(),
+        &file_cache,
+        &[],
+    )
+    .expect_err("colliding operationIds must be rejected");
+    insta::assert_snapshot!(format!("duplicate_operation_id_{name}"), err.to_string());
+}
+
+/// Colliding DEFAULT (fn-name) operationIds are qualified with their module
+/// path relative to the routes folder; non-colliding defaults and explicit ids
+/// are left untouched.
+#[rstest]
+#[case::sibling_files(
+    &[("routes::users", "/users", None), ("routes::posts", "/posts", None)],
+    &[("/posts", "posts_list"), ("/users", "users_list")]
+)]
+#[case::nested_module(
+    &[("routes::admin::users", "/admin/users", None), ("routes::users", "/users", None)],
+    &[("/admin/users", "admin_users_list"), ("/users", "users_list")]
+)]
+#[case::explicit_untouched(
+    &[
+        ("routes::users", "/users", None),
+        ("routes::posts", "/posts", None),
+        ("routes::tags", "/tags", Some("listTags")),
+    ],
+    &[("/posts", "posts_list"), ("/tags", "listTags"), ("/users", "users_list")]
+)]
+#[case::single_default_unchanged(
+    &[("routes::users", "/users", None), ("routes::posts", "/posts", Some("listPosts"))],
+    &[("/posts", "listPosts"), ("/users", "list")]
+)]
+fn colliding_default_operation_ids_are_qualified(
+    #[case] routes: &[(&str, &str, Option<&str>)],
+    #[case] expected: &[(&str, &str)],
+) {
+    let (metadata, file_cache) = list_routes(routes);
+    let (paths, _) = super::build_path_items(
+        &metadata,
+        &std::collections::HashSet::new(),
+        &HashMap::new(),
+        &file_cache,
+        &[],
+    )
+    .expect("colliding default operationIds are qualified, not rejected");
+    let ids: Vec<(&str, &str)> = paths
+        .iter()
+        .map(|(path, item)| {
+            (
+                path.as_str(),
+                item.get
+                    .as_ref()
+                    .and_then(|op| op.operation_id.as_deref())
+                    .unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(ids, expected);
+}
+
+/// Qualification that still collides (same module path) is a compile error.
+#[test]
+fn qualified_operation_id_collision_is_a_compile_error() {
+    let (mut metadata, file_cache) = list_routes(&[
+        ("routes::users", "/users", None),
+        ("routes::posts", "/posts", None),
+    ]);
+    metadata.routes[1].module_path = "routes::users".to_string();
+    let err = super::build_path_items(
+        &metadata,
+        &std::collections::HashSet::new(),
+        &HashMap::new(),
+        &file_cache,
+        &[],
+    )
+    .expect_err("qualified ids that still collide must be rejected");
+    insta::assert_snapshot!(
+        "duplicate_operation_id_after_qualification",
+        err.to_string()
+    );
+}
+
+#[test]
+fn distinct_operation_id_override_resolves_collision() {
+    let users_path = "/virtual/users.rs".to_string();
+    let posts_path = "/virtual/posts.rs".to_string();
+    let mut file_cache: HashMap<String, syn::File> = HashMap::new();
+    for path in [&users_path, &posts_path] {
+        file_cache.insert(
+            path.clone(),
+            syn::parse_str("pub fn list() -> String { String::new() }").unwrap(),
+        );
+    }
+    let mut metadata = CollectedMetadata::new();
+    metadata
+        .routes
+        .push(route_meta("GET", "/users", "list", &users_path));
+    let mut posts = route_meta("GET", "/posts", "list", &posts_path);
+    posts.operation_id = Some("listPosts".to_string());
+    metadata.routes.push(posts);
+    let (paths, _) = super::build_path_items(
+        &metadata,
+        &std::collections::HashSet::new(),
+        &HashMap::new(),
+        &file_cache,
+        &[],
+    )
+    .expect("distinct operationIds are accepted");
+    assert_eq!(paths.len(), 2);
+}
+
+#[test]
+fn find_duplicate_operation_id_reports_both_locations() {
+    use vespera_core::route::{HttpMethod, Operation, PathItem};
+    let op = |id: &str| Operation {
+        operation_id: Some(id.to_string()),
+        ..Operation::default()
+    };
+    let mut paths = std::collections::BTreeMap::new();
+    let mut a = PathItem::default();
+    a.set_operation(HttpMethod::Get, op("health"));
+    let mut b = PathItem::default();
+    b.set_operation(HttpMethod::Post, op("other"));
+    b.set_operation(HttpMethod::Get, op("health"));
+    paths.insert("/a".to_string(), a);
+    // A merged child may carry operations without an `operationId`: they
+    // claim nothing, so two of them never collide.
+    let mut anonymous = PathItem::default();
+    anonymous.set_operation(HttpMethod::Get, Operation::default());
+    anonymous.set_operation(HttpMethod::Delete, Operation::default());
+    paths.insert("/anonymous".to_string(), anonymous);
+    assert!(super::find_duplicate_operation_id(&paths).is_none());
+    paths.insert("/b".to_string(), b);
+    assert_eq!(
+        super::find_duplicate_operation_id(&paths),
+        Some((
+            "health".to_string(),
+            "GET /a".to_string(),
+            "GET /b".to_string()
+        ))
+    );
+}
+
 #[test]
 fn route_storage_dedup_skips_already_in_ast() {
     // When a route's `fn_sig_str` was already discovered by parsing the
@@ -212,6 +393,8 @@ fn route_storage_fast_path_disambiguates_same_fn_name_by_file_path() {
     metadata
         .routes
         .push(route_meta("GET", "/posts", "list", &posts_path));
+    // Same fn name in two files: operationIds must still be unique.
+    metadata.routes[1].operation_id = Some("list_posts".to_string());
 
     let route_storage = vec![
         StoredRouteInfo {
@@ -303,6 +486,8 @@ fn route_storage_legacy_none_file_path_is_skipped_when_ambiguous() {
     metadata
         .routes
         .push(route_meta("GET", "/posts", "list", &posts_path));
+    // Same fn name in two files: operationIds must still be unique.
+    metadata.routes[1].operation_id = Some("list_posts".to_string());
 
     let mut file_cache = HashMap::new();
     file_cache.insert(

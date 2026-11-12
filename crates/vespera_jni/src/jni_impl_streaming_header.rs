@@ -9,11 +9,11 @@ use jni::objects::{Global, JByteArray, JClass, JObject};
 use crate::daemon_env::with_cached_daemon_env;
 use crate::jni_impl::{
     guard_void_symbol, panic_wire, read_request_byte_array, runtime, runtime_unavailable_wire,
-    streaming_buffer::{PullPushBuffers, mark_streaming_buffer_reusable},
+    streaming_buffer::{PullPushBuffers, mark_streaming_buffer_reusable, release_pull_lease},
     support::{
         FullStreamHeaderSetup, PanicHeaderAction, panic_post_header_action,
         push_unless_header_failed, setup_full_stream_with_header, setup_stream_with_header,
-        throw_streaming_abort,
+        throw_streaming_abort, track_pull,
     },
 };
 use crate::streaming_closures::{
@@ -100,13 +100,7 @@ fn throw_if_stream_aborted(
     outcome: vespera_inprocess::StreamOutcome,
 ) {
     let failed_header = flags.failed_header();
-    if failed_header
-        || matches!(
-            outcome,
-            vespera_inprocess::StreamOutcome::BodyError
-                | vespera_inprocess::StreamOutcome::SinkStopped
-        )
-    {
+    if failed_header || outcome.is_truncated() {
         throw_streaming_abort(env, failed_header);
     }
 }
@@ -343,12 +337,16 @@ fn dispatch_full_streaming_with_header_body(env: &mut jni::Env<'_>, args: &FullH
     let header_for_cb = header_global;
     let flags_for_cb = Arc::clone(args.flags);
     let flags_for_push = Arc::clone(args.flags);
+    // The pull closure carries a liveness token: a producer still parked in
+    // `InputStream.read` after the bounded join is DETACHED, keeping the pull
+    // array in flight, so the pull lease is only reused once it is dropped.
+    let (pull, pull_token) = track_pull(make_pull_closure(pull_jvm, pull_global, pull_buf));
     let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut push = make_push_closure(push_jvm, push_global, push_buf);
         runtime.block_on(
             vespera_inprocess::dispatch_bidirectional_streaming_with_header_closing(
                 header_input,
-                make_pull_closure(pull_jvm, pull_global, pull_buf),
+                pull,
                 move |chunk: &[u8]| {
                     push_unless_header_failed(&flags_for_push.failed, &mut push, chunk)
                 },
@@ -362,7 +360,7 @@ fn dispatch_full_streaming_with_header_body(env: &mut jni::Env<'_>, args: &FullH
         )
     }));
     finish_header_dispatch(env, args.header_consumer, args.flags, &panic_result, || {
-        mark_streaming_buffer_reusable(pull_buf_lease);
+        release_pull_lease(pull_buf_lease, pull_token.producer_dropped());
         mark_streaming_buffer_reusable(push_buf_lease);
     });
 }

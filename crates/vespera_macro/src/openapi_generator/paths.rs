@@ -184,11 +184,12 @@ pub(super) fn build_path_items(
 /// axum itself panics on a duplicate method+path at runtime, so surfacing it at
 /// compile time is strictly better than the silent loss.
 fn assemble_path_items(
-    results: Vec<(usize, HttpMethod, vespera_core::route::Operation)>,
+    mut results: Vec<(usize, HttpMethod, vespera_core::route::Operation)>,
     metadata: &CollectedMetadata,
     paths: &mut BTreeMap<String, PathItem>,
     all_tags: &mut BTreeSet<String>,
 ) -> syn::Result<()> {
+    resolve_operation_ids(&mut results, metadata)?;
     // Borrows from `metadata`, which outlives this loop — the map is only ever
     // read inside the duplicate-route error branch below, so cloning the path
     // and handler name for every route was two wasted allocations per route.
@@ -222,6 +223,163 @@ fn assemble_path_items(
         );
     }
     Ok(())
+}
+
+/// Make every operationId unique (OpenAPI: "operationId MUST be unique").
+///
+/// The id defaults to the handler's fn ident, and file-based routing routinely
+/// produces `routes/users.rs::list` + `routes/posts.rs::list`.  When DEFAULT
+/// ids collide, every colliding default is qualified with its module path
+/// (relative to the routes folder) joined by `_` — `users_list`, `posts_list`,
+/// `admin_users_list`.  Non-colliding defaults stay untouched so existing specs
+/// do not churn.  An explicit `operation_id = "..."` is never rewritten: a clash
+/// involving one (or a clash that survives qualification) is a compile error
+/// naming both handlers.
+fn resolve_operation_ids(
+    results: &mut [BuiltOperation],
+    metadata: &CollectedMetadata,
+) -> syn::Result<()> {
+    let is_default = |idx: usize| metadata.routes[idx].operation_id.is_none();
+    let mut default_counts: HashMap<&str, usize> = HashMap::new();
+    for (idx, _, operation) in results.iter() {
+        if is_default(*idx)
+            && let Some(id) = operation.operation_id.as_deref()
+        {
+            *default_counts.entry(id).or_default() += 1;
+        }
+    }
+    let colliding: HashSet<String> = default_counts
+        .into_iter()
+        .filter(|&(_, count)| count > 1)
+        .map(|(id, _)| id.to_owned())
+        .collect();
+    if !colliding.is_empty() {
+        let common = common_module_prefix_len(&metadata.routes);
+        for (idx, _, operation) in results.iter_mut() {
+            if is_default(*idx)
+                && let Some(id) = operation.operation_id.as_mut()
+                && colliding.contains(id.as_str())
+            {
+                *id = qualified_operation_id(&metadata.routes[*idx], id, common);
+            }
+        }
+    }
+
+    let mut claimed: HashMap<&str, usize> = HashMap::new();
+    // `build_operation` always sets an id (explicit or the fn name); an
+    // operation without one simply has nothing to claim.
+    let with_ids = results.iter().filter_map(|(idx, method, operation)| {
+        Some((idx, method, operation.operation_id.as_deref()?))
+    });
+    for (idx, method, operation_id) in with_ids {
+        if let Some(&previous_idx) = claimed.get(operation_id) {
+            let previous = &metadata.routes[previous_idx];
+            let route_meta = &metadata.routes[*idx];
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!(
+                    "duplicate operationId `{operation_id}`: used by both `{prev_handler}` \
+                     (`{prev_method} {prev_path}`) and `{handler}` (`{method} {path}`) — \
+                     operationIds must be unique; set one explicitly with \
+                     `#[vespera::route(..., operation_id = \"...\")]`",
+                    prev_handler = handler_display(previous),
+                    prev_method = previous.method.to_ascii_uppercase(),
+                    prev_path = previous.path,
+                    handler = handler_display(route_meta),
+                    path = route_meta.path,
+                ),
+            ));
+        }
+        claimed.insert(operation_id, *idx);
+    }
+    Ok(())
+}
+
+/// Non-empty `::` segments of a route's module path.
+fn module_segments(route: &crate::metadata::RouteMetadata) -> Vec<&str> {
+    route
+        .module_path
+        .split("::")
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+/// Number of leading module segments shared by EVERY route — normally the
+/// routes folder name the collector prepends (`routes::users` → `routes`).
+fn common_module_prefix_len(routes: &[crate::metadata::RouteMetadata]) -> usize {
+    let mut all = routes.iter().map(module_segments);
+    // No routes → no shared prefix (callers only ask when ids collide, i.e.
+    // with at least two routes, but `0` is the honest answer regardless).
+    all.next().map_or(0, |first| {
+        all.fold(first.len(), |common, segments| {
+            first
+                .iter()
+                .zip(&segments)
+                .take(common)
+                .take_while(|(a, b)| a == b)
+                .count()
+        })
+    })
+}
+
+/// `{module segments after the routes folder}_{default id}`.  The collector
+/// prefixes every module path with the routes folder name (`routes::admin::users`),
+/// so one leading segment is dropped when ALL routes share it.  At least one
+/// module segment is always kept so a qualified id never degrades back to the
+/// bare fn name; non-identifier characters become `_`.
+fn qualified_operation_id(
+    route: &crate::metadata::RouteMetadata,
+    default_id: &str,
+    common: usize,
+) -> String {
+    let segments = module_segments(route);
+    let skip = common.min(1).min(segments.len().saturating_sub(1));
+    let mut qualified = String::new();
+    for segment in &segments[skip..] {
+        qualified.extend(segment.chars().map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        }));
+        qualified.push('_');
+    }
+    qualified.push_str(default_id);
+    qualified
+}
+
+/// `module::path::handler` for diagnostics (just `handler` at the crate root).
+fn handler_display(route: &crate::metadata::RouteMetadata) -> String {
+    if route.module_path.is_empty() {
+        route.function_name.clone()
+    } else {
+        format!("{}::{}", route.module_path, route.function_name)
+    }
+}
+
+/// Find the first `operationId` shared by two operations across `paths`.
+///
+/// Used after merging child-app specs (`merge = [...]`), where only the
+/// serialized documents — not handler names — are available. Returns
+/// `(operation_id, first "METHOD /path", second "METHOD /path")`.
+pub fn find_duplicate_operation_id(
+    paths: &BTreeMap<String, PathItem>,
+) -> Option<(String, String, String)> {
+    let mut seen: HashMap<&str, String> = HashMap::new();
+    for (path, item) in paths {
+        for (method, operation) in item.operations() {
+            let Some(operation_id) = operation.operation_id.as_deref() else {
+                continue;
+            };
+            let location = format!("{method} {path}");
+            if let Some(previous) = seen.get(operation_id) {
+                return Some((operation_id.to_string(), previous.clone(), location));
+            }
+            seen.insert(operation_id, location);
+        }
+    }
+    None
 }
 
 fn build_storage_fn_sigs<'a>(

@@ -1,5 +1,6 @@
 ---
-source: crates/vespera_macro/src/parser/schema/enum_schema.rs
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests.rs
+assertion_line: 422
 expression: schema
 ---
 Schema {
@@ -31,8 +32,7 @@ Schema {
     max_properties: None,
     enum: None,
     all_of: None,
-    any_of: None,
-    one_of: Some(
+    any_of: Some(
         [
             Inline(
                 Schema {
@@ -361,6 +361,7 @@ Schema {
             ),
         ],
     ),
+    one_of: None,
     not: None,
     discriminator: None,
     nullable: None,

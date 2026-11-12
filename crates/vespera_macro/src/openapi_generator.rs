@@ -20,6 +20,7 @@ pub use defaults::extract_default_value_from_function;
 #[cfg(test)]
 pub use defaults::find_function_in_file;
 use paths::build_path_items;
+pub use paths::find_duplicate_operation_id;
 
 /// OpenAPI security data parsed from the `vespera!` macro.
 #[derive(Default)]
@@ -135,6 +136,70 @@ pub fn try_generate_openapi_doc_with_metadata(
     })
 }
 
+/// Reject `#[route(security = [...])]` / top-level `security = [...]` names
+/// that are not declared in `vespera!(security_schemes = [...])`.
+///
+/// Only enforced when the app declares `security_schemes` at all — an app that
+/// relies on schemes supplied elsewhere (none declared here) is left alone.
+/// An undeclared name produces a security requirement that points at nothing,
+/// which OpenAPI tooling rejects and which silently disables auth in clients.
+///
+/// `schemes` must be the FINAL `components.securitySchemes` — i.e. after child
+/// apps from `vespera!(merge = [...])` were merged in — so a route referencing
+/// a scheme that only a merged child declares is accepted. The caller decides
+/// whether validation applies at all (only when the app itself declared
+/// `security_schemes`).
+pub fn validate_security_references(
+    metadata: &CollectedMetadata,
+    schemes: &BTreeMap<String, SecurityScheme>,
+    security: Option<&[BTreeMap<String, Vec<String>>]>,
+) -> syn::Result<()> {
+    let declared = || {
+        schemes
+            .keys()
+            .map(|name| format!("`{name}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let unknown = |user: String, name: &str| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!(
+                "{user} references unknown security scheme `{name}`; declared in \
+                 `vespera!(security_schemes = [...])`: {}",
+                declared()
+            ),
+        )
+    };
+    for route in &metadata.routes {
+        for name in route.security.iter().flatten() {
+            if !schemes.contains_key(name) {
+                let handler = if route.module_path.is_empty() {
+                    route.function_name.clone()
+                } else {
+                    format!("{}::{}", route.module_path, route.function_name)
+                };
+                return Err(unknown(
+                    format!(
+                        "route `{handler}` (`{} {}`)",
+                        route.method.to_ascii_uppercase(),
+                        route.path
+                    ),
+                    name,
+                ));
+            }
+        }
+    }
+    for requirement in security.into_iter().flatten() {
+        for name in requirement.keys() {
+            if !schemes.contains_key(name) {
+                return Err(unknown("top-level `security`".to_string(), name));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn build_tags(
     mut all_tags: std::collections::BTreeSet<String>,
     tag_descriptions: Option<&HashMap<String, String>>,
@@ -238,6 +303,68 @@ mod tests {
         assert_eq!(doc_servers.len(), 2);
         assert_eq!(doc_servers[0].url, "https://api.example.com");
         assert_eq!(doc_servers[1].url, "http://localhost:3000");
+    }
+
+    /// Route / top-level security names must exist in `security_schemes`
+    /// (only enforced when schemes are declared at all).
+    #[rstest::rstest]
+    #[case::route_unknown("route_unknown", Some(vec!["bearerAuth", "apiKey"]), None, true, true)]
+    #[case::global_unknown("global_unknown", None, Some("oauth"), true, true)]
+    #[case::all_known("all_known", Some(vec!["bearerAuth"]), Some("bearerAuth"), true, false)]
+    #[case::no_schemes_declared("no_schemes", Some(vec!["anything"]), None, false, false)]
+    fn security_references_are_validated(
+        #[case] name: &str,
+        #[case] route_security: Option<Vec<&str>>,
+        #[case] global: Option<&str>,
+        #[case] declare_schemes: bool,
+        #[case] is_error: bool,
+    ) {
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(RouteMetadata {
+            method: "get".to_string(),
+            path: "/secure".to_string(),
+            function_name: "secure_route".to_string(),
+            module_path: "routes::secure".to_string(),
+            file_path: "virtual/secure.rs".to_string(),
+            error_status: None,
+            typed_responses: None,
+            tags: None,
+            security: route_security.map(|names| names.into_iter().map(String::from).collect()),
+            headers: Vec::new(),
+            success_status: None,
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
+            description: None,
+        });
+        let config = OpenApiSecurity {
+            security_schemes: declare_schemes.then(|| {
+                BTreeMap::from([(
+                    "bearerAuth".to_string(),
+                    SecurityScheme {
+                        r#type: SecuritySchemeType::Http,
+                        description: None,
+                        name: None,
+                        r#in: None,
+                        scheme: Some("bearer".to_string()),
+                        bearer_format: None,
+                        flows: None,
+                        open_id_connect_url: None,
+                    },
+                )])
+            }),
+            security: global.map(|g| vec![BTreeMap::from([(g.to_string(), Vec::new())])]),
+            tag_descriptions: None,
+        };
+        let result = config.security_schemes.as_ref().map_or(Ok(()), |schemes| {
+            validate_security_references(&metadata, schemes, config.security.as_deref())
+        });
+        assert_eq!(result.is_err(), is_error, "{name}");
+        if let Err(error) = result {
+            insta::assert_snapshot!(format!("unknown_security_scheme_{name}"), error.to_string());
+        }
     }
 
     #[test]

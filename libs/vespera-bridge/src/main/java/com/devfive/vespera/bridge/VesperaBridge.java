@@ -1,5 +1,6 @@
 package com.devfive.vespera.bridge;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
@@ -61,22 +62,9 @@ public class VesperaBridge {
      *  reject a later re-init with a <em>different</em> library name. */
     private static String loadedLibraryName;
 
-    private static volatile Integer pendingChunkBytes = null;
-    private static volatile Integer pendingChannelCapacity = null;
-
     @FunctionalInterface
     interface NativeLibraryLoader {
         void load(String libraryName);
-    }
-
-    @FunctionalInterface
-    interface StreamingConfigurator {
-        void configure(int chunkBytes, int channelCapacity);
-    }
-
-    @FunctionalInterface
-    interface RuntimeConfigurator {
-        void configure(int workerThreads);
     }
 
     /**
@@ -160,11 +148,22 @@ public class VesperaBridge {
      *   <li>{@code vespera.runtime.workerThreads} — worker threads of
      *       the shared Tokio runtime (default: number of logical
      *       CPUs, clamped to 1 – 1024)</li>
+     *   <li>{@code vespera.runtime.maxBlockingThreads} — blocking-pool cap
+     *       of the shared runtime (default 512, clamped to 1 – 8192)</li>
+     *   <li>{@code vespera.limits.maxRequestBytes} — buffered-request cap
+     *       (default 64 MiB, {@code 0} = unlimited)</li>
+     *   <li>{@code vespera.limits.maxStreamingRequestBytes} — bidirectional
+     *       streaming request-body cap (default {@code 0} = unlimited)</li>
+     *   <li>{@code vespera.limits.maxBufferedResponseBytes} — buffered
+     *       response cap (default 256 MiB, {@code 0} = unlimited)</li>
+     *   <li>{@code vespera.dispatch.timeoutMillis} — per-dispatch deadline
+     *       (default {@code 0} = disabled)</li>
+     *   <li>{@code vespera.async.maxInFlight} — {@link #dispatchAsync}
+     *       in-flight cap (default 4096, {@code 0} = unlimited)</li>
      * </ul>
-     * The {@code VESPERA_STREAMING_CHUNK_BYTES} /
-     * {@code VESPERA_STREAMING_CHANNEL_CAPACITY} /
-     * {@code VESPERA_RUNTIME_WORKERS} environment variables apply
-     * when no system property is set.
+     * The matching {@code VESPERA_*} environment variables apply when no
+     * system property is set.  A value the Rust side could not apply
+     * (already fixed) is logged as a warning.
      *
      * @param libraryName Cargo crate name (e.g. {@code "rust_jni_demo"})
      */
@@ -191,16 +190,9 @@ public class VesperaBridge {
         // Error), but a later init() must not try to load the same cdylib again.
         loaded = true;
         loadedLibraryName = libraryName;
-        // Apply pending streaming config (set via configureStreaming before init).
-        // Pending values beat system properties (Rust-side setter > env > default).
-        int chunkBytes = pendingOrProperty(
-                pendingChunkBytes, "vespera.streaming.chunkBytes");
-        int channelCapacity = pendingOrProperty(
-                pendingChannelCapacity, "vespera.streaming.channelCapacity");
-        configureStreamingIfSupported(chunkBytes, channelCapacity, VesperaBridge::configureStreaming0);
-        configureRuntimeIfSupported(
-                Integer.getInteger("vespera.runtime.workerThreads", 0),
-                VesperaBridge::configureRuntime0);
+        // Apply pending config (set via configure* before init); pending
+        // values beat system properties (Rust-side setter > env > default).
+        VesperaNativeConfig.applyAfterLoad();
     }
 
     static void loadNativeLibrary(
@@ -212,33 +204,6 @@ public class VesperaBridge {
         } catch (VesperaNativeLoader.BundledNativeAbsent absent) {
             systemLoader.load(libraryName);
         }
-    }
-
-    static void configureStreamingIfSupported(
-            int chunkBytes,
-            int channelCapacity,
-            StreamingConfigurator configurator) {
-        try {
-            configurator.configure(chunkBytes, channelCapacity);
-        } catch (UnsatisfiedLinkError olderNativeLibrary) {
-            // Pre-0.2 native libraries don't export configureStreaming0.
-            // Streaming config then falls back to env vars / defaults —
-            // never block init over an optional tuning hook.
-        }
-    }
-
-    static void configureRuntimeIfSupported(
-            int workerThreads, RuntimeConfigurator configurator) {
-        try {
-            configurator.configure(workerThreads);
-        } catch (UnsatisfiedLinkError olderNativeLibrary) {
-            // Same guard as above — older native libraries fall back to
-            // the VESPERA_RUNTIME_WORKERS env var / Tokio's default.
-        }
-    }
-
-    static int pendingOrProperty(Integer pendingValue, String propertyName) {
-        return pendingValue != null ? pendingValue : Integer.getInteger(propertyName, 0);
     }
 
     /**
@@ -258,6 +223,9 @@ public class VesperaBridge {
      * @param chunkBytes per-chunk buffer size for streaming dispatches
      * @param channelCapacity bound of the bidirectional request-body
      *                        channel in slots
+     * <p>Returns {@code void} for binary compatibility with 0.5.x callers; a
+     * value the Rust side had already fixed is logged as a warning.
+     *
      * @throws IllegalArgumentException if {@code chunkBytes} is outside
      *         [4096, 8388608] (4 KiB – 8 MiB) or {@code channelCapacity}
      *         is outside [1, 1024]
@@ -272,16 +240,73 @@ public class VesperaBridge {
             throw new IllegalArgumentException(
                     "channelCapacity " + channelCapacity + " out of range [1, 1024]");
         }
-        if (loaded) {
-            // Native library already loaded — apply immediately.
-            configureStreamingIfSupported(
-                    chunkBytes, channelCapacity, VesperaBridge::configureStreaming0);
-        } else {
-            // Native library not yet loaded — store pending values.
-            // These will be applied in init() before any dispatch.
-            pendingChunkBytes = chunkBytes;
-            pendingChannelCapacity = channelCapacity;
-        }
+        VesperaNativeConfig.setStreaming(chunkBytes, channelCapacity, loaded);
+    }
+
+    /**
+     * Configure the shared Tokio runtime (same pending-config pattern and
+     * precedence as {@link #configureStreaming}).  Must take effect before the
+     * runtime starts (first dispatch); values {@code <= 0} leave a setting
+     * untouched.
+     *
+     * @param workerThreads      worker threads (clamped 1–1024; default:
+     *                           logical CPUs)
+     * @param maxBlockingThreads blocking-pool cap (clamped 1–8192; default 512)
+     * @return {@code false} when a value could not be applied (logged)
+     */
+    public static synchronized boolean configureRuntime(int workerThreads, int maxBlockingThreads) {
+        boolean workers = VesperaNativeConfig.RUNTIME_WORKER_THREADS.set(workerThreads, loaded);
+        boolean blocking =
+                VesperaNativeConfig.RUNTIME_MAX_BLOCKING_THREADS.set(maxBlockingThreads, loaded);
+        return workers && blocking;
+    }
+
+    /**
+     * Configure the Rust-side size limits (pending-config pattern, see
+     * {@link #configureStreaming}).  {@code 0} = unlimited; a negative value
+     * leaves that limit untouched.
+     *
+     * @param maxRequestBytes          buffered request cap (default 64 MiB;
+     *                                 over → {@code 413})
+     * @param maxStreamingRequestBytes bidirectional-streaming request-body
+     *                                 cap (default unlimited; over → {@code 413})
+     * @param maxBufferedResponseBytes buffered response cap (default 256 MiB;
+     *                                 over → {@code 500})
+     * @return {@code false} when a value could not be applied (logged)
+     */
+    public static synchronized boolean configureLimits(
+            long maxRequestBytes, long maxStreamingRequestBytes, long maxBufferedResponseBytes) {
+        boolean request = VesperaNativeConfig.MAX_REQUEST_BYTES.set(maxRequestBytes, loaded);
+        boolean streaming = VesperaNativeConfig.MAX_STREAMING_REQUEST_BYTES
+                .set(maxStreamingRequestBytes, loaded);
+        boolean response = VesperaNativeConfig.MAX_BUFFERED_RESPONSE_BYTES
+                .set(maxBufferedResponseBytes, loaded);
+        return request && streaming && response;
+    }
+
+    /**
+     * Configure the per-dispatch deadline in milliseconds ({@code 0} =
+     * disabled, the default; negative = untouched).  A buffered dispatch
+     * (SYNC / ASYNC / DIRECT) is bounded as a whole and answers {@code 504}
+     * on expiry; a streaming dispatch is bounded only until its response
+     * header (time-to-first-header, {@code 504} when it expires) — once the
+     * header is committed the body streams without a total deadline.
+     *
+     * @return {@code false} when the value could not be applied (logged)
+     */
+    public static synchronized boolean configureDispatchTimeout(long timeoutMillis) {
+        return VesperaNativeConfig.DISPATCH_TIMEOUT_MILLIS.set(timeoutMillis, loaded);
+    }
+
+    /**
+     * Configure the {@link #dispatchAsync} in-flight cap ({@code 0} =
+     * unlimited, default 4096; negative = untouched).  Calls beyond the cap
+     * complete immediately with a retryable {@code 503} wire response.
+     *
+     * @return {@code false} when the value could not be applied (logged)
+     */
+    public static synchronized boolean configureAsyncMaxInFlight(int maxInFlight) {
+        return VesperaNativeConfig.ASYNC_MAX_IN_FLIGHT.set(maxInFlight, loaded);
     }
 
     /**
@@ -295,27 +320,28 @@ public class VesperaBridge {
         VesperaDirectBufferPool.clearCurrentThreadBuffers();
         VesperaWireCodec.clearCurrentThreadBuffers();
         WireHeaderReader.clearCurrentThreadBuffers();
-        VesperaProxyController.clearCurrentThreadBuffers();
     }
 
-    /**
-     * Seed the Rust-side streaming configuration.  Values {@code <= 0}
-     * leave the corresponding setting untouched (environment variable
-     * or built-in default applies).  Calls after the configuration is
-     * fixed are silently ignored.
-     */
-    private static native void configureStreaming0(int chunkBytes, int channelCapacity);
+    // Optional configuration hooks (see VesperaNativeConfig).  Each returns
+    // whether the Rust side applied the value; a native library that predates
+    // a hook throws UnsatisfiedLinkError, which VesperaNativeConfig tolerates.
+    // Values meaning "untouched": <= 0 for the streaming / runtime hooks,
+    // negative for the limit / timeout / async hooks (where 0 = unlimited).
+    static native boolean configureStreaming0(int chunkBytes, int channelCapacity);
 
-    /**
-     * Seed the shared Tokio runtime's worker thread count (system
-     * property {@code vespera.runtime.workerThreads}, env fallback
-     * {@code VESPERA_RUNTIME_WORKERS}; clamped to 1–1024 on the Rust
-     * side).  Defaults to Tokio's heuristic (number of logical CPUs)
-     * — cap it when the JVM's own thread pools compete for the same
-     * cores.  Values {@code <= 0} leave the setting untouched; calls
-     * after the runtime started are silently ignored.
-     */
-    private static native void configureRuntime0(int workerThreads);
+    static native boolean configureRuntime0(int workerThreads);
+
+    static native boolean configureMaxBlockingThreads0(int maxBlockingThreads);
+
+    static native boolean configureMaxRequestBytes0(long maxBytes);
+
+    static native boolean configureMaxStreamingRequestBytes0(long maxBytes);
+
+    static native boolean configureMaxBufferedResponseBytes0(long maxBytes);
+
+    static native boolean configureDispatchTimeout0(long timeoutMillis);
+
+    static native boolean configureAsyncMaxInFlight0(int maxInFlight);
 
     /**
      * Dispatch a wire-format HTTP-like request through the Rust axum
@@ -397,18 +423,24 @@ public class VesperaBridge {
      * arrived via {@code outputStream} while the dispatch was in
      * flight.
      *
-     * <p>Failure modes (malformed wire, panic in Rust, no app
-     * registered) return a regular {@code error_wire(...)} response
-     * (header + small plain-text body) and the {@code outputStream}
-     * is <strong>not</strong> written to.  Callers can detect a
-     * streaming error by checking whether the returned bytes carry a
-     * non-empty body via {@link #decodeResponse(byte[])}.
+     * <p>Failure modes that happen <strong>before</strong> any body byte
+     * was written (malformed wire, panic in Rust, no app registered, a
+     * deadline before the header, or a body error before the first chunk)
+     * return a regular
+     * {@code error_wire(...)} response (header + small plain-text body) and
+     * the {@code outputStream} is <strong>not</strong> written to.  A
+     * {@code 422}'s validation errors are hoisted into the returned header.
      *
      * @param wireRequest  length-prefixed binary wire request
      * @param outputStream sink for response body chunks
      * @return wire-format header bytes (body lives on the OutputStream)
+     * @throws IOException when the response failed <strong>after</strong>
+     *         body bytes were written (body-stream error, the
+     *         {@code outputStream} throwing): the written body is truncated
+     *         and the transport must be aborted
      */
-    public static native byte[] dispatchStreaming(byte[] wireRequest, OutputStream outputStream);
+    public static native byte[] dispatchStreaming(byte[] wireRequest, OutputStream outputStream)
+            throws IOException;
 
     /**
      * <strong>Bidirectional streaming</strong> binary wire-format JNI
@@ -439,10 +471,11 @@ public class VesperaBridge {
      * {@link #decodeResponse(byte[])} to read the status and headers
      * — the body has already been written to {@code outputStream}.
      *
-     * <p>Failure modes (malformed wire, panic in Rust, no app
-     * registered) return a regular {@code error_wire(...)} response
-     * (header + small plain-text body) and <strong>neither</strong>
-     * stream is touched.
+     * <p>Failure modes before any response byte was written (malformed
+     * wire, panic in Rust, no app registered, request body over the
+     * streaming cap) return a regular {@code error_wire(...)} response
+     * (header + small plain-text body) and {@code outputStream} is not
+     * written to.
      *
      * @param wireRequestHeader length-prefixed binary wire request
      *                          header (no body)
@@ -450,11 +483,13 @@ public class VesperaBridge {
      * @param outputStream      sink for response body chunks
      * @return wire-format header bytes (body lives on the
      *         {@code outputStream})
+     * @throws IOException when the response failed after body bytes were
+     *         written to {@code outputStream} (truncated response)
      */
     public static native byte[] dispatchFullStreaming(
             byte[] wireRequestHeader,
             InputStream inputStream,
-            OutputStream outputStream);
+            OutputStream outputStream) throws IOException;
 
     /**
      * Convenience encoder for the bidirectional streaming variant —

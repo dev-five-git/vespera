@@ -10,7 +10,11 @@ pub(super) fn parse_unit_enum_to_schema(
 ) -> Schema {
     let mut enum_values = Vec::with_capacity(enum_item.variants.len());
 
-    for variant in &enum_item.variants {
+    for variant in enum_item
+        .variants
+        .iter()
+        .filter(|variant| !super::variant::is_variant_omitted(variant))
+    {
         let variant_name = strip_raw_prefix_owned(variant.ident.to_string());
 
         // Check for variant-level rename attribute first (takes precedence)

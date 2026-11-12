@@ -10,15 +10,70 @@
 //! next dispatch allocates a fresh buffer instead of aliasing the Java
 //! array that may still be in flight).
 
-use std::{cell::RefCell, sync::Arc};
+use std::{
+    cell::RefCell,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 use jni::objects::{Global, JByteArray};
 
 use super::streaming_chunk_size;
 
 thread_local! {
-    static STREAMING_PULL_BUFFER: RefCell<Option<CachedStreamingChunkBuffer>> = const { RefCell::new(None) };
-    static STREAMING_PUSH_BUFFER: RefCell<Option<CachedStreamingChunkBuffer>> = const { RefCell::new(None) };
+    static STREAMING_PULL_BUFFER: ThreadSlot = const { ThreadSlot(RefCell::new(None)) };
+    static STREAMING_PUSH_BUFFER: ThreadSlot = const { ThreadSlot(RefCell::new(None)) };
+}
+
+/// Per-thread cache slot whose TLS destructor NEVER touches the JVM.
+///
+/// Dropping the last `Arc<Global<JByteArray>>` runs jni-rs `Global::drop`,
+/// which attaches the current thread to issue `DeleteGlobalRef`.  Doing that
+/// from a TLS destructor is unsound territory: the thread is mid-teardown, it
+/// may already have been detached (a JVM thread exiting) and the VM may be
+/// shutting down, and a panic there aborts the process.  So the destructor
+/// only MOVES the cached array into [`GRAVEYARD`] (a lock + `Vec::push`, no
+/// JNI); the array is released later by [`drain_graveyard`] on the next
+/// checkout, from a thread that is attached by construction.  If even the
+/// push fails, the array is deliberately leaked (`mem::forget`): leaking one
+/// chunk-sized Java array per exiting thread is bounded and harmless, a
+/// JNI call or panic inside a TLS destructor is not.
+struct ThreadSlot(RefCell<Option<CachedStreamingChunkBuffer>>);
+
+impl Drop for ThreadSlot {
+    fn drop(&mut self) {
+        if let Some(cached) = self.0.get_mut().take() {
+            bury(cached.array);
+        }
+    }
+}
+
+/// Global refs evicted by exiting threads, awaiting release on an attached
+/// thread.  Holds at most one entry per exited thread that ever streamed, and
+/// is emptied by every subsequent checkout.
+static GRAVEYARD: Mutex<Vec<StreamingChunkBuffer>> = Mutex::new(Vec::new());
+
+fn bury(array: StreamingChunkBuffer) {
+    let mut pending = Some(array);
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut graveyard = GRAVEYARD.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(array) = pending.take() {
+            graveyard.push(array);
+        }
+    }));
+    // Push failed (poisoned allocator / unwinding): leak rather than run
+    // `Global::drop` (an attach) inside a TLS destructor.
+    if let Some(array) = pending {
+        std::mem::forget(array);
+    }
+}
+
+/// Release the refs buried by exited threads.  Called from
+/// [`checkout_streaming_chunk_buffer`], i.e. on a JVM-attached thread inside a
+/// JNI call, so `Global::drop` resolves the env via `GetEnv` without a fresh
+/// attach.  The vec is taken under the lock and dropped outside it.
+fn drain_graveyard() {
+    let buried = std::mem::take(&mut *GRAVEYARD.lock().unwrap_or_else(PoisonError::into_inner));
+    drop(buried);
 }
 
 pub type StreamingChunkBuffer = Arc<Global<JByteArray<'static>>>;
@@ -35,8 +90,8 @@ impl StreamingBufferRole {
         callback: impl FnOnce(&RefCell<Option<CachedStreamingChunkBuffer>>) -> R,
     ) -> R {
         match self {
-            Self::Pull => STREAMING_PULL_BUFFER.with(callback),
-            Self::Push => STREAMING_PUSH_BUFFER.with(callback),
+            Self::Pull => STREAMING_PULL_BUFFER.with(|slot| callback(&slot.0)),
+            Self::Push => STREAMING_PUSH_BUFFER.with(|slot| callback(&slot.0)),
         }
     }
 }
@@ -106,6 +161,24 @@ impl Drop for StreamingChunkBufferLease {
     }
 }
 
+/// Release a pull lease after a bidirectional dispatch, honouring a request
+/// producer that may have been DETACHED (bounded join, see
+/// `vespera_inprocess::REQUEST_PRODUCER_JOIN_GRACE`) while still parked in
+/// `InputStream.read` writing into the pull array.
+///
+/// `producer_dropped` is `true` when the pull closure (which owns the array
+/// reference handed to Java) has been dropped.  Only then is the cached array
+/// provably idle and safe to reuse; otherwise the lease is dropped un-released,
+/// which DISCARDS the slot so the next dispatch installs a fresh array instead
+/// of aliasing the one the detached producer may still fill.
+pub fn release_pull_lease(lease: Option<StreamingChunkBufferLease>, producer_dropped: bool) {
+    if producer_dropped {
+        mark_streaming_buffer_reusable(lease);
+    } else {
+        drop(lease);
+    }
+}
+
 fn new_streaming_chunk_buffer(
     env: &mut jni::Env<'_>,
     size: usize,
@@ -118,6 +191,7 @@ pub fn checkout_streaming_chunk_buffer(
     env: &mut jni::Env<'_>,
     role: StreamingBufferRole,
 ) -> jni::errors::Result<(StreamingChunkBuffer, Option<StreamingChunkBufferLease>)> {
+    drain_graveyard();
     let size = streaming_chunk_size();
     role.with_cache(|cache| {
         let mut slot = cache.borrow_mut();

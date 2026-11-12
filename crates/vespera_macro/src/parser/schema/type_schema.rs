@@ -2,7 +2,9 @@
 
 mod conversion;
 
-pub use conversion::{is_builtin_openapi_type, is_primitive_type, parse_type_to_schema_ref};
+pub use conversion::{
+    is_builtin_openapi_type, is_primitive_type, parse_type_to_schema_ref, tuple_array_schema,
+};
 
 #[cfg(test)]
 mod tests {
@@ -152,7 +154,7 @@ mod tests {
     )]
     #[case("Result<String, i32>", false, Some(SchemaType::Object), None)]
     #[case("crate::Value", false, None, None)]
-    #[case("(i32, bool)", false, Some(SchemaType::Object), None)]
+    #[case("(i32, bool)", false, Some(SchemaType::Array), None)]
     fn test_parse_type_to_schema_ref_additional_cases(
         #[case] ty_src: &str,
         #[case] expect_additional_props: bool,

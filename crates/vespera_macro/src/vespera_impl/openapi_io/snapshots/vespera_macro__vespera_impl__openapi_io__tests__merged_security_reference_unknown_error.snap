@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/vespera_impl/openapi_io/tests.rs
+expression: error.to_string()
+---
+route `routes::secure::secure` (`GET /secure`) references unknown security scheme `ghostAuth`; declared in `vespera!(security_schemes = [...])`: `childAuth`, `parentAuth`

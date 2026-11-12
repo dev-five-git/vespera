@@ -2,6 +2,7 @@
 name = "vespera_macro"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "Procedural macros for Vespera - automatic route discovery and OpenAPI generation"
 license.workspace = true
 repository.workspace = true
@@ -27,7 +28,7 @@ proc-macro = true
 
 [dependencies]
 quote = "1"
-syn = { version = "3", features = ["full"] }
+syn = { version = "3", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 vespera_core = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }

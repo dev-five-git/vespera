@@ -12,7 +12,9 @@ use axum::response::Response;
 use axum::routing::get;
 use futures_util::stream;
 use tokio::runtime::Builder;
-use vespera_inprocess::{Router, dispatch_from_bytes, register_app};
+use vespera_inprocess::{
+    DirectWriteResult, Router, dispatch_from_bytes, dispatch_into, register_app,
+};
 
 /// A `200 OK` whose body's only frame is an error — collecting it fails
 /// partway, which the buffered dispatch path must report as a `500`.
@@ -91,4 +93,35 @@ fn response_body_stream_error_during_422_hoisting_becomes_500() {
         b"response body stream error",
         "a failed 422 collection must emit the canonical body-stream error"
     );
+}
+
+#[test]
+fn direct_write_422_body_stream_error_becomes_500() {
+    register_app(|| {
+        Router::new()
+            .route("/boom", get(erroring_body))
+            .route("/boom-422", get(erroring_422_body))
+    });
+
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build runtime");
+    let mut out = vec![0u8; 4096];
+    let DirectWriteResult::Complete(n) =
+        dispatch_into(assemble_wire("GET", "/boom-422"), &mut out, &runtime)
+    else {
+        panic!("a 500 error wire must fit in 4 KiB");
+    };
+
+    let resp = &out[..n];
+    let header_len = u32::from_be_bytes(resp[..4].try_into().unwrap()) as usize;
+    let header: serde_json::Value =
+        serde_json::from_slice(&resp[4..4 + header_len]).expect("response header JSON");
+    assert_eq!(
+        header["status"].as_u64(),
+        Some(500),
+        "direct-write must agree with the buffered path on a failed 422 prefetch"
+    );
+    assert_eq!(&resp[4 + header_len..], b"response body stream error");
 }

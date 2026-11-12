@@ -1,5 +1,4 @@
 use std::{
-    cell::RefCell,
     future::Future,
     sync::{
         Arc, OnceLock,
@@ -23,21 +22,30 @@ use crate::streaming_closures::{
 // a sidecar module to keep this file within the 1000-line source cap.
 #[path = "jni_impl_streaming_buffer.rs"]
 pub mod streaming_buffer;
-use streaming_buffer::{PullPushBuffers, mark_streaming_buffer_reusable};
+use streaming_buffer::{PullPushBuffers, mark_streaming_buffer_reusable, release_pull_lease};
 
 // Runtime / streaming configuration JNI hooks (seeded from
 // `VesperaBridge.init()` before the first dispatch) live in a sidecar
 // module so this file stays focused on the per-request dispatch symbols.
 #[path = "jni_impl_config.rs"]
 mod config;
-pub use config::{runtime_worker_threads, streaming_chunk_size};
+pub use config::{
+    DEFAULT_ASYNC_MAX_IN_FLIGHT, DEFAULT_RUNTIME_MAX_BLOCKING_THREADS, async_max_in_flight,
+    runtime_max_blocking_threads, runtime_worker_threads, set_async_max_in_flight,
+    set_runtime_max_blocking_threads, set_runtime_worker_threads, streaming_chunk_size,
+};
+use config::{async_overloaded_wire, try_acquire_async_permit};
 
-/// Multi-threaded Tokio runtime shared across all JNI calls.
+/// Multi-threaded Tokio runtime shared across ALL JNI calls — sync
+/// (`dispatchBytes`, `dispatchDirect0`), async and streaming alike.
 ///
 /// Worker thread count defaults to Tokio's heuristic (number of
 /// logical CPUs) and can be capped for embeddings where the JVM's
 /// own thread pools (e.g. Tomcat) compete for the same cores —
-/// see [`runtime_worker_threads`].
+/// see [`runtime_worker_threads`].  The blocking pool is capped by
+/// [`runtime_max_blocking_threads`] (default
+/// [`DEFAULT_RUNTIME_MAX_BLOCKING_THREADS`]), which now bounds the whole
+/// process: there is no per-Java-thread runtime any more.
 static RUNTIME: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
 
 pub fn runtime() -> Option<&'static tokio::runtime::Runtime> {
@@ -47,7 +55,11 @@ pub fn runtime() -> Option<&'static tokio::runtime::Runtime> {
             if let Some(workers) = runtime_worker_threads() {
                 builder.worker_threads(workers);
             }
-            builder.enable_all().build().ok()
+            builder
+                .max_blocking_threads(runtime_max_blocking_threads())
+                .enable_all()
+                .build()
+                .ok()
         })
         .as_ref()
 }
@@ -56,58 +68,28 @@ pub fn runtime_unavailable_wire() -> Vec<u8> {
     vespera_inprocess::error_wire(500, "failed to create Tokio runtime")
 }
 
-fn block_on_shared_runtime<F>(future: F) -> Option<F::Output>
+/// Drive a synchronous JNI dispatch to completion on the shared
+/// multi-thread [`RUNTIME`] from the calling (Java) thread.
+///
+/// The request future itself is polled on the calling thread inside
+/// `block_on`, but everything it spawns lives on the shared runtime: a
+/// detached `tokio::spawn` keeps making progress on the worker threads after
+/// the call returns, and runtime-bound resources (timers, I/O registrations,
+/// pooled connections) created during one dispatch stay valid for later
+/// dispatches from ANY Java thread.  The previous per-thread current-thread
+/// runtime starved detached tasks between calls, broke cross-thread reuse of
+/// runtime-bound resources, multiplied blocking pools per servlet thread and
+/// tore a whole runtime down inside a TLS destructor.
+///
+/// Must not be called from inside the runtime (e.g. an inline
+/// `CompletableFuture` continuation on a worker — see `dispatchAsync`); the
+/// resulting `block_on` panic is caught by the symbol guards and degrades to a
+/// `500`.
+pub fn block_on_shared_runtime<F>(future: F) -> Option<F::Output>
 where
     F: Future,
 {
     runtime().map(|runtime| runtime.block_on(future))
-}
-
-/// Cap on each per-thread sync runtime's blocking pool.
-///
-/// [`block_on_sync_runtime`] builds ONE current-thread runtime per calling
-/// OS thread. A JVM host with a large servlet pool (e.g. 200 Tomcat threads)
-/// would otherwise get 200 runtimes each able to spawn Tokio's default 512
-/// blocking threads — a worst case approaching 100k threads if handlers use
-/// `spawn_blocking` (the multipart extractor's temp-file I/O does). Capping
-/// the per-runtime blocking pool bounds that multiplication. Sync dispatch is
-/// for small requests; a handler that exceeds the cap simply runs its
-/// blocking tasks in batches — no deadlock, because `block_on` keeps driving
-/// the runtime. Detached `tokio::spawn` is still unsupported on this path
-/// (see [`block_on_sync_runtime`]).
-const SYNC_RUNTIME_MAX_BLOCKING_THREADS: usize = 4;
-
-thread_local! {
-    static SYNC_RUNTIME: RefCell<Option<tokio::runtime::Runtime>> = const { RefCell::new(None) };
-}
-
-/// Drive a synchronous JNI dispatch on the calling OS thread's
-/// current-thread Tokio runtime.
-///
-/// The request future is driven to completion inside this `block_on`,
-/// avoiding shared-runtime enter/scheduler contention on tiny
-/// `dispatchBytes` / `dispatchDirect` calls.  Handlers that await their
-/// spawned tasks still complete normally, and `spawn_blocking` uses this
-/// runtime's blocking pool.  Detached `tokio::spawn` tasks are fragile on
-/// this path: a current-thread runtime has no worker threads, so detached
-/// tasks only make progress while a later `block_on` runs on the same
-/// Java caller thread.  The TLS runtime is dropped when that OS thread
-/// exits, cleanly shutting down its per-runtime state.
-pub fn block_on_sync_runtime<F>(future: F) -> Option<F::Output>
-where
-    F: Future,
-{
-    SYNC_RUNTIME.with(|runtime| {
-        let mut runtime = runtime.borrow_mut();
-        if runtime.is_none() {
-            *runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .max_blocking_threads(SYNC_RUNTIME_MAX_BLOCKING_THREADS)
-                .build()
-                .ok();
-        }
-        runtime.as_ref().map(|runtime| runtime.block_on(future))
-    })
 }
 
 /// Check-and-clear the pending Java exception, reporting whether one
@@ -373,7 +355,7 @@ where
 
 #[path = "jni_impl_support.rs"]
 pub mod support;
-use support::{setup_full_stream, setup_stream};
+use support::{setup_full_stream, setup_stream, throw_streaming_abort, track_pull};
 
 /// `com.devfive.vespera.bridge.VesperaBridge.dispatchBytes(byte[]) -> byte[]`
 ///
@@ -400,7 +382,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchByt
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                 || match read_request_byte_array(env, &request_bytes) {
                     Ok(input) => {
-                        block_on_sync_runtime(vespera_inprocess::dispatch_from_bytes_async(input))
+                        block_on_shared_runtime(vespera_inprocess::dispatch_from_bytes_async(input))
                             .unwrap_or_else(runtime_unavailable_wire)
                     }
                     Err(err_wire) => err_wire,
@@ -491,6 +473,14 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
             // still-valid LOCAL `future_obj` ref, so only the spawned task
             // needs a `Global` ref (created just before the spawn below) —
             // instead of a second one held solely for these paths.
+            // Admission control BEFORE reading the request: a saturated
+            // in-flight cap answers a retryable 503 immediately instead of
+            // queueing unbounded tasks (and their request buffers).
+            let Some(permit) = try_acquire_async_permit() else {
+                let _ = complete_future_local(env, &future_obj, &async_overloaded_wire());
+                future_notified_body.store(true, Ordering::Release);
+                return Ok(());
+            };
             let input = match read_request_byte_array(env, &request_bytes) {
                 Ok(buf) => buf,
                 Err(err) => {
@@ -550,6 +540,9 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
                     return false;
                 };
                 runtime.spawn(async move {
+                    // Held until the future is completed; released with the
+                    // task on every path (including runtime shutdown).
+                    let _permit = permit;
                     let response = std::panic::AssertUnwindSafe(
                         vespera_inprocess::dispatch_from_bytes_async(input),
                     )
@@ -625,15 +618,15 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
 /// first to commit the HTTP status + response headers, then
 /// continue serving the streamed body bytes.
 ///
-/// Failure modes mirror [`Java_...dispatchBytes`]: a **pre-streaming**
-/// failure (malformed wire, version mismatch, no app registered, or a panic
-/// before the first body frame) produces a regular `error_wire(...)` response
-/// (header + small body) and the `OutputStream` is **not** written to.  A
-/// failure that occurs **after** the first body frame (the host
-/// `OutputStream` erroring mid-drain, or a body-stream error) may leave
-/// partial bytes already written to the `OutputStream`; it is still reported
-/// as a `500` `error_wire(...)` header return, so the caller must treat a
-/// `5xx` header returned after streaming has begun as a truncated response.
+/// Failure modes: a **pre-streaming** failure (malformed wire, version
+/// mismatch, no app registered, a `504` deadline before the header, or a
+/// body error before the first chunk) produces a regular `error_wire(...)`
+/// header return and the `OutputStream` is **not** written to.  `422`
+/// validation errors are hoisted into the returned header like every other
+/// mode.  A failure **after** at least one chunk was written (body-stream
+/// error or the `OutputStream` throwing)
+/// throws `java.io.IOException` instead of returning a header: the bytes
+/// already written are truncated and the caller must abort its transport.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStreaming<'local>(
     mut unowned_env: EnvUnowned<'local>,
@@ -670,15 +663,21 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                     return streaming_setup_failed_array(env);
                 };
 
-                let header_bytes =
-                    block_on_shared_runtime(vespera_inprocess::dispatch_streaming_async(
+                let dispatched = block_on_shared_runtime(
+                    vespera_inprocess::dispatch_streaming_with_outcome_async(
                         input,
                         make_push_closure(jvm, stream_global, push_buf),
-                    ))
-                    .unwrap_or_else(runtime_unavailable_wire);
+                    ),
+                );
                 mark_streaming_buffer_reusable(push_buf_lease);
-
-                wire_byte_array(env, &header_bytes)
+                match dispatched {
+                    None => wire_byte_array(env, &runtime_unavailable_wire()),
+                    Some((_, outcome)) if outcome.is_truncated() => {
+                        throw_streaming_abort(env, false);
+                        Ok(JObject::null())
+                    }
+                    Some((header_bytes, _)) => wire_byte_array(env, &header_bytes),
+                }
             })?;
 
         Ok(response)
@@ -706,9 +705,10 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
 ///   number of bytes read into the supplied buffer.
 ///
 /// Failure modes mirror [`Java_...dispatchStreaming`]: malformed
-/// wire / unknown version / no app / Rust panic produce a normal
-/// `error_wire(...)` response in the returned bytes and neither
-/// stream is touched.
+/// wire / unknown version / no app / Rust panic / a failure before the first
+/// response chunk produce a normal `error_wire(...)` response in the returned
+/// bytes; a failure after response bytes were written to `outputStream`
+/// throws `java.io.IOException` (truncated response).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFullStreaming<
     'local,
@@ -770,16 +770,27 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                 let push_jvm = jvm;
                 let push_global = output_global;
 
-                let header_response = block_on_shared_runtime(
-                    vespera_inprocess::dispatch_bidirectional_streaming_closing(
+                // Pull request body chunks from Java InputStream on a tokio
+                // blocking thread.  The liveness token tells whether the
+                // producer was DETACHED (bounded join) while still parked in
+                // `InputStream.read`, in which case the pull array stays in
+                // flight and its lease must not be reused.
+                let (pull, pull_token) =
+                    track_pull(make_pull_closure(pull_jvm, pull_global, pull_buf));
+                let mut push = make_push_closure(push_jvm, push_global, push_buf);
+                let mut captured_header: Vec<u8> = Vec::new();
+                let mut delivered = false;
+                let outcome = block_on_shared_runtime(
+                    vespera_inprocess::dispatch_bidirectional_streaming_with_header_closing(
                         header_input,
-                        // Pull request body chunks from Java InputStream.
-                        // Runs on a tokio blocking thread (spawn_blocking
-                        // inside dispatch_bidirectional_streaming).
-                        make_pull_closure(pull_jvm, pull_global, pull_buf),
-                        // Push response body chunks to Java OutputStream.
-                        // Runs on the tokio worker driving the dispatch.
-                        make_push_closure(push_jvm, push_global, push_buf),
+                        pull,
+                        // Push response body chunks to Java OutputStream on
+                        // the thread driving the dispatch.
+                        |chunk: &[u8]| {
+                            delivered = true;
+                            push(chunk)
+                        },
+                        |h: &[u8]| captured_header.extend_from_slice(h),
                         // Close the InputStream once the response is fully
                         // streamed, so a producer parked in a blocking read is
                         // unblocked and the dispatch cannot hang on a stuck
@@ -790,12 +801,22 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                             });
                         },
                     ),
-                )
-                .unwrap_or_else(runtime_unavailable_wire);
-                mark_streaming_buffer_reusable(pull_buf_lease);
+                );
+                release_pull_lease(pull_buf_lease, pull_token.producer_dropped());
                 mark_streaming_buffer_reusable(push_buf_lease);
-
-                wire_byte_array(env, &header_response)
+                match outcome {
+                    None => wire_byte_array(env, &runtime_unavailable_wire()),
+                    Some(vespera_inprocess::StreamOutcome::Complete) => {
+                        wire_byte_array(env, &captured_header)
+                    }
+                    // Failed before any response byte reached Java: a clean
+                    // error response is still possible.
+                    Some(failed) if !delivered => wire_byte_array(env, &failed.error_wire()),
+                    Some(_) => {
+                        throw_streaming_abort(env, false);
+                        Ok(JObject::null())
+                    }
+                }
             })?;
 
         Ok(response)
@@ -809,3 +830,7 @@ mod runtime_config_tests;
 #[cfg(test)]
 #[path = "jni_impl_streaming_abort_tests.rs"]
 mod streaming_abort_tests;
+
+#[cfg(test)]
+#[path = "jni_impl_shared_runtime_tests.rs"]
+mod shared_runtime_tests;

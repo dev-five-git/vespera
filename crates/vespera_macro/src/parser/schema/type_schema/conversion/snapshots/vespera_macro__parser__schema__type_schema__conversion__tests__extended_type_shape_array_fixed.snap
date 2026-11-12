@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/parser/schema/type_schema/conversion/tests.rs
+assertion_line: 412
+expression: "format!(\"{ty_src} => {json}\")"
+---
+[f32; 3] => {"type":"array","items":{"type":"number","format":"float"},"minItems":3,"maxItems":3}

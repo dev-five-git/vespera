@@ -1,5 +1,6 @@
 ---
-source: crates/vespera_macro/src/parser/schema/enum_schema.rs
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests.rs
+assertion_line: 573
 expression: schema
 ---
 Schema {
@@ -61,13 +62,64 @@ Schema {
                     unique_items: None,
                     properties: Some(
                         {
-                            "content": Inline(
+                            "kind": Inline(
                                 Schema {
                                     ref_path: None,
                                     schema_type: Some(
                                         String,
                                     ),
                                     format: None,
+                                    title: None,
+                                    description: None,
+                                    default: None,
+                                    example: None,
+                                    examples: None,
+                                    minimum: None,
+                                    maximum: None,
+                                    exclusive_minimum: None,
+                                    exclusive_maximum: None,
+                                    multiple_of: None,
+                                    min_length: None,
+                                    max_length: None,
+                                    pattern: None,
+                                    items: None,
+                                    prefix_items: None,
+                                    min_items: None,
+                                    max_items: None,
+                                    unique_items: None,
+                                    properties: None,
+                                    required: None,
+                                    additional_properties: None,
+                                    min_properties: None,
+                                    max_properties: None,
+                                    enum: Some(
+                                        [
+                                            String("A"),
+                                        ],
+                                    ),
+                                    all_of: None,
+                                    any_of: None,
+                                    one_of: None,
+                                    not: None,
+                                    discriminator: None,
+                                    nullable: None,
+                                    read_only: None,
+                                    write_only: None,
+                                    external_docs: None,
+                                    defs: None,
+                                    dynamic_anchor: None,
+                                    dynamic_ref: None,
+                                },
+                            ),
+                            "n": Inline(
+                                Schema {
+                                    ref_path: None,
+                                    schema_type: Some(
+                                        Integer,
+                                    ),
+                                    format: Some(
+                                        "int32",
+                                    ),
                                     title: None,
                                     description: None,
                                     default: None,
@@ -106,7 +158,7 @@ Schema {
                                     dynamic_ref: None,
                                 },
                             ),
-                            "type": Inline(
+                            "note": Inline(
                                 Schema {
                                     ref_path: None,
                                     schema_type: Some(
@@ -136,17 +188,15 @@ Schema {
                                     additional_properties: None,
                                     min_properties: None,
                                     max_properties: None,
-                                    enum: Some(
-                                        [
-                                            String("Text"),
-                                        ],
-                                    ),
+                                    enum: None,
                                     all_of: None,
                                     any_of: None,
                                     one_of: None,
                                     not: None,
                                     discriminator: None,
-                                    nullable: None,
+                                    nullable: Some(
+                                        true,
+                                    ),
                                     read_only: None,
                                     write_only: None,
                                     external_docs: None,
@@ -159,8 +209,8 @@ Schema {
                     ),
                     required: Some(
                         [
-                            "type",
-                            "content",
+                            "kind",
+                            "n",
                         ],
                     ),
                     additional_properties: None,
@@ -208,7 +258,7 @@ Schema {
                     unique_items: None,
                     properties: Some(
                         {
-                            "type": Inline(
+                            "kind": Inline(
                                 Schema {
                                     ref_path: None,
                                     schema_type: Some(
@@ -240,7 +290,7 @@ Schema {
                                     max_properties: None,
                                     enum: Some(
                                         [
-                                            String("Empty"),
+                                            String("B"),
                                         ],
                                     ),
                                     all_of: None,
@@ -261,7 +311,153 @@ Schema {
                     ),
                     required: Some(
                         [
-                            "type",
+                            "kind",
+                        ],
+                    ),
+                    additional_properties: None,
+                    min_properties: None,
+                    max_properties: None,
+                    enum: None,
+                    all_of: None,
+                    any_of: None,
+                    one_of: None,
+                    not: None,
+                    discriminator: None,
+                    nullable: None,
+                    read_only: None,
+                    write_only: None,
+                    external_docs: None,
+                    defs: None,
+                    dynamic_anchor: None,
+                    dynamic_ref: None,
+                },
+            ),
+            Inline(
+                Schema {
+                    ref_path: None,
+                    schema_type: Some(
+                        Object,
+                    ),
+                    format: None,
+                    title: None,
+                    description: None,
+                    default: None,
+                    example: None,
+                    examples: None,
+                    minimum: None,
+                    maximum: None,
+                    exclusive_minimum: None,
+                    exclusive_maximum: None,
+                    multiple_of: None,
+                    min_length: None,
+                    max_length: None,
+                    pattern: None,
+                    items: None,
+                    prefix_items: None,
+                    min_items: None,
+                    max_items: None,
+                    unique_items: None,
+                    properties: Some(
+                        {
+                            "kind": Inline(
+                                Schema {
+                                    ref_path: None,
+                                    schema_type: Some(
+                                        String,
+                                    ),
+                                    format: None,
+                                    title: None,
+                                    description: None,
+                                    default: None,
+                                    example: None,
+                                    examples: None,
+                                    minimum: None,
+                                    maximum: None,
+                                    exclusive_minimum: None,
+                                    exclusive_maximum: None,
+                                    multiple_of: None,
+                                    min_length: None,
+                                    max_length: None,
+                                    pattern: None,
+                                    items: None,
+                                    prefix_items: None,
+                                    min_items: None,
+                                    max_items: None,
+                                    unique_items: None,
+                                    properties: None,
+                                    required: None,
+                                    additional_properties: None,
+                                    min_properties: None,
+                                    max_properties: None,
+                                    enum: None,
+                                    all_of: None,
+                                    any_of: None,
+                                    one_of: None,
+                                    not: Some(
+                                        Inline(
+                                            Schema {
+                                                ref_path: None,
+                                                schema_type: None,
+                                                format: None,
+                                                title: None,
+                                                description: None,
+                                                default: None,
+                                                example: None,
+                                                examples: None,
+                                                minimum: None,
+                                                maximum: None,
+                                                exclusive_minimum: None,
+                                                exclusive_maximum: None,
+                                                multiple_of: None,
+                                                min_length: None,
+                                                max_length: None,
+                                                pattern: None,
+                                                items: None,
+                                                prefix_items: None,
+                                                min_items: None,
+                                                max_items: None,
+                                                unique_items: None,
+                                                properties: None,
+                                                required: None,
+                                                additional_properties: None,
+                                                min_properties: None,
+                                                max_properties: None,
+                                                enum: Some(
+                                                    [
+                                                        String("A"),
+                                                        String("B"),
+                                                    ],
+                                                ),
+                                                all_of: None,
+                                                any_of: None,
+                                                one_of: None,
+                                                not: None,
+                                                discriminator: None,
+                                                nullable: None,
+                                                read_only: None,
+                                                write_only: None,
+                                                external_docs: None,
+                                                defs: None,
+                                                dynamic_anchor: None,
+                                                dynamic_ref: None,
+                                            },
+                                        ),
+                                    ),
+                                    discriminator: None,
+                                    nullable: None,
+                                    read_only: None,
+                                    write_only: None,
+                                    external_docs: None,
+                                    defs: None,
+                                    dynamic_anchor: None,
+                                    dynamic_ref: None,
+                                },
+                            ),
+                        },
+                    ),
+                    required: Some(
+                        [
+                            "kind",
                         ],
                     ),
                     additional_properties: None,
@@ -287,7 +483,7 @@ Schema {
     not: None,
     discriminator: Some(
         Discriminator {
-            property_name: "type",
+            property_name: "kind",
             mapping: None,
         },
     ),

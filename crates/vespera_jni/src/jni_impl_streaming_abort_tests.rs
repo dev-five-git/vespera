@@ -106,3 +106,21 @@ fn panic_post_header_action_aborts_once_header_is_committed() {
         PanicHeaderAction::ThrowAbort
     );
 }
+
+#[test]
+fn pull_token_reports_whether_the_pull_closure_is_still_alive() {
+    let (mut pull, token) = super::support::track_pull(|| 7u8);
+    assert!(
+        !token.producer_dropped(),
+        "closure alive -> array in flight"
+    );
+    assert_eq!(pull(), 7);
+    let detached = std::thread::spawn(move || {
+        let _ = pull();
+    });
+    detached.join().expect("producer thread");
+    assert!(
+        token.producer_dropped(),
+        "closure dropped -> lease reusable"
+    );
+}

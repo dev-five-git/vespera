@@ -2,6 +2,7 @@
 name = "vespera_core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "Core types and utilities for Vespera"
 license.workspace = true
 repository.workspace = true

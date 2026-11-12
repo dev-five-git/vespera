@@ -1,5 +1,7 @@
 package com.devfive.vespera.bridge;
 
+import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.util.Map;
 import java.util.Objects;
@@ -233,7 +235,72 @@ final class VesperaDirectBufferPool {
     static void clearCurrentThreadBuffers() {
         DIRECT_POOL.remove();
         DIRECT_UNDER_RETAIN_STREAK.remove();
+        DIRECT_BODY_SCRATCH.remove();
+        DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.remove();
     }
+
+    // ── DIRECT response-body copy scratch ─────────────────────────────────
+    // Per-thread heap scratch for copying a direct-buffer response body into
+    // the servlet OutputStream (Channels.newChannel would allocate its own
+    // temporary heap buffer per write). Lives here — not in the Spring-typed
+    // WireResponseWriter — so clearCurrentThreadBuffers() stays loadable
+    // without Spring on the classpath.
+
+    private static final int DIRECT_BODY_SCRATCH_INITIAL = 16 * 1024;
+    private static final int DIRECT_BODY_COPY_CHUNK = 1024 * 1024;
+    private static final int DIRECT_BODY_SCRATCH_RETAIN_CAPACITY = 256 * 1024;
+    private static final int DIRECT_BODY_SCRATCH_SHRINK_IDLE_WRITES = 8;
+    private static final ThreadLocal<byte[]> DIRECT_BODY_SCRATCH =
+            ThreadLocal.withInitial(() -> new byte[DIRECT_BODY_SCRATCH_INITIAL]);
+    private static final ThreadLocal<Integer> DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK =
+            ThreadLocal.withInitial(VesperaDirectBufferPool::initialSmallWriteStreak);
+
+    static Integer initialSmallWriteStreak() {
+        return 0;
+    }
+
+    static void writeDirectBody(ByteBuffer body, OutputStream out) throws IOException {
+        int initialRemaining = body.remaining();
+        try {
+            byte[] scratch = directBodyScratch(Math.min(initialRemaining, DIRECT_BODY_COPY_CHUNK));
+            while (body.hasRemaining()) {
+                int n = Math.min(body.remaining(), scratch.length);
+                body.get(scratch, 0, n);
+                out.write(scratch, 0, n);
+            }
+        } finally {
+            shrinkDirectBodyScratchIfIdle(initialRemaining);
+        }
+    }
+
+    private static byte[] directBodyScratch(int required) {
+        byte[] scratch = DIRECT_BODY_SCRATCH.get();
+        if (scratch.length < required) {
+            scratch = new byte[Math.min(DIRECT_BODY_COPY_CHUNK, required)];
+            DIRECT_BODY_SCRATCH.set(scratch);
+        }
+        return scratch;
+    }
+
+    private static void shrinkDirectBodyScratchIfIdle(int remainingAfterWrite) {
+        byte[] scratch = DIRECT_BODY_SCRATCH.get();
+        if (scratch.length <= DIRECT_BODY_SCRATCH_RETAIN_CAPACITY) {
+            DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.set(0);
+            return;
+        }
+        if (remainingAfterWrite > DIRECT_BODY_SCRATCH_RETAIN_CAPACITY) {
+            DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.set(0);
+            return;
+        }
+        int streak = DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.get() + 1;
+        if (streak >= DIRECT_BODY_SCRATCH_SHRINK_IDLE_WRITES) {
+            DIRECT_BODY_SCRATCH.set(new byte[DIRECT_BODY_SCRATCH_INITIAL]);
+            DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.set(0);
+        } else {
+            DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.set(streak);
+        }
+    }
+
 
     static boolean directPoolPresentForTest() {
         return DIRECT_POOL.get() != null;

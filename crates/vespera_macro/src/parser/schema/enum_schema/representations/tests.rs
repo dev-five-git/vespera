@@ -268,7 +268,11 @@ fn test_untagged_enum_basic() {
     // Should NOT have discriminator
     assert!(schema.discriminator.is_none());
 
-    let one_of = schema.one_of.expect("one_of missing");
+    let one_of = schema.any_of.expect("untagged enums emit anyOf");
+    assert!(
+        schema.one_of.is_none(),
+        "untagged enums must not emit oneOf"
+    );
     assert_eq!(one_of.len(), 2);
 
     // First variant should be string schema directly (not wrapped in object)
@@ -307,7 +311,7 @@ fn test_untagged_enum_struct_variants() {
 
     assert!(schema.discriminator.is_none());
 
-    let one_of = schema.one_of.expect("one_of missing");
+    let one_of = schema.any_of.expect("untagged enums emit anyOf");
     assert_eq!(one_of.len(), 2);
 
     // User variant should be object with name and age (no wrapper)
@@ -338,7 +342,7 @@ fn test_untagged_enum_unit_variant() {
         &HashMap::<String, String>::new(),
     );
 
-    let one_of = schema.one_of.expect("one_of missing");
+    let one_of = schema.any_of.expect("untagged enums emit anyOf");
     assert_eq!(one_of.len(), 2);
 
     // Unit variant in untagged enum should be null
@@ -464,15 +468,17 @@ fn test_externally_tagged_empty_struct_variant() {
     });
 }
 
-// Edge case: Internally tagged enum with tuple variant
+// Internally tagged newtype variants wrapping a struct are emitted as
+// `allOf: [{tag object}, <inner>]` (serde merges the tag into the inner map).
 #[test]
-fn test_internally_tagged_skips_tuple_variant() {
+fn test_internally_tagged_newtype_variant_uses_all_of() {
     let enum_item: syn::ItemEnum = syn::parse_str(
         r#"
                 #[serde(tag = "type")]
                 enum Message {
                     Text { content: String },
-                    Number(i32),
+                    Detail(Payload),
+                    Meta(std::collections::HashMap<String, i32>),
                     Empty,
                 }
                 "#,
@@ -481,23 +487,95 @@ fn test_internally_tagged_skips_tuple_variant() {
 
     let schema = parse_enum_to_schema(
         &enum_item,
-        &HashSet::<String>::new(),
+        &HashSet::from(["Payload".to_string()]),
         &HashMap::<String, String>::new(),
     );
 
-    // Tuple variant `Number(i32)` should be skipped, only 2 variants should remain
     let one_of = schema.clone().one_of.expect("one_of missing");
-    assert_eq!(one_of.len(), 2); // Text and Empty only
+    assert_eq!(one_of.len(), 4, "newtype variants are no longer dropped");
+    let SchemaRef::Inline(detail) = &one_of[1] else {
+        panic!("inline variant schema");
+    };
+    let all_of = detail.all_of.as_ref().expect("newtype → allOf");
+    assert_eq!(all_of.len(), 2);
+    assert!(
+        matches!(&all_of[1], SchemaRef::Ref(r) if r.ref_path == "#/components/schemas/Payload")
+    );
 
-    // Verify discriminator is present
     let discriminator = schema
         .discriminator
         .as_ref()
         .expect("discriminator missing");
     assert_eq!(discriminator.property_name, "type");
 
-    with_settings!({ snapshot_path => "../../snapshots", snapshot_suffix => "internally_tagged_skip_tuple" }, {
+    with_settings!({ snapshot_path => "../../snapshots", snapshot_suffix => "internally_tagged_newtype" }, {
         assert_debug_snapshot!(schema);
+    });
+}
+
+// Defensive fallback: a scalar newtype (rejected at derive time) and a
+// multi-field tuple (a serde compile error) are skipped by the generator.
+#[test]
+fn internally_tagged_scalar_newtype_is_skipped_by_generator() {
+    let enum_item: syn::ItemEnum = syn::parse_str(
+        r#"#[serde(tag = "type")] enum M { Number(i32), Pair(i32, i32), Unit(()), Empty }"#,
+    )
+    .unwrap();
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
+    // `Unit(())` → tag only; `Empty` → tag only.
+    assert_eq!(schema.one_of.expect("one_of").len(), 2);
+}
+
+/// Struct-variant fields share the struct field walker: `skip`, `flatten`,
+/// `rename`, `skip_serializing_if`, doc comments and `#[schema]` constraints
+/// all apply. Variant-level `skip` / `skip_serializing` drop the variant;
+/// `#[serde(other)]` accepts any tag except the known ones.
+#[rstest::rstest]
+#[case::external_field_attrs(
+    "external_field_attrs",
+    r#"enum E {
+        Create {
+            #[serde(skip)] internal: i32,
+            #[serde(rename = "userName")] name: String,
+            #[serde(skip_serializing_if = "Vec::is_empty")] tags: Vec<String>,
+            /// The age
+            #[schema(minimum = 0, maximum = 150)] age: u8,
+            #[serde(flatten)] meta: Meta,
+        },
+        #[serde(skip)] Hidden { x: i32 },
+        #[serde(skip_serializing)] WriteOnly(i32),
+    }"#
+)]
+#[case::internal_other(
+    "internal_other",
+    r#"#[serde(tag = "kind")] enum E {
+        A { #[serde(skip_serializing_if = "Option::is_none")] note: Option<String>, n: i32 },
+        B,
+        #[serde(other)] Unknown,
+    }"#
+)]
+#[case::adjacent_other(
+    "adjacent_other",
+    r#"#[serde(tag = "t", content = "c")] enum E { A(i32), #[serde(skip)] Gone, #[serde(other)] Unknown }"#
+)]
+#[case::untagged_field_attrs(
+    "untagged_field_attrs",
+    r#"#[serde(untagged)] enum E { Full { #[serde(rename = "ID")] id: i32, #[serde(skip_serializing_if = "Option::is_none")] x: Option<i32> }, Pair(i32, String) }"#
+)]
+#[case::unit_enum_skip("unit_enum_skip", r"enum E { A, #[serde(skip)] Internal(i32), B }")]
+fn enum_variant_and_field_attrs_snapshot(#[case] name: &str, #[case] src: &str) {
+    let enum_item: syn::ItemEnum = syn::parse_str(src).unwrap();
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::from(["Meta".to_string()]),
+        &HashMap::<String, String>::new(),
+    );
+    with_settings!({ snapshot_path => "../../snapshots" }, {
+        assert_debug_snapshot!(format!("enum_variant_attrs_{name}"), schema);
     });
 }
 
@@ -527,24 +605,14 @@ fn test_untagged_tuple_variant_with_known_schema_ref() {
 
     assert!(schema.discriminator.is_none());
 
-    let one_of = schema.one_of.expect("one_of missing");
+    let one_of = schema.any_of.expect("untagged enums emit anyOf");
     assert_eq!(one_of.len(), 2);
 
-    // First variant (UserData) should have all_of with a $ref since it's a known schema
-    if let SchemaRef::Inline(user_variant) = &one_of[0] {
-        // The schema should have all_of containing the reference
-        let all_of = user_variant
-            .all_of
-            .as_ref()
-            .expect("all_of missing for known schema ref");
-        assert_eq!(all_of.len(), 1);
-        if let SchemaRef::Ref(reference) = &all_of[0] {
-            assert!(reference.ref_path.contains("UserData"));
-        } else {
-            panic!("Expected SchemaRef::Ref inside all_of");
-        }
+    // First variant (UserData) is a plain $ref: known schema, no description.
+    if let SchemaRef::Ref(reference) = &one_of[0] {
+        assert!(reference.ref_path.contains("UserData"));
     } else {
-        panic!("Expected inline schema");
+        panic!("Expected a plain SchemaRef::Ref");
     }
 
     // Second variant (String) should be inline string schema directly
@@ -617,7 +685,7 @@ fn test_untagged_multi_field_tuple_variant() {
 
     assert!(schema.discriminator.is_none());
 
-    let one_of = schema.clone().one_of.expect("one_of missing");
+    let one_of = schema.clone().any_of.expect("untagged enums emit anyOf");
     assert_eq!(one_of.len(), 3);
 
     // Single-field tuple should be string schema directly
@@ -652,4 +720,63 @@ fn test_untagged_multi_field_tuple_variant() {
     with_settings!({ snapshot_path => "../../snapshots", snapshot_suffix => "untagged_multi_field_tuple" }, {
         assert_debug_snapshot!(schema);
     });
+}
+
+/// Fully skipped tuple-variant fields are not serialized, so they are not
+/// array positions either (externally, adjacently tagged and untagged alike).
+#[rstest::rstest]
+#[case::external("")]
+#[case::adjacent(r#"#[serde(tag = "t", content = "c")]"#)]
+#[case::untagged("#[serde(untagged)]")]
+fn tuple_variant_skipped_fields_are_not_array_items(#[case] repr: &str) {
+    let enum_item: syn::ItemEnum = syn::parse_str(&format!(
+        "{repr} enum Shape {{ Line(i32, #[serde(skip)] String, \
+         #[serde(skip_serializing, skip_deserializing)] u8, bool) }}"
+    ))
+    .unwrap();
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
+    let json = serde_json::to_string(&schema).unwrap();
+    assert!(
+        json.contains(r#""minItems":2,"maxItems":2"#),
+        "two emitted positions expected: {json}"
+    );
+}
+
+/// An undocumented untagged newtype variant over a known schema is a plain
+/// `$ref` (no `allOf` wrapper); a documented one keeps the wrapper so the
+/// description can sit beside the reference.
+#[test]
+fn untagged_newtype_ref_is_plain_ref_without_description() {
+    let enum_item: syn::ItemEnum = syn::parse_str(
+        r"
+        #[serde(untagged)]
+        enum Either {
+            Plain(User),
+            /// Documented
+            Documented(User),
+        }
+        ",
+    )
+    .unwrap();
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::from(["User".to_string()]),
+        &HashMap::<String, String>::new(),
+    );
+    let any_of = schema.any_of.expect("anyOf");
+    assert!(
+        matches!(&any_of[0], SchemaRef::Ref(reference) if reference.ref_path == "#/components/schemas/User")
+    );
+    let SchemaRef::Inline(documented) = &any_of[1] else {
+        panic!("documented variant keeps the allOf wrapper");
+    };
+    assert_eq!(documented.description.as_deref(), Some("Documented"));
+    assert!(matches!(
+        documented.all_of.as_deref(),
+        Some([SchemaRef::Ref(_)])
+    ));
 }

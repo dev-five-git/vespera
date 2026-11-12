@@ -12,6 +12,7 @@ pub use common::{
 };
 pub use enum_repr::{SerdeEnumRepr, extract_enum_repr};
 pub use extract::{
-    extract_default, extract_field_rename, extract_flatten, extract_rename_all, extract_skip,
+    extract_default, extract_field_rename, extract_flatten, extract_rename_all,
+    extract_serde_skip_flags, extract_skip,
 };
 pub use rename_case::rename_field;

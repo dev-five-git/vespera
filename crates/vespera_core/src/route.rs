@@ -178,7 +178,7 @@ pub struct Header {
 }
 
 /// `OpenAPI` Operation definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Operation {
     /// Operation ID (unique identifier)
@@ -289,12 +289,55 @@ impl PathItem {
     pub fn set_operation(&mut self, method: HttpMethod, operation: Operation) {
         let _ = self.try_set_operation(method, operation);
     }
+
+    /// Iterate the operations present on this path item, in a fixed method
+    /// order (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, TRACE).
+    pub fn operations(&self) -> impl Iterator<Item = (HttpMethod, &Operation)> {
+        [
+            (HttpMethod::Get, self.get.as_ref()),
+            (HttpMethod::Post, self.post.as_ref()),
+            (HttpMethod::Put, self.put.as_ref()),
+            (HttpMethod::Patch, self.patch.as_ref()),
+            (HttpMethod::Delete, self.delete.as_ref()),
+            (HttpMethod::Head, self.head.as_ref()),
+            (HttpMethod::Options, self.options.as_ref()),
+            (HttpMethod::Trace, self.trace.as_ref()),
+        ]
+        .into_iter()
+        .filter_map(|(method, op)| op.map(|op| (method, op)))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rstest::rstest;
+
+    #[test]
+    fn path_item_operations_iterates_present_methods_in_order() {
+        let mut item = PathItem::default();
+        assert_eq!(item.operations().count(), 0);
+        for (method, id) in [(HttpMethod::Delete, "d"), (HttpMethod::Get, "g")] {
+            item.set_operation(
+                method,
+                Operation {
+                    operation_id: Some(id.to_string()),
+                    ..Operation::default()
+                },
+            );
+        }
+        let seen: Vec<(HttpMethod, Option<&str>)> = item
+            .operations()
+            .map(|(m, op)| (m, op.operation_id.as_deref()))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                (HttpMethod::Get, Some("g")),
+                (HttpMethod::Delete, Some("d"))
+            ]
+        );
+    }
 
     #[rstest]
     #[case("GET", HttpMethod::Get)]

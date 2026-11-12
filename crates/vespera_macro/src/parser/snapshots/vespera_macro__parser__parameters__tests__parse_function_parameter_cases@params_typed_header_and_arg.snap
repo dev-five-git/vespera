@@ -4,7 +4,7 @@ expression: parameters
 ---
 [
     Parameter {
-        name: "user-agent",
+        name: "User-Agent",
         in: Header,
         description: None,
         required: Some(

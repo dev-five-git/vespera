@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -422,13 +423,14 @@ class StreamingClosureStressTest {
      * on every write must not hang or SIGSEGV the JVM.  The Rust push
      * closure latches a {@code failed} flag on the first write failure and
      * turns subsequent frames into a no-op instead of repeatedly crossing
-     * JNI into the broken sink; the dispatch still returns the wire header.
+     * JNI into the broken sink.
      *
-     * <p>That header carries {@code 500}, not the handler's {@code 200}:
-     * the bytes that reached the sink are truncated, and vespera never
-     * reports a truncated body as a clean success.  The Rust side locks the
-     * same contract in
-     * {@code response_streaming_chunk_break_returns_500_not_silent_success}.
+     * <p>Because the failure happened <em>after</em> body bytes were handed
+     * to the sink, the response is truncated: {@code dispatchStreaming}
+     * throws {@link IOException} (abort the transport) instead of returning
+     * a header — vespera never reports a truncated body as a clean success.
+     * The Rust side locks the same contract in
+     * {@code sink_stop_after_first_chunk_is_reported_as_truncation}.
      */
     @Test
     @Order(5)
@@ -449,12 +451,10 @@ class StreamingClosureStressTest {
             }
         };
 
-        byte[] respHeader = VesperaBridge.dispatchStreaming(wireRequest, throwing);
-        assertNotNull(respHeader,
-                "dispatch must return a header even when the OutputStream throws");
-        VesperaBridge.DecodedResponse resp = VesperaBridge.decodeResponse(respHeader);
-        assertEquals(500, resp.status(),
-                "a sink that stops mid-body truncates the response, "
-                        + "so the header must not report the handler's 200");
+        IOException aborted = assertThrows(IOException.class,
+                () -> VesperaBridge.dispatchStreaming(wireRequest, throwing),
+                "a sink that stops mid-body truncates the response, so the "
+                        + "dispatch must abort instead of reporting a header");
+        assertTrue(aborted.getMessage().contains("aborted"), aborted.getMessage());
     }
 }

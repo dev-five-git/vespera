@@ -184,6 +184,85 @@ pub fn extract_skip(attrs: &[syn::Attribute]) -> bool {
     false
 }
 
+/// Presence flags for the serde skip/other keywords on a field or variant.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SerdeSkipFlags {
+    pub skip: bool,
+    pub skip_serializing: bool,
+    pub skip_deserializing: bool,
+    pub skip_serializing_if: bool,
+    pub other: bool,
+}
+
+impl SerdeSkipFlags {
+    /// The member never appears on the wire in either direction.
+    #[must_use]
+    pub const fn fully_skipped(self) -> bool {
+        self.skip || (self.skip_serializing && self.skip_deserializing)
+    }
+
+    /// The member may be absent from serialized output (`skip_serializing`
+    /// or a `skip_serializing_if` predicate), so it must not be `required`.
+    #[must_use]
+    pub const fn maybe_omitted_on_output(self) -> bool {
+        self.skip_serializing || self.skip_serializing_if
+    }
+}
+
+/// Collect [`SerdeSkipFlags`] from `#[serde(...)]` attributes.
+///
+/// Unlike the single-keyword extractors, this consumes `key = value` and
+/// `key(...)` payloads so an unrelated `skip_serializing_if = "..."` or
+/// `rename(serialize = "..")` never aborts the walk; the raw-token fallback
+/// still covers anything the structured walk cannot parse.
+pub fn extract_serde_skip_flags(attrs: &[syn::Attribute]) -> SerdeSkipFlags {
+    let mut flags = SerdeSkipFlags::default();
+    for attr in attrs {
+        if !attr.path().is_ident("serde") {
+            continue;
+        }
+        let mut local = SerdeSkipFlags::default();
+        let parsed = attr.parse_nested_meta(|meta| {
+            if let Some(ident) = meta.path.segments.last().map(|seg| &seg.ident) {
+                if ident == "skip" {
+                    local.skip = true;
+                } else if ident == "skip_serializing" {
+                    local.skip_serializing = true;
+                } else if ident == "skip_deserializing" {
+                    local.skip_deserializing = true;
+                } else if ident == "skip_serializing_if" {
+                    local.skip_serializing_if = true;
+                } else if ident == "other" {
+                    local.other = true;
+                }
+            }
+            if meta.input.peek(syn::Token![=]) {
+                meta.value()?.parse::<syn::Expr>()?;
+            } else if meta.input.peek(syn::token::Paren) {
+                meta.input.parse::<proc_macro2::Group>()?;
+            }
+            Ok(())
+        });
+        if parsed.is_err()
+            && let syn::Meta::List(meta_list) = &attr.meta
+        {
+            let tokens = meta_list.tokens.to_string();
+            local.skip |= contains_standalone_word(&tokens, "skip");
+            local.skip_serializing |= contains_standalone_word(&tokens, "skip_serializing");
+            local.skip_deserializing |= contains_standalone_word(&tokens, "skip_deserializing");
+            local.skip_serializing_if |= contains_standalone_word(&tokens, "skip_serializing_if");
+            local.other |= contains_standalone_word(&tokens, "other");
+        }
+        flags.skip |= local.skip;
+        flags.skip_serializing |= local.skip_serializing;
+        flags.skip_deserializing |= local.skip_deserializing;
+        flags.skip_serializing_if |= local.skip_serializing_if;
+        flags.other |= local.other;
+    }
+    flags
+}
+
 /// Extract flatten attribute from field attributes
 /// Returns true if #[serde(flatten)] is present
 pub fn extract_flatten(attrs: &[syn::Attribute]) -> bool {
@@ -551,5 +630,60 @@ mod tests {
             unreachable!("test input must contain named fields");
         };
         assert_eq!(extract_field_rename(&fields.named[0].attrs), None);
+    }
+
+    #[rstest]
+    #[case::none("#[doc = \"x\"]", SerdeSkipFlags::default())]
+    #[case::skip("#[serde(skip)]", SerdeSkipFlags { skip: true, ..SerdeSkipFlags::default() })]
+    #[case::skip_serializing_if(
+        "#[serde(skip_serializing_if = \"Vec::is_empty\", default)]",
+        SerdeSkipFlags { skip_serializing_if: true, ..SerdeSkipFlags::default() }
+    )]
+    #[case::skip_ser_only(
+        "#[serde(rename(serialize = \"a\"), skip_serializing)]",
+        SerdeSkipFlags { skip_serializing: true, ..SerdeSkipFlags::default() }
+    )]
+    #[case::both_directions(
+        "#[serde(skip_serializing)] #[serde(skip_deserializing)]",
+        SerdeSkipFlags {
+            skip_serializing: true,
+            skip_deserializing: true,
+            ..SerdeSkipFlags::default()
+        }
+    )]
+    #[case::other("#[serde(other)]", SerdeSkipFlags { other: true, ..SerdeSkipFlags::default() })]
+    fn serde_skip_flags_cases(#[case] attrs_src: &str, #[case] expected: SerdeSkipFlags) {
+        let item: syn::ItemStruct =
+            syn::parse_str(&format!("struct Foo {{ {attrs_src} field: i32 }}")).unwrap();
+        let syn::Fields::Named(fields) = &item.fields else {
+            unreachable!("named fields");
+        };
+        assert_eq!(extract_serde_skip_flags(&fields.named[0].attrs), expected);
+    }
+
+    #[test]
+    fn serde_skip_flags_helpers() {
+        let only_ser = SerdeSkipFlags {
+            skip_serializing: true,
+            ..SerdeSkipFlags::default()
+        };
+        assert!(only_ser.maybe_omitted_on_output());
+        assert!(!only_ser.fully_skipped());
+        let both = SerdeSkipFlags {
+            skip_deserializing: true,
+            ..only_ser
+        };
+        assert!(both.fully_skipped());
+        assert!(!SerdeSkipFlags::default().maybe_omitted_on_output());
+    }
+
+    #[test]
+    fn serde_skip_flags_fallback_after_parse_error() {
+        // `skip_serializing_if` followed by an unparsable payload aborts the
+        // structured walk; the raw-token fallback still finds the keyword.
+        let attr: syn::Attribute = syn::parse_quote!(#[serde(skip_serializing_if = , other)]);
+        let flags = extract_serde_skip_flags(&[attr]);
+        assert!(flags.skip_serializing_if);
+        assert!(flags.other);
     }
 }

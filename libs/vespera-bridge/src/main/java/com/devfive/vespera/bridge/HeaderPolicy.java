@@ -26,8 +26,9 @@ final class HeaderPolicy {
      *
      * <p>{@code content-length} is not hop-by-hop by RFC semantics, but it is
      * proxy-owned in this servlet bridge: buffered/direct responses set the
-     * exact bytes they write, and streaming responses let the servlet container
-     * frame the body.
+     * exact bytes they write, streaming responses let the servlet container
+     * frame the body, and {@code HEAD} responses re-advertise the Rust-declared
+     * value (see {@link ResponseHeaderAccumulator#declaredContentLength()}).
      *
      * <p>Names are compared case-insensitively against the canonical lowercase
      * form the wire header carries.
@@ -75,14 +76,59 @@ final class HeaderPolicy {
     static final class ResponseHeaderAccumulator implements BiConsumer<String, String> {
         final List<HeaderPair> headers = new ArrayList<>(8);
         Set<String> connectionTokens;
+        /** Wire status, filled in by the caller once the header is parsed. */
+        int status = 500;
+        /** -1 = absent, -2 = present but invalid/conflicting, else the value. */
+        private long declaredContentLength = -1;
 
         @Override
         public void accept(String name, String value) {
             headers.add(new HeaderPair(name, value));
             if (name.length() == 10 && name.regionMatches(true, 0, "connection", 0, 10)) {
                 connectionTokens = addConnectionTokens(connectionTokens, value);
+            } else if (isContentLengthHeader(name) && declaredContentLength != -2) {
+                long parsed = parseContentLength(value);
+                declaredContentLength =
+                        parsed < 0 || (declaredContentLength >= 0 && declaredContentLength != parsed)
+                                ? -2 : parsed;
             }
         }
+
+        /**
+         * The {@code content-length} the Rust response declared, or {@code -1}
+         * when absent, malformed, or repeated with conflicting values. The
+         * header itself is never forwarded (proxy-owned framing); this value
+         * lets a {@code HEAD} response advertise the GET-equivalent
+         * representation length axum computed while sending an empty body.
+         */
+        long declaredContentLength() {
+            return Math.max(-1, declaredContentLength);
+        }
+    }
+
+    /**
+     * Parse a {@code Content-Length} field value: optional surrounding
+     * whitespace around 1–18 ASCII digits (so it cannot overflow a
+     * {@code long}). Anything else — signs, lists, empty — returns {@code -1}.
+     */
+    static long parseContentLength(String value) {
+        if (value == null) {
+            return -1;
+        }
+        int start = trimHttpWhitespaceStart(value, 0, value.length());
+        int end = trimHttpWhitespaceEnd(value, start, value.length());
+        if (start == end || end - start > 18) {
+            return -1;
+        }
+        long result = 0;
+        for (int i = start; i < end; i++) {
+            char c = value.charAt(i);
+            if (c < '0' || c > '9') {
+                return -1;
+            }
+            result = result * 10 + (c - '0');
+        }
+        return result;
     }
 
     static Set<String> addConnectionTokens(Set<String> tokens, String value) {

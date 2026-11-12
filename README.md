@@ -31,11 +31,13 @@ let app = vespera!(openapi = "openapi.json", docs_url = "/docs");
 
 ```toml
 [dependencies]
-vespera = "0.1"
+vespera = "0.5"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 ```
+
+> **MSRV:** Rust 1.88 (edition 2024), checked in CI.
 
 ### 2. Create Route Handler
 
@@ -761,7 +763,7 @@ Schedule background tasks with `#[vespera::cron]`. A tiny built-in tokio schedul
 
 ```toml
 [dependencies]
-vespera = { version = "0.1", features = ["cron"] }
+vespera = { version = "0.5", features = ["cron"] }
 ```
 
 ### Define Cron Jobs
@@ -917,7 +919,7 @@ Embed your Vespera router inside a Java/Spring application — no TCP, no JSON e
 
 ```rust
 // Cargo.toml
-// vespera = { version = "0.1", features = ["jni"] }
+// vespera = { version = "0.5", features = ["jni"] }
 
 pub fn create_app() -> axum::Router {
     vespera!(title = "My API")
@@ -956,10 +958,13 @@ vespera/
 │   ├── vespera_inprocess/    # In-process axum dispatch + binary wire API
 │   └── vespera_jni/          # JNI glue (Runtime + JNI symbol)
 ├── libs/
-│   └── vespera-bridge/       # Java library (kr.devfive:vespera-bridge)
-└── examples/
-    ├── axum-example/         # Standalone OpenAPI server
-    └── rust-jni-demo/        # Rust + Spring Boot JNI integration
+│   ├── vespera-bridge/       # Java library (kr.devfive:vespera-bridge)
+│   └── vespera-bridge-gradle-plugin/  # Gradle plugin (kr.devfive.vespera-bridge)
+├── examples/
+│   ├── axum-example/         # Standalone OpenAPI server
+│   ├── rust-jni-demo/        # Rust + Spring Boot JNI integration
+│   └── testkit/              # In-process test client used by the examples
+└── benches/                  # Compile-time macro benchmarks (not default members)
 ```
 
 ---
@@ -973,6 +978,13 @@ cd vespera
 # Build & test
 cargo build
 cargo test --workspace
+
+# Lint gates (also enforced in CI: fmt, clippy, oxlint)
+bun install --frozen-lockfile
+bun run lint
+
+# Supply-chain check (cargo install cargo-deny --locked)
+cargo deny check
 
 # Run example
 cd examples/axum-example

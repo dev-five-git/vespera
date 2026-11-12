@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/parser/schema/type_schema/conversion/tests.rs
+assertion_line: 412
+expression: "format!(\"{ty_src} => {json}\")"
+---
+VecDeque<bool> => {"type":"array","items":{"type":"boolean"}}

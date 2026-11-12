@@ -2,10 +2,13 @@ package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.Field;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -80,20 +83,86 @@ class VesperaBridgeInitTest {
     void optionalNativeConfigurationSeamsApplyValuesAndIgnoreMissingSymbols() {
         AtomicInteger configuredChunk = new AtomicInteger();
         AtomicInteger configuredCapacity = new AtomicInteger();
-        VesperaBridge.configureStreamingIfSupported(8192, 7, (chunk, capacity) -> {
+        assertTrue(VesperaNativeConfig.configureStreamingIfSupported(8192, 7, (chunk, capacity) -> {
             configuredChunk.set(chunk);
             configuredCapacity.set(capacity);
-        });
+            return true;
+        }));
         assertEquals(8192, configuredChunk.get());
         assertEquals(7, configuredCapacity.get());
-        assertDoesNotThrow(() -> VesperaBridge.configureStreamingIfSupported(
-                8192, 7, (chunk, capacity) -> { throw new UnsatisfiedLinkError("old"); }));
+        assertFalse(VesperaNativeConfig.configureStreamingIfSupported(
+                8192, 7, (chunk, capacity) -> false),
+                "a value the Rust side already fixed is surfaced as false");
+        assertFalse(assertDoesNotThrow(() -> VesperaNativeConfig.configureStreamingIfSupported(
+                8192, 7, (chunk, capacity) -> { throw new UnsatisfiedLinkError("old"); })));
 
-        AtomicInteger workers = new AtomicInteger();
-        VesperaBridge.configureRuntimeIfSupported(3, workers::set);
-        assertEquals(3, workers.get());
-        assertDoesNotThrow(() -> VesperaBridge.configureRuntimeIfSupported(
-                3, value -> { throw new UnsatisfiedLinkError("old"); }));
+        VesperaNativeConfig.Knob knob = new VesperaNativeConfig.Knob(
+                "test.knob", "vespera.test.knob", -1, value -> true);
+        AtomicLong applied = new AtomicLong(Long.MIN_VALUE);
+        assertTrue(knob.apply(3, value -> { applied.set(value); return true; }));
+        assertEquals(3, applied.get());
+        assertFalse(knob.apply(3, value -> false));
+        assertFalse(assertDoesNotThrow(
+                () -> knob.apply(3, value -> { throw new UnsatisfiedLinkError("old"); })));
+        assertFalse(assertDoesNotThrow(
+                () -> knob.apply(-1, value -> { throw new UnsatisfiedLinkError("old"); })),
+                "an unset value on an old native library is a quiet no-op");
+    }
+
+    @Test
+    void unsetSentinelInConfigureRuntimeDoesNotShadowTheSystemProperty() {
+        String property = "vespera.runtime.maxBlockingThreads";
+        String previous = System.getProperty(property);
+        VesperaNativeConfig.Knob workers = VesperaNativeConfig.RUNTIME_WORKER_THREADS;
+        VesperaNativeConfig.Knob blocking = VesperaNativeConfig.RUNTIME_MAX_BLOCKING_THREADS;
+        try {
+            System.setProperty(property, "77");
+            assertTrue(VesperaBridge.configureRuntime(8, 0));
+            assertEquals(8, workers.resolve(), "the programmatic worker count is pending");
+            assertEquals(77, blocking.resolve(),
+                    "maxBlockingThreads=0 (unset) must fall through to the system property");
+            assertTrue(blocking.set(-5, false), "negative is unset too");
+            assertEquals(77, blocking.resolve());
+            assertTrue(VesperaNativeConfig.MAX_REQUEST_BYTES.isUnset(-1));
+            assertFalse(VesperaNativeConfig.MAX_REQUEST_BYTES.isUnset(0),
+                    "0 means unlimited for the limit knobs, not unset");
+        } finally {
+            workers.clearPendingForTest();
+            blocking.clearPendingForTest();
+            if (previous == null) {
+                System.clearProperty(property);
+            } else {
+                System.setProperty(property, previous);
+            }
+        }
+    }
+
+    @Test
+    void knobsStorePendingValuesBeforeInitAndPreferThemOverProperties() {
+        String property = "vespera.test.knob.pending";
+        String previous = System.getProperty(property);
+        try {
+            VesperaNativeConfig.Knob knob = new VesperaNativeConfig.Knob(
+                    "test.knob", property, -1, value -> {
+                        throw new AssertionError("must not reach native before init");
+                    });
+            assertEquals(-1, knob.resolve(), "unset without property or pending value");
+            System.setProperty(property, "42");
+            assertEquals(42, knob.resolve(), "system property applies");
+            assertTrue(knob.set(0, false), "pre-init values are stored");
+            assertEquals(0, knob.resolve(), "pending 0 (unlimited) beats the property");
+            knob.clearPendingForTest();
+            assertEquals(42, knob.resolve());
+        } finally {
+            if (previous == null) {
+                System.clearProperty(property);
+            } else {
+                System.setProperty(property, previous);
+            }
+        }
+        assertTrue(new VesperaNativeConfig.Knob("t", "t", -1, v -> true).isUnset(-1));
+        assertEquals(Integer.MAX_VALUE, VesperaNativeConfig.toInt(Long.MAX_VALUE));
+        assertEquals(-1, VesperaNativeConfig.toInt(-1));
     }
 
     @Test
@@ -102,10 +171,10 @@ class VesperaBridgeInitTest {
         String previous = System.getProperty(property);
         try {
             System.setProperty(property, "41");
-            assertEquals(17, VesperaBridge.pendingOrProperty(17, property));
-            assertEquals(41, VesperaBridge.pendingOrProperty(null, property));
+            assertEquals(17, VesperaNativeConfig.pendingOrProperty(17, property));
+            assertEquals(41, VesperaNativeConfig.pendingOrProperty(null, property));
             System.setProperty(property, "not-an-integer");
-            assertEquals(0, VesperaBridge.pendingOrProperty(null, property));
+            assertEquals(0, VesperaNativeConfig.pendingOrProperty(null, property));
         } finally {
             if (previous == null) {
                 System.clearProperty(property);

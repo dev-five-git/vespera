@@ -14,7 +14,7 @@ use super::ValidationErrorItem;
 /// errors; beyond this the (cold-path) hoist is skipped and the body is
 /// surfaced verbatim, so a large 422 body never forces a full
 /// `serde_json::Value` reparse.
-const MAX_HOIST_BODY_BYTES: usize = 64 * 1024;
+pub const MAX_HOIST_BODY_BYTES: usize = 64 * 1024;
 
 /// First content-type value decides whether a 422 body is JSON for the
 /// validation-error hoist (matches the previous first-of-`Multi`
