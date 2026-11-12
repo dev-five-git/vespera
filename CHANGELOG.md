@@ -305,6 +305,25 @@ Additive; the defaults keep the previous behaviour.
   folder. A jar built this way needs a bridge from this release to load the
   musl library on Alpine.
 
+### springdoc-openapi integration (`kr.devfive:vespera-bridge`)
+
+Additive; applications without springdoc are unaffected.
+
+- With springdoc-openapi on the classpath (your dependency; the bridge only
+  compiles against it) the Rust routes appear in the application's Swagger UI.
+  The Rust app must serve its document with `vespera!(spec_url = ...)`; the
+  bridge fetches it in-process (native `GET`, no HTTP) from
+  `vespera.bridge.springdoc.spec-path` (default `/openapi.json`), or from a
+  custom `VesperaOpenApiSource` bean.
+- `vespera.bridge.springdoc.mode=group` (default): one Swagger UI definition
+  per documented app (`_default` + `exposed-apps`), served verbatim at
+  `/v3/api-docs/vespera/<app>`; springdoc's own document stays listed as
+  `application`. `mode=merge` merges the paths, components and tags into
+  springdoc's `/v3/api-docs` instead (clashing component names prefixed,
+  named apps' operations get the app header parameter).
+- When springdoc is present, the proxy's `/**` catch-all is no longer listed
+  in springdoc's own document.
+
 ### Trusted principal side channel (`vespera_inprocess`, `kr.devfive:vespera-bridge`)
 
 - New optional request wire-header field
