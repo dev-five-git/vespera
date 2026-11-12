@@ -207,6 +207,15 @@ pub struct CreateUserRequest {
 }
 ```
 
+When serde reads a type differently than it writes it — `#[serde(default)]`,
+one-sided `skip_deserializing` / `skip_serializing`, or
+`rename(deserialize = "..")` — request bodies reference a separate
+`{Name}Input` component (defaulted fields optional, `skip_deserializing`
+fields absent, deserialize names), FastAPI-style, while responses keep
+`{Name}`. Types whose two views are identical get no extra component.
+`#[schema(name = "X")]` yields `XInput`; if that name is already taken the
+first free `XInput2`, `XInput3`, … is used.
+
 ### Request Validation (`Validated<T>` → `422`)
 
 `Validated<T>` wraps any axum extractor (`Json`, `Form`, `Query`, `Path`) and

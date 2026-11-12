@@ -78,6 +78,11 @@ of an existing 0.5 application.
 - Doc comments keep Markdown indentation; `#[deprecated]` handlers / fields,
   `skip_deserializing` (`readOnly`) and `skip_serializing` (`writeOnly`) are
   documented; query/path field docs become parameter descriptions.
+- Request bodies reference a `{Name}Input` component when serde reads the
+  type differently than it writes it (`#[serde(default)]`, one-sided
+  `skip_deserializing` / `skip_serializing`, `rename(deserialize = ..)`, or a
+  field type with its own input view); `{Name}` stays the response view and
+  nothing extra is emitted when the views are identical.
 - `Query<T>` honours container `#[serde(default)]` and `Option<Query<T>>`
   (optional parameters) and destructured / `_` patterns.
 - New compile errors: `#[route(responses = [(404, T)])]` with a `T` that does
