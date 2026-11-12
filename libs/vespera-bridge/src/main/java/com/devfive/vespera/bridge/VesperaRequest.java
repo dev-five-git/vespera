@@ -11,6 +11,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 
 import com.devfive.vespera.bridge.VesperaBridge.DecodedResponse;
 
@@ -29,6 +31,7 @@ import com.devfive.vespera.bridge.VesperaBridge.DecodedResponse;
  * or parses domain JSON. A builder is not thread-safe; a buffered request
  * may be sent repeatedly, an {@link InputStream} body only once.
  */
+@NullMarked
 public final class VesperaRequest {
 
     private final VesperaClient.Transport transport;
@@ -44,7 +47,7 @@ public final class VesperaRequest {
     private String scheme;
     private VesperaPrincipal principal;
 
-    VesperaRequest(VesperaClient.Transport transport, String appName, String method, String path) {
+    VesperaRequest(VesperaClient.Transport transport, @Nullable String appName, String method, String path) {
         this.transport = transport;
         this.appName = appName;
         this.method = requireToken(Objects.requireNonNull(method, "method"), "method");
@@ -70,7 +73,7 @@ public final class VesperaRequest {
      * Route this request to the named app instead of the client's
      * ({@code null} / blank = the default app).
      */
-    public VesperaRequest app(String appName) {
+    public VesperaRequest app(@Nullable String appName) {
         this.appName = VesperaWireCodec.normalizedAppName(appName);
         return this;
     }
@@ -80,7 +83,7 @@ public final class VesperaRequest {
      * A {@code null} value appends the bare {@code name}; other values use
      * {@link String#valueOf(Object)}. Repeat the call for repeated keys.
      */
-    public VesperaRequest query(String name, Object value) {
+    public VesperaRequest query(String name, @Nullable Object value) {
         Objects.requireNonNull(name, "name");
         appendQuerySeparator();
         query.append(VesperaClient.percentEncode(name));
@@ -145,13 +148,13 @@ public final class VesperaRequest {
      * ({@code ConnectInfo<SocketAddr>} in Rust): {@code ip:port}, IPv6 as
      * {@code [ip]:port}. Unparseable values are ignored by Rust.
      */
-    public VesperaRequest remoteAddr(String remoteAddr) {
+    public VesperaRequest remoteAddr(@Nullable String remoteAddr) {
         this.remoteAddr = remoteAddr;
         return this;
     }
 
     /** {@code http} / {@code https}, forwarded as the {@code scheme} wire field. */
-    public VesperaRequest scheme(String scheme) {
+    public VesperaRequest scheme(@Nullable String scheme) {
         this.scheme = scheme;
         return this;
     }
@@ -160,7 +163,7 @@ public final class VesperaRequest {
      * Trusted principal forwarded as the {@code principal} wire field (Rust
      * extracts {@code vespera::inprocess::Principal}); {@code null} = anonymous.
      */
-    public VesperaRequest principal(VesperaPrincipal principal) {
+    public VesperaRequest principal(@Nullable VesperaPrincipal principal) {
         this.principal = principal;
         return this;
     }
@@ -208,7 +211,7 @@ public final class VesperaRequest {
      *
      * @param contentType sent as {@code content-type}; {@code null} leaves the header alone
      */
-    public VesperaRequest body(String text, String contentType) {
+    public VesperaRequest body(String text, @Nullable String contentType) {
         Objects.requireNonNull(text, "text");
         return body(text.getBytes(VesperaResponse.charsetOf(contentType)), contentType);
     }
@@ -218,7 +221,7 @@ public final class VesperaRequest {
      *
      * @param contentType sent as {@code content-type}; {@code null} leaves the header alone
      */
-    public VesperaRequest body(byte[] bytes, String contentType) {
+    public VesperaRequest body(byte[] bytes, @Nullable String contentType) {
         this.body = Objects.requireNonNull(bytes, "bytes");
         this.bodyStream = null;
         if (contentType != null) {
@@ -237,7 +240,7 @@ public final class VesperaRequest {
      *
      * @param contentType sent as {@code content-type}; {@code null} leaves the header alone
      */
-    public VesperaRequest body(InputStream stream, String contentType) {
+    public VesperaRequest body(InputStream stream, @Nullable String contentType) {
         this.bodyStream = Objects.requireNonNull(stream, "stream");
         this.streamConsumed = false;
         this.body = VesperaWireCodec.EMPTY_BODY;
@@ -461,12 +464,12 @@ public final class VesperaRequest {
     }
 
     /** Target app name, or {@code null} for the default app. */
-    public String appName() {
+    public @Nullable String appName() {
         return appName;
     }
 
     /** Current header value for {@code name}, or {@code null}. */
-    public String headerValue(String name) {
+    public @Nullable String headerValue(String name) {
         return headers.get(Objects.requireNonNull(name, "name").toLowerCase(Locale.ROOT));
     }
 

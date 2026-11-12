@@ -73,4 +73,15 @@ final class AsyncDispatch {
      *         when it had already finished (or the token is unknown)
      */
     static native boolean cancel0(long token);
+
+    /**
+     * Poll the dispatch once on the calling thread; when it is still pending,
+     * hand it to a Tokio worker that completes {@code future} (see
+     * {@link ParkingDispatch}).
+     *
+     * @return the wire response when the dispatch finished on this thread
+     *         ({@code future} untouched), or {@code null} when {@code future}
+     *         will be completed
+     */
+    static native byte[] dispatchPollFirst0(CompletableFuture<byte[]> future, byte[] wireRequest);
 }
