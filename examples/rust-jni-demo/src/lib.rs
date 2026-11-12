@@ -159,6 +159,47 @@ mod tests {
         // Sizes are clamped.
         let big = body(&format!("/diag/blob/rust-big/{}", usize::MAX)).await;
         assert_eq!(big.len(), routes::diag::MAX_BLOB_BYTES);
+        // A finished drip counts a run; nothing was dropped.
+        assert_eq!(body("/diag/drip/rust-drip/2/1").await.len(), 2048);
+        assert_eq!(body("/diag/runs/rust-drip").await, "1");
+        assert_eq!(body("/diag/runs/rust-drip:dropped").await, "0");
+        // A sleep cancelled mid-flight records the drop, not a run.
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            dispatch(
+                app.clone(),
+                &req("GET", "/diag/sleep/rust-cancel/60000", ""),
+            ),
+        )
+        .await;
+        assert!(cancelled.is_err());
+        assert_eq!(body("/diag/runs/rust-cancel").await, "0");
+        assert_eq!(body("/diag/runs/rust-cancel:dropped").await, "1");
+        // A drip body dropped before its end records the drop.
+        vespera::inprocess::register_app_named("diag-test", create_app);
+        let header =
+            r#"{"v":1,"method":"GET","path":"/diag/drip/rust-drip-cut/100/1","app":"diag-test"}"#;
+        let mut wire = u32::try_from(header.len()).unwrap().to_be_bytes().to_vec();
+        wire.extend_from_slice(header.as_bytes());
+        let mut chunks = 0;
+        let _ = vespera::inprocess::dispatch_streaming_with_header_async(
+            wire,
+            |_h: &[u8]| {},
+            |c: &[u8]| {
+                if !c.is_empty() {
+                    chunks += 1;
+                }
+                if chunks >= 2 {
+                    std::ops::ControlFlow::Break(())
+                } else {
+                    std::ops::ControlFlow::Continue(())
+                }
+            },
+        )
+        .await;
+        assert_eq!(body("/diag/runs/rust-drip-cut:dropped").await, "1");
+        assert_eq!(body("/diag/runs/rust-drip-cut").await, "0");
+        assert_eq!(body("/diag/async-in-flight").await, "0");
     }
 
     #[tokio::test]

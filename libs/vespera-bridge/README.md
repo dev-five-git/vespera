@@ -675,10 +675,23 @@ Always-complete contract: the future is **always** completed with a
 valid wire response, even on Rust panics or JNI conversion failures.
 You will never see a dangling future.
 
-> Cancellation note: `future.cancel(true)` marks the Java side as
-> cancelled but does not abort the in-flight Rust dispatch in this
-> release. The Rust task continues to completion and its result is
-> discarded.
+**Cancellation propagates to Rust.** When the future completes
+exceptionally — `future.cancel(..)`, `future.orTimeout(..)`, or your own
+`completeExceptionally(..)` — the in-flight Rust handler is dropped at its
+next `.await` (its DB queries, timers and other owned work stop) and its
+`vespera.async.maxInFlight` slot is released at once. A normal completion
+never cancels anything, and a cancel that races the completion is harmless.
+The proxy's `ASYNC` mode cancels the native future when the servlet async
+request ends first (Spring async timeout, container-reported error or client
+disconnect).
+
+#### Client disconnects per dispatch mode
+
+| Mode | What happens when the HTTP client goes away |
+|---|---|
+| `ASYNC` (`dispatchAsync`) | The native future is cancelled on async timeout / container error → the Rust handler is dropped and its in-flight slot freed. |
+| `STREAMING` / `BIDIRECTIONAL_STREAMING` (all streaming natives) | The next servlet write or flush fails → Rust stops polling and drops the response body immediately (the body is flushed before it waits, so a slow producer is detected at its first pause). A handler that has not produced its response header yet is not interrupted until it does. |
+| `SYNC` / `DIRECT` | Not cancellable: the handler runs on `block_on` and the disconnect is only visible when the finished response is written. Bound these with `vespera.dispatch.timeoutMillis` / `vespera.bridge.native.dispatch-timeout`. |
 
 ### Streaming dispatch (large bodies, file uploads/downloads)
 
