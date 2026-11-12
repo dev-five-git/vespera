@@ -113,7 +113,7 @@ Why `smart` as the default mode (since 0.2.0)? Measured on a small `GET /health`
 
 Trade-offs the new default makes on your behalf:
 
-- **DIRECT** writes the wire response straight into a pooled direct `ByteBuffer` (per-thread, 64 KiB → `vespera.direct.maxBufferBytes` default 4 MiB). On responses larger than the pooled buffer the Java side **retries once with a bigger buffer** by default, which re-runs the Rust handler. This is why DIRECT is gated on safe methods only. Set `vespera.bridge.direct-retry-on-overflow=false` to surface the overflow instead of automatically retrying.
+- **DIRECT** writes the wire response straight into a pooled direct `ByteBuffer` (per-thread, 64 KiB → `vespera.direct.maxBufferBytes` default 4 MiB). A response larger than the pooled buffer is kept natively and copied into a bigger buffer (or, beyond the cap and for `text/event-stream`, streamed) — the Rust handler runs once. Requests that `Accept` an event stream / NDJSON are streamed from the start.
 - **SYNC** fully buffers the response on the JVM heap. The 256 KiB request-size gate keeps the response size reasonable for JSON-RPC-shaped traffic; large or unknown-length bodies still stream.
 - **`BIDIRECTIONAL_STREAMING`** is unchanged for large/unknown-length bodies — multi-GB upload + multi-GB download still runs chunk-bounded, ~32 KiB resident each side.
 
@@ -178,11 +178,13 @@ streaming modes (`STREAMING`, `BIDIRECTIONAL_STREAMING`) it bounds only the
 time answers `504`; once the header is committed the body streams without a
 total deadline, so a long download that keeps making progress is never cut off.
 
-`vespera.bridge.direct-retry-on-overflow` defaults to `true` for backward
-compatibility with the 0.2.x DIRECT fast path.  When `false`, a DIRECT response
-overflow raises the existing `BufferTooSmallException` path in the proxy (HTTP
-500 with the required size) instead of growing the response buffer and re-running
-the Rust handler.
+A DIRECT response that overflows the pooled buffer is **kept on the Rust side**
+(the overflow stash) and fetched into a grown buffer — the handler runs once.
+A response beyond the pool cap (`vespera.direct.maxBufferBytes`) or a
+`text/event-stream` response is streamed to the client from the stash instead.
+`vespera.bridge.direct-retry-on-overflow` (default `true`) now only matters when
+the stash cannot be used (a re-dispatch); when `false` that case raises the
+`BufferTooSmallException` path in the proxy (HTTP 500 with the required size).
 
 `vespera.bridge.max-buffered-request-bytes` defaults to 64 MiB (`0` =
 unlimited), matching the Rust-side `VESPERA_MAX_REQUEST_BYTES` default.  The
@@ -429,8 +431,9 @@ Contract:
 - Return `>= 0`: a complete wire response occupies `out[0..n]`.
 - Return `< 0`: `-(requiredSize)` — the response did not fit; buffer
   contents are undefined (a prefix may have been written).
-  `requiredSize` is exact, but **retrying re-runs the Rust handler**,
-so only retry safe requests.
+  `requiredSize` is exact, but **retrying the raw `dispatchDirect`
+  re-runs the Rust handler**, so only retry safe requests.  (The pooled
+  API below does not re-run: it fetches the stashed response.)
 - `Integer.MIN_VALUE`: response exceeds 2 GiB (unrepresentable).
 
 `dispatchDirectPooled(byte[] wireRequest, boolean retryOnOverflow)`
@@ -438,12 +441,12 @@ wraps the raw call with per-thread reusable direct buffers (64 KiB
 initial, doubling up to the `vespera.direct.maxBufferBytes` system
 property, default 4 MiB) and returns a read-only view of the response
 valid until the next dispatch on the same thread.  On response
-overflow it throws `BufferTooSmallException(requiredSize)` unless
-`retryOnOverflow` is `true` — pass `true` only for safe
-requests, because the retry dispatches again.  In the Spring proxy,
-`retryOnOverflow` is additionally gated by
-`vespera.bridge.direct-retry-on-overflow` (default `true`; set `false`
-to keep DIRECT from automatically double-executing any handler).
+overflow the finished response stays in a native stash (at most 1024
+entries, 30 s TTL) and is copied into a grown pooled buffer — **the
+handler is not re-run**, whatever `retryOnOverflow` says.  Only a
+response beyond the pool cap or a `text/event-stream` response throws
+`BufferTooSmallException(requiredSize)` (the stash entry is released);
+the Spring proxy streams those from the stash instead.
 
 The fastest variant skips the intermediate wire `byte[]` entirely —
 `dispatchDirectPooled(appName, method, path, query, headers, body,
@@ -472,17 +475,15 @@ vespera:
 
 | Request shape | Mode | ns/round-trip |
 |---|---|---|
+| `Accept: text/event-stream` / `application/x-ndjson` / `application/stream+json` | `STREAMING` (body ≤ 256 KiB) | — |
 | Small/bodyless + safe (GET/HEAD/OPTIONS) | `DIRECT` | ~2,200 |
 | Small (≤ 256 KiB Content-Length) + unsafe (POST/PUT/PATCH/DELETE) | `SYNC` | ~3,200 |
 | Large or unknown-length body | `BIDIRECTIONAL_STREAMING` | ~24,100 |
 
-The safe-method gate on DIRECT matters because a response that
-overflows the pooled buffer (`vespera.direct.maxBufferBytes`, default
-4 MiB) is retried by default — which re-runs the Rust handler once.
-Safe methods are not intended to mutate server state, but the replayed
-response may still differ (for example timestamps or generated IDs).
-Set `vespera.bridge.direct-retry-on-overflow=false` to surface the
-overflow instead.  SYNC never re-runs the handler (safe for POST), but
+A response that overflows the pooled buffer is fetched from the native
+overflow stash (or streamed from it beyond the 4 MiB cap / for event
+streams), so DIRECT no longer re-runs the handler; the safe-method gate
+is kept for the rare re-dispatch fallback.  SYNC never re-runs the handler (safe for POST), but
 buffers the full response on the JVM heap, which the request-size gate
 keeps reasonable for JSON-RPC-shaped traffic.
 
@@ -516,6 +517,14 @@ accumulation, no configuration required.  The DIRECT fast path keeps
 its pooling benefit on platform threads (Tomcat's default request
 pool); virtual-thread deployments transparently fall back to the heap
 path at a small per-call allocation cost.
+
+**Carrier pinning:** a virtual thread blocked inside a native call is
+pinned to its carrier.  On a virtual thread the proxy's `SYNC` path (and
+the heap fallback above) therefore dispatches through `dispatchAsync` +
+`join()` — the virtual thread parks and releases its carrier while the
+handler runs (~1.5 µs extra; the `vespera.async.maxInFlight` cap applies).
+Platform threads keep the direct call.  The streaming modes still pin
+(they write to the servlet streams from the calling thread).
 
 You can still opt out of DIRECT entirely if you prefer streaming
 end-to-end:
@@ -845,7 +854,7 @@ vespera.bridge:
 ```
 
 - A JVM can load a native library through **one class loader only**, and it is never unloaded. Loading it again from a redeployed web app fails with `UnsatisfiedLinkError: ... already loaded in another classloader`; the bridge rethrows it with guidance. On servlet containers that redeploy or host several apps, put `vespera-bridge` and the library in the container's shared lib (e.g. Tomcat `$CATALINA_BASE/lib`) or run one deployment per JVM, and restart the JVM to pick up a new native build.
-- `VesperaBridge.shutdown(Duration)` stops the shared Tokio runtime (waiting up to the timeout for running tasks) and returns `false` if it was already shut down (or the library is not loaded). It is one-way: afterwards every dispatch answers `503`, and the runtime cannot be restarted in the same process. Registered apps and the loaded library stay in memory.
+- `VesperaBridge.shutdown(Duration)` stops the shared Tokio runtime and returns `false` if it was already shut down (or the library is not loaded). New dispatches answer `503` at once; in-flight dispatches of every mode are drained for up to the timeout, then the runtime stops — an `ASYNC` dispatch still pending completes its future with a `503` wire, and cron jobs stop. Called from a Tokio worker (an inline `CompletableFuture` continuation) it returns immediately and finishes in the background. It is one-way: the runtime cannot be restarted in the same process. Registered apps and the loaded library stay in memory.
 - `shutdown-on-close` only acts when the library was loaded by `library-name` (the autoconfiguration owns it); a library you initialised yourself is never shut down by Spring.
 
 ## Native library loading

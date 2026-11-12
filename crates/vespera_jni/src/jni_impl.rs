@@ -1,9 +1,6 @@
-use std::{
-    future::Future,
-    sync::{
-        Arc, OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 use futures_util::FutureExt;
@@ -36,123 +33,15 @@ pub use config::{
 };
 use config::{async_overloaded_wire, try_acquire_async_permit};
 
-/// Multi-threaded Tokio runtime shared across ALL JNI calls — sync
-/// (`dispatchBytes`, `dispatchDirect0`), async and streaming alike.
-///
-/// Worker thread count defaults to Tokio's heuristic (number of
-/// logical CPUs) and can be capped for embeddings where the JVM's
-/// own thread pools (e.g. Tomcat) compete for the same cores —
-/// see [`runtime_worker_threads`].  The blocking pool is capped by
-/// [`runtime_max_blocking_threads`] (default
-/// [`DEFAULT_RUNTIME_MAX_BLOCKING_THREADS`]), which now bounds the whole
-/// process: there is no per-Java-thread runtime any more.
-///
-/// Dispatch only ever uses the cloned [`Handle`](tokio::runtime::Handle);
-/// the owning [`Runtime`](tokio::runtime::Runtime) sits behind a `Mutex` so
-/// [`shutdown_runtime`] (the `shutdown0` JNI hook) can take it out and shut
-/// it down gracefully.  The hot path never touches the mutex.
-static RUNTIME: OnceLock<Option<SharedRuntime>> = OnceLock::new();
-
-/// Set once by [`shutdown_runtime`]; from then on [`runtime`] returns `None`
-/// and [`runtime_unavailable_wire`] answers `503`.
-static RUNTIME_SHUT_DOWN: AtomicBool = AtomicBool::new(false);
-
-/// Wire `503` body once the shared runtime has been shut down.
-pub const RUNTIME_SHUT_DOWN_MSG: &str = "vespera runtime has been shut down";
-
-struct SharedRuntime {
-    handle: tokio::runtime::Handle,
-    runtime: std::sync::Mutex<Option<tokio::runtime::Runtime>>,
-}
-
-fn build_shared_runtime() -> Option<SharedRuntime> {
-    let mut builder = tokio::runtime::Builder::new_multi_thread();
-    if let Some(workers) = runtime_worker_threads() {
-        builder.worker_threads(workers);
-    }
-    let runtime = builder
-        .max_blocking_threads(runtime_max_blocking_threads())
-        .enable_all()
-        .build()
-        .ok()?;
-    Some(SharedRuntime {
-        handle: runtime.handle().clone(),
-        runtime: std::sync::Mutex::new(Some(runtime)),
-    })
-}
-
-/// Handle of the shared runtime (built on first use), or `None` when it
-/// could not be built or has been shut down (see
-/// [`runtime_unavailable_wire`] for the matching wire response).
-pub fn runtime() -> Option<&'static tokio::runtime::Handle> {
-    if RUNTIME_SHUT_DOWN.load(Ordering::Acquire) {
-        return None;
-    }
-    RUNTIME
-        .get_or_init(build_shared_runtime)
-        .as_ref()
-        .map(|shared| &shared.handle)
-}
-
-/// Wire response for a dispatch that found no runtime: `503` after
-/// [`shutdown_runtime`], `500` when the runtime could not be built.
-pub fn runtime_unavailable_wire() -> Vec<u8> {
-    if RUNTIME_SHUT_DOWN.load(Ordering::Acquire) {
-        vespera_inprocess::error_wire(503, RUNTIME_SHUT_DOWN_MSG)
-    } else {
-        vespera_inprocess::error_wire(500, "failed to create Tokio runtime")
-    }
-}
-
-/// Shut the shared runtime down, waiting up to `timeout` for its tasks.
-///
-/// Irreversible for the process: every later dispatch answers `503`
-/// ([`RUNTIME_SHUT_DOWN_MSG`]); a runtime that was never started is simply
-/// never built.  In-flight dispatches that already hold the handle finish
-/// or fail (their tasks are cancelled once the timeout elapses; the symbol
-/// guards turn any resulting panic into a `500`).  Returns `false` when the
-/// runtime had already been shut down.  Must be called from a thread that
-/// is not a runtime worker (a plain Java thread).
-pub fn shutdown_runtime(timeout: std::time::Duration) -> bool {
-    if RUNTIME_SHUT_DOWN.swap(true, Ordering::AcqRel) {
-        return false;
-    }
-    // A never-started runtime stays unbuilt (a concurrent first dispatch
-    // that is mid-build completes first and is shut down below).
-    let _ = RUNTIME.set(None);
-    let owned = RUNTIME
-        .get()
-        .and_then(Option::as_ref)
-        .and_then(|shared| shared.runtime.lock().ok()?.take());
-    if let Some(runtime) = owned {
-        runtime.shutdown_timeout(timeout);
-    }
-    true
-}
-
-/// Drive a synchronous JNI dispatch to completion on the shared
-/// multi-thread [`RUNTIME`] from the calling (Java) thread.
-///
-/// The request future itself is polled on the calling thread inside
-/// `block_on`, but everything it spawns lives on the shared runtime: a
-/// detached `tokio::spawn` keeps making progress on the worker threads after
-/// the call returns, and runtime-bound resources (timers, I/O registrations,
-/// pooled connections) created during one dispatch stay valid for later
-/// dispatches from ANY Java thread.  The previous per-thread current-thread
-/// runtime starved detached tasks between calls, broke cross-thread reuse of
-/// runtime-bound resources, multiplied blocking pools per servlet thread and
-/// tore a whole runtime down inside a TLS destructor.
-///
-/// Must not be called from inside the runtime (e.g. an inline
-/// `CompletableFuture` continuation on a worker — see `dispatchAsync`); the
-/// resulting `block_on` panic is caught by the symbol guards and degrades to a
-/// `500`.
-pub fn block_on_shared_runtime<F>(future: F) -> Option<F::Output>
-where
-    F: Future,
-{
-    runtime().map(|runtime| runtime.block_on(future))
-}
+// Shared runtime lifecycle (lazy build, in-flight leases, deferred hooks,
+// graceful shutdown) lives in a sidecar module.
+#[path = "jni_impl_lifecycle.rs"]
+mod lifecycle;
+pub use lifecycle::{
+    RUNTIME_SHUT_DOWN_MSG, RuntimeHook, block_on_shared_runtime, jni_loaded, mark_jni_loaded,
+    on_shared_runtime, runtime, runtime_unavailable_wire, shutdown_runtime,
+    start_runtime_for_hooks,
+};
 
 /// Check-and-clear the pending Java exception, reporting whether one
 /// was pending (and therefore cleared).
@@ -460,6 +349,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchByt
 
 #[path = "jni_impl_direct.rs"]
 mod direct;
+pub use direct::stash as direct_stash;
 
 /// `com.devfive.vespera.bridge.VesperaBridge.dispatchAsync(CompletableFuture<byte[]>, byte[]) -> void`
 ///
@@ -603,46 +493,25 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
                 let Some(runtime) = runtime() else {
                     return false;
                 };
-                runtime.spawn(async move {
+                // Completes the future exactly once: with the response, or
+                // with a `503` if the runtime drops this task first.
+                let completion = AsyncCompletion {
+                    jvm,
+                    future: Some(future_for_task),
+                };
+                runtime.handle().spawn(async move {
                     // Held until the future is completed; released with the
-                    // task on every path (including runtime shutdown).
+                    // task on every path (including runtime shutdown).  The
+                    // lease keeps `shutdown_runtime`'s drain waiting for it.
                     let _permit = permit;
+                    let _lease = runtime;
                     let response = std::panic::AssertUnwindSafe(
                         vespera_inprocess::dispatch_from_bytes_async(input),
                     )
                     .catch_unwind()
                     .await
                     .unwrap_or_else(|_| panic_wire());
-
-                    // ALWAYS-COMPLETE CONTRACT: the Java CompletableFuture must
-                    // resolve on every path or `dispatchAsync` callers hang
-                    // forever.  The cached-daemon completion can fail BEFORE it
-                    // reaches Java (daemon attach during VM shutdown, or an OOM
-                    // allocating the response byte[]); only then is a second,
-                    // tiny-payload attempt worth making — it is far less likely
-                    // to OOM, so the future still resolves with an error rather
-                    // than never.  A `complete()` that WAS invoked (whether it
-                    // resolved the future or threw) must never be retried: the
-                    // retry re-enters the same broken Java method and would
-                    // complete the same future twice.
-                    let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        with_cached_daemon_env(
-                            &jvm,
-                            |env| -> jni::errors::Result<CompleteAttempt> {
-                                Ok(complete_future(env, &future_for_task, &response))
-                            },
-                        )
-                    }));
-                    if !matches!(attempt, Ok(Ok(CompleteAttempt::Invoked))) {
-                        let _ = with_cached_daemon_env(&jvm, |env| -> jni::errors::Result<()> {
-                            let _ = complete_future(
-                                env,
-                                &future_for_task,
-                                &vespera_inprocess::error_wire(500, "async completion failed"),
-                            );
-                            Ok(())
-                        });
-                    }
+                    completion.complete(&response);
                 });
                 true
             }));
@@ -663,6 +532,66 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
     if panicked && !future_notified.load(Ordering::Acquire) && !future_obj.is_null() {
         let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
             complete_future_local(env, &future_obj, &panic_wire())
+        });
+    }
+}
+
+/// Completes a `dispatchAsync` `CompletableFuture` exactly once — with the
+/// response via [`AsyncCompletion::complete`], or with a `503` wire
+/// ([`RUNTIME_SHUT_DOWN_MSG`]) when the task is dropped before that (the
+/// runtime shut down with the dispatch still pending), so a Java caller never
+/// waits forever.
+struct AsyncCompletion {
+    jvm: jni::JavaVM,
+    future: Option<jni::refs::Global<JObject<'static>>>,
+}
+
+impl AsyncCompletion {
+    fn complete(mut self, response: &[u8]) {
+        if let Some(future) = self.future.take() {
+            complete_async_future(&self.jvm, &future, response);
+        }
+    }
+}
+
+impl Drop for AsyncCompletion {
+    fn drop(&mut self) {
+        if let Some(future) = self.future.take() {
+            let wire = vespera_inprocess::error_wire(503, RUNTIME_SHUT_DOWN_MSG);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                complete_async_future(&self.jvm, &future, &wire);
+            }));
+        }
+    }
+}
+
+/// ALWAYS-COMPLETE CONTRACT: the Java `CompletableFuture` must resolve on
+/// every path or `dispatchAsync` callers hang forever.  The cached-daemon
+/// completion can fail BEFORE it reaches Java (daemon attach during VM
+/// shutdown, or an OOM allocating the response `byte[]`); only then is a
+/// second, tiny-payload attempt worth making — it is far less likely to OOM,
+/// so the future still resolves with an error rather than never.  A
+/// `complete()` that WAS invoked (whether it resolved the future or threw)
+/// must never be retried: the retry re-enters the same broken Java method and
+/// would complete the same future twice.
+fn complete_async_future(
+    jvm: &jni::JavaVM,
+    future: &jni::refs::Global<JObject<'static>>,
+    response: &[u8],
+) {
+    let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        with_cached_daemon_env(jvm, |env| -> jni::errors::Result<CompleteAttempt> {
+            Ok(complete_future(env, future, response))
+        })
+    }));
+    if !matches!(attempt, Ok(Ok(CompleteAttempt::Invoked))) {
+        let _ = with_cached_daemon_env(jvm, |env| -> jni::errors::Result<()> {
+            let _ = complete_future(
+                env,
+                future,
+                &vespera_inprocess::error_wire(500, "async completion failed"),
+            );
+            Ok(())
         });
     }
 }

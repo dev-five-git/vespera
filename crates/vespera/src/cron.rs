@@ -7,9 +7,12 @@
 //! [`start_once`], so calling the factory repeatedly (tests, `jni_app!`,
 //! several `serve` calls) never stacks duplicate schedulers.  Scheduling
 //! works with or without an ambient Tokio runtime: inside one the jobs are
-//! spawned onto it; outside (a plain `#[test]`, the JNI `JNI_OnLoad` hook)
-//! they run on a dedicated `vespera-cron` background thread that owns a
-//! current-thread runtime, instead of panicking in `tokio::spawn`.
+//! spawned onto it.  In a JNI library (the factory runs inside `JNI_OnLoad`,
+//! with no runtime) they are handed to `vespera_jni`'s shared runtime, so
+//! they honour `configureRuntime` and stop with `shutdown0`.  Anywhere else
+//! outside a runtime (a plain `#[test]`) they run on a dedicated
+//! `vespera-cron` background thread that owns a current-thread runtime,
+//! instead of panicking in `tokio::spawn`.
 
 use std::{future::Future, pin::Pin, sync::Once};
 
@@ -43,19 +46,29 @@ pub fn start_once(guard: &'static Once, jobs: impl IntoIterator<Item = CronJob>)
 
 /// Spawn one scheduling task per job.
 ///
-/// Uses the current Tokio runtime when there is one; otherwise starts a
+/// Uses the current Tokio runtime when there is one; in a JVM-loaded JNI
+/// library the jobs wait for the shared JNI runtime; otherwise starts a
 /// dedicated `vespera-cron` thread running a current-thread runtime, so this
 /// never panics outside a runtime.  Every call starts a new set of
 /// schedulers — prefer [`start_once`] for anything that can run twice.
 pub fn start(jobs: impl IntoIterator<Item = CronJob>) {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        for job in jobs {
+            handle.spawn(run_job(job));
+        }
+        return;
+    }
+    let jobs: Vec<CronJob> = jobs.into_iter().collect();
+    #[cfg(feature = "jni")]
+    if vespera_jni::jni_loaded() {
+        vespera_jni::on_shared_runtime(Box::new(move |handle| {
             for job in jobs {
                 handle.spawn(run_job(job));
             }
-        }
-        Err(_) => spawn_scheduler_thread(jobs.into_iter().collect()),
+        }));
+        return;
     }
+    spawn_scheduler_thread(jobs);
 }
 
 /// Run `jobs` on a detached background thread that owns a current-thread
@@ -103,10 +116,25 @@ async fn run_job(job: CronJob) {
     };
     let mut after = Utc::now();
     while let Some(next) = next_occurrence(&cron, after) {
-        tokio::time::sleep((next - Utc::now()).to_std().unwrap_or_default()).await;
+        sleep_until_wall_clock(next).await;
         tokio::spawn((job.run)());
         after = next.max(Utc::now());
     }
+}
+
+/// Sleep until the wall clock reaches `next`.  Tokio sleeps on the monotonic
+/// clock, so a wall-clock step backwards during the sleep (NTP correction,
+/// manual change) would otherwise fire the job early: re-check and sleep
+/// again until `Utc::now() >= next`.
+async fn sleep_until_wall_clock(next: DateTime<Utc>) {
+    while let Some(remaining) = remaining_until(next, Utc::now()) {
+        tokio::time::sleep(remaining).await;
+    }
+}
+
+/// Time left until `next`, or `None` once `now` reached it.
+fn remaining_until(next: DateTime<Utc>, now: DateTime<Utc>) -> Option<std::time::Duration> {
+    (now < next).then(|| (next - now).to_std().unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -218,5 +246,29 @@ mod tests {
         assert!(wait_for(&ONCE_FIRST_TICKS, 1), "first job never fired");
         std::thread::sleep(Duration::from_millis(1200));
         assert_eq!(ONCE_SECOND_TICKS.load(Ordering::SeqCst), 0);
+    }
+
+    /// The wall clock is re-checked after every sleep: a backwards step
+    /// leaves time remaining, so the job is not fired early.
+    #[test]
+    fn remaining_until_tracks_the_wall_clock() {
+        let next = DateTime::parse_from_rfc3339("2030-01-01T00:00:10Z")
+            .unwrap()
+            .to_utc();
+        let before = next - chrono::Duration::seconds(3);
+        assert_eq!(remaining_until(next, before), Some(Duration::from_secs(3)));
+        assert_eq!(remaining_until(next, next), None);
+        assert_eq!(
+            remaining_until(next, next + chrono::Duration::seconds(1)),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn sleep_until_a_past_instant_returns_at_once() {
+        let started = Instant::now();
+        sleep_until_wall_clock(Utc::now() - chrono::Duration::seconds(1)).await;
+        sleep_until_wall_clock(Utc::now() + chrono::Duration::milliseconds(20)).await;
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

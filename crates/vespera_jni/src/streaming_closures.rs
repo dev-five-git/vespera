@@ -66,6 +66,7 @@ impl CachedMethod {
 struct MethodCache {
     input_stream_read: CachedMethod,
     output_stream_write: CachedMethod,
+    output_stream_flush: CachedMethod,
     consumer_accept: CachedMethod,
     future_complete: CachedMethod,
 }
@@ -85,6 +86,12 @@ impl MethodCache {
                     jni_str!("java/io/OutputStream"),
                     jni_str!("write"),
                     jni_sig!("([BII)V"),
+                )?,
+                output_stream_flush: CachedMethod::resolve(
+                    env,
+                    jni_str!("java/io/OutputStream"),
+                    jni_str!("flush"),
+                    jni_sig!("()V"),
                 )?,
                 consumer_accept: CachedMethod::resolve(
                     env,
@@ -265,6 +272,31 @@ fn call_output_stream_write(
             JValue::Int(len),
         ],
     )?;
+    Ok(())
+}
+
+/// `OutputStream.flush()` — the response-streaming flush hint (an empty
+/// chunk from the header-first dispatchers, fired before the body waits),
+/// so a servlet container does not hold incremental output (SSE events, the
+/// committed status line) in its buffer.
+fn call_output_stream_flush(
+    env: &mut jni::Env<'_>,
+    stream: &Global<JObject<'static>>,
+) -> jni::errors::Result<()> {
+    if can_call_unchecked(stream)
+        && let Some(cache) = method_cache(env)
+    {
+        call_cached_method(
+            env,
+            stream,
+            &cache.output_stream_flush,
+            ReturnType::Primitive(Primitive::Void),
+            &[],
+        )?;
+        return Ok(());
+    }
+
+    env.call_method(stream, jni_str!("flush"), jni_sig!("()V"), &[])?;
     Ok(())
 }
 
@@ -465,6 +497,10 @@ pub fn make_pull_closure(
 /// unbounded in size, so frames larger than the buffer are written
 /// in buffer-sized segments.
 ///
+/// An **empty** chunk is the dispatcher's flush hint (see
+/// `vespera_inprocess::dispatch_streaming_with_header_async`): it calls
+/// `OutputStream.flush()` instead of writing.
+///
 /// NOTE: when request pull and response push run concurrently
 /// (bidirectional streaming), each side MUST own a **separate**
 /// buffer — they execute on different threads.
@@ -494,6 +530,14 @@ pub fn make_push_closure(
         // creates no JNI local refs (cached unchecked `write` call +
         // `set_region`), so the per-chunk frame would be pure overhead.
         let outcome = with_cached_daemon_env_no_frame(&jvm, |env| -> jni::errors::Result<()> {
+            if chunk.is_empty() {
+                call_output_stream_flush(env, &stream)?;
+                // Same pending-exception latch as `write()` below.
+                if take_pending_exception(env) {
+                    return Err(jni::errors::Error::JavaException);
+                }
+                return Ok(());
+            }
             let arr: &jni::objects::JByteArray<'_> = buf.as_ref().as_ref();
             for seg in chunk.chunks(chunk_size) {
                 // SAFETY: `u8` and `i8` (JNI's `jbyte`) have

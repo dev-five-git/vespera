@@ -337,6 +337,42 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_configureMa
     })
 }
 
+/// `com.devfive.vespera.bridge.VesperaNativeConfig.configureMaxRequestProducers0(long) -> boolean`
+///
+/// Cap on concurrently running bidirectional-streaming upload producers
+/// ([`vespera_inprocess::set_max_streaming_request_producers`]); `0` =
+/// unlimited, negative = untouched.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaNativeConfig_configureMaxRequestProducers0<
+    'local,
+>(
+    _unowned_env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    max_producers: jlong,
+) -> jboolean {
+    guarded_configure(|| {
+        apply_optional(
+            max_producers,
+            vespera_inprocess::set_max_streaming_request_producers,
+        )
+    })
+}
+
+/// `com.devfive.vespera.bridge.VesperaNativeConfig.startRuntime0() -> boolean`
+///
+/// Called by `VesperaBridge.init()` right after the runtime knobs were
+/// applied: builds the shared runtime now when work waits for it (cron jobs
+/// registered from `JNI_OnLoad` — see [`super::on_shared_runtime`]), so they
+/// start without waiting for the first dispatch.  Otherwise the runtime stays
+/// lazy.  Returns whether it was started.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaNativeConfig_startRuntime0<'local>(
+    _unowned_env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+) -> jboolean {
+    guarded_configure(super::start_runtime_for_hooks)
+}
+
 /// `com.devfive.vespera.bridge.VesperaBridge.configureMaxBufferedResponseBytes0(long) -> boolean`
 ///
 /// Buffered-response cap
@@ -396,10 +432,14 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_configureAs
 
 /// `com.devfive.vespera.bridge.VesperaBridge.shutdown0(long) -> boolean`
 ///
-/// Gracefully shuts the shared Tokio runtime down, waiting up to
-/// `timeout_millis` (negative = `0`) for in-flight tasks
-/// ([`super::shutdown_runtime`]).  Irreversible: later dispatches answer
-/// `503`.  Returns `false` when it had already been shut down.
+/// Gracefully shuts the shared Tokio runtime down
+/// ([`super::shutdown_runtime`]): new dispatches answer `503` at once,
+/// in-flight dispatches of every mode are drained for up to `timeout_millis`
+/// (negative = `0`), then the runtime is shut down with the remaining time —
+/// a `dispatchAsync` still pending then completes its future with a `503`
+/// wire, cron jobs stop.  Called from a Tokio worker thread the drain runs
+/// in the background and the call returns immediately.  Irreversible.
+/// Returns `false` when it had already been shut down.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_shutdown0<'local>(
     _unowned_env: EnvUnowned<'local>,

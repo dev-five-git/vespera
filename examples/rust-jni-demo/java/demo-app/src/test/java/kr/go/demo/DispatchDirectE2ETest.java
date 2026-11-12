@@ -106,17 +106,19 @@ class DispatchDirectE2ETest {
 
     @Test
     @Order(4)
-    void overflowWithoutRetryThrowsWithExactRequiredSize() {
+    void overflowWithoutRetryIsFetchedFromTheStash() throws Exception {
         byte[] body = randomBody(100 * 1024, 4);
         byte[] wire = echoWire(body);
         // Fresh thread → fresh 64 KiB pooled out buffer, guaranteed
-        // smaller than the ~100 KiB wire response.
-        VesperaBridge.BufferTooSmallException e = assertThrows(
-                VesperaBridge.BufferTooSmallException.class,
-                () -> runOnFreshThread(() ->
-                        VesperaBridge.dispatchDirectPooled(wire, false)));
-        assertTrue(e.requiredSize() > 100 * 1024,
-                "required size must cover header + body, got " + e.requiredSize());
+        // smaller than the ~100 KiB wire response.  The finished response
+        // is kept natively and fetched into a grown buffer — no re-run, so
+        // even retryOnOverflow=false succeeds.
+        byte[][] response = new byte[1][];
+        runOnFreshThread(() ->
+                response[0] = toArray(VesperaBridge.dispatchDirectPooled(wire, false)));
+        VesperaBridge.DecodedResponse decoded = VesperaBridge.decodeResponse(response[0]);
+        assertEquals(200, decoded.status());
+        assertArrayEquals(sha256(body), sha256(decoded.bodyBytes()));
     }
 
     @Test
