@@ -21,6 +21,8 @@ use crate::wire::{
     split_wire_request,
 };
 
+mod inline_pull;
+use inline_pull::InlineState;
 mod producer;
 pub use producer::REQUEST_PRODUCER_JOIN_GRACE;
 use producer::{ChannelBody, RequestProducerHandle, RequestSourceCloser, join_request_producer};
@@ -656,6 +658,16 @@ where
 /// default 16): if axum reads slowly, the `pull_chunk` call blocks
 /// naturally.
 ///
+/// **Small-body fast path:** when this future is driven directly by
+/// `Runtime::block_on` (not inside a spawned task) and no
+/// [`crate::dispatch_timeout`] is configured, the first two pulls made
+/// **before the handler returns its response** run inline on the calling
+/// thread instead — a body that ends within them (one chunk + `End`) never
+/// starts the blocking producer, channel or producer slot.  `pull_chunk` must
+/// therefore be callable from the thread that drives `block_on` (the JNI
+/// caller thread is attached to the JVM).  Pulls made while the response
+/// streams always go through the producer.
+///
 /// Failure modes match [`dispatch_streaming_async`]: malformed
 /// header / unknown version / no app / handler error → normal
 /// `error_wire(...)` response (with the message inside the returned
@@ -684,8 +696,9 @@ where
 /// `request_close` callback.
 ///
 /// `request_close` is invoked once, after the response body is fully
-/// drained, **only if** the request producer was started (the handler
-/// read at least one body chunk).  It must close/abort the request body
+/// drained, **only if** the request source was read (the handler read at
+/// least one body chunk — through the producer or the inline small-body
+/// fast path).  It must close/abort the request body
 /// source (e.g. the Java `InputStream`) so a producer parked in a
 /// blocking read is unblocked and this call cannot hang on a stuck upload
 /// that never reaches EOF.  It is a no-op for full reads (already at EOF)
@@ -869,11 +882,16 @@ where
     let max_request_body = crate::config::max_streaming_request_bytes();
     let limit_exceeded = Arc::new(AtomicBool::new(false));
     let producer_handle: RequestProducerHandle = Arc::new(Mutex::new(None));
+    // Small-body fast path (`streaming/inline_pull.rs`): until the handler
+    // returns, pulls may run on a `block_on` caller thread — never with a
+    // deadline, which an inline blocking read could not honour.
+    let inline = InlineState::new(!deadline.is_armed());
     let body = Body::new(ChannelBody::new(
         pull_chunk,
         Arc::clone(&producer_handle),
         max_request_body,
         Arc::clone(&limit_exceeded),
+        Arc::clone(&inline),
     ));
     // RAII guard: closes the request source iff the producer was started, on
     // EVERY exit path — including a panic unwinding out of the handler or out
@@ -883,7 +901,11 @@ where
     // `catch_unwind` turns the panic into a 500 but skips the explicit close,
     // so the parked producer never gets unblocked. This is the panic-path
     // sibling of the M3 hang.
-    let mut closer = RequestSourceCloser::new(Arc::clone(&producer_handle), request_close);
+    let mut closer = RequestSourceCloser::new(
+        Arc::clone(&producer_handle),
+        Arc::clone(&inline),
+        request_close,
+    );
 
     // Content-Type parity with the buffered / direct / response-streaming
     // paths: a request with no explicit Content-Type defaults to
@@ -911,6 +933,9 @@ where
             header.connection_info(),
         )))
         .await;
+    // The handler returned: any further body poll comes from the streaming
+    // response, which must never block on an inline read.
+    inline.close();
     // Pre-commit failures (bad method/path → 405/400, expired deadline →
     // 504, request body over `max_streaming_request_bytes` → 413): close the
     // request source (no-op if the producer never started), join the

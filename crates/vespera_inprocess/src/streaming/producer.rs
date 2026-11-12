@@ -17,6 +17,7 @@ use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
 use bytes::Bytes;
 use http_body::{Body as HttpBody, Frame};
 
+use super::inline_pull::InlineState;
 use super::{MAX_CONSECUTIVE_EMPTY_READS, RequestChunk, StreamAbort};
 use crate::config::{effective_streaming_channel_capacity, max_streaming_request_producers};
 
@@ -91,20 +92,23 @@ fn producer_was_started(producer_handle: &RequestProducerHandle) -> bool {
 /// leaking a producer parked in a blocking source read.
 pub struct RequestSourceCloser<C: FnOnce()> {
     producer_handle: RequestProducerHandle,
+    inline: Arc<InlineState>,
     close: Option<C>,
 }
 
 impl<C: FnOnce()> RequestSourceCloser<C> {
-    pub fn new(producer_handle: RequestProducerHandle, close: C) -> Self {
+    pub fn new(producer_handle: RequestProducerHandle, inline: Arc<InlineState>, close: C) -> Self {
         Self {
             producer_handle,
+            inline,
             close: Some(close),
         }
     }
 
-    /// Close the request source iff the producer was started. Idempotent: the
+    /// Close the request source iff it was read — the producer was started,
+    /// or the source was pulled inline (`inline_pull.rs`). Idempotent: the
     /// close hook is consumed on the first call, so later calls (including the
-    /// one in `Drop`) are no-ops. If the producer never started the hook is
+    /// one in `Drop`) are no-ops. If the source was never read the hook is
     /// dropped uncalled — there is nothing to close.
     ///
     /// The hook runs under `catch_unwind`: `close_if_started` is also invoked
@@ -117,7 +121,7 @@ impl<C: FnOnce()> RequestSourceCloser<C> {
     /// already-produced response.
     pub fn close_if_started(&mut self) {
         if let Some(close) = self.close.take()
-            && producer_was_started(&self.producer_handle)
+            && (self.inline.touched() || producer_was_started(&self.producer_handle))
         {
             // `AssertUnwindSafe`: the hook is `FnOnce()` best-effort cleanup and
             // the producer is being torn down regardless, so swallowing its
@@ -180,6 +184,12 @@ pub struct ChannelBody {
     pub(super) slots: Arc<Semaphore>,
     /// In-progress wait for a producer slot while the cap is saturated.
     pub(super) permit_wait: Option<PermitFuture>,
+    /// Inline pulls left before the producer takes over (see
+    /// `inline_pull.rs`).
+    pub(super) inline_budget: u8,
+    /// Inline-pull gate + "source touched" flag, shared with the
+    /// dispatcher and the [`RequestSourceCloser`].
+    pub(super) inline: Arc<InlineState>,
 }
 
 impl ChannelBody {
@@ -188,6 +198,7 @@ impl ChannelBody {
         producer_handle: RequestProducerHandle,
         max_bytes: usize,
         limit_exceeded: Arc<AtomicBool>,
+        inline: Arc<InlineState>,
     ) -> Self
     where
         P: FnMut() -> RequestChunk + Send + 'static,
@@ -203,6 +214,8 @@ impl ChannelBody {
             clean_end: Arc::new(AtomicBool::new(false)),
             slots: Arc::clone(producer_slots()),
             permit_wait: None,
+            inline_budget: super::inline_pull::INLINE_PULL_BUDGET,
+            inline,
         }
     }
 
@@ -265,6 +278,9 @@ impl HttpBody for ChannelBody {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        if let Some(frame) = self.poll_inline() {
+            return Poll::Ready(frame);
+        }
         if self.poll_start_producer(cx).is_pending() {
             return Poll::Pending;
         }

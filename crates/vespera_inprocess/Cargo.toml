@@ -57,16 +57,6 @@ tracing = { version = "0.1.44", default-features = false, features = ["std"], op
 
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["json", "query", "tokio", "http1"] }
-criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
-# The criterion bench runs under mimalloc (set as its `#[global_allocator]`
-# in benches/dispatch.rs) to match the SHIPPED JNI cdylib, which enables
-# mimalloc by default.  Measured 2026-06: the default Windows system heap
-# routes per-request `Vec` allocations >= ~1 MiB through a slow
-# VirtualAlloc commit/decommit path (e.g. 1 MiB `dispatch_from_bytes`
-# materialise = 311 us system-heap vs 30 us mimalloc — a ~10x cliff that is
-# pure harness artifact, never seen by the cdylib).  Benching under mimalloc
-# keeps the large-body absolute numbers representative of production.
-mimalloc = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 # `FutureExt::catch_unwind` for the `async_spawn_pattern` bench, which
 # A/Bs the vespera_jni `dispatchAsync` spawn-mechanism change (inner
@@ -78,6 +68,22 @@ rstest = "0.28"
 # Span/event capture for `tests/tracing_instrumentation.rs` (feature
 # `tracing`): a `Registry` + a tiny collecting `Layer`.  Test-only.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+
+# The criterion bench runs under mimalloc (set as its `#[global_allocator]`
+# in benches/dispatch.rs) to match the SHIPPED JNI cdylib, which enables
+# mimalloc by default.  Measured 2026-06: the default Windows system heap
+# routes per-request `Vec` allocations >= ~1 MiB through a slow
+# VirtualAlloc commit/decommit path (e.g. 1 MiB `dispatch_from_bytes`
+# materialise = 311 us system-heap vs 30 us mimalloc — a ~10x cliff that is
+# pure harness artifact, never seen by the cdylib).  Benching under mimalloc
+# keeps the large-body absolute numbers representative of production.
+# Both are bench-only, so they are left out under Miri (`cargo miri` sets
+# `cfg(miri)`, which Cargo also applies to target-specific dependencies):
+# Miri cannot execute C code, and their C build scripts (mimalloc, criterion's
+# `alloca`) would otherwise need a C cross-compiler when Miri interprets a non-host target.
+[target.'cfg(not(miri))'.dev-dependencies]
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+mimalloc = "0.1"
 
 [[bench]]
 name = "dispatch"

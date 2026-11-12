@@ -136,6 +136,12 @@ impl Deadline {
         Self { sleep: None }
     }
 
+    /// Whether a timeout is configured (a timer is armed).
+    #[must_use]
+    pub const fn is_armed(&self) -> bool {
+        self.sleep.is_some()
+    }
+
     /// Drive `fut` until it completes (`Some`) or the deadline elapses
     /// (`None`; the caller then drops `fut` — Tokio cancellation).  Once
     /// elapsed, every later call returns `None` unless `fut` is immediately

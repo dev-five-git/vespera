@@ -415,11 +415,18 @@ async fn dispatch_bidirectional_streaming_endless_empty_pull_aborts_not_hangs() 
 
     let dispatched = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        vespera_inprocess::dispatch_bidirectional_streaming(header_only_wire, pull_chunk, on_chunk),
+        // Spawned task: the empty reads reach the producer's cap.
+        tokio::spawn(vespera_inprocess::dispatch_bidirectional_streaming(
+            header_only_wire,
+            pull_chunk,
+            on_chunk,
+        )),
     )
     .await;
 
-    let header_bytes = dispatched.expect("dispatch must terminate, not busy-spin forever");
+    let header_bytes = dispatched
+        .expect("dispatch must terminate, not busy-spin forever")
+        .unwrap();
     let (header, _body) = decode_wire(&header_bytes);
     assert_eq!(
         header["status"].as_u64(),
@@ -575,9 +582,15 @@ async fn dispatch_bidirectional_streaming_large_request_body() {
         ControlFlow::Continue(())
     };
 
-    let header_bytes =
-        vespera_inprocess::dispatch_bidirectional_streaming(header_only_wire, pull_chunk, on_chunk)
-            .await;
+    // Spawned task: every pull runs on the producer (not the inline
+    // `block_on` path), so its chunking is what is exercised.
+    let header_bytes = tokio::spawn(vespera_inprocess::dispatch_bidirectional_streaming(
+        header_only_wire,
+        pull_chunk,
+        on_chunk,
+    ))
+    .await
+    .unwrap();
 
     let (header, _) = decode_wire(&header_bytes);
     assert_eq!(header["status"].as_u64(), Some(200));
@@ -632,9 +645,15 @@ async fn dispatch_bidirectional_streaming_oversized_chunk_splits_and_roundtrips(
         ControlFlow::Continue(())
     };
 
-    let header_bytes =
-        vespera_inprocess::dispatch_bidirectional_streaming(header_only_wire, pull_chunk, on_chunk)
-            .await;
+    // Spawned task: every pull runs on the producer (not the inline
+    // `block_on` path), so its chunking is what is exercised.
+    let header_bytes = tokio::spawn(vespera_inprocess::dispatch_bidirectional_streaming(
+        header_only_wire,
+        pull_chunk,
+        on_chunk,
+    ))
+    .await
+    .unwrap();
 
     let (header, _) = decode_wire(&header_bytes);
     assert_eq!(header["status"].as_u64(), Some(200));

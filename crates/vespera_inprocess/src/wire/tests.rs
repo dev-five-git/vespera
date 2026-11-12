@@ -335,6 +335,10 @@ fn hand_parse_rejects_what_serde_rejects() {
 /// (so a well-formed deep value is *accepted*, not rejected).  The test
 /// completing at all proves neither path blew the stack.
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "50 000-deep nesting takes over 15 min under Miri; no unsafe involved"
+)]
 fn hand_parse_handles_deep_unknown_nesting_without_overflow() {
     // Depth far beyond any native recursion limit (a recursive skip would
     // overflow the stack here).
