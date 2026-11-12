@@ -16,6 +16,13 @@ repository.workspace = true
 # that exists only to benchmark the hand-rolled production path against.
 # Enable with `cargo bench -p vespera_inprocess --features bench-support`.
 bench-support = []
+# Inserts the optional `remote_addr` wire field as an
+# `axum::extract::ConnectInfo<SocketAddr>` request extension.  The type is
+# gated behind axum's `tokio` feature, which also turns on `tokio/net`;
+# `vespera` and `vespera_jni` already enable it, so real builds compile
+# nothing extra.  Kept opt-in so a standalone build (the criterion gate's
+# `cargo bench -p vespera_inprocess`) keeps the runtime it has always measured.
+connect-info = ["axum/tokio"]
 
 [dependencies]
 # Lock-free read snapshot for the multi-app router registry: named-app
@@ -24,10 +31,7 @@ bench-support = []
 # the lock-free fast path the default app already enjoys.  Registration
 # (startup-only, first-wins) goes through copy-on-write `rcu`.
 arc-swap = "1"
-# `tokio`: gates `axum::extract::ConnectInfo`, inserted as a request
-# extension from the optional `remote_addr` wire field.  `vespera` already
-# enables it, so a real build compiles nothing extra.
-axum = { version = "0.8", default-features = false, features = ["tokio"] }
+axum = { version = "0.8", default-features = false }
 bytes = "1"
 http = "1"
 http-body = "1"

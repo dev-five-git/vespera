@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 
 use axum::body::Body;
+#[cfg(feature = "connect-info")]
 use axum::extract::ConnectInfo;
 use bytes::Bytes;
 use http::{HeaderName, Method, Request, Uri, header::CONTENT_TYPE, uri::Scheme};
@@ -41,8 +42,10 @@ impl ConnectionInfo {
         }
     }
 
-    /// Insert the parsed values as request extensions.
+    /// Insert the parsed values as request extensions (`remote_addr` only
+    /// with the `connect-info` feature).
     fn apply_to(self, extensions: &mut http::Extensions) {
+        #[cfg(feature = "connect-info")]
         if let Some(addr) = self.remote_addr {
             extensions.insert(ConnectInfo(addr));
         }
@@ -794,6 +797,7 @@ mod tests {
 
         let mut extensions = http::Extensions::new();
         info.clone().apply_to(&mut extensions);
+        #[cfg(feature = "connect-info")]
         assert_eq!(
             extensions.get::<ConnectInfo<SocketAddr>>().map(|c| c.0),
             info.remote_addr
