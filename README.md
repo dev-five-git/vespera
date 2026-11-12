@@ -1347,6 +1347,20 @@ See [SKILL.md](./SKILL.md) for development guidelines and architecture details.
 
 ---
 
+## Security
+
+Report vulnerabilities privately — see [SECURITY.md](./SECURITY.md). Releases
+carry signed GitHub build-provenance and CycloneDX SBOM attestations; verify a
+downloaded artifact with:
+
+```bash
+gh attestation verify vespera-<version>.crate --repo dev-five-git/vespera
+gh attestation verify vespera-bridge-<version>.jar --repo dev-five-git/vespera \
+  --predicate-type https://cyclonedx.org/bom
+```
+
+---
+
 ## License
 
 Apache-2.0

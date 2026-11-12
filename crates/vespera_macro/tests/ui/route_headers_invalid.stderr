@@ -1,0 +1,19 @@
+error: #[route] headers entry missing required `name` field.
+ --> tests/ui/route_headers_invalid.rs:5:1
+  |
+5 | #[route(get, headers = [{ required = true }])]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `route` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: duplicate header field `name`
+ --> tests/ui/route_headers_invalid.rs:8:41
+  |
+8 | #[route(get, headers = [{ name = "X-A", name = "X-B" }])]
+  |                                         ^^^^
+
+error: unknown header field: `kind`. Expected `name`, `required`, or `description`
+  --> tests/ui/route_headers_invalid.rs:11:41
+   |
+11 | #[route(get, headers = [{ name = "X-A", kind = "string" }])]
+   |                                         ^^^^
