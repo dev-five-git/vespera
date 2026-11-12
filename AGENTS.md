@@ -506,6 +506,20 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 #   semver   (PRs only, not a release gate) cargo-semver-checks per published
 #            crate; release type is read from .changepacks/changepack_log_*.json,
 #            so an intentional break must be declared as a Minor (0.x) / Major bump
+#   bench           (bench.yml, PRs touching crates/**) criterion gate on the
+#                   in-process hot path: merge base vs head, 5 interleaved
+#                   paired rounds, FAIL iff median > +30% AND every round > +20%
+#                   (scripts/bench-interleaved.sh)
+#   jni-bench-gate  (jni-bench-gate.yml, PRs touching vespera_inprocess /
+#                   vespera_jni / libs/vespera-bridge) the same rule over real
+#                   JNI dispatch: rust-jni-demo cdylib (pinned alignment
+#                   RUSTFLAGS) + bridge JAR per side, one fresh JVM per side per
+#                   round running libs/vespera-bridge/bench/JniDispatchBench.java
+#                   (sync / direct / streaming GET, 64 KiB full-streaming POST,
+#                   async GET); logic in scripts/jni-bench-interleaved.sh +
+#                   scripts/jni-bench-compare.ts (unit-tested by `bun test`).
+#                   Local: CARGO_JOBS=2 scripts/jni-bench-interleaved.sh origin/main
+#                   jni-bench.yml stays nightly + informational (*BenchTest suite).
 # Third-party actions are pinned to commit SHAs; workflows default to
 # `permissions: contents: read`.
 cargo deny check                                   # local equivalent of `deny`
@@ -532,5 +546,5 @@ cargo llvm-cov report --summary-only \
 - Generic types in schemas require `#[derive(Schema)]` on all type params
 - JNI native library can be bundled inside the fat JAR for single-file deployment
 - `VesperaBridge.init()` auto-extracts bundled native lib to temp, falls back to system path
-- JNI dispatch perf benchmarks: `libs/vespera-bridge/docs/jni-before-after-2026-06-11.md` (note: root `/docs` is gitignored)
+- JNI dispatch perf benchmarks: `libs/vespera-bridge/docs/jni-before-after-2026-06-11.md` (note: root `/docs` is gitignored); PR regression gate: `jni-bench-gate.yml` (harness `libs/vespera-bridge/bench/JniDispatchBench.java`)
 - `vespera_macro` file_cache: per-macro-invocation epoch caching of `fs::metadata` (`bump_epoch` called at every file-cache-reaching entry point — `vespera!`, `schema_type!`, `schema!`, `export_app!`, `#[derive(Schema)]`); `collector.rs` clone-optimized
