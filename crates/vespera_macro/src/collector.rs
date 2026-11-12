@@ -44,7 +44,12 @@ fn kebab_case_path(path: &str) -> String {
 }
 
 /// Join a file-derived `base_path` with an optional `#[route(path = "...")]`
-/// suffix and kebab-case the result.
+/// suffix.
+///
+/// Only the file/module-derived `base_path` is kebab-cased (the file-based
+/// routing convention: `user_groups.rs` → `/user-groups`). An explicit
+/// `path = "..."` is the author's literal URL and is joined verbatim —
+/// `#[route(path = "/my_route")]` serves `/my_route`.
 ///
 /// Both collection paths (the `ROUTE_STORAGE` fast path and the `syn` slow
 /// path) MUST produce byte-identical route paths for the same route — a
@@ -52,14 +57,15 @@ fn kebab_case_path(path: &str) -> String {
 /// fast path happened to be active.  Keeping the join in exactly one place
 /// makes that divergence unrepresentable.
 fn build_route_path(base_path: &str, custom_path: Option<&str>) -> String {
-    let joined = custom_path.map_or_else(
-        || base_path.to_owned(),
-        |custom| {
-            let trimmed_base = base_path.trim_end_matches('/');
-            format!("{trimmed_base}/{}", custom.trim_start_matches('/'))
-        },
-    );
-    kebab_case_path(&joined)
+    let base = kebab_case_path(base_path);
+    match custom_path {
+        None => base,
+        Some(custom) => format!(
+            "{}/{}",
+            base.trim_end_matches('/'),
+            custom.trim_start_matches('/')
+        ),
+    }
 }
 
 /// Yield the per-file invariants (`module_path`, `file_path`) for one route.
