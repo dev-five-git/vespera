@@ -19,6 +19,7 @@ pub mod generic;
 pub mod health;
 pub mod memos;
 pub mod path;
+pub mod shapes;
 pub mod typed_form;
 pub mod typed_header;
 pub mod users;

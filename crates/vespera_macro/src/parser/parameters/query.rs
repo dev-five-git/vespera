@@ -74,6 +74,8 @@ pub(super) fn parse_query_extractor(
 /// `#[serde(flatten)]` fields of a known struct contribute that struct's
 /// fields (all optional when the flattened field is an `Option`). A flattened
 /// non-struct (e.g. a `HashMap` catch-all) has no fixed names and is left out.
+/// (serde buffers flattened values as strings, so with `serde_urlencoded`
+/// only string-typed flattened fields deserialize from a query string.)
 ///
 /// Array fields (`Vec<T>`, sets) are documented as `style: form, explode:
 /// true` — repeated keys (`?tag=a&tag=b`). Note that axum's own `Query` uses
