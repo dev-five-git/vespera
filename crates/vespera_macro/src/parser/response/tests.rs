@@ -740,3 +740,12 @@ fn opaque_and_raw_bodies(
     });
     assert_eq!(media_shape(&responses, status), expected);
 }
+
+#[rstest]
+#[case::reference_to_slice("&'static [i32]")]
+#[case::tuple("(i32, i32)")]
+#[case::plain_path("i32")]
+fn result_args_ignores_non_result_types(#[case] ty: &str) {
+    let ty: Type = syn::parse_str(ty).unwrap();
+    assert!(result_args(&ty).is_none());
+}

@@ -124,17 +124,23 @@ fn find_alias(
     let files = file_cache::list_rs_files(src_dir);
     let mut definitions = files
         .iter()
-        .filter(|path| {
-            file_cache::get_file_content(path).is_some_and(|content| content.contains(&needle))
-        })
-        .filter_map(|path| file_cache::get_parsed_file(path))
-        .filter_map(|file| alias_in_items(&file.items, name));
+        .filter_map(|path| alias_in_file(path, &needle, name));
     let first = definitions.next()?;
     // The same alias seen twice (e.g. a re-declaration) is fine; two
     // different definitions are ambiguous without name resolution.
     definitions
         .all(|alias| same_definition(&first, &alias))
         .then_some(first)
+}
+
+/// The `type <name>` item in the file at `path`. Files whose text lacks
+/// `needle` are skipped without parsing.
+fn alias_in_file(path: &Path, needle: &str, name: &str) -> Option<syn::ItemType> {
+    let content = file_cache::get_file_content(path)?;
+    if !content.contains(needle) {
+        return None;
+    }
+    alias_in_items(&file_cache::get_parsed_file(path)?.items, name)
 }
 
 /// A `type <name>` item among `items`, searching inline modules too.
