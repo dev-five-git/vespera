@@ -341,6 +341,22 @@ where
     // The header is committed: the dispatch deadline bounds only the time to
     // the first header, never the body (a long download that is still making
     // progress must not be cut off mid-stream).
+    stream_body_tail(body, on_chunk, flush_hints).await
+}
+
+/// Post-header body tail shared by every header-first streaming path and
+/// [`crate::PendingDirectResponse::stream`]: frame-by-frame delivery with
+/// ready-frame coalescing and (with `flush_hints`) an empty-chunk flush hint
+/// before the body waits.  The header was just delivered, so it starts
+/// "unflushed".
+pub async fn stream_body_tail<F>(
+    mut body: Body,
+    on_chunk: &mut F,
+    flush_hints: bool,
+) -> StreamOutcome
+where
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+{
     let mut batch = FrameBatch::new(crate::config::streaming_chunk_bytes());
     // Something (the header, then body bytes) reached the sink since the
     // last flush hint.

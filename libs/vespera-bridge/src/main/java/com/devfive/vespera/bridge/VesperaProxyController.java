@@ -798,12 +798,25 @@ public class VesperaProxyController {
         try {
             // Encodes straight into the pooled direct buffer — no
             // intermediate wire-sized byte[].
-            wireResp = currentThreadIsVirtual == null
-                    ? VesperaBridge.dispatchDirectPooled(
-                            appName, method, path, query, headers, body, retry)
-                    : VesperaBridge.dispatchDirectPooled(
-                            appName, method, path, query, headers, body,
-                            retry, currentThreadIsVirtual.booleanValue());
+            wireResp = VesperaBridge.dispatchDirectPooled(
+                    appName, method, path, query, headers, body, retry,
+                    currentThreadIsVirtual == null
+                            ? VesperaBridge.currentThreadIsVirtual()
+                            : currentThreadIsVirtual.booleanValue());
+        } catch (StashedOverflowException stashed) {
+            // The finished response (an event stream, or larger than the
+            // pooled buffer cap) is still held on the Rust side: stream it
+            // instead of re-running the handler, and stream this route up
+            // front next time.
+            directOverflowMemory.recordOverflow(appName, method, path, query);
+            WireResponseWriter.BodyPermittingOutputStream bodyOut =
+                    new WireResponseWriter.BodyPermittingOutputStream(response.getOutputStream(), method);
+            stashed.streamTo(
+                    headerBytes -> bodyOut.applyPermitsBody(
+                            WireResponseWriter.applyDecodedHeader(headerBytes, response, method)),
+                    bodyOut);
+            response.getOutputStream().flush();
+            return;
         } catch (VesperaBridge.BufferTooSmallException overflow) {
             // The first dispatch already ran; its oversized result was discarded.
             if (retry) {

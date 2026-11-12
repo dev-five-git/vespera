@@ -70,6 +70,7 @@
 
 mod bounded;
 mod config;
+mod direct;
 mod dispatch;
 mod envelope;
 mod header_latin1;
@@ -91,10 +92,11 @@ pub use config::{
     set_max_streaming_request_producers, set_streaming_channel_capacity, set_streaming_chunk_bytes,
     streaming_channel_capacity, streaming_chunk_bytes,
 };
+pub use direct::{DirectWriteResult, PendingDirectResponse, ResumableDirectWrite};
 pub use dispatch::{
-    DirectWriteResult, check_ingress_cap, dispatch, dispatch_from_bytes, dispatch_from_bytes_async,
-    dispatch_into, dispatch_into_async, dispatch_into_async_borrowed, dispatch_owned,
-    dispatch_typed,
+    check_ingress_cap, dispatch, dispatch_from_bytes, dispatch_from_bytes_async, dispatch_into,
+    dispatch_into_async, dispatch_into_async_borrowed, dispatch_into_async_borrowed_resumable,
+    dispatch_owned, dispatch_typed,
 };
 pub use envelope::{
     HeaderValue, RequestEnvelope, ResponseEnvelope, ResponseMetadata, error_envelope,

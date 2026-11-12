@@ -485,3 +485,92 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
     });
     deliver_panic_header_if_needed(&mut unowned_env, &header_consumer, &flags, panicked);
 }
+
+/// Wire `500` body when a DIRECT overflow stash token is no longer known.
+const STASH_EXPIRED_MSG: &str = "vespera DIRECT overflow stash entry expired or already redeemed";
+
+struct StashStreamArgs<'a, 'local> {
+    token: jni::sys::jlong,
+    header_consumer: &'a JObject<'local>,
+    output_stream: &'a JObject<'local>,
+    flags: &'a Arc<StreamingFlags>,
+}
+
+/// Body of `DirectStash.stream0`: deliver a stashed DIRECT overflow through
+/// the same header-first streaming contract as
+/// `dispatchStreamingWithHeader` (header consumer exactly once, flush hints,
+/// `IOException` on a post-header truncation) — the handler is NOT re-run.
+fn stream_stashed_body(env: &mut jni::Env<'_>, args: &StashStreamArgs<'_, '_>) {
+    if reject_null_header_consumer(env, args.header_consumer, args.flags) {
+        return;
+    }
+    let Some(pending) = crate::jni_impl::direct_stash::take_stashed(args.token) else {
+        notify_local_header(
+            env,
+            args.header_consumer,
+            &vespera_inprocess::error_wire(500, STASH_EXPIRED_MSG),
+            args.flags,
+        );
+        return;
+    };
+    let Ok((header_global, stream_global, jvm, push_buf, push_buf_lease)) =
+        setup_stream_with_header(env, args.header_consumer, args.output_stream)
+    else {
+        notify_local_header(env, args.header_consumer, &panic_wire(), args.flags);
+        return;
+    };
+    let Some(runtime) = runtime() else {
+        mark_streaming_buffer_reusable(push_buf_lease);
+        notify_local_header(
+            env,
+            args.header_consumer,
+            &runtime_unavailable_wire(),
+            args.flags,
+        );
+        return;
+    };
+    let flags_for_cb = Arc::clone(args.flags);
+    let flags_for_push = Arc::clone(args.flags);
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let jvm_for_cb = jvm.clone();
+        let mut push = make_push_closure(jvm, stream_global, push_buf);
+        runtime.block_on(pending.stream(
+            make_header_callback(jvm_for_cb, header_global, flags_for_cb),
+            move |chunk: &[u8]| push_unless_header_failed(&flags_for_push.failed, &mut push, chunk),
+        ))
+    }));
+    finish_header_dispatch(env, args.header_consumer, args.flags, &panic_result, || {
+        mark_streaming_buffer_reusable(push_buf_lease);
+    });
+}
+
+/// `com.devfive.vespera.bridge.DirectStash.stream0(long, Consumer<byte[]>, OutputStream) -> void`
+///
+/// Stream the stashed DIRECT overflow `token` header-first (see
+/// [`stream_stashed_body`]); an unknown token delivers a `500` header.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_devfive_vespera_bridge_DirectStash_stream0<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    token: jni::sys::jlong,
+    header_consumer: JObject<'local>,
+    output_stream: JObject<'local>,
+) {
+    let flags = Arc::new(StreamingFlags::new());
+    let flags_body = Arc::clone(&flags);
+    let panicked = guard_void_symbol(|| {
+        let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
+            stream_stashed_body(
+                env,
+                &StashStreamArgs {
+                    token,
+                    header_consumer: &header_consumer,
+                    output_stream: &output_stream,
+                    flags: &flags_body,
+                },
+            );
+            Ok(())
+        });
+    });
+    deliver_panic_header_if_needed(&mut unowned_env, &header_consumer, &flags, panicked);
+}

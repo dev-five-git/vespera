@@ -127,6 +127,8 @@ pub fn shutdown_runtime(timeout: std::time::Duration) -> bool {
     if let Some(runtime) = owned {
         runtime.shutdown_timeout(timeout);
     }
+    // Stashed DIRECT overflows can no longer be redeemed.
+    direct_stash::clear_stash();
     true
 }
 
@@ -460,6 +462,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchByt
 
 #[path = "jni_impl_direct.rs"]
 mod direct;
+pub use direct::stash as direct_stash;
 
 /// `com.devfive.vespera.bridge.VesperaBridge.dispatchAsync(CompletableFuture<byte[]>, byte[]) -> void`
 ///

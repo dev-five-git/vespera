@@ -39,6 +39,14 @@ fn ensure() {
             .route("/big_full", get(big_full))
             .route("/big_stream", get(big_stream))
             .route("/small", get(|| async { "ok" }))
+            .route(
+                "/empty_stream",
+                get(|| async {
+                    Body::from_stream(futures_util::stream::empty::<
+                        Result<Bytes, std::convert::Infallible>,
+                    >())
+                }),
+            )
             .route("/big_422", get(big_422))
             .route("/small_422", get(small_422))
             .route("/slow_422", get(slow_422))
@@ -397,4 +405,60 @@ async fn streaming_422_prefetch_past_the_deadline_is_a_504_header() {
     assert_eq!(outcome, StreamOutcome::Complete);
     assert_eq!(split(&header).0["status"], 504);
     assert_eq!(chunks, 0);
+}
+
+/// The legacy direct-write overflow drains an unknown-length body only to
+/// COUNT it — now bounded by the buffered-response cap instead of forever.
+#[tokio::test]
+async fn direct_write_overflow_counting_is_capped() {
+    ensure();
+    let mut out = vec![0u8; 512];
+    let DirectWriteResult::Complete(n) =
+        dispatch_into_async(encode("GET", "/big_stream", b""), &mut out).await
+    else {
+        panic!("the 500 naming the cap fits");
+    };
+    let (json, body) = split(&out[..n]);
+    assert_eq!(json["status"], 500);
+    assert!(String::from_utf8_lossy(body).contains(&MAX_RESPONSE.to_string()));
+}
+
+/// Resumable direct write: a deadline before the response commits is a
+/// 504; a pending response whose remaining body stalls past the deadline
+/// resumes into a 504 as well (the resume is bounded like the dispatch).
+#[tokio::test]
+async fn resumable_direct_write_is_bounded_by_the_deadline() {
+    use vespera_inprocess::{ResumableDirectWrite, dispatch_into_async_borrowed_resumable};
+    ensure();
+    let mut out = vec![0u8; 4096];
+    let started = Instant::now();
+    let ResumableDirectWrite::Complete(n) =
+        dispatch_into_async_borrowed_resumable(&encode("GET", "/slow", b""), &mut out).await
+    else {
+        panic!("504 wire must fit");
+    };
+    assert_quick(started);
+    assert_eq!(split(&out[..n]).0["status"], 504);
+
+    // `/empty_stream` has the same (header-only) wire header as
+    // `/slow_body`: two spare bytes cannot hold its 4-byte first frame.
+    let ResumableDirectWrite::Complete(header_len) =
+        dispatch_into_async_borrowed_resumable(&encode("GET", "/empty_stream", b""), &mut out)
+            .await
+    else {
+        panic!("header-only response fits");
+    };
+    let mut tiny = vec![0u8; header_len + 2];
+    let ResumableDirectWrite::Overflow(pending) =
+        dispatch_into_async_borrowed_resumable(&encode("GET", "/slow_body", b""), &mut tiny).await
+    else {
+        panic!("the 4-byte first frame overflows a 2-byte body budget");
+    };
+    assert!(!pending.is_exact());
+    let started = Instant::now();
+    let ResumableDirectWrite::Complete(n) = pending.write_into(&mut out).await else {
+        panic!("504 wire must fit");
+    };
+    assert_quick(started);
+    assert_eq!(split(&out[..n]).0["status"], 504);
 }

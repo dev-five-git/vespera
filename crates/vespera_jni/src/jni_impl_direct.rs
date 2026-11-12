@@ -14,6 +14,11 @@ use super::{
     block_on_shared_runtime, clear_pending_exception, panic_wire, runtime_unavailable_wire,
 };
 
+// Overflow stash + the resumable / fetch / stream / discard symbols bound to
+// `com.devfive.vespera.bridge.DirectStash`.
+#[path = "jni_impl_direct_stash.rs"]
+pub mod stash;
+
 /// Sentinel for [`Java_..._dispatchDirect`]: the response (or its
 /// required size) cannot be represented in the `jint` return value
 /// (> `i32::MAX` bytes).
@@ -152,11 +157,38 @@ unsafe fn write_response_to_out(out_addr: *mut u8, out_cap: usize, response: &[u
 ///    that wrapper contract for speed.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDirect0<'local>(
-    mut unowned_env: EnvUnowned<'local>,
+    unowned_env: EnvUnowned<'local>,
     _class: JClass<'local>,
     in_buf: JByteBuffer<'local>,
     in_len: jint,
     out_buf: JByteBuffer<'local>,
+) -> jint {
+    run_direct_symbol(unowned_env, &in_buf, in_len, &out_buf, |input, out| {
+        block_on_shared_runtime(vespera_inprocess::dispatch_into_async_borrowed(input, out)).map(
+            |dispatched| match dispatched {
+                // n <= out_cap, and Java buffer capacities are jint-bounded,
+                // so this always fits i32.
+                vespera_inprocess::DirectWriteResult::Complete(n) => direct_complete_code(n),
+                vespera_inprocess::DirectWriteResult::Overflow(required) => {
+                    direct_overflow_code(required)
+                }
+            },
+        )
+    })
+}
+
+/// Shared body of the direct-buffer symbols (`dispatchDirect0` and the
+/// resumable `DirectStash.dispatchResumable0`): buffer resolution and
+/// validation, the SEC-1 overlap check, and the panic guards.  `dispatch`
+/// receives the borrowed input and the exclusive output slice (see the
+/// safety invariants on [`Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDirect0`])
+/// and returns the `jint` code, or `None` when the runtime is unavailable.
+fn run_direct_symbol<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    in_buf: &JByteBuffer<'local>,
+    in_len: jint,
+    out_buf: &JByteBuffer<'local>,
+    dispatch: impl FnOnce(&[u8], &mut [u8]) -> Option<jint>,
 ) -> jint {
     let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         unowned_env
@@ -180,8 +212,8 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                     // to write into, so it still propagates via `?` → the
                     // RuntimeException the resolve below maps it to (defense in
                     // depth behind the Java-side isDirect()/isReadOnly() guard).
-                    let out_addr = env.get_direct_buffer_address(&out_buf)?;
-                    let out_cap = env.get_direct_buffer_capacity(&out_buf)?;
+                    let out_addr = env.get_direct_buffer_address(out_buf)?;
+                    let out_cap = env.get_direct_buffer_capacity(out_buf)?;
                     out_region = Some((out_addr, out_cap));
                     debug_assert!(
                         !out_addr.is_null(),
@@ -194,8 +226,8 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                     // throwing + returning the default `jint` — so a caller that
                     // bypasses the Java wrapper with a bad `in_buf` but a valid
                     // `out_buf` still receives a decodable wire error.
-                    let in_resolved = match env.get_direct_buffer_address(&in_buf) {
-                        Ok(addr) => env.get_direct_buffer_capacity(&in_buf).map(|cap| (addr, cap)),
+                    let in_resolved = match env.get_direct_buffer_address(in_buf) {
+                        Ok(addr) => env.get_direct_buffer_capacity(in_buf).map(|cap| (addr, cap)),
                         Err(e) => Err(e),
                     };
                     let Ok((in_addr, in_cap)) = in_resolved else {
@@ -247,7 +279,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                         return Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) });
                     }
 
-                    let Some(dispatched) = ({
+                    let Some(code) = ({
                         // SAFETY: invariants 1–3 above.  `in_addr..in_addr+in_len`
                         // (`in_len <= in_cap`) is a readable region and
                         // `out_addr..out_addr+out_cap` a writable region, both of
@@ -261,9 +293,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                         // and never escapes this synchronous `block_on`.
                         let input = unsafe { std::slice::from_raw_parts(in_addr, in_len) };
                         let out = unsafe { std::slice::from_raw_parts_mut(out_addr, out_cap) };
-                        block_on_shared_runtime(vespera_inprocess::dispatch_into_async_borrowed(
-                            input, out,
-                        ))
+                        dispatch(input, out)
                     }) else {
                         let err = runtime_unavailable_wire();
                         // SAFETY: same direct-buffer invariants as above; this branch
@@ -272,14 +302,6 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                         return Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) });
                     };
 
-                    let code = match dispatched {
-                        vespera_inprocess::DirectWriteResult::Complete(n) => {
-                            // n <= out_cap, and Java buffer capacities are
-                            // jint-bounded, so this always fits i32.
-                            direct_complete_code(n)
-                        }
-                        vespera_inprocess::DirectWriteResult::Overflow(required) => direct_overflow_code(required),
-                    };
                     Ok(code)
                 }));
 
