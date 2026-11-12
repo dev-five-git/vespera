@@ -114,8 +114,11 @@ abstract class VesperaBridgeExtension {
      * `targets.put("linux-aarch64", "aarch64-unknown-linux-gnu")`. Each entry
      * is built with `cargo build --target <triple>` (when `autoBuildCargo`
      * is on), read from `<targetDir>/<triple>/<profile>/` and bundled under
-     * `native/<os>-<arch>/` with that platform's library file name. The host
-     * build is skipped when a key names the host platform. The toolchain /
+     * `native/<os>-<arch>/` with that platform's library file name. A
+     * `*-linux-musl*` triple is bundled under `native/linux-<arch>-musl/`
+     * (keys may also name `linux-<arch>-musl` directly), where the bridge
+     * looks first on a musl JVM. The host build is skipped when a key (or its
+     * bundle folder) names the host platform. The toolchain /
      * linker for each triple must already be installed.
      */
     abstract val targets: MapProperty<String, String>

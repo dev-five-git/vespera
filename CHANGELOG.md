@@ -165,3 +165,17 @@ Behaviour changes — no code change is needed, but they are observable:
 - Gradle plugin: hyphenated `crateName`s work (new `packageName` / `libName`),
   `bridgeVersion` defaults to the matching bridge release, `cargoSourceRoots` is
   ignored and `CargoBuildTask.commands` was replaced by its properties.
+
+### musl native libraries (`kr.devfive:vespera-bridge`, Gradle plugin)
+
+- On a musl-libc Linux JVM (Alpine) the bridge looks for the bundled library
+  in `native/linux-<arch>-musl/` first; it falls back to the glibc
+  `native/linux-<arch>/` library only when no musl one is bundled, with a WARN.
+  The libc is detected from `/proc/self/maps` (no process spawn) and can be
+  forced with `-Dvespera.native.libc=musl|glibc`. glibc JVMs are unchanged.
+- Gradle plugin: a `*-linux-musl*` target triple is bundled under
+  `native/linux-<arch>-musl/` even when its `targets` key is the plain
+  `linux-<arch>` (previously `native/linux-<arch>/`); `linux-<arch>-musl` keys
+  are accepted, and on a musl build host the host build goes to the `-musl`
+  folder. A jar built this way needs a bridge from this release to load the
+  musl library on Alpine.

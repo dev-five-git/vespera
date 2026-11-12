@@ -28,6 +28,7 @@ import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
@@ -114,18 +115,18 @@ final class VesperaNativeLoader {
         InputStream open() throws IOException;
     }
 
+    /** The bundled resource chosen by {@link #resolveBundledResource}, already opened. */
+    record BundledResource(String path, InputStream stream) {}
+
     static void loadBundled(String libraryName) {
         String os = detectOs();
-        String arch = detectArch();
         String filename = mapLibraryName(os, libraryName);
-        String resourcePath = "native/" + os + "-" + arch + "/" + filename;
         ClassLoader loader = VesperaBridge.class.getClassLoader();
-
-        InputStream probe = loader.getResourceAsStream(resourcePath);
-        if (probe == null) {
-            throw new BundledNativeAbsent("Not found in JAR: " + resourcePath);
-        }
-        InputStream[] first = {probe};
+        BundledResource found = resolveBundledResource(
+                NativePlatformDetector.hostCandidatePlatforms(NativePlatformDetector.HOST),
+                filename, loader::getResourceAsStream);
+        String resourcePath = found.path();
+        InputStream[] first = {found.stream()};
         ResourceOpener opener = () -> {
             InputStream in = first[0];
             first[0] = null;
@@ -161,6 +162,44 @@ final class VesperaNativeLoader {
         }
         cleanupLegacyExtractions(
                 Paths.get(System.getProperty("java.io.tmpdir")), System.currentTimeMillis());
+    }
+
+    /**
+     * The first {@code native/<platform>/<filename>} resource present among
+     * {@code platforms} (most specific first, see
+     * {@link NativePlatformDetector#candidatePlatforms}). On a musl JVM that
+     * bundles only the plain {@code linux-<arch>} (glibc) library, that one is
+     * returned with a WARN: it will most likely fail to load.
+     *
+     * @param open opens a classpath resource, {@code null} when absent
+     * @throws BundledNativeAbsent when none is bundled (names every path tried)
+     */
+    static BundledResource resolveBundledResource(
+            List<String> platforms, String filename, Function<String, InputStream> open) {
+        for (int i = 0; i < platforms.size(); i++) {
+            String path = "native/" + platforms.get(i) + "/" + filename;
+            InputStream stream = open.apply(path);
+            if (stream == null) {
+                continue;
+            }
+            String preferred = platforms.get(0);
+            if (i > 0 && preferred.endsWith(NativePlatformDetector.MUSL_SUFFIX)) {
+                LOG.log(System.Logger.Level.WARNING,
+                        "No musl native library bundled (native/" + preferred + "/" + filename
+                                + "); loading the glibc build " + path + " on a musl libc JVM,"
+                                + " which will most likely fail with UnsatisfiedLinkError. Bundle a"
+                                + " *-linux-musl build under native/" + preferred + "/ (Gradle plugin:"
+                                + " vespera.targets) or override the detection with -D"
+                                + NativePlatformDetector.LIBC_PROPERTY + "=glibc.");
+            }
+            return new BundledResource(path, stream);
+        }
+        StringBuilder tried = new StringBuilder();
+        for (String platform : platforms) {
+            tried.append(tried.length() == 0 ? "" : ", ")
+                    .append("native/").append(platform).append('/').append(filename);
+        }
+        throw new BundledNativeAbsent("Not found in JAR: " + tried);
     }
 
     /**
@@ -642,20 +681,11 @@ final class VesperaNativeLoader {
     }
 
     private static String detectOs() {
-        String os = System.getProperty("os.name", "").toLowerCase();
-        // "darwin" MUST be tested before "win": the string "darwin" contains
-        // the substring "win", so the opposite order sends a Darwin-reporting
-        // JVM down the Windows path and makes it look for a .dll.
-        if (os.contains("mac") || os.contains("darwin")) return "macos";
-        if (os.contains("win")) return "windows";
-        return "linux";
+        return NativePlatformDetector.detectOs(System.getProperty("os.name", ""));
     }
 
     private static String detectArch() {
-        String arch = System.getProperty("os.arch", "").toLowerCase();
-        if (arch.contains("amd64") || arch.contains("x86_64")) return "x86_64";
-        if (arch.contains("aarch64") || arch.contains("arm64")) return "aarch64";
-        return arch;
+        return NativePlatformDetector.detectArch(System.getProperty("os.arch", ""));
     }
 
     private static String mapLibraryName(String os, String name) {
