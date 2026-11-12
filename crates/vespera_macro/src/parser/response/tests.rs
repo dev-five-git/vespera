@@ -719,6 +719,7 @@ fn media_shape(
 #[case::bare_result("-> Result", "200", Some(("application/json", SchemaType::Object, None)))]
 #[case::result_lifetime_arg("-> Result<'static, Json<i32>>", "200", Some(("application/json", SchemaType::Integer, Some("int32"))))]
 #[case::header_array_in_tuple("-> (StatusCode, [(HeaderName, &'static str); 1])", "200", None)]
+#[case::reference_to_non_path("-> &'static [i32]", "200", Some(("application/json", SchemaType::Array, None)))]
 #[case::bare_fn("-> fn()", "200", Some(("application/json", SchemaType::Object, None)))]
 fn opaque_and_raw_bodies(
     #[case] return_type: &str,

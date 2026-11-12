@@ -132,13 +132,15 @@ fn find_alias(
         let Some(alias) = alias_in_items(&file.items, name) else {
             continue;
         };
-        match &found {
-            // The same alias seen twice (e.g. a re-declaration) is fine; two
-            // different definitions are ambiguous without name resolution.
-            Some(previous) if !same_definition(previous, &alias) => return None,
-            Some(_) => {}
-            None => found = Some(alias),
+        // The same alias seen twice (e.g. a re-declaration) is fine; two
+        // different definitions are ambiguous without name resolution.
+        if found
+            .as_ref()
+            .is_some_and(|previous| !same_definition(previous, &alias))
+        {
+            return None;
         }
+        found.get_or_insert(alias);
     }
     found
 }
