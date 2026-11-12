@@ -220,12 +220,12 @@ fn result_args(ty: &Type) -> Option<(&Type, Option<&Type>)> {
         Type::Reference(type_ref) => type_ref.elem.as_ref(),
         other => other,
     };
-    let Type::Path(type_path) = inner else {
-        return None;
+    let type_path = match inner {
+        Type::Path(type_path) if is_keyword_type_by_type_path(type_path, &KeywordType::Result) => {
+            type_path
+        }
+        _ => return None,
     };
-    if !is_keyword_type_by_type_path(type_path, &KeywordType::Result) {
-        return None;
-    }
     let segment = type_path.path.segments.last()?;
     let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
         return None;
