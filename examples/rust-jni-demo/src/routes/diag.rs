@@ -74,10 +74,17 @@ pub async fn blob(Path((key, bytes)): Path<(String, usize)>) -> Vec<u8> {
 }
 
 /// Answers `slept` after `ms` milliseconds (at most [`MAX_SLEEP_MILLIS`]);
-/// counts a run of `key` once the delay is over, or `"<key>:dropped"` when
-/// the handler is cancelled while sleeping.
+/// records `"<key>:started"` as soon as the handler body runs, then counts a
+/// run of `key` once the delay is over, or `"<key>:dropped"` when the handler
+/// is cancelled while sleeping.
+///
+/// The `:started` marker lets a test cancel only once the handler really
+/// runs: a `dispatchAsync` holds its in-flight slot from admission, before a
+/// Tokio worker first polls the task, and a cancel landing in that window
+/// drops the request before the handler (and its drop probe) ever existed.
 #[vespera::route(get, path = "/sleep/{key}/{ms}", tags = ["diag"])]
 pub async fn sleep(Path((key, ms)): Path<(String, u64)>) -> &'static str {
+    record(format!("{key}:started"));
     let mut probe = DropProbe::new(key);
     tokio::time::sleep(Duration::from_millis(ms.min(MAX_SLEEP_MILLIS))).await;
     if let Some(key) = probe.disarm() {

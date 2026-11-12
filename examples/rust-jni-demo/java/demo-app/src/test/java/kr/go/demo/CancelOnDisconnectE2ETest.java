@@ -72,6 +72,11 @@ class CancelOnDisconnectE2ETest {
         return 0;
     }
 
+    /** Waits until the {@code /diag/sleep} handler of {@code key} is running. */
+    private static void awaitStarted(String key) throws InterruptedException {
+        await(key + " started", () -> runs(key + ":started") == 1);
+    }
+
     private static void await(String what, BooleanSupplier condition) throws InterruptedException {
         // Generous: CI runners (macOS / Windows) can be slow to schedule.
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
@@ -169,6 +174,11 @@ class CancelOnDisconnectE2ETest {
                 "GET", "/diag/sleep/" + key + "/60000", null, Map.of(), null);
         CompletableFuture<byte[]> future = VesperaBridge.dispatch(wire);
         await("async dispatch admitted", () -> asyncInFlight() == baseline + 1);
+        // The slot is taken at admission, before a Tokio worker first polls
+        // the task: a cancel in that window drops the request before the
+        // handler (and its drop probe) exists, so no ":dropped" is ever
+        // recorded.  Cancel only once the handler is really sleeping.
+        awaitStarted(key);
         assertFalse(future.isDone());
 
         long start = System.nanoTime();
@@ -190,6 +200,8 @@ class CancelOnDisconnectE2ETest {
                 "GET", "/diag/sleep/" + key + "/60000", null, Map.of(), null);
         CompletableFuture<byte[]> future = new CompletableFuture<>();
         VesperaBridge.dispatchAsync(future, wire);
+        // Same race as above: time out only a handler that already runs.
+        awaitStarted(key);
         future.orTimeout(100, TimeUnit.MILLISECONDS);
         await(key + " dropped", () -> runs(key + ":dropped") == 1);
         await("in-flight slot released", () -> asyncInFlight() == baseline);
