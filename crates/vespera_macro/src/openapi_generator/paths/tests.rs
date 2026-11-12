@@ -65,6 +65,36 @@ fn route_in_file_cache_appears_in_paths() {
 }
 
 #[test]
+fn ast_backed_route_expands_same_file_result_alias() {
+    let temp_dir = TempDir::new().unwrap();
+    let route_file = create_temp_file(
+        &temp_dir,
+        "users.rs",
+        "pub type ApiResult<T> = Result<Json<T>, String>;
+         pub async fn get_user() -> ApiResult<i32> { Ok(Json(1)) }",
+    );
+    let mut metadata = CollectedMetadata::new();
+    metadata.routes.push(route_meta(
+        "GET",
+        "/user",
+        "get_user",
+        &route_file.to_string_lossy(),
+    ));
+
+    let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
+
+    let op = doc.paths["/user"].get.as_ref().expect("GET op");
+    let content = |status: &str| {
+        op.responses[status]
+            .content
+            .as_ref()
+            .and_then(|content| content.keys().next().cloned())
+    };
+    assert_eq!(content("200").as_deref(), Some("application/json"));
+    assert_eq!(content("400").as_deref(), Some("text/plain"));
+}
+
+#[test]
 fn duplicate_method_and_path_is_a_compile_error() {
     // Two distinct handlers mapping to the same (GET, /dup) must be a compile
     // error that names BOTH handlers — not a silent last-wins overwrite that

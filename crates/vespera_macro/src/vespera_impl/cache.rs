@@ -209,6 +209,36 @@ pub(super) fn compute_schema_hash(schema_storage: &HashMap<String, StructMetadat
     hasher.finish()
 }
 
+/// Fold the `#[route]` signatures stored for this crate into `schema_hash`.
+///
+/// `#[route]` expands return-type aliases (`-> ApiResult<User>`) through
+/// definitions that may live OUTSIDE the route folder (e.g. `src/error.rs`),
+/// which the route-file fingerprints do not cover. Hashing the stored
+/// (already expanded) signatures keeps an alias edit from serving a stale
+/// spec.
+pub(super) fn with_route_signature_hash(
+    schema_hash: u64,
+    route_storage: &[crate::route_impl::StoredRouteInfo],
+) -> u64 {
+    let mut signatures: Vec<(&str, &str, &str)> = route_storage
+        .iter()
+        .map(|route| {
+            (
+                route.file_path.as_deref().unwrap_or_default(),
+                route.fn_name.as_str(),
+                route.fn_sig_str.as_str(),
+            )
+        })
+        .collect();
+    signatures.sort_unstable();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    schema_hash.hash(&mut hasher);
+    for signature in &signatures {
+        signature.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 /// Compute a deterministic hash of OpenAPI config fields.
 #[cfg(test)]
 pub(super) fn compute_config_hash(processed: &ProcessedVesperaInput) -> u64 {
@@ -224,6 +254,7 @@ pub(super) fn compute_config_hash_with_merge_cache(
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     processed.title.hash(&mut hasher);
     processed.version.hash(&mut hasher);
+    super::path_utils::package_description().hash(&mut hasher);
     processed.docs_url.hash(&mut hasher);
     processed.redoc_url.hash(&mut hasher);
     processed.openapi_file_names.hash(&mut hasher);
@@ -783,6 +814,40 @@ mod tests {
         let path = dir.path().join("spec.json");
         std::fs::write(&path, "{}").unwrap();
         assert!(!sidecar_matches(&path, None, path_fingerprint(&path)));
+    }
+
+    #[test]
+    fn stored_route_signatures_contribute_to_schema_hash() {
+        let route = |sig: &str| crate::route_impl::StoredRouteInfo {
+            fn_name: "get_user".to_string(),
+            method: None,
+            custom_path: None,
+            success_status: None,
+            error_status: None,
+            typed_responses: None,
+            tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
+            description: None,
+            file_path: Some("src/routes/users.rs".to_string()),
+            fn_sig_str: sig.to_string(),
+        };
+        let before = with_route_signature_hash(7, &[route("fn get_user () -> Result < A , B >")]);
+        let after = with_route_signature_hash(7, &[route("fn get_user () -> Result < A , C >")]);
+        assert_ne!(before, after);
+        assert_eq!(
+            before,
+            with_route_signature_hash(7, &[route("fn get_user () -> Result < A , B >")])
+        );
+        assert_ne!(
+            with_route_signature_hash(7, &[]),
+            with_route_signature_hash(8, &[])
+        );
     }
 
     #[test]

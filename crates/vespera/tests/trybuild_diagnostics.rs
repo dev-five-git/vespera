@@ -11,6 +11,8 @@ fn ui_diagnostics() {
     let t = trybuild::TestCases::new();
     // `responses` validation lives in `RouteArgs::parse` (always compiled).
     t.compile_fail("tests/ui/route_responses_invalid.rs");
+    // A `responses` type without `#[derive(Schema)]` (dangling `$ref`).
+    t.compile_fail("tests/ui/route_responses_not_schema.rs");
     // The cron-syntax validator only compiles into the proc-macro under the
     // `cron` feature (enabled transitively by `vespera`'s `cron` feature), so
     // only assert the cron diagnostic when that feature is on.

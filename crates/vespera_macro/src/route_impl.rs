@@ -245,6 +245,24 @@ fn extract_typed_responses(arr: &syn::ExprArray) -> Option<Vec<(u16, String)>> {
     }
 }
 
+/// The signature stored for `vespera!`: the handler's own signature with a
+/// return-type alias (`-> ApiResult<User>`) expanded through the aliases
+/// visible from `source_file` / the crate's `src/` (see
+/// [`crate::parser::expand_return_type_alias`]). The source is only read when
+/// the return type could name an alias.
+fn stored_signature(sig: &syn::Signature, source_file: Option<&std::path::Path>) -> syn::Signature {
+    let mut sig = sig.clone();
+    if let Some(file) = source_file.filter(|_| crate::parser::needs_alias_expansion(&sig)) {
+        use crate::schema_macro::file_cache;
+        file_cache::bump_epoch();
+        let same_file = file_cache::get_parsed_file(file);
+        let src_dir =
+            file_cache::get_manifest_dir().map(|dir| std::path::PathBuf::from(dir).join("src"));
+        crate::parser::expand_return_type_alias(&mut sig, same_file.as_ref(), src_dir.as_deref());
+    }
+    sig
+}
+
 /// Validate route function - must be pub and async
 pub fn validate_route_fn(item_fn: &syn::ItemFn) -> Result<(), syn::Error> {
     if !matches!(item_fn.vis, syn::Visibility::Public(_)) {
@@ -270,9 +288,15 @@ pub fn process_route_attribute(
     let route_args = syn::parse2::<args::RouteArgs>(attr)?;
     let item_fn: syn::ItemFn = syn::parse2(item.clone()).map_err(|e| syn::Error::new(e.span(), "#[route] attribute: can only be applied to functions, not other items. Move or remove the attribute."))?;
     validate_route_fn(&item_fn)?;
-    let fn_sig = &item_fn.sig;
+    let source_file = proc_macro2::Span::call_site().local_file();
+    let fn_sig = &stored_signature(&item_fn.sig, source_file.as_deref());
 
     // Store route metadata for later consumption by vespera!() macro
+    let (summary, description) = crate::route::doc_summary_and_description(
+        route_args.summary.as_ref().map(syn::LitStr::value),
+        route_args.description.as_ref().map(syn::LitStr::value),
+        &item_fn.attrs,
+    );
     let stored = StoredRouteInfo {
         fn_name: item_fn.sig.ident.to_string(),
         method: route_args.method.as_ref().map(syn::Ident::to_string),
@@ -296,7 +320,7 @@ pub fn process_route_attribute(
         },
         headers: route_args.headers.unwrap_or_default(),
         operation_id: route_args.operation_id.as_ref().map(syn::LitStr::value),
-        summary: route_args.summary.as_ref().map(syn::LitStr::value),
+        summary,
         request_example: route_args
             .request_example
             .as_ref()
@@ -305,20 +329,46 @@ pub fn process_route_attribute(
             .response_example
             .as_ref()
             .map(parse_example_string),
-        deprecated: route_args.deprecated,
-        description: route_args
-            .description
-            .as_ref()
-            .map(syn::LitStr::value)
-            .or_else(|| crate::route::extract_doc_comment(&item_fn.attrs)),
+        deprecated: route_args.deprecated || crate::route::has_deprecated_attr(&item_fn.attrs),
+        description,
         fn_sig_str: quote::quote!(#fn_sig).to_string(),
-        file_path: proc_macro2::Span::call_site()
-            .local_file()
-            .map(|p| p.display().to_string()),
+        file_path: source_file.map(|p| p.display().to_string()),
     };
     register_route(stored);
 
-    Ok(item)
+    let assertions = route_args
+        .responses
+        .as_ref()
+        .map(typed_response_assertions)
+        .unwrap_or_default();
+    let mut output = item;
+    output.extend(assertions);
+    Ok(output)
+}
+
+/// `T: ::vespera::Schema` assertions for every type in
+/// `responses = [(404, NotFound), ...]`, spanned at the type path.
+///
+/// The OpenAPI document references each type as a component schema; a type
+/// without `#[derive(Schema)]` (or a typo) would otherwise emit a dangling
+/// `$ref`. With the assertion it is a compile error pointing at the type.
+fn typed_response_assertions(arr: &syn::ExprArray) -> proc_macro2::TokenStream {
+    let assertions = arr.elems.iter().filter_map(|elem| match elem {
+        syn::Expr::Tuple(tuple) => match tuple.elems.get(1) {
+            Some(syn::Expr::Path(path)) => {
+                let path = &path.path;
+                Some(quote::quote_spanned! { syn::spanned::Spanned::span(path) =>
+                    const _: () = {
+                        const fn __vespera_assert_schema<T: ::vespera::Schema + ?Sized>() {}
+                        let _ = __vespera_assert_schema::<#path>;
+                    };
+                })
+            }
+            _ => None,
+        },
+        _ => None,
+    });
+    quote::quote! { #(#assertions)* }
 }
 
 #[cfg(test)]
@@ -389,6 +439,26 @@ mod tests {
         assert!(result.is_ok());
         // Should return the original item unchanged
         assert_eq!(result.unwrap().to_string(), item.to_string());
+    }
+
+    #[test]
+    fn typed_responses_emit_schema_assertions() {
+        let attr = quote!(get, responses = [(404, NotFound), (409, errors::Conflict)]);
+        let item = quote!(
+            pub async fn handler() -> String {
+                "ok".to_string()
+            }
+        );
+        let output = process_route_attribute(attr, item).unwrap();
+        let file: syn::File = syn::parse2(output).unwrap();
+        insta::assert_snapshot!(
+            "route_typed_response_schema_assertions",
+            prettyplease::unparse(&file)
+        );
+
+        // Non-path entries (rejected by the argument parser) emit nothing.
+        let array: syn::ExprArray = syn::parse_quote!([(404, 1), 2]);
+        assert!(typed_response_assertions(&array).is_empty());
     }
 
     #[test]
@@ -704,5 +774,30 @@ mod tests {
         let array = syn::parse2::<syn::ExprArray>(source).expect("valid response array fixture");
 
         assert_eq!(extract_typed_responses(&array), expected);
+    }
+
+    #[test]
+    fn stored_signature_expands_return_alias_from_source_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("users.rs");
+        std::fs::write(&file, "pub type ApiResult<T> = Result<Json<T>, AppError>;").unwrap();
+
+        let aliased: syn::Signature = syn::parse_quote!(async fn get_user() -> ApiResult<User>);
+        let stored = stored_signature(&aliased, Some(&file));
+        assert_eq!(
+            quote!(#stored).to_string(),
+            "async fn get_user () -> Result < Json < User > , AppError >"
+        );
+
+        // Without a source file, or for a return type that cannot be an
+        // alias, the signature is stored verbatim.
+        let unchanged = stored_signature(&aliased, None);
+        assert_eq!(quote!(#unchanged).to_string(), quote!(#aliased).to_string());
+        let plain: syn::Signature = syn::parse_quote!(async fn list() -> Json<Vec<User>>);
+        let stored_plain = stored_signature(&plain, Some(&file));
+        assert_eq!(
+            quote!(#stored_plain).to_string(),
+            quote!(#plain).to_string()
+        );
     }
 }

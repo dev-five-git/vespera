@@ -700,6 +700,26 @@ fn media_shape(
 #[case::result_impl_ok("-> Result<impl IntoResponse, String>", "200", None)]
 #[case::result_impl_err_text("-> Result<impl IntoResponse, String>", "400", Some(("text/plain", SchemaType::String, None)))]
 #[case::result_html_err("-> Result<Redirect, Html<String>>", "400", Some(("text/html", SchemaType::String, None)))]
+// `()` is an empty body (no content); `Json<()>` still serializes `null`.
+#[case::unit_ok("-> Result<(), String>", "200", None)]
+#[case::unit_plain("-> ()", "200", None)]
+#[case::status_unit("-> (StatusCode, ())", "200", None)]
+#[case::json_unit("-> Json<()>", "200", Some(("application/json", SchemaType::Null, None)))]
+// axum's one-argument `Result<T>`: opaque `ErrorResponse` error.
+#[case::axum_result_ok(
+    "-> axum::response::Result<Json<i32>>",
+    "200",
+    Some(("application/json", SchemaType::Integer, Some("int32")))
+)]
+#[case::axum_result_err("-> axum::response::Result<Json<i32>>", "400", None)]
+#[case::explicit_error_response("-> Result<Json<i32>, ErrorResponse>", "400", None)]
+// An unexpanded alias / non-Schema type is description-only, not `{type: object}`.
+#[case::unresolved_alias("-> ApiResult<User>", "200", None)]
+#[case::unknown_named_type("-> CustomResponse", "200", None)]
+#[case::bare_result("-> Result", "200", Some(("application/json", SchemaType::Object, None)))]
+#[case::result_lifetime_arg("-> Result<'static, Json<i32>>", "200", Some(("application/json", SchemaType::Integer, Some("int32"))))]
+#[case::header_array_in_tuple("-> (StatusCode, [(HeaderName, &'static str); 1])", "200", None)]
+#[case::bare_fn("-> fn()", "200", Some(("application/json", SchemaType::Object, None)))]
 fn opaque_and_raw_bodies(
     #[case] return_type: &str,
     #[case] status: &str,
