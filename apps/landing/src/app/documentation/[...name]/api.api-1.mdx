@@ -17,9 +17,52 @@ let app = vespera!(
         { url = "https://api.example.com", description = "Production" },
         { url = "http://localhost:3000",   description = "Development" }
     ],
+    security_schemes = [               // OpenAPI components.securitySchemes
+        { name = "bearerAuth", type = "http", scheme = "bearer", bearer_format = "JWT" },
+        { name = "apiKey", type = "apiKey", in = "header", header_name = "X-API-Key" }
+    ],
+    security = ["bearerAuth"],         // Optional document-level security
+    tags = [                           // OpenAPI top-level tag descriptions
+        { name = "users", description = "User operations" },
+        { name = "admin", description = "Admin operations" }
+    ],
     merge = [crate1::App1, crate2::App2]  // Merge child vespera apps
 );
 ```
+
+A relative `openapi` path resolves against the crate's `CARGO_MANIFEST_DIR`, so a workspace member writes the file next to its own `Cargo.toml`.
+
+## OpenAPI `info` and `servers`
+
+- `title` and `version` fill `info.title` / `info.version` (defaults: `"API"` and the crate's `CARGO_PKG_VERSION`).
+- `info.description` defaults to the crate's `description` from `Cargo.toml`.
+- Without `servers = [...]` (or `VESPERA_SERVER_URL`) the document has **no** `servers` entry, so Swagger UI and generated clients call the origin that serves the spec.
+- `tags = [...]` adds top-level tag descriptions for the tags your routes use.
+
+## Security Schemes
+
+Declare schemes with `security_schemes`, then attach requirements to routes with `#[vespera::route(security = [...])]`. Each entry becomes an OpenAPI security requirement with empty scopes; `security = []` on a route emits an explicitly unauthenticated operation. A route referencing an unknown scheme is a compile error (checked after `merge`).
+
+```rust
+let app = vespera!(
+    openapi = "openapi.json",
+    docs_url = "/docs",
+    security_schemes = [
+        { name = "bearerAuth", type = "http", scheme = "bearer", bearer_format = "JWT" },
+        { name = "apiKey", type = "apiKey", in = "header", header_name = "X-API-Key" },
+        { name = "basicAuth", type = "http", scheme = "basic" }
+    ],
+    security = ["bearerAuth"] // optional document-level default
+);
+
+#[vespera::route(get, path = "/me", security = ["bearerAuth"])]
+pub async fn current_user(...) -> ... { ... }
+
+#[vespera::route(get, path = "/health", security = [])]
+pub async fn health() -> &'static str { "ok" }
+```
+
+Supported `type` values are OpenAPI's camelCase wire names: `"apiKey"`, `"http"`, `"mutualTLS"`, `"oauth2"` and `"openIdConnect"`. The DSL uses `header_name` for the api-key `name` field so it does not clash with the scheme's own `name`.
 
 ## Environment Variable Fallbacks
 
@@ -50,6 +93,15 @@ let app = vespera!(
     spec_url = "/openapi.json"
 );
 ```
+
+The pinned asset versions are `swagger-ui-dist` 5.34.0 and `redoc` 2.5.4; a page behind a Content Security Policy must allow those unpkg URLs. The renderers are public in `vespera::docs` if you want to serve a page yourself:
+
+| Item | Description |
+|------|-------------|
+| `swagger_ui_html(spec_json: &str) -> String` | Swagger UI page with the spec embedded |
+| `redoc_html(spec_json: &str) -> String` | ReDoc page with the spec embedded |
+| `escape_json_for_script(json: &str) -> String` | Escapes `<`, `>`, `&`, U+2028 and U+2029 so JSON is safe inside `<script>` |
+| `SWAGGER_UI_VERSION` / `REDOC_VERSION` | The pinned asset versions |
 
 ## Common Patterns
 
@@ -126,7 +178,25 @@ async fn main() -> std::io::Result<()> {
 }
 ```
 
-`addr` accepts anything `tokio::net::ToSocketAddrs` takes — strings like `"0.0.0.0:3000"`, tuples like `([0, 0, 0, 0], 3000)`, or a `SocketAddr`.
+`addr` accepts anything `tokio::net::ToSocketAddrs` takes — strings like `"0.0.0.0:3000"`, tuples like `("127.0.0.1", 8080)`, or a `SocketAddr`.
+
+The router is served with `ConnectInfo<SocketAddr>`, so handlers can extract the peer address with `ConnectInfo(addr): ConnectInfo<SocketAddr>`.
+
+`serve_with_graceful_shutdown(addr, signal)` stops accepting connections once `signal` resolves and returns after in-flight requests finish:
+
+```rust
+use vespera::{vespera, Serve};
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    vespera!(docs_url = "/docs")
+        .serve_with_graceful_shutdown("0.0.0.0:3000", async {
+            // requires tokio's `signal` feature
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await
+}
+```
 
 ## export_app! Macro
 

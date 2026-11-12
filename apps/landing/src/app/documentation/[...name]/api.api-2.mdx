@@ -28,7 +28,34 @@ pub async fn get_user(Path(id): Path<u32>) -> Json<User> { ... }
 | method | `get`, `post`, `put`, `patch`, `delete`, `head`, `options` | `get` | HTTP method |
 | `path` | string | `""` | Path suffix appended to the file-based prefix |
 | `tags` | string array | `[]` | OpenAPI tags for grouping in Swagger UI |
-| `description` | string | `""` | OpenAPI operation description |
+| `operation_id` | string | function name | OpenAPI `operationId`. Colliding default ids are module-qualified; two identical explicit ids are a compile error |
+| `summary` | string | first paragraph of the doc comment | OpenAPI operation summary |
+| `description` | string | doc comment after its first paragraph | OpenAPI operation description (the whole doc comment when `summary` is given). An explicit value disables doc-comment extraction |
+| `status` | `2xx` integer | `200` | Success status, e.g. `status = 204`; `204` / `304` document no body. A non-`2xx` value is a compile error |
+| `error_status` | integer array | none | Extra schema-less error statuses, e.g. `error_status = [404]` |
+| `responses` | `[(status, Type)]` | none | Typed error bodies, e.g. `responses = [(404, NotFoundError)]`; `Type` must implement `Schema` |
+| `security` | string array | document default | Security requirements, e.g. `security = ["bearerAuth"]`; `security = []` marks the operation unauthenticated |
+| `headers` | array of `{ name, required?, description? }` | none | Header parameters read by custom extractors; `required` defaults to `false` |
+| `request_example` | JSON string | none | Request body example; invalid JSON is emitted as a string value |
+| `response_example` | JSON string | none | `200` response example; invalid JSON is emitted as a string value |
+| `deprecated` | bare flag | off | Marks the operation `deprecated: true` (`#[deprecated]` on the handler does the same) |
+
+```rust
+#[vespera::route(
+    put,
+    path = "/{id}",
+    tags = ["users"],
+    operation_id = "updateUser",
+    summary = "Update a user",
+    security = ["bearerAuth"],
+    headers = [{ name = "X-Trace-Id" }],
+    request_example = r#"{"name":"Alice"}"#,
+    deprecated
+)]
+pub async fn update_user(...) -> ... { ... }
+```
+
+Without `summary` / `description`, the handler's doc comment is used: its first paragraph becomes the `summary`, the remaining paragraphs the `description`.
 
 ## Extractor to OpenAPI Mapping
 
@@ -188,6 +215,17 @@ pub async fn get_user(
     }
     Ok(Json(User { id, name: "Alice".into() }))
 }
+```
+
+A handler returning `Result<_, E>` documents a single inferred `400` error, because the macro cannot read the runtime `StatusCode`. Declare the real statuses with `responses` (typed bodies, a JSON `$ref` per status) and/or `error_status` (schema-less). As soon as any of them is present the explicit set is authoritative and the inferred `400` is dropped unless you list it; a typed `responses` entry wins over `error_status` for the same code.
+
+```rust
+#[vespera::route(get, path = "/{id}", responses = [(404, ApiError)])]
+pub async fn get_user(...) -> Result<Json<User>, (StatusCode, Json<ApiError>)> { ... }
+
+// 204 success + 404 error — no 200, no 400
+#[vespera::route(delete, path = "/{id}", status = 204, error_status = [404])]
+pub async fn delete_user(Path(id): Path<u32>) -> Result<StatusCode, (StatusCode, String)> { ... }
 ```
 
 ## Handler Requirements
