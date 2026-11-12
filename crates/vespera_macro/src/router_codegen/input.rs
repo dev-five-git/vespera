@@ -142,49 +142,49 @@ impl Parse for AutoRouterInput {
 
         Ok(Self {
             dir: dir.or_else(|| {
-                std::env::var("VESPERA_DIR")
+                crate::env_access::var("VESPERA_DIR")
                     .map(|f| LitStr::new(&f, Span::call_site()))
                     .ok()
             }),
             openapi: openapi.or_else(|| {
-                std::env::var("VESPERA_OPENAPI")
+                crate::env_access::var("VESPERA_OPENAPI")
                     .map(|f| vec![LitStr::new(&f, Span::call_site())])
                     .ok()
             }),
             title: title.or_else(|| {
-                std::env::var("VESPERA_TITLE")
+                crate::env_access::var("VESPERA_TITLE")
                     .map(|f| LitStr::new(&f, Span::call_site()))
                     .ok()
             }),
             version: version
                 .or_else(|| {
-                    std::env::var("VESPERA_VERSION")
+                    crate::env_access::var("VESPERA_VERSION")
                         .map(|f| LitStr::new(&f, Span::call_site()))
                         .ok()
                 })
                 .or_else(|| {
-                    std::env::var("CARGO_PKG_VERSION")
+                    crate::env_access::var("CARGO_PKG_VERSION")
                         .map(|f| LitStr::new(&f, Span::call_site()))
                         .ok()
                 }),
             docs_url: docs_url.or_else(|| {
-                std::env::var("VESPERA_DOCS_URL")
+                crate::env_access::var("VESPERA_DOCS_URL")
                     .map(|f| LitStr::new(&f, Span::call_site()))
                     .ok()
             }),
             redoc_url: redoc_url.or_else(|| {
-                std::env::var("VESPERA_REDOC_URL")
+                crate::env_access::var("VESPERA_REDOC_URL")
                     .map(|f| LitStr::new(&f, Span::call_site()))
                     .ok()
             }),
             servers: servers.or_else(|| {
-                std::env::var("VESPERA_SERVER_URL")
+                crate::env_access::var("VESPERA_SERVER_URL")
                     .ok()
                     .filter(|url| url.starts_with("http://") || url.starts_with("https://"))
                     .map(|url| {
                         vec![ServerConfig {
                             url,
-                            description: std::env::var("VESPERA_SERVER_DESCRIPTION").ok(),
+                            description: crate::env_access::var("VESPERA_SERVER_DESCRIPTION").ok(),
                         }]
                     })
             }),

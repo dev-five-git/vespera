@@ -77,10 +77,8 @@ mod tests {
     use crate::schema_macro::file_lookup::find_struct_from_path;
 
     use super::*;
-    use serial_test::serial;
     use tempfile::TempDir;
     #[test]
-    #[serial]
     fn test_find_fk_column_from_target_entity_success() {
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
@@ -96,17 +94,10 @@ pub struct Model {
 }
 "#;
         std::fs::write(models_dir.join("notification.rs"), notification_model).unwrap();
-        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
         let result =
             find_fk_column_from_target_entity("crate::models::notification::Schema", "TargetUser");
-        unsafe {
-            if let Some(dir) = original {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
         assert_eq!(
             result,
             Some("target_user_id".to_string()),
@@ -114,7 +105,6 @@ pub struct Model {
         );
     }
     #[test]
-    #[serial]
     fn test_find_fk_column_from_target_entity_mod_rs() {
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
@@ -129,17 +119,10 @@ pub struct Model {
 }
 "#;
         std::fs::write(models_dir.join("mod.rs"), notification_model).unwrap();
-        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
         let result =
             find_fk_column_from_target_entity("crate::models::notification::Schema", "Sender");
-        unsafe {
-            if let Some(dir) = original {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
         assert_eq!(
             result,
             Some("sender_id".to_string()),
@@ -147,63 +130,38 @@ pub struct Model {
         );
     }
     #[test]
-    #[serial]
     fn test_find_fk_column_from_target_entity_empty_module_segments() {
         let temp_dir = TempDir::new().unwrap();
-        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
         let result = find_fk_column_from_target_entity("crate::Schema", "SomeRelation");
-        unsafe {
-            if let Some(dir) = original {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
         assert!(result.is_none(), "Empty module segments should return None");
     }
     #[test]
-    #[serial]
     fn test_find_fk_column_from_target_entity_file_not_found() {
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
         std::fs::create_dir_all(&src_dir).unwrap();
-        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
         let result =
             find_fk_column_from_target_entity("crate::models::nonexistent::Schema", "SomeRelation");
-        unsafe {
-            if let Some(dir) = original {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
         assert!(result.is_none(), "Non-existent file should return None");
     }
     #[test]
-    #[serial]
     fn test_find_fk_column_from_target_entity_unparseable_file() {
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
         let models_dir = src_dir.join("models");
         std::fs::create_dir_all(&models_dir).unwrap();
         std::fs::write(models_dir.join("broken.rs"), "this is not valid rust {{{{").unwrap();
-        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
         let result =
             find_fk_column_from_target_entity("crate::models::broken::Schema", "SomeRelation");
-        unsafe {
-            if let Some(dir) = original {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
         assert!(result.is_none(), "Unparseable file should return None");
     }
     #[test]
-    #[serial]
     fn test_find_fk_column_from_target_entity_no_model_struct() {
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
@@ -216,24 +174,16 @@ pub struct SomethingElse {
 pub enum Status { Active, Inactive }
 ";
         std::fs::write(models_dir.join("nomodel.rs"), content).unwrap();
-        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
         let result =
             find_fk_column_from_target_entity("crate::models::nomodel::Schema", "SomeRelation");
-        unsafe {
-            if let Some(dir) = original {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
         assert!(
             result.is_none(),
             "File without Model struct should return None"
         );
     }
     #[test]
-    #[serial]
     fn test_find_fk_column_from_target_entity_no_matching_relation_enum() {
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
@@ -248,24 +198,16 @@ pub struct Model {
 }
 "#;
         std::fs::write(models_dir.join("comment.rs"), model).unwrap();
-        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
         let result =
             find_fk_column_from_target_entity("crate::models::comment::Schema", "TargetUser");
-        unsafe {
-            if let Some(dir) = original {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
         assert!(
             result.is_none(),
             "Non-matching relation_enum should return None"
         );
     }
     #[test]
-    #[serial]
     fn test_find_fk_column_from_target_entity_tuple_struct() {
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
@@ -273,21 +215,13 @@ pub struct Model {
         std::fs::create_dir_all(&models_dir).unwrap();
         let model = "pub struct Model(i32, String);";
         std::fs::write(models_dir.join("tuple.rs"), model).unwrap();
-        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
         let result =
             find_fk_column_from_target_entity("crate::models::tuple::Schema", "SomeRelation");
-        unsafe {
-            if let Some(dir) = original {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
         assert!(result.is_none(), "Tuple struct Model should return None");
     }
     #[test]
-    #[serial]
     fn test_find_fk_column_from_target_entity_field_no_from_attr() {
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
@@ -302,24 +236,16 @@ pub struct Model {
 }
 "#;
         std::fs::write(models_dir.join("nofrom.rs"), model).unwrap();
-        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
         let result =
             find_fk_column_from_target_entity("crate::models::nofrom::Schema", "TargetUser");
-        unsafe {
-            if let Some(dir) = original {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
         assert!(
             result.is_none(),
             "Field without 'from' attribute should return None"
         );
     }
     #[test]
-    #[serial]
     fn test_find_struct_from_path_qualified_module_path() {
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
@@ -330,17 +256,10 @@ pub struct Model {
             "pub struct Model { pub id: i32, pub name: String }",
         )
         .unwrap();
-        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
         let ty: syn::Type = syn::parse_str("crate::models::user::Model").unwrap();
         let result = find_struct_from_path(&ty, None);
-        unsafe {
-            if let Some(dir) = original {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
         assert!(
             result.is_some(),
             "Should find Model struct via qualified path"
@@ -357,7 +276,6 @@ pub struct Model {
         );
     }
     #[test]
-    #[serial]
     fn test_find_struct_from_path_mod_rs_variant() {
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
@@ -368,17 +286,10 @@ pub struct Model {
             "pub struct Model { pub id: i32, pub email: String }",
         )
         .unwrap();
-        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
         let ty: syn::Type = syn::parse_str("crate::models::user::Model").unwrap();
         let result = find_struct_from_path(&ty, None);
-        unsafe {
-            if let Some(dir) = original {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
         assert!(result.is_some(), "Should find Model struct via mod.rs path");
         let (metadata, _) = result.unwrap();
         assert!(
@@ -387,7 +298,6 @@ pub struct Model {
         );
     }
     #[test]
-    #[serial]
     fn test_find_fk_column_parse_struct_cached_failure() {
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
@@ -400,17 +310,10 @@ pub struct Model {
             "Model",
             "not valid rust {{ struct }}",
         );
-        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
         let result =
             find_fk_column_from_target_entity("crate::models::item::Schema", "SomeRelation");
-        unsafe {
-            if let Some(dir) = original {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
         assert!(
             result.is_none(),
             "Should return None when struct definition fails to parse"

@@ -234,7 +234,7 @@ pub fn ensure_openapi_files_from_cache(
 /// `target/vespera/` directory — with a single shared file name, crate
 /// A's `include_str!` could read the spec crate B just wrote.
 pub(super) fn embed_spec_path() -> std::path::PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let manifest_dir = crate::env_access::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     find_target_dir(Path::new(&manifest_dir))
         .join("vespera")
         .join(format!("vespera_spec-{}.json", current_crate_tag()))
@@ -243,7 +243,7 @@ pub(super) fn embed_spec_path() -> std::path::PathBuf {
 /// Path of the pretty-spec sidecar (warm-rebuild source for
 /// `openapi.json` recovery — see `ensure_openapi_files_from_cache`).
 pub(super) fn pretty_sidecar_path() -> std::path::PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let manifest_dir = crate::env_access::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     find_target_dir(Path::new(&manifest_dir))
         .join("vespera")
         .join(format!("openapi_pretty-{}.json", current_crate_tag()))

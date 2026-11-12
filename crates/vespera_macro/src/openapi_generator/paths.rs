@@ -532,13 +532,19 @@ pub(super) fn parallel_filter_map<T: Sync, R: Send>(
     let chunk_size = jobs.len().div_ceil(workers);
     // Workers do not inherit the caller's thread-locals.
     let input_names = request_view::snapshot();
+    #[cfg(test)]
+    let test_env = crate::env_access::test_env::snapshot();
     std::thread::scope(|scope| {
         let handles: Vec<_> = jobs
             .chunks(chunk_size)
             .map(|chunk| {
                 let input_names = std::sync::Arc::clone(&input_names);
+                #[cfg(test)]
+                let test_env = std::sync::Arc::clone(&test_env);
                 scope.spawn(move || {
                     request_view::install(input_names);
+                    #[cfg(test)]
+                    crate::env_access::test_env::install(test_env);
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         let results: syn::Result<Vec<R>> =
                             chunk.iter().filter_map(|job| f(job).transpose()).collect();

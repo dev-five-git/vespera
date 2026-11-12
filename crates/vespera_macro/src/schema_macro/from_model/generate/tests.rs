@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use rstest::rstest;
-use serial_test::serial;
 
 use super::*;
 
@@ -10,7 +9,7 @@ use super::*;
 // Every scenario snapshots the FULL generated `impl` (pretty-printed
 // Rust) under an explicit name — one reviewable artifact per code
 // path instead of fragile `contains` probes.  All cases run
-// `#[serial]` inside a temp `CARGO_MANIFEST_DIR` so file-lookup
+// inside a (thread-local) temp `CARGO_MANIFEST_DIR` so file-lookup
 // branches are deterministic and isolated.
 
 fn pretty(tokens: &TokenStream) -> String {
@@ -106,9 +105,7 @@ fn run_scenario(
         std::fs::write(models_dir.join(file), source).unwrap();
     }
 
-    let original = std::env::var("CARGO_MANIFEST_DIR").ok();
-    // SAFETY: every caller is a #[serial] test.
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+    let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
 
     let tokens = generate_from_model_with_relations(
         &syn::Ident::new(new_type, proc_macro2::Span::call_site()),
@@ -118,15 +115,6 @@ fn run_scenario(
         &module.iter().map(ToString::to_string).collect::<Vec<_>>(),
         &HashMap::new(),
     );
-
-    // SAFETY: same as above.
-    unsafe {
-        match original {
-            Some(dir) => std::env::set_var("CARGO_MANIFEST_DIR", dir),
-            None => std::env::remove_var("CARGO_MANIFEST_DIR"),
-        }
-    }
-
     pretty(&tokens)
 }
 
@@ -378,7 +366,6 @@ fn run_scenario(
         )],
         &["crate", "models", "user"]
     )]
-#[serial]
 fn generate_from_model_scenario_snapshot(
     #[case] snapshot_name: &str,
     #[case] models: &[(&str, &str)],
