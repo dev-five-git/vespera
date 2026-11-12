@@ -492,8 +492,8 @@ let app = vespera!(
 | `path` | Route suffix appended to the file-based path |
 | `tags` | OpenAPI operation tags, e.g. `tags = ["users"]` |
 | `operation_id` | OpenAPI operationId override, e.g. `operation_id = "getUser"`; defaults to the Rust function name |
-| `summary` | OpenAPI operation summary, e.g. `summary = "Get a user"` |
-| `description` | OpenAPI operation description; otherwise doc comments are used |
+| `summary` | OpenAPI operation summary, e.g. `summary = "Get a user"`; otherwise the first paragraph of the doc comment |
+| `description` | OpenAPI operation description; otherwise the doc comment after its first paragraph (the whole doc comment when `summary` is given) |
 | `status` | Success-response status override (must be `2xx`), e.g. `status = 204`; re-keys the inferred `200` response (no body for `204`/`304`) |
 | `error_status` | Extra error status codes to include in OpenAPI responses; declaring any makes the explicit error set authoritative (see below) |
 | `responses` | Typed error responses, e.g. `responses = [(404, NotFoundError), (400, crate::errors::BadRequestError)]`; declaring any makes the explicit error set authoritative (see below) |
@@ -534,6 +534,8 @@ All parameters support environment variable fallbacks:
 | `servers` | `VESPERA_SERVER_URL` + `VESPERA_SERVER_DESCRIPTION` |
 
 **Priority**: Macro parameter > Environment variable > Default
+
+Without `servers` the document has no `servers` entry, so clients use the origin that serves it. `info.description` defaults to the crate's `description` from `Cargo.toml`.
 
 ---
 

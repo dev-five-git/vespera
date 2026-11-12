@@ -29,6 +29,31 @@ of an existing 0.5 application.
   payloads in internally tagged newtype variants.
 - Known `headers::*` `TypedHeader` parameters use the real header name.
 
+### OpenAPI accuracy (`vespera`, `vespera_macro`, `vespera_core`)
+
+- No default `servers: [{url: "http://localhost:3000"}]`; `servers` is omitted
+  unless configured. `info.description` defaults to the crate description.
+- Handler doc comments: the first paragraph becomes `summary`, the rest
+  `description` (previously the whole comment was the `description`).
+- `#[schema(name = "X")]` types are referenced as `$ref X` everywhere.
+- Recursive generic instantiations become components named
+  `Base_Arg` (`Tree<i32>` → `Tree_i32`); non-recursive generics stay inline.
+- `Result<(), E>` / `()` document an empty `200` without content; 1-argument
+  `axum::response::Result<T>` and user `Result` aliases are expanded; unknown
+  return types get a description-only `200` instead of `{type: object}`.
+- `rename_all` follows serde exactly for fields vs. variants (`XMLParser` →
+  `xMLParser` with `camelCase`); `rename(serialize, deserialize)` sides are
+  never mixed; per-variant `#[serde(untagged)]` is supported.
+- Doc comments keep Markdown indentation; `#[deprecated]` handlers / fields,
+  `skip_deserializing` (`readOnly`) and `skip_serializing` (`writeOnly`) are
+  documented; query/path field docs become parameter descriptions.
+- `Query<T>` honours container `#[serde(default)]` and `Option<Query<T>>`
+  (optional parameters) and destructured / `_` patterns.
+- New compile errors: `#[route(responses = [(404, T)])]` with a `T` that does
+  not implement `Schema`, and `#[route]` handlers inside inline `mod { .. }`
+  blocks. `#[cfg]`-gated route modules / handlers that are compiled out are
+  skipped.
+
 ### `Validated<T>`
 
 - `Json` / `Form` / `Query` / `Path` deserialization failures now return

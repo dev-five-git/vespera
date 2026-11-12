@@ -290,7 +290,7 @@ npx @apidevtools/swagger-cli validate openapi.json
 | `VESPERA_VERSION` | API version | `CARGO_PKG_VERSION` |
 | `VESPERA_DOCS_URL` | Swagger UI path | none |
 | `VESPERA_REDOC_URL` | ReDoc path | none |
-| `VESPERA_SERVER_URL` | Server URL | `http://localhost:3000` |
+| `VESPERA_SERVER_URL` | Server URL | none (`servers` omitted → same origin) |
 
 ---
 

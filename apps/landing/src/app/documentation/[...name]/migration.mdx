@@ -30,6 +30,27 @@ Code that previously compiled with a silently wrong spec now fails at compile ti
 - an internally tagged enum (`#[serde(tag = "...")]`) with a scalar newtype payload,
 - duplicate explicit `operation_id`s.
 
+## OpenAPI Accuracy Changes
+
+These changes alter the generated document of an existing application without any code change:
+
+- **No default server.** `servers: [{ url: "http://localhost:3000" }]` is no longer emitted; without `servers = [...]` / `VESPERA_SERVER_URL` the document omits `servers`, so Swagger UI and clients call the origin that serves the spec. Add `servers = [{ url = "http://localhost:3000" }]` to keep the old output.
+- **Summary from doc comments.** The first paragraph of a handler's doc comment becomes the operation `summary`, the remaining paragraphs the `description` (previously the whole comment was the `description`). An explicit `summary = "..."` keeps the whole doc comment as the description; an explicit `description = "..."` disables doc-comment extraction.
+- **`info.description`** defaults to the crate's `description` in `Cargo.toml`.
+- **Renamed schemas** (`#[schema(name = "UserDto")]`) are referenced by their custom name instead of an inline `{ "type": "object" }`.
+- **Recursive generics** such as `Tree<i32>` (`struct Tree<T> { children: Vec<Tree<T>> }`) become components named after the instantiation — base name plus each type argument joined with `_` (`Tree_i32`, `Tree_Vec_User`). Non-recursive generics (`Page<User>`) are still inlined.
+- **Unit and alias returns.** `Result<(), E>` and `()` document an empty `200` without `content`; `axum::response::Result<T>` documents its `ErrorResponse`; `type ApiResult<T> = Result<Json<T>, AppError>` aliases are expanded; an unresolvable return type is documented by description only.
+- **serde naming.** `rename_all` now applies serde's exact field and variant rules (variant `XMLParser` with `camelCase` is `xMLParser`), and `rename(serialize = "..", deserialize = "..")` uses the deserialize name for request-only contexts (query / path parameters).
+- **More annotations**: `#[deprecated]` handlers and fields emit `deprecated: true`, `skip_deserializing` fields `readOnly`, `skip_serializing` fields `writeOnly`; doc comments keep Markdown indentation; per-variant `#[serde(untagged)]` emits an `anyOf`.
+- **Query parameters** honour container `#[serde(default)]`, `Option<Query<T>>` (all optional) and destructured `Query(Filter { .. })` / `_` patterns.
+
+### New compile errors (OpenAPI accuracy)
+
+- `#[route(responses = [(404, NotFound)])]` where `NotFound` does not implement `Schema` (previously a dangling `$ref`).
+- A `#[route]` handler inside an inline `mod name { .. }` block of a route file (it could never be mounted; move it to its own file).
+
+Route modules declared behind `#[cfg(...)]` that are compiled out, and `#[cfg]`-gated handlers, are now skipped instead of producing an unresolved path.
+
 ## `Validated<T>` Deserialization Errors
 
 `Validated<Json<T>>`, `Validated<Form<T>>`, `Validated<Query<T>>` and `Validated<Path<T>>` now turn **deserialization failures** (wrong type, missing field, unparsable value) into `422 Unprocessable Entity` with the same `{"errors":[{"path","message"}]}` envelope as rule violations. Previously these returned axum's plain-text rejections (`422` / `400`). Malformed JSON syntax (`400`) and `415` content-type errors are unchanged. See [Validated & 422](/documentation/concept/concept-3).
