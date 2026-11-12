@@ -32,7 +32,7 @@ use tokio::net::ToSocketAddrs;
 /// Extension trait that adds a one-liner [`Serve::serve`] method to
 /// any [`axum::Router`].
 pub trait Serve {
-    /// Bind a TCP listener to `addr` and drive [`axum::serve`] until
+    /// Bind a TCP listener to `addr` and drive [`axum::serve()`] until
     /// the listener stops.
     ///
     /// `addr` accepts anything that implements

@@ -60,7 +60,7 @@ impl std::fmt::Display for StreamAbort {
 
 impl std::error::Error for StreamAbort {}
 
-/// **Streaming** sibling of [`dispatch_from_bytes_async`].
+/// **Streaming** sibling of [`crate::dispatch_from_bytes_async`].
 ///
 /// Drives the dispatch end-to-end like the non-streaming variant but
 /// emits the response body **chunk-by-chunk via `on_chunk`** instead
@@ -87,7 +87,7 @@ impl std::error::Error for StreamAbort {}
 /// callback should treat it as ephemeral (e.g. write it to an
 /// `OutputStream`, accumulate it on disk, …).
 ///
-/// Failure modes are identical to [`dispatch_from_bytes_async`] —
+/// Failure modes are identical to [`crate::dispatch_from_bytes_async`] —
 /// returns a valid wire-format error response (header + body) when
 /// the wire input is malformed, the version is wrong, no app is
 /// registered, or the handler reports a pre-dispatch error.  In the
@@ -465,7 +465,7 @@ where
 /// which is inherently blocking.  That blocking producer is started
 /// lazily on the first request-body poll, so handlers that never read
 /// the body never touch the `InputStream`. Backpressure is enforced by
-/// a bounded mpsc channel ([`effective_streaming_channel_capacity`] slots,
+/// a bounded mpsc channel ([`crate::effective_streaming_channel_capacity`] slots,
 /// default 16): if axum reads slowly, the `pull_chunk` call blocks
 /// naturally.
 ///

@@ -16,7 +16,7 @@
 //!
 //! Both apps share the same Rust process / same Tokio runtime / same
 //! JNI bridge — Spring picks the target per request based on the
-//! configured [`AppNameResolver`].
+//! configured `AppNameResolver` (a Java-side bean in `vespera-bridge`).
 
 mod admin_routes;
 mod routes;

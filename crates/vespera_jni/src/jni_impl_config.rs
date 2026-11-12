@@ -74,7 +74,7 @@ fn read_env_usize(var: &str, default: usize, min: usize, max: usize) -> usize {
     )
 }
 
-/// Worker thread count for the shared [`RUNTIME`](super::RUNTIME), resolved once
+/// Worker thread count for the shared Tokio runtime, resolved once
 /// (first hit wins, then fixed for the process lifetime):
 ///
 /// 1. [`set_runtime_worker_threads`] called before the runtime is

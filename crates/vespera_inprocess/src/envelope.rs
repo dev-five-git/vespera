@@ -55,8 +55,8 @@ impl ResponseMetadata {
 /// `body` carries the response body decoded as UTF-8 text.  For
 /// binary responses that are not valid UTF-8, `body` will be the
 /// empty string — callers that need raw bytes must use the binary
-/// wire path ([`dispatch_from_bytes`]) instead of [`dispatch_typed`]
-/// / [`dispatch_owned`].
+/// wire path ([`crate::dispatch_from_bytes`]) instead of
+/// [`crate::dispatch_typed`] / [`crate::dispatch_owned`].
 #[derive(Debug, Serialize)]
 pub struct ResponseEnvelope {
     pub status: u16,

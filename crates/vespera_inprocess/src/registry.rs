@@ -121,7 +121,7 @@ fn validate_app_name(name: &str) -> Result<&str, String> {
 /// routed here.
 ///
 /// Any FFI boundary (JNI, C, WASM) calls this once at init time, then
-/// uses [`dispatch_from_bytes`] on each request.
+/// uses [`crate::dispatch_from_bytes`] on each request.
 ///
 /// # Second-call semantics
 ///
@@ -157,7 +157,7 @@ where
 ///
 /// # Invalid names
 ///
-/// Names that fail [`validate_app_name`] (empty, > 64 bytes, or
+/// Names that fail `validate_app_name` (empty, > 64 bytes, or
 /// containing characters outside `[A-Za-z0-9_-]`) are silently
 /// discarded — registration is a no-op.  Dispatch with a matching
 /// invalid name will return a `400` wire response.  Use
@@ -179,7 +179,7 @@ where
 /// - `Ok(true)`  — newly registered (the factory ran and the router was stored)
 /// - `Ok(false)` — a router was already registered under this name; first-wins,
 ///   so the factory was NOT invoked
-/// - `Err(msg)`  — `name` failed [`validate_app_name`] (empty, > 64 bytes, or
+/// - `Err(msg)`  — `name` failed `validate_app_name` (empty, > 64 bytes, or
 ///   characters outside `[A-Za-z0-9_-]`); nothing was registered
 ///
 /// A multi-app host can surface a typo'd app name at startup — instead of
@@ -191,7 +191,7 @@ where
 ///
 /// # Re-entrancy
 ///
-/// `factory` runs while the registration write-path mutex ([`REGISTER_LOCK`])
+/// `factory` runs while the registration write-path mutex (`REGISTER_LOCK`)
 /// is held, so a given name's factory runs **at most once** even under a
 /// concurrent same-name race.  It therefore MUST NOT call back into
 /// `register_app*` from within itself — doing so re-enters the non-reentrant
