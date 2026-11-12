@@ -3,6 +3,8 @@ package com.devfive.vespera.bridge;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Properties for the autoconfigured vespera-bridge defaults.
@@ -20,6 +22,7 @@ import java.time.Duration;
  * vespera:
  *   bridge:
  *     app-header: X-My-App        # override the default header name
+ *     exposed-apps: [admin]       # apps the client-controlled app header may select
  *     controller-enabled: false   # disable our controller (BYO controller)
  *     direct-retry-on-overflow: false # surface DIRECT overflow instead of retrying
  *     max-buffered-request-bytes: 10485760 # cap SYNC/ASYNC/DIRECT/STREAMING request buffering
@@ -46,6 +49,19 @@ public class VesperaBridgeProperties {
      * to the default app registered via {@code register_app}.
      */
     private String appHeader = "X-Vespera-App";
+
+    /**
+     * App names a request may select through {@link #appHeader} (the
+     * {@code _default} app is always selectable).  <strong>Security:</strong>
+     * the header is client-controlled — while this list is empty any client
+     * can route any URL into any registered app (e.g. {@code GET /users} with
+     * {@code X-Vespera-App: admin}), bypassing path-based Spring Security
+     * rules, and the proxy logs a one-time WARN on the first non-default
+     * selection.  When set, any other app name is answered with {@code 404}
+     * without dispatching.  Only the default {@link HeaderAppNameResolver}
+     * honours it; a custom {@link AppNameResolver} enforces its own policy.
+     */
+    private List<String> exposedApps = new ArrayList<>();
 
     /**
      * When {@code true} (default), Spring Boot autoconfigures
@@ -142,6 +158,14 @@ public class VesperaBridgeProperties {
 
     public void setAppHeader(String appHeader) {
         this.appHeader = appHeader;
+    }
+
+    public List<String> getExposedApps() {
+        return exposedApps;
+    }
+
+    public void setExposedApps(List<String> exposedApps) {
+        this.exposedApps = exposedApps == null ? new ArrayList<>() : new ArrayList<>(exposedApps);
     }
 
     public boolean isControllerEnabled() {

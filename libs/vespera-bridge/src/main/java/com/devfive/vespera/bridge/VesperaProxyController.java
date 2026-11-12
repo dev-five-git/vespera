@@ -69,6 +69,8 @@ public class VesperaProxyController {
     private final boolean directRetryOnOverflow;
     private final long maxBufferedRequestBytes;
     private final long maxBufferedResponseBytes;
+    /** Lower-case app-selection header stripped before forwarding, or {@code null}. */
+    private final String appSelectionHeader;
 
     // Adaptive DIRECT-overflow avoidance: routes that overflowed the pooled
     // direct buffer once are streamed up front thereafter, removing the
@@ -126,6 +128,7 @@ public class VesperaProxyController {
         this.directRetryOnOverflow = directRetryOnOverflow;
         this.maxBufferedRequestBytes = Math.max(0, maxBufferedRequestBytes);
         this.maxBufferedResponseBytes = Math.max(0, maxBufferedResponseBytes);
+        this.appSelectionHeader = appResolver.selectionHeaderName();
     }
 
     @RequestMapping(value = "/**", consumes = MediaType.ALL_VALUE)
@@ -133,7 +136,7 @@ public class VesperaProxyController {
                         HttpServletResponse response) throws IOException {
 
         final RequestShape shape = RequestShape.capture(request);
-        final String appName = appResolver.resolveAppName(request);
+        final String appName = resolveAppName(request);
         final Boolean currentThreadIsVirtual;
         final DispatchMode mode;
         if (modeResolver instanceof SmartDispatchModeResolver smartResolver) {
@@ -151,8 +154,6 @@ public class VesperaProxyController {
         // sees exactly the URL published in the generated openapi.json.
         final String path = pathWithinApplication(request);
         final String query = Objects.toString(request.getQueryString(), "");
-        final VesperaBridge.HeaderSource headers = sink -> HeaderPolicy.forEachRequestHeader(request, sink);
-
         // Adaptive DIRECT-overflow avoidance: a route that overflowed the
         // pooled direct buffer before is streamed up front, so it dispatches
         // ONCE instead of paying the DIRECT-overflow-then-stream double
@@ -172,33 +173,64 @@ public class VesperaProxyController {
         // mode, materialise the body bytes here (replaces Spring's
         // @RequestBody, which we cannot use because it would consume
         // the InputStream and leave the bidirectional path empty).
+        if (effectiveMode == DispatchMode.BIDIRECTIONAL_STREAMING) {
+            dispatchBidirectional(request, response, appName, method, path, query,
+                    requestHeaders(request, appSelectionHeader, null));
+            return null;
+        }
+        // Every other mode materialises the REQUEST body (STREAMING only
+        // streams the response), so all of them honour the same
+        // vespera.bridge.max-buffered-request-bytes cap.
+        final byte[] body = readBody(request, shape, maxBufferedRequestBytes);
+        final VesperaBridge.HeaderSource headers = requestHeaders(request, appSelectionHeader, null);
         switch (effectiveMode) {
             case SYNC:
-                dispatchSync(response, appName, method, path, query, headers,
-                        readBody(request, shape, maxBufferedRequestBytes),
+                dispatchSync(response, appName, method, path, query, headers, body,
                         maxBufferedResponseBytes);
                 return null;
             case ASYNC:
-                return dispatchAsyncFlow(appName, method, path, query, headers,
-                        readBody(request, shape, maxBufferedRequestBytes));
+                return dispatchAsyncFlow(appName, method, path, query, headers, body);
             case STREAMING:
-                // STREAMING materialises the REQUEST body (only the response
-                // streams), so it must honour the same buffered-request cap
-                // as SYNC/ASYNC/DIRECT — otherwise a custom resolver routing
-                // a bodyful request here would bypass
-                // vespera.bridge.max-buffered-request-bytes.
-                dispatchStreaming(response, appName, method, path, query,
-                        headers, readBody(request, shape, maxBufferedRequestBytes));
+                dispatchStreaming(response, appName, method, path, query, headers, body);
                 return null;
             case DIRECT:
-                dispatchDirectMode(response, appName, method, path, query, headers,
-                        readBody(request, shape, maxBufferedRequestBytes), currentThreadIsVirtual);
-                return null;
-            case BIDIRECTIONAL_STREAMING:
             default:
-                dispatchBidirectional(request, response, appName, method, path, query, headers);
+                dispatchDirectMode(response, appName, method, path, query, headers, body,
+                        currentThreadIsVirtual);
                 return null;
         }
+    }
+
+    /**
+     * Resolve the target app; an {@link UnknownAppException} (an app outside
+     * {@code vespera.bridge.exposed-apps}) becomes {@code 404} before anything
+     * is dispatched.
+     */
+    private String resolveAppName(HttpServletRequest request) {
+        try {
+            return appResolver.resolveAppName(request);
+        } catch (UnknownAppException unknown) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, unknown.getMessage());
+        }
+    }
+
+    /**
+     * Request headers forwarded to Rust: the {@link HeaderPolicy} filter,
+     * minus the app-selection header ({@code excludedHeader}, lower-case, may be
+     * {@code null}), with {@code content-length} replaced when
+     * {@code contentLength} is non-null.
+     */
+    static VesperaBridge.HeaderSource requestHeaders(
+            HttpServletRequest request, String excludedHeader, String contentLength) {
+        if (excludedHeader == null && contentLength == null) {
+            return sink -> HeaderPolicy.forEachRequestHeader(request, sink);
+        }
+        return sink -> HeaderPolicy.forEachRequestHeader(request, (name, value) -> {
+            if (name.equals(excludedHeader)) {
+                return;
+            }
+            sink.put(name, contentLength != null && name.equals("content-length") ? contentLength : value);
+        });
     }
 
     /**

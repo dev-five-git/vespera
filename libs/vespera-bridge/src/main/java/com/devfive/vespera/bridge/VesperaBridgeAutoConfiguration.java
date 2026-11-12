@@ -36,6 +36,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <ul>
  *   <li><strong>Header name</strong>:
  *       set {@code vespera.bridge.app-header}.</li>
+ *   <li><strong>Exposed apps (security)</strong>:
+ *       set {@code vespera.bridge.exposed-apps} — the app header is
+ *       client-controlled, so restrict which apps it may select.</li>
  *   <li><strong>Custom app selection</strong>:
  *       register a {@code @Bean AppNameResolver} —
  *       the default {@link HeaderAppNameResolver} is automatically
@@ -97,7 +100,7 @@ public class VesperaBridgeAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public AppNameResolver vesperaBridgeAppNameResolver(VesperaBridgeProperties props) {
-        return new HeaderAppNameResolver(props.getAppHeader());
+        return new HeaderAppNameResolver(props.getAppHeader(), props.getExposedApps());
     }
 
     /**
