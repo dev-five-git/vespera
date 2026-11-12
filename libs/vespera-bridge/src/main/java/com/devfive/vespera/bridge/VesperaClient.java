@@ -6,6 +6,8 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Programmatic, in-process client for the embedded Rust app — call vespera
@@ -46,6 +48,7 @@ import java.util.concurrent.CompletableFuture;
  * {@link VesperaClientException}. Instances are immutable and thread-safe;
  * the Spring autoconfiguration exposes one as a bean.
  */
+@NullMarked
 public final class VesperaClient {
 
     /** Native dispatch seam; package-private so unit tests can fake the JNI side. */
@@ -98,7 +101,7 @@ public final class VesperaClient {
     /** Normalised app name; {@code null} = the default app. */
     private final String appName;
 
-    VesperaClient(Transport transport, String appName) {
+    VesperaClient(Transport transport, @Nullable String appName) {
         this.transport = Objects.requireNonNull(transport, "transport");
         this.appName = VesperaWireCodec.normalizedAppName(appName);
     }
@@ -113,12 +116,12 @@ public final class VesperaClient {
      * {@code jni_apps!}). {@code null}, blank or {@code "_default"} target
      * the default app. An unknown name is answered {@code 404} by Rust.
      */
-    public VesperaClient forApp(String appName) {
+    public VesperaClient forApp(@Nullable String appName) {
         return new VesperaClient(transport, appName);
     }
 
     /** The app this client targets, or {@code null} for the default app. */
-    public String appName() {
+    public @Nullable String appName() {
         return appName;
     }
 
