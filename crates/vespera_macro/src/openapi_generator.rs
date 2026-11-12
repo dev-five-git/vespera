@@ -89,13 +89,26 @@ pub fn try_generate_openapi_doc_with_metadata(
     let file_cache = file_cache.unwrap_or_else(|| build_file_cache(metadata));
     let struct_file_index = build_struct_file_index(&file_cache);
     stage("lookups + file index");
-    let mut schemas = parse_component_schemas(
-        metadata,
-        &known_schema_names,
-        &struct_definitions,
-        &file_cache,
-        &struct_file_index,
-    )?;
+    // `{Name}Input` request views (installed for this generation only). A
+    // candidate whose built request view turns out identical to its response
+    // view is dropped and the components rebuilt, until every remaining input
+    // really differs (dropping one can make a referencing type identical).
+    let mut input_names = component_schemas::input_names(metadata, &known_schema_names);
+    let mut schemas = loop {
+        crate::parser::schema::generic_instances::take_materialized();
+        crate::parser::schema::request_view::install(std::sync::Arc::clone(&input_names));
+        let schemas = parse_component_schemas(
+            metadata,
+            &known_schema_names,
+            &struct_definitions,
+            &file_cache,
+            &struct_file_index,
+        )?;
+        match component_schemas::without_identical_inputs(&input_names, &schemas) {
+            Some(reduced) => input_names = reduced,
+            None => break schemas,
+        }
+    };
     stage("component schemas");
     let (paths, all_tags) = build_path_items(
         metadata,
@@ -108,6 +121,9 @@ pub fn try_generate_openapi_doc_with_metadata(
     for (name, schema) in crate::parser::schema::generic_instances::take_materialized() {
         schemas.entry(name).or_insert(schema);
     }
+    let input_names = crate::parser::schema::request_view::snapshot();
+    crate::parser::schema::request_view::install(std::sync::Arc::default());
+    component_schemas::prune_unreferenced_inputs(&mut schemas, &paths, &input_names);
     let security_config = security_config.unwrap_or_default();
     let tags = build_tags(all_tags, security_config.tag_descriptions.as_ref());
 

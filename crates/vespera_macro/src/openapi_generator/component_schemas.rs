@@ -7,9 +7,129 @@ use std::{
 
 use crate::{
     metadata::CollectedMetadata,
-    openapi_generator::{defaults::process_default_functions, paths::parallel_filter_map},
-    parser::{parse_enum_to_schema, parse_struct_to_schema},
+    openapi_generator::{defaults::process_default_functions_for, paths::parallel_filter_map},
+    parser::{
+        parse_enum_to_schema, parse_struct_to_schema,
+        schema::{SerdeSide, request_view},
+    },
 };
+
+/// The `{Name}Input` request-view names for the documented types (see
+/// [`request_view`]). Without any `serde` attribute no view can differ, so
+/// the definitions are not even parsed.
+pub(super) fn input_names(
+    metadata: &CollectedMetadata,
+    known_schema_names: &HashSet<&str>,
+) -> request_view::InputNames {
+    let documented: Vec<&crate::metadata::StructMetadata> = metadata
+        .structs
+        .iter()
+        .filter(|s| s.include_in_openapi)
+        .collect();
+    if !documented.iter().any(|s| s.definition.contains("serde")) {
+        return std::sync::Arc::default();
+    }
+    let items: Vec<Option<syn::Item>> = documented
+        .iter()
+        .map(|s| syn::parse_str::<syn::Item>(&s.definition).ok())
+        .collect();
+    let sources: Vec<request_view::ViewSource<'_>> = documented
+        .iter()
+        .zip(&items)
+        .filter_map(|(meta, item)| {
+            Some(request_view::ViewSource {
+                name: &meta.name,
+                rust_ident: meta.rust_ident.as_deref(),
+                item: item.as_ref()?,
+            })
+        })
+        .collect();
+    let taken: BTreeSet<String> = known_schema_names.iter().map(ToString::to_string).collect();
+    request_view::compute_input_names(&sources, &taken)
+}
+
+/// `input_names` without the inputs whose built schema equals the response
+/// view's, or `None` when every input differs.
+pub(super) fn without_identical_inputs(
+    input_names: &request_view::InputNames,
+    schemas: &BTreeMap<String, vespera_core::schema::Schema>,
+) -> Option<request_view::InputNames> {
+    let as_json = |name: &str| schemas.get(name).map(serde_json::to_value);
+    let identical: BTreeSet<&String> = input_names
+        .iter()
+        .filter(|(component, input)| {
+            schemas.contains_key(component.as_str())
+                && as_json(component).map(Result::ok) == as_json(input).map(Result::ok)
+        })
+        .map(|(_, input)| input)
+        .collect();
+    if identical.is_empty() {
+        return None;
+    }
+    Some(std::sync::Arc::new(
+        input_names
+            .iter()
+            .filter(|(_, input)| !identical.contains(input))
+            .map(|(component, input)| (component.clone(), input.clone()))
+            .collect(),
+    ))
+}
+
+/// Drop the `{Name}Input` components no request body reaches: a type that
+/// only ever appears in responses keeps a single component.
+pub(super) fn prune_unreferenced_inputs(
+    schemas: &mut BTreeMap<String, vespera_core::schema::Schema>,
+    paths: &BTreeMap<String, vespera_core::route::PathItem>,
+    input_names: &request_view::InputNames,
+) {
+    let inputs: BTreeSet<&str> = input_names.values().map(String::as_str).collect();
+    if inputs.is_empty() {
+        return;
+    }
+    // Every component reachable from a request body.
+    let mut pending: Vec<String> = Vec::new();
+    for item in paths.values() {
+        // Serialization of these plain data types cannot fail.
+        let value = serde_json::to_value(item).unwrap_or_default();
+        collect_request_body_refs(&value, false, &mut pending);
+    }
+    let mut reached: BTreeSet<String> = BTreeSet::new();
+    while let Some(name) = pending.pop() {
+        if let Some(schema) = schemas.get(&name)
+            && reached.insert(name)
+        {
+            let value = serde_json::to_value(schema).unwrap_or_default();
+            collect_request_body_refs(&value, true, &mut pending);
+        }
+    }
+    schemas.retain(|name, _| !inputs.contains(name.as_str()) || reached.contains(name));
+}
+
+/// Component names of the `$ref`s inside `value`, counting only those under
+/// a `requestBody` unless `inside` is already set.
+fn collect_request_body_refs(value: &serde_json::Value, inside: bool, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                if inside
+                    && key == "$ref"
+                    && let Some(name) = child
+                        .as_str()
+                        .and_then(|r| r.strip_prefix("#/components/schemas/"))
+                {
+                    out.push(name.to_string());
+                }
+                collect_request_body_refs(child, inside || key == "requestBody", out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                collect_request_body_refs(child, inside, out);
+            }
+        }
+        _ => {}
+    }
+}
 
 /// Build schema name and definition lookup maps from metadata.
 ///
@@ -102,7 +222,7 @@ pub(super) fn parse_component_schemas(
     // collector fast path skips parsing, leaving `file_cache` empty).
     let build_one = |struct_meta: &crate::metadata::StructMetadata,
                      file_ast: Option<&syn::File>|
-     -> syn::Result<Option<(String, vespera_core::schema::Schema)>> {
+     -> syn::Result<Option<Vec<(String, vespera_core::schema::Schema)>>> {
         let parsed = syn::parse_str::<syn::Item>(&struct_meta.definition).map_err(|err| {
             syn::Error::new(
                 proc_macro2::Span::call_site(),
@@ -112,24 +232,41 @@ pub(super) fn parse_component_schemas(
                 ),
             )
         })?;
-        let mut schema = match &parsed {
-            syn::Item::Struct(struct_item) => {
-                parse_struct_to_schema(struct_item, known_schema_names, struct_definitions)
+        // One view of the item: the response view, or (inside
+        // `with_request_view`) the request view with deserialize names.
+        let build_view = |side: SerdeSide| {
+            let mut schema = match &parsed {
+                syn::Item::Struct(struct_item) => {
+                    parse_struct_to_schema(struct_item, known_schema_names, struct_definitions)
+                }
+                syn::Item::Enum(enum_item) => {
+                    parse_enum_to_schema(enum_item, known_schema_names, struct_definitions)
+                }
+                _ => return None,
+            };
+            if let syn::Item::Struct(struct_item) = &parsed {
+                process_default_functions_for(
+                    struct_item,
+                    file_ast,
+                    &mut schema,
+                    &struct_meta.field_defaults,
+                    side,
+                );
             }
-            syn::Item::Enum(enum_item) => {
-                parse_enum_to_schema(enum_item, known_schema_names, struct_definitions)
-            }
-            _ => return Ok(None),
+            Some(schema)
         };
-        if let syn::Item::Struct(struct_item) = &parsed {
-            process_default_functions(
-                struct_item,
-                file_ast,
-                &mut schema,
-                &struct_meta.field_defaults,
-            );
+        let Some(schema) = build_view(SerdeSide::Serialize) else {
+            return Ok(None);
+        };
+        let mut views = vec![(struct_meta.name.clone(), schema)];
+        // The `{Name}Input` request view, when it differs.
+        if let Some(input_name) = request_view::input_name(&struct_meta.name)
+            && let Some(input) =
+                request_view::with_request_view(|| build_view(SerdeSide::Deserialize))
+        {
+            views.push((input_name, input));
         }
-        Ok(Some((struct_meta.name.clone(), schema)))
+        Ok(Some(views))
     };
 
     // Partition: structs whose file AST is reachable need the
@@ -162,15 +299,15 @@ pub(super) fn parse_component_schemas(
     }
 
     let mut schemas = BTreeMap::new();
-    for (name, schema) in parallel_filter_map(
+    for views in parallel_filter_map(
         &parallel_jobs,
         &|meta: &&crate::metadata::StructMetadata| build_one(meta, None),
     )? {
-        schemas.insert(name, schema);
+        schemas.extend(views);
     }
     for (struct_meta, ast) in ast_backed {
-        if let Some((name, schema)) = build_one(struct_meta, Some(ast))? {
-            schemas.insert(name, schema);
+        if let Some(views) = build_one(struct_meta, Some(ast))? {
+            schemas.extend(views);
         }
     }
 

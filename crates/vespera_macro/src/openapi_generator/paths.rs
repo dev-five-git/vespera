@@ -24,7 +24,7 @@ use crate::{
     metadata::CollectedMetadata,
     parser::{
         OperationRouteConfig, build_operation_from_function, openapi_path_template,
-        schema::generic_instances,
+        schema::{generic_instances, request_view},
     },
     route_impl::StoredRouteInfo,
 };
@@ -530,11 +530,15 @@ pub(super) fn parallel_filter_map<T: Sync, R: Send>(
     let _guard = FallbackGuard;
 
     let chunk_size = jobs.len().div_ceil(workers);
+    // Workers do not inherit the caller's thread-locals.
+    let input_names = request_view::snapshot();
     std::thread::scope(|scope| {
         let handles: Vec<_> = jobs
             .chunks(chunk_size)
             .map(|chunk| {
+                let input_names = std::sync::Arc::clone(&input_names);
                 scope.spawn(move || {
+                    request_view::install(input_names);
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         let results: syn::Result<Vec<R>> =
                             chunk.iter().filter_map(|job| f(job).transpose()).collect();

@@ -160,3 +160,134 @@ fn recursive_generic_instantiation_becomes_a_component() {
 
     insta::assert_snapshot!("accuracy_recursive_generic_component", pretty(&doc));
 }
+
+fn post(path: &str, fn_name: &str) -> RouteMetadata {
+    RouteMetadata {
+        method: "post".to_string(),
+        ..route(path, fn_name)
+    }
+}
+
+fn stored_post(fn_name: &str, sig: &str) -> StoredRouteInfo {
+    StoredRouteInfo {
+        method: Some("post".to_string()),
+        ..stored(fn_name, sig)
+    }
+}
+
+/// Request bodies reference `{Name}Input` when serde reads a different shape
+/// than it writes; responses keep `{Name}`. Identical views emit nothing.
+#[test]
+fn request_views_get_input_components() {
+    let mut metadata = CollectedMetadata::new();
+    metadata.structs.push(schema(
+        "Settings",
+        r#"pub struct Settings {
+            #[serde(default)] pub theme: String,
+            #[serde(skip_deserializing)] pub updated_at: String,
+            #[serde(skip_serializing)] pub secret: String,
+            #[serde(rename(serialize = "displayName", deserialize = "display_name"))] pub name: String,
+            pub plain: bool,
+        }"#,
+    ));
+    metadata.structs.push(schema(
+        "Profile",
+        "pub struct Profile { pub settings: Settings, pub tags: Vec<String> }",
+    ));
+    metadata
+        .structs
+        .push(schema("Page", "pub struct Page<T> { pub items: Vec<T> }"));
+    metadata.structs.push(renamed(
+        "AccountDto",
+        "Account",
+        r#"#[schema(name = "AccountDto")] #[serde(default)] pub struct Account { pub id: u32 }"#,
+    ));
+    // A real type already owns `AccountDtoInput`.
+    metadata.structs.push(schema(
+        "AccountDtoInput",
+        "pub struct AccountDtoInput { pub x: u8 }",
+    ));
+    metadata
+        .structs
+        .push(schema("Plain", "pub struct Plain { pub x: u8 }"));
+    for (path, name) in [
+        ("/profile", "save"),
+        ("/page", "page"),
+        ("/account", "account"),
+    ] {
+        metadata.routes.push(post(path, name));
+    }
+    metadata.routes.push(route("/plain", "plain"));
+    let storage = [
+        stored_post(
+            "save",
+            "async fn save(Json(p): Json<Profile>) -> Json<Profile>",
+        ),
+        stored_post(
+            "page",
+            "async fn page(Form(p): Form<Page<Settings>>) -> Json<Page<Settings>>",
+        ),
+        stored_post(
+            "account",
+            "async fn account(Json(a): Json<Account>) -> Json<Account>",
+        ),
+        stored(
+            "plain",
+            "async fn plain(Json(p): Json<Plain>) -> Json<Plain>",
+        ),
+    ];
+
+    let doc = generate(&metadata, &storage);
+
+    insta::assert_snapshot!("accuracy_request_view_inputs", pretty(&doc));
+}
+
+#[test]
+fn input_names_skip_unparsable_definitions() {
+    let mut metadata = CollectedMetadata::new();
+    metadata
+        .structs
+        .push(schema("Broken", "pub struct Broken { serde"));
+    metadata
+        .structs
+        .push(schema("A", "pub struct A { #[serde(default)] pub x: u8 }"));
+    let known = std::collections::HashSet::from(["A", "Broken"]);
+    let names = super::component_schemas::input_names(&metadata, &known);
+    assert_eq!(names.get("A").map(String::as_str), Some("AInput"));
+    assert_eq!(names.len(), 1);
+}
+
+/// Candidates whose built request view equals the response view (here a
+/// field-level `default` the response already treats as optional) and inputs
+/// no request body reaches emit no `Input` component.
+#[test]
+fn identical_or_unused_request_views_emit_nothing() {
+    let mut metadata = CollectedMetadata::new();
+    metadata.structs.push(schema(
+        "Opt",
+        "pub struct Opt { #[serde(default)] pub x: u8 }",
+    ));
+    metadata
+        .structs
+        .push(schema("Holder", "pub struct Holder { pub opt: Opt }"));
+    metadata.structs.push(schema(
+        "Out",
+        "pub struct Out { #[serde(skip_deserializing)] pub id: u8 }",
+    ));
+    metadata.routes.push(post("/holder", "holder"));
+    let storage = [stored_post(
+        "holder",
+        "async fn holder(Json(h): Json<Holder>) -> Json<Out>",
+    )];
+
+    let doc = generate(&metadata, &storage);
+
+    let names: Vec<&String> = doc
+        .components
+        .as_ref()
+        .and_then(|c| c.schemas.as_ref())
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(names, ["Holder", "Opt", "Out"]);
+}

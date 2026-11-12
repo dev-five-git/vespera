@@ -24,6 +24,7 @@ thread_local! {
 
 use super::super::{
     generics::substitute_type,
+    request_view,
     serde_attrs::{capitalize_first, extract_schema_name_from_entity, extract_schema_ref_override},
     struct_schema::parse_struct_to_schema,
 };
@@ -530,10 +531,19 @@ fn parse_type_impl(
                             // Inline the substituted struct, unless it
                             // contains itself — then it becomes the named
                             // component `Base_Arg..` (see `generic_instances`).
-                            let name = super::generic_instances::instance_name(
-                                &component_name(resolved_name, def_str),
+                            let base = component_name(resolved_name, def_str);
+                            let mut name = super::generic_instances::instance_name(
+                                &base,
                                 concrete_types.iter().copied(),
                             );
+                            // A request-view instantiation differs from the
+                            // response one when it names an input type.
+                            if request_view::in_request_view()
+                                && (request_view::has_input(&base)
+                                    || request_view::mentions_input(concrete_types.iter().copied()))
+                            {
+                                name.push_str("Input");
+                            }
                             return super::generic_instances::inline_or_reference(&name, || {
                                 parse_struct_to_schema(&parsed, known_schemas, struct_definitions)
                             });
@@ -541,7 +551,9 @@ fn parse_type_impl(
                     }
                 }
                 // Non-generic type or generic without parameters - use reference
-                SchemaRef::Ref(Reference::schema(&component_name(resolved_name, def_str)))
+                let component = component_name(resolved_name, def_str);
+                let component = request_view::input_component(&component).unwrap_or(component);
+                SchemaRef::Ref(Reference::schema(&component))
             } else {
                 // For unknown custom types, return object schema instead of reference
                 // This prevents creating invalid references to non-existent schemas

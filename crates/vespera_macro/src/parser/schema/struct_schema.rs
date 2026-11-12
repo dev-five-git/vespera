@@ -15,9 +15,10 @@ use vespera_core::schema::{AdditionalProperties, Schema, SchemaRef, SchemaType};
 use super::{
     schema_attrs::{SchemaConstraints, extract_schema_constraints},
     serde_attrs::{
-        extract_deny_unknown_fields, extract_doc_comment, extract_field_rename, extract_flatten,
-        extract_rename_all, extract_schema_ref_override, extract_serde_skip_flags,
-        extract_transparent, rename_field, strip_raw_prefix_owned,
+        SerdeSide, extract_default, extract_deny_unknown_fields, extract_doc_comment,
+        extract_field_rename_for, extract_flatten, extract_rename_all, extract_rename_all_for,
+        extract_schema_ref_override, extract_serde_skip_flags, extract_transparent, rename_field,
+        strip_raw_prefix_owned,
     },
     type_schema::{parse_type_to_schema_ref, tuple_array_schema},
 };
@@ -27,8 +28,9 @@ use crate::schema_macro::type_utils::{is_option_type, option_inner};
 ///
 /// This function extracts:
 /// - Field names and types as properties
-/// - Required fields (non-`Option` types; `#[serde(default)]` does NOT relax
-///   `required`, since this schema is shared by request and response bodies)
+/// - Required fields (non-`Option` types). In the response view a
+///   `#[serde(default)]` field stays present on output; inside
+///   `request_view::with_request_view` (the `{Name}Input` view) it is optional
 /// - Doc comments as descriptions
 /// - Serde attributes (rename, `rename_all`, skip, default)
 ///
@@ -105,13 +107,21 @@ fn parse_struct_body(
 
     match &struct_item.fields {
         Fields::Named(fields_named) => {
-            let rename_all = extract_rename_all(&struct_item.attrs);
+            let request = super::request_view::in_request_view();
+            let rename_all = if request {
+                extract_rename_all_for(&struct_item.attrs, SerdeSide::Deserialize)
+            } else {
+                extract_rename_all(&struct_item.attrs)
+            };
+            let container_default = request && extract_default(&struct_item.attrs).is_some();
             let fields = collect_named_fields(
                 fields_named,
                 rename_all.as_deref(),
+                container_default,
                 known_schemas,
                 struct_definitions,
             );
+
             // `deny_unknown_fields` → closed object. serde does not support
             // it together with `flatten`, so a flattening struct stays open.
             let closed =
@@ -223,6 +233,7 @@ impl NamedFields {
 pub(super) fn collect_named_fields(
     fields_named: &syn::FieldsNamed,
     rename_all: Option<&str>,
+    container_default: bool,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> NamedFields {
@@ -230,9 +241,13 @@ pub(super) fn collect_named_fields(
         required: Vec::with_capacity(fields_named.named.len()),
         ..NamedFields::default()
     };
+    // Request view (see `request_view`): fields serde never reads are
+    // dropped, keys use the deserialize name, and `#[serde(default)]`
+    // (field or container) makes a field optional.
+    let request = super::request_view::in_request_view();
     for field in &fields_named.named {
         let skip_flags = extract_serde_skip_flags(&field.attrs);
-        if skip_flags.fully_skipped() {
+        if skip_flags.fully_skipped() || (request && skip_flags.skip_deserializing) {
             continue;
         }
 
@@ -249,7 +264,12 @@ pub(super) fn collect_named_fields(
             |i| strip_raw_prefix_owned(i.to_string()),
         );
         // Field-level rename takes precedence over rename_all.
-        let field_name = extract_field_rename(&field.attrs)
+        let side = if request {
+            SerdeSide::Deserialize
+        } else {
+            SerdeSide::Serialize
+        };
+        let field_name = extract_field_rename_for(&field.attrs, side)
             .unwrap_or_else(|| rename_field(&rust_field_name, rename_all));
 
         // A field marked `#[schema(any)]` SHORT-CIRCUITS type conversion: the
@@ -273,8 +293,9 @@ pub(super) fn collect_named_fields(
             .attrs
             .iter()
             .any(|attr| attr.path().is_ident("deprecated"));
-        let read_only = skip_flags.skip_deserializing;
-        let write_only = skip_flags.skip_serializing;
+        // (Both are meaningless in a request-only view.)
+        let read_only = !request && skip_flags.skip_deserializing;
+        let write_only = !request && skip_flags.skip_serializing;
         if doc.is_some() || deprecated || read_only || write_only {
             let mut schema = match schema_ref {
                 SchemaRef::Inline(schema) => schema,
@@ -297,13 +318,17 @@ pub(super) fn collect_named_fields(
             apply_constraints_to_schema_ref(&mut schema_ref, &constraints);
         }
 
-        // Required is determined by nullability (Option<T>) and by whether the
-        // field can be omitted from serialized output (`skip_serializing`,
-        // `skip_serializing_if`). `#[serde(default)]` does NOT relax required:
-        // this schema is shared by request AND response bodies, and a
-        // defaulted field is always present on output (documented in README;
-        // the query extractor differs because query params are input-only).
-        if !is_option_type(&field.ty) && !skip_flags.maybe_omitted_on_output() {
+        // Required is determined by nullability (Option<T>) and, in the
+        // response view, by whether the field can be omitted from serialized
+        // output (`skip_serializing`, `skip_serializing_if`); in the request
+        // view by `#[serde(default)]` (field or container), since serde fills
+        // a missing defaulted field in.
+        let optional = if request {
+            container_default || extract_default(&field.attrs).is_some()
+        } else {
+            skip_flags.maybe_omitted_on_output()
+        };
+        if !is_option_type(&field.ty) && !optional {
             out.required.push(field_name.clone());
         }
 

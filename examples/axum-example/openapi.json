@@ -127,6 +127,37 @@
         }
       }
     },
+    "/config/preferences": {
+      "put": {
+        "operationId": "save_preferences",
+        "tags": [
+          "config"
+        ],
+        "summary": "Save notification preferences",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreferencesInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Preferences"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/enums": {
       "get": {
         "operationId": "enum_endpoint",
@@ -512,7 +543,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UserListRequest"
+                "$ref": "#/components/schemas/UserListRequestInput"
               }
             }
           }
@@ -543,7 +574,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AdvancedSearchRequest"
+                "$ref": "#/components/schemas/AdvancedSearchRequestInput"
               }
             }
           }
@@ -2422,6 +2453,26 @@
           }
         ]
       },
+      "AdvancedSearchRequestInput": {
+        "description": "Request combining multiple flattened structs",
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "Search query string"
+              }
+            },
+            "required": [
+              "query"
+            ]
+          },
+          {
+            "$ref": "#/components/schemas/PaginationInput"
+          }
+        ]
+      },
       "Audit": {
         "type": "object",
         "description": "Optional audit block flattened into [`Telemetry`].",
@@ -3870,6 +3921,24 @@
           "perPage"
         ]
       },
+      "PaginationInput": {
+        "type": "object",
+        "description": "Common pagination parameters that can be reused across requests",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Page number (1-indexed)",
+            "default": 1
+          },
+          "perPage": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Items per page",
+            "default": 20
+          }
+        }
+      },
       "Paging": {
         "type": "object",
         "description": "Paging parameters flattened into a query string (strings only: serde\nbuffers flattened values, so typed numbers would not parse from a query).",
@@ -3911,6 +3980,54 @@
             "format": "binary"
           }
         }
+      },
+      "Preferences": {
+        "type": "object",
+        "description": "Notification preferences.\n\nserde reads a different shape than it writes, so the request body\nreferences `PreferencesInput` (defaults optional, `updatedBy` absent)\nwhile the response keeps `Preferences`.",
+        "properties": {
+          "digestHour": {
+            "type": "integer",
+            "format": "uint8",
+            "default": 9
+          },
+          "emailOptIn": {
+            "type": "boolean",
+            "default": false
+          },
+          "locale": {
+            "type": "string"
+          },
+          "updatedBy": {
+            "type": "string",
+            "readOnly": true
+          }
+        },
+        "required": [
+          "digestHour",
+          "updatedBy",
+          "locale"
+        ]
+      },
+      "PreferencesInput": {
+        "type": "object",
+        "description": "Notification preferences.\n\nserde reads a different shape than it writes, so the request body\nreferences `PreferencesInput` (defaults optional, `updatedBy` absent)\nwhile the response keeps `Preferences`.",
+        "properties": {
+          "digestHour": {
+            "type": "integer",
+            "format": "uint8",
+            "default": 9
+          },
+          "emailOptIn": {
+            "type": "boolean",
+            "default": false
+          },
+          "locale": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "locale"
+        ]
       },
       "ResponseMeta": {
         "type": "object",
@@ -4722,6 +4839,31 @@
           },
           {
             "$ref": "#/components/schemas/Pagination"
+          }
+        ]
+      },
+      "UserListRequestInput": {
+        "description": "Request with flattened pagination parameters\n\nThe pagination fields (page, per_page) are merged into this struct's JSON representation.",
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "filter": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Filter users by name (optional)"
+              },
+              "sort": {
+                "type": "string",
+                "description": "Sort order: \"asc\" or \"desc\"",
+                "default": "asc"
+              }
+            }
+          },
+          {
+            "$ref": "#/components/schemas/PaginationInput"
           }
         ]
       },
