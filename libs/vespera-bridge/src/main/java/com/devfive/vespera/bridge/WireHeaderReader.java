@@ -129,14 +129,69 @@ final class WireHeaderReader {
                         r.skipValue();
                     }
                 }
-                // KEY_OTHER: "v", "metadata", "validation_errors", … —
-                // matched by bytes, value skipped, never materialised.
+                // Only `"panicked":"true"` is looked for (other entries are
+                // skipped unmaterialised) and only when the sink wants it.
+                case KEY_METADATA -> {
+                    if (headerSink instanceof PanicFlagSink flagSink) {
+                        if (r.readMetadataPanicked()) {
+                            flagSink.markPanicked();
+                        }
+                    } else {
+                        r.skipValue();
+                    }
+                }
+                // KEY_OTHER: "v", "validation_errors", … — matched by
+                // bytes, value skipped, never materialised.
                 default -> r.skipValue();
             }
         }
         r.requireFullyConsumed();
         return status;
     }
+
+    /**
+     * A header sink that also wants to know whether the response metadata
+     * carries {@code "panicked":"true"} (a Rust panic caught by the JNI
+     * guards).
+     */
+    interface PanicFlagSink {
+        void markPanicked();
+    }
+
+    /**
+     * Scan the metadata value for {@code "panicked":"true"} without
+     * materialising any other entry. Consumes the whole value.
+     */
+    boolean readMetadataPanicked() {
+        if (!isObjectStart()) {
+            skipValue();
+            return false;
+        }
+        beginObject();
+        boolean panicked = false;
+        while (true) {
+            skipWs();
+            int c = cur();
+            if (c == ',') {
+                pos++;
+                skipWs();
+                c = cur();
+            }
+            if (c == '}') {
+                pos++;
+                return panicked;
+            }
+            long key = scanQuotedKey();
+            expect(':');
+            if (key >= 0 && (int) key == 8 && regionEquals((int) (key >>> 32), "panicked")
+                    && peek() == '"') {
+                panicked = "true".equals(readString());
+            } else {
+                skipValue();
+            }
+        }
+    }
+
 
     /** Decoded response-header components (see {@link #decode}). */
     static final class Decoded {
@@ -167,119 +222,11 @@ final class WireHeaderReader {
      * unknown fields (incl. {@code v}) are skipped without materialising.
      */
     static Decoded decode(ByteBuffer buf, int off, int len) {
-        WireHeaderReader r = new WireHeaderReader(buf, off, len);
-        return r.decodeRoot();
+        return WireHeaderDecoder.decodeRoot(new WireHeaderReader(buf, off, len));
     }
 
     static Decoded decode(byte[] buf, int off, int len) {
-        WireHeaderReader r = new WireHeaderReader(buf, off, len);
-        return r.decodeRoot();
-    }
-
-    private Decoded decodeRoot() {
-        Decoded out = new Decoded();
-        requireObjectStart();
-        beginObject();
-        int seen = 0;
-        int key;
-        while ((key = nextRootKey()) != KEY_END) {
-            seen = rejectDuplicateRootKey(seen, key);
-            switch (key) {
-                case KEY_STATUS -> out.status = readStatusCode();
-                case KEY_HEADERS -> {
-                    if (isObjectStart()) {
-                        beginObject();
-                        String k;
-                        while ((k = nextKeyCanonical()) != null) {
-                            if (out.headers == null) {
-                                // Pre-size for a typical response header
-                                // count (content-type, content-length, …).
-                                out.headers = new LinkedHashMap<>(8);
-                            }
-                            if (isArrayStart()) {
-                                beginArray();
-                                List<String> list = new ArrayList<>();
-                                while (hasNextElement()) {
-                                    list.add(readString());
-                                }
-                                out.headers.put(k, list);
-                            } else {
-                                out.headers.put(k, readString());
-                            }
-                        }
-                    } else {
-                        skipValue();
-                    }
-                }
-                case KEY_METADATA -> {
-                    if (isObjectStart()) {
-                        beginObject();
-                        out.metadata = readStringMap();
-                    } else {
-                        skipValue();
-                    }
-                }
-                case KEY_VALIDATION -> {
-                    if (isArrayStart()) {
-                        beginArray();
-                        out.validationErrors = new ArrayList<>();
-                        while (hasNextElement()) {
-                            if (!isObjectStart()) {
-                                // Fixed schema is an array of objects; a
-                                // non-object element (only on malformed
-                                // input) is skipped so the cursor still
-                                // reaches the array end cleanly.
-                                skipValue();
-                                continue;
-                            }
-                            beginObject();
-                            Map<String, Object> entry = new LinkedHashMap<>(4);
-                            String k;
-                            while ((k = nextKeyCanonical()) != null) {
-                                entry.put(k, readPrimitiveValue());
-                            }
-                            out.validationErrors.add(entry);
-                        }
-                    } else {
-                        skipValue();
-                    }
-                }
-                // KEY_OTHER: "v" and any unknown field — value skipped,
-                // never materialised.
-                default -> skipValue();
-            }
-        }
-        requireFullyConsumed();
-        return out;
-    }
-
-    /**
-     * Read a string→string object (the {@code metadata} shape) into the
-     * smallest map: {@link Map#of()} when empty, a single-entry immutable
-     * {@link Map#of(Object, Object)} for the overwhelmingly common one-key
-     * case ({@code {"version":...}}) — no hash table allocated — and a
-     * mutable {@link LinkedHashMap} only for the rare 2+ key case (which
-     * also tolerates duplicate keys, last-wins, like the prior map).
-     * Assumes the object was already entered ({@link #beginObject}).
-     */
-    Map<String, String> readStringMap() {
-        String k0 = nextKeyCanonical();
-        if (k0 == null) {
-            return Map.of();
-        }
-        String v0 = readString();
-        String k1 = nextKeyCanonical();
-        if (k1 == null) {
-            return Map.of(k0, v0);
-        }
-        Map<String, String> m = new LinkedHashMap<>(8);
-        m.put(k0, v0);
-        m.put(k1, readString());
-        String k;
-        while ((k = nextKeyCanonical()) != null) {
-            m.put(k, readString());
-        }
-        return m;
+        return WireHeaderDecoder.decodeRoot(new WireHeaderReader(buf, off, len));
     }
 
     private void skipWs() {
@@ -301,7 +248,7 @@ final class WireHeaderReader {
         return array != null ? array[index] & 0xFF : buf.get(index) & 0xFF;
     }
 
-    private void requireFullyConsumed() {
+    void requireFullyConsumed() {
         skipWs();
         if (pos != end) {
             throw err("trailing data after root object");
@@ -317,13 +264,13 @@ final class WireHeaderReader {
         return new IllegalArgumentException("wire header JSON: " + what + " at offset " + pos);
     }
 
-    private void requireObjectStart() {
+    void requireObjectStart() {
         if (peek() != '{') {
             throw err("expected object");
         }
     }
 
-    private int rejectDuplicateRootKey(int seen, int key) {
+    int rejectDuplicateRootKey(int seen, int key) {
         if (key < 0) {
             return seen;
         }
@@ -434,14 +381,14 @@ final class WireHeaderReader {
     // "headers"; every other key ("v", "metadata", "validation_errors", …)
     // is matched by length+bytes and its value skipped — never materialised
     // as a String.
-    private static final int KEY_END = -2;
-    private static final int KEY_OTHER = -1;
-    private static final int KEY_STATUS = 0;
-    private static final int KEY_HEADERS = 1;
+    static final int KEY_END = -2;
+    static final int KEY_OTHER = -1;
+    static final int KEY_STATUS = 0;
+    static final int KEY_HEADERS = 1;
     // Recognised additionally by the full decode() path (apply() skips these
     // as KEY_OTHER); matched allocation-free by length + bytes like the rest.
-    private static final int KEY_METADATA = 2;
-    private static final int KEY_VALIDATION = 3;
+    static final int KEY_METADATA = 2;
+    static final int KEY_VALIDATION = 3;
 
     /**
      * Advance past the next root member key WITHOUT allocating a String for
@@ -475,6 +422,33 @@ final class WireHeaderReader {
      * {@code KEY_OTHER}.
      */
     private int matchRootKey() {
+        long key = scanQuotedKey();
+        if (key < 0) {
+            return KEY_OTHER;
+        }
+        int start = (int) (key >>> 32);
+        int contentLen = (int) key;
+        if (contentLen == 6 && regionEquals(start, "status")) {
+            return KEY_STATUS;
+        }
+        if (contentLen == 7 && regionEquals(start, "headers")) {
+            return KEY_HEADERS;
+        }
+        if (contentLen == 8 && regionEquals(start, "metadata")) {
+            return KEY_METADATA;
+        }
+        if (contentLen == 17 && regionEquals(start, "validation_errors")) {
+            return KEY_VALIDATION;
+        }
+        return KEY_OTHER;
+    }
+
+    /**
+     * Consume a quoted member key without allocating, returning
+     * {@code (start << 32) | length} of its raw bytes, or {@code -1} for an
+     * escaped key (never emitted for the fixed field names).
+     */
+    private long scanQuotedKey() {
         skipWs();
         if (cur() != '"') {
             throw err("expected string");
@@ -502,22 +476,7 @@ final class WireHeaderReader {
         }
         int contentLen = pos - start;
         pos++; // consume closing quote
-        if (!simple) {
-            return KEY_OTHER;
-        }
-        if (contentLen == 6 && regionEquals(start, "status")) {
-            return KEY_STATUS;
-        }
-        if (contentLen == 7 && regionEquals(start, "headers")) {
-            return KEY_HEADERS;
-        }
-        if (contentLen == 8 && regionEquals(start, "metadata")) {
-            return KEY_METADATA;
-        }
-        if (contentLen == 17 && regionEquals(start, "validation_errors")) {
-            return KEY_VALIDATION;
-        }
-        return KEY_OTHER;
+        return simple ? ((long) start << 32) | contentLen : -1L;
     }
 
     private boolean regionEquals(int s, String lit) {

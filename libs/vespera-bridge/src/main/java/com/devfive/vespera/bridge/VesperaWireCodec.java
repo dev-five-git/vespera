@@ -492,12 +492,23 @@ final class VesperaWireCodec {
                 if (sink.started) {
                     buf.put('}');
                 }
+                writeOptionalField(buf, ",\"remote_addr\":", headers.remoteAddr());
+                writeOptionalField(buf, ",\"scheme\":", headers.scheme());
             }
             finishHeaderJson(buf, normalizedAppName);
             return buf;
         } catch (RuntimeException | Error failure) {
             shrinkHeaderBufferIfOversized(buf);
             throw failure;
+        }
+    }
+
+    /** Emit {@code prefix} + the JSON string {@code value}, unless it is {@code null}. */
+    private static void writeOptionalField(
+            ExposedByteArrayOutputStream buf, String prefix, String value) {
+        if (value != null) {
+            buf.putAscii(prefix);
+            writeJsonString(buf, value);
         }
     }
 

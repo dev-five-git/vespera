@@ -261,11 +261,14 @@ class VesperaProxyControllerCoverageTest {
         };
         assertFalse(VesperaProxyController.isRejectedExecution(cyclic));
 
-        CompletionException wrapped = new CompletionException(new IllegalStateException("boom"));
-        CompletionException propagated = assertThrows(
-                CompletionException.class,
-                () -> VesperaProxyController.asyncFailureToResponse(wrapped));
-        assertSame(wrapped, propagated);
+        ResponseEntity<?> bare = VesperaProxyController.asyncFailureToResponse(
+                new IllegalStateException());
+        assertEquals(500, bare.getStatusCode().value());
+        assertEquals("vespera dispatch failed: java.lang.IllegalStateException",
+                new String((byte[]) bare.getBody(), StandardCharsets.UTF_8));
+        ResponseEntity<?> emptyCompletion = VesperaProxyController.asyncFailureToResponse(
+                new CompletionException(null));
+        assertEquals(500, emptyCompletion.getStatusCode().value());
     }
 
     @Test
@@ -337,22 +340,18 @@ class VesperaProxyControllerCoverageTest {
     }
 
     @Test
-    void convenienceAsyncBuilderExposesAReadableResource() throws Exception {
-        ResponseEntity<?> response =
+    void convenienceAsyncBuilderExposesAByteArrayBody() {
+        ResponseEntity<byte[]> response =
                 WireResponseWriter.buildResponseEntityFromWire(heapWire(200, "resource"));
-        Resource resource = (Resource) response.getBody();
 
         assertEquals(200, response.getStatusCode().value());
-        assertEquals(8, resource.contentLength());
-        assertEquals("vespera wire response body slice", resource.getDescription());
-        assertArrayEquals(
-                "resource".getBytes(StandardCharsets.UTF_8),
-                resource.getInputStream().readAllBytes());
+        assertEquals(8, response.getHeaders().getContentLength());
+        assertArrayEquals("resource".getBytes(StandardCharsets.UTF_8), response.getBody());
 
-        ResponseEntity<?> noContent =
+        ResponseEntity<byte[]> noContent =
                 WireResponseWriter.buildResponseEntityFromWire(heapWire(204, "ignored"));
         assertEquals(0, noContent.getHeaders().getContentLength());
-        assertEquals(0, ((Resource) noContent.getBody()).contentLength());
+        assertEquals(0, noContent.getBody().length);
     }
 
     private static MockHttpServletRequest requestReportingLength(long length, byte[] body) {

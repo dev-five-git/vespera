@@ -152,6 +152,28 @@ final class VesperaNativeLoader {
                 Paths.get(System.getProperty("java.io.tmpdir")), System.currentTimeMillis());
     }
 
+    /**
+     * Rewrap the JVM's "already loaded in another classloader" link error —
+     * a second web-app deployment (or a hot redeploy) loading the same
+     * native library from its own class loader — with actionable guidance;
+     * any other error is returned unchanged.
+     */
+    static UnsatisfiedLinkError withDeploymentGuidance(UnsatisfiedLinkError failure, String libraryName) {
+        String message = failure.getMessage();
+        if (message == null || !message.contains("already loaded in another classloader")) {
+            return failure;
+        }
+        UnsatisfiedLinkError guided = new UnsatisfiedLinkError(message
+                + " — the vespera native library '" + libraryName + "' can be loaded by only ONE"
+                + " class loader per JVM and cannot be unloaded. On a servlet container that"
+                + " redeploys or hosts several web apps, put vespera-bridge and the native"
+                + " library in the container's shared lib directory (e.g. Tomcat $CATALINA_BASE/lib)"
+                + " instead of WEB-INF/lib, run one deployment per JVM, and restart the JVM"
+                + " (not only the web app) to pick up a new native build.");
+        guided.initCause(failure);
+        return guided;
+    }
+
     private static void closeQuietly(InputStream in) {
         if (in != null) {
             try {

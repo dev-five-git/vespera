@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -28,22 +29,14 @@ import java.util.function.Consumer;
  * <pre>
  *   bytes 0..4    : u32 BE = header_json byte length N
  *   bytes 4..4+N  : UTF-8 JSON header
- *                     (request)  { "v":1, "method", "path",
- *                                  "query"?, "headers"? }
- *                     (response) { "v":1, "status", "headers",
- *                                  "metadata" }
- *   bytes 4+N..   : raw body bytes (UTF-8 text or binary —
- *                   no encoding applied)
+ *                     (request)  { "v":1, "method", "path", "query"?,
+ *                                  "headers"?, "app"?, "remote_addr"?, "scheme"? }
+ *                     (response) { "v":1, "status", "headers", "metadata" }
+ *   bytes 4+N..   : raw body bytes (no encoding applied)
  * </pre>
  *
- * <p><strong>Usage</strong> — single line in your Spring Boot app:
- * <pre>{@code
- * VesperaBridge.init("rust_jni_demo");
- * }</pre>
- *
- * <p>The proxy controller ({@link VesperaProxyController}) is
- * auto-configured by Spring's component scan when this JAR is on the
- * classpath.
+ * <p><strong>Usage</strong>: {@code VesperaBridge.init("rust_jni_demo");} — the
+ * proxy controller ({@link VesperaProxyController}) is autoconfigured by Spring Boot.
  */
 public class VesperaBridge {
 
@@ -52,9 +45,23 @@ public class VesperaBridge {
         void put(String lowerName, String value);
     }
 
+    /**
+     * Streams request headers into the encoder; the optional defaults add the
+     * {@code remote_addr} / {@code scheme} wire fields ({@code null} = omitted).
+     */
     @FunctionalInterface
     public interface HeaderSource {
         void writeTo(HeaderSink sink);
+
+        /** Client socket address as {@code ip:port} ({@code [ip]:port} for IPv6), or {@code null}. */
+        default String remoteAddr() {
+            return null;
+        }
+
+        /** {@code http} / {@code https}, or {@code null}. */
+        default String scheme() {
+            return null;
+        }
     }
 
     private static volatile boolean loaded = false;
@@ -200,11 +207,42 @@ public class VesperaBridge {
             NativeLibraryLoader bundledLoader,
             NativeLibraryLoader systemLoader) {
         try {
-            bundledLoader.load(libraryName);
-        } catch (VesperaNativeLoader.BundledNativeAbsent absent) {
-            systemLoader.load(libraryName);
+            try {
+                bundledLoader.load(libraryName);
+            } catch (VesperaNativeLoader.BundledNativeAbsent absent) {
+                systemLoader.load(libraryName);
+            }
+        } catch (UnsatisfiedLinkError failure) {
+            throw VesperaNativeLoader.withDeploymentGuidance(failure, libraryName);
         }
     }
+
+    /** Whether {@link #init(String)} has loaded the native library in this class loader. */
+    public static boolean isInitialized() {
+        return loaded;
+    }
+
+    /**
+     * Gracefully shut the Rust runtime down, waiting up to {@code timeout} for
+     * in-flight tasks. <strong>Irreversible for the JVM</strong> (a native
+     * library cannot be reloaded in-process): later dispatches answer
+     * {@code 503}. Returns {@code false} when not initialised, already shut
+     * down, or the native library predates the hook.
+     */
+    public static synchronized boolean shutdown(Duration timeout) {
+        Objects.requireNonNull(timeout, "timeout");
+        if (!loaded) {
+            return false;
+        }
+        long millis = timeout.isNegative() ? 0 : timeout.toMillis();
+        try {
+            return shutdown0(millis);
+        } catch (UnsatisfiedLinkError olderNativeLibrary) {
+            return false;
+        }
+    }
+
+    static native boolean shutdown0(long timeoutMillis);
 
     /**
      * Configure streaming tuning parameters for the Rust-side dispatch

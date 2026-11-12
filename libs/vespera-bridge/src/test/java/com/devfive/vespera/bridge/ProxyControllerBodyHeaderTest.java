@@ -41,13 +41,13 @@ class ProxyControllerBodyHeaderTest {
     // ── C-2: async executor backpressure (AbortPolicy → 503) ─────────────
 
     @Test
-    void asyncRejectionMapsTo503AndOtherFailuresPropagate() {
+    void asyncRejectionMapsTo503AndOtherFailuresBecomePlainTextErrors() {
         // CompletableFuture delivers an executor rejection wrapped in a
         // CompletionException. asyncFailureToResponse must turn that into a 503
         // backpressure response (instead of letting the heavy wire build run on
-        // a Rust Tokio worker, the CallerRunsPolicy hazard this replaces), while
-        // re-propagating every OTHER failure unchanged so Spring maps it as
-        // before.
+        // a Rust Tokio worker, the CallerRunsPolicy hazard this replaces); every
+        // OTHER failure becomes the proxy's plain-text error (never Spring's
+        // /error page).
         Throwable rejected = new java.util.concurrent.CompletionException(
                 new java.util.concurrent.RejectedExecutionException("queue full"));
         assertTrue(VesperaProxyController.isRejectedExecution(rejected));
@@ -55,9 +55,18 @@ class ProxyControllerBodyHeaderTest {
 
         ResponseEntity<?> resp = VesperaProxyController.asyncFailureToResponse(rejected);
         assertEquals(503, resp.getStatusCode().value());
+        assertEquals("text/plain;charset=utf-8", resp.getHeaders().getContentType().toString());
 
-        assertThrows(java.util.concurrent.CompletionException.class,
-                () -> VesperaProxyController.asyncFailureToResponse(new RuntimeException("boom")));
+        ResponseEntity<?> boom = VesperaProxyController.asyncFailureToResponse(
+                new java.util.concurrent.CompletionException(new RuntimeException("boom")));
+        assertEquals(500, boom.getStatusCode().value());
+        assertEquals("vespera dispatch failed: boom",
+                new String((byte[]) boom.getBody(), StandardCharsets.UTF_8));
+
+        ResponseEntity<?> tooLarge = VesperaProxyController.asyncFailureToResponse(
+                new ResponseStatusException(org.springframework.http.HttpStatusCode.valueOf(413), "big"));
+        assertEquals(413, tooLarge.getStatusCode().value());
+        assertEquals("big", new String((byte[]) tooLarge.getBody(), StandardCharsets.UTF_8));
     }
 
     // ── ASYNC buffered-response cap parity with SYNC ─────────────────────
@@ -437,11 +446,7 @@ class ProxyControllerBodyHeaderTest {
                 heapWire(AXUM_HEAD_HEADER, ""), "HEAD");
 
         assertEquals(17, entity.getHeaders().getContentLength());
-        Resource body = (Resource) entity.getBody();
-        assertEquals(0, body.contentLength());
-        try (InputStream in = body.getInputStream()) {
-            assertEquals(-1, in.read());
-        }
+        assertEquals(0, ((byte[]) entity.getBody()).length);
     }
 
     @Test
