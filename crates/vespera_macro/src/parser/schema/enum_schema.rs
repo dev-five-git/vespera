@@ -10,11 +10,21 @@ use vespera_core::schema::Schema;
 
 use super::serde_attrs::{
     SerdeEnumRepr, extract_doc_comment, extract_enum_repr, extract_rename_all,
+    extract_rename_all_fields,
 };
 
 mod representations;
 mod unit;
 mod variant;
+
+/// The two serde renaming rules an enum container can carry.
+#[derive(Clone, Copy)]
+struct EnumRenames<'a> {
+    /// `rename_all` — applies to variant names.
+    variants: Option<&'a str>,
+    /// `rename_all_fields` — applies to the fields of struct variants.
+    fields: Option<&'a str>,
+}
 
 /// Parses a Rust enum into an OpenAPI Schema.
 pub fn parse_enum_to_schema(
@@ -24,6 +34,13 @@ pub fn parse_enum_to_schema(
 ) -> Schema {
     let enum_description = extract_doc_comment(&enum_item.attrs);
     let rename_all = extract_rename_all(&enum_item.attrs);
+    let rename_all_fields = extract_rename_all_fields(&enum_item.attrs);
+    // Container `rename_all` renames VARIANTS only; struct-variant fields
+    // follow `rename_all_fields` (a variant-level `rename_all` still wins).
+    let renames = EnumRenames {
+        variants: rename_all.as_deref(),
+        fields: rename_all_fields.as_deref(),
+    };
     let repr = extract_enum_repr(&enum_item.attrs);
     let all_unit = enum_item
         .variants
@@ -39,14 +56,14 @@ pub fn parse_enum_to_schema(
         SerdeEnumRepr::ExternallyTagged => representations::parse_externally_tagged_enum(
             enum_item,
             enum_description,
-            rename_all.as_deref(),
+            renames,
             known_schemas,
             struct_definitions,
         ),
         SerdeEnumRepr::InternallyTagged { tag } => representations::parse_internally_tagged_enum(
             enum_item,
             enum_description,
-            rename_all.as_deref(),
+            renames,
             &tag,
             known_schemas,
             struct_definitions,
@@ -55,7 +72,7 @@ pub fn parse_enum_to_schema(
             representations::parse_adjacently_tagged_enum(
                 enum_item,
                 enum_description,
-                rename_all.as_deref(),
+                renames,
                 &tag,
                 &content,
                 known_schemas,
@@ -65,7 +82,7 @@ pub fn parse_enum_to_schema(
         SerdeEnumRepr::Untagged => representations::parse_untagged_enum(
             enum_item,
             enum_description,
-            rename_all.as_deref(),
+            renames,
             known_schemas,
             struct_definitions,
         ),
@@ -526,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_enum_to_schema_field_uses_enum_rename_all() {
+    fn test_parse_enum_to_schema_field_ignores_enum_rename_all() {
         let enum_item: syn::ItemEnum = syn::parse_str(
             r#"
             #[serde(rename_all = "snake_case")]
@@ -554,8 +571,9 @@ mod tests {
             panic!("Expected inline inner schema")
         };
         let inner_props = inner.properties.as_ref().expect("inner props missing");
-        assert!(inner_props.contains_key("user_id"));
-        assert!(!inner_props.contains_key("UserId"));
+        // serde: container rename_all renames variants, never their fields.
+        assert!(inner_props.contains_key("UserId"));
+        assert!(!inner_props.contains_key("user_id"));
     }
 
     #[test]

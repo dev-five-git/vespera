@@ -263,6 +263,52 @@ pub fn extract_serde_skip_flags(attrs: &[syn::Attribute]) -> SerdeSkipFlags {
     flags
 }
 
+/// Walk every `#[serde(...)]` key, calling `on_key(meta)` for each one and
+/// consuming any `= value` / `(...)` payload the callback left unread (it
+/// returns `false`), so an unrelated key never aborts the walk.
+fn walk_serde_keys(
+    attrs: &[syn::Attribute],
+    mut on_key: impl FnMut(&syn::meta::ParseNestedMeta<'_>) -> syn::Result<bool>,
+) {
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
+        let _ = attr.parse_nested_meta(|meta| {
+            if !on_key(&meta)? {
+                if meta.input.peek(syn::Token![=]) {
+                    meta.value()?.parse::<syn::Expr>()?;
+                } else if meta.input.peek(syn::token::Paren) {
+                    meta.input.parse::<proc_macro2::Group>()?;
+                }
+            }
+            Ok(())
+        });
+    }
+}
+
+/// `#[serde(rename_all_fields = "...")]` on an enum: the `rename_all` rule
+/// applied to the fields of every struct variant.
+pub fn extract_rename_all_fields(attrs: &[syn::Attribute]) -> Option<String> {
+    let mut found = None;
+    walk_serde_keys(attrs, |meta| {
+        if meta.path.is_ident("rename_all_fields") && meta.input.peek(syn::Token![=]) {
+            let lit: syn::LitStr = meta.value()?.parse()?;
+            found.get_or_insert(lit.value());
+            return Ok(true);
+        }
+        Ok(false)
+    });
+    found
+}
+
+/// `#[serde(deny_unknown_fields)]` is present on the container.
+pub fn extract_deny_unknown_fields(attrs: &[syn::Attribute]) -> bool {
+    let mut found = false;
+    walk_serde_keys(attrs, |meta| {
+        found |= meta.path.is_ident("deny_unknown_fields");
+        Ok(false)
+    });
+    found
+}
+
 /// Extract flatten attribute from field attributes
 /// Returns true if #[serde(flatten)] is present
 pub fn extract_flatten(attrs: &[syn::Attribute]) -> bool {
@@ -363,6 +409,44 @@ mod tests {
     #![allow(clippy::option_option)]
     use super::*;
     use rstest::rstest;
+
+    #[rstest]
+    #[case(
+        r#"#[serde(rename_all_fields = "camelCase")] enum E {}"#,
+        Some("camelCase")
+    )]
+    #[case(
+        r#"#[serde(rename_all = "snake_case", rename_all_fields = "kebab-case")] enum E {}"#,
+        Some("kebab-case")
+    )]
+    #[case(
+        r#"#[serde(rename_all_fields = "lowercase")] #[serde(rename_all_fields = "UPPERCASE")] enum E {}"#,
+        Some("lowercase")
+    )]
+    #[case(
+        r#"#[serde(rename_all_fields(serialize = "camelCase"))] enum E {}"#,
+        None
+    )]
+    #[case(r"#[serde(rename_all_fields = 1)] enum E {}", None)]
+    #[case(r#"#[other(rename_all_fields = "camelCase")] enum E {}"#, None)]
+    #[case(r"enum E {}", None)]
+    fn rename_all_fields_cases(#[case] src: &str, #[case] expected: Option<&str>) {
+        let item: syn::ItemEnum = syn::parse_str(src).unwrap();
+        assert_eq!(extract_rename_all_fields(&item.attrs).as_deref(), expected);
+    }
+
+    #[rstest]
+    #[case(r"#[serde(deny_unknown_fields)] struct S;", true)]
+    #[case(
+        r#"#[serde(rename_all = "camelCase", deny_unknown_fields)] struct S;"#,
+        true
+    )]
+    #[case(r"#[serde(default)] struct S;", false)]
+    #[case(r"struct S;", false)]
+    fn deny_unknown_fields_cases(#[case] src: &str, #[case] expected: bool) {
+        let item: syn::ItemStruct = syn::parse_str(src).unwrap();
+        assert_eq!(extract_deny_unknown_fields(&item.attrs), expected);
+    }
     #[rstest]
     #[case(r#"#[serde(rename_all = "camelCase")] struct Foo;"#, Some("camelCase"))]
     #[case(

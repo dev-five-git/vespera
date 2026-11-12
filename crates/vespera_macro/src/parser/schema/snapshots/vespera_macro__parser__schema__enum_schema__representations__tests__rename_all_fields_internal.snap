@@ -1,0 +1,50 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests.rs
+assertion_line: 809
+expression: "serde_json::to_string_pretty(&schema).unwrap()"
+---
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "user_created"
+          ]
+        },
+        "userId": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "kind",
+        "userId"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "USER_ID": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "user_deleted"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "USER_ID"
+      ]
+    }
+  ],
+  "discriminator": {
+    "propertyName": "kind"
+  }
+}

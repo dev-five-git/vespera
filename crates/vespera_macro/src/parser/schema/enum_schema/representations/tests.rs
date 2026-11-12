@@ -780,3 +780,35 @@ fn untagged_newtype_ref_is_plain_ref_without_description() {
         Some([SchemaRef::Ref(_)])
     ));
 }
+
+/// `rename_all` renames variants only; `rename_all_fields` renames the fields
+/// of every struct variant (a variant-level `rename_all` still wins) — in all
+/// four serde representations.
+#[rstest::rstest]
+#[case::external("external", "")]
+#[case::internal("internal", r#"#[serde(tag = "kind")]"#)]
+#[case::adjacent("adjacent", r#"#[serde(tag = "kind", content = "data")]"#)]
+#[case::untagged("untagged", "#[serde(untagged)]")]
+fn rename_all_fields_applies_to_struct_variant_fields(#[case] name: &str, #[case] repr: &str) {
+    let src = format!(
+        r#"{repr}
+        #[serde(rename_all = "snake_case", rename_all_fields = "camelCase")]
+        enum Event {{
+            UserCreated {{ user_id: i32 }},
+            #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+            UserDeleted {{ user_id: i32 }},
+        }}"#
+    );
+    let enum_item: syn::ItemEnum = syn::parse_str(&src).unwrap();
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
+    with_settings!({ snapshot_path => "../../snapshots" }, {
+        insta::assert_snapshot!(
+            format!("rename_all_fields_{name}"),
+            serde_json::to_string_pretty(&schema).unwrap()
+        );
+    });
+}

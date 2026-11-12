@@ -807,3 +807,61 @@ fn schema_any_field_forces_object_without_type_conversion() {
         Some(SchemaType::Object)
     );
 }
+
+/// Container/field serde attributes that change the object's shape:
+/// `flatten` of an `Option` relaxes the inner fields, `deny_unknown_fields`
+/// closes the object (unless it flattens, which serde does not support).
+#[rstest]
+#[case::flatten_option_known_struct(
+    "flatten_option_known_struct",
+    r"struct Outer { id: i32, #[serde(flatten)] page: Option<Page> }"
+)]
+#[case::flatten_option_generic_inline(
+    "flatten_option_generic_inline",
+    r"struct Outer { #[serde(flatten)] wrapped: Option<Wrapper<String>> }"
+)]
+#[case::flatten_option_nested_flatten(
+    "flatten_option_nested_flatten",
+    r"struct Outer { #[serde(flatten)] meta: Option<Meta> }"
+)]
+#[case::flatten_option_enum_ref_kept(
+    "flatten_option_enum_ref_kept",
+    r"struct Outer { #[serde(flatten)] kind: Option<Kind> }"
+)]
+#[case::flatten_required_struct_unchanged(
+    "flatten_required_struct_unchanged",
+    r"struct Outer { #[serde(flatten)] page: Page }"
+)]
+#[case::deny_unknown_fields_closed(
+    "deny_unknown_fields_closed",
+    r#"#[serde(deny_unknown_fields, rename_all = "camelCase")] struct Strict { user_id: i32 }"#
+)]
+#[case::deny_unknown_fields_with_flatten_open(
+    "deny_unknown_fields_with_flatten_open",
+    r"#[serde(deny_unknown_fields)] struct Strict { id: i32, #[serde(flatten)] page: Page }"
+)]
+fn serde_shape_attributes(#[case] name: &str, #[case] src: &str) {
+    let known: HashSet<String> = ["Page", "Wrapper", "Meta", "Audit", "Kind"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let definitions: HashMap<String, String> = [
+        ("Page", "struct Page { page: u32, size: Option<u32> }"),
+        ("Wrapper", "struct Wrapper<T> { value: T, note: String }"),
+        (
+            "Meta",
+            "struct Meta { tag: String, #[serde(flatten)] audit: Audit, #[serde(flatten)] extra: Wrapper<u8> }",
+        ),
+        ("Audit", "struct Audit { by: String }"),
+        ("Kind", "enum Kind { A, B }"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    let struct_item: syn::ItemStruct = syn::parse_str(src).unwrap();
+    let schema = parse_struct_to_schema(&struct_item, &known, &definitions);
+    insta::assert_snapshot!(
+        format!("serde_shape_{name}"),
+        serde_json::to_string_pretty(&schema).unwrap()
+    );
+}

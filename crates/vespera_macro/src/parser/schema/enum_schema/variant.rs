@@ -17,7 +17,7 @@ use super::super::{
 /// `#[schema(...)]` constraints behave identically on enum variants.
 pub(super) fn build_struct_variant_fields(
     fields_named: &syn::FieldsNamed,
-    enum_rename_all: Option<&str>,
+    enum_rename_all_fields: Option<&str>,
     variant_attrs: &[syn::Attribute],
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
@@ -25,7 +25,7 @@ pub(super) fn build_struct_variant_fields(
     let variant_rename_all = extract_rename_all(variant_attrs);
     collect_named_fields(
         fields_named,
-        variant_rename_all.as_deref().or(enum_rename_all),
+        variant_rename_all.as_deref().or(enum_rename_all_fields),
         known_schemas,
         struct_definitions,
     )
@@ -47,7 +47,7 @@ pub(super) fn is_other_variant(variant: &syn::Variant) -> bool {
 /// Build a schema for a variant's data (tuple or struct fields)
 pub(super) fn build_variant_data_schema(
     variant: &syn::Variant,
-    enum_rename_all: Option<&str>,
+    enum_rename_all_fields: Option<&str>,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Option<SchemaRef> {
@@ -75,7 +75,7 @@ pub(super) fn build_variant_data_schema(
         syn::Fields::Named(fields_named) => Some(SchemaRef::Inline(Box::new(
             build_struct_variant_fields(
                 fields_named,
-                enum_rename_all,
+                enum_rename_all_fields,
                 &variant.attrs,
                 known_schemas,
                 struct_definitions,
