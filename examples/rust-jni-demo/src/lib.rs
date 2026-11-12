@@ -207,6 +207,7 @@ mod tests {
         .await;
         assert!(cancelled.is_err());
         assert_eq!(body("/diag/runs/rust-cancel").await, "0");
+        assert_eq!(body("/diag/runs/rust-cancel:started").await, "1");
         assert_eq!(body("/diag/runs/rust-cancel:dropped").await, "1");
         // A drip body dropped before its end records the drop.
         vespera::inprocess::register_app_named("diag-test", create_app);
