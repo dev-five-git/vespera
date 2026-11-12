@@ -63,8 +63,9 @@ pub struct StoredRouteInfo {
     pub typed_responses: Option<Vec<(u16, String)>>,
     /// Tags for `OpenAPI` grouping from `tags = ["users"]`.
     pub tags: Option<Vec<String>>,
-    /// Per-route security requirements from `security = ["bearerAuth"]`.
-    pub security: Option<Vec<String>>,
+    /// Per-route security requirements from `security = ["bearerAuth"]` /
+    /// `security = [("oauth2", ["read:users"])]`.
+    pub security: Option<Vec<vespera_core::schema::SecurityRequirement>>,
     /// Header parameters from `headers = [{ name = "Authorization" }]`.
     pub headers: Vec<HeaderParam>,
     /// Explicit OpenAPI operationId from `operation_id = "getUser"`.
@@ -190,16 +191,6 @@ fn extract_tag_strings(arr: &syn::ExprArray) -> syn::Result<Option<Vec<String>>>
     require_string_literal_elems(arr, "tags")?;
     let tags = collect_string_literal_values(arr);
     Ok(if tags.is_empty() { None } else { Some(tags) })
-}
-
-/// Extract security scheme names from a `syn::ExprArray`, erroring on any
-/// non-string entry.
-///
-/// Unlike tags, an empty array is meaningful: `security = []` disables
-/// inherited/global security for that operation in OpenAPI.
-fn extract_security_strings(arr: &syn::ExprArray) -> syn::Result<Vec<String>> {
-    require_string_literal_elems(arr, "security")?;
-    Ok(collect_string_literal_values(arr))
 }
 
 fn parse_example_string(lit: &syn::LitStr) -> serde_json::Value {
@@ -342,7 +333,10 @@ pub fn process_route_attribute(
             None => None,
         },
         security: match route_args.security.as_ref() {
-            Some(arr) => Some(extract_security_strings(arr)?),
+            Some(arr) => Some(crate::security::parse_security_requirements(
+                arr,
+                "#[route] `security`",
+            )?),
             None => None,
         },
         headers: route_args.headers.unwrap_or_default(),
@@ -789,34 +783,6 @@ mod tests {
         // error, not silently dropped.
         let arr: syn::ExprArray = syn::parse_quote!([users]);
         let err = extract_tag_strings(&arr).expect_err("non-string tag must error");
-        assert!(err.to_string().contains("string literals"), "{err}");
-    }
-
-    #[test]
-    fn test_extract_security_strings_values() {
-        let arr: syn::ExprArray = syn::parse_quote!(["bearerAuth", "apiKey"]);
-        assert_eq!(
-            extract_security_strings(&arr).unwrap(),
-            vec!["bearerAuth".to_string(), "apiKey".to_string()]
-        );
-    }
-
-    #[test]
-    fn test_extract_security_strings_empty_is_ok() {
-        // `security = []` is meaningful (explicit no-auth) and must NOT error.
-        let arr: syn::ExprArray = syn::parse_quote!([]);
-        assert_eq!(
-            extract_security_strings(&arr).unwrap(),
-            Vec::<String>::new()
-        );
-    }
-
-    #[test]
-    fn test_extract_security_strings_rejects_non_string() {
-        // `security = [bearerAuth]` (missing quotes) must error rather than
-        // silently documenting a protected route as unauthenticated.
-        let arr: syn::ExprArray = syn::parse_quote!([bearerAuth]);
-        let err = extract_security_strings(&arr).expect_err("non-string security must error");
         assert!(err.to_string().contains("string literals"), "{err}");
     }
 

@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/router_codegen/security_dsl_tests.rs
+expression: error.to_string()
+---
+`flows` must configure at least one OAuth2 flow: `implicit`, `password`, `client_credentials`, `authorization_code`

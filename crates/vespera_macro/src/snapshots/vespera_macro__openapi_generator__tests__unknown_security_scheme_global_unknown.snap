@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/openapi_generator.rs
-assertion_line: 361
 expression: error.to_string()
 ---
-top-level `security` references unknown security scheme `oauth`; declared in `vespera!(security_schemes = [...])`: `bearerAuth`
+top-level `security` references unknown security scheme `oauth`; declared in `vespera!(security_schemes = [...])`: `bearerAuth`, `oauth2`

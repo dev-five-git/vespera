@@ -145,7 +145,11 @@ fn build_with_tags(sig_src: &str, path: &str, tags: Option<&[String]>) -> Operat
     )
 }
 
-fn build_with_security(sig_src: &str, path: &str, security: Option<&[String]>) -> Operation {
+fn build_with_security(
+    sig_src: &str,
+    path: &str,
+    security: Option<&[vespera_core::schema::SecurityRequirement]>,
+) -> Operation {
     let sig: syn::Signature = syn::parse_str(sig_src).expect("signature parse failed");
     build_operation_from_function(
         &sig,
@@ -831,14 +835,17 @@ fn test_non_path_extractor_generates_params_and_extends() {
 
 #[test]
 fn route_security_generates_requirement_objects_and_preserves_empty() {
-    let bearer = vec!["bearerAuth".to_string(), "apiKey".to_string()];
+    let bearer = vec![
+        BTreeMap::from([("bearerAuth".to_string(), Vec::new())]),
+        BTreeMap::from([("oauth2".to_string(), vec!["read:users".to_string()])]),
+    ];
     let op = build_with_security("fn secure() -> String", "/secure", Some(&bearer));
     let requirements = op.security.expect("security present");
     assert_eq!(requirements.len(), 2);
     assert!(requirements[0].contains_key("bearerAuth"));
-    assert!(requirements[1].contains_key("apiKey"));
+    assert_eq!(requirements[1]["oauth2"], ["read:users"]);
 
-    let empty: Vec<String> = Vec::new();
+    let empty = Vec::new();
     let op = build_with_security("fn public() -> String", "/public", Some(&empty));
     assert_eq!(op.security, Some(Vec::new()));
 }

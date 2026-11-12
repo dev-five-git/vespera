@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/security/tests.rs
+expression: "describe_requirement_error(&error, \"route `get_user` (`GET /users`)\",\n&schemes)"
+---
+route `get_user` (`GET /users`) references unknown security scheme `missing`; declared in `vespera!(security_schemes = [...])`: `bare`, `bearer`, `empty`, `oauth2`, `oidc`

@@ -27,6 +27,18 @@ of an existing 0.5 application.
 - New compile errors: duplicate explicit `operation_id`s, unknown security
   schemes (checked after `merge`), malformed `#[schema(...)]`, and scalar
   payloads in internally tagged newtype variants.
+- OAuth2 / OpenID Connect: `oauth2` security schemes declare `flows`
+  (`implicit` / `password` / `client_credentials` / `authorization_code` with
+  their URLs and `scopes`), and `security = [...]` (route and document level)
+  accepts scoped requirements `("oauth2", ["read:users"])`, AND groups
+  `[["apiKey", ("oauth2", [...])]]` and an optional-auth `[]` alternative.
+  New compile errors: an `oauth2` scheme without `flows` or with a flow
+  missing a required URL, `flows` on another scheme type, and a scope that no
+  flow of the referenced `oauth2` scheme declares. The malformed-`security`
+  diagnostic wording changed. `vespera_core` adds `SecurityRequirement` and
+  `OAuthFlows::{declares_scope, scope_names}`; `vespera_inprocess` adds
+  `Principal::require_scopes` → `InsufficientScope` (`403` +
+  `WWW-Authenticate: Bearer error="insufficient_scope"`).
 - Known `headers::*` `TypedHeader` parameters use the real header name.
 - `Path<Struct>` parameters are typed per field (serde names); `Query<Struct>`
   drops `skip` / `skip_deserializing` fields, expands `flatten`, and array

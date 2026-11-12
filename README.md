@@ -432,8 +432,8 @@ without parsing the body. See [`crates/vespera/tests/jni_validation.rs`](./crate
 
 Declare OpenAPI security schemes in `vespera!`, then attach requirements to
 routes with `security = [...]`. Each route entry becomes an OpenAPI security
-requirement object with empty scopes; use `security = []` on a route to emit an
-explicit unauthenticated operation.
+requirement object (with scopes for `("oauth2", ["read:users"])`, see below);
+use `security = []` on a route to emit an explicit unauthenticated operation.
 
 ```rust
 let app = vespera!(
@@ -458,6 +458,71 @@ Supported `type` values match OpenAPI's camelCase wire names: `"apiKey"`,
 `"http"`, `"mutualTLS"`, `"oauth2"`, and `"openIdConnect"`. The DSL uses
 `header_name` for the OpenAPI api-key `name` field so it does not conflict with
 the security scheme entry name.
+
+#### OAuth2 / OpenID Connect scopes
+
+An `oauth2` scheme declares its `flows` (`implicit`, `password`,
+`client_credentials`, `authorization_code`) with the URLs OpenAPI requires for
+each flow and a `scopes` map; an `openIdConnect` scheme takes its discovery
+URL. Requirements name scopes as a `("scheme", ["scope", ...])` tuple:
+
+```rust
+let app = vespera!(
+    openapi = "openapi.json",
+    security_schemes = [
+        {
+            name = "oauth2",
+            type = "oauth2",
+            flows = {
+                authorization_code = {
+                    authorization_url = "https://auth.example.com/authorize",
+                    token_url = "https://auth.example.com/token",
+                    refresh_url = "https://auth.example.com/refresh", // optional
+                    scopes = { "read:users" = "Read users", "write:users" = "Modify users" },
+                },
+                client_credentials = {
+                    token_url = "https://auth.example.com/token",
+                    scopes = { "read:users" = "Read users" },
+                },
+            },
+        },
+        {
+            name = "oidc",
+            type = "openIdConnect",
+            open_id_connect_url = "https://auth.example.com/.well-known/openid-configuration"
+        }
+    ],
+    security = [("oauth2", ["read:users"])] // document-level default
+);
+
+// Alternatives (OR): an oauth2 token with `read:users`, or an OIDC login.
+#[vespera::route(get, path = "/users", security = [("oauth2", ["read:users"]), ("oidc", ["openid"])])]
+pub async fn list_users() -> ... { ... }
+
+// AND group: an API key *and* an oauth2 token with `write:users`.
+#[vespera::route(post, path = "/users", security = [["apiKey", ("oauth2", ["write:users"])]])]
+pub async fn create_user() -> ... { ... }
+
+// `[]` as an alternative makes authentication optional (`{}` in OpenAPI).
+#[vespera::route(get, path = "/feed", security = ["bearerAuth", []])]
+pub async fn feed() -> ... { ... }
+```
+
+```json
+"security": [{ "oauth2": ["read:users"] }, { "oidc": ["openid"] }]
+```
+
+Checked at compile time: an `oauth2` scheme without `flows`, a flow missing
+`authorization_url` / `token_url`, `flows` on a non-`oauth2` scheme, and a
+requirement asking an `oauth2` scheme for a scope that none of its flows
+declares are all compile errors. (OpenID Connect scopes live in the discovery
+document and other scheme types take free-form role names, so those are not
+checked.)
+
+The scopes only *document* the requirement. When the host forwards the granted
+scopes as `vespera::inprocess::Principal` authorities (feature `inprocess`),
+`principal.require_scopes(&["read:users"])?` enforces them, answering `403`
+with `WWW-Authenticate: Bearer error="insufficient_scope", scope="..."`.
 
 ### Supported Extractors
 
@@ -664,7 +729,7 @@ with `/` and they must not share a path (both are compile errors).
 | `status` | Success-response status override (must be `2xx`), e.g. `status = 204`; re-keys the inferred `200` response (no body for `204`/`304`) |
 | `error_status` | Extra error status codes to include in OpenAPI responses; declaring any makes the explicit error set authoritative (see below) |
 | `responses` | Typed error responses, e.g. `responses = [(404, NotFoundError), (400, crate::errors::BadRequestError)]`; declaring any makes the explicit error set authoritative (see below) |
-| `security` | Per-operation security requirements, e.g. `security = ["bearerAuth"]`; `security = []` emits explicit no auth |
+| `security` | Per-operation security requirements, e.g. `security = ["bearerAuth"]` or with OAuth2 scopes `security = [("oauth2", ["read:users"])]` (an inner `[...]` is an AND group); `security = []` emits explicit no auth |
 | `headers` | Header parameters consumed by custom extractors, e.g. `headers = [{ name = "Authorization", required = true, description = "Bearer token" }]`; `required` defaults to `false` |
 | `request_example` | Operation-level request body example as a JSON string; invalid JSON is emitted as a JSON string value |
 | `response_example` | Operation-level `200` response example as a JSON string; invalid JSON is emitted as a JSON string value |
