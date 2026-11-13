@@ -64,14 +64,16 @@ impl<'de> serde::de::Visitor<'de> for SchemaRefVisitor {
                 SchemaField::RefPath if pure_ref && ref_path.is_none() && !has_inline_fields => {
                     ref_path = Some(access.next_value::<String>()?);
                 }
-                other => {
+                // `_` (not a binding): a binding pattern on its own line gets
+                // no coverage region on current rustc.
+                _ => {
                     if let Some(path) = ref_path.take() {
                         schema.ref_path = Some(path);
                     }
                     pure_ref = false;
                     has_inline_fields = true;
                     apply_schema_field(
-                        other,
+                        key,
                         &mut schema,
                         &mut type_nullable,
                         &mut nullable,
