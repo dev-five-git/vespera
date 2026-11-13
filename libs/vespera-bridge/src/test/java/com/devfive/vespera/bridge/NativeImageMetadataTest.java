@@ -443,12 +443,24 @@ class NativeImageMetadataTest {
 
     // ── Spring AOT ──────────────────────────────────────────────────────
 
+    private static List<Class<?>> importedHints(Class<?> autoConfiguration) {
+        ImportRuntimeHints imported = autoConfiguration.getAnnotation(ImportRuntimeHints.class);
+        assertNotNull(imported, autoConfiguration.getSimpleName() + " imports no runtime hints");
+        return List.of(imported.value());
+    }
+
     @Test
-    void autoConfigurationImportsTheRuntimeHints() {
-        ImportRuntimeHints imported =
-                VesperaBridgeAutoConfiguration.class.getAnnotation(ImportRuntimeHints.class);
-        assertNotNull(imported);
-        assertTrue(List.of(imported.value()).contains(VesperaBridgeRuntimeHints.class));
+    void servletAutoConfigurationImportsProxyAndSecurityHints() {
+        List<Class<?>> imported = importedHints(VesperaBridgeAutoConfiguration.class);
+        assertTrue(imported.contains(VesperaBridgeRuntimeHints.class));
+        assertTrue(imported.contains(VesperaSecurityRuntimeHints.class));
+    }
+
+    @Test
+    void reactiveAutoConfigurationImportsOnlyTheServletFreeSecurityHints() {
+        // VesperaBridgeRuntimeHints references the servlet-only proxy method.
+        assertEquals(List.of(VesperaSecurityRuntimeHints.class),
+                importedHints(VesperaBridgeReactiveAutoConfiguration.class));
     }
 
     @Test
@@ -459,16 +471,18 @@ class NativeImageMetadataTest {
     }
 
     @Test
-    void runtimeHintsCoverSpringSecurityAuthoritiesOnlyWhenPresent() {
+    void securityHintsCoverSpringSecurityAuthoritiesOnlyWhenPresent() {
         RuntimeHints absent = new RuntimeHints();
-        new VesperaBridgeRuntimeHints().registerHints(absent, getClass().getClassLoader());
+        new VesperaSecurityRuntimeHints().registerHints(absent, getClass().getClassLoader());
         // Spring Security is not on this test classpath.
         assertEquals(null, absent.reflection().getTypeHint(TypeReference.of(SecurityAuthorities.AUTHENTICATION)));
 
         RuntimeHints present = new RuntimeHints();
-        VesperaBridgeRuntimeHints.registerHints(present, type -> true);
+        VesperaSecurityRuntimeHints.registerHints(present, type -> true);
         assertInvokable(present, SecurityAuthorities.AUTHENTICATION, "getAuthorities");
         assertInvokable(present, SecurityAuthorities.GRANTED_AUTHORITY, "getAuthority");
+        // The anonymous check compares class names: no reflection on the token type.
+        assertEquals(null, present.reflection().getTypeHint(TypeReference.of(SecurityAuthorities.ANONYMOUS_TOKEN)));
     }
 
     private static void assertInvokable(RuntimeHints hints, String type, String method) {
