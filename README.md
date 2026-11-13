@@ -1344,8 +1344,10 @@ vespera = { version = "0.6", features = ["jni", "tracing"] }
 
 With the opt-in `tracing` feature every in-process / JNI dispatch runs inside a
 `vespera.dispatch` span (INFO) with the fields `mode` (`bytes` / `async` /
-`direct` / `streaming` / `bidirectional`), `method`, `path` (never the query
-string), `app`, `status`, `duration_ms` and `panicked`. Synthesised error
+`direct` / `streaming` / `bidirectional`), `method`, `route` (the matched axum route
+template such as `/users/{id}` — never the concrete path or query, so
+secrets in path segments do not reach your logs; unset when no route
+matched), `app`, `status`, `duration_ms` and `panicked`. Synthesised error
 responses emit an event — WARN for malformed wire (`400`), size limits
 (`413`), too many headers (`431`), runtime shut down / overloaded (`503`),
 deadline (`504`) and other `4xx`; ERROR for engine `5xx` and for a panic that

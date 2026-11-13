@@ -12,10 +12,16 @@
 //! * One `vespera.dispatch` **span** per wire dispatch (INFO level), opened
 //!   by the entry point and entered on every poll of the dispatch future.
 //!   Fields: `mode` (`bytes` / `async` / `direct` / `streaming` /
-//!   `bidirectional`), `method`, `path` (never the query string), `app`,
+//!   `bidirectional`), `method`, `route`, `app`,
 //!   `status` (the final wire status, including synthesised error statuses),
 //!   `duration_ms` (recorded when the dispatch future completes or is
 //!   dropped) and `panicked` (`false` unless a panic unwound out of it).
+//!   `route` is the axum route **template** that matched (`MatchedPath`,
+//!   e.g. `/users/{id}`), never the concrete request path: path segments
+//!   can carry secrets (tokens, e-mails) and would make the field
+//!   unbounded-cardinality.  It is recorded by a `route_layer` on the
+//!   [`TracedApp`] twin of every registered app, so a request no route
+//!   matched (`404` fallback, rejected before routing) leaves it unset.
 //! * A WARN / ERROR **event** for every synthesised error response
 //!   ([`error_response`], hooked into `wire::error_wire`): malformed wire /
 //!   request (`400`), size limit (`413`), too many headers (`431`), runtime
@@ -29,7 +35,10 @@
 //! cached callsite-interest check, after which the future is awaited
 //! unwrapped.  With a subscriber: one span (no field allocations — every
 //! value is a `&str` / integer / `f64`), one `Instant::now()` pair, and a
-//! `Span::current()` lookup at the two record points.
+//! `Span::current()` lookup at the record points (and when picking the
+//! router), plus the route-recording layer's service hop.  Without an
+//! interested subscriber the registry hands out the uninstrumented router,
+//! so the only extra work is that `Span::current()` check.
 
 use std::future::Future;
 use std::time::Instant;
@@ -58,7 +67,7 @@ pub async fn instrument<F: Future>(mode: &'static str, fut: F) -> F::Output {
         "vespera.dispatch",
         mode,
         method = Empty,
-        path = Empty,
+        route = Empty,
         app = Empty,
         status = Empty,
         duration_ms = Empty,
@@ -120,18 +129,98 @@ fn current_dispatch_span() -> Option<Span> {
         .then_some(span)
 }
 
-/// Record the parsed request line onto the current dispatch span.
-pub fn record_request(method: &str, path: &str, app: Option<&str>) {
+/// Record the parsed request line (method + app, never the concrete path)
+/// onto the current dispatch span.
+pub fn record_request(method: &str, app: Option<&str>) {
     if let Some(span) = current_dispatch_span() {
-        // Defensive: a wire `path` carrying its own `?query` must not leak
-        // it (the query is a separate wire field and is never recorded).
-        let path = path.split_once('?').map_or(path, |(path, _)| path);
         let app = app
             .filter(|app| !app.is_empty())
             .unwrap_or(crate::DEFAULT_APP_NAME);
         span.record("method", method);
-        span.record("path", path);
         span.record("app", app);
+    }
+}
+
+/// A registered app as the registry stores it with the feature on: the
+/// factory's router, plus a twin whose routes carry [`RecordRouteLayer`]
+/// (built once per registration, never per request; both share the
+/// handlers).  [`TracedApp::router`] hands out the twin only while a
+/// `vespera.dispatch` span is recording, so a build with the feature on but
+/// no interested subscriber dispatches the exact uninstrumented router.
+#[derive(Clone)]
+pub struct TracedApp {
+    plain: crate::Router,
+    traced: crate::Router,
+}
+
+impl TracedApp {
+    /// Pair `router` with its route-recording twin (a router without routes
+    /// is used as is: axum rejects a `route_layer` on it).
+    pub fn new(router: crate::Router) -> Self {
+        let traced = if router.has_routes() {
+            router.clone().route_layer(RecordRouteLayer)
+        } else {
+            router.clone()
+        };
+        Self {
+            plain: router,
+            traced,
+        }
+    }
+
+    /// The router to dispatch: the twin inside a recording dispatch span.
+    pub fn router(&self) -> crate::Router {
+        if current_dispatch_span().is_some() {
+            self.traced.clone()
+        } else {
+            self.plain.clone()
+        }
+    }
+}
+
+/// `route_layer` that records the matched route template.
+#[derive(Clone, Copy)]
+pub struct RecordRouteLayer;
+
+impl<S> tower::Layer<S> for RecordRouteLayer {
+    type Service = RecordRoute<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        RecordRoute(inner)
+    }
+}
+
+/// Service half of [`RecordRouteLayer`]: runs after axum routed the
+/// request (so `MatchedPath` is set) and inside the dispatch span's poll.
+#[derive(Clone)]
+pub struct RecordRoute<S>(S);
+
+impl<S: tower::Service<axum::extract::Request>> tower::Service<axum::extract::Request>
+    for RecordRoute<S>
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.0.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: axum::extract::Request) -> Self::Future {
+        if let Some(route) = request.extensions().get::<axum::extract::MatchedPath>() {
+            record_route(route.as_str());
+        }
+        self.0.call(request)
+    }
+}
+
+/// Record the matched route template onto the current dispatch span.
+fn record_route(route: &str) {
+    if let Some(span) = current_dispatch_span() {
+        span.record("route", route);
     }
 }
 
