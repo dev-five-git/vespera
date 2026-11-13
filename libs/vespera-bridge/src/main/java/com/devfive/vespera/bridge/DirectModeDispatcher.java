@@ -82,11 +82,10 @@ final class DirectModeDispatcher {
             overflowMemory.recordOverflow(appName, method, path, query);
             WireResponseWriter.BodyPermittingOutputStream bodyOut =
                     new WireResponseWriter.BodyPermittingOutputStream(response.getOutputStream(), method);
-            stashed.streamTo(
+            streamHeaderFirst(response, () -> stashed.streamTo(
                     headerBytes -> bodyOut.applyPermitsBody(
                             WireResponseWriter.applyDecodedHeader(headerBytes, response, method)),
-                    bodyOut);
-            response.getOutputStream().flush();
+                    bodyOut));
             return;
         } catch (VesperaBridge.BufferTooSmallException overflow) {
             // The first dispatch already ran; its oversized result was discarded.
@@ -144,11 +143,41 @@ final class DirectModeDispatcher {
                 appName, method, path, query, headers, body);
         WireResponseWriter.BodyPermittingOutputStream bodyOut =
                 new WireResponseWriter.BodyPermittingOutputStream(response.getOutputStream(), method);
-        VesperaBridge.dispatchStreamingWithHeader(
+        streamHeaderFirst(response, () -> VesperaBridge.dispatchStreamingWithHeader(
                 wireReq,
                 headerBytes -> bodyOut.applyPermitsBody(
                         WireResponseWriter.applyDecodedHeader(headerBytes, response, method)),
-                bodyOut);
+                bodyOut));
+    }
+
+    /**
+     * A header-first streaming native call.  The natives throw
+     * {@link VesperaStreamAbortedException} without declaring it (their
+     * public signatures predate it); this seam makes the checked exception
+     * catchable.
+     */
+    @FunctionalInterface
+    interface HeaderFirstStream {
+        void run() throws IOException;
+    }
+
+    /**
+     * Run {@code stream}, then flush.  A failure after the Rust header was
+     * applied (a panic, a body error) answers a proxy {@code 500} while the
+     * response is still uncommitted, and is rethrown once it is committed so
+     * the container aborts the connection (see
+     * {@link ProxyErrors#writeStreamAbort}).
+     */
+    static void streamHeaderFirst(HttpServletResponse response, HeaderFirstStream stream)
+            throws IOException {
+        try {
+            stream.run();
+        } catch (IOException aborted) {
+            if (!ProxyErrors.writeStreamAbort(response, aborted, false)) {
+                throw aborted;
+            }
+            return;
+        }
         response.getOutputStream().flush();
     }
 }

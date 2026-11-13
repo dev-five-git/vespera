@@ -201,7 +201,7 @@ public class VesperaBridge {
             try {
                 bundledLoader.load(libraryName);
             } catch (VesperaNativeLoader.BundledNativeAbsent absent) {
-                systemLoader.load(libraryName);
+                VesperaNativeLoader.loadFromSystemPath(libraryName, absent, systemLoader);
             }
         } catch (UnsatisfiedLinkError failure) {
             throw VesperaNativeLoader.withDeploymentGuidance(failure, libraryName);
@@ -612,6 +612,7 @@ public class VesperaBridge {
      * wire-format header (length-prefixed JSON).  Use
      * {@link #decodeResponse(byte[])} to extract status / headers /
      * metadata from those bytes.
+     * A failure after the header throws the undeclared {@link VesperaStreamAbortedException}.
      */
     public static native void dispatchStreamingWithHeader(
             byte[] wireRequest,
@@ -623,7 +624,7 @@ public class VesperaBridge {
      * with the same header-callback contract as
      * {@link #dispatchStreamingWithHeader}.  Bidirectional streaming
      * + ability to commit Spring response status/headers before the
-     * first body byte.
+     * first body byte (post-header failures: {@link VesperaStreamAbortedException}).
      */
     public static native void dispatchFullStreamingWithHeader(
             byte[] wireRequestHeader,

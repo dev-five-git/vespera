@@ -9,23 +9,82 @@ use std::sync::{
 };
 
 use jni::objects::{Global, JObject};
+use jni::strings::JNIStr;
 
 use super::streaming_buffer::{
     PullPushBuffers, StreamingBufferRole, StreamingChunkBuffer, StreamingChunkBufferLease,
     checkout_pull_push_buffers, checkout_streaming_chunk_buffer,
 };
 
-pub fn throw_streaming_abort(env: &mut jni::Env<'_>, header_failed: bool) {
-    if header_failed {
-        let _ = env.throw_new(
-            jni::jni_str!("java/io/IOException"),
-            jni::jni_str!("vespera: response header callback failed before body streaming"),
-        );
-    } else {
-        let _ = env.throw_new(
-            jni::jni_str!("java/io/IOException"),
-            jni::jni_str!("vespera: response body stream aborted after the header was committed"),
-        );
+/// Exception class thrown when a streaming dispatch aborts the Java
+/// transport: `com.devfive.vespera.bridge.VesperaStreamAbortedException`
+/// (an `IOException`), whose `panicked()` tells a Rust panic apart from a
+/// body error / sink stop, so the proxy can answer a still-uncommitted
+/// response with its own `500` (flagged panicked) instead of leaving the
+/// status to the servlet container's error page.
+pub const STREAM_ABORTED_CLASS: &JNIStr =
+    jni::jni_str!("com/devfive/vespera/bridge/VesperaStreamAbortedException");
+
+/// Why a streaming dispatch aborts the Java transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbortReason {
+    /// The header consumer threw: the header was not (fully) applied.
+    HeaderCallbackFailed,
+    /// The response body errored or the chunk sink stopped after the header.
+    BodyAborted,
+    /// A Rust panic unwound out of the dispatch after the header was delivered.
+    Panicked,
+}
+
+impl AbortReason {
+    /// The reason for a dispatch whose header consumer threw (`header_failed`)
+    /// or that panicked after the header was delivered (`panicked`).  A failed
+    /// header callback wins: it is the first failure on that path.
+    #[must_use]
+    pub const fn from_flags(header_failed: bool, panicked: bool) -> Self {
+        if header_failed {
+            Self::HeaderCallbackFailed
+        } else if panicked {
+            Self::Panicked
+        } else {
+            Self::BodyAborted
+        }
+    }
+
+    /// The exception message.  The [`Self::Panicked`] text is matched
+    /// verbatim by `VesperaStreamAbortedException.PANIC_MESSAGE` on the Java
+    /// side — keep the two in sync.
+    #[must_use]
+    pub fn message(self) -> &'static JNIStr {
+        match self {
+            Self::HeaderCallbackFailed => {
+                jni::jni_str!("vespera: response header callback failed before body streaming")
+            }
+            Self::BodyAborted => {
+                jni::jni_str!(
+                    "vespera: response body stream aborted after the header was committed"
+                )
+            }
+            Self::Panicked => {
+                jni::jni_str!(
+                    "vespera: panic in Rust engine after the response header was produced"
+                )
+            }
+        }
+    }
+}
+
+/// Throw the abort exception for `reason`.  Falls back to a plain
+/// `java.io.IOException` (same message) when the typed class cannot be
+/// resolved — a bridge JAR older than this cdylib, or a native image whose
+/// JNI metadata does not register it — so the abort is never lost.
+pub fn throw_streaming_abort(env: &mut jni::Env<'_>, reason: AbortReason) {
+    if env
+        .throw_new(STREAM_ABORTED_CLASS, reason.message())
+        .is_err()
+    {
+        env.exception_clear();
+        let _ = env.throw_new(jni::jni_str!("java/io/IOException"), reason.message());
     }
 }
 
