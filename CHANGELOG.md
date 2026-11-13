@@ -431,18 +431,42 @@ Additive.
 - The Spring autoconfiguration registers a `VesperaClient` bean
   (`@ConditionalOnMissingBean`), also with `controller-enabled=false`.
 
+### C ABI for non-JVM hosts (`vespera`, `vespera_inprocess`, `vespera_jni`)
+
+Additive.
+
+- New `vespera` feature `ffi` (`vespera_inprocess/ffi`): a stable C ABI so
+  C/C++, Go (cgo), Python (`ctypes`), .NET (P/Invoke) and Node (N-API) hosts
+  can embed a vespera app in-process. `vespera::ffi_app!(create_app)` /
+  `vespera::ffi_apps! { "_default" => .., "admin" => .. }` export
+  `vespera_init`; the library exports `vespera_dispatch` (wire in →
+  Rust-allocated wire out), `vespera_dispatch_into` (direct write;
+  `VESPERA_OVERFLOW` + required size), `vespera_dispatch_async` (completion
+  callback, exactly once), `vespera_free`, `vespera_shutdown` and
+  `vespera_abi_version`. Hand-written header:
+  `crates/vespera_inprocess/include/vespera.h` (also
+  `vespera_inprocess::ffi::HEADER`), kept in sync by a test.
+- The shared host runtime (lazy build, in-flight leases, deferred hooks,
+  graceful irreversible shutdown, worker / blocking-pool knobs) moved from
+  `vespera_jni` into `vespera_inprocess::runtime` (feature `runtime`), so JNI
+  and the C ABI share one runtime. `vespera_jni` re-exports the same items
+  under the same names (no API change); `vespera::cron` now routes jobs to the
+  shared runtime whenever a host (JVM or C) loaded the library
+  (`vespera_inprocess::runtime::host_loaded`).
+
 ### Miri and loom checking (`vespera_inprocess`, `vespera_jni`)
 
 No behaviour change for applications.
 
-- The JNI shared-runtime gate (in-flight `RuntimeLease` count + shut-down
-  flag) is one atomic word now, entered with a single `fetch_add` instead of
-  a `SeqCst` increment followed by a `SeqCst` flag load. The guarantee is
-  unchanged (a dispatch is either refused with `503` or waited for by
-  `shutdown0`'s drain); it no longer depends on cross-variable `SeqCst`
-  ordering, and the hot path does one atomic RMW instead of an RMW plus a load.
+- The shared-runtime gate (in-flight `RuntimeLease` count + shut-down flag,
+  now in `vespera_inprocess::runtime`) is one atomic word now, entered with a
+  single `fetch_add` instead of a `SeqCst` increment followed by a `SeqCst`
+  flag load. The guarantee is unchanged (a dispatch is either refused with
+  `503` or waited for by the shutdown drain — `shutdown0` / `vespera_shutdown`);
+  it no longer depends on cross-variable `SeqCst` ordering, and the hot path
+  does one atomic RMW instead of an RMW plus a load.
 - New CI jobs: `miri` runs the `vespera_inprocess` unit tests and the JNI-free
   `unsafe` helpers of `vespera_jni` (direct-buffer copy, uninitialised
   spare-capacity fill, `u8`→`jbyte` view) under Miri; `loom` model-checks the
-  runtime gate and the `dispatchAsync` in-flight cap
-  (`RUSTFLAGS="--cfg vespera_loom"`).
+  runtime gate (`vespera_inprocess`) and the `dispatchAsync` in-flight cap
+  (`vespera_jni`) (`RUSTFLAGS="--cfg vespera_loom"`).

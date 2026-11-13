@@ -34,6 +34,15 @@ connect-info = ["axum/tokio"]
 # 504 / engine 5xx) and panics.  OFF by default: without it the crate has no
 # `tracing` dependency and the dispatch paths compile exactly as before.
 tracing = ["dep:tracing"]
+# The shared multi-thread host runtime (`vespera_inprocess::runtime`): lazy
+# build, in-flight leases, deferred hooks, graceful irreversible shutdown.
+# Used by the JNI bridge (`vespera_jni`) and the C ABI (`ffi`).
+runtime = ["tokio/rt-multi-thread"]
+# Stable C ABI (`vespera_inprocess::ffi`, header `include/vespera.h`):
+# `vespera_dispatch` / `vespera_dispatch_into` / `vespera_dispatch_async` /
+# `vespera_free` / `vespera_shutdown` exported from the cdylib, plus the
+# `ffi_app!` / `ffi_apps!` macros emitting `vespera_init`.
+ffi = ["runtime"]
 
 [dependencies]
 # Lock-free read snapshot for the multi-app router registry: named-app
@@ -84,6 +93,14 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["r
 [target.'cfg(not(miri))'.dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 mimalloc = "0.1"
+
+# loom models of the shared runtime's lease gate (`src/runtime/gate.rs`).
+# Only under the custom `--cfg vespera_loom` (not `cfg(loom)`, which would
+# switch Tokio and friends into their own loom builds), and only in this
+# crate's own unit-test build — as a dependency it keeps `std` atomics:
+# RUSTFLAGS="--cfg vespera_loom" cargo test --release -p vespera_inprocess --features runtime --lib loom_
+[target.'cfg(vespera_loom)'.dev-dependencies]
+loom = "0.7"
 
 [[bench]]
 name = "dispatch"

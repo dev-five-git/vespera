@@ -1,0 +1,129 @@
+/*
+ * vespera.h — stable C ABI for embedding a vespera (Rust/axum) app
+ * in-process.  Hand-written; `crates/vespera_inprocess/tests/ffi_header.rs`
+ * keeps it in sync with the Rust symbols.
+ *
+ * The Rust cdylib enables `vespera = { features = ["ffi"] }` and invokes
+ * `vespera::ffi_app!(create_app);` (or `vespera::ffi_apps! { ... }`), which
+ * exports `vespera_init`; every other symbol below comes from the library.
+ *
+ * WIRE FORMAT (request and response):
+ *   bytes 0..4   : u32 big-endian = header JSON length N
+ *   bytes 4..4+N : UTF-8 JSON
+ *                  request : {"v":1,"method","path","query"?,"headers"?,
+ *                             "app"?,"remote_addr"?,"scheme"?,"principal"?}
+ *                  response: {"v":1,"status","headers","metadata",
+ *                             "validation_errors"?}
+ *   bytes 4+N..  : raw body bytes
+ * Every failure that can be expressed as HTTP (malformed wire 400, unknown
+ * app 404, body too large 413, handler panic 500 with metadata
+ * "panicked":"true", runtime shut down 503, deadline 504) is returned as a
+ * normal wire response with VESPERA_OK.  Negative return codes are reserved
+ * for API misuse and conditions where no response can be produced.
+ *
+ * THREAD SAFETY: every function may be called concurrently from any number
+ * of host threads.  The synchronous dispatch functions block the calling
+ * thread on the shared Tokio runtime; do not call them from a callback that
+ * runs on a runtime worker (vespera_dispatch_async completions) — they
+ * would answer a 500 panic response instead of deadlocking.
+ *
+ * PANICS never unwind across this ABI.
+ */
+#ifndef VESPERA_H
+#define VESPERA_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Bumped on any incompatible change to this header. */
+#define VESPERA_ABI_VERSION 1
+
+/* Return codes. */
+#define VESPERA_OK 0
+/* vespera_dispatch_into: the response did not fit; *written = required size. */
+#define VESPERA_OVERFLOW 1
+/* A required pointer was NULL, a size was out of range, or buffers overlap. */
+#define VESPERA_ERR_INVALID_ARGUMENT (-1)
+/* A Rust panic was caught where no wire response could be returned. */
+#define VESPERA_ERR_PANIC (-2)
+/* vespera_init: an app could not be registered (see stderr). */
+#define VESPERA_ERR_REGISTRATION (-3)
+/* vespera_init: runtime unavailable; vespera_shutdown: already shut down. */
+#define VESPERA_ERR_RUNTIME (-4)
+
+/*
+ * Completion callback of vespera_dispatch_async.  Invoked exactly once,
+ * possibly on another thread (a runtime worker, or the thread calling
+ * vespera_shutdown when a pending dispatch is dropped with a 503).  The
+ * callback OWNS `response` and must release it with
+ * vespera_free(response, response_len).  It must not unwind.
+ */
+typedef void (*vespera_callback)(void *user_data, uint8_t *response, size_t response_len);
+
+/* VESPERA_ABI_VERSION the library was built with. */
+uint32_t vespera_abi_version(void);
+
+/*
+ * Register the app(s) declared by ffi_app!/ffi_apps! and start the shared
+ * runtime.  Idempotent: later calls return VESPERA_OK without re-running
+ * the factories.  Returns VESPERA_ERR_REGISTRATION, VESPERA_ERR_PANIC (a
+ * factory panicked) or VESPERA_ERR_RUNTIME (shut down / could not start).
+ * Exported by the ffi_app!/ffi_apps! macro in the user's cdylib.
+ */
+int vespera_init(void);
+
+/*
+ * Synchronous dispatch.  `request` must be readable for `request_len`
+ * bytes (may be NULL when request_len == 0).  On VESPERA_OK, *response /
+ * *response_len hold a Rust-allocated wire response the caller owns and
+ * must release with vespera_free.  VESPERA_ERR_INVALID_ARGUMENT when
+ * `response` or `response_len` is NULL (nothing is written).
+ */
+int vespera_dispatch(const uint8_t *request, size_t request_len, uint8_t **response, size_t *response_len);
+
+/*
+ * Synchronous dispatch writing the wire response straight into the
+ * caller's buffer (no Rust allocation for the response).  VESPERA_OK:
+ * *written = bytes written.  VESPERA_OVERFLOW: the response needs *written
+ * bytes; `out` contents are undefined and a retry RE-RUNS the handler
+ * (out == NULL with out_capacity == 0 is a valid size probe).
+ * VESPERA_ERR_INVALID_ARGUMENT: `written` is NULL, `out` is NULL with a
+ * non-zero capacity, or the request and output buffers overlap.
+ */
+int vespera_dispatch_into(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *written);
+
+/*
+ * Asynchronous dispatch: returns immediately; `callback(user_data, ...)`
+ * receives the wire response exactly once (inline on this thread when the
+ * request is rejected before dispatch, e.g. runtime shut down → 503).
+ * `user_data` is passed through untouched and must be usable from any
+ * thread.  VESPERA_ERR_INVALID_ARGUMENT (callback never called) when
+ * `callback` is NULL.
+ */
+int vespera_dispatch_async(const uint8_t *request, size_t request_len, vespera_callback callback, void *user_data);
+
+/*
+ * Release a response returned by vespera_dispatch or handed to a
+ * vespera_callback.  `len` must be the length returned with it.  NULL is a
+ * no-op.  Never pass memory from another allocator.
+ */
+void vespera_free(uint8_t *ptr, size_t len);
+
+/*
+ * Shut the shared runtime down for good: new dispatches answer 503 at
+ * once, in-flight ones get up to `timeout_ms` to finish, then the runtime
+ * stops (pending async dispatches complete with 503).  Returns VESPERA_OK,
+ * or VESPERA_ERR_RUNTIME when it was already shut down.  Irreversible for
+ * the process.
+ */
+int vespera_shutdown(uint64_t timeout_ms);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* VESPERA_H */
