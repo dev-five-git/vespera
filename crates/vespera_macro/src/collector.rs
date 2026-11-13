@@ -259,17 +259,15 @@ pub fn collect_metadata_from_files<'a>(
     // on each cache miss.  Canonicalizing both sides makes the keys
     // comparable regardless of cwd-relativity or separator style.
     let cwd = std::env::current_dir().unwrap_or_default();
-    let storage_by_file: HashMap<String, Vec<&StoredRouteInfo>> = {
-        let mut map: HashMap<String, Vec<&StoredRouteInfo>> = HashMap::new();
-        for stored in route_storage {
-            if let Some(ref fp) = stored.file_path {
-                map.entry(normalize_path_key(fp, &cwd))
-                    .or_default()
-                    .push(stored);
-            }
+    let mut storage_by_file: HashMap<String, Vec<&StoredRouteInfo>> = HashMap::new();
+    for stored in route_storage {
+        if let Some(ref fp) = stored.file_path {
+            storage_by_file
+                .entry(normalize_path_key(fp, &cwd))
+                .or_default()
+                .push(stored);
         }
-        map
-    };
+    }
 
     for file in files {
         if file.extension().is_none_or(|e| e != "rs") {

@@ -61,6 +61,12 @@ impl ConnectionInfo {
             extensions.insert(principal);
         }
     }
+
+    /// [`Self::apply_to`] on an owned request, handed back by value.
+    fn attach(self, mut request: Request<Body>) -> Request<Body> {
+        self.apply_to(request.extensions_mut());
+        request
+    }
 }
 
 /// `http` / `https` (ASCII case-insensitive) → [`Scheme`]; anything else is
@@ -675,23 +681,19 @@ pub async fn dispatch_and_split<'h>(
     // emptiness), so content-type defaulting follows the caller's
     // `default_json_when_absent` flag rather than body-emptiness detection.
     //
-    // Block-scoped on purpose: `extensions_mut()` borrows the request, and a
-    // borrowed local of an `async fn` keeps its storage in the future across
-    // the `.await` below even after it is moved out — a second ~250-byte
-    // `Request` copy every dispatch future then carries.  Ending the binding
-    // here keeps only the copy moved into `router_oneshot`.
-    let request = {
-        let mut request = build_axum_request_inner(
-            http_method,
-            uri,
-            body,
-            headers,
-            header_bytes_owner,
-            default_json_when_absent,
-        )?;
-        connection.apply_to(request.extensions_mut());
-        request
-    };
+    // By value through `attach` on purpose: `extensions_mut()` borrows the
+    // request, and a borrowed local of an `async fn` keeps its storage in the
+    // future across the `.await` below even after it is moved out — a second
+    // ~250-byte `Request` copy every dispatch future then carries.  Never
+    // binding it mutably here keeps only the copy moved into `router_oneshot`.
+    let request = connection.attach(build_axum_request_inner(
+        http_method,
+        uri,
+        body,
+        headers,
+        header_bytes_owner,
+        default_json_when_absent,
+    )?);
 
     let response = router_oneshot(router, request).await;
 

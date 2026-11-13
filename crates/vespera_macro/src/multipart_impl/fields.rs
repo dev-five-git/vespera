@@ -137,44 +137,41 @@ fn push_post_loop<'a>(
         return;
     }
 
-    match default_kind {
-        DefaultKind::Trait => {
-            cg.post_loop
-                .push(quote! { let #ident: #ty = #ident.unwrap_or_default(); });
-        }
-        DefaultKind::Function(fn_path) => {
-            // A malformed user-supplied `default = "..."` path must surface as a
-            // clean, span-attached compile error at the field — not an internal
-            // macro panic (`.expect`) that prints no source location and aborts
-            // expansion of the whole derive.
-            match syn::parse_str::<syn::ExprPath>(fn_path) {
-                Ok(path) => cg
-                    .post_loop
-                    .push(quote! { let #ident: #ty = #ident.unwrap_or_else(#path); }),
-                Err(err) => {
-                    let compile_err = syn::Error::new_spanned(
-                        ident,
-                        format!("invalid `default` function path `{fn_path}`: {err}"),
-                    )
-                    .to_compile_error();
-                    // Emit the diagnostic and still bind `#ident` (unreachable
-                    // fallback) so the malformed default does not cascade into
-                    // spurious "cannot find value" errors downstream.
-                    cg.post_loop.push(quote! {
-                        #compile_err
-                        let #ident: #ty = #ident.unwrap_or_else(|| ::core::unreachable!());
-                    });
+    let binding = match default_kind {
+        DefaultKind::Trait => quote! { let #ident: #ty = #ident.unwrap_or_default(); },
+        DefaultKind::Function(fn_path) => default_fn_post_loop(ident, ty, fn_path),
+        DefaultKind::None => quote! {
+            let #ident = #ident.ok_or(
+                vespera::multipart::TypedMultipartError::MissingField {
+                    field_name: std::string::String::from(#field_name)
                 }
+            )?;
+        },
+    };
+    cg.post_loop.push(binding);
+}
+
+/// Post-loop binding for `default = "path::to::fn"`.
+fn default_fn_post_loop(ident: &syn::Ident, ty: &Type, fn_path: &str) -> TokenStream {
+    // A malformed user-supplied `default = "..."` path must surface as a
+    // clean, span-attached compile error at the field — not an internal
+    // macro panic (`.expect`) that prints no source location and aborts
+    // expansion of the whole derive.
+    match syn::parse_str::<syn::ExprPath>(fn_path) {
+        Ok(path) => quote! { let #ident: #ty = #ident.unwrap_or_else(#path); },
+        Err(err) => {
+            let compile_err = syn::Error::new_spanned(
+                ident,
+                format!("invalid `default` function path `{fn_path}`: {err}"),
+            )
+            .to_compile_error();
+            // Emit the diagnostic and still bind `#ident` (unreachable
+            // fallback) so the malformed default does not cascade into
+            // spurious "cannot find value" errors downstream.
+            quote! {
+                #compile_err
+                let #ident: #ty = #ident.unwrap_or_else(|| ::core::unreachable!());
             }
-        }
-        DefaultKind::None => {
-            cg.post_loop.push(quote! {
-                let #ident = #ident.ok_or(
-                    vespera::multipart::TypedMultipartError::MissingField {
-                        field_name: std::string::String::from(#field_name)
-                    }
-                )?;
-            });
         }
     }
 }
