@@ -72,6 +72,43 @@ vespera {
 
 Each `targets` key is a bridge platform (`<os>-<arch>`, os `windows` / `macos` / `linux`); its library is read from `<targetDir>/<triple>/<profile>/` and bundled under `native/<os>-<arch>/` with that platform's file name (`.dll` / `lib*.dylib` / `lib*.so`). A plain `linux-<arch>` key built for a `*-linux-musl*` triple is bundled under `native/linux-<arch>-musl/` (where the bridge looks first on a musl JVM); `linux-<arch>-musl` keys are accepted too, so one jar can carry both builds, e.g. `targets.put("linux-x86_64-musl", "x86_64-unknown-linux-musl")` next to the glibc host build. A key naming the host platform replaces the host build (on an Alpine build host the host platform is `linux-<arch>-musl`). The cross toolchain/linker must already be installed. Everything under `extraNativeLibs/native/` is merged in; a locally built library wins over a prebuilt one with the same path. `cargoBuild` is never `UP-TO-DATE` (Cargo's own incremental check decides) and declares no file inputs.
 
+#### Per-platform native jars (publish once per platform, consume one)
+
+Vespera has no prebuilt native library of its own — the cdylib is **your** app — so instead of one fat jar you can publish one small classifier jar per platform and let each deployment pull only its own. Build the cdylib on a CI matrix (one native runner per platform), merge the artifacts into `prebuilt/native/<platform>/<lib>`, and package them from a dedicated Gradle project:
+
+```kotlin
+// myapp-native/build.gradle.kts
+plugins {
+    `maven-publish`
+    id("kr.devfive.vespera-bridge") version "0.6.0"
+}
+group = "com.acme"
+version = "0.1.0"
+
+vespera {
+    crateName.set("my-app")
+    bundleNative.set(false)    // nothing is built or bundled locally
+    nativeJarsDir.set(rootProject.layout.projectDirectory.dir("prebuilt")) // default: extraNativeLibs
+    nativeJarPlatforms.addAll(listOf(
+        "linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-aarch64", "windows-x86_64",
+    ))
+}
+```
+
+- One `nativeJar<Platform>` task per entry (`nativeJarLinuxX86_64`, `nativeJarLinuxX86_64Musl`, …; lifecycle task `nativeJars`) writes `build/libs/myapp-native-0.1.0-<platform>.jar` containing exactly `native/<platform>/<lib>`; it fails with the missing path when that platform's library is absent. Platforms are bridge platform keys (`<os>-<arch>`, `linux-<arch>-musl`).
+- With `maven-publish` applied, the jars are the classifier artifacts of a `vesperaNative` publication (artifactId = project name, `pom` packaging, no main jar): `./gradlew publishVesperaNativePublicationTo<Repo>Repository`. Rename it with `publishing.publications.named<MavenPublication>("vesperaNative") { artifactId = "..." }`. With the vanniktech Maven Central plugin the publication is signed and uploaded with the others.
+- **Consumers** keep the plugin (for the `vespera-bridge` dependency) with `bundleNative.set(false)` and add the platforms they deploy to — the bridge loads the host's from whichever jar carries it:
+
+  ```kotlin
+  vespera { crateName.set("my-app"); bundleNative.set(false) }
+  dependencies {
+      runtimeOnly("com.acme:myapp-native:0.1.0:linux-x86_64")   // production image
+      runtimeOnly("com.acme:myapp-native:0.1.0:macos-aarch64")  // developer laptops
+  }
+  ```
+
+A ready-to-copy GitHub Actions workflow (matrix: Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64 → merge → `nativeJars` → publish on tags) lives at [`.github/workflow-templates/vespera-native-jars.yml`](../../.github/workflow-templates/vespera-native-jars.yml).
+
 ## Two-line integration
 
 ```java
@@ -1117,6 +1154,8 @@ vespera.bridge:
 
    **Directory safety (POSIX).** The base and hash directories are created with mode `0700` and, before a cached copy is trusted, verified to be real directories (symbolic links are rejected), owned by the current user, and not group- or other-writable; an explicit `vespera.native.dir` / `VESPERA_NATIVE_DIR` is subject to the same checks. The extracted library is made owner read/execute only (`0500`). If verification fails — for example a squatted, shared (`1777`-style) or symlinked directory — the library is extracted into a fresh private `vespera-native-*` temp directory for this JVM only (no reuse, removed on exit where possible) and a warning is logged. **Directory safety (Windows / non-POSIX).** The same guarantee comes from the owner and the ACL: the base and hash directories must be real directories (no symbolic link or junction), owned by the current user, and their ACL must not grant write-like rights (`WRITE_DATA`, `APPEND_DATA`, `DELETE_CHILD`, `DELETE`, `WRITE_ACL`, `WRITE_OWNER`) to anyone but the owner, `SYSTEM` or `Administrators` (inherit-only entries, `DENY` entries and SIDs that do not resolve to an account are ignored). A predictable directory that fails this — e.g. one another user created first under a shared `java.io.tmpdir` to plant a DLL — is not reused: the library is extracted into a fresh, randomly named `vespera-native-*` temp directory for this JVM and a warning is logged. A file system without ACLs gets the same fallback.
 2. **Fallback** — `System.loadLibrary("crateName")` searches `java.library.path`.
+
+The bundled lookup is a plain classpath resource lookup, so the library may come from the application jar or from any per-platform native jar on the runtime classpath (`myapp-native-0.1.0-linux-x86_64.jar`, see [Per-platform native jars](#per-platform-native-jars-publish-once-per-platform-consume-one)). When neither path works, the `UnsatisfiedLinkError` names the host platform, the paths tried, the platforms the classpath **does** bundle the library for (e.g. `the classpath bundles libmy_app.so only for [macos-aarch64, windows-x86_64]` — the deployment is missing its platform's jar), or the other `native/<platform>/` libraries found when the `init` name matches none, followed by the `java.library.path` failure.
 
 **musl vs glibc (Linux).** A glibc `.so` cannot be loaded into a musl JVM (Alpine) and vice versa, so musl builds live under their own `native/linux-<arch>-musl/` folder. On Linux the bridge detects the libc the JVM itself is linked against from `/proc/self/maps` (no process is spawned; a mapped `ld-musl-*` means musl) — falling back, without `/proc`, to "`/lib/ld-musl-*` exists and no `ld-linux*` loader does" — and can be forced with `-Dvespera.native.libc=musl|glibc`. On musl it tries `native/linux-<arch>-musl/` first and only when no musl library is bundled loads `native/linux-<arch>/` with a WARN (that load most likely fails); glibc JVMs only ever look at `native/linux-<arch>/`. Build the musl library with a `*-linux-musl` Rust target (a cdylib needs `RUSTFLAGS="-C target-feature=-crt-static"`).
 
