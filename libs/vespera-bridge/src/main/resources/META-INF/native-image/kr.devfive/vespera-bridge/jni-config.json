@@ -65,6 +65,17 @@
     ]
   },
   {
+    "name": "com.devfive.vespera.bridge.VesperaStreamAbortedException",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": [
+          "java.lang.String"
+        ]
+      }
+    ]
+  },
+  {
     "name": "java.lang.IllegalArgumentException",
     "methods": [
       {

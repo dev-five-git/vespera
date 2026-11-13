@@ -115,6 +115,14 @@ class NativeImageMetadataTest {
     private static final Pattern THROW_NEW = Pattern.compile(
             "\\.throw_new\\(\\s*(?:jni::)?jni_str!\\(\\s*\"([^\"]+)\"\\s*\\)");
 
+    /** {@code env.throw_new(CLASS_CONST, ..)}, resolved through {@link #CLASS_CONST}. */
+    private static final Pattern THROW_NEW_CONST = Pattern.compile(
+            "\\.throw_new\\(\\s*([A-Z][A-Z0-9_]*)\\s*,");
+
+    /** {@code const NAME: &JNIStr = jni_str!(class);}. */
+    private static final Pattern CLASS_CONST = Pattern.compile(
+            "const\\s+([A-Z][A-Z0-9_]*)\\s*:\\s*&JNIStr\\s*=\\s*(?:jni::)?jni_str!\\(\\s*\"([^\"]+)\"\\s*\\)");
+
     /** Any JNI class-name literal ({@code jni_str!("java/io/InputStream")}). */
     private static final Pattern CLASS_LITERAL = Pattern.compile(
             "jni_str!\\(\\s*\"([A-Za-z_$][\\w$]*(?:/[A-Za-z_$][\\w$]*)+)\"\\s*\\)");
@@ -165,6 +173,19 @@ class NativeImageMetadataTest {
             }
         }
         return -1;
+    }
+
+    /** JNI class names of every {@code throw_new} site, literal or through a {@code &JNIStr} const. */
+    private static List<String> thrownClasses(Map<Path, String> sources) {
+        List<String> thrown = new ArrayList<>();
+        matches(THROW_NEW, sources).forEach(m -> thrown.add(m[0]));
+        Map<String, String> consts = new TreeMap<>();
+        matches(CLASS_CONST, sources).forEach(m -> consts.put(m[0], m[1]));
+        for (String[] m : matches(THROW_NEW_CONST, sources)) {
+            assertTrue(consts.containsKey(m[0]), "throw_new(" + m[0] + ", ..) names no &JNIStr const");
+            thrown.add(consts.get(m[0]));
+        }
+        return thrown;
     }
 
     private static List<String[]> matches(Pattern pattern, Map<Path, String> sources) {
@@ -313,7 +334,7 @@ class NativeImageMetadataTest {
         JsonNode jni = metadata("jni-config.json");
         Map<Path, String> sources = rustSources();
         Set<String> thrown = new TreeSet<>();
-        matches(THROW_NEW, sources).forEach(m -> thrown.add(binaryName(m[0])));
+        thrownClasses(sources).forEach(c -> thrown.add(binaryName(c)));
         assertFalse(thrown.isEmpty(), "found no throw_new(..) — extraction is stale");
         if (sources.values().stream().anyMatch(s -> s.contains("ThrowRuntimeExAndDefault"))) {
             // `jni::errors::ThrowRuntimeExAndDefault` throws RuntimeException.
@@ -349,7 +370,7 @@ class NativeImageMetadataTest {
         Map<String, Integer> explained = new TreeMap<>();
         explained.put("find_class", 1);
         explained.put("get_method_id", 1);
-        int throwNew = matches(THROW_NEW, sources).size();
+        int throwNew = thrownClasses(sources).size();
         if (throwNew > 0) {
             explained.put("throw_new", throwNew);
         }
