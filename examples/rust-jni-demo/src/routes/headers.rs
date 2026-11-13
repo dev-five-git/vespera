@@ -27,8 +27,7 @@ pub async fn names(headers: HeaderMap) -> Json<Vec<String>> {
 pub async fn raw(headers: HeaderMap) -> Response {
     let name = headers
         .get("x-name")
-        .map(|value| value.as_bytes().to_vec())
-        .unwrap_or_default();
+        .map_or_else(Vec::new, |value| value.as_bytes().to_vec());
     let mut disposition = b"attachment; filename=\"".to_vec();
     disposition.extend_from_slice(&name);
     disposition.push(b'"');

@@ -29,3 +29,6 @@ testkit = { path = "../testkit" }
 insta = "1.49"
 rstest = "0.28"
 
+
+[lints]
+workspace = true

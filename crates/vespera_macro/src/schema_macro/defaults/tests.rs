@@ -713,3 +713,44 @@ fn validate_literal_default_accepts_non_path_and_empty_path_types() {
     });
     assert!(validate_literal_default("anything", &empty).is_ok());
 }
+
+/// Every primitive the literal check knows parses against its EXACT type:
+/// an in-range literal passes, a non-numeric one is rejected.
+#[rstest::rstest]
+#[case::i8("i8")]
+#[case::i16("i16")]
+#[case::i32("i32")]
+#[case::i64("i64")]
+#[case::i128("i128")]
+#[case::isize("isize")]
+#[case::u8("u8")]
+#[case::u16("u16")]
+#[case::u32("u32")]
+#[case::u64("u64")]
+#[case::u128("u128")]
+#[case::usize("usize")]
+#[case::f32("f32")]
+#[case::f64("f64")]
+fn validate_literal_default_checks_every_numeric_type(#[case] type_name: &str) {
+    let ty: syn::Type = syn::parse_str(type_name).unwrap();
+    assert!(validate_literal_default("7", &ty).is_ok(), "{type_name}");
+    let err = validate_literal_default("seven", &ty).unwrap_err();
+    assert!(err.contains(&format!("`{type_name}`")), "{err}");
+}
+
+/// The SQL-function fallback for scalar types: `Default::default()` plus the
+/// value the OpenAPI default advertises.
+#[rstest::rstest]
+#[case::bool("bool", "false")]
+#[case::string("String", "")]
+#[case::int("i64", "0")]
+#[case::uuid("Uuid", "00000000-0000-0000-0000-000000000000")]
+fn sql_function_default_for_scalar_types(#[case] type_name: &str, #[case] expected: &str) {
+    let ty: syn::Type = syn::parse_str(type_name).unwrap();
+    let (expr, default) = sql_function_default_for_type(&ty).unwrap();
+    assert_eq!(
+        expr.to_string(),
+        quote::quote!(Default::default()).to_string()
+    );
+    assert_eq!(default, expected);
+}

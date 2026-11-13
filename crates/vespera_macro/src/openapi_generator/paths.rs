@@ -534,24 +534,22 @@ pub(super) fn parallel_filter_map<T: Sync, R: Send>(
     let input_names = request_view::snapshot();
     let test_env = crate::env_access::test_env::snapshot();
     std::thread::scope(|scope| {
-        let handles: Vec<_> = jobs
-            .chunks(chunk_size)
-            .map(|chunk| {
-                let input_names = std::sync::Arc::clone(&input_names);
-                let test_env = std::sync::Arc::clone(&test_env);
-                scope.spawn(move || {
-                    request_view::install(input_names);
-                    crate::env_access::test_env::install(test_env);
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let results: syn::Result<Vec<R>> =
-                            chunk.iter().filter_map(|job| f(job).transpose()).collect();
-                        // Recursive generic components built on this worker
-                        // travel back to the calling thread.
-                        (results, generic_instances::take_materialized())
-                    }))
-                })
-            })
-            .collect();
+        let mut handles = Vec::with_capacity(workers);
+        for chunk in jobs.chunks(chunk_size) {
+            let input_names = std::sync::Arc::clone(&input_names);
+            let test_env = std::sync::Arc::clone(&test_env);
+            handles.push(scope.spawn(move || {
+                request_view::install(input_names);
+                crate::env_access::test_env::install(test_env);
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let results: syn::Result<Vec<R>> =
+                        chunk.iter().filter_map(|job| f(job).transpose()).collect();
+                    // Recursive generic components built on this worker
+                    // travel back to the calling thread.
+                    (results, generic_instances::take_materialized())
+                }))
+            }));
+        }
         let mut results: Vec<R> = Vec::with_capacity(jobs.len());
         for handle in handles {
             let worker_result = handle
