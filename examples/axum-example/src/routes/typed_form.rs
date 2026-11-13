@@ -67,15 +67,12 @@ pub async fn list_file_uploads() -> Json<Vec<FileUploadResponse>> {
 pub async fn create_file_upload(
     TypedMultipart(req): TypedMultipart<CreateFileUploadRequest>,
 ) -> Result<Json<FileUploadResponse>, (StatusCode, String)> {
-    let tags: Vec<String> = req
-        .tags
-        .map(|t| {
-            t.split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
+    let tags: Vec<String> = req.tags.map_or_else(Vec::new, |t| {
+        t.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    });
 
     Ok(Json(FileUploadResponse {
         id: 1,
@@ -99,15 +96,12 @@ pub async fn update_file_upload(
         name: req.name.unwrap_or_else(|| "Unchanged".to_string()),
         thumbnail_url: req.thumbnail.map(|_| "updated_thumbnail_url".to_string()),
         document_url: req.document.map(|_| "updated_document_url".to_string()),
-        tags: req
-            .tags
-            .map(|t| {
-                t.split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default(),
+        tags: req.tags.map_or_else(Vec::new, |t| {
+            t.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        }),
         is_active: req.is_active.unwrap_or(true),
         created_at: "2024-01-01T00:00:00Z".to_string(),
     }))
@@ -124,15 +118,12 @@ pub async fn patch_file_upload(
         name: req.name.unwrap_or_else(|| "Unchanged".to_string()),
         thumbnail_url: req.thumbnail.map(|_| "patched_thumbnail_url".to_string()),
         document_url: None,
-        tags: req
-            .tags
-            .map(|t| {
-                t.split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default(),
+        tags: req.tags.map_or_else(Vec::new, |t| {
+            t.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        }),
         is_active: true,
         created_at: "2024-01-01T00:00:00Z".to_string(),
     }))

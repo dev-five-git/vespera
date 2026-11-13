@@ -84,6 +84,14 @@ impl Drop for ReentryGuard {
     }
 }
 
+/// Run `factory` with the re-entrancy flag set, cleared again by
+/// [`ReentryGuard`] on every exit path (including a factory panic).
+fn run_factory_guarded<F: Fn() -> Router>(factory: &F) -> Router {
+    REGISTERING.with(|r| r.set(true));
+    let _reentry = ReentryGuard;
+    factory()
+}
+
 /// Validate an app name for registration / lookup.
 ///
 /// Constraints:
@@ -229,11 +237,7 @@ where
     // `factory()` call and cleared by `ReentryGuard::drop` on every exit path
     // (incl. a factory panic), so a re-entrant `register_app*` from inside the
     // factory is rejected with an error rather than deadlocking.
-    let router = {
-        REGISTERING.with(|r| r.set(true));
-        let _reentry = ReentryGuard;
-        factory()
-    };
+    let router = run_factory_guarded(&factory);
     let is_default = name == DEFAULT_APP_NAME;
     APP_ROUTERS.rcu(|current| {
         let mut next: HashMap<String, Router> = (**current).clone();
