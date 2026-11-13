@@ -11,7 +11,10 @@ mod cron;
 mod models;
 mod routes;
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use sea_orm::{Database, DatabaseConnection};
 use serde::{Deserialize, Serialize};
@@ -47,6 +50,18 @@ fn app_state(db: DatabaseConnection) -> Arc<AppState> {
             required_prefix: "app-".to_string(),
         },
     })
+}
+
+/// Runs of the cron discovery probes — `[crate root, inline module, after
+/// vespera!]` (asserted by `tests/integration_cron.rs`).
+#[doc(hidden)]
+pub static CRON_PROBE_RUNS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
+
+/// A cron job at the crate root is scheduled as `crate::root_probe` (not
+/// `crate::lib::root_probe`).
+#[vespera::cron("* * * * * *")]
+pub async fn root_probe() {
+    CRON_PROBE_RUNS[0].fetch_add(1, Ordering::SeqCst);
 }
 
 #[derive(Serialize, Deserialize, Schema)]
@@ -162,4 +177,11 @@ pub async fn create_app_with_layer() -> axum::Router {
     )
     .layer(cors)
     .with_state(app_state(db))
+}
+
+/// Declared after the `vespera!` calls in a file whose earlier job is
+/// already registered: still discovered by the module-tree scan.
+#[vespera::cron("* * * * * *")]
+pub async fn after_vespera_probe() {
+    CRON_PROBE_RUNS[2].fetch_add(1, Ordering::SeqCst);
 }

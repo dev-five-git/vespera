@@ -11,14 +11,19 @@
 //!    module tree is walked from its root (`src/lib.rs` / `src/main.rs`)
 //!    following `mod` declarations, and every `pub async fn` carrying
 //!    `#[cron("…")]` / `#[vespera::cron("…")]` that the storage does not know
-//!    yet is added.
+//!    yet is added.  Known jobs are matched per function, so a job declared
+//!    after `vespera!` in a file whose earlier jobs are stored is found too.
+//!
+//! The same module tree places the stored jobs: a file path alone names
+//! neither the crate root (`src/lib.rs` / `src/main.rs` are `crate`, not
+//! `crate::lib`) nor inline `mod name { … }` blocks.
 //!
 //! The scan only follows modules the compiler would also see: `#[cfg]`-gated
 //! modules / functions and `#[path]` modules are skipped, and only the module
 //! tree that contains the `vespera!` call site is used, so stray files never
 //! produce a `crate::…` path that does not resolve.  A cheap text pre-filter
-//! (`cron(` in a file the storage does not cover) keeps the common case — no
-//! unexpanded jobs — free of any parsing.
+//! (`cron(` anywhere under `src/`) keeps the common case — no cron jobs at
+//! all — free of any parsing.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -33,16 +38,21 @@ use crate::schema_macro::file_cache;
 const CRON_ATTR_MARKER: &str = "cron(";
 
 /// Build the cron job list for one `vespera!` expansion: the storage entries
-/// first (unchanged order and module paths), then any job the module-tree
-/// scan finds that the storage does not cover yet.
+/// first (unchanged order), then any job the module-tree scan finds that the
+/// storage does not cover yet.
 pub(super) fn discover_cron_jobs(
     storage: &[StoredCronInfo],
     src_dir: Option<&Path>,
     call_site: Option<&Path>,
 ) -> Vec<CronMetadata> {
     let mut canonical_paths = HashMap::new();
-    let mut jobs = stored_jobs(storage, src_dir, &mut canonical_paths);
-    if let Some(src_dir) = src_dir {
+    // Most projects declare no `#[vespera::cron]` jobs: without stored jobs
+    // or a `cron(` attribute anywhere under `src/`, nothing is parsed.
+    let tree = src_dir
+        .filter(|src_dir| !storage.is_empty() || has_cron_attribute(src_dir))
+        .and_then(|src_dir| crate_tree(src_dir, call_site));
+    let mut jobs = stored_jobs(storage, src_dir, tree.as_ref(), &mut canonical_paths);
+    if let Some(tree) = tree {
         let known: HashSet<(String, String)> = storage
             .iter()
             .filter_map(|s| {
@@ -54,20 +64,27 @@ pub(super) fn discover_cron_jobs(
                 })
             })
             .collect();
-        jobs.extend(scan_unexpanded_jobs(src_dir, call_site, &known));
+        jobs.extend(
+            tree.jobs
+                .into_iter()
+                .filter(|job| !known.contains(&(job.file_path.clone(), job.function_name.clone()))),
+        );
     }
     jobs
 }
 
-/// Convert `CRON_STORAGE` entries, deriving each module path from the file
-/// path relative to `src/`.
+/// Convert `CRON_STORAGE` entries.  The module path is the one `tree`
+/// declares the function in; without a match (no tree, `#[path]` module,
+/// macro-generated function) it is derived from the file path relative to
+/// `src/`.
 fn stored_jobs(
     storage: &[StoredCronInfo],
     src_dir: Option<&Path>,
+    tree: Option<&ModuleTree>,
     canonical_paths: &mut HashMap<PathBuf, String>,
 ) -> Vec<CronMetadata> {
-    // Most projects declare no `#[vespera::cron]` jobs: skip the
-    // `fs::canonicalize` syscall on `<manifest>/src` entirely then.
+    // Skip the `fs::canonicalize` syscall on `<manifest>/src` when there is
+    // nothing to place.
     if storage.is_empty() {
         return Vec::new();
     }
@@ -80,10 +97,17 @@ fn stored_jobs(
                 .as_ref()
                 .map(|fp| {
                     let normalized = canonicalized_cron_path(fp, canonical_paths);
-                    let relative = normalized
-                        .strip_prefix(&src_display)
-                        .map_or(&*normalized, |rest| rest.trim_start_matches('/'));
-                    cron_module_path(relative)
+                    let declared = tree.and_then(|tree| {
+                        tree.cron_fns
+                            .get(&(normalized.clone(), s.fn_name.clone()))
+                            .cloned()
+                    });
+                    declared.unwrap_or_else(|| {
+                        let relative = normalized
+                            .strip_prefix(&src_display)
+                            .map_or(&*normalized, |rest| rest.trim_start_matches('/'));
+                        cron_module_path(relative)
+                    })
                 })
                 .unwrap_or_default();
             CronMetadata {
@@ -97,40 +121,26 @@ fn stored_jobs(
         .collect()
 }
 
-/// Jobs reachable from the crate's module tree that `known` (canonical file,
-/// function name) does not list yet.
-fn scan_unexpanded_jobs(
-    src_dir: &Path,
-    call_site: Option<&Path>,
-    known: &HashSet<(String, String)>,
-) -> Vec<CronMetadata> {
-    let known_files: HashSet<&str> = known.iter().map(|(file, _)| file.as_str()).collect();
-    let has_candidate = file_cache::list_rs_files(src_dir).iter().any(|path| {
+/// Whether any `.rs` file under `src/` contains a cron attribute.
+fn has_cron_attribute(src_dir: &Path) -> bool {
+    file_cache::list_rs_files(src_dir).iter().any(|path| {
         file_cache::get_file_content(path).is_some_and(|content| content.contains(CRON_ATTR_MARKER))
-            && !known_files.contains(canonical_display(path).as_str())
-    });
-    if !has_candidate {
-        return Vec::new();
-    }
+    })
+}
+
+/// The module tree that contains the `vespera!` call site; without call-site
+/// information (unit tests) the library root wins over the binary root.
+fn crate_tree(src_dir: &Path, call_site: Option<&Path>) -> Option<ModuleTree> {
     let call_site = call_site.map(canonical_display);
     let mut trees = ["lib.rs", "main.rs"]
         .into_iter()
         .map(|root| src_dir.join(root))
         .filter(|root| root.is_file())
         .map(|root| ModuleTree::from_root(&root, src_dir));
-    // The tree that contains the `vespera!` call site; without call-site
-    // information (unit tests) the library root wins over the binary root.
-    let tree = match call_site {
+    match call_site {
         Some(call_site) => trees.find(|tree| tree.files.contains(&call_site)),
         None => trees.next(),
-    };
-    tree.map(|tree| {
-        tree.jobs
-            .into_iter()
-            .filter(|job| !known.contains(&(job.file_path.clone(), job.function_name.clone())))
-            .collect()
-    })
-    .unwrap_or_default()
+    }
 }
 
 /// Files reachable from one crate root plus the `#[cron]` jobs declared in
@@ -138,69 +148,108 @@ fn scan_unexpanded_jobs(
 #[derive(Default)]
 struct ModuleTree {
     files: HashSet<String>,
+    /// Schedulable jobs outside `#[cfg]`-gated items — the scan result.
     jobs: Vec<CronMetadata>,
+    /// (canonical file, function name) → module path of every function
+    /// carrying a cron attribute, `#[cfg]`-gated ones included (rustc may
+    /// have expanded those): places the stored jobs.  The first declaration
+    /// wins.
+    cron_fns: HashMap<(String, String), String>,
+}
+
+/// Where [`ModuleTree::visit`] currently is.
+struct Scope<'a> {
+    /// Directory that child file modules resolve under.
+    mod_dir: &'a Path,
+    /// Module path of the items (`""` = crate root).
+    module_path: &'a str,
+    /// Canonical file the items live in.
+    file: &'a str,
+    /// Inside a `#[cfg]`-gated module: indexed, never scanned.
+    gated: bool,
 }
 
 impl ModuleTree {
     fn from_root(root: &Path, src_dir: &Path) -> Self {
         let mut tree = Self::default();
-        tree.walk(root, src_dir, "");
+        tree.walk(root, src_dir, "", false);
         tree
     }
 
     /// Record `file` (module `module_path`, child modules resolved under
     /// `mod_dir`) and descend into its items.  Files without `mod` or a cron
     /// attribute cannot contribute anything, so they are never parsed.
-    fn walk(&mut self, file: &Path, mod_dir: &Path, module_path: &str) {
+    fn walk(&mut self, file: &Path, mod_dir: &Path, module_path: &str, gated: bool) {
         let display = canonical_display(file);
         self.files.insert(display.clone());
         if let Some(content) = file_cache::get_file_content(file)
             && (content.contains("mod") || content.contains(CRON_ATTR_MARKER))
             && let Ok(ast) = syn::parse_file(&content)
         {
-            let collect_jobs = content.contains(CRON_ATTR_MARKER);
-            self.visit(&ast.items, mod_dir, module_path, &display, collect_jobs);
+            let scope = Scope {
+                mod_dir,
+                module_path,
+                file: &display,
+                gated,
+            };
+            self.visit(&ast.items, &scope, content.contains(CRON_ATTR_MARKER));
         }
     }
 
-    fn visit(
-        &mut self,
-        items: &[syn::Item],
-        mod_dir: &Path,
-        module_path: &str,
-        file: &str,
-        collect_jobs: bool,
-    ) {
+    fn visit(&mut self, items: &[syn::Item], scope: &Scope<'_>, collect_jobs: bool) {
         for item in items {
             match item {
-                syn::Item::Mod(module) if !is_cfg_gated(&module.attrs) => {
+                syn::Item::Mod(module) => {
                     let name = module.ident.unraw().to_string();
-                    let child_path = join_module(module_path, &name);
-                    let child_dir = mod_dir.join(&name);
+                    let child_path = join_module(scope.module_path, &name);
+                    let child_dir = scope.mod_dir.join(&name);
+                    let gated = scope.gated || is_cfg_gated(&module.attrs);
                     if let Some((_, inner)) = &module.content {
-                        self.visit(inner, &child_dir, &child_path, file, collect_jobs);
+                        let child = Scope {
+                            mod_dir: &child_dir,
+                            module_path: &child_path,
+                            file: scope.file,
+                            gated,
+                        };
+                        self.visit(inner, &child, collect_jobs);
                     } else if !module.attrs.iter().any(|a| a.path().is_ident("path"))
-                        && let Some(child) =
-                            [mod_dir.join(format!("{name}.rs")), child_dir.join("mod.rs")]
-                                .into_iter()
-                                .find(|candidate| candidate.is_file())
+                        && let Some(child) = [
+                            scope.mod_dir.join(format!("{name}.rs")),
+                            child_dir.join("mod.rs"),
+                        ]
+                        .into_iter()
+                        .find(|candidate| candidate.is_file())
                     {
-                        self.walk(&child, &child_dir, &child_path);
+                        self.walk(&child, &child_dir, &child_path, gated);
                     }
                 }
-                syn::Item::Fn(function) if collect_jobs => {
-                    if let Some(args) = cron_args(function) {
-                        self.jobs.push(CronMetadata {
-                            expression: args.expression.value(),
-                            function_name: function.sig.ident.unraw().to_string(),
-                            module_path: module_path.to_owned(),
-                            file_path: file.to_owned(),
-                            options: args.options(),
-                        });
-                    }
+                syn::Item::Fn(function)
+                    if collect_jobs && function.attrs.iter().any(|a| is_cron_path(a.path())) =>
+                {
+                    self.add_cron_fn(function, scope);
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// Index a function carrying a cron attribute and, when it is
+    /// schedulable and not `#[cfg]`-gated, record it as a scanned job.
+    fn add_cron_fn(&mut self, function: &syn::ItemFn, scope: &Scope<'_>) {
+        let function_name = function.sig.ident.unraw().to_string();
+        self.cron_fns
+            .entry((scope.file.to_owned(), function_name.clone()))
+            .or_insert_with(|| scope.module_path.to_owned());
+        if !scope.gated
+            && let Some(args) = cron_args(function)
+        {
+            self.jobs.push(CronMetadata {
+                expression: args.expression.value(),
+                function_name,
+                module_path: scope.module_path.to_owned(),
+                file_path: scope.file.to_owned(),
+                options: args.options(),
+            });
         }
     }
 }
@@ -262,9 +311,13 @@ fn canonicalized_cron_path(fp: &str, cache: &mut HashMap<PathBuf, String>) -> St
         .clone()
 }
 
-/// Convert a `src/`-relative file path to a module path: strip `.rs`, `/` →
-/// `::`, `-` → `_`, drop a trailing `::mod`.
+/// Convert a `src/`-relative file path to a module path: the crate roots
+/// `lib.rs` / `main.rs` are the crate itself (`""`); otherwise strip `.rs`,
+/// `/` → `::`, `-` → `_`, drop a trailing `::mod`.
 fn cron_module_path(relative: &str) -> String {
+    if matches!(relative, "lib.rs" | "main.rs") {
+        return String::new();
+    }
     let stem = relative.strip_suffix(".rs").unwrap_or(relative);
     let mut module_path = String::with_capacity(stem.len());
     for ch in stem.chars() {
@@ -329,6 +382,9 @@ mod tests {
     #[rstest]
     #[case::slashes_and_hyphens("admin-tools/daily-job.rs", "admin_tools::daily_job")]
     #[case::module_file("admin-tools/mod.rs", "admin_tools")]
+    #[case::library_root("lib.rs", "")]
+    #[case::binary_root("main.rs", "")]
+    #[case::nested_lib_file("tools/lib.rs", "tools::lib")]
     fn cron_module_path_normalizes_rust_module_syntax(#[case] input: &str, #[case] expected: &str) {
         assert_eq!(cron_module_path(input), expected);
     }
@@ -512,5 +568,94 @@ mod tests {
         let krate = crate_with(&[("jobs.rs", r#"#[cron("1 * * * * *")] pub async fn job() {}"#)]);
         let src = krate.path().join("src");
         assert!(discover_cron_jobs(&[], Some(&src), None).is_empty());
+    }
+
+    fn rows(rows: &[(&str, &str, &str)]) -> Vec<(String, String, String)> {
+        let mut rows: Vec<_> = rows
+            .iter()
+            .map(|(module, name, expr)| {
+                ((*module).to_owned(), (*name).to_owned(), (*expr).to_owned())
+            })
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    /// Stored jobs are placed by the module tree: the crate root is `crate`
+    /// (not `crate::lib`), inline modules keep their segments (also
+    /// `#[cfg]`-gated ones rustc expanded), and a job declared after
+    /// `vespera!` in a file with stored jobs is still scanned.
+    #[test]
+    fn stored_jobs_take_their_module_path_from_the_module_tree() {
+        let krate = crate_with(&[
+            (
+                "lib.rs",
+                r#"
+                #[vespera::cron("1 * * * * *")] pub async fn root_job() {}
+                pub mod jobs {
+                    #[cron("2 * * * * *")] pub async fn inline_job() {}
+                    pub mod deeper {
+                        #[cron("3 * * * * *")] pub async fn deep_job() {}
+                    }
+                }
+                #[path = "x.rs"] mod pathed;
+                pub fn create_app() {}
+                #[cron("4 * * * * *")] pub async fn after_job() {}
+                #[cfg(test)]
+                mod tests {
+                    #[cron("5 * * * * *")] pub async fn gated_job() {}
+                }
+                "#,
+            ),
+            (
+                "x.rs",
+                r#"#[cron("6 * * * * *")] pub async fn pathed_job() {}"#,
+            ),
+        ]);
+        let src = krate.path().join("src");
+        let lib = src.join("lib.rs").display().to_string();
+        let x = src.join("x.rs").display().to_string();
+        let storage = [
+            stored("root_job", Some(lib.clone())),
+            stored("inline_job", Some(lib.clone())),
+            stored("deep_job", Some(lib.clone())),
+            stored("gated_job", Some(lib)),
+            stored("pathed_job", Some(x)),
+        ];
+        let stored_expr = "0 0 0 * * *";
+        let jobs = discover_cron_jobs(&storage, Some(&src), Some(&src.join("lib.rs")));
+        assert_eq!(
+            summary(&jobs),
+            rows(&[
+                ("", "root_job", stored_expr),
+                ("jobs", "inline_job", stored_expr),
+                ("jobs::deeper", "deep_job", stored_expr),
+                ("tests", "gated_job", stored_expr),
+                // `#[path]` modules are not followed: derived from the file.
+                ("x", "pathed_job", stored_expr),
+                ("", "after_job", "4 * * * * *"),
+            ])
+        );
+    }
+
+    /// Without a module tree to consult (call site outside both trees), a
+    /// stored crate-root job still resolves to `crate`.
+    #[test]
+    fn stored_root_job_without_a_tree_falls_back_to_the_crate_root() {
+        let krate = crate_with(&[
+            (
+                "main.rs",
+                r#"#[cron("1 * * * * *")] pub async fn bin_job() {}"#,
+            ),
+            ("orphan.rs", ""),
+        ]);
+        let src = krate.path().join("src");
+        let main = src.join("main.rs").display().to_string();
+        let jobs = discover_cron_jobs(
+            &[stored("bin_job", Some(main))],
+            Some(&src),
+            Some(&src.join("orphan.rs")),
+        );
+        assert_eq!(summary(&jobs), rows(&[("", "bin_job", "0 0 0 * * *")]));
     }
 }
