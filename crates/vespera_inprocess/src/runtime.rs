@@ -12,6 +12,7 @@
 //! |---|---|---|---|
 //! | worker threads | [`set_runtime_worker_threads`] | `VESPERA_RUNTIME_WORKERS` | logical CPUs, clamped `1..=1024` |
 //! | blocking pool | [`set_runtime_max_blocking_threads`] | `VESPERA_RUNTIME_MAX_BLOCKING_THREADS` | 512, clamped `1..=8192` |
+//! | async in-flight cap | [`set_async_max_in_flight`] | `VESPERA_ASYNC_MAX_IN_FLIGHT` | 4096, `0` = unlimited |
 
 use std::{
     future::Future,
@@ -27,6 +28,15 @@ use std::{
 // model-check it.
 mod gate;
 use gate::LeaseGate;
+
+// The async-dispatch in-flight cap shared by JNI `dispatchAsync` and the C
+// ABI's `vespera_dispatch_async`, Tokio-free so loom can model-check it.
+mod in_flight;
+pub use in_flight::{
+    ASYNC_OVERLOADED_MSG, AsyncPermit, CapPermit, DEFAULT_ASYNC_MAX_IN_FLIGHT, InFlightCap,
+    async_in_flight, async_max_in_flight, async_overloaded_wire, set_async_max_in_flight,
+    try_acquire_async_permit,
+};
 
 const MIN_RUNTIME_WORKERS: usize = 1;
 const MAX_RUNTIME_WORKERS: usize = 1024;

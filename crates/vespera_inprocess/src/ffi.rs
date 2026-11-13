@@ -13,9 +13,10 @@
 //! | `vespera_init()` | register apps + start the shared runtime (idempotent) |
 //! | `vespera_dispatch(req, len, &out, &out_len)` | wire in → Rust-allocated wire out |
 //! | `vespera_dispatch_into(req, len, buf, cap, &written)` | wire in → caller buffer; overflow reports the required size |
-//! | `vespera_dispatch_async(req, len, cb, user_data)` | wire in → `cb(user_data, out, out_len)` exactly once |
+//! | `vespera_dispatch_async(req, len, cb, user_data)` | wire in → `cb(user_data, out, out_len)` exactly once (`503` over the in-flight cap) |
 //! | `vespera_free(ptr, len)` | release a Rust-allocated response |
 //! | `vespera_shutdown(timeout_ms)` | drain + stop the shared runtime (irreversible) |
+//! | `vespera_configure_*(value)` | process-wide knobs, first-wins (see [`configure`]) |
 //!
 //! All dispatches run on the same shared runtime as JNI
 //! ([`crate::runtime`]), so a cdylib exporting both `jni_app!` and
@@ -31,9 +32,18 @@ use std::{
 };
 
 use crate::runtime::{
-    RuntimeLease, block_on_shared_runtime, runtime, runtime_unavailable_wire, shutdown_runtime,
+    AsyncPermit, RuntimeLease, async_overloaded_wire, block_on_shared_runtime, runtime,
+    runtime_unavailable_wire, shutdown_runtime, try_acquire_async_permit,
 };
 use crate::{DirectWriteResult, check_ingress_cap, error_wire, panic_error_wire};
+
+// `vespera_configure_*`: the C twins of the JNI `configure*0` hooks.
+pub mod configure;
+pub use configure::{
+    vespera_configure_async_max_in_flight, vespera_configure_dispatch_timeout_ms,
+    vespera_configure_max_blocking_threads, vespera_configure_max_buffered_response_bytes,
+    vespera_configure_max_request_bytes, vespera_configure_worker_threads,
+};
 
 /// The hand-written C header (`include/vespera.h`) matching these symbols.
 pub const HEADER: &str = include_str!("../include/vespera.h");
@@ -54,6 +64,9 @@ pub const VESPERA_ERR_REGISTRATION: c_int = -3;
 /// `vespera_init`: the runtime is unavailable; `vespera_shutdown`: already
 /// shut down.
 pub const VESPERA_ERR_RUNTIME: c_int = -4;
+/// `vespera_configure_*`: the knob was already fixed (an earlier configure
+/// call, `vespera_init` starting the runtime, or a dispatch reading it).
+pub const VESPERA_ERR_TOO_LATE: c_int = -5;
 
 /// `400` body for a NULL request pointer with a non-zero length.
 pub const NULL_REQUEST_MSG: &str = "invalid request buffer (NULL with non-zero length)";
@@ -254,23 +267,34 @@ impl Drop for Completion {
     }
 }
 
-/// Validate + copy the request and claim the runtime, or the wire response
-/// to deliver inline.
-fn prepare_async(input: Option<&[u8]>) -> Result<(Vec<u8>, RuntimeLease), Vec<u8>> {
+/// What a spawned async dispatch holds: the copied request, its in-flight
+/// slot and its runtime lease.
+type AsyncClaim = (Vec<u8>, AsyncPermit, RuntimeLease);
+
+/// Admit (in-flight cap, shared with JNI `dispatchAsync`), validate + copy
+/// the request and claim the runtime, or the wire response to deliver
+/// inline.
+fn prepare_async(input: Option<&[u8]>) -> Result<AsyncClaim, Vec<u8>> {
+    let permit = try_acquire_async_permit().ok_or_else(async_overloaded_wire)?;
     let input = input.ok_or_else(|| error_wire(400, NULL_REQUEST_MSG))?;
     if let Some(err) = check_ingress_cap(input.len()) {
         return Err(err);
     }
     let input = input.to_vec();
     runtime()
-        .map(|lease| (input, lease))
+        .map(|lease| (input, permit, lease))
         .ok_or_else(runtime_unavailable_wire)
 }
 
 /// The spawned async dispatch: poll it under `catch_unwind` (a handler
-/// panic answers a `500` panic wire), deliver, then release the lease so a
-/// shutdown drain waits for the callback too.
-async fn run_async(input: Vec<u8>, lease: RuntimeLease, mut completion: Completion) {
+/// panic answers a `500` panic wire), deliver, then release the in-flight
+/// slot and the lease so a shutdown drain waits for the callback too.
+async fn run_async(
+    input: Vec<u8>,
+    permit: AsyncPermit,
+    lease: RuntimeLease,
+    mut completion: Completion,
+) {
     let mut dispatch = Box::pin(crate::dispatch_from_bytes_async(input));
     let wire = std::future::poll_fn(|cx| {
         catch_unwind(AssertUnwindSafe(|| dispatch.as_mut().poll(cx)))
@@ -278,7 +302,7 @@ async fn run_async(input: Vec<u8>, lease: RuntimeLease, mut completion: Completi
     })
     .await;
     completion.deliver(wire);
-    drop(lease);
+    drop((permit, lease));
 }
 
 /// `int vespera_dispatch_async(const uint8_t*, size_t, vespera_callback,
@@ -308,7 +332,11 @@ pub unsafe extern "C" fn vespera_dispatch_async(
     let input = unsafe { request_slice(request, request_len) };
     match catch_unwind(|| prepare_async(input)).unwrap_or_else(|_| Err(panic_wire())) {
         Err(wire) => completion.deliver(wire),
-        Ok((input, lease)) => drop(lease.handle().spawn(run_async(input, lease, completion))),
+        Ok((input, permit, lease)) => drop(
+            lease
+                .handle()
+                .spawn(run_async(input, permit, lease, completion)),
+        ),
     }
     VESPERA_OK
 }

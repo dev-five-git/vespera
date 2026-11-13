@@ -11,108 +11,21 @@
 //! runtime knobs — the shared runtime already started).  The Java side
 //! surfaces `false` instead of silently dropping the configuration.
 
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use jni::EnvUnowned;
 use jni::objects::JClass;
 use jni::sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong};
 
-use super::gates::{CapPermit, InFlightCap};
 use super::{guard_void_symbol, set_runtime_max_blocking_threads, set_runtime_worker_threads};
 
-/// Default cap on concurrently in-flight `dispatchAsync` calls.
-///
-/// `dispatchAsync` returns immediately, so a caller that fires it in a loop
-/// without its own backpressure would otherwise queue unbounded tasks (and
-/// their request buffers) on the runtime.  4096 is far above realistic
-/// in-process concurrency for a JVM host (servlet pools are typically a few
-/// hundred threads) yet bounds a runaway producer; excess calls complete
-/// immediately with a retryable `503` wire response.  `0` disables the cap.
-pub const DEFAULT_ASYNC_MAX_IN_FLIGHT: usize = 4096;
-const MAX_ASYNC_MAX_IN_FLIGHT: usize = 1 << 24;
-
-static ASYNC_MAX_IN_FLIGHT: OnceLock<usize> = OnceLock::new();
-/// The `dispatchAsync` in-flight counter + admission protocol (loom-checked).
-#[cfg(not(vespera_loom))]
-static ASYNC_IN_FLIGHT: InFlightCap = InFlightCap::new();
-/// loom atomics are not `const`-constructible; the loom build only runs the
-/// `loom_*` models, which never touch the static.
-#[cfg(vespera_loom)]
-static ASYNC_IN_FLIGHT: std::sync::LazyLock<InFlightCap> =
-    std::sync::LazyLock::new(InFlightCap::new);
-
-/// Read a `usize` env knob: absent → `default`; present but unparseable →
-/// one-time stderr warning + `default` (callers resolve through a
-/// `OnceLock`, so the warning fires at most once); valid → clamped.
-fn read_env_usize(var: &str, default: usize, min: usize, max: usize) -> usize {
-    let Ok(raw) = std::env::var(var) else {
-        return default;
-    };
-    raw.trim().parse::<usize>().map_or_else(
-        |_| {
-            eprintln!(
-                "vespera: ignoring invalid {var}={raw:?} (expected a non-negative \
-                 integer); using the default {default}"
-            );
-            default
-        },
-        |v| v.clamp(min, max),
-    )
-}
-
-/// Cap on concurrently in-flight `dispatchAsync` calls.  Precedence:
-/// [`set_async_max_in_flight`], then `VESPERA_ASYNC_MAX_IN_FLIGHT`, then
-/// [`DEFAULT_ASYNC_MAX_IN_FLIGHT`] (4096).  `0` = unlimited.
-#[must_use]
-pub fn async_max_in_flight() -> usize {
-    *ASYNC_MAX_IN_FLIGHT.get_or_init(|| {
-        read_env_usize(
-            "VESPERA_ASYNC_MAX_IN_FLIGHT",
-            DEFAULT_ASYNC_MAX_IN_FLIGHT,
-            0,
-            MAX_ASYNC_MAX_IN_FLIGHT,
-        )
-    })
-}
-
-/// Override the `dispatchAsync` in-flight cap **before the first async
-/// dispatch**.  `0` = unlimited.  Returns `false` when already fixed.
-pub fn set_async_max_in_flight(max: usize) -> bool {
-    ASYNC_MAX_IN_FLIGHT
-        .set(max.min(MAX_ASYNC_MAX_IN_FLIGHT))
-        .is_ok()
-}
-
-/// `dispatchAsync` calls currently holding an in-flight slot (admitted and
-/// not yet completed, cancelled or dropped).  Always `0` while the cap is
-/// disabled (`0` = unlimited admits without counting).  A diagnostic: a
-/// cancelled dispatch must hand its slot back promptly.
-#[must_use]
-pub fn async_in_flight() -> usize {
-    ASYNC_IN_FLIGHT.in_flight()
-}
-
-/// One admitted `dispatchAsync` slot; releases it on drop (task completion,
-/// a caught panic, or the runtime dropping the task at shutdown).
-pub type AsyncPermit = CapPermit;
-
-/// Admit one `dispatchAsync` call, or `None` when the in-flight cap is
-/// reached (the caller completes the future with a `503` immediately).
-#[must_use]
-pub fn try_acquire_async_permit() -> Option<AsyncPermit> {
-    ASYNC_IN_FLIGHT.admit(async_max_in_flight())
-}
-
-/// `503` wire response for an async dispatch rejected by the in-flight cap.
-#[must_use]
-pub fn async_overloaded_wire() -> Vec<u8> {
-    vespera_inprocess::error_wire(
-        503,
-        "too many in-flight async dispatches \
-         (vespera.async.maxInFlight / VESPERA_ASYNC_MAX_IN_FLIGHT)",
-    )
-}
+// The `dispatchAsync` in-flight cap is shared with the C ABI's
+// `vespera_dispatch_async` (one counter for both hosts) and lives next to the
+// shared runtime, with its loom model (`vespera_inprocess::runtime`).
+pub use vespera_inprocess::runtime::{
+    DEFAULT_ASYNC_MAX_IN_FLIGHT, async_in_flight, async_max_in_flight, async_overloaded_wire,
+    set_async_max_in_flight, try_acquire_async_permit,
+};
 
 /// Per-chunk buffer size for streaming dispatches.
 ///
@@ -404,19 +317,6 @@ mod tests {
         assert_eq!(guarded_configure(|| true), JNI_TRUE);
         assert_eq!(guarded_configure(|| false), JNI_FALSE);
         assert_eq!(guarded_configure(|| panic!("boom")), JNI_FALSE);
-    }
-
-    #[test]
-    fn env_knob_absent_uses_default() {
-        assert_eq!(read_env_usize("VESPERA_JNI_TEST_ABSENT_KNOB", 7, 1, 10), 7);
-    }
-
-    #[test]
-    fn async_overloaded_wire_is_503() {
-        let wire = async_overloaded_wire();
-        let len = u32::from_be_bytes(wire[..4].try_into().unwrap()) as usize;
-        let header = std::str::from_utf8(&wire[4..4 + len]).unwrap();
-        assert!(header.contains("\"status\":503"), "{header}");
     }
 
     #[test]

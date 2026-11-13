@@ -63,6 +63,12 @@ fn header_prototypes_match_the_exported_symbols() {
         ffi::vespera_dispatch_async;
     let _: unsafe extern "C" fn(*mut u8, usize) = ffi::vespera_free;
     let _: extern "C" fn(u64) -> c_int = ffi::vespera_shutdown;
+    let _: extern "C" fn(usize) -> c_int = ffi::vespera_configure_worker_threads;
+    let _: extern "C" fn(usize) -> c_int = ffi::vespera_configure_max_blocking_threads;
+    let _: extern "C" fn(usize) -> c_int = ffi::vespera_configure_max_request_bytes;
+    let _: extern "C" fn(usize) -> c_int = ffi::vespera_configure_max_buffered_response_bytes;
+    let _: extern "C" fn(u64) -> c_int = ffi::vespera_configure_dispatch_timeout_ms;
+    let _: extern "C" fn(usize) -> c_int = ffi::vespera_configure_async_max_in_flight;
     let callback: Option<VesperaCallback> = None;
     let _: Option<unsafe extern "C" fn(*mut c_void, *mut u8, usize)> = callback;
 
@@ -77,6 +83,12 @@ fn header_prototypes_match_the_exported_symbols() {
             "int vespera_dispatch_async(const uint8_t *request, size_t request_len, vespera_callback callback, void *user_data)",
             "void vespera_free(uint8_t *ptr, size_t len)",
             "int vespera_shutdown(uint64_t timeout_ms)",
+            "int vespera_configure_worker_threads(size_t worker_threads)",
+            "int vespera_configure_max_blocking_threads(size_t max_blocking_threads)",
+            "int vespera_configure_max_request_bytes(size_t max_bytes)",
+            "int vespera_configure_max_buffered_response_bytes(size_t max_bytes)",
+            "int vespera_configure_dispatch_timeout_ms(uint64_t timeout_ms)",
+            "int vespera_configure_async_max_in_flight(size_t max_in_flight)",
         ]
     );
 }
@@ -97,6 +109,7 @@ fn header_constants_match_the_rust_constants() {
             i64::from(ffi::VESPERA_ERR_REGISTRATION),
         ),
         ("VESPERA_ERR_RUNTIME", i64::from(ffi::VESPERA_ERR_RUNTIME)),
+        ("VESPERA_ERR_TOO_LATE", i64::from(ffi::VESPERA_ERR_TOO_LATE)),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))

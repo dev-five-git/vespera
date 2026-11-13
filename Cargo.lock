@@ -3634,7 +3634,6 @@ dependencies = [
  "axum",
  "futures-util",
  "jni",
- "loom",
  "mimalloc",
  "rstest",
  "tokio",
