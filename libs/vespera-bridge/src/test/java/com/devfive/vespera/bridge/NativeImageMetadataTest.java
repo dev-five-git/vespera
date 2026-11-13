@@ -463,12 +463,12 @@ class NativeImageMetadataTest {
         RuntimeHints absent = new RuntimeHints();
         new VesperaBridgeRuntimeHints().registerHints(absent, getClass().getClassLoader());
         // Spring Security is not on this test classpath.
-        assertEquals(null, absent.reflection().getTypeHint(TypeReference.of(ServletPrincipalResolver.AUTHENTICATION)));
+        assertEquals(null, absent.reflection().getTypeHint(TypeReference.of(SecurityAuthorities.AUTHENTICATION)));
 
         RuntimeHints present = new RuntimeHints();
         VesperaBridgeRuntimeHints.registerHints(present, type -> true);
-        assertInvokable(present, ServletPrincipalResolver.AUTHENTICATION, "getAuthorities");
-        assertInvokable(present, ServletPrincipalResolver.GRANTED_AUTHORITY, "getAuthority");
+        assertInvokable(present, SecurityAuthorities.AUTHENTICATION, "getAuthorities");
+        assertInvokable(present, SecurityAuthorities.GRANTED_AUTHORITY, "getAuthority");
     }
 
     private static void assertInvokable(RuntimeHints hints, String type, String method) {

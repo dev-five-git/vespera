@@ -3,8 +3,6 @@ package com.devfive.vespera.bridge;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.server.PathContainer;
 import org.springframework.web.servlet.mvc.condition.AbstractRequestCondition;
-import org.springframework.web.util.ServletRequestPathUtils;
-import org.springframework.web.util.UrlPathHelper;
 import org.springframework.web.util.pattern.PathPattern;
 import org.springframework.web.util.pattern.PathPatternParser;
 import org.springframework.web.util.pattern.PatternParseException;
@@ -89,6 +87,18 @@ public final class ProxyPathPatterns {
         return anyMatch(includePatterns, container) && !anyMatch(excludePatterns, container);
     }
 
+    /**
+     * Whether the proxy owns {@code pathWithinApplication} (an already parsed
+     * path, e.g. a WebFlux {@code RequestPath#pathWithinApplication()}).
+     */
+    public boolean matches(PathContainer pathWithinApplication) {
+        if (isDefault()) {
+            return true;
+        }
+        return anyMatch(includePatterns, pathWithinApplication)
+                && !anyMatch(excludePatterns, pathWithinApplication);
+    }
+
     /** Whether {@code request}'s path matches an exclude pattern. */
     boolean excluded(HttpServletRequest request) {
         return !excludePatterns.isEmpty() && anyMatch(excludePatterns, lookupPath(request));
@@ -118,10 +128,7 @@ public final class ProxyPathPatterns {
      * (undecoded) lookup path.
      */
     static PathContainer lookupPath(HttpServletRequest request) {
-        if (ServletRequestPathUtils.hasParsedRequestPath(request)) {
-            return ServletRequestPathUtils.getParsedRequestPath(request).pathWithinApplication();
-        }
-        return PathContainer.parsePath(UrlPathHelper.rawPathInstance.getLookupPathForRequest(request));
+        return ServletLookupPath.of(request);
     }
 
     private static List<String> normalize(Collection<String> patterns) {

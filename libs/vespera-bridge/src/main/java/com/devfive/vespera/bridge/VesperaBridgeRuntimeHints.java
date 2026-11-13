@@ -42,9 +42,13 @@ public final class VesperaBridgeRuntimeHints implements RuntimeHintsRegistrar {
         hints.reflection().registerMethod(
                 VesperaPreflightHandlerMapping.proxyMethod(), ExecutableMode.INVOKE);
         registerNoArgMethodIfPresent(hints, present,
-                ServletPrincipalResolver.AUTHENTICATION, "getAuthorities");
+                SecurityAuthorities.AUTHENTICATION, "getAuthorities");
         registerNoArgMethodIfPresent(hints, present,
-                ServletPrincipalResolver.GRANTED_AUTHORITY, "getAuthority");
+                SecurityAuthorities.GRANTED_AUTHORITY, "getAuthority");
+        if (present.test(SecurityAuthorities.ANONYMOUS_TOKEN)) {
+            // Class.forName probe for anonymous authentication.
+            hints.reflection().registerType(TypeReference.of(SecurityAuthorities.ANONYMOUS_TOKEN));
+        }
     }
 
     private static void registerNoArgMethodIfPresent(

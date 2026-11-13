@@ -24,7 +24,7 @@ dependencies {
 
 ### Dependencies — Spring is provided by your app
 
-`vespera-bridge` declares **no transitive dependencies** (its POM is empty): Spring Boot, Spring MVC, the servlet API and SLF4J are compile-only and must come from the application. Every Spring Boot web app already has them through `spring-boot-starter-web` (Boot 3) / `spring-boot-starter-webmvc` (Boot 4), so nothing changes there. The autoconfiguration only activates in a servlet web application with Spring MVC on the classpath (`@ConditionalOnClass` + `@ConditionalOnWebApplication(type = SERVLET)`), and the non-Spring API (`VesperaBridge` dispatch / `encodeRequest` / `decodeResponse`) runs with no Spring jars at all.
+`vespera-bridge` declares **no transitive dependencies** (its POM is empty): Spring Boot, Spring MVC, the servlet API, Spring WebFlux / Reactor and SLF4J are compile-only and must come from the application. Every Spring Boot web app already has them through `spring-boot-starter-web` (Boot 3) / `spring-boot-starter-webmvc` (Boot 4), so nothing changes there. The autoconfiguration only activates in a servlet web application with Spring MVC on the classpath (`@ConditionalOnClass` + `@ConditionalOnWebApplication(type = SERVLET)`); its WebFlux counterpart only in a reactive web application with WebFlux on the classpath (see [WebFlux](#webflux)), and the non-Spring API (`VesperaBridge` dispatch / `encodeRequest` / `decodeResponse`) runs with no Spring jars at all.
 
 Kotlin is optional too: the [Kotlin extensions](#kotlin) ship inside the same JAR, but `kotlin-stdlib` and `kotlinx-coroutines-core` are compile-only — Java applications never load a Kotlin class.
 
@@ -361,6 +361,56 @@ public Executor vesperaBridgeAsyncResponseExecutor() {
     return Executors.newFixedThreadPool(4);
 }
 ```
+
+## WebFlux
+
+Spring WebFlux applications (reactor-netty, or any reactive server) get a non-blocking proxy instead of `VesperaProxyController`. Add the bridge to an app that has `spring-boot-starter-webflux`, call `VesperaBridge.init(...)` or set `vespera.bridge.library-name`, and that is all. `VesperaBridgeReactiveAutoConfiguration` activates only with `@ConditionalOnWebApplication(type = REACTIVE)` and only when `DispatcherHandler` and Reactor are on the classpath. The servlet autoconfiguration stays `SERVLET`-only, so a given app gets exactly one of the two proxies. WebFlux and Reactor are **compile-only** dependencies of the bridge, so they never reach a servlet or plain-Java consumer transitively. The build's `verifyPublishedPom` check fails if the published POM or Gradle module metadata declares any dependency.
+
+```java
+VesperaBridge.init("my_rust_lib");                          // or vespera.bridge.library-name
+SpringApplication.run(ReactiveApplication.class, args);     // spring-boot-starter-webflux
+```
+
+**Autoconfigured beans** (each `@ConditionalOnMissingBean`, so any of them can be replaced):
+
+| Bean | Default | Role |
+|---|---|---|
+| `ReactiveAppNameResolver` | `ReactiveHeaderAppNameResolver(vespera.bridge.app-header, vespera.bridge.exposed-apps)` | Picks the app per exchange. It uses the same allowlist and one-time WARN as the servlet `HeaderAppNameResolver`, and the selection header is never forwarded. |
+| `ReactivePrincipalResolver` | `ExchangePrincipalResolver`, or `ReactivePrincipalResolver.none()` when `forward-principal=false` | Fills the trusted `principal` wire field from `exchange.getPrincipal()`. With Spring Security WebFlux, that is the `ReactiveSecurityContextHolder` authentication. Authorities are read reflectively, and anonymous tokens are skipped. |
+| `VesperaReactiveProxyHandler` | (`controller-enabled=true`) | The `WebHandler` that dispatches to Rust. |
+| `VesperaReactiveHandlerMapping` | order `LOWEST_PRECEDENCE - 10` | Maps `include-patterns` / `exclude-patterns`. `@Controller`s and `RouterFunction`s win; static resources come after. |
+| `VesperaReactivePreflightFilter` | (`cors=rust`) | WebFlux answers CORS preflights inside `DispatcherHandler` without invoking a handler, so this `WebFilter` routes owned-path preflights to Rust. |
+
+**Dispatch.** Requests go through `VesperaBridge.dispatchAsync`, so a Netty event loop never blocks:
+
+- The request body is aggregated with `DataBufferUtils.join`, capped by `max-buffered-request-bytes`. A declared or actual excess answers `413`.
+- The completion is published on `Schedulers.parallel()`, not on the Tokio worker that completed it.
+- The response is written as one zero-copy buffer, capped by `max-buffered-response-bytes` (`500`).
+- **Cancel-on-disconnect.** When the client goes away, the `Mono` is cancelled, which cancels the `CompletableFuture`, and the native task is dropped at its next poll. This is the same `cancel0` path as the servlet `ASYNC` mode. Observers see such a request with status `499`.
+
+**Shared behaviour.** The following work exactly as on the servlet side:
+
+- `HeaderPolicy` (hop-by-hop and `Connection`-nominated headers)
+- the request id (`vespera.bridge.request-id.*`, put in the MDC around the dispatch call)
+- `remote_addr` and `scheme`
+- CORS ownership (`cors=spring|rust`)
+- `DispatchObserver` beans, `MicrometerDispatchObserver` and the health indicator
+- `vespera.bridge.native.*`, `library-name` and `shutdown-on-close`
+- the `VesperaClient` bean
+
+**Streaming.** A request whose `Accept` header asks for `text/event-stream` or NDJSON (the same rule as `SmartDispatchModeResolver`) is dispatched through the native header-first streaming symbol (`dispatchStreamingWithHeader`) on `Schedulers.boundedElastic()`. The bytes are bridged with `DataBufferUtils.outputStreamPublisher` (backpressured, 64 KiB chunks) and written with `writeAndFlushWith`, so every chunk Rust emits is flushed to the client. A disconnect ends the blocking writer, and the native side stops on the failed write. All other requests take the buffered path.
+
+**Properties that do not apply to WebFlux:** `dispatch-mode` (there is no `DispatchModeResolver`: the proxy always uses async dispatch, or streaming per `Accept`), `direct-retry-on-overflow`, `async-pool-size` and `clear-threadlocals-after-request`.
+
+**Limitations:**
+
+- Request bodies are always aggregated; there is no streamed upload equivalent of `BIDIRECTIONAL_STREAMING`.
+- Each streamed response holds one `boundedElastic` thread for its lifetime, so size `reactor.schedulers.defaultBoundedElasticSize` for many concurrent SSE clients. An idle stream notices a disconnect only at its next write.
+- `HEAD` is never streamed.
+- A form body that a filter already consumed through `exchange.getFormData()` is not rebuilt (unlike the servlet proxy's parameter-map fallback).
+- A path that a user `@Controller` owns for another HTTP method answers `405` from Spring rather than falling through to Rust.
+- The springdoc integration is servlet-only.
+- `VesperaClient.send()` blocks. From reactive code, use `sendAsync()` (`Mono.fromFuture(...)`).
 
 ## Multi-app routing
 
@@ -1210,7 +1260,7 @@ and the Gradle plugin.
 
 ## End-to-end example
 
-See [`examples/rust-jni-demo`](../../examples/rust-jni-demo/) for a complete Rust + Spring Boot integration including build scripts, native bundling, and a curl smoke test.
+See [`examples/rust-jni-demo`](../../examples/rust-jni-demo/) for a complete Rust + Spring Boot integration including build scripts, native bundling, and a curl smoke test. Its `java/demo-reactive-app` module is the WebFlux variant (reactor-netty, no servlet API), whose `ReactiveProxyE2ETest` runs against the real cdylib.
 
 ## Breaking changes after 0.5.0
 

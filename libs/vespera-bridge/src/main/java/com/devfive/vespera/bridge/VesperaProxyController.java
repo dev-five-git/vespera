@@ -19,14 +19,12 @@ import java.io.InputStream;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
-import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Catch-all proxy controller — autoconfigured by
@@ -295,29 +293,11 @@ public class VesperaProxyController {
      * characters), else a fresh random UUID.
      */
     static String resolveRequestId(String incoming) {
-        if (incoming != null && isValidRequestId(incoming)) {
-            return incoming;
-        }
-        ThreadLocalRandom random = ThreadLocalRandom.current();
-        // Random (version 4, IETF variant) UUID without SecureRandom's cost:
-        // a request id needs uniqueness, not unpredictability.
-        long msb = (random.nextLong() & ~0xF000L) | 0x4000L;
-        long lsb = (random.nextLong() & ~(0xC000L << 48)) | (0x8000L << 48);
-        return new UUID(msb, lsb).toString();
+        return RequestIds.resolve(incoming);
     }
 
     static boolean isValidRequestId(String value) {
-        int length = value.length();
-        if (length == 0 || length > 128) {
-            return false;
-        }
-        for (int i = 0; i < length; i++) {
-            char c = value.charAt(i);
-            if (c < 0x21 || c > 0x7e) {
-                return false;
-            }
-        }
-        return true;
+        return RequestIds.isValid(value);
     }
 
     /** The routing + dispatch body of {@link #proxy}; {@code null} once the response is written. */
