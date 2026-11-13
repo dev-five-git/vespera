@@ -20,9 +20,6 @@ final class SecurityAuthorities {
     static final String ANONYMOUS_TOKEN =
             "org.springframework.security.authentication.AnonymousAuthenticationToken";
 
-    /** Spring Security's anonymous token type, or {@code null} without Spring Security. */
-    private static final Class<?> ANONYMOUS = load(ANONYMOUS_TOKEN);
-
     /** {@code Authentication#getAuthorities()}, or {@code null} without Spring Security. */
     private final Method getAuthorities;
     /** {@code GrantedAuthority#getAuthority()}, or {@code null} without Spring Security. */
@@ -71,9 +68,21 @@ final class SecurityAuthorities {
      * Whether {@code principal} is Spring Security's anonymous
      * authentication (servlet's {@code getUserPrincipal()} hides it; the
      * reactive exchange principal does not, so the reactive resolver skips it).
+     *
+     * <p>Compares the names along the principal's superclass chain instead of
+     * loading the token class: a lookup that fails (a native image without a
+     * reflection hint for it, a class loader that cannot see Spring Security)
+     * would otherwise answer {@code false} and forward {@code "anonymousUser"}
+     * as an authenticated principal. This check cannot fail open.
      */
     static boolean isAnonymous(Object principal) {
-        return principal != null && ANONYMOUS != null && ANONYMOUS.isInstance(principal);
+        for (Class<?> type = principal == null ? null : principal.getClass();
+                type != null; type = type.getSuperclass()) {
+            if (ANONYMOUS_TOKEN.equals(type.getName())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** The class {@code name} if it is on the classpath, else {@code null}. */

@@ -1221,7 +1221,7 @@ The JAR ships GraalVM reachability metadata under `META-INF/native-image/kr.devf
 | `resource-config.json` | Bundled libraries `native/<platform>/<lib>` and `vespera-bridge.properties`. |
 | `reflect-config.json` | `Thread.isVirtual()` (looked up reflectively; the bridge targets Java 17). |
 
-With Spring Boot, the autoconfiguration also contributes Spring AOT hints (`VesperaBridgeRuntimeHints`, via `@ImportRuntimeHints`): the proxy handler method the CORS preflight mapping resolves by reflection, and Spring Security's `Authentication.getAuthorities()` / `GrantedAuthority.getAuthority()` when Spring Security is present (forwarded principal authorities). So a Spring Boot app that already builds natively only needs the `org.graalvm.buildtools.native` plugin:
+With Spring Boot, the autoconfigurations also contribute Spring AOT hints via `@ImportRuntimeHints`: `VesperaBridgeRuntimeHints` (servlet only) for the proxy handler method the CORS preflight mapping resolves by reflection, and `VesperaSecurityRuntimeHints` (servlet and WebFlux) for Spring Security's `Authentication.getAuthorities()` / `GrantedAuthority.getAuthority()` when Spring Security is present (forwarded principal authorities). Anonymous authentication is recognised by class name, so `anonymousUser` is never forwarded even without a reflection hint. So a Spring Boot app that already builds natively only needs the `org.graalvm.buildtools.native` plugin:
 
 ```kotlin
 plugins {

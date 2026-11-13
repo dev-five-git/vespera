@@ -98,7 +98,7 @@ import java.util.concurrent.atomic.AtomicInteger;
         "org.springframework.web.servlet.DispatcherServlet"})
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @EnableConfigurationProperties(VesperaBridgeProperties.class)
-@ImportRuntimeHints(VesperaBridgeRuntimeHints.class)
+@ImportRuntimeHints({VesperaBridgeRuntimeHints.class, VesperaSecurityRuntimeHints.class})
 public class VesperaBridgeAutoConfiguration {
 
     /**

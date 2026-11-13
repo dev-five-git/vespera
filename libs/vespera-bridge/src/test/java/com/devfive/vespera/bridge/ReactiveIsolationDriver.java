@@ -5,9 +5,11 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicReference;
+import org.springframework.aot.hint.RuntimeHints;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ReactiveWebApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.ImportRuntimeHints;
 import org.springframework.http.HttpHeaders;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
@@ -67,6 +69,14 @@ public final class ReactiveIsolationDriver implements Callable<String> {
                     }
                 });
         require(failure.get() == null, "autoconfiguration: " + failure.get());
+
+        // The native-image hints the reactive autoconfiguration imports are servlet-free.
+        ImportRuntimeHints imported = VesperaBridgeReactiveAutoConfiguration.class
+                .getAnnotation(ImportRuntimeHints.class);
+        require(imported != null && List.of(imported.value()).contains(VesperaSecurityRuntimeHints.class),
+                "reactive runtime hints");
+        new VesperaSecurityRuntimeHints().registerHints(
+                new RuntimeHints(), getClass().getClassLoader());
         return "ok";
     }
 
