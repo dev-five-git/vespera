@@ -317,6 +317,11 @@ jobs:
         with:
           bun-version: 1.4.4
       - uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
+        with:
+          # Must match the pin below: this action sets a directory override
+          # that wins over the toolchain the next step installs.
+          toolchain: 1.99.1
+          components: clippy, rustfmt
       - name: Install
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
