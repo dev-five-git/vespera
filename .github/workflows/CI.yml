@@ -320,6 +320,11 @@ jobs:
       - name: Install
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          # Pinned: rustc 1.100's coverage instrumentation drops scattered
+          # lines (match arms, closures) that 1.99.1 attributes correctly, so
+          # the 100% gate failed on unchanged code. Bump deliberately, after
+          # checking `cargo tarpaulin` still reports 100% on the new release.
+          toolchain: 1.99.1
           components: clippy, rustfmt
       - name: Build
         run: cargo check
