@@ -1,0 +1,169 @@
+name: Re-attest release
+
+# Records the provenance + SBOM attestations of an ALREADY PUBLISHED release,
+# for a version whose CI.yml `attest` job never ran or failed for good (0.6.0:
+# the SBOMs lacked a CycloneDX serialNumber, fixed in #217). Publishes nothing.
+#
+# `collect` downloads the published files from the registries (crates.io with
+# its SHA-256 checksum, Maven Central / the Gradle Plugin Portal with their
+# .sha1), resolves the released commit from the changepacks tags
+# `<name>(<project path>)@<version>` (all seven must agree, and must match each
+# crate's .cargo_vcs_info.json) and regenerates the SBOMs of that commit with
+# THIS ref's scripts/sbom.sh: `scripts/release-artifacts.sh --from-registries`.
+# `attest` mirrors CI.yml's `attest` job: no checkout, only GitHub's own attest
+# actions get `id-token: write` / `attestations: write`.
+#
+# Verify the result with `--signer-workflow
+# dev-five-git/vespera/.github/workflows/reattest.yml` (see SECURITY.md).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Released version to re-attest (e.g. 0.6.0)'
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+# Least privilege by default; only `attest` widens it.
+permissions:
+  contents: read
+
+# Third-party actions are pinned to full commit SHAs, as in CI.yml (keep the
+# pins in sync with CI.yml's `changepacks` / `attest` jobs).
+
+jobs:
+  collect:
+    name: collect published artifacts
+    # Attestations carry the source ref; only ever sign from main.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      attest: ${{ steps.release.outputs.any }}
+    steps:
+      - name: Validate the version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::version must be X.Y.Z, got '$VERSION'"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - name: Download artifacts and regenerate SBOMs
+        id: release
+        env:
+          VERSION: ${{ inputs.version }}
+        run: bash scripts/release-artifacts.sh --from-registries "$VERSION" "$RUNNER_TEMP/release"
+      - name: Upload attestation subjects
+        # Also after a partial collection failure: whatever was collected is
+        # still attested (the failed step keeps this run red).
+        if: ${{ !cancelled() && steps.release.outputs.any == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-attestation-subjects
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 30
+
+  # Same steps as CI.yml `attest` (keep in sync). "Re-run failed jobs" retries
+  # only the signing from the uploaded files.
+  attest:
+    name: attest release
+    needs: collect
+    if: ${{ !cancelled() && needs.collect.outputs.attest == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # attach the SBOMs to the GitHub releases
+      contents: write
+      # an OIDC token for the Sigstore signing certificate, and write access
+      # to the repository's attestation store
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-attestation-subjects
+          path: ${{ runner.temp }}/release
+      - name: Read the manifest
+        id: release
+        run: |
+          dir="$RUNNER_TEMP/release"
+          while IFS=$'\t' read -r _path _version id artifact sbom; do
+            [[ $id =~ ^[a-z_]+$ ]] || { echo "::error::bad manifest id '$id'"; exit 1; }
+            echo "$id=$dir/$artifact"
+            echo "${id}_sbom=$dir/$sbom"
+          done <"$dir/manifest.tsv" >>"$GITHUB_OUTPUT"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/release/artifacts/*
+            ${{ runner.temp }}/release/sbom/*
+      - name: Attest SBOM (vespera)
+        if: steps.release.outputs.vespera != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.release.outputs.vespera }}
+          sbom-path: ${{ steps.release.outputs.vespera_sbom }}
+      - name: Attest SBOM (vespera_core)
+        if: steps.release.outputs.vespera_core != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.release.outputs.vespera_core }}
+          sbom-path: ${{ steps.release.outputs.vespera_core_sbom }}
+      - name: Attest SBOM (vespera_macro)
+        if: steps.release.outputs.vespera_macro != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.release.outputs.vespera_macro }}
+          sbom-path: ${{ steps.release.outputs.vespera_macro_sbom }}
+      - name: Attest SBOM (vespera_inprocess)
+        if: steps.release.outputs.vespera_inprocess != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.release.outputs.vespera_inprocess }}
+          sbom-path: ${{ steps.release.outputs.vespera_inprocess_sbom }}
+      - name: Attest SBOM (vespera_jni)
+        if: steps.release.outputs.vespera_jni != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.release.outputs.vespera_jni }}
+          sbom-path: ${{ steps.release.outputs.vespera_jni_sbom }}
+      - name: Attest SBOM (vespera-bridge)
+        if: steps.release.outputs.vespera_bridge != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.release.outputs.vespera_bridge }}
+          sbom-path: ${{ steps.release.outputs.vespera_bridge_sbom }}
+      - name: Attest SBOM (vespera-bridge-gradle-plugin)
+        if: steps.release.outputs.vespera_bridge_gradle_plugin != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.release.outputs.vespera_bridge_gradle_plugin }}
+          sbom-path: ${{ steps.release.outputs.vespera_bridge_gradle_plugin_sbom }}
+      - name: Attach SBOMs to the GitHub releases
+        # Best effort convenience copy; the attestations are the record.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          dir="$RUNNER_TEMP/release"
+          releases=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')
+          while IFS=$'\t' read -r path version _id _artifact sbom; do
+            # changepacks tags: <name>(<project path>)@<version>
+            tag=$(grep -F -- "($path)@$version" <<<"$releases" | grep -E -- "@${version//./\\.}$" | head -n1 || true)
+            if [ -z "$tag" ]; then
+              echo "::warning::no GitHub release found for $path@$version"
+              continue
+            fi
+            gh release upload "$tag" "$dir/$sbom" --clobber --repo "$GITHUB_REPOSITORY"
+          done <"$dir/manifest.tsv"
