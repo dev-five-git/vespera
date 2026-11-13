@@ -581,7 +581,7 @@ bytes 4+N..   : raw body bytes (UTF-8 text or binary —
 ```
 
 - `"v":1` is the protocol version. Mismatched versions return a `400` wire response with an explanatory plain-text body.
-- `"principal"` is `null` or `{"name": string, "authorities"?: [string], "attributes"?: {string: string}}` (at most 1024 authorities and 1024 attributes; otherwise `400`). The bridge sets it from the `PrincipalResolver` only — see [Forwarded principal](#forwarded-principal).
+- `"principal"` is `null` or `{"name": string, "authorities"?: [string], "attributes"?: {string: string}}` (at most 1024 authorities and 1024 attributes; otherwise `400`). The bridge encoder forwards only the first `VesperaPrincipal.MAX_ENTRIES` (1024) of each and logs a one-time warning when it drops the rest. The bridge sets it from the `PrincipalResolver` only — see [Forwarded principal](#forwarded-principal).
 - Multi-valued response headers (e.g. `set-cookie`) render as JSON arrays so semantics are preserved — they're never comma-joined.
 - All failure paths (malformed wire, Rust panic, no app registered) return a valid length-prefixed response with status `4xx` / `5xx`, so the decoder never has to special-case errors.
 - **Header values use a Latin-1 mapping.** Servlet containers expose header bytes as ISO-8859-1 strings and write response header chars back the same way, so each byte travels as the JSON char `U+0000–U+00FF`. Rust maps a request value whose chars are all `≤ U+00FF` back to those bytes (a value with a wider char keeps its UTF-8 encoding), and renders every response value byte as one char — so a UTF-8 `Content-Disposition: attachment; filename="résumé.pdf"` reaches the client byte-for-byte (previously the whole value was dropped). ASCII values are unchanged.
