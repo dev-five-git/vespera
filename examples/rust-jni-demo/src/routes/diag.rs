@@ -15,6 +15,8 @@ use std::{
 use vespera::axum::{
     body::{Body, Bytes},
     extract::Path,
+    http::header,
+    response::{IntoResponse, Response},
 };
 
 /// Largest body `/diag/blob` produces (16 MiB).
@@ -135,4 +137,44 @@ pub async fn runs(Path(key): Path<String>) -> String {
 #[vespera::route(get, path = "/async-in-flight", tags = ["diag"])]
 pub async fn async_in_flight() -> String {
     vespera::jni::async_in_flight().to_string()
+}
+
+/// Reads the whole request body, then panics — BEFORE any response header
+/// exists.  Paired with a large `POST` the Spring proxy's smart resolver
+/// routes it through bidirectional streaming (`dispatchFullStreamingWithHeader`),
+/// where the request producer has already been started: the proxy must
+/// answer `500` (panicked), never a `200`.
+#[allow(clippy::panic)]
+#[vespera::route(post, path = "/panic-after-read", tags = ["diag"])]
+pub async fn panic_after_read(body: Body) -> String {
+    let read = vespera::axum::body::to_bytes(body, usize::MAX)
+        .await
+        .map_or(0, |bytes| bytes.len());
+    panic!("intentional panic after reading {read} request bytes");
+}
+
+/// A `200` `application/octet-stream` body of `chunks` 1 KiB chunks (at most
+/// [`MAX_DRIP_CHUNKS`]) whose stream then panics — AFTER the response header
+/// was produced.  The request body (if any) is drained first, so a large
+/// `POST` exercises bidirectional streaming.  A client must never see this
+/// as a complete `200`: the proxy answers `500` while the response is still
+/// uncommitted, and aborts the connection once bytes reached the client.
+#[allow(clippy::panic)]
+#[vespera::route(post, path = "/panic-mid-body/{chunks}", tags = ["diag"])]
+pub async fn panic_mid_body(Path(chunks): Path<u64>, body: Body) -> Response {
+    let _ = vespera::axum::body::to_bytes(body, usize::MAX).await;
+    let chunks = chunks.min(MAX_DRIP_CHUNKS);
+    let stream = futures_util::stream::unfold(0u64, move |n| async move {
+        assert!(
+            n < chunks,
+            "intentional panic after {chunks} response chunks"
+        );
+        let chunk = Bytes::from(vec![b'p'; 1024]);
+        Some((Ok::<_, std::convert::Infallible>(chunk), n + 1))
+    });
+    (
+        [(header::CONTENT_TYPE, "application/octet-stream")],
+        Body::from_stream(stream),
+    )
+        .into_response()
 }

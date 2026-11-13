@@ -314,7 +314,7 @@ where
 
 #[path = "jni_impl_support.rs"]
 pub mod support;
-use support::{setup_full_stream, setup_stream, throw_streaming_abort, track_pull};
+use support::{AbortReason, setup_full_stream, setup_stream, throw_streaming_abort, track_pull};
 
 /// `com.devfive.vespera.bridge.VesperaBridge.dispatchBytes(byte[]) -> byte[]`
 ///
@@ -727,7 +727,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                 match dispatched {
                     None => wire_byte_array(env, &runtime_unavailable_wire()),
                     Some((_, outcome)) if outcome.is_truncated() => {
-                        throw_streaming_abort(env, false);
+                        throw_streaming_abort(env, AbortReason::BodyAborted);
                         Ok(JObject::null())
                     }
                     Some((header_bytes, _)) => wire_byte_array(env, &header_bytes),
@@ -867,7 +867,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                     // error response is still possible.
                     Some(failed) if !delivered => wire_byte_array(env, &failed.error_wire()),
                     Some(_) => {
-                        throw_streaming_abort(env, false);
+                        throw_streaming_abort(env, AbortReason::BodyAborted);
                         Ok(JObject::null())
                     }
                 }

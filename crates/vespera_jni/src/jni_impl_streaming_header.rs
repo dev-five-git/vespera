@@ -11,7 +11,7 @@ use crate::jni_impl::{
     guard_void_symbol, panic_wire, read_request_byte_array, runtime, runtime_unavailable_wire,
     streaming_buffer::{PullPushBuffers, mark_streaming_buffer_reusable, release_pull_lease},
     support::{
-        FullStreamHeaderSetup, PanicHeaderAction, panic_post_header_action,
+        AbortReason, FullStreamHeaderSetup, PanicHeaderAction, panic_post_header_action,
         push_unless_header_failed, setup_full_stream_with_header, setup_stream_with_header,
         throw_streaming_abort, track_pull,
     },
@@ -68,7 +68,7 @@ fn handle_header_dispatch_panic(
             flags.notified.store(true, Ordering::Release);
         }
         PanicHeaderAction::ThrowAbort => {
-            throw_streaming_abort(env, failed);
+            throw_streaming_abort(env, AbortReason::from_flags(failed, true));
         }
     }
 }
@@ -101,7 +101,7 @@ fn throw_if_stream_aborted(
 ) {
     let failed_header = flags.failed_header();
     if failed_header || outcome.is_truncated() {
-        throw_streaming_abort(env, failed_header);
+        throw_streaming_abort(env, AbortReason::from_flags(failed_header, false));
     }
 }
 

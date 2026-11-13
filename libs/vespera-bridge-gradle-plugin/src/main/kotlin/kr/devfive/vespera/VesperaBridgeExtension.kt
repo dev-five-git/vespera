@@ -1,9 +1,12 @@
 package kr.devfive.vespera
 
+import org.gradle.api.DomainObjectSet
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.model.ObjectFactory
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.MapProperty
 import org.gradle.api.provider.Property
+import javax.inject.Inject
 
 /**
  * DSL for the `kr.devfive.vespera-bridge` plugin.
@@ -17,7 +20,7 @@ import org.gradle.api.provider.Property
  * }
  * ```
  */
-abstract class VesperaBridgeExtension {
+abstract class VesperaBridgeExtension @Inject constructor(objects: ObjectFactory) {
     /**
      * Cargo crate of the Rust cdylib: either the package name
      * (`rust-jni-demo`) or its underscore library form (`rust_jni_demo`).
@@ -122,4 +125,45 @@ abstract class VesperaBridgeExtension {
      * linker for each triple must already be installed.
      */
     abstract val targets: MapProperty<String, String>
+
+    /**
+     * Whether `processResources` bundles the cdylib(s) into this project's
+     * own jar via `bundleNativeLib` (default `true`). Set it to `false` in an
+     * application that takes its native library from per-platform native
+     * jars (`runtimeOnly("<group>:<artifact>:<version>:linux-x86_64")`)
+     * instead, or in a project that only publishes such jars
+     * ([nativeJarPlatforms]): no locally built cdylib is then required.
+     */
+    abstract val bundleNative: Property<Boolean>
+
+    /**
+     * Platforms (`<os>-<arch>`, or `linux-<arch>-musl`) to package as
+     * per-platform **native jars**: one `nativeJar<Platform>` task per entry
+     * (all aggregated by `nativeJars`) builds
+     * `<project>-<version>-<platform>.jar` holding exactly
+     * `native/<platform>/` of [nativeJarsDir] — the classpath layout
+     * `VesperaBridge.init(...)` loads from. With `maven-publish` applied the
+     * jars are the classifier artifacts of a `vesperaNative` publication
+     * (artifactId = project name, pom packaging), so a consumer adds
+     * `runtimeOnly("<group>:<project>:<version>:<platform>")` for each
+     * platform it deploys to.
+     *
+     * ```kotlin
+     * vespera {
+     *     crateName.set("my-app")
+     *     bundleNative.set(false)
+     *     nativeJarsDir.set(layout.projectDirectory.dir("prebuilt")) // prebuilt/native/<platform>/<lib>
+     *     nativeJarPlatforms.addAll(listOf("linux-x86_64", "macos-aarch64", "windows-x86_64"))
+     * }
+     * ```
+     */
+    val nativeJarPlatforms: DomainObjectSet<String> = objects.domainObjectSet(String::class.java)
+
+    /**
+     * Directory holding prebuilt libraries laid out as
+     * `native/<platform>/<lib>` (typically the artifacts of a CI build
+     * matrix) that the [nativeJarPlatforms] jars are packaged from. Defaults
+     * to [extraNativeLibs].
+     */
+    abstract val nativeJarsDir: DirectoryProperty
 }
