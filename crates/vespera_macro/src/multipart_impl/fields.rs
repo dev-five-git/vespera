@@ -137,7 +137,18 @@ fn push_post_loop<'a>(
         return;
     }
 
-    let binding = match default_kind {
+    cg.post_loop
+        .push(post_loop_binding(ident, ty, field_name, default_kind));
+}
+
+/// The post-loop `let` that resolves a missing non-`Option`/`Vec` field.
+fn post_loop_binding(
+    ident: &syn::Ident,
+    ty: &Type,
+    field_name: &str,
+    default_kind: &DefaultKind,
+) -> TokenStream {
+    match default_kind {
         DefaultKind::Trait => quote! { let #ident: #ty = #ident.unwrap_or_default(); },
         DefaultKind::Function(fn_path) => default_fn_post_loop(ident, ty, fn_path),
         DefaultKind::None => quote! {
@@ -147,8 +158,7 @@ fn push_post_loop<'a>(
                 }
             )?;
         },
-    };
-    cg.post_loop.push(binding);
+    }
 }
 
 /// Post-loop binding for `default = "path::to::fn"`.
