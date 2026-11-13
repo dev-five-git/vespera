@@ -811,15 +811,28 @@ public class VesperaProxyController {
         // read() (bounded join); the gate keeps it off the servlet stream
         // once the dispatch returned.
         GatedRequestInputStream requestBody = new GatedRequestInputStream(request.getInputStream());
+        DirectModeDispatcher.HeaderFirstStream stream = () -> VesperaBridge.dispatchFullStreamingWithHeader(
+                wireHeader,
+                headerBytes -> bodyOut.applyPermitsBody(
+                        WireResponseWriter.applyDecodedHeader(headerBytes, response, method)),
+                requestBody,
+                bodyOut);
+        IOException aborted = null;
+        boolean detached;
         try {
-            VesperaBridge.dispatchFullStreamingWithHeader(
-                    wireHeader,
-                    headerBytes -> bodyOut.applyPermitsBody(
-                            WireResponseWriter.applyDecodedHeader(headerBytes, response, method)),
-                    requestBody,
-                    bodyOut);
+            stream.run();
+        } catch (IOException failure) {
+            // Failed after the Rust header was applied (panic, body error):
+            // answered below once the request body is detached.
+            aborted = failure;
         } finally {
-            detachRequestBody(requestBody, response);
+            detached = detachRequestBody(requestBody, response);
+        }
+        if (aborted != null) {
+            if (!ProxyErrors.writeStreamAbort(response, aborted, detached)) {
+                throw aborted;
+            }
+            return;
         }
         response.getOutputStream().flush();
     }

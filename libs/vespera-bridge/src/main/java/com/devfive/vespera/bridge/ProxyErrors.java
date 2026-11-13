@@ -40,6 +40,41 @@ final class ProxyErrors {
      */
     static boolean write(HttpServletResponse response, int status, String message)
             throws IOException {
+        return write(response, status, message, false);
+    }
+
+    /** Body of the proxy {@code 500} for a Rust panic (same as the native panic wire). */
+    static final String RUST_PANIC = "panic in Rust engine";
+
+    /** Body of the proxy {@code 500} for a response body that failed mid-stream. */
+    static final String STREAM_ABORTED = "response body stream error";
+
+    /**
+     * A header-first streaming dispatch failed after the Rust header was
+     * applied to {@code response} ({@code aborted}, normally a
+     * {@link VesperaStreamAbortedException}): while nothing reached the client
+     * yet, replace the (possibly {@code 200}) status, Rust headers and
+     * buffered partial body with a proxy {@code 500} — flagged panicked for a
+     * Rust panic, exactly like the buffered modes — instead of leaving the
+     * outcome to the servlet container's error page.  Returns {@code false}
+     * once the response is committed: the caller must rethrow so the
+     * container aborts the connection (the client sees a truncated
+     * transfer, never a cleanly terminated short body).
+     *
+     * @param closeConnection also send {@code Connection: close} (a detached
+     *                        request-body read leaves the stream position unknown)
+     */
+    static boolean writeStreamAbort(HttpServletResponse response, IOException aborted,
+            boolean closeConnection) throws IOException {
+        boolean panic = VesperaStreamAbortedException.isPanic(aborted);
+        if (panic) {
+            ProxyServletResponse.markPanicked(response);
+        }
+        return write(response, 500, panic ? RUST_PANIC : STREAM_ABORTED, closeConnection);
+    }
+
+    private static boolean write(HttpServletResponse response, int status, String message,
+            boolean closeConnection) throws IOException {
         if (response.isCommitted()) {
             return false;
         }
@@ -47,6 +82,9 @@ final class ProxyErrors {
             proxied.resetProxyOutput();
         } else {
             response.resetBuffer();
+        }
+        if (closeConnection) {
+            response.setHeader("Connection", "close");
         }
         byte[] body = bytes(message);
         response.setStatus(status);

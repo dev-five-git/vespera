@@ -244,6 +244,17 @@ items below are additions, plus one behaviour change to graceful shutdown.
   while the response streams, inside a spawned task, or under a dispatch
   timeout still use the producer. The `request_close` hook now fires whenever
   the source was read, inline or not.
+- Header-first streaming failures (`dispatchStreamingWithHeader`,
+  `dispatchFullStreamingWithHeader`, the stashed DIRECT overflow stream) now
+  throw `com.devfive.vespera.bridge.VesperaStreamAbortedException` (an
+  undeclared `IOException`; `panicked()` flags a Rust panic after the header
+  was produced) instead of a plain `IOException`. The Spring proxy answers
+  such a failure with its own `500` (`panic in Rust engine` / `response body
+  stream error`, `DispatchEvent.panicked` set for a panic) while the response
+  is still uncommitted, instead of leaving it to the servlet container's
+  `/error` page with the Rust `200` headers still applied; once bytes reached
+  the client it still aborts the connection. Bridge JAR and cdylib must come
+  from the same release (an older JAR sees a plain `IOException`).
 
 ### Observability (`vespera`, `vespera_inprocess`)
 
