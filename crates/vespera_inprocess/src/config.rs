@@ -291,6 +291,7 @@ mod tests {
     };
 
     #[test]
+    #[cfg_attr(miri, ignore = "re-executes the test binary as a child process")]
     fn process_config_setters_clamp_cache_and_feed_public_predicates() {
         const CHILD_ENV: &str = "VESPERA_CONFIG_SETTER_TEST_CHILD";
         if std::env::var_os(CHILD_ENV).is_none() {

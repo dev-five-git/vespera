@@ -447,18 +447,26 @@ fn write_header_value<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap, name
         // Single value: emit the scalar string.
         None => write_header_value_string(sink, first),
         // Multiple values: emit a JSON array.
-        Some(second) => {
-            sink.put(b"[");
-            write_header_value_string(sink, first);
-            sink.put(b",");
-            write_header_value_string(sink, second);
-            for value in values {
-                sink.put(b",");
-                write_header_value_string(sink, value);
-            }
-            sink.put(b"]");
-        }
+        Some(second) => write_header_value_array(sink, first, second, values),
     }
+}
+
+/// The repeated-name case of [`write_header_value`]: `[first,second,rest...]`.
+fn write_header_value_array<'a, S: JsonSink>(
+    sink: &mut S,
+    first: &http::HeaderValue,
+    second: &http::HeaderValue,
+    rest: impl Iterator<Item = &'a http::HeaderValue>,
+) {
+    sink.put(b"[");
+    write_header_value_string(sink, first);
+    sink.put(b",");
+    write_header_value_string(sink, second);
+    for value in rest {
+        sink.put(b",");
+        write_header_value_string(sink, value);
+    }
+    sink.put(b"]");
 }
 
 /// Serialize one `validation_errors` entry — fields in struct order

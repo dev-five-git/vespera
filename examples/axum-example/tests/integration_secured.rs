@@ -37,6 +37,27 @@ async fn bearer_route_checks_the_token(#[case] authorization: &str, #[case] stat
     }
 }
 
+#[rstest]
+#[case::scoped(Some("Bearer read-users-token"), StatusCode::OK)]
+#[case::missing_scope(Some("Bearer demo-token"), StatusCode::FORBIDDEN)]
+#[case::anonymous(None, StatusCode::UNAUTHORIZED)]
+#[tokio::test]
+async fn scoped_route_checks_the_scope(
+    #[case] authorization: Option<&str>,
+    #[case] status: StatusCode,
+) {
+    let server = TestServer::new(create_app().await);
+    let mut request = server.get("/secured/directory");
+    if let Some(authorization) = authorization {
+        request = request.add_header(AUTHORIZATION, authorization);
+    }
+    let response = request.await;
+    response.assert_status(status);
+    if status == StatusCode::OK {
+        assert_eq!(response.json::<Value>(), json!(["alice", "bob"]));
+    }
+}
+
 #[tokio::test]
 async fn api_key_route_checks_the_header() {
     let server = TestServer::new(create_app().await);
@@ -60,8 +81,36 @@ async fn spec_documents_security_and_operation_metadata() {
         spec["components"]["securitySchemes"],
         json!({
             "apiKey": {"type": "apiKey", "name": "X-API-Key", "in": "header"},
-            "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}
+            "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"},
+            "oauth2": {
+                "type": "oauth2",
+                "description": "Demo authorization server",
+                "flows": {
+                    "clientCredentials": {
+                        "tokenUrl": "https://auth.example.com/token",
+                        "scopes": {"read:users": "Read the user directory"}
+                    },
+                    "authorizationCode": {
+                        "authorizationUrl": "https://auth.example.com/authorize",
+                        "tokenUrl": "https://auth.example.com/token",
+                        "scopes": {
+                            "read:users": "Read the user directory",
+                            "write:users": "Modify users"
+                        }
+                    }
+                }
+            },
+            "oidc": {
+                "type": "openIdConnect",
+                "openIdConnectUrl": "https://auth.example.com/.well-known/openid-configuration"
+            }
         })
+    );
+
+    // Scoped requirements: one alternative per tuple, scopes kept in order.
+    assert_eq!(
+        spec["paths"]["/secured/directory"]["get"]["security"],
+        json!([{"oauth2": ["read:users"]}, {"oidc": ["openid", "read:users"]}])
     );
 
     let me = &spec["paths"]["/secured/me"]["get"];

@@ -1,0 +1,8 @@
+# cargo-nextest configuration.  Only the `default-miri` profile (selected
+# automatically by `cargo miri nextest run`, see the `miri` CI job) is
+# customised: one process per test lets Miri report every unsupported test
+# instead of aborting the binary on the first, and a hung interpretation is
+# killed instead of eating the job timeout.
+[profile.default-miri]
+slow-timeout = { period = "120s", terminate-after = 5 }
+fail-fast = false

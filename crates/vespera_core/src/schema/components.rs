@@ -29,6 +29,14 @@ pub struct Components {
     pub security_schemes: Option<BTreeMap<String, SecurityScheme>>,
 }
 
+/// One OpenAPI Security Requirement Object: security scheme name → the
+/// scopes (OAuth2 / OpenID Connect) or role names it requires.
+///
+/// Every entry of one requirement must be satisfied together (AND); the
+/// `security` arrays of an operation / document list alternatives (OR). An
+/// empty requirement (`{}`) makes authentication optional.
+pub type SecurityRequirement = BTreeMap<String, Vec<String>>;
+
 /// Security scheme type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,6 +96,35 @@ pub struct OAuthFlows {
     pub client_credentials: Option<OAuthFlow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authorization_code: Option<OAuthFlow>,
+}
+
+impl OAuthFlows {
+    /// Every flow this object configures, in OpenAPI field order.
+    fn configured(&self) -> impl Iterator<Item = &OAuthFlow> {
+        [
+            self.implicit.as_ref(),
+            self.password.as_ref(),
+            self.client_credentials.as_ref(),
+            self.authorization_code.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
+    /// Whether any configured flow declares `scope`.
+    #[must_use]
+    pub fn declares_scope(&self, scope: &str) -> bool {
+        self.configured()
+            .any(|flow| flow.scopes.contains_key(scope))
+    }
+
+    /// The union of the scopes declared by every configured flow, sorted.
+    #[must_use]
+    pub fn scope_names(&self) -> std::collections::BTreeSet<&str> {
+        self.configured()
+            .flat_map(|flow| flow.scopes.keys().map(String::as_str))
+            .collect()
+    }
 }
 
 /// OAuth2 flow definition.

@@ -42,7 +42,7 @@ pub struct RouteMetadata {
     pub tags: Option<Vec<String>>,
     /// Per-route OpenAPI security requirements.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub security: Option<Vec<String>>,
+    pub security: Option<Vec<vespera_core::schema::SecurityRequirement>>,
     /// Header parameters declared by custom extractors at the route site.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub headers: Vec<HeaderParam>,

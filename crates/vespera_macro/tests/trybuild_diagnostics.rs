@@ -17,6 +17,7 @@ fn ui_diagnostics() {
     // `vespera!`
     t.compile_fail("tests/ui/vespera_args_invalid.rs");
     t.compile_fail("tests/ui/vespera_security_servers_invalid.rs");
+    t.compile_fail("tests/ui/vespera_oauth2_security_invalid.rs");
     // `#[derive(Schema)]`
     t.compile_fail("tests/ui/schema_assertion_missing_custom.rs");
     t.pass("tests/ui/schema_assertion_schema_any.rs");

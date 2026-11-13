@@ -23,6 +23,7 @@
 //! dropped before stats.
 
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -139,14 +140,17 @@ fn median(sorted: &[f64]) -> f64 {
     if n % 2 == 1 {
         sorted[n / 2]
     } else {
-        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+        f64::midpoint(sorted[n / 2 - 1], sorted[n / 2])
     }
 }
 
+// Sample counts are tiny (a handful of runs), so `usize -> f64` is exact.
+#[allow(clippy::cast_precision_loss)]
 fn mean(v: &[f64]) -> f64 {
     v.iter().sum::<f64>() / v.len() as f64
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn stddev(v: &[f64], m: f64) -> f64 {
     if v.len() < 2 {
         return 0.0;
@@ -224,7 +228,10 @@ fn main() {
         let dir = baselines_dir();
         let _ = fs::create_dir_all(&dir);
         let path = dir.join(format!("{name}.txt"));
-        let body: String = clean.iter().map(|t| format!("{t}\n")).collect();
+        let body = clean.iter().fold(String::new(), |mut body, t| {
+            let _ = writeln!(body, "{t}");
+            body
+        });
         match fs::write(&path, body) {
             Ok(()) => println!("   saved baseline `{name}` -> {}", path.display()),
             Err(e) => eprintln!("   failed to save baseline `{name}`: {e}"),

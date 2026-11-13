@@ -553,3 +553,42 @@ fn user_schema_named_like_std_type_keeps_ref(#[case] ident: &str) {
     };
     assert_eq!(reference.ref_path, format!("#/components/schemas/{ident}"));
 }
+
+/// Every primitive arm of the wire-type table: `(type, json type, format,
+/// minimum)`.
+#[rstest::rstest]
+#[case::i8("i8", SchemaType::Integer, Some("int8"), None)]
+#[case::i16("i16", SchemaType::Integer, Some("int16"), None)]
+#[case::non_zero_i16("NonZeroI16", SchemaType::Integer, Some("int16"), None)]
+#[case::i32("i32", SchemaType::Integer, Some("int32"), None)]
+#[case::i64("i64", SchemaType::Integer, Some("int64"), None)]
+#[case::u8("u8", SchemaType::Integer, Some("uint8"), None)]
+#[case::u16("u16", SchemaType::Integer, Some("uint16"), None)]
+#[case::u32("u32", SchemaType::Integer, Some("uint32"), None)]
+#[case::u64("u64", SchemaType::Integer, Some("uint64"), None)]
+#[case::f32("f32", SchemaType::Number, Some("float"), None)]
+#[case::f64("f64", SchemaType::Number, Some("double"), None)]
+#[case::decimal("Decimal", SchemaType::String, Some("decimal"), None)]
+#[case::char("char", SchemaType::String, Some("char"), None)]
+#[case::uuid("Uuid", SchemaType::String, Some("uuid"), None)]
+#[case::non_zero_u8("NonZeroU8", SchemaType::Integer, Some("uint8"), Some(1.0))]
+#[case::non_zero_u16("NonZeroU16", SchemaType::Integer, Some("uint16"), Some(1.0))]
+#[case::non_zero_u32("NonZeroU32", SchemaType::Integer, Some("uint32"), Some(1.0))]
+#[case::non_zero_u64("NonZeroU64", SchemaType::Integer, Some("uint64"), Some(1.0))]
+#[case::non_zero_u128("NonZeroU128", SchemaType::Integer, None, Some(1.0))]
+fn primitive_wire_types(
+    #[case] source: &str,
+    #[case] schema_type: SchemaType,
+    #[case] format: Option<&str>,
+    #[case] minimum: Option<f64>,
+) {
+    let ty: Type = syn::parse_str(source).expect("type");
+    let SchemaRef::Inline(schema) =
+        parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions())
+    else {
+        panic!("inline schema for {source}");
+    };
+    assert_eq!(schema.schema_type, Some(schema_type), "{source}");
+    assert_eq!(schema.format.as_deref(), format, "{source}");
+    assert_eq!(schema.minimum, minimum, "{source}");
+}

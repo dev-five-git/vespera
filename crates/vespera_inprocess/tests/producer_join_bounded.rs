@@ -63,21 +63,29 @@ async fn completed_response_is_not_held_hostage_by_a_stuck_producer() {
         RequestChunk::End
     };
 
-    let mut header = Vec::new();
-    let mut body = Vec::new();
     let started = Instant::now();
-    let outcome = dispatch_bidirectional_streaming_with_header_closing(
-        encode(),
-        pull,
-        |c: &[u8]| {
-            body.extend_from_slice(c);
-            ControlFlow::Continue(())
-        },
-        |h: &[u8]| header.extend_from_slice(h),
-        // A close that does NOT unblock the parked read.
-        || {},
-    )
-    .await;
+    // Inside a spawned task every pull runs on the `spawn_blocking` producer,
+    // which reads ahead and parks in the second pull (a `block_on` caller
+    // would pull the first chunk inline and never start the producer).
+    let (outcome, header, body) = tokio::spawn(async move {
+        let mut header = Vec::new();
+        let mut body = Vec::new();
+        let outcome = dispatch_bidirectional_streaming_with_header_closing(
+            encode(),
+            pull,
+            |c: &[u8]| {
+                body.extend_from_slice(c);
+                ControlFlow::Continue(())
+            },
+            |h: &[u8]| header.extend_from_slice(h),
+            // A close that does NOT unblock the parked read.
+            || {},
+        )
+        .await;
+        (outcome, header, body)
+    })
+    .await
+    .unwrap();
     let elapsed = started.elapsed();
 
     assert_eq!(outcome, StreamOutcome::Complete);

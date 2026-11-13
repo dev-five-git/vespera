@@ -27,6 +27,18 @@ of an existing 0.5 application.
 - New compile errors: duplicate explicit `operation_id`s, unknown security
   schemes (checked after `merge`), malformed `#[schema(...)]`, and scalar
   payloads in internally tagged newtype variants.
+- OAuth2 / OpenID Connect: `oauth2` security schemes declare `flows`
+  (`implicit` / `password` / `client_credentials` / `authorization_code` with
+  their URLs and `scopes`), and `security = [...]` (route and document level)
+  accepts scoped requirements `("oauth2", ["read:users"])`, AND groups
+  `[["apiKey", ("oauth2", [...])]]` and an optional-auth `[]` alternative.
+  New compile errors: an `oauth2` scheme without `flows` or with a flow
+  missing a required URL, `flows` on another scheme type, and a scope that no
+  flow of the referenced `oauth2` scheme declares. The malformed-`security`
+  diagnostic wording changed. `vespera_core` adds `SecurityRequirement` and
+  `OAuthFlows::{declares_scope, scope_names}`; `vespera_inprocess` adds
+  `Principal::require_scopes` → `InsufficientScope` (`403` +
+  `WWW-Authenticate: Bearer error="insufficient_scope"`).
 - Known `headers::*` `TypedHeader` parameters use the real header name.
 - `Path<Struct>` parameters are typed per field (serde names); `Query<Struct>`
   drops `skip` / `skip_deserializing` fields, expands `flatten`, and array
@@ -221,6 +233,17 @@ items below are additions, plus one behaviour change to graceful shutdown.
   `Extension<Scheme>`; a caught panic sets `metadata.panicked`; after
   `shutdown0` / `VesperaBridge.shutdown(Duration)` every dispatch answers
   `503`.
+- Bidirectional streaming (`dispatch_bidirectional_streaming*`,
+  `dispatchFullStreaming*`) pulls a small request body on the calling thread:
+  when the dispatch is driven by `Runtime::block_on` (every JNI symbol) and no
+  dispatch timeout is set, the first two request pulls made before the handler
+  returns run inline, so a one-chunk body never starts the `spawn_blocking`
+  producer (64 B echo: ~10.5 µs → ~0.95 µs in the Rust bench; JNI
+  `dispatchFullStreaming` ~18.9 µs → ~2.9 µs, 64 KiB ~24 µs → ~4.6 µs). A
+  custom `pull_chunk` must be callable from the `block_on` thread. Pulls made
+  while the response streams, inside a spawned task, or under a dispatch
+  timeout still use the producer. The `request_close` hook now fires whenever
+  the source was read, inline or not.
 
 ### Observability (`vespera`, `vespera_inprocess`)
 
@@ -396,3 +419,19 @@ Additive.
   new unchecked `VesperaClientException`.
 - The Spring autoconfiguration registers a `VesperaClient` bean
   (`@ConditionalOnMissingBean`), also with `controller-enabled=false`.
+
+### Miri and loom checking (`vespera_inprocess`, `vespera_jni`)
+
+No behaviour change for applications.
+
+- The JNI shared-runtime gate (in-flight `RuntimeLease` count + shut-down
+  flag) is one atomic word now, entered with a single `fetch_add` instead of
+  a `SeqCst` increment followed by a `SeqCst` flag load. The guarantee is
+  unchanged (a dispatch is either refused with `503` or waited for by
+  `shutdown0`'s drain); it no longer depends on cross-variable `SeqCst`
+  ordering, and the hot path does one atomic RMW instead of an RMW plus a load.
+- New CI jobs: `miri` runs the `vespera_inprocess` unit tests and the JNI-free
+  `unsafe` helpers of `vespera_jni` (direct-buffer copy, uninitialised
+  spare-capacity fill, `u8`→`jbyte` view) under Miri; `loom` model-checks the
+  runtime gate and the `dispatchAsync` in-flight cap
+  (`RUSTFLAGS="--cfg vespera_loom"`).
