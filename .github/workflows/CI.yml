@@ -439,6 +439,12 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Generate lcov
         if: always()
+        # The pinned nightly's `llvm-cov export -format=lcov` crashes (stack
+        # dump after "N functions have mismatched data") on this workspace's
+        # profdata, while `report` above succeeds. The summary is the job's
+        # output; the lcov file is a convenience, so its failure must not turn
+        # every main run red.
+        continue-on-error: true
         run: |
           cargo llvm-cov report --lcov --output-path branch-lcov.info \
             --ignore-filename-regex '(benches|examples|vespera_jni)'
@@ -450,6 +456,7 @@ jobs:
           path: |
             branch-coverage.txt
             branch-lcov.info
+          if-no-files-found: warn
 
   # Pull requests: changepacks only posts/updates its status comment
   # (`changepacks check --remote`). It never publishes on a PR, so this job
