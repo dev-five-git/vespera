@@ -27,9 +27,12 @@ version, and security fixes land in the **latest released version** only.
 
 Every release is built and published by the `changepacks` job of
 [`.github/workflows/CI.yml`](.github/workflows/CI.yml) on `main`, only after all CI
-gates pass. For releases published after 0.5.0 that job also records
+gates pass. For releases published after 0.5.0, the `attest` job of the same
+workflow run then records
 [GitHub artifact attestations](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
-(signed with Sigstore) for exactly the files it published:
+(signed with Sigstore) for exactly the files that were published. Only that job,
+which runs nothing but GitHub's own attest actions, can request the signing
+token:
 
 | Package | Attested files | SBOM (CycloneDX JSON) |
 |---|---|---|

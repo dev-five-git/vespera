@@ -607,12 +607,18 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 # minor/patch PRs for cargo, the three Gradle builds, bun and github-actions
 # (dtolnay/rust-toolchain + changepacks/action are branch-pinned → ignored).
 # Third-party actions are pinned to commit SHAs; workflows default to
-# `permissions: contents: read`. Only the release job adds `id-token: write` +
-# `attestations: write`: after changepacks publishes, scripts/release-artifacts.sh
-# collects the published .crate files (sha256 checked against crates.io) + JARs
-# and regenerates the SBOMs from the released commit in a temp worktree; then
+# `permissions: contents: read`. After changepacks publishes (even partially),
+# the release job runs scripts/release-artifacts.sh: it collects the published
+# .crate files (sha256 checked against crates.io) + JARs and regenerates the
+# SBOMs from the released commit in a temp worktree (a package that fails is
+# skipped, the rest still collected), then uploads them as the
+# `release-attestation-subjects` artifact. Only the separate `attest` job
+# (needs: changepacks; no checkout, only GitHub's attest actions) has
+# `id-token: write` + `attestations: write` — the release job runs the
+# unpinned changepacks CLI + build code and must not mint OIDC tokens. It runs
 # actions/attest-build-provenance (all files) + one actions/attest SBOM
-# attestation per package, SBOMs attached to the GitHub releases (best effort).
+# attestation per package and attaches the SBOMs to the GitHub releases (best
+# effort); "Re-run failed jobs" re-attests without publishing again.
 # vespera-bridge also publishes its SBOM to Maven Central (classifier
 # `cyclonedx`); the Gradle plugin's is NOT on its publication (the Plugin Portal
 # rejects JSON artifacts). User-facing verification: SECURITY.md.
