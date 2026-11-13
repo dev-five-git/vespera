@@ -3567,7 +3567,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vespera"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "axum",
  "axum-extra",
@@ -3594,7 +3594,7 @@ dependencies = [
 
 [[package]]
 name = "vespera_core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono-tz",
  "croner",
@@ -3606,7 +3606,7 @@ dependencies = [
 
 [[package]]
 name = "vespera_inprocess"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "arc-swap",
  "axum",
@@ -3629,7 +3629,7 @@ dependencies = [
 
 [[package]]
 name = "vespera_jni"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "axum",
  "futures-util",
@@ -3643,7 +3643,7 @@ dependencies = [
 
 [[package]]
 name = "vespera_macro"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "insta",
  "prettyplease",
