@@ -54,11 +54,14 @@ else
   exit 1
 fi
 
-# Assert an SBOM is CycloneDX JSON describing <name>@<version>.
+# Assert an SBOM is CycloneDX JSON describing <name>@<version>. actions/attest
+# rejects a CycloneDX document without a `serialNumber` ("Unsupported SBOM
+# format"), so that is checked here too, on every PR.
 check_sbom() { # <file> <name> <version>
   jq -e --arg n "$2" --arg v "$3" '
     .bomFormat == "CycloneDX"
     and (.specVersion | type == "string")
+    and (.serialNumber | type == "string" and test("^urn:uuid:[0-9a-f-]{36}$"))
     and .metadata.component.name == $n
     and .metadata.component.version == $v
   ' "$1" >/dev/null || {
@@ -72,6 +75,18 @@ check_sbom() { # <file> <name> <version>
 # Reproducible timestamps: the SBOM of a commit is dated by the commit.
 SOURCE_DATE_EPOCH=$(git -C "$root" log -1 --format=%ct 2>/dev/null || date +%s)
 export SOURCE_DATE_EPOCH
+commit=$(git -C "$root" rev-parse HEAD 2>/dev/null || echo unknown)
+
+# cargo-cyclonedx writes no `serialNumber`. Add one that stays reproducible: a
+# name-based (version 5 layout) UUID of <name>@<version>@<commit>, placed after
+# `specVersion` like the Gradle plugin's.
+add_serial_number() { # <file> <name> <version>
+  local h uuid
+  h=$(printf '%s@%s@%s' "$2" "$3" "$commit" | sha1sum | cut -c1-32)
+  uuid="${h:0:8}-${h:8:4}-5${h:13:3}-$(printf '%x' $(( (16#${h:16:1} & 3) | 8 )))${h:17:3}-${h:20:12}"
+  jq --arg s "urn:uuid:$uuid"     '{bomFormat, specVersion, serialNumber: $s} + del(.serialNumber)' "$1" >"$1.tmp"
+  mv "$1.tmp" "$1"
+}
 metadata=$(cargo metadata --manifest-path "$root/Cargo.toml" --no-deps --format-version 1)
 # cargo-cyclonedx always describes every workspace member, next to its manifest.
 "${cdx[@]}" --manifest-path "$root/Cargo.toml" --format json \
@@ -80,6 +95,7 @@ for crate in "${crates[@]}"; do
   version=$(jq -r --arg n "$crate" '.packages[] | select(.name == $n) | .version' <<<"$metadata" | tr -d '\r')
   dest="$out/$crate-$version.cdx.json"
   mv "$root/crates/$crate/$crate.cdx.json" "$dest"
+  add_serial_number "$dest" "$crate" "$version"
   check_sbom "$dest" "$crate" "$version"
 done
 # Drop the SBOMs of the unpublished members (examples, benches).
