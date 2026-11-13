@@ -24,6 +24,16 @@ import java.util.Objects;
  */
 public record VesperaPrincipal(String name, List<String> authorities, Map<String, String> attributes) {
 
+    /**
+     * Maximum number of {@code authorities} and, separately, of {@code attributes}
+     * forwarded on the wire. Mirrors the Rust parser's
+     * {@code vespera_inprocess::MAX_PRINCIPAL_ENTRIES} (1024), which answers
+     * {@code 400} for a longer list; the bridge encoder therefore forwards only
+     * the first {@code MAX_ENTRIES} of each (in iteration order) and logs a
+     * one-time warning instead of failing every request of such a user.
+     */
+    public static final int MAX_ENTRIES = 1024;
+
     /** Validates and defensively copies the components (no {@code null} entries). */
     public VesperaPrincipal {
         Objects.requireNonNull(name, "name");

@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.devfive.vespera.bridge.VesperaBridge.DecodedResponse;
 import com.devfive.vespera.bridge.VesperaBridge.HeaderSink;
@@ -504,10 +505,16 @@ final class VesperaWireCodec {
         }
     }
 
+    private static final System.Logger LOG = System.getLogger(VesperaBridge.class.getName());
+    /** One-time guard for the principal-truncation warning (reset by tests). */
+    static final AtomicBoolean PRINCIPAL_TRUNCATION_WARNED = new AtomicBoolean();
+
     /**
      * Emit the trusted {@code ,"principal":{"name":...,"authorities":[...],"attributes":{...}}}
      * field (empty {@code authorities} / {@code attributes} omitted), unless
-     * {@code principal} is {@code null}.
+     * {@code principal} is {@code null}. At most {@link VesperaPrincipal#MAX_ENTRIES}
+     * authorities and attributes are written (the Rust parser rejects longer
+     * lists with {@code 400}); the rest are dropped with a one-time warning.
      */
     static void writePrincipal(ExposedByteArrayOutputStream buf, VesperaPrincipal principal) {
         if (principal == null) {
@@ -517,24 +524,30 @@ final class VesperaWireCodec {
         writeJsonString(buf, principal.name());
         if (!principal.authorities().isEmpty()) {
             buf.putAscii(",\"authorities\":[");
-            boolean first = true;
+            int written = 0;
             for (String authority : principal.authorities()) {
-                if (!first) {
+                if (written == VesperaPrincipal.MAX_ENTRIES) {
+                    break;
+                }
+                if (written != 0) {
                     buf.put(',');
                 }
-                first = false;
+                written++;
                 writeJsonString(buf, authority);
             }
             buf.put(']');
         }
         if (!principal.attributes().isEmpty()) {
             buf.putAscii(",\"attributes\":{");
-            boolean first = true;
+            int written = 0;
             for (Map.Entry<String, String> e : principal.attributes().entrySet()) {
-                if (!first) {
+                if (written == VesperaPrincipal.MAX_ENTRIES) {
+                    break;
+                }
+                if (written != 0) {
                     buf.put(',');
                 }
-                first = false;
+                written++;
                 writeJsonString(buf, e.getKey());
                 buf.put(':');
                 writeJsonString(buf, e.getValue());
@@ -542,6 +555,24 @@ final class VesperaWireCodec {
             buf.put('}');
         }
         buf.put('}');
+        warnIfPrincipalTruncated(principal);
+    }
+
+    /**
+     * Log once per process when a principal exceeded
+     * {@link VesperaPrincipal#MAX_ENTRIES}; returns whether this call logged.
+     */
+    static boolean warnIfPrincipalTruncated(VesperaPrincipal principal) {
+        int authorities = principal.authorities().size();
+        int attributes = principal.attributes().size();
+        if ((authorities > VesperaPrincipal.MAX_ENTRIES || attributes > VesperaPrincipal.MAX_ENTRIES)
+                && PRINCIPAL_TRUNCATION_WARNED.compareAndSet(false, true)) {
+            LOG.log(System.Logger.Level.WARNING, "vespera: a principal has " + authorities + " authorities and " + attributes
+                    + " attributes; only the first " + VesperaPrincipal.MAX_ENTRIES
+                    + " of each are forwarded (Rust MAX_PRINCIPAL_ENTRIES). Logged once.");
+            return true;
+        }
+        return false;
     }
 
     /** Emit {@code prefix} + the JSON string {@code value}, unless it is {@code null}. */

@@ -146,6 +146,52 @@ class PrincipalForwardingTest {
         assertFalse(new String(wire, StandardCharsets.UTF_8).contains("principal"));
     }
 
+    @Test
+    void codecCapsAuthoritiesAndAttributesAtTheRustLimit() throws Exception {
+        assertEquals(1024, VesperaPrincipal.MAX_ENTRIES);
+        List<String> authorities = new ArrayList<>();
+        Map<String, String> attributes = new LinkedHashMap<>();
+        for (int i = 0; i < VesperaPrincipal.MAX_ENTRIES + 5; i++) {
+            authorities.add("R" + i);
+            attributes.put("k" + i, "v" + i);
+        }
+        VesperaWireCodec.PRINCIPAL_TRUNCATION_WARNED.set(false);
+        JsonNode principal = new ObjectMapper()
+                .readTree(headerJson(new VesperaPrincipal("big", authorities, attributes)))
+                .path("principal");
+        assertEquals(VesperaPrincipal.MAX_ENTRIES, principal.path("authorities").size());
+        assertEquals("R0", principal.path("authorities").path(0).asText());
+        assertEquals("R1023", principal.path("authorities").path(1023).asText());
+        assertEquals(VesperaPrincipal.MAX_ENTRIES, principal.path("attributes").size());
+        assertEquals("v1023", principal.path("attributes").path("k1023").asText());
+        assertTrue(principal.path("attributes").path("k1024").isMissingNode());
+        // The truncation warned (once): later oversized principals stay silent.
+        assertTrue(VesperaWireCodec.PRINCIPAL_TRUNCATION_WARNED.get());
+        assertFalse(VesperaWireCodec.warnIfPrincipalTruncated(
+                new VesperaPrincipal("big", authorities, null)));
+    }
+
+    @Test
+    void codecWarnsOnlyForOversizedPrincipals() {
+        List<String> exact = new ArrayList<>();
+        Map<String, String> exactAttributes = new LinkedHashMap<>();
+        for (int i = 0; i < VesperaPrincipal.MAX_ENTRIES; i++) {
+            exact.add("R" + i);
+            exactAttributes.put("k" + i, "v");
+        }
+        VesperaWireCodec.PRINCIPAL_TRUNCATION_WARNED.set(false);
+        assertFalse(VesperaWireCodec.warnIfPrincipalTruncated(
+                new VesperaPrincipal("ok", exact, exactAttributes)));
+        assertFalse(VesperaWireCodec.PRINCIPAL_TRUNCATION_WARNED.get());
+        exactAttributes.put("one-more", "v");
+        assertTrue(VesperaWireCodec.warnIfPrincipalTruncated(
+                new VesperaPrincipal("attrs", List.of(), exactAttributes)));
+        exact.add("one-more");
+        VesperaWireCodec.PRINCIPAL_TRUNCATION_WARNED.set(false);
+        assertTrue(VesperaWireCodec.warnIfPrincipalTruncated(
+                new VesperaPrincipal("auths", exact, null)));
+    }
+
     // ── ServletPrincipalResolver ──
 
     @Test
