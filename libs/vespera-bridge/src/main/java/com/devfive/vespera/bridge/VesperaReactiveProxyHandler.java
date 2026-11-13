@@ -22,7 +22,6 @@ import reactor.core.scheduler.Schedulers;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -266,10 +265,18 @@ public class VesperaReactiveProxyHandler implements WebHandler {
             Mono<VesperaPrincipal> resolved = principalResolver.resolvePrincipal(exchange);
             return resolved == null ? Mono.empty() : resolved;
         }).map(Optional::of).defaultIfEmpty(Optional.empty());
-        return Mono.zip(readBody(request, declared, cap), principal).flatMap(parts -> {
+        // A WebFilter (Spring Security's CsrfWebFilter) may have consumed a
+        // form body through exchange.getFormData(): rebuild it from that.
+        Mono<byte[]> body = readBody(request, declared, cap)
+                .flatMap(read -> ReactiveFormBodySupport.recoverConsumedBody(exchange, read, declared));
+        return Mono.zip(body, principal).flatMap(parts -> {
+            byte[] bodyBytes = parts.getT1();
+            // A rebuilt form body can differ in length from the declared one.
+            String contentLength = declared >= 0 && bodyBytes.length != declared
+                    ? Integer.toString(bodyBytes.length) : null;
             VesperaBridge.HeaderSource headers = new ReactiveHeaderSource(request, appSelectionHeader,
-                    requestIdHeaderLower, px.requestId, parts.getT2().orElse(null));
-            byte[] wire = VesperaBridge.encodeRequest(appName, method, px.path, query, headers, parts.getT1());
+                    requestIdHeaderLower, px.requestId, parts.getT2().orElse(null), contentLength);
+            byte[] wire = VesperaBridge.encodeRequest(appName, method, px.path, query, headers, bodyBytes);
             px.reachedRust = true;
             return streaming ? stream(wire, out, px, method) : buffered(wire, out, px, method);
         });
@@ -392,7 +399,7 @@ public class VesperaReactiveProxyHandler implements WebHandler {
                     return null;
                 }), gate);
             } catch (IOException failure) {
-                throw new UncheckedIOException(failure);
+                throw new StreamAbort(failure);
             }
         }, response.bufferFactory(), executor, STREAM_CHUNK_BYTES);
         return response.writeAndFlushWith(Flux.from(body).map(Mono::just))
@@ -402,25 +409,58 @@ public class VesperaReactiveProxyHandler implements WebHandler {
     /** Apply a streamed wire header; returns whether body bytes may follow. */
     static boolean applyStreamingHeader(byte[] headerBytes, ReactiveProxyResponse out, String method) {
         int headerLen = VesperaWireCodec.readHeaderLength(headerBytes);
-        HeaderPolicy.ResponseHeaderAccumulator acc = out.applyWireHeader(headerBytes, 4, headerLen);
+        HeaderPolicy.ResponseHeaderAccumulator acc = out.applyWireHeader(headerBytes, 4, headerLen, true);
         return WireResponseWriter.responsePermitsBody(acc.status, method);
     }
 
     /**
-     * A proxy-side failure before Rust's response started becomes a
+     * The native streaming symbol failed after it started: normally a
+     * {@link VesperaStreamAbortedException} (a panic or a body error after
+     * the Rust header). Unchecked so it can leave the
+     * {@code outputStreamPublisher} body; unwrapped again by {@link #fail}.
+     */
+    static final class StreamAbort extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        StreamAbort(IOException cause) {
+            super(cause.getMessage(), cause, false, false);
+        }
+
+        @Override
+        public synchronized IOException getCause() {
+            return (IOException) super.getCause();
+        }
+    }
+
+    /**
+     * Handle a failed request. While the response is uncommitted it becomes a
      * {@link ProxyErrors}-shaped response ({@link ResponseStatusException} →
-     * its status, anything else → {@code 500}); once Rust's header was applied
-     * (or the response committed) the error propagates and the connection is
-     * closed.
+     * its status, a post-header stream abort → {@code 500}
+     * {@link ProxyErrors#RUST_PANIC} / {@link ProxyErrors#STREAM_ABORTED},
+     * anything else → {@code 500}), with an applied Rust header discarded
+     * first (its status and headers never reach the client). Once committed
+     * the error propagates, so the server aborts the connection: the client
+     * sees a truncated transfer, never a cleanly completed short body. A
+     * caught Rust panic is flagged for observers either way (servlet parity,
+     * see {@link ProxyErrors#writeStreamAbort}).
      */
     private Mono<Void> fail(ReactiveProxyResponse out, ProxyExchange px, Throwable failure) {
-        if (out.response.isCommitted() || out.headerApplied()) {
-            px.complete(out.response.isCommitted() ? out.status() : 500, out.panicked());
-            return Mono.error(failure);
+        IOException aborted = failure instanceof StreamAbort streamAbort ? streamAbort.getCause() : null;
+        boolean panic = aborted != null && VesperaStreamAbortedException.isPanic(aborted);
+        if (panic) {
+            out.markPanicked();
         }
+        if (out.response.isCommitted()) {
+            px.complete(out.status(), out.panicked());
+            return Mono.error(aborted != null ? aborted : failure);
+        }
+        out.discardRustOutput();
         int status;
         String message;
-        if (failure instanceof ResponseStatusException rejected) {
+        if (aborted != null) {
+            status = 500;
+            message = panic ? ProxyErrors.RUST_PANIC : ProxyErrors.STREAM_ABORTED;
+        } else if (failure instanceof ResponseStatusException rejected) {
             status = rejected.getStatusCode().value();
             message = rejected.getReason();
         } else {

@@ -30,15 +30,24 @@ final class ReactiveHeaderSource implements VesperaBridge.HeaderSource {
     private final String remoteAddr;
     private final String scheme;
     private final VesperaPrincipal principal;
+    /** Replacement {@code content-length} (a rebuilt form body), or {@code null}. */
+    private final String contentLength;
+
+    ReactiveHeaderSource(ServerHttpRequest request, String excludedHeader,
+            String requestIdHeader, String requestId, VesperaPrincipal principal) {
+        this(request, excludedHeader, requestIdHeader, requestId, principal, null);
+    }
 
     /**
      * @param excludedHeader  lower-case header to drop (the app selector), or {@code null}
      * @param requestIdHeader lower-case request-id header, or {@code null} when disabled
      * @param requestId       id forwarded under {@code requestIdHeader} (replacing the client's)
      * @param principal       trusted principal, or {@code null}
+     * @param contentLength   replacement {@code content-length} value, or {@code null}
      */
     ReactiveHeaderSource(ServerHttpRequest request, String excludedHeader,
-            String requestIdHeader, String requestId, VesperaPrincipal principal) {
+            String requestIdHeader, String requestId, VesperaPrincipal principal, String contentLength) {
+        this.contentLength = contentLength;
         this.headers = request.getHeaders();
         this.excludedHeader = excludedHeader;
         this.requestIdHeader = requestId == null ? null : requestIdHeader;
@@ -63,7 +72,8 @@ final class ReactiveHeaderSource implements VesperaBridge.HeaderSource {
                     || lower.equals(requestIdHeader)) {
                 return;
             }
-            sink.put(lower, join(lower, values));
+            sink.put(lower, contentLength != null && lower.equals("content-length")
+                    ? contentLength : join(lower, values));
         });
         if (requestIdHeader != null) {
             sink.put(requestIdHeader, requestId);
