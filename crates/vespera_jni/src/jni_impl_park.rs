@@ -16,6 +16,30 @@
 //! returns `Pending`: the half-polled future moves to a Tokio worker, which
 //! completes the Java `CompletableFuture`, and the virtual thread parks on it
 //! — the carrier is never held across a wait.
+//!
+//! # Task context of the first poll
+//!
+//! The first poll runs on the Java caller thread with the shared runtime's
+//! context entered (`runtime.enter()`, a no-op waker), **outside any Tokio
+//! task and outside `block_on`**; only a `Pending` remainder becomes a task.
+//! So, in this mode only, one request can observe two task contexts:
+//!
+//! - `tokio::task::try_id()` is `None` (and `tokio::task::id()` panics) until
+//!   the handler's first wait, then returns the spawned task's id; the
+//!   `block_on` modes (`dispatchBytes`, `dispatchDirect0`) never have an id,
+//!   `dispatchAsync` always has the same one.
+//! - The handler may resume on a different OS thread than its first poll, so
+//!   `thread_local!` state does not carry across the first `.await`.
+//! - The first poll runs without a coop budget, and
+//!   `tokio::task::block_in_place` (or a nested `Handle::block_on`) there
+//!   just blocks the calling thread — pinning the virtual thread's carrier.
+//!
+//! `task_local!` values installed with `LocalKey::scope` live in the future
+//! itself and behave the same in every mode; `Handle::current()` and
+//! `tokio::spawn` work in the first poll.  Handlers that depend on a stable
+//! task identity opt out with `-Dvespera.virtualThread.pollFirst=false`
+//! (every request runs as one `dispatchAsync` task).  Wrapping the first
+//! poll in a task would cost the cross-thread hand-off this mode removes.
 
 use std::future::Future;
 use std::panic::AssertUnwindSafe;

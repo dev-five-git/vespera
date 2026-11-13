@@ -16,7 +16,11 @@ only CPU work, like any Java code on a virtual thread). Pending → the
 half-polled future moves to a Tokio worker that completes a
 `CompletableFuture`, and the virtual thread parks on it — the carrier is
 never held across a wait. `-Dvespera.virtualThread.pollFirst=false` restores
-the old always-park behaviour.
+the old always-park behaviour. Task context: the first poll runs outside any
+Tokio task (`tokio::task::try_id()` is `None` until the first wait, then the
+spawned task's id; the handler may resume on another thread; `task_local!`
+scopes are unaffected) — opt out with the same property when a handler needs
+one stable task context (`crates/vespera_jni/src/jni_impl_park.rs` module docs).
 
 ## Method
 

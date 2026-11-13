@@ -17,7 +17,12 @@ import java.util.concurrent.CompletableFuture;
  *       without waiting returns its response right there (pinned-call cost,
  *       the carrier only did CPU work); one that has to wait is handed,
  *       half-polled, to a Tokio worker and the virtual thread <em>parks</em>
- *       on the {@code CompletableFuture} that worker completes.</li>
+ *       on the {@code CompletableFuture} that worker completes.  The first
+ *       poll runs outside any Tokio task (only the pending remainder is
+ *       spawned), so a Rust handler sees {@code tokio::task::try_id()} as
+ *       {@code None} until its first wait and may resume on another thread
+ *       ({@code task_local!} scopes are unaffected); handlers that need one
+ *       stable task context opt out with the property below.</li>
  *   <li>{@code -Dvespera.virtualThread.pollFirst=false}: every request goes
  *       through {@link VesperaBridge#dispatchAsync} + {@code join()} (the
  *       pre-0.6 behaviour) &mdash; measured ~10&times; the latency of a
@@ -32,7 +37,13 @@ import java.util.concurrent.CompletableFuture;
  */
 final class ParkingDispatch {
 
-    /** System property switching the poll-first strategy off ({@code false}). */
+    /**
+     * System property switching the poll-first strategy off ({@code false}):
+     * every virtual-thread request then runs as one {@code dispatchAsync}
+     * Tokio task, so the handler's task context ({@code tokio::task::id()})
+     * is stable from its first poll &mdash; at ~10&times; the latency for a
+     * handler that never waits.
+     */
     static final String POLL_FIRST_PROPERTY = "vespera.virtualThread.pollFirst";
 
     private static final boolean POLL_FIRST = pollFirstEnabled(System.getProperty(POLL_FIRST_PROPERTY));

@@ -738,6 +738,17 @@ throughput for a handler that never waits).  Both apply the
 threads keep the direct call.  The streaming modes still pin (they write to
 the servlet streams from the calling thread).
 
+**Task context under poll-first:** the first poll runs on the calling
+thread outside any Tokio task (inside the runtime context, so
+`Handle::current()` / `tokio::spawn` work); only a pending remainder is
+spawned.  A Rust handler therefore sees `tokio::task::try_id()` as `None`
+(`tokio::task::id()` panics) until its first wait and the spawned task's id
+afterwards, may resume on another OS thread (`thread_local!` state does not
+carry over), and a `block_in_place` before the first wait blocks the
+carrier.  `task_local!` values set with `LocalKey::scope` travel with the
+future and are unaffected.  Handlers that need one stable task context set
+`-Dvespera.virtualThread.pollFirst=false`.
+
 You can still opt out of DIRECT entirely if you prefer streaming
 end-to-end:
 - Set `vespera.bridge.dispatch-mode=bidirectional-streaming` so DIRECT
