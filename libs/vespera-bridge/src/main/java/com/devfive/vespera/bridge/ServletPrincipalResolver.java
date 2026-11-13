@@ -22,8 +22,8 @@ import java.util.Map;
  */
 public final class ServletPrincipalResolver implements PrincipalResolver {
 
-    private static final String AUTHENTICATION = "org.springframework.security.core.Authentication";
-    private static final String GRANTED_AUTHORITY = "org.springframework.security.core.GrantedAuthority";
+    static final String AUTHENTICATION = "org.springframework.security.core.Authentication";
+    static final String GRANTED_AUTHORITY = "org.springframework.security.core.GrantedAuthority";
 
     /** {@code Authentication#getAuthorities()}, or {@code null} without Spring Security. */
     private final Method getAuthorities;

@@ -25,6 +25,7 @@ Also provides in-process dispatch (`vespera_inprocess` crate) and JNI integratio
 | **Binary wire format (JNI)** | `vespera_inprocess` | `[u32 BE len | UTF-8 JSON header | raw body]` — multipart / PDFs / images travel as raw bytes; **`422` validation errors hoisted** into the wire header as `"validation_errors": [...]` so Java decoders never special-case error shapes |
 | **Multi-app routing (JNI/FFI)** | `vespera::jni_apps! { "_default" => app, "admin" => admin_app }` | Wire header carries optional `"app"` field; Java side picks per request via `X-Vespera-App` header (configurable via `AppNameResolver`) |
 | **Zero-config Spring autoconfigure** | `libs/vespera-bridge/.../VesperaBridgeAutoConfiguration` | `VesperaProxyController` + `AppNameResolver` + `DispatchModeResolver` + `PrincipalResolver` beans auto-registered; replace any of them via `@ConditionalOnMissingBean` |
+| **GraalVM native image** | `libs/vespera-bridge/src/main/resources/META-INF/native-image/kr.devfive/vespera-bridge/` | Bridge JAR ships `jni-config.json` (every JNI class/method/`ThrowNew` exception `crates/vespera_jni` + the `jni` crate's internal bindings look up), `resource-config.json` (`native/<platform>/<lib>`, `vespera-bridge.properties`), `reflect-config.json` (`Thread.isVirtual`); Spring AOT `VesperaBridgeRuntimeHints` via `@ImportRuntimeHints` on the autoconfiguration (proxy method, Spring Security authorities). `NativeImageMetadataTest` scans the Rust sources so a new JNI lookup without metadata fails `./gradlew test`; demo-app opt-in `-PnativeImage :demo-app:nativeCompile` + `scripts/native-image-smoke.sh`; manual `native-image.yml` workflow |
 | **Programmatic Java client** | `libs/vespera-bridge/.../VesperaClient` | `VesperaClient.create().get("/users/42").send()` → `VesperaResponse` (status / headers / raw body / hoisted `422` errors) in-process, no HTTP; SYNC / ASYNC / streamed-upload paths; autoconfigured bean independent of `controller-enabled` |
 | **Per-platform native jars** | Gradle plugin `vespera { nativeJarPlatforms; nativeJarsDir; bundleNative }` (`libs/vespera-bridge-gradle-plugin/.../NativeJars.kt`) | One classifier jar per platform (`myapp-native-0.1.0-linux-x86_64.jar` = only `native/<platform>/<lib>`, packaged from CI-matrix artifacts) + a `vesperaNative` `maven-publish` publication; consumers `runtimeOnly("<g>:<a>:<v>:<platform>")` with `bundleNative=false`; loader errors list the platforms the classpath bundles vs the host (`BundledNativeIndex`); user CI template `.github/workflow-templates/vespera-native-jars.yml` (not used by vespera's own CI) |
 | **Kotlin extensions** | `libs/vespera-bridge/src/main/kotlin/.../VesperaKotlin.kt` | Inside the same `vespera-bridge` JAR (no extra artifact): `suspend fun VesperaRequest.sendAwait()` (coroutine cancellation cancels the future → native cancel-on-disconnect), `client.get(path) { header(..); query(..) }` receiver DSL, `Pair` vararg `query`/`headers`. kotlin-stdlib / kotlinx-coroutines are `compileOnly` (`kotlin.stdlib.default.dependency=false`) → POM stays empty; JSpecify `@NullMarked`/`@Nullable` (compileOnly) on the client API |
@@ -138,6 +139,7 @@ vespera/
 | `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/VesperaNativeLoader.java` | ~720 | Native library lookup/extraction/loading for the bridge facade; `loadFromSystemPath` combines a bundled miss + `java.library.path` failure into one error |
 | `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/BundledNativeIndex.java` | ~155 | Failure-path diagnostics: lists `native/<platform>/<file>` across classpath jars/dirs (+ known-platform probes) so a missing library names the platforms found vs the host |
 | `libs/vespera-bridge-gradle-plugin/src/main/kotlin/kr/devfive/vespera/NativeJars.kt` | ~100 | `nativeJar<Platform>` classifier jar tasks + `nativeJars` + the `vesperaNative` Maven publication |
+| `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/VesperaBridgeRuntimeHints.java` | ~55 | Spring AOT `RuntimeHintsRegistrar` (native image): `VesperaProxyController#proxy` + Spring Security `getAuthorities`/`getAuthority` when present; JNI/resources live in the static `META-INF/native-image/kr.devfive/vespera-bridge/*-config.json` |
 | `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/RequestShape.java` | ~79 | Java request body/idempotency classifier used by smart dispatch-mode selection |
 
 ## CRATE DEPENDENCY GRAPH
@@ -434,6 +436,7 @@ props only.
 | Macro integration tests | `crates/vespera_macro/tests/` (+ `insta` snapshots) |
 | Macro compile-fail diagnostics | `crates/vespera_macro/tests/ui/` + `crates/vespera/tests/ui/` (trybuild, `trybuild_diagnostics.rs`; regenerate `.stderr` with `TRYBUILD=overwrite`, then review) |
 | Wire parser fuzzing | `fuzz/` (cargo-fuzz, own workspace: `wire_dispatch`, differential `wire_header_parse` vs the serde twin); Java: `WireHeaderReaderFuzzTest` (seeded) |
+| GraalVM metadata ↔ JNI lookups | `libs/vespera-bridge/src/test/java/com/devfive/vespera/bridge/NativeImageMetadataTest.java` (reads `crates/vespera_jni/src`: every `CachedMethod::resolve` / `call_method` / `throw_new` / `jni_str!` class must be in `jni-config.json`; any other JNI lookup API call fails until an extraction rule covers it; pins the audited `jni` crate version — on a bump re-trace with `-agentlib:native-image-agent` over the demo-app E2E suite) |
 | Validated/422 contract | `crates/vespera/tests/validated_extractor.rs`, `crates/vespera/tests/jni_validation.rs` | Envelope built via `#[derive(Serialize)]` structs (not `serde_json::json!`); exact bytes locked by `insta::assert_snapshot!` in `validated_extractor.rs` |
 | Core unit tests | `crates/vespera_core/src/**` inline `#[cfg(test)]` |
 | JNI end-to-end | `examples/rust-jni-demo` (Rust + Java + Gradle) |
@@ -558,6 +561,11 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 #                   Local: CARGO_JOBS=2 scripts/jni-bench-interleaved.sh origin/main
 #                   jni-bench.yml stays nightly + informational (*BenchTest suite).
 #   fuzz-build (not a release gate) `cargo fuzz build` of fuzz/ on pinned nightly
+#   native-image (native-image.yml, workflow_dispatch only, never a gate)
+#            GraalVM CE 25 `-PnativeImage :demo-app:nativeCompile` (bridge +
+#            plugin as --include-build, no mavenLocal) + scripts/native-image-smoke.sh
+#            (direct / overflow / sync / async-on-virtual-threads / SSE /
+#            bidirectional / 422 / panic). Local Windows needs MSVC (vcvars64).
 # Fuzz workflow (.github/workflows/fuzz.yml, weekly + workflow_dispatch, never a
 # gate): runs every fuzz/ target for a bounded time (default 600 s each) and
 # uploads crash reproducers. Dependabot (.github/dependabot.yml): weekly grouped

@@ -9,6 +9,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.ImportRuntimeHints;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -97,6 +98,7 @@ import java.util.concurrent.atomic.AtomicInteger;
         "org.springframework.web.servlet.DispatcherServlet"})
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @EnableConfigurationProperties(VesperaBridgeProperties.class)
+@ImportRuntimeHints(VesperaBridgeRuntimeHints.class)
 public class VesperaBridgeAutoConfiguration {
 
     /**

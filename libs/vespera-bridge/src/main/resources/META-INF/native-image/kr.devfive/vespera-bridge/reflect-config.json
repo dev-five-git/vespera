@@ -1,0 +1,11 @@
+[
+  {
+    "name": "java.lang.Thread",
+    "methods": [
+      {
+        "name": "isVirtual",
+        "parameterTypes": []
+      }
+    ]
+  }
+]
