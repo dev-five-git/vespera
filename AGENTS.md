@@ -625,6 +625,14 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 # actions/attest-build-provenance (all files) + one actions/attest SBOM
 # attestation per package and attaches the SBOMs to the GitHub releases (best
 # effort); "Re-run failed jobs" re-attests without publishing again.
+# Re-attest an already published release (attest job never ran / failed for
+# good, e.g. 0.6.0): .github/workflows/reattest.yml (workflow_dispatch on main,
+# input `version`) runs `scripts/release-artifacts.sh --from-registries <v>`
+# (downloads crates.io / Maven Central / Plugin Portal files with checksum
+# checks; released commit = the seven changepacks tags `<name>(<path>)@<v>`,
+# which must agree and match each crate's .cargo_vcs_info.json; SBOMs from the
+# current scripts/sbom.sh on that commit), then a copy of the `attest` job
+# (keep in sync). Verify with --signer-workflow .../reattest.yml (SECURITY.md).
 # vespera-bridge also publishes its SBOM to Maven Central (classifier
 # `cyclonedx`); the Gradle plugin's is NOT on its publication (the Plugin Portal
 # rejects JSON artifacts). User-facing verification: SECURITY.md.

@@ -2,6 +2,15 @@
 # Collect what a release just published, for provenance + SBOM attestation.
 #
 #   scripts/release-artifacts.sh <published-json> <out-dir>
+#   scripts/release-artifacts.sh --from-registries <version> <out-dir>
+#
+# --from-registries (the workflow_dispatch `reattest` workflow, for a release
+# whose attestation failed or predates it): all seven packages of <version>,
+# downloaded from crates.io (SHA-256 checked against the crates.io API), Maven
+# Central and the Gradle Plugin Portal (SHA-1 checked against the registry's
+# .sha1) instead of the publish run's build outputs. The released commit is the
+# one every changepacks tag `<name>(<project path>)@<version>` points to (all
+# seven must agree, and must match each crate's .cargo_vcs_info.json).
 #
 # <published-json> is the changepacks action's `changepacks` output: a JSON array
 # of the project paths it published in this run, e.g.
@@ -31,10 +40,19 @@
 # SBOMs are generated in a temporary worktree of it.
 set -euo pipefail
 
-if [ "$#" -ne 2 ]; then
-  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//' >&2
-  exit 2
+usage() { sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+registry_version=
+if [ "${1:-}" = --from-registries ]; then
+  [ "$#" -eq 3 ] || usage
+  registry_version=$2
+  [[ $registry_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+    echo "::error::invalid version '$registry_version'" >&2
+    exit 2
+  }
+  shift 2
+  set -- '["crates/vespera/Cargo.toml","crates/vespera_core/Cargo.toml","crates/vespera_macro/Cargo.toml","crates/vespera_inprocess/Cargo.toml","crates/vespera_jni/Cargo.toml","libs/vespera-bridge/build.gradle.kts","libs/vespera-bridge-gradle-plugin/build.gradle.kts"]' "$1"
 fi
+[ "$#" -eq 2 ] || usage
 published=$1
 root=$(cd "$(dirname "$0")/.." && pwd)
 mkdir -p "$2/artifacts" "$2/sbom"
@@ -50,9 +68,76 @@ if [ "${#paths[@]}" -eq 0 ]; then
 fi
 printf 'published: %s\n' "${paths[@]}"
 
+curl_get() { # <url> <file>: download with retries (registries can lag a publish)
+  curl -fsSL --retry 5 --retry-delay 10 -A 'vespera-release (https://github.com/dev-five-git/vespera)' \
+    -o "$2" "$1"
+}
+
+# ── --from-registries: the published files ────────────────────────────────
+downloads=
+if [ -n "$registry_version" ]; then
+  downloads=$(mktemp -d)
+  for p in "${paths[@]}"; do
+    case $p in
+      crates/*/Cargo.toml)
+        crate=${p#crates/}; crate=${crate%/Cargo.toml}
+        curl_get "https://static.crates.io/crates/$crate/$crate-$registry_version.crate" \
+          "$downloads/$crate-$registry_version.crate" ||
+          echo "::error::could not download $crate@$registry_version from crates.io"
+        ;;
+      libs/*/build.gradle.kts)
+        lib=${p#libs/}; lib=${lib%/build.gradle.kts}
+        repo=https://repo1.maven.org/maven2
+        if [ "$lib" = vespera-bridge-gradle-plugin ]; then repo=https://plugins.gradle.org/m2; fi
+        base="$repo/kr/devfive/$lib/$registry_version/$lib-$registry_version"
+        for suffix in .jar -sources.jar -javadoc.jar; do
+          f="$downloads/$lib-$registry_version$suffix"
+          if curl_get "$base$suffix" "$f" && curl_get "$base$suffix.sha1" "$f.sha1" &&
+            [ "$(sha1sum "$f" | cut -d' ' -f1)" = "$(tr -d ' \r\n' <"$f.sha1" | cut -c1-40)" ]; then
+            rm "$f.sha1"
+          else
+            echo "::error::could not download (or SHA-1-verify) $lib-$registry_version$suffix"
+            rm -f "$f" "$f.sha1"
+          fi
+        done
+        ;;
+    esac
+  done
+fi
+
 # ── The released commit ───────────────────────────────────────────────────
 sha=$(git -C "$root" rev-parse HEAD)
+if [ -n "$registry_version" ]; then
+  # Every changepacks tag of the version must exist and name the same commit.
+  tags=$(git -C "$root" ls-remote --tags origin)
+  sha=
+  for p in "${paths[@]}"; do
+    name=${p#*/}; name=${name%%/*}
+    ref="refs/tags/$name($p)@$registry_version"
+    # Peeled `^{}` line (annotated tag) wins over the tag object itself.
+    tag_sha=$(awk -v r="$ref" '$2 == r "^{}" { print $1; f = 1; exit } $2 == r { s = $1 } END { if (!f && s) print s }' <<<"$tags")
+    if [ -z "$tag_sha" ]; then
+      echo "::error::missing release tag $ref" >&2
+      exit 1
+    fi
+    if [ -n "$sha" ] && [ "$tag_sha" != "$sha" ]; then
+      echo "::error::release tags of $registry_version disagree ($sha vs $tag_sha for $ref)" >&2
+      exit 1
+    fi
+    sha=$tag_sha
+  done
+  for crate_file in "$downloads"/*.crate; do
+    [ -f "$crate_file" ] || continue
+    vcs=$(tar -xzOf "$crate_file" --wildcards '*/.cargo_vcs_info.json' 2>/dev/null |
+      jq -r '.git.sha1 // empty' || true)
+    if [ -n "$vcs" ] && [ "$vcs" != "$sha" ]; then
+      echo "::error::$(basename "$crate_file") was packaged from $vcs, not the tagged $sha" >&2
+      exit 1
+    fi
+  done
+fi
 for p in "${paths[@]}"; do
+  [ -z "$registry_version" ] || break
   if [[ $p =~ ^crates/([a-z_]+)/Cargo\.toml$ ]]; then
     for crate_file in "$root"/target/package/"${BASH_REMATCH[1]}"-*.crate; do
       [ -f "$crate_file" ] || continue
@@ -71,15 +156,28 @@ src=$(mktemp -d)
 bridge_published_sbom=$(mktemp -d)
 # Cleanup must never turn a successful run into a failed one (`set -e` also
 # applies inside an EXIT trap), hence the `|| true`s.
-trap 'git -C "$root" worktree remove --force "$src" || true; rm -rf "$src" "$bridge_published_sbom" || true' EXIT
+trap 'git -C "$root" worktree remove --force "$src" || true; rm -rf "$src" "$bridge_published_sbom" ${downloads:+"$downloads"} || true' EXIT
 git -C "$root" worktree add --detach "$src" "$sha"
 echo "released commit: $sha"
 
 # The bridge SBOM that went to Maven Central (classifier `cyclonedx`) was built
 # by the publish task; keep that exact file rather than a regenerated one
 # (fresh serial number).
-cp "$root"/libs/vespera-bridge/build/reports/cyclonedx-direct/*-cyclonedx.json \
-  "$bridge_published_sbom/" 2>/dev/null || true
+if [ -z "$registry_version" ]; then
+  cp "$root"/libs/vespera-bridge/build/reports/cyclonedx-direct/*-cyclonedx.json \
+    "$bridge_published_sbom/" 2>/dev/null || true
+else
+  # The copy on Maven Central, if actions/attest can take it (it needs a
+  # `serialNumber`); otherwise the regenerated one is attested.
+  f="$bridge_published_sbom/vespera-bridge-$registry_version-cyclonedx.json"
+  if ! curl_get "https://repo1.maven.org/maven2/kr/devfive/vespera-bridge/$registry_version/$(basename "$f")" "$f" ||
+    ! jq -e --arg v "$registry_version" '.bomFormat == "CycloneDX" and
+      (.serialNumber | type == "string" and test("^urn:uuid:[0-9a-f-]{36}$")) and
+      .metadata.component.version == $v' "$f" >/dev/null; then
+    echo "::warning::not using the Maven Central vespera-bridge SBOM; attesting a regenerated one"
+    rm -f "$f"
+  fi
+fi
 
 bash "$root/scripts/sbom.sh" "$out/sbom-all" "$src"
 metadata=$(cargo metadata --manifest-path "$src/Cargo.toml" --no-deps --format-version 1)
@@ -111,7 +209,13 @@ for p in "${paths[@]}"; do
       crate=${p#crates/}; crate=${crate%/Cargo.toml}
       version=$(jq -r --arg n "$crate" '.packages[] | select(.name == $n) | .version' <<<"$metadata" | tr -d '\r')
       file="$root/target/package/$crate-$version.crate"
-      if [ ! -f "$file" ]; then
+      if [ -n "$registry_version" ]; then
+        file="$downloads/$crate-$version.crate"
+        if [ "$version" != "$registry_version" ] || [ ! -f "$file" ]; then
+          fail "$crate@$registry_version: not downloaded, or the tagged commit has version $version; not attesting it"
+          continue
+        fi
+      elif [ ! -f "$file" ]; then
         # Checked against crates.io below, so a non-identical repackage is
         # refused rather than attested.
         echo "::warning::$crate-$version.crate not left by cargo publish; repackaging"
@@ -137,7 +241,13 @@ for p in "${paths[@]}"; do
       lib=${p#libs/}; lib=${lib%/build.gradle.kts}
       version=$(tr -d '\r' <"$src/$p" | sed -nE 's/^version = "([^"]+)"$/\1/p')
       libs_dir="$root/libs/$lib/build/libs"
-      if [ ! -f "$libs_dir/$lib-$version.jar" ]; then
+      if [ -n "$registry_version" ]; then
+        libs_dir=$downloads
+        if [ "$version" != "$registry_version" ] || [ ! -f "$libs_dir/$lib-$version.jar" ]; then
+          fail "$lib@$registry_version: not downloaded, or the tagged commit has version $version; not attesting it"
+          continue
+        fi
+      elif [ ! -f "$libs_dir/$lib-$version.jar" ]; then
         # Gradle 9 builds reproducible archives by default, so a rebuild of
         # the released commit should match what was uploaded (NOT verified
         # against Maven Central, unlike the crates).

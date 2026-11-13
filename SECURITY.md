@@ -77,6 +77,25 @@ gh attestation verify "vespera-bridge-$V-cyclonedx.json" --repo dev-five-git/ves
 file's SHA-256, so it can gate a CI pipeline. Maven Central artifacts are also
 GPG-signed (`.asc`), as Central requires.
 
+**Re-attested releases.** A release whose `attest` job did not complete (0.6.0:
+its SBOMs lacked a CycloneDX `serialNumber`) is attested afterwards by the
+manually dispatched [`.github/workflows/reattest.yml`](.github/workflows/reattest.yml)
+on `main`. It publishes nothing: it downloads the files the registries serve
+(crates.io, checked against the crates.io SHA-256; Maven Central / Gradle Plugin
+Portal, checked against their `.sha1`), takes the released commit from the
+release tags (cross-checked with each crate's `.cargo_vcs_info.json`),
+regenerates the SBOMs from that commit and attests them the same way. Its
+attestations name that workflow as the signer, so verify those versions with:
+
+```bash
+gh attestation verify "vespera-$V.crate" --repo dev-five-git/vespera \
+  --signer-workflow dev-five-git/vespera/.github/workflows/reattest.yml \
+  --source-ref refs/heads/main
+```
+
+Their build provenance records the re-attestation run, not the original
+publish run.
+
 Notes:
 
 - The crate SBOMs are generated with `cargo-cyclonedx` for **all features and all
