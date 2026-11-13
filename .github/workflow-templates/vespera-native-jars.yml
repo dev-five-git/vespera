@@ -1,0 +1,123 @@
+# Vespera per-platform native jars — workflow template for YOUR application repo.
+#
+# Vespera embeds your Rust app as a cdylib, so the native library is yours to
+# build. This workflow builds it once per platform on native runners, merges the
+# results into `prebuilt/native/<platform>/<lib>`, and lets the
+# `kr.devfive.vespera-bridge` Gradle plugin package one classifier jar per
+# platform (`myapp-native-0.1.0-linux-x86_64.jar`, `...-macos-aarch64.jar`, ...)
+# and publish them as the `vesperaNative` Maven publication.
+#
+# It is NOT used by the vespera repository itself: copy it to
+# `.github/workflows/` of your repo and adjust the `env` block. The matching
+# Gradle project (GRADLE_PROJECT_DIR) looks like:
+#
+#   plugins {
+#       `maven-publish`
+#       id("kr.devfive.vespera-bridge") version "<plugin-version>"
+#   }
+#   group = "com.acme"
+#   version = "0.1.0"
+#   vespera {
+#       crateName.set("my-app")
+#       bundleNative.set(false)                // nothing built locally
+#       nativeJarsDir.set(rootProject.layout.projectDirectory.dir("prebuilt"))
+#       nativeJarPlatforms.addAll(listOf(
+#           "linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-aarch64", "windows-x86_64",
+#       ))
+#   }
+#   publishing { repositories { maven { /* your repository + credentials */ } } }
+#
+# Consumers then add the platforms they deploy to (the bridge picks the host's):
+#   runtimeOnly("com.acme:myapp-native:0.1.0:linux-x86_64")
+#
+# Notes
+# - Linux libraries link against the runner's glibc (ubuntu-24.04 = 2.39). To run
+#   on older distributions, build inside an older image (job `container:`) or add
+#   a musl entry (target x86_64-unknown-linux-musl, platform linux-x86_64-musl,
+#   `apt-get install musl-tools`, `RUSTFLAGS="-C target-feature=-crt-static"` for
+#   a cdylib, library at target/<triple>/release/), which the bridge prefers on
+#   musl JVMs.
+# - Actions are pinned to commit SHAs (supply-chain hygiene); bump them with
+#   Dependabot.
+
+name: native-jars
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Cargo package of the cdylib (`cargo build -p`).
+  CRATE: my-app
+  # Library file stem: the package name with `-` → `_`, or `[lib] name`.
+  LIB_NAME: my_app
+  # Gradle project applying the vespera-bridge plugin with nativeJarPlatforms.
+  GRADLE_PROJECT_DIR: java/myapp-native
+
+jobs:
+  build:
+    name: cdylib (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { platform: linux-x86_64,   os: ubuntu-24.04,     file: "lib{0}.so" }
+          - { platform: linux-aarch64,  os: ubuntu-24.04-arm, file: "lib{0}.so" }
+          - { platform: macos-x86_64,   os: macos-15-intel,   file: "lib{0}.dylib" }
+          - { platform: macos-aarch64,  os: macos-15,         file: "lib{0}.dylib" }
+          - { platform: windows-x86_64, os: windows-latest,   file: "{0}.dll" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
+      - name: cargo build
+        run: cargo build --release --locked -p "$CRATE"
+        shell: bash
+      - name: Stage native/${{ matrix.platform }}/
+        shell: bash
+        env:
+          FILE: ${{ format(matrix.file, env.LIB_NAME) }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          mkdir -p "stage/native/$PLATFORM"
+          cp "target/release/$FILE" "stage/native/$PLATFORM/$FILE"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-${{ matrix.platform }}
+          path: stage/
+          if-no-files-found: error
+
+  native-jars:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      # Every artifact holds native/<platform>/<lib>; merged they form the
+      # nativeJarsDir layout the plugin packages from.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: native-*
+          path: prebuilt
+          merge-multiple: true
+      - name: Package one jar per platform
+        run: ./gradlew -p "$GRADLE_PROJECT_DIR" nativeJars
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-jars
+          path: ${{ env.GRADLE_PROJECT_DIR }}/build/libs/*.jar
+          if-no-files-found: error
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/')
+        # Supply the repository credentials your `publishing {}` block reads.
+        env:
+          ORG_GRADLE_PROJECT_publishUsername: ${{ secrets.PUBLISH_USERNAME }}
+          ORG_GRADLE_PROJECT_publishPassword: ${{ secrets.PUBLISH_PASSWORD }}
+        run: ./gradlew -p "$GRADLE_PROJECT_DIR" publishVesperaNativePublicationToMavenRepository
