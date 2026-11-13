@@ -151,33 +151,41 @@ impl SchemaTypeWire {
     {
         match self {
             Self::Single(schema_type) => Ok((Some(schema_type), false)),
-            Self::Multiple(schema_types) => {
-                let nullable = schema_types.contains(&SchemaType::Null);
-                let mut schema_type = None;
-                for next_type in schema_types
-                    .into_iter()
-                    .filter(|schema_type| *schema_type != SchemaType::Null)
-                {
-                    if let Some(current_type) = schema_type
-                        && current_type != next_type
-                    {
-                        return Err(E::custom(
-                            "OpenAPI schema `type` arrays with multiple non-null types are not representable; use anyOf/oneOf instead",
-                        ));
-                    }
-                    schema_type = Some(next_type);
-                }
-                // `["null"]` (or `["null","null"]`): a null-only `type` array.
-                // Without this it would yield `(None, Some(true))` and
-                // re-serialize to `{}` — silently dropping the null constraint.
-                // Collapse to the equivalent singular `type:"null"` so the
-                // schema round-trips losslessly.
-                if schema_type.is_none() && nullable {
-                    return Ok((Some(SchemaType::Null), false));
-                }
-                Ok((schema_type, nullable))
-            }
+            Self::Multiple(schema_types) => Self::collapse_type_array(schema_types),
         }
+    }
+
+    /// The `type: [...]` arm of [`Self::into_schema_type_and_nullable`].
+    fn collapse_type_array<E>(
+        schema_types: Vec<SchemaType>,
+    ) -> Result<(Option<SchemaType>, bool), E>
+    where
+        E: DeError,
+    {
+        let nullable = schema_types.contains(&SchemaType::Null);
+        let mut schema_type = None;
+        for next_type in schema_types
+            .into_iter()
+            .filter(|schema_type| *schema_type != SchemaType::Null)
+        {
+            if let Some(current_type) = schema_type
+                && current_type != next_type
+            {
+                return Err(E::custom(
+                    "OpenAPI schema `type` arrays with multiple non-null types are not representable; use anyOf/oneOf instead",
+                ));
+            }
+            schema_type = Some(next_type);
+        }
+        // `["null"]` (or `["null","null"]`): a null-only `type` array.
+        // Without this it would yield `(None, Some(true))` and
+        // re-serialize to `{}` — silently dropping the null constraint.
+        // Collapse to the equivalent singular `type:"null"` so the
+        // schema round-trips losslessly.
+        if schema_type.is_none() && nullable {
+            return Ok((Some(SchemaType::Null), false));
+        }
+        Ok((schema_type, nullable))
     }
 }
 
@@ -520,28 +528,24 @@ impl Serialize for Schema {
         if let Some(value) = &self.default {
             out.serialize_field("default", value)?;
         }
+        // Single-expression arms: a binding pattern on its own line gets no
+        // coverage region on current rustc.
         match (&self.example, &self.examples) {
-            (Some(example), Some(examples)) => {
-                out.serialize_field(
-                    "examples",
-                    &ExamplesWithLegacy {
-                        example: Some(example),
-                        examples,
-                    },
-                )?;
-            }
-            (Some(example), None) => {
-                out.serialize_field(
-                    "examples",
-                    &ExamplesWithLegacy {
-                        example: Some(example),
-                        examples: &[],
-                    },
-                )?;
-            }
-            (None, Some(examples)) => {
-                out.serialize_field("examples", examples)?;
-            }
+            (Some(example), Some(examples)) => out.serialize_field(
+                "examples",
+                &ExamplesWithLegacy {
+                    example: Some(example),
+                    examples,
+                },
+            )?,
+            (Some(example), None) => out.serialize_field(
+                "examples",
+                &ExamplesWithLegacy {
+                    example: Some(example),
+                    examples: &[],
+                },
+            )?,
+            (None, Some(examples)) => out.serialize_field("examples", examples)?,
             (None, None) => {}
         }
         // Order is load-bearing: these six calls reproduce the exact field

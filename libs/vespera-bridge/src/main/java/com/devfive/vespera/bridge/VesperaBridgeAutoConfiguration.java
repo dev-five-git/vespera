@@ -9,6 +9,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.ImportRuntimeHints;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -97,6 +98,7 @@ import java.util.concurrent.atomic.AtomicInteger;
         "org.springframework.web.servlet.DispatcherServlet"})
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @EnableConfigurationProperties(VesperaBridgeProperties.class)
+@ImportRuntimeHints(VesperaBridgeRuntimeHints.class)
 public class VesperaBridgeAutoConfiguration {
 
     /**
@@ -108,8 +110,7 @@ public class VesperaBridgeAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public VesperaBridgeNativeSettings vesperaBridgeNativeSettings(VesperaBridgeProperties props) {
-        props.getNative().apply(props.getMaxBufferedResponseBytes());
-        return new VesperaBridgeNativeSettings(autoInit(props.getLibraryName()));
+        return VesperaBridgeNativeSettings.apply(props);
     }
 
     /**
@@ -117,16 +118,7 @@ public class VesperaBridgeAutoConfiguration {
      * unless the application already did. Returns whether this call loaded it.
      */
     static boolean autoInit(String libraryName) {
-        if (libraryName == null || libraryName.isBlank()) {
-            return false;
-        }
-        synchronized (VesperaBridge.class) {
-            if (VesperaBridge.isInitialized()) {
-                return false;
-            }
-            VesperaBridge.init(libraryName.trim());
-            return true;
-        }
+        return VesperaBridgeNativeSettings.autoInit(libraryName);
     }
 
     /**

@@ -95,6 +95,68 @@ jobs:
         # own target, where ASan cannot link; build for the gnu host instead.
         run: cargo fuzz build --target x86_64-unknown-linux-gnu
 
+  # Miri: interprets the pure-Rust test suites and reports undefined
+  # behaviour (out-of-bounds / uninitialised reads, invalid `set_len`,
+  # aliasing violations, data races) in our `unsafe` code AND in the
+  # dependencies those tests drive (bytes, http, tokio sync, arc-swap).
+  # Scope: every `vespera_inprocess` unit test plus the JNI-free `unsafe`
+  # helpers of `vespera_jni` (direct-buffer copy, spare-capacity fill,
+  # `u8`→`jbyte` view) and its loom-shimmed async cap. The shared-runtime
+  # lease gate + lifecycle are `vespera_inprocess` unit tests
+  # (`runtime::gate`, `runtime::tests`; feature `runtime`, named explicitly
+  # below). The JNI symbols need a JVM and are covered by jni-e2e. A handful of tests that spawn a child process
+  # or are too slow interpreted carry `#[cfg_attr(miri, ignore = "...")]`.
+  # nextest runs one process per test (`.config/nextest.toml`
+  # `default-miri` profile), so an unsupported operation fails that test
+  # only. Gating: ~5 minutes on a runner and deterministic (isolation on,
+  # fixed seed), so a regression here is a real UB report, not flake.
+  miri:
+    name: Miri (unsafe + data races)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04 # nightly
+        with:
+          toolchain: nightly-2026-08-29
+          components: miri, rust-src
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-nextest
+      - name: cargo miri setup
+        run: cargo miri setup
+      - name: cargo miri nextest run
+        run: >-
+          cargo miri nextest run -p vespera_inprocess -p vespera_jni --lib
+          --features vespera_inprocess/runtime
+          -E 'package(vespera_inprocess) | (package(vespera_jni) & test(/^(jni_buf|jni_impl::direct::direct_tests|jni_impl::gates)::/))'
+
+  # loom: exhaustively explores thread interleavings (bounded preemptions)
+  # of the two hand-rolled atomic protocols — the shared-runtime lease gate
+  # vs the shutdown drain (`crates/vespera_inprocess/src/runtime/gate.rs`)
+  # and the `dispatchAsync` in-flight cap
+  # (`crates/vespera_jni/src/jni_impl_gates.rs`).
+  # A custom `--cfg vespera_loom` (not `cfg(loom)`, which would flip Tokio
+  # and other dependencies into their own loom builds) swaps in loom's
+  # atomics; only the `loom_*` models run. Stable toolchain, < 2 minutes.
+  loom:
+    name: loom (atomic protocols)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: cargo test loom_ (vespera_inprocess runtime lease gate)
+        env:
+          RUSTFLAGS: --cfg vespera_loom
+          LOOM_MAX_PREEMPTIONS: '3'
+        run: cargo test --release -p vespera_inprocess --features runtime --lib loom_
+      - name: cargo test loom_ (vespera_jni dispatchAsync cap)
+        env:
+          RUSTFLAGS: --cfg vespera_loom
+          LOOM_MAX_PREEMPTIONS: '3'
+        run: cargo test --release -p vespera_jni --lib loom_
+
   # Minimum supported Rust version of the PUBLISHED crates
   # ([workspace.package] rust-version). Examples are deliberately not held to
   # it — axum-example's sea-orm 2 / sqlx 0.9 need Rust 1.94 — so the check is
@@ -423,7 +485,7 @@ jobs:
     # unformatted/lint-failing code, a broken MSRV, a disallowed dependency,
     # a platform-specific test failure, or a broken JNI dispatch path on any
     # supported OS.
-    needs: [lint, msrv, deny, sbom, test, test-os, jni-e2e]
+    needs: [lint, msrv, deny, sbom, test, test-os, jni-e2e, miri, loom]
     permissions:
       # Actions > General > Workflow permissions for creating pull request:
       # push the version branch + create GitHub releases / tags (and attach
@@ -750,11 +812,18 @@ jobs:
         shell: bash
         working-directory: examples/rust-jni-demo/java
         run: ./gradlew :demo-app:test --console=plain --no-daemon
+      - name: Run demo-reactive-app WebFlux E2E tests
+        # VesperaReactiveProxyHandler on reactor-netty against the same cdylib,
+        # on a classpath with WebFlux but no servlet API / Spring MVC.
+        shell: bash
+        working-directory: examples/rust-jni-demo/java
+        run: ./gradlew :demo-reactive-app:test --console=plain --no-daemon
       - name: Merge Java coverage
         # Regenerates the bridge's JaCoCo report now that demo-app has run, so
         # it also credits the classes only reachable with a loaded cdylib — the
         # JNI wrappers and the Spring proxy, which the unit suite cannot drive.
-        # The report task reads demo-app/build/jacoco/test.exec when present.
+        # The report task reads demo-app/build/jacoco/test.exec
+        # (and demo-reactive-app's) when present.
         shell: bash
         working-directory: libs/vespera-bridge
         run: ./gradlew jacocoTestReport --console=plain --no-daemon
@@ -765,6 +834,7 @@ jobs:
           name: jni-e2e-${{ matrix.os }}-jdk${{ matrix.java }}-test-results
           path: |
             examples/rust-jni-demo/java/demo-app/build/test-results/test/*.xml
+            examples/rust-jni-demo/java/demo-reactive-app/build/test-results/test/*.xml
             libs/vespera-bridge/build/test-results/test/*.xml
             libs/vespera-bridge-gradle-plugin/build/test-results/test/*.xml
             libs/vespera-bridge/build/reports/jacoco/test/jacocoTestReport.xml

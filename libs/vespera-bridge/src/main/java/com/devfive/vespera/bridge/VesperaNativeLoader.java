@@ -122,9 +122,14 @@ final class VesperaNativeLoader {
         String os = detectOs();
         String filename = mapLibraryName(os, libraryName);
         ClassLoader loader = VesperaBridge.class.getClassLoader();
-        BundledResource found = resolveBundledResource(
-                NativePlatformDetector.hostCandidatePlatforms(NativePlatformDetector.HOST),
-                filename, loader::getResourceAsStream);
+        List<String> platforms = NativePlatformDetector.hostCandidatePlatforms(NativePlatformDetector.HOST);
+        BundledResource found;
+        try {
+            found = resolveBundledResource(platforms, filename, loader::getResourceAsStream);
+        } catch (BundledNativeAbsent absent) {
+            throw new BundledNativeAbsent(absent.getMessage() + BundledNativeIndex.describe(
+                    platforms.get(0), filename, BundledNativeIndex.scan(loader, filename)));
+        }
         String resourcePath = found.path();
         InputStream[] first = {found.stream()};
         ResourceOpener opener = () -> {
@@ -200,6 +205,26 @@ final class VesperaNativeLoader {
                     .append("native/").append(platform).append('/').append(filename);
         }
         throw new BundledNativeAbsent("Not found in JAR: " + tried);
+    }
+
+    /**
+     * The system-library-path fallback after {@code absent}: when that fails
+     * too, the error carries both causes — the bundled paths tried and the
+     * platforms the classpath does bundle — not only "no X in
+     * java.library.path".
+     */
+    static void loadFromSystemPath(
+            String libraryName, BundledNativeAbsent absent, VesperaBridge.NativeLibraryLoader systemLoader) {
+        try {
+            systemLoader.load(libraryName);
+        } catch (UnsatisfiedLinkError notOnLibraryPath) {
+            UnsatisfiedLinkError combined = new UnsatisfiedLinkError("Cannot load native library '"
+                    + libraryName + "': " + absent.getMessage() + " System library path fallback: "
+                    + notOnLibraryPath.getMessage());
+            combined.initCause(notOnLibraryPath);
+            combined.addSuppressed(absent);
+            throw combined;
+        }
     }
 
     /**

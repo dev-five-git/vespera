@@ -2,8 +2,8 @@ use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::support::{
-    PanicHeaderAction, panic_post_header_action, push_unless_header_failed,
-    should_fire_fallback_header,
+    AbortReason, PanicHeaderAction, STREAM_ABORTED_CLASS, panic_post_header_action,
+    push_unless_header_failed, should_fire_fallback_header,
 };
 
 #[test]
@@ -122,5 +122,44 @@ fn pull_token_reports_whether_the_pull_closure_is_still_alive() {
     assert!(
         token.producer_dropped(),
         "closure dropped -> lease reusable"
+    );
+}
+
+#[test]
+fn stream_abort_reason_prefers_a_failed_header_callback() {
+    assert_eq!(
+        AbortReason::from_flags(true, true),
+        AbortReason::HeaderCallbackFailed
+    );
+    assert_eq!(
+        AbortReason::from_flags(true, false),
+        AbortReason::HeaderCallbackFailed
+    );
+    assert_eq!(AbortReason::from_flags(false, true), AbortReason::Panicked);
+    assert_eq!(
+        AbortReason::from_flags(false, false),
+        AbortReason::BodyAborted
+    );
+}
+
+#[test]
+fn stream_abort_messages_match_the_java_contract() {
+    // `VesperaStreamAbortedException.PANIC_MESSAGE` matches the panic text
+    // verbatim to set `panicked()`; the other two are distinct.
+    assert_eq!(
+        AbortReason::Panicked.message().to_str(),
+        "vespera: panic in Rust engine after the response header was produced"
+    );
+    assert_eq!(
+        AbortReason::BodyAborted.message().to_str(),
+        "vespera: response body stream aborted after the header was committed"
+    );
+    assert_eq!(
+        AbortReason::HeaderCallbackFailed.message().to_str(),
+        "vespera: response header callback failed before body streaming"
+    );
+    assert_eq!(
+        STREAM_ABORTED_CLASS.to_str(),
+        "com/devfive/vespera/bridge/VesperaStreamAbortedException"
     );
 }

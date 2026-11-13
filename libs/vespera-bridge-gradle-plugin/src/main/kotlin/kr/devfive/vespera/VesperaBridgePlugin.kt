@@ -28,6 +28,9 @@ import java.util.Properties
  *    task that invokes `cargo build -p <package>` (plus one
  *    `--target <triple>` build per `vespera.targets` entry) before
  *    `bundleNativeLib`.
+ * 5. Packages `vespera.nativeJarPlatforms` as per-platform classifier jars
+ *    (`nativeJar<Platform>` / `nativeJars`, see [NativeJars]) and, with
+ *    `maven-publish`, publishes them as the `vesperaNative` publication.
  *
  * Usage:
  *
@@ -51,6 +54,8 @@ class VesperaBridgePlugin : Plugin<Project> {
         ext.cargoSourceRoots.convention(listOf("src", "crates", "examples"))
         ext.cargoProfile.convention("release")
         ext.targets.convention(emptyMap())
+        ext.bundleNative.convention(true)
+        NativeJars.register(project, ext)
         embeddedBridgeVersion()?.let { ext.bridgeVersion.convention(it) }
 
         // Host platform (`<os>-<arch>`, `-musl` on a musl Linux host). Probed in
@@ -150,8 +155,10 @@ class VesperaBridgePlugin : Plugin<Project> {
         // late mutable project callback.
         project.pluginManager.withPlugin("java") {
             project.tasks.withType(ProcessResources::class.java).configureEach {
-                dependsOn(bundleTask)
-                from(generatedResourcesDir)
+                // `bundleNative = false` (the app loads its library from
+                // per-platform native jars) leaves bundleNativeLib unrealised.
+                dependsOn(ext.bundleNative.map { if (it) listOf(bundleTask) else emptyList<Any>() })
+                from(ext.bundleNative.map { if (it) listOf(generatedResourcesDir) else emptyList<Any>() })
             }
 
             // Repository configuration is intentionally left to

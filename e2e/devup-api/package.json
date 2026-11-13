@@ -10,6 +10,6 @@
   "devDependencies": {
     "@devup-api/fetch": "0.1.27",
     "@devup-api/generator": "0.1.29",
-    "typescript": "6.0.3"
+    "typescript": "7.0.2"
   }
 }

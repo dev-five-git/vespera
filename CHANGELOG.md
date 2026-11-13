@@ -233,6 +233,28 @@ items below are additions, plus one behaviour change to graceful shutdown.
   `Extension<Scheme>`; a caught panic sets `metadata.panicked`; after
   `shutdown0` / `VesperaBridge.shutdown(Duration)` every dispatch answers
   `503`.
+- Bidirectional streaming (`dispatch_bidirectional_streaming*`,
+  `dispatchFullStreaming*`) pulls a small request body on the calling thread:
+  when the dispatch is driven by `Runtime::block_on` (every JNI symbol) and no
+  dispatch timeout is set, the first two request pulls made before the handler
+  returns run inline, so a one-chunk body never starts the `spawn_blocking`
+  producer (64 B echo: ~10.5 µs → ~0.95 µs in the Rust bench; JNI
+  `dispatchFullStreaming` ~18.9 µs → ~2.9 µs, 64 KiB ~24 µs → ~4.6 µs). A
+  custom `pull_chunk` must be callable from the `block_on` thread. Pulls made
+  while the response streams, inside a spawned task, or under a dispatch
+  timeout still use the producer. The `request_close` hook now fires whenever
+  the source was read, inline or not.
+- Header-first streaming failures (`dispatchStreamingWithHeader`,
+  `dispatchFullStreamingWithHeader`, the stashed DIRECT overflow stream) now
+  throw `com.devfive.vespera.bridge.VesperaStreamAbortedException` (an
+  undeclared `IOException`; `panicked()` flags a Rust panic after the header
+  was produced) instead of a plain `IOException`. The Spring proxy answers
+  such a failure with its own `500` (`panic in Rust engine` / `response body
+  stream error`, `DispatchEvent.panicked` set for a panic) while the response
+  is still uncommitted, instead of leaving it to the servlet container's
+  `/error` page with the Rust `200` headers still applied; once bytes reached
+  the client it still aborts the connection. Bridge JAR and cdylib must come
+  from the same release (an older JAR sees a plain `IOException`).
 
 ### Observability (`vespera`, `vespera_inprocess`)
 
@@ -408,3 +430,43 @@ Additive.
   new unchecked `VesperaClientException`.
 - The Spring autoconfiguration registers a `VesperaClient` bean
   (`@ConditionalOnMissingBean`), also with `controller-enabled=false`.
+
+### C ABI for non-JVM hosts (`vespera`, `vespera_inprocess`, `vespera_jni`)
+
+Additive.
+
+- New `vespera` feature `ffi` (`vespera_inprocess/ffi`): a stable C ABI so
+  C/C++, Go (cgo), Python (`ctypes`), .NET (P/Invoke) and Node (N-API) hosts
+  can embed a vespera app in-process. `vespera::ffi_app!(create_app)` /
+  `vespera::ffi_apps! { "_default" => .., "admin" => .. }` export
+  `vespera_init`; the library exports `vespera_dispatch` (wire in →
+  Rust-allocated wire out), `vespera_dispatch_into` (direct write;
+  `VESPERA_OVERFLOW` + required size), `vespera_dispatch_async` (completion
+  callback, exactly once), `vespera_free`, `vespera_shutdown` and
+  `vespera_abi_version`. Hand-written header:
+  `crates/vespera_inprocess/include/vespera.h` (also
+  `vespera_inprocess::ffi::HEADER`), kept in sync by a test.
+- The shared host runtime (lazy build, in-flight leases, deferred hooks,
+  graceful irreversible shutdown, worker / blocking-pool knobs) moved from
+  `vespera_jni` into `vespera_inprocess::runtime` (feature `runtime`), so JNI
+  and the C ABI share one runtime. `vespera_jni` re-exports the same items
+  under the same names (no API change); `vespera::cron` now routes jobs to the
+  shared runtime whenever a host (JVM or C) loaded the library
+  (`vespera_inprocess::runtime::host_loaded`).
+
+### Miri and loom checking (`vespera_inprocess`, `vespera_jni`)
+
+No behaviour change for applications.
+
+- The shared-runtime gate (in-flight `RuntimeLease` count + shut-down flag,
+  now in `vespera_inprocess::runtime`) is one atomic word now, entered with a
+  single `fetch_add` instead of a `SeqCst` increment followed by a `SeqCst`
+  flag load. The guarantee is unchanged (a dispatch is either refused with
+  `503` or waited for by the shutdown drain — `shutdown0` / `vespera_shutdown`);
+  it no longer depends on cross-variable `SeqCst` ordering, and the hot path
+  does one atomic RMW instead of an RMW plus a load.
+- New CI jobs: `miri` runs the `vespera_inprocess` unit tests and the JNI-free
+  `unsafe` helpers of `vespera_jni` (direct-buffer copy, uninitialised
+  spare-capacity fill, `u8`→`jbyte` view) under Miri; `loom` model-checks the
+  runtime gate (`vespera_inprocess`) and the `dispatchAsync` in-flight cap
+  (`vespera_jni`) (`RUSTFLAGS="--cfg vespera_loom"`).

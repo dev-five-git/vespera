@@ -770,6 +770,7 @@ criterion_group!(
     bench_registry_ab,
     bench_headers_path,
     streaming::bench_streaming_path,
+    streaming::bench_bidirectional_small,
     streaming::bench_async_spawn_pattern,
     streaming::bench_close_hook_ab,
     streaming::bench_async_completion_isolation_ab,

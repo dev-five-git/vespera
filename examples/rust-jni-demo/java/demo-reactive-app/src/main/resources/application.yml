@@ -1,0 +1,12 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: demo-reactive-app
+
+vespera:
+  bridge:
+    # Loads the bundled rust_jni_demo cdylib during context startup.
+    library-name: rust_jni_demo
+    exposed-apps: admin

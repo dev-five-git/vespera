@@ -59,6 +59,16 @@ vespera::jni_apps! {
     "admin"    => admin_app,
 }
 
+// The same cdylib also speaks the stable C ABI (`vespera` feature `ffi`):
+// `vespera_init` registers the same two apps for C / Go / Python / .NET /
+// Node hosts, which then call `vespera_dispatch` & co. declared in
+// `vespera_inprocess`'s `include/vespera.h` (see `ffi/ctypes_demo.py`).
+// Both hosts share one runtime; the wire `"app"` field picks the app.
+vespera::ffi_apps! {
+    "_default" => create_app,
+    "admin"    => admin_app,
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -81,6 +91,38 @@ mod tests {
 
     fn parse(json: &str) -> serde_json::Value {
         serde_json::from_str(json).unwrap()
+    }
+
+    /// The C ABI exactly as a C host drives it: `vespera_init`, then
+    /// `vespera_dispatch` + `vespera_free` (outside any Tokio runtime).
+    #[test]
+    fn c_abi_dispatches_both_apps() {
+        use vespera::inprocess::ffi::{VESPERA_OK, vespera_dispatch, vespera_free};
+
+        assert_eq!(vespera_init(), VESPERA_OK);
+        for (app, path) in [(None, "/health"), (Some("admin"), "/dashboard")] {
+            let mut header = serde_json::json!({"v": 1, "method": "GET", "path": path});
+            if let Some(app) = app {
+                header["app"] = app.into();
+            }
+            let header = serde_json::to_vec(&header).unwrap();
+            let mut wire = u32::try_from(header.len()).unwrap().to_be_bytes().to_vec();
+            wire.extend_from_slice(&header);
+            let (mut out, mut out_len) = (std::ptr::null_mut(), 0usize);
+            // SAFETY: live request buffer; the response is copied, then freed once.
+            let response = unsafe {
+                assert_eq!(
+                    vespera_dispatch(wire.as_ptr(), wire.len(), &raw mut out, &raw mut out_len),
+                    VESPERA_OK
+                );
+                let copy = std::slice::from_raw_parts(out, out_len).to_vec();
+                vespera_free(out, out_len);
+                copy
+            };
+            let len = u32::from_be_bytes(response[..4].try_into().unwrap()) as usize;
+            let head: serde_json::Value = serde_json::from_slice(&response[4..4 + len]).unwrap();
+            assert_eq!(head["status"], 200, "{path}: {head}");
+        }
     }
 
     #[tokio::test]

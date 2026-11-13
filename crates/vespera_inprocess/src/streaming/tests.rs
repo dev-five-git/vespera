@@ -1,3 +1,4 @@
+use super::inline_pull::InlineState;
 use super::{
     ChannelBody, RequestProducerHandle, RequestSourceCloser, StreamOutcome,
     emit_header_then_stream_body,
@@ -34,7 +35,11 @@ fn close_hook_panic_is_contained() {
     let join_handle = runtime.spawn(async {});
     let producer_handle: RequestProducerHandle = Arc::new(Mutex::new(Some(join_handle)));
 
-    let mut closer = RequestSourceCloser::new(Arc::clone(&producer_handle), || panic!("hook boom"));
+    let mut closer = RequestSourceCloser::new(
+        Arc::clone(&producer_handle),
+        InlineState::new(false),
+        || panic!("hook boom"),
+    );
     // Returns normally — the panic is caught inside `close_if_started`.
     closer.close_if_started();
     // Idempotent: the hook was consumed on the first call, so this is a
@@ -202,6 +207,8 @@ async fn channel_body_without_a_producer_is_clean_eof() {
         clean_end: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         slots: Arc::new(tokio::sync::Semaphore::new(1)),
         permit_wait: None,
+        inline_budget: 0,
+        inline: InlineState::new(false),
     };
 
     assert!(body.frame().await.is_none());
@@ -216,6 +223,8 @@ where
         Arc::new(Mutex::new(None)),
         0,
         Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        // Closed inline gate: these tests exercise the spawned producer.
+        InlineState::new(false),
     )
 }
 
@@ -264,6 +273,8 @@ async fn channel_close_is_eof_only_after_a_clean_end(
         clean_end: Arc::new(std::sync::atomic::AtomicBool::new(clean_end)),
         slots: Arc::new(tokio::sync::Semaphore::new(1)),
         permit_wait: None,
+        inline_budget: 0,
+        inline: InlineState::new(false),
     };
     let first = body.frame().await;
     assert_eq!(matches!(first, Some(Err(_))), expect_abort);

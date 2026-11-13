@@ -24,7 +24,7 @@ dependencies {
 
 ### Dependencies — Spring is provided by your app
 
-`vespera-bridge` declares **no transitive dependencies** (its POM is empty): Spring Boot, Spring MVC, the servlet API and SLF4J are compile-only and must come from the application. Every Spring Boot web app already has them through `spring-boot-starter-web` (Boot 3) / `spring-boot-starter-webmvc` (Boot 4), so nothing changes there. The autoconfiguration only activates in a servlet web application with Spring MVC on the classpath (`@ConditionalOnClass` + `@ConditionalOnWebApplication(type = SERVLET)`), and the non-Spring API (`VesperaBridge` dispatch / `encodeRequest` / `decodeResponse`) runs with no Spring jars at all.
+`vespera-bridge` declares **no transitive dependencies** (its POM is empty): Spring Boot, Spring MVC, the servlet API, Spring WebFlux / Reactor and SLF4J are compile-only and must come from the application. Every Spring Boot web app already has them through `spring-boot-starter-web` (Boot 3) / `spring-boot-starter-webmvc` (Boot 4), so nothing changes there. The autoconfiguration only activates in a servlet web application with Spring MVC on the classpath (`@ConditionalOnClass` + `@ConditionalOnWebApplication(type = SERVLET)`); its WebFlux counterpart only in a reactive web application with WebFlux on the classpath (see [WebFlux](#webflux)), and the non-Spring API (`VesperaBridge` dispatch / `encodeRequest` / `decodeResponse`) runs with no Spring jars at all.
 
 Kotlin is optional too: the [Kotlin extensions](#kotlin) ship inside the same JAR, but `kotlin-stdlib` and `kotlinx-coroutines-core` are compile-only — Java applications never load a Kotlin class.
 
@@ -71,6 +71,43 @@ vespera {
 ```
 
 Each `targets` key is a bridge platform (`<os>-<arch>`, os `windows` / `macos` / `linux`); its library is read from `<targetDir>/<triple>/<profile>/` and bundled under `native/<os>-<arch>/` with that platform's file name (`.dll` / `lib*.dylib` / `lib*.so`). A plain `linux-<arch>` key built for a `*-linux-musl*` triple is bundled under `native/linux-<arch>-musl/` (where the bridge looks first on a musl JVM); `linux-<arch>-musl` keys are accepted too, so one jar can carry both builds, e.g. `targets.put("linux-x86_64-musl", "x86_64-unknown-linux-musl")` next to the glibc host build. A key naming the host platform replaces the host build (on an Alpine build host the host platform is `linux-<arch>-musl`). The cross toolchain/linker must already be installed. Everything under `extraNativeLibs/native/` is merged in; a locally built library wins over a prebuilt one with the same path. `cargoBuild` is never `UP-TO-DATE` (Cargo's own incremental check decides) and declares no file inputs.
+
+#### Per-platform native jars (publish once per platform, consume one)
+
+Vespera has no prebuilt native library of its own — the cdylib is **your** app — so instead of one fat jar you can publish one small classifier jar per platform and let each deployment pull only its own. Build the cdylib on a CI matrix (one native runner per platform), merge the artifacts into `prebuilt/native/<platform>/<lib>`, and package them from a dedicated Gradle project:
+
+```kotlin
+// myapp-native/build.gradle.kts
+plugins {
+    `maven-publish`
+    id("kr.devfive.vespera-bridge") version "0.6.0"
+}
+group = "com.acme"
+version = "0.1.0"
+
+vespera {
+    crateName.set("my-app")
+    bundleNative.set(false)    // nothing is built or bundled locally
+    nativeJarsDir.set(rootProject.layout.projectDirectory.dir("prebuilt")) // default: extraNativeLibs
+    nativeJarPlatforms.addAll(listOf(
+        "linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-aarch64", "windows-x86_64",
+    ))
+}
+```
+
+- One `nativeJar<Platform>` task per entry (`nativeJarLinuxX86_64`, `nativeJarLinuxX86_64Musl`, …; lifecycle task `nativeJars`) writes `build/libs/myapp-native-0.1.0-<platform>.jar` containing exactly `native/<platform>/<lib>`; it fails with the missing path when that platform's library is absent. Platforms are bridge platform keys (`<os>-<arch>`, `linux-<arch>-musl`).
+- With `maven-publish` applied, the jars are the classifier artifacts of a `vesperaNative` publication (artifactId = project name, `pom` packaging, no main jar): `./gradlew publishVesperaNativePublicationTo<Repo>Repository`. Rename it with `publishing.publications.named<MavenPublication>("vesperaNative") { artifactId = "..." }`. With the vanniktech Maven Central plugin the publication is signed and uploaded with the others.
+- **Consumers** keep the plugin (for the `vespera-bridge` dependency) with `bundleNative.set(false)` and add the platforms they deploy to — the bridge loads the host's from whichever jar carries it:
+
+  ```kotlin
+  vespera { crateName.set("my-app"); bundleNative.set(false) }
+  dependencies {
+      runtimeOnly("com.acme:myapp-native:0.1.0:linux-x86_64")   // production image
+      runtimeOnly("com.acme:myapp-native:0.1.0:macos-aarch64")  // developer laptops
+  }
+  ```
+
+A ready-to-copy GitHub Actions workflow (matrix: Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64 → merge → `nativeJars` → publish on tags) lives at [`.github/workflow-templates/vespera-native-jars.yml`](../../.github/workflow-templates/vespera-native-jars.yml).
 
 ## Two-line integration
 
@@ -324,6 +361,56 @@ public Executor vesperaBridgeAsyncResponseExecutor() {
     return Executors.newFixedThreadPool(4);
 }
 ```
+
+## WebFlux
+
+Spring WebFlux applications (reactor-netty, or any reactive server) get a non-blocking proxy instead of `VesperaProxyController`. Add the bridge to an app that has `spring-boot-starter-webflux`, call `VesperaBridge.init(...)` or set `vespera.bridge.library-name`, and that is all. `VesperaBridgeReactiveAutoConfiguration` activates only with `@ConditionalOnWebApplication(type = REACTIVE)` and only when `DispatcherHandler` and Reactor are on the classpath. The servlet autoconfiguration stays `SERVLET`-only, so a given app gets exactly one of the two proxies. WebFlux and Reactor are **compile-only** dependencies of the bridge, so they never reach a servlet or plain-Java consumer transitively. The build's `verifyPublishedPom` check fails if the published POM or Gradle module metadata declares any dependency.
+
+```java
+VesperaBridge.init("my_rust_lib");                          // or vespera.bridge.library-name
+SpringApplication.run(ReactiveApplication.class, args);     // spring-boot-starter-webflux
+```
+
+**Autoconfigured beans** (each `@ConditionalOnMissingBean`, so any of them can be replaced):
+
+| Bean | Default | Role |
+|---|---|---|
+| `ReactiveAppNameResolver` | `ReactiveHeaderAppNameResolver(vespera.bridge.app-header, vespera.bridge.exposed-apps)` | Picks the app per exchange. It uses the same allowlist and one-time WARN as the servlet `HeaderAppNameResolver`, and the selection header is never forwarded. |
+| `ReactivePrincipalResolver` | `ExchangePrincipalResolver`, or `ReactivePrincipalResolver.none()` when `forward-principal=false` | Fills the trusted `principal` wire field from `exchange.getPrincipal()`. With Spring Security WebFlux, that is the `ReactiveSecurityContextHolder` authentication. Authorities are read reflectively, and anonymous tokens are skipped. |
+| `VesperaReactiveProxyHandler` | (`controller-enabled=true`) | The `WebHandler` that dispatches to Rust. |
+| `VesperaReactiveHandlerMapping` | order `LOWEST_PRECEDENCE - 10` | Maps `include-patterns` / `exclude-patterns`. `@Controller`s and `RouterFunction`s win; static resources come after. |
+| `VesperaReactivePreflightFilter` | (`cors=rust`) | WebFlux answers CORS preflights inside `DispatcherHandler` without invoking a handler, so this `WebFilter` routes owned-path preflights to Rust. |
+
+**Dispatch.** Requests go through `VesperaBridge.dispatchAsync`, so a Netty event loop never blocks:
+
+- The request body is aggregated with `DataBufferUtils.join`, capped by `max-buffered-request-bytes`. A declared or actual excess answers `413`.
+- The completion is published on `Schedulers.parallel()`, not on the Tokio worker that completed it.
+- The response is written as one zero-copy buffer, capped by `max-buffered-response-bytes` (`500`).
+- **Cancel-on-disconnect.** When the client goes away, the `Mono` is cancelled, which cancels the `CompletableFuture`, and the native task is dropped at its next poll. This is the same `cancel0` path as the servlet `ASYNC` mode. Observers see such a request with status `499`.
+
+**Shared behaviour.** The following work exactly as on the servlet side:
+
+- `HeaderPolicy` (hop-by-hop and `Connection`-nominated headers)
+- the request id (`vespera.bridge.request-id.*`, put in the MDC around the dispatch call)
+- `remote_addr` and `scheme`
+- CORS ownership (`cors=spring|rust`)
+- `DispatchObserver` beans, `MicrometerDispatchObserver` and the health indicator
+- `vespera.bridge.native.*`, `library-name` and `shutdown-on-close`
+- the `VesperaClient` bean
+
+**Streaming.** A request whose `Accept` header asks for `text/event-stream` or NDJSON (the same rule as `SmartDispatchModeResolver`) is dispatched through the native header-first streaming symbol (`dispatchStreamingWithHeader`) on `Schedulers.boundedElastic()`. The bytes are bridged with `DataBufferUtils.outputStreamPublisher` (backpressured, 64 KiB chunks) and written with `writeAndFlushWith`, so every chunk Rust emits is flushed to the client. A disconnect ends the blocking writer, and the native side stops on the failed write. All other requests take the buffered path.
+
+**Properties that do not apply to WebFlux:** `dispatch-mode` (there is no `DispatchModeResolver`: the proxy always uses async dispatch, or streaming per `Accept`), `direct-retry-on-overflow`, `async-pool-size` and `clear-threadlocals-after-request`.
+
+**Limitations:**
+
+- Request bodies are always aggregated; there is no streamed upload equivalent of `BIDIRECTIONAL_STREAMING`.
+- Each streamed response holds one `boundedElastic` thread for its lifetime, so size `reactor.schedulers.defaultBoundedElasticSize` for many concurrent SSE clients. An idle stream notices a disconnect only at its next write.
+- `HEAD` is never streamed.
+- A form body that a filter already consumed through `exchange.getFormData()` is not rebuilt (unlike the servlet proxy's parameter-map fallback).
+- A path that a user `@Controller` owns for another HTTP method answers `405` from Spring rather than falling through to Rust.
+- The springdoc integration is servlet-only.
+- `VesperaClient.send()` blocks. From reactive code, use `sendAsync()` (`Mono.fromFuture(...)`).
 
 ## Multi-app routing
 
@@ -1118,9 +1205,48 @@ vespera.bridge:
    **Directory safety (POSIX).** The base and hash directories are created with mode `0700` and, before a cached copy is trusted, verified to be real directories (symbolic links are rejected), owned by the current user, and not group- or other-writable; an explicit `vespera.native.dir` / `VESPERA_NATIVE_DIR` is subject to the same checks. The extracted library is made owner read/execute only (`0500`). If verification fails — for example a squatted, shared (`1777`-style) or symlinked directory — the library is extracted into a fresh private `vespera-native-*` temp directory for this JVM only (no reuse, removed on exit where possible) and a warning is logged. **Directory safety (Windows / non-POSIX).** The same guarantee comes from the owner and the ACL: the base and hash directories must be real directories (no symbolic link or junction), owned by the current user, and their ACL must not grant write-like rights (`WRITE_DATA`, `APPEND_DATA`, `DELETE_CHILD`, `DELETE`, `WRITE_ACL`, `WRITE_OWNER`) to anyone but the owner, `SYSTEM` or `Administrators` (inherit-only entries, `DENY` entries and SIDs that do not resolve to an account are ignored). A predictable directory that fails this — e.g. one another user created first under a shared `java.io.tmpdir` to plant a DLL — is not reused: the library is extracted into a fresh, randomly named `vespera-native-*` temp directory for this JVM and a warning is logged. A file system without ACLs gets the same fallback.
 2. **Fallback** — `System.loadLibrary("crateName")` searches `java.library.path`.
 
+The bundled lookup is a plain classpath resource lookup, so the library may come from the application jar or from any per-platform native jar on the runtime classpath (`myapp-native-0.1.0-linux-x86_64.jar`, see [Per-platform native jars](#per-platform-native-jars-publish-once-per-platform-consume-one)). When neither path works, the `UnsatisfiedLinkError` names the host platform, the paths tried, the platforms the classpath **does** bundle the library for (e.g. `the classpath bundles libmy_app.so only for [macos-aarch64, windows-x86_64]` — the deployment is missing its platform's jar), or the other `native/<platform>/` libraries found when the `init` name matches none, followed by the `java.library.path` failure.
+
 **musl vs glibc (Linux).** A glibc `.so` cannot be loaded into a musl JVM (Alpine) and vice versa, so musl builds live under their own `native/linux-<arch>-musl/` folder. On Linux the bridge detects the libc the JVM itself is linked against from `/proc/self/maps` (no process is spawned; a mapped `ld-musl-*` means musl) — falling back, without `/proc`, to "`/lib/ld-musl-*` exists and no `ld-linux*` loader does" — and can be forced with `-Dvespera.native.libc=musl|glibc`. On musl it tries `native/linux-<arch>-musl/` first and only when no musl library is bundled loads `native/linux-<arch>/` with a WARN (that load most likely fails); glibc JVMs only ever look at `native/linux-<arch>/`. Build the musl library with a `*-linux-musl` Rust target (a cdylib needs `RUSTFLAGS="-C target-feature=-crt-static"`).
 
 The supported platforms are `linux-x86_64`, `linux-aarch64`, `linux-x86_64-musl`, `linux-aarch64-musl`, `macos-x86_64`, `macos-aarch64`, `windows-x86_64`. Place the cdylib at `src/main/resources/native/{platform}/` to bundle it; see [`examples/rust-jni-demo/java/demo-app/build.gradle.kts`](../../examples/rust-jni-demo/java/demo-app/build.gradle.kts) for a working Gradle task.
+
+## GraalVM native image
+
+The JAR ships GraalVM reachability metadata under `META-INF/native-image/kr.devfive/vespera-bridge/`, which `native-image` picks up from the classpath on its own (no flags, no agent run, nothing to copy):
+
+| File | Registers |
+|---|---|
+| `jni-config.json` | Everything the Rust side looks up through JNI: `InputStream.read(byte[])` / `close()`, `OutputStream.write(byte[],int,int)` / `flush()`, `Consumer.accept`, `CompletableFuture.complete` (streaming and async callbacks), the `(String)` constructors of the exceptions it throws (`IOException`, `IllegalArgumentException`, `RuntimeException`), and every JDK class the `jni` crate binds internally (`Throwable`, `Thread`, `Class`, `ClassLoader`, its exception types, ...) with all public members — its bindings resolve every member on first use, and a single missing one recurses inside its own error handling until the request thread overflows its stack. |
+| `resource-config.json` | Bundled libraries `native/<platform>/<lib>` and `vespera-bridge.properties`. |
+| `reflect-config.json` | `Thread.isVirtual()` (looked up reflectively; the bridge targets Java 17). |
+
+With Spring Boot, the autoconfiguration also contributes Spring AOT hints (`VesperaBridgeRuntimeHints`, via `@ImportRuntimeHints`): the proxy handler method the CORS preflight mapping resolves by reflection, and Spring Security's `Authentication.getAuthorities()` / `GrantedAuthority.getAuthority()` when Spring Security is present (forwarded principal authorities). So a Spring Boot app that already builds natively only needs the `org.graalvm.buildtools.native` plugin:
+
+```kotlin
+plugins {
+    id("org.springframework.boot") version "4.1.2"
+    id("org.graalvm.buildtools.native") version "1.1.14"   // the version Spring Boot manages
+    id("kr.devfive.vespera-bridge") version "..."
+}
+```
+
+```bash
+# JAVA_HOME = GraalVM for JDK 25 (Spring Boot 4) / GraalVM for JDK 17+ (Spring Boot 3.5)
+./gradlew nativeCompile
+./build/native/nativeCompile/my-app
+```
+
+The repository's demo app builds the same way (`./gradlew -PnativeImage :demo-app:nativeCompile` in `examples/rust-jni-demo/java`); `scripts/native-image-smoke.sh` drives every dispatch mode against the executable, and the manual `Native Image` workflow (`.github/workflows/native-image.yml`) runs both on ubuntu.
+
+**Limitations**
+
+- **The Rust library stays a separate file.** A native image cannot statically link a JNI cdylib: `VesperaBridge.init` extracts the bundled `native/<platform>/` library (embedded as a resource) and `System.load`s it exactly as on the JVM, so the extraction directory rules above still apply. Ship it next to the executable and use `java.library.path` instead if you would rather not embed it: drop it from the resources and start with `-Djava.library.path=<dir>`.
+- **One platform per image.** Only the host platform's library is useful; bundle just that one (the Gradle plugin's default) to keep the executable small.
+- **Same release for both halves**, as on the JVM: the metadata matches the JNI lookups of the `vespera_jni` version from the same release. A cdylib from another release may look up something that is not registered, which fails only inside the image (a JNI lookup error, a streaming callback falling back to a slower path, or a `StackOverflowError` from the `jni` crate's recursive lookup).
+- **Charsets.** `VesperaResponse.bodyString()` and form decoding honour the `charset` parameter; a native image only contains the charsets GraalVM includes by default, so add `-H:+AddAllCharsets` if your Rust handlers answer in charsets other than UTF-8 / ISO-8859-1 / US-ASCII.
+- **Your own app's reflection** (DTOs Jackson binds in Java code, and so on) is outside this metadata; vespera's DTOs live in Rust and need none.
+- Tested with GraalVM CE 25 and Spring Boot 4.1; the metadata uses the classic `*-config.json` format, which GraalVM 22.3 and later read.
 
 ## SBOM and provenance
 
@@ -1134,7 +1260,7 @@ and the Gradle plugin.
 
 ## End-to-end example
 
-See [`examples/rust-jni-demo`](../../examples/rust-jni-demo/) for a complete Rust + Spring Boot integration including build scripts, native bundling, and a curl smoke test.
+See [`examples/rust-jni-demo`](../../examples/rust-jni-demo/) for a complete Rust + Spring Boot integration including build scripts, native bundling, and a curl smoke test. Its `java/demo-reactive-app` module is the WebFlux variant (reactor-netty, no servlet API), whose `ReactiveProxyE2ETest` runs against the real cdylib.
 
 ## Breaking changes after 0.5.0
 

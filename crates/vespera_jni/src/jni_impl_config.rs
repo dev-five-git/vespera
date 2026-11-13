@@ -12,32 +12,14 @@
 //! surfaces `false` instead of silently dropping the configuration.
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use jni::EnvUnowned;
 use jni::objects::JClass;
 use jni::sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong};
 
-use super::guard_void_symbol;
-
-const MIN_RUNTIME_WORKERS: usize = 1;
-const MAX_RUNTIME_WORKERS: usize = 1024;
-
-/// Default cap on the shared runtime's blocking pool.
-///
-/// Kept at Tokio's own default (512).  The blocking pool hosts one request
-/// producer per in-flight bidirectional upload (parked in
-/// `InputStream.read`) plus any handler `spawn_blocking` work (e.g. the
-/// multipart extractor's temp-file I/O).  A producer waiting for its handler
-/// and a handler waiting for a blocking thread can deadlock once the pool is
-/// exhausted, so the cap must stay well above the host's request concurrency
-/// (Tomcat's default pool is 200 threads).  Threads are spawned lazily and
-/// reaped after 10 s idle, so a high cap costs nothing when unused; it now
-/// bounds the whole process (sync / direct dispatch no longer build one
-/// runtime — and one blocking pool — per Java thread).
-pub const DEFAULT_RUNTIME_MAX_BLOCKING_THREADS: usize = 512;
-const MAX_RUNTIME_MAX_BLOCKING_THREADS: usize = 8192;
+use super::gates::{CapPermit, InFlightCap};
+use super::{guard_void_symbol, set_runtime_max_blocking_threads, set_runtime_worker_threads};
 
 /// Default cap on concurrently in-flight `dispatchAsync` calls.
 ///
@@ -50,10 +32,15 @@ const MAX_RUNTIME_MAX_BLOCKING_THREADS: usize = 8192;
 pub const DEFAULT_ASYNC_MAX_IN_FLIGHT: usize = 4096;
 const MAX_ASYNC_MAX_IN_FLIGHT: usize = 1 << 24;
 
-static RUNTIME_WORKER_THREADS: OnceLock<Option<usize>> = OnceLock::new();
-static RUNTIME_MAX_BLOCKING_THREADS: OnceLock<usize> = OnceLock::new();
 static ASYNC_MAX_IN_FLIGHT: OnceLock<usize> = OnceLock::new();
-static ASYNC_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+/// The `dispatchAsync` in-flight counter + admission protocol (loom-checked).
+#[cfg(not(vespera_loom))]
+static ASYNC_IN_FLIGHT: InFlightCap = InFlightCap::new();
+/// loom atomics are not `const`-constructible; the loom build only runs the
+/// `loom_*` models, which never touch the static.
+#[cfg(vespera_loom)]
+static ASYNC_IN_FLIGHT: std::sync::LazyLock<InFlightCap> =
+    std::sync::LazyLock::new(InFlightCap::new);
 
 /// Read a `usize` env knob: absent → `default`; present but unparseable →
 /// one-time stderr warning + `default` (callers resolve through a
@@ -72,73 +59,6 @@ fn read_env_usize(var: &str, default: usize, min: usize, max: usize) -> usize {
         },
         |v| v.clamp(min, max),
     )
-}
-
-/// Worker thread count for the shared Tokio runtime, resolved once
-/// (first hit wins, then fixed for the process lifetime):
-///
-/// 1. [`set_runtime_worker_threads`] called before the runtime is
-///    first used (the `configureRuntime0` JNI hook from
-///    `VesperaBridge.init()` lands here)
-/// 2. `VESPERA_RUNTIME_WORKERS` environment variable
-/// 3. `None` — Tokio's default (number of logical CPUs)
-///
-/// Values are clamped to `[1, 1024]`.  An env value that is present but
-/// fails to parse emits a one-time stderr warning and falls back to the
-/// Tokio default.
-#[must_use]
-pub fn runtime_worker_threads() -> Option<usize> {
-    *RUNTIME_WORKER_THREADS.get_or_init(|| {
-        // Absent env var: silently fall through to the Tokio default — only a
-        // PRESENT-but-INVALID value triggers the warning.
-        let raw = std::env::var("VESPERA_RUNTIME_WORKERS").ok()?;
-        raw.trim().parse::<usize>().map_or_else(
-            |_| {
-                eprintln!(
-                    "vespera: ignoring invalid VESPERA_RUNTIME_WORKERS={raw:?} \
-                     (expected a positive integer); using the Tokio default \
-                     (logical CPU count)"
-                );
-                None
-            },
-            |v| Some(v.clamp(MIN_RUNTIME_WORKERS, MAX_RUNTIME_WORKERS)),
-        )
-    })
-}
-
-/// Override the shared runtime's worker thread count **before the
-/// first dispatch**.  Returns `false` when the value was already
-/// fixed.  Clamped to `[1, 1024]`.
-pub fn set_runtime_worker_threads(workers: usize) -> bool {
-    RUNTIME_WORKER_THREADS
-        .set(Some(
-            workers.clamp(MIN_RUNTIME_WORKERS, MAX_RUNTIME_WORKERS),
-        ))
-        .is_ok()
-}
-
-/// Blocking-pool cap of the shared runtime.  Precedence:
-/// [`set_runtime_max_blocking_threads`], then
-/// `VESPERA_RUNTIME_MAX_BLOCKING_THREADS`, then
-/// [`DEFAULT_RUNTIME_MAX_BLOCKING_THREADS`] (512).  Clamped to `[1, 8192]`.
-#[must_use]
-pub fn runtime_max_blocking_threads() -> usize {
-    *RUNTIME_MAX_BLOCKING_THREADS.get_or_init(|| {
-        read_env_usize(
-            "VESPERA_RUNTIME_MAX_BLOCKING_THREADS",
-            DEFAULT_RUNTIME_MAX_BLOCKING_THREADS,
-            1,
-            MAX_RUNTIME_MAX_BLOCKING_THREADS,
-        )
-    })
-}
-
-/// Override the shared runtime's blocking-pool cap **before the first
-/// dispatch**.  Returns `false` when already fixed.  Clamped to `[1, 8192]`.
-pub fn set_runtime_max_blocking_threads(threads: usize) -> bool {
-    RUNTIME_MAX_BLOCKING_THREADS
-        .set(threads.clamp(1, MAX_RUNTIME_MAX_BLOCKING_THREADS))
-        .is_ok()
 }
 
 /// Cap on concurrently in-flight `dispatchAsync` calls.  Precedence:
@@ -170,43 +90,18 @@ pub fn set_async_max_in_flight(max: usize) -> bool {
 /// cancelled dispatch must hand its slot back promptly.
 #[must_use]
 pub fn async_in_flight() -> usize {
-    ASYNC_IN_FLIGHT.load(Ordering::Acquire)
+    ASYNC_IN_FLIGHT.in_flight()
 }
 
 /// One admitted `dispatchAsync` slot; releases it on drop (task completion,
 /// a caught panic, or the runtime dropping the task at shutdown).
-pub struct AsyncPermit {
-    /// The counter this permit holds a slot in; `None` when uncapped.
-    counter: Option<&'static AtomicUsize>,
-}
-
-impl Drop for AsyncPermit {
-    fn drop(&mut self) {
-        if let Some(counter) = self.counter {
-            counter.fetch_sub(1, Ordering::AcqRel);
-        }
-    }
-}
+pub type AsyncPermit = CapPermit;
 
 /// Admit one `dispatchAsync` call, or `None` when the in-flight cap is
 /// reached (the caller completes the future with a `503` immediately).
 #[must_use]
 pub fn try_acquire_async_permit() -> Option<AsyncPermit> {
-    admit(async_max_in_flight(), &ASYNC_IN_FLIGHT)
-}
-
-fn admit(max: usize, in_flight: &'static AtomicUsize) -> Option<AsyncPermit> {
-    if max == 0 {
-        return Some(AsyncPermit { counter: None });
-    }
-    let previous = in_flight.fetch_add(1, Ordering::AcqRel);
-    if previous >= max {
-        in_flight.fetch_sub(1, Ordering::AcqRel);
-        return None;
-    }
-    Some(AsyncPermit {
-        counter: Some(in_flight),
-    })
+    ASYNC_IN_FLIGHT.admit(async_max_in_flight())
 }
 
 /// `503` wire response for an async dispatch rejected by the in-flight cap.
@@ -509,29 +404,6 @@ mod tests {
         assert_eq!(guarded_configure(|| true), JNI_TRUE);
         assert_eq!(guarded_configure(|| false), JNI_FALSE);
         assert_eq!(guarded_configure(|| panic!("boom")), JNI_FALSE);
-    }
-
-    #[test]
-    fn admission_counts_and_releases_slots() {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let first = admit(2, &COUNTER).expect("slot 1");
-        let second = admit(2, &COUNTER).expect("slot 2");
-        assert!(admit(2, &COUNTER).is_none(), "third call is rejected");
-        assert_eq!(
-            COUNTER.load(Ordering::Acquire),
-            2,
-            "a rejection leaks no slot"
-        );
-        drop(first);
-        let third = admit(2, &COUNTER).expect("a released slot is reusable");
-        drop((second, third));
-        assert_eq!(COUNTER.load(Ordering::Acquire), 0);
-        assert!(admit(0, &COUNTER).is_some(), "0 = unlimited");
-        assert_eq!(
-            COUNTER.load(Ordering::Acquire),
-            0,
-            "unlimited is not counted"
-        );
     }
 
     #[test]

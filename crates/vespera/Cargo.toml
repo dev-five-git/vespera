@@ -64,7 +64,14 @@ cron = ["tokio/rt", "tokio/time", "tokio/sync", "vespera_core/cron-chrono", "ves
 # is opt-in; without it `tz = ...` is a compile error.
 cron-tz = ["cron", "vespera_core/cron-tz", "vespera_macro/cron-tz"]
 inprocess = ["dep:vespera_inprocess", "vespera_inprocess/connect-info"]
-jni = ["inprocess", "dep:vespera_jni"]
+jni = ["inprocess", "dep:vespera_jni", "vespera_inprocess/runtime"]
+# Stable C ABI for non-JVM hosts (C/C++, Go, Python ctypes, .NET, Node):
+# `vespera::ffi_app!` / `ffi_apps!` export `vespera_init`; the other symbols
+# (`vespera_dispatch`, `vespera_dispatch_into`, `vespera_dispatch_async`,
+# `vespera_free`, `vespera_shutdown`) come from `vespera_inprocess::ffi`.
+# Header: `vespera_inprocess`'s `include/vespera.h`.  Shares the host runtime
+# with `jni`, so one cdylib can serve both.
+ffi = ["inprocess", "vespera_inprocess/ffi"]
 # Structured `tracing` diagnostics (off by default): the in-process / JNI
 # dispatch `vespera.dispatch` span + error/panic events (forwarded to
 # `vespera_inprocess/tracing` when `inprocess` / `jni` is on — the `?` keeps
@@ -113,7 +120,7 @@ garde = { workspace = true, optional = true }
 # the graph via axum's json/form/query features).
 serde_path_to_error = { version = "0.1", optional = true }
 # `tracing` feature: cron diagnostics as `tracing` events (see the feature).
-tracing = { version = "0.1.41", default-features = false, features = ["std"], optional = true }
+tracing = { version = "0.1.44", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
 # Used by integration tests under `tests/` that exercise the

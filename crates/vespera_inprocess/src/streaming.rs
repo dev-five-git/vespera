@@ -1,16 +1,13 @@
 //! Streaming dispatch variants: response streaming, header-callback
 //! streaming, and bidirectional (request + response) streaming.
 
-use std::future::Future;
 use std::ops::ControlFlow;
-use std::pin::{Pin, pin};
+use std::pin::pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
 use axum::body::Body;
-use bytes::Bytes;
-use http_body::Body as _;
 use http_body_util::BodyExt;
 
 use crate::bounded::{Deadline, Prefetched422, prefetch_422_body, timeout_wire};
@@ -21,6 +18,10 @@ use crate::wire::{
     split_wire_request,
 };
 
+mod frame_batch;
+use frame_batch::{FrameBatch, poll_frame_now};
+mod inline_pull;
+use inline_pull::InlineState;
 mod producer;
 pub use producer::REQUEST_PRODUCER_JOIN_GRACE;
 use producer::{ChannelBody, RequestProducerHandle, RequestSourceCloser, join_request_producer};
@@ -195,24 +196,20 @@ where
     // a pre-chunk failure (clean error response) from a truncation.
     let mut captured: Vec<u8> = Vec::new();
     let mut delivered = false;
-    let outcome = {
-        let mut on_header = |h: &[u8]| captured.extend_from_slice(h);
-        let mut counting = |chunk: &[u8]| {
+    let outcome = emit_header_then_stream_body(
+        status,
+        headers,
+        metadata,
+        body,
+        &mut deadline,
+        &mut |h: &[u8]| captured.extend_from_slice(h),
+        &mut |chunk: &[u8]| {
             delivered = true;
             on_chunk(chunk)
-        };
-        emit_header_then_stream_body(
-            status,
-            headers,
-            metadata,
-            body,
-            &mut deadline,
-            &mut on_header,
-            &mut counting,
-            false,
-        )
-        .await
-    };
+        },
+        false,
+    )
+    .await;
     match outcome {
         StreamOutcome::Complete => (captured, StreamOutcome::Complete),
         failed => (
@@ -327,25 +324,10 @@ where
     F: FnMut(&[u8]) -> ControlFlow<()>,
 {
     if status == 422 {
-        match deadline.run(pin!(prefetch_422_body(body))).await {
-            None => {
-                on_header(&timeout_wire());
-                return StreamOutcome::Complete;
-            }
-            Some(Prefetched422::Failed) => {
-                on_header(&error_wire(500, BODY_STREAM_ERROR_MSG));
-                return StreamOutcome::Complete;
-            }
-            Some(Prefetched422::Small(collected)) => {
-                on_header(&build_wire_header_bytes_hoisting(
-                    status, &headers, &metadata, &collected,
-                ));
-                if !collected.is_empty() && on_chunk(&collected).is_break() {
-                    return StreamOutcome::SinkStopped;
-                }
-                return StreamOutcome::Complete;
-            }
-            Some(Prefetched422::Large(rest)) => body = rest,
+        let prefetched = deadline.run(pin!(prefetch_422_body(body))).await;
+        match finish_prefetched_422(prefetched, &headers, &metadata, on_header, on_chunk) {
+            Ok(rest) => body = rest,
+            Err(outcome) => return outcome,
         }
     }
 
@@ -354,6 +336,47 @@ where
     // the first header, never the body (a long download that is still making
     // progress must not be cut off mid-stream).
     stream_body_tail(body, on_chunk, flush_hints).await
+}
+
+/// Settle a prefetched `422` body: `Err(outcome)` when the response was
+/// delivered here (hoisting header + body, or a 504/500 error header),
+/// `Ok(body)` when it was too large to hoist and streams normally.
+fn finish_prefetched_422<H, F>(
+    prefetched: Option<Prefetched422>,
+    headers: &http::HeaderMap,
+    metadata: &crate::envelope::ResponseMetadata,
+    on_header: &mut H,
+    on_chunk: &mut F,
+) -> Result<Body, StreamOutcome>
+where
+    H: FnMut(&[u8]),
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+{
+    let collected = match prefetched {
+        None => return Err(header_only(on_header, &timeout_wire())),
+        Some(Prefetched422::Failed) => {
+            return Err(header_only(
+                on_header,
+                &error_wire(500, BODY_STREAM_ERROR_MSG),
+            ));
+        }
+        Some(Prefetched422::Small(collected)) => collected,
+        Some(Prefetched422::Large(rest)) => return Ok(rest),
+    };
+    on_header(&build_wire_header_bytes_hoisting(
+        422, headers, metadata, &collected,
+    ));
+    if !collected.is_empty() && on_chunk(&collected).is_break() {
+        return Err(StreamOutcome::SinkStopped);
+    }
+    Err(StreamOutcome::Complete)
+}
+
+/// A pre-header failure: the (error) response is delivered in full through
+/// the header callback, so nothing is truncated.
+fn header_only<H: FnMut(&[u8])>(on_header: &mut H, wire: &[u8]) -> StreamOutcome {
+    on_header(wire);
+    StreamOutcome::Complete
 }
 
 /// Post-header body tail shared by every header-first streaming path and
@@ -397,7 +420,7 @@ where
                 body.frame().await
             }
         };
-        match next {
+        let data = match next {
             None => {
                 return if batch.deliver(on_chunk).is_break() {
                     StreamOutcome::SinkStopped
@@ -405,19 +428,8 @@ where
                     StreamOutcome::Complete
                 };
             }
-            Some(Ok(frame)) => {
-                if let Ok(data) = frame.into_data()
-                    && !data.is_empty()
-                {
-                    unflushed = flush_hints;
-                    // The chunk sink asked to stop (e.g. the host's output sink
-                    // failed). The header is already committed, so report the
-                    // truncation to the caller.
-                    if batch.push(data, on_chunk).is_break() {
-                        return StreamOutcome::SinkStopped;
-                    }
-                }
-            }
+            // A non-data frame (trailers) maps to an empty chunk: skipped.
+            Some(Ok(frame)) => frame.into_data().unwrap_or_default(),
             // The response body aborted mid-stream after the header was
             // committed: status/headers can no longer change, so deliver what
             // was already produced and surface the truncation so the host can
@@ -430,79 +442,16 @@ where
                     StreamOutcome::BodyError
                 };
             }
-        }
-    }
-}
-
-/// Poll `body` for its next frame exactly once, without waiting: `Pending`
-/// means the body has nothing ready right now (its waker is registered, so a
-/// following `body.frame().await` resumes normally).
-fn poll_frame_now(
-    body: &mut Body,
-) -> impl Future<Output = Poll<Option<Result<http_body::Frame<Bytes>, axum::Error>>>> + '_ {
-    std::future::poll_fn(move |cx| Poll::Ready(Pin::new(&mut *body).poll_frame(cx)))
-}
-
-/// Coalesces response frames that are ready back-to-back into one sink call.
-///
-/// The first frame is held zero-copy (a single-frame body — the common
-/// `Json` / `Bytes` response — is delivered without any copy); only a
-/// second small frame arriving before the body waits starts a copying
-/// batch, capped at the streaming chunk size so the buffered amount stays
-/// `O(chunk)`.
-struct FrameBatch {
-    held: Option<Bytes>,
-    merged: Vec<u8>,
-    cap: usize,
-}
-
-impl FrameBatch {
-    const fn new(cap: usize) -> Self {
-        Self {
-            held: None,
-            merged: Vec::new(),
-            cap,
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.held.as_ref().map_or(self.merged.len(), Bytes::len)
-    }
-
-    /// Add one non-empty frame, delivering the current batch first when the
-    /// frame would push it past the cap.
-    fn push<F>(&mut self, data: Bytes, on_chunk: &mut F) -> ControlFlow<()>
-    where
-        F: FnMut(&[u8]) -> ControlFlow<()>,
-    {
-        if self.len().saturating_add(data.len()) > self.cap {
-            self.deliver(on_chunk)?;
-        }
-        if self.len() == 0 {
-            self.held = Some(data);
-        } else {
-            if let Some(held) = self.held.take() {
-                self.merged.extend_from_slice(&held);
+        };
+        if !data.is_empty() {
+            unflushed = flush_hints;
+            // The chunk sink asked to stop (e.g. the host's output sink
+            // failed). The header is already committed, so report the
+            // truncation to the caller.
+            if batch.push(data, on_chunk).is_break() {
+                return StreamOutcome::SinkStopped;
             }
-            self.merged.extend_from_slice(&data);
         }
-        ControlFlow::Continue(())
-    }
-
-    /// Hand the batched bytes (if any) to the sink.
-    fn deliver<F>(&mut self, on_chunk: &mut F) -> ControlFlow<()>
-    where
-        F: FnMut(&[u8]) -> ControlFlow<()>,
-    {
-        if let Some(held) = self.held.take() {
-            return on_chunk(&held);
-        }
-        if self.merged.is_empty() {
-            return ControlFlow::Continue(());
-        }
-        let flow = on_chunk(&self.merged);
-        self.merged.clear();
-        flow
     }
 }
 
@@ -560,17 +509,11 @@ where
     // truncated.
     let (header_bytes, body_bytes) = match cap_and_split(input) {
         Ok(parts) => parts,
-        Err(wire) => {
-            on_header(&wire);
-            return StreamOutcome::Complete;
-        }
+        Err(wire) => return header_only(&mut on_header, &wire),
     };
     let (header, router) = match parse_validate_resolve(&header_bytes) {
         Ok(parts) => parts,
-        Err(wire) => {
-            on_header(&wire);
-            return StreamOutcome::Complete;
-        }
+        Err(wire) => return header_only(&mut on_header, &wire),
     };
 
     // Content-Type defaulting (INP-03): a non-empty body with no explicit
@@ -602,10 +545,7 @@ where
         .await
     {
         Some(Ok(parts)) => parts,
-        Some(Err((status, msg))) => {
-            on_header(&error_wire(status, &msg));
-            return StreamOutcome::Complete;
-        }
+        Some(Err((status, msg))) => return header_only(&mut on_header, &error_wire(status, &msg)),
         // Deadline expired before the header was committed: a clean 504.
         None => {
             on_header(&timeout_wire());
@@ -656,6 +596,16 @@ where
 /// default 16): if axum reads slowly, the `pull_chunk` call blocks
 /// naturally.
 ///
+/// **Small-body fast path:** when this future is driven directly by
+/// `Runtime::block_on` (not inside a spawned task) and no
+/// [`crate::dispatch_timeout`] is configured, the first two pulls made
+/// **before the handler returns its response** run inline on the calling
+/// thread instead — a body that ends within them (one chunk + `End`) never
+/// starts the blocking producer, channel or producer slot.  `pull_chunk` must
+/// therefore be callable from the thread that drives `block_on` (the JNI
+/// caller thread is attached to the JVM).  Pulls made while the response
+/// streams always go through the producer.
+///
 /// Failure modes match [`dispatch_streaming_async`]: malformed
 /// header / unknown version / no app / handler error → normal
 /// `error_wire(...)` response (with the message inside the returned
@@ -684,8 +634,9 @@ where
 /// `request_close` callback.
 ///
 /// `request_close` is invoked once, after the response body is fully
-/// drained, **only if** the request producer was started (the handler
-/// read at least one body chunk).  It must close/abort the request body
+/// drained, **only if** the request source was read (the handler read at
+/// least one body chunk — through the producer or the inline small-body
+/// fast path).  It must close/abort the request body
 /// source (e.g. the Java `InputStream`) so a producer parked in a
 /// blocking read is unblocked and this call cannot hang on a stuck upload
 /// that never reaches EOF.  It is a no-op for full reads (already at EOF)
@@ -702,18 +653,15 @@ where
     C: FnOnce(),
 {
     let mut header_bytes: Vec<u8> = Vec::with_capacity(4 + WIRE_HEADER_RESERVE);
-    let outcome = {
-        let on_header = |h: &[u8]| header_bytes.extend_from_slice(h);
-        bidirectional_streaming_inner(
-            input_header,
-            pull_chunk,
-            on_chunk,
-            on_header,
-            request_close,
-            false,
-        )
-        .await
-    };
+    let outcome = bidirectional_streaming_inner(
+        input_header,
+        pull_chunk,
+        on_chunk,
+        |h: &[u8]| header_bytes.extend_from_slice(h),
+        request_close,
+        false,
+    )
+    .await;
     match outcome {
         // `Complete` covers a clean drain AND the pre-dispatch error paths
         // (which deliver a full `error_wire(...)` via `on_header`), so the
@@ -839,10 +787,7 @@ where
 {
     let (header_bytes, body_tail) = match split_wire_request(input_header) {
         Ok(parts) => parts,
-        Err(msg) => {
-            on_header(&error_wire(400, &msg));
-            return StreamOutcome::Complete;
-        }
+        Err(msg) => return header_only(&mut on_header, &error_wire(400, &msg)),
     };
     // `input_header` MUST be header-only on the bidirectional path — the
     // request body arrives via `pull_chunk`.  A non-empty tail means the
@@ -859,21 +804,23 @@ where
     }
     let (header, router) = match parse_validate_resolve(&header_bytes) {
         Ok(parts) => parts,
-        Err(wire) => {
-            on_header(&wire);
-            return StreamOutcome::Complete;
-        }
+        Err(wire) => return header_only(&mut on_header, &wire),
     };
 
     let mut deadline = Deadline::start();
     let max_request_body = crate::config::max_streaming_request_bytes();
     let limit_exceeded = Arc::new(AtomicBool::new(false));
     let producer_handle: RequestProducerHandle = Arc::new(Mutex::new(None));
+    // Small-body fast path (`streaming/inline_pull.rs`): until the handler
+    // returns, pulls may run on a `block_on` caller thread — never with a
+    // deadline, which an inline blocking read could not honour.
+    let inline = InlineState::new(!deadline.is_armed());
     let body = Body::new(ChannelBody::new(
         pull_chunk,
         Arc::clone(&producer_handle),
         max_request_body,
         Arc::clone(&limit_exceeded),
+        Arc::clone(&inline),
     ));
     // RAII guard: closes the request source iff the producer was started, on
     // EVERY exit path — including a panic unwinding out of the handler or out
@@ -883,7 +830,11 @@ where
     // `catch_unwind` turns the panic into a 500 but skips the explicit close,
     // so the parked producer never gets unblocked. This is the panic-path
     // sibling of the M3 hang.
-    let mut closer = RequestSourceCloser::new(Arc::clone(&producer_handle), request_close);
+    let mut closer = RequestSourceCloser::new(
+        Arc::clone(&producer_handle),
+        Arc::clone(&inline),
+        request_close,
+    );
 
     // Content-Type parity with the buffered / direct / response-streaming
     // paths: a request with no explicit Content-Type defaults to
@@ -911,14 +862,19 @@ where
             header.connection_info(),
         )))
         .await;
+    // The handler returned: any further body poll comes from the streaming
+    // response, which must never block on an inline read.
+    inline.close();
     // Pre-commit failures (bad method/path → 405/400, expired deadline →
     // 504, request body over `max_streaming_request_bytes` → 413): close the
     // request source (no-op if the producer never started), join the
     // producer (bounded), then deliver one complete error header.
     let (status, headers, metadata, response_body) = match dispatched {
         Some(Ok(parts)) if !limit_exceeded.load(Ordering::Acquire) => parts,
-        failed => {
-            let wire = match failed {
+        // `_`, not a binding: a binding pattern on its own line gets no
+        // coverage region on current rustc.
+        _ => {
+            let wire = match dispatched {
                 None => timeout_wire(),
                 Some(Err((status, msg))) => error_wire(status, &msg),
                 Some(Ok(_)) => error_wire(

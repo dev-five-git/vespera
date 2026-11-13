@@ -83,7 +83,7 @@ val springBootVersion = "4.1.2"
 val springFrameworkVersion = "7.0.10"
 val springBoot3Version = "3.5.16"
 val springFramework3Version = "6.2.19"
-val micrometerVersion = "1.15.12"
+val micrometerVersion = "1.17.2"
 // Optional springdoc-openapi integration (VesperaSpringdocAutoConfiguration):
 // springdoc 3.x targets Boot 4, 2.x Boot 3.5 — the APIs the bridge uses exist in both.
 val springdocVersion = "3.2.0"
@@ -91,7 +91,7 @@ val springdoc3Version = "2.10.0"
 // Kotlin extensions: compiled against these, provided by the Kotlin app.
 // kotlinx-coroutines >= 1.7 carries `kotlinx.coroutines.future.await` in core.
 val kotlinVersion = "2.4.21"
-val coroutinesVersion = "1.8.0"
+val coroutinesVersion = "1.11.0"
 
 dependencies {
     // Optional Kotlin extensions (VesperaKotlin.kt) — provided by the Kotlin app;
@@ -102,12 +102,17 @@ dependencies {
     // VesperaResponse / VesperaClientException): Kotlin reads them from the
     // class files, so callers get `String?` / `String` instead of platform
     // types. Annotations are not needed at runtime.
-    compileOnly("org.jspecify:jspecify:1.0.0")
+    compileOnly("org.jspecify:jspecify:1.0.1")
 
     compileOnly("org.springframework.boot:spring-boot-autoconfigure:$springBootVersion")
     compileOnly("org.springframework:spring-webmvc:$springFrameworkVersion")
     compileOnly("jakarta.servlet:jakarta.servlet-api:6.1.0")
-    compileOnly("org.slf4j:slf4j-api:2.0.17")
+    // Optional: the WebFlux proxy (VesperaBridgeReactiveAutoConfiguration and
+    // the Reactive* / VesperaReactive* classes) only loads in a REACTIVE web
+    // application, whose spring-webflux + reactor-core come with the app
+    // (spring-boot-starter-webflux). compileOnly keeps both out of the POM.
+    compileOnly("org.springframework:spring-webflux:$springFrameworkVersion")
+    compileOnly("org.slf4j:slf4j-api:2.0.20")
     // Optional: MicrometerDispatchObserver / VesperaBridgeMetricsAutoConfiguration
     // only load when the application ships Micrometer (e.g. via Actuator).
     compileOnly("io.micrometer:micrometer-core:$micrometerVersion")
@@ -135,6 +140,8 @@ dependencies {
     annotationProcessor("org.springframework.boot:spring-boot-configuration-processor:$springBootVersion")
 
     testImplementation("org.springframework.boot:spring-boot-starter-web:$springBootVersion")
+    // WebFlux proxy tests: WebTestClient + a real reactor-netty server.
+    testImplementation("org.springframework.boot:spring-boot-starter-webflux:$springBootVersion")
     testImplementation("io.micrometer:micrometer-core:$micrometerVersion")
     testImplementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:$springdocVersion")
     testImplementation("org.springframework.boot:spring-boot-health:$springBootVersion")
@@ -167,6 +174,7 @@ val testBoot3Runtime: Configuration = configurations.create("testBoot3Runtime") 
 
 dependencies {
     testBoot3Runtime("org.springframework.boot:spring-boot-starter-web:$springBoot3Version")
+    testBoot3Runtime("org.springframework.boot:spring-boot-starter-webflux:$springBoot3Version")
     testBoot3Runtime("io.micrometer:micrometer-core:$micrometerVersion")
     testBoot3Runtime("org.springdoc:springdoc-openapi-starter-webmvc-ui:$springdoc3Version")
     testBoot3Runtime("org.springframework.boot:spring-boot-actuator:$springBoot3Version")
@@ -216,6 +224,10 @@ tasks.named<Test>("test") {
 // match because demo-app resolves this exact build's JAR from mavenLocal.
 val demoAppExecutionData = rootProject.layout.projectDirectory
     .file("../../examples/rust-jni-demo/java/demo-app/build/jacoco/test.exec")
+// The WebFlux E2E app (demo-reactive-app) drives VesperaReactiveProxyHandler
+// through the same real cdylib.
+val demoReactiveAppExecutionData = rootProject.layout.projectDirectory
+    .file("../../examples/rust-jni-demo/java/demo-reactive-app/build/jacoco/test.exec")
 
 tasks.named<JacocoReport>("jacocoTestReport") {
     dependsOn(tasks.named("test"))
@@ -223,6 +235,7 @@ tasks.named<JacocoReport>("jacocoTestReport") {
         files(
             layout.buildDirectory.file("jacoco/test.exec"),
             demoAppExecutionData,
+            demoReactiveAppExecutionData,
         ).filter { it.exists() },
     )
     reports {
@@ -304,4 +317,40 @@ publishing {
             builtBy(cyclonedxDirectBom)
         }
     }
+}
+
+// ── Published dependency check ────────────────────────────────────────────
+// Spring, the servlet API, Spring WebFlux / Reactor, Micrometer and springdoc
+// are all compileOnly: the published POM (and Gradle module metadata) must
+// declare NO dependencies, so a
+// consumer without WebFlux (or without Spring at all) never receives it
+// transitively. Runs with the unit suite (CI invokes `./gradlew test`).
+val verifyPublishedPom = tasks.register("verifyPublishedPom") {
+    group = LifecycleBasePlugin.VERIFICATION_GROUP
+    description = "Fails when the published POM or Gradle module metadata declares any dependency."
+    dependsOn(tasks.withType<GenerateMavenPom>(), tasks.withType<GenerateModuleMetadata>())
+    val pomFile = layout.buildDirectory.file("publications/maven/pom-default.xml")
+    val moduleFile = layout.buildDirectory.file("publications/maven/module.json")
+    inputs.files(pomFile, moduleFile)
+    doLast {
+        val module = moduleFile.get().asFile.readText()
+        if (module.contains("\"dependencies\"")) {
+            throw GradleException("The published Gradle module metadata must not declare dependencies:\n$module")
+        }
+        val pom = pomFile.get().asFile.readText()
+        if (pom.contains("<dependencies>") || pom.contains("<dependency>")) {
+            throw GradleException(
+                "The published POM must not declare dependencies (Spring / servlet / WebFlux / " +
+                    "Reactor / Micrometer are compileOnly):\n$pom",
+            )
+        }
+    }
+}
+
+tasks.named("check") {
+    dependsOn(verifyPublishedPom)
+}
+
+tasks.named("test") {
+    finalizedBy(verifyPublishedPom)
 }

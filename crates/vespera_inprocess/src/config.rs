@@ -84,7 +84,7 @@ fn parse_config_value(
 /// [`parse_config_value`] stays as the pure, `Option<&str>`-taking
 /// predicate the existing unit tests exercise; this thin wrapper adds
 /// only the `std::env::var` lookup and is a straight-line delegate.
-fn read_env_clamped(var_name: &'static str, default: usize, min: usize, max: usize) -> usize {
+pub fn read_env_clamped(var_name: &'static str, default: usize, min: usize, max: usize) -> usize {
     let raw = std::env::var(var_name).ok();
     parse_config_value(var_name, raw.as_deref(), default, min, max)
 }
@@ -291,6 +291,7 @@ mod tests {
     };
 
     #[test]
+    #[cfg_attr(miri, ignore = "re-executes the test binary as a child process")]
     fn process_config_setters_clamp_cache_and_feed_public_predicates() {
         const CHILD_ENV: &str = "VESPERA_CONFIG_SETTER_TEST_CHILD";
         if std::env::var_os(CHILD_ENV).is_none() {
