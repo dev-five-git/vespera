@@ -38,6 +38,12 @@ class AsyncDispatchTest {
         AsyncDispatch.linkCancellation(future, TOKEN, canceller);
         future.orTimeout(1, TimeUnit.MILLISECONDS);
         assertThrows(Exception.class, future::join);
+        // join() can return before the link's callback has run on the
+        // orTimeout delayer thread (dependents fire in LIFO order).
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (cancelled.isEmpty() && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
         assertEquals(List.of(TOKEN), cancelled);
 
         CompletableFuture<byte[]> failed = new CompletableFuture<>();
