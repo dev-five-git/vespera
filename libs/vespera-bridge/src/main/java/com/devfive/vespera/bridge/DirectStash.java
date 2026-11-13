@@ -54,7 +54,7 @@ final class DirectStash {
 
     /** {@link VesperaDirectBufferPool.DirectDispatcher} over the resumable symbol. */
     static int dispatchResumable(ByteBuffer in, int inLen, ByteBuffer out) {
-        VesperaBridge.validateDirectBuffers(in, inLen, out);
+        BridgeInputChecks.requireDirectBuffers(in, inLen, out);
         return dispatchResumable0(in, inLen, out);
     }
 
