@@ -9,6 +9,7 @@ import reactor.core.publisher.Mono;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
@@ -41,6 +42,8 @@ final class ReactiveProxyResponse {
     private volatile boolean panicked;
     /** Whether a Rust wire header was applied (the response is Rust's from then on). */
     private volatile boolean headerApplied;
+    /** Headers as they were before a streamed Rust header was applied ({@link #discardRustOutput}). */
+    private HttpHeaders beforeRust;
 
     ReactiveProxyResponse(ServerHttpResponse response, String requestIdHeader, String requestId,
             CorsHandling cors) {
@@ -62,6 +65,11 @@ final class ReactiveProxyResponse {
         return headerApplied;
     }
 
+    /** Flag the response as a caught Rust panic (a streamed body that panicked after its header). */
+    void markPanicked() {
+        panicked = true;
+    }
+
     /** Pre-set the request-id echo; Rust's own value (if any) replaces it later. */
     void applyDefaultRequestId() {
         if (requestIdHeader != null && !upstreamRequestId) {
@@ -74,6 +82,19 @@ final class ReactiveProxyResponse {
      * headers. Returns the accumulator (status, declared content length).
      */
     HeaderPolicy.ResponseHeaderAccumulator applyWireHeader(byte[] wire, int off, int len) {
+        return applyWireHeader(wire, off, len, false);
+    }
+
+    /**
+     * {@link #applyWireHeader(byte[], int, int)}; {@code resettable} first
+     * snapshots the current headers so {@link #discardRustOutput} restores
+     * them exactly (a streamed body can still fail before the commit).
+     */
+    HeaderPolicy.ResponseHeaderAccumulator applyWireHeader(byte[] wire, int off, int len,
+            boolean resettable) {
+        if (resettable) {
+            beforeRust = copy(response.getHeaders(), null);
+        }
         HeaderPolicy.ResponseHeaderAccumulator acc = new HeaderPolicy.ResponseHeaderAccumulator();
         acc.status = WireHeaderReader.apply(wire, off, len, acc);
         response.setStatusCode(HttpStatusCode.valueOf(acc.status));
@@ -117,6 +138,41 @@ final class ReactiveProxyResponse {
         }
         headers.add(name, value);
         written.add(lower);
+    }
+
+    /**
+     * Undo the applied Rust header on the still-uncommitted response, for a
+     * proxy-written error: restore the headers from before it (filter-set
+     * ones such as CORS, security headers and the request-id echo survive;
+     * Rust's {@code Set-Cookie}, {@code Cache-Control}, ... are dropped).
+     * Without a snapshot, the headers Rust wrote are removed by name.
+     */
+    void discardRustOutput() {
+        if (!headerApplied) {
+            return;
+        }
+        HttpHeaders headers = response.getHeaders();
+        HttpHeaders restored = beforeRust != null ? beforeRust : copy(headers, written);
+        headers.clear();
+        restored.forEach(headers::addAll);
+        beforeRust = null;
+        written.clear();
+        if (upstreamRequestId) {
+            upstreamRequestId = false;
+            applyDefaultRequestId();
+        }
+        headerApplied = false;
+    }
+
+    /** A copy of {@code headers}, minus the lower-case names in {@code skip} (if any). */
+    private static HttpHeaders copy(HttpHeaders headers, Set<String> skip) {
+        HttpHeaders copy = new HttpHeaders();
+        headers.forEach((name, values) -> {
+            if (skip == null || !skip.contains(name.toLowerCase(Locale.ROOT))) {
+                copy.addAll(name, List.copyOf(values));
+            }
+        });
+        return copy;
     }
 
     /** Set the proxy-owned {@code Content-Length} ({@code < 0} = leave unset). */
