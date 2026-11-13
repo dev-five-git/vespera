@@ -61,16 +61,20 @@ type StoredApp = Router;
 #[cfg(feature = "tracing")]
 type StoredApp = crate::obs::TracedApp;
 
-/// The router to dispatch for a stored app (a cheap `Arc` clone).
+/// The router to dispatch for a stored app (a cheap `Arc` clone).  A macro
+/// like `traced!`, so the variant compiled out of a build is not a function
+/// body coverage could count.
 #[cfg(not(feature = "tracing"))]
-#[inline]
-fn dispatch_router(stored: &StoredApp) -> Router {
-    stored.clone()
+macro_rules! dispatch_router {
+    ($stored:expr) => {
+        $stored.clone()
+    };
 }
 #[cfg(feature = "tracing")]
-#[inline]
-fn dispatch_router(stored: &StoredApp) -> Router {
-    stored.router()
+macro_rules! dispatch_router {
+    ($stored:expr) => {
+        $stored.router()
+    };
 }
 
 /// Serializes the registration **write path** (`register_app*`) so a given
@@ -302,12 +306,12 @@ pub fn resolve_app_router(header: &WireRequestHeader) -> Result<Router, Vec<u8>>
     if name == DEFAULT_APP_NAME
         && let Some(router) = DEFAULT_ROUTER.get()
     {
-        return Ok(dispatch_router(router));
+        return Ok(dispatch_router!(router));
     }
     // Named-app resolution is also lock-free: a single `ArcSwap` load
     // (atomic) + hash lookup, no reader parking under concurrency.
     if let Some(router) = APP_ROUTERS.load().get(name) {
-        return Ok(dispatch_router(router));
+        return Ok(dispatch_router!(router));
     }
     // Miss: decide between 400 (invalid name) and 404 (unregistered).
     match validate_app_name(name) {
