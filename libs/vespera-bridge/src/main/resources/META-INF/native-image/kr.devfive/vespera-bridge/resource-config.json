@@ -1,0 +1,12 @@
+{
+  "resources": {
+    "includes": [
+      {
+        "pattern": "\\Qnative/\\E[^/]+/[^/]+"
+      },
+      {
+        "pattern": "\\Qcom/devfive/vespera/bridge/vespera-bridge.properties\\E"
+      }
+    ]
+  }
+}

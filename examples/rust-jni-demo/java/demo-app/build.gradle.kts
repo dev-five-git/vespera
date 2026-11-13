@@ -7,6 +7,11 @@ plugins {
     jacoco
     id("org.springframework.boot") version "4.1.2"
     id("io.spring.dependency-management") version "1.1.7"
+    // GraalVM native image, opt-in: `./gradlew -PnativeImage :demo-app:nativeCompile`
+    // with GraalVM for JDK 25 as JAVA_HOME. Applied (below) only with -PnativeImage,
+    // so the regular JVM build and the E2E suite never run Spring AOT. The version is
+    // the one Spring Boot 4.1 manages. CI: .github/workflows/native-image.yml.
+    id("org.graalvm.buildtools.native") version "1.1.14" apply false
     // ───────────────────────────────────────────────────────────────────
     // Vespera bridge plugin — auto-wires:
     //   - bundleNativeLib task (cdylib → resources/native/<os>-<arch>/)
@@ -19,6 +24,10 @@ plugins {
     // ───────────────────────────────────────────────────────────────────
     // Version resolved in settings.gradle.kts from the in-repo plugin build.
     id("kr.devfive.vespera-bridge")
+}
+
+if (providers.gradleProperty("nativeImage").isPresent) {
+    apply(plugin = "org.graalvm.buildtools.native")
 }
 
 group = "kr.go.demo"

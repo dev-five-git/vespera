@@ -1211,6 +1211,43 @@ The bundled lookup is a plain classpath resource lookup, so the library may come
 
 The supported platforms are `linux-x86_64`, `linux-aarch64`, `linux-x86_64-musl`, `linux-aarch64-musl`, `macos-x86_64`, `macos-aarch64`, `windows-x86_64`. Place the cdylib at `src/main/resources/native/{platform}/` to bundle it; see [`examples/rust-jni-demo/java/demo-app/build.gradle.kts`](../../examples/rust-jni-demo/java/demo-app/build.gradle.kts) for a working Gradle task.
 
+## GraalVM native image
+
+The JAR ships GraalVM reachability metadata under `META-INF/native-image/kr.devfive/vespera-bridge/`, which `native-image` picks up from the classpath on its own (no flags, no agent run, nothing to copy):
+
+| File | Registers |
+|---|---|
+| `jni-config.json` | Everything the Rust side looks up through JNI: `InputStream.read(byte[])` / `close()`, `OutputStream.write(byte[],int,int)` / `flush()`, `Consumer.accept`, `CompletableFuture.complete` (streaming and async callbacks), the `(String)` constructors of the exceptions it throws (`IOException`, `IllegalArgumentException`, `RuntimeException`), and every JDK class the `jni` crate binds internally (`Throwable`, `Thread`, `Class`, `ClassLoader`, its exception types, ...) with all public members — its bindings resolve every member on first use, and a single missing one recurses inside its own error handling until the request thread overflows its stack. |
+| `resource-config.json` | Bundled libraries `native/<platform>/<lib>` and `vespera-bridge.properties`. |
+| `reflect-config.json` | `Thread.isVirtual()` (looked up reflectively; the bridge targets Java 17). |
+
+With Spring Boot, the autoconfiguration also contributes Spring AOT hints (`VesperaBridgeRuntimeHints`, via `@ImportRuntimeHints`): the proxy handler method the CORS preflight mapping resolves by reflection, and Spring Security's `Authentication.getAuthorities()` / `GrantedAuthority.getAuthority()` when Spring Security is present (forwarded principal authorities). So a Spring Boot app that already builds natively only needs the `org.graalvm.buildtools.native` plugin:
+
+```kotlin
+plugins {
+    id("org.springframework.boot") version "4.1.2"
+    id("org.graalvm.buildtools.native") version "1.1.14"   // the version Spring Boot manages
+    id("kr.devfive.vespera-bridge") version "..."
+}
+```
+
+```bash
+# JAVA_HOME = GraalVM for JDK 25 (Spring Boot 4) / GraalVM for JDK 17+ (Spring Boot 3.5)
+./gradlew nativeCompile
+./build/native/nativeCompile/my-app
+```
+
+The repository's demo app builds the same way (`./gradlew -PnativeImage :demo-app:nativeCompile` in `examples/rust-jni-demo/java`); `scripts/native-image-smoke.sh` drives every dispatch mode against the executable, and the manual `Native Image` workflow (`.github/workflows/native-image.yml`) runs both on ubuntu.
+
+**Limitations**
+
+- **The Rust library stays a separate file.** A native image cannot statically link a JNI cdylib: `VesperaBridge.init` extracts the bundled `native/<platform>/` library (embedded as a resource) and `System.load`s it exactly as on the JVM, so the extraction directory rules above still apply. Ship it next to the executable and use `java.library.path` instead if you would rather not embed it: drop it from the resources and start with `-Djava.library.path=<dir>`.
+- **One platform per image.** Only the host platform's library is useful; bundle just that one (the Gradle plugin's default) to keep the executable small.
+- **Same release for both halves**, as on the JVM: the metadata matches the JNI lookups of the `vespera_jni` version from the same release. A cdylib from another release may look up something that is not registered, which fails only inside the image (a JNI lookup error, a streaming callback falling back to a slower path, or a `StackOverflowError` from the `jni` crate's recursive lookup).
+- **Charsets.** `VesperaResponse.bodyString()` and form decoding honour the `charset` parameter; a native image only contains the charsets GraalVM includes by default, so add `-H:+AddAllCharsets` if your Rust handlers answer in charsets other than UTF-8 / ISO-8859-1 / US-ASCII.
+- **Your own app's reflection** (DTOs Jackson binds in Java code, and so on) is outside this metadata; vespera's DTOs live in Rust and need none.
+- Tested with GraalVM CE 25 and Spring Boot 4.1; the metadata uses the classic `*-config.json` format, which GraalVM 22.3 and later read.
+
 ## SBOM and provenance
 
 Each release publishes a CycloneDX SBOM next to the JAR on Maven Central

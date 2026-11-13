@@ -11,7 +11,7 @@
 
 Vespera is a fully automated OpenAPI 3.1 engine for Axum - delivers FastAPI-like DX to Rust. Zero-config route discovery via compile-time macro scanning.
 
-Also provides in-process dispatch (`vespera_inprocess` crate) and JNI integration (`vespera_jni` crate) for embedding Rust axum apps inside Java/Spring applications without HTTP overhead.
+Also provides in-process dispatch (`vespera_inprocess` crate) and JNI integration (`vespera_jni` crate) for embedding Rust axum apps inside Java/Spring applications without HTTP overhead, plus a stable C ABI (`vespera_inprocess::ffi`, feature `ffi`) for non-JVM hosts (C/C++, Go, Python ctypes, .NET, Node).
 
 ### Headline Capabilities (2026)
 
@@ -26,10 +26,12 @@ Also provides in-process dispatch (`vespera_inprocess` crate) and JNI integratio
 | **Multi-app routing (JNI/FFI)** | `vespera::jni_apps! { "_default" => app, "admin" => admin_app }` | Wire header carries optional `"app"` field; Java side picks per request via `X-Vespera-App` header (configurable via `AppNameResolver`) |
 | **Zero-config Spring autoconfigure** | `libs/vespera-bridge/.../VesperaBridgeAutoConfiguration` | `VesperaProxyController` + `AppNameResolver` + `DispatchModeResolver` + `PrincipalResolver` beans auto-registered; replace any of them via `@ConditionalOnMissingBean` |
 | **WebFlux proxy** | `libs/vespera-bridge/.../VesperaBridgeReactiveAutoConfiguration` | REACTIVE web apps (WebFlux compile-only, never transitive): `VesperaReactiveProxyHandler` dispatches via `dispatchAsync` (no event-loop blocking; Mono cancel → future cancel → native `cancel0`), aggregated body capped by `max-buffered-request-bytes` (`413`), `text/event-stream`/NDJSON `Accept` streamed through `dispatchStreamingWithHeader` on `boundedElastic`; reuses `HeaderPolicy`, app allowlist, principal (`exchange.getPrincipal()`), include/exclude patterns, `vespera.bridge.*`, observers/metrics |
+| **GraalVM native image** | `libs/vespera-bridge/src/main/resources/META-INF/native-image/kr.devfive/vespera-bridge/` | Bridge JAR ships `jni-config.json` (every JNI class/method/`ThrowNew` exception `crates/vespera_jni` + the `jni` crate's internal bindings look up), `resource-config.json` (`native/<platform>/<lib>`, `vespera-bridge.properties`), `reflect-config.json` (`Thread.isVirtual`); Spring AOT `VesperaBridgeRuntimeHints` via `@ImportRuntimeHints` on the autoconfiguration (proxy method, Spring Security authorities). `NativeImageMetadataTest` scans the Rust sources so a new JNI lookup without metadata fails `./gradlew test`; demo-app opt-in `-PnativeImage :demo-app:nativeCompile` + `scripts/native-image-smoke.sh`; manual `native-image.yml` workflow |
 | **Programmatic Java client** | `libs/vespera-bridge/.../VesperaClient` | `VesperaClient.create().get("/users/42").send()` → `VesperaResponse` (status / headers / raw body / hoisted `422` errors) in-process, no HTTP; SYNC / ASYNC / streamed-upload paths; autoconfigured bean independent of `controller-enabled` |
+| **C ABI for non-JVM hosts** | `vespera::ffi_app!` / `ffi_apps!` + `vespera_inprocess::ffi` (feature `ffi`) | `vespera_init` / `vespera_dispatch` / `vespera_dispatch_into` / `vespera_dispatch_async` / `vespera_free` / `vespera_shutdown` / `vespera_abi_version`; hand-written header `crates/vespera_inprocess/include/vespera.h` (locked by `tests/ffi_header.rs`); same wire format + shared runtime as JNI |
+| **Cron jobs** | `#[vespera::cron("...")]` | Auto-discovered like routes (`CRON_STORAGE` + a module-tree scan fallback in `vespera_impl/cron_discovery.rs` for modules expanded after `vespera!`); started once per `vespera!` invocation via `vespera::cron::start_once` — on the current Tokio runtime; in a host-loaded library (`JNI_OnLoad`, or `vespera_init` from `ffi_app!`) on the shared host runtime via `vespera_inprocess::runtime::on_shared_runtime` (`host_loaded()`) (honours `configureRuntime`, stops on `shutdown0`; `VesperaBridge.init()` starts the runtime when jobs wait); otherwise a dedicated `vespera-cron` thread (plain `#[test]`); jobs sleep until the wall clock reaches the occurrence; croner 4, shared parser in `vespera_core::cron`. **UTC by default**; `tz = "Asia/Seoul"` needs the opt-in `cron-tz` feature (chrono-tz; name checked at compile time, `tz` without the feature is a compile error); `overlap = "allow"` (default) / `"skip"`; every run is supervised (panics logged via `eprintln!`, schedule continues); `cron::shutdown()` / `shutdown_and_wait(timeout)` stop scheduling process-wide and for good, and `serve_with_graceful_shutdown` calls both (10 s grace) |
 | **Per-platform native jars** | Gradle plugin `vespera { nativeJarPlatforms; nativeJarsDir; bundleNative }` (`libs/vespera-bridge-gradle-plugin/.../NativeJars.kt`) | One classifier jar per platform (`myapp-native-0.1.0-linux-x86_64.jar` = only `native/<platform>/<lib>`, packaged from CI-matrix artifacts) + a `vesperaNative` `maven-publish` publication; consumers `runtimeOnly("<g>:<a>:<v>:<platform>")` with `bundleNative=false`; loader errors list the platforms the classpath bundles vs the host (`BundledNativeIndex`); user CI template `.github/workflow-templates/vespera-native-jars.yml` (not used by vespera's own CI) |
 | **Kotlin extensions** | `libs/vespera-bridge/src/main/kotlin/.../VesperaKotlin.kt` | Inside the same `vespera-bridge` JAR (no extra artifact): `suspend fun VesperaRequest.sendAwait()` (coroutine cancellation cancels the future → native cancel-on-disconnect), `client.get(path) { header(..); query(..) }` receiver DSL, `Pair` vararg `query`/`headers`. kotlin-stdlib / kotlinx-coroutines are `compileOnly` (`kotlin.stdlib.default.dependency=false`) → POM stays empty; JSpecify `@NullMarked`/`@Nullable` (compileOnly) on the client API |
-| **Cron jobs** | `#[vespera::cron("...")]` | Auto-discovered like routes (`CRON_STORAGE` + a module-tree scan fallback in `vespera_impl/cron_discovery.rs` for modules expanded after `vespera!`); started once per `vespera!` invocation via `vespera::cron::start_once` — on the current Tokio runtime; in a JVM-loaded JNI library (`JNI_OnLoad`) on the shared JNI runtime via `vespera_jni::on_shared_runtime` (honours `configureRuntime`, stops on `shutdown0`; `VesperaBridge.init()` starts the runtime when jobs wait); otherwise a dedicated `vespera-cron` thread (plain `#[test]`); jobs sleep until the wall clock reaches the occurrence; croner 4, shared parser in `vespera_core::cron`. **UTC by default**; `tz = "Asia/Seoul"` needs the opt-in `cron-tz` feature (chrono-tz; name checked at compile time, `tz` without the feature is a compile error); `overlap = "allow"` (default) / `"skip"`; every run is supervised (panics logged via `eprintln!`, schedule continues); `cron::shutdown()` / `shutdown_and_wait(timeout)` stop scheduling process-wide and for good, and `serve_with_graceful_shutdown` calls both (10 s grace) |
 
 ## STRUCTURE
 
@@ -42,7 +44,10 @@ vespera/
 │   ├── vespera_macro/        # Proc-macros (main logic lives here)
 │   ├── vespera_inprocess/    # In-process dispatch (transport-agnostic)
 │   │   ├── src/lib.rs        # dispatch(), register_app(), dispatch_from_bytes()
-│   │   └── src/wire/         # hand-rolled wire-header parse (header_read) + serialize (header_write)
+│   │   ├── src/wire/         # hand-rolled wire-header parse (header_read) + serialize (header_write)
+│   │   ├── src/runtime.rs    # shared host runtime (feature `runtime`) used by JNI + C ABI
+│   │   ├── src/ffi.rs        # stable C ABI (feature `ffi`) + ffi_app!/ffi_apps!
+│   │   └── include/vespera.h # hand-written C header for the ffi symbols
 │   └── vespera_jni/          # JNI bridge (depends on vespera_inprocess)
 │       ├── src/jni_impl.rs   # RUNTIME, jni_app! macro, JNI symbol export
 │       └── src/streaming_closures.rs  # Streaming closure factories + JMethodID cache
@@ -78,6 +83,8 @@ vespera/
 | Wire header parse/serialize | `crates/vespera_inprocess/src/wire/` | Hand-rolled `header_read` (request parse) + `header_write` (response serialize); byte-identical to serde_json, whose twins are kept private (`*_serde`) for the criterion A/B |
 | App factory (FFI pattern) | `crates/vespera_inprocess/src/registry.rs` | register_app(), resolve_app_router() |
 | JNI integration | `crates/vespera_jni/src/jni_impl.rs` | RUNTIME, jni_app! macro, JNI symbol export |
+| C ABI (non-JVM hosts) | `crates/vespera_inprocess/src/ffi.rs` + `include/vespera.h` | `extern "C"` symbols, `ffi_app!`/`ffi_apps!`; keep the header and `tests/ffi_header.rs` in sync |
+| Shared host runtime | `crates/vespera_inprocess/src/runtime.rs` | lazy build, leases, hooks, shutdown (JNI re-exports it) |
 | Java bridge library | `libs/vespera-bridge/` | com.devfive.vespera.bridge package |
 | JNI demo (Rust) | `examples/rust-jni-demo/src/` | Routes + vespera::jni_app! |
 | JNI demo (Java) | `examples/rust-jni-demo/java/` | Spring Boot proxy app |
@@ -113,8 +120,10 @@ vespera/
 | `crates/vespera_jni/src/jni_impl_direct.rs` | ~330 | `dispatchDirect0` symbol + its `jint` overflow/unrepresentable sentinel protocol; `run_direct_symbol` shared buffer validation |
 | `crates/vespera_jni/src/jni_impl_park.rs` | ~135 | `AsyncDispatch.dispatchPollFirst0` (virtual-thread `ParkingDispatch`): poll the dispatch once on the caller under the runtime context (no-op waker); ready → inline wire, pending → spawn the half-polled future, a worker completes the `CompletableFuture`; holds the async in-flight permit + `RuntimeLease` throughout
 | `crates/vespera_jni/src/jni_impl_direct_stash.rs` | ~290 | DIRECT overflow stash (`BTreeMap`, at most 1024 entries, 30 s TTL) + `DirectStash.{dispatchResumable0,fetch0,discard0}`; handle = 8-byte BE token + flags byte (`FLAG_EXACT`, `FLAG_STREAM`) in `out[0..9]` |
-| `crates/vespera_jni/src/jni_impl_lifecycle.rs` | ~300 | Shared runtime: lazy build, `RuntimeLease` in-flight counting through `LeaseGate` (count + shut-down flag in one atomic word), graceful `shutdown_runtime` (drain, then `shutdown_timeout`; background thread when called inside a runtime), `on_shared_runtime` hooks (cron) |
-| `crates/vespera_jni/src/jni_impl_gates.rs` | ~300 | JNI-free atomic admission protocols: `LeaseGate` (runtime lease count + shut-down bit, one `fetch_add` to enter, `fetch_or` to close) and `InFlightCap` (`dispatchAsync` cap); atomics swap to loom under `--cfg vespera_loom` and the `loom_*` models live here |
+| `crates/vespera_inprocess/src/runtime.rs` | ~400 | Feature `runtime`: the shared host runtime for JNI + C ABI — worker / blocking-pool knobs, lazy build, `RuntimeLease` in-flight counting through `LeaseGate` (count + shut-down flag in one atomic word), graceful `shutdown_runtime` / `shutdown_runtime_then(timeout, cleanup)` (drain, then `shutdown_timeout`; background thread when called inside a runtime), `on_shared_runtime` hooks (cron), `mark_host_loaded` / `host_loaded`; `vespera_jni` re-exports it (its `shutdown_runtime` adds the DIRECT-stash cleanup) |
+| `crates/vespera_inprocess/src/runtime/gate.rs` | ~200 | Tokio-free `LeaseGate` (runtime lease count + shut-down bit, one `fetch_add` to enter, `fetch_or` to close); atomics swap to loom under `--cfg vespera_loom` (unit-test build only) and its `loom_*` models live here |
+| `crates/vespera_jni/src/jni_impl_gates.rs` | ~140 | JNI-free `InFlightCap` (`dispatchAsync` cap) admission protocol; atomics swap to loom under `--cfg vespera_loom` and its `loom_*` model lives here |
+| `crates/vespera_inprocess/src/ffi.rs` | ~500 | Feature `ffi`: stable C ABI — `vespera_dispatch` (Rust-allocated `Box<[u8]>` out, `vespera_free`), `vespera_dispatch_into` (`VESPERA_OVERFLOW` + required size; overlapping buffers rejected), `vespera_dispatch_async` (callback exactly once; `503` from `Drop` when the task is dropped at shutdown), `vespera_shutdown`, `vespera_abi_version`, `ffi_app!` / `ffi_apps!` (emit `vespera_init` → `__init`); every entry point `catch_unwind`-guarded; header `include/vespera.h` (`ffi::HEADER`) |
 | `crates/vespera_jni/src/jni_impl_streaming_header.rs` | ~489 | The two `*WithHeader` streaming symbols (response-only and bidirectional) |
 | `crates/vespera_jni/src/jni_impl_support.rs` | ~243 | Per-symbol setup routines + abort/panic-policy helpers shared by the streaming symbols |
 | `crates/vespera_jni/src/jni_impl_streaming_buffer.rs` | ~199 | Per-thread reusable Java chunk `byte[]` pool + lease (a panicking dispatch keeps the lease checked out); the TLS destructor makes no JNI call — it parks the `Global` array in a graveyard freed on the next attached checkout (deliberately leaked if even that fails) |
@@ -143,6 +152,7 @@ vespera/
 | `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/VesperaNativeLoader.java` | ~720 | Native library lookup/extraction/loading for the bridge facade; `loadFromSystemPath` combines a bundled miss + `java.library.path` failure into one error |
 | `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/BundledNativeIndex.java` | ~155 | Failure-path diagnostics: lists `native/<platform>/<file>` across classpath jars/dirs (+ known-platform probes) so a missing library names the platforms found vs the host |
 | `libs/vespera-bridge-gradle-plugin/src/main/kotlin/kr/devfive/vespera/NativeJars.kt` | ~100 | `nativeJar<Platform>` classifier jar tasks + `nativeJars` + the `vesperaNative` Maven publication |
+| `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/VesperaBridgeRuntimeHints.java` | ~55 | Spring AOT `RuntimeHintsRegistrar` (native image): `VesperaProxyController#proxy` + Spring Security `getAuthorities`/`getAuthority` when present; JNI/resources live in the static `META-INF/native-image/kr.devfive/vespera-bridge/*-config.json` |
 | `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/RequestShape.java` | ~79 | Java request body/idempotency classifier used by smart dispatch-mode selection |
 
 ## CRATE DEPENDENCY GRAPH
@@ -159,10 +169,11 @@ vespera_inprocess (transport layer — no JNI deps)
   ├── bytes (Bytes for zero-copy body handling)
   ├── http, http-body-util, tower
   ├── serde, serde_json
-  └── tokio (rt only — for dispatch_from_bytes Runtime param)
+  └── tokio (rt only — for dispatch_from_bytes Runtime param;
+             + rt-multi-thread with feature `runtime` / `ffi`)
 
 vespera_jni (JNI glue — thin layer)
-  ├── vespera_inprocess (via workspace)
+  ├── vespera_inprocess (via workspace, features connect-info + runtime)
   ├── jni
   └── tokio (rt-multi-thread — for LazyLock<Runtime>)
 
@@ -197,6 +208,7 @@ Feature flags:
 |---------|-----------|------|
 | `inprocess` | `vespera::inprocess` (= `vespera_inprocess`) | dispatch, register_app, envelopes; enables `vespera_inprocess/connect-info` (`remote_addr` wire field → `ConnectInfo<SocketAddr>`, which needs `axum/tokio`) |
 | `jni` | `vespera::jni` (= `vespera_jni`) + implies `inprocess` | RUNTIME, jni_app!, JNI symbol |
+| `ffi` | `vespera::ffi_app!` / `ffi_apps!`, `vespera::inprocess::ffi` + implies `inprocess` (`vespera_inprocess/ffi` → `runtime`) | stable C ABI exported from the cdylib (`vespera_dispatch` & co.); shares the host runtime with `jni`, so one cdylib can serve both (`rust-jni-demo` does) |
 | `mimalloc` (default) | (with `jni`) mimalloc as the cdylib's `#[global_allocator]` | measured -15~19% on sync/direct dispatch vs Windows HeapAlloc; weak no-op without `jni` |
 | `multipart` (default) | `vespera::multipart` (`TypedMultipart`, `FieldData`), `vespera::tempfile` | `#[derive(Multipart)]` / `schema_type!(..., multipart)` runtime + deps (tempfile, axum/axum-extra multer multipart, tokio fs/io-util); without it `vespera::Multipart` is a stand-in derive (`vespera_macro::MultipartFeatureDisabled`) whose `compile_error!` names the feature (trybuild `tests/ui/multipart_needs_feature.rs`, run under `--no-default-features`) |
 | `validation` (default) | `vespera::Validated` | `#[derive(Schema)]` also emits `garde::Validate`; `Validated<T>` extractor + 422 envelope |
@@ -296,6 +308,22 @@ Java: `VesperaBridge.configureLimits(...)`, `configureDispatchTimeout(ms)`, `con
 | `error_wire(u16, &str) -> Vec<u8>` | sync | wire-format error builder |
 | `cancellable(F) -> (u64, impl Future<Output = Option<F::Output>>)` / `cancel(u64) -> bool` | sync | host-driven cancellation of a spawned dispatch (JNI `dispatchAsync` cancel) |
 | `dispatch_typed(Router, &RequestEnvelope) -> ResponseEnvelope` | async | direct axum API (BC) |
+| `runtime::{runtime, block_on_shared_runtime, shutdown_runtime, on_shared_runtime, ...}` | sync | feature `runtime`: the shared host runtime (JNI + C ABI) |
+
+### C ABI (`vespera_inprocess::ffi`, feature `ffi`)
+
+Header `crates/vespera_inprocess/include/vespera.h` (hand-written; `tests/ffi_header.rs` compares every prototype / `#define` with the Rust items and coerces each symbol to its C function-pointer type). `ffi_app!` / `ffi_apps!` (re-exported as `vespera::ffi_app!` / `ffi_apps!`, names checked at compile time like `jni_apps!`) emit `vespera_init` in the user's cdylib; the library exports the rest.
+
+| Symbol | Contract |
+|---|---|
+| `int vespera_init(void)` | marks the host loaded (cron), registers the apps (first-wins → idempotent), builds the runtime; `VESPERA_ERR_REGISTRATION` / `_PANIC` / `_RUNTIME` |
+| `int vespera_dispatch(req, len, uint8_t **out, size_t *out_len)` | always `VESPERA_OK` + wire response (`400` NULL/malformed, `404` app, `413`, `500` panic, `503` shut down) unless `out`/`out_len` NULL → `VESPERA_ERR_INVALID_ARGUMENT` |
+| `int vespera_dispatch_into(req, len, out, cap, size_t *written)` | `VESPERA_OK` (`*written` = n) / `VESPERA_OVERFLOW` (`*written` = required; retry re-runs the handler; `NULL`/`0` = size probe); overlapping buffers rejected |
+| `int vespera_dispatch_async(req, len, cb, user_data)` | `cb(user_data, resp, resp_len)` exactly once (inline when rejected early, else on a worker; `503` when dropped by shutdown); `cb` owns `resp` |
+| `void vespera_free(ptr, len)` | frees a response (`Box<[u8]>`); NULL no-op |
+| `int vespera_shutdown(uint64_t timeout_ms)` | `shutdown_runtime`; `VESPERA_ERR_RUNTIME` when already shut down |
+
+Sync symbols must not be called from a runtime worker (the `block_on` panic degrades to a `500` panic wire).
 
 ### Multi-app routing
 
@@ -441,6 +469,7 @@ props only.
 | Macro integration tests | `crates/vespera_macro/tests/` (+ `insta` snapshots) |
 | Macro compile-fail diagnostics | `crates/vespera_macro/tests/ui/` + `crates/vespera/tests/ui/` (trybuild, `trybuild_diagnostics.rs`; regenerate `.stderr` with `TRYBUILD=overwrite`, then review) |
 | Wire parser fuzzing | `fuzz/` (cargo-fuzz, own workspace: `wire_dispatch`, differential `wire_header_parse` vs the serde twin); Java: `WireHeaderReaderFuzzTest` (seeded) |
+| GraalVM metadata ↔ JNI lookups | `libs/vespera-bridge/src/test/java/com/devfive/vespera/bridge/NativeImageMetadataTest.java` (reads `crates/vespera_jni/src`: every `CachedMethod::resolve` / `call_method` / `throw_new` / `jni_str!` class must be in `jni-config.json`; any other JNI lookup API call fails until an extraction rule covers it; pins the audited `jni` crate version — on a bump re-trace with `-agentlib:native-image-agent` over the demo-app E2E suite) |
 | Validated/422 contract | `crates/vespera/tests/validated_extractor.rs`, `crates/vespera/tests/jni_validation.rs` | Envelope built via `#[derive(Serialize)]` structs (not `serde_json::json!`); exact bytes locked by `insta::assert_snapshot!` in `validated_extractor.rs` |
 | Core unit tests | `crates/vespera_core/src/**` inline `#[cfg(test)]` |
 | JNI end-to-end | `examples/rust-jni-demo` (Rust + Java + Gradle); WebFlux: `java/demo-reactive-app` (`ReactiveProxyE2ETest`, real cdylib, no servlet API) |
@@ -546,10 +575,12 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 #            unit test + the JNI-free unsafe helpers / gates of vespera_jni;
 #            `#[cfg_attr(miri, ignore = "...")]` only for child-process or
 #            pathologically slow tests (`.config/nextest.toml` default-miri)
-#   loom     RUSTFLAGS="--cfg vespera_loom" cargo test --release -p vespera_jni
-#            --lib loom_ (LOOM_MAX_PREEMPTIONS=3): runtime lease gate vs
-#            shutdown drain + dispatchAsync cap (`jni_impl_gates.rs`). Custom
-#            cfg, NOT `cfg(loom)` — that flips tokio into its own loom build
+#   loom     RUSTFLAGS="--cfg vespera_loom" cargo test --release --lib loom_
+#            (LOOM_MAX_PREEMPTIONS=3), twice: `-p vespera_inprocess --features
+#            runtime` (runtime lease gate vs shutdown drain,
+#            `vespera_inprocess/src/runtime/gate.rs`) and `-p vespera_jni`
+#            (dispatchAsync cap, `jni_impl_gates.rs`). Custom cfg, NOT
+#            `cfg(loom)` — that flips tokio into its own loom build
 #   bench           (bench.yml, PRs touching crates/**) criterion gate on the
 #                   in-process hot path: merge base vs head, 5 interleaved
 #                   paired rounds, FAIL iff median > +30% AND every round > +20%
@@ -565,6 +596,11 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 #                   Local: CARGO_JOBS=2 scripts/jni-bench-interleaved.sh origin/main
 #                   jni-bench.yml stays nightly + informational (*BenchTest suite).
 #   fuzz-build (not a release gate) `cargo fuzz build` of fuzz/ on pinned nightly
+#   native-image (native-image.yml, workflow_dispatch only, never a gate)
+#            GraalVM CE 25 `-PnativeImage :demo-app:nativeCompile` (bridge +
+#            plugin as --include-build, no mavenLocal) + scripts/native-image-smoke.sh
+#            (direct / overflow / sync / async-on-virtual-threads / SSE /
+#            bidirectional / 422 / panic). Local Windows needs MSVC (vcvars64).
 # Fuzz workflow (.github/workflows/fuzz.yml, weekly + workflow_dispatch, never a
 # gate): runs every fuzz/ target for a bounded time (default 600 s each) and
 # uploads crash reproducers. Dependabot (.github/dependabot.yml): weekly grouped
@@ -581,11 +617,13 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 # `cyclonedx`); the Gradle plugin's is NOT on its publication (the Plugin Portal
 # rejects JSON artifacts). User-facing verification: SECURITY.md.
 cargo deny check                                   # local equivalent of `deny`
-cargo +nightly-2026-08-29 miri nextest run -p vespera_inprocess --lib \
+cargo +nightly-2026-08-29 miri nextest run -p vespera_inprocess --features runtime --lib \
   --target x86_64-unknown-linux-gnu                # local `miri` (Linux target: tokio's
                                                    # Windows IOCP driver is unsupported)
 RUSTFLAGS="--cfg vespera_loom" CARGO_TARGET_DIR=target/loom \
-  cargo test --release -p vespera_jni --lib loom_  # local `loom`
+  cargo test --release -p vespera_inprocess --features runtime --lib loom_  # local `loom`
+RUSTFLAGS="--cfg vespera_loom" CARGO_TARGET_DIR=target/loom \
+  cargo test --release -p vespera_jni --lib loom_  # (both crates)
 cargo +1.88 check --all-features -p vespera -p vespera_core -p vespera_macro \
   -p vespera_inprocess -p vespera_jni              # local equivalent of `msrv`
 

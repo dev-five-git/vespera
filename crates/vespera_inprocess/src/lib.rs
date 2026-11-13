@@ -87,21 +87,33 @@ macro_rules! traced {
     };
 }
 
+mod app_names;
 mod bounded;
 mod cancel;
 mod config;
 mod direct;
 mod dispatch;
 mod envelope;
+// Stable C ABI (feature `ffi`): `vespera_dispatch` & co. plus
+// `ffi_app!` / `ffi_apps!`; header in `include/vespera.h`.
+// SAFETY SCOPE: the C entry points dereference host-supplied pointers.
+#[cfg(feature = "ffi")]
+#[allow(unsafe_code)]
+pub mod ffi;
 mod header_latin1;
 mod internal;
 #[cfg(feature = "tracing")]
 mod obs;
 mod principal;
 mod registry;
+// Shared host runtime (feature `runtime`) used by JNI and the C ABI.
+#[cfg(feature = "runtime")]
+pub mod runtime;
 mod streaming;
 mod wire;
 
+#[doc(hidden)]
+pub use app_names::{__app_names_unique, __app_names_valid};
 /// Re-export `axum::Router` so consumers don't need a direct axum dependency.
 pub use axum::Router;
 pub use bounded::DISPATCH_TIMEOUT_MSG;

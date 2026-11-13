@@ -1,0 +1,63 @@
+name: Native Image (manual)
+
+# Builds the rust-jni-demo Spring Boot app as a GraalVM native image and runs
+# scripts/native-image-smoke.sh against it, exercising the reachability
+# metadata vespera-bridge ships under
+# META-INF/native-image/kr.devfive/vespera-bridge/ (JNI lookups made by the
+# Rust side, bundled native library resources) and its Spring AOT hints.
+#
+# Manual and informational: workflow_dispatch only, NOT a release gate (a
+# Spring Boot native build takes several minutes and ~8 GB of RAM). The
+# metadata itself is kept in sync with crates/vespera_jni on every PR by
+# NativeImageMetadataTest in the vespera-bridge unit suite.
+#
+# The bridge and its Gradle plugin come from this checkout as Gradle included
+# builds (--include-build), so nothing is published to mavenLocal.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: native-image-${{ github.ref }}
+  cancel-in-progress: true
+
+# Read-only token: this job only checks out and builds.
+permissions:
+  contents: read
+
+jobs:
+  native-image:
+    name: Native image smoke (ubuntu-latest, GraalVM CE 25)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # JDK 17: the Gradle toolchain the bridge and plugin builds compile with.
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+      # GraalVM last, so JAVA_HOME / GRAALVM_HOME point at it (Spring Boot 4
+      # native builds need GraalVM for JDK 25).
+      - uses: graalvm/setup-graalvm@d6eca2595046623d69d636041513c80abf745406 # v1.6.9
+        with:
+          java-version: '25'
+          distribution: 'graalvm-community'
+      - uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
+      - name: Build rust-jni-demo cdylib (release)
+        run: cargo build -p rust-jni-demo --release
+      - name: Make gradlew executable
+        run: |
+          chmod +x libs/vespera-bridge/gradlew
+          chmod +x libs/vespera-bridge-gradle-plugin/gradlew
+          chmod +x examples/rust-jni-demo/java/gradlew
+      - name: Build the demo-app native image
+        working-directory: examples/rust-jni-demo/java
+        run: |
+          ./gradlew -PnativeImage \
+            --include-build ../../../libs/vespera-bridge \
+            --include-build ../../../libs/vespera-bridge-gradle-plugin \
+            :demo-app:nativeCompile --console=plain --no-daemon
+      - name: Smoke test the native image
+        run: bash scripts/native-image-smoke.sh examples/rust-jni-demo/java/demo-app/build/native/nativeCompile/demo-app
