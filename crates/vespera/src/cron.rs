@@ -259,10 +259,20 @@ impl Controller {
     /// Spawn one supervised run of `job`: the job runs in its own task, and
     /// a supervisor awaits it so a panic is logged instead of vanishing with
     /// a dropped `JoinHandle`.  The returned handle finishes with the run.
-    fn launch(&'static self, job: CronJob) -> JoinHandle<()> {
+    ///
+    /// Returns `None` without running anything once shutdown was requested.
+    /// The run is counted in flight *before* the stop flag is checked: a
+    /// concurrent [`shutdown_and_wait`] (stores the flag, then reads the
+    /// count — both `SeqCst`) either sees this run in flight or this check
+    /// sees the flag, so it can never report idle while a run starts.
+    fn launch(&'static self, job: CronJob) -> Option<JoinHandle<()>> {
         let in_flight = InFlight::enter(self);
+        if self.stopped.load(Ordering::SeqCst) {
+            // Dropping the guard wakes `idle` waiters when this was the last.
+            return None;
+        }
         let run = tokio::spawn((job.run)());
-        tokio::spawn(async move {
+        let supervisor = tokio::spawn(async move {
             let _in_flight = in_flight;
             if let Err(error) = run.await
                 && error.is_panic()
@@ -275,7 +285,8 @@ impl Controller {
                     panic_message(&*payload)
                 );
             }
-        })
+        });
+        Some(supervisor)
     }
 }
 
@@ -410,9 +421,11 @@ async fn run_job(job: CronJob, controller: &'static Controller) {
                 "cron job `{}` skipped its {next} run: the previous run is still in progress",
                 job.name
             );
-        } else {
-            running.push(controller.launch(job));
+        } else if let Some(run) = controller.launch(job) {
+            running.push(run);
         }
+        // A shutdown that raced the wake-up made `launch` back out; the next
+        // `unless_stopped` sees the flag and ends the loop.
         after = next.max(Utc::now());
     }
     // Keep this scheduler alive until its in-flight runs finish, so a
@@ -762,6 +775,24 @@ mod tests {
         .expect("returns at once");
         assert_eq!(STOPPED_TICKS.load(Ordering::SeqCst), 0);
         assert!(controller.wait_idle(Duration::from_millis(10)).await);
+    }
+
+    /// A tick whose sleep ended just as `shutdown_and_wait` began reaches
+    /// `launch` after the flag is set: it backs out instead of starting a run
+    /// the waiter has already reported idle.
+    #[tokio::test]
+    async fn launch_after_shutdown_backs_out_and_stays_idle() {
+        let controller = controller();
+        controller.shutdown();
+        assert!(
+            controller
+                .launch(CronJob::new("* * * * * *", stopped_tick))
+                .is_none()
+        );
+        assert_eq!(controller.in_flight.load(Ordering::SeqCst), 0);
+        assert!(controller.wait_idle(Duration::from_millis(10)).await);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(STOPPED_TICKS.load(Ordering::SeqCst), 0);
     }
 
     /// Outside any runtime (plain `#[test]`, JNI `JNI_OnLoad`) `start` must
