@@ -540,15 +540,9 @@ pub fn make_push_closure(
             }
             let arr: &jni::objects::JByteArray<'_> = buf.as_ref().as_ref();
             for seg in chunk.chunks(chunk_size) {
-                // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
-                // identical size/alignment; this views the
-                // segment as the signed slice `set_region`
-                // expects.  `seg.len() <= chunk_size` (max
-                // 8 MiB) so it always fits both the buffer
-                // and `i32`.
-                let seg_i8 =
-                    unsafe { std::slice::from_raw_parts(seg.as_ptr().cast::<i8>(), seg.len()) };
-                arr.set_region(env, 0, seg_i8)?;
+                // `seg.len() <= chunk_size` (max 8 MiB) so it always fits
+                // both the buffer and `i32`.
+                arr.set_region(env, 0, crate::jni_buf::as_jbytes(seg))?;
                 // seg.len() <= chunk_size <= 8 MiB always fits i32; the
                 // `unwrap_or(chunk_size_i32)` fallback is unreachable but keeps
                 // this FFI hot path panic-free (and write-safe: the fallback is

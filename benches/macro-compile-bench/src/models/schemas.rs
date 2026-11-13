@@ -61,7 +61,9 @@ pub struct Category {
     pub id: i64,
     pub name: String,
     pub slug: String,
-    /// Self-referential: exercises circular-schema handling.
+    /// Self-referential: exercises circular-schema handling (spelled by name, not
+    /// `Self`, on purpose: that is the form the schema derive must resolve).
+    #[allow(clippy::use_self)]
     pub parent: Option<Box<Category>>,
 }
 

@@ -3,6 +3,8 @@ use serde_json::json;
 use testkit::TestServer;
 use vespera::axum;
 
+const HTTP_METHODS: [&str; 7] = ["get", "post", "put", "patch", "delete", "head", "options"];
+
 #[tokio::test]
 async fn test_health_endpoint() {
     let app = create_app().await;
@@ -614,11 +616,10 @@ fn test_openapi_structural_integrity() {
     }
 
     // 2. Unique operationIds + 3. every operation has a non-empty `responses`.
-    const METHODS: [&str; 7] = ["get", "post", "put", "patch", "delete", "head", "options"];
     let mut operation_ids: HashMap<String, String> = HashMap::new();
     for (path, item) in openapi["paths"].as_object().expect("paths object") {
         let item = item.as_object().expect("path item object");
-        for method in METHODS {
+        for method in HTTP_METHODS {
             let Some(op) = item.get(method) else {
                 continue;
             };

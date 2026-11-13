@@ -233,6 +233,17 @@ items below are additions, plus one behaviour change to graceful shutdown.
   `Extension<Scheme>`; a caught panic sets `metadata.panicked`; after
   `shutdown0` / `VesperaBridge.shutdown(Duration)` every dispatch answers
   `503`.
+- Bidirectional streaming (`dispatch_bidirectional_streaming*`,
+  `dispatchFullStreaming*`) pulls a small request body on the calling thread:
+  when the dispatch is driven by `Runtime::block_on` (every JNI symbol) and no
+  dispatch timeout is set, the first two request pulls made before the handler
+  returns run inline, so a one-chunk body never starts the `spawn_blocking`
+  producer (64 B echo: ~10.5 µs → ~0.95 µs in the Rust bench; JNI
+  `dispatchFullStreaming` ~18.9 µs → ~2.9 µs, 64 KiB ~24 µs → ~4.6 µs). A
+  custom `pull_chunk` must be callable from the `block_on` thread. Pulls made
+  while the response streams, inside a spawned task, or under a dispatch
+  timeout still use the producer. The `request_close` hook now fires whenever
+  the source was read, inline or not.
 
 ### Observability (`vespera`, `vespera_inprocess`)
 
@@ -408,3 +419,19 @@ Additive.
   new unchecked `VesperaClientException`.
 - The Spring autoconfiguration registers a `VesperaClient` bean
   (`@ConditionalOnMissingBean`), also with `controller-enabled=false`.
+
+### Miri and loom checking (`vespera_inprocess`, `vespera_jni`)
+
+No behaviour change for applications.
+
+- The JNI shared-runtime gate (in-flight `RuntimeLease` count + shut-down
+  flag) is one atomic word now, entered with a single `fetch_add` instead of
+  a `SeqCst` increment followed by a `SeqCst` flag load. The guarantee is
+  unchanged (a dispatch is either refused with `503` or waited for by
+  `shutdown0`'s drain); it no longer depends on cross-variable `SeqCst`
+  ordering, and the hot path does one atomic RMW instead of an RMW plus a load.
+- New CI jobs: `miri` runs the `vespera_inprocess` unit tests and the JNI-free
+  `unsafe` helpers of `vespera_jni` (direct-buffer copy, uninitialised
+  spare-capacity fill, `u8`→`jbyte` view) under Miri; `loom` model-checks the
+  runtime gate and the `dispatchAsync` in-flight cap
+  (`RUSTFLAGS="--cfg vespera_loom"`).

@@ -276,3 +276,45 @@ pub fn bench_async_completion_isolation_ab(c: &mut Criterion) {
     group.finish();
     drop(runtime);
 }
+
+/// Fixed startup cost of a bidirectional dispatch with a **small** request
+/// body (`0` B and `64` B, pulled in one chunk + `End`) against
+/// `/echo/bytes`.  The payload is too small for throughput to matter, so
+/// this group isolates the per-request setup of the request-body path
+/// (producer start, channel, producer slot, thread handoff) — the floor
+/// that dominates small `dispatchFullStreaming` calls from the JNI bridge.
+pub fn bench_bidirectional_small(c: &mut Criterion) {
+    install_bench_app();
+
+    let runtime = Runtime::new().expect("tokio runtime");
+    let mut group = c.benchmark_group("bidirectional_small");
+    let header_only = assemble_wire("POST", "/echo/bytes", Some("application/octet-stream"), &[]);
+
+    for &body_len in &[0_usize, 64] {
+        group.bench_with_input(
+            BenchmarkId::new("echo", body_len),
+            &body_len,
+            |b, &body_len| {
+                b.iter(|| {
+                    let mut first = Some(vec![0xA5u8; body_len]).filter(|v| !v.is_empty());
+                    let pull = move || -> RequestChunk {
+                        first.take().map_or(RequestChunk::End, RequestChunk::Data)
+                    };
+                    let mut sink = 0usize;
+                    runtime.block_on(dispatch_bidirectional_streaming(
+                        header_only.clone(),
+                        pull,
+                        |chunk| {
+                            sink += chunk.len();
+                            ControlFlow::Continue(())
+                        },
+                    ));
+                    sink
+                });
+            },
+        );
+    }
+
+    group.finish();
+    drop(runtime);
+}

@@ -13,3 +13,6 @@ publish = false
 [dependencies]
 vespera = { path = "../../crates/vespera" }
 serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true
