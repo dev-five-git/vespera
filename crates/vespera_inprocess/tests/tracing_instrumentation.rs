@@ -131,12 +131,14 @@ fn app() -> Router {
     Router::new()
         .route("/ok", get(|| async { "ok" }).post(|| async { "posted" }))
         .route("/panic", get(panics))
+        .route("/users/{id}/tokens/{token}", get(|| async { "user" }))
 }
 
 fn setup() {
     let _ = set_max_request_bytes(CAP);
     register_app(app);
     register_app_named("admin", app);
+    register_app_named("empty", Router::new);
 }
 
 fn wire(header: &str, body: &[u8]) -> Vec<u8> {
@@ -187,7 +189,7 @@ fn success_span_records_request_status_and_duration() {
     let span = capture.dispatch_span();
     assert_eq!(field(&span, "mode"), "bytes");
     assert_eq!(field(&span, "method"), "GET");
-    assert_eq!(field(&span, "path"), "/ok");
+    assert_eq!(field(&span, "route"), "/ok");
     assert_eq!(field(&span, "app"), "_default");
     assert_eq!(field(&span, "status"), "200");
     assert_eq!(field(&span, "panicked"), "false");
@@ -213,8 +215,53 @@ fn path_query_suffix_is_never_recorded_and_named_app_is() {
         )
     });
     let span = capture.dispatch_span();
-    assert_eq!(field(&span, "path"), "/ok");
+    assert_eq!(field(&span, "route"), "/ok");
     assert_eq!(field(&span, "app"), "admin");
+}
+
+#[test]
+fn route_template_is_recorded_never_the_concrete_path() {
+    setup();
+    let capture = Capture::default();
+    let resp = capture.run(|| {
+        dispatch_from_bytes(
+            get_wire("/users/alice@example.com/tokens/s3cr3t"),
+            &runtime(),
+        )
+    });
+    assert_eq!(status_of(&resp), 200);
+    let span = capture.dispatch_span();
+    assert_eq!(field(&span, "route"), "/users/{id}/tokens/{token}");
+    assert!(!span.contains_key("path"), "{span:?}");
+    let dump = format!("{span:?}");
+    assert!(
+        !dump.contains("s3cr3t") && !dump.contains("alice"),
+        "{dump}"
+    );
+}
+
+#[test]
+fn unmatched_requests_and_route_less_apps_record_no_route() {
+    setup();
+    for (header, app) in [
+        (
+            r#"{"v":1,"method":"GET","path":"/missing/s3cr3t"}"#,
+            "_default",
+        ),
+        (
+            r#"{"v":1,"method":"GET","path":"/ok","app":"empty"}"#,
+            "empty",
+        ),
+    ] {
+        let capture = Capture::default();
+        let resp = capture.run(|| dispatch_from_bytes(wire(header, b""), &runtime()));
+        assert_eq!(status_of(&resp), 404);
+        let span = capture.dispatch_span();
+        assert_eq!(field(&span, "route"), "<unset>");
+        assert_eq!(field(&span, "app"), app);
+        assert_eq!(field(&span, "status"), "404");
+        assert!(!format!("{span:?}").contains("s3cr3t"));
+    }
 }
 
 #[test]
@@ -240,7 +287,7 @@ fn panic_marks_span_and_emits_error_event() {
     let span = capture.dispatch_span();
     assert_eq!(field(&span, "panicked"), "true");
     assert_eq!(field(&span, "status"), "500");
-    assert_eq!(field(&span, "path"), "/panic");
+    assert_eq!(field(&span, "route"), "/panic");
     assert!(field(&span, "duration_ms").parse::<f64>().is_ok());
     assert_eq!(
         capture.events(),

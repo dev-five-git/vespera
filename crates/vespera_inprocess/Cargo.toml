@@ -29,11 +29,11 @@ bench-support = []
 # `cargo bench -p vespera_inprocess`) keeps the runtime it has always measured.
 connect-info = ["axum/tokio"]
 # Structured `tracing` instrumentation: a `vespera.dispatch` span per wire
-# dispatch (mode / method / path / app / status / duration_ms / panicked) and
+# dispatch (mode / method / route / app / status / duration_ms / panicked) and
 # WARN/ERROR events for synthesised error responses (400 / 413 / 431 / 503 /
 # 504 / engine 5xx) and panics.  OFF by default: without it the crate has no
 # `tracing` dependency and the dispatch paths compile exactly as before.
-tracing = ["dep:tracing"]
+tracing = ["dep:tracing", "axum/matched-path"]
 # The shared multi-thread host runtime (`vespera_inprocess::runtime`): lazy
 # build, in-flight leases, deferred hooks, graceful irreversible shutdown.
 # Used by the JNI bridge (`vespera_jni`) and the C ABI (`ffi`).

@@ -109,7 +109,7 @@ pub fn parse_validate_resolve(
     let header = parse_wire_header(header_bytes)
         .map_err(|msg| error_wire(parse_error_status(&msg), &msg))?;
     #[cfg(feature = "tracing")]
-    crate::obs::record_request(&header.method, &header.path, header.app.as_deref());
+    crate::obs::record_request(&header.method, header.app.as_deref());
     if header.v != WIRE_VERSION {
         return Err(error_wire(
             400,

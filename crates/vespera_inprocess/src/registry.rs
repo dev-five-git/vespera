@@ -36,7 +36,7 @@ const MAX_APP_NAME_LEN: usize = 64;
 /// snapshot.  Factory closures are invoked **outside** the update, so a
 /// factory panic cannot corrupt the registry; there is no lock to
 /// poison.
-static APP_ROUTERS: LazyLock<ArcSwap<HashMap<String, Router>>> =
+static APP_ROUTERS: LazyLock<ArcSwap<HashMap<String, StoredApp>>> =
     LazyLock::new(|| ArcSwap::from_pointee(HashMap::new()));
 
 /// Lock-free fast path for the **default** app.
@@ -52,7 +52,26 @@ static APP_ROUTERS: LazyLock<ArcSwap<HashMap<String, Router>>> =
 ///
 /// Named apps resolve through the lock-free [`ArcSwap`] load — they are
 /// the rare multi-app case and can be registered at any time.
-static DEFAULT_ROUTER: OnceLock<Router> = OnceLock::new();
+static DEFAULT_ROUTER: OnceLock<StoredApp> = OnceLock::new();
+
+/// What the registry stores per app: the factory's [`Router`], plus (feature
+/// `tracing`) its route-recording twin — see [`crate::obs::TracedApp`].
+#[cfg(not(feature = "tracing"))]
+type StoredApp = Router;
+#[cfg(feature = "tracing")]
+type StoredApp = crate::obs::TracedApp;
+
+/// The router to dispatch for a stored app (a cheap `Arc` clone).
+#[cfg(not(feature = "tracing"))]
+#[inline]
+fn dispatch_router(stored: &StoredApp) -> Router {
+    stored.clone()
+}
+#[cfg(feature = "tracing")]
+#[inline]
+fn dispatch_router(stored: &StoredApp) -> Router {
+    stored.router()
+}
 
 /// Serializes the registration **write path** (`register_app*`) so a given
 /// app name's `factory` runs **at most once**, even under concurrent
@@ -238,9 +257,12 @@ where
     // (incl. a factory panic), so a re-entrant `register_app*` from inside the
     // factory is rejected with an error rather than deadlocking.
     let router = run_factory_guarded(&factory);
+    // Feature `tracing`: also keep a route-recording twin of the router.
+    #[cfg(feature = "tracing")]
+    let router = crate::obs::TracedApp::new(router);
     let is_default = name == DEFAULT_APP_NAME;
     APP_ROUTERS.rcu(|current| {
-        let mut next: HashMap<String, Router> = (**current).clone();
+        let mut next: HashMap<String, StoredApp> = (**current).clone();
         // First-wins: `or_insert_with` leaves an existing entry (from a
         // racing registration) untouched, so the first inserter wins.
         next.entry(name.clone()).or_insert_with(|| router.clone());
@@ -280,12 +302,12 @@ pub fn resolve_app_router(header: &WireRequestHeader) -> Result<Router, Vec<u8>>
     if name == DEFAULT_APP_NAME
         && let Some(router) = DEFAULT_ROUTER.get()
     {
-        return Ok(router.clone());
+        return Ok(dispatch_router(router));
     }
     // Named-app resolution is also lock-free: a single `ArcSwap` load
     // (atomic) + hash lookup, no reader parking under concurrency.
     if let Some(router) = APP_ROUTERS.load().get(name) {
-        return Ok(router.clone());
+        return Ok(dispatch_router(router));
     }
     // Miss: decide between 400 (invalid name) and 404 (unregistered).
     match validate_app_name(name) {
