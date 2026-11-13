@@ -152,7 +152,7 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
             // for larger bodies, idempotent or not.
             boolean virtualThread = currentThreadIsVirtual != null
                     ? currentThreadIsVirtual.booleanValue()
-                    : VesperaBridge.currentThreadIsVirtual();
+                    : VesperaDirectBufferPool.currentThreadIsVirtual();
             if (virtualThread) {
                 return syncSized(contentLength, bodyless)
                         ? DispatchMode.SYNC

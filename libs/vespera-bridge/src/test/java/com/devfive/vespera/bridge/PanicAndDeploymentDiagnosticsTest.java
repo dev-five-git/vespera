@@ -112,7 +112,7 @@ class PanicAndDeploymentDiagnosticsTest {
         UnsatisfiedLinkError original = new UnsatisfiedLinkError(
                 "Native Library /tmp/librust_jni_demo.so already loaded in another classloader");
         UnsatisfiedLinkError guided = assertThrows(UnsatisfiedLinkError.class,
-                () -> VesperaBridge.loadNativeLibrary("rust_jni_demo",
+                () -> VesperaNativeLoader.loadNativeLibrary("rust_jni_demo",
                         name -> { throw original; }, name -> { }));
         assertTrue(guided.getMessage().startsWith(original.getMessage()));
         assertTrue(guided.getMessage().contains("shared lib"), guided.getMessage());

@@ -390,7 +390,7 @@ class VesperaDirectWrapperTest {
 
         IllegalArgumentException queryInPath = assertThrows(
                 IllegalArgumentException.class,
-                () -> VesperaBridge.dispatchDirectPooled(
+                () -> DirectModeDispatcher.dispatchPooled(
                         null, "GET", "/items?a=1", null, headers, null, false, false));
         assertEquals(
                 "path must not contain '?' — pass the raw query string via the query parameter",

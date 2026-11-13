@@ -74,11 +74,6 @@ public class VesperaBridge {
      *  reject a later re-init with a <em>different</em> library name. */
     private static String loadedLibraryName;
 
-    @FunctionalInterface
-    interface NativeLibraryLoader {
-        void load(String libraryName);
-    }
-
     /**
      * Decoded wire-format response.
      *
@@ -179,7 +174,8 @@ public class VesperaBridge {
             }
             return;
         }
-        loadNativeLibrary(libraryName, VesperaNativeLoader::loadBundled, System::loadLibrary);
+        VesperaNativeLoader.loadNativeLibrary(
+                libraryName, VesperaNativeLoader::loadBundled, System::loadLibrary);
         // Bridge JAR <-> native library release check (VesperaVersions); a
         // major.minor mismatch throws before the library is marked loaded.
         VesperaVersions.verify(VesperaBridge::nativeVersion0);
@@ -191,21 +187,6 @@ public class VesperaBridge {
         // Apply pending config (set via configure* before init); pending
         // values beat system properties (Rust-side setter > env > default).
         VesperaNativeConfig.applyAfterLoad();
-    }
-
-    static void loadNativeLibrary(
-            String libraryName,
-            NativeLibraryLoader bundledLoader,
-            NativeLibraryLoader systemLoader) {
-        try {
-            try {
-                bundledLoader.load(libraryName);
-            } catch (VesperaNativeLoader.BundledNativeAbsent absent) {
-                VesperaNativeLoader.loadFromSystemPath(libraryName, absent, systemLoader);
-            }
-        } catch (UnsatisfiedLinkError failure) {
-            throw VesperaNativeLoader.withDeploymentGuidance(failure, libraryName);
-        }
     }
 
     /** Whether {@link #init(String)} has loaded the native library in this class loader. */
@@ -270,15 +251,7 @@ public class VesperaBridge {
      *         is outside [1, 1024]
      */
     public static synchronized void configureStreaming(int chunkBytes, int channelCapacity) {
-        if (chunkBytes < 4096 || chunkBytes > 8388608) {
-            throw new IllegalArgumentException(
-                    "chunkBytes " + chunkBytes
-                            + " out of range [4096, 8388608] (4 KiB – 8 MiB)");
-        }
-        if (channelCapacity < 1 || channelCapacity > 1024) {
-            throw new IllegalArgumentException(
-                    "channelCapacity " + channelCapacity + " out of range [1, 1024]");
-        }
+        BridgeInputChecks.requireStreamingConfig(chunkBytes, channelCapacity);
         VesperaNativeConfig.setStreaming(chunkBytes, channelCapacity, loaded);
     }
 
@@ -704,46 +677,8 @@ public class VesperaBridge {
      *         {@code inLen} is negative, or exceeds {@code in.capacity()}
      */
     public static int dispatchDirect(ByteBuffer in, int inLen, ByteBuffer out) {
-        validateDirectBuffers(in, inLen, out);
+        BridgeInputChecks.requireDirectBuffers(in, inLen, out);
         return dispatchDirect0(in, inLen, out);
-    }
-
-    /** Caller-side checks shared by the direct-buffer natives. */
-    static void validateDirectBuffers(ByteBuffer in, int inLen, ByteBuffer out) {
-        Objects.requireNonNull(in, "in");
-        Objects.requireNonNull(out, "out");
-        if (!in.isDirect() || !out.isDirect()) {
-            throw new IllegalArgumentException(
-                    "dispatchDirect requires direct ByteBuffers (use ByteBuffer.allocateDirect)");
-        }
-        if (in.isReadOnly()) {
-            throw new IllegalArgumentException(
-                    "dispatchDirect requires a writable in ByteBuffer (got a read-only buffer)");
-        }
-        // SEC-2: the native side writes the wire response straight into
-        // `out` via a `&mut [u8]`; a read-only direct buffer (e.g. a
-        // read-only MappedByteBuffer) is backed by read-only pages, so
-        // writing to it is undefined behavior / a process crash.  Reject
-        // it here — the native code cannot recover from a write fault.
-        if (out.isReadOnly()) {
-            throw new IllegalArgumentException(
-                    "dispatchDirect requires a writable out ByteBuffer (got a read-only buffer)");
-        }
-        if (inLen < 0 || inLen > in.capacity()) {
-            throw new IllegalArgumentException(
-                    "inLen " + inLen + " out of range for in.capacity() " + in.capacity());
-        }
-    }
-
-    /**
-     * Whether the calling thread is a virtual thread (Java 21+); always
-     * {@code false} on the Java 17 baseline.  Delegates to
-     * {@link VesperaDirectBufferPool#currentThreadIsVirtual()} — used by
-     * {@link SmartDispatchModeResolver} to keep pooled direct-buffer work
-     * off virtual threads.
-     */
-    static boolean currentThreadIsVirtual() {
-        return VesperaDirectBufferPool.currentThreadIsVirtual();
     }
 
     /**
@@ -818,7 +753,7 @@ public class VesperaBridge {
             Map<String, String> headers,
             byte[] body,
             boolean retryOnOverflow) {
-        requireRequestInputs(method, path, headers);
+        BridgeInputChecks.requireRequest(method, path, headers);
         return VesperaDirectBufferPool.dispatchDirectPooled(
                 appName, method, path, query, headers, body, retryOnOverflow);
     }
@@ -831,24 +766,9 @@ public class VesperaBridge {
             HeaderSource headers,
             byte[] body,
             boolean retryOnOverflow) {
-        requireRequestInputs(method, path);
+        BridgeInputChecks.requireRequest(method, path);
         return VesperaDirectBufferPool.dispatchDirectPooled(
                 appName, method, path, query, headers, body, retryOnOverflow);
-    }
-
-    static ByteBuffer dispatchDirectPooled(
-            String appName,
-            String method,
-            String path,
-            String query,
-            HeaderSource headers,
-            byte[] body,
-            boolean retryOnOverflow,
-            boolean currentThreadIsVirtual) {
-        requireRequestInputs(method, path);
-        return VesperaDirectBufferPool.dispatchDirectPooled(
-                appName, method, path, query, headers, body, retryOnOverflow, currentThreadIsVirtual,
-                currentThreadIsVirtual ? ParkingDispatch::park : VesperaBridge::dispatchBytes, true);
     }
 
     /**
@@ -882,7 +802,7 @@ public class VesperaBridge {
             byte[] body,
             ByteBuffer target) {
         Objects.requireNonNull(target, "target");
-        requireRequestInputs(method, path, headers);
+        BridgeInputChecks.requireRequest(method, path, headers);
         return VesperaWireCodec.encodeRequestInto(appName, method, path, query, headers, body, target);
     }
 
@@ -895,7 +815,7 @@ public class VesperaBridge {
             byte[] body,
             ByteBuffer target) {
         Objects.requireNonNull(target, "target");
-        requireRequestInputs(method, path);
+        BridgeInputChecks.requireRequest(method, path);
         return VesperaWireCodec.encodeRequestInto(appName, method, path, query, headers, body, target);
     }
 
@@ -915,7 +835,7 @@ public class VesperaBridge {
             String query,
             Map<String, String> headers,
             byte[] body) {
-        requireRequestInputs(method, path, headers);
+        BridgeInputChecks.requireRequest(method, path, headers);
         return VesperaWireCodec.encodeRequest(null, method, path, query, headers, body);
     }
 
@@ -925,7 +845,7 @@ public class VesperaBridge {
             String query,
             HeaderSource headers,
             byte[] body) {
-        requireRequestInputs(method, path);
+        BridgeInputChecks.requireRequest(method, path);
         return VesperaWireCodec.encodeRequest(null, method, path, query, headers, body);
     }
 
@@ -955,7 +875,7 @@ public class VesperaBridge {
             String query,
             Map<String, String> headers,
             byte[] body) {
-        requireRequestInputs(method, path, headers);
+        BridgeInputChecks.requireRequest(method, path, headers);
         return VesperaWireCodec.encodeRequest(appName, method, path, query, headers, body);
     }
 
@@ -966,28 +886,8 @@ public class VesperaBridge {
             String query,
             HeaderSource headers,
             byte[] body) {
-        requireRequestInputs(method, path);
+        BridgeInputChecks.requireRequest(method, path);
         return VesperaWireCodec.encodeRequest(appName, method, path, query, headers, body);
-    }
-
-    private static void requireRequestInputs(
-            String method, String path, Map<String, String> headers) {
-        requireRequestInputs(method, path);
-        if (headers != null) {
-            for (Map.Entry<String, String> header : headers.entrySet()) {
-                Objects.requireNonNull(header.getKey(), "header key");
-                Objects.requireNonNull(header.getValue(), "header value");
-            }
-        }
-    }
-
-    private static void requireRequestInputs(String method, String path) {
-        Objects.requireNonNull(method, "method");
-        Objects.requireNonNull(path, "path");
-        if (path.indexOf('?') >= 0) {
-            throw new IllegalArgumentException(
-                    "path must not contain '?' — pass the raw query string via the query parameter");
-        }
     }
 
     /**

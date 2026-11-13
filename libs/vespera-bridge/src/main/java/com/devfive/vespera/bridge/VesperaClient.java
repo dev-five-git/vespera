@@ -72,7 +72,7 @@ public final class VesperaClient {
         @Override
         public byte[] dispatch(byte[] wireRequest) {
             requireInitialized();
-            return ParkingDispatch.dispatchBytes(wireRequest, VesperaBridge.currentThreadIsVirtual());
+            return ParkingDispatch.dispatchBytes(wireRequest, VesperaDirectBufferPool.currentThreadIsVirtual());
         }
 
         @Override

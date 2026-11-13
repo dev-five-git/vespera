@@ -53,14 +53,14 @@ class VesperaBridgeInitTest {
     void nativeLoadDecisionFallsBackOnlyForAbsentBundledResource() {
         AtomicInteger bundledCalls = new AtomicInteger();
         AtomicInteger systemCalls = new AtomicInteger();
-        VesperaBridge.loadNativeLibrary(
+        VesperaNativeLoader.loadNativeLibrary(
                 "demo",
                 name -> bundledCalls.incrementAndGet(),
                 name -> systemCalls.incrementAndGet());
         assertEquals(1, bundledCalls.get());
         assertEquals(0, systemCalls.get());
 
-        VesperaBridge.loadNativeLibrary(
+        VesperaNativeLoader.loadNativeLibrary(
                 "fallback",
                 name -> { throw new VesperaNativeLoader.BundledNativeAbsent(name); },
                 name -> {
@@ -71,7 +71,7 @@ class VesperaBridgeInitTest {
 
         UnsatisfiedLinkError invalidBundled = assertThrows(
                 UnsatisfiedLinkError.class,
-                () -> VesperaBridge.loadNativeLibrary(
+                () -> VesperaNativeLoader.loadNativeLibrary(
                         "invalid",
                         name -> { throw new UnsatisfiedLinkError("invalid bundled"); },
                         name -> systemCalls.incrementAndGet()));

@@ -161,7 +161,7 @@ class BundledNativeIndexTest {
         UnsatisfiedLinkError notOnPath = new UnsatisfiedLinkError("no demo in java.library.path");
 
         UnsatisfiedLinkError combined = assertThrows(UnsatisfiedLinkError.class,
-                () -> VesperaBridge.loadNativeLibrary("demo",
+                () -> VesperaNativeLoader.loadNativeLibrary("demo",
                         name -> { throw absent; }, name -> { throw notOnPath; }));
 
         assertTrue(combined.getMessage().startsWith("Cannot load native library 'demo': Not found in JAR"),
