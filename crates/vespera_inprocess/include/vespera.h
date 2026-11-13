@@ -39,7 +39,8 @@
 extern "C" {
 #endif
 
-/* Bumped on any incompatible change to this header. */
+/* Bumped on any incompatible change to this header (adding functions or
+ * return codes is compatible and does not bump it). */
 #define VESPERA_ABI_VERSION 1
 
 /* Return codes. */
@@ -54,13 +55,18 @@ extern "C" {
 #define VESPERA_ERR_REGISTRATION (-3)
 /* vespera_init: runtime unavailable; vespera_shutdown: already shut down. */
 #define VESPERA_ERR_RUNTIME (-4)
+/* vespera_configure_*: the setting was already fixed; nothing changed. */
+#define VESPERA_ERR_TOO_LATE (-5)
 
 /*
- * Completion callback of vespera_dispatch_async.  Invoked exactly once,
- * possibly on another thread (a runtime worker, or the thread calling
- * vespera_shutdown when a pending dispatch is dropped with a 503).  The
- * callback OWNS `response` and must release it with
- * vespera_free(response, response_len).  It must not unwind.
+ * Completion callback of vespera_dispatch_async.  Invoked at most once
+ * (exactly once except for the vespera_shutdown case below), possibly on
+ * another thread: inline on the calling thread when the request is rejected
+ * before dispatch, otherwise on a runtime worker thread — including when
+ * vespera_shutdown drops a pending dispatch with a 503, which can happen
+ * after vespera_shutdown has returned.  The callback OWNS `response` and
+ * must release it with vespera_free(response, response_len).  It must not
+ * unwind.
  */
 typedef void (*vespera_callback)(void *user_data, uint8_t *response, size_t response_len);
 
@@ -98,8 +104,9 @@ int vespera_dispatch_into(const uint8_t *request, size_t request_len, uint8_t *o
 
 /*
  * Asynchronous dispatch: returns immediately; `callback(user_data, ...)`
- * receives the wire response exactly once (inline on this thread when the
- * request is rejected before dispatch, e.g. runtime shut down → 503).
+ * receives the wire response once (inline on this thread when the request
+ * is rejected before dispatch: too many async dispatches in flight → 503,
+ * see vespera_configure_async_max_in_flight; runtime shut down → 503).
  * `user_data` is passed through untouched and must be usable from any
  * thread.  VESPERA_ERR_INVALID_ARGUMENT (callback never called) when
  * `callback` is NULL.
@@ -116,11 +123,50 @@ void vespera_free(uint8_t *ptr, size_t len);
 /*
  * Shut the shared runtime down for good: new dispatches answer 503 at
  * once, in-flight ones get up to `timeout_ms` to finish, then the runtime
- * stops (pending async dispatches complete with 503).  Returns VESPERA_OK,
+ * stops.  Pending async dispatches are dropped and their callbacks receive
+ * a 503 on a runtime worker thread, possibly after this call returned.
+ * EXCEPTION: a handler still blocking its worker thread (not yielding at an
+ * .await) when the time is up is abandoned with the runtime: its callback
+ * never runs and its `user_data` is never released.  Returns VESPERA_OK,
  * or VESPERA_ERR_RUNTIME when it was already shut down.  Irreversible for
  * the process.
  */
 int vespera_shutdown(uint64_t timeout_ms);
+
+/*
+ * Process-wide settings, the C twins of the JVM bridge's configure hooks
+ * and of the VESPERA_* environment variables (a configure call wins over
+ * the variable).  Call them BEFORE vespera_init: the runtime settings are
+ * fixed when vespera_init starts the shared runtime, the others when a
+ * dispatch first reads them.  Each returns VESPERA_OK when applied,
+ * VESPERA_ERR_TOO_LATE when the setting was already fixed (an earlier call,
+ * the runtime started, or a dispatch read it; nothing changes), or
+ * VESPERA_ERR_PANIC.
+ */
+
+/* Runtime worker threads (VESPERA_RUNTIME_WORKERS), clamped to 1..1024. */
+int vespera_configure_worker_threads(size_t worker_threads);
+
+/* Runtime blocking-pool cap (VESPERA_RUNTIME_MAX_BLOCKING_THREADS),
+ * clamped to 1..8192; default 512. */
+int vespera_configure_max_blocking_threads(size_t max_blocking_threads);
+
+/* Request size cap (VESPERA_MAX_REQUEST_BYTES) → 413; 0 = unlimited;
+ * default 64 MiB. */
+int vespera_configure_max_request_bytes(size_t max_bytes);
+
+/* Buffered response cap (VESPERA_MAX_BUFFERED_RESPONSE_BYTES) → 500;
+ * 0 = unlimited; default 256 MiB. */
+int vespera_configure_max_buffered_response_bytes(size_t max_bytes);
+
+/* Per-dispatch deadline (VESPERA_DISPATCH_TIMEOUT_MS) → 504; 0 = disabled
+ * (the default). */
+int vespera_configure_dispatch_timeout_ms(uint64_t timeout_ms);
+
+/* Cap on in-flight vespera_dispatch_async calls, shared with the JVM
+ * bridge's dispatchAsync (VESPERA_ASYNC_MAX_IN_FLIGHT) → 503; 0 = unlimited;
+ * default 4096. */
+int vespera_configure_async_max_in_flight(size_t max_in_flight);
 
 #ifdef __cplusplus
 }

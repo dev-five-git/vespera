@@ -94,7 +94,8 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["r
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 mimalloc = "0.1"
 
-# loom models of the shared runtime's lease gate (`src/runtime/gate.rs`).
+# loom models of the shared runtime's lease gate (`src/runtime/gate.rs`) and
+# the async in-flight cap shared by JNI and the C ABI (`src/runtime/in_flight.rs`).
 # Only under the custom `--cfg vespera_loom` (not `cfg(loom)`, which would
 # switch Tokio and friends into their own loom builds), and only in this
 # crate's own unit-test build — as a dependency it keeps `std` atomics:
