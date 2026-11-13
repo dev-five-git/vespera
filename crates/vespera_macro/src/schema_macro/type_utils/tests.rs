@@ -542,6 +542,9 @@ fn option_inner_rejects_wrapper_without_generic_arguments() {
 #[case::uuid("Uuid", serde_json::json!("00000000-0000-0000-0000-000000000000"))]
 #[case::datetime("DateTimeUtc", serde_json::json!("1970-01-01T00:00:00+00:00"))]
 #[case::naive_datetime("NaiveDateTime", serde_json::json!("1970-01-01T00:00:00"))]
+#[case::naive_date("NaiveDate", serde_json::json!("1970-01-01"))]
+#[case::naive_time("NaiveTime", serde_json::json!("00:00:00"))]
+#[case::time("Time", serde_json::json!("00:00:00"))]
 fn type_default_returns_temporal_and_uuid_sentinels(
     #[case] input: &str,
     #[case] expected: serde_json::Value,

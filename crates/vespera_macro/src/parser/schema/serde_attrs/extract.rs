@@ -282,18 +282,17 @@ pub(super) fn walk_serde_keys(
 ) -> bool {
     let mut all_parsed = true;
     for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
-        all_parsed &= attr
-            .parse_nested_meta(|meta| {
-                if !on_key(&meta)? {
-                    if meta.input.peek(syn::Token![=]) {
-                        meta.value()?.parse::<syn::Expr>()?;
-                    } else if meta.input.peek(syn::token::Paren) {
-                        meta.input.parse::<proc_macro2::Group>()?;
-                    }
+        let parsed = attr.parse_nested_meta(|meta| {
+            if !on_key(&meta)? {
+                if meta.input.peek(syn::Token![=]) {
+                    meta.value()?.parse::<syn::Expr>()?;
+                } else if meta.input.peek(syn::token::Paren) {
+                    meta.input.parse::<proc_macro2::Group>()?;
                 }
-                Ok(())
-            })
-            .is_ok();
+            }
+            Ok(())
+        });
+        all_parsed &= parsed.is_ok();
     }
     all_parsed
 }

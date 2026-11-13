@@ -637,6 +637,13 @@ mod scalar_parsers;
 
 // ─── NamedTempFile ──────────────────────────────────────────────────────────
 
+/// Create a temp file and reopen a second handle to it (both blocking).
+fn create_reopened_temp_file() -> std::io::Result<(tempfile::NamedTempFile, std::fs::File)> {
+    let temp = tempfile::NamedTempFile::new()?;
+    let std_file = temp.reopen()?;
+    Ok((temp, std_file))
+}
+
 impl<S: Send + Sync> TryFromFieldWithState<S> for tempfile::NamedTempFile {
     async fn try_from_field_with_state(
         mut field: MeteredField<'_>,
@@ -653,18 +660,14 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for tempfile::NamedTempFile {
         // wrapped in `tokio::fs` below so large writes also route to the
         // blocking pool.  `temp` keeps ownership of the path + delete-on-
         // drop guard.
-        let (temp, std_file) = tokio::task::spawn_blocking(|| {
-            let temp = Self::new()?;
-            let std_file = temp.reopen()?;
-            Ok::<_, std::io::Error>((temp, std_file))
-        })
-        .await
-        .map_err(|e| TypedMultipartError::Other {
-            source: e.to_string(),
-        })?
-        .map_err(|e| TypedMultipartError::Other {
-            source: e.to_string(),
-        })?;
+        let (temp, std_file) = tokio::task::spawn_blocking(create_reopened_temp_file)
+            .await
+            .map_err(|e| TypedMultipartError::Other {
+                source: e.to_string(),
+            })?
+            .map_err(|e| TypedMultipartError::Other {
+                source: e.to_string(),
+            })?;
         let mut file = tokio::fs::File::from_std(std_file);
 
         let limit_bytes = limit_bytes.unwrap_or_else(default_temp_file_field_limit_bytes);

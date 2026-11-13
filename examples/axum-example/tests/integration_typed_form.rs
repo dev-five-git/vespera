@@ -199,5 +199,5 @@ async fn test_typed_form_create_minimal() {
     assert_eq!(result["name"], "Minimal Upload");
     assert!(result["thumbnailUrl"].is_null());
     assert!(result["documentUrl"].is_null());
-    assert!(result["tags"].as_array().unwrap().is_empty());
+    assert_eq!(result["tags"].as_array().map(Vec::len), Some(0));
 }

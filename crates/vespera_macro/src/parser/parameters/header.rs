@@ -228,4 +228,54 @@ mod tests {
             assert_eq!(params[0].required, Some(false));
         }
     }
+
+    /// Every well-known `headers::*` type maps to its exact wire name.
+    #[test]
+    fn known_typed_header_names_cover_the_whole_table() {
+        let table = [
+            ("Authorization", "Authorization"),
+            ("ContentType", "Content-Type"),
+            ("Accept", "Accept"),
+            ("UserAgent", "User-Agent"),
+            ("Cookie", "Cookie"),
+            ("Host", "Host"),
+            ("Origin", "Origin"),
+            ("Referer", "Referer"),
+            ("IfNoneMatch", "If-None-Match"),
+            ("IfMatch", "If-Match"),
+            ("IfModifiedSince", "If-Modified-Since"),
+            ("IfUnmodifiedSince", "If-Unmodified-Since"),
+            ("IfRange", "If-Range"),
+            ("ContentLength", "Content-Length"),
+            ("ContentEncoding", "Content-Encoding"),
+            ("ContentRange", "Content-Range"),
+            ("ContentLocation", "Content-Location"),
+            ("ContentDisposition", "Content-Disposition"),
+            ("CacheControl", "Cache-Control"),
+            ("Connection", "Connection"),
+            ("Date", "Date"),
+            ("ETag", "ETag"),
+            ("Expect", "Expect"),
+            ("Pragma", "Pragma"),
+            ("ProxyAuthorization", "Proxy-Authorization"),
+            ("Range", "Range"),
+            ("Te", "TE"),
+            ("TransferEncoding", "Transfer-Encoding"),
+            ("Upgrade", "Upgrade"),
+            (
+                "AccessControlRequestMethod",
+                "Access-Control-Request-Method",
+            ),
+            (
+                "AccessControlRequestHeaders",
+                "Access-Control-Request-Headers",
+            ),
+            ("SecWebsocketKey", "Sec-WebSocket-Key"),
+            ("SecWebsocketVersion", "Sec-WebSocket-Version"),
+        ];
+        for (ident, wire) in table {
+            assert_eq!(known_typed_header_name(ident), Some(wire), "{ident}");
+        }
+        assert_eq!(known_typed_header_name("XRequestId"), None);
+    }
 }
