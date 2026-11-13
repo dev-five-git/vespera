@@ -1,3 +1,12 @@
+// Route handlers are `pub async fn` by contract (vespera! discovers them), even when
+// they never await, and the example favours readable over pedantic formatting.
+#![allow(
+    clippy::unused_async,
+    clippy::unused_async_trait_impl,
+    clippy::uninlined_format_args,
+    clippy::default_trait_access
+)]
+
 mod cron;
 mod models;
 mod routes;
