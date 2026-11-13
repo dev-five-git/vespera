@@ -103,7 +103,8 @@ jobs:
   # helpers of `vespera_jni` (direct-buffer copy, spare-capacity fill,
   # `u8`→`jbyte` view) and its loom-shimmed async cap. The shared-runtime
   # lease gate + lifecycle are `vespera_inprocess` unit tests
-  # (`runtime::gate`, `runtime::tests`; feature `runtime`, named explicitly
+  # (`runtime::gate`, `runtime::tests`) and the C ABI (`ffi`, raw-pointer
+  # round-trips through `vespera_free`); feature `ffi` (implies `runtime`, named explicitly
   # below). The JNI symbols need a JVM and are covered by jni-e2e. A handful of tests that spawn a child process
   # or are too slow interpreted carry `#[cfg_attr(miri, ignore = "...")]`.
   # nextest runs one process per test (`.config/nextest.toml`
@@ -128,7 +129,7 @@ jobs:
       - name: cargo miri nextest run
         run: >-
           cargo miri nextest run -p vespera_inprocess -p vespera_jni --lib
-          --features vespera_inprocess/runtime
+          --features vespera_inprocess/ffi
           -E 'package(vespera_inprocess) | (package(vespera_jni) & test(/^(jni_buf|jni_impl::direct::direct_tests|jni_impl::gates)::/))'
 
   # loom: exhaustively explores thread interleavings (bounded preemptions)

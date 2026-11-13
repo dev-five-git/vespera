@@ -625,7 +625,7 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 # `cyclonedx`); the Gradle plugin's is NOT on its publication (the Plugin Portal
 # rejects JSON artifacts). User-facing verification: SECURITY.md.
 cargo deny check                                   # local equivalent of `deny`
-cargo +nightly-2026-08-29 miri nextest run -p vespera_inprocess --features runtime --lib \
+cargo +nightly-2026-08-29 miri nextest run -p vespera_inprocess --features ffi --lib \
   --target x86_64-unknown-linux-gnu                # local `miri` (Linux target: tokio's
                                                    # Windows IOCP driver is unsupported)
 RUSTFLAGS="--cfg vespera_loom" CARGO_TARGET_DIR=target/loom \
