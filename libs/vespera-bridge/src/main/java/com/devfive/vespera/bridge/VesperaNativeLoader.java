@@ -78,6 +78,32 @@ final class VesperaNativeLoader {
 
     private VesperaNativeLoader() {}
 
+    /** Loading seam: {@code loadBundled} / {@code System::loadLibrary} in production, fakes in tests. */
+    @FunctionalInterface
+    interface NativeLibraryLoader {
+        void load(String libraryName);
+    }
+
+    /**
+     * Load {@code libraryName} for {@link VesperaBridge#init(String)}: the
+     * bundled (JAR-embedded) copy first, the system library path when none is
+     * bundled; a link failure is rewrapped with deployment guidance.
+     */
+    static void loadNativeLibrary(
+            String libraryName,
+            NativeLibraryLoader bundledLoader,
+            NativeLibraryLoader systemLoader) {
+        try {
+            try {
+                bundledLoader.load(libraryName);
+            } catch (BundledNativeAbsent absent) {
+                loadFromSystemPath(libraryName, absent, systemLoader);
+            }
+        } catch (UnsatisfiedLinkError failure) {
+            throw withDeploymentGuidance(failure, libraryName);
+        }
+    }
+
     /** System property selecting the extraction base directory. */
     static final String NATIVE_DIR_PROPERTY = "vespera.native.dir";
     /** Environment variable selecting the extraction base directory. */
@@ -214,7 +240,7 @@ final class VesperaNativeLoader {
      * java.library.path".
      */
     static void loadFromSystemPath(
-            String libraryName, BundledNativeAbsent absent, VesperaBridge.NativeLibraryLoader systemLoader) {
+            String libraryName, BundledNativeAbsent absent, NativeLibraryLoader systemLoader) {
         try {
             systemLoader.load(libraryName);
         } catch (UnsatisfiedLinkError notOnLibraryPath) {

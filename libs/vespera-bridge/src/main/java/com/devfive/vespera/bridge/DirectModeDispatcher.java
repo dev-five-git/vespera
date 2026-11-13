@@ -69,10 +69,10 @@ final class DirectModeDispatcher {
         try {
             // Encodes straight into the pooled direct buffer — no
             // intermediate wire-sized byte[].
-            wireResp = VesperaBridge.dispatchDirectPooled(
+            wireResp = dispatchPooled(
                     appName, method, path, query, headers, body, retry,
                     currentThreadIsVirtual == null
-                            ? VesperaBridge.currentThreadIsVirtual()
+                            ? VesperaDirectBufferPool.currentThreadIsVirtual()
                             : currentThreadIsVirtual.booleanValue());
         } catch (StashedOverflowException stashed) {
             // The finished response (an event stream, or larger than the
@@ -179,5 +179,24 @@ final class DirectModeDispatcher {
             return;
         }
         response.getOutputStream().flush();
+    }
+
+    /**
+     * Pooled direct dispatch whose heap fallback parks instead of pinning on
+     * a virtual thread ({@link ParkingDispatch#park}).
+     */
+    static ByteBuffer dispatchPooled(
+            String appName,
+            String method,
+            String path,
+            String query,
+            VesperaBridge.HeaderSource headers,
+            byte[] body,
+            boolean retryOnOverflow,
+            boolean currentThreadIsVirtual) {
+        BridgeInputChecks.requireRequest(method, path);
+        return VesperaDirectBufferPool.dispatchDirectPooled(
+                appName, method, path, query, headers, body, retryOnOverflow, currentThreadIsVirtual,
+                currentThreadIsVirtual ? ParkingDispatch::park : VesperaBridge::dispatchBytes, true);
     }
 }

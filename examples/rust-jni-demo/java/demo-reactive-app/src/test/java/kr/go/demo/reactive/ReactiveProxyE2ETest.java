@@ -138,6 +138,47 @@ class ReactiveProxyE2ETest {
         assertEquals(413, response.statusCode());
     }
 
+    private HttpResponse<InputStream> streamPanic(int chunks) throws Exception {
+        return http.send(HttpRequest.newBuilder(
+                        URI.create("http://127.0.0.1:" + port + "/diag/panic-mid-body/" + chunks))
+                .header("Accept", "text/event-stream")
+                .POST(HttpRequest.BodyPublishers.noBody()).build(),
+                HttpResponse.BodyHandlers.ofInputStream());
+    }
+
+    /** A streamed body that panics before anything was committed: the proxy's 500, not Rust's 200. */
+    @Test
+    void streamedPanicBeforeTheCommitAnswersA500() throws Exception {
+        HttpResponse<InputStream> response = streamPanic(0);
+        assertEquals(500, response.statusCode());
+        try (InputStream body = response.body()) {
+            assertEquals("panic in Rust engine", new String(body.readAllBytes(), StandardCharsets.UTF_8));
+        }
+        assertEquals("text/plain; charset=utf-8", response.headers().firstValue("content-type").orElseThrow());
+    }
+
+    /** Once bytes reached the client the response cannot change: the transfer is cut short. */
+    @Test
+    void streamedPanicAfterTheCommitAbortsTheResponse() throws Exception {
+        HttpResponse<InputStream> response;
+        try {
+            response = streamPanic(512);
+        } catch (IOException aborted) {
+            return; // aborted before the status line arrived: also incomplete
+        }
+        assertEquals(200, response.statusCode());
+        int received = 0;
+        try (InputStream body = response.body()) {
+            byte[] buffer = new byte[64 * 1024];
+            for (int n; (n = body.read(buffer)) != -1; ) {
+                received += n;
+            }
+        } catch (IOException aborted) {
+            return; // the connection was aborted mid-body
+        }
+        throw new AssertionError("a panicked stream completed cleanly after " + received + " bytes");
+    }
+
     @Test
     void forwardsClientAddressPrincipalAndAppSelection() throws Exception {
         String client = get("/headers/client").body();

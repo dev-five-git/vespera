@@ -308,7 +308,7 @@ public class VesperaProxyController {
         final Boolean currentThreadIsVirtual;
         final DispatchMode mode;
         if (modeResolver instanceof SmartDispatchModeResolver smartResolver) {
-            boolean virtualThread = VesperaBridge.currentThreadIsVirtual();
+            boolean virtualThread = VesperaDirectBufferPool.currentThreadIsVirtual();
             currentThreadIsVirtual = Boolean.valueOf(virtualThread);
             mode = smartResolver.resolveMode(request, virtualThread);
         } else {
@@ -634,7 +634,7 @@ public class VesperaProxyController {
         byte[] wireReq = VesperaBridge.encodeRequest(
                 appName, method, path, query, headers, body);
         // Parks (instead of pinning the carrier) on a virtual thread.
-        byte[] wireResp = ParkingDispatch.dispatchBytes(wireReq, VesperaBridge.currentThreadIsVirtual());
+        byte[] wireResp = ParkingDispatch.dispatchBytes(wireReq, VesperaDirectBufferPool.currentThreadIsVirtual());
         rejectOversizedBufferedResponse(wireResp, javaResponseCap(maxBufferedResponseBytes));
         WireResponseWriter.writeWireResponse(wireResp, response, method);
     }
