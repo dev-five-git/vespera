@@ -28,7 +28,8 @@ name: Bench
 # headers_path, request_headers_path, resolve_path, dispatch_path). The
 # streaming and contended groups are noisier (spawn_blocking / scheduler
 # timing) and the router_path setup micro-bench is low-signal, so those
-# are validated locally instead — see PERF_REPORT.md.
+# are validated locally instead (`cargo bench -p vespera_inprocess --bench
+# dispatch -- <group>`).
 #
 # Small, deterministic ALLOCATION regressions are caught noise-free by the
 # `alloc_budget` integration test (a counting global allocator asserting exact
@@ -43,6 +44,9 @@ on:
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'rust-toolchain'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
       - '.github/workflows/bench.yml'
       - 'scripts/bench-interleaved.sh'
   pull_request:
@@ -50,6 +54,9 @@ on:
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'rust-toolchain'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
       - '.github/workflows/bench.yml'
       - 'scripts/bench-interleaved.sh'
 
@@ -68,6 +75,9 @@ jobs:
   bench:
     name: Criterion regression gate
     runs-on: ubuntu-latest
+    # Two release builds + 5 x 2 interleaved runs; the default (6 h) would let
+    # a hung bench hold a runner for hours.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -89,7 +99,7 @@ jobs:
           should_run=false
           while IFS= read -r path; do
             case "$path" in
-              crates/*|Cargo.lock|.github/workflows/bench.yml|scripts/bench-interleaved.sh)
+              crates/*|Cargo.lock|rust-toolchain|rust-toolchain.toml|.cargo/*|.github/workflows/bench.yml|scripts/bench-interleaved.sh)
                 should_run=true
                 ;;
             esac
