@@ -43,6 +43,13 @@ pub struct StoredCronInfo {
     pub expression: String,
     /// Source file path from `Span::call_site().local_file()`
     pub file_path: Option<String>,
+    /// Inline `mod` path inside `file_path` that encloses the function
+    /// (`""` = file level, `"a::b"` = `mod a { mod b { … } }`), or `None`
+    /// when it could not be located (no file, macro-generated function, an
+    /// IDE buffer that differs from the file on disk).  Part of the storage
+    /// key, so same-named jobs in different inline modules of one file do
+    /// not replace each other.
+    pub inline_module: Option<String>,
     /// Optional `tz` / `overlap` arguments
     pub options: CronOptions,
 }
@@ -148,6 +155,58 @@ impl SourceIdentified for StoredCronInfo {
     fn file_path(&self) -> Option<&str> {
         self.file_path.as_deref()
     }
+    fn scope(&self) -> Option<&str> {
+        self.inline_module.as_deref()
+    }
+}
+
+/// The inline-module path (see [`StoredCronInfo::inline_module`]) enclosing
+/// the function `fn_name` whose name token starts on `line` of `file`.
+///
+/// The file is re-parsed with proc-macro2's fallback implementation forced:
+/// tokens parsed from a string through the compiler bridge all carry the
+/// call-site span, so only the fallback reports real line numbers.  Only the
+/// returned `String` leaves this function, so no fallback token is ever mixed
+/// with compiler tokens.
+pub fn inline_module_of(file: Option<&str>, fn_name: &str, line: usize) -> Option<String> {
+    /// Restores proc-macro2's normal mode even if parsing panics.
+    struct Unforce;
+    impl Drop for Unforce {
+        fn drop(&mut self) {
+            proc_macro2::fallback::unforce();
+        }
+    }
+    let content = crate::schema_macro::file_cache::get_file_content(std::path::Path::new(file?))?;
+    proc_macro2::fallback::force();
+    let _unforce = Unforce;
+    let ast = syn::parse_file(&content).ok()?;
+    find_fn_module(&ast.items, fn_name, line, "")
+}
+
+/// Depth-first search of `items` (and the inline modules inside them) for the
+/// function `fn_name` declared on `line`; returns the inline path to it.
+fn find_fn_module(items: &[syn::Item], fn_name: &str, line: usize, prefix: &str) -> Option<String> {
+    items.iter().find_map(|item| match item {
+        syn::Item::Fn(function)
+            if function.sig.ident == fn_name && function.sig.ident.span().start().line == line =>
+        {
+            Some(prefix.to_owned())
+        }
+        syn::Item::Mod(syn::ItemMod {
+            ident,
+            content: Some((_, inner)),
+            ..
+        }) => {
+            let name = syn::ext::IdentExt::unraw(ident).to_string();
+            let child = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}::{name}")
+            };
+            find_fn_module(inner, fn_name, line, &child)
+        }
+        _ => None,
+    })
 }
 
 /// Replace-insert a `#[cron]` metadata entry in the current crate's bucket.
@@ -201,12 +260,16 @@ pub fn process_cron_attribute(
     let item_fn: syn::ItemFn = syn::parse2(item.clone()).map_err(|e| syn::Error::new(e.span(), "#[cron] attribute: can only be applied to functions, not other items. Move or remove the attribute."))?;
     validate_cron_fn(&item_fn)?;
 
+    let fn_name = item_fn.sig.ident.to_string();
+    let file_path = proc_macro2::Span::call_site()
+        .local_file()
+        .map(|p| p.display().to_string());
+    let line = item_fn.sig.ident.span().start().line;
     let stored = StoredCronInfo {
-        fn_name: item_fn.sig.ident.to_string(),
+        inline_module: inline_module_of(file_path.as_deref(), &fn_name, line),
+        fn_name,
         expression: args.expression.value(),
-        file_path: proc_macro2::Span::call_site()
-            .local_file()
-            .map(|p| p.display().to_string()),
+        file_path,
         options: args.options(),
     };
     register_cron(stored);
@@ -421,12 +484,14 @@ mod tests {
             fn_name: fn_name.clone(),
             expression: "0 */5 * * * *".to_string(),
             file_path: file_path.clone(),
+            inline_module: None,
             options: CronOptions::default(),
         });
         register_cron(StoredCronInfo {
             fn_name: fn_name.clone(),
             expression: "0 */10 * * * *".to_string(),
             file_path,
+            inline_module: None,
             options: CronOptions::default(),
         });
 
@@ -437,6 +502,83 @@ mod tests {
             .collect();
         assert_eq!(matches.len(), 1, "same source cron should replace");
         assert_eq!(matches[0].expression, "0 */10 * * * *");
+    }
+
+    /// Same file + function name but different inline modules are two jobs;
+    /// an unknown inline module still replaces (IDE re-expansion).
+    #[test]
+    fn test_register_cron_keys_by_inline_module() {
+        let file_path = Some("/tmp/vespera/tasks/clash.rs".to_string());
+        let fn_name = "__test_clash_cron".to_string();
+        let entry = |inline: Option<&str>, expression: &str| StoredCronInfo {
+            fn_name: fn_name.clone(),
+            expression: expression.to_string(),
+            file_path: file_path.clone(),
+            inline_module: inline.map(str::to_string),
+            options: CronOptions::default(),
+        };
+        let expressions = || -> Vec<(Option<String>, String)> {
+            current_crate_crons()
+                .iter()
+                .filter(|entry| entry.fn_name == fn_name)
+                .map(|entry| (entry.inline_module.clone(), entry.expression.clone()))
+                .collect()
+        };
+        register_cron(entry(Some("a"), "1 * * * * *"));
+        register_cron(entry(Some("b"), "2 * * * * *"));
+        register_cron(entry(Some("a"), "3 * * * * *"));
+        assert_eq!(
+            expressions(),
+            vec![
+                (Some("a".to_string()), "3 * * * * *".to_string()),
+                (Some("b".to_string()), "2 * * * * *".to_string()),
+            ]
+        );
+        register_cron(entry(None, "4 * * * * *"));
+        assert_eq!(expressions().len(), 2, "unknown scope replaces, never adds");
+    }
+
+    #[rstest::rstest]
+    #[case::file_level("tick", 2, Some(""))]
+    #[case::inline_a("tick", 5, Some("a"))]
+    #[case::nested_raw_b("tick", 9, Some("b::inner"))]
+    #[case::wrong_line("tick", 3, None)]
+    #[case::unknown_fn("tock", 5, None)]
+    fn test_inline_module_of_locates_the_declaration(
+        #[case] fn_name: &str,
+        #[case] line: usize,
+        #[case] expected: Option<&str>,
+    ) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("jobs.rs");
+        std::fs::write(
+            &file,
+            "\n#[cron(\"0 * * * * *\")] pub async fn tick() {}\nmod a {\n    pub fn other() {}\n    #[cron(\"1 * * * * *\")] pub async fn tick() {}\n}\nmod r#b {\n    mod inner {\n        #[cron(\"2 * * * * *\")] pub async fn tick() {}\n    }\n    mod external;\n}\n",
+        )
+        .unwrap();
+        let file = file.display().to_string();
+        assert_eq!(
+            inline_module_of(Some(&file), fn_name, line),
+            expected.map(str::to_string)
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::no_file(None)]
+    #[case::missing_file(Some("/definitely/not/here/jobs.rs"))]
+    fn test_inline_module_of_without_a_readable_file(#[case] file: Option<&str>) {
+        assert_eq!(inline_module_of(file, "tick", 1), None);
+    }
+
+    #[test]
+    fn test_inline_module_of_unparsable_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("broken.rs");
+        std::fs::write(&file, "mod {{{").unwrap();
+        assert_eq!(
+            inline_module_of(Some(&file.display().to_string()), "tick", 1),
+            None
+        );
     }
 
     // ===== Compile-time cron-syntax validation (gated by the `cron` feature) =====

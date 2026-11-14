@@ -28,20 +28,32 @@ pub type CrateStorage<T> = LazyLock<Mutex<HashMap<String, Arc<Vec<T>>>>>;
 /// Metadata that identifies the source item (function) an entry came from.
 ///
 /// Two entries describe the same source item when they share a function name
-/// AND a source path — the pair a re-expansion of the same attribute produces,
-/// which must replace rather than duplicate the previous entry.
+/// AND a source path (AND a scope, when both know theirs) — what a re-expansion
+/// of the same attribute produces, which must replace rather than duplicate
+/// the previous entry.
 pub trait SourceIdentified {
     /// Name of the annotated function (e.g., `"get_user"`).
     fn fn_name(&self) -> &str;
     /// Source file path, when the compiler exposed one.
     fn file_path(&self) -> Option<&str>;
+    /// Where inside the file the item lives (e.g. its inline `mod` path), when
+    /// known.  Two known scopes must match; an unknown scope matches any, so an
+    /// entry whose scope could not be located still replaces rather than
+    /// duplicates.
+    fn scope(&self) -> Option<&str> {
+        None
+    }
 }
 
-/// Whether two entries came from the same function in the same file, treating
-/// `\` and `/` as equivalent separators.
+/// Whether two entries came from the same function in the same file (and the
+/// same scope inside it), treating `\` and `/` as equivalent separators.
 fn same_source<T: SourceIdentified>(left: &T, right: &T) -> bool {
     left.fn_name() == right.fn_name()
         && crate::file_utils::paths_equal_normalized(left.file_path(), right.file_path())
+        && match (left.scope(), right.scope()) {
+            (Some(left), Some(right)) => left == right,
+            _ => true,
+        }
 }
 
 /// Replace-insert one metadata entry in the current crate's bucket.
@@ -86,6 +98,7 @@ mod tests {
         fn_name: String,
         file_path: Option<String>,
         payload: &'static str,
+        scope: Option<&'static str>,
     }
 
     impl SourceIdentified for TestEntry {
@@ -94,6 +107,9 @@ mod tests {
         }
         fn file_path(&self) -> Option<&str> {
             self.file_path.as_deref()
+        }
+        fn scope(&self) -> Option<&str> {
+            self.scope
         }
     }
 
@@ -104,7 +120,27 @@ mod tests {
             fn_name: fn_name.to_string(),
             file_path: Some(file_path.to_string()),
             payload,
+            scope: None,
         }
+    }
+
+    fn scoped(scope: Option<&'static str>, payload: &'static str) -> TestEntry {
+        TestEntry {
+            scope,
+            ..entry("__scoped", "C:/vespera/jobs.rs", payload)
+        }
+    }
+
+    /// Known scopes must match; an unknown scope matches any.
+    #[test]
+    fn register_keys_by_scope_when_both_know_it() {
+        register(&TEST_STORAGE, scoped(Some("a"), "a1"));
+        register(&TEST_STORAGE, scoped(Some("b"), "b1"));
+        assert_eq!(payloads_for("__scoped"), vec!["a1", "b1"]);
+        register(&TEST_STORAGE, scoped(Some("b"), "b2"));
+        assert_eq!(payloads_for("__scoped"), vec!["a1", "b2"]);
+        register(&TEST_STORAGE, scoped(None, "unknown"));
+        assert_eq!(payloads_for("__scoped"), vec!["unknown", "b2"]);
     }
 
     fn payloads_for(fn_name: &str) -> Vec<&'static str> {
