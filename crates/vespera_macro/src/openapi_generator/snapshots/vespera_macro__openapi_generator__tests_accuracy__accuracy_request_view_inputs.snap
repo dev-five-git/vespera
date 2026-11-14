@@ -260,6 +260,7 @@ expression: pretty(&doc)
           }
         },
         "required": [
+          "theme",
           "updated_at",
           "displayName",
           "plain"

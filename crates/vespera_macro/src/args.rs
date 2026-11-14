@@ -286,7 +286,7 @@ fn duplicate_error(ident: &syn::Ident, name: &str) -> syn::Error {
 }
 
 /// Validate `error_status = [<u16>, ...]`: every element must be an integer
-/// literal in the `u16` range.  A malformed entry is rejected with a
+/// literal naming an HTTP status code (`100..=599`).  A malformed entry is rejected with a
 /// span-attached compile error instead of being silently dropped by the
 /// downstream `filter_map` extraction (which would emit incomplete OpenAPI).
 fn validate_error_status_array(array: &syn::ExprArray) -> syn::Result<()> {
@@ -302,14 +302,24 @@ fn validate_error_status_array(array: &syn::ExprArray) -> syn::Result<()> {
                  e.g. `error_status = [400, 404]`.",
             ));
         };
-        lit_int.base10_parse::<u16>().map_err(|_| {
-            syn::Error::new_spanned(
-                lit_int,
-                "#[route] `error_status` code must be in the u16 range (0-65535).",
-            )
-        })?;
+        parse_http_status(lit_int, "error_status")?;
     }
     Ok(())
+}
+
+/// An HTTP status code literal: `100..=599` (RFC 9110 section 15). Anything
+/// else is not a valid OpenAPI response key and is rejected on its span.
+fn parse_http_status(lit_int: &LitInt, key: &str) -> syn::Result<u16> {
+    lit_int
+        .base10_parse::<u16>()
+        .ok()
+        .filter(|code| (100..=599).contains(code))
+        .ok_or_else(|| {
+            syn::Error::new_spanned(
+                lit_int,
+                format!("#[route] `{key}` status must be an HTTP status code (100-599)."),
+            )
+        })
 }
 
 /// Validate `responses = [(<u16>, Type), ...]`: every element must be a
@@ -348,12 +358,7 @@ fn validate_responses_array(array: &syn::ExprArray) -> syn::Result<()> {
                  e.g. `(404, NotFoundError)`.",
             ));
         };
-        lit_int.base10_parse::<u16>().map_err(|_| {
-            syn::Error::new_spanned(
-                lit_int,
-                "#[route] `responses` status must be in the u16 range (0-65535).",
-            )
-        })?;
+        parse_http_status(lit_int, "responses")?;
         let schema = &tuple.elems[1];
         if !matches!(schema, syn::Expr::Path(_)) {
             return Err(syn::Error::new_spanned(
@@ -510,6 +515,10 @@ mod tests {
     #[case("error_status = [\"400\"]", false, None, None, None)] // not an integer
     #[case("error_status = [400, \"404\"]", false, None, None, None)] // mixed
     #[case("error_status = [70000]", false, None, None, None)] // out of u16 range
+    #[case("error_status = [1000]", false, None, None, None)] // not an HTTP status
+    #[case("error_status = [99]", false, None, None, None)] // below 100
+    #[case("error_status = [600]", false, None, None, None)] // above 599
+    #[case("error_status = [100, 599]", true, None, None, Some(vec![100, 599]))] // bounds
     #[case("error_status = [NotFound]", false, None, None, None)] // path, not int
     #[case("get, invalid", false, None, None, None)]
     #[case("path =", false, None, None, None)]

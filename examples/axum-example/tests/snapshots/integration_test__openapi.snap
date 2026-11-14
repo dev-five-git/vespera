@@ -5208,6 +5208,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           }
         },
         "required": [
+          "emailOptIn",
           "digestHour",
           "updatedBy",
           "locale"
@@ -5565,7 +5566,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "name",
+          "email5",
           "email6",
+          "num",
           "in_skip",
           "in_skip3"
         ]

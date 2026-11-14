@@ -13,6 +13,9 @@ import org.springframework.web.cors.CorsUtils;
 import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.HandlerExecutionChain;
 import org.springframework.web.servlet.HandlerMapping;
+import org.springframework.web.servlet.mvc.method.RequestMappingInfo;
+import org.springframework.web.servlet.mvc.method.RequestMappingInfoHandlerMapping;
+import org.springframework.web.util.ServletRequestPathUtils;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -43,7 +46,9 @@ import java.util.Set;
  * also serve the actual request: as a bean (which receives the
  * {@link ApplicationContext}) it asks the application's other
  * {@link HandlerMapping}s, in order, which handler the actual request
- * ({@code Access-Control-Request-Method}, same path) would get. When that is
+ * ({@code Access-Control-Request-Method}, same path) would get (annotated
+ * controllers through Spring's own preflight matching, which skips
+ * {@code consumes} / {@code produces} / {@code headers} conditions). When that is
  * a Java handler (a {@code @RestController} with {@code @CrossOrigin}, a
  * router function, an actuator endpoint …) the preflight is left to Spring,
  * which answers it with that handler's CORS configuration. The lookup runs on
@@ -94,6 +99,21 @@ public final class VesperaPreflightHandlerMapping implements HandlerMapping, Ord
     /**
      * Whether the first other handler mapping that maps the actual request
      * hands it to something other than the Vespera proxy.
+     *
+     * <p>A {@link RequestMappingInfoHandlerMapping} (where the proxy's own
+     * {@code @RequestMapping("/**")} lives) is asked with the <em>real</em>
+     * preflight: {@link RequestMappingInfo#getMatchingCondition} applies
+     * Spring's preflight rules there (the method condition matches
+     * {@code Access-Control-Request-Method}; {@code consumes},
+     * {@code produces} and {@code headers} conditions are skipped, since a
+     * preflight carries none of the actual request's headers). Re-evaluating
+     * the mappings on a plain request with the announced method would reject
+     * {@code @PostMapping(consumes = "application/json")} (no
+     * {@code Content-Type}) or {@code headers = "X-Api=1"}, so the proxy's
+     * catch-all would win and Rust would answer a preflight for a Java
+     * endpoint. Other mapping types, and an annotated-controller mapping
+     * none of whose mappings matches the preflight, are asked with the actual
+     * request (so a rejection such as {@code 405} still leaves it to Spring).
      */
     private boolean javaHandlesActualRequest(HttpServletRequest preflight) {
         List<HandlerMapping> mappings = otherMappings();
@@ -101,21 +121,54 @@ public final class VesperaPreflightHandlerMapping implements HandlerMapping, Ord
             return false;
         }
         String method = preflight.getHeader(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD).trim();
-        ActualRequestView actual = new ActualRequestView(preflight, method);
         for (HandlerMapping mapping : mappings) {
-            HandlerExecutionChain chain;
+            Object found = null;
             try {
-                chain = mapping.getHandler(actual);
+                if (mapping instanceof RequestMappingInfoHandlerMapping infoMapping) {
+                    found = bestPreflightMatch(infoMapping, new ActualRequestView(preflight, null));
+                }
+                if (found == null) {
+                    HandlerExecutionChain chain = mapping.getHandler(new ActualRequestView(preflight, method));
+                    found = chain == null ? null : chain.getHandler();
+                }
             } catch (Exception springOwned) {
                 // A mapping that claims the path but rejects the request
                 // (405, 406, 415 …): Spring answers the actual request.
                 return true;
             }
-            if (chain != null) {
-                return !isProxy(chain.getHandler());
+            if (found != null) {
+                return !isProxy(found);
             }
         }
         return false;
+    }
+
+    /**
+     * The handler method {@code mapping} would pick for {@code preflight},
+     * evaluated with Spring's own preflight matching and ordering, or
+     * {@code null} when none of its mappings matches (or it uses legacy
+     * {@code AntPathMatcher} matching). {@code preflight} must
+     * keep attribute writes private (an {@link ActualRequestView}).
+     */
+    static HandlerMethod bestPreflightMatch(RequestMappingInfoHandlerMapping mapping, HttpServletRequest preflight) {
+        if (mapping.getPatternParser() == null) {
+            // Legacy AntPathMatcher matching (deprecated): keep the
+            // actual-request lookup for it.
+            return null;
+        }
+        if (!ServletRequestPathUtils.hasParsedRequestPath(preflight)) {
+            ServletRequestPathUtils.parseAndCache(preflight);
+        }
+        RequestMappingInfo bestInfo = null;
+        HandlerMethod best = null;
+        for (Map.Entry<RequestMappingInfo, HandlerMethod> entry : mapping.getHandlerMethods().entrySet()) {
+            RequestMappingInfo match = entry.getKey().getMatchingCondition(preflight);
+            if (match != null && (bestInfo == null || match.compareTo(bestInfo, preflight) < 0)) {
+                bestInfo = match;
+                best = entry.getValue();
+            }
+        }
+        return best;
     }
 
     private static boolean isProxy(Object handler) {
@@ -151,8 +204,9 @@ public final class VesperaPreflightHandlerMapping implements HandlerMapping, Ord
 
     /**
      * The actual request a preflight announces (its
-     * {@code Access-Control-Request-Method}); request attributes the
-     * handler-mapping lookup writes stay local to this view.
+     * {@code Access-Control-Request-Method}), or with a {@code null} method
+     * the preflight itself; request attributes the handler-mapping lookup
+     * writes stay local to this view.
      */
     static final class ActualRequestView extends HttpServletRequestWrapper {
         private final String method;
@@ -166,7 +220,7 @@ public final class VesperaPreflightHandlerMapping implements HandlerMapping, Ord
 
         @Override
         public String getMethod() {
-            return method;
+            return method == null ? super.getMethod() : method;
         }
 
         @Override

@@ -21,8 +21,14 @@ fn ui_diagnostics() {
     // only assert the cron diagnostic when that feature is on.
     #[cfg(feature = "cron")]
     t.compile_fail("tests/ui/cron_invalid.rs");
-    // `overlap` values are checked by the attribute parser itself.
+    // `overlap` values are checked by the attribute parser itself (only
+    // reached with `cron`: without it the attribute is the stand-in below).
+    #[cfg(feature = "cron")]
     t.compile_fail("tests/ui/cron_invalid_overlap.rs");
+    // Without the `cron` feature, `#[vespera::cron]` resolves to a stand-in
+    // attribute whose `compile_error!` names the feature.
+    #[cfg(not(feature = "cron"))]
+    t.compile_fail("tests/ui/cron_needs_feature.rs");
     // `tz` names are looked up in the IANA database under `cron-tz`, and the
     // argument is rejected (naming the feature) without it.
     #[cfg(feature = "cron-tz")]
