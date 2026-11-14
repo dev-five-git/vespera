@@ -6,9 +6,7 @@ expression: "params.iter().map(|p|\n(p.name.as_str(), p.r#in, param_schema_type(
     (
         "org",
         Path,
-        Some(
-            Object,
-        ),
+        None,
     ),
     (
         "repo",

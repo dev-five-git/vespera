@@ -352,7 +352,12 @@ pub fn process_derive_schema(
     }
 
     // Schema-derived types appear in OpenAPI spec (include_in_openapi: true)
-    let mut metadata = build_struct_metadata(input, schema_name, call_site_file.as_deref());
+    let repr_input = serde_repr::with_serde_repr_derives(input, call_site_file.as_deref());
+    let mut metadata = build_struct_metadata(
+        repr_input.as_ref().unwrap_or(input),
+        schema_name,
+        call_site_file.as_deref(),
+    );
     if has_explicit_schema_name {
         metadata.explicit_schema_name = true;
         if *name != metadata.name {
@@ -586,6 +591,8 @@ pub fn extract_defaults_from_file(
     }
     defaults
 }
+
+mod serde_repr;
 
 #[cfg(test)]
 #[path = "schema_impl/tests.rs"]

@@ -297,19 +297,11 @@ pub(super) fn walk_serde_keys(
     all_parsed
 }
 
-/// `#[serde(rename_all_fields = "...")]` on an enum: the `rename_all` rule
-/// applied to the fields of every struct variant.
-pub fn extract_rename_all_fields(attrs: &[syn::Attribute]) -> Option<String> {
-    let mut found = None;
-    walk_serde_keys(attrs, |meta| {
-        if meta.path.is_ident("rename_all_fields") && meta.input.peek(syn::Token![=]) {
-            let lit: syn::LitStr = meta.value()?.parse()?;
-            found.get_or_insert(lit.value());
-            return Ok(true);
-        }
-        Ok(false)
-    });
-    found
+/// `#[serde(rename_all_fields = "...")]` on an enum for `side`: the
+/// `rename_all` rule applied to the fields of every struct variant (the
+/// `rename_all_fields(serialize = "..", deserialize = "..")` form included).
+pub fn extract_rename_all_fields_for(attrs: &[syn::Attribute], side: SerdeSide) -> Option<String> {
+    extract_sided_key(attrs, "rename_all_fields", side)
 }
 
 /// `#[serde(deny_unknown_fields)]` is present on the container.
@@ -438,6 +430,10 @@ mod tests {
     )]
     #[case(
         r#"#[serde(rename_all_fields(serialize = "camelCase"))] enum E {}"#,
+        Some("camelCase")
+    )]
+    #[case(
+        r#"#[serde(rename_all_fields(deserialize = "camelCase"))] enum E {}"#,
         None
     )]
     #[case(r"#[serde(rename_all_fields = 1)] enum E {}", None)]
@@ -445,7 +441,10 @@ mod tests {
     #[case(r"enum E {}", None)]
     fn rename_all_fields_cases(#[case] src: &str, #[case] expected: Option<&str>) {
         let item: syn::ItemEnum = syn::parse_str(src).unwrap();
-        assert_eq!(extract_rename_all_fields(&item.attrs).as_deref(), expected);
+        assert_eq!(
+            extract_rename_all_fields_for(&item.attrs, SerdeSide::Serialize).as_deref(),
+            expected
+        );
     }
 
     #[rstest]

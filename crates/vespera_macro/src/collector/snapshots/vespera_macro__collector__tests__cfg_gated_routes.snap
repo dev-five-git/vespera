@@ -1,0 +1,7 @@
+---
+source: crates/vespera_macro/src/collector/tests.rs
+expression: "gated.join(\"\\n\")"
+---
+get /admin routes::admin::panel [feature = "admin"]
+get /admin/stats/{id} routes::admin::stats::stats [feature = "admin" & unix]
+post /users routes::users::beta [feature = "beta"]
