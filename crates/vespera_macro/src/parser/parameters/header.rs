@@ -80,6 +80,7 @@ fn parse_header(
         example: None,
         style: None,
         explode: None,
+        ..Default::default()
     }])
 }
 
@@ -192,6 +193,7 @@ fn typed_header_parameter(typed_header: &syn::PathSegment, required: bool) -> Op
         example: None,
         style: None,
         explode: None,
+        ..Default::default()
     })
 }
 

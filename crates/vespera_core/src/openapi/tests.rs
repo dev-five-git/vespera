@@ -1,4 +1,5 @@
 use super::*;
+use crate::Extensions;
 use crate::route::{Operation, PathItem};
 use crate::schema::{Components, Schema, SchemaType, SecurityScheme, SecuritySchemeType};
 use ::rstest::rstest;
@@ -14,6 +15,7 @@ fn create_base_openapi() -> OpenApi {
             contact: None,
             license: None,
             summary: None,
+            extensions: Extensions::new(),
         },
         servers: None,
         paths: BTreeMap::new(),
@@ -22,6 +24,7 @@ fn create_base_openapi() -> OpenApi {
         security: None,
         tags: None,
         external_docs: None,
+        extensions: Extensions::new(),
     }
 }
 
@@ -40,6 +43,7 @@ fn create_path_item(summary: &str) -> PathItem {
             external_docs: None,
             callbacks: None,
             servers: None,
+            extensions: Extensions::new(),
         }),
         ..Default::default()
     }
@@ -92,6 +96,7 @@ fn create_post_path_item(summary: &str) -> PathItem {
             external_docs: None,
             callbacks: None,
             servers: None,
+            extensions: Extensions::new(),
         }),
         ..Default::default()
     }
@@ -198,6 +203,7 @@ fn test_merge_schemas() {
         request_bodies: None,
         headers: None,
         security_schemes: None,
+        ..Default::default()
     });
 
     let mut other = create_base_openapi();
@@ -212,6 +218,7 @@ fn test_merge_schemas() {
         request_bodies: None,
         headers: None,
         security_schemes: None,
+        ..Default::default()
     });
 
     base.merge(other);
@@ -242,6 +249,7 @@ fn test_merge_schemas_when_self_has_no_components() {
         request_bodies: None,
         headers: None,
         security_schemes: None,
+        ..Default::default()
     });
 
     base.merge(other);
@@ -276,6 +284,7 @@ fn test_merge_security_schemes() {
         request_bodies: None,
         headers: None,
         security_schemes: Some(base_security_schemes),
+        ..Default::default()
     });
 
     let mut other = create_base_openapi();
@@ -301,6 +310,7 @@ fn test_merge_security_schemes() {
         request_bodies: None,
         headers: None,
         security_schemes: Some(other_security_schemes),
+        ..Default::default()
     });
 
     base.merge(other);
@@ -397,6 +407,7 @@ fn test_merge_components_responses_and_parameters() {
         description: desc.to_string(),
         headers: None,
         content: None,
+        links: None,
     };
 
     let mut base = create_base_openapi();
@@ -408,6 +419,7 @@ fn test_merge_components_responses_and_parameters() {
         request_bodies: None,
         headers: None,
         security_schemes: None,
+        ..Default::default()
     });
 
     let mut other = create_base_openapi();
@@ -428,12 +440,14 @@ fn test_merge_components_responses_and_parameters() {
                 example: None,
                 style: None,
                 explode: None,
+                ..Default::default()
             },
         )])),
         examples: None,
         request_bodies: None,
         headers: None,
         security_schemes: None,
+        ..Default::default()
     });
 
     base.merge(other);
@@ -461,6 +475,7 @@ fn test_merge_empty_component_maps_are_absent() {
         request_bodies: Some(BTreeMap::new()),
         headers: Some(BTreeMap::new()),
         security_schemes: Some(BTreeMap::new()),
+        ..Default::default()
     });
 
     base.merge(other);
@@ -510,6 +525,7 @@ fn test_merge_empty_component_maps_do_not_create_empty_sections() {
         request_bodies: None,
         headers: None,
         security_schemes: None,
+        ..Default::default()
     });
 
     let mut other = create_base_openapi();
@@ -521,6 +537,7 @@ fn test_merge_empty_component_maps_do_not_create_empty_sections() {
         request_bodies: Some(BTreeMap::new()),
         headers: Some(BTreeMap::new()),
         security_schemes: Some(BTreeMap::new()),
+        ..Default::default()
     });
 
     base.merge(other);
@@ -557,6 +574,10 @@ fn merge_same_path_adopts_empty_slots_and_preserves_occupied_slots_for_every_fie
             description: Some(format!("{prefix}-description")),
             ref_path: Some(format!("#/paths/{prefix}")),
             servers: Some(Vec::new()),
+            extensions: Extensions::from([(
+                "x-owner".to_owned(),
+                serde_json::json!(format!("{prefix}-owner")),
+            )]),
         }
     };
 
@@ -594,6 +615,9 @@ fn merge_same_path_adopts_empty_slots_and_preserves_occupied_slots_for_every_fie
 #[case(serde_json::json!({"examples":{"shared":{"summary":"sample","value":7}}}))]
 #[case(serde_json::json!({"requestBodies":{"shared":{"required":true,"content":{}}}}))]
 #[case(serde_json::json!({"headers":{"shared":{"description":"trace header","schema":{"type":"string"}}}}))]
+#[case(serde_json::json!({"links":{"shared":{"operationId":"getUser"}}}))]
+#[case(serde_json::json!({"callbacks":{"shared":{"{$request.body#/url}":{"post":{"responses":{}}}}}}))]
+#[case(serde_json::json!({"pathItems":{"shared":{"get":{"responses":{}}}}}))]
 fn merge_accepts_each_reusable_component_kind_when_it_is_the_only_nonempty_map(
     #[case] expected: serde_json::Value,
 ) {

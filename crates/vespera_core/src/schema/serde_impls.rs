@@ -1,13 +1,9 @@
-use super::{
-    AdditionalProperties, Discriminator, ExternalDocumentation, Schema, SchemaRef, SchemaType,
-    is_empty_properties, is_empty_required,
-};
+use super::{Schema, SchemaRef, SchemaType, is_empty_properties, is_empty_required};
 use serde::{
     Deserialize, Serialize,
     de::Error as DeError,
     ser::{SerializeSeq, SerializeStruct},
 };
-use std::collections::BTreeMap;
 
 /// Serialize `Option<f64>` as integer when the value has no fractional part.
 ///
@@ -34,20 +30,19 @@ where
 /// The `i64` rendering of `value`, or `None` when `value` is not a whole number
 /// that survives the `f64 → i64 → f64` round trip.
 ///
-/// Float→int casts SATURATE in Rust, so an out-of-range constraint (`1e20`)
-/// would silently become `i64::MAX` and corrupt the generated spec. The exact
-/// round-trip comparison is what rejects it, hence the `float_cmp` allow.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::float_cmp
-)]
+/// Float→int casts SATURATE in Rust, so an out-of-range constraint (`1e20`,
+/// or exactly `2^63`, whose saturated `i64::MAX` rounds back to `2^63` as an
+/// `f64`) would silently become `i64::MAX` and corrupt the generated spec.
+/// Only whole numbers in `[-2^63, 2^63)` take the integer form; every such
+/// `f64` converts to `i64` exactly.
+#[allow(clippy::cast_possible_truncation)]
 pub(super) fn lossless_integer_form(value: f64) -> Option<i64> {
-    if value.fract() != 0.0 {
+    /// `2^63` — the first whole `f64` beyond `i64::MAX`.
+    const I64_BOUND: f64 = 9_223_372_036_854_775_808.0;
+    if value.fract() != 0.0 || !(-I64_BOUND..I64_BOUND).contains(&value) {
         return None;
     }
-    let int_val = value as i64;
-    (int_val as f64 == value).then_some(int_val)
+    Some(value as i64)
 }
 
 struct NumberConstraint(f64);
@@ -189,111 +184,25 @@ impl SchemaTypeWire {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SchemaDeserialize {
-    #[serde(rename = "$ref")]
-    ref_path: Option<String>,
-    #[serde(rename = "type")]
-    schema_type: Option<SchemaTypeWire>,
-    format: Option<String>,
-    title: Option<String>,
-    description: Option<String>,
-    default: Option<serde_json::Value>,
-    example: Option<serde_json::Value>,
-    examples: Option<Vec<serde_json::Value>>,
-    minimum: Option<f64>,
-    maximum: Option<f64>,
-    exclusive_minimum: Option<f64>,
-    exclusive_maximum: Option<f64>,
-    multiple_of: Option<f64>,
-    min_length: Option<usize>,
-    max_length: Option<usize>,
-    pattern: Option<String>,
-    items: Option<SchemaRef>,
-    prefix_items: Option<Vec<SchemaRef>>,
-    min_items: Option<usize>,
-    max_items: Option<usize>,
-    unique_items: Option<bool>,
-    properties: Option<BTreeMap<String, SchemaRef>>,
-    required: Option<Vec<String>>,
-    additional_properties: Option<AdditionalProperties>,
-    min_properties: Option<usize>,
-    max_properties: Option<usize>,
-    r#enum: Option<Vec<serde_json::Value>>,
-    all_of: Option<Vec<SchemaRef>>,
-    any_of: Option<Vec<SchemaRef>>,
-    one_of: Option<Vec<SchemaRef>>,
-    not: Option<SchemaRef>,
-    discriminator: Option<Discriminator>,
-    nullable: Option<bool>,
-    read_only: Option<bool>,
-    write_only: Option<bool>,
-    deprecated: Option<bool>,
-    external_docs: Option<ExternalDocumentation>,
-    #[serde(rename = "$defs")]
-    defs: Option<BTreeMap<String, Schema>>,
-    #[serde(rename = "$dynamicAnchor")]
-    dynamic_anchor: Option<String>,
-    #[serde(rename = "$dynamicRef")]
-    dynamic_ref: Option<String>,
-}
-
+/// A schema in any position: the object form, or a JSON Schema 2020-12
+/// boolean schema (`true` ≡ `{}`, `false` ≡ `{"not": {}}`, as in a
+/// `components.schemas` / `$defs` entry).
+///
+/// Shares [`SchemaRef`]'s field-by-field visitor, so a [`Schema`] and an
+/// inline [`SchemaRef`] read every keyword identically (including the
+/// OpenAPI 3.0 boolean `exclusiveMinimum` / `exclusiveMaximum`); a pure
+/// `{"$ref": ...}` object becomes a schema carrying only `ref_path`.
 impl<'de> Deserialize<'de> for Schema {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let wire = SchemaDeserialize::deserialize(deserializer)?;
-        let (schema_type, type_nullable) = wire.schema_type.map_or(Ok((None, false)), |wire| {
-            wire.into_schema_type_and_nullable::<D::Error>()
-        })?;
-        let nullable = if type_nullable {
-            Some(true)
-        } else {
-            wire.nullable
-        };
-        Ok(Self {
-            ref_path: wire.ref_path,
-            schema_type,
-            format: wire.format,
-            title: wire.title,
-            description: wire.description,
-            default: wire.default,
-            example: wire.example,
-            examples: wire.examples,
-            minimum: wire.minimum,
-            maximum: wire.maximum,
-            exclusive_minimum: wire.exclusive_minimum,
-            exclusive_maximum: wire.exclusive_maximum,
-            multiple_of: wire.multiple_of,
-            min_length: wire.min_length,
-            max_length: wire.max_length,
-            pattern: wire.pattern,
-            items: wire.items,
-            prefix_items: wire.prefix_items,
-            min_items: wire.min_items,
-            max_items: wire.max_items,
-            unique_items: wire.unique_items,
-            properties: wire.properties,
-            required: wire.required,
-            additional_properties: wire.additional_properties,
-            min_properties: wire.min_properties,
-            max_properties: wire.max_properties,
-            r#enum: wire.r#enum,
-            all_of: wire.all_of,
-            any_of: wire.any_of,
-            one_of: wire.one_of,
-            not: wire.not,
-            discriminator: wire.discriminator,
-            nullable,
-            read_only: wire.read_only,
-            write_only: wire.write_only,
-            deprecated: wire.deprecated,
-            external_docs: wire.external_docs,
-            defs: wire.defs,
-            dynamic_anchor: wire.dynamic_anchor,
-            dynamic_ref: wire.dynamic_ref,
+        Ok(match SchemaRef::deserialize(deserializer)? {
+            SchemaRef::Inline(schema) => *schema,
+            SchemaRef::Ref(reference) => Self {
+                ref_path: Some(reference.ref_path),
+                ..Self::default()
+            },
         })
     }
 }

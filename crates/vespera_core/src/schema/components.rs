@@ -27,6 +27,15 @@ pub struct Components {
     /// Security scheme definitions
     #[serde(skip_serializing_if = "Option::is_none")]
     pub security_schemes: Option<BTreeMap<String, SecurityScheme>>,
+    /// Link definitions
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub links: Option<BTreeMap<String, crate::route::Link>>,
+    /// Callback definitions
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callbacks: Option<BTreeMap<String, crate::route::Callback>>,
+    /// Reusable Path Item definitions (OpenAPI 3.1)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_items: Option<BTreeMap<String, crate::route::PathItem>>,
 }
 
 /// One OpenAPI Security Requirement Object: security scheme name → the
