@@ -106,7 +106,8 @@ run_side() { # <side> <round>
     -cp "$(to_native "$work/bridge-$side.jar")$cp_sep$(to_native "$work/classes-$side")" \
     JniDispatchBench >"$work/$side-$round.out" 2>"$work/$side-$round.log" ||
     { cat "$work/$side-$round.out" "$work/$side-$round.log"; exit 1; }
-  grep '^RESULT ' "$work/$side-$round.out" | cut -d' ' -f2- >"$work/results/$side-$round.txt"
+  grep '^RESULT ' "$work/$side-$round.out" | cut -d' ' -f2- >"$work/results/$side-$round.txt" ||
+    { cat "$work/$side-$round.out" "$work/$side-$round.log"; echo "::error::$side round $round printed no RESULT lines" >&2; exit 1; }
   echo "[$side round $round]"
   cat "$work/$side-$round.log"
 }

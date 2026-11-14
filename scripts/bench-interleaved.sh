@@ -23,11 +23,14 @@
 #
 # Env: ROUNDS (5) WARMUP_SECS (1) MEASURE_SECS (2) REGRESS_MEAN (0.30)
 #      REGRESS_LOWER (0.20) WORK_DIR (mktemp)
-# Needs: git, cargo, jq, awk, sort. Exit 1 when any benchmark regresses.
+# Needs: git, cargo, jq, awk, sort. Exit 1 when any benchmark regresses, and
+# also when NO benchmark could be compared (a filter that matches nothing, a
+# renamed group, criterion output that did not parse): a gate that measured
+# nothing must not pass.
 set -euo pipefail
 
 if [ "$#" -lt 1 ]; then
-  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 fi
 base_rev=$1
@@ -105,7 +108,10 @@ while IFS= read -r est; do
     echo "::error::Performance regression: ${bench} median change exceeds ${limit_mean} with every paired round > ${limit_lower}"
     fail=1
   fi
-done < <(find "$work/criterion/head/1" -path '*/new/estimates.json' | sort)
+done < <(find "$work/criterion/head/1" -path '*/new/estimates.json' 2>/dev/null | sort)
 
-[ "$found" -eq 1 ] || echo "::notice::No comparable benchmarks found; nothing to gate."
-exit $fail
+if [ "$found" -ne 1 ]; then
+  echo "::error::No comparable benchmarks found (filter '${filter}'): the gate measured nothing." >&2
+  exit 1
+fi
+exit "$fail"

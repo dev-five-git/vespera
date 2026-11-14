@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/multipart_impl/mod.rs
+assertion_line: 477
+expression: out
+---
+::core::compile_error! {
+    "`limit` \"99999999999999999999GiB\" overflows the maximum size (18446744073709551615 bytes)"
+}

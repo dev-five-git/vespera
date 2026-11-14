@@ -1,0 +1,11 @@
+---
+source: crates/vespera_macro/src/multipart_impl/mod.rs
+assertion_line: 483
+expression: out
+---
+::core::compile_error! {
+    "expected `limit = \"<size>\"`, e.g. `limit = \"10MiB\"` or `limit = \"unlimited\"`"
+}
+::core::compile_error! {
+    "expected `limit = \"<size>\"`, e.g. `limit = \"10MiB\"` or `limit = \"unlimited\"`"
+}

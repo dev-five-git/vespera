@@ -52,6 +52,10 @@ jobs:
           [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "::error::version must be X.Y.Z, got '$VERSION'"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # scripts/sbom.sh runs the Java libraries' gradlew (as in CI.yml).
+      - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          min-wrapper-count: 3
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:

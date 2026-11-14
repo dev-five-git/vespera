@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bisect a performance (or any) regression across the published versions of ONE
-# dependency, using `cargo update -p <crate>@<ver> --precise <ver>`.
+# dependency, using `cargo update -p <crate> --precise <ver>`.
 #
 #   scripts/bisect-dep.sh <crate> <good-version> <bad-version> <probe-command...>
 #
