@@ -350,7 +350,7 @@ class VesperaProxyControllerCoverageTest {
 
         ResponseEntity<byte[]> noContent =
                 WireResponseWriter.buildResponseEntityFromWire(heapWire(204, "ignored"));
-        assertEquals(0, noContent.getHeaders().getContentLength());
+        assertEquals(-1, noContent.getHeaders().getContentLength());
         assertEquals(0, noContent.getBody().length);
     }
 

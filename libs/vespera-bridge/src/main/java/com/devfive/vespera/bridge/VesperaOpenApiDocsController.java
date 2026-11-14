@@ -9,7 +9,6 @@ import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -45,8 +44,14 @@ public class VesperaOpenApiDocsController {
         return apps;
     }
 
-    @GetMapping(value = "${vespera.bridge.springdoc.docs-path:/v3/api-docs/vespera}/{app}",
-            produces = MediaType.APPLICATION_JSON_VALUE)
+    /**
+     * {@code GET <docs-path>/{app}}. Mapped by
+     * {@link VesperaOpenApiDocsMapping} from the normalised
+     * {@code vespera.bridge.springdoc.docs-path} (the same base path
+     * {@link VesperaSwaggerUiUrls} lists), not by an annotation: a raw
+     * {@code ${...}} placeholder would keep a trailing slash or map an empty
+     * value to {@code /{app}}.
+     */
     public ResponseEntity<byte[]> openApi(@PathVariable("app") String app) {
         if (!apps.contains(app)) {
             return error(HttpStatus.NOT_FOUND, "unknown vespera app");

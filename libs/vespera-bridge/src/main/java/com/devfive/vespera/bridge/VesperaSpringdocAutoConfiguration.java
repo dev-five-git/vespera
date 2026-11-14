@@ -6,6 +6,7 @@ import org.springdoc.core.models.GroupedOpenApi;
 import org.springdoc.core.properties.SpringDocConfigProperties;
 import org.springdoc.core.properties.SwaggerUiConfigProperties;
 import org.springdoc.core.utils.SpringDocUtils;
+import org.springframework.beans.factory.ListableBeanFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -73,6 +74,16 @@ public class VesperaSpringdocAutoConfiguration {
         VesperaOpenApiDocsController vesperaOpenApiDocsController(
                 VesperaOpenApiSource source, VesperaBridgeProperties props) {
             return new VesperaOpenApiDocsController(source, documentedApps(props));
+        }
+
+        /** Maps the docs controller at the normalised {@code <docs-path>/{app}}. */
+        @Bean
+        @ConditionalOnProperty(prefix = "vespera.bridge.springdoc", name = "mode", havingValue = "group",
+                matchIfMissing = true)
+        VesperaOpenApiDocsMapping vesperaOpenApiDocsMapping(
+                ListableBeanFactory beans, ObjectProvider<VesperaOpenApiDocsController> controller,
+                VesperaBridgeProperties props) {
+            return new VesperaOpenApiDocsMapping(beans, controller, props.getSpringdoc());
         }
 
         /** Lists the {@code group}-mode documents in Swagger UI (when springdoc's UI is present). */

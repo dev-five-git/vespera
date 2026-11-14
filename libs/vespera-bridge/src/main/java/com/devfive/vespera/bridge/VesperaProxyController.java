@@ -711,11 +711,11 @@ public class VesperaProxyController {
             ProxyServletResponse response, ProxyExchange exchange) {
         byte[] wireReq = VesperaBridge.encodeRequest(
                 appName, method, path, query, headers, body);
-        DeferredResult<ResponseEntity<?>> result = new DeferredResult<>();
+        DeferredResult<ResponseEntity<?>> result = newAsyncResult(response);
         final String requestId = exchange.requestId;
         final long cap = javaResponseCap(maxBufferedResponseBytes);
         CompletableFuture<byte[]> nativeResult = VesperaBridge.dispatch(wireReq);
-        // Spring answers an async timeout with 503 (AsyncRequestTimeoutException).
+        // An async timeout answers the ProxyErrors 503 (newAsyncResult).
         result.onTimeout(() -> {
             nativeResult.cancel(false);
             exchange.complete(HttpStatus.SERVICE_UNAVAILABLE.value(), response.panicked());
@@ -747,6 +747,31 @@ public class VesperaProxyController {
                     }
                 });
         return result;
+    }
+
+    /**
+     * The ASYNC {@link DeferredResult} (Spring's default async timeout). Its
+     * timeout result is the {@link ProxyErrors} plain-text {@code 503} with
+     * the request id echoed: without one, Spring raises
+     * {@code AsyncRequestTimeoutException}, which Spring Boot renders through
+     * its {@code /error} page instead of the proxy's error shape.
+     */
+    static DeferredResult<ResponseEntity<?>> newAsyncResult(ProxyServletResponse response) {
+        return new DeferredResult<>(null, () -> asyncTimeoutResponse(response));
+    }
+
+    static ResponseEntity<?> asyncTimeoutResponse(ProxyServletResponse response) {
+        ResponseEntity<byte[]> entity = ProxyErrors.entity(
+                HttpStatus.SERVICE_UNAVAILABLE.value(), "vespera: async dispatch timed out");
+        String idHeader = response == null ? null : response.requestIdHeader();
+        if (idHeader == null) {
+            return entity;
+        }
+        // Builder only: HttpHeaders' copy methods differ between Spring 6 and 7.
+        return ResponseEntity.status(entity.getStatusCode())
+                .headers(entity.getHeaders())
+                .header(idHeader, response.requestId())
+                .body(entity.getBody());
     }
 
     /**

@@ -741,7 +741,7 @@ class VesperaWireTest {
                 null, "GET", "/\uD800x", null, Map.of());
         String json = new String(
                 header.backingArray(), 0, header.size(), StandardCharsets.UTF_8);
-        assertTrue(json.contains("/\\ud800x"), json);
+        assertTrue(json.contains("/�x"), json);
     }
 
     @Test

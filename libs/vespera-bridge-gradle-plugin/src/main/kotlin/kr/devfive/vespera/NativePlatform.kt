@@ -191,11 +191,13 @@ internal object NativePlatform {
 
     /**
      * Map a Cargo profile name to its `target/` output subdirectory.
-     * Cargo's built-in `dev` profile emits to `debug`; every other profile
+     * Cargo's built-in `dev` and `test` profiles emit to `debug`, `bench` to
+     * `release` (they inherit those directories); every other profile
      * (`release`, or a custom `[profile.X]`) uses its own name verbatim.
      */
     fun profileDir(profile: String): String = when (profile) {
-        "dev", "debug" -> "debug"
+        "dev", "debug", "test" -> "debug"
+        "bench" -> "release"
         else -> profile
     }
 

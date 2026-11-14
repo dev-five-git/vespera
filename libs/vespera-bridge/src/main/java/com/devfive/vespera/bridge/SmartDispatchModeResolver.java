@@ -18,17 +18,33 @@ import jakarta.servlet.http.HttpServletRequest;
  *   <li>{@link DispatchMode#DIRECT} — safe requests
  *       (GET / HEAD / OPTIONS per RFC 9110) up to the DIRECT gate
  *       ({@link #DEFAULT_MAX_DIRECT_BYTES}, 1 MiB), or provably
- *       bodyless ones of any declared length.  Safety matters because
- *       a DIRECT response overflow retries the dispatch, re-running the
- *       Rust handler.</li>
+ *       bodyless ones of any declared length, on a platform thread.  A
+ *       response that overflows the pooled buffer is kept in the native
+ *       stash and fetched into a grown buffer, or — beyond the pool cap,
+ *       or a {@code text/event-stream} — streamed from the stash; the
+ *       handler runs once.</li>
+ *   <li>{@link DispatchMode#STREAMING} — the same safe requests on a
+ *       <em>virtual</em> thread.  The virtual-thread buffered path (pooled
+ *       buffers bind to the virtual thread, so DIRECT falls back to the
+ *       heap {@code dispatchBytes} route there) has no stash: a large
+ *       download would fail at {@code max-buffered-response-bytes} and an
+ *       event stream without {@code Accept: text/event-stream} would never
+ *       flush.  Response streaming keeps DIRECT's semantics, at the cost of
+ *       pinning the carrier while the handler runs (a native call;
+ *       measured ~7.7&nbsp;µs vs ~3.2&nbsp;µs SYNC for a tiny
+ *       {@code GET}).  {@link #SmartDispatchModeResolver(long, long, boolean)}
+ *       with {@code parkSafeRequestsOnVirtualThreads = true} restores the
+ *       parking SYNC route (never pins across a wait, but buffers the whole
+ *       response) for safe requests within the SYNC gate.</li>
  *   <li>{@link DispatchMode#SYNC} — unsafe requests
  *       (POST / PUT / PATCH / DELETE) up to the SYNC gate
  *       ({@link #DEFAULT_MAX_SYNC_BYTES}, 256 KiB).  SYNC never re-runs
  *       the handler, so it is safe for any method, but it fully buffers
-     *       the response on the heap — so its gate is kept lower than the
-     *       DIRECT gate, above which streaming wins.  The Spring proxy also
-     *       enforces {@code vespera.bridge.max-buffered-response-bytes}
-     *       (64 MiB default) before serving a SYNC response.</li>
+ *       the response on the heap — so its gate is kept lower than the
+ *       DIRECT gate, above which streaming wins.  The Spring proxy also
+ *       enforces {@code vespera.bridge.max-buffered-response-bytes}
+ *       (64 MiB default) before serving a SYNC response.  On a virtual
+ *       thread SYNC parks instead of pinning ({@link ParkingDispatch}).</li>
  *   <li>{@link DispatchMode#BIDIRECTIONAL_STREAMING} — everything
  *       else (larger or unknown-length bodies).</li>
  * </ul>
@@ -58,7 +74,8 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
      * through pooled direct buffers — measured 1.7&ndash;2.7&times; faster
      * than streaming for 256 KiB&ndash;1 MiB bodies, provided
      * {@code vespera.direct.maxRetainedBytes} (2 MiB default) keeps the
-     * response buffer resident so DIRECT does not re-run the handler.
+     * response buffer resident, so an overflow (fetched from the native
+     * stash into a grown buffer) stays rare.
      */
     public static final long DEFAULT_MAX_DIRECT_BYTES = 1024 * 1024L;
 
@@ -74,6 +91,7 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
 
     private final long maxDirectBytes;
     private final long maxSyncBytes;
+    private final boolean parkSafeRequestsOnVirtualThreads;
 
     public SmartDispatchModeResolver() {
         this(DEFAULT_MAX_DIRECT_BYTES, DEFAULT_MAX_SYNC_BYTES);
@@ -100,11 +118,33 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
      *                       lower than {@code maxDirectBytes}
      */
     public SmartDispatchModeResolver(long maxDirectBytes, long maxSyncBytes) {
+        this(maxDirectBytes, maxSyncBytes, false);
+    }
+
+    /**
+     * @param maxDirectBytes largest {@code Content-Length} eligible for
+     *                       DIRECT dispatch (safe methods; on a virtual
+     *                       thread: response-only STREAMING)
+     * @param maxSyncBytes   largest {@code Content-Length} eligible for SYNC
+     *                       dispatch (unsafe methods)
+     * @param parkSafeRequestsOnVirtualThreads {@code true}: on a virtual
+     *                       thread, safe requests within the SYNC gate take
+     *                       the parking SYNC route (never pins the carrier
+     *                       across a wait, but buffers the whole response —
+     *                       {@code max-buffered-response-bytes} applies and
+     *                       an event stream is only sent when it ends) and
+     *                       larger ones stream both ways; {@code false}
+     *                       (default): they stream the response, like a
+     *                       DIRECT overflow on a platform thread
+     */
+    public SmartDispatchModeResolver(
+            long maxDirectBytes, long maxSyncBytes, boolean parkSafeRequestsOnVirtualThreads) {
         if (maxDirectBytes < 0 || maxSyncBytes < 0) {
             throw new IllegalArgumentException("byte gates must be >= 0");
         }
         this.maxDirectBytes = maxDirectBytes;
         this.maxSyncBytes = maxSyncBytes;
+        this.parkSafeRequestsOnVirtualThreads = parkSafeRequestsOnVirtualThreads;
     }
 
     @Override
@@ -136,24 +176,27 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
 
         if (HttpMethods.isSafe(method)) {
             // Safe (GET/HEAD/OPTIONS): DIRECT up to the (larger) DIRECT gate,
-            // else stream.  Safety matters because a DIRECT response overflow
-            // re-runs the Rust handler.
+            // else stream.  A DIRECT response overflow is fetched or streamed
+            // from the native stash (the handler runs once).
             boolean directSized =
                     bodyless || (contentLength >= 0 && contentLength <= maxDirectBytes);
             if (!directSized) {
                 return DispatchMode.BIDIRECTIONAL_STREAMING;
             }
             // DIRECT's pooled direct buffers bind to the virtual thread (not
-            // the carrier) in Java 21+, so on a virtual-thread-per-request
-            // server dispatchDirectPooled allocates fresh off-heap buffers and
-            // falls back to the heap path anyway.  Route virtual threads to
-            // SYNC (no off-heap pooling, no re-run) when small, but stream
-            // above the SYNC gate — SYNC's heap buffering loses to streaming
-            // for larger bodies, idempotent or not.
+            // the carrier) in Java 21+, so on a virtual thread DIRECT falls
+            // back to the buffered heap path, which has no stash: a large
+            // download would hit max-buffered-response-bytes (500) and an
+            // event stream without an SSE Accept would never flush.  Stream
+            // the response instead (DIRECT's overflow semantics), unless the
+            // application opted into the parking SYNC route.
             boolean virtualThread = currentThreadIsVirtual != null
                     ? currentThreadIsVirtual.booleanValue()
                     : VesperaDirectBufferPool.currentThreadIsVirtual();
             if (virtualThread) {
+                if (!parkSafeRequestsOnVirtualThreads) {
+                    return DispatchMode.STREAMING;
+                }
                 return syncSized(contentLength, bodyless)
                         ? DispatchMode.SYNC
                         : DispatchMode.BIDIRECTIONAL_STREAMING;

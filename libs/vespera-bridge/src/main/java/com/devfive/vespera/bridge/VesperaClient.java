@@ -31,8 +31,13 @@ import org.jspecify.annotations.Nullable;
  * <ul>
  *   <li>{@link VesperaRequest#send()} — buffered SYNC
  *       ({@link VesperaBridge#dispatchBytes(byte[])}); on a virtual thread
- *       it parks on {@link VesperaBridge#dispatchAsync} instead of pinning
- *       the carrier ({@link ParkingDispatch}).</li>
+ *       it is poll-first ({@link ParkingDispatch}): the dispatch is polled
+ *       once on the calling thread ({@code AsyncDispatch.dispatchPollFirst0})
+ *       and answers inline when the handler does not wait, else the virtual
+ *       thread parks on a {@code CompletableFuture} a Tokio worker completes
+ *       — the carrier is never pinned across a wait
+ *       ({@code -Dvespera.virtualThread.pollFirst=false}: always
+ *       {@link VesperaBridge#dispatchAsync} + {@code join()}).</li>
  *   <li>{@link VesperaRequest#sendAsync()} — ASYNC
  *       ({@link VesperaBridge#dispatchAsync}); bounded by
  *       {@code vespera.async.maxInFlight} ({@code 503} beyond it).</li>
