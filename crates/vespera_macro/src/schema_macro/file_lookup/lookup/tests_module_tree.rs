@@ -95,6 +95,56 @@ fn relative_lookup_uses_call_site_module(
     assert_eq!(module_path.join("::"), module);
 }
 
+/// M15: a first segment the call-site module imports resolves through
+/// that import (it used to be read from the crate root: `crate::user`).
+#[test]
+fn path_through_call_site_import() {
+    let (dir, _guard) = temp_crate("lib.rs");
+    let call_site = dir.path().join("src/handlers.rs");
+    std::fs::write(
+        &call_site,
+        "use crate::models::user;\nuse crate::models as m;",
+    )
+    .unwrap();
+    bump_epoch();
+    let (metadata, module_path) = lookup("user::User", Some(&call_site)).unwrap();
+    assert_eq!(
+        (metadata.name.as_str(), module_path.join("::").as_str()),
+        ("User", "crate::models::user")
+    );
+    let (_, module_path) = lookup("m::user::User", Some(&call_site)).unwrap();
+    assert_eq!(module_path.join("::"), "crate::models::user");
+    // Not imported: crate-root relative, as before.
+    let (_, module_path) = lookup("models::ModsModel", Some(&call_site)).unwrap();
+    assert_eq!(module_path.join("::"), "crate::models");
+}
+
+/// L17: in an integration test, `crate::` is the test crate (`tests/`), not
+/// the library's `src/`.
+#[test]
+fn integration_test_crate_root() {
+    let (dir, _guard) = temp_crate("lib.rs");
+    let tests = dir.path().join("tests");
+    std::fs::create_dir_all(tests.join("common")).unwrap();
+    std::fs::write(tests.join("api.rs"), "mod common;").unwrap();
+    std::fs::write(
+        tests.join("common/mod.rs"),
+        "pub struct Shared { pub id: i32 }",
+    )
+    .unwrap();
+    let _crate = crate::env_access::test_env::set_var("CARGO_CRATE_NAME", "api");
+    bump_epoch();
+    let call_site = tests.join("api.rs");
+    let (metadata, module_path) = lookup("crate::common::Shared", Some(&call_site)).unwrap();
+    assert_eq!(
+        (metadata.name.as_str(), module_path.join("::").as_str()),
+        ("Shared", "crate::common")
+    );
+    // From the helper itself: its module is `crate::common`.
+    let (_, module_path) = lookup("Shared", Some(&tests.join("common/mod.rs"))).unwrap();
+    assert_eq!(module_path.join("::"), "crate::common");
+}
+
 #[test]
 fn relative_lookup_without_call_site_is_crate_relative() {
     let (_dir, _guard) = temp_crate("lib.rs");
@@ -186,11 +236,10 @@ fn requested_module_path_absolutizes(#[case] path: &str, #[case] expected: Optio
 }
 
 /// Storage keyed by bare name must not answer a qualified path into another
-/// module; the file lookup wins, storage stays the fallback.
+/// module: the file lookup wins.
 #[rstest]
 #[case::other_module_uses_file("crate::models::user::User", "models/mod.rs", "pub id")]
 #[case::same_module_uses_storage("crate::models::user::User", "models/user.rs", "pub stored")]
-#[case::missing_file_falls_back("crate::nowhere::User", "models/mod.rs", "pub stored")]
 #[case::bare_uses_storage("User", "models/mod.rs", "pub stored")]
 fn storage_hit_must_match_requested_module(
     #[case] source: &str,
@@ -205,4 +254,26 @@ fn storage_hit_must_match_requested_module(
     let (tokens, _) = crate::schema_macro::generate_schema_type_code(&input, &storage).unwrap();
     let rendered = tokens.to_string();
     assert!(rendered.contains(expected_field), "{rendered}");
+}
+
+/// M15: a qualified path the file lookup cannot find is an error, also when
+/// a same-named schema of another module is stored (it used to be used).
+#[rstest]
+#[case::other_module_stored(
+    Some("models/mod.rs"),
+    "note: `User` exists in `crate::models`, which is not the requested module"
+)]
+#[case::nothing_stored(None, "")]
+fn missing_qualified_source_never_falls_back(#[case] stored_in: Option<&str>, #[case] note: &str) {
+    let (dir, _guard) = temp_crate("lib.rs");
+    let storage: std::collections::HashMap<_, _> = stored_in
+        .map(|file| ("User".to_string(), stored_user(&dir, file)))
+        .into_iter()
+        .collect();
+    let input: crate::schema_macro::SchemaTypeInput =
+        syn::parse_str("UserDto from crate::nowhere::User").unwrap();
+    let error = crate::schema_macro::generate_schema_type_code(&input, &storage).unwrap_err();
+    let messages: Vec<String> = error.into_iter().map(|e| e.to_string()).collect();
+    assert!(messages[0].contains("User"), "{messages:?}");
+    assert_eq!(messages.get(1).map_or("", String::as_str), note);
 }

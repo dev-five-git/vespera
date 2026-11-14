@@ -6,6 +6,7 @@
 
 mod circular;
 mod codegen;
+mod crate_layout;
 mod defaults;
 mod field_attrs;
 pub mod file_cache;
@@ -381,6 +382,8 @@ mod tests {
             inline_type_info: None,
             relation_enum: None,
             fk_column: None,
+            fk_optional: true,
+            fk_to: None,
             via_rel: None,
             adapter: false,
         };

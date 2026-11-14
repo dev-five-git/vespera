@@ -1,8 +1,16 @@
 pub mod api;
+pub mod bakery;
+pub mod cake;
+pub mod category;
 pub mod config;
+pub mod cycle_a;
+pub mod cycle_b;
+pub mod cycle_c;
 pub mod document;
+pub mod listing;
 pub mod memo;
 pub mod memo_comment;
+pub mod page;
 pub mod profile;
 pub mod single;
 pub mod single_rel;

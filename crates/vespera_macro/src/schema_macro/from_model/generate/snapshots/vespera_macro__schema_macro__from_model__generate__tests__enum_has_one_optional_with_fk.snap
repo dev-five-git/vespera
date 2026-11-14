@@ -5,19 +5,19 @@ expression: "run_scenario(models, new_type, source_type, rows, &relations, modul
 #[allow(deprecated)]
 impl MemoSchema {
     pub async fn from_model(
-        model: Model,
-        db: &sea_orm::DatabaseConnection,
+        __vespera_model: Model,
+        __vespera_db: &sea_orm::DatabaseConnection,
     ) -> Result<Self, sea_orm::DbErr> {
-        let target_user = match &model.target_user_id {
+        let target_user = match &__vespera_model.target_user_id {
             Some(fk_value) => {
                 <user::Entity as sea_orm::EntityTrait>::find_by_id(fk_value.clone())
-                    .one(db)
+                    .one(__vespera_db)
                     .await?
             }
             None => None,
         };
         Ok(Self {
-            id: model.id,
+            id: __vespera_model.id,
             target_user: target_user
                 .map(|r| Box::new(<user::Schema as From<_>>::from(r))),
         })

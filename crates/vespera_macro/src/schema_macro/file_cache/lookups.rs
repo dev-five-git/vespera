@@ -40,26 +40,43 @@ enum Probe<T> {
 
 /// Get or compute circular reference analysis, with caching.
 ///
-/// The cache key is `(source_module_path_joined, definition)` since the same
-/// model definition analyzed from the same module context always produces
-/// the same result.
-pub fn get_circular_analysis(source_module_path: &[String], definition: &str) -> CircularAnalysis {
-    let key = (source_module_path.join("::"), definition.to_string());
+/// The cache key is `(source module | related module, definition)`; an
+/// entry lives for one epoch (macro invocation), since a transitive cycle
+/// check reads other models from disk.
+pub fn get_circular_analysis(
+    source_module_path: &[String],
+    related_module_path: &[String],
+    definition: &str,
+) -> CircularAnalysis {
+    let key = (
+        format!(
+            "{}|{}",
+            source_module_path.join("::"),
+            related_module_path.join("::")
+        ),
+        definition.to_string(),
+    );
 
     // The borrow must end before analyzing: analysis re-enters FILE_CACHE.
-    let cached = FILE_CACHE.with(|cache| cache.borrow().circular_analysis.get(&key).cloned());
+    let cached = FILE_CACHE.with(|cache| {
+        let cache = cache.borrow();
+        cache
+            .circular_analysis
+            .get(&key)
+            .filter(|(epoch, _)| *epoch == cache.epoch)
+            .map(|(_, analysis)| analysis.clone())
+    });
     if let Some(result) = cached {
         FILE_CACHE.with(|cache| cache.borrow_mut().circular_cache_hits += 1);
         return result;
     }
 
-    let result = analyze_circular_refs(source_module_path, definition);
+    let result = analyze_circular_refs(source_module_path, related_module_path, definition);
 
     FILE_CACHE.with(|cache| {
-        cache
-            .borrow_mut()
-            .circular_analysis
-            .insert(key, result.clone());
+        let mut cache = cache.borrow_mut();
+        let epoch = cache.epoch;
+        cache.circular_analysis.insert(key, (epoch, result.clone()));
     });
 
     result
@@ -69,10 +86,10 @@ pub fn get_circular_analysis(source_module_path: &[String], definition: &str) ->
 /// path-keyed lookup caches (`struct_lookup`, `fk_column_lookup`) across
 /// epochs.
 ///
-/// The digest folds in the path string, the crate's `src` dir, and the
-/// mtime+len [`super::FileFingerprint`] of every file the resolution could
-/// read: the two `{module}.rs` / `{module}/mod.rs` candidates for a qualified
-/// path, or every `.rs` file under `src` for a single-segment one. Comparing
+/// The digest folds in the path string, the crate's module directory, and
+/// the mtime+len [`super::FileFingerprint`] of every file the resolution could
+/// read: every `.rs` file of the crate (the module's own file and the
+/// module tree from the crate root) plus the crate root files. Comparing
 /// it against the stored `PathLookupEntry::fingerprint` is what makes a
 /// surviving entry safe — an entry whose inputs changed on disk fails the
 /// comparison and is re-resolved.
@@ -90,34 +107,22 @@ fn path_lookup_fingerprint(cache: &mut FileCache, path_str: &str) -> u64 {
     let Some(manifest_dir) = super::get_manifest_dir_inner(cache) else {
         return hasher.finish();
     };
-    let src_dir = Path::new(&manifest_dir).join("src");
+    let layout = crate::schema_macro::crate_layout::layout_for(
+        Path::new(&manifest_dir),
+        proc_macro2::Span::call_site().local_file().as_deref(),
+    );
+    let src_dir = &layout.module_dir;
     src_dir.hash(&mut hasher);
 
-    let segments: Vec<&str> = path_str
-        .split("::")
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .filter(|s| *s != "crate" && *s != "self" && *s != "super")
-        .collect();
-
-    if segments.len() <= 1 {
-        let files = ensure_file_list(cache, &src_dir);
-        for path in files.iter() {
-            fingerprint_path(cache, path, &mut hasher);
-        }
-        return hasher.finish();
-    }
-
-    let module_segments = &segments[..segments.len() - 1];
-    let joined = module_segments.join("/");
-    let candidates = [
-        src_dir.join(format!("{joined}.rs")),
-        src_dir.join(format!("{joined}/mod.rs")),
-    ];
-    for path in &candidates {
+    // Every source file of the crate: a qualified path is resolved through
+    // its module's own file AND, failing that, the module tree from the
+    // crate root (`mod` declarations, `#[path]`, inline modules), so an
+    // edit to any of those files can change the answer (the module's two
+    // candidate files alone left a long-lived rust-analyzer stale).
+    let files = ensure_file_list(cache, src_dir);
+    for path in files.iter().chain(&layout.roots) {
         fingerprint_path(cache, path, &mut hasher);
     }
-
     hasher.finish()
 }
 
@@ -277,9 +282,10 @@ pub fn get_module_path_from_schema_path(schema_path: &proc_macro2::TokenStream) 
         return result;
     }
 
+    // Raw identifiers (`r#type`) are un-raw'd like every other module path.
     let mut result: Vec<String> = path_str
         .split("::")
-        .map(str::trim)
+        .map(|s| s.trim().trim_start_matches("r#"))
         .filter(|s| !s.is_empty())
         .map(ToString::to_string)
         .collect();

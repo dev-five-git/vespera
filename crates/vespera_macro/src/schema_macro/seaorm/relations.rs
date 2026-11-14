@@ -2,9 +2,12 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Type;
 
-use super::attrs::{extract_belongs_to_from_field, extract_relation_enum, extract_via_rel};
+use super::attrs::{
+    extract_belongs_to_from_field, extract_belongs_to_to_field, extract_relation_enum,
+    extract_via_rel, is_composite_columns,
+};
 use crate::schema_macro::module_scope::{Resolved, path_tokens, resolve_name};
-use crate::schema_macro::type_utils::is_option_type;
+use crate::schema_macro::type_utils::{is_option_type, option_inner, seaorm_relation_inner_type};
 
 /// Relation field info for generating `from_model` code.
 #[derive(Clone)]
@@ -16,6 +19,11 @@ pub struct RelationFieldInfo {
     pub inline_type_info: Option<(syn::Ident, Vec<String>)>,
     pub relation_enum: Option<String>,
     pub fk_column: Option<String>,
+    /// The `fk_column` field is an `Option` (independent of `is_optional`:
+    /// a `BelongsTo<Option<..>>` is optional even with a required key).
+    pub fk_optional: bool,
+    /// The referenced column on the target (`to = ".."`), when given.
+    pub fk_to: Option<String>,
     pub via_rel: Option<String>,
     /// The field is replaced by a `relation_adapters` wrapper
     /// (`From<Option<Model>>`), so `from_model` converts instead of building
@@ -57,6 +65,10 @@ pub fn convert_relation_type_to_schema_with_info(
     let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() else {
         return None;
     };
+    // SeaORM 2.0's optional `BelongsTo<Option<Entity>>`: the target is the
+    // `Option`'s argument, and the relation is optional whatever the FK.
+    let (inner_ty, optional_target) =
+        option_inner(inner_ty).map_or((inner_ty, false), |target| (target, true));
     let Type::Path(inner_path) = inner_ty else {
         return None;
     };
@@ -70,6 +82,7 @@ pub fn convert_relation_type_to_schema_with_info(
             field_attrs,
             parsed_struct,
             schema_path,
+            optional_target,
         )),
         "HasMany" => {
             let relation_enum = extract_relation_enum(field_attrs);
@@ -83,6 +96,8 @@ pub fn convert_relation_type_to_schema_with_info(
                 inline_type_info: None,
                 relation_enum,
                 fk_column: None,
+                fk_optional: true,
+                fk_to: None,
                 via_rel,
                 adapter: false,
             };
@@ -94,9 +109,29 @@ pub fn convert_relation_type_to_schema_with_info(
             field_attrs,
             parsed_struct,
             schema_path,
+            optional_target,
         )),
         _ => None,
     }
+}
+
+/// The absolute module (`["crate", .., "user"]`) of the entity a `HasOne` /
+/// `HasMany` / `BelongsTo` (or `BelongsTo<Option<..>>`) field written in
+/// `module_path` targets; `None` for any other type.
+pub fn relation_target_module(ty: &Type, module_path: &[String]) -> Option<Vec<String>> {
+    let inner = seaorm_relation_inner_type(ty)?;
+    let Type::Path(inner) = option_inner(inner).unwrap_or(inner) else {
+        return None;
+    };
+    let segments: Vec<String> = inner
+        .path
+        .segments
+        .iter()
+        .map(|s| crate::parser::strip_raw_prefix_owned(s.ident.to_string()))
+        .collect();
+    let mut target = absolute_schema_segments(&segments, module_path);
+    target.pop();
+    Some(target)
 }
 
 fn schema_path_tokens(path: &syn::Path, source_module_path: &[String]) -> TokenStream {
@@ -154,12 +189,14 @@ fn single_relation(
     field_attrs: &[syn::Attribute],
     parsed_struct: &syn::ItemStruct,
     schema_path: TokenStream,
+    optional_target: bool,
 ) -> (TokenStream, RelationFieldInfo) {
     let fk_field = extract_belongs_to_from_field(field_attrs);
     let relation_enum = extract_relation_enum(field_attrs);
-    let is_optional = fk_field
+    let fk_optional = fk_field
         .as_ref()
-        .is_none_or(|f| is_field_optional_in_struct(parsed_struct, f));
+        .is_none_or(|f| fk_is_optional(parsed_struct, f));
+    let is_optional = optional_target || fk_optional;
 
     let converted = if is_optional {
         quote! { Option<Box<#schema_path>> }
@@ -174,10 +211,25 @@ fn single_relation(
         inline_type_info: None,
         relation_enum,
         fk_column: fk_field,
-        via_rel: None,
+        fk_optional,
+        fk_to: extract_belongs_to_to_field(field_attrs),
+        // `HasOne` + `via_rel`: the FK is the target's relation of that name.
+        via_rel: extract_via_rel(field_attrs),
         adapter: false,
     };
     (converted, info)
+}
+
+/// Whether the FK column(s) `fk` may be absent: an `Option` field, or any
+/// `Option` column of a composite key.
+fn fk_is_optional(parsed_struct: &syn::ItemStruct, fk: &str) -> bool {
+    if is_composite_columns(fk) {
+        fk.trim_matches(['(', ')'])
+            .split(", ")
+            .any(|column| is_field_optional_in_struct(parsed_struct, column))
+    } else {
+        is_field_optional_in_struct(parsed_struct, fk)
+    }
 }
 
 #[cfg(test)]
@@ -546,6 +598,84 @@ mod tests {
         assert_eq!(
             absolute_schema_segments(&segs(path), &module).join("::"),
             expected
+        );
+    }
+
+    // SeaORM 2.0 shapes: `BelongsTo<Option<E>>` targets `E` (it used to
+    // build `cake::Option`) and is optional even with a required key;
+    // `from` / `to` column paths name fields; `HasOne` keeps `via_rel`; a
+    // composite key is optional when any of its columns is.
+    #[rstest::rstest]
+    #[case::optional_belongs_to(
+        r#"#[sea_orm(belongs_to, from = "bakery_id", to = "id")] pub bakery: BelongsTo<Option<super::bakery::Entity>>"#,
+        "Option < Box < crate :: models :: bakery :: Schema >>",
+        (true, false),
+        (Some("bakery_id"), Some("id"), None)
+    )]
+    #[case::column_paths(
+        r#"#[sea_orm(belongs_to, from = "Column::BakeryId", to = "Id")] pub bakery: BelongsTo<super::bakery::Entity>"#,
+        "Box < crate :: models :: bakery :: Schema >",
+        (false, false),
+        (Some("bakery_id"), Some("id"), None)
+    )]
+    #[case::has_one_via_rel(
+        r#"#[sea_orm(has_one, relation_enum = "Profile", via_rel = "Owner")] pub profile: HasOne<super::profile::Entity>"#,
+        "Option < Box < crate :: models :: profile :: Schema >>",
+        (true, true),
+        (None, None, Some("Owner"))
+    )]
+    #[case::composite_key(
+        r#"#[sea_orm(belongs_to, from = "(BakeryId, tenant_id)", to = "(Id, TenantId)")] pub bakery: BelongsTo<super::bakery::Entity>"#,
+        "Option < Box < crate :: models :: bakery :: Schema >>",
+        (true, true),
+        (Some("(bakery_id, tenant_id)"), Some("(id, tenant_id)"), None)
+    )]
+    fn seaorm_2_relation_shapes(
+        #[case] field: &str,
+        #[case] converted: &str,
+        #[case] (is_optional, fk_optional): (bool, bool),
+        #[case] (fk_column, fk_to, via_rel): (Option<&str>, Option<&str>, Option<&str>),
+    ) {
+        let parsed = make_test_struct(&format!(
+            "pub struct Model {{ pub id: i32, pub bakery_id: i32, pub tenant_id: Option<i32>, {field} }}"
+        ));
+        let relation = parsed.fields.iter().next_back().unwrap();
+        let (tokens, info) = convert_relation_type_to_schema_with_info(
+            &relation.ty,
+            &relation.attrs,
+            &parsed,
+            &segs("crate::models::cake"),
+            relation.ident.clone().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(tokens.to_string(), converted);
+        assert_eq!(
+            (info.is_optional, info.fk_optional),
+            (is_optional, fk_optional)
+        );
+        assert_eq!(
+            (
+                info.fk_column.as_deref(),
+                info.fk_to.as_deref(),
+                info.via_rel.as_deref()
+            ),
+            (fk_column, fk_to, via_rel)
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::optional_target(
+        "BelongsTo<Option<super::bakery::Entity>>",
+        Some("crate::models::bakery")
+    )]
+    #[case::raw_module("HasOne<super::r#type::Entity>", Some("crate::models::type"))]
+    #[case::not_a_relation("Option<super::bakery::Entity>", None)]
+    #[case::non_path_target("HasOne<&'static str>", None)]
+    fn relation_target_modules(#[case] ty: &str, #[case] expected: Option<&str>) {
+        let ty: syn::Type = syn::parse_str(ty).unwrap();
+        assert_eq!(
+            relation_target_module(&ty, &segs("crate::models::cake")),
+            expected.map(segs)
         );
     }
 

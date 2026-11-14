@@ -10,6 +10,7 @@ fn default_Dto_seeded() -> i32 {
 fn default_Dto_overridden() -> i32 {
     "7".parse().unwrap()
 }
+#[allow(deprecated)]
 #[derive(
     serde::Serialize,
     serde::Deserialize,

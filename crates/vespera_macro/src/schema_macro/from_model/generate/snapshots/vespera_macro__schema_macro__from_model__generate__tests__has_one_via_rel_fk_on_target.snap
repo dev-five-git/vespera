@@ -5,30 +5,31 @@ expression: "run_scenario(models, new_type, source_type, rows, &relations, modul
 #[allow(deprecated)]
 impl UserSchema {
     pub async fn from_model(
-        model: crate::models::user::Model,
-        db: &sea_orm::DatabaseConnection,
+        __vespera_model: crate::models::user::Model,
+        __vespera_db: &sea_orm::DatabaseConnection,
     ) -> Result<Self, sea_orm::DbErr> {
         let profile = sea_orm::QueryFilter::filter(
                 <crate::models::profile::Entity as sea_orm::EntityTrait>::find(),
                 sea_orm::ColumnTrait::eq(
                     &crate::models::profile::Column::OwnerId,
-                    model.id.clone(),
+                    __vespera_model.id.clone(),
                 ),
             )
-            .one(db)
+            .one(__vespera_db)
             .await?;
-        let __parent_stub__ = Self {
-            id: model.id.clone(),
-            profile: None,
-        };
         Ok(Self {
-            id: model.id,
-            profile: profile
-                .map(|r| Box::new(crate::models::profile::Schema {
-                    id: r.id,
-                    owner_id: r.owner_id,
-                    owner: Box::new(__parent_stub__.clone()),
-                })),
+            id: __vespera_model.id,
+            profile: match profile {
+                Some(r) => {
+                    Some(
+                        Box::new(
+                            crate::models::profile::Schema::from_model(r, __vespera_db)
+                                .await?,
+                        ),
+                    )
+                }
+                None => None,
+            },
         })
     }
 }

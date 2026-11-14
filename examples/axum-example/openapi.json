@@ -3593,6 +3593,310 @@
           "actor"
         ]
       },
+      "BakeryInCake": {
+        "type": "object",
+        "description": "One adapter DTO for both bakery relations (and for two `schema_type!`\ncalls): the generated conversions are wrapper-local, so it is never\nimplemented twice (`E0119`). The container `default` and the `#[cfg]`\nof the (compiled-out) field carry over to the wrapper's conversions and\ndeserialize proxy.",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "BakerySchema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "flagship": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BakerySchema_Flagship"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`HasOne` selected through the target's `FlagshipOf` relation."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name"
+        ]
+      },
+      "BakerySchema_Flagship": {
+        "type": "object",
+        "properties": {
+          "bakeryId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "flagshipOfId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "CakeBakeryOnly": {
+        "type": "object",
+        "properties": {
+          "bakery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BakeryInCake"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          }
+        },
+        "required": [
+          "id",
+          "bakery"
+        ]
+      },
+      "CakeSchema": {
+        "type": "object",
+        "properties": {
+          "bakery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CakeSchema_Bakery"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "bakeryId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "flagshipOf": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CakeSchema_FlagshipOf"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "flagshipOfId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "CakeSchema_Bakery": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name"
+        ]
+      },
+      "CakeSchema_FlagshipOf": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name"
+        ]
+      },
+      "CakeWithBakeries": {
+        "type": "object",
+        "properties": {
+          "bakery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BakeryInCake"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "bakeryId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "flagshipOf": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BakeryInCake"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "flagshipOfId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "bakery",
+          "flagshipOf"
+        ]
+      },
+      "CategorySchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CategorySchema_Parent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parentId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "CategorySchema_Parent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parentId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
       "ComplexStructBody": {
         "type": "object",
         "properties": {
@@ -4093,6 +4397,189 @@
         "required": [
           "id",
           "name"
+        ]
+      },
+      "Cursor": {
+        "type": "object",
+        "description": "A position in a paged listing (resolved in this module).",
+        "properties": {
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CycleASchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "label": {
+            "type": "string"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CycleASchema_Next"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nextId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ]
+      },
+      "CycleASchema_Next": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "label": {
+            "type": "string"
+          },
+          "nextId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ]
+      },
+      "CycleBSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "label": {
+            "type": "string"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CycleBSchema_Next"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nextId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ]
+      },
+      "CycleBSchema_Next": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "label": {
+            "type": "string"
+          },
+          "nextId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ]
+      },
+      "CycleCSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "label": {
+            "type": "string"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CycleCSchema_Next"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nextId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ]
+      },
+      "CycleCSchema_Next": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "label": {
+            "type": "string"
+          },
+          "nextId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "label"
         ]
       },
       "DocumentResponse": {
@@ -4773,6 +5260,53 @@
         "required": [
           "body",
           "extra"
+        ]
+      },
+      "ListingSchema": {
+        "type": "object",
+        "properties": {
+          "bakeryCode": {
+            "type": "string"
+          },
+          "byCode": {
+            "$ref": "#/components/schemas/BakerySchema"
+          },
+          "db": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BakerySchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dbId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "model": {
+            "$ref": "#/components/schemas/BakerySchema"
+          },
+          "modelId": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "modelId",
+          "bakeryCode",
+          "model",
+          "byCode"
         ]
       },
       "MapQuery": {
@@ -5468,6 +6002,19 @@
           "text"
         ]
       },
+      "PageRow": {
+        "type": "object",
+        "description": "A row type the generic source module (`models::page`) cannot name.",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
       "PaginatedResponse": {
         "type": "object",
         "properties": {
@@ -5748,6 +6295,32 @@
       "Rgb": {
         "type": "string",
         "description": "An RGB colour that travels as `\"#rrggbb\"` in both directions."
+      },
+      "RowPage": {
+        "type": "object",
+        "description": "A page of `T`; `M` defaults to a sample of the same rows.",
+        "properties": {
+          "cursor": {
+            "$ref": "#/components/schemas/Cursor"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PageRow"
+            }
+          },
+          "sample": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PageRow"
+            }
+          }
+        },
+        "required": [
+          "items",
+          "cursor",
+          "sample"
+        ]
       },
       "SearchQuery": {
         "description": "Query string: `tags` repeats (`?tags=a&tags=b`, `style: form, explode:\ntrue`), `internal` is never read, `Paging`'s fields are inlined.",
@@ -6899,6 +7472,26 @@
           "id",
           "name",
           "tags"
+        ]
+      },
+      "UuidItemName": {
+        "type": "object",
+        "description": "UUID item model for testing UUID format in OpenAPI",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Item ID",
+            "default": "00000000-0000-0000-0000-000000000000"
+          },
+          "name": {
+            "type": "string",
+            "description": "Item name"
+          }
+        },
+        "required": [
+          "id",
+          "name"
         ]
       },
       "UuidItemSchema": {

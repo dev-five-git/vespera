@@ -1,0 +1,77 @@
+---
+source: crates/vespera_macro/src/schema_macro/same_file_override.rs
+expression: "prettyplease::unparse(&file)"
+---
+#[derive(serde::Serialize, vespera::Schema)]
+#[serde(transparent)]
+#[schema(ref = "UserInArticle", nullable)]
+struct __VesperaArticleResponseUserRelation(pub Option<UserInArticle>);
+impl Clone for __VesperaArticleResponseUserRelation {
+    fn clone(&self) -> Self {
+        Self(
+            self
+                .0
+                .as_ref()
+                .map(|dto| UserInArticle {
+                    id: dto.id.clone(),
+                    #[cfg(test)]
+                    name: dto.name.clone(),
+                }),
+        )
+    }
+}
+impl Default for __VesperaArticleResponseUserRelation {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(default)]
+struct __VesperaArticleResponseUserProxy {
+    id: i32,
+    #[cfg(test)]
+    name: String,
+}
+impl ::core::default::Default for __VesperaArticleResponseUserProxy {
+    fn default() -> Self {
+        let dto: UserInArticle = <UserInArticle as ::core::default::Default>::default();
+        Self {
+            id: dto.id,
+            #[cfg(test)]
+            name: dto.name,
+        }
+    }
+}
+impl<'de> serde::Deserialize<'de> for __VesperaArticleResponseUserRelation {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let proxy = <Option<
+            __VesperaArticleResponseUserProxy,
+        > as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(
+            Self(
+                proxy
+                    .map(|proxy| UserInArticle {
+                        id: proxy.id,
+                        #[cfg(test)]
+                        name: proxy.name,
+                    }),
+            ),
+        )
+    }
+}
+impl From<Option<crate::models::user::Model>> for __VesperaArticleResponseUserRelation {
+    fn from(source: Option<crate::models::user::Model>) -> Self {
+        Self(
+            source
+                .map(|source| UserInArticle {
+                    id: source.id.clone(),
+                    #[cfg(test)]
+                    name: source.name.clone(),
+                }),
+        )
+    }
+}

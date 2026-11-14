@@ -10,6 +10,7 @@ use super::{
     file_cache::{get_circular_analysis, get_module_path_from_schema_path},
     file_lookup::find_model_from_schema_path,
     seaorm::{RelationFieldInfo, convert_type_with_chrono},
+    transformation::reroot_serde_paths,
     type_utils::{is_seaorm_relation_type, snake_to_pascal_case},
 };
 use crate::parser::{extract_rename_all, extract_skip};
@@ -155,7 +156,8 @@ fn generate_inline_type_core(
 
     // Detect circular fields only when requested
     let circular_fields: Vec<String> = if check_circular {
-        let fields = get_circular_analysis(source_module_path, model_def).circular_fields;
+        let fields = get_circular_analysis(source_module_path, &target_module_path, model_def)
+            .circular_fields;
         // If no circular fields, no need for inline type
         if fields.is_empty() {
             return None;
@@ -172,7 +174,7 @@ fn generate_inline_type_core(
     // Generate inline type name: {SchemaName}_{Field}
     // Use custom schema name if provided, otherwise use the Rust struct name
     let parent_name = schema_name_override.map_or_else(
-        || parent_type_name.to_string(),
+        || crate::parser::strip_raw_prefix_owned(parent_type_name.to_string()),
         std::string::ToString::to_string,
     );
     let field_name_pascal = snake_to_pascal_case(&crate::parser::strip_raw_prefix_owned(
@@ -207,13 +209,17 @@ fn generate_inline_type_core(
                 continue;
             }
 
-            // Keep serde and doc attributes
-            let kept_attrs: Vec<syn::Attribute> = field
-                .attrs
-                .iter()
-                .filter(|attr| attr.path().is_ident("serde") || attr.path().is_ident("doc"))
-                .cloned()
-                .collect();
+            // Keep serde (function paths re-rooted at the target module, the
+            // type is emitted at the call site), doc and cfg attributes (the
+            // construction repeats the cfg).
+            let kept_attrs: Vec<syn::Attribute> =
+                reroot_serde_paths(&field.attrs, effective_module_path)
+                    .into_iter()
+                    .filter(|attr| {
+                        let path = attr.path();
+                        path.is_ident("serde") || path.is_ident("doc") || path.is_ident("cfg")
+                    })
+                    .collect();
 
             // Convert SeaORM datetime types to chrono equivalents
             // Use the target model's module path to correctly resolve enum types

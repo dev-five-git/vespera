@@ -72,7 +72,7 @@ pub(super) fn generate_sea_orm_default_attrs(
                 return (quote! {}, schema_default_attr);
             }
 
-            let fn_name = format!("default_{struct_name}_{field_name}");
+            let fn_name = format!("default_{}_{field_name}", unraw(struct_name));
             let fn_ident = syn::Ident::new(&fn_name, proc_macro2::Span::call_site());
 
             // Validate the literal against the field's type at macro-expansion
@@ -111,7 +111,7 @@ pub(super) fn generate_sea_orm_default_attrs(
                 return (quote! {}, schema_default_attr);
             }
 
-            let fn_name = format!("default_{struct_name}_{field_name}");
+            let fn_name = format!("default_{}_{field_name}", unraw(struct_name));
             let fn_ident = syn::Ident::new(&fn_name, proc_macro2::Span::call_site());
 
             default_functions.push(quote! {
@@ -125,6 +125,11 @@ pub(super) fn generate_sea_orm_default_attrs(
             (serde_default_attr, schema_default_attr)
         }
     }
+}
+
+/// `ident` without a raw `r#` prefix (it goes into generated fn names).
+fn unraw(ident: &syn::Ident) -> String {
+    crate::parser::strip_raw_prefix_owned(ident.to_string())
 }
 
 /// Return a type-appropriate (Rust default expression, OpenAPI default string) pair

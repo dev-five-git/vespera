@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use syn::Type;
 
 use crate::metadata::StructMetadata;
+use crate::schema_macro::crate_layout::{CrateLayout, layout_for};
 
 /// Why a source struct lookup failed.
 #[derive(Debug, Clone)]
@@ -129,7 +130,8 @@ pub(super) fn find_struct_with_call_site(
     // Get CARGO_MANIFEST_DIR to locate src folder (cached to avoid repeated syscalls)
     let manifest_dir = crate::schema_macro::file_cache::get_manifest_dir()
         .ok_or(LookupError::MissingManifestDir)?;
-    let src_dir = Path::new(&manifest_dir).join("src");
+    let layout = layout_for(Path::new(&manifest_dir), call_site);
+    let src_dir = &layout.module_dir;
 
     // Extract path segments from the type
     let Type::Path(type_path) = ty else {
@@ -152,16 +154,16 @@ pub(super) fn find_struct_with_call_site(
     // qualified path for anything outside the file that invokes the macro.
     if module_part.is_empty() {
         return match call_site {
-            Some(file_path) => find_bare_struct_in_file(file_path, &struct_name, &src_dir),
+            Some(file_path) => find_bare_struct_in_file(file_path, &struct_name, &layout),
             None => Err(LookupError::BareNotFound { struct_name }),
         };
     }
 
-    let call_site_module = call_site.map(|file| file_path_to_module_path(file, &src_dir));
+    let call_site_module = call_site.map(|file| layout.module_path_of(file));
     let module_path = absolute_module_path(module_part, call_site_module.as_deref());
     let module_segments: Vec<&str> = module_path[1..].iter().map(String::as_str).collect();
 
-    if let Some(definition) = find_struct_in_module(&src_dir, &module_segments, &struct_name) {
+    if let Some(definition) = find_struct_in_module(src_dir, &module_segments, &struct_name) {
         return Ok((
             StructMetadata::new_model(struct_name, definition),
             module_path,
@@ -171,11 +173,9 @@ pub(super) fn find_struct_with_call_site(
     let mut searched: Vec<PathBuf> = if module_segments.is_empty() {
         Vec::new()
     } else {
-        candidate_file_paths(&src_dir, &module_segments).into()
+        candidate_file_paths(src_dir, &module_segments).into()
     };
-    searched.extend(crate::schema_macro::module_scope::crate_root_files(
-        &src_dir,
-    ));
+    searched.extend(layout.roots.iter().cloned());
     Err(LookupError::NotFound {
         struct_name,
         searched,
@@ -184,12 +184,24 @@ pub(super) fn find_struct_with_call_site(
 
 /// The absolute (`crate::..`) module path of a written module path:
 /// `crate::a` as is, `self::a` / `super::a` relative to the call-site
-/// module (when known), anything else relative to the crate root.
+/// module (when known), a first segment the call-site module imports or
+/// defines (`use crate::models::memo;` → `memo::Model`) through that
+/// import, anything else relative to the crate root.
 fn absolute_module_path(
     module_part: &[String],
     call_site_module: Option<&[String]>,
 ) -> Vec<String> {
     let first = module_part[0].as_str();
+    if !matches!(first, "crate" | "self" | "super")
+        && let Some(module) = call_site_module
+        && let crate::schema_macro::module_scope::Resolved::Path(path) =
+            crate::schema_macro::module_scope::resolve_name(&module_part[..1], module)
+    {
+        return path
+            .into_iter()
+            .chain(module_part[1..].iter().cloned())
+            .collect();
+    }
     match (first, call_site_module) {
         ("crate", _) => module_part.to_vec(),
         ("self", Some(module)) => module.iter().chain(&module_part[1..]).cloned().collect(),
@@ -245,9 +257,9 @@ pub(super) fn find_struct_in_module(
 fn find_bare_struct_in_file(
     file_path: &Path,
     struct_name: &str,
-    src_dir: &Path,
+    layout: &CrateLayout,
 ) -> Result<(StructMetadata, Vec<String>), LookupError> {
-    let module_path = file_path_to_module_path(file_path, src_dir);
+    let module_path = layout.module_path_of(file_path);
     if let Some(definition) =
         crate::schema_macro::file_cache::get_struct_definition(file_path, struct_name)
     {
@@ -304,70 +316,21 @@ pub fn collect_rs_files_recursive(dir: &Path, files: &mut Vec<std::path::PathBuf
     }
 }
 
-/// Derive module path from a file path relative to src directory.
+/// Derive module path from a file path relative to the crate's module
+/// directory (see [`CrateLayout::module_path_of`]).
 ///
 /// Examples:
 /// - `src/models/user.rs` -> `["crate", "models", "user"]`
 /// - `src/models/user/mod.rs` -> `["crate", "models", "user"]`
 /// - `src/lib.rs` / `src/main.rs` / `src/bin/tool.rs` -> `["crate"]`
+/// - a file outside `src_dir` -> `["crate"]`
+#[cfg(test)]
 pub fn file_path_to_module_path(file_path: &Path, src_dir: &Path) -> Vec<String> {
-    let relative = file_path
-        .strip_prefix(src_dir)
-        .ok()
-        .map(std::path::Path::to_path_buf)
-        .or_else(|| relative_path_after_src(file_path))
-        .unwrap_or_default();
-
-    let mut names: Vec<String> = relative
-        .components()
-        .filter_map(|component| match component {
-            std::path::Component::Normal(os_str) => os_str.to_str().map(str::to_string),
-            _ => None,
-        })
-        .collect();
-    // Crate roots: `main.rs` / `lib.rs` at the top, and every binary under
-    // `src/bin/` (`bin/tool.rs`, `bin/tool/main.rs`).
-    let is_root = match names.as_slice() {
-        [file] => file == "main.rs" || file == "lib.rs",
-        [bin, file] => bin == "bin" && Path::new(file).extension().is_some_and(|ext| ext == "rs"),
-        [bin, _, file] => bin == "bin" && file == "main.rs",
-        _ => false,
-    };
-    if is_root {
-        names.clear();
+    CrateLayout {
+        module_dir: src_dir.to_path_buf(),
+        roots: Vec::new(),
     }
-
-    let mut segments = vec!["crate".to_string()];
-    for name in names {
-        // Handle .rs extension
-        if let Some(stem) = name.strip_suffix(".rs") {
-            // `mod.rs` does not add a segment
-            if stem != "mod" {
-                segments.push(stem.to_string());
-            }
-        } else {
-            // Directory name
-            segments.push(name);
-        }
-    }
-
-    segments
-}
-
-fn relative_path_after_src(file_path: &Path) -> Option<PathBuf> {
-    let mut seen_src = false;
-    let mut relative = PathBuf::new();
-    for component in file_path.components() {
-        let std::path::Component::Normal(os_str) = component else {
-            continue;
-        };
-        if seen_src {
-            relative.push(os_str);
-        } else if os_str == "src" {
-            seen_src = true;
-        }
-    }
-    seen_src.then_some(relative)
+    .module_path_of(file_path)
 }
 
 /// Find struct definition from a schema path string (e.g., "`crate::models::user::Schema`").
@@ -393,26 +356,25 @@ pub fn find_model_from_schema_path(schema_path_str: &str) -> Option<StructMetada
     find_in_schema_module(&module_segments, "Model")
 }
 
-/// Non-empty, trimmed segments of a `::`-separated path, `crate` / `self` /
-/// `super` removed (and `Schema` when `strip_schema`).
+/// Non-empty, trimmed, un-raw'd (`r#type` -> `type`) segments of a
+/// `::`-separated path (and without `Schema` when `strip_schema`).
 fn schema_path_segments(path_str: &str, strip_schema: bool) -> Vec<&str> {
     path_str
         .split("::")
-        .map(str::trim)
+        .map(|s| s.trim().trim_start_matches("r#"))
         .filter(|s| !(s.is_empty() || (strip_schema && *s == "Schema")))
         .collect()
 }
 
 fn find_in_schema_module(segments: &[&str], struct_name: &str) -> Option<StructMetadata> {
     // Get CARGO_MANIFEST_DIR to locate src folder (cached to avoid repeated syscalls)
-    let manifest_dir = crate::schema_macro::file_cache::get_manifest_dir()?;
-    let src_dir = Path::new(&manifest_dir).join("src");
+    let layout = crate::schema_macro::crate_layout::crate_layout()?;
     let module_segments: Vec<&str> = segments
         .iter()
         .filter(|s| !matches!(**s, "crate" | "self" | "super"))
         .copied()
         .collect();
-    find_struct_in_module(&src_dir, &module_segments, struct_name)
+    find_struct_in_module(&layout.module_dir, &module_segments, struct_name)
         .map(|definition| StructMetadata::new_model(struct_name.to_string(), definition))
 }
 
@@ -422,11 +384,9 @@ fn find_in_schema_module(segments: &[&str], struct_name: &str) -> Option<StructM
 pub fn storage_module_path(metadata: &StructMetadata) -> Option<Vec<String>> {
     let identity = metadata.source_identity.as_deref()?;
     let (file, _) = identity.rsplit_once('@')?.0.rsplit_once("::")?;
-    let manifest_dir = crate::schema_macro::file_cache::get_manifest_dir()?;
-    let src_dir = Path::new(&manifest_dir).join("src");
+    let layout = crate::schema_macro::crate_layout::crate_layout()?;
     let file = Path::new(file);
-    file.starts_with(&src_dir)
-        .then(|| file_path_to_module_path(file, &src_dir))
+    layout.contains(file).then(|| layout.module_path_of(file))
 }
 
 /// The absolute module a qualified source path (`models::user::Model`,
@@ -447,10 +407,8 @@ pub fn requested_module_path(ty: &Type) -> Option<Vec<String>> {
     }
     let call_site = proc_macro2::Span::call_site().local_file();
     let call_site_module = call_site
-        .zip(crate::schema_macro::file_cache::get_manifest_dir())
-        .map(|(file, manifest_dir)| {
-            file_path_to_module_path(&file, &Path::new(&manifest_dir).join("src"))
-        });
+        .zip(crate::schema_macro::crate_layout::crate_layout())
+        .map(|(file, layout)| layout.module_path_of(&file));
     Some(absolute_module_path(
         module_part,
         call_site_module.as_deref(),

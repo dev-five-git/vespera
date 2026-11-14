@@ -5,11 +5,11 @@ expression: "run_scenario(models, new_type, source_type, rows, &relations, modul
 #[allow(deprecated)]
 impl TestSchema {
     pub async fn from_model(
-        model: Model,
-        db: &sea_orm::DatabaseConnection,
+        __vespera_model: Model,
+        __vespera_db: &sea_orm::DatabaseConnection,
     ) -> Result<Self, sea_orm::DbErr> {
         Ok(Self {
-            id: model.id,
+            id: __vespera_model.id,
             unknown: Default::default(),
         })
     }

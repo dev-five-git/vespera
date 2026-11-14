@@ -45,6 +45,8 @@ fn rel(
         inline_type_info: None,
         relation_enum: None,
         fk_column: None,
+        fk_optional: true,
+        fk_to: None,
         via_rel: None,
         adapter: false,
     }
@@ -459,6 +461,50 @@ fn file_lookup_generates_inline_type_for_circular_model() {
 
     assert_eq!(result.type_name.to_string(), "MemoSchema_User");
     assert_eq!(field_names(&result), ["id", "name"]);
+}
+
+/// Raw module segments (`r#type`) and a raw parent name are un-raw'd
+/// (circular detection and the inline type used to miss them), the kept
+/// fields' serde paths are re-rooted at the target module (M14) and their
+/// `#[cfg]` is kept (L21).
+#[test]
+fn raw_paths_reroot_and_cfg() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let models_dir = temp_dir.path().join("src").join("models");
+    std::fs::create_dir_all(&models_dir).unwrap();
+    std::fs::write(
+        models_dir.join("type.rs"),
+        r#"
+    pub fn fallback() -> String { String::new() }
+    pub struct Model {
+        pub id: i32,
+        #[serde(default = "fallback")]
+        #[cfg(feature = "x")]
+        pub label: String,
+        pub memo: BelongsTo<super::memo::Entity>,
+    }
+    "#,
+    )
+    .unwrap();
+
+    let result = with_manifest_dir(temp_dir.path(), || {
+        generate_inline_relation_type(
+            &syn::Ident::new_raw("Memo", proc_macro2::Span::call_site()),
+            &rel("kind", "BelongsTo", quote!(crate::models::r#type::Schema)),
+            &module_path(&MEMO_MODULE),
+            None,
+        )
+    })
+    .expect("circular reference through the raw module path");
+
+    assert_eq!(result.type_name.to_string(), "Memo_Kind");
+    assert_eq!(field_names(&result), ["id", "label"]);
+    let label = &result.fields[1].attrs;
+    let rendered = quote!(#(#label)*).to_string();
+    assert_eq!(
+        rendered,
+        "# [serde (default = \"crate::models::r#type::fallback\")] # [cfg (feature = \"x\")]"
+    );
 }
 
 #[test]

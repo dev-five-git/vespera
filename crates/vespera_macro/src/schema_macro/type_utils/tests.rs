@@ -335,10 +335,8 @@ fn test_is_map_type(#[case] type_str: &str, #[case] expected: bool) {
 #[rstest]
 #[case("String", Some(serde_json::Value::String(String::new())))]
 #[case("i32", Some(serde_json::Value::Number(serde_json::Number::from(0))))]
-#[case(
-    "Decimal",
-    Some(serde_json::Value::Number(serde_json::Number::from(0)))
-)]
+#[case("DateTime<Local>", None)]
+#[case("DateTimeLocal", None)]
 #[case("bool", Some(serde_json::Value::Bool(false)))]
 #[case("Option<String>", Some(serde_json::Value::Null))]
 #[case("f64", Some(serde_json::Value::Number(serde_json::Number::from_f64(0.0).unwrap())))]
@@ -546,7 +544,14 @@ fn option_inner_rejects_wrapper_without_generic_arguments() {
 
 #[rstest]
 #[case::uuid("Uuid", serde_json::json!("00000000-0000-0000-0000-000000000000"))]
-#[case::datetime("DateTimeUtc", serde_json::json!("1970-01-01T00:00:00+00:00"))]
+#[case::datetime_utc("DateTimeUtc", serde_json::json!("1970-01-01T00:00:00Z"))]
+#[case::chrono_utc("DateTime<Utc>", serde_json::json!("1970-01-01T00:00:00Z"))]
+#[case::with_time_zone("DateTimeWithTimeZone", serde_json::json!("1970-01-01T00:00:00+00:00"))]
+#[case::chrono_fixed("chrono::DateTime<chrono::FixedOffset>", serde_json::json!("1970-01-01T00:00:00+00:00"))]
+// SeaORM's bare `DateTime` is `NaiveDateTime`; `Decimal` serializes as a
+// string.
+#[case::sea_orm_datetime("DateTime", serde_json::json!("1970-01-01T00:00:00"))]
+#[case::decimal("Decimal", serde_json::json!("0"))]
 #[case::naive_datetime("NaiveDateTime", serde_json::json!("1970-01-01T00:00:00"))]
 #[case::naive_date("NaiveDate", serde_json::json!("1970-01-01"))]
 #[case::naive_time("NaiveTime", serde_json::json!("00:00:00"))]

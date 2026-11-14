@@ -10,20 +10,21 @@ use quote::quote;
 use syn::Type;
 
 use super::super::{
-    file_cache::get_fk_column,
-    seaorm::RelationFieldInfo,
+    file_cache::{get_fk_column, get_struct_from_schema_path},
+    seaorm::{RelationFieldInfo, is_composite_columns, is_sea_orm_primary_key},
     type_utils::{normalize_token_str, snake_to_pascal_case},
 };
-use super::build_entity_path_from_schema_path;
+use super::{DB, MODEL, build_entity_path_from_schema_path};
 
-/// The `let <field> = ...;` statement loading one relation of `model`.
+/// The `let <field> = ...;` statement loading one relation of the model.
 ///
 /// # Errors
 ///
 /// A `#[sea_orm(...)]` value that must become an identifier but is not one,
 /// and a relation whose rows cannot be selected: a `relation_enum` / `via_rel`
 /// whose foreign key is not found on the target entity (previously an empty
-/// `vec![]` / an uncompilable `Relation::X` query).
+/// `vec![]` / an uncompilable `Relation::X` query), and a composite
+/// `from = "(a, b)"` key.
 pub(super) fn relation_load(
     rel: &RelationFieldInfo,
     source_type: &Type,
@@ -38,33 +39,60 @@ pub(super) fn relation_load(
         "HasMany" => false,
         _ => return Ok(TokenStream::new()),
     };
+    let schema_path_str = normalize_token_str(&rel.schema_path);
 
     if single && let Some(fk_col) = &rel.fk_column {
-        // The FK lives on the source model: select the target by its key.
+        // The FK lives on the source model: select the target by the
+        // referenced column (`find_by_id` when it is the primary key).
+        for (key, columns) in [("from", Some(fk_col)), ("to", rel.fk_to.as_ref())] {
+            if let Some(columns) = columns.filter(|c| is_composite_columns(c)) {
+                return Err(syn::Error::new_spanned(
+                    source_type,
+                    format!(
+                        "schema_type!: relation field `{field_name}` has a composite key `#[sea_orm({key} = \"{columns}\")]`, which `from_model` cannot load; `omit` the field"
+                    ),
+                ));
+            }
+        }
         let fk_ident = ident("from", fk_col)?;
-        return Ok(if rel.is_optional {
+        let select = match rel.fk_to.as_deref() {
+            Some(to) if !is_target_primary_key(&schema_path_str, to) => {
+                let column = column_path(&entity_path);
+                let to_ident = ident("to", &snake_to_pascal_case(to))?;
+                quote! {
+                    sea_orm::QueryFilter::filter(
+                        #entity::find(),
+                        sea_orm::ColumnTrait::eq(&#column::#to_ident, fk_value.clone()),
+                    )
+                }
+            }
+            _ => quote! { #entity::find_by_id(fk_value.clone()) },
+        };
+        return Ok(if rel.fk_optional {
             quote! {
-                let #field_name = match &model.#fk_ident {
-                    Some(fk_value) => #entity::find_by_id(fk_value.clone()).one(db).await?,
+                let #field_name = match &#MODEL.#fk_ident {
+                    Some(fk_value) => #select.one(#DB).await?,
                     None => None,
                 };
             }
         } else {
             quote! {
-                let #field_name = #entity::find_by_id(model.#fk_ident.clone()).one(db).await?;
+                let #field_name = {
+                    let fk_value = &#MODEL.#fk_ident;
+                    #select.one(#DB).await?
+                };
             }
         });
     }
 
     // Named relation without a source-side FK: the FK lives on the target
     // entity's relation of that name (`via_rel`, else `relation_enum`).
+    let fetch = if single { quote!(one) } else { quote!(all) };
     let Some(fk_rel) = rel.via_rel.as_ref().or(rel.relation_enum.as_ref()) else {
-        let fetch = if single { quote!(one) } else { quote!(all) };
         return Ok(quote! {
-            let #field_name = sea_orm::ModelTrait::find_related(&model, #entity_path).#fetch(db).await?;
+            let #field_name = sea_orm::ModelTrait::find_related(&#MODEL, #entity_path).#fetch(#DB).await?;
         });
     };
-    let schema_path_str = normalize_token_str(&rel.schema_path);
     let Some((from, to)) = get_fk_column(&schema_path_str, fk_rel) else {
         return Err(syn::Error::new_spanned(
             source_type,
@@ -85,15 +113,35 @@ pub(super) fn relation_load(
         })?;
     let to_ident = ident("to", to.as_deref().unwrap_or("id"))?;
     let column = column_path(&entity_path);
-    let fetch = if single { quote!(one) } else { quote!(all) };
     Ok(quote! {
         let #field_name = sea_orm::QueryFilter::filter(
             #entity::find(),
-            sea_orm::ColumnTrait::eq(&#column::#from_ident, model.#to_ident.clone()),
+            sea_orm::ColumnTrait::eq(&#column::#from_ident, #MODEL.#to_ident.clone()),
         )
-        .#fetch(db)
+        .#fetch(#DB)
         .await?;
     })
+}
+
+/// Whether `column` is the whole primary key of the `Model` behind
+/// `schema_path` (`find_by_id` selects by it). Without the model on disk,
+/// SeaORM's conventional `id` is assumed.
+fn is_target_primary_key(schema_path: &str, column: &str) -> bool {
+    let model_path = schema_path.replace("::Schema", "::Model");
+    // A stored definition always parses.
+    let Some(parsed) = get_struct_from_schema_path(&model_path)
+        .and_then(|model| super::super::file_cache::parse_struct_cached(&model.definition).ok())
+    else {
+        return column == "id";
+    };
+    let keys: Vec<String> = parsed
+        .fields
+        .iter()
+        .filter(|field| is_sea_orm_primary_key(&field.attrs))
+        .filter_map(|field| field.ident.as_ref())
+        .map(|ident| crate::parser::strip_raw_prefix_owned(ident.to_string()))
+        .collect();
+    keys == [column]
 }
 
 /// `path::to::Entity` → `path::to::Column`.

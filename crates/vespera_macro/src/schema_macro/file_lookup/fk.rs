@@ -1,7 +1,5 @@
 //! Foreign-key lookup for SeaORM HasMany relations.
 
-use std::path::Path;
-
 use super::lookup::find_struct_in_module;
 
 /// Find the FK columns from the target entity for a `HasMany` relation with `via_rel`.
@@ -23,14 +21,13 @@ pub fn find_fk_column_from_target_entity(
         extract_belongs_to_from_field, extract_belongs_to_to_field, extract_relation_enum,
     };
 
-    // Get CARGO_MANIFEST_DIR to locate src folder (cached to avoid repeated syscalls)
-    let manifest_dir = crate::schema_macro::file_cache::get_manifest_dir()?;
-    let src_dir = Path::new(&manifest_dir).join("src");
+    let layout = crate::schema_macro::crate_layout::crate_layout()?;
+    let src_dir = layout.module_dir;
 
     // e.g., "crate :: models :: notification :: Schema" -> models::notification
     let module_segments: Vec<&str> = target_schema_path
         .split("::")
-        .map(str::trim)
+        .map(|s| s.trim().trim_start_matches("r#"))
         .filter(|s| {
             !s.is_empty() && !matches!(*s, "Schema" | "Entity" | "crate" | "self" | "super")
         })

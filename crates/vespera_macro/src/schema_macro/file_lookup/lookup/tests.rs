@@ -15,7 +15,8 @@ fn bare_struct_file_lookup_returns_metadata_and_module_path() {
     let file_path = model_dir.join("user.rs");
     std::fs::write(&file_path, "pub struct User { pub id: i32 }").unwrap();
 
-    let (metadata, module_path) = find_bare_struct_in_file(&file_path, "User", &src_dir).unwrap();
+    let (metadata, module_path) =
+        find_bare_struct_in_file(&file_path, "User", &layout_for(temp.path(), None)).unwrap();
 
     assert_eq!(metadata.name, "User");
     assert!(metadata.definition.contains("pub struct User"));
@@ -30,7 +31,7 @@ fn bare_struct_file_lookup_reports_missing_struct() {
     let file_path = src_dir.join("models.rs");
     std::fs::write(&file_path, "pub struct Other;").unwrap();
 
-    let result = find_bare_struct_in_file(&file_path, "Missing", &src_dir);
+    let result = find_bare_struct_in_file(&file_path, "Missing", &layout_for(temp.path(), None));
 
     assert!(matches!(
         result,
@@ -255,21 +256,23 @@ fn bare_lookup_uses_injected_call_site_definition_when_local_file_is_available()
         .find(|path| path.file_name().is_some_and(|name| name == "src"))
         .expect("this test module lives below src");
 
-    let (metadata, module_path) =
-        find_bare_struct_in_file(&call_site_file, "InjectedCallSiteModel", src_dir)
-            .expect("injected call-site definition resolves");
+    let (metadata, module_path) = find_bare_struct_in_file(
+        &call_site_file,
+        "InjectedCallSiteModel",
+        &layout_for(src_dir.parent().unwrap(), None),
+    )
+    .expect("injected call-site definition resolves");
     assert_eq!(metadata.name, "InjectedCallSiteModel");
     assert!(module_path.starts_with(&["crate".to_string()]));
 }
 
+/// L17: a `src` component of a path outside the crate's `src` used to root the
+/// module path (`crate::models::user`).
 #[test]
-fn module_path_falls_back_to_components_after_src() {
+fn module_path_ignores_an_unrelated_src_ancestor() {
     let file = Path::new("unrelated/root/src/models/user/mod.rs");
     let unrelated_src = Path::new("different/src");
-    assert_eq!(
-        file_path_to_module_path(file, unrelated_src),
-        ["crate", "models", "user"]
-    );
+    assert_eq!(file_path_to_module_path(file, unrelated_src), ["crate"]);
 }
 
 #[test]
@@ -299,13 +302,10 @@ fn qualified_schema_path_ignores_empty_namespace_segments() {
     assert!(metadata.definition.contains("pub struct Model"));
 }
 
-/// Only normal path components name modules (a `..` is skipped).
+/// `..` folds: `src/../models/user.rs` is outside `src`.
 #[test]
-fn test_file_path_to_module_path_skips_parent_components() {
+fn test_file_path_to_module_path_folds_parent_components() {
     let src_dir = Path::new("/project/src");
     let file_path = Path::new("/project/src/../models/user.rs");
-    assert_eq!(
-        file_path_to_module_path(file_path, src_dir),
-        vec!["crate", "models", "user"]
-    );
+    assert_eq!(file_path_to_module_path(file_path, src_dir), vec!["crate"]);
 }

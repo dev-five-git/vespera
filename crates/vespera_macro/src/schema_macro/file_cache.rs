@@ -163,7 +163,7 @@ struct FileCache {
 
     // --- Phase 4 caches ---
     /// Cached circular reference analysis results: (module_path, definition) → analysis.
-    circular_analysis: HashMap<(String, String), CircularAnalysis>,
+    circular_analysis: HashMap<(String, String), (u64, CircularAnalysis)>,
     /// Cached struct lookups by schema path plus dependency fingerprint.
     /// `None` values are cached (negative cache) to avoid repeated failed lookups.
     /// `Arc` because `StructMetadata.definition` holds the full struct

@@ -5,7 +5,65 @@
 //! unresolved `T`, and `schema_type!(Dto from Page<User>)` emitted fields of
 //! a type `T` that did not exist at the call site.
 
+use proc_macro2::TokenStream;
+use quote::ToTokens;
+
+use super::type_utils::resolve_type_with_params;
 use crate::parser::schema::substitute_type;
+
+/// One type parameter's value.
+enum Arg {
+    /// Written at the macro call site.
+    CallSite(syn::Type),
+    /// The parameter's default, written in the source struct's module (it
+    /// may name earlier parameters: `P<T, M = Vec<T>>`).
+    Default(syn::Type),
+}
+
+/// The type parameters of a generic source and the values the macro call
+/// gives them.
+pub struct Bindings {
+    names: Vec<String>,
+    args: Vec<Arg>,
+}
+
+impl Bindings {
+    /// The parameters' values: call-site arguments as written, each default
+    /// passed through `default` (with the earlier parameters' names) and
+    /// then given the earlier parameters' values.
+    fn values(&self, default: impl Fn(&syn::Type, &[String]) -> syn::Type) -> Vec<syn::Type> {
+        let mut values: Vec<syn::Type> = Vec::with_capacity(self.args.len());
+        for (index, arg) in self.args.iter().enumerate() {
+            let earlier = &self.names[..index];
+            values.push(match arg {
+                Arg::CallSite(ty) => ty.clone(),
+                Arg::Default(ty) => substitute(&default(ty, earlier), earlier, &values),
+            });
+        }
+        values
+    }
+
+    /// The source field type `raw` (as written in the uninstantiated struct,
+    /// in `source_module`) for the macro call site: its own names resolve in
+    /// the source module, the call-site arguments are inserted unchanged
+    /// (they are written at the call site, which may import names the source
+    /// module does not), and defaults resolve in the source module.
+    pub fn field_type(&self, raw: &syn::Type, source_module: &[String]) -> TokenStream {
+        let values = self.values(|ty, earlier| resolve(ty, source_module, earlier));
+        let resolved = resolve(raw, source_module, &self.names);
+        substitute(&resolved, &self.names, &values).into_token_stream()
+    }
+}
+
+/// `ty` resolved in `module`, the `params` left as they are.
+fn resolve(ty: &syn::Type, module: &[String], params: &[String]) -> syn::Type {
+    syn::parse2(resolve_type_with_params(ty, module, params)).unwrap_or_else(|_| ty.clone())
+}
+
+fn substitute(ty: &syn::Type, names: &[String], concrete: &[syn::Type]) -> syn::Type {
+    let concrete: Vec<&syn::Type> = concrete.iter().collect();
+    substitute_type(ty, names, &concrete)
+}
 
 /// `item` with its type parameters replaced by the type arguments of `ty`'s
 /// last path segment (a parameter's default fills a missing trailing
@@ -16,6 +74,15 @@ pub fn instantiate(
     ty: &syn::Type,
     macro_name: &str,
 ) -> syn::Result<syn::ItemStruct> {
+    instantiate_with_bindings(item, ty, macro_name).map(|(instance, _)| instance)
+}
+
+/// [`instantiate`], plus the bindings (`None` for a non-generic source).
+pub fn instantiate_with_bindings(
+    item: &syn::ItemStruct,
+    ty: &syn::Type,
+    macro_name: &str,
+) -> syn::Result<(syn::ItemStruct, Option<Bindings>)> {
     let name = &item.ident;
     let error = |message: String| syn::Error::new_spanned(ty, format!("{macro_name}: {message}"));
     if item
@@ -28,11 +95,11 @@ pub fn instantiate(
             "`{name}` has lifetime or const parameters, which are not supported"
         )));
     }
-    let args = type_arguments(ty)
+    let given = type_arguments(ty)
         .map_err(|()| error(format!("only type arguments are supported for `{name}`")))?;
     let params: Vec<&syn::TypeParam> = item.generics.type_params().collect();
-    if params.is_empty() && args.is_empty() {
-        return Ok(item.clone());
+    if params.is_empty() && given.is_empty() {
+        return Ok((item.clone(), None));
     }
     let expected = || {
         params
@@ -41,37 +108,38 @@ pub fn instantiate(
             .collect::<Vec<_>>()
             .join(", ")
     };
-    if args.len() > params.len() {
+    if given.len() > params.len() {
         return Err(error(format!(
             "`{name}` takes {} type argument(s) ({}), {} given",
             params.len(),
             expected(),
-            args.len()
+            given.len()
         )));
     }
-    let mut concrete: Vec<&syn::Type> = Vec::with_capacity(params.len());
+    let mut args = Vec::with_capacity(params.len());
     for (index, param) in params.iter().enumerate() {
-        match args
-            .get(index)
-            .copied()
-            .or(param.default.as_ref().map(|(_, ty)| ty))
-        {
-            Some(arg) => concrete.push(arg),
-            None => {
+        args.push(match (given.get(index), &param.default) {
+            (Some(arg), _) => Arg::CallSite((*arg).clone()),
+            (None, Some((_, default))) => Arg::Default(default.clone()),
+            (None, None) => {
                 return Err(error(format!(
                     "`{name}` is generic: give its type argument(s) ({}), e.g. `{name}<..>`",
                     expected()
                 )));
             }
-        }
+        });
     }
-    let names: Vec<String> = params.iter().map(|param| param.ident.to_string()).collect();
+    let bindings = Bindings {
+        names: params.iter().map(|param| param.ident.to_string()).collect(),
+        args,
+    };
+    let concrete = bindings.values(|ty, _| ty.clone());
     let mut instance = item.clone();
     instance.generics = syn::Generics::default();
     for field in &mut instance.fields {
-        field.ty = substitute_type(&field.ty, &names, &concrete);
+        field.ty = substitute(&field.ty, &bindings.names, &concrete);
     }
-    Ok(instance)
+    Ok((instance, Some(bindings)))
 }
 
 /// The type arguments of `ty`'s last path segment (`Err` for a lifetime /
@@ -122,6 +190,12 @@ mod tests {
         "pub struct W { pub value : Option < String > }"
     )]
     #[case::non_path_type("pub struct S { pub a: i32 }", "&S", "pub struct S { pub a : i32 }")]
+    // A default naming an earlier parameter gets that parameter's value.
+    #[case::default_names_earlier_param(
+        "pub struct P<T, M = Vec<T>> { pub item: T, pub meta: M }",
+        "P<User>",
+        "pub struct P { pub item : User , pub meta : Vec < User > }"
+    )]
     fn instantiates(#[case] item: &str, #[case] ty: &str, #[case] expected: &str) {
         let item: syn::ItemStruct = syn::parse_str(item).unwrap();
         let ty: syn::Type = syn::parse_str(ty).unwrap();
@@ -160,5 +234,66 @@ mod tests {
         let ty: syn::Type = syn::parse_str(ty).unwrap();
         let err = instantiate(&item, &ty, "schema!").unwrap_err();
         assert_eq!(err.to_string(), expected);
+    }
+}
+
+#[cfg(test)]
+mod field_type_tests {
+    use quote::ToTokens;
+    use rstest::rstest;
+    use tempfile::TempDir;
+
+    use super::*;
+
+    /// The source module `crate::page` defines `Meta` and imports `Item`
+    /// from `models`; the call site passes its own `Row`.
+    #[rstest]
+    // The call-site argument is inserted as written (it used to be resolved
+    // in the source module: `crate::page::Row`, which does not exist).
+    #[case::call_site_arg("Vec<T>", "Page<Row>", "Vec < Row >")]
+    // The source's own names still resolve in the source module.
+    #[case::source_names("Option<Meta>", "Page<Row>", "Option < crate :: page :: Meta >")]
+    // A default resolves in the source module, with the earlier argument
+    // as written at the call site.
+    #[case::default_resolved_in_source("M", "Page<Row>", "Vec < (Row , crate :: models :: Item) >")]
+    #[case::default_overridden("M", "Page<Row, Other>", "Other")]
+    fn field_type(#[case] raw: &str, #[case] source: &str, #[case] expected: &str) {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("lib.rs"), "pub mod page;\npub mod models;").unwrap();
+        std::fs::write(src.join("models.rs"), "pub struct Item;").unwrap();
+        std::fs::write(
+            src.join("page.rs"),
+            "use crate::models::Item;\npub struct Meta;\npub struct Page<T, M = Vec<(T, Item)>> { pub items: Vec<T>, pub meta: M }",
+        )
+        .unwrap();
+        let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        crate::schema_macro::file_cache::bump_epoch();
+
+        let item: syn::ItemStruct = syn::parse_str(
+            "pub struct Page<T, M = Vec<(T, Item)>> { pub items: Vec<T>, pub meta: M }",
+        )
+        .unwrap();
+        let ty: syn::Type = syn::parse_str(source).unwrap();
+        let (_, bindings) = instantiate_with_bindings(&item, &ty, "schema_type!").unwrap();
+        let raw: syn::Type = syn::parse_str(raw).unwrap();
+        let module = ["crate", "page"].map(String::from);
+        assert_eq!(
+            bindings
+                .unwrap()
+                .field_type(&raw, &module)
+                .to_token_stream()
+                .to_string(),
+            expected
+        );
+    }
+
+    #[test]
+    fn non_generic_source_has_no_bindings() {
+        let item: syn::ItemStruct = syn::parse_str("pub struct S { pub a: i32 }").unwrap();
+        let ty: syn::Type = syn::parse_str("S").unwrap();
+        let (_, bindings) = instantiate_with_bindings(&item, &ty, "schema_type!").unwrap();
+        assert!(bindings.is_none());
     }
 }

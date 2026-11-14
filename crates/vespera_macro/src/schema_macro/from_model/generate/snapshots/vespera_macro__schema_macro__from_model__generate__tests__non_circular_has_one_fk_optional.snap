@@ -5,22 +5,23 @@ expression: "run_scenario(models, new_type, source_type, rows, &relations, modul
 #[allow(deprecated)]
 impl UserSchema {
     pub async fn from_model(
-        model: crate::models::user::Model,
-        db: &sea_orm::DatabaseConnection,
+        __vespera_model: crate::models::user::Model,
+        __vespera_db: &sea_orm::DatabaseConnection,
     ) -> Result<Self, sea_orm::DbErr> {
         let address = sea_orm::ModelTrait::find_related(
-                &model,
+                &__vespera_model,
                 crate::models::address::Entity,
             )
-            .one(db)
+            .one(__vespera_db)
             .await?;
         Ok(Self {
-            id: model.id,
+            id: __vespera_model.id,
             address: match address {
                 Some(r) => {
                     Some(
                         Box::new(
-                            crate::models::address::Schema::from_model(r, db).await?,
+                            crate::models::address::Schema::from_model(r, __vespera_db)
+                                .await?,
                         ),
                     )
                 }

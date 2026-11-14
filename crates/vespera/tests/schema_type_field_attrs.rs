@@ -14,6 +14,7 @@ pub struct Signup {
     pub name: String,
     #[schema(minimum = 18)]
     #[cfg_attr(all(), schema(maximum = 130))]
+    #[cfg_attr(all(), serde(alias = "years"))]
     pub age: u8,
     #[schema(default = "legacy")]
     pub nick: String,
@@ -34,9 +35,9 @@ pub struct GardeSource {
     pub untouched: bool,
 }
 
-/// `#[deprecated]` is carried, so the DTO's own serde derives warn about it
-/// exactly like a hand-written struct would.
-#[allow(deprecated)]
+/// `#[deprecated]` is carried; the DTO allows it on its own derives, so
+/// using the source (here, with `deny(warnings)`) compiles cleanly. The
+/// `Schema`-deriving `partial` twin exercises the other derives.
 mod legacy {
     use vespera::schema_type;
 
@@ -48,6 +49,7 @@ mod legacy {
     }
 
     schema_type!(LegacyDto from Legacy, ignore);
+    schema_type!(LegacyPatch from Legacy, partial);
 }
 use legacy::{Legacy, LegacyDto};
 
@@ -67,6 +69,8 @@ mod never_compiled {
 // `ignore` (no `Schema` derive) used to keep the SeaORM-derived
 // `#[schema(default = ..)]`, an unknown attribute without the derive.
 schema_type!(SeededDto from Seeded, ignore, add = [("note": String)]);
+// A raw type name went verbatim into the default fn name (`Ident::new` panic).
+schema_type!(r#RawSeeded from Seeded, ignore, add = [("note": String)]);
 
 #[test]
 #[allow(deprecated)]
@@ -132,6 +136,8 @@ fn garde_rules_follow_the_field() {
 fn ignored_schema_keeps_serde_defaults_only() {
     let dto: SeededDto = serde_json::from_str(r#"{"note":"n"}"#).unwrap();
     assert_eq!((dto.id, dto.count, dto.note.as_str()), (0, 5, "n"));
+    let raw: RawSeeded = serde_json::from_str(r#"{"note":""}"#).unwrap();
+    assert_eq!((raw.id, raw.count), (0, 5));
 }
 
 #[derive(Serialize, Deserialize, Clone, Schema)]
@@ -163,4 +169,30 @@ fn split_rename_all_keeps_both_sides() {
         serde_json::to_value(&dto).unwrap(),
         serde_json::json!({ "user-name": "a" })
     );
+}
+
+/// A `serde` item inside `cfg_attr` is carried (it used to be dropped).
+#[test]
+fn cfg_attr_serde_is_carried() {
+    let dto: SignupDto = serde_json::from_str(r#"{"name":"abc","years":40,"nick":"n"}"#).unwrap();
+    assert_eq!(dto.age, 40);
+    let patch: SignupPatch = serde_json::from_str(r#"{"years":41}"#).unwrap();
+    assert_eq!(patch.age, Some(41));
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(bound = "T: Serialize + serde::de::DeserializeOwned")]
+pub struct Bounded<T> {
+    #[serde(bound = "T: Serialize + serde::de::DeserializeOwned")]
+    pub value: T,
+}
+
+// The source's `bound`s name `T`, which the instantiated DTO lacks: they
+// used to be copied onto it (`cannot find type T`).
+schema_type!(BoundedInt from Bounded<i32>);
+
+#[test]
+fn bounds_of_a_generic_source_are_dropped() {
+    let dto: BoundedInt = serde_json::from_str(r#"{"value":3}"#).unwrap();
+    assert_eq!(BoundedInt::from(Bounded { value: 3 }).value, dto.value);
 }
