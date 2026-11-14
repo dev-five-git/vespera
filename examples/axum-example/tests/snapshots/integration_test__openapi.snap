@@ -952,6 +952,46 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         }
       }
     },
+    "/form/subscription": {
+      "get": {
+        "operationId": "subscription",
+        "tags": [
+          "form"
+        ],
+        "summary": "Check a subscription",
+        "description": "On GET, `Form` reads the query string, so its fields are documented as\nquery parameters.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "email",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/form/upload": {
       "post": {
         "operationId": "upload",

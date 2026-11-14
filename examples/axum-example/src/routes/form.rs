@@ -49,6 +49,15 @@ pub async fn subscribe(Form(input): Form<SubscribeRequest>) -> Json<SubscribeRes
     })
 }
 
+/// Check a subscription
+///
+/// On GET, `Form` reads the query string, so its fields are documented as
+/// query parameters.
+#[route(get, path = "/subscription", tags = ["form"])]
+pub async fn subscription(Form(input): Form<SubscribeRequest>) -> String {
+    format!("{} <{}>", input.name, input.email)
+}
+
 /// Submit a contact form
 #[route(post, path = "/contact", tags = ["form"])]
 pub async fn contact(Form(input): Form<ContactFormRequest>) -> Json<ContactFormResponse> {

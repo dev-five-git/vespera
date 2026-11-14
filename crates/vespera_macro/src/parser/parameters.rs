@@ -32,12 +32,13 @@ pub fn parse_function_parameter(
             {
                 return Some(parameters);
             }
+            // `TypedHeader<T>` is named after `T`, whatever the pattern.
+            if let Some(parameters) = header::parse_typed_header(ty) {
+                return Some(parameters);
+            }
             // The name is only needed for the scalar / header fallbacks below.
             let param_name = extract_param_name(pat.as_ref())?;
 
-            if let Some(parameters) = header::parse_option_typed_header(&param_name, ty) {
-                return Some(parameters);
-            }
             if let Some(parameters) =
                 path::parse_path_extractor(ty, path_params, known_schemas, struct_definitions)
             {

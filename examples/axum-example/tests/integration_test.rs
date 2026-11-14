@@ -16,6 +16,17 @@ async fn test_health_endpoint() {
     response.assert_text("ok");
 }
 
+/// `Form<T>` on GET reads the query string, as the document says.
+#[tokio::test]
+async fn test_form_on_get_reads_the_query_string() {
+    let server = TestServer::new(create_app().await);
+
+    server
+        .get("/form/subscription?name=Ada&email=ada%40example.com")
+        .await
+        .assert_text("Ada <ada@example.com>");
+}
+
 #[tokio::test]
 async fn test_mod_file_endpoint() {
     let app = create_app().await;

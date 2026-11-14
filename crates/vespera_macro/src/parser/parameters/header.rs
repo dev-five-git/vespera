@@ -9,11 +9,17 @@ use vespera_core::{
 use super::shared::is_primitive_or_like;
 use crate::parser::schema::parse_type_to_schema_ref;
 
-pub(super) fn parse_option_typed_header(param_name: &str, ty: &Type) -> Option<Vec<Parameter>> {
+/// `TypedHeader<T>` (required) or `Option<TypedHeader<T>>` (optional). The
+/// header is named after `T`, so the argument pattern (`TypedHeader(_)`,
+/// `_`, a binding) never matters.
+pub(super) fn parse_typed_header(ty: &Type) -> Option<Vec<Parameter>> {
     let Type::Path(type_path) = ty else {
         return None;
     };
-    let segment = type_path.path.segments.first()?;
+    let segment = type_path.path.segments.last()?;
+    if segment.ident == "TypedHeader" {
+        return typed_header_parameter(segment, true).map(|param| vec![param]);
+    }
     if segment.ident != "Option" {
         return None;
     }
@@ -27,7 +33,7 @@ pub(super) fn parse_option_typed_header(param_name: &str, ty: &Type) -> Option<V
     if inner_segment.ident != "TypedHeader" {
         return None;
     }
-    typed_header_parameter(param_name, inner_segment, false).map(|param| vec![param])
+    typed_header_parameter(inner_segment, false).map(|param| vec![param])
 }
 
 pub(super) fn parse_header_extractor(
@@ -40,11 +46,10 @@ pub(super) fn parse_header_extractor(
         return None;
     };
     let segment = type_path.path.segments.last()?;
-    match segment.ident.to_string().as_str() {
-        "Header" => parse_header(param_name, segment, known_schemas, struct_definitions),
-        "TypedHeader" => typed_header_parameter(param_name, segment, true).map(|param| vec![param]),
-        _ => None,
+    if segment.ident != "Header" {
+        return None;
     }
+    parse_header(param_name, segment, known_schemas, struct_definitions)
 }
 
 fn parse_header(
@@ -128,16 +133,42 @@ fn is_reserved_header_name(name: &str) -> bool {
         .any(|reserved| name.eq_ignore_ascii_case(reserved))
 }
 
+/// `XRequestId` → `x-request-id`, `HTTPVersion` → `http-version`,
+/// `Api_Key` → `api-key`.
+fn kebab_case_type_name(ident: &str) -> String {
+    let chars: Vec<char> = ident.chars().collect();
+    let mut out = String::with_capacity(ident.len() + 4);
+    for (i, &c) in chars.iter().enumerate() {
+        if c == '_' {
+            out.push('-');
+            continue;
+        }
+        if c.is_ascii_uppercase() && i > 0 {
+            let prev = chars[i - 1];
+            let next_is_lower = chars.get(i + 1).is_some_and(char::is_ascii_lowercase);
+            if prev.is_ascii_lowercase()
+                || prev.is_ascii_digit()
+                || (prev.is_ascii_uppercase() && next_is_lower)
+            {
+                out.push('-');
+            }
+        }
+        out.push(c.to_ascii_lowercase());
+    }
+    out
+}
+
 /// The header parameter for `TypedHeader<T>`: named after the HEADER when `T`
-/// is a known `headers::*` type, otherwise after the Rust binding
-/// (`_` → `-`). Returns `None` for headers that
+/// is a known `headers::*` type, otherwise after `T` in kebab-case
+/// (`XRequestId` → `x-request-id`). Returns `None` for headers that
 /// OpenAPI forbids as header parameters (`Authorization`, `Accept`,
 /// `Content-Type`).
-fn typed_header_parameter(
-    param_name: &str,
-    typed_header: &syn::PathSegment,
-    required: bool,
-) -> Option<Parameter> {
+///
+/// Limitation: a custom `headers::Header` impl declares its wire name in
+/// `Header::name()`, which a macro cannot see. The kebab-cased type name is
+/// a convention, not the truth — name the type after its header
+/// (`struct XRequestId` for `x-request-id`) to keep the document right.
+fn typed_header_parameter(typed_header: &syn::PathSegment, required: bool) -> Option<Parameter> {
     // `TypedHeader<T>` has exactly one (type) parameter.
     let header_ident = if let syn::PathArguments::AngleBracketed(args) = &typed_header.arguments
         && let Some(syn::GenericArgument::Type(Type::Path(path))) = args.args.first()
@@ -146,14 +177,9 @@ fn typed_header_parameter(
     } else {
         None
     };
-    // Only the well-known `headers::*` types have a wire name we can trust.
-    // A custom `headers::Header` impl declares its name in `Header::name()`,
-    // which a macro cannot see — fall back to the binding name (the pre-0.x
-    // behaviour) instead of guessing from the type name.
-    let name = header_ident
-        .as_deref()
-        .and_then(known_typed_header_name)
-        .map_or_else(|| param_name.replace('_', "-"), str::to_string);
+    let header_ident = header_ident?;
+    let name = known_typed_header_name(&header_ident)
+        .map_or_else(|| kebab_case_type_name(&header_ident), str::to_string);
     if is_reserved_header_name(&name) {
         return None;
     }
@@ -178,13 +204,19 @@ mod tests {
     #[test]
     fn malformed_option_and_header_generics_are_rejected() {
         let bare_option: Type = syn::parse_quote!(Option);
-        assert!(parse_option_typed_header("x", &bare_option).is_none());
+        assert!(parse_typed_header(&bare_option).is_none());
         let lifetime_option: Type = syn::parse_quote!(Option<'static>);
-        assert!(parse_option_typed_header("x", &lifetime_option).is_none());
+        assert!(parse_typed_header(&lifetime_option).is_none());
         // An `Option` of anything but `TypedHeader` is left to the other
         // extractor parsers.
         let plain_option: Type = syn::parse_quote!(Option<String>);
-        assert!(parse_option_typed_header("x", &plain_option).is_none());
+        assert!(parse_typed_header(&plain_option).is_none());
+        let reference: Type = syn::parse_quote!(&str);
+        assert!(parse_typed_header(&reference).is_none());
+        let other: Type = syn::parse_quote!(Vec<TypedHeader<XTenant>>);
+        assert!(parse_typed_header(&other).is_none());
+        let typed: Type = syn::parse_quote!(TypedHeader<XTenant>);
+        assert!(parse_header_extractor("x", &typed, &HashSet::new(), &HashMap::new()).is_none());
 
         let bare_header: Type = syn::parse_quote!(Header);
         assert!(
@@ -197,29 +229,31 @@ mod tests {
         );
     }
 
-    /// Known `headers::*` types are named after the header; custom types fall
-    /// back to the Rust binding name; OpenAPI-reserved names
-    /// (`Authorization`/`Accept`/`Content-Type`) are not emitted.
+    /// Known `headers::*` types are named after the header; custom types are
+    /// named after the type in kebab-case (never after the Rust binding);
+    /// OpenAPI-reserved names (`Authorization`/`Accept`/`Content-Type`)
+    /// are not emitted.
     #[rstest]
     #[case::user_agent("TypedHeader<UserAgent>", Some("User-Agent"))]
     #[case::qualified("TypedHeader<headers::IfNoneMatch>", Some("If-None-Match"))]
     #[case::etag("TypedHeader<ETag>", Some("ETag"))]
     #[case::te("TypedHeader<Te>", Some("TE"))]
-    #[case::custom("TypedHeader<XRequestId>", Some("my-binding"))]
-    #[case::custom_qualified("TypedHeader<my_headers::TenantId>", Some("my-binding"))]
+    #[case::custom("TypedHeader<XRequestId>", Some("x-request-id"))]
+    #[case::custom_qualified("TypedHeader<my_headers::TenantId>", Some("tenant-id"))]
+    #[case::custom_acronym("TypedHeader<HTTPVersion2Hint>", Some("http-version2-hint"))]
+    #[case::custom_snake("TypedHeader<Api_Key>", Some("api-key"))]
     #[case::cookie("TypedHeader<Cookie>", Some("Cookie"))]
     #[case::authorization("TypedHeader<Authorization<Bearer>>", None)]
     #[case::content_type("TypedHeader<ContentType>", None)]
     #[case::accept("TypedHeader<Accept>", None)]
-    #[case::bare("TypedHeader", Some("my-binding"))]
+    #[case::bare("TypedHeader", None)]
     fn typed_header_names(#[case] ty_src: &str, #[case] expected: Option<&str>) {
         let ty: Type = syn::parse_str(ty_src).unwrap();
-        let required = parse_header_extractor("my_binding", &ty, &HashSet::new(), &HashMap::new())
-            .map(|params| params[0].name.clone());
+        let required = parse_typed_header(&ty).map(|params| params[0].name.clone());
         assert_eq!(required.as_deref(), expected, "{ty_src}");
 
         let optional: Type = syn::parse_str(&format!("Option<{ty_src}>")).unwrap();
-        let optional = parse_option_typed_header("my_binding", &optional);
+        let optional = parse_typed_header(&optional);
         assert_eq!(
             optional.as_ref().map(|params| params[0].name.as_str()),
             expected
@@ -227,6 +261,32 @@ mod tests {
         if let Some(params) = optional {
             assert_eq!(params[0].required, Some(false));
         }
+    }
+
+    /// The header name never depends on the pattern: `TypedHeader(_)`,
+    /// `_` and a destructured binding name the same header.
+    #[rstest]
+    #[case::wildcard_inner("fn f(TypedHeader(_): TypedHeader<UserAgent>)", "User-Agent", true)]
+    #[case::wildcard("fn f(_: TypedHeader<XTenant>)", "x-tenant", true)]
+    #[case::binding("fn f(TypedHeader(h): TypedHeader<XTenant>)", "x-tenant", true)]
+    #[case::optional_wildcard("fn f(_: Option<TypedHeader<XTenant>>)", "x-tenant", false)]
+    fn typed_header_name_ignores_the_pattern(
+        #[case] sig: &str,
+        #[case] name: &str,
+        #[case] required: bool,
+    ) {
+        let sig: syn::Signature = syn::parse_str(sig).unwrap();
+        let params = crate::parser::parameters::parse_function_parameter(
+            &sig.inputs[0],
+            &[],
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+        )
+        .expect("header parameter");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].name, name);
+        assert_eq!(params[0].required, Some(required));
     }
 
     /// Every well-known `headers::*` type maps to its exact wire name.

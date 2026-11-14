@@ -186,6 +186,7 @@ pub(super) fn build_path_items(
                 request_example: route_meta.request_example.as_ref(),
                 response_example: route_meta.response_example.as_ref(),
                 deprecated: route_meta.deprecated,
+                form_in_query: matches!(method, HttpMethod::Get | HttpMethod::Head),
             },
         );
         operation.description.clone_from(&route_meta.description);
