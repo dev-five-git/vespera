@@ -13,6 +13,8 @@ Schedule background tasks with `#[vespera::cron]`. Jobs are auto-discovered like
 vespera = { version = "0.7", features = ["cron"] }
 ```
 
+`cron` pulls in croner, whose `derive_builder` dependency builds `syn` 2 next to the `syn` 3 of vespera's macros, so the first (clean) build is noticeably slower; incremental builds are unaffected.
+
 ### Define Jobs
 
 Place `#[vespera::cron("...")]` on any `pub async fn` with zero parameters. The function can live anywhere in your project:
@@ -66,7 +68,7 @@ vespera = { version = "0.7", features = ["cron", "cron-tz"] }
 pub async fn morning_report() {}
 ```
 
-Zone names are checked at compile time (exact, case-sensitive: `"Asia/Seoul"`, `"America/New_York"`, `"UTC"`). Using `tz` without the `cron-tz` feature is a compile error. Daylight-saving changes follow croner: a fixed-time job whose time falls into a spring-forward gap runs right after the gap, and runs once in a fall-back overlap.
+Zone names are checked at compile time (exact, case-sensitive: `"Asia/Seoul"`, `"America/New_York"`, `"UTC"`). Using `tz` without the `cron-tz` feature is a compile error. Daylight-saving changes follow croner: a fixed-time job whose time falls into a spring-forward gap runs right after the gap (a 02:30 job runs at 03:00 when 02:00 jumps to 03:00), and runs once in a fall-back overlap (at the first 01:30).
 
 ### Overlapping Runs
 

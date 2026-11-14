@@ -107,7 +107,10 @@ async fn main() -> std::io::Result<()> {
 > single chained call. `addr` accepts anything `tokio::net::ToSocketAddrs`
 > takes (strings, tuples, `SocketAddr`). Handlers can extract
 > `ConnectInfo<SocketAddr>`, and `.serve_with_graceful_shutdown(addr, signal)`
-> stops accepting connections once `signal` resolves.
+> stops accepting connections once `signal` resolves. To serve a listener you
+> bound yourself (port `0` in tests — read `listener.local_addr()` first — or a
+> socket tuned with `tokio::net::TcpSocket`), use `.serve_listener(listener)` /
+> `.serve_listener_with_graceful_shutdown(listener, signal)`.
 
 ### 4. Run
 
@@ -1069,6 +1072,10 @@ Schedule background tasks with `#[vespera::cron]`. A tiny built-in tokio schedul
 vespera = { version = "0.7", features = ["cron"] }
 ```
 
+`cron` pulls in croner, whose `derive_builder` dependency builds `syn` 2 (vespera's own
+macros use `syn` 3), so it adds a second `syn` to clean builds — noticeably slower the
+first time; incremental builds are unaffected.
+
 ### Define Cron Jobs
 
 Place `#[vespera::cron("...")]` on any `pub async fn` with zero parameters. The function can live anywhere in your project — no special directory required.
@@ -1137,7 +1144,8 @@ The name is checked at compile time (exact, case-sensitive IANA names such as
 `"Asia/Seoul"`, `"America/New_York"`, `"UTC"`); using `tz` without the
 `cron-tz` feature is a compile error. Daylight-saving transitions follow
 croner: a fixed-time job whose time falls into a spring-forward gap runs right
-after the gap, and runs once in a fall-back overlap.
+after the gap (a 02:30 job runs at 03:00 when 02:00 jumps to 03:00), and runs
+once in a fall-back overlap (at the first 01:30).
 
 ### Overlapping Runs
 
@@ -1371,6 +1379,10 @@ pub fn create_app() -> axum::Router {
 
 vespera::ffi_app!(create_app); // or ffi_apps! { "_default" => create_app, "admin" => admin_app }
 ```
+
+The default `mimalloc` feature installs mimalloc as the global allocator only in `jni`
+builds; an `ffi`-only cdylib keeps the system allocator (declare your own
+`#[global_allocator]` if you want a different one).
 
 ```c
 #include <string.h>

@@ -8,7 +8,8 @@
 //!   IANA time zone instead (requires the `cron-tz` feature; the name is
 //!   checked at compile time).  Daylight-saving transitions follow croner:
 //!   a fixed-time job whose time falls into a spring-forward gap runs right
-//!   after the gap, and runs once in a fall-back overlap.
+//!   after the gap (a 02:30 job runs at 03:00 when 02:00 jumps to 03:00),
+//!   and runs once in a fall-back overlap (at the first 01:30).
 //! - **Overlap.** By default ([`Overlap::Allow`]) every tick starts a run, so
 //!   a slow job may overlap itself.  `overlap = "skip"` ([`Overlap::Skip`])
 //!   skips — and logs — a tick while the previous run is still going.
@@ -649,6 +650,43 @@ mod tests {
             schedule.next_after(utc(after)).unwrap().to_rfc3339(),
             expected
         );
+    }
+
+    /// The daylight-saving behaviour the module docs promise, in
+    /// America/New_York (2030: spring forward 03-10 02:00 EST -> 03:00 EDT,
+    /// fall back 11-03 02:00 EDT -> 01:00 EST): the occurrences following
+    /// `after`, in UTC.
+    #[cfg(feature = "cron-tz")]
+    #[rstest]
+    // 02:30 does not exist on 03-10: the run moves to the first instant
+    // after the gap (03:00 EDT = 07:00Z), then the next day is 02:30 EDT.
+    #[case::spring_forward_gap(
+        "0 30 2 * * *",
+        "2030-03-09T12:00:00Z",
+        &["2030-03-10T07:00:00+00:00", "2030-03-11T06:30:00+00:00"]
+    )]
+    // 01:30 happens twice on 11-03 (EDT 05:30Z, EST 06:30Z): one run only.
+    #[case::fall_back_overlap(
+        "0 30 1 * * *",
+        "2030-11-02T12:00:00Z",
+        &["2030-11-03T05:30:00+00:00", "2030-11-04T06:30:00+00:00"]
+    )]
+    fn daylight_saving_transitions_follow_the_documented_rules(
+        #[case] expression: &'static str,
+        #[case] after: &str,
+        #[case] expected: &[&str],
+    ) {
+        let job = CronJob::new(expression, tick).with_timezone("America/New_York");
+        let schedule = Schedule::new(&job).unwrap();
+        let mut at = utc(after);
+        let runs: Vec<String> = expected
+            .iter()
+            .map(|_| {
+                at = schedule.next_after(at).unwrap();
+                at.to_rfc3339()
+            })
+            .collect();
+        assert_eq!(runs, expected);
     }
 
     /// A job that cannot be scheduled is reported and returns at once.
