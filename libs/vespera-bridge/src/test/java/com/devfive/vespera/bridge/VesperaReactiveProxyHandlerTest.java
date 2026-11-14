@@ -438,6 +438,42 @@ class VesperaReactiveProxyHandlerTest {
         }
     }
 
+    @Test
+    void streamCancelledWhileQueuedNeverReachesRust() throws Exception {
+        // One streaming thread, one queue slot.
+        VesperaStreamingExecutor streaming = new VesperaStreamingExecutor(1, 1);
+        VesperaReactiveProxyHandler handler = ReactiveTestSupport.handler(transport,
+                new ReactiveHeaderAppNameResolver("X-Vespera-App", List.of()), null, 1024, 1024,
+                "X-Request-Id", List.of(events::add), CorsHandling.RUST, streaming);
+        java.util.concurrent.CountDownLatch gate = new java.util.concurrent.CountDownLatch(1);
+        transport.streamGate = gate;
+        try {
+            Disposable running = handler.handle(sse("/one")).subscribe();
+            assertTrue(transport.streamsEntered.tryAcquire(5, java.util.concurrent.TimeUnit.SECONDS));
+            // Subscribed: its task is submitted and waits in the pool queue.
+            Disposable queued = handler.handle(sse("/two")).subscribe();
+            assertEquals(2, streaming.inUse());
+
+            queued.dispose(); // the client disconnected while queued
+            assertEquals(1, streaming.inUse(), "the queued slot is freed at once");
+
+            gate.countDown();
+            long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (streaming.inUse() > 0 && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+            assertEquals(0, streaming.inUse());
+            // Give a (wrongly) surviving queued task the chance to run.
+            assertFalse(transport.streamsEntered.tryAcquire(200, java.util.concurrent.TimeUnit.MILLISECONDS),
+                    "the cancelled stream never runs the native dispatch");
+            assertEquals(1, transport.requests.size(), "only the running stream reached Rust");
+            running.dispose();
+        } finally {
+            gate.countDown();
+            streaming.close();
+        }
+    }
+
     private static MockServerWebExchange sse(String path) {
         return MockServerWebExchange.from(MockServerHttpRequest.get(path)
                 .header(HttpHeaders.ACCEPT, "text/event-stream"));
