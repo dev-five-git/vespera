@@ -546,7 +546,9 @@ cargo run                      # Starts server on :3000
 cargo run -p rust-jni-demo     # Starts server on :3000
 
 # Run JNI demo (Java + Rust)
-cd libs/vespera-bridge && ./gradlew jar
+# (demo resolves the bridge AND the Gradle plugin from mavenLocal — same as CI)
+(cd libs/vespera-bridge-gradle-plugin && ./gradlew publishToMavenLocal)
+(cd libs/vespera-bridge && ./gradlew publishToMavenLocal)
 cargo build -p rust-jni-demo --release
 cd examples/rust-jni-demo/java && ./gradlew :demo-app:bootJar
 java -jar demo-app/build/libs/demo-app-0.1.0.jar

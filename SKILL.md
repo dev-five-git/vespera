@@ -186,6 +186,17 @@ async fn main() -> std::io::Result<()> {
 - `.serve_with_graceful_shutdown(addr, signal)` stops accepting connections
   once `signal` resolves and waits for in-flight requests (with the `cron`
   feature it also stops the cron scheduler; see below).
+- `.serve_listener(listener)` / `.serve_listener_with_graceful_shutdown(listener, signal)`
+  serve a `tokio::net::TcpListener` you already bound (port `0` in tests — read
+  `listener.local_addr()` first, no bind-drop-rebind race — or a socket tuned
+  with `tokio::net::TcpSocket`). Custom `Serve` implementors must provide them
+  (added in 0.8).
+
+```rust
+let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+println!("listening on {}", listener.local_addr()?);
+vespera!(title = "My API").serve_listener(listener).await
+```
 
 ---
 
@@ -234,8 +245,8 @@ pub async fn reindex() {}
 | `Uuid` | `string` + `format: uuid` | |
 | `Decimal` | `string` + `format: decimal` | |
 | `NaiveDate` | `string` + `format: date` | |
-| `NaiveTime` | `string` + `format: time` | |
-| `DateTime`, `DateTimeWithTimeZone` | `string` + `format: date-time` | |
+| `NaiveTime`, `NaiveDateTime`, `PrimitiveDateTime`, `time::Time`, sea-orm `DateTime` | `string` | No offset, so no `time` / `date-time` format (RFC 3339 requires one) |
+| `DateTime<Tz>`, `DateTimeWithTimeZone`, `DateTimeUtc`, `OffsetDateTime` | `string` + `format: date-time` | |
 | `FieldData<NamedTempFile>` | `string` + `format: binary` | File upload field |
 | `Ipv4Addr` / `Ipv6Addr` | `string` + `format: ipv4` / `ipv6` | |
 | `IpAddr`, `SocketAddr` (+`V4`/`V6`), `PathBuf` | `string` | serde writes them as strings |
@@ -245,7 +256,7 @@ pub async fn reindex() {}
 | field `#[serde(with / serialize_with / deserialize_with)]` without `value_type` | `{}` + description note | Shape unknown; per direction for one-sided keys |
 | container `#[serde(into = "T")]` / `from` / `try_from` | `T` for responses / requests | Other direction keeps the fields (`{Name}Input`); container `#[schema(value_type = T)]` = both |
 | `std::time::Duration` | `object` `{secs, nanos}` | serde's std shape; other qualified `Duration`s → `{}` |
-| `()` | empty response | 204 No Content |
+| `()` | empty response | `200` without `content` (use `status = 204` for No Content) |
 | Custom struct | `$ref` | Must derive Schema |
 
 ## Extractor Mapping Reference
@@ -255,14 +266,14 @@ pub async fn reindex() {}
 | `Path<T>` | path parameter | T can be tuple or struct (struct fields matched by serde name); `{*rest}` → `{rest}` |
 | `Query<T>` | query parameters | Struct fields become params; skip/flatten honoured; `Vec<T>` → `style: form, explode: true` |
 | `Json<T>` | requestBody | application/json |
-| `Form<T>` | requestBody | application/x-www-form-urlencoded |
+| `Form<T>` | requestBody; query parameters on `GET` / `HEAD` | application/x-www-form-urlencoded; on `GET` / `HEAD` axum reads the query string, so the fields become query params |
 | `TypedMultipart<T>` | requestBody | multipart/form-data — typed with schema |
 | `Multipart` | requestBody | multipart/form-data — untyped, generic object |
 | `Option<Json<T>>` | requestBody | `required: false` |
 | `Bytes` / `Body` | requestBody | application/octet-stream binary |
 | `State<T>` | **ignored** | Internal, not API |
 | `Extension<T>` | **ignored** | Internal, not API |
-| `TypedHeader<T>` | header parameter | |
+| `TypedHeader<T>` | header parameter | Named after `T`, never the binding: known `headers::*` wire name (`UserAgent` → `User-Agent`), else `T` in kebab-case (`XRequestId` → `x-request-id`); `Authorization` / `Accept` / `Content-Type` omitted |
 | `HeaderMap` | **ignored** | Too dynamic |
 
 `TypedMultipart<T>`, `#[derive(Multipart)]` and `schema_type!(..., multipart)` need

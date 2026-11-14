@@ -62,7 +62,7 @@ export const SIDE_MENU_ITEMS: Record<string, SideMenuItem[]> = {
       ],
     },
     { label: 'Features', value: 'features' },
-    { label: 'Migrating to 0.6', value: 'migration' },
+    { label: 'Migration Guide', value: 'migration' },
     {
       label: 'API Reference',
       value: 'api',
@@ -80,6 +80,7 @@ export const SIDE_MENU_ITEMS: Record<string, SideMenuItem[]> = {
         { label: 'Dispatch Modes & Wire', value: 'theme-2' },
         { label: 'Streaming & Multi-App', value: 'theme-3' },
         { label: 'Spring Configuration', value: 'theme-4' },
+        { label: 'C ABI (Non-JVM Hosts)', value: 'theme-5' },
       ],
     },
   ],

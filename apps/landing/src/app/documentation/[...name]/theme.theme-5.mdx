@@ -1,0 +1,62 @@
+# C ABI (Non-JVM Hosts)
+
+The same in-process dispatch that powers the Java bridge is also exported as a stable C ABI, so C/C++, Go (cgo), Python (`ctypes`), .NET (P/Invoke) or Node (N-API addons) can embed a Vespera app without HTTP. It uses the same binary wire format and the same shared Tokio runtime as JNI, so one cdylib can serve both a JVM and a C host.
+
+## Rust Setup
+
+```toml
+[dependencies]
+vespera = { version = "0.8", features = ["ffi"] }
+
+[lib]
+crate-type = ["cdylib"]
+```
+
+```rust
+use vespera::{axum, vespera};
+
+pub fn create_app() -> axum::Router {
+    vespera!(title = "My API", version = "1.0.0")
+}
+
+// Exports `vespera_init` registering the default app.
+vespera::ffi_app!(create_app);
+```
+
+For several apps use `ffi_apps!` (the C twin of `jni_apps!`); the request's wire `"app"` field selects one (absent → `"_default"`). Names are checked at compile time (non-empty, ≤ 64 bytes, `[A-Za-z0-9_-]`, unique), and only one `ffi_app!` / `ffi_apps!` may appear per cdylib:
+
+```rust
+vespera::ffi_apps! {
+    "_default" => create_app,
+    "admin"    => admin_app,
+}
+```
+
+`ffi_app!` / `ffi_apps!` emit `vespera_init` in your crate; every other symbol comes from the library. The `ffi` feature can be combined with `jni` in the same cdylib.
+
+## The Header
+
+The hand-written header ships with the `vespera_inprocess` crate as `include/vespera.h` (also available in Rust as `vespera::inprocess::ffi::HEADER`). CI compiles it as C99 and C++ and checks every prototype against the Rust symbols.
+
+| Function | Contract |
+|----------|----------|
+| `int vespera_init(void)` | Registers the apps and starts the shared runtime. Idempotent. `VESPERA_ERR_REGISTRATION` / `VESPERA_ERR_PANIC` / `VESPERA_ERR_RUNTIME` on failure |
+| `int vespera_dispatch(req, len, uint8_t **out, size_t *out_len)` | Synchronous; on `VESPERA_OK` the caller owns `*out` and releases it with `vespera_free` |
+| `int vespera_dispatch_into(req, len, out, cap, size_t *written)` | Writes into the caller's buffer. `VESPERA_OVERFLOW` sets `*written` to the required size (a retry re-runs the handler; `NULL` / `0` is a size probe) |
+| `int vespera_dispatch_async(req, len, cb, user_data)` | Returns at once; `cb(user_data, resp, resp_len)` runs once — inline for early rejections (`400` / `413` / `503`), otherwise on a runtime worker, possibly before the call returns. The callback owns `resp` |
+| `void vespera_free(ptr, len)` | Releases a response; `NULL` is a no-op |
+| `int vespera_shutdown(uint64_t timeout_ms)` | Stops the runtime for good: new dispatches answer `503`, in-flight ones get up to the timeout |
+| `uint32_t vespera_abi_version(void)` | The `VESPERA_ABI_VERSION` the library was built with (bumped only on incompatible changes) |
+| `int vespera_configure_*(...)` | `worker_threads`, `max_blocking_threads`, `max_request_bytes`, `max_buffered_response_bytes`, `dispatch_timeout_ms`, `async_max_in_flight` — call before `vespera_init`; `VESPERA_ERR_TOO_LATE` once the value is fixed |
+
+Every failure that can be expressed as HTTP — malformed wire `400`, unknown app `404`, body too large `413`, handler panic `500` (metadata `"panicked":"true"`), runtime shut down `503`, deadline `504` — comes back as a normal wire response with `VESPERA_OK`. Negative return codes are reserved for API misuse. Panics never unwind across the ABI.
+
+## Rules
+
+- Every function may be called concurrently from any thread.
+- The synchronous functions block the calling thread on the shared runtime: never call them from a `vespera_dispatch_async` callback (they answer a `500` panic response instead of deadlocking).
+- `vespera_dispatch_async` shares the in-flight cap (default 4096) with the JVM bridge's `dispatchAsync`; over the cap the callback receives an inline `503`.
+- After `vespera_shutdown`, pending async dispatches receive a `503` on a worker thread, possibly after `vespera_shutdown` returned. A handler still blocking its worker when the timeout ends is abandoned: its callback never runs.
+- There is no streaming entry point in the C ABI.
+
+The [wire format](/documentation/theme/theme-2) is the same as for JNI. The repository's `examples/rust-jni-demo/ffi/ctypes_demo.py` drives the demo cdylib from Python.

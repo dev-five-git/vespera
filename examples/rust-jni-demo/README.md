@@ -65,11 +65,17 @@ Output:
 - macOS: `target/release/librust_jni_demo.dylib`
 - Windows: `target/release/rust_jni_demo.dll`
 
-### Step 2: Build the vespera-bridge JAR
+### Step 2: Publish the vespera-bridge JAR and Gradle plugin to mavenLocal
+
+The demo dogfoods the bridge and the `kr.devfive.vespera-bridge` Gradle plugin
+built from this repository: `java/settings.gradle.kts` resolves both from
+`mavenLocal()` first, at the versions read from
+`libs/vespera-bridge/build.gradle.kts` and
+`libs/vespera-bridge-gradle-plugin/build.gradle.kts` (the same steps CI runs):
 
 ```bash
-cd libs/vespera-bridge
-./gradlew jar
+(cd libs/vespera-bridge-gradle-plugin && ./gradlew publishToMavenLocal)
+(cd libs/vespera-bridge && ./gradlew publishToMavenLocal)
 ```
 
 ### Step 3: Build and run the Spring Boot app
@@ -161,10 +167,10 @@ public class DemoApplication {
 
 1. `vespera::jni_app!` generates `JNI_OnLoad` → calls `vespera::inprocess::register_app(create_app)`
 2. Java calls `VesperaBridge.init("rust_jni_demo")` → loads cdylib → triggers `JNI_OnLoad`
-3. `VesperaProxyController` catches all HTTP requests → encodes them into the **binary wire format** via `VesperaBridge.encodeRequest(...)` → calls `VesperaBridge.dispatchBytes(byte[])`
-4. JNI symbol delegates to `vespera::inprocess::dispatch_from_bytes()`
-5. `dispatch_from_bytes` parses the wire header, looks up the cached `Router`, and runs `router.oneshot(request)` with the raw body bytes
-6. Response wire bytes flow back the same way; the controller parses status + headers straight from the wire via `WireHeaderReader` and returns `ResponseEntity<byte[]>` for every content type (the wire header carries the exact `Content-Type`, written verbatim — no UTF-8 round-trip)
+3. `VesperaProxyController` catches all HTTP requests → encodes them into the **binary wire format** → the autoconfigured `SmartDispatchModeResolver` (default since vespera-bridge 0.2) picks a dispatch mode per request: `DIRECT` (direct `ByteBuffer`s, `VesperaBridge.dispatchDirect`) for small / bodyless idempotent requests, `SYNC` (`VesperaBridge.dispatchBytes(byte[])`) for small non-idempotent ones, and the streaming modes for SSE / NDJSON `Accept` or large / unknown-length bodies
+4. The JNI symbol delegates to `vespera_inprocess` (e.g. `dispatch_from_bytes()` for `SYNC`)
+5. The dispatcher parses the wire header, looks up the cached `Router`, and runs `router.oneshot(request)` with the raw body bytes
+6. Response wire bytes flow back the same way; the controller parses status + headers straight from the wire via `WireHeaderReader` and writes the body to the servlet response for every content type (the wire header carries the exact `Content-Type`, written verbatim — no UTF-8 round-trip)
 7. No TCP between Java and Rust; **no base64** — multipart uploads, PDFs, images travel as raw bytes
 
 #### Wire format
