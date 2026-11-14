@@ -7,6 +7,7 @@
 mod circular;
 mod codegen;
 mod defaults;
+mod field_attrs;
 pub mod file_cache;
 mod file_lookup;
 mod from_model;

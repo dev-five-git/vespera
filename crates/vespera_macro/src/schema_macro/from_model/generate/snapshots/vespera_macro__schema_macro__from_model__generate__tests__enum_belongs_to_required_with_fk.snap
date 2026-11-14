@@ -2,6 +2,7 @@
 source: crates/vespera_macro/src/schema_macro/from_model/generate/tests.rs
 expression: "run_scenario(models, new_type, source_type, rows, &relations, module)"
 ---
+#[allow(deprecated)]
 impl CommentSchema {
     pub async fn from_model(
         model: Model,

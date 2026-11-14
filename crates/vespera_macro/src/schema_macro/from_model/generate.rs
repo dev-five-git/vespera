@@ -14,7 +14,6 @@ use super::super::{
     type_utils::normalize_token_str,
 };
 use super::loads::relation_load;
-use crate::metadata::StructMetadata;
 
 /// Generate `from_model` impl for `SeaORM` Model WITH relations (async version).
 ///
@@ -54,12 +53,36 @@ pub fn generate_from_model_with_relations(
     field_mappings: &[(syn::Ident, syn::Ident, bool, bool)],
     relation_fields: &[RelationFieldInfo],
     source_module_path: &[String],
-    _schema_storage: &HashMap<String, StructMetadata>,
+    field_cfgs: &HashMap<String, TokenStream>,
 ) -> syn::Result<TokenStream> {
+    // `#[cfg(..)]` of a source field, repeated on everything touching it.
+    let cfg_of = |ident: &syn::Ident| {
+        field_cfgs
+            .get(&crate::parser::strip_raw_prefix_owned(ident.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    };
+
+    // Prefixes each per-field assignment (in `field_mappings` order) with
+    // the source field's `#[cfg(..)]`.
+    let gate = |assignments: Vec<TokenStream>| -> Vec<TokenStream> {
+        assignments
+            .into_iter()
+            .zip(field_mappings)
+            .map(|(assignment, (_, source_ident, _, _))| {
+                let cfg = cfg_of(source_ident);
+                quote! { #cfg #assignment }
+            })
+            .collect()
+    };
+
     // Build relation loading statements
     let relation_loads: Vec<TokenStream> = relation_fields
         .iter()
-        .map(|rel| relation_load(rel, source_type, source_module_path))
+        .map(|rel| {
+            let cfg = cfg_of(&rel.field_name);
+            relation_load(rel, source_type, source_module_path).map(|load| quote! { #cfg #load })
+        })
         .collect::<syn::Result<_>>()?;
 
     // Check if we need a parent stub for HasMany relations with required circular back-refs
@@ -321,6 +344,7 @@ pub fn generate_from_model_with_relations(
     // For HasMany with required circular back-refs, we create a parent stub first
 
     // Generate parent stub definition if needed
+    let parent_stub_fields = gate(parent_stub_fields);
     let parent_stub_def = if needs_parent_stub {
         quote! {
             let __parent_stub__ = Self {
@@ -331,8 +355,12 @@ pub fn generate_from_model_with_relations(
         quote! {}
     };
 
+    let field_assignments = gate(field_assignments);
+
     Ok(quote! {
+        #[allow(deprecated)]
         impl #new_type_name {
+
             pub async fn from_model(
                 model: #source_type,
                 db: &sea_orm::DatabaseConnection,

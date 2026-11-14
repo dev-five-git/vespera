@@ -10,6 +10,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::defaults::generate_sea_orm_default_attrs;
+use super::field_attrs::carried_field_attrs;
 use super::file_cache;
 use super::file_lookup::{
     find_struct_from_path_detailed, requested_module_path, storage_module_path,
@@ -20,6 +21,7 @@ use super::inline_types::{
     generate_inline_type_definition,
 };
 use super::input::{PartialMode, SchemaTypeInput};
+use super::module_scope::segment_ident as field_ident;
 use super::same_file_override::maybe_generate_same_file_relation_override;
 use super::seaorm::{
     RelationFieldInfo, convert_relation_type_to_schema_with_info, convert_type_with_chrono,
@@ -205,6 +207,20 @@ pub fn generate_schema_type_code(
     let mut relation_override_helpers: Vec<TokenStream> = Vec::new();
     // Track serde codec adapters for `partial` fields with `with` & co.
     let mut codec_adapters: Vec<TokenStream> = Vec::new();
+    // The same fields as `field_tokens`, but always with their `#[schema]`
+    // attributes: the registered metadata feeds the OpenAPI document even
+    // when `ignore` leaves the emitted struct without a `Schema` derive.
+    let mut metadata_field_tokens: Vec<TokenStream> = Vec::with_capacity(field_capacity);
+    // `#[cfg(..)]` of each source field (by source name), repeated on its
+    // `From` / `from_model` assignment.
+    let mut field_cfgs: HashMap<String, TokenStream> = HashMap::new();
+    let schema_derived = !input.ignore_schema;
+    // A source field with `#[garde(..)]` makes the DTO derive
+    // `garde::Validate`; every other field then needs `#[garde(skip)]`.
+    let any_garde = parsed_struct
+        .fields
+        .iter()
+        .any(|field| carried_field_attrs(&field.attrs, schema_derived).garde);
 
     if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
         for field in &fields_named.named {
@@ -387,6 +403,22 @@ pub fn generate_schema_type_code(
 
             // Extract doc attributes to carry over comments to the generated struct
             let doc_attrs = extract_doc_attrs(&field.attrs);
+            let carried = carried_field_attrs(&field.attrs, schema_derived);
+            if !carried.cfgs.is_empty() {
+                let cfgs = &carried.cfgs;
+                field_cfgs.insert(rust_field_name.clone(), quote! { #(#cfgs)* });
+            }
+            let carried_schema = &carried.schema;
+            let carried_other = &carried.other;
+            let garde_skip = (any_garde && !carried.garde).then(|| quote! { #[garde(skip)] });
+            // `#[schema]` only where `Schema` is derived (a bare `#[schema]`
+            // is an unknown attribute otherwise); the metadata keeps them.
+            let (emitted_schema, mut metadata_only) = if schema_derived {
+                (quote! { #(#carried_schema)* }, TokenStream::new())
+            } else {
+                (TokenStream::new(), quote! { #(#carried_schema)* })
+            };
+            let carried_attrs = quote! { #emitted_schema #(#carried_other)* #garde_skip };
 
             if input.multipart {
                 // Multipart mode: emit form_data attrs, suppress serde attrs
@@ -394,8 +426,7 @@ pub fn generate_schema_type_code(
 
                 // Check if field should be renamed (rename still applies to Rust field names)
                 if let Some(new_name) = rename_map.get(&rust_field_name) {
-                    let new_field_ident =
-                        syn::Ident::new(new_name, field.ident.as_ref().unwrap().span());
+                    let new_field_ident = field_ident(new_name);
                     // The form field keeps the source's name.
                     let form_name_attr = field_form_name(
                         &field.attrs,
@@ -406,6 +437,7 @@ pub fn generate_schema_type_code(
 
                     field_tokens.push(quote! {
                         #(#doc_attrs)*
+                        #carried_attrs
                         #(#form_data_attrs)*
                         #form_name_attr
                         #vis #new_field_ident: #field_ty
@@ -429,6 +461,7 @@ pub fn generate_schema_type_code(
 
                     field_tokens.push(quote! {
                         #(#doc_attrs)*
+                        #carried_attrs
                         #(#form_data_attrs)*
                         #form_name_attr
                         #vis #field_ident: #field_ty
@@ -470,12 +503,21 @@ pub fn generate_schema_type_code(
                     should_wrap_option || is_option_type(original_ty),
                     &mut default_functions,
                 );
+                // The source's own `#[schema(default ..)]` wins; without a
+                // `Schema` derive the attribute only goes to the metadata.
+                let schema_default_attr = if carried.schema_default {
+                    TokenStream::new()
+                } else if schema_derived {
+                    schema_default_attr
+                } else {
+                    metadata_only.extend(schema_default_attr);
+                    TokenStream::new()
+                };
 
                 // Check if field should be renamed
                 if let Some(new_name) = rename_map.get(&rust_field_name) {
                     // Create new identifier for the field
-                    let new_field_ident: syn::Ident =
-                        syn::Ident::new(new_name, field.ident.as_ref().unwrap().span());
+                    let new_field_ident: syn::Ident = field_ident(new_name);
 
                     // The JSON key stays the source's: its explicit serde
                     // rename, else rename_all applied to the SOURCE name
@@ -488,6 +530,7 @@ pub fn generate_schema_type_code(
 
                     field_tokens.push(quote! {
                         #(#doc_attrs)*
+                        #carried_attrs
                         #(#serde_field_attrs)*
                         #serde_default_attr
                         #schema_default_attr
@@ -508,6 +551,7 @@ pub fn generate_schema_type_code(
 
                     field_tokens.push(quote! {
                         #(#doc_attrs)*
+                        #carried_attrs
                         #(#serde_field_attrs)*
                         #serde_default_attr
                         #schema_default_attr
@@ -523,15 +567,21 @@ pub fn generate_schema_type_code(
                     ));
                 }
             }
+            let emitted = field_tokens.last().cloned().unwrap_or_default();
+            metadata_field_tokens.push(quote! { #metadata_only #emitted });
         }
     }
 
     // Add new fields from `add` parameter
+    let add_garde_skip = any_garde.then(|| quote! { #[garde(skip)] });
     for (field_name, field_ty) in input.add.iter().flatten() {
-        let field_ident: syn::Ident = syn::Ident::new(field_name, proc_macro2::Span::call_site());
-        field_tokens.push(quote! {
+        let field_ident = field_ident(field_name);
+        let field = quote! {
+            #add_garde_skip
             pub #field_ident: #field_ty
-        });
+        };
+        field_tokens.push(field.clone());
+        metadata_field_tokens.push(field);
     }
 
     // Build derive list
@@ -540,6 +590,18 @@ pub fn generate_schema_type_code(
         false
     } else {
         input.derive_clone
+    };
+    // Source `#[garde(..)]` rules come with the derive that reads them
+    // (and the source container's own `#[garde(..)]`, e.g. `context`).
+    let garde_derive = any_garde.then(|| quote! { ::garde::Validate, });
+    let container_garde_attrs: Vec<&syn::Attribute> = if any_garde {
+        parsed_struct
+            .attrs
+            .iter()
+            .filter(|attr| attr.path().is_ident("garde"))
+            .collect()
+    } else {
+        Vec::new()
     };
     let clone_derive: proc_macro2::TokenStream = if derive_clone {
         quote! { Clone, }
@@ -577,15 +639,17 @@ pub fn generate_schema_type_code(
             let field_assignments: Vec<_> = field_mappings
                 .iter()
                 .map(|(new_ident, source_ident, wrapped, _is_relation)| {
+                    let cfg = field_cfgs.get(&strip_raw_prefix_owned(source_ident.to_string()));
                     if *wrapped {
-                        quote! { #new_ident: Some(source.#source_ident) }
+                        quote! { #cfg #new_ident: Some(source.#source_ident) }
                     } else {
-                        quote! { #new_ident: source.#source_ident }
+                        quote! { #cfg #new_ident: source.#source_ident }
                     }
                 })
                 .collect();
 
             quote! {
+                #[allow(deprecated)]
                 impl From<#source_type> for #new_type_name {
                     fn from(source: #source_type) -> Self {
                         Self {
@@ -609,7 +673,7 @@ pub fn generate_schema_type_code(
                     &field_mappings,
                     &relation_fields,
                     &source_module_path,
-                    schema_storage,
+                    &field_cfgs,
                 )?
             } else {
                 quote! {}
@@ -627,7 +691,8 @@ pub fn generate_schema_type_code(
             #(#inline_type_definitions)*
 
             #(#struct_doc_attrs)*
-            #[derive(vespera::Multipart, #clone_derive #schema_derive)]
+            #[derive(vespera::Multipart, #garde_derive #clone_derive #schema_derive)]
+            #(#container_garde_attrs)*
             #schema_name_attr
             #[serde(rename_all = #effective_rename_all)]
             pub struct #new_type_name {
@@ -650,7 +715,8 @@ pub fn generate_schema_type_code(
             #(#codec_adapters)*
 
             #(#struct_doc_attrs)*
-            #[derive(serde::Serialize, serde::Deserialize, #clone_derive #schema_derive)]
+            #[derive(serde::Serialize, serde::Deserialize, #garde_derive #clone_derive #schema_derive)]
+            #(#container_garde_attrs)*
             #schema_name_attr
             #[serde(rename_all = #effective_rename_all)]
             #(#serde_attrs_without_rename_all)*
@@ -671,7 +737,7 @@ pub fn generate_schema_type_code(
             #[serde(rename_all = #effective_rename_all)]
             #(#serde_attrs_without_rename_all)*
             pub struct #new_type_name {
-                #(#field_tokens),*
+                #(#metadata_field_tokens),*
             }
         };
         StructMetadata::new(custom_name.clone(), struct_def.to_string())
@@ -681,256 +747,6 @@ pub fn generate_schema_type_code(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use super::*;
-
-    fn create_test_struct_metadata(name: &str, definition: &str) -> StructMetadata {
-        StructMetadata::new(name.to_string(), definition.to_string())
-    }
-
-    fn to_storage(items: Vec<StructMetadata>) -> HashMap<String, StructMetadata> {
-        items.into_iter().map(|s| (s.name.clone(), s)).collect()
-    }
-
-    #[test]
-    fn test_generate_schema_type_code_multipart_with_add_and_custom_name() {
-        let storage = to_storage(vec![create_test_struct_metadata(
-            "Upload",
-            "pub struct Upload { pub id: i32, pub name: String }",
-        )]);
-
-        let tokens = quote!(
-            UploadForm from Upload,
-            multipart,
-            name = "UploadFormSchema",
-            add = [("extra": String)]
-        );
-        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
-        let result = generate_schema_type_code(&input, &storage);
-
-        assert!(result.is_ok());
-        let (tokens, metadata) = result.unwrap();
-        let output = tokens.to_string();
-        assert!(output.contains("vespera :: Multipart"));
-        assert!(output.contains("extra"));
-        assert!(output.contains("UploadFormSchema"));
-        assert_eq!(metadata.unwrap().name, "UploadFormSchema");
-    }
-    // ============================================================
-    // Tests for multipart mode
-    // ============================================================
-
-    #[test]
-    fn test_generate_schema_type_code_multipart_basic() {
-        // Tests: multipart mode generates Multipart derive, suppresses From impl
-        let storage = to_storage(vec![create_test_struct_metadata(
-            "UploadRequest",
-            "pub struct UploadRequest { pub name: String, pub description: Option<String> }",
-        )]);
-
-        let tokens = quote!(PatchUpload from UploadRequest, multipart);
-        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
-        let result = generate_schema_type_code(&input, &storage);
-
-        assert!(result.is_ok());
-        let (tokens, _metadata) = result.unwrap();
-        let output = tokens.to_string();
-        // Should derive Multipart
-        assert!(output.contains("Multipart"));
-        // Should NOT have From impl (multipart suppresses it)
-        assert!(!output.contains("impl From"));
-        // Should have the struct fields
-        assert!(output.contains("name"));
-        assert!(output.contains("description"));
-    }
-
-    #[test]
-    fn test_generate_schema_type_code_multipart_with_rename() {
-        // Tests: multipart mode with field rename
-        let storage = to_storage(vec![create_test_struct_metadata(
-            "UploadRequest",
-            "pub struct UploadRequest { pub name: String, pub file_path: String }",
-        )]);
-
-        let tokens = quote!(RenamedUpload from UploadRequest, multipart, rename = [("file_path", "document_path")]);
-        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
-        let result = generate_schema_type_code(&input, &storage);
-
-        assert!(result.is_ok());
-        let (tokens, _metadata) = result.unwrap();
-        let output = tokens.to_string();
-        // Should derive Multipart
-        assert!(output.contains("Multipart"));
-        // Should have renamed field
-        assert!(output.contains("document_path"));
-        // Original name should NOT appear as field
-        assert!(!output.contains("file_path"));
-    }
-
-    #[test]
-    fn test_generate_schema_type_code_multipart_with_form_data_attrs() {
-        // Tests: multipart mode preserves #[form_data] attributes from source
-        let storage = to_storage(vec![create_test_struct_metadata(
-            "UploadRequest",
-            r#"pub struct UploadRequest {
-            pub name: String,
-            #[form_data(limit = "10MiB")]
-            pub file: String
-        }"#,
-        )]);
-
-        let tokens = quote!(PatchUpload from UploadRequest, multipart);
-        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
-        let result = generate_schema_type_code(&input, &storage);
-
-        assert!(result.is_ok());
-        let (tokens, _metadata) = result.unwrap();
-        let output = tokens.to_string();
-        // Should preserve form_data attributes
-        assert!(output.contains("form_data"));
-        assert!(output.contains("limit"));
-    }
-
-    #[test]
-    fn test_generate_schema_type_code_multipart_skips_relations() {
-        // Tests: multipart mode skips relation fields
-        let storage = to_storage(vec![create_test_struct_metadata(
-            "Model",
-            r#"#[sea_orm(table_name = "memos")]
-        pub struct Model {
-            pub id: i32,
-            pub title: String,
-            pub user: BelongsTo<super::user::Entity>
-        }"#,
-        )]);
-
-        let tokens = quote!(MemoUpload from Model, multipart);
-        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
-        let result = generate_schema_type_code(&input, &storage);
-
-        assert!(result.is_ok());
-        let (tokens, _metadata) = result.unwrap();
-        let output = tokens.to_string();
-        // Relation field should be skipped in multipart mode
-        assert!(!output.contains("user"));
-        // Regular fields should be present
-        assert!(output.contains("id"));
-        assert!(output.contains("title"));
-        // Should derive Multipart
-        assert!(output.contains("Multipart"));
-    }
-
-    #[test]
-    fn test_generate_schema_type_code_multipart_partial() {
-        // Coverage for multipart + partial combination
-        let storage = to_storage(vec![create_test_struct_metadata(
-            "UploadRequest",
-            "pub struct UploadRequest { pub name: String, pub tags: String }",
-        )]);
-
-        let tokens = quote!(PatchUpload from UploadRequest, multipart, partial);
-        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
-        let result = generate_schema_type_code(&input, &storage);
-
-        assert!(result.is_ok());
-        let (tokens, _metadata) = result.unwrap();
-        let output = tokens.to_string();
-        // Should derive Multipart
-        assert!(output.contains("Multipart"));
-        // Fields should be wrapped in Option (partial)
-        assert!(output.contains("Option"));
-        // Should NOT have From impl
-        assert!(!output.contains("impl From"));
-    }
-
-    #[test]
-    fn malformed_stored_definition_returns_spanned_parse_error() {
-        let storage = to_storage(vec![create_test_struct_metadata("Broken", "not a struct")]);
-        let input: SchemaTypeInput = syn::parse2(quote!(Output from Broken)).unwrap();
-
-        let error = generate_schema_type_code(&input, &storage)
-            .expect_err("malformed stored definitions must be diagnosed");
-        assert!(
-            error
-                .to_string()
-                .starts_with("failed to parse struct definition for `Broken`:")
-        );
-    }
-
-    #[test]
-    fn explicit_relation_adapter_generates_override_field_and_helper() {
-        let storage = to_storage(vec![
-            create_test_struct_metadata(
-                "Model",
-                r#"#[sea_orm(table_name = "article")]
-                   pub struct Model { pub user: HasOne<super::user::Entity> }"#,
-            ),
-            create_test_struct_metadata("UserAdapter", "pub struct UserAdapter { pub id: i64 }"),
-        ]);
-        let input: SchemaTypeInput = syn::parse2(quote!(
-            Article from Model, relation_adapters = [("user", UserAdapter)]
-        ))
-        .unwrap();
-
-        let (tokens, _) = generate_schema_type_code(&input, &storage).unwrap();
-        let output = tokens.to_string();
-        assert!(output.contains("pub user : __VesperaArticleUserRelation"));
-        assert!(output.contains("impl From < Option <"));
-    }
-
-    #[test]
-    fn explicitly_picked_unconvertible_relation_returns_error() {
-        let storage = to_storage(vec![create_test_struct_metadata(
-            "Model",
-            r#"#[sea_orm(table_name = "article")]
-               pub struct Model { pub user: HasOne }"#,
-        )]);
-        let input: SchemaTypeInput =
-            syn::parse2(quote!(Article from Model, pick = ["user"])).unwrap();
-
-        let error = generate_schema_type_code(&input, &storage)
-            .expect_err("a picked relation without a target type cannot be converted");
-        assert_eq!(
-            error.to_string(),
-            "schema_type!: relation field `user` was explicitly picked but its SeaORM relation type could not be converted"
-        );
-    }
-
-    #[test]
-    fn normal_rename_maps_generated_field_back_to_source_field() {
-        let storage = to_storage(vec![create_test_struct_metadata(
-            "User",
-            "pub struct User { pub original: String }",
-        )]);
-        let input: SchemaTypeInput =
-            syn::parse2(quote!(Renamed from User, rename = [("original", "renamed")])).unwrap();
-
-        let (tokens, _) = generate_schema_type_code(&input, &storage).unwrap();
-        let output = tokens.to_string();
-        assert!(output.contains("pub renamed : String"));
-        assert!(output.contains("renamed : source . original"));
-    }
-
-    #[test]
-    fn malformed_sea_orm_from_is_a_compile_error_not_a_panic() {
-        let storage = to_storage(vec![create_test_struct_metadata(
-            "Model",
-            r#"#[sea_orm(table_name = "posts")]
-            pub struct Model {
-                pub id: i32,
-                pub author_id: i32,
-                #[sea_orm(belongs_to = "super::user::Entity", from = "author id", to = "id", relation_enum = "Author")]
-                pub author: BelongsTo<super::user::Entity>,
-            }"#,
-        )]);
-        let input: SchemaTypeInput = syn::parse2(quote!(PostSchema from Model)).unwrap();
-
-        let error = generate_schema_type_code(&input, &storage).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "schema_type!: relation field `author` has `#[sea_orm(from = \"author id\")]`, but `author id` is not a valid Rust identifier"
-        );
-    }
-}
+mod tests;
+#[cfg(test)]
+mod tests_field_attrs;
