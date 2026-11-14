@@ -1502,7 +1502,9 @@
             "required": true,
             "schema": {
               "type": "integer",
-              "format": "uint32"
+              "format": "uint32",
+              "minimum": 0,
+              "maximum": 4294967295
             }
           },
           {

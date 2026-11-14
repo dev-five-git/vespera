@@ -1,5 +1,6 @@
 ---
 source: examples/axum-example/tests/integration_test.rs
+assertion_line: 446
 expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
 ---
 {
@@ -1506,7 +1507,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "required": true,
             "schema": {
               "type": "integer",
-              "format": "uint32"
+              "format": "uint32",
+              "minimum": 0,
+              "maximum": 4294967295
             }
           },
           {
