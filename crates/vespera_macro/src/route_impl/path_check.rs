@@ -284,6 +284,8 @@ mod tests {
     #[case::paren_tuple(Some("/{a}/{b}"), "p: Path<((u32, u32))>")]
     #[case::lifetime_argument(Some("/{a}/{b}"), "p: Path<'static>")]
     #[case::receiver(Some("/{a}/{b}"), "&self, p: Path<(u32, u32)>")]
+    #[case::reference_arg(Some("/{a}/{b}"), "r: &str, p: Path<(u32, u32)>")]
+    #[case::bare_path_type(Some("/{a}/{b}"), "p: Path")]
     #[case::no_path_extractor(None, "Json(b): Json<(u32, u32)>")]
     fn accepted(#[case] path: Option<&str>, #[case] arg: &str) {
         assert_eq!(check(path, arg), Ok(()));
@@ -327,5 +329,26 @@ mod tests {
     )]
     fn rejected(#[case] path: Option<&str>, #[case] arg: &str, #[case] message: &str) {
         assert_eq!(check(path, arg), Err(message.to_string()));
+    }
+
+    #[test]
+    fn structs_are_looked_up_in_the_route_source_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("route.rs");
+        std::fs::write(
+            &file,
+            "#[serde(deny_unknown_fields)] struct Strict { id: u32 }",
+        )
+        .unwrap();
+        let sig: syn::Signature = syn::parse_str("async fn h(p: Path<Strict>)").unwrap();
+        let err = check_path_extractors(&sig, Some("/{id}/{x}"), Some(&file))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("has the path parameter `{x}`"), "{err}");
+        assert!(check_path_extractors(&sig, Some("/{id}"), Some(&file)).is_ok());
+        // Unknown in the file / no source file: not checked.
+        let other: syn::Signature = syn::parse_str("async fn h(p: Path<Other>)").unwrap();
+        assert!(check_path_extractors(&other, Some("/{id}/{x}"), Some(&file)).is_ok());
+        assert!(check_path_extractors(&sig, Some("/{id}/{x}"), None).is_ok());
     }
 }
