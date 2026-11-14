@@ -138,6 +138,8 @@ pub struct PostParams {
 pub async fn get_post(Path(params): Path<PostParams>) -> Json<Post> { ... }
 ```
 
+The axum 0.7 notation is accepted too and normalized at compile time: `path = "/users/:id/files/*rest"` registers `/users/{id}/files/{*rest}` and is documented as `/users/{id}/files/{rest}`. A malformed path (unbalanced braces, an empty `{}` / `:`, a duplicate parameter name, a catch-all that is not the last segment) is a compile error on the path literal.
+
 ### Query Parameters
 
 ```rust

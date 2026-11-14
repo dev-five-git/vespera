@@ -1488,6 +1488,42 @@
         }
       }
     },
+    "/path/legacy/{id}/files/{rest}": {
+      "get": {
+        "operationId": "legacy_path_notation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "uint32"
+            }
+          },
+          {
+            "name": "rest",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/path/multi-path/{arg}/{var1}/{var2}": {
       "get": {
         "operationId": "mod_file_with_multi_path",

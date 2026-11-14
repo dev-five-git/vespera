@@ -1,0 +1,35 @@
+error: route path `/users/{id`: unclosed `{` in segment `{id`
+ --> tests/ui/route_path_invalid.rs:6:21
+  |
+6 | #[route(get, path = "/users/{id")]
+  |                     ^^^^^^^^^^^^
+
+error: route path `/users/{a{b}}`: nested `{` in segment `{a{b}}`
+ --> tests/ui/route_path_invalid.rs:9:21
+  |
+9 | #[route(get, path = "/users/{a{b}}")]
+  |                     ^^^^^^^^^^^^^^^
+
+error: route path `/users/{}`: empty path parameter `{}`
+  --> tests/ui/route_path_invalid.rs:12:21
+   |
+12 | #[route(get, path = "/users/{}")]
+   |                     ^^^^^^^^^^^
+
+error: route path `/users/:`: `:` must be followed by a parameter name (`:id`)
+  --> tests/ui/route_path_invalid.rs:15:21
+   |
+15 | #[route(get, path = "/users/:")]
+   |                     ^^^^^^^^^^
+
+error: route path `/users/:id/posts/{id}`: duplicate path parameter `id`
+  --> tests/ui/route_path_invalid.rs:18:21
+   |
+18 | #[route(get, path = "/users/:id/posts/{id}")]
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: route path `/files/*rest/meta`: the catch-all `{*rest}` must be the whole last segment
+  --> tests/ui/route_path_invalid.rs:21:21
+   |
+21 | #[route(get, path = "/files/*rest/meta")]
+   |                     ^^^^^^^^^^^^^^^^^^^

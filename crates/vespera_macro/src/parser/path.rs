@@ -28,11 +28,177 @@ pub fn openapi_path_template(path: &str) -> String {
     path.replace("{*", "{")
 }
 
+/// Normalize a `#[route(path = "...")]` literal to axum 0.8 syntax and
+/// reject malformed templates with an error spanned on the literal.
+///
+/// axum 0.7 spellings are accepted and rewritten per segment (axum 0.8
+/// panics on them when the router is built): `:name` -> `{name}`, `*name`
+/// -> `{*name}`. Mixed styles in one path are fine. Errors: unbalanced or
+/// nested braces, an empty parameter (`{}`, `:`, `*`, `{*}`), a duplicate
+/// parameter name, and a catch-all that is not the whole last segment.
+/// `{{` / `}}` stay literal braces (axum's escape).
+pub fn normalize_route_path(lit: &syn::LitStr) -> syn::Result<syn::LitStr> {
+    let path = lit.value();
+    let normalized = normalize_path_str(&path).map_err(|msg| syn::Error::new(lit.span(), msg))?;
+    if normalized == path {
+        return Ok(lit.clone());
+    }
+    Ok(syn::LitStr::new(&normalized, lit.span()))
+}
+
+fn normalize_path_str(path: &str) -> Result<String, String> {
+    let segments: Vec<&str> = path.split('/').collect();
+    let last = segments.len() - 1;
+    let mut names: Vec<String> = Vec::new();
+    let mut out: Vec<String> = Vec::with_capacity(segments.len());
+    for (i, segment) in segments.iter().enumerate() {
+        let (normalized, params) = if let Some(name) = segment.strip_prefix(':') {
+            check_v07_name(path, ':', name)?;
+            (format!("{{{name}}}"), vec![(name.to_string(), false)])
+        } else if let Some(name) = segment.strip_prefix('*') {
+            check_v07_name(path, '*', name)?;
+            (format!("{{*{name}}}"), vec![(name.to_string(), true)])
+        } else {
+            ((*segment).to_string(), brace_params(path, segment)?)
+        };
+        for (name, catch_all) in params {
+            if catch_all && (i != last || normalized != format!("{{*{name}}}")) {
+                return Err(format!(
+                    "route path `{path}`: the catch-all `{{*{name}}}` must be the whole last segment"
+                ));
+            }
+            if names.contains(&name) {
+                return Err(format!(
+                    "route path `{path}`: duplicate path parameter `{name}`"
+                ));
+            }
+            names.push(name);
+        }
+        out.push(normalized);
+    }
+    Ok(out.join("/"))
+}
+
+/// The name after an axum 0.7 `:` / `*` segment prefix.
+fn check_v07_name(path: &str, prefix: char, name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err(format!(
+            "route path `{path}`: `{prefix}` must be followed by a parameter name (`{prefix}id`)"
+        ));
+    }
+    if name.contains(['{', '}', ':', '*']) {
+        return Err(format!(
+            "route path `{path}`: invalid parameter name `{name}` after `{prefix}`"
+        ));
+    }
+    Ok(())
+}
+
+/// The `{name}` / `{*name}` parameters of one segment, `(name, catch_all)`.
+fn brace_params(path: &str, segment: &str) -> Result<Vec<(String, bool)>, String> {
+    let mut params = Vec::new();
+    let mut open: Option<String> = None;
+    let mut chars = segment.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, open.as_mut()) {
+            ('{', None) if chars.peek() == Some(&'{') => {
+                chars.next();
+            }
+            ('}', None) if chars.peek() == Some(&'}') => {
+                chars.next();
+            }
+            ('{', None) => open = Some(String::new()),
+            ('{', Some(_)) => {
+                return Err(format!(
+                    "route path `{path}`: nested `{{` in segment `{segment}`"
+                ));
+            }
+            ('}', None) => {
+                return Err(format!(
+                    "route path `{path}`: unbalanced `}}` in segment `{segment}`"
+                ));
+            }
+            ('}', Some(_)) => {
+                let raw = open.take().unwrap_or_default();
+                let (name, catch_all) = raw
+                    .strip_prefix('*')
+                    .map_or((raw.as_str(), false), |name| (name, true));
+                if name.is_empty() {
+                    return Err(format!(
+                        "route path `{path}`: empty path parameter `{{{raw}}}`"
+                    ));
+                }
+                params.push((name.to_string(), catch_all));
+            }
+            (c, Some(name)) => name.push(c),
+            (_, None) => {}
+        }
+    }
+    if open.is_some() {
+        return Err(format!(
+            "route path `{path}`: unclosed `{{` in segment `{segment}`"
+        ));
+    }
+    Ok(params)
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
 
     use super::*;
+
+    #[rstest]
+    #[case("/users", "/users")]
+    #[case("/users/{id}", "/users/{id}")]
+    #[case("/users/:id", "/users/{id}")]
+    #[case("/users/:id/posts/:post_id", "/users/{id}/posts/{post_id}")]
+    #[case("/files/*rest", "/files/{*rest}")]
+    #[case("/a/:id/{b}/*rest", "/a/{id}/{b}/{*rest}")]
+    #[case("/files/{*rest}", "/files/{*rest}")]
+    #[case("/img/{name}.png", "/img/{name}.png")]
+    #[case("/lit/{{x}}", "/lit/{{x}}")]
+    #[case("/time/a:b", "/time/a:b")]
+    #[case("", "")]
+    #[case("/", "/")]
+    fn normalizes_route_paths(#[case] path: &str, #[case] expected: &str) {
+        assert_eq!(normalize_path_str(path).as_deref(), Ok(expected));
+    }
+
+    #[rstest]
+    #[case::unclosed("/{id", "unclosed `{` in segment `{id`")]
+    #[case::unbalanced_close("/id}", "unbalanced `}` in segment `id}`")]
+    #[case::nested("/{a{b}}", "nested `{` in segment `{a{b}}`")]
+    #[case::empty_braces("/{}", "empty path parameter `{}`")]
+    #[case::empty_catch_all("/{*}", "empty path parameter `{*}`")]
+    #[case::empty_colon("/a/:", "`:` must be followed by a parameter name (`:id`)")]
+    #[case::empty_star("/a/*", "`*` must be followed by a parameter name (`*id`)")]
+    #[case::bad_colon_name("/a/:{id}", "invalid parameter name `{id}` after `:`")]
+    #[case::duplicate("/a/:id/{id}", "duplicate path parameter `id`")]
+    #[case::catch_all_not_last(
+        "/a/*rest/b",
+        "the catch-all `{*rest}` must be the whole last segment"
+    )]
+    #[case::catch_all_partial(
+        "/a/x{*rest}",
+        "the catch-all `{*rest}` must be the whole last segment"
+    )]
+    fn rejects_malformed_route_paths(#[case] path: &str, #[case] message: &str) {
+        assert_eq!(
+            normalize_path_str(path),
+            Err(format!("route path `{path}`: {message}"))
+        );
+    }
+
+    #[test]
+    fn normalized_literal_keeps_the_span_and_reuses_unchanged_literals() {
+        let lit: syn::LitStr = syn::parse_quote!("/users/:id");
+        assert_eq!(normalize_route_path(&lit).unwrap().value(), "/users/{id}");
+        let lit: syn::LitStr = syn::parse_quote!("/users/{id}");
+        assert_eq!(normalize_route_path(&lit).unwrap(), lit);
+        let lit: syn::LitStr = syn::parse_quote!("/users/{id");
+        assert!(normalize_route_path(&lit).is_err());
+    }
 
     #[rstest]
     #[case("/test", vec![])]

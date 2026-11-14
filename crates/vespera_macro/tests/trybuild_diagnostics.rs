@@ -14,6 +14,7 @@ fn ui_diagnostics() {
     t.compile_fail("tests/ui/route_fn_signature.rs");
     t.compile_fail("tests/ui/route_status_invalid.rs");
     t.compile_fail("tests/ui/route_headers_invalid.rs");
+    t.compile_fail("tests/ui/route_path_invalid.rs");
     // `vespera!`
     t.compile_fail("tests/ui/vespera_args_invalid.rs");
     t.compile_fail("tests/ui/vespera_security_servers_invalid.rs");

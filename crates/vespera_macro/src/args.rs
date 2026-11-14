@@ -109,7 +109,7 @@ impl RouteArgsBuilder {
     ) -> syn::Result<()> {
         reject_duplicate(self.path.as_ref(), ident, "path")?;
         input.parse::<syn::Token![=]>()?;
-        self.path = Some(input.parse()?);
+        self.path = Some(crate::parser::normalize_route_path(&input.parse()?)?);
         Ok(())
     }
 
