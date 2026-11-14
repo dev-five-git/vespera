@@ -417,8 +417,7 @@ class ProxyControllerBodyHeaderTest {
         int bodyLen = WireResponseWriter.applyDirectHeaderAndPositionBody(wire, response);
 
         assertEquals(0, bodyLen);
-        assertEquals(0, response.getContentLength());
-        assertEquals("0", response.getHeader("Content-Length"));
+        assertFalse(response.containsHeader("Content-Length"));
     }
 
     // ── HEAD: axum empties the body but keeps the GET-equivalent length ────
@@ -528,12 +527,30 @@ class ProxyControllerBodyHeaderTest {
     }
 
     @Test
-    void headNoBodyStatusStillAdvertisesZero() throws IOException {
-        MockHttpServletResponse response = new MockHttpServletResponse();
-        WireResponseWriter.writeWireResponse(
-                heapWire("{\"status\":304,\"headers\":{\"content-length\":\"17\"}}", ""),
-                response, "HEAD");
-        assertEquals("0", response.getHeader("Content-Length"));
+    void noBodyStatusesNeverAdvertiseContentLength() throws IOException {
+        // RFC 9110: a 1xx / 204 must not carry Content-Length, and a 304's
+        // Content-Length describes the selected representation, so a
+        // synthesised 0 would be wrong for both.
+        for (int status : new int[] {103, 204, 304}) {
+            for (String method : new String[] {"GET", "HEAD"}) {
+                String header = "{\"status\":" + status + ",\"headers\":{\"content-length\":\"17\"}}";
+                MockHttpServletResponse sync = new MockHttpServletResponse();
+                WireResponseWriter.writeWireResponse(heapWire(header, ""), sync, method);
+                assertFalse(sync.containsHeader("Content-Length"), status + " " + method);
+
+                MockHttpServletResponse direct = new MockHttpServletResponse();
+                WireResponseWriter.applyDirectHeaderAndPositionBody(
+                        directWire(header, ""), direct, method);
+                assertFalse(direct.containsHeader("Content-Length"), status + " " + method);
+
+                ResponseEntity<?> entity = WireResponseWriter.buildAsyncResponseEntityFromWire(
+                        heapWire(header, ""), method, null);
+                assertEquals(-1, entity.getHeaders().getContentLength(), status + " " + method);
+                assertNull(entity.getBody(), status + " " + method);
+                assertEquals(WireResponseWriter.NO_CONTENT_LENGTH,
+                        WireResponseWriter.bufferedContentLength(status, method, 0, 17));
+            }
+        }
     }
 
     @Test

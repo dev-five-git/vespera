@@ -1,6 +1,6 @@
 ---
 source: crates/vespera_macro/src/parser/schema/type_schema.rs
-assertion_line: 521
+assertion_line: 534
 expression: "format!(\"{ty_src} => {}\", serde_json::to_string(&schema_ref).unwrap())"
 ---
-Duration => {"type":"object","properties":{"nanos":{"type":"integer","format":"uint32","minimum":0,"maximum":999999999},"secs":{"type":"integer","format":"uint64","minimum":0}},"required":["secs","nanos"]}
+Duration => {"description":"A `Duration` whose crate is not spelled out: `std::time::Duration` is `{\"secs\", \"nanos\"}`, `time::Duration` a string or an array. Write the full path or add `#[schema(value_type = T)]`."}

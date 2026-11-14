@@ -1,0 +1,44 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_serde_fidelity.rs
+assertion_line: 209
+expression: both_views(src)
+---
+struct Req { id: i32, #[serde(flatten)] kind: Kind, #[serde(flatten)] extra: HashMap<String, String> }
+response: {
+  "allOf": [
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    {
+      "$ref": "#/components/schemas/Kind"
+    }
+  ]
+}
+request: {
+  "allOf": [
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    {
+      "$ref": "#/components/schemas/Kind"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
+assertion_line: 101
+expression: both_views(src)
+---
+enum Shape { Square(u8), Point, #[serde(other)] Unknown }
+response: {"oneOf":[{"type":"object","properties":{"Square":{"type":"integer","format":"uint8","minimum":0,"maximum":255}},"required":["Square"]},{"type":"string","enum":["Point"]},{"type":"string","enum":["Unknown"]}]}
+request: {"oneOf":[{"type":"object","properties":{"Square":{"type":"integer","format":"uint8","minimum":0,"maximum":255}},"required":["Square"]},{"type":"string","enum":["Point"]},{"type":"string","not":{"enum":["Square","Point"]}}]}

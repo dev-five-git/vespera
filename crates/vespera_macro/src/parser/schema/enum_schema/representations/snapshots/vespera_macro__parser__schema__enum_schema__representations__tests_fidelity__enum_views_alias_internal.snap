@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
+assertion_line: 101
+expression: both_views(src)
+---
+#[serde(tag = "t")] enum Shape { #[serde(alias = "c")] Circle { r: u8 }, Dot }
+response: {"oneOf":[{"type":"object","properties":{"r":{"type":"integer","format":"uint8","minimum":0,"maximum":255},"t":{"type":"string","enum":["Circle"]}},"required":["t","r"]},{"type":"object","properties":{"t":{"type":"string","enum":["Dot"]}},"required":["t"]}],"discriminator":{"propertyName":"t"}}
+request: {"oneOf":[{"type":"object","properties":{"r":{"type":"integer","format":"uint8","minimum":0,"maximum":255},"t":{"type":"string","enum":["Circle","c"]}},"required":["t","r"]},{"type":"object","properties":{"t":{"type":"string","enum":["Dot"]}},"required":["t"]}],"discriminator":{"propertyName":"t"}}

@@ -138,6 +138,38 @@ class VesperaSpringdocAutoConfigurationTest {
     }
 
     @Test
+    void docsPathIsMappedFromItsNormalizedFormLikeTheSwaggerUiUrls() throws Exception {
+        try (ConfigurableApplicationContext ctx = start("--vespera.bridge.springdoc.docs-path=rust-docs/")) {
+            String config = get(ctx, "/v3/api-docs/swagger-config").body();
+            assertTrue(config.contains("\"url\":\"/rust-docs/_default\""), config);
+            HttpResponse<String> rust = get(ctx, "/rust-docs/_default");
+            assertEquals(200, rust.statusCode());
+            assertEquals(DEFAULT_SPEC, rust.body());
+            assertEquals(ADMIN_SPEC, get(ctx, "/rust-docs/admin").body());
+        }
+        // Blank = the default path, never a root `/{app}` mapping that would shadow the proxy.
+        try (ConfigurableApplicationContext ctx = start("--vespera.bridge.springdoc.docs-path=")) {
+            assertEquals(DEFAULT_SPEC, get(ctx, "/v3/api-docs/vespera/_default").body());
+            assertEquals(503, get(ctx, "/admin").statusCode(), "still proxied to Rust");
+        }
+    }
+
+    @Test
+    void rootOrPatternDocsPathFailsTheStartupClearly() {
+        for (String path : new String[] {"/", "/docs/{x}", "/docs/**"}) {
+            Exception failure = org.junit.jupiter.api.Assertions.assertThrows(Exception.class,
+                    () -> start("--vespera.bridge.springdoc.docs-path=" + path).close());
+            boolean mentioned = false;
+            for (Throwable t = failure; t != null; t = t.getCause()) {
+                if (String.valueOf(t.getMessage()).contains("vespera.bridge.springdoc.docs-path")) {
+                    mentioned = true;
+                }
+            }
+            assertTrue(mentioned, path + ": " + failure);
+        }
+    }
+
+    @Test
     void disabledIntegrationRegistersNothing() throws Exception {
         try (ConfigurableApplicationContext ctx = start("--vespera.bridge.springdoc.enabled=false")) {
             assertEquals(0, ctx.getBeanNamesForType(VesperaOpenApiDocsController.class).length);

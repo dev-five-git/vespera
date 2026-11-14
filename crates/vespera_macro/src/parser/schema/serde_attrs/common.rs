@@ -3,6 +3,8 @@
 //! This module provides functions to extract serde attributes from Rust types
 //! to properly generate `OpenAPI` schemas that respect serialization rules.
 
+use super::extract::{walk_attr_keys, walk_serde_keys};
+
 /// Extract doc comments from attributes.
 /// Returns the doc comment text or `None` if there are no doc comments.
 ///
@@ -106,44 +108,33 @@ pub fn extract_schema_name_from_entity(ty: &syn::Type) -> Option<String> {
     }
 }
 
-/// Extract whether `#[serde(transparent)]` is present on a struct.
+/// Extract whether `#[serde(transparent)]` is present on a struct (in any
+/// position: `#[serde(crate = "x", transparent)]` counts too).
 pub fn extract_transparent(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        if !attr.path().is_ident("serde") {
-            return false;
-        }
-
-        let mut is_transparent = false;
-        let _ = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("transparent") {
-                is_transparent = true;
-            }
-            Ok(())
-        });
-        is_transparent
-    })
+    let mut found = false;
+    walk_serde_keys(attrs, |meta| {
+        found |= meta.path.is_ident("transparent");
+        Ok(false)
+    });
+    found
 }
 
 /// Extract `#[schema(ref = "Name", nullable)]` override from a struct.
+///
+/// Unrelated `key = value` entries (`#[schema(name = "X", ref = "Y")]`) are
+/// skipped instead of aborting the walk.
 pub fn extract_schema_ref_override(attrs: &[syn::Attribute]) -> Option<(String, bool)> {
     attrs.iter().find_map(|attr| {
-        if !attr.path().is_ident("schema") {
-            return None;
-        }
-
         let mut ref_name = None;
         let mut nullable = false;
-        let _ = attr.parse_nested_meta(|meta| {
+        walk_attr_keys(std::slice::from_ref(attr), "schema", |meta| {
             if meta.path.is_ident("ref") {
-                let value = meta.value()?;
-                let lit: syn::LitStr = value.parse()?;
-                ref_name = Some(lit.value());
-            } else if meta.path.is_ident("nullable") {
-                nullable = true;
+                ref_name = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+                return Ok(true);
             }
-            Ok(())
+            nullable |= meta.path.is_ident("nullable");
+            Ok(false)
         });
-
         ref_name.map(|name| (name, nullable))
     })
 }
@@ -285,6 +276,37 @@ mod tests {
         assert_eq!(strip_raw_prefix_owned("r#match".to_string()), "match");
         assert_eq!(strip_raw_prefix_owned("normal".to_string()), "normal");
         assert_eq!(strip_raw_prefix_owned("r#".to_string()), "");
+    }
+
+    /// `transparent` is found after any `key = value` / `key(...)` entry.
+    #[rstest::rstest]
+    #[case::alone("#[serde(transparent)]", true)]
+    #[case::after_crate(r#"#[serde(crate = "my_serde", transparent)]"#, true)]
+    #[case::after_bound(r#"#[serde(bound(serialize = "T: X"), transparent)]"#, true)]
+    #[case::second_attr(r#"#[serde(rename = "W")] #[serde(transparent)]"#, true)]
+    #[case::absent(r#"#[serde(rename = "transparent")]"#, false)]
+    #[case::other_attr("#[schema(transparent)]", false)]
+    fn transparent_after_any_key(#[case] attrs: &str, #[case] expected: bool) {
+        let item: syn::ItemStruct = syn::parse_str(&format!("{attrs} struct W(u8);")).unwrap();
+        assert_eq!(extract_transparent(&item.attrs), expected);
+    }
+
+    #[rstest::rstest]
+    #[case::plain(r#"#[schema(ref = "User")]"#, Some(("User", false)))]
+    #[case::nullable(r#"#[schema(ref = "User", nullable)]"#, Some(("User", true)))]
+    #[case::after_name(r#"#[schema(name = "Dto", ref = "User")]"#, Some(("User", false)))]
+    #[case::nullable_first(r#"#[schema(nullable, ref = "User")]"#, Some(("User", true)))]
+    #[case::bad_value("#[schema(ref = User)]", None)]
+    #[case::none(r#"#[schema(name = "Dto")]"#, None)]
+    fn schema_ref_override_after_any_key(
+        #[case] attrs: &str,
+        #[case] expected: Option<(&str, bool)>,
+    ) {
+        let item: syn::ItemStruct = syn::parse_str(&format!("{attrs} struct W;")).unwrap();
+        assert_eq!(
+            extract_schema_ref_override(&item.attrs),
+            expected.map(|(name, nullable)| (name.to_string(), nullable))
+        );
     }
 
     #[rstest::rstest]

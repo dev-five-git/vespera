@@ -40,6 +40,21 @@ class NativePlatformTest {
         assertEquals(expected, NativePlatform.cargoCommand("demo", profile, triple).joinToString(" "))
     }
 
+    /** Cargo's built-in profiles inherit their output directory: `test` → debug, `bench` → release. */
+    @ParameterizedTest
+    @CsvSource(
+        "dev, debug",
+        "debug, debug",
+        "test, debug",
+        "release, release",
+        "bench, release",
+        "dist, dist",
+    )
+    fun mapsProfilesToTheirCargoOutputDirectory(profile: String, dir: String) {
+        assertEquals(dir, NativePlatform.profileDir(profile))
+        assertEquals("$dir/libdemo.so", NativePlatform.cdylibRelativePath("linux", "demo", profile))
+    }
+
     @Test
     fun resolvesCdylibPathsPerPlatform() {
         assertEquals("release/demo.dll", NativePlatform.cdylibRelativePath("windows", "demo", "release"))

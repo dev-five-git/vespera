@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
+assertion_line: 101
+expression: both_views(src)
+---
+enum Color { #[serde(alias = "crimson")] Red, Blue }
+response: {"type":"string","enum":["Red","Blue"]}
+request: {"type":"string","enum":["Red","crimson","Blue"]}

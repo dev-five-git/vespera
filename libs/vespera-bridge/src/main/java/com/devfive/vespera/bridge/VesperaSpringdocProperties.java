@@ -190,6 +190,29 @@ public class VesperaSpringdocProperties {
         return path;
     }
 
+    /**
+     * {@link #normalizedDocsPath()}, rejecting a value the document mapping
+     * {@code <docs-path>/{app}} cannot use: the root (it would map
+     * {@code /{app}} and shadow the proxy) or a path pattern.
+     *
+     * @throws IllegalStateException with the property name and the reason
+     */
+    String validatedDocsPath() {
+        String path = normalizedDocsPath();
+        if ("/".equals(path)) {
+            throw new IllegalStateException("vespera.bridge.springdoc.docs-path='" + docsPath
+                    + "' is invalid: the root would map /{app} and shadow the vespera proxy; "
+                    + "use a base path such as /v3/api-docs/vespera");
+        }
+        for (char c : new char[] {'{', '}', '*', '?'}) {
+            if (path.indexOf(c) >= 0) {
+                throw new IllegalStateException("vespera.bridge.springdoc.docs-path='" + docsPath
+                        + "' is invalid: it must be a literal path, not a pattern ('" + c + "')");
+            }
+        }
+        return path;
+    }
+
     /** Swagger UI label of {@code app}. */
     String displayNameFor(String app) {
         String base = displayName == null || displayName.isBlank() ? "vespera" : displayName.trim();

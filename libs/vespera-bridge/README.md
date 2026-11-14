@@ -138,7 +138,7 @@ Out of the box the autoconfigure module wires up:
 | Concern | Default | Override |
 |---|---|---|
 | **App selection** | Read `X-Vespera-App` request header; absent → default app. **Client-controlled — restrict it with `vespera.bridge.exposed-apps`** (see [Multi-app routing → Security](#security-the-app-header-is-client-controlled)) | Properties `vespera.bridge.app-header` / `vespera.bridge.exposed-apps`, or custom [`AppNameResolver`](src/main/java/com/devfive/vespera/bridge/AppNameResolver.java) bean |
-| **Dispatch mode** | [`SmartDispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/SmartDispatchModeResolver.java) since 0.2.0 — picks per request: [`DIRECT`](src/main/java/com/devfive/vespera/bridge/DispatchMode.java) (pooled direct buffers, no JNI array copies) for small/bodyless safe requests (GET/HEAD/OPTIONS, Content-Length absent or ≤ 1 MiB) ~2.2 µs; `SYNC` (heap-buffered) for small unsafe requests (POST/PUT/PATCH/DELETE ≤ 256 KiB) ~3.2 µs; `BIDIRECTIONAL_STREAMING` for the rest ~24.1 µs | Property `vespera.bridge.dispatch-mode: bidirectional-streaming` (opt out, restore pre-0.2.0 default), or custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean |
+| **Dispatch mode** | [`SmartDispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/SmartDispatchModeResolver.java) since 0.2.0 — picks per request: [`DIRECT`](src/main/java/com/devfive/vespera/bridge/DispatchMode.java) (pooled direct buffers, no JNI array copies) for small/bodyless safe requests (GET/HEAD/OPTIONS, Content-Length absent or ≤ 1 MiB) ~2.2 µs (response-only `STREAMING` on a virtual thread); `SYNC` (heap-buffered) for small unsafe requests (POST/PUT/PATCH/DELETE ≤ 256 KiB) ~3.2 µs; `BIDIRECTIONAL_STREAMING` for the rest ~24.1 µs | Property `vespera.bridge.dispatch-mode: bidirectional-streaming` (opt out, restore pre-0.2.0 default), or custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean |
 | **URL pattern** | Single `@RequestMapping("/**")` catch-all — every vespera router URL exactly mirrors the published OpenAPI path | Properties `vespera.bridge.include-patterns` / `vespera.bridge.exclude-patterns` (see [Proxied paths](#proxied-paths-include--exclude-patterns)), or `vespera.bridge.controller-enabled: false` and your own controller |
 | **Body handling** | Servlet `InputStream` straight through to Rust (no buffering) for streaming modes; full read for sync/async | (encoded by the chosen `DispatchMode`) |
 | **Programmatic client** | A [`VesperaClient`](src/main/java/com/devfive/vespera/bridge/VesperaClient.java) bean for the default app (see [Programmatic client](#programmatic-client-vesperaclient)), also with `controller-enabled: false` and in non-web applications (`spring.main.web-application-type=none`) | Your own `VesperaClient` bean (e.g. `VesperaClient.create().forApp("admin")`) |
@@ -147,7 +147,7 @@ Why `smart` as the default mode (since 0.2.0)? Measured on a small `GET /health`
 
 | Request shape | Mode | ns/round-trip |
 |---|---|---|
-| Small/bodyless + safe (GET/HEAD/OPTIONS, Content-Length absent or ≤ 1 MiB) | `DIRECT` | ~2,200 |
+| Small/bodyless + safe (GET/HEAD/OPTIONS, Content-Length absent or ≤ 1 MiB) | `DIRECT` (`STREAMING` on a virtual thread) | ~2,200 (~7,700) |
 | Small (≤ 256 KiB Content-Length) + unsafe (POST/PUT/PATCH/DELETE) | `SYNC` | ~3,200 |
 | Large or unknown-length body | `BIDIRECTIONAL_STREAMING` | ~24,100 |
 
@@ -593,7 +593,7 @@ vespera:
       spec-paths:
         admin: /admin/openapi.json # per-app override
       apps: [_default, admin]      # default: _default + vespera.bridge.exposed-apps
-      docs-path: /v3/api-docs/vespera # group mode: documents served at <docs-path>/<app>
+      docs-path: /v3/api-docs/vespera # group mode: documents served at <docs-path>/<app> (trailing / ignored; "/" or a pattern fails the startup)
       display-name: vespera        # group mode: Swagger UI label (named apps: "vespera (admin)")
 ```
 
@@ -721,6 +721,7 @@ vespera:
 |---|---|---|
 | `Accept: text/event-stream` / `application/x-ndjson` / `application/stream+json` | `STREAMING` (body ≤ 256 KiB) | — |
 | Small/bodyless + safe (GET/HEAD/OPTIONS) | `DIRECT` | ~2,200 |
+| Small/bodyless + safe, on a **virtual thread** | `STREAMING` | ~7,700 |
 | Small (≤ 256 KiB Content-Length) + unsafe (POST/PUT/PATCH/DELETE) | `SYNC` | ~3,200 |
 | Large or unknown-length body | `BIDIRECTIONAL_STREAMING` | ~24,100 |
 
@@ -730,6 +731,30 @@ streams), so DIRECT no longer re-runs the handler; the safe-method gate
 is kept for the rare re-dispatch fallback.  SYNC never re-runs the handler (safe for POST), but
 buffers the full response on the JVM heap, which the request-size gate
 keeps reasonable for JSON-RPC-shaped traffic.
+
+**Safe requests on virtual threads stream their response.** The pooled
+DIRECT buffers bind to the virtual thread, so on a virtual thread DIRECT
+falls back to the buffered heap path, which has no overflow stash: a
+large download would be answered `500` at
+`vespera.bridge.max-buffered-response-bytes`, and an event stream requested
+without `Accept: text/event-stream` would never flush. `smart` therefore
+routes safe requests within the DIRECT gate to response-only `STREAMING`
+on a virtual thread — the same result a platform thread gets from DIRECT.
+The cost: a streaming call pins the carrier while the handler runs (see
+**Carrier pinning** below) and a tiny `GET` takes ~7.7 µs instead of
+~3.2 µs. To keep the parking `SYNC` route for small safe requests (never
+pins across a wait, but the whole response is buffered, so the two limits
+above apply), register the resolver yourself:
+
+```java
+@Bean
+DispatchModeResolver dispatchModeResolver() {
+    return new SmartDispatchModeResolver(
+            SmartDispatchModeResolver.DEFAULT_MAX_DIRECT_BYTES,
+            SmartDispatchModeResolver.DEFAULT_MAX_SYNC_BYTES,
+            true); // parkSafeRequestsOnVirtualThreads
+}
+```
 
 Custom policies can still register the bean directly (the property is
 ignored when a user `DispatchModeResolver` bean exists):
@@ -776,7 +801,10 @@ throughput for a handler that never waits).  Both apply the
 `vespera.async.maxInFlight` cap.  Measurements:
 [`docs/virtual-thread-park.md`](docs/virtual-thread-park.md).  Platform
 threads keep the direct call.  The streaming modes still pin (they write to
-the servlet streams from the calling thread).
+the servlet streams from the calling thread) — including the response-only
+`STREAMING` that `SmartDispatchModeResolver` picks for safe requests on a
+virtual thread (see the dispatch-mode table above); unsafe requests within
+the SYNC gate take the parking `SYNC` route.
 
 **Task context under poll-first:** the first poll runs on the calling
 thread outside any Tokio task (inside the runtime context, so
@@ -1031,7 +1059,9 @@ next `.await` (its DB queries, timers and other owned work stop) and its
 never cancels anything, and a cancel that races the completion is harmless.
 The proxy's `ASYNC` mode cancels the native future when the servlet async
 request ends first (Spring async timeout, container-reported error or client
-disconnect).
+disconnect). An async timeout is answered with the proxy's plain-text `503`
+(`vespera: async dispatch timed out`, request id echoed), not Spring Boot's
+`/error` page.
 
 #### Client disconnects per dispatch mode
 
@@ -1385,7 +1415,7 @@ Pre-0.2.0 the autoconfigured default was [`BidirectionalStreamingDispatchModeRes
 | Large or unknown-length body | `BIDIRECTIONAL_STREAMING` | `BIDIRECTIONAL_STREAMING` |
 
 Trade-offs the new default makes:
-- **DIRECT** writes the wire response straight into a pooled per-thread direct `ByteBuffer` (64 KiB → `vespera.direct.maxBufferBytes`, default 4 MiB).  Responses larger than the pooled buffer trigger a single retry with a bigger buffer, which **re-runs the Rust handler** — which is why DIRECT is gated on safe methods only.
+- **DIRECT** writes the wire response straight into a pooled per-thread direct `ByteBuffer` (64 KiB → `vespera.direct.maxBufferBytes`, default 4 MiB).  Responses larger than the pooled buffer trigger a single retry with a bigger buffer, which **re-runs the Rust handler** — which is why DIRECT is gated on safe methods only.  (Since the native overflow stash, an overflow is fetched into a grown buffer or streamed from the stash instead; the handler runs once.)
 - **SYNC** fully buffers the response on the JVM heap.  The 256 KiB request-size gate keeps the response size reasonable for JSON-RPC-shaped traffic; large or unknown-length bodies still stream.
 
 **Opt out** (restore the pre-0.2.0 default):

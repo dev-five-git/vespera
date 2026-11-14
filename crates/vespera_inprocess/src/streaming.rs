@@ -15,7 +15,7 @@ use crate::dispatch::{cap_and_split, parse_validate_resolve};
 use crate::internal::{BODY_SINK_STOPPED_MSG, BODY_STREAM_ERROR_MSG, dispatch_and_split};
 use crate::wire::{
     WIRE_HEADER_RESERVE, build_wire_header_bytes, build_wire_header_bytes_hoisting, error_wire,
-    split_wire_request,
+    error_wire_untraced, split_wire_request,
 };
 
 mod frame_batch;
@@ -196,20 +196,22 @@ where
     // a pre-chunk failure (clean error response) from a truncation.
     let mut captured: Vec<u8> = Vec::new();
     let mut delivered = false;
-    let outcome = emit_header_then_stream_body(
-        status,
-        headers,
-        metadata,
-        body,
-        &mut deadline,
-        &mut |h: &[u8]| captured.extend_from_slice(h),
-        &mut |chunk: &[u8]| {
-            delivered = true;
-            on_chunk(chunk)
-        },
-        false,
-    )
-    .await;
+    let outcome = reported(
+        emit_header_then_stream_body(
+            status,
+            headers,
+            metadata,
+            body,
+            &mut deadline,
+            &mut |h: &[u8]| captured.extend_from_slice(h),
+            &mut |chunk: &[u8]| {
+                delivered = true;
+                on_chunk(chunk)
+            },
+            false,
+        )
+        .await,
+    );
     match outcome {
         StreamOutcome::Complete => (captured, StreamOutcome::Complete),
         failed => (
@@ -265,13 +267,25 @@ impl StreamOutcome {
     /// Canonical error wire response for a truncated outcome (`500` for a
     /// body error / sink stop); for `Complete` this is never consulted by
     /// the dispatchers and returns a `500` as well.
+    ///
+    /// Builds the wire without the `tracing` error event: the dispatcher
+    /// already reported the truncation inside its `vespera.dispatch` span
+    /// (a sink stop — the client went away — is not an engine error).
     #[must_use]
     pub fn error_wire(self) -> Vec<u8> {
         match self {
-            Self::SinkStopped => error_wire(500, BODY_SINK_STOPPED_MSG),
-            Self::Complete | Self::BodyError => error_wire(500, BODY_STREAM_ERROR_MSG),
+            Self::SinkStopped => error_wire_untraced(500, BODY_SINK_STOPPED_MSG),
+            Self::Complete | Self::BodyError => error_wire_untraced(500, BODY_STREAM_ERROR_MSG),
         }
     }
+}
+
+/// Report a streaming outcome inside the current dispatch span (feature
+/// `tracing`; see `obs::stream_outcome`) and hand it back.
+fn reported(outcome: StreamOutcome) -> StreamOutcome {
+    #[cfg(feature = "tracing")]
+    crate::obs::stream_outcome(outcome);
+    outcome
 }
 
 /// Shared tail of every streaming variant ([`dispatch_streaming_with_header_async`],
@@ -553,17 +567,19 @@ where
         }
     };
 
-    emit_header_then_stream_body(
-        status,
-        headers,
-        metadata,
-        body,
-        &mut deadline,
-        &mut on_header,
-        &mut on_chunk,
-        true,
+    reported(
+        emit_header_then_stream_body(
+            status,
+            headers,
+            metadata,
+            body,
+            &mut deadline,
+            &mut on_header,
+            &mut on_chunk,
+            true,
+        )
+        .await,
     )
-    .await
 }
 
 /// **Bidirectional streaming dispatch** — both request and response
@@ -892,17 +908,19 @@ where
         }
     };
 
-    let outcome = emit_header_then_stream_body(
-        status,
-        headers,
-        metadata,
-        response_body,
-        &mut deadline,
-        &mut on_header,
-        &mut on_chunk,
-        flush_hints,
-    )
-    .await;
+    let outcome = reported(
+        emit_header_then_stream_body(
+            status,
+            headers,
+            metadata,
+            response_body,
+            &mut deadline,
+            &mut on_header,
+            &mut on_chunk,
+            flush_hints,
+        )
+        .await,
+    );
 
     // The response is fully drained, so the handler has finished and will
     // not read more of the request body. If the producer was started (the

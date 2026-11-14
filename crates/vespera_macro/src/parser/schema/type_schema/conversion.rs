@@ -330,9 +330,13 @@ fn parse_type_impl(
                             if matches!(ident_str.as_str(), "Vec" | "VecDeque" | "LinkedList") {
                                 return SchemaRef::Inline(Box::new(Schema::array(inner_schema)));
                             }
+                            // A set serializes unique items, but serde reads
+                            // an array with duplicates and drops them, so only
+                            // the response view promises `uniqueItems`.
                             if ident_str == "HashSet" || ident_str == "BTreeSet" {
                                 let mut schema = Schema::array(inner_schema);
-                                schema.unique_items = Some(true);
+                                schema.unique_items =
+                                    (!request_view::in_request_view()).then_some(true);
                                 return SchemaRef::Inline(Box::new(schema));
                             }
                             // Option<T> -> nullable schema (see `nullable`)
@@ -445,6 +449,12 @@ fn parse_type_impl(
                     minimum: Some(0.0),
                     ..Schema::integer()
                 }))),
+                // serde_json writes a NaN / infinite float as `null`. The
+                // schema still says `number`: that value is a lossy fallback
+                // (it cannot be read back into the float), so promising
+                // `number | null` would make every client handle a null that
+                // only a non-finite float — almost always a bug — produces,
+                // and would split every float-bearing type into two views.
                 "f32" => Some(number_with_format("float")),
                 "f64" => Some(number_with_format("double")),
                 // `rust_decimal` serializes `Decimal` as a JSON *string* (to
@@ -454,23 +464,28 @@ fn parse_type_impl(
                 "char" => Some(string_with_format("char")),
                 "Uuid" => Some(string_with_format("uuid")),
                 "String" | "str" => Some(SchemaRef::Inline(Box::new(Schema::string()))),
-                // Date-time types from chrono and time crates. RFC 3339
-                // `date-time` / `time` REQUIRE a UTC offset, so only the
-                // offset-carrying types use those formats: `DateTime<Tz>`
-                // (chrono), sea-orm's `DateTimeWithTimeZone` / `DateTimeUtc` /
-                // `DateTimeLocal` and `OffsetDateTime` (time).
+                // Date-time types from chrono. RFC 3339 `date-time` / `time`
+                // REQUIRE a UTC offset, so only the offset-carrying types use
+                // those formats: `DateTime<Tz>` (chrono) and sea-orm's
+                // `DateTimeWithTimeZone` / `DateTimeUtc` / `DateTimeLocal`.
                 "DateTime" if !segment.arguments.is_none() => Some(string_with_format("date-time")),
-                "DateTimeWithTimeZone" | "DateTimeUtc" | "DateTimeLocal" | "OffsetDateTime" => {
+                "DateTimeWithTimeZone" | "DateTimeUtc" | "DateTimeLocal" => {
                     Some(string_with_format("date-time"))
                 }
+                // The `time` crate writes its own (non-RFC 3339) formats —
+                // `OffsetDateTime` as `2024-01-01 0:00:00.0 +00:00:00` —
+                // and only with its `serde-human-readable` feature (a tuple
+                // of numbers otherwise). `OffsetDateTime` / `PrimitiveDateTime`
+                // exist only there; `Date` / `Time` only when qualified
+                // (`time::Date`): bare, they are sea-orm's chrono aliases.
+                "OffsetDateTime" | "PrimitiveDateTime" => Some(time_crate_schema()),
+                "Date" | "Time" if is_time_crate_path(path) => Some(time_crate_schema()),
                 // Naive (offset-less) date-times and times: chrono
-                // `NaiveDateTime` / `NaiveTime`, time `PrimitiveDateTime` /
-                // `Time`, and sea-orm's argument-less `DateTime` / `Time`
-                // aliases of the chrono naive types. No registered format
-                // fits (`date-time` / `time` would reject the offset-less
-                // value) and the lexical form differs between crates
-                // (`T` vs space separator), so they are plain strings.
-                "DateTime" | "NaiveDateTime" | "PrimitiveDateTime" | "NaiveTime" | "Time" => {
+                // `NaiveDateTime` / `NaiveTime`, and sea-orm's argument-less
+                // `DateTime` / `Time` aliases of the chrono naive types. No
+                // registered format fits (`date-time` / `time` would reject
+                // the offset-less value), so they are plain strings.
+                "DateTime" | "NaiveDateTime" | "NaiveTime" | "Time" => {
                     Some(SchemaRef::Inline(Box::new(Schema::string())))
                 }
                 "NaiveDate" | "Date" => Some(string_with_format("date")),
@@ -583,32 +598,40 @@ fn parse_type_impl(
                     // This is a concrete generic type like GenericStruct<String>
                     // Inline the schema by substituting generic parameters with concrete types
                     if let Some(mut parsed) = parsed_def {
-                        // Extract generic parameter names from the definition
-                        let generic_params: Vec<String> = parsed
+                        // Extract generic parameter names (and defaults)
+                        // from the definition
+                        let (generic_params, defaults): (Vec<String>, Vec<Option<Type>>) = parsed
                             .generics_mut()
-                            .params
-                            .iter()
-                            .filter_map(|param| {
-                                if let syn::GenericParam::Type(type_param) = param {
-                                    Some(type_param.ident.to_string())
-                                } else {
-                                    None
-                                }
+                            .type_params()
+                            .map(|param| {
+                                let default = param.default.as_ref().map(|(_, ty)| ty.clone());
+                                (param.ident.to_string(), default)
                             })
-                            .collect();
+                            .unzip();
 
-                        // Extract concrete type arguments
-                        let concrete_types: Vec<&Type> = args
+                        // Extract concrete type arguments; a parameter left
+                        // out takes its default (`Page<T, M = Meta>` used as
+                        // `Page<User>` is `Page<User, Meta>`), which may name
+                        // the parameters before it.
+                        let mut concrete_owned: Vec<Type> = args
                             .args
                             .iter()
                             .filter_map(|arg| {
                                 if let syn::GenericArgument::Type(ty) = arg {
-                                    Some(ty)
+                                    Some(ty.clone())
                                 } else {
                                     None
                                 }
                             })
                             .collect();
+                        for default in defaults.iter().skip(concrete_owned.len()) {
+                            let Some(default) = default else { break };
+                            let given: Vec<&Type> = concrete_owned.iter().collect();
+                            let filled =
+                                substitute_type(default, &generic_params[..given.len()], &given);
+                            concrete_owned.push(filled);
+                        }
+                        let concrete_types: Vec<&Type> = concrete_owned.iter().collect();
 
                         // Substitute generic parameters with concrete types in all fields
                         if generic_params.len() == concrete_types.len() {
@@ -637,7 +660,10 @@ fn parse_type_impl(
                             // response one when it names an input type.
                             if request_view::in_request_view()
                                 && (request_view::has_input(&base)
-                                    || request_view::mentions_input(concrete_types.iter().copied()))
+                                    || request_view::mentions_input(concrete_types.iter().copied())
+                                    || concrete_types
+                                        .iter()
+                                        .any(|ty| request_view::type_view_differs(ty)))
                             {
                                 name.push_str("Input");
                             }
@@ -731,7 +757,7 @@ fn component_name(ident: String, definition: Option<&str>) -> String {
 
 /// Fixed-length JSON array for a Rust tuple / tuple struct / tuple variant:
 /// `prefixItems` (one schema per position) with `minItems == maxItems == len`.
-pub fn tuple_array_schema<'t>(
+fn tuple_array_schema<'t>(
     elems: impl ExactSizeIterator<Item = &'t Type>,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
@@ -791,53 +817,108 @@ fn is_json_value_path(
     }
 }
 
+/// Description of a `time` crate value (see [`time_crate_schema`]).
+pub const TIME_CRATE_DESCRIPTION: &str = "Serialized by the `time` crate: a string in \
+its own format (not RFC 3339) with its `serde-human-readable` feature, an array of \
+numbers otherwise.";
+
+/// Description of a bare `Duration` (see [`duration_schema`]).
+pub const AMBIGUOUS_DURATION_DESCRIPTION: &str = "A `Duration` whose crate is not \
+spelled out: `std::time::Duration` is `{\"secs\", \"nanos\"}`, `time::Duration` a \
+string or an array. Write the full path or add `#[schema(value_type = T)]`.";
+
+/// A `time` crate date / time value: a plain string (no RFC 3339 `format`).
+fn time_crate_schema() -> SchemaRef {
+    SchemaRef::Inline(Box::new(Schema {
+        description: Some(TIME_CRATE_DESCRIPTION.to_string()),
+        ..Schema::string()
+    }))
+}
+
+/// `time::<..>::Ident` — a path rooted at the `time` crate.
+fn is_time_crate_path(path: &syn::Path) -> bool {
+    path.segments.len() > 1 && path.segments[0].ident == "time"
+}
+
+/// `std::time::Duration` / `core::time::Duration`.
+pub fn is_std_duration_path(path: &syn::Path) -> bool {
+    let segments = &path.segments;
+    segments.len() == 3
+        && (segments[0].ident == "std" || segments[0].ident == "core")
+        && segments[1].ident == "time"
+        && segments[2].ident == "Duration"
+}
+
 /// Schema of a `Duration`, chosen from how its path is spelled.
 ///
-/// - bare `Duration`, `std::time::Duration`, `core::time::Duration`: serde's
-///   std impl serializes `{"secs": u64, "nanos": u32}` (nanos < 1e9). A bare
-///   `Duration` is assumed to be the std type — `chrono::Duration` has no
-///   serde impl at all, so it cannot be a bare serialized field.
+/// - `std::time::Duration` / `core::time::Duration`: serde's std impl writes
+///   `{"secs": u64, "nanos": u32}` (nanos < 1e9) and rejects unknown keys;
+///   it also READS a `[secs, nanos]` array, and any `nanos` (it normalises
+///   them), so the request view is `anyOf: [<object>, <array>]`.
+/// - a bare `Duration` may be std's or `time`'s (`use time::Duration`), which
+///   serialize differently, so it is any value (`{}`) with a description.
 /// - any other qualified `Duration` (`time::Duration`, `chrono::Duration`, …)
 ///   has no single wire shape (the `time` crate emits a `"secs.nanos"` string
 ///   or a `[secs, nanos]` tuple depending on its features; chrono needs a
 ///   `serde_with` adapter), so it is documented as any value (`{}`). Annotate
 ///   the field with `#[schema(...)]` / a newtype to document the exact shape.
 fn duration_schema(path: &syn::Path) -> SchemaRef {
-    let segments = &path.segments;
-    let is_std = segments.len() == 1
-        || (segments.len() == 3
-            && (segments[0].ident == "std" || segments[0].ident == "core")
-            && segments[1].ident == "time");
-    if !is_std {
+    if path.segments.len() == 1 {
+        return SchemaRef::Inline(Box::new(Schema {
+            description: Some(AMBIGUOUS_DURATION_DESCRIPTION.to_string()),
+            ..Schema::default()
+        }));
+    }
+    if !is_std_duration_path(path) {
         return SchemaRef::Inline(Box::default());
     }
-    let properties = std::collections::BTreeMap::from([
-        (
-            "secs".to_string(),
-            SchemaRef::Inline(Box::new(Schema {
-                format: Some("uint64".to_string()),
-                minimum: Some(0.0),
-                ..Schema::integer()
-            })),
-        ),
-        (
-            "nanos".to_string(),
-            SchemaRef::Inline(Box::new(Schema {
-                format: Some("uint32".to_string()),
-                minimum: Some(0.0),
-                maximum: Some(999_999_999.0),
-                ..Schema::integer()
-            })),
-        ),
-    ]);
-    SchemaRef::Inline(Box::new(Schema {
-        properties: Some(properties),
+    let request = request_view::in_request_view();
+    let secs = || {
+        SchemaRef::Inline(Box::new(Schema {
+            format: Some("uint64".to_string()),
+            minimum: Some(0.0),
+            ..Schema::integer()
+        }))
+    };
+    let nanos = || {
+        SchemaRef::Inline(Box::new(Schema {
+            format: Some("uint32".to_string()),
+            minimum: Some(0.0),
+            maximum: Some(if request {
+                f64::from(u32::MAX)
+            } else {
+                999_999_999.0
+            }),
+            ..Schema::integer()
+        }))
+    };
+    let object = Schema {
+        properties: Some(std::collections::BTreeMap::from([
+            ("secs".to_string(), secs()),
+            ("nanos".to_string(), nanos()),
+        ])),
         required: Some(vec!["secs".to_string(), "nanos".to_string()]),
+        additional_properties: Some(AdditionalProperties::Bool(false)),
         ..Schema::object()
+    };
+    if !request {
+        return SchemaRef::Inline(Box::new(object));
+    }
+    SchemaRef::Inline(Box::new(Schema {
+        any_of: Some(vec![
+            SchemaRef::Inline(Box::new(object)),
+            SchemaRef::Inline(Box::new(Schema {
+                prefix_items: Some(vec![secs(), nanos()]),
+                min_items: Some(2),
+                max_items: Some(2),
+                ..Schema::new(SchemaType::Array)
+            })),
+        ]),
+        ..Schema::default()
     }))
 }
 
-/// String schema of a std / `url` type whose serde impl writes a JSON string:
+// String schema of a std / `url` type whose serde impl writes a JSON string:
 /// `Ipv4Addr` / `Ipv6Addr` carry the `ipv4` / `ipv6` formats and `Url` the
 /// `uri` format. `IpAddr` (either family), the `SocketAddr` set
 /// (`ip:port` — no registered format) and `PathBuf` stay plain strings.

@@ -640,7 +640,8 @@ final class VesperaWireCodec {
      * Jackson {@code UTF8JsonGenerator} emitted (it does not escape
      * {@code /} or non-ASCII).  Single pass, no per-string {@code byte[]}:
      * printable ASCII is written verbatim, the rest UTF-8 encoded inline
-     * (surrogate pairs become 4-byte sequences).
+     * (surrogate pairs become 4-byte sequences, an unpaired surrogate
+     * becomes U+FFFD).
      */
     private static void writeJsonString(ExposedByteArrayOutputStream out, String s) {
         out.put('"');
@@ -752,18 +753,15 @@ final class VesperaWireCodec {
             } else if (Character.isSurrogate(c)) {
                 // Unpaired UTF-16 surrogate (a lone high surrogate not
                 // followed by a low surrogate, or a lone low surrogate).
-                // UTF-8 must never encode surrogate code points, so emit a
-                // six-character JSON escape (backslash, u, four hex digits)
-                // instead of the invalid 3-byte sequence the BMP branch
-                // below would produce — this keeps the wire header valid
-                // UTF-8 / RFC 8259 JSON and round-trips losslessly through
-                // serde_json on the Rust side.
-                out.put('\\');
-                out.put('u');
-                out.put(HEX[(c >> 12) & 0xF]);
-                out.put(HEX[(c >> 8) & 0xF]);
-                out.put(HEX[(c >> 4) & 0xF]);
-                out.put(HEX[c & 0xF]);
+                // It names no Unicode scalar value: the 3-byte sequence the
+                // BMP branch below would produce is invalid UTF-8, and a
+                // `\uD800` JSON escape is rejected by the Rust wire parser
+                // (a Rust String cannot hold it → 400 malformed wire). Emit
+                // U+FFFD (EF BF BD) instead — what String.getBytes(UTF_8)
+                // does — so the request still reaches the handler.
+                out.put(0xEF);
+                out.put(0xBF);
+                out.put(0xBD);
             } else {
                 out.put(0xE0 | (c >> 12));
                 out.put(0x80 | ((c >> 6) & 0x3F));
