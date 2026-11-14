@@ -615,6 +615,12 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 #                   scripts/jni-bench-compare.ts (unit-tested by `bun test`).
 #                   Local: CARGO_JOBS=2 scripts/jni-bench-interleaved.sh origin/main
 #                   jni-bench.yml stays nightly + informational (*BenchTest suite).
+#   minimal-versions (not a release gate: transitive deps float, so an
+#            upstream release can break it) workspace narrowed to crates/*,
+#            `cargo +nightly-2026-08-29 update -Z direct-minimal-versions`, then
+#            `cargo check --all-features` of the 5 published crates — keeps
+#            direct-dependency lower bounds honest (tokio >= 1.41 for
+#            `task::try_id`, proc-macro2 >= 1.0.100 for `Span::local_file`)
 #   fuzz-build (not a release gate) `cargo fuzz build` of fuzz/ on pinned nightly
 #   native-image (native-image.yml, workflow_dispatch only, never a gate)
 #            GraalVM CE 25 `-PnativeImage :demo-app:nativeCompile` (bridge +

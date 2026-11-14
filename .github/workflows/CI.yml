@@ -211,6 +211,38 @@ jobs:
           -p vespera -p vespera_core -p vespera_macro
           -p vespera_inprocess -p vespera_jni
 
+  # Lower bounds of the PUBLISHED crates' direct dependencies: resolve every
+  # direct dependency to the minimum its `Cargo.toml` allows (transitive ones
+  # stay at their newest compatible release) and build. A bound below an API
+  # the code uses (e.g. `tokio::task::try_id`, stable since tokio 1.41) or
+  # below what another dependency needs fails here instead of in a user's
+  # lockfile. The examples are dropped from the workspace first: their own
+  # loose bounds are not published. NOT a release gate (absent from the
+  # changepacks `needs:`): because transitive dependencies float, a new
+  # upstream release can break this job without any change in this
+  # repository, and that must not block a release — fix the bound in a
+  # follow-up PR instead.
+  minimal-versions:
+    name: Minimal versions (direct deps)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          # `-Z direct-minimal-versions` is nightly-only; pinned like miri.
+          toolchain: nightly-2026-08-29
+      - name: Restrict the workspace to the published crates
+        run: |
+          sed -i 's|^members = .*|members = ["crates/*"]|; s|^default-members = .*|default-members = ["crates/*"]|' Cargo.toml
+      - name: cargo update -Z direct-minimal-versions
+        run: cargo +nightly-2026-08-29 update -Z direct-minimal-versions
+      - name: cargo check (published crates, all features)
+        run: >-
+          cargo +nightly-2026-08-29 check --all-features
+          -p vespera -p vespera_core -p vespera_macro
+          -p vespera_inprocess -p vespera_jni
+
   # Supply-chain gate: RustSec advisories, license allowlist, banned /
   # duplicate crates and allowed sources — configured in deny.toml.
   deny:
