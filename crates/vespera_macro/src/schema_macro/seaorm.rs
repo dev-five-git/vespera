@@ -6,12 +6,15 @@ mod relations;
 
 pub use attrs::{
     extract_belongs_to_from_field, extract_belongs_to_to_field, extract_relation_enum,
-    extract_sea_orm_default_value, has_sea_orm_primary_key, is_sql_function_default,
+    extract_sea_orm_default_value, has_sea_orm_primary_key, is_composite_columns,
+    is_sea_orm_primary_key, is_sql_function_default,
 };
 pub use conversion::convert_type_with_chrono;
 #[cfg(test)]
 pub use relations::is_field_optional_in_struct;
-pub use relations::{RelationFieldInfo, convert_relation_type_to_schema_with_info};
+pub use relations::{
+    RelationFieldInfo, convert_relation_type_to_schema_with_info, relation_target_module,
+};
 
 // Circular-relation integration tests live here because relation
 // conversion (`convert_relation_type_to_schema_with_info`) is the

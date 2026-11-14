@@ -263,6 +263,36 @@ fn test_file_list_skips_walk_within_same_epoch() {
     );
 }
 
+/// L24: a qualified path resolved through the module tree (an inline module
+/// of the crate root) is re-resolved when the crate root changes; the
+/// fingerprint used to cover only the module's own candidate files.
+#[test]
+fn qualified_lookup_follows_module_tree_edits() {
+    let temp_dir = TempDir::new().unwrap();
+    let src_dir = temp_dir.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    let lib = src_dir.join("lib.rs");
+    std::fs::write(&lib, "pub mod inner { pub struct Model { pub a: i32 } }").unwrap();
+    let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
+
+    bump_epoch();
+    let first = get_struct_from_schema_path("crate::inner::Model").expect("found");
+    assert!(first.definition.contains("pub a"));
+
+    std::fs::write(
+        &lib,
+        "pub mod inner { pub struct Model { pub a: i32, pub added_field: bool } }",
+    )
+    .unwrap();
+    bump_epoch();
+    let second = get_struct_from_schema_path("crate::inner::Model").expect("found");
+    assert!(
+        second.definition.contains("added_field"),
+        "{}",
+        second.definition
+    );
+}
+
 /// `get_manifest_dir` caches within an epoch but revalidates across epochs,
 /// so a long-lived rust-analyzer proc-macro server reused for a DIFFERENT
 /// crate (different `CARGO_MANIFEST_DIR`) stops resolving cross-file lookups

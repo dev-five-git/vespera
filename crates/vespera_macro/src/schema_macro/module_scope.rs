@@ -8,7 +8,8 @@
 //! - **Where a module lives** ([`module_items`]): `crate::a::b` is looked up
 //!   in `src/a/b.rs` / `src/a/b/mod.rs` (fast path, also for crates without a
 //!   root file on disk), then by walking the module tree from the crate root
-//!   (`src/lib.rs` / `src/main.rs`) through `mod x;` declarations — honouring
+//!   (`src/lib.rs` / `src/main.rs`, or the test / example / bench / binary
+//!   root, see [`super::crate_layout`]) through `mod x;` declarations — honouring
 //!   `#[path = "..."]` — and inline `mod x { ... }` blocks.
 //! - **What a name means inside it** ([`ModuleScope`] / [`resolve_name`]):
 //!   `use` imports (private imports must not be re-exported through the
@@ -36,20 +37,6 @@ struct Cursor {
     stem: String,
     /// Inline `mod x { .. }` components walked inside the current file.
     inline: Vec<String>,
-}
-
-fn src_dir() -> Option<PathBuf> {
-    file_cache::get_manifest_dir().map(|dir| Path::new(&dir).join("src"))
-}
-
-/// Crate root candidates: `main.rs` first while compiling a binary target.
-pub(super) fn crate_root_files(src: &Path) -> [PathBuf; 2] {
-    let (lib, main) = (src.join("lib.rs"), src.join("main.rs"));
-    if crate::env_access::var("CARGO_BIN_NAME").is_ok() {
-        [main, lib]
-    } else {
-        [lib, main]
-    }
 }
 
 fn open_file(path: &Path, force_mod_rs: bool) -> Option<Cursor> {
@@ -137,7 +124,8 @@ fn crate_relative(module_path: &[String]) -> Option<&[String]> {
 /// The items of the module at `module_path` (`crate::a::b` or `a::b`).
 pub fn module_items(module_path: &[String]) -> Option<Vec<syn::Item>> {
     let segments = crate_relative(module_path)?;
-    let src = src_dir()?;
+    let layout = super::crate_layout::crate_layout()?;
+    let src = &layout.module_dir;
     // Fast path: the longest prefix that is a module file of its own, then
     // inline / nested modules below it. Works for trees without a crate root
     // and costs no root walk for the common `src/a/b.rs` layout.
@@ -152,7 +140,8 @@ pub fn module_items(module_path: &[String]) -> Option<Vec<syn::Item>> {
             break;
         }
     }
-    crate_root_files(&src)
+    layout
+        .roots
         .iter()
         .find_map(|root| descend_all(open_file(root, true)?, segments))
         .map(|cursor| cursor.items)
@@ -350,7 +339,7 @@ fn normalize_use_path(path: &[String], module: &[String], locals: &HashSet<Strin
 
 type ScopeCache = (
     u64,
-    HashMap<(Option<String>, Vec<String>), Option<Arc<ModuleScope>>>,
+    HashMap<(Option<PathBuf>, Vec<String>), Option<Arc<ModuleScope>>>,
 );
 
 thread_local! {
@@ -364,7 +353,10 @@ pub fn module_scope(module_path: &[String]) -> Option<Arc<ModuleScope>> {
         return None;
     }
     let epoch = file_cache::current_epoch();
-    let key = (file_cache::get_manifest_dir(), module_path.to_vec());
+    let key = (
+        super::crate_layout::crate_layout().map(|layout| layout.module_dir),
+        module_path.to_vec(),
+    );
     let cached = SCOPES.with(|scopes| {
         let mut scopes = scopes.borrow_mut();
         if scopes.0 != epoch {

@@ -5,12 +5,12 @@ expression: "run_scenario(models, new_type, source_type, rows, &relations, modul
 #[allow(deprecated)]
 impl SimpleSchema {
     pub async fn from_model(
-        model: Model,
-        db: &sea_orm::DatabaseConnection,
+        __vespera_model: Model,
+        __vespera_db: &sea_orm::DatabaseConnection,
     ) -> Result<Self, sea_orm::DbErr> {
         Ok(Self {
-            id: model.id,
-            name: model.name,
+            id: __vespera_model.id,
+            name: __vespera_model.name,
         })
     }
 }

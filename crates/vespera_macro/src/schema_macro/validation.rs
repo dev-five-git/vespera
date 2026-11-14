@@ -172,7 +172,16 @@ pub fn validate_rename_fields(
         at,
         source_type_name,
     )?;
+    let mut seen = HashSet::new();
     for (from_field, to_field) in rename_pairs.into_iter().flatten() {
+        // A second rename of one field used to win silently.
+        if !seen.insert(from_field.as_str()) {
+            return Err(at.error_at(
+                "rename",
+                from_field,
+                format!("`rename` lists source field `{from_field}` more than once"),
+            ));
+        }
         if !is_valid_field_ident(to_field) {
             return Err(at.error_at(
                 "rename_to",
@@ -279,6 +288,28 @@ pub fn validate_included<'a>(
             field,
             format!("`{param}` names field `{field}`, which this type does not include: {reason}"),
         ));
+    }
+    Ok(())
+}
+
+/// Rejects a `param` entry naming a field the type does not emit although
+/// `omit` / `pick` keep it (`dropped`: field → reason).
+pub fn validate_emitted<'a>(
+    param: &str,
+    fields: impl IntoIterator<Item = &'a str>,
+    dropped: &std::collections::HashMap<String, &str>,
+    at: &impl ErrorAt,
+) -> Result<(), syn::Error> {
+    for field in fields {
+        if let Some(reason) = dropped.get(field) {
+            return Err(at.error_at(
+                param,
+                field,
+                format!(
+                    "`{param}` names field `{field}`, which this type does not include: {reason}"
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -423,6 +454,22 @@ mod tests {
 
         let result = validate_rename_fields(rename.as_ref(), &source_fields, &ty, "User");
         assert!(result.is_ok());
+    }
+
+    /// L15: a field renamed twice used to take the last target silently.
+    #[test]
+    fn test_validate_rename_fields_duplicate_source_rejected() {
+        let source_fields = create_field_names(&["id"]);
+        let rename = Some(vec![
+            ("id".to_string(), "key".to_string()),
+            ("id".to_string(), "other".to_string()),
+        ]);
+        let ty: syn::Type = syn::parse2(quote!(User)).unwrap();
+
+        let err = validate_rename_fields(rename.as_ref(), &source_fields, &ty, "User")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "`rename` lists source field `id` more than once");
     }
 
     #[test]

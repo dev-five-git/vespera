@@ -545,9 +545,11 @@ pub fn get_type_default(ty: &Type) -> Option<serde_json::Value> {
         Type::Path(type_path) => type_path.path.segments.last().and_then(|segment| {
             match segment.ident.to_string().as_str() {
                 "String" => Some(serde_json::Value::String(String::new())),
-                "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "Decimal" => {
+                "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" => {
                     Some(serde_json::Value::Number(serde_json::Number::from(0)))
                 }
+                // `rust_decimal` serializes as a string.
+                "Decimal" => Some(serde_json::Value::String("0".to_string())),
                 "f32" | "f64" => Some(serde_json::Value::Number(
                     serde_json::Number::from_f64(0.0)
                         .unwrap_or_else(|| serde_json::Number::from(0)),
@@ -557,9 +559,31 @@ pub fn get_type_default(ty: &Type) -> Option<serde_json::Value> {
                 "Uuid" => Some(serde_json::Value::String(
                     "00000000-0000-0000-0000-000000000000".to_string(),
                 )),
-                "DateTime" | "DateTimeWithTimeZone" | "DateTimeUtc" => Some(
-                    serde_json::Value::String("1970-01-01T00:00:00+00:00".to_string()),
-                ),
+                // chrono's epoch as each zone serializes it (`Local` depends
+                // on the machine: no documented value).
+                "DateTimeUtc" => Some(serde_json::Value::String(
+                    "1970-01-01T00:00:00Z".to_string(),
+                )),
+                "DateTimeWithTimeZone" => Some(serde_json::Value::String(
+                    "1970-01-01T00:00:00+00:00".to_string(),
+                )),
+                "DateTime" => match first_generic_type_arg(segment)
+                    .and_then(last_path_segment)
+                    .map(|zone| zone.ident.to_string())
+                    .as_deref()
+                {
+                    Some("Utc") => Some(serde_json::Value::String(
+                        "1970-01-01T00:00:00Z".to_string(),
+                    )),
+                    Some("FixedOffset") => Some(serde_json::Value::String(
+                        "1970-01-01T00:00:00+00:00".to_string(),
+                    )),
+                    // The bare name is SeaORM's `NaiveDateTime` alias.
+                    None if segment.arguments.is_none() => {
+                        Some(serde_json::Value::String("1970-01-01T00:00:00".to_string()))
+                    }
+                    _ => None,
+                },
                 "NaiveDateTime" => {
                     Some(serde_json::Value::String("1970-01-01T00:00:00".to_string()))
                 }

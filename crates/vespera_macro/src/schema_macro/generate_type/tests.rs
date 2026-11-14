@@ -248,3 +248,79 @@ fn malformed_sea_orm_from_is_a_compile_error_not_a_panic() {
         "schema_type!: relation field `author` has `#[sea_orm(from = \"author id\")]`, but `author id` is not a valid Rust identifier"
     );
 }
+
+/// L14: a raw new type name (`r#Foo`) went verbatim into generated fn
+/// names (`default_r#Foo_count`): `Ident::new` panicked.
+#[test]
+fn raw_type_name_in_generated_fn_names() {
+    let storage = to_storage(vec![create_test_struct_metadata(
+        "Model",
+        r#"pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            #[sea_orm(default_value = "5")]
+            pub count: i32,
+            #[serde(with = "codec")]
+            pub at: String,
+        }"#,
+    )]);
+    let input: SchemaTypeInput = syn::parse_str("r#Foo from Model").unwrap();
+    let output = generate_schema_type_code(&input, &storage)
+        .unwrap()
+        .0
+        .to_string();
+    assert!(output.contains("fn default_Foo_count"), "{output}");
+    let input: SchemaTypeInput = syn::parse_str("r#Foo from Model, partial").unwrap();
+    let output = generate_schema_type_code(&input, &storage)
+        .unwrap()
+        .0
+        .to_string();
+    assert!(output.contains("fn __vespera_Foo_at_ser"), "{output}");
+}
+
+/// M22: `rename` / `partial` / `pick` naming a field `omit` / `pick` keep
+/// but the type still drops used to be silently ignored.
+#[rstest::rstest]
+#[case::rename_omit_default(
+    "Dto from Model, omit_default, rename = [(\"id\", \"key\")]",
+    "`rename` names field `id`, which this type does not include: `omit_default` drops it (a SeaORM default / primary key)"
+)]
+#[case::partial_omit_default(
+    "Dto from Model, omit_default, partial = [\"count\"]",
+    "`partial` names field `count`, which this type does not include: `omit_default` drops it (a SeaORM default / primary key)"
+)]
+#[case::pick_omit_default(
+    "Dto from Model, omit_default, pick = [\"id\", \"name\"]",
+    "`pick` names field `id`, which this type does not include: `omit_default` drops it (a SeaORM default / primary key)"
+)]
+#[case::rename_multipart_relation(
+    "Dto from Model, multipart, rename = [(\"owner\", \"o\")]",
+    "`rename` names field `owner`, which this type does not include: `multipart` types carry no relations"
+)]
+#[case::rename_unpicked_has_many(
+    "Dto from Model, rename = [(\"items\", \"all\")]",
+    "`rename` names field `items`, which this type does not include: a HasMany relation is only included when `pick`ed"
+)]
+#[case::partial_unconvertible_relation(
+    "Dto from Model, partial = [\"broken\"]",
+    "`partial` names field `broken`, which this type does not include: its SeaORM relation type could not be converted"
+)]
+fn naming_a_dropped_field_is_an_error(#[case] input: &str, #[case] expected: &str) {
+    let storage = to_storage(vec![create_test_struct_metadata(
+        "Model",
+        r#"#[sea_orm(table_name = "things")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i32,
+            pub name: String,
+            #[sea_orm(default_value = "0")]
+            pub count: i32,
+            pub owner: HasOne<super::user::Entity>,
+            pub items: HasMany<super::item::Entity>,
+            pub broken: HasOne,
+        }"#,
+    )]);
+    let input: SchemaTypeInput = syn::parse_str(input).unwrap();
+    let error = generate_schema_type_code(&input, &storage).unwrap_err();
+    assert_eq!(error.to_string(), expected);
+}

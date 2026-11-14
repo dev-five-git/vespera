@@ -16,14 +16,14 @@ use std::collections::{HashMap, HashSet};
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use vespera_core::schema::{Schema, SchemaRef};
+use vespera_core::schema::Schema;
 
 use super::SchemaInput;
 use crate::{
     metadata::StructMetadata,
     parser::{
         extract_field_rename, extract_rename_all, extract_skip, parse_struct_to_schema,
-        rename_field, schema::extract_flatten, strip_raw_prefix_owned,
+        rename_field, strip_raw_prefix_owned,
     },
 };
 
@@ -74,23 +74,31 @@ fn build_filtered_schema(
     // Single source of truth — identical logic to OpenAPI generation
     // (required-by-nullability, doc descriptions, flatten/transparent,
     // field constraints, `$ref` references).
-    let mut schema = parse_struct_to_schema(struct_item, &known_schemas, &struct_definitions);
-
-    // `schema!` layers field filtering on top: drop the omitted / unpicked
-    // properties (matched against BOTH the Rust identifier and the
-    // serde-renamed JSON name, as the prior hand-rolled walk did).
-    if let Some(filter) = compute_field_filter(struct_item, omit_set, pick_set) {
-        filter_schema_fields(&mut schema, &filter);
-    }
-
-    schema
+    // `schema!` filters the fields first (omitted / unpicked ones matched
+    // against BOTH the Rust identifier and the serde-renamed JSON name).
+    let filtered = filter_struct_fields(struct_item, omit_set, pick_set);
+    parse_struct_to_schema(
+        filtered.as_ref().unwrap_or(struct_item),
+        &known_schemas,
+        &struct_definitions,
+    )
 }
 
 /// One field the schema carries (not `#[serde(skip)]`ped).
 struct EmittedField {
     rust: String,
     json: String,
-    flatten: bool,
+}
+
+/// A field's Rust identifier (unraw) and its JSON name.
+fn field_names(field: &syn::Field, rename_all: Option<&str>) -> (String, String) {
+    let rust = field.ident.as_ref().map_or_else(
+        || "unknown".to_string(),
+        |i| strip_raw_prefix_owned(i.to_string()),
+    );
+    let json =
+        extract_field_rename(&field.attrs).unwrap_or_else(|| rename_field(&rust, rename_all));
+    (rust, json)
 }
 
 /// The fields of `struct_item` its schema carries, in declaration order.
@@ -104,17 +112,8 @@ fn emitted_fields(struct_item: &syn::ItemStruct) -> Vec<EmittedField> {
         .iter()
         .filter(|field| !extract_skip(&field.attrs))
         .map(|field| {
-            let rust = field.ident.as_ref().map_or_else(
-                || "unknown".to_string(),
-                |i| strip_raw_prefix_owned(i.to_string()),
-            );
-            let json = extract_field_rename(&field.attrs)
-                .unwrap_or_else(|| rename_field(&rust, rename_all.as_deref()));
-            EmittedField {
-                rust,
-                json,
-                flatten: extract_flatten(&field.attrs),
-            }
+            let (rust, json) = field_names(field, rename_all.as_deref());
+            EmittedField { rust, json }
         })
         .collect()
 }
@@ -146,91 +145,36 @@ pub fn validate_filter_names(
     Ok(())
 }
 
-/// What the `pick` / `omit` filter removes.
-#[derive(Debug, PartialEq, Eq)]
-struct FieldFilter {
-    /// JSON names of the dropped own properties.
-    dropped: HashSet<String>,
-    /// Per `#[serde(flatten)]` field (declaration order): whether it stays.
-    flattened: Vec<bool>,
-}
-
-/// The filter `omit` / `pick` describe, or `None` when no filtering is
-/// requested (both sets empty → keep every field).
+/// `struct_item` without the fields `omit` / `pick` remove, or `None` when
+/// no filtering is requested (both sets empty → keep every field).
 ///
-/// Mirrors the OpenAPI field walk: `#[serde(skip)]` fields never qualify,
-/// and a name matches `omit`/`pick` against EITHER its Rust identifier or
-/// its serde-renamed JSON name. A `#[serde(flatten)]` field is kept or
-/// dropped as a whole (its `allOf` member).
-fn compute_field_filter(
+/// A name matches its Rust identifier or its serde-renamed JSON name; a
+/// `#[serde(flatten)]` field is kept or dropped as a whole. Filtering the
+/// struct BEFORE the schema is built keeps the schema exactly what the
+/// filtered struct documents, whatever shape the flatten composition takes
+/// (filtering the built schema assumed `allOf: [own, one per flattened
+/// field]`, which merged flatten members no longer follow).
+fn filter_struct_fields(
     struct_item: &syn::ItemStruct,
     omit_set: &HashSet<String>,
     pick_set: &HashSet<String>,
-) -> Option<FieldFilter> {
+) -> Option<syn::ItemStruct> {
     if omit_set.is_empty() && pick_set.is_empty() {
         return None;
     }
-    let mut filter = FieldFilter {
-        dropped: HashSet::new(),
-        flattened: Vec::new(),
-    };
-    for field in emitted_fields(struct_item) {
-        let named = |set: &HashSet<String>| set.contains(&field.rust) || set.contains(&field.json);
-        let kept = !named(omit_set) && (pick_set.is_empty() || named(pick_set));
-        if field.flatten {
-            filter.flattened.push(kept);
-        } else if !kept {
-            filter.dropped.insert(field.json);
-        }
+    let mut filtered = struct_item.clone();
+    if let syn::Fields::Named(fields_named) = &mut filtered.fields {
+        let rename_all = extract_rename_all(&struct_item.attrs);
+        fields_named.named = std::mem::take(&mut fields_named.named)
+            .into_iter()
+            .filter(|field| {
+                let (rust, json) = field_names(field, rename_all.as_deref());
+                let named = |set: &HashSet<String>| set.contains(&rust) || set.contains(&json);
+                !named(omit_set) && (pick_set.is_empty() || named(pick_set))
+            })
+            .collect();
     }
-    Some(filter)
-}
-
-/// Applies `filter` to `schema`. With flattened fields the schema is
-/// `allOf: [<own properties>, ...flattened]`: the own member is filtered,
-/// dropped flattened members are removed, and a lone remaining own member
-/// becomes the schema itself (as [`parse_struct_to_schema`] represents a
-/// struct without flattened fields). Filtering the top level of an `allOf`
-/// schema used to be a no-op.
-fn filter_schema_fields(schema: &mut Schema, filter: &FieldFilter) {
-    let Some(all_of) = schema
-        .all_of
-        .as_mut()
-        .filter(|_| !filter.flattened.is_empty())
-    else {
-        retain_properties(schema, &filter.dropped);
-        return;
-    };
-    let mut kept = std::iter::once(true).chain(filter.flattened.iter().copied());
-    all_of.retain(|_| kept.next().unwrap_or(true));
-    if let Some(SchemaRef::Inline(own)) = all_of.first_mut() {
-        retain_properties(own, &filter.dropped);
-    }
-    if let [SchemaRef::Inline(own)] = all_of.as_slice() {
-        *schema = Schema {
-            description: schema.description.take(),
-            ..(**own).clone()
-        };
-    }
-}
-
-/// Removes the `dropped` properties (and their `required` entries),
-/// normalizing an emptied `properties`/`required` back to `None` to match
-/// [`parse_struct_to_schema`]'s own representation. Properties no field
-/// declares (a struct `#[serde(tag)]`) stay.
-fn retain_properties(schema: &mut Schema, dropped: &HashSet<String>) {
-    if let Some(properties) = &mut schema.properties {
-        properties.retain(|name, _| !dropped.contains(name));
-        if properties.is_empty() {
-            schema.properties = None;
-        }
-    }
-    if let Some(required) = &mut schema.required {
-        required.retain(|name| !dropped.contains(name));
-        if required.is_empty() {
-            schema.required = None;
-        }
-    }
+    Some(filtered)
 }
 
 #[cfg(test)]
@@ -240,8 +184,8 @@ mod tests {
     use crate::metadata::StructMetadata;
 
     use super::{
-        FieldFilter, SchemaInput, build_filtered_schema, compute_field_filter,
-        generate_filtered_schema, validate_filter_names,
+        SchemaInput, build_filtered_schema, filter_struct_fields, generate_filtered_schema,
+        validate_filter_names,
     };
 
     fn empty_storage() -> HashMap<String, StructMetadata> {
@@ -400,30 +344,62 @@ mod tests {
     }
 
     #[test]
-    fn filtering_skips_serde_hidden_fields_and_handles_identifierless_field() {
+    fn filter_struct_fields_matches_rust_and_json_names() {
         let mut item = parse(
-            "pub struct S { #[serde(skip)] pub hidden: String, pub shown: i32, pub other: i32 }",
+            r#"#[serde(rename_all = "camelCase")] pub struct S { pub user_name: String, pub r#type: i32, pub other: i32 }"#,
         );
-        let pick = HashSet::from(["shown".to_string()]);
-        let filter = compute_field_filter(&item, &HashSet::new(), &pick)
-            .expect("a pick filter always produces a filter");
-        assert_eq!(
-            filter,
-            FieldFilter {
-                dropped: HashSet::from(["other".to_string()]),
-                flattened: Vec::new(),
-            }
-        );
+        assert!(filter_struct_fields(&item, &HashSet::new(), &HashSet::new()).is_none());
+        let pick = HashSet::from(["userName".to_string(), "type".to_string()]);
+        let filtered = filter_struct_fields(&item, &HashSet::new(), &pick).unwrap();
+        let names: Vec<String> = filtered
+            .fields
+            .iter()
+            .map(|f| f.ident.as_ref().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["user_name", "r#type"]);
 
+        // An identifierless field is named `unknown`; a tuple struct has
+        // nothing to filter.
         let syn::Fields::Named(fields) = &mut item.fields else {
             panic!("fixture is a named struct");
         };
-        fields.named[1].ident = None;
-        let filter = compute_field_filter(&item, &HashSet::new(), &pick).unwrap();
-        assert_eq!(
-            filter.dropped,
-            HashSet::from(["unknown".to_string(), "other".to_string()])
+        fields.named[2].ident = None;
+        let omit = HashSet::from(["unknown".to_string()]);
+        let filtered = filter_struct_fields(&item, &omit, &HashSet::new()).unwrap();
+        assert_eq!(filtered.fields.len(), 2);
+        let tuple = parse("pub struct T(pub i32);");
+        let filtered = filter_struct_fields(&tuple, &omit, &HashSet::new()).unwrap();
+        assert_eq!(filtered.fields.len(), 1);
+    }
+
+    /// M10: an `Option` flatten member is merged into the own object; the
+    /// post-build filter took it for an `allOf` member and kept its
+    /// properties when the flattened field was omitted.
+    #[test]
+    fn filtering_a_merged_flatten_member() {
+        let item = parse(
+            "pub struct S { pub id: i32, pub name: String, #[serde(flatten)] pub base: Option<Base> }",
         );
+        let full =
+            build_filtered_schema(&item, &HashSet::new(), &HashSet::new(), &flatten_storage());
+        let keys = |schema: &super::Schema| {
+            schema
+                .properties
+                .as_ref()
+                .map(|p| p.keys().cloned().collect::<Vec<_>>())
+        };
+        assert_eq!(
+            keys(&full),
+            Some(vec!["created".into(), "id".into(), "name".into()])
+        );
+
+        let omit = HashSet::from(["base".to_string()]);
+        let schema = build_filtered_schema(&item, &omit, &HashSet::new(), &flatten_storage());
+        assert_eq!(keys(&schema), Some(vec!["id".into(), "name".into()]));
+
+        let pick = HashSet::from(["base".to_string()]);
+        let schema = build_filtered_schema(&item, &HashSet::new(), &pick, &flatten_storage());
+        assert_eq!(keys(&schema), Some(vec!["created".into()]));
     }
 
     fn flatten_storage() -> HashMap<String, StructMetadata> {
@@ -459,7 +435,7 @@ mod tests {
         let schema = build_filtered_schema(&item, &omit, &HashSet::new(), &flatten_storage());
         let all_of = schema.all_of.expect("still composed");
         assert_eq!(all_of.len(), 2);
-        let super::SchemaRef::Inline(own) = &all_of[0] else {
+        let vespera_core::schema::SchemaRef::Inline(own) = &all_of[0] else {
             panic!("own member is inline");
         };
         assert_eq!(

@@ -195,6 +195,13 @@ fn parse_attrs(field: &str) -> Vec<syn::Attribute> {
     true,
     false
 )]
+// `bound` names type parameters the instantiated DTO lacks.
+#[case::bound_dropped(
+    "field_bound_dropped",
+    r#"#[serde(bound = "T: Clone", alias = "b")]"#,
+    false,
+    false
+)]
 #[case::unparseable_kept_verbatim("field_unparseable", "#[serde(rename = )]", true, false)]
 fn field_serde_attrs_cases(
     #[case] name: &str,

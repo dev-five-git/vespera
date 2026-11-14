@@ -9,6 +9,24 @@ mod loads;
 
 pub use generate::generate_from_model_with_relations;
 
+/// A parameter of the generated `from_model`, named so no relation field
+/// (whose loaded value becomes a local of the field's name) can shadow it.
+pub(super) struct Param(&'static str);
+
+impl quote::ToTokens for Param {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        tokens.extend([TokenTree::Ident(proc_macro2::Ident::new(
+            self.0,
+            proc_macro2::Span::call_site(),
+        ))]);
+    }
+}
+
+/// The source model parameter.
+pub(super) const MODEL: Param = Param("__vespera_model");
+/// The database connection parameter.
+pub(super) const DB: Param = Param("__vespera_db");
+
 /// Build Entity path from Schema path.
 /// e.g., `crate::models::user::Schema` -> `crate::models::user::Entity`
 ///

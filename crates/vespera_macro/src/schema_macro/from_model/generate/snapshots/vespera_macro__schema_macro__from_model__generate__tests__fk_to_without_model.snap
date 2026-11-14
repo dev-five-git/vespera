@@ -1,0 +1,32 @@
+---
+source: crates/vespera_macro/src/schema_macro/from_model/generate/tests.rs
+expression: "run_scenario(models, new_type, source_type, rows, &relations, module)"
+---
+#[allow(deprecated)]
+impl AccountSchema {
+    pub async fn from_model(
+        __vespera_model: crate::models::account::Model,
+        __vespera_db: &sea_orm::DatabaseConnection,
+    ) -> Result<Self, sea_orm::DbErr> {
+        let owner = {
+            let fk_value = &__vespera_model.owner_code;
+            sea_orm::QueryFilter::filter(
+                    <crate::models::owner::Entity as sea_orm::EntityTrait>::find(),
+                    sea_orm::ColumnTrait::eq(
+                        &crate::models::owner::Column::Code,
+                        fk_value.clone(),
+                    ),
+                )
+                .one(__vespera_db)
+                .await?
+        };
+        Ok(Self {
+            id: __vespera_model.id,
+            owner: owner
+                .ok_or_else(|| sea_orm::DbErr::RecordNotFound(
+                    format!("Required relation '{}' not found", stringify!(owner)),
+                ))
+                .map(|r| Box::new(<crate::models::owner::Schema as From<_>>::from(r)))?,
+        })
+    }
+}
