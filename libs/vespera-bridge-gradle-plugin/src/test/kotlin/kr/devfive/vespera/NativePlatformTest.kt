@@ -76,13 +76,37 @@ class NativePlatformTest {
     }
 
     @Test
-    fun aTargetForTheHostPlatformReplacesTheHostBuild() {
+    fun aTargetBundledIntoTheHostFolderReplacesTheHostBuild() {
+        val builds = NativePlatform.plannedBuilds(
+            "linux-x86_64", "demo", "release", mapOf("linux-x86_64" to "x86_64-unknown-linux-gnu"),
+        )
+        assertEquals(
+            listOf(
+                NativePlatform.NativeBuild(
+                    "linux-x86_64", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-gnu/release/libdemo.so",
+                ),
+            ),
+            builds,
+        )
+    }
+
+    @Test
+    fun aHostKeyMappedToMuslKeepsTheHostBuild() {
+        // The musl triple is bundled where the bridge looks on musl
+        // (native/linux-x86_64-musl/), so native/linux-x86_64/ — where a glibc
+        // JVM looks — still needs the host build.
         val builds = NativePlatform.plannedBuilds(
             "linux-x86_64", "demo", "release", mapOf("linux-x86_64" to "x86_64-unknown-linux-musl"),
         )
-        assertEquals(listOf("x86_64-unknown-linux-musl"), builds.map { it.triple })
-        // ... but a musl triple is bundled where the bridge looks on musl.
-        assertEquals(listOf("linux-x86_64-musl"), builds.map { it.platform })
+        assertEquals(
+            listOf(
+                NativePlatform.NativeBuild("linux-x86_64", null, "release/libdemo.so"),
+                NativePlatform.NativeBuild(
+                    "linux-x86_64-musl", "x86_64-unknown-linux-musl", "x86_64-unknown-linux-musl/release/libdemo.so",
+                ),
+            ),
+            builds,
+        )
     }
 
     @ParameterizedTest

@@ -184,6 +184,7 @@ class NativeJarsFunctionalTest {
         val result = run("processResources").build()
 
         assertNull(result.task(":bundleNativeLib"), result.output)
+        assertNull(result.task(":verifyNativeLibs"), result.output)
         assertFalse(File(dir, "build/resources/main/native").exists())
     }
 

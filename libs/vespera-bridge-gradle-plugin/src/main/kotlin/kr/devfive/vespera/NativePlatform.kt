@@ -233,8 +233,10 @@ internal object NativePlatform {
 
     /**
      * Every library to bundle: each `targets` entry is cross-built into its
-     * [bundlePlatform] folder; the host build is added unless a target already
-     * covers the host platform (its key or its bundle folder names it).
+     * [bundlePlatform] folder; the host build is added unless a target is
+     * already bundled into the host platform's folder (the resolved folder
+     * counts, not the key: a host key mapped to a musl triple lands in
+     * `<host>-musl` and keeps the host build).
      * [hostPlatform] carries the `-musl` classifier on a musl build host.
      * [libStem] is the library file stem ([libraryStem]).
      */
@@ -258,7 +260,9 @@ internal object NativePlatform {
                     same.joinToString { it.triple.orEmpty() }
             }
         }
-        if (hostPlatform in targets || builds.any { it.platform == hostPlatform }) return builds
+        // Compare bundle folders, not keys: `targets["linux-x86_64"] = "<musl triple>"`
+        // bundles into linux-x86_64-musl, so linux-x86_64 still needs the host build.
+        if (builds.any { it.platform == hostPlatform }) return builds
         val host = NativeBuild(
             hostPlatform,
             null,
