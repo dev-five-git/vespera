@@ -53,30 +53,38 @@ pub(super) fn discover_cron_jobs(
         .and_then(|src_dir| crate_tree(src_dir, call_site));
     let mut jobs = stored_jobs(storage, src_dir, tree.as_ref(), &mut canonical_paths);
     if let Some(tree) = tree {
-        let known: HashSet<(String, String)> = storage
+        // A scanned job is known when a stored one sits in the same file with
+        // the same function name AND module path — same-named jobs in
+        // different inline modules of one file are distinct.
+        let known: HashSet<(String, String, String)> = storage
             .iter()
-            .filter_map(|s| {
+            .zip(&jobs)
+            .filter_map(|(s, job)| {
                 s.file_path.as_deref().map(|fp| {
                     (
                         canonicalized_cron_path(fp, &mut canonical_paths),
                         s.fn_name.clone(),
+                        job.module_path.clone(),
                     )
                 })
             })
             .collect();
-        jobs.extend(
-            tree.jobs
-                .into_iter()
-                .filter(|job| !known.contains(&(job.file_path.clone(), job.function_name.clone()))),
-        );
+        jobs.extend(tree.jobs.into_iter().filter(|job| {
+            !known.contains(&(
+                job.file_path.clone(),
+                job.function_name.clone(),
+                job.module_path.clone(),
+            ))
+        }));
     }
     jobs
 }
 
 /// Convert `CRON_STORAGE` entries.  The module path is the one `tree`
-/// declares the function in; without a match (no tree, `#[path]` module,
-/// macro-generated function) it is derived from the file path relative to
-/// `src/`.
+/// declares the function in (in the entry's inline module when it recorded
+/// one, else the file's first declaration of that name); without a match (no
+/// tree, `#[path]` module, macro-generated function) it is derived from the
+/// file path relative to `src/` plus the recorded inline module.
 fn stored_jobs(
     storage: &[StoredCronInfo],
     src_dir: Option<&Path>,
@@ -97,16 +105,14 @@ fn stored_jobs(
                 .as_ref()
                 .map(|fp| {
                     let normalized = canonicalized_cron_path(fp, canonical_paths);
-                    let declared = tree.and_then(|tree| {
-                        tree.cron_fns
-                            .get(&(normalized.clone(), s.fn_name.clone()))
-                            .cloned()
-                    });
+                    let inline = s.inline_module.as_deref();
+                    let declared =
+                        tree.and_then(|tree| tree.module_of(&normalized, inline, &s.fn_name));
                     declared.unwrap_or_else(|| {
                         let relative = normalized
                             .strip_prefix(&src_display)
                             .map_or(&*normalized, |rest| rest.trim_start_matches('/'));
-                        cron_module_path(relative)
+                        join_module(&cron_module_path(relative), inline.unwrap_or_default())
                     })
                 })
                 .unwrap_or_default();
@@ -155,6 +161,10 @@ struct ModuleTree {
     /// have expanded those): places the stored jobs.  The first declaration
     /// wins.
     cron_fns: HashMap<(String, String), String>,
+    /// (canonical file, inline-module path inside it, function name) →
+    /// module path: places stored jobs that recorded their inline module,
+    /// so same-named jobs in different inline modules of one file stay apart.
+    scoped_cron_fns: HashMap<(String, String, String), String>,
 }
 
 /// Where [`ModuleTree::visit`] currently is.
@@ -165,6 +175,8 @@ struct Scope<'a> {
     module_path: &'a str,
     /// Canonical file the items live in.
     file: &'a str,
+    /// Inline-module path inside `file` (`""` = file level).
+    inline: &'a str,
     /// Inside a `#[cfg]`-gated module: indexed, never scanned.
     gated: bool,
 }
@@ -190,6 +202,7 @@ impl ModuleTree {
                 mod_dir,
                 module_path,
                 file: &display,
+                inline: "",
                 gated,
             };
             self.visit(&ast.items, &scope, content.contains(CRON_ATTR_MARKER));
@@ -205,10 +218,12 @@ impl ModuleTree {
                     let child_dir = scope.mod_dir.join(&name);
                     let gated = scope.gated || is_cfg_gated(&module.attrs);
                     if let Some((_, inner)) = &module.content {
+                        let inline = join_module(scope.inline, &name);
                         let child = Scope {
                             mod_dir: &child_dir,
                             module_path: &child_path,
                             file: scope.file,
+                            inline: &inline,
                             gated,
                         };
                         self.visit(inner, &child, collect_jobs);
@@ -233,12 +248,36 @@ impl ModuleTree {
         }
     }
 
+    /// Module path of the cron function `fn_name` declared in `file` — in
+    /// the inline module `inline` when known, else its first declaration.
+    fn module_of(&self, file: &str, inline: Option<&str>, fn_name: &str) -> Option<String> {
+        inline
+            .map_or_else(
+                || self.cron_fns.get(&(file.to_owned(), fn_name.to_owned())),
+                |inline| {
+                    self.scoped_cron_fns.get(&(
+                        file.to_owned(),
+                        inline.to_owned(),
+                        fn_name.to_owned(),
+                    ))
+                },
+            )
+            .cloned()
+    }
+
     /// Index a function carrying a cron attribute and, when it is
     /// schedulable and not `#[cfg]`-gated, record it as a scanned job.
     fn add_cron_fn(&mut self, function: &syn::ItemFn, scope: &Scope<'_>) {
         let function_name = function.sig.ident.unraw().to_string();
         self.cron_fns
             .entry((scope.file.to_owned(), function_name.clone()))
+            .or_insert_with(|| scope.module_path.to_owned());
+        self.scoped_cron_fns
+            .entry((
+                scope.file.to_owned(),
+                scope.inline.to_owned(),
+                function_name.clone(),
+            ))
             .or_insert_with(|| scope.module_path.to_owned());
         if !scope.gated
             && let Some(args) = cron_args(function)
@@ -286,7 +325,9 @@ fn is_cfg_gated(attrs: &[syn::Attribute]) -> bool {
 }
 
 fn join_module(parent: &str, name: &str) -> String {
-    if parent.is_empty() {
+    if name.is_empty() {
+        parent.to_owned()
+    } else if parent.is_empty() {
         name.to_owned()
     } else {
         format!("{parent}::{name}")
@@ -360,8 +401,57 @@ mod tests {
             fn_name: fn_name.to_owned(),
             expression: "0 0 0 * * *".to_owned(),
             file_path,
+            inline_module: None,
             options: CronOptions::default(),
         }
+    }
+
+    fn stored_in(fn_name: &str, file_path: &Path, inline: &str, expr: &str) -> StoredCronInfo {
+        StoredCronInfo {
+            expression: expr.to_owned(),
+            inline_module: Some(inline.to_owned()),
+            ..stored(fn_name, Some(file_path.display().to_string()))
+        }
+    }
+
+    /// Same-named jobs in different inline modules of one file: each stored
+    /// entry is placed in its own module, and a sibling the storage does not
+    /// know yet is still scanned.  `#[path]` files keep the recorded inline
+    /// module on the derived path.
+    #[test]
+    fn same_named_jobs_in_inline_modules_do_not_clash() {
+        let krate = crate_with(&[
+            (
+                "lib.rs",
+                r#"
+                pub mod a { #[cron("1 * * * * *")] pub async fn tick() {} }
+                pub mod b { #[cron("2 * * * * *")] pub async fn tick() {} }
+                pub mod c { pub mod d { #[cron("3 * * * * *")] pub async fn tick() {} } }
+                #[path = "x.rs"] mod pathed;
+                "#,
+            ),
+            (
+                "x.rs",
+                r#"mod e { #[cron("4 * * * * *")] pub async fn tick() {} }"#,
+            ),
+        ]);
+        let src = krate.path().join("src");
+        let lib = src.join("lib.rs");
+        let storage = [
+            stored_in("tick", &lib, "a", "1 * * * * *"),
+            stored_in("tick", &lib, "b", "2 * * * * *"),
+            stored_in("tick", &src.join("x.rs"), "e", "4 * * * * *"),
+        ];
+        let jobs = discover_cron_jobs(&storage, Some(&src), Some(&lib));
+        assert_eq!(
+            summary(&jobs),
+            rows(&[
+                ("a", "tick", "1 * * * * *"),
+                ("b", "tick", "2 * * * * *"),
+                ("c::d", "tick", "3 * * * * *"),
+                ("x::e", "tick", "4 * * * * *"),
+            ])
+        );
     }
 
     fn summary(jobs: &[CronMetadata]) -> Vec<(String, String, String)> {

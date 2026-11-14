@@ -53,9 +53,10 @@ fn app_state(db: DatabaseConnection) -> Arc<AppState> {
 }
 
 /// Runs of the cron discovery probes — `[crate root, inline module, after
-/// vespera!]` (asserted by `tests/integration_cron.rs`).
+/// vespera!, same-named job in a sibling inline module]` (asserted by
+/// `tests/integration_cron.rs`).
 #[doc(hidden)]
-pub static CRON_PROBE_RUNS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
+pub static CRON_PROBE_RUNS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
 
 /// A cron job at the crate root is scheduled as `crate::root_probe` (not
 /// `crate::lib::root_probe`).

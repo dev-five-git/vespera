@@ -1,5 +1,6 @@
-//! Cron discovery end to end: jobs at the crate root, in an inline module and
-//! after `vespera!` compile into the right paths and are all scheduled.
+//! Cron discovery end to end: jobs at the crate root, in an inline module,
+//! after `vespera!` and a same-named job in a sibling inline module of the same
+//! file compile into the right paths and are all scheduled.
 
 use std::{
     sync::atomic::Ordering,

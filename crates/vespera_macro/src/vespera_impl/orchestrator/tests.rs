@@ -188,6 +188,7 @@ fn test_process_vespera_macro_with_cron_storage() {
                 .display()
                 .to_string(),
         ),
+        inline_module: None,
         options: crate::metadata::CronOptions::default(),
     });
 
