@@ -17,6 +17,8 @@ Gradle plugin `kr.devfive.vespera-bridge` (Maven Central / Plugin Portal: `kr.de
 | `nativeJarsDir` | `extraNativeLibs` | source of the native jars (`native/<platform>/<lib>`) |
 | `bridgeVersion` | the bridge release this plugin was built with | `vespera-bridge` dependency version |
 
+`bundleNativeLib` is a `Sync` into the plugin-owned `build/generated/vesperaNativeResources`. A target you drop from `targets` / `extraNativeLibs`, or a renamed crate, disappears from the jar on the next build without a `clean`.
+
 ## Per-platform native jars
 
 ```kotlin

@@ -99,6 +99,31 @@ class VesperaBridgePluginFunctionalTest {
     }
 
     @Test
+    fun droppedTargetLeavesNoStaleLibraryInTheJar() {
+        val hostLib = NativePlatform.mapLibraryName(hostOs, "demo")
+        write("rust/target/release/$hostLib", "host")
+        write("rust/target/$crossTriple/release/libdemo.so", "cross")
+        setUp("""    targets.put("$crossPlatform", "$crossTriple")""")
+        run("jar").build()
+        val stale = "native/$crossPlatform/libdemo.so"
+        assertTrue(jarEntries().contains(stale), jarEntries().toString())
+
+        // The cross target is removed from the build: its library must not linger.
+        setUp("")
+        val result = run("jar").build()
+
+        assertEquals(TaskOutcome.SUCCESS, result.task(":bundleNativeLib")?.outcome)
+        assertFalse(File(dir, "build/generated/vesperaNativeResources/$stale").exists())
+        assertFalse(jarEntries().contains(stale), jarEntries().toString())
+        assertTrue(jarEntries().contains("native/$host/$hostLib"), jarEntries().toString())
+    }
+
+    private fun jarEntries(): Set<String> {
+        val jar = File(dir, "build/libs").listFiles { f -> f.name.endsWith(".jar") }!!.single()
+        return java.util.zip.ZipFile(jar).use { zip -> zip.entries().asSequence().map { it.name }.toSet() }
+    }
+
+    @Test
     fun hyphenatedCrateNameBundlesTheUnderscoreLibraryFile() {
         val hostLib = NativePlatform.mapLibraryName(hostOs, "rust_jni_demo")
         write("rust/target/release/$hostLib", "hyphen")
