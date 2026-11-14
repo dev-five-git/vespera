@@ -184,9 +184,11 @@ pub(super) fn process_default_functions_for(
         }
     }
 
-    // Demote every serde-default field from `required`: it is optional on the
-    // wire regardless of how the default value was obtained.
-    if !serde_default_fields.is_empty() {
+    // Demote every serde-default field from `required` in the REQUEST view:
+    // serde fills an omitted key in on input, however the default value was
+    // obtained. The response view keeps it required: serde always writes a
+    // `#[serde(default)]` field on output.
+    if side == SerdeSide::Deserialize && !serde_default_fields.is_empty() {
         if let Some(required) = target.required.as_mut() {
             required.retain(|name| !serde_default_fields.contains(name));
         }

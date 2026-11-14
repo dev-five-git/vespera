@@ -5,5 +5,6 @@ expression: field_json(field_src)
 {
   "type": "integer",
   "format": "uint32",
-  "minimum": 5
+  "minimum": 5,
+  "maximum": 4294967295
 }

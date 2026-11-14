@@ -24,9 +24,10 @@ use super::seaorm::{
     extract_sea_orm_default_value, has_sea_orm_primary_key,
 };
 use super::transformation::{
-    build_omit_set, build_partial_config, build_pick_set, build_rename_map, container_serde_attrs,
-    determine_rename_all, extract_doc_attrs, extract_form_data_attrs, field_serde_attrs,
-    renamed_field_form_name, renamed_field_serde_rename, should_skip_field, should_wrap_in_option,
+    OptionWrap, build_omit_set, build_partial_config, build_pick_set, build_rename_map,
+    container_serde_attrs, determine_rename_all, extract_doc_attrs, extract_form_data_attrs,
+    field_form_name, field_serde_attrs, renamed_field_serde_rename, should_skip_field,
+    should_wrap_in_option,
 };
 use super::type_utils::{
     extract_module_path, extract_type_name, is_option_type, is_seaorm_model,
@@ -140,7 +141,10 @@ pub fn generate_schema_type_code(
 
     // Container serde attributes from the source struct, rebuilt key by key
     // without rename_all (emitted separately) and the impl-dependent keys.
-    let serde_attrs_without_rename_all = container_serde_attrs(&parsed_struct.attrs);
+    let serde_attrs_without_rename_all = container_serde_attrs(
+        &parsed_struct.attrs,
+        &strip_raw_prefix_owned(parsed_struct.ident.to_string()),
+    );
 
     // Extract doc comments from source struct to carry over to generated struct
     let struct_doc_attrs = extract_doc_attrs(&parsed_struct.attrs);
@@ -177,6 +181,8 @@ pub fn generate_schema_type_code(
     let mut default_functions: Vec<TokenStream> = Vec::new();
     // Track same-file relation override helpers
     let mut relation_override_helpers: Vec<TokenStream> = Vec::new();
+    // Track serde codec adapters for `partial` fields with `with` & co.
+    let mut codec_adapters: Vec<TokenStream> = Vec::new();
 
     if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
         for field in &fields_named.named {
@@ -215,6 +221,8 @@ pub fn generate_schema_type_code(
                 is_option_type(original_ty),
                 is_relation,
             );
+            // `T` of a field `partial` wrapped into `Option<T>`.
+            let mut wrapped_inner_ty: Option<TokenStream> = None;
 
             // Determine field type: convert relation types to Schema types
             let (field_ty, relation_info): (Box<dyn quote::ToTokens>, Option<RelationFieldInfo>) =
@@ -340,6 +348,7 @@ pub fn generate_schema_type_code(
                     // Also resolves local types to absolute paths
                     let converted_ty = convert_type_with_chrono(original_ty, &source_module_path);
                     if should_wrap_option {
+                        wrapped_inner_ty = Some(converted_ty.clone());
                         (Box::new(quote! { Option<#converted_ty> }), None)
                     } else {
                         (Box::new(converted_ty), None)
@@ -365,10 +374,11 @@ pub fn generate_schema_type_code(
                     let new_field_ident =
                         syn::Ident::new(new_name, field.ident.as_ref().unwrap().span());
                     // The form field keeps the source's name.
-                    let form_name_attr = renamed_field_form_name(
+                    let form_name_attr = field_form_name(
                         &field.attrs,
                         &rust_field_name,
                         &effective_rename_all,
+                        true,
                     );
 
                     field_tokens.push(quote! {
@@ -386,10 +396,18 @@ pub fn generate_schema_type_code(
                     ));
                 } else {
                     let field_ident = field.ident.clone().unwrap();
+                    // A source `#[serde(rename)]` keeps naming the form field.
+                    let form_name_attr = field_form_name(
+                        &field.attrs,
+                        &rust_field_name,
+                        &effective_rename_all,
+                        false,
+                    );
 
                     field_tokens.push(quote! {
                         #(#doc_attrs)*
                         #(#form_data_attrs)*
+                        #form_name_attr
                         #vis #field_ident: #field_ty
                     });
 
@@ -406,8 +424,14 @@ pub fn generate_schema_type_code(
                 // This is important when using schema_type! with models from other files
                 // that may have ORM-specific attributes we don't want in the generated struct
                 let is_renamed = rename_map.contains_key(&rust_field_name);
-                let serde_field_attrs =
-                    field_serde_attrs(&field.attrs, should_wrap_option, is_renamed);
+                let adapter_prefix = format!("__vespera_{new_type_name}_{rust_field_name}");
+                let wrap = wrapped_inner_ty.as_ref().map(|inner_ty| OptionWrap {
+                    adapter_prefix: &adapter_prefix,
+                    inner_ty,
+                });
+                let (serde_field_attrs, adapters) =
+                    field_serde_attrs(&field.attrs, wrap.as_ref(), is_renamed);
+                codec_adapters.push(adapters);
 
                 // Generate serde default + schema(default) from sea_orm(default_value) or primary_key
                 // Handles literal defaults, SQL function defaults, and implicit auto-increment
@@ -598,6 +622,9 @@ pub fn generate_schema_type_code(
 
             // Default value functions for sea_orm(default_value) fields
             #(#default_functions)*
+
+            // Serde codec adapters for `partial` fields with `with` & co.
+            #(#codec_adapters)*
 
             #(#struct_doc_attrs)*
             #[derive(serde::Serialize, serde::Deserialize, #clone_derive #schema_derive)]

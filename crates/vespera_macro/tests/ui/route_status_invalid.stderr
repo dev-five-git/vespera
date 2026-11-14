@@ -10,8 +10,14 @@ error: #[route] `error_status` entries must be integer status codes, e.g. `error
 8 | #[route(get, error_status = ["404"])]
   |                              ^^^^^
 
-error: #[route] `error_status` code must be in the u16 range (0-65535).
+error: #[route] `error_status` status must be an HTTP status code (100-599).
   --> tests/ui/route_status_invalid.rs:11:30
    |
 11 | #[route(get, error_status = [70000])]
    |                              ^^^^^
+
+error: #[route] `error_status` status must be an HTTP status code (100-599).
+  --> tests/ui/route_status_invalid.rs:14:30
+   |
+14 | #[route(get, error_status = [1000])]
+   |                              ^^^^

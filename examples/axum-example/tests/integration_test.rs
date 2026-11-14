@@ -27,6 +27,16 @@ async fn test_form_on_get_reads_the_query_string() {
         .assert_text("Ada <ada@example.com>");
 }
 
+/// `routes/type.rs` (`mod r#type;`) with `fn r#match` is mounted; the
+/// `#[cfg(any())]` module `disabled` is not.
+#[tokio::test]
+async fn test_keyword_and_cfg_gated_modules() {
+    let server = TestServer::new(create_app().await);
+
+    server.get("/type").await.assert_text("match");
+    server.get("/disabled").await.assert_status_not_found();
+}
+
 #[tokio::test]
 async fn test_mod_file_endpoint() {
     let app = create_app().await;

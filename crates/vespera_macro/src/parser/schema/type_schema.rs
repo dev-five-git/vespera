@@ -153,7 +153,7 @@ mod tests {
         None,
         Some("#/components/schemas/Value")
     )]
-    #[case("Result<String, i32>", false, Some(SchemaType::Object), None)]
+    #[case("Result<String, i32>", false, None, None)]
     #[case("crate::Value", false, None, None)]
     #[case("(i32, bool)", false, Some(SchemaType::Array), None)]
     fn test_parse_type_to_schema_ref_additional_cases(
@@ -208,24 +208,24 @@ mod tests {
     #[rstest]
     #[case("Box<'a>")]
     #[case("Vec<'a>")]
-    fn non_type_generic_argument_falls_back_to_object(#[case] ty_source: &str) {
+    fn non_type_generic_argument_falls_back_to_any(#[case] ty_source: &str) {
         let ty: Type = syn::parse_str(ty_source).unwrap();
         let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
 
         let SchemaRef::Inline(schema) = schema_ref else {
-            panic!("expected inline object schema for {ty_source}");
+            panic!("expected inline any-value schema for {ty_source}");
         };
-        assert_eq!(schema.schema_type, Some(SchemaType::Object));
+        assert_eq!(schema.schema_type, None);
     }
 
     // Test parse_type_to_schema_ref with unknown custom type (not in known_schemas)
     #[test]
     fn test_parse_type_to_schema_ref_unknown_custom_type() {
-        // MyUnknownType is not in known_schemas, should return inline object schema
+        // MyUnknownType is not in known_schemas: inline any-value schema
         let ty: Type = syn::parse_str("MyUnknownType").unwrap();
         let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = schema_ref {
-            assert_eq!(schema.schema_type, Some(SchemaType::Object));
+            assert_eq!(schema.schema_type, None);
         } else {
             panic!("Expected inline schema for unknown type");
         }
@@ -238,7 +238,7 @@ mod tests {
         let ty: Type = syn::parse_str("crate::models::UnknownStruct").unwrap();
         let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = schema_ref {
-            assert_eq!(schema.schema_type, Some(SchemaType::Object));
+            assert_eq!(schema.schema_type, None);
         } else {
             panic!("Expected inline schema for unknown qualified type");
         }
@@ -413,8 +413,8 @@ mod tests {
         // Falls through to unknown type handling
         match schema_ref {
             SchemaRef::Inline(schema) => {
-                // Unknown custom type defaults to object
-                assert_eq!(schema.schema_type, Some(SchemaType::Object));
+                // Unknown custom type defaults to any value
+                assert_eq!(schema.schema_type, None);
             }
             SchemaRef::Ref(_) => panic!("Expected inline for unknown Schema type"),
         }
@@ -440,17 +440,20 @@ mod tests {
     }
 
     // Tests for date/time types from chrono crate
+    // (offset-less types carry no `date-time` / `time` format: RFC 3339
+    // requires the offset; bare `DateTime` is sea-orm's naive alias)
     #[rstest]
-    #[case("DateTime", "date-time")]
-    #[case("NaiveDateTime", "date-time")]
-    #[case("DateTimeWithTimeZone", "date-time")]
-    #[case("DateTimeUtc", "date-time")]
-    #[case("DateTimeLocal", "date-time")]
-    #[case("NaiveDate", "date")]
-    #[case("NaiveTime", "time")]
+    #[case("DateTime", None)]
+    #[case("DateTime<Utc>", Some("date-time"))]
+    #[case("NaiveDateTime", None)]
+    #[case("DateTimeWithTimeZone", Some("date-time"))]
+    #[case("DateTimeUtc", Some("date-time"))]
+    #[case("DateTimeLocal", Some("date-time"))]
+    #[case("NaiveDate", Some("date"))]
+    #[case("NaiveTime", None)]
     fn test_parse_type_to_schema_ref_chrono_date_time_types(
         #[case] ty_name: &str,
-        #[case] expected_format: &str,
+        #[case] expected_format: Option<&str>,
     ) {
         let ty: Type = syn::parse_str(ty_name).unwrap();
         let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
@@ -462,9 +465,9 @@ mod tests {
                 "Type {ty_name} should be string schema"
             );
             assert_eq!(
-                schema.format,
-                Some(expected_format.to_string()),
-                "Type {ty_name} should have format {expected_format}"
+                schema.format.as_deref(),
+                expected_format,
+                "Type {ty_name} format"
             );
         } else {
             panic!("Expected inline schema for {ty_name}");
@@ -473,13 +476,13 @@ mod tests {
 
     // Tests for date/time types from time crate
     #[rstest]
-    #[case("OffsetDateTime", "date-time")]
-    #[case("PrimitiveDateTime", "date-time")]
-    #[case("Date", "date")]
-    #[case("Time", "time")]
+    #[case("OffsetDateTime", Some("date-time"))]
+    #[case("PrimitiveDateTime", None)]
+    #[case("Date", Some("date"))]
+    #[case("Time", None)]
     fn test_parse_type_to_schema_ref_time_crate_types(
         #[case] ty_name: &str,
-        #[case] expected_format: &str,
+        #[case] expected_format: Option<&str>,
     ) {
         let ty: Type = syn::parse_str(ty_name).unwrap();
         let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
@@ -491,9 +494,9 @@ mod tests {
                 "Type {ty_name} should be string schema"
             );
             assert_eq!(
-                schema.format,
-                Some(expected_format.to_string()),
-                "Type {ty_name} should have format {expected_format}"
+                schema.format.as_deref(),
+                expected_format,
+                "Type {ty_name} format"
             );
         } else {
             panic!("Expected inline schema for {ty_name}");
@@ -554,7 +557,6 @@ mod tests {
         let qualified_types = vec![
             ("chrono::DateTime<chrono::Utc>", "date-time"),
             ("chrono::NaiveDate", "date"),
-            ("chrono::NaiveTime", "time"),
         ];
 
         for (ty_str, expected_format) in qualified_types {
@@ -581,7 +583,7 @@ mod tests {
 
     // Test for Option<date/time type> (ensures nullable is preserved)
     #[rstest]
-    #[case("Option<DateTime>", "date-time")]
+    #[case("Option<DateTime<Utc>>", "date-time")]
     #[case("Option<NaiveDate>", "date")]
     fn test_parse_type_to_schema_ref_optional_date_time_types(
         #[case] ty_str: &str,
@@ -602,7 +604,7 @@ mod tests {
     // Test for Vec<date/time type> (array of date/time values)
     #[test]
     fn test_parse_type_to_schema_ref_vec_date_time_types() {
-        let ty: Type = syn::parse_str("Vec<DateTime>").unwrap();
+        let ty: Type = syn::parse_str("Vec<DateTime<Utc>>").unwrap();
         let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
 
         if let SchemaRef::Inline(schema) = schema_ref {
@@ -614,7 +616,7 @@ mod tests {
                 panic!("Expected inline items schema");
             }
         } else {
-            panic!("Expected inline schema for Vec<DateTime>");
+            panic!("Expected inline schema for Vec<DateTime<Utc>>");
         }
     }
 
@@ -646,7 +648,7 @@ mod tests {
         );
 
         // Concrete instantiation with DateTime
-        let ty: Type = syn::parse_str("Event<DateTime>").unwrap();
+        let ty: Type = syn::parse_str("Event<DateTime<Utc>>").unwrap();
         let schema_ref = parse_type_to_schema_ref(&ty, &known_schemas, &struct_definitions);
 
         if let SchemaRef::Inline(schema) = schema_ref {
@@ -685,7 +687,7 @@ mod tests {
             "struct TimeRange<T, U> { start: T, end: U }".to_string(),
         );
 
-        let ty: Type = syn::parse_str("TimeRange<DateTime, NaiveDate>").unwrap();
+        let ty: Type = syn::parse_str("TimeRange<DateTime<Utc>, NaiveDate>").unwrap();
         let schema_ref = parse_type_to_schema_ref(&ty, &known_schemas, &struct_definitions);
 
         if let SchemaRef::Inline(schema) = schema_ref {
@@ -805,14 +807,13 @@ mod tests {
     #[case("Path")]
     #[case("Query")]
     #[case("Header")]
-    fn test_parse_type_non_generic_wrappers_return_object(#[case] ty_src: &str) {
+    fn test_parse_type_non_generic_wrappers_return_any(#[case] ty_src: &str) {
         let ty: Type = syn::parse_str(ty_src).unwrap();
         let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(
-                schema.schema_type,
-                Some(SchemaType::Object),
-                "{ty_src} without generics should be object"
+                schema.schema_type, None,
+                "{ty_src} without generics carries no payload type: any value"
             );
         } else {
             panic!("Expected inline schema for {ty_src}");

@@ -198,10 +198,12 @@ fn test_build_operation_without_tags() {
     assert_eq!(op.tags, None);
 }
 
-#[test]
-fn test_build_operation_operation_id() {
-    let op = build("fn my_handler() -> String", "/test", None);
-    assert_eq!(op.operation_id, Some("my_handler".to_string()));
+#[rstest]
+#[case::plain("fn my_handler() -> String", "my_handler")]
+#[case::raw_keyword("fn r#match() -> String", "match")]
+fn test_build_operation_operation_id(#[case] sig: &str, #[case] expected: &str) {
+    let op = build(sig, "/test", None);
+    assert_eq!(op.operation_id.as_deref(), Some(expected));
 }
 
 #[test]
@@ -887,4 +889,40 @@ fn response_example_is_attached_to_200_media() {
 
     let media = &op.responses["200"].content.as_ref().unwrap()["application/json"];
     assert_eq!(media.example, Some(response_example));
+}
+
+/// A path segment is documented once per `(name, in)`: a bare argument named
+/// like the segment types the `{type: string}` placeholder instead of adding
+/// a second `in: path` entry; a `Path<T>` extractor's entry is authoritative.
+#[rstest]
+#[case::bare_typed_argument("dedup_bare_typed", "fn get(org: i64) -> String", "/orgs/{org}")]
+#[case::bare_custom_extractor(
+    "dedup_bare_custom_extractor",
+    "fn get(org: OrgCtx) -> String",
+    "/orgs/{org}/repos/{repo}"
+)]
+#[case::path_extractor_wins(
+    "dedup_path_extractor_wins",
+    "fn get(Path(org): Path<String>, org: i64) -> String",
+    "/orgs/{org}"
+)]
+fn path_parameters_are_deduplicated(#[case] snapshot: &str, #[case] sig: &str, #[case] path: &str) {
+    let op = build(sig, path, None);
+    let params = op.parameters.unwrap_or_default();
+    for (index, param) in params.iter().enumerate() {
+        assert!(
+            !params[..index]
+                .iter()
+                .any(|seen| seen.name == param.name && seen.r#in == param.r#in),
+            "duplicate parameter `{}`: {params:?}",
+            param.name
+        );
+    }
+    insta::assert_debug_snapshot!(
+        snapshot,
+        params
+            .iter()
+            .map(|p| (p.name.as_str(), p.r#in, param_schema_type(p)))
+            .collect::<Vec<_>>()
+    );
 }

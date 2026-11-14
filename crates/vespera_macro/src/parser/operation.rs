@@ -93,6 +93,7 @@ pub fn build_operation_from_function(
 
     // Generate path parameters from path string (not from function signature)
     // This is the primary source of truth for path parameters
+    let mut placeholder_path_params = 0;
     if let Some(ty) = &path_extractor_type {
         parameters.extend(path_extractor_parameters(
             ty,
@@ -101,12 +102,14 @@ pub fn build_operation_from_function(
             struct_definitions,
         ));
     } else {
-        // No Path extractor found, but path has parameters - use String as default
+        // No Path extractor found, but path has parameters - use String as
+        // default (placeholders a bare `name: T` argument below may type).
         parameters.extend(
             path_params
                 .iter()
                 .map(|name| path_parameter(name, string_path_schema())),
         );
+        placeholder_path_params = path_params.len();
     }
 
     // Build HashSet once for O(1) path-param membership tests in parse_function_parameter
@@ -151,7 +154,7 @@ pub fn build_operation_from_function(
     if let Some(headers) = config.headers {
         parameters.extend(headers.iter().map(header_parameter));
     }
-    deduplicate_header_parameters(&mut parameters);
+    deduplicate_parameters(&mut parameters, placeholder_path_params);
 
     // Parse return type - may return multiple responses (for Result types)
     let mut responses = parse_return_type(&sig.output, known_schemas, struct_definitions);
@@ -266,7 +269,8 @@ pub fn build_operation_from_function(
         operation_id: config
             .operation_id
             .map(str::to_owned)
-            .or_else(|| Some(sig.ident.to_string())),
+            // `fn r#match` → operationId `match`, not `r#match`.
+            .or_else(|| Some(syn::ext::IdentExt::unraw(&sig.ident).to_string())),
         tags: config.tags.map(<[std::string::String]>::to_vec),
         summary: config.summary.map(str::to_owned),
         description: None,
@@ -320,14 +324,31 @@ fn response_description_for_status(status_code: u16) -> String {
 /// `headers = [...]`. Keep the first occurrence (signature-derived parameters
 /// are appended before route-site headers and usually carry the richer schema)
 /// and drop later duplicates using HTTP's case-insensitive header-name rules.
-fn deduplicate_header_parameters(parameters: &mut Vec<Parameter>) {
-    let mut seen_headers = HashSet::new();
-    parameters.retain(|parameter| {
-        if parameter.r#in != ParameterLocation::Header {
-            return true;
+/// OpenAPI forbids two parameters with the same `(name, in)` (header names
+/// compare case-insensitively). The first occurrence wins and keeps its
+/// position, except that one of the leading `placeholders` `{type: string}`
+/// path entries (emitted when no `Path<T>` extractor types the route's
+/// segments) is replaced by the first later entry for the same segment, e.g. a
+/// bare `user_id: u64` argument named like `{user_id}`.
+fn deduplicate_parameters(parameters: &mut Vec<Parameter>, placeholders: usize) {
+    let same = |a: &Parameter, b: &Parameter| {
+        a.r#in == b.r#in
+            && if a.r#in == ParameterLocation::Header {
+                a.name.eq_ignore_ascii_case(&b.name)
+            } else {
+                a.name == b.name
+            }
+    };
+    let mut kept: Vec<Parameter> = Vec::with_capacity(parameters.len());
+    let mut retyped: HashSet<usize> = HashSet::new();
+    for parameter in std::mem::take(parameters) {
+        match kept.iter().position(|seen| same(seen, &parameter)) {
+            Some(slot) if slot < placeholders && retyped.insert(slot) => kept[slot] = parameter,
+            Some(_) => {}
+            None => kept.push(parameter),
         }
-        seen_headers.insert(parameter.name.to_ascii_lowercase())
-    });
+    }
+    *parameters = kept;
 }
 
 /// `responses = [(404, NotFound)]` entry. `#[route]` asserts the type is

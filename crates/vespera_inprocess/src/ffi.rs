@@ -70,6 +70,9 @@ pub const VESPERA_ERR_TOO_LATE: c_int = -5;
 
 /// `400` body for a NULL request pointer with a non-zero length.
 pub const NULL_REQUEST_MSG: &str = "invalid request buffer (NULL with non-zero length)";
+/// `400` body for a request length above `isize::MAX` (no buffer can be
+/// that large, whatever the pointer).
+pub const REQUEST_LEN_TOO_LARGE_MSG: &str = "invalid request buffer (length exceeds isize::MAX)";
 /// `503` body for an async dispatch dropped before it completed (runtime
 /// shutdown).
 pub const ASYNC_DROPPED_MSG: &str = "dispatch dropped before completion (runtime shut down)";
@@ -80,22 +83,30 @@ const PANIC_MSG: &str = "panic in Rust engine";
 pub type VesperaCallback =
     unsafe extern "C" fn(user_data: *mut c_void, response: *mut u8, response_len: usize);
 
-/// Borrow the request buffer, or `None` for a NULL pointer with a non-zero
-/// (or slice-impossible) length.
+/// The borrowed request buffer, or the `400` message explaining why there
+/// is none.
+type RequestInput<'a> = Result<&'a [u8], &'static str>;
+
+/// Borrow the request buffer, or the `400` message for a NULL pointer with
+/// a non-zero length ([`NULL_REQUEST_MSG`]) or a slice-impossible length
+/// ([`REQUEST_LEN_TOO_LARGE_MSG`]).
 ///
 /// # Safety
 ///
 /// When `len > 0` and `ptr` is non-NULL, `ptr` must be readable for `len`
 /// bytes and not mutated for `'a`.
-unsafe fn request_slice<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
+unsafe fn request_slice<'a>(ptr: *const u8, len: usize) -> RequestInput<'a> {
     if len == 0 {
-        return Some(&[]);
+        return Ok(&[]);
     }
-    if ptr.is_null() || isize::try_from(len).is_err() {
-        return None;
+    if isize::try_from(len).is_err() {
+        return Err(REQUEST_LEN_TOO_LARGE_MSG);
+    }
+    if ptr.is_null() {
+        return Err(NULL_REQUEST_MSG);
     }
     // SAFETY: non-NULL, `len <= isize::MAX`, readable per the contract.
-    Some(unsafe { std::slice::from_raw_parts(ptr, len) })
+    Ok(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
 /// Hand a wire response to the host: `(ptr, len)` of a leaked `Box<[u8]>`,
@@ -116,9 +127,10 @@ fn panic_wire() -> Vec<u8> {
 }
 
 /// The wire response for a synchronous buffered dispatch of `input`.
-fn dispatch_buffered(input: Option<&[u8]>) -> Vec<u8> {
-    let Some(input) = input else {
-        return error_wire(400, NULL_REQUEST_MSG);
+fn dispatch_buffered(input: RequestInput<'_>) -> Vec<u8> {
+    let input = match input {
+        Ok(input) => input,
+        Err(msg) => return error_wire(400, msg),
     };
     check_ingress_cap(input.len()).unwrap_or_else(|| {
         block_on_shared_runtime(crate::dispatch_from_bytes_async(input.to_vec()))
@@ -227,9 +239,10 @@ pub unsafe extern "C" fn vespera_dispatch_into(
 }
 
 /// The direct-write outcome for `input` into `out`.
-fn dispatch_direct(input: Option<&[u8]>, out: &mut [u8]) -> DirectWriteResult {
-    let Some(input) = input else {
-        return crate::direct::write_wire_into(out, &error_wire(400, NULL_REQUEST_MSG));
+fn dispatch_direct(input: RequestInput<'_>, out: &mut [u8]) -> DirectWriteResult {
+    let input = match input {
+        Ok(input) => input,
+        Err(msg) => return crate::direct::write_wire_into(out, &error_wire(400, msg)),
     };
     if let Some(err) = check_ingress_cap(input.len()) {
         return crate::direct::write_wire_into(out, &err);
@@ -274,9 +287,9 @@ type AsyncClaim = (Vec<u8>, AsyncPermit, RuntimeLease);
 /// Admit (in-flight cap, shared with JNI `dispatchAsync`), validate + copy
 /// the request and claim the runtime, or the wire response to deliver
 /// inline.
-fn prepare_async(input: Option<&[u8]>) -> Result<AsyncClaim, Vec<u8>> {
+fn prepare_async(input: RequestInput<'_>) -> Result<AsyncClaim, Vec<u8>> {
     let permit = try_acquire_async_permit().ok_or_else(async_overloaded_wire)?;
-    let input = input.ok_or_else(|| error_wire(400, NULL_REQUEST_MSG))?;
+    let input = input.map_err(|msg| error_wire(400, msg))?;
     if let Some(err) = check_ingress_cap(input.len()) {
         return Err(err);
     }
@@ -307,6 +320,12 @@ async fn run_async(
 
 /// `int vespera_dispatch_async(const uint8_t*, size_t, vespera_callback,
 /// void*)` — see `include/vespera.h`.
+///
+/// `callback` may run before this returns: inline for an early rejection
+/// (in-flight cap `503`, NULL / oversized-length request `400`, size cap
+/// `413`, shut down `503`), and a runtime worker may finish a fast dispatch
+/// first too — the host must not hold a lock across the call that the
+/// callback takes.
 ///
 /// # Safety
 ///
@@ -427,14 +446,18 @@ mod tests {
         // SAFETY: NULL/len-0 and NULL/len>0 never dereference; the last
         // case borrows a live array.
         unsafe {
-            assert_eq!(request_slice(std::ptr::null(), 0), Some(&[][..]));
-            assert_eq!(request_slice(std::ptr::null(), 3), None);
+            assert_eq!(request_slice(std::ptr::null(), 0), Ok(&[][..]));
+            assert_eq!(request_slice(std::ptr::null(), 3), Err(NULL_REQUEST_MSG));
             assert_eq!(
                 request_slice(std::ptr::NonNull::<u8>::dangling().as_ptr(), usize::MAX),
-                None
+                Err(REQUEST_LEN_TOO_LARGE_MSG)
+            );
+            assert_eq!(
+                request_slice(std::ptr::null(), usize::MAX),
+                Err(REQUEST_LEN_TOO_LARGE_MSG)
             );
             let bytes = [1u8, 2, 3];
-            assert_eq!(request_slice(bytes.as_ptr(), 2), Some(&bytes[..2]));
+            assert_eq!(request_slice(bytes.as_ptr(), 2), Ok(&bytes[..2]));
         }
     }
 

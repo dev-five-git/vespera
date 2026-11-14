@@ -28,7 +28,8 @@ expression: pretty(&doc)
                     },
                     "total": {
                       "type": "integer",
-                      "format": "uint64"
+                      "format": "uint64",
+                      "minimum": 0
                     }
                   },
                   "required": [
@@ -67,13 +68,12 @@ expression: pretty(&doc)
         "properties": {
           "items": {
             "type": "array",
-            "items": {
-              "type": "object"
-            }
+            "items": {}
           },
           "total": {
             "type": "integer",
-            "format": "uint64"
+            "format": "uint64",
+            "minimum": 0
           }
         },
         "required": [
@@ -90,9 +90,7 @@ expression: pretty(&doc)
               "$ref": "#/components/schemas/Tree"
             }
           },
-          "value": {
-            "type": "object"
-          }
+          "value": {}
         },
         "required": [
           "value",

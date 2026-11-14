@@ -11,6 +11,8 @@ use crate::TestStruct;
 
 pub mod codecs;
 pub mod config;
+#[cfg(any())]
+pub mod disabled;
 pub mod enums;
 pub mod error;
 pub mod events;
@@ -24,6 +26,7 @@ pub mod network;
 pub mod path;
 pub mod secured;
 pub mod shapes;
+pub mod r#type;
 pub mod typed_form;
 pub mod typed_header;
 pub mod users;

@@ -1,0 +1,13 @@
+---
+source: crates/vespera_macro/src/parser/operation/tests.rs
+expression: "params.iter().map(|p|\n(p.name.as_str(), p.r#in, param_schema_type(p))).collect::<Vec<_>>()"
+---
+[
+    (
+        "org",
+        Path,
+        Some(
+            String,
+        ),
+    ),
+]

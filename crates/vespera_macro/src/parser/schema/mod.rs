@@ -45,9 +45,10 @@ pub use enum_schema::{
 };
 pub use generics::substitute_type;
 pub use serde_attrs::{
-    SerdeSide, extract_default, extract_doc_comment, extract_field_codec, extract_field_rename,
-    extract_field_rename_for, extract_flatten, extract_rename_all, extract_rename_all_for,
-    extract_serde_skip_flags, extract_skip, rename_field, strip_raw_prefix_owned,
+    SerdeSide, extract_default, extract_deny_unknown_fields, extract_doc_comment,
+    extract_field_codec, extract_field_rename, extract_field_rename_for, extract_flatten,
+    extract_rename_all, extract_rename_all_for, extract_serde_skip_flags, extract_skip,
+    rename_field, strip_raw_prefix_owned,
 };
 pub use struct_schema::{apply_field_rules, parse_struct_to_schema};
 // Re-export for internal use within the parser module. `parse_type_to_schema_ref`
