@@ -673,6 +673,21 @@ fn sidecar_validation_covers_missing_fingerprints_corruption_and_success() {
         .is_none()
     );
 
+    // A corrupted content-addressed pretty sidecar (fingerprint and content
+    // hash both disagree) is rejected.
+    let corrupted = pretty_sidecar_path("t", hash_str("expected"));
+    fs::write(&corrupted, "corrupted").unwrap();
+    assert!(
+        load_validated_sidecar_specs(
+            "t",
+            None,
+            Some(hash_str("expected")),
+            None,
+            Some(path_fingerprint(&corrupted).unwrap().wrapping_add(1)),
+        )
+        .is_none()
+    );
+
     let loaded = load_validated_sidecar_specs(
         "t",
         Some(hash_str("compact")),
