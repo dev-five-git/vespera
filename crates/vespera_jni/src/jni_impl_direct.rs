@@ -53,6 +53,17 @@ fn direct_overflow_code(required: usize) -> jint {
     jint::try_from(required).map_or(DIRECT_UNREPRESENTABLE, |r: jint| -r)
 }
 
+/// `-(MIN_DIRECT_OUT_BYTES)` for an `out` buffer below
+/// [`vespera_inprocess::MIN_DIRECT_OUT_BYTES`], else `None`.
+///
+/// Such a buffer could not hold a synthesized panic / timeout wire, and
+/// the caller's overflow retry would re-run the failing handler, so
+/// `dispatchDirect0` asks for the minimum before dispatching at all.
+fn undersized_out_code(out_len: usize) -> Option<jint> {
+    (out_len < vespera_inprocess::MIN_DIRECT_OUT_BYTES)
+        .then(|| direct_overflow_code(vespera_inprocess::MIN_DIRECT_OUT_BYTES))
+}
+
 /// Whether `[a0, a0+a_len)` and `[b0, b0+b_len)` overlap (addresses as
 /// `usize`).  Used to reject aliasing `in_buf` / `out_buf` direct-buffer
 /// ranges in [`Java_..._dispatchDirect0`] before creating a shared `&[u8]`
@@ -119,6 +130,11 @@ unsafe fn write_response_to_out(out_addr: *mut u8, out_cap: usize, response: &[u
 ///   written).  `required_size` is exact, but retrying re-runs the
 ///   dispatch, so the Java side only auto-retries idempotent
 ///   methods.
+/// * An `out_buf` smaller than [`vespera_inprocess::MIN_DIRECT_OUT_BYTES`]
+///   (1 KiB) returns `-(MIN_DIRECT_OUT_BYTES)` **without dispatching**:
+///   every wire synthesized after the handler ran (panic `500`, `504`
+///   timeout, …) fits that minimum, so a retry never re-runs a handler
+///   whose failure response merely overflowed.
 /// * `Integer.MIN_VALUE`: response size exceeds `i32::MAX`.
 ///
 /// Compared with `dispatchBytes`, this path removes BOTH JNI
@@ -164,6 +180,9 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
     out_buf: JByteBuffer<'local>,
 ) -> jint {
     run_direct_symbol(unowned_env, &in_buf, in_len, &out_buf, |input, out| {
+        if let Some(code) = undersized_out_code(out.len()) {
+            return Some(code);
+        }
         block_on_shared_runtime(vespera_inprocess::dispatch_into_async_borrowed(input, out)).map(
             |dispatched| match dispatched {
                 // n <= out_cap, and Java buffer capacities are jint-bounded,

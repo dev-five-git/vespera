@@ -107,9 +107,11 @@ impl std::error::Error for StreamAbort {}
 /// an oversized one is streamed unhoisted).
 ///
 /// A failure **after** body bytes were already delivered through
-/// `on_chunk` (body error, sink stop, or an expired
-/// [`crate::dispatch_timeout`]) returns a `5xx` error header — the delivered
-/// body is truncated.  Callers that must distinguish "clean error response"
+/// `on_chunk` (body error or sink stop) returns a `5xx` error header — the
+/// delivered body is truncated.  [`crate::dispatch_timeout`] bounds only the
+/// time to the response header here (an expired deadline answers `504`
+/// before any body byte); once the header is committed the body drains
+/// without a total deadline.  Callers that must distinguish "clean error response"
 /// from "truncated body" (e.g. to abort the transport) should use
 /// [`dispatch_streaming_with_outcome_async`].
 pub async fn dispatch_streaming_async<F>(input: Vec<u8>, on_chunk: F) -> Vec<u8>

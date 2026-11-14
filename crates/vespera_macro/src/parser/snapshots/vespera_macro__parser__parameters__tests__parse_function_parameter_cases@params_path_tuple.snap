@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/parser/parameters.rs
-assertion_line: 162
 expression: parameters
 ---
 [
@@ -62,6 +61,11 @@ expression: parameters
         example: None,
         style: None,
         explode: None,
+        deprecated: None,
+        allow_empty_value: None,
+        allow_reserved: None,
+        examples: None,
+        content: None,
     },
     Parameter {
         name: "count",
@@ -123,5 +127,10 @@ expression: parameters
         example: None,
         style: None,
         explode: None,
+        deprecated: None,
+        allow_empty_value: None,
+        allow_reserved: None,
+        examples: None,
+        content: None,
     },
 ]
