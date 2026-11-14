@@ -16,9 +16,15 @@ pub enum OpenApiVersion {
     V3_0_2,
     #[serde(rename = "3.0.3")]
     V3_0_3,
+    #[serde(rename = "3.0.4")]
+    V3_0_4,
     #[serde(rename = "3.1.0")]
     #[default]
     V3_1_0,
+    #[serde(rename = "3.1.1")]
+    V3_1_1,
+    #[serde(rename = "3.1.2")]
+    V3_1_2,
 }
 
 /// Contact information

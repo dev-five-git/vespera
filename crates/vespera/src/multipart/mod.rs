@@ -298,8 +298,13 @@ impl<T> std::ops::DerefMut for TypedMultipart<T> {
 ///
 /// Sized as a **bounded safety budget**, not a generous allowance: it is the
 /// guard that still applies when applications disable or raise axum's
-/// [`DefaultBodyLimit`](axum::extract::DefaultBodyLimit) (notably the
-/// in-process / JNI upload path, where axum's HTTP-layer limit never runs). At
+/// [`DefaultBodyLimit`](axum::extract::DefaultBodyLimit). That limit is not
+/// an HTTP-server layer: the underlying `axum::extract::Multipart` extractor
+/// applies it to the body itself, so it runs on every transport — including
+/// the in-process / JNI dispatch path — and without a `DefaultBodyLimit`
+/// layer it is axum's built-in 2 MB. Large uploads therefore need
+/// `DefaultBodyLimit::max(..)` / `DefaultBodyLimit::disable()` on the route,
+/// and this cap is what still bounds them once that is raised. At
 /// 64 MiB a single request can no longer pin hundreds of MiB of buffered text
 /// fields / temp-file I/O — the practical DoS budget the previous 512 MiB
 /// default handed every caller. Applications that legitimately accept larger

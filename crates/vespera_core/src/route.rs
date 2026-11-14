@@ -230,6 +230,11 @@ pub struct Header {
     pub schema: Option<SchemaRef>,
 }
 
+/// `OpenAPI` Callback Object: runtime expression (e.g.
+/// `{$request.body#/callbackUrl}`) → the Path Item describing the request
+/// the API sends to that URL.
+pub type Callback = BTreeMap<String, PathItem>;
+
 /// `OpenAPI` Operation definition
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -263,9 +268,10 @@ pub struct Operation {
     /// External documentation for this operation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_docs: Option<ExternalDocumentation>,
-    /// Callback definitions keyed by runtime expression.
+    /// Callback definitions: callback name → [`Callback`] (runtime
+    /// expression → Path Item), per the OpenAPI 3.1 Callback Object.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub callbacks: Option<BTreeMap<String, Box<PathItem>>>,
+    pub callbacks: Option<BTreeMap<String, Callback>>,
     /// Alternative servers for this operation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub servers: Option<Vec<Server>>,
@@ -614,8 +620,11 @@ mod tests {
     fn operation_and_path_item_optional_openapi_fields_serialize_when_present() {
         let mut callbacks = BTreeMap::new();
         callbacks.insert(
-            "{$request.body#/callbackUrl}".to_string(),
-            Box::new(PathItem::default()),
+            "onEvent".to_string(),
+            Callback::from([(
+                "{$request.body#/callbackUrl}".to_string(),
+                PathItem::default(),
+            )]),
         );
         let operation = Operation {
             operation_id: None,
@@ -651,6 +660,28 @@ mod tests {
         assert!(json.contains("\"$ref\":\"#/paths/~1users\""));
         assert!(json.contains("callbacks"));
         assert!(json.contains("servers"));
+    }
+
+    /// `callbacks` is name → (runtime expression → Path Item), as in the
+    /// OpenAPI 3.1 Callback Object; the expression level must survive a
+    /// round trip instead of being dropped as an unknown Path Item field.
+    #[test]
+    fn callbacks_nest_name_then_expression_then_path_item() {
+        let json = serde_json::json!({
+            "responses": {},
+            "callbacks": {
+                "onData": {
+                    "{$request.query.callbackUrl}/data": {
+                        "post": { "responses": { "202": { "description": "ok" } } }
+                    }
+                }
+            }
+        });
+        let operation: Operation = serde_json::from_value(json.clone()).unwrap();
+        let callback = &operation.callbacks.as_ref().unwrap()["onData"];
+        let path_item: &PathItem = &callback["{$request.query.callbackUrl}/data"];
+        assert!(path_item.post.is_some());
+        assert_eq!(serde_json::to_value(&operation).unwrap(), json);
     }
 
     #[rstest]

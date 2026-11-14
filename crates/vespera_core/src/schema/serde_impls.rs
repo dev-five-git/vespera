@@ -417,12 +417,23 @@ impl Schema {
     /// `nullable_ref` suppresses the explicit `anyOf` field: a nullable `$ref`
     /// already emitted its own `anyOf` in the head, and the validation at the
     /// top of [`Schema::serialize`] guarantees the two never both carry data.
-    fn serialize_composition<S>(&self, out: &mut S, nullable_ref: bool) -> Result<(), S::Error>
+    fn serialize_composition<S>(
+        &self,
+        out: &mut S,
+        nullable: bool,
+        nullable_ref: bool,
+    ) -> Result<(), S::Error>
     where
         S: SerializeStruct,
     {
-        if let Some(value) = &self.r#enum {
-            out.serialize_field("enum", value)?;
+        if let Some(values) = &self.r#enum {
+            // A nullable `enum` must name `null` or it still rejects it,
+            // whatever `type` says.
+            if nullable && !values.contains(&serde_json::Value::Null) {
+                out.serialize_field("enum", &EnumWithNull(values))?;
+            } else {
+                out.serialize_field("enum", values)?;
+            }
         }
         if let Some(value) = &self.all_of {
             out.serialize_field("allOf", value)?;
@@ -474,12 +485,91 @@ impl Schema {
     }
 }
 
+/// `enum` values plus a trailing `null` (borrowing, no cloned `Vec`).
+struct EnumWithNull<'a>(&'a [serde_json::Value]);
+
+impl Serialize for EnumWithNull<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.len() + 1))?;
+        for value in self.0 {
+            seq.serialize_element(value)?;
+        }
+        seq.serialize_element(&serde_json::Value::Null)?;
+        seq.end()
+    }
+}
+
+/// `schema` serialized as if it were not nullable (the first `anyOf` branch
+/// of [`NullableComposition`]).
+struct NonNullable<'a>(&'a Schema);
+
+impl Serialize for NonNullable<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize_as(serializer, false)
+    }
+}
+
+/// `anyOf: [<schema>, {type: null}]` for a nullable schema without `type`
+/// or `$ref` whose composition keyword would otherwise still reject `null`.
+struct NullableComposition<'a>(&'a Schema);
+
+impl Serialize for NullableComposition<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(2))?;
+        seq.serialize_element(&NonNullable(self.0))?;
+        seq.serialize_element(&NullSchema)?;
+        seq.end()
+    }
+}
+
+impl Schema {
+    /// Whether a composition keyword (`oneOf` / `allOf` / `not`, or an
+    /// `anyOf` without a `{type: null}` branch) makes this schema reject
+    /// `null` even when it is flagged `nullable`.
+    fn composition_rejects_null(&self) -> bool {
+        self.one_of.is_some()
+            || self.all_of.is_some()
+            || self.not.is_some()
+            || self.any_of.as_ref().is_some_and(|members| {
+                !members.iter().any(|member| {
+                    matches!(member, SchemaRef::Inline(schema) if schema.schema_type == Some(SchemaType::Null))
+                })
+            })
+    }
+}
+
 impl Serialize for Schema {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        let nullable_ref = self.nullable == Some(true) && self.ref_path.is_some();
+        self.serialize_as(serializer, self.nullable == Some(true))
+    }
+}
+
+impl Schema {
+    /// [`Serialize`] with `nullable` in place of `self.nullable`.
+    ///
+    /// OpenAPI 3.1 has no `nullable` keyword, so it is carried by the shape:
+    /// `type: [T, "null"]`, `anyOf: [{$ref}, {type: null}]` for a reference,
+    /// `null` appended to an `enum`, and — for a schema with neither `type`
+    /// nor `$ref` whose `oneOf` / `allOf` / `not` / `anyOf` would reject
+    /// `null` — `anyOf: [<schema>, {type: null}]`.  Any other type-less
+    /// schema already accepts `null` and is emitted as is.
+    fn serialize_as<S>(&self, serializer: S, nullable: bool) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if nullable
+            && self.ref_path.is_none()
+            && self.schema_type.is_none()
+            && self.composition_rejects_null()
+        {
+            let mut out = serializer.serialize_struct("Schema", 1)?;
+            out.serialize_field("anyOf", &NullableComposition(self))?;
+            return out.end();
+        }
+        let nullable_ref = nullable && self.ref_path.is_some();
         if nullable_ref && self.any_of.is_some() {
             return Err(serde::ser::Error::custom(
                 "invalid Schema: nullable `$ref` serializes through anyOf and cannot also carry explicit any_of",
@@ -511,7 +601,7 @@ impl Serialize for Schema {
             // `SchemaType` is byte-identical). Both avoid the previous
             // per-schema `SchemaTypeWire` value. A nullable `null` (e.g.
             // `Option<()>`) stays the single `"null"` (never `["null","null"]`).
-            if self.nullable == Some(true) && schema_type != SchemaType::Null {
+            if nullable && schema_type != SchemaType::Null {
                 out.serialize_field("type", &NullableScalarType(schema_type))?;
             } else {
                 out.serialize_field("type", &schema_type)?;
@@ -555,7 +645,7 @@ impl Serialize for Schema {
         self.serialize_string_constraints(&mut out)?;
         self.serialize_array_constraints(&mut out)?;
         self.serialize_object_constraints(&mut out)?;
-        self.serialize_composition(&mut out, nullable_ref)?;
+        self.serialize_composition(&mut out, nullable, nullable_ref)?;
         self.serialize_trailing_flags(&mut out)?;
         out.end()
     }

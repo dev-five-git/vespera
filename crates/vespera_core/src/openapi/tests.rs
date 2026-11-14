@@ -741,3 +741,22 @@ fn merge_adopts_webhooks_when_self_has_none() {
 
     assert!(base.webhooks.unwrap().contains_key("hook"));
 }
+
+#[rstest]
+#[case(OpenApiVersion::V3_0_4, "3.0.4")]
+#[case(OpenApiVersion::V3_1_0, "3.1.0")]
+#[case(OpenApiVersion::V3_1_1, "3.1.1")]
+#[case(OpenApiVersion::V3_1_2, "3.1.2")]
+fn openapi_version_round_trips(#[case] version: OpenApiVersion, #[case] wire: &str) {
+    let json = serde_json::to_value(version).unwrap();
+    assert_eq!(json, wire);
+    assert_eq!(
+        serde_json::from_value::<OpenApiVersion>(json).unwrap(),
+        version
+    );
+}
+
+#[test]
+fn openapi_version_default_stays_3_1_0() {
+    assert_eq!(OpenApiVersion::default(), OpenApiVersion::V3_1_0);
+}

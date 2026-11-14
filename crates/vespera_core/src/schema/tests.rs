@@ -739,3 +739,111 @@ fn schema_ref_inline_schema_preserves_every_supported_keyword() {
     assert_eq!(output["$dynamicAnchor"], "node");
     assert_eq!(output["$dynamicRef"], "#node");
 }
+
+mod nullable_and_boolean_schemas {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn inline(schema: Schema) -> SchemaRef {
+        SchemaRef::Inline(Box::new(schema))
+    }
+
+    /// OpenAPI 3.1 has no `nullable` keyword: a nullable schema must accept
+    /// `null` through `type` / `enum` / `anyOf` alone.
+    #[rstest]
+    #[case::typed_enum_gains_null(
+        Schema { r#enum: Some(vec![json!("a"), json!("b")]), nullable: Some(true), ..Schema::string() },
+        json!({"type": ["string", "null"], "enum": ["a", "b", null]})
+    )]
+    #[case::enum_already_naming_null(
+        Schema { r#enum: Some(vec![json!("a"), Value::Null]), nullable: Some(true), ..Schema::string() },
+        json!({"type": ["string", "null"], "enum": ["a", null]})
+    )]
+    #[case::non_nullable_enum_unchanged(
+        Schema { r#enum: Some(vec![json!("a")]), nullable: Some(false), ..Schema::string() },
+        json!({"type": "string", "enum": ["a"]})
+    )]
+    #[case::typeless_enum_gains_null(
+        Schema { r#enum: Some(vec![json!(1)]), nullable: Some(true), ..Schema::default() },
+        json!({"enum": [1, null]})
+    )]
+    #[case::typeless_one_of_wrapped(
+        Schema {
+            title: Some("Choice".into()),
+            one_of: Some(vec![inline(Schema::string())]),
+            nullable: Some(true),
+            ..Schema::default()
+        },
+        json!({"anyOf": [{"title": "Choice", "oneOf": [{"type": "string"}]}, {"type": "null"}]})
+    )]
+    #[case::typeless_all_of_wrapped(
+        Schema {
+            all_of: Some(vec![SchemaRef::Ref(Reference::schema("A"))]),
+            nullable: Some(true),
+            ..Schema::default()
+        },
+        json!({"anyOf": [{"allOf": [{"$ref": "#/components/schemas/A"}]}, {"type": "null"}]})
+    )]
+    #[case::typeless_not_wrapped(
+        Schema {
+            not: Some(inline(Schema::string())),
+            nullable: Some(true),
+            ..Schema::default()
+        },
+        json!({"anyOf": [{"not": {"type": "string"}}, {"type": "null"}]})
+    )]
+    #[case::typeless_any_of_without_null_wrapped(
+        Schema {
+            any_of: Some(vec![inline(Schema::integer())]),
+            nullable: Some(true),
+            ..Schema::default()
+        },
+        json!({"anyOf": [{"anyOf": [{"type": "integer"}]}, {"type": "null"}]})
+    )]
+    #[case::typeless_any_of_with_null_unchanged(
+        Schema {
+            any_of: Some(vec![inline(Schema::integer()), inline(Schema::new(SchemaType::Null))]),
+            nullable: Some(true),
+            ..Schema::default()
+        },
+        json!({"anyOf": [{"type": "integer"}, {"type": "null"}]})
+    )]
+    #[case::typeless_unconstrained_already_accepts_null(
+        Schema { description: Some("anything".into()), nullable: Some(true), ..Schema::default() },
+        json!({"description": "anything"})
+    )]
+    fn nullable_schema_accepts_null_on_the_wire(#[case] schema: Schema, #[case] expected: Value) {
+        assert_eq!(serde_json::to_value(&schema).unwrap(), expected);
+    }
+
+    /// JSON Schema 2020-12 boolean schemas: `true` accepts everything
+    /// (`{}`), `false` nothing (`{"not": {}}`).
+    #[rstest]
+    #[case::always("true", json!({}))]
+    #[case::never("false", json!({"not": {}}))]
+    fn boolean_schema_deserializes_to_its_object_form(#[case] wire: &str, #[case] expected: Value) {
+        let schema_ref: SchemaRef = serde_json::from_str(wire).unwrap();
+        assert!(matches!(schema_ref, SchemaRef::Inline(_)));
+        assert_eq!(serde_json::to_value(&schema_ref).unwrap(), expected);
+    }
+
+    #[test]
+    fn boolean_schemas_deserialize_inside_a_schema() {
+        let schema: Schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {"anything": true, "nothing": false},
+            "items": false,
+            "additionalProperties": false
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&schema).unwrap(),
+            json!({
+                "type": "object",
+                "items": {"not": {}},
+                "properties": {"anything": {}, "nothing": {"not": {}}},
+                "additionalProperties": false
+            })
+        );
+    }
+}

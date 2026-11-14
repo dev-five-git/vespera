@@ -370,3 +370,76 @@ fn test_typed_multipart_deref_mut() {
     tm.push(4);
     assert_eq!(&*tm, &[1, 2, 3, 4]);
 }
+
+// ─── Reflected part names ───────────────────────────────────────────
+
+/// A client-chosen part name is echoed bounded (64 chars + `…`) with
+/// control characters escaped, in both the message and the envelope `path`.
+#[rstest::rstest]
+#[case::plain("avatar", "avatar")]
+#[case::exactly_the_cap(&"n".repeat(64), &"n".repeat(64))]
+#[case::over_the_cap(&"가".repeat(500), &format!("{}…", "가".repeat(64)))]
+#[case::control_chars("a\r\nInjected: 1\u{1b}[31m", "a\\r\\nInjected: 1\\u{1b}[31m")]
+fn reflected_field_name_is_bounded_and_printable(#[case] name: &str, #[case] shown: &str) {
+    let err = TypedMultipartError::UnknownField {
+        field_name: name.to_owned(),
+    };
+    assert_eq!(err.to_string(), format!("Unknown field: `{shown}`"));
+    let body: serde_json::Value = serde_json::from_slice(&err.error_body()).unwrap();
+    assert_eq!(body["errors"][0]["path"], shown);
+}
+
+#[test]
+fn every_named_variant_bounds_its_field_name() {
+    let long = "x".repeat(1000);
+    let shown = format!("{}…", "x".repeat(64));
+    let errors = [
+        TypedMultipartError::MissingField {
+            field_name: long.clone(),
+        },
+        TypedMultipartError::WrongFieldType {
+            field_name: long.clone(),
+            wanted: Cow::Borrowed("i32"),
+            source: "err".to_owned(),
+        },
+        TypedMultipartError::DuplicateField {
+            field_name: long.clone(),
+        },
+        TypedMultipartError::invalid_enum_value(long.clone(), "bad"),
+        TypedMultipartError::FieldTooLarge {
+            field_name: long.clone(),
+            limit_bytes: 1,
+        },
+        TypedMultipartError::RequestTooLarge {
+            field_name: long.clone(),
+            limit_bytes: 1,
+        },
+    ];
+    for err in errors {
+        let message = err.to_string();
+        assert!(
+            message.contains(&shown) && !message.contains(&long),
+            "{message}"
+        );
+    }
+}
+
+/// Reflected values (an enum variant, a scalar parse message quoting the
+/// client value) are escaped like a part name.
+#[test]
+fn reflected_values_escape_control_chars() {
+    let err = TypedMultipartError::invalid_enum_value("status".to_owned(), "a\nb");
+    assert_eq!(
+        err.to_string(),
+        "Invalid enum value `a\\nb` for field `status`"
+    );
+    let err = TypedMultipartError::WrongFieldType {
+        field_name: "flag".to_owned(),
+        wanted: Cow::Borrowed("bool"),
+        source: "invalid boolean value: `y\u{7}`".to_owned(),
+    };
+    assert_eq!(
+        err.to_string(),
+        "Wrong type for field `flag` (expected bool): invalid boolean value: `y\\u{7}`"
+    );
+}
