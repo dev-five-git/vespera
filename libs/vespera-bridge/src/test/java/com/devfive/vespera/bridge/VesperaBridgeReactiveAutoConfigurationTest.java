@@ -31,7 +31,7 @@ class VesperaBridgeReactiveAutoConfigurationTest {
     static class WebFluxConfig {}
 
     private final ReactiveWebApplicationContextRunner reactive = new ReactiveWebApplicationContextRunner()
-            .withConfiguration(AutoConfigurations.of(
+            .withConfiguration(AutoConfigurations.of(VesperaBridgeCoreAutoConfiguration.class,
                     VesperaBridgeAutoConfiguration.class, VesperaBridgeReactiveAutoConfiguration.class));
 
     @Test
@@ -52,7 +52,7 @@ class VesperaBridgeReactiveAutoConfigurationTest {
     @Test
     void servletApplicationGetsTheServletProxyOnly() {
         new WebApplicationContextRunner()
-                .withConfiguration(AutoConfigurations.of(
+                .withConfiguration(AutoConfigurations.of(VesperaBridgeCoreAutoConfiguration.class,
                         VesperaBridgeAutoConfiguration.class, VesperaBridgeReactiveAutoConfiguration.class))
                 .run(ctx -> {
                     assertEquals(1, ctx.getBeansOfType(VesperaProxyController.class).size());

@@ -1,3 +1,4 @@
+com.devfive.vespera.bridge.VesperaBridgeCoreAutoConfiguration
 com.devfive.vespera.bridge.VesperaBridgeAutoConfiguration
 com.devfive.vespera.bridge.VesperaBridgeReactiveAutoConfiguration
 com.devfive.vespera.bridge.VesperaBridgeMetricsAutoConfiguration

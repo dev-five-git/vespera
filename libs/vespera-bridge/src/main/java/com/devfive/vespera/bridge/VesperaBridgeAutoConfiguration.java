@@ -10,7 +10,6 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ImportRuntimeHints;
-import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 
@@ -92,7 +91,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 // configuration is skipped cleanly when Spring MVC or the servlet API is absent
 // (Spring is a provided dependency since the bridge stopped exporting the
 // starter), instead of failing on a missing class.
-@AutoConfiguration
+@AutoConfiguration(after = VesperaBridgeCoreAutoConfiguration.class)
 @ConditionalOnClass(name = {
         "jakarta.servlet.Servlet",
         "org.springframework.web.servlet.DispatcherServlet"})
@@ -102,53 +101,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class VesperaBridgeAutoConfiguration {
 
     /**
-     * Forwards {@code vespera.bridge.native.*} to the {@link VesperaBridge}
-     * {@code configure*} methods during context startup, before the proxy
-     * serves its first request (the controller bean depends on it), so the
-     * values land before the first dispatch fixes the native runtime/limits.
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    public VesperaBridgeNativeSettings vesperaBridgeNativeSettings(VesperaBridgeProperties props) {
-        return VesperaBridgeNativeSettings.apply(props);
-    }
-
-    /**
      * {@code vespera.bridge.library-name}: initialise the native library
      * unless the application already did. Returns whether this call loaded it.
      */
     static boolean autoInit(String libraryName) {
         return VesperaBridgeNativeSettings.autoInit(libraryName);
-    }
-
-    /**
-     * {@code vespera.bridge.shutdown-on-close=true}: shut the native runtime
-     * down when the context closes — only when the autoconfiguration
-     * initialised the library itself (an application-initialised library may
-     * outlive this context). Destroyed after the web server stopped serving.
-     */
-    @Bean
-    @ConditionalOnProperty(prefix = "vespera.bridge", name = "shutdown-on-close", havingValue = "true")
-    public DisposableBean vesperaBridgeShutdown(
-            VesperaBridgeNativeSettings nativeSettings, VesperaBridgeProperties props) {
-        return () -> {
-            if (nativeSettings.autoInitialized()) {
-                VesperaBridge.shutdown(props.getShutdownTimeout());
-            }
-        };
-    }
-
-    /**
-     * Programmatic in-process client for the default app
-     * ({@code client.forApp("admin")} for a named one). Independent of
-     * {@code vespera.bridge.controller-enabled}; depends on the native
-     * settings bean so {@code vespera.bridge.native.*} and
-     * {@code library-name} are applied before the first client dispatch.
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    public VesperaClient vesperaClient(VesperaBridgeNativeSettings nativeSettings) {
-        return VesperaClient.create();
     }
 
     @Bean

@@ -30,7 +30,7 @@ import org.springframework.web.servlet.HandlerExecutionChain;
 class BridgeHardeningTest {
 
     private final WebApplicationContextRunner runner = new WebApplicationContextRunner()
-            .withConfiguration(AutoConfigurations.of(
+            .withConfiguration(AutoConfigurations.of(VesperaBridgeCoreAutoConfiguration.class,
                     VesperaBridgeAutoConfiguration.class,
                     VesperaBridgeHealthAutoConfiguration.class));
 
