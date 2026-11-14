@@ -8,7 +8,7 @@ use jni::objects::{Global, JByteArray, JClass, JObject};
 
 use crate::daemon_env::with_cached_daemon_env;
 use crate::jni_impl::{
-    clear_pending_exception, guard_void_symbol, panic_wire, read_request_byte_array, runtime,
+    clear_pending_exception, guard_env_void_symbol, panic_wire, read_request_byte_array, runtime,
     runtime_unavailable_wire,
     streaming_buffer::{PullPushBuffers, mark_streaming_buffer_reusable, release_pull_lease},
     streaming_setup_failed_wire,
@@ -226,14 +226,15 @@ fn make_header_callback(
     }
 }
 
-/// Outer-panic header fallback shared by both `dispatch*WithHeader`
-/// JNI symbols.  When `guard_void_symbol` intercepts a panic that escaped
-/// the inner `with_env` scope AND the header consumer has not yet been
+/// Outer-panic header fallback shared by the `dispatch*WithHeader` and
+/// `DirectStash.stream0` JNI symbols.  When `guard_env_void_symbol` reports a
+/// panic that escaped the body (outside the dispatch's own `catch_unwind`,
+/// e.g. in the setup) AND the header consumer has not yet been
 /// notified AND the caller passed a non-null consumer, deliver the
 /// canonical `panic_wire()` bytes through it so the Java caller never
 /// hangs waiting for a header that will never arrive.
 ///
-/// Extracted verbatim from the two symbols' post-`guard_void_symbol`
+/// Extracted verbatim from the symbols' post-`guard_env_void_symbol`
 /// tails so a future edit to the panic-recovery predicate (extra
 /// atomic fence, logging, changed `panic_wire` shape) can never drift
 /// between them.  `#[inline]` folds it back into each caller so codegen
@@ -453,19 +454,17 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
 ) {
     let flags = Arc::new(StreamingFlags::new());
     let flags_body = Arc::clone(&flags);
-    let panicked = guard_void_symbol(|| {
-        let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
-            dispatch_streaming_with_header_body(
-                env,
-                &StreamHeaderArgs {
-                    request_bytes: &request_bytes,
-                    header_consumer: &header_consumer,
-                    output_stream: &output_stream,
-                    flags: &flags_body,
-                },
-            );
-            Ok(())
-        });
+    let panicked = guard_env_void_symbol(&mut unowned_env, |env| {
+        dispatch_streaming_with_header_body(
+            env,
+            &StreamHeaderArgs {
+                request_bytes: &request_bytes,
+                header_consumer: &header_consumer,
+                output_stream: &output_stream,
+                flags: &flags_body,
+            },
+        );
+        Ok(())
     });
     deliver_panic_header_if_needed(&mut unowned_env, &header_consumer, &flags, panicked);
 }
@@ -483,20 +482,18 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
 ) {
     let flags = Arc::new(StreamingFlags::new());
     let flags_body = Arc::clone(&flags);
-    let panicked = guard_void_symbol(|| {
-        let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
-            dispatch_full_streaming_with_header_body(
-                env,
-                &FullHeaderArgs {
-                    header_bytes: &header_bytes_in,
-                    header_consumer: &header_consumer,
-                    input_stream: &input_stream,
-                    output_stream: &output_stream,
-                    flags: &flags_body,
-                },
-            );
-            Ok(())
-        });
+    let panicked = guard_env_void_symbol(&mut unowned_env, |env| {
+        dispatch_full_streaming_with_header_body(
+            env,
+            &FullHeaderArgs {
+                header_bytes: &header_bytes_in,
+                header_consumer: &header_consumer,
+                input_stream: &input_stream,
+                output_stream: &output_stream,
+                flags: &flags_body,
+            },
+        );
+        Ok(())
     });
     deliver_panic_header_if_needed(&mut unowned_env, &header_consumer, &flags, panicked);
 }
@@ -573,19 +570,17 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_DirectStash_stream0<'loca
 ) {
     let flags = Arc::new(StreamingFlags::new());
     let flags_body = Arc::clone(&flags);
-    let panicked = guard_void_symbol(|| {
-        let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
-            stream_stashed_body(
-                env,
-                &StashStreamArgs {
-                    token,
-                    header_consumer: &header_consumer,
-                    output_stream: &output_stream,
-                    flags: &flags_body,
-                },
-            );
-            Ok(())
-        });
+    let panicked = guard_env_void_symbol(&mut unowned_env, |env| {
+        stream_stashed_body(
+            env,
+            &StashStreamArgs {
+                token,
+                header_consumer: &header_consumer,
+                output_stream: &output_stream,
+                flags: &flags_body,
+            },
+        );
+        Ok(())
     });
     deliver_panic_header_if_needed(&mut unowned_env, &header_consumer, &flags, panicked);
 }
