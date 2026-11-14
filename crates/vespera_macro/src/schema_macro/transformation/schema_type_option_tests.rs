@@ -214,12 +214,13 @@ fn test_generate_schema_type_code_tuple_struct() {
 
     let tokens = quote!(PointDTO from Point);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
-    let result = generate_schema_type_code(&input, &storage);
-
-    assert!(result.is_ok());
-    let (tokens, _metadata) = result.unwrap();
-    let output = tokens.to_string();
-    assert!(output.contains("PointDTO"));
+    let err = generate_schema_type_code(&input, &storage)
+        .err()
+        .expect("tuple source is rejected");
+    assert_eq!(
+        err.to_string(),
+        "schema_type!: `Point` is a tuple or unit struct; schema_type! derives from structs with named fields"
+    );
 }
 
 // Test raw identifier fields

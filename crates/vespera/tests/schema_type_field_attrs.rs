@@ -131,3 +131,34 @@ fn ignored_schema_keeps_serde_defaults_only() {
     let dto: SeededDto = serde_json::from_str(r#"{"note":"n"}"#).unwrap();
     assert_eq!((dto.id, dto.count, dto.note.as_str()), (0, 5, "n"));
 }
+
+#[derive(Serialize, Deserialize, Clone, Schema)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+pub struct SplitCase {
+    pub user_name: String,
+    pub created_by: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Schema)]
+#[serde(rename_all(serialize = "kebab-case"))]
+pub struct SerializeOnly {
+    pub user_name: String,
+}
+
+// `rename_all(serialize, deserialize)` used to collapse to the serialize side.
+schema_type!(SplitCaseDto from SplitCase, rename = [("created_by", "author")]);
+schema_type!(SerializeOnlyDto from SerializeOnly);
+
+#[test]
+fn split_rename_all_keeps_both_sides() {
+    let dto: SplitCaseDto = serde_json::from_str(r#"{"user_name":"a","created_by":"b"}"#).unwrap();
+    assert_eq!(
+        serde_json::to_value(&dto).unwrap(),
+        serde_json::json!({ "userName": "a", "createdBy": "b" })
+    );
+    let dto: SerializeOnlyDto = serde_json::from_str(r#"{"user_name":"a"}"#).unwrap();
+    assert_eq!(
+        serde_json::to_value(&dto).unwrap(),
+        serde_json::json!({ "user-name": "a" })
+    );
+}

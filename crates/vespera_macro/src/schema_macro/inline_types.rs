@@ -175,9 +175,11 @@ fn generate_inline_type_core(
         || parent_type_name.to_string(),
         std::string::ToString::to_string,
     );
-    let field_name_pascal = snake_to_pascal_case(&rel_info.field_name.to_string());
+    let field_name_pascal = snake_to_pascal_case(&crate::parser::strip_raw_prefix_owned(
+        rel_info.field_name.to_string(),
+    ));
     let inline_type_name = syn::Ident::new(
-        &format!("{parent_name}_{field_name_pascal}"),
+        &ident_safe(&format!("{parent_name}_{field_name_pascal}")),
         proc_macro2::Span::call_site(),
     );
 
@@ -232,6 +234,26 @@ fn generate_inline_type_core(
 }
 
 /// Generate the struct definition `TokenStream` for an inline relation type
+/// `name` as a valid Rust identifier: a `name = "..."` schema override may
+/// contain characters (`-`, `.`, spaces) or start with a digit, which used
+/// to panic `syn::Ident::new` for the inline relation type.
+fn ident_safe(name: &str) -> String {
+    let mut ident: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if ident.starts_with(|c: char| c.is_ascii_digit()) {
+        ident.insert(0, '_');
+    }
+    ident
+}
+
 pub fn generate_inline_type_definition(inline_type: &InlineRelationType) -> TokenStream {
     let type_name = &inline_type.type_name;
     let rename_all = &inline_type.rename_all;

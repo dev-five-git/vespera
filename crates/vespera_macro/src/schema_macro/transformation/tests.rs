@@ -268,7 +268,12 @@ fn renamed_field_serde_rename_cases(
 ) {
     let attrs = parse_attrs(field_attrs);
     assert_eq!(
-        renamed_field_serde_rename(&attrs, source, rename_all).to_string(),
+        renamed_field_serde_rename(
+            &attrs,
+            source,
+            &RenameAll::new(Some(&rename_all.to_string()), &[], rename_all)
+        )
+        .to_string(),
         expected
     );
 }
@@ -409,4 +414,54 @@ fn test_should_wrap_in_option_partial_fields() {
         false,
         false
     ));
+}
+
+#[rstest]
+#[case::plain(
+    r#"#[serde(rename_all = "snake_case")]"#,
+    None,
+    "# [serde (rename_all = \"snake_case\")]"
+)]
+#[case::split(
+    r#"#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]"#,
+    None,
+    "# [serde (rename_all (serialize = \"camelCase\" , deserialize = \"snake_case\"))]"
+)]
+#[case::serialize_only(
+    r#"#[serde(rename_all(serialize = "kebab-case"))]"#,
+    None,
+    "# [serde (rename_all (serialize = \"kebab-case\" ,))]"
+)]
+#[case::deserialize_only(
+    r#"#[serde(rename_all(deserialize = "kebab-case"))]"#,
+    None,
+    "# [serde (rename_all (deserialize = \"kebab-case\"))]"
+)]
+#[case::input_wins(
+    r#"#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]"#,
+    Some("PascalCase"),
+    "# [serde (rename_all = \"PascalCase\")]"
+)]
+fn rename_all_keeps_both_sides(
+    #[case] container: &str,
+    #[case] input: Option<&str>,
+    #[case] expected: &str,
+) {
+    let attrs = parse_attrs(container);
+    let input = input.map(ToString::to_string);
+    let effective = determine_rename_all(input.as_ref(), &attrs);
+    let rename_all = RenameAll::new(input.as_ref(), &attrs, &effective);
+    assert_eq!(rename_all.attr().to_string(), expected);
+}
+
+#[test]
+fn renamed_field_follows_each_rename_all_side() {
+    let rename_all = RenameAll {
+        serialize: Some("camelCase".to_string()),
+        deserialize: None,
+    };
+    assert_eq!(
+        renamed_field_serde_rename(&[], "user_name", &rename_all).to_string(),
+        "# [serde (rename (serialize = \"userName\" , deserialize = \"user_name\"))]"
+    );
 }

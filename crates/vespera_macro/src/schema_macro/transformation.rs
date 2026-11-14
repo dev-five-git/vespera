@@ -38,8 +38,8 @@ use quote::quote;
 use syn::punctuated::Punctuated;
 
 use super::input::PartialMode;
-use crate::parser::extract_rename_all;
 use crate::parser::schema::{SerdeSide, extract_field_rename_for, rename_field};
+use crate::parser::{extract_rename_all, extract_rename_all_for};
 
 /// Builds the omit set from input without cloning the source Vec.
 pub fn build_omit_set(omit: Option<&Vec<String>>) -> HashSet<String> {
@@ -288,16 +288,17 @@ fn append_segment(path: &syn::ExprPath, segment: &str) -> syn::ExprPath {
 pub fn renamed_field_serde_rename(
     attrs: &[syn::Attribute],
     source_field_name: &str,
-    rename_all: &str,
+    rename_all: &RenameAll,
 ) -> TokenStream {
     let serde_only: Vec<syn::Attribute> = attrs
         .iter()
         .filter(|attr| attr.path().is_ident("serde"))
         .cloned()
         .collect();
-    let fallback = || rename_field(source_field_name, Some(rename_all));
-    let ser = extract_field_rename_for(&serde_only, SerdeSide::Serialize).unwrap_or_else(fallback);
-    let de = extract_field_rename_for(&serde_only, SerdeSide::Deserialize).unwrap_or_else(fallback);
+    let ser = extract_field_rename_for(&serde_only, SerdeSide::Serialize)
+        .unwrap_or_else(|| rename_field(source_field_name, rename_all.serialize.as_deref()));
+    let de = extract_field_rename_for(&serde_only, SerdeSide::Deserialize)
+        .unwrap_or_else(|| rename_field(source_field_name, rename_all.deserialize.as_deref()));
     if ser == de {
         quote! { #[serde(rename = #ser)] }
     } else {
@@ -352,6 +353,48 @@ pub fn extract_doc_attrs(attrs: &[syn::Attribute]) -> Vec<&syn::Attribute> {
 /// 1. If `input.rename_all` is specified, use it
 /// 2. Else if source has `rename_all`, use it
 /// 3. Else default to "camelCase"
+/// The DTO's `rename_all` per serde side. A source with
+/// `#[serde(rename_all(serialize = "..", deserialize = ".."))]` keeps both
+/// sides (it used to collapse to the serialize side); `None` = no renaming.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RenameAll {
+    pub serialize: Option<String>,
+    pub deserialize: Option<String>,
+}
+
+impl RenameAll {
+    /// The sides of the source container, unless `rename_all = ".."` was
+    /// given to `schema_type!` (or the source has no per-side form): then
+    /// `effective` on both sides.
+    pub fn new(input: Option<&String>, source_attrs: &[syn::Attribute], effective: &str) -> Self {
+        let serialize = extract_rename_all_for(source_attrs, SerdeSide::Serialize);
+        let deserialize = extract_rename_all_for(source_attrs, SerdeSide::Deserialize);
+        if input.is_none() && serialize != deserialize {
+            Self {
+                serialize,
+                deserialize,
+            }
+        } else {
+            Self {
+                serialize: Some(effective.to_string()),
+                deserialize: Some(effective.to_string()),
+            }
+        }
+    }
+
+    /// The container attribute: `rename_all = ".."`, or the per-side list.
+    pub fn attr(&self) -> TokenStream {
+        match (&self.serialize, &self.deserialize) {
+            (Some(ser), Some(de)) if ser == de => quote! { #[serde(rename_all = #ser)] },
+            (ser, de) => {
+                let ser = ser.iter().map(|ser| quote! { serialize = #ser });
+                let de = de.iter().map(|de| quote! { deserialize = #de });
+                quote! { #[serde(rename_all(#(#ser,)* #(#de),*))] }
+            }
+        }
+    }
+}
+
 pub fn determine_rename_all(
     input_rename_all: Option<&String>,
     source_attrs: &[syn::Attribute],

@@ -28,7 +28,7 @@ use super::seaorm::{
     extract_sea_orm_default_value, has_sea_orm_primary_key,
 };
 use super::transformation::{
-    OptionWrap, build_omit_set, build_partial_config, build_pick_set, build_rename_map,
+    OptionWrap, RenameAll, build_omit_set, build_partial_config, build_pick_set, build_rename_map,
     container_serde_attrs, determine_rename_all, extract_doc_attrs, extract_form_data_attrs,
     field_form_name, field_serde_attrs, renamed_field_serde_rename, should_skip_field,
     should_wrap_in_option,
@@ -118,6 +118,16 @@ pub fn generate_schema_type_code(
                 format!("failed to parse struct definition for `{source_type_name}`: {e}"),
             )
         })?;
+    // A tuple / unit source has no field names to pick, rename or carry:
+    // the DTO used to come out empty (and its `From` dropped every value).
+    if !matches!(parsed_struct.fields, syn::Fields::Named(_)) {
+        return Err(syn::Error::new_spanned(
+            &input.source_type,
+            format!(
+                "schema_type!: `{source_type_name}` is a tuple or unit struct; schema_type! derives from structs with named fields"
+            ),
+        ));
+    }
 
     // Extract all field names from source struct for validation
     // Include relation fields since they can be converted to Schema types
@@ -176,6 +186,12 @@ pub fn generate_schema_type_code(
     // Determine the effective rename_all strategy
     let effective_rename_all =
         determine_rename_all(input.rename_all.as_ref(), &parsed_struct.attrs);
+    let rename_all = RenameAll::new(
+        input.rename_all.as_ref(),
+        &parsed_struct.attrs,
+        &effective_rename_all,
+    );
+    let rename_all_attr = rename_all.attr();
 
     // Check if source is a SeaORM Model
     let is_source_seaorm_model = is_seaorm_model(&parsed_struct);
@@ -522,11 +538,8 @@ pub fn generate_schema_type_code(
                     // The JSON key stays the source's: its explicit serde
                     // rename, else rename_all applied to the SOURCE name
                     // (`serde_field_attrs` already dropped `rename`).
-                    let rename_attr = renamed_field_serde_rename(
-                        &field.attrs,
-                        &rust_field_name,
-                        &effective_rename_all,
-                    );
+                    let rename_attr =
+                        renamed_field_serde_rename(&field.attrs, &rust_field_name, &rename_all);
 
                     field_tokens.push(quote! {
                         #(#doc_attrs)*
@@ -718,7 +731,7 @@ pub fn generate_schema_type_code(
             #[derive(serde::Serialize, serde::Deserialize, #garde_derive #clone_derive #schema_derive)]
             #(#container_garde_attrs)*
             #schema_name_attr
-            #[serde(rename_all = #effective_rename_all)]
+            #rename_all_attr
             #(#serde_attrs_without_rename_all)*
             pub struct #new_type_name {
                 #(#field_tokens),*
@@ -734,7 +747,8 @@ pub fn generate_schema_type_code(
     let metadata = input.schema_name.as_ref().map(|custom_name| {
         // Build struct definition string for metadata (without derives/attrs for parsing)
         let struct_def = quote! {
-            #[serde(rename_all = #effective_rename_all)]
+            #rename_all_attr
+
             #(#serde_attrs_without_rename_all)*
             pub struct #new_type_name {
                 #(#metadata_field_tokens),*

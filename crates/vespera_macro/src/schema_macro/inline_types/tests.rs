@@ -549,3 +549,25 @@ fn no_relations_uses_source_module_when_schema_path_has_no_module() {
         "crate :: models :: source :: LocalState"
     );
 }
+
+#[rstest]
+#[case::dashes_and_dots(Some("memo-detail.v2"), "items", "memo_detail_v2_Items")]
+#[case::leading_digit(Some("2024 Memo"), "items", "_2024_Memo_Items")]
+#[case::raw_field(None, "r#type", "Parent_Type")]
+fn inline_type_name_is_a_valid_ident(
+    #[case] schema_name: Option<&str>,
+    #[case] field: &str,
+    #[case] expected: &str,
+) {
+    let mut info = rel("placeholder", "HasMany", quote!(Schema));
+    info.field_name = syn::parse_str(field).unwrap();
+    let result = generate_inline_relation_type_no_relations_from_def(
+        &syn::parse_quote!(Parent),
+        &info,
+        &module_path(&["crate", "models", "source"]),
+        schema_name,
+        "pub struct Model { pub state: i32 }",
+    )
+    .unwrap();
+    assert_eq!(result.type_name.to_string(), expected);
+}
