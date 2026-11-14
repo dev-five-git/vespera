@@ -1,69 +1,99 @@
 pub(super) fn quoted_value_after_key(tokens: &str, key: &str) -> Option<String> {
-    for (start, _) in tokens.match_indices(key) {
-        if !is_standalone_word_at(tokens, start, key) && !is_qualified_key(tokens, start) {
-            continue;
-        }
+    for start in key_positions(tokens, key) {
         // Only the `key = "value"` form: a side list `key(serialize = "a",
         // deserialize = "b")` must never yield one side's value for both.
         let Some(value_part) = tokens[start + key.len()..].trim_start().strip_prefix('=') else {
             continue;
         };
-        let value_part = value_part.trim();
-        let Some(quote_start) = value_part.find('"') else {
-            continue;
-        };
-        let after_quote = &value_part[quote_start + 1..];
-        let Some(quote_end) = after_quote.find('"') else {
-            continue;
-        };
-        return Some(after_quote[..quote_end].to_string());
+        if let Some(value) = leading_string_literal(value_part) {
+            return Some(value);
+        }
     }
     None
 }
 
-pub(super) fn contains_standalone_word(tokens: &str, word: &str) -> bool {
-    tokens.match_indices(word).any(|(start, _)| {
-        is_standalone_word_at(tokens, start, word) || is_qualified_key(tokens, start)
-    })
+/// The contents of the `"..."` literal `value_part` starts with (after
+/// whitespace); a value of any other kind yields `None`.
+fn leading_string_literal(value_part: &str) -> Option<String> {
+    let after_quote = value_part.trim_start().strip_prefix('"')?;
+    Some(after_quote[..after_quote.find('"')?].to_string())
 }
 
-fn is_qualified_key(tokens: &str, start: usize) -> bool {
-    start >= 2 && &tokens[start - 2..start] == "::"
+pub(super) fn contains_standalone_word(tokens: &str, word: &str) -> bool {
+    key_positions(tokens, word).next().is_some()
+}
+
+/// Start indices of `word` in `tokens` written as a key: a standalone word
+/// or the last segment of a qualified path (`serde::default`), never inside
+/// a string literal (`skip_serializing_if = "util::skip_none"` names no key).
+fn key_positions<'a>(tokens: &'a str, word: &'a str) -> impl Iterator<Item = usize> + 'a {
+    tokens
+        .match_indices(word)
+        .map(|(start, _)| start)
+        .filter(move |&start| {
+            (is_standalone_word_at(tokens, start, word) || is_qualified_key(tokens, start, word))
+                && !in_string_literal(tokens, start)
+        })
+}
+
+/// Whether byte `at` of `tokens` lies inside a `"..."` literal (escapes
+/// honoured).
+fn in_string_literal(tokens: &str, at: usize) -> bool {
+    let mut in_str = false;
+    let mut escaped = false;
+    for ch in tokens[..at].chars() {
+        if escaped {
+            escaped = false;
+        } else if in_str && ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            in_str = !in_str;
+        }
+    }
+    in_str
+}
+
+/// `word` at `start` is the last segment of a qualified path: `::` before it
+/// and a key boundary after it (`a::skip_none` is not `skip`).
+fn is_qualified_key(tokens: &str, start: usize, word: &str) -> bool {
+    tokens[..start].ends_with("::") && is_key_end(tokens, start + word.len())
+}
+
+/// The character at byte `end` ends a key (or the input ends there).
+fn is_key_end(tokens: &str, end: usize) -> bool {
+    matches!(
+        tokens[end..].chars().next(),
+        None | Some(' ' | ',' | ')' | '=')
+    )
 }
 
 fn is_standalone_word_at(tokens: &str, start: usize, word: &str) -> bool {
-    let before = if start > 0 { &tokens[..start] } else { "" };
-    let after = &tokens[start + word.len()..];
-    let before_char = before.chars().last().unwrap_or(' ');
-    let after_char = after.chars().next().unwrap_or(' ');
-    let before_ok = before_char == ' ' || before_char == ',' || before_char == '(';
-    let after_ok = after_char == ' ' || after_char == ',' || after_char == ')' || after_char == '=';
-    before_ok && after_ok
+    matches!(tokens[..start].chars().last(), None | Some(' ' | ',' | '('))
+        && is_key_end(tokens, start + word.len())
 }
 
+/// `default` / `default = "path"` among raw `#[serde(...)]` tokens, skipping
+/// any occurrence that is no key (inside a string literal such as
+/// `rename = "defaultValue"`, or part of a longer identifier) and a
+/// `default = <non-string>` (not a serde default).
 #[allow(clippy::option_option)]
 pub(super) fn scan_default_from_raw_tokens(tokens: &str) -> Option<Option<String>> {
-    let start = tokens.find("default")?;
-    let remaining = &tokens[start + "default".len()..];
-    if remaining.trim_start().starts_with('=') {
-        let after_equals = remaining
-            .trim_start()
-            .strip_prefix('=')
-            .unwrap_or("")
-            .trim_start();
-        let quote_start = after_equals.find('"')?;
-        let after_quote = &after_equals[quote_start + 1..];
-        let quote_end = after_quote.find('"')?;
-        Some(Some(after_quote[..quote_end].to_string()))
-    } else if is_standalone_word_at(tokens, start, "default") {
-        Some(None)
-    } else {
-        None
+    for start in key_positions(tokens, "default") {
+        let remaining = tokens[start + "default".len()..].trim_start();
+        let Some(after_equals) = remaining.strip_prefix('=') else {
+            return Some(None);
+        };
+        if let Some(path) = leading_string_literal(after_equals) {
+            return Some(Some(path));
+        }
     }
+    None
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::option_option)]
+
     use crate::parser::schema::serde_attrs::*;
     use proc_macro2::{Span, TokenStream};
     use quote::quote;
@@ -731,10 +761,112 @@ mod tests {
     }
 
     #[rstest]
-    #[case("module::rename", 8, true)]
-    #[case("module:rename", 7, false)]
-    #[case("rename", 0, false)]
-    fn qualified_key_detection(#[case] tokens: &str, #[case] start: usize, #[case] expected: bool) {
-        assert_eq!(super::is_qualified_key(tokens, start), expected);
+    #[case("module::rename", 8, "rename", true)]
+    #[case("module:rename", 7, "rename", false)]
+    #[case("rename", 0, "rename", false)]
+    #[case("a::skip_none", 3, "skip", false)]
+    #[case("a::skip)", 3, "skip", true)]
+    fn qualified_key_detection(
+        #[case] tokens: &str,
+        #[case] start: usize,
+        #[case] word: &str,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(super::is_qualified_key(tokens, start, word), expected);
+    }
+
+    /// Raw-token keys never match inside a string literal (escapes honoured)
+    /// nor as the prefix of a longer qualified identifier.
+    #[rstest]
+    #[case::literal_path(r#"skip_serializing_if = "util::skip_none""#, "skip", false)]
+    #[case::literal_word(r#"with = "a skip b""#, "skip", false)]
+    #[case::escaped_quote_stays_in_literal(r#"rename = "a\" skip""#, "skip", false)]
+    #[case::escaped_backslash_closes_literal(r#"rename = "a\\", skip"#, "skip", true)]
+    #[case::qualified_key(r#"with = "x", serde::flatten"#, "flatten", true)]
+    #[case::literal_flatten(r#"with = "helpers::flatten_opt""#, "flatten", false)]
+    fn standalone_word_ignores_literals(
+        #[case] tokens: &str,
+        #[case] word: &str,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(super::contains_standalone_word(tokens, word), expected);
+    }
+
+    #[rstest]
+    #[case::after_literal_mention(r#"rename = "defaultValue", default"#, Some(None))]
+    #[case::non_string_then_path(r#"default = 1, default = "f""#, Some(Some("f")))]
+    #[case::non_string_only("default = 1", None)]
+    #[case::qualified_path(r#"serde::default = "f""#, Some(Some("f")))]
+    #[case::longer_ident("defaults", None)]
+    #[case::literal_only(r#"rename = "default""#, None)]
+    fn raw_default_scan(#[case] tokens: &str, #[case] expected: Option<Option<&str>>) {
+        assert_eq!(
+            super::scan_default_from_raw_tokens(tokens),
+            expected.map(|inner| inner.map(str::to_string))
+        );
+    }
+
+    #[rstest]
+    #[case::default_after_rename(r#"#[serde(rename = "defaultValue", default)]"#, Some(None))]
+    #[case::path_after_rename(r#"#[serde(rename = "x", default = "f")]"#, Some(Some("f")))]
+    #[case::non_string_value("#[serde(default = 1)]", None)]
+    #[case::first_attribute_wins(r#"#[serde(default)] #[serde(default = "f")]"#, Some(None))]
+    #[case::qualified("#[serde(serde::default)]", Some(None))]
+    #[case::absent(r#"#[serde(rename = "default")]"#, None)]
+    fn default_detection_skips_earlier_keys(
+        #[case] attrs: &str,
+        #[case] expected: Option<Option<&str>>,
+    ) {
+        let item: syn::ItemStruct =
+            syn::parse_str(&format!("struct S {{ {attrs} f: i32 }}")).unwrap();
+        let attrs = &item.fields.iter().next().unwrap().attrs;
+        assert_eq!(
+            extract_default(attrs),
+            expected.map(|inner| inner.map(str::to_string))
+        );
+    }
+
+    #[test]
+    fn default_raw_fallback_skips_literal_mentions() {
+        let attr = create_attr_with_raw_tokens(quote!(@, rename = "defaultValue", default));
+        assert_eq!(extract_default(&[attr]), Some(None));
+    }
+
+    #[rstest]
+    #[case::predicate_path(r#"#[serde(skip_serializing_if = "util::skip_none")]"#, false)]
+    #[case::predicate_then_skip(r#"#[serde(skip_serializing_if = "Option::is_none", skip)]"#, true)]
+    #[case::split_lists("#[serde(skip_serializing)] #[serde(skip_deserializing)]", true)]
+    #[case::one_side("#[serde(skip_serializing)]", false)]
+    fn skip_detection(#[case] attrs: &str, #[case] expected: bool) {
+        let item: syn::ItemStruct =
+            syn::parse_str(&format!("struct S {{ {attrs} f: i32 }}")).unwrap();
+        assert_eq!(
+            extract_skip(&item.fields.iter().next().unwrap().attrs),
+            expected
+        );
+    }
+
+    #[rstest]
+    #[case::with_path(r#"#[serde(with = "helpers::flatten_opt")]"#, false)]
+    #[case::with_then_flatten(r#"#[serde(with = "x", flatten)]"#, true)]
+    #[case::qualified("#[serde(serde::flatten)]", true)]
+    #[case::second_list(r#"#[serde(rename = "a")] #[serde(flatten)]"#, true)]
+    fn flatten_detection(#[case] attrs: &str, #[case] expected: bool) {
+        let item: syn::ItemStruct =
+            syn::parse_str(&format!("struct S {{ {attrs} f: i32 }}")).unwrap();
+        assert_eq!(
+            extract_flatten(&item.fields.iter().next().unwrap().attrs),
+            expected
+        );
+    }
+
+    #[rstest]
+    #[case::raw_flatten(quote!(@, flatten), true)]
+    #[case::raw_literal_only(quote!(@, with = "a::flatten"), false)]
+    fn flatten_raw_fallback(#[case] tokens: TokenStream, #[case] expected: bool) {
+        assert_eq!(
+            extract_flatten(&[create_attr_with_raw_tokens(tokens)]),
+            expected
+        );
     }
 }

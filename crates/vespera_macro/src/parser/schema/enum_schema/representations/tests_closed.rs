@@ -60,3 +60,42 @@ fn closed_newtype_payload_merges_the_tag(#[case] name: &str, #[case] src: &str) 
         serde_json::to_string_pretty(&schema).unwrap()
     );
 }
+
+/// Enum-level `#[serde(deny_unknown_fields)]` closes every struct variant
+/// (serde's struct-variant visitors read the enum's container attributes),
+/// in every representation; adjacently tagged enums also reject keys other
+/// than the tag and the content. Newtype payloads keep their own setting.
+#[rstest]
+#[case::external(
+    "external",
+    "#[serde(deny_unknown_fields)] enum E { S { a: u8 }, T(u8, u8), N(Open), U }"
+)]
+#[case::internal(
+    "internal",
+    "#[serde(tag = \"t\", deny_unknown_fields)] enum E { S { a: u8 }, N(Open), U }"
+)]
+#[case::adjacent(
+    "adjacent",
+    "#[serde(tag = \"t\", content = \"c\", deny_unknown_fields)] enum E { S { a: u8 }, U }"
+)]
+#[case::untagged(
+    "untagged",
+    "#[serde(untagged, deny_unknown_fields)] enum E { S { a: u8 }, N(Open) }"
+)]
+#[case::adjacent_open(
+    "adjacent_open",
+    "#[serde(tag = \"t\", content = \"c\")] enum E { S { a: u8 } }"
+)]
+fn enum_deny_unknown_fields_closes_struct_variants(#[case] name: &str, #[case] src: &str) {
+    let enum_item: syn::ItemEnum = syn::parse_str(src).unwrap();
+    let known = HashSet::from(["Open".to_string()]);
+    let definitions = HashMap::from([(
+        "Open".to_string(),
+        "pub struct Open { pub id: u32 }".to_string(),
+    )]);
+    let schema = parse_enum_to_schema(&enum_item, &known, &definitions);
+    insta::assert_snapshot!(
+        format!("enum_deny_unknown_fields_{name}"),
+        serde_json::to_string_pretty(&schema).unwrap()
+    );
+}

@@ -1,0 +1,41 @@
+---
+source: crates/vespera_macro/src/parser/response/tests.rs
+expression: "serde_json::to_string_pretty(&responses).unwrap()"
+---
+{
+  "200": {
+    "description": "Successful response",
+    "content": {
+      "application/json": {
+        "schema": {
+          "type": "object",
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "Ok": {
+                  "type": "integer",
+                  "format": "int32"
+                }
+              },
+              "required": [
+                "Ok"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "Err": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "Err"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}

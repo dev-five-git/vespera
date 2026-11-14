@@ -34,6 +34,7 @@ mod garde_rules;
 mod generics;
 pub mod request_view;
 pub mod schema_attrs;
+mod scoped_ident;
 mod serde_attrs;
 mod struct_schema;
 mod type_schema;
@@ -44,11 +45,12 @@ pub use enum_schema::{
     internally_tagged_non_object_message, parse_enum_to_schema, validate_enum_for_schema,
 };
 pub use generics::substitute_type;
+pub use scoped_ident::{definition_key, scoped_key};
 pub use serde_attrs::{
-    SerdeSide, extract_default, extract_deny_unknown_fields, extract_doc_comment,
+    SerdeSide, extract_aliases, extract_default, extract_deny_unknown_fields, extract_doc_comment,
     extract_field_codec, extract_field_rename, extract_field_rename_for, extract_flatten,
-    extract_rename_all, extract_rename_all_for, extract_serde_skip_flags, extract_skip,
-    rename_field, strip_raw_prefix_owned,
+    extract_rename_all, extract_rename_all_for, extract_schema_default, extract_serde_skip_flags,
+    extract_skip, rename_field, strip_raw_prefix_owned,
 };
 pub use struct_schema::{apply_field_rules, parse_struct_to_schema};
 // Re-export for internal use within the parser module. `parse_type_to_schema_ref`

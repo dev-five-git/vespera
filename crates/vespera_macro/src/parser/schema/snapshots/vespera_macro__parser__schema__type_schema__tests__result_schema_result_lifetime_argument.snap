@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/parser/schema/type_schema.rs
+expression: "serde_json::to_string_pretty(&schema_ref).unwrap()"
+---
+{}

@@ -105,7 +105,7 @@ pub(super) fn parse_externally_tagged_enum(
         let keys = variant_keys(variant, renames.variants);
 
         if let Some(data_schema) =
-            build_variant_data_schema(variant, renames.fields, known_schemas, struct_definitions)
+            build_variant_data_schema(variant, renames, known_schemas, struct_definitions)
         {
             // Tuple / struct variant: {"VariantName": <data>}
             for key in keys {
@@ -222,7 +222,7 @@ pub(super) fn parse_internally_tagged_enum(
                     .properties
                     .insert(tag_string.clone(), tag_schema.clone());
                 fields.required.insert(0, tag_string.clone());
-                fields.into_object_schema(variant_description, false)
+                fields.into_object_schema(variant_description, renames.deny_unknown_fields)
             }
             (None, syn::Fields::Unnamed(fields_unnamed)) if fields_unnamed.unnamed.len() == 1 => {
                 let field = &fields_unnamed.unnamed[0];
@@ -302,16 +302,21 @@ pub(super) fn parse_adjacently_tagged_enum(
 
         // Add the content field if variant has data
         if let Some(data_schema) =
-            build_variant_data_schema(variant, renames.fields, known_schemas, struct_definitions)
+            build_variant_data_schema(variant, renames, known_schemas, struct_definitions)
         {
             properties.insert(content_string.clone(), data_schema);
             required.push(content_string.clone());
         }
 
+        // serde's adjacently tagged visitor under `deny_unknown_fields`
+        // rejects every key but the tag and the content.
         let variant_schema = Schema {
             description: variant_description,
             properties: Some(properties),
             required: Some(required),
+            additional_properties: renames
+                .deny_unknown_fields
+                .then_some(AdditionalProperties::Bool(false)),
             ..Schema::object()
         };
 
@@ -390,7 +395,7 @@ pub(super) fn parse_untagged_enum(
                 known_schemas,
                 struct_definitions,
             )
-            .into_object_schema(variant_description, false),
+            .into_object_schema(variant_description, renames.deny_unknown_fields),
         };
 
         any_of_schemas.push(SchemaRef::Inline(Box::new(variant_schema)));

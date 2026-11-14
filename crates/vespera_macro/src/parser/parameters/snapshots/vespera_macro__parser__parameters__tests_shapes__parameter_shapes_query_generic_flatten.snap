@@ -1,0 +1,41 @@
+---
+source: crates/vespera_macro/src/parser/parameters/tests_shapes.rs
+expression: "render(func_src, path_params)"
+---
+fn f(q: Query<Paged<Filter>>) {}
+[
+  {
+    "name": "page",
+    "in": "query",
+    "required": true,
+    "schema": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "maximum": 4294967295
+    }
+  },
+  {
+    "name": "q",
+    "in": "query",
+    "required": true,
+    "schema": {
+      "type": "string"
+    }
+  },
+  {
+    "name": "item",
+    "in": "query",
+    "required": false,
+    "schema": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/Filter"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+]

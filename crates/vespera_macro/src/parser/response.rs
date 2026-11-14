@@ -148,7 +148,7 @@ const EVENT_STREAM: &str = "text/event-stream";
 const TEXT_PLAIN: &str = "text/plain";
 
 /// True for raw byte bodies axum sends as `application/octet-stream`:
-/// `Bytes`, `BytesMut`, `Body`, `Vec<u8>`, `Box<[u8]>`, `Cow<'static, [u8]>`,
+/// `Bytes`, `BytesMut`, `Vec<u8>`, `Box<[u8]>`, `Cow<'static, [u8]>`,
 /// `[u8; N]`, `&[u8]` and `&[u8; N]`.
 fn is_bytes_like(ty: &Type) -> bool {
     match ty {
@@ -160,7 +160,7 @@ fn is_bytes_like(ty: &Type) -> bool {
                 .segments
                 .last()
                 .is_some_and(|seg| match seg.ident.to_string().as_str() {
-                    "Bytes" | "BytesMut" | "Body" => true,
+                    "Bytes" | "BytesMut" => true,
                     "Vec" => type_arg_of(ty, "Vec").is_some_and(is_u8),
                     "Box" | "Cow" => crate::schema_macro::type_utils::first_generic_type_arg(seg)
                         .is_some_and(is_byte_buffer),
@@ -186,13 +186,14 @@ fn is_u8(ty: &Type) -> bool {
 
 /// True for bodies whose shape the signature does not reveal: `impl
 /// IntoResponse` (any `impl Trait`), a type-erased `Response`, axum's
-/// `ErrorResponse`, a `Redirect` and `NoContent` (no body at all). They are
-/// documented by description only.
+/// `ErrorResponse`, a `Redirect` and `NoContent` (no body at all), and a bare
+/// `Body` (axum sets no `Content-Type` for it, so none can be claimed). They
+/// are documented by description only.
 fn is_opaque_body(ty: &Type) -> bool {
     match ty {
         Type::ImplTrait(_) => true,
         Type::Path(type_path) => type_path.path.segments.last().is_some_and(|seg| {
-            ["Response", "Redirect", "ErrorResponse", "NoContent"]
+            ["Response", "Redirect", "ErrorResponse", "NoContent", "Body"]
                 .iter()
                 .any(|ident| seg.ident == ident)
         }),
@@ -231,7 +232,9 @@ fn body_content_type(ty: &Type) -> Option<&'static str> {
 /// (no `Json` unwrapping). `Err` is `None` for axum's one-argument
 /// `Result<T>`, whose error (`ErrorResponse`) is opaque.
 fn result_args(ty: &Type) -> Option<(&Type, Option<&Type>)> {
-    let mut inner = unwrap_json(ty);
+    // `Json<Result<A, B>>` is NOT a result: it is one `200` body, serde's
+    // externally tagged `{"Ok": A}` / `{"Err": B}` (see the type schema).
+    let mut inner = ty;
     if let Type::Reference(type_ref) = inner {
         inner = type_ref.elem.as_ref();
     }

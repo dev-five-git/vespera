@@ -412,7 +412,7 @@ pub fn extract_field_defaults_from_path(
     let fn_defaults: Vec<(String, String)> = fields
         .iter()
         .filter_map(|f| {
-            let field_name = f.ident.as_ref()?.to_string();
+            let field_name = strip_raw_prefix_owned(f.ident.as_ref()?.to_string());
             if let Some(Some(fn_name)) = crate::parser::extract_default(&f.attrs) {
                 // Only handle simple function names (not paths like "crate::utils::default")
                 if fn_name.contains("::") {
@@ -483,28 +483,16 @@ fn serde_default_is_resolvable(
     field_defaults: &BTreeMap<String, serde_json::Value>,
 ) -> bool {
     match default_kind {
-        Some(_) => field
-            .ident
-            .as_ref()
-            .is_some_and(|ident| field_defaults.contains_key(&ident.to_string())),
+        Some(_) => field.ident.as_ref().is_some_and(|ident| {
+            field_defaults.contains_key(&strip_raw_prefix_owned(ident.to_string()))
+        }),
         None => crate::schema_macro::type_utils::get_type_default(&field.ty).is_some(),
     }
 }
 
+/// A `#[schema(default ...)]` key on the field, wherever it sits in the list.
 fn has_schema_default(attrs: &[syn::Attribute]) -> bool {
-    attrs
-        .iter()
-        .filter(|attr| attr.path().is_ident("schema"))
-        .any(|attr| {
-            let mut found = false;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("default") {
-                    found = true;
-                }
-                Ok(())
-            });
-            found
-        })
+    crate::parser::schema::extract_schema_default(attrs).is_some()
 }
 
 fn extract_defaults_from_path(
@@ -600,3 +588,6 @@ mod tests;
 
 #[cfg(test)]
 mod tests_wire_override;
+
+#[cfg(test)]
+mod tests_defaults;

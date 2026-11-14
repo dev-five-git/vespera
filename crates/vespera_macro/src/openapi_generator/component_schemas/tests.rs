@@ -81,7 +81,7 @@ fn schema_lookups_include_hidden_structs_for_references() {
         rust_ident: None,
     });
 
-    let (known_schema_names, struct_definitions) = build_schema_lookups(&metadata);
+    let (known_schema_names, struct_definitions) = build_schema_lookups(&metadata, &[]);
 
     assert!(known_schema_names.contains("Hidden"));
     assert_eq!(
@@ -415,6 +415,58 @@ fn renamed(name: &str, ident: &str, definition: &str) -> StructMetadata {
     }
 }
 
+/// M9: each rename is also registered under its `module::Ident`, so a
+/// module-qualified use resolves to the right one; the first scoped entry
+/// (by schema name) wins a key two renames share, and a real schema of
+/// that key is never replaced.
+#[test]
+fn scoped_rust_idents_are_registered() {
+    let scoped = |key: &str, name: &'static str, definition: &'static str| ScopedRustIdent {
+        key: key.to_string(),
+        name,
+        definition,
+    };
+    let mut metadata = CollectedMetadata::new();
+    metadata.structs = vec![StructMetadata::new(
+        "d::Foo".to_string(),
+        "struct Real;".to_string(),
+    )];
+    let entries = [
+        scoped("b::Foo", "B", "struct Foo { b: String }"),
+        scoped("a::Foo", "C", "struct Foo { c: i32 }"),
+        scoped("a::Foo", "A", "struct Foo { a: i32 }"),
+        scoped("d::Foo", "D", "struct Foo { d: i32 }"),
+    ];
+    let (known, definitions) = build_schema_lookups(&metadata, &entries);
+    assert!(known.contains("a::Foo") && known.contains("b::Foo"));
+    assert_eq!(definitions.get("a::Foo"), Some(&"struct Foo { a: i32 }"));
+    assert_eq!(definitions.get("b::Foo"), Some(&"struct Foo { b: String }"));
+    assert_eq!(definitions.get("d::Foo"), Some(&"struct Real;"));
+}
+
+/// Only a rename with a source identity gets a scoped key, derived from the
+/// module around its declaration.
+#[test]
+fn scoped_rust_idents_come_from_source_identities() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("models.rs");
+    fs::write(&file, "mod b {\n    struct Foo;\n}\n").unwrap();
+    let identity = format!("{}::Foo@2:11", file.display());
+    let mut metadata = CollectedMetadata::new();
+    metadata.structs = vec![
+        renamed("B", "Foo", "struct Foo;").with_source_identity(identity.clone()),
+        renamed("A", "Foo", "struct Foo;"),
+        StructMetadata::new("Plain".to_string(), "struct Plain;".to_string())
+            .with_source_identity(identity),
+    ];
+    let scoped = scoped_rust_idents(&metadata);
+    let keys: Vec<(&str, &str)> = scoped
+        .iter()
+        .map(|entry| (entry.key.as_str(), entry.name))
+        .collect();
+    assert_eq!(keys, [("b::Foo", "B")]);
+}
+
 /// Two renamed types sharing a Rust ident resolve the same way whatever
 /// order the storage handed them over in.
 #[test]
@@ -424,7 +476,7 @@ fn shared_rust_ident_alias_is_order_independent() {
     let resolve = |structs: Vec<StructMetadata>| {
         let mut metadata = CollectedMetadata::new();
         metadata.structs = structs;
-        let (_, definitions) = build_schema_lookups(&metadata);
+        let (_, definitions) = build_schema_lookups(&metadata, &[]);
         definitions.get("Foo").map(|d| (*d).to_string())
     };
     let forward = resolve(vec![a.clone(), b.clone()]);

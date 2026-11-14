@@ -103,12 +103,13 @@ fn parse_struct_body(
     // newtype tuple structs (serde decides "newtype" by the DECLARED field
     // count) serialize as their inner value, so they use the inner schema.
     let transparent = extract_transparent(&struct_item.attrs);
+    let side = super::request_view::current_side();
     let inner_field = match &struct_item.fields {
         Fields::Named(fields_named) if transparent => {
-            single_emitted_field(fields_named.named.iter())
+            single_emitted_field(fields_named.named.iter(), side)
         }
         Fields::Unnamed(fields_unnamed) if transparent => {
-            single_emitted_field(fields_unnamed.unnamed.iter())
+            single_emitted_field(fields_unnamed.unnamed.iter(), side)
         }
         Fields::Unnamed(fields_unnamed) if fields_unnamed.unnamed.len() == 1 => {
             fields_unnamed.unnamed.first()
@@ -119,7 +120,7 @@ fn parse_struct_body(
         let schema_ref = field_schema_ref(
             field,
             &extract_schema_constraints(&field.attrs),
-            super::request_view::current_side(),
+            side,
             known_schemas,
             struct_definitions,
         );
@@ -225,14 +226,42 @@ pub(super) fn tuple_fields_schema(
     }
 }
 
-/// The ONLY non-skipped field, if exactly one remains.
+/// serde's transparent field on `side` (serde_derive `check_transparent` /
+/// `allow_transparent`): the ONLY field that is not `PhantomData` and is not
+/// skipped on that side (`skip` / `skip_serializing` when writing;
+/// `skip` / `skip_deserializing` / a field `default` when reading).
 fn single_emitted_field<'a>(
     fields: impl Iterator<Item = &'a syn::Field>,
+    side: SerdeSide,
 ) -> Option<&'a syn::Field> {
-    let mut emitted =
-        fields.filter(|field| !extract_serde_skip_flags(&field.attrs).fully_skipped());
+    let mut emitted = fields.filter(|field| {
+        if is_phantom_data(&field.ty) {
+            return false;
+        }
+        let flags = extract_serde_skip_flags(&field.attrs);
+        !flags.skip
+            && match side {
+                SerdeSide::Serialize => !flags.skip_serializing,
+                SerdeSide::Deserialize => {
+                    !flags.skip_deserializing && extract_default(&field.attrs).is_none()
+                }
+            }
+    });
     let first = emitted.next()?;
     emitted.next().is_none().then_some(first)
+}
+
+/// `PhantomData<..>` by its last path segment (serde's own test).
+fn is_phantom_data(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Group(group) => is_phantom_data(&group.elem),
+        syn::Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "PhantomData"),
+        _ => false,
+    }
 }
 
 /// Turn a `SchemaRef` into a `Schema`, attaching `description` (a `$ref` is
@@ -540,3 +569,6 @@ mod tests_wire_names;
 
 #[cfg(test)]
 mod tests_serde_fidelity;
+
+#[cfg(test)]
+mod tests_transparent;

@@ -1,0 +1,17 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_transparent.rs
+expression: both_views(src)
+---
+#[serde(transparent)] struct W { v: u32, #[serde(default, skip_serializing)] extra: String }
+response: {
+  "type": "integer",
+  "format": "uint32",
+  "minimum": 0,
+  "maximum": 4294967295
+}
+request: {
+  "type": "integer",
+  "format": "uint32",
+  "minimum": 0,
+  "maximum": 4294967295
+}

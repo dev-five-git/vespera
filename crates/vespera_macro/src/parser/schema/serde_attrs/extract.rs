@@ -143,53 +143,15 @@ pub fn extract_aliases(attrs: &[syn::Attribute]) -> Vec<String> {
     aliases
 }
 
-/// Extract skip attribute from field attributes
-/// Returns true if #[serde(skip)] is present
+/// Extract skip attribute from field attributes.
+/// Returns true if the field never reaches the wire: `#[serde(skip)]`, or
+/// both `skip_serializing` and `skip_deserializing` (across every
+/// `#[serde(..)]` list, as serde merges them).
 pub fn extract_skip(attrs: &[syn::Attribute]) -> bool {
-    for attr in attrs {
-        if attr.path().is_ident("serde") {
-            let mut has_skip = false;
-            let mut has_skip_serializing = false;
-            let mut has_skip_deserializing = false;
-            let parsed = attr.parse_nested_meta(|meta| {
-                // Match by the path's LAST segment (see extract_flatten) so a
-                // qualified `module::skip` is caught by the structured parser,
-                // leaving the fallback as a pure parse-error recovery path.
-                let last = meta.path.segments.last().map(|seg| &seg.ident);
-                if last.is_some_and(|id| id == "skip") {
-                    has_skip = true;
-                } else if last.is_some_and(|id| id == "skip_serializing") {
-                    has_skip_serializing = true;
-                } else if last.is_some_and(|id| id == "skip_deserializing") {
-                    has_skip_deserializing = true;
-                }
-                Ok(())
-            });
-            if has_skip || (has_skip_serializing && has_skip_deserializing) {
-                return true;
-            }
-
-            // Fallback ONLY when structured parsing FAILED (see extract_rename_all):
-            // a successful walk already determined skip is absent, so skip the
-            // throwaway token-string allocation + scan in the common case.
-            if parsed.is_err() {
-                let syn::Meta::List(meta_list) = &attr.meta else {
-                    continue;
-                };
-                let tokens = meta_list.tokens.to_string();
-                if contains_standalone_word(&tokens, "skip")
-                    || (contains_standalone_word(&tokens, "skip_serializing")
-                        && contains_standalone_word(&tokens, "skip_deserializing"))
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
+    extract_serde_skip_flags(attrs).fully_skipped()
 }
 
-/// Presence flags for the serde skip/other keywords on a field or variant.
+// Presence flags for the serde skip/other keywords on a field or variant.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SerdeSkipFlags {
@@ -320,99 +282,77 @@ pub fn extract_deny_unknown_fields(attrs: &[syn::Attribute]) -> bool {
     found
 }
 
-/// Extract flatten attribute from field attributes
-/// Returns true if #[serde(flatten)] is present
-pub fn extract_flatten(attrs: &[syn::Attribute]) -> bool {
-    for attr in attrs {
-        if attr.path().is_ident("serde") {
-            // Try using parse_nested_meta for robust parsing
-            let mut found = false;
-            let parsed = attr.parse_nested_meta(|meta| {
-                // Match the keyword by the path's LAST segment so a qualified
-                // `module::flatten` is recognised by the structured parser
-                // itself; the manual fallback below then only covers the genuine
-                // parse-error case (an unhandled `key = value` aborting the
-                // walk), not "key present but written as a qualified path".
-                if meta
-                    .path
-                    .segments
-                    .last()
-                    .is_some_and(|seg| seg.ident == "flatten")
-                {
-                    found = true;
-                }
-                Ok(())
-            });
-            if found {
-                return true;
-            }
-
-            // Fallback ONLY when structured parsing FAILED (see extract_rename_all):
-            // a successful walk already determined flatten is absent, so skip the
-            // throwaway token-string allocation + scan in the common case.
-            if parsed.is_err()
-                && let syn::Meta::List(meta_list) = &attr.meta
-            {
-                let tokens = meta_list.tokens.to_string();
-                if contains_standalone_word(&tokens, "flatten") {
-                    return true;
-                }
-            }
-        }
-    }
-    false
+/// Whether the serde key `meta` names `key` by its LAST path segment, so a
+/// qualified `module::key` is recognised by the structured walk itself.
+fn last_segment_is(meta: &syn::meta::ParseNestedMeta<'_>, key: &str) -> bool {
+    meta.path
+        .segments
+        .last()
+        .is_some_and(|seg| seg.ident == key)
 }
 
-/// Check whether the `"default"` substring at index `start` of `tokens`
+/// The token strings of every `#[serde(...)]` list, for the raw-token
+/// fallbacks that run only when a structured walk failed to parse.
+fn serde_list_tokens(attrs: &[syn::Attribute]) -> impl Iterator<Item = String> + '_ {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("serde"))
+        .filter_map(|attr| attr.meta.require_list().ok())
+        .map(|list| list.tokens.to_string())
+}
+
+/// Extract flatten attribute from field attributes
+/// Returns true if #[serde(flatten)] is present
+///
+/// Every other key's `= value` / `(...)` payload is consumed by
+/// [`walk_serde_keys`], so `with = "helpers::flatten_opt"` never aborts the
+/// walk into the raw-token fallback (which ignores string literals anyway).
+pub fn extract_flatten(attrs: &[syn::Attribute]) -> bool {
+    let mut found = false;
+    let parsed = walk_serde_keys(attrs, |meta| {
+        found |= last_segment_is(meta, "flatten");
+        Ok(false)
+    });
+    found
+        || (!parsed
+            && serde_list_tokens(attrs).any(|tokens| contains_standalone_word(&tokens, "flatten")))
+}
+
 /// Extract default attribute from field attributes
 /// Returns:
 /// - Some(None) if #[serde(default)] is present (no function)
 /// - `Some(Some(function_name))` if #[serde(default = "`function_name`")] is present
 /// - None if no default attribute is present
+///
+/// Keys before `default` (`rename = "defaultValue", default`) are consumed by
+/// [`walk_serde_keys`], so they never hide it.
 #[allow(clippy::option_option)]
 pub fn extract_default(attrs: &[syn::Attribute]) -> Option<Option<String>> {
-    for attr in attrs {
-        if attr.path().is_ident("serde")
-            && let syn::Meta::List(meta_list) = &attr.meta
-        {
-            let mut found_default: Option<Option<String>> = None;
-            let parsed = attr.parse_nested_meta(|meta| {
-                // Match by the path's LAST segment (see extract_flatten) so a
-                // qualified `module::default` is caught by the structured parser.
-                if meta
-                    .path
-                    .segments
-                    .last()
-                    .is_some_and(|seg| seg.ident == "default")
-                {
-                    // Check if it has a value (default = "function_name")
-                    if let Ok(value) = meta.value() {
-                        if let Ok(syn::Expr::Lit(syn::ExprLit {
-                            lit: syn::Lit::Str(s),
-                            ..
-                        })) = value.parse::<syn::Expr>()
-                        {
-                            found_default = Some(Some(s.value()));
-                        }
-                    } else {
-                        // Just "default" without value
-                        found_default = Some(None);
-                    }
-                }
-                Ok(())
-            });
-            // Fallback ONLY when structured parsing FAILED (see extract_rename_all):
-            // a successful walk already determined whether `default` is present, so
-            // skip the throwaway token-string allocation + scan in the common case.
-            if found_default.is_none() && parsed.is_err() {
-                found_default = scan_default_from_raw_tokens(&meta_list.tokens.to_string());
-            }
-            if let Some(default_value) = found_default {
-                return Some(default_value);
-            }
+    let mut found: Option<Option<String>> = None;
+    let parsed = walk_serde_keys(attrs, |meta| {
+        if !last_segment_is(meta, "default") {
+            return Ok(false);
         }
+        if meta.input.peek(syn::Token![=]) {
+            // `default = "path"`; any other value is not a serde default.
+            if let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(s),
+                ..
+            }) = meta.value()?.parse::<syn::Expr>()?
+            {
+                found.get_or_insert(Some(s.value()));
+            }
+            return Ok(true);
+        }
+        found.get_or_insert(None);
+        Ok(false)
+    });
+    // Fallback ONLY when structured parsing FAILED: a successful walk already
+    // determined whether `default` is present.
+    if found.is_none() && !parsed {
+        found = serde_list_tokens(attrs).find_map(|tokens| scan_default_from_raw_tokens(&tokens));
     }
-    None
+    found
 }
 
 #[cfg(test)]

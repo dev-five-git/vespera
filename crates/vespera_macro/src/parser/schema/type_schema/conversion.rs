@@ -357,19 +357,55 @@ fn parse_type_impl(
                         return SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)));
                     }
                     "HasMany" => {
-                        // HasMany<Entity> -> array of references to corresponding Schema
-                        if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
-                            && let Some(schema_name) = extract_schema_name_from_entity(inner_ty)
-                        {
-                            let inner_ref = SchemaRef::Ref(Reference::new(format!(
-                                "#/components/schemas/{schema_name}"
-                            )));
-                            return SchemaRef::Inline(Box::new(Schema::array(inner_ref)));
-                        }
+                        // HasMany<Entity> -> nullable array of references to the
+                        // corresponding Schema: sea-orm serializes `Unloaded` as
+                        // `null` (and reads `null` back as `Unloaded`).
+                        let schema_name = match args.args.first() {
+                            Some(syn::GenericArgument::Type(inner_ty)) => {
+                                extract_schema_name_from_entity(inner_ty)
+                            }
+                            _ => None,
+                        };
                         // Fallback: array of generic objects
-                        return SchemaRef::Inline(Box::new(Schema::array(SchemaRef::Inline(
-                            Box::new(Schema::new(SchemaType::Object)),
-                        ))));
+                        let items = schema_name.map_or_else(
+                            || SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object))),
+                            |name| {
+                                SchemaRef::Ref(Reference::new(format!(
+                                    "#/components/schemas/{name}"
+                                )))
+                            },
+                        );
+                        return super::nullable::nullable(SchemaRef::Inline(Box::new(
+                            Schema::array(items),
+                        )));
+                    }
+                    // Result<T, E> -> serde's externally tagged enum:
+                    // `{"Ok": T}` or `{"Err": E}`.
+                    "Result" => {
+                        let mut types = args.args.iter().filter_map(|arg| match arg {
+                            syn::GenericArgument::Type(ty) => Some(ty),
+                            _ => None,
+                        });
+                        if let (Some(ok_ty), Some(err_ty)) = (types.next(), types.next()) {
+                            let branch = |key: &str, ty: &Type| {
+                                SchemaRef::Inline(Box::new(Schema {
+                                    properties: Some(std::collections::BTreeMap::from([(
+                                        key.to_string(),
+                                        parse_type_to_schema_ref(
+                                            ty,
+                                            known_schemas,
+                                            struct_definitions,
+                                        ),
+                                    )])),
+                                    required: Some(vec![key.to_string()]),
+                                    ..Schema::object()
+                                }))
+                            };
+                            return SchemaRef::Inline(Box::new(Schema {
+                                one_of: Some(vec![branch("Ok", ok_ty), branch("Err", err_ty)]),
+                                ..Schema::new(SchemaType::Object)
+                            }));
+                        }
                     }
                     "HashMap" | "BTreeMap" => {
                         // HashMap<K, V> or BTreeMap<K, V> -> object with additionalProperties
@@ -549,7 +585,11 @@ fn parse_type_impl(
                     }
                 }
             } else {
-                type_name
+                // `b::Foo` names the `Foo` declared in module `b` (two
+                // `#[schema(name)]` renames may share the ident).
+                crate::parser::schema::definition_key(path, |key| known_schemas.contains(key))
+                    .filter(|key| key.contains("::"))
+                    .unwrap_or(type_name)
             };
 
             if known_schemas.contains(resolved_name.as_str()) {
