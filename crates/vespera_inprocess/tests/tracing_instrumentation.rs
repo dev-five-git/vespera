@@ -127,9 +127,18 @@ async fn panics() -> &'static str {
     panic!("handler boom")
 }
 
+/// One body chunk, then a body error (after the header was committed).
+async fn broken() -> axum::body::Body {
+    axum::body::Body::from_stream(futures_util::stream::iter([
+        Ok(bytes::Bytes::from_static(b"partial")),
+        Err(std::io::Error::other("body boom")),
+    ]))
+}
+
 fn app() -> Router {
     Router::new()
         .route("/ok", get(|| async { "ok" }).post(|| async { "posted" }))
+        .route("/broken", get(broken))
         .route("/panic", get(panics))
         .route("/users/{id}/tokens/{token}", get(|| async { "user" }))
 }
@@ -391,6 +400,69 @@ fn direct_streaming_and_bidirectional_modes() {
             ("streaming", "200"),
             ("bidirectional", "200")
         ]
+    );
+}
+
+/// A host sink that stops accepting the body (the client went away) is not
+/// an engine error: the span records `499` and only a DEBUG event is
+/// emitted — inside the span, although the bidirectional entry point builds
+/// its `500` wire after the span closed.
+#[test]
+fn sink_stop_is_a_client_disconnect_not_an_error() {
+    setup();
+    let capture = Capture::default();
+    let resp = capture.run(|| {
+        runtime().block_on(dispatch_bidirectional_streaming(
+            get_wire("/ok"),
+            || RequestChunk::End,
+            |_| ControlFlow::Break(()),
+        ))
+    });
+    assert_eq!(status_of(&resp), 500);
+    assert_eq!(field(&capture.dispatch_span(), "status"), "499");
+    assert_eq!(
+        capture.events(),
+        [(
+            Level::DEBUG,
+            "vespera dispatch: response sink stopped (client disconnected)".to_owned(),
+            Some("vespera.dispatch")
+        )]
+    );
+}
+
+/// A response body that errors after the header is an engine `500`,
+/// reported once and inside the span in every streaming mode.
+#[rstest::rstest]
+#[case::streaming("streaming")]
+#[case::bidirectional("bidirectional")]
+fn post_header_body_error_is_an_error_event_inside_the_span(#[case] mode: &str) {
+    setup();
+    let capture = Capture::default();
+    let resp = capture.run(|| {
+        let rt = runtime();
+        if mode == "streaming" {
+            rt.block_on(dispatch_streaming_async(get_wire("/broken"), |_| {
+                ControlFlow::Continue(())
+            }))
+        } else {
+            rt.block_on(dispatch_bidirectional_streaming(
+                get_wire("/broken"),
+                || RequestChunk::End,
+                |_| ControlFlow::Continue(()),
+            ))
+        }
+    });
+    assert_eq!(status_of(&resp), 500);
+    let span = capture.dispatch_span();
+    assert_eq!(field(&span, "mode"), mode);
+    assert_eq!(field(&span, "status"), "500");
+    assert_eq!(
+        capture.events(),
+        [(
+            Level::ERROR,
+            "vespera dispatch: internal error".to_owned(),
+            Some("vespera.dispatch")
+        )]
     );
 }
 

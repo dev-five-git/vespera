@@ -28,6 +28,11 @@
 //!   shut down / overloaded (`503`), deadline (`504`), other `4xx` (WARN)
 //!   and engine `5xx` (ERROR).  Handler-produced responses never emit an
 //!   event — only the span's `status` field.
+//! * For the streaming modes, a response body that errored after the header
+//!   was committed is an engine `500` (ERROR event, `status = 500`); a host
+//!   sink that stopped accepting the body (the client disconnected) records
+//!   `status = 499` with a DEBUG event only ([`stream_outcome`]).  Both are
+//!   emitted inside the span, before it closes.
 //! * An ERROR event (parented to the span) when a panic unwinds out of the
 //!   dispatch future, which also sets `panicked = true` and `status = 500`.
 //!
@@ -247,5 +252,31 @@ pub fn error_response(status: u16, detail: &str) {
         504 => tracing::warn!(status, detail, "vespera dispatch: deadline exceeded"),
         0..500 => tracing::warn!(status, detail, "vespera dispatch: request rejected"),
         _ => tracing::error!(status, detail, "vespera dispatch: internal error"),
+    }
+}
+
+/// `status` recorded for a stream whose host sink stopped accepting the
+/// response body — the client went away (nginx's "client closed request").
+pub const CLIENT_CLOSED_STATUS: u16 = 499;
+
+/// Hook for every streaming outcome, called inside the dispatch span once
+/// the response body drained (or stopped): a [`crate::StreamOutcome::BodyError`]
+/// is an engine `500` (ERROR event, like [`error_response`]); a
+/// [`crate::StreamOutcome::SinkStopped`] means the host's sink stopped
+/// accepting the body — usually a client that disconnected — so it records
+/// [`CLIENT_CLOSED_STATUS`] and emits only a DEBUG event.
+pub fn stream_outcome(outcome: crate::StreamOutcome) {
+    match outcome {
+        crate::StreamOutcome::Complete => {}
+        crate::StreamOutcome::BodyError => {
+            error_response(500, crate::internal::BODY_STREAM_ERROR_MSG);
+        }
+        crate::StreamOutcome::SinkStopped => {
+            record_status(CLIENT_CLOSED_STATUS);
+            tracing::debug!(
+                status = CLIENT_CLOSED_STATUS,
+                "vespera dispatch: response sink stopped (client disconnected)"
+            );
+        }
     }
 }
