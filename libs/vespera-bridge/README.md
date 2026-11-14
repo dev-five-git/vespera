@@ -685,6 +685,10 @@ Contract:
   `requiredSize` is exact, but **retrying the raw `dispatchDirect`
   re-runs the Rust handler**, so only retry safe requests.  (The pooled
   API below does not re-run: it fetches the stashed response.)
+- An `out` smaller than `VesperaBridge.MIN_DIRECT_OUT_BYTES` (1 KiB)
+  returns `-(1024)` **without running the handler** (such a buffer could
+  not hold a synthesized panic / timeout response, so a retry would re-run
+  a failing handler); retrying with at least 1 KiB dispatches normally.
 - `Integer.MIN_VALUE`: response exceeds 2 GiB (unrepresentable).
 
 `dispatchDirectPooled(byte[] wireRequest, boolean retryOnOverflow)`
