@@ -18,7 +18,7 @@ use super::{
     serde_attrs::{
         SerdeSide, extract_default, extract_deny_unknown_fields, extract_doc_comment,
         extract_field_codec, extract_field_rename_for, extract_flatten, extract_rename_all,
-        extract_rename_all_for, extract_schema_ref_override, extract_serde_skip_flags,
+        extract_rename_all_for, extract_schema_ref_override, extract_serde_skip_flags, extract_tag,
         extract_transparent, rename_field, strip_raw_prefix_owned,
     },
     type_schema::{parse_type_to_schema_ref, tuple_array_schema},
@@ -129,13 +129,32 @@ fn parse_struct_body(
                 extract_rename_all(&struct_item.attrs)
             };
             let container_default = request && extract_default(&struct_item.attrs).is_some();
-            let fields = collect_named_fields(
+            let mut fields = collect_named_fields(
                 fields_named,
                 rename_all.as_deref(),
                 container_default,
                 known_schemas,
                 struct_definitions,
             );
+            // `#[serde(tag = "t")]` on a struct: serde's Serialize writes
+            // `"t": <serialize name>` before the fields (also through the map
+            // path a `flatten` struct uses), so the response view requires
+            // it. serde's Deserialize ignores the tag entirely: an absent tag
+            // is accepted and a present one is just an unknown key (rejected
+            // under `deny_unknown_fields`), so the request view (`{Name}Input`,
+            // see `request_view::struct_differs`) leaves it out.
+            if !request && let Some(tag) = extract_tag(&struct_item.attrs) {
+                let serde_name = extract_field_rename_for(&struct_item.attrs, SerdeSide::Serialize)
+                    .unwrap_or_else(|| strip_raw_prefix_owned(struct_item.ident.to_string()));
+                fields.properties.insert(
+                    tag.clone(),
+                    SchemaRef::Inline(Box::new(Schema {
+                        r#enum: Some(vec![serde_json::Value::String(serde_name)]),
+                        ..Schema::string()
+                    })),
+                );
+                fields.required.insert(0, tag);
+            }
 
             // `deny_unknown_fields` → closed object. serde does not support
             // it together with `flatten`, so a flattening struct stays open.
@@ -496,3 +515,6 @@ mod tests;
 
 #[cfg(test)]
 mod tests_wire_override;
+
+#[cfg(test)]
+mod tests_wire_names;

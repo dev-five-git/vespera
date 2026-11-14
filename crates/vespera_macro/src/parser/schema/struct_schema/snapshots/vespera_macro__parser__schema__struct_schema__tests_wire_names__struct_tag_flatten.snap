@@ -1,0 +1,56 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_wire_names.rs
+assertion_line: 47
+expression: "format!(\"response:\\n{}\\nrequest:\\n{}\", render(src, false), render(src, true))"
+---
+response:
+{
+  "allOf": [
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "Created"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ]
+    },
+    {
+      "$ref": "#/components/schemas/Meta"
+    }
+  ]
+}
+request:
+{
+  "allOf": [
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "maximum": 4294967295
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    {
+      "$ref": "#/components/schemas/Meta"
+    }
+  ]
+}

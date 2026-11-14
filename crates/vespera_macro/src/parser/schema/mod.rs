@@ -54,4 +54,5 @@ pub use struct_schema::{apply_field_rules, parse_struct_to_schema};
 // Re-export for internal use within the parser module. `parse_type_to_schema_ref`
 // is reached directly via the `type_schema` submodule path where needed.
 pub use type_schema::generic_instances;
+pub use type_schema::nullable::nullable as nullable_schema_ref;
 pub use type_schema::{is_builtin_openapi_type, is_primitive_type, parse_type_to_schema_ref};

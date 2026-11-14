@@ -12,7 +12,7 @@ pub use common::{
     capitalize_first, extract_doc_comment, extract_schema_name_from_entity,
     extract_schema_ref_override, extract_transparent, strip_raw_prefix_owned,
 };
-pub use enum_repr::{SerdeEnumRepr, extract_enum_repr, extract_untagged};
+pub use enum_repr::{SerdeEnumRepr, extract_enum_repr, extract_tag, extract_untagged};
 pub use extract::{
     SerdeSide, extract_default, extract_deny_unknown_fields, extract_field_rename,
     extract_field_rename_for, extract_flatten, extract_rename_all, extract_rename_all_fields_for,
