@@ -74,6 +74,21 @@ curl_get() { # <url> <file>: download with retries (registries can lag a publish
     -o "$2" "$1"
 }
 
+# Maven Central / the Plugin Portal can take ~30 min to serve a fresh
+# release (0.7.0's re-attest started minutes after the publish and got 404s),
+# so a registry download keeps trying for up to 30 minutes.
+registry_get() { # <url> <file>
+  local attempt
+  for attempt in $(seq 1 30); do
+    if curl_get "$1" "$2"; then return 0; fi
+    if [ "$attempt" -lt 30 ]; then
+      echo "waiting for $1 (attempt $attempt/30)" >&2
+      sleep 60
+    fi
+  done
+  return 1
+}
+
 # ── --from-registries: the published files ────────────────────────────────
 downloads=
 if [ -n "$registry_version" ]; then
@@ -93,7 +108,7 @@ if [ -n "$registry_version" ]; then
         base="$repo/kr/devfive/$lib/$registry_version/$lib-$registry_version"
         for suffix in .jar -sources.jar -javadoc.jar; do
           f="$downloads/$lib-$registry_version$suffix"
-          if curl_get "$base$suffix" "$f" && curl_get "$base$suffix.sha1" "$f.sha1" &&
+          if registry_get "$base$suffix" "$f" && registry_get "$base$suffix.sha1" "$f.sha1" &&
             [ "$(sha1sum "$f" | cut -d' ' -f1)" = "$(tr -d ' \r\n' <"$f.sha1" | cut -c1-40)" ]; then
             rm "$f.sha1"
           else

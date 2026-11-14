@@ -497,6 +497,10 @@ jobs:
       contents: write
       # open the version PR / comment on it
       pull-requests: write
+      # dispatch CI on the version PR branch: pushes made with GITHUB_TOKEN
+      # never trigger workflows, but `workflow_dispatch` does, so the version
+      # PR gets its checks before anyone merges it
+      actions: write
       # NO id-token / attestations here: this job runs third-party and build
       # code (the changepacks CLI binary, cargo build scripts, Gradle plugins),
       # none of which may mint an OIDC token or write attestations. The
@@ -558,29 +562,40 @@ jobs:
           path: ${{ runner.temp }}/release/
           if-no-files-found: error
           retention-days: 30
-      - name: Sync Cargo.lock on the version PR
-        # changepacks bumps the workspace versions in Cargo.toml but not the
-        # workspace members' entries in Cargo.lock, so the version PR (and the
-        # release tag) would carry a stale lockfile. Refresh only the
-        # workspace members on that branch. Best effort: never blocks publish.
-        # Runs whenever changepacks itself succeeded — exactly as before the
-        # attestation steps were added — so a failed artifact collection never
-        # skips it.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         if: ${{ !cancelled() && steps.changepacks.outcome == 'success' }}
         continue-on-error: true
+        with:
+          bun-version: 1.4.4
+      - name: Sync the version PR and run CI on it
+        # changepacks bumps the versions in Cargo.toml / build.gradle.kts but
+        # not the workspace members' Cargo.lock entries nor the versions the
+        # landing docs quote, so the version PR (and the release tag) would
+        # carry a stale lockfile and fail main's version-alignment check right
+        # after merging (0.7.0: the release did not run until the docs were
+        # fixed by hand). Refresh both on that branch, then dispatch CI on it:
+        # the bot's pushes trigger no workflow, so without this the version
+        # PR shows no checks at all. Best effort: never blocks publish. Runs
+        # whenever changepacks itself succeeded, so a failed artifact
+        # collection never skips it.
+        if: ${{ !cancelled() && steps.changepacks.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if ! git fetch --depth 1 origin changepacks/main 2>/dev/null; then
             echo "no version PR branch"; exit 0
           fi
           git checkout -B changepacks/main FETCH_HEAD
           cargo update --workspace
-          if git diff --quiet -- Cargo.lock; then
-            echo "Cargo.lock already in sync"; exit 0
+          bun scripts/sync-landing-versions.ts
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "Sync Cargo.lock and the landing docs with the bumped versions"
+            git push origin HEAD:changepacks/main
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Sync Cargo.lock with the bumped workspace versions" -- Cargo.lock
-          git push origin HEAD:changepacks/main
+          gh workflow run CI.yml --repo "$GITHUB_REPOSITORY" --ref changepacks/main
     outputs:
       changepacks: ${{ steps.changepacks.outputs.changepacks }}
       release_assets_urls: ${{ steps.changepacks.outputs.release_assets_urls }}

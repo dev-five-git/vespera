@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'bun:test'
 
 import {
+  DOC_VERSION_PATTERNS,
   VESPERA_BRIDGE_PLUGIN_VERSION,
   VESPERA_BRIDGE_VERSION,
   VESPERA_VERSION,
@@ -24,22 +25,11 @@ const docs = readdirSync(DOCS_DIR)
     content: readFileSync(join(DOCS_DIR, file), 'utf-8'),
   }))
 
-// Every version literal the documentation samples quote, paired with the
-// constant it must match.
-const PATTERNS: [RegExp, string][] = [
-  [/^vespera = "([^"]+)"/gm, VESPERA_VERSION],
-  [/^vespera = \{ version = "([^"]+)"/gm, VESPERA_VERSION],
-  [/kr\.devfive:vespera-bridge:([0-9][^"]*)"/g, VESPERA_BRIDGE_VERSION],
-  [
-    /<artifactId>vespera-bridge<\/artifactId>\s*<version>([^<]+)<\/version>/g,
-    VESPERA_BRIDGE_VERSION,
-  ],
-  [/bridgeVersion\.set\("([^"]+)"\)/g, VESPERA_BRIDGE_VERSION],
-  [
-    /id\("kr\.devfive\.vespera-bridge"\) version "([^"]+)"/g,
-    VESPERA_BRIDGE_PLUGIN_VERSION,
-  ],
-]
+const CONSTANTS = {
+  VESPERA_VERSION,
+  VESPERA_BRIDGE_VERSION,
+  VESPERA_BRIDGE_PLUGIN_VERSION,
+}
 
 describe('documentation versions', () => {
   it('should find documentation pages', () => {
@@ -49,9 +39,9 @@ describe('documentation versions', () => {
   it('should quote the current versions in every code sample', () => {
     const found: { file: string; version: string; expected: string }[] = []
     for (const { file, content } of docs) {
-      for (const [pattern, expected] of PATTERNS) {
+      for (const [pattern, constant] of DOC_VERSION_PATTERNS) {
         for (const match of content.matchAll(pattern)) {
-          found.push({ file, version: match[1], expected })
+          found.push({ file, version: match[1], expected: CONSTANTS[constant] })
         }
       }
     }
