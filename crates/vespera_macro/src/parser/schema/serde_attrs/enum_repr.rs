@@ -1,3 +1,5 @@
+use super::extract::walk_serde_keys;
+
 /// Serde enum representation types
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SerdeEnumRepr {
@@ -40,138 +42,54 @@ pub fn extract_enum_repr(attrs: &[syn::Attribute]) -> SerdeEnumRepr {
     }
 }
 
+/// The string value of the container key whose last path segment is `key`
+/// (`tag = "type"`, `content = "data"`), from the first `#[serde]` list that
+/// carries it. Unrelated `key = value` / `key(...)` entries are skipped
+/// structurally — never by a substring scan, which would read `"camelCase"`
+/// out of `rename = "Stage", rename_all = "camelCase"` as a tag.
+fn extract_string_key(attrs: &[syn::Attribute], key: &str) -> Option<String> {
+    let mut found = None;
+    walk_serde_keys(attrs, |meta| {
+        if meta.path.segments.last().is_none_or(|seg| seg.ident != key) {
+            return Ok(false);
+        }
+        if let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(value),
+            ..
+        }) = meta.value()?.parse::<syn::Expr>()?
+        {
+            found.get_or_insert(value.value());
+        }
+        Ok(true)
+    });
+    found
+}
+
 /// Extract tag attribute from serde container attributes
 /// Returns the tag name if `#[serde(tag = "...")]` is present
 pub fn extract_tag(attrs: &[syn::Attribute]) -> Option<String> {
-    for attr in attrs {
-        if attr.path().is_ident("serde") {
-            let mut found_tag = None;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("tag")
-                    && let Ok(value) = meta.value()
-                    && let Ok(syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(s),
-                        ..
-                    })) = value.parse::<syn::Expr>()
-                {
-                    found_tag = Some(s.value());
-                }
-                Ok(())
-            });
-            if found_tag.is_some() {
-                return found_tag;
-            }
-
-            // Fallback: manual token parsing
-            let Ok(tokens) = attr.meta.require_list() else {
-                continue;
-            };
-            let token_str = tokens.tokens.to_string();
-
-            if let Some(start) = token_str.find("tag") {
-                // Ensure it's "tag" not "untagged"
-                let before = if start > 0 { &token_str[..start] } else { "" };
-                let before_char = before.chars().last().unwrap_or(' ');
-                if before_char != 'n' {
-                    // Not "untagged"
-                    let remaining = &token_str[start + "tag".len()..];
-                    if let Some(equals_pos) = remaining.find('=') {
-                        let value_part = remaining[equals_pos + 1..].trim();
-                        if let Some(quote_start) = value_part.find('"') {
-                            let after_quote = &value_part[quote_start + 1..];
-                            if let Some(quote_end) = after_quote.find('"') {
-                                let value = &after_quote[..quote_end];
-                                return Some(value.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
+    extract_string_key(attrs, "tag")
 }
 
 /// Extract content attribute from serde container attributes
 /// Returns the content name if `#[serde(content = "...")]` is present
 pub fn extract_content(attrs: &[syn::Attribute]) -> Option<String> {
-    for attr in attrs {
-        if attr.path().is_ident("serde") {
-            let mut found_content = None;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("content")
-                    && let Ok(value) = meta.value()
-                    && let Ok(syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(s),
-                        ..
-                    })) = value.parse::<syn::Expr>()
-                {
-                    found_content = Some(s.value());
-                }
-                Ok(())
-            });
-            if found_content.is_some() {
-                return found_content;
-            }
-
-            // Fallback: manual token parsing
-            let Ok(tokens) = attr.meta.require_list() else {
-                continue;
-            };
-            let token_str = tokens.tokens.to_string();
-
-            if let Some(start) = token_str.find("content") {
-                let remaining = &token_str[start + "content".len()..];
-                if let Some(equals_pos) = remaining.find('=') {
-                    let value_part = remaining[equals_pos + 1..].trim();
-                    if let Some(quote_start) = value_part.find('"') {
-                        let after_quote = &value_part[quote_start + 1..];
-                        if let Some(quote_end) = after_quote.find('"') {
-                            let value = &after_quote[..quote_end];
-                            return Some(value.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
+    extract_string_key(attrs, "content")
 }
 
 /// Extract untagged attribute from serde container attributes
 /// Returns true if `#[serde(untagged)]` is present
 pub fn extract_untagged(attrs: &[syn::Attribute]) -> bool {
-    for attr in attrs {
-        if attr.path().is_ident("serde") {
-            let mut found = false;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("untagged") {
-                    found = true;
-                }
-                Ok(())
-            });
-            if found {
-                return true;
-            }
-
-            // Fallback: manual token parsing
-            if let syn::Meta::List(meta_list) = &attr.meta {
-                let tokens = meta_list.tokens.to_string();
-                if let Some(pos) = tokens.find("untagged") {
-                    let before = if pos > 0 { &tokens[..pos] } else { "" };
-                    let after = &tokens[pos + "untagged".len()..];
-                    let before_char = before.chars().last().unwrap_or(' ');
-                    let after_char = after.chars().next().unwrap_or(' ');
-                    if (before_char == ' ' || before_char == ',' || before_char == '(')
-                        && (after_char == ' ' || after_char == ',' || after_char == ')')
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    false
+    let mut found = false;
+    walk_serde_keys(attrs, |meta| {
+        found |= meta
+            .path
+            .segments
+            .last()
+            .is_some_and(|seg| seg.ident == "untagged");
+        Ok(false)
+    });
+    found
 }
 
 #[cfg(test)]
@@ -194,6 +112,11 @@ mod tests {
     #[case(r#"rename_all = "camelCase""#, None)]
     #[case(r"untagged", None)]
     #[case(r"default", None)]
+    // A `key = value` before `tag` never aborts the walk, and no tag is ever
+    // read out of another key's value.
+    #[case(r#"rename = "Stage", rename_all = "camelCase""#, None)]
+    #[case(r#"rename = "Stage", tag = "kind""#, Some("kind"))]
+    #[case(r#"rename_all(serialize = "lowercase"), tag = "kind""#, Some("kind"))]
     fn test_extract_tag(#[case] serde_content: &str, #[case] expected: Option<&str>) {
         let attrs = get_enum_attrs(serde_content);
         let result = extract_tag(&attrs);
@@ -208,6 +131,8 @@ mod tests {
     #[case(r#"tag = "type""#, None)]
     #[case(r"untagged", None)]
     #[case(r#"rename_all = "camelCase""#, None)]
+    #[case(r#"rename = "content", tag = "t""#, None)]
+    #[case(r#"bound = "T: X", tag = "t", content = "c""#, Some("c"))]
     fn test_extract_content(#[case] serde_content: &str, #[case] expected: Option<&str>) {
         let attrs = get_enum_attrs(serde_content);
         let result = extract_content(&attrs);
@@ -222,6 +147,8 @@ mod tests {
     #[case(r#"tag = "type""#, false)]
     #[case(r#"rename_all = "camelCase""#, false)]
     #[case(r"default", false)]
+    #[case(r#"rename = "untagged""#, false)]
+    #[case(r#"bound = "T: X", untagged"#, true)]
     fn test_extract_untagged(#[case] serde_content: &str, #[case] expected: bool) {
         let attrs = get_enum_attrs(serde_content);
         let result = extract_untagged(&attrs);

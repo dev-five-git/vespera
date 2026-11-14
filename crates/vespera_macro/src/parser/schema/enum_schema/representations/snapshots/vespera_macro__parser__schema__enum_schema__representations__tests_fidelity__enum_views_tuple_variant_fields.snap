@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
+assertion_line: 101
+expression: both_views(src)
+---
+enum E { Pair(#[schema(value_type = String)] Id, #[serde(deserialize_with = "d")] u8), One(#[serde(with = "m")] Thing) }
+response: {"oneOf":[{"type":"object","properties":{"Pair":{"type":"array","prefixItems":[{"type":"string"},{"type":"integer","format":"uint8","minimum":0,"maximum":255}],"minItems":2,"maxItems":2}},"required":["Pair"]},{"type":"object","properties":{"One":{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."}},"required":["One"]}]}
+request: {"oneOf":[{"type":"object","properties":{"Pair":{"type":"array","prefixItems":[{"type":"string"},{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."}],"minItems":2,"maxItems":2}},"required":["Pair"]},{"type":"object","properties":{"One":{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."}},"required":["One"]}]}

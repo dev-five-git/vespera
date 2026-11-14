@@ -1,26 +1,56 @@
-use vespera_core::schema::{Schema, SchemaType};
+use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
 use super::super::{
-    request_view::current_side,
-    serde_attrs::{SerdeSide, extract_field_rename_for, rename_variant, strip_raw_prefix_owned},
+    request_view::{current_side, in_request_view},
+    serde_attrs::{
+        SerdeSide, extract_aliases, extract_field_rename_for, rename_variant,
+        strip_raw_prefix_owned,
+    },
 };
 
 /// Parse a simple enum (all unit variants) to a string schema with enum values.
+///
+/// In the request view a `#[serde(other)]` variant makes serde accept ANY
+/// string (an unknown name deserializes as that variant), and each variant
+/// also accepts its `#[serde(alias)]` names. The response view lists the
+/// serialized names only (the `other` variant writes its own name).
 pub(super) fn parse_unit_enum_to_schema(
     enum_item: &syn::ItemEnum,
     description: Option<String>,
     rename_all: Option<&str>,
 ) -> Schema {
+    let request = in_request_view();
     let mut enum_values = Vec::with_capacity(enum_item.variants.len());
+    let mut catch_all = false;
 
     for variant in enum_item
         .variants
         .iter()
         .filter(|variant| !super::variant::is_variant_omitted(variant))
     {
-        enum_values.push(serde_json::Value::String(get_variant_key(
-            variant, rename_all,
-        )));
+        if request && super::variant::is_other_variant(variant) {
+            catch_all = true;
+            continue;
+        }
+        enum_values.extend(
+            variant_keys(variant, rename_all)
+                .into_iter()
+                .map(serde_json::Value::String),
+        );
+    }
+
+    if catch_all {
+        return Schema {
+            description,
+            one_of: Some(vec![
+                SchemaRef::Inline(Box::new(Schema {
+                    r#enum: Some(enum_values.clone()),
+                    ..Schema::string()
+                })),
+                SchemaRef::Inline(Box::new(other_tag_schema(enum_values))),
+            ]),
+            ..Schema::default()
+        };
     }
 
     Schema {
@@ -35,6 +65,18 @@ pub(super) fn parse_unit_enum_to_schema(
     }
 }
 
+/// `{type: string, not: {enum: known}}` — the names a `#[serde(other)]`
+/// variant is deserialized from.
+pub(super) fn other_tag_schema(known: Vec<serde_json::Value>) -> Schema {
+    Schema {
+        not: Some(SchemaRef::Inline(Box::new(Schema {
+            r#enum: Some(known),
+            ..Schema::default()
+        }))),
+        ..Schema::string()
+    }
+}
+
 /// Get the variant key (name after rename transformations) on the serde side
 /// of the view being built.
 pub(super) fn get_variant_key(variant: &syn::Variant, rename_all: Option<&str>) -> String {
@@ -44,6 +86,15 @@ pub(super) fn get_variant_key(variant: &syn::Variant, rename_all: Option<&str>) 
         .unwrap_or_else(|| rename_variant(&variant_name, rename_all))
 }
 
+/// Every name the variant is identified by in the view being built: its key
+/// and, in the request view, its `#[serde(alias)]` names.
+pub(super) fn variant_keys(variant: &syn::Variant, rename_all: Option<&str>) -> Vec<String> {
+    let mut keys = vec![get_variant_key(variant, rename_all)];
+    if in_request_view() {
+        keys.extend(extract_aliases(&variant.attrs));
+    }
+    keys
+}
 /// Whether the enum derives `serde_repr`'s impl for `side`:
 /// `Serialize_repr` (serialize) / `Deserialize_repr` (deserialize), by any
 /// path (`serde_repr::Serialize_repr`).

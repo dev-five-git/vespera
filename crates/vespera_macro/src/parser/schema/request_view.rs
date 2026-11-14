@@ -20,6 +20,14 @@
 //! - a field has a one-sided `serialize_with` / `deserialize_with` (without
 //!   `#[schema(value_type)]`), or is an `Option` read through a custom
 //!   deserializer (serde then requires it),
+//! - a field has `#[serde(alias)]` names (accepted keys), or a non-`Option`
+//!   `skip_serializing_if` field without `default` (optional on output,
+//!   required on input),
+//! - a tuple position is skipped / custom-converted on one side only,
+//! - a field's type is a `HashSet` / `BTreeSet` (`uniqueItems` on output
+//!   only) or a `std::time::Duration` (also read from `[secs, nanos]`),
+//! - an enum variant is aliased, is the `#[serde(other)]` catch-all, or has
+//!   a one-sided variant-level `serialize_with` / `deserialize_with`,
 //!
 //! or (transitively) when it names a type whose request view differs: a
 //! `CreateOrder { items: Vec<LineItem> }` references `LineItemInput` from
@@ -46,7 +54,7 @@ use super::{
     enum_schema::derives_serde_repr,
     schema_attrs::extract_schema_constraints,
     serde_attrs::{
-        SerdeSide, extract_default, extract_field_codec, extract_field_rename_for,
+        SerdeSide, extract_aliases, extract_default, extract_field_codec, extract_field_rename_for,
         extract_rename_all_fields_for, extract_rename_all_for, extract_serde_skip_flags,
         extract_tag,
     },
@@ -98,6 +106,18 @@ pub fn has_input(component: &str) -> bool {
 /// The input component name of `component` (regardless of the current mode).
 pub fn input_name(component: &str) -> Option<String> {
     INPUT_NAMES.with(|names| names.borrow().get(component).cloned())
+}
+
+/// The type (Rust ident or component name) whose input component is
+/// `input`, if `input` is one.
+pub fn component_of_input(input: &str) -> Option<String> {
+    INPUT_NAMES.with(|names| {
+        names
+            .borrow()
+            .iter()
+            .find(|(_, name)| *name == input)
+            .map(|(component, _)| component.clone())
+    })
 }
 
 /// Whether any type named inside `types` has an input view.
@@ -215,12 +235,8 @@ fn container_override_differs(attrs: &[syn::Attribute]) -> bool {
 /// `deserialize_with` without `value_type`, or an `Option` read through a
 /// custom function (serde no longer defaults it to `None` when absent).
 fn field_codec_differs(field: &syn::Field) -> bool {
-    let codec = extract_field_codec(&field.attrs);
-    (codec.serialize != codec.deserialize
-        && extract_schema_constraints(&field.attrs)
-            .value_type
-            .is_none())
-        || (codec.deserialize && is_option_type(&field.ty))
+    one_sided_codec(&field.attrs)
+        || (extract_field_codec(&field.attrs).deserialize && is_option_type(&field.ty))
 }
 
 /// The type's own attributes make its request view differ.
@@ -235,8 +251,10 @@ fn directly_differs(item: &syn::Item) -> bool {
 /// A struct reads differently than it writes (container `default`, sided
 /// `rename_all`, or a field that differs).
 fn struct_differs(item: &syn::ItemStruct) -> bool {
-    let syn::Fields::Named(fields) = &item.fields else {
-        return false;
+    let fields = match &item.fields {
+        syn::Fields::Named(fields) => fields,
+        syn::Fields::Unnamed(fields) => return fields.unnamed.iter().any(positional_differs),
+        syn::Fields::Unit => return false,
     };
     // serde writes a struct `tag` but never reads it (see `struct_schema`);
     // a serialize-side `value_type` / `into` hides it from the response view.
@@ -264,8 +282,59 @@ fn field_differs(field: &syn::Field) -> bool {
         && (skip.skip_deserializing
             || skip.skip_serializing
             || field_codec_differs(field)
+            || field_type_differs(field)
             || extract_default(&field.attrs).is_some()
+            || !extract_aliases(&field.attrs).is_empty()
+            // Omitted from output when the predicate holds, but read as a
+            // required key (serde has no default to fill it in).
+            || (skip.skip_serializing_if && !is_option_type(&field.ty))
             || sided_differs(|side| extract_field_rename_for(&field.attrs, side)))
+}
+
+/// A tuple-struct / tuple-variant position reads differently than it
+/// writes: skipped on one side only (the array length differs), a one-sided
+/// custom serde function, or a type whose schema differs per side.
+fn positional_differs(field: &syn::Field) -> bool {
+    let skip = extract_serde_skip_flags(&field.attrs);
+    !skip.fully_skipped()
+        && (skip.skip_serializing != skip.skip_deserializing
+            || one_sided_codec(&field.attrs)
+            || field_type_differs(field))
+}
+
+/// A one-sided `serialize_with` / `deserialize_with` (field or variant)
+/// without `#[schema(value_type)]`.
+fn one_sided_codec(attrs: &[syn::Attribute]) -> bool {
+    let codec = extract_field_codec(attrs);
+    codec.serialize != codec.deserialize && extract_schema_constraints(attrs).value_type.is_none()
+}
+
+/// The field's type (or its `value_type`) has a different schema per side.
+fn field_type_differs(field: &syn::Field) -> bool {
+    type_view_differs(&field.ty)
+        || extract_schema_constraints(&field.attrs)
+            .value_type
+            .is_some_and(|value_type| type_view_differs(&value_type.0))
+}
+
+/// Whether `ty` names a std type whose schema differs per side:
+/// `HashSet` / `BTreeSet` (`uniqueItems` only on output — serde silently
+/// drops duplicates when reading) and `std::time::Duration` (also read from
+/// a `[secs, nanos]` array).
+pub fn type_view_differs(ty: &syn::Type) -> bool {
+    struct Visitor(bool);
+    impl<'ast> syn::visit::Visit<'ast> for Visitor {
+        fn visit_path(&mut self, path: &'ast syn::Path) {
+            self.0 |=
+                path.segments.last().is_some_and(|segment| {
+                    segment.ident == "HashSet" || segment.ident == "BTreeSet"
+                }) || super::type_schema::is_std_duration_path(path);
+            syn::visit::visit_path(self, path);
+        }
+    }
+    let mut visitor = Visitor(false);
+    syn::visit::Visit::visit_type(&mut visitor, ty);
+    visitor.0
 }
 
 /// `extract` yields a different value per serde direction.
@@ -275,8 +344,9 @@ fn sided_differs<T: PartialEq>(extract: impl Fn(SerdeSide) -> T) -> bool {
 
 /// An enum reads differently than it writes: one-sided `rename_all` /
 /// `rename_all_fields` / `serde_repr`, a variant that is only skipped in one
-/// direction or renamed per direction, or a struct-variant field that
-/// differs like a struct field does.
+/// direction, renamed per direction, aliased, a `#[serde(other)]` catch-all
+/// (any unknown name reads as it), converted by a one-sided custom serde
+/// function, or a variant field that differs like a struct field does.
 fn enum_differs(item: &syn::ItemEnum) -> bool {
     let attrs = &item.attrs;
     if sided_differs(|side| extract_rename_all_for(attrs, side))
@@ -289,10 +359,16 @@ fn enum_differs(item: &syn::ItemEnum) -> bool {
         let skip = extract_serde_skip_flags(&variant.attrs);
         !skip.skip
             && (skip.skip_serializing != skip.skip_deserializing
+                || skip.other
+                || !extract_aliases(&variant.attrs).is_empty()
+                || one_sided_codec(&variant.attrs)
                 || sided_differs(|side| extract_field_rename_for(&variant.attrs, side))
                 || sided_differs(|side| extract_rename_all_for(&variant.attrs, side))
-                || matches!(&variant.fields, syn::Fields::Named(fields)
-                    if fields.named.iter().any(field_differs)))
+                || match &variant.fields {
+                    syn::Fields::Named(fields) => fields.named.iter().any(field_differs),
+                    syn::Fields::Unnamed(fields) => fields.unnamed.iter().any(positional_differs),
+                    syn::Fields::Unit => false,
+                })
     })
 }
 
@@ -380,12 +456,38 @@ mod tests {
         r#"#[serde(rename_all(deserialize = "camelCase"))] struct A { a_b: i32 }"#,
         true
     )]
+    // Optional on output, but serde reads it as a required key.
     #[case::skip_serializing_if(
         r#"struct A { #[serde(skip_serializing_if = "Vec::is_empty")] v: Vec<u8> }"#,
+        true
+    )]
+    #[case::skip_serializing_if_option(
+        r#"struct A { #[serde(skip_serializing_if = "Option::is_none")] v: Option<u8> }"#,
         false
     )]
+    #[case::alias(r#"struct A { #[serde(alias = "b")] a: u8 }"#, true)]
+    #[case::hash_set("struct A { tags: std::collections::HashSet<String> }", true)]
+    #[case::btree_set_value_type(
+        "struct A { #[schema(value_type = BTreeSet<u8>)] tags: Bits }",
+        true
+    )]
+    #[case::std_duration("struct A { ttl: std::time::Duration }", true)]
+    #[case::bare_duration("struct A { ttl: Duration }", false)]
     #[case::empty_container_default("#[serde(default)] struct A {}", false)]
     #[case::tuple("struct A(#[serde(default)] u8);", false)]
+    #[case::tuple_one_sided_skip("struct A(u8, #[serde(skip_serializing)] u8);", true)]
+    #[case::tuple_both_skips("struct A(u8, #[serde(skip)] u8);", false)]
+    #[case::tuple_one_sided_codec(r#"struct A(#[serde(serialize_with = "f")] u8);"#, true)]
+    #[case::tuple_set("struct A(HashSet<u8>);", true)]
+    #[case::unit_struct("struct A;", false)]
+    #[case::enum_variant_alias(r#"enum E { #[serde(alias = "a")] A, B }"#, true)]
+    #[case::enum_other(r"enum E { A, #[serde(other)] Unknown }", true)]
+    #[case::enum_variant_one_sided_codec(
+        r#"enum E { #[serde(deserialize_with = "f")] A(u8) }"#,
+        true
+    )]
+    #[case::enum_variant_with_both(r#"enum E { #[serde(with = "m")] A(u8) }"#, false)]
+    #[case::enum_tuple_one_sided_skip("enum E { A(u8, #[serde(skip_deserializing)] u8) }", true)]
     #[case::enum_variant_field_default("enum E { A { #[serde(default)] x: u8 } }", true)]
     #[case::enum_plain("enum E { A, B(u8), C { x: u8 } }", false)]
     #[case::enum_sided_rename_all(
@@ -492,6 +594,8 @@ mod tests {
         assert!(!in_request_view());
         assert_eq!(input_component("A"), None);
         assert!(has_input("A"));
+        assert_eq!(component_of_input("AInput").as_deref(), Some("A"));
+        assert_eq!(component_of_input("A"), None);
         let inner = with_request_view(|| {
             assert!(in_request_view());
             (input_component("A"), input_component("B"))

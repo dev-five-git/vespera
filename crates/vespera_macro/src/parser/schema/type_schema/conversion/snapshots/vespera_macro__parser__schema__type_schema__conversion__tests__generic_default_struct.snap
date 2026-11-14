@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/parser/schema/type_schema/conversion/tests.rs
+assertion_line: 823
+expression: "format!(\"{ty_src} => {}\", serde_json::to_string(&schema_ref).unwrap())"
+---
+Page<User> => {"type":"object","properties":{"items":{"type":"array","items":{"$ref":"#/components/schemas/User"}},"meta":{"$ref":"#/components/schemas/Meta"}},"required":["items","meta"]}

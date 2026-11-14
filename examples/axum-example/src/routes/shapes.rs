@@ -138,7 +138,8 @@ pub struct Audit {
 #[derive(Serialize, Deserialize, Schema)]
 pub struct Telemetry {
     pub payload: serde_json::Value,
-    pub elapsed: Duration,
+    // Spelled out: a bare `Duration` could be `time::Duration` (another shape).
+    pub elapsed: std::time::Duration,
     pub event: ShapeEvent,
     #[serde(flatten)]
     pub audit: Option<Audit>,
