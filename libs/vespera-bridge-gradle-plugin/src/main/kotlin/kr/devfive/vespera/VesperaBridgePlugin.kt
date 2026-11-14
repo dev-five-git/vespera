@@ -7,7 +7,7 @@ import org.gradle.api.Task
 import org.gradle.api.provider.ValueSource
 import org.gradle.api.provider.ValueSourceParameters
 import org.gradle.api.provider.ValueSourceSpec
-import org.gradle.api.tasks.Copy
+import org.gradle.api.tasks.Sync
 import org.gradle.language.jvm.tasks.ProcessResources
 import java.io.File
 import java.util.Properties
@@ -16,9 +16,11 @@ import java.util.Properties
  * Gradle plugin that wires a Vespera Rust cdylib into a Java
  * application:
  *
- * 1. Registers a `bundleNativeLib` task that copies the host cdylib (and every
+ * 1. Registers a `bundleNativeLib` `Sync` task that copies the host cdylib (and every
  *    `vespera.targets` cross-build) from the Cargo target directory into a
- *    generated resources directory, merged with `vespera.extraNativeLibs`.
+ *    generated resources directory, merged with `vespera.extraNativeLibs`
+ *    (a plugin-owned directory: a dropped target or renamed crate leaves no
+ *    stale library behind).
  * 2. Wires those generated resources into `processResources` under
  *    `native/<os>-<arch>/` so `VesperaBridge.init(...)` can extract it.
  * 3. Adds `kr.devfive:vespera-bridge:<bridgeVersion>` as an
@@ -106,12 +108,12 @@ class VesperaBridgePlugin : Plugin<Project> {
 
         val bundleTask = project.tasks.register(
             "bundleNativeLib",
-            Copy::class.java,
-            object : org.gradle.api.Action<Copy> {
-                override fun execute(t: Copy) {
+            Sync::class.java,
+            object : org.gradle.api.Action<Sync> {
+                override fun execute(t: Sync) {
                     t.group = "vespera"
                     t.description =
-                        "Copy the built cdylib(s) into generated resources/native/<os>-<arch>/."
+                        "Sync the built cdylib(s) into generated resources/native/<os>-<arch>/ (stale libraries removed)."
                     t.into(generatedResourcesDir)
                     // Locally built libraries win over extraNativeLibs.
                     t.duplicatesStrategy = DuplicatesStrategy.EXCLUDE
@@ -139,8 +141,8 @@ class VesperaBridgePlugin : Plugin<Project> {
         )
 
         // Wire cargoBuild -> bundleNativeLib when opt-in.
-        bundleTask.configure(object : org.gradle.api.Action<Copy> {
-            override fun execute(t: Copy) {
+        bundleTask.configure(object : org.gradle.api.Action<Sync> {
+            override fun execute(t: Sync) {
                 t.dependsOn(
                     ext.autoBuildCargo.map { auto ->
                         if (auto) listOf(cargoBuildTask) else emptyList<Any>()
