@@ -7,9 +7,9 @@
  * release the pending changepacks will produce. Bump them together with a
  * release.
  */
-export const VESPERA_VERSION = '0.6'
-export const VESPERA_BRIDGE_VERSION = '0.6.0'
-export const VESPERA_BRIDGE_PLUGIN_VERSION = '0.6.0'
+export const VESPERA_VERSION = '0.7'
+export const VESPERA_BRIDGE_VERSION = '0.7.0'
+export const VESPERA_BRIDGE_PLUGIN_VERSION = '0.7.0'
 
 export interface SideMenuItem {
   label: string

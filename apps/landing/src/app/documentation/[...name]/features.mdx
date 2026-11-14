@@ -10,7 +10,7 @@ Schedule background tasks with `#[vespera::cron]`. Jobs are auto-discovered like
 
 ```toml
 [dependencies]
-vespera = { version = "0.6", features = ["cron"] }
+vespera = { version = "0.7", features = ["cron"] }
 ```
 
 ### Define Jobs
@@ -57,7 +57,7 @@ All times are **UTC** unless a job names an IANA time zone with `tz`. Time zones
 
 ```toml
 [dependencies]
-vespera = { version = "0.6", features = ["cron", "cron-tz"] }
+vespera = { version = "0.7", features = ["cron", "cron-tz"] }
 ```
 
 ```rust
