@@ -31,7 +31,24 @@ pub fn extract_doc_comment(attrs: &[syn::Attribute]) -> Option<String> {
                 .or_else(|| value.strip_prefix("/ "))
                 .map_or_else(|| value.clone(), |rest| format!(" {rest}"));
             // A `/** ... */` block arrives as ONE multi-line attribute.
-            doc_lines.extend(value.split('\n').map(|line| line.trim_end().to_string()));
+            let lines: Vec<&str> = value.split('\n').map(str::trim_end).collect();
+            // rustdoc drops the ` * ` decoration of a block whose every
+            // non-blank line starts with `*`.
+            let decorated = lines.len() > 1
+                && lines
+                    .iter()
+                    .filter(|line| !line.is_empty())
+                    .all(|line| line.trim_start().starts_with('*'));
+            doc_lines.extend(lines.into_iter().map(|line| {
+                if decorated {
+                    line.trim_start()
+                        .strip_prefix('*')
+                        .unwrap_or_default()
+                        .to_string()
+                } else {
+                    line.to_string()
+                }
+            }));
         }
     }
 
@@ -154,22 +171,26 @@ pub fn extract_schema_default(attrs: &[syn::Attribute]) -> Option<Option<String>
 
 /// Extract `#[schema(ref = "Name", nullable)]` override from a struct.
 ///
-/// Unrelated `key = value` entries (`#[schema(name = "X", ref = "Y")]`) are
-/// skipped instead of aborting the walk.
+/// Unrelated `key = value` entries (`#[schema(name = "X", ref = "Y")]`, a
+/// `value_type = Vec<T>` type) are skipped instead of aborting the walk, and
+/// `nullable` counts from any `#[schema]` attribute (the first `ref` wins).
 pub fn extract_schema_ref_override(attrs: &[syn::Attribute]) -> Option<(String, bool)> {
-    attrs.iter().find_map(|attr| {
-        let mut ref_name = None;
-        let mut nullable = false;
-        walk_attr_keys(std::slice::from_ref(attr), "schema", |meta| {
-            if meta.path.is_ident("ref") {
-                ref_name = Some(meta.value()?.parse::<syn::LitStr>()?.value());
-                return Ok(true);
-            }
-            nullable |= meta.path.is_ident("nullable");
-            Ok(false)
-        });
-        ref_name.map(|name| (name, nullable))
-    })
+    let mut ref_name = None;
+    let mut nullable = false;
+    walk_attr_keys(attrs, "schema", |meta| {
+        if meta.path.is_ident("value_type") {
+            meta.value()?.parse::<syn::Type>()?;
+            return Ok(true);
+        }
+        if meta.path.is_ident("ref") {
+            let name = meta.value()?.parse::<syn::LitStr>()?.value();
+            ref_name.get_or_insert(name);
+            return Ok(true);
+        }
+        nullable |= meta.path.is_ident("nullable");
+        Ok(false)
+    });
+    ref_name.map(|name| (name, nullable))
 }
 
 #[cfg(test)]
@@ -230,6 +251,10 @@ mod tests {
 "], Some("Line one
     code"))]
     #[case::leaked_marker(&[" / Leaked"], Some("Leaked"))]
+    // `/** \n * a\n *   b\n */`: the ` * ` decoration is not text.
+    #[case::decorated_block(&["\n * Line one\n *     code\n "], Some("Line one\n    code"))]
+    // A `///` line starting with `*` is a Markdown list item.
+    #[case::list_line(&[" * item"], Some("* item"))]
     fn doc_comment_keeps_markdown_indentation(
         #[case] lines: &[&str],
         #[case] expected: Option<&str>,
@@ -338,6 +363,18 @@ mod tests {
     #[case::nullable_first(r#"#[schema(nullable, ref = "User")]"#, Some(("User", true)))]
     #[case::bad_value("#[schema(ref = User)]", None)]
     #[case::none(r#"#[schema(name = "Dto")]"#, None)]
+    #[case::nullable_separate_attr(
+        r#"#[schema(ref = "User")] #[schema(nullable)]"#,
+        Some(("User", true))
+    )]
+    #[case::after_value_type(
+        r#"#[schema(value_type = Vec<String>, ref = "User")]"#,
+        Some(("User", false))
+    )]
+    #[case::first_ref_wins(
+        r#"#[schema(ref = "User")] #[schema(ref = "Other")]"#,
+        Some(("User", false))
+    )]
     fn schema_ref_override_after_any_key(
         #[case] attrs: &str,
         #[case] expected: Option<(&str, bool)>,

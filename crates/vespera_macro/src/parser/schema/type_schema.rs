@@ -306,6 +306,26 @@ mod tests {
         }
     }
 
+    /// `BelongsTo` (and SeaORM 2.0's `BelongsTo<Option<Entity>>`) is the
+    /// same nullable `$ref` as `HasOne`.
+    #[rstest::rstest]
+    #[case::has_one_option("HasOne<Option<super::user::Entity>>")]
+    #[case::belongs_to("BelongsTo<super::user::Entity>")]
+    #[case::belongs_to_option("BelongsTo<Option<super::user::Entity>>")]
+    fn single_relations_are_nullable_refs(#[case] ty: &str) {
+        let ty: Type = syn::parse_str(ty).unwrap();
+        let SchemaRef::Inline(schema) =
+            parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions())
+        else {
+            panic!("expected an inline nullable reference");
+        };
+        assert_eq!(
+            schema.ref_path.as_deref(),
+            Some("#/components/schemas/User")
+        );
+        assert_eq!(schema.nullable, Some(true));
+    }
+
     #[test]
     fn test_parse_type_to_schema_ref_has_one_fallback() {
         // HasOne<i32> should fallback to generic object (no Entity)
@@ -569,16 +589,29 @@ mod tests {
         );
     }
 
+    /// A user schema named like a JSON value keeps its `$ref`, also through
+    /// a path, unless the path names `serde_json` / `sea_orm`.
     #[rstest]
-    #[case::value("Value")]
-    #[case::json_value("JsonValue")]
-    fn known_bare_value_schema_keeps_its_ref(#[case] name: &str) {
+    #[case::value("Value", "Value", true)]
+    #[case::json_value("JsonValue", "JsonValue", true)]
+    #[case::qualified_json("Json", "crate::models::Json", true)]
+    #[case::qualified_json_value("JsonValue", "models::JsonValue", true)]
+    #[case::sea_orm_json("Json", "sea_orm::prelude::Json", false)]
+    #[case::serde_json_value("Value", "serde_json::Value", false)]
+    fn known_value_schema_keeps_its_ref(
+        #[case] name: &str,
+        #[case] ty: &str,
+        #[case] is_ref: bool,
+    ) {
         let known: HashSet<String> = HashSet::from([name.to_string()]);
-        let ty: Type = syn::parse_str(name).unwrap();
-        assert!(matches!(
-            parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions()),
-            SchemaRef::Ref(_)
-        ));
+        let ty: Type = syn::parse_str(ty).unwrap();
+        assert_eq!(
+            matches!(
+                parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions()),
+                SchemaRef::Ref(_)
+            ),
+            is_ref
+        );
     }
 
     // Test for qualified chrono types (e.g., chrono::DateTime<Utc>)

@@ -1,0 +1,98 @@
+//! Declared statuses vs inferred responses: only declared ERROR responses
+//! (`>= 400`) replace the inferred `400`, `status = N` never overwrites an
+//! explicit `responses = [(N, T)]`, and every no-body success status (`204`,
+//! `205`) drops the body.
+
+use std::collections::HashMap;
+
+use rstest::rstest;
+
+use super::*;
+
+/// The responses of `sig` under the given declarations, as `status: media
+/// types (schema)` lines.
+fn render(
+    sig: &str,
+    success_status: Option<u16>,
+    typed: &[(u16, &str)],
+    error_status: &[u16],
+) -> String {
+    let sig: syn::Signature = syn::parse_str(sig).unwrap();
+    let known = HashSet::from(["User", "Created"]);
+    let definitions = HashMap::from([
+        ("User", "pub struct User { pub id: u32 }"),
+        ("Created", "pub struct Created { pub id: u32 }"),
+    ]);
+    let typed: Vec<(u16, String)> = typed
+        .iter()
+        .map(|(code, name)| (*code, (*name).to_string()))
+        .collect();
+    let op = build_operation_from_function(
+        &sig,
+        "/x",
+        &known,
+        &definitions,
+        OperationRouteConfig {
+            success_status,
+            typed_responses: (!typed.is_empty()).then_some(typed.as_slice()),
+            error_status: (!error_status.is_empty()).then_some(error_status),
+            ..OperationRouteConfig::default()
+        },
+    );
+    op.responses
+        .iter()
+        .map(|(code, response)| {
+            format!(
+                "{code}: {}",
+                serde_json::to_string(&response.content).unwrap()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[rstest]
+// A 2xx entry in `responses = [...]` declares no error: the inferred `400`
+// stays.
+#[case::typed_2xx_keeps_400(
+    "typed_2xx_keeps_400",
+    "fn f() -> Result<Json<User>, String>",
+    None,
+    &[(202, "Created")][..],
+    &[][..]
+)]
+#[case::typed_404_drops_400(
+    "typed_404_drops_400",
+    "fn f() -> Result<Json<User>, String>",
+    None,
+    &[(404, "User")][..],
+    &[][..]
+)]
+// `status = 201` re-keys the inferred body unless `responses` already
+// documents `201` explicitly.
+#[case::status_keeps_explicit_entry(
+    "status_keeps_explicit_entry",
+    "fn f() -> Json<User>",
+    Some(201),
+    &[(201, "Created")][..],
+    &[][..]
+)]
+#[case::status_205_drops_body(
+    "status_205_drops_body",
+    "fn f() -> Json<User>",
+    Some(205),
+    &[][..],
+    &[][..]
+)]
+fn declared_statuses(
+    #[case] name: &str,
+    #[case] sig: &str,
+    #[case] success_status: Option<u16>,
+    #[case] typed: &[(u16, &str)],
+    #[case] error_status: &[u16],
+) {
+    insta::assert_snapshot!(
+        format!("declared_statuses_{name}"),
+        render(sig, success_status, typed, error_status)
+    );
+}

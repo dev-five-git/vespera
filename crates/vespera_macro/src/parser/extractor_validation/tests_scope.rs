@@ -81,3 +81,56 @@ fn crate_path_into_another_route_module_is_not_local() {
                pub fn handler(Json(v): Json<crate::routes::other::Value>) {}";
     assert!(run(src).is_ok());
 }
+
+/// A route file collected through the `#[route]` fast path has no AST in
+/// the collector's cache: it is parsed (memoized) and checked all the same,
+/// next to files the cache does hold; an unreadable path is skipped.
+#[test]
+fn fast_path_route_files_are_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("users.rs");
+    std::fs::write(
+        &file,
+        "pub struct Local { pub a: i32 }\n\
+         pub fn create(Json(v): Json<Local>) {}\n\
+         pub fn list() {}",
+    )
+    .unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    let route = |function_name: &str, file_path: &str| RouteMetadata {
+        method: "get".to_string(),
+        path: "/x".to_string(),
+        function_name: function_name.to_string(),
+        module_path: "routes::users".to_string(),
+        file_path: file_path.to_string(),
+        error_status: None,
+        typed_responses: None,
+        tags: None,
+        security: None,
+        headers: Vec::new(),
+        success_status: None,
+        operation_id: None,
+        summary: None,
+        request_example: None,
+        response_example: None,
+        deprecated: false,
+        description: None,
+    };
+    let real = file.to_string_lossy().into_owned();
+    let mut metadata = CollectedMetadata::new();
+    metadata.routes.push(route("handler", "x.rs"));
+    metadata.routes.push(route("gone", "missing/nowhere.rs"));
+    metadata.routes.push(route("list", &real));
+    metadata.routes.push(route("create", &real));
+    let cached: syn::File = syn::parse_str("pub fn handler() {}").unwrap();
+    let file_cache = HashMap::from([("x.rs".to_string(), cached)]);
+
+    let message = validate_schema_backed_extractors_with_cache(&metadata, &file_cache)
+        .expect_err("the fast-path file declares a non-`Schema` `Local`")
+        .to_string();
+    assert!(message.contains("`Json<Local>`"), "{message}");
+
+    // Nothing to parse: the cached ASTs alone are checked.
+    metadata.routes.truncate(1);
+    assert!(validate_schema_backed_extractors_with_cache(&metadata, &file_cache).is_ok());
+}

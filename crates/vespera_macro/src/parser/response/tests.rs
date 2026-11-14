@@ -386,14 +386,11 @@ fn test_extract_result_types_empty_path_via_reference() {
 
 #[test]
 fn test_extract_result_types_with_reference() {
-    // Test the Reference path (line 38-41) that succeeds
-    // &Result<T, E> should still extract types
+    // `&Result<T, E>` is seen through: both halves are extracted.
     let ty: syn::Type = syn::parse_str("&Result<String, i32>").unwrap();
-    let _result = extract_result_types(&ty);
-    // Note: This doesn't actually work because is_keyword_type_by_type_path
-    // checks for Result type, but ref to Result is different
-    // The important thing is the code doesn't panic
-    // Tests: exercises reference path even if result is None
+    let (ok_ty, err_ty) = extract_result_types(&ty).expect("a referenced Result is a Result");
+    assert_eq!(quote::quote!(#ok_ty).to_string(), "String");
+    assert_eq!(quote::quote!(#err_ty).to_string(), "i32");
 }
 
 #[test]

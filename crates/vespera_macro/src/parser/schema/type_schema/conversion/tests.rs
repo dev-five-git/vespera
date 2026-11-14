@@ -65,7 +65,8 @@ fn test_generic_known_schema_invalid_definition() {
 
 #[test]
 fn test_generic_known_schema_tuple_struct() {
-    // Tuple struct fields are NOT Named → skips field substitution but still inlines
+    // Tuple struct fields are substituted too: `Pair<String>` is a
+    // fixed-length array of two strings.
     let mut known = HashSet::new();
     known.insert("Pair".to_string());
     let mut defs = HashMap::new();
@@ -73,12 +74,107 @@ fn test_generic_known_schema_tuple_struct() {
 
     let ty: Type = syn::parse_str("Pair<String>").unwrap();
     let schema_ref = parse_type_to_schema_ref(&ty, &known, &defs);
-    // Tuple struct still gets inlined (generics cleared, parse_struct_to_schema called)
-    // but field types are NOT substituted (no Named fields to iterate)
-    assert!(
-        matches!(schema_ref, SchemaRef::Inline(_)),
-        "Tuple struct should still inline"
+    assert_eq!(
+        serde_json::to_value(&schema_ref).unwrap(),
+        serde_json::json!({
+            "type": "array",
+            "prefixItems": [{"type": "string"}, {"type": "string"}],
+            "minItems": 2,
+            "maxItems": 2
+        })
     );
+}
+
+/// A `value_type` naming a type parameter follows the instantiation.
+#[test]
+fn generic_value_type_is_substituted() {
+    let known = HashSet::from(["Page".to_string()]);
+    let defs = HashMap::from([(
+        "Page".to_string(),
+        "struct Page<T> { #[schema(value_type = Vec<T>)] items: Opaque }".to_string(),
+    )]);
+    let ty: Type = syn::parse_str("Page<u8>").unwrap();
+    let schema = serde_json::to_value(parse_type_to_schema_ref(&ty, &known, &defs)).unwrap();
+    assert_eq!(schema["properties"]["items"]["items"]["format"], "uint8");
+}
+
+/// Recursive instantiations over two same-ident types renamed apart
+/// (`a::Foo` = `AFoo`, `b::Foo` = `BFoo`) get distinct components.
+#[test]
+fn recursive_instances_over_scoped_arguments_do_not_collide() {
+    super::super::generic_instances::take_materialized();
+    let known: HashSet<String> = ["Tree", "Foo", "a::Foo", "b::Foo"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let defs = HashMap::from([
+        (
+            "Tree".to_string(),
+            "struct Tree<T> { value: T, children: Vec<Tree<T>> }".to_string(),
+        ),
+        (
+            "a::Foo".to_string(),
+            r#"#[schema(name = "AFoo")] struct Foo { a: u8 }"#.to_string(),
+        ),
+        (
+            "b::Foo".to_string(),
+            r#"#[schema(name = "BFoo")] struct Foo { b: u8 }"#.to_string(),
+        ),
+    ]);
+    let reference = |src: &str| {
+        let ty: Type = syn::parse_str(src).unwrap();
+        match parse_type_to_schema_ref(&ty, &known, &defs) {
+            SchemaRef::Ref(reference) => reference.ref_path,
+            SchemaRef::Inline(schema) => panic!("expected a $ref: {schema:?}"),
+        }
+    };
+    assert_eq!(reference("Tree<a::Foo>"), "#/components/schemas/Tree_AFoo");
+    assert_eq!(reference("Tree<b::Foo>"), "#/components/schemas/Tree_BFoo");
+    // An unscoped argument keeps its ident.
+    assert_eq!(reference("Tree<u8>"), "#/components/schemas/Tree_u8");
+    let materialized = super::super::generic_instances::take_materialized();
+    assert_eq!(
+        materialized.keys().collect::<Vec<_>>(),
+        ["Tree_AFoo", "Tree_BFoo", "Tree_u8"]
+    );
+}
+
+/// Every ident [`is_builtin_openapi_type`] lists has its own arm in
+/// `parse_type_impl` (a listed ident without one skips the `T: Schema`
+/// assertion yet maps to the unknown-type `{}`).
+#[test]
+fn is_builtin_openapi_type_matches_conversion_arms() {
+    fn literals(tokens: proc_macro2::TokenStream, out: &mut Vec<String>) {
+        for tree in tokens {
+            match tree {
+                proc_macro2::TokenTree::Group(group) => literals(group.stream(), out),
+                proc_macro2::TokenTree::Literal(lit) => out.push(lit.to_string()),
+                _ => {}
+            }
+        }
+    }
+    let file = syn::parse_file(include_str!("../conversion.rs")).unwrap();
+    let body = |name: &str| {
+        let mut out = Vec::new();
+        for item in &file.items {
+            if let syn::Item::Fn(func) = item
+                && func.sig.ident == name
+            {
+                literals(quote::ToTokens::to_token_stream(&func.block), &mut out);
+            }
+        }
+        out
+    };
+    let builtins: Vec<String> = body("is_builtin_openapi_type")
+        .into_iter()
+        .filter_map(|lit| lit.strip_prefix('b').map(str::to_string))
+        .collect();
+    let arms = body("parse_type_impl");
+    assert!(builtins.len() > 50, "{builtins:?}");
+    for builtin in &builtins {
+        assert!(arms.contains(builtin), "no conversion arm for {builtin}");
+        assert!(is_builtin_openapi_type(builtin.trim_matches('"')));
+    }
 }
 
 #[test]

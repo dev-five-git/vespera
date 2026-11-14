@@ -56,6 +56,19 @@ fn responses_json(return_type: &str) -> String {
 #[case::ok_unresolved("ok_unresolved", "-> Result<CustomBody, String>")]
 #[case::err_status_unresolved("err_status_unresolved", "-> Result<User, (StatusCode, AppError)>")]
 #[case::err_json_unknown("err_json_unknown", "-> Result<User, Json<AppError>>")]
+// 13: the error side is keyed like the success one (`Redirect` → `3XX`,
+// `NoContent` → `204`); an `Infallible` / `!` error never happens.
+#[case::err_redirect("err_redirect", "-> Result<Html<String>, Redirect>")]
+#[case::err_no_content("err_no_content", "-> Result<Json<User>, (HeaderMap, NoContent)>")]
+#[case::redirect_both("redirect_both", "-> Result<Redirect, Redirect>")]
+#[case::err_infallible("err_infallible", "-> Result<Json<User>, std::convert::Infallible>")]
+#[case::err_never("err_never", "-> Result<Json<User>, !>")]
+// 14: a nested response tuple is searched for its body too.
+#[case::nested_tuple("nested_tuple", "-> (StatusCode, (HeaderMap, Json<User>))")]
+#[case::result_nested_tuple(
+    "result_nested_tuple",
+    "-> Result<(StatusCode, (CookieJar, String)), (StatusCode, (HeaderMap,))>"
+)]
 fn response_parts_and_bodies(#[case] name: &str, #[case] return_type: &str) {
     insta::assert_snapshot!(
         format!("response_parts_{name}"),

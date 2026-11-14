@@ -38,16 +38,36 @@ const REQUEST_EXTRACTORS: [&str; 6] = [
 /// `Schema`-backed type names. Returns a `compile_error!`-ready `syn::Error` on
 /// the first same-file non-`Schema` struct used in such an extractor.
 ///
-/// Only call sites with a parsed file AST (cache-miss / `export_app!`) run this;
-/// a cache hit means the source is byte-identical to a build that already
-/// passed, so re-validation is unnecessary.
-/// Validate schema-backed extractors using an invocation-local AST cache
-/// already produced by route collection.
+/// Runs on every metadata cache miss (`vespera!` / `export_app!`); a cache
+/// hit means the source is byte-identical to a build that already passed, so
+/// re-validation is unnecessary. `file_cache` holds the ASTs route collection
+/// already parsed; a route file it lacks (the collector's `#[route]` fast
+/// path stores no AST) is parsed here through the memoized
+/// `schema_macro::file_cache`.
 pub fn validate_schema_backed_extractors_with_cache(
     metadata: &CollectedMetadata,
     file_cache: &HashMap<String, syn::File>,
 ) -> syn::Result<()> {
-    check_extractors(metadata, file_cache)
+    let mut missing: HashMap<String, syn::File> = HashMap::new();
+    for route in &metadata.routes {
+        if !file_cache.contains_key(&route.file_path)
+            && !missing.contains_key(&route.file_path)
+            && let Some(ast) = crate::schema_macro::file_cache::get_parsed_file(
+                std::path::Path::new(&route.file_path),
+            )
+        {
+            missing.insert(route.file_path.clone(), ast);
+        }
+    }
+    if missing.is_empty() {
+        return check_extractors(metadata, file_cache);
+    }
+    missing.extend(
+        file_cache
+            .iter()
+            .map(|(path, ast)| (path.clone(), ast.clone())),
+    );
+    check_extractors(metadata, &missing)
 }
 
 fn check_extractors(
@@ -485,7 +505,7 @@ mod tests {
             "b: Result<Json<Local>, JsonRejection>",
             "b: std::result::Result<Query<Local>, QueryRejection>",
             "b: Option<Form<Local>>",
-            "b: Option<Validated<Json<Local>>>",
+            "b: Cached<Validated<Json<Local>>>",
         ] {
             let src = format!(
                 "pub struct Local {{ pub a: i32 }} pub fn handler({arg}) -> String {{ String::new() }}"

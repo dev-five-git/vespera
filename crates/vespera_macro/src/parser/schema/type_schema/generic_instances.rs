@@ -41,9 +41,20 @@ thread_local! {
 
 /// The component name of `base<args..>`.
 pub fn instance_name<'a>(base: &str, args: impl IntoIterator<Item = &'a Type>) -> String {
+    instance_name_with(base, args, &|_| None)
+}
+
+/// [`instance_name`] where a path argument `component` resolves to a
+/// component name of its own (`a::Foo` / `b::Foo` renamed apart) is spelled
+/// by that name instead of its last ident.
+pub fn instance_name_with<'a>(
+    base: &str,
+    args: impl IntoIterator<Item = &'a Type>,
+    component: &dyn Fn(&syn::Path) -> Option<String>,
+) -> String {
     let mut name = base.to_string();
     for arg in args {
-        push_type_segments(&mut name, arg);
+        push_type_segments(&mut name, arg, component);
     }
     name
 }
@@ -57,38 +68,43 @@ pub fn instance_name<'a>(base: &str, args: impl IntoIterator<Item = &'a Type>) -
 /// identifier contains) together with their size — `[T; 4]` → `_Array.4_T`,
 /// `[T]` → `_Slice._T`, `(A, B)` → `_Tuple.2_A_B`, anything else (`impl
 /// Trait`, `dyn Trait`, …) → `_.Value`.
-fn push_type_segments(name: &mut String, ty: &Type) {
+fn push_type_segments(
+    name: &mut String,
+    ty: &Type,
+    component: &dyn Fn(&syn::Path) -> Option<String>,
+) {
     match ty {
         Type::Path(type_path) => {
             if let Some(segment) = type_path.path.segments.last() {
+                let ident = component(&type_path.path).unwrap_or_else(|| segment.ident.to_string());
                 name.push('_');
-                name.push_str(&segment.ident.to_string().replace('_', "-"));
+                name.push_str(&ident.replace('_', "-"));
                 if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                     for arg in &args.args {
                         if let syn::GenericArgument::Type(inner) = arg {
-                            push_type_segments(name, inner);
+                            push_type_segments(name, inner, component);
                         }
                     }
                 }
             }
         }
-        Type::Reference(reference) => push_type_segments(name, &reference.elem),
-        Type::Paren(paren) => push_type_segments(name, &paren.elem),
-        Type::Group(group) => push_type_segments(name, &group.elem),
+        Type::Reference(reference) => push_type_segments(name, &reference.elem, component),
+        Type::Paren(paren) => push_type_segments(name, &paren.elem, component),
+        Type::Group(group) => push_type_segments(name, &group.elem, component),
         Type::Array(array) => {
             name.push_str("_Array.");
             push_array_len(name, &array.len);
-            push_type_segments(name, &array.elem);
+            push_type_segments(name, &array.elem, component);
         }
         Type::Slice(slice) => {
             name.push_str("_Slice.");
-            push_type_segments(name, &slice.elem);
+            push_type_segments(name, &slice.elem, component);
         }
         Type::Tuple(tuple) => {
             name.push_str("_Tuple.");
             name.push_str(&tuple.elems.len().to_string());
             for elem in &tuple.elems {
-                push_type_segments(name, elem);
+                push_type_segments(name, elem, component);
             }
         }
         _ => name.push_str("_.Value"),
@@ -114,15 +130,23 @@ fn push_array_len(name: &mut String, len: &syn::Expr) {
 // Inline the generic instantiation `name`, built by `build`, unless that
 /// would recurse forever — then a `$ref` to the materialised component.
 pub fn inline_or_reference(name: &str, build: impl FnOnce() -> Schema) -> SchemaRef {
+    // In the request view the instantiation carries an `Input` suffix when
+    // the definition has an input view; it then refers to that input.
+    let request = super::super::request_view::in_request_view();
     let definition = DEFINITIONS.with(|stack| {
         stack
             .borrow()
             .iter()
             .rev()
-            .find(|(instance, _)| instance == name)
+            .find(|(instance, _)| {
+                instance == name
+                    || (request && name.strip_suffix("Input") == Some(instance.as_str()))
+            })
             .map(|(_, component)| component.clone())
     });
     if let Some(component) = definition {
+        let component =
+            super::super::request_view::input_component(&component).unwrap_or(component);
         return SchemaRef::Ref(Reference::schema(&component));
     }
     if MATERIALIZED.with(|map| map.borrow().contains_key(name)) {
@@ -142,6 +166,31 @@ pub fn inline_or_reference(name: &str, build: impl FnOnce() -> Schema) -> Schema
     } else {
         SchemaRef::Inline(Box::new(schema))
     }
+}
+
+/// Run `build` (the schema of the struct / enum definition `ident` with
+/// `generics` and container `attrs`); for a generic definition such as
+/// `Tree<T>`, its own instantiation `Tree<T>` inside it refers back to its
+/// component (`Tree`) instead of materialising `Tree_T`.
+pub fn with_definition<R>(
+    ident: &syn::Ident,
+    generics: &syn::Generics,
+    attrs: &[syn::Attribute],
+    build: impl FnOnce() -> R,
+) -> R {
+    let params: Vec<Type> = generics
+        .type_params()
+        .map(|param| {
+            let ident = &param.ident;
+            syn::parse_quote!(#ident)
+        })
+        .collect();
+    if params.is_empty() {
+        return build();
+    }
+    let component =
+        crate::schema_impl::extract_schema_name_attr(attrs).unwrap_or_else(|| ident.to_string());
+    with_self_instance(instance_name(&component, &params), component, build)
 }
 
 /// Run `build` (the schema of a generic definition such as `Tree<T>`) with

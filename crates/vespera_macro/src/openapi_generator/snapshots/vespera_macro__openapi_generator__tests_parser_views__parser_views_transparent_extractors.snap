@@ -1,0 +1,211 @@
+---
+source: crates/vespera_macro/src/openapi_generator/tests_parser_views.rs
+expression: doc
+---
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/chosen": {
+      "get": {
+        "operationId": "chosen",
+        "parameters": [
+          {
+            "name": "c",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Kind"
+            }
+          },
+          {
+            "name": "o",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Kind"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{user}": {
+      "get": {
+        "operationId": "user",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wrapped": {
+      "get": {
+        "operationId": "wrapped",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "maximum": 4294967295
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Chosen": {
+        "type": "object",
+        "properties": {
+          "raw": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "raw"
+        ]
+      },
+      "Filter": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "q": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "q"
+        ]
+      },
+      "Kind": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "a": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "A"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "a"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "b": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "B"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "b"
+            ]
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind"
+        }
+      },
+      "UserId": {
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0
+      },
+      "Wrapped": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Filter"
+          }
+        ]
+      }
+    }
+  }
+}

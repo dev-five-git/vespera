@@ -6,13 +6,15 @@ use vespera_core::{
     schema::{Schema, SchemaRef},
 };
 
-use super::shared::{input_rename_all, named_struct_fields, serde_field_name};
+use super::shared::{
+    MAX_CONVERSION_DEPTH, deserialized_instead, input_rename_all, named_struct_fields,
+    serde_field_name,
+};
 use crate::{
     parser::schema::{
         SerdeSide, apply_field_rules, extract_aliases, extract_doc_comment, extract_flatten,
         extract_serde_skip_flags, parse_type_to_schema_ref,
-        schema_attrs::extract_schema_constraints,
-        wire_override::{container_override_type, field_schema_ref},
+        schema_attrs::extract_schema_constraints, wire_override::field_schema_ref,
     },
     schema_macro::type_utils::{is_map_type as utils_is_map_type, last_path_segment, option_inner},
 };
@@ -83,9 +85,6 @@ pub(in crate::parser) fn path_extractor_parameters(
     path_parameters_from(inner_ty, path_params, known_schemas, struct_definitions, 0)
 }
 
-/// How many container `from` / `try_from` hops are followed (a cycle stops).
-const MAX_CONVERSION_DEPTH: usize = 8;
-
 fn path_parameters_from(
     inner_ty: &Type,
     path_params: &[String],
@@ -114,10 +113,10 @@ fn path_parameters_from(
 
     if let Some(struct_item) = named_struct_fields(inner_ty, struct_definitions) {
         // Container `#[serde(from = "X")]` / `try_from` (or `#[schema(value_type
-        // = X)]`): the segments are deserialized as `X`, not as these fields.
+        // = X)]`), or `#[serde(transparent)]`: the segments are deserialized
+        // as `X` / the single field's type, not as these fields.
         if depth < MAX_CONVERSION_DEPTH
-            && let Some(source) =
-                container_override_type(&struct_item.attrs, SerdeSide::Deserialize)
+            && let Some(source) = deserialized_instead(&struct_item)
         {
             return path_parameters_from(
                 &source,

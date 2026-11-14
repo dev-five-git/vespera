@@ -57,9 +57,10 @@ use super::{
     enum_schema::derives_serde_repr,
     schema_attrs::extract_schema_constraints,
     serde_attrs::{
-        SerdeSide, extract_aliases, extract_default, extract_field_codec, extract_field_rename_for,
-        extract_flatten, extract_rename_all_fields_for, extract_rename_all_for,
-        extract_serde_skip_flags, extract_tag,
+        SerdeSide, extract_aliases, extract_default, extract_deny_unknown_fields,
+        extract_field_codec, extract_field_rename_for, extract_flatten,
+        extract_rename_all_fields_for, extract_rename_all_for, extract_serde_skip_flags,
+        extract_tag,
     },
     wire_override::container_override_type,
 };
@@ -167,9 +168,11 @@ pub fn compute_input_names(sources: &[ViewSource<'_>], taken: &BTreeSet<String>)
             component_of.entry(ident).or_insert(source.name);
         }
     }
+    let items: Vec<&syn::Item> = sources.iter().map(|source| source.item).collect();
+    let map_bearing = map_bearing_structs(&items);
     let mut differs: BTreeSet<&str> = sources
         .iter()
-        .filter(|source| directly_differs(source.item))
+        .filter(|source| directly_differs(source.item, &map_bearing))
         .map(|source| source.name)
         .collect();
     let referenced: Vec<(&str, BTreeSet<String>)> = sources
@@ -242,18 +245,58 @@ fn field_codec_differs(field: &syn::Field) -> bool {
         || (extract_field_codec(&field.attrs).deserialize && is_option_type(&field.ty))
 }
 
-/// The type's own attributes make its request view differ.
-fn directly_differs(item: &syn::Item) -> bool {
+/// The type's own attributes make its request view differ. `map_bearing`
+/// holds the idents of structs whose flattened members include a map (see
+/// [`map_bearing_structs`]).
+fn directly_differs(item: &syn::Item, map_bearing: &BTreeSet<String>) -> bool {
     match item {
-        syn::Item::Struct(item) => container_override_differs(&item.attrs) || struct_differs(item),
-        syn::Item::Enum(item) => container_override_differs(&item.attrs) || enum_differs(item),
+        syn::Item::Struct(item) => {
+            container_override_differs(&item.attrs) || struct_differs(item, map_bearing)
+        }
+        syn::Item::Enum(item) => {
+            container_override_differs(&item.attrs) || enum_differs(item, map_bearing)
+        }
         _ => false,
     }
 }
 
+/// Idents of the named-field structs among `items` that read unlisted keys
+/// through a flattened map — directly or through a flattened struct that
+/// does (transitively).
+fn map_bearing_structs(items: &[&syn::Item]) -> BTreeSet<String> {
+    let mut bearing = BTreeSet::new();
+    loop {
+        let before = bearing.len();
+        for item in items {
+            if let syn::Item::Struct(item) = item
+                && let syn::Fields::Named(fields) = &item.fields
+                && fields
+                    .named
+                    .iter()
+                    .filter(|field| extract_flatten(&field.attrs))
+                    .any(|field| reads_unlisted_keys(&field.ty, &bearing))
+            {
+                bearing.insert(item.ident.to_string());
+            }
+        }
+        if bearing.len() == before {
+            return bearing;
+        }
+    }
+}
+
+/// A flattened member of type `ty` (seen through an `Option`) reads every
+/// buffered key: a map, or a struct in `map_bearing`.
+fn reads_unlisted_keys(ty: &syn::Type, map_bearing: &BTreeSet<String>) -> bool {
+    let ty = crate::schema_macro::type_utils::option_inner(ty).unwrap_or(ty);
+    is_map_type(ty)
+        || matches!(ty, syn::Type::Path(path) if path.path.segments.last()
+            .is_some_and(|segment| map_bearing.contains(&segment.ident.to_string())))
+}
+
 /// A struct reads differently than it writes (container `default`, sided
 /// `rename_all`, or a field that differs).
-fn struct_differs(item: &syn::ItemStruct) -> bool {
+fn struct_differs(item: &syn::ItemStruct, map_bearing: &BTreeSet<String>) -> bool {
     let fields = match &item.fields {
         syn::Fields::Named(fields) => fields,
         syn::Fields::Unnamed(fields) => return fields.unnamed.iter().any(positional_differs),
@@ -275,20 +318,34 @@ fn struct_differs(item: &syn::ItemStruct) -> bool {
     {
         return true;
     }
-    fields.named.iter().any(field_differs) || flatten_differs(&fields.named)
+    fields.named.iter().any(field_differs)
+        || flatten_differs(
+            &fields.named,
+            extract_deny_unknown_fields(&item.attrs),
+            map_bearing,
+        )
 }
 
 /// The merged `#[serde(flatten)]` members read differently than they write
 /// (see `struct_schema::flatten`): a flattened `Option` accepts any value for
-/// its keys (it becomes `None`), and a flattened map declared before another
-/// flattened member also reads that member's keys.
-fn flatten_differs(fields: &syn::punctuated::Punctuated<syn::Field, syn::Token![,]>) -> bool {
+/// its keys (it becomes `None`), a flattened map (or a struct flattening
+/// one) declared before another flattened member also reads that member's
+/// keys, and under `deny_unknown_fields` a flattened map is written but
+/// never read (the request view stays closed).
+fn flatten_differs(
+    fields: &syn::punctuated::Punctuated<syn::Field, syn::Token![,]>,
+    deny_unknown_fields: bool,
+    map_bearing: &BTreeSet<String>,
+) -> bool {
     let mut map_seen = false;
     for field in fields.iter().filter(|field| extract_flatten(&field.attrs)) {
         if map_seen || is_option_type(&field.ty) {
             return true;
         }
-        map_seen = is_map_type(&field.ty);
+        map_seen = reads_unlisted_keys(&field.ty, map_bearing);
+        if map_seen && deny_unknown_fields {
+            return true;
+        }
     }
     false
 }
@@ -371,9 +428,11 @@ fn sided_differs<T: PartialEq>(extract: impl Fn(SerdeSide) -> T) -> bool {
 /// `rename_all_fields` / `serde_repr`, a variant that is only skipped in one
 /// direction, renamed per direction, aliased, a `#[serde(other)]` catch-all
 /// (any unknown name reads as it), converted by a one-sided custom serde
-/// function, or a variant field that differs like a struct field does.
-fn enum_differs(item: &syn::ItemEnum) -> bool {
+/// function, or a variant field (or flattened member) that differs like a
+/// struct's does.
+fn enum_differs(item: &syn::ItemEnum, map_bearing: &BTreeSet<String>) -> bool {
     let attrs = &item.attrs;
+    let deny_unknown_fields = extract_deny_unknown_fields(attrs);
     if sided_differs(|side| extract_rename_all_for(attrs, side))
         || sided_differs(|side| extract_rename_all_fields_for(attrs, side))
         || sided_differs(|side| derives_serde_repr(attrs, side))
@@ -390,7 +449,10 @@ fn enum_differs(item: &syn::ItemEnum) -> bool {
                 || sided_differs(|side| extract_field_rename_for(&variant.attrs, side))
                 || sided_differs(|side| extract_rename_all_for(&variant.attrs, side))
                 || match &variant.fields {
-                    syn::Fields::Named(fields) => fields.named.iter().any(field_differs),
+                    syn::Fields::Named(fields) => {
+                        fields.named.iter().any(field_differs)
+                            || flatten_differs(&fields.named, deny_unknown_fields, map_bearing)
+                    }
                     syn::Fields::Unnamed(fields) => fields.unnamed.iter().any(positional_differs),
                     syn::Fields::Unit => false,
                 })
@@ -480,6 +542,33 @@ mod tests {
         false
     )]
     #[case::flatten_non_path("struct A { #[serde(flatten)] p: (Page), q: u8 }", false)]
+    // Written (the response lists the map) but never read (closed request).
+    #[case::deny_flatten_map(
+        "#[serde(deny_unknown_fields)] struct A { id: u8, #[serde(flatten)] m: HashMap<String, u8> }",
+        true
+    )]
+    #[case::deny_flatten_map_bearing(
+        "#[serde(deny_unknown_fields)] struct A { #[serde(flatten)] h: HasMap }",
+        true
+    )]
+    #[case::deny_flatten_struct(
+        "#[serde(deny_unknown_fields)] struct A { #[serde(flatten)] p: Page }",
+        false
+    )]
+    // `HasMap` flattens a map, which also reads `Page`'s keys.
+    #[case::flatten_map_bearing_then_struct(
+        "struct A { #[serde(flatten)] h: HasMap, #[serde(flatten)] p: Page }",
+        true
+    )]
+    #[case::enum_variant_flatten_map_then_struct(
+        "enum E { V { #[serde(flatten)] m: HashMap<String, u8>, #[serde(flatten)] p: Page } }",
+        true
+    )]
+    #[case::enum_deny_variant_flatten_map(
+        "#[serde(deny_unknown_fields)] enum E { V { #[serde(flatten)] m: HashMap<String, u8> } }",
+        true
+    )]
+    #[case::enum_variant_flatten_struct("enum E { V { #[serde(flatten)] p: Page } }", false)]
     #[case::field_default("struct A { #[serde(default)] x: i32 }", true)]
     #[case::container_default("#[serde(default)] struct A { x: i32 }", true)]
     #[case::skip_deserializing("struct A { #[serde(skip_deserializing)] id: i32 }", true)]
@@ -571,7 +660,32 @@ mod tests {
     )]
     #[case::form_data_only(r#"struct A { #[form_data(field_name = "b")] x: u8 }"#, false)]
     fn direct_differences(#[case] src: &str, #[case] expected: bool) {
-        assert_eq!(directly_differs(&syn::parse_str(src).unwrap()), expected);
+        let map_bearing = BTreeSet::from(["HasMap".to_string()]);
+        assert_eq!(
+            directly_differs(&syn::parse_str(src).unwrap(), &map_bearing),
+            expected
+        );
+    }
+
+    /// Structs flattening a map — directly, through an `Option`, or through
+    /// another such struct — read every buffered key.
+    #[test]
+    fn map_bearing_structs_are_transitive() {
+        let items: Vec<syn::Item> = [
+            "struct Outer { #[serde(flatten)] h: Option<HasMap> }",
+            "struct HasMap { #[serde(flatten)] m: HashMap<String, u8> }",
+            "struct Plain { #[serde(flatten)] p: Page, m: HashMap<String, u8> }",
+            "struct Tuple(HashMap<String, u8>);",
+            "enum E { V { #[serde(flatten)] m: HashMap<String, u8> } }",
+        ]
+        .iter()
+        .map(|src| syn::parse_str(src).unwrap())
+        .collect();
+        let items: Vec<&syn::Item> = items.iter().collect();
+        assert_eq!(
+            map_bearing_structs(&items),
+            BTreeSet::from(["HasMap".to_string(), "Outer".to_string()])
+        );
     }
 
     #[test]
@@ -707,6 +821,6 @@ mod tests {
     fn non_type_items_reference_nothing() {
         let item: syn::Item = syn::parse_str("fn f() {}").unwrap();
         assert!(referenced_idents(&item).is_empty());
-        assert!(!directly_differs(&item));
+        assert!(!directly_differs(&item, &BTreeSet::new()));
     }
 }

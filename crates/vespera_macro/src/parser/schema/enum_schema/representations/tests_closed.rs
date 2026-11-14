@@ -27,6 +27,11 @@ use crate::parser::schema::enum_schema::parse_enum_to_schema;
     "closed_generic_inline",
     "#[serde(tag = \"type\")] enum Event { Wrapped(Closed<u8>), Map(std::collections::HashMap<String, u8>), Fieldless(Empty) }"
 )]
+// `value_type` documents (and classifies) the payload as the closed `Payload`.
+#[case::value_type_closed(
+    "value_type_closed",
+    "#[serde(tag = \"type\")] enum Event { Created(#[schema(value_type = Payload)] Other) }"
+)]
 fn closed_newtype_payload_merges_the_tag(#[case] name: &str, #[case] src: &str) {
     let enum_item: syn::ItemEnum = syn::parse_str(src).unwrap();
     let known = HashSet::from([

@@ -8,6 +8,7 @@ use vespera_core::schema::{AdditionalProperties, Discriminator, Schema, SchemaRe
 
 use super::super::{
     request_view::in_request_view,
+    schema_attrs::extract_schema_constraints,
     serde_attrs::extract_doc_comment,
     struct_schema::{resolve_type, tuple_fields_schema, with_description},
 };
@@ -229,10 +230,15 @@ pub(super) fn parse_internally_tagged_enum(
                 let inner = newtype_field_schema(field, known_schemas, struct_definitions);
                 // A `$ref` payload is resolved from its Rust type (a
                 // request-view `$ref` names the `Input` component, so the
-                // `$ref` itself cannot be looked up).
+                // `$ref` itself cannot be looked up) — the `value_type`, when
+                // present, since that is what `inner` documents.
                 let payload = match &inner {
                     SchemaRef::Inline(schema) => Some((**schema).clone()),
-                    SchemaRef::Ref(_) => resolve_type(&field.ty, known_schemas, struct_definitions),
+                    SchemaRef::Ref(_) => {
+                        let value_type = extract_schema_constraints(&field.attrs).value_type;
+                        let declared = value_type.as_ref().map_or(&field.ty, |ty| &ty.0);
+                        resolve_type(declared, known_schemas, struct_definitions)
+                    }
                 };
                 match payload.as_ref().and_then(|payload| payload.schema_type) {
                     // Newtype of `()` / a unit struct serializes as just the tag.
@@ -306,6 +312,13 @@ pub(super) fn parse_adjacently_tagged_enum(
         {
             properties.insert(content_string.clone(), data_schema);
             required.push(content_string.clone());
+        } else if renames.deny_unknown_fields && matches!(variant.fields, syn::Fields::Unit) {
+            // serde reads a unit variant's content key when present (as
+            // `null`), so the closed object must list it — optional.
+            properties.insert(
+                content_string.clone(),
+                SchemaRef::Inline(Box::new(Schema::new(SchemaType::Null))),
+            );
         }
 
         // serde's adjacently tagged visitor under `deny_unknown_fields`
