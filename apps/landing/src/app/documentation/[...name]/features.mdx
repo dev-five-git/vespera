@@ -10,7 +10,7 @@ Schedule background tasks with `#[vespera::cron]`. Jobs are auto-discovered like
 
 ```toml
 [dependencies]
-vespera = { version = "0.7", features = ["cron"] }
+vespera = { version = "0.8", features = ["cron"] }
 ```
 
 `cron` pulls in croner, whose `derive_builder` dependency builds `syn` 2 next to the `syn` 3 of vespera's macros, so the first (clean) build is noticeably slower; incremental builds are unaffected.
@@ -59,7 +59,7 @@ All times are **UTC** unless a job names an IANA time zone with `tz`. Time zones
 
 ```toml
 [dependencies]
-vespera = { version = "0.7", features = ["cron", "cron-tz"] }
+vespera = { version = "0.8", features = ["cron", "cron-tz"] }
 ```
 
 ```rust

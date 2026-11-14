@@ -6,7 +6,7 @@
 
 ```toml
 [dependencies]
-vespera = { version = "0.7", features = ["jni"] }
+vespera = { version = "0.8", features = ["jni"] }
 ```
 
 The `jni` feature implies `inprocess` — both are enabled automatically.
@@ -52,7 +52,7 @@ cargo build --release
 <dependency>
   <groupId>kr.devfive</groupId>
   <artifactId>vespera-bridge</artifactId>
-  <version>0.7.0</version>
+  <version>0.8.0</version>
 </dependency>
 ```
 
@@ -60,7 +60,7 @@ cargo build --release
 
 ```kotlin
 dependencies {
-    implementation("kr.devfive:vespera-bridge:0.7.0")
+    implementation("kr.devfive:vespera-bridge:0.8.0")
 }
 ```
 
@@ -70,13 +70,13 @@ The `kr.devfive.vespera-bridge` Gradle plugin replaces ~22 lines of native-libra
 
 ```kotlin
 plugins {
-    id("kr.devfive.vespera-bridge") version "0.7.0"
+    id("kr.devfive.vespera-bridge") version "0.8.0"
 }
 
 vespera {
     crateName.set("my_rust_lib")
     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
-    bridgeVersion.set("0.7.0")
+    bridgeVersion.set("0.8.0")
 }
 ```
 
