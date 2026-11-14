@@ -243,6 +243,25 @@ pub fn validate_cron_fn(item_fn: &syn::ItemFn) -> Result<(), syn::Error> {
     Ok(())
 }
 
+/// Message of the `#[vespera::cron]` stand-in used without vespera's `cron`
+/// feature.
+pub const FEATURE_DISABLED_MSG: &str = "`#[vespera::cron]` requires vespera's `cron` feature: \
+     enable it with vespera = { features = [\"cron\"] }";
+
+/// Expansion of the `#[vespera::cron]` stand-in (vespera's `cron` feature
+/// off): the item unchanged plus a compile error naming the feature, spanned
+/// on the function name (the whole item when it is not a function). No job
+/// is registered, so `vespera!` never references `vespera::cron`.
+pub fn feature_disabled_error(item: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    let error = match syn::parse2::<syn::ItemFn>(item.clone()) {
+        Ok(item_fn) => syn::Error::new(item_fn.sig.ident.span(), FEATURE_DISABLED_MSG),
+        Err(_) => syn::Error::new_spanned(&item, FEATURE_DISABLED_MSG),
+    };
+    let mut out = error.to_compile_error();
+    out.extend(item);
+    out
+}
+
 /// Process cron attribute - extracted for testability
 pub fn process_cron_attribute(
     attr: proc_macro2::TokenStream,
@@ -331,6 +350,27 @@ mod tests {
     use quote::quote;
 
     use super::*;
+
+    #[test]
+    fn feature_disabled_stand_in_keeps_the_item_and_names_the_feature() {
+        let item = quote!(
+            pub async fn job() {}
+        );
+        let out = feature_disabled_error(item.clone()).to_string();
+        assert!(out.starts_with(":: core :: compile_error !"), "{out}");
+        assert!(
+            out.contains(r#"vespera = { features = [\"cron\"] }"#),
+            "{out}"
+        );
+        assert!(out.ends_with(&item.to_string()), "{out}");
+        // Not a function: still an error (spanned on the item), item kept.
+        let out = feature_disabled_error(quote!(
+            struct S;
+        ))
+        .to_string();
+        assert!(out.contains("compile_error"), "{out}");
+        assert!(out.ends_with("struct S ;"), "{out}");
+    }
 
     // ========== Tests for validate_cron_fn ==========
 

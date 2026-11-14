@@ -110,6 +110,17 @@ pub fn cron(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
+/// Stand-in for `#[vespera::cron]` re-exported by `vespera` when its `cron`
+/// feature is off: the function is kept, no job is registered, and a
+/// `compile_error!` names the feature instead of a later unresolved
+/// `vespera::cron::start_once` inside `vespera!`'s expansion.
+#[doc(hidden)]
+#[cfg(not(tarpaulin_include))]
+#[proc_macro_attribute]
+pub fn cron_feature_disabled(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    cron_impl::feature_disabled_error(item.into()).into()
+}
+
 /// Derive macro for Schema
 ///
 /// Supports `#[schema(name = "CustomName")]` attribute to set custom `OpenAPI` schema name.

@@ -1,0 +1,5 @@
+error: `#[vespera::cron]` requires vespera's `cron` feature: enable it with vespera = { features = ["cron"] }
+ --> tests/ui/cron_needs_feature.rs:8:14
+  |
+8 | pub async fn cleanup() {}
+  |              ^^^^^^^
