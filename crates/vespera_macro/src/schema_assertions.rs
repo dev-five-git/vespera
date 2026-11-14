@@ -39,11 +39,12 @@ use std::collections::HashSet;
 use proc_macro2::TokenStream;
 use quote::{quote, quote_spanned};
 use syn::spanned::Spanned;
+use syn::visit::Visit;
 use syn::{GenericArgument, PathArguments, Type};
 
 use crate::parser::schema::{
-    SerdeSide, extract_field_codec, is_builtin_openapi_type, schema_attrs::SchemaConstraints,
-    wire_override::container_override_type,
+    SerdeSide, extract_field_codec, extract_skip, is_builtin_openapi_type,
+    schema_attrs::SchemaConstraints, wire_override::container_override_type,
 };
 
 /// Emit BOTH the marker-trait impl AND the per-field leaf-type
@@ -121,16 +122,16 @@ fn emit_field_assertions(
     input: &syn::DeriveInput,
     field_constraints: &[SchemaConstraints],
 ) -> TokenStream {
+    // Every generic parameter kind: a type `T`, a const `N`, a lifetime
+    // (`"'a"`) — none of them is in scope in a module-level assertion.
     let generic_idents: HashSet<String> = input
         .generics
         .params
         .iter()
-        .filter_map(|param| {
-            if let syn::GenericParam::Type(t) = param {
-                Some(t.ident.to_string())
-            } else {
-                None
-            }
+        .map(|param| match param {
+            syn::GenericParam::Type(t) => t.ident.to_string(),
+            syn::GenericParam::Const(c) => c.ident.to_string(),
+            syn::GenericParam::Lifetime(l) => format!("'{}", l.lifetime.ident),
         })
         .collect();
 
@@ -153,7 +154,9 @@ fn emit_field_assertions(
             // explicitly opted out of type-driven schema generation, so
             // there's no leaf to assert.  Parse errors on `#[schema(...)]`
             // are surfaced upstream by `process_derive_schema`.
-            if constraints.is_any() {
+            // A fully `#[serde(skip)]`-ped field never reaches the schema
+            // (a `PgPool` handle, a cache), so its type is never consulted.
+            if constraints.is_any() || extract_skip(&field.attrs) {
                 continue;
             }
             let codec = extract_field_codec(&field.attrs);
@@ -278,34 +281,34 @@ fn second_generic_type_arg(segment: &syn::PathSegment) -> Option<&Type> {
         .nth(1)
 }
 
-/// `true` when any path segment of `ty` (including inside nested
-/// `<...>` arguments) names one of the current struct's generic type
-/// parameters.  We cannot synthesise a trait bound for a generic
-/// parameter from inside the derive — the marker impl is unconditional
-/// `impl<T> Schema for Foo<T> {}` — so any leaf referring to `T` must
-/// be skipped.
+/// `true` when `ty` (anywhere inside it: nested `<...>` arguments, array
+/// lengths, references, tuples) names one of the current item's generic
+/// parameters (`T`, a const `N`, a lifetime `'a` — stored as `"'a"`) or
+/// `Self`.  The assertions are module-level `const _` items, where none of
+/// those is in scope (E0412 / E0425 / E0261 / E0411), and the marker impl is
+/// unconditional (`impl<T> Schema for Foo<T> {}`), so such a leaf can only be
+/// checked at its use site — it is skipped.
 fn type_contains_generic(ty: &Type, generic_idents: &HashSet<String>) -> bool {
-    match ty {
-        Type::Path(type_path) => {
-            for segment in &type_path.path.segments {
-                if generic_idents.contains(&segment.ident.to_string()) {
-                    return true;
-                }
-                if let PathArguments::AngleBracketed(args) = &segment.arguments {
-                    for arg in &args.args {
-                        if let GenericArgument::Type(inner) = arg
-                            && type_contains_generic(inner, generic_idents)
-                        {
-                            return true;
-                        }
-                    }
-                }
-            }
-            false
-        }
-        Type::Reference(r) => type_contains_generic(&r.elem, generic_idents),
-        _ => false,
+    struct Mentions<'a> {
+        names: &'a HashSet<String>,
+        found: bool,
     }
+    impl<'ast> Visit<'ast> for Mentions<'_> {
+        fn visit_path_segment(&mut self, segment: &'ast syn::PathSegment) {
+            self.found |=
+                segment.ident == "Self" || self.names.contains(&segment.ident.to_string());
+            syn::visit::visit_path_segment(self, segment);
+        }
+        fn visit_lifetime(&mut self, lifetime: &'ast syn::Lifetime) {
+            self.found |= self.names.contains(&format!("'{}", lifetime.ident));
+        }
+    }
+    let mut mentions = Mentions {
+        names: generic_idents,
+        found: false,
+    };
+    mentions.visit_type(ty);
+    mentions.found
 }
 
 /// `serde_json::Value` allowlist — bare `Value`, or any qualified path
@@ -631,7 +634,7 @@ mod tests {
         let generics = HashSet::from(["T".to_string()]);
 
         assert!(type_contains_generic(&parse_ty("&T"), &generics));
-        assert!(!type_contains_generic(&parse_ty("(T, String)"), &generics));
+        assert!(type_contains_generic(&parse_ty("(T, String)"), &generics));
     }
 
     // ── emit_marker_impl preserves generics ─────────────────────────
@@ -742,6 +745,32 @@ mod tests {
             out.is_empty(),
             "fields whose leaf is the struct's generic param must not emit assertions, got: {out}"
         );
+    }
+
+    /// Leaves no module-level `const _` can name (a lifetime / const
+    /// parameter, `Self`) and fully skipped fields emit nothing.
+    #[rstest::rstest]
+    #[case::serde_skip(parse_quote!(struct S { #[serde(skip)] pool: PgPool }))]
+    #[case::skip_both_sides(parse_quote!(struct S {
+        #[serde(skip_serializing)]
+        #[serde(skip_deserializing)]
+        pool: PgPool,
+    }))]
+    #[case::lifetime(parse_quote!(struct S<'a> { name: Name<'a> }))]
+    #[case::const_param(parse_quote!(struct S<const N: usize> { items: Items<N> }))]
+    #[case::self_type(parse_quote!(struct Node { children: Vec<Box<Self>> }))]
+    fn no_assertion_for_unnameable_or_skipped_leaf(#[case] input: syn::DeriveInput) {
+        let out = emit_field_assertions(&input, &constraints_for(&input)).to_string();
+        assert!(out.is_empty(), "expected no assertion, got: {out}");
+    }
+
+    #[test]
+    fn one_sided_skip_still_asserts() {
+        let input: syn::DeriveInput = parse_quote! {
+            struct S<'a> { #[serde(skip_serializing)] pool: PgPool, other: Name<'static> }
+        };
+        let out = emit_field_assertions(&input, &constraints_for(&input)).to_string();
+        assert!(out.contains("PgPool") && out.contains("Name"), "{out}");
     }
 
     #[test]

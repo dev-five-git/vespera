@@ -65,7 +65,9 @@ pub fn expand_return_type_alias(
         let Some(name) = alias_candidate(ty) else {
             break;
         };
-        if seen.contains(&name) {
+        if seen.contains(&name)
+            || matches!(&**ty, Type::Path(path) if is_external_path(&path.path, same_file))
+        {
             break;
         }
         let Some(alias) = find_alias(&name, same_file, src_dir) else {
@@ -86,7 +88,7 @@ fn alias_candidate(ty: &Type) -> Option<String> {
     let Type::Path(type_path) = ty else {
         return None;
     };
-    if type_path.qself.is_some() {
+    if type_path.qself.is_some() || type_path.path.leading_colon.is_some() {
         return None;
     }
     let segment = type_path.path.segments.last()?;
@@ -119,6 +121,11 @@ fn find_alias(
     if let Some(alias) = same_file.and_then(|file| alias_in_items(&file.items, name)) {
         return Some(alias);
     }
+    // `use axum::response::Result;` — the name is another crate's item, so a
+    // same-named alias elsewhere in this crate is unrelated.
+    if same_file.is_some_and(|file| import_kind(&file.items, name) == Some(Import::External)) {
+        return None;
+    }
     let src_dir = src_dir?;
     let needle = format!("type {name}");
     let files = file_cache::list_rs_files(src_dir);
@@ -131,6 +138,94 @@ fn find_alias(
     definitions
         .all(|alias| same_definition(&first, &alias))
         .then_some(first)
+}
+
+/// `crate` / `self` / `super`: a path root inside the current crate.
+fn is_local_root(ident: &syn::Ident) -> bool {
+    ident == "crate" || ident == "self" || ident == "super"
+}
+
+/// Whether the return type `ty` is a qualified path into another crate
+/// (`axum::response::Result<..>`): never one of this crate's aliases. A
+/// path whose first segment is `crate` / `self` / `super`, a module the
+/// handler's file declares (`mod error;`) or a name it imports from this
+/// crate (`use crate::error;`) stays a candidate; without the file, any
+/// other qualified path counts as external.
+fn is_external_path(path: &syn::Path, same_file: Option<&syn::File>) -> bool {
+    let first = &path.segments[0].ident;
+    path.segments.len() > 1
+        && !is_local_root(first)
+        && !same_file.is_some_and(|file| {
+            declares_module(&file.items, first)
+                || import_kind(&file.items, &first.to_string()) == Some(Import::Local)
+        })
+}
+
+/// Whether `items` declare `mod <name>` (inline modules searched too).
+fn declares_module(items: &[syn::Item], name: &syn::Ident) -> bool {
+    items.iter().any(|item| match item {
+        syn::Item::Mod(module) => {
+            module.ident == *name
+                || module
+                    .content
+                    .as_ref()
+                    .is_some_and(|(_, items)| declares_module(items, name))
+        }
+        _ => false,
+    })
+}
+
+/// Where a `use` brings a name from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Import {
+    /// `use crate::..` / `self::..` / `super::..`.
+    Local,
+    /// Any other root (`use axum::response::Result;`, `use ::std::..`).
+    External,
+}
+
+/// The first `use` among `items` (inline modules included) that brings
+/// `name` into scope (`use a::Result;`, `use a::{B as Result};`).
+fn import_kind(items: &[syn::Item], name: &str) -> Option<Import> {
+    items.iter().find_map(|item| match item {
+        syn::Item::Use(item_use) => {
+            let root = item_use.leading_colon.is_some().then_some(None);
+            use_tree_import(&item_use.tree, root, name)
+        }
+        syn::Item::Mod(module) => module
+            .content
+            .as_ref()
+            .and_then(|(_, items)| import_kind(items, name)),
+        _ => None,
+    })
+}
+
+/// `root` is `None` before the first path segment, `Some(None)` after a
+/// leading `::` (always another crate), `Some(Some(first))` otherwise.
+#[allow(clippy::option_option)]
+fn use_tree_import(
+    tree: &syn::UseTree,
+    root: Option<Option<&syn::Ident>>,
+    name: &str,
+) -> Option<Import> {
+    let kind = || match root {
+        Some(Some(first)) if is_local_root(first) => Import::Local,
+        // `use Name;` (root `None`) names an extern crate or a local item.
+        None => Import::Local,
+        Some(_) => Import::External,
+    };
+    match tree {
+        syn::UseTree::Path(path) => {
+            use_tree_import(&path.tree, root.or(Some(Some(&path.ident))), name)
+        }
+        syn::UseTree::Name(used) => (used.ident == name).then(kind),
+        syn::UseTree::Rename(rename) => (rename.rename == name).then(kind),
+        syn::UseTree::Group(group) => group
+            .items
+            .iter()
+            .find_map(|tree| use_tree_import(tree, root, name)),
+        syn::UseTree::Glob(_) => None,
+    }
 }
 
 /// The `type <name>` item in the file at `path`. Files whose text lacks
@@ -282,10 +377,93 @@ mod tests {
         "-> R<'static, u8>",
         "-> Result < Json < u8 > , E >"
     )]
+    // Another crate's item is never expanded through a same-named alias.
+    #[case::qualified_external(
+        "type Result<T> = std::result::Result<T, AppError>;",
+        "-> axum::response::Result<Json<u8>>",
+        "-> axum :: response :: Result < Json < u8 > >"
+    )]
+    #[case::leading_colon(
+        "type ApiResult<T> = Result<T, E>;",
+        "-> ::app::ApiResult<u8>",
+        "-> :: app :: ApiResult < u8 >"
+    )]
+    #[case::crate_path(
+        "type ApiResult<T> = Result<T, E>;",
+        "-> crate::ApiResult<u8>",
+        "-> Result < u8 , E >"
+    )]
+    #[case::declared_module_path(
+        "mod error { pub type ApiResult<T> = Result<T, E>; }",
+        "-> error::ApiResult<u8>",
+        "-> Result < u8 , E >"
+    )]
+    #[case::locally_imported_module_path(
+        "use crate::errors; mod m { pub type ApiResult<T> = Result<T, E>; }",
+        "-> errors::ApiResult<u8>",
+        "-> Result < u8 , E >"
+    )]
     fn expands_aliases(#[case] file_src: &str, #[case] ret: &str, #[case] expected: &str) {
         assert_eq!(expand(file_src, ret), expected);
     }
 
+    #[test]
+    fn qualified_path_without_file_is_external() {
+        let mut sig: syn::Signature = syn::parse_str("fn h() -> error::ApiResult<u8>").unwrap();
+        assert!(!expand_return_type_alias(&mut sig, None, None));
+    }
+
+    #[rstest]
+    #[case::external("use axum::response::Result;", Some(Import::External))]
+    #[case::local("use crate::error::Result;", Some(Import::Local))]
+    #[case::self_root("use self::x::Result;", Some(Import::Local))]
+    #[case::leading_colon("use ::std::result::Result;", Some(Import::External))]
+    #[case::group_rename("use a::{b, c::D as Result};", Some(Import::External))]
+    #[case::bare_name("use Result;", Some(Import::Local))]
+    #[case::glob("use a::*;", None)]
+    #[case::inline_module("mod m { use axum::Result; }", Some(Import::External))]
+    #[case::module_without_body("mod m; struct S;", None)]
+    fn import_kinds(#[case] file_src: &str, #[case] expected: Option<Import>) {
+        let file: syn::File = syn::parse_str(file_src).unwrap();
+        assert_eq!(import_kind(&file.items, "Result"), expected);
+    }
+
+    #[rstest]
+    #[case::nested("mod a { mod error {} }", true)]
+    #[case::declared("mod error;", true)]
+    #[case::other("mod a; struct error;", false)]
+    fn module_declarations(#[case] file_src: &str, #[case] expected: bool) {
+        let file: syn::File = syn::parse_str(file_src).unwrap();
+        let name: syn::Ident = syn::parse_str("error").unwrap();
+        assert_eq!(declares_module(&file.items, &name), expected);
+    }
+
+    /// `use axum::response::Result;` makes `Result<..>` axum's, so the
+    /// crate's own `type Result<T>` elsewhere under `src/` does not apply.
+    #[test]
+    fn externally_imported_name_skips_crate_wide_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path();
+        std::fs::write(
+            src.join("error.rs"),
+            "pub type Result<T> = std::result::Result<T, AppError>;",
+        )
+        .unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let handler_file: syn::File = syn::parse_str("use axum::response::Result;").unwrap();
+        let mut sig: syn::Signature = syn::parse_str("fn h() -> Result<Json<u8>>").unwrap();
+        assert!(!expand_return_type_alias(
+            &mut sig,
+            Some(&handler_file),
+            Some(src)
+        ));
+        let local_file: syn::File = syn::parse_str("use crate::error::Result;").unwrap();
+        assert!(expand_return_type_alias(
+            &mut sig,
+            Some(&local_file),
+            Some(src)
+        ));
+    }
     #[test]
     fn default_return_is_untouched() {
         let mut sig: syn::Signature = syn::parse_str("fn handler()").unwrap();

@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/parser/schema/struct_schema/tests_serde_fidelity.rs
-assertion_line: 209
 expression: both_views(src)
 ---
 struct Req { id: i32, #[serde(flatten)] strict: Option<Strict> }
@@ -27,7 +26,12 @@ request: {
       "format": "int32"
     },
     "token": {
-      "type": "string"
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {}
+      ]
     }
   },
   "required": [

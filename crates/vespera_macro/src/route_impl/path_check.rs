@@ -8,7 +8,7 @@
 //! MORE parameters than the route's own `path` declares, never fewer. Only
 //! cases that fail whatever the prefix are rejected (error spanned on the
 //! `Path<..>` type; `Validated` / `ValidatedWith` / `Result<_, Rejection>`
-//! wrappers are seen through):
+//! / `Option` wrappers are seen through):
 //! - `Path<(A, B, ..)>` with FEWER elements than the route's own parameters;
 //! - `Path<scalar>` (a primitive such as `u32` / `String`) on a route with
 //!   two or more own parameters;
@@ -64,6 +64,9 @@ pub(super) fn check_with_lookup(
             continue;
         };
         let ty = request_extractor(&pat_type.ty);
+        // axum's `Option<Path<T>>` is `None` only when the route has no path
+        // parameters at all; a mismatch is still a rejection.
+        let ty = unwrap_extractor(ty, "Option").map_or(ty, request_extractor);
         let Some(inner) = unwrap_extractor(ty, "Path") else {
             continue;
         };
@@ -287,6 +290,8 @@ mod tests {
     #[case::receiver(Some("/{a}/{b}"), "&self, p: Path<(u32, u32)>")]
     #[case::reference_arg(Some("/{a}/{b}"), "r: &str, p: Path<(u32, u32)>")]
     #[case::bare_path_type(Some("/{a}/{b}"), "p: Path")]
+    #[case::option_tuple_exact(Some("/{a}/{b}"), "p: Option<Path<(String, u32)>>")]
+    #[case::option_of_other(Some("/{a}/{b}"), "p: Option<Query<u32>>")]
     #[case::no_path_extractor(None, "Json(b): Json<(u32, u32)>")]
     fn accepted(#[case] path: Option<&str>, #[case] arg: &str) {
         assert_eq!(check(path, arg), Ok(()));
@@ -337,6 +342,16 @@ mod tests {
         Some("/{x}/{y}"),
         "p: ValidatedWith<Ctx, Path<(u32,)>>",
         "route `/{x}/{y}` has 2 path parameters but `Path<(u32,)>` extracts 1 value"
+    )]
+    #[case::option_tuple_short(
+        Some("/{x}/{y}"),
+        "p: Option<Path<(u32,)>>",
+        "route `/{x}/{y}` has 2 path parameters but `Path<(u32,)>` extracts 1 value"
+    )]
+    #[case::option_strict_extra(
+        Some("/{id}/{x}"),
+        "p: Option<Validated<Path<Strict>>>",
+        "route `/{id}/{x}` has the path parameter `{x}`, but `Path<Strict>` has no field for it and denies unknown fields"
     )]
     fn rejected(#[case] path: Option<&str>, #[case] arg: &str, #[case] message: &str) {
         assert_eq!(check(path, arg), Err(message.to_string()));

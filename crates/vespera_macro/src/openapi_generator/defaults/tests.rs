@@ -214,6 +214,11 @@ fn extract_default_value_from_function_no_value() {
     syn::parse_quote!(#[schema(default = "42")]),
     Some("42".to_string()),
 )]
+#[case::after_other_key(
+    syn::parse_quote!(#[schema(format = "int64", default = "7")]),
+    Some("7".to_string()),
+)]
+#[case::non_string_value(syn::parse_quote!(#[schema(default = 7)]), None)]
 #[case::no_default(syn::parse_quote!(#[schema(rename = "foo")]), None)]
 #[case::non_schema(syn::parse_quote!(#[serde(default)]), None)]
 fn extract_schema_default_attr_cases(

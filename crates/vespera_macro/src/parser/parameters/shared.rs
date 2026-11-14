@@ -5,8 +5,9 @@ use vespera_core::schema::SchemaRef;
 
 use crate::{
     parser::schema::{
-        SerdeSide, extract_field_rename_for, extract_rename_all_for, is_primitive_type,
-        nullable_schema_ref, rename_field, strip_raw_prefix_owned,
+        SerdeSide, definition_key, extract_field_rename_for, extract_rename_all_for,
+        is_primitive_type, nullable_schema_ref, rename_field, strip_raw_prefix_owned,
+        substitute_type,
     },
     schema_macro::type_utils::is_primitive_like as utils_is_primitive_like,
 };
@@ -60,6 +61,11 @@ pub(super) fn is_known_type(
 
 /// The struct named by `ty`'s last path segment, when `struct_definitions`
 /// holds it as a struct with **named** fields.
+///
+/// A generic struct's field types are instantiated with `ty`'s type
+/// arguments (`Paged<Filter>` → `T` = `Filter`; a missing argument takes the
+/// parameter's default), so a flattened `T` or a `T`-typed field documents
+/// the concrete type.
 pub(super) fn named_struct_fields(
     ty: &Type,
     struct_definitions: &HashMap<&str, &str>,
@@ -67,17 +73,68 @@ pub(super) fn named_struct_fields(
     let Type::Path(type_path) = ty else {
         return None;
     };
-    let ident = type_path.path.segments.last()?.ident.to_string();
-    let struct_item =
-        syn::parse_str::<syn::ItemStruct>(struct_definitions.get(ident.as_str())?).ok()?;
-    matches!(struct_item.fields, syn::Fields::Named(_)).then_some(struct_item)
+    let segment = type_path.path.segments.last()?;
+    let key = definition_key(&type_path.path, |key| struct_definitions.contains_key(key))?;
+    let mut struct_item =
+        syn::parse_str::<syn::ItemStruct>(struct_definitions.get(key.as_str())?).ok()?;
+    if !matches!(struct_item.fields, syn::Fields::Named(_)) {
+        return None;
+    }
+    let names: Vec<String> = struct_item
+        .generics
+        .type_params()
+        .map(|param| param.ident.to_string())
+        .collect();
+    if names.is_empty() {
+        return Some(struct_item);
+    }
+    let args: Vec<&Type> = match &segment.arguments {
+        syn::PathArguments::AngleBracketed(args) => args
+            .args
+            .iter()
+            .filter_map(|arg| match arg {
+                syn::GenericArgument::Type(ty) => Some(ty),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    // Each parameter: its argument, else its default (which may name earlier
+    // parameters, already concrete), else itself (left unresolved).
+    let mut concrete: Vec<Type> = Vec::with_capacity(names.len());
+    for (index, param) in struct_item.generics.type_params().enumerate() {
+        let ty = args.get(index).map_or_else(
+            || {
+                param.default.as_ref().map_or_else(
+                    || {
+                        let ident = &param.ident;
+                        syn::parse_quote!(#ident)
+                    },
+                    |(_, default)| {
+                        let earlier: Vec<&Type> = concrete.iter().collect();
+                        substitute_type(default, &names[..index], &earlier)
+                    },
+                )
+            },
+            |arg| (*arg).clone(),
+        );
+        concrete.push(ty);
+    }
+    let concrete: Vec<&Type> = concrete.iter().collect();
+    for field in &mut struct_item.fields {
+        field.ty = substitute_type(&field.ty, &names, &concrete);
+    }
+    Some(struct_item)
 }
 
 /// Whether `struct_definitions` holds `ty`'s last path segment as a struct of
 /// any shape (named, tuple or unit).
 pub(super) fn is_defined_struct(ty: &Type, struct_definitions: &HashMap<&str, &str>) -> bool {
-    crate::schema_macro::type_utils::last_path_segment(ty)
-        .and_then(|segment| struct_definitions.get(segment.ident.to_string().as_str()))
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+    definition_key(&type_path.path, |key| struct_definitions.contains_key(key))
+        .and_then(|key| struct_definitions.get(key.as_str()))
         .is_some_and(|definition| syn::parse_str::<syn::ItemStruct>(definition).is_ok())
 }
 

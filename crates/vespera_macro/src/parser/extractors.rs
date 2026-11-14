@@ -60,8 +60,14 @@ fn result_ok_type(ty: &Type) -> Option<&Type> {
 }
 
 /// Return true when the type is a `Validated<...>` or `ValidatedWith<..., ...>`
-/// extractor wrapper.
-pub(super) fn is_validated_type(ty: &Type) -> bool {
+/// extractor wrapper, also behind `Cached<..>` / `Option<..>` (which pass the
+/// validation rejection — the `422` — through unchanged).
+pub(super) fn is_validated_type(mut ty: &Type) -> bool {
+    while let Some(inner) =
+        extractor_inner_type(ty, "Cached").or_else(|| extractor_inner_type(ty, "Option"))
+    {
+        ty = inner;
+    }
     validated_inner_type(ty).is_some()
 }
 
@@ -213,5 +219,16 @@ mod tests {
         assert!(validated_inner_type(&ty).is_none());
         assert!(!is_validated_type(&ty));
         assert!(std::ptr::eq(request_extractor(&ty), &raw const ty));
+    }
+
+    /// `Cached` / `Option` pass the `Validated` rejection (`422`) through.
+    #[rstest]
+    #[case::cached("Cached<Validated<Query<F>>>", true)]
+    #[case::option("Option<Validated<Query<F>>>", true)]
+    #[case::cached_option("Cached<Option<ValidatedWith<C, Query<F>>>>", true)]
+    #[case::cached_plain("Cached<Query<F>>", false)]
+    fn validated_behind_cached_or_option(#[case] src: &str, #[case] expected: bool) {
+        let ty: Type = syn::parse_str(src).unwrap();
+        assert_eq!(is_validated_type(&ty), expected);
     }
 }
