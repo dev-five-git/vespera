@@ -41,6 +41,38 @@ import org.junit.jupiter.api.Test;
 
 class VesperaNativeLoaderTest {
 
+    /**
+     * A copy another class loader already holds is valid and shared: a
+     * failed load for that reason must not delete it (the next extraction
+     * would otherwise race a missing file); any other load failure removes
+     * the dead copy and its directory.
+     */
+    @Test
+    void failedLoadDeletesTheCopyUnlessAnotherClassLoaderHoldsIt() {
+        Path library = Path.of("cache", "abc", "libx.so");
+        List<Path> deleted = new ArrayList<>();
+        VesperaNativeLoader.TempFileDeleter deleter = deleted::add;
+
+        UnsatisfiedLinkError shared = assertThrows(UnsatisfiedLinkError.class,
+                () -> VesperaNativeLoader.loadExtracted(library, path -> {
+                    throw new UnsatisfiedLinkError(
+                            "Native Library " + path + " already loaded in another classloader");
+                }, deleter));
+        assertTrue(shared.getMessage().contains("another classloader"));
+        assertTrue(deleted.isEmpty(), "shared verified copy kept: " + deleted);
+
+        assertThrows(UnsatisfiedLinkError.class,
+                () -> VesperaNativeLoader.loadExtracted(library, path -> {
+                    throw new UnsatisfiedLinkError("wrong ELF class");
+                }, deleter));
+        assertEquals(List.of(library, library.getParent()), deleted);
+
+        List<String> loaded = new ArrayList<>();
+        VesperaNativeLoader.loadExtracted(library, loaded::add, deleter);
+        assertEquals(List.of(library.toAbsolutePath().toString()), loaded);
+        assertFalse(VesperaNativeLoader.loadedByAnotherClassLoader(new UnsatisfiedLinkError()));
+    }
+
     @Test
     void utilityConstructorIsPrivateButWellFormed() throws Exception {
         var constructor = VesperaNativeLoader.class.getDeclaredConstructor();
@@ -68,7 +100,7 @@ class VesperaNativeLoaderTest {
             assertDetection("Windows 11", "amd64", "windows", "x86_64", "demo.dll");
             assertDetection("Mac OS X", "arm64", "macos", "aarch64", "libdemo.dylib");
             assertDetection("Darwin", "aarch64", "macos", "aarch64", "libdemo.dylib");
-            assertDetection("FreeBSD", "riscv64", "linux", "riscv64", "libdemo.so");
+            assertDetection("FreeBSD", "riscv64", "freebsd", "riscv64", "libdemo.so");
             assertDetection("Linux", "x86_64", "linux", "x86_64", "libdemo.so");
         } finally {
             restoreProperty("os.name", oldOs);

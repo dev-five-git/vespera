@@ -225,6 +225,26 @@ class ReactiveProxyE2ETest {
         }
     }
 
+    // fetch() / curl send a wildcard Accept (*/*): an event stream must still arrive, not buffer forever.
+    @Test
+    void eventStreamWithAWildcardAcceptStillStreams() throws Exception {
+        HttpResponse<InputStream> response = http.send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/stream/events"))
+                        .header("Accept", "*/*").build(),
+                HttpResponse.BodyHandlers.ofInputStream());
+        assertEquals(200, response.statusCode());
+        assertEquals("text/event-stream", response.headers().firstValue("content-type").orElseThrow());
+        try (BufferedReader lines = new BufferedReader(
+                new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
+            assertEquals("data: event-0", lines.readLine());
+        }
+
+        // An ordinary response of such a GET is held back and keeps its Content-Length.
+        HttpResponse<String> health = get("/health", "Accept", "*/*");
+        assertEquals("ok", health.body());
+        assertEquals("2", health.headers().firstValue("content-length").orElseThrow());
+    }
+
     private static Socket rawGet(int port, String path, String... headerLines) throws IOException {
         Socket socket = new Socket(InetAddress.getLoopbackAddress(), port);
         StringBuilder request = new StringBuilder("GET " + path + " HTTP/1.1\r\nHost: localhost\r\n");
@@ -240,7 +260,9 @@ class ReactiveProxyE2ETest {
     @Test
     void clientDisconnectCancelsTheRustHandler() throws Exception {
         String key = "reactive-cancel-" + System.nanoTime();
-        try (Socket socket = rawGet(port, "/diag/sleep/" + key + "/30000")) {
+        // A concrete non-streaming Accept keeps the cancellable buffered path (a
+        // bodyless GET with `*/*` / no Accept is streamed header-first).
+        try (Socket socket = rawGet(port, "/diag/sleep/" + key + "/30000", "Accept: application/json")) {
             await(key + " started", () -> runs(key + ":started") == 1);
         } // the client goes away mid-dispatch
         await(key + " dropped", () -> runs(key + ":dropped") == 1);

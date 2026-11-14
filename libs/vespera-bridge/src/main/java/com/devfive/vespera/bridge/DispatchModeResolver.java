@@ -54,13 +54,17 @@ public interface DispatchModeResolver {
      *   <li>HTTP/1.x only: no {@code Content-Length}, no
      *       {@code Transfer-Encoding}, and the method is GET / HEAD /
      *       OPTIONS — per RFC 9112 §6.3 such a request has no body.
-     *       HTTP/2 is deliberately excluded because length-less DATA frames
-     *       can carry a GET body and h2 has no {@code Transfer-Encoding}
-     *       header.</li>
+     *       HTTP/2 is not covered by this rule because length-less DATA
+     *       frames can carry a GET body and h2 has no
+     *       {@code Transfer-Encoding} header.</li>
+     *   <li>HTTP/2 / HTTP/3: a GET / HEAD / OPTIONS whose request stream the
+     *       container already reports finished
+     *       ({@code getInputStream().isFinished()} — END_STREAM on the
+     *       HEADERS frame).</li>
      * </ul>
      *
-     * <p>For protocols other than HTTP/1.x, absence of framing headers is
-     * treated as unknown rather than empty; callers that choose a
+     * <p>Otherwise, for protocols other than HTTP/1.x, absence of framing
+     * headers is treated as unknown rather than empty; callers that choose a
      * non-bidirectional mode will still read the servlet input stream fully.
      */
     static boolean definitelyBodyless(HttpServletRequest request) {

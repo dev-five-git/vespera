@@ -115,7 +115,9 @@ class ReactiveNettyServerTest {
         transport.pending = nativeFuture;
         try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), server.port())) {
             OutputStream out = socket.getOutputStream();
-            out.write("GET /slow HTTP/1.1\r\nHost: localhost\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+            // A concrete non-streaming Accept: the buffered (cancellable) ASYNC path.
+            out.write("GET /slow HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\n\r\n"
+                    .getBytes(StandardCharsets.US_ASCII));
             out.flush();
             long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
             while (transport.requests.isEmpty() && System.nanoTime() < deadline) {
@@ -141,7 +143,8 @@ class ReactiveNettyServerTest {
         transport.pending = nativeFuture;
         try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), server.port())) {
             socket.getOutputStream().write(
-                    "GET /slow HTTP/1.1\r\nHost: localhost\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+                    "GET /slow HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\n\r\n"
+                            .getBytes(StandardCharsets.US_ASCII));
             long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
             while (transport.requests.isEmpty() && System.nanoTime() < deadline) {
                 Thread.sleep(5);

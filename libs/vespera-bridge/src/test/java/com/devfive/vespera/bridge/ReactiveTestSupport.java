@@ -31,6 +31,8 @@ final class ReactiveTestSupport {
         volatile byte[] streamHeader = responseWire(200, "{\"content-type\":\"text/event-stream\"}", "");
         volatile List<String> streamChunks = List.of("data: a\n\n", "data: b\n\n");
         volatile Throwable streamFailure;
+        /** When set, implicitly streamed GETs replay streamHeader / streamChunks too. */
+        volatile boolean streamImplicitRequests;
         /** When set, a streaming dispatch blocks on it (holding its thread) before the header. */
         volatile java.util.concurrent.CountDownLatch streamGate;
         /** Released once each time a streaming dispatch starts. */
@@ -64,6 +66,16 @@ final class ReactiveTestSupport {
                     throw new IOException(interrupted);
                 }
             }
+            if (!explicitStreamingRequest(wireRequest) && !streamImplicitRequests) {
+                // An implicitly streamed GET: replay the buffered `response`
+                // as the native symbol would for an in-memory body — header,
+                // one body write, no flush hint.
+                byte[] wire = response;
+                int len = ByteBuffer.wrap(wire).getInt();
+                headerConsumer.accept(java.util.Arrays.copyOf(wire, 4 + len));
+                body.write(wire, 4 + len, wire.length - 4 - len);
+                return;
+            }
             headerConsumer.accept(streamHeader);
             for (String chunk : streamChunks) {
                 body.write(chunk.getBytes(StandardCharsets.UTF_8));
@@ -75,6 +87,12 @@ final class ReactiveTestSupport {
             if (streamFailure instanceof RuntimeException runtime) {
                 throw runtime;
             }
+        }
+
+        /** Whether the request's {@code Accept} asked for a stream (vs an implicitly streamed GET). */
+        static boolean explicitStreamingRequest(byte[] wireRequest) {
+            String header = header(wireRequest).toString().toLowerCase(java.util.Locale.ROOT);
+            return header.contains("event-stream") || header.contains("ndjson") || header.contains("stream+json");
         }
 
         JsonNode lastHeader() {

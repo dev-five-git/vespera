@@ -844,7 +844,10 @@ final class VesperaWireCodec {
         }
         java.util.ArrayList<Map<String, Object>> copy = new java.util.ArrayList<>(validationErrors.size());
         for (Map<String, Object> error : validationErrors) {
-            copy.add(Map.copyOf(error));
+            // Not Map.copyOf: an entry may carry a null (JSON null, or a nested
+            // value the decoder does not materialise), which Map.copyOf rejects
+            // with an NPE that surfaced as "malformed wire".
+            copy.add(java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(error)));
         }
         return java.util.List.copyOf(copy);
     }

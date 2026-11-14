@@ -1,3 +1,4 @@
+import java.util.zip.ZipFile
 import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
 
 plugins {
@@ -272,8 +273,8 @@ mavenPublishing {
 
         licenses {
             license {
-                name.set("MIT License")
-                url.set("https://opensource.org/licenses/MIT")
+                name.set("Apache License, Version 2.0")
+                url.set("https://www.apache.org/licenses/LICENSE-2.0")
             }
         }
 
@@ -338,6 +339,13 @@ val verifyPublishedPom = tasks.register("verifyPublishedPom") {
             throw GradleException("The published Gradle module metadata must not declare dependencies:\n$module")
         }
         val pom = pomFile.get().asFile.readText()
+        // Same license as the repository LICENSE and the Rust crates (Apache-2.0).
+        if (!pom.contains("<name>Apache License, Version 2.0</name>") ||
+            !pom.contains("<url>https://www.apache.org/licenses/LICENSE-2.0</url>") ||
+            pom.contains("opensource.org/licenses/MIT")
+        ) {
+            throw GradleException("The published POM must declare the Apache-2.0 license (only):\n$pom")
+        }
         if (pom.contains("<dependencies>") || pom.contains("<dependency>")) {
             throw GradleException(
                 "The published POM must not declare dependencies (Spring / servlet / WebFlux / " +
@@ -353,4 +361,55 @@ tasks.named("check") {
 
 tasks.named("test") {
     finalizedBy(verifyPublishedPom)
+}
+
+// ── License in every JAR ──────────────────────────────────────────────────
+// The repository LICENSE (Apache-2.0, as declared in the POM) ships as
+// META-INF/LICENSE of the main, sources and javadoc JARs.
+val repositoryLicense = layout.projectDirectory.file("../../LICENSE")
+// AbstractArchiveTask, not Jar: vanniktech's `plainJavadocJar` is no Jar subtype.
+val publishedJars = tasks.withType<AbstractArchiveTask>().matching {
+    it.name in setOf("jar", "sourcesJar", "javadocJar", "plainJavadocJar")
+}
+publishedJars.configureEach {
+    from(repositoryLicense) {
+        into("META-INF")
+    }
+}
+
+val verifyJarLicenses = tasks.register("verifyJarLicenses") {
+    group = LifecycleBasePlugin.VERIFICATION_GROUP
+    description = "Fails when a published JAR lacks the repository LICENSE as META-INF/LICENSE."
+    val jars = publishedJars
+    dependsOn(jars)
+    val jarFiles = files(jars) // lazy: the javadoc JAR task is registered later
+    val license = repositoryLicense.asFile
+    inputs.files(jarFiles)
+    doLast {
+        val expected = license.readText()
+        if (!expected.contains("Apache License") || !expected.contains("Version 2.0")) {
+            throw GradleException("$license is not the Apache-2.0 license the POM declares")
+        }
+        if (jarFiles.files.size < 3) {
+            throw GradleException("expected the main, sources and javadoc JARs, got ${jarFiles.files}")
+        }
+        jarFiles.files.forEach { jar ->
+            ZipFile(jar).use { zip ->
+                val entry = zip.getEntry("META-INF/LICENSE")
+                    ?: throw GradleException("$jar has no META-INF/LICENSE")
+                val packaged = zip.getInputStream(entry).use { it.readBytes().toString(Charsets.UTF_8) }
+                if (packaged != expected) {
+                    throw GradleException("$jar META-INF/LICENSE differs from the repository LICENSE")
+                }
+            }
+        }
+    }
+}
+
+tasks.named("check") {
+    dependsOn(verifyJarLicenses)
+}
+
+tasks.named("test") {
+    finalizedBy(verifyJarLicenses)
 }

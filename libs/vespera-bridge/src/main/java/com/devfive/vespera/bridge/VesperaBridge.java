@@ -664,6 +664,14 @@ public class VesperaBridge {
     }
 
     /**
+     * Smallest {@code out} capacity {@link #dispatchDirect(ByteBuffer, int,
+     * ByteBuffer)} dispatches into (mirrors the Rust
+     * {@code vespera_inprocess::MIN_DIRECT_OUT_BYTES}); a smaller buffer is
+     * answered with {@code -(MIN_DIRECT_OUT_BYTES)} before the handler runs.
+     */
+    public static final int MIN_DIRECT_OUT_BYTES = 1024;
+
+    /**
      * Raw native entry — validated by {@link #dispatchDirect(ByteBuffer,
      * int, ByteBuffer)}; never call this directly.
      */
@@ -689,6 +697,12 @@ public class VesperaBridge {
      *       prefix may have been written).  {@code requiredSize} is
      *       exact; retrying re-runs the dispatch (see
      *       {@link BufferTooSmallException}).</li>
+     *   <li>An {@code out} smaller than {@link #MIN_DIRECT_OUT_BYTES}
+     *       (1 KiB) returns {@code -(MIN_DIRECT_OUT_BYTES)} <em>without
+     *       running the handler</em>: such a buffer could not hold a
+     *       synthesized panic / timeout response, and growing it and
+     *       retrying would re-run a failing handler.  Retrying with at
+     *       least that capacity dispatches normally.</li>
      *   <li>{@code Integer.MIN_VALUE}: response exceeds 2 GiB and is
      *       unrepresentable in this protocol.</li>
      * </ul>

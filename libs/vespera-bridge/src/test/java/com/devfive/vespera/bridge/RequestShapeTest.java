@@ -68,6 +68,60 @@ class RequestShapeTest {
         assertFalse(RequestShape.capture(unknownLength("GET", null)).definitelyBodyless);
     }
 
+    /**
+     * HTTP/2 never sends Content-Length for a GET: a safe request whose stream
+     * the container reports finished (END_STREAM on HEADERS) is bodyless; one
+     * it cannot vouch for (not finished, getReader() used) is not.
+     */
+    @Test
+    void httpTwoSafeRequestIsBodylessWhenTheContainerReportsTheStreamFinished() {
+        assertTrue(RequestShape.capture(http2("GET", () -> true)).definitelyBodyless);
+        assertTrue(RequestShape.capture(http2("HEAD", () -> true)).definitelyBodyless);
+        assertFalse(RequestShape.capture(http2("GET", () -> false)).definitelyBodyless);
+        assertFalse(RequestShape.capture(http2("GET", () -> {
+            throw new IllegalStateException("getReader() has already been called");
+        })).definitelyBodyless);
+        assertFalse(RequestShape.capture(http2("POST", () -> true)).definitelyBodyless,
+                "unsafe methods are never assumed bodyless without framing");
+    }
+
+    private static MockHttpServletRequest http2(String method, java.util.function.BooleanSupplier finished) {
+        return new MockHttpServletRequest(method, "/items") {
+            @Override
+            public long getContentLengthLong() {
+                return -1;
+            }
+
+            @Override
+            public String getProtocol() {
+                return "HTTP/2.0";
+            }
+
+            @Override
+            public jakarta.servlet.ServletInputStream getInputStream() {
+                return new jakarta.servlet.ServletInputStream() {
+                    @Override
+                    public boolean isFinished() {
+                        return finished.getAsBoolean();
+                    }
+
+                    @Override
+                    public boolean isReady() {
+                        return true;
+                    }
+
+                    @Override
+                    public void setReadListener(jakarta.servlet.ReadListener listener) {}
+
+                    @Override
+                    public int read() {
+                        return -1;
+                    }
+                };
+            }
+        };
+    }
+
     private static MockHttpServletRequest unknownLength(String method, String protocol) {
         return new MockHttpServletRequest(method, "/items") {
             @Override

@@ -53,6 +53,59 @@ class AsyncResponseContentTypeTest {
             }
             return result;
         }
+
+        /** As the proxy: marked with its per-request {@link ProxyServletResponse}. */
+        @org.springframework.web.bind.annotation.RequestMapping(
+                value = "/files/{name}",
+                method = {org.springframework.web.bind.annotation.RequestMethod.GET,
+                        org.springframework.web.bind.annotation.RequestMethod.HEAD})
+        Object file(HttpServletRequest request, jakarta.servlet.http.HttpServletResponse servletResponse) {
+            ProxyServletResponse proxied = new ProxyServletResponse(servletResponse, null, null);
+            VesperaAsyncResponseBodyAdvice.markProxied(request, proxied);
+            DeferredResult<Object> result = new DeferredResult<>();
+            result.setResult(WireResponseWriter.buildAsyncResponseEntityFromWire(
+                    wire("{\"content-type\":\"application/pdf\",\"etag\":\"\\\"v1\\\"\","
+                            + "\"last-modified\":\"Wed, 21 Oct 2015 07:28:00 GMT\"}", "%PDF-1.7"),
+                    request.getMethod(), proxied));
+            return result;
+        }
+    }
+
+    private static MockHttpServletResponse call(
+            org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder request) throws Exception {
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(new AsyncController())
+                .setControllerAdvice(new VesperaAsyncResponseBodyAdvice())
+                .build();
+        MvcResult started = mvc.perform(request).andReturn();
+        assertTrue(started.getRequest().isAsyncStarted());
+        return mvc.perform(asyncDispatch(started)).andReturn().getResponse();
+    }
+
+    /** No converter runs, so Spring's RFD guard never adds Content-Disposition. */
+    @ParameterizedTest
+    @ValueSource(strings = {"/files/report.pdf", "/files/report.bat", "/files/x.html;a=b"})
+    void typedBodiesGetNoContentDisposition(String path) throws Exception {
+        MockHttpServletResponse response = call(get(path));
+        assertEquals(200, response.getStatus());
+        assertNull(response.getHeader("Content-Disposition"));
+        assertEquals("application/pdf", response.getContentType());
+        assertEquals("%PDF-1.7", response.getContentAsString());
+    }
+
+    /** Rust owns conditional requests: a Rust 200 is never turned into Spring's 304 / 412. */
+    @ParameterizedTest
+    @ValueSource(strings = {"GET", "HEAD"})
+    void conditionalRequestsDoNotTurnARust200Into304(String method) throws Exception {
+        MockHttpServletResponse response = call(
+                org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request(
+                                org.springframework.http.HttpMethod.valueOf(method), "/files/report.pdf")
+                        .header("If-None-Match", "\"v1\"")
+                        .header("If-Modified-Since", "Wed, 21 Oct 2015 07:28:00 GMT")
+                        .header("If-Unmodified-Since", "Tue, 20 Oct 2015 07:28:00 GMT"));
+        assertEquals(200, response.getStatus());
+        assertEquals("\"v1\"", response.getHeader("ETag"));
+        assertEquals("Wed, 21 Oct 2015 07:28:00 GMT", response.getHeader("Last-Modified"));
+        assertEquals(method.equals("GET") ? "%PDF-1.7" : "", response.getContentAsString());
     }
 
     private static MockHttpServletResponse call(String path) throws Exception {

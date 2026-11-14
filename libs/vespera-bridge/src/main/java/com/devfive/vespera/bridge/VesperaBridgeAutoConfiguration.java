@@ -17,8 +17,6 @@ import jakarta.servlet.Filter;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletRequest;
 import jakarta.servlet.ServletResponse;
-import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.ThreadFactory;
@@ -75,8 +73,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  *       provide your own {@code @RestController} that calls the
  *       {@link VesperaBridge} native methods directly.</li>
    *   <li><strong>Async response continuation executor</strong>:
-   *       replace the {@code vesperaBridgeAsyncResponseExecutor} bean.
-   *       The default is a small named daemon-thread pool.</li>
+   *       replace the {@code vesperaBridgeAsyncResponseExecutor} bean
+   *       ({@link VesperaAsyncResponseExecutor#of}). The default is a small
+   *       named daemon-thread pool, wrapped so that it is not an
+   *       {@code Executor} bean (Boot's {@code applicationTaskExecutor} stays).</li>
  * </ul>
  *
  * <p><strong>0.2.0 behavior change:</strong> the autoconfigured
@@ -191,7 +191,10 @@ public class VesperaBridgeAutoConfiguration {
 
     @Bean("vesperaBridgeAsyncResponseExecutor")
     @ConditionalOnMissingBean(name = "vesperaBridgeAsyncResponseExecutor")
-    public ExecutorService vesperaBridgeAsyncResponseExecutor(VesperaBridgeProperties props) {
+    public VesperaAsyncResponseExecutor vesperaBridgeAsyncResponseExecutor(VesperaBridgeProperties props) {
+        // Wrapped in a non-Executor holder: an Executor-typed bean would make
+        // Boot's TaskExecutionAutoConfiguration (@ConditionalOnMissingBean(Executor))
+        // skip the application's `applicationTaskExecutor`.
         // Default (asyncPoolSize <= 0) preserves the historical sizing:
         // Math.max(2, Math.min(4, cpus)). A positive vespera.bridge.async-pool-size
         // overrides the cap for high-concurrency async dispatch (clamped to >= 1).
@@ -206,7 +209,7 @@ public class VesperaBridgeAutoConfiguration {
             return thread;
         };
         int queueCapacity = Math.max(256, threads * 256);
-        return new ThreadPoolExecutor(
+        return VesperaAsyncResponseExecutor.of(new ThreadPoolExecutor(
                 threads,
                 threads,
                 0L,
@@ -222,7 +225,7 @@ public class VesperaBridgeAutoConfiguration {
                 // contract). AbortPolicy rejects instead; the proxy's
                 // dispatchAsyncFlow maps the rejection to a 503 backpressure
                 // signal. The bounded queue still absorbs bursts first.
-                new ThreadPoolExecutor.AbortPolicy());
+                new ThreadPoolExecutor.AbortPolicy()));
     }
 
     @Bean
@@ -260,7 +263,7 @@ public class VesperaBridgeAutoConfiguration {
     public VesperaProxyController vesperaProxyController(
             AppNameResolver appResolver,
             DispatchModeResolver modeResolver,
-            @Qualifier("vesperaBridgeAsyncResponseExecutor") Executor asyncResponseExecutor,
+            @Qualifier("vesperaBridgeAsyncResponseExecutor") Object asyncResponseExecutor,
             VesperaBridgeProperties props,
             VesperaBridgeNativeSettings nativeSettings,
             ObjectProvider<DispatchObserver> observers,
@@ -268,7 +271,7 @@ public class VesperaBridgeAutoConfiguration {
         return new VesperaProxyController(
                 appResolver,
                 modeResolver,
-                asyncResponseExecutor,
+                VesperaAsyncResponseExecutor.unwrap(asyncResponseExecutor),
                 props.isDirectRetryOnOverflow(),
                 props.getMaxBufferedRequestBytes(),
                 props.getMaxBufferedResponseBytes(),
