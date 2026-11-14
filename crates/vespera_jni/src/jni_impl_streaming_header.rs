@@ -8,8 +8,10 @@ use jni::objects::{Global, JByteArray, JClass, JObject};
 
 use crate::daemon_env::with_cached_daemon_env;
 use crate::jni_impl::{
-    guard_void_symbol, panic_wire, read_request_byte_array, runtime, runtime_unavailable_wire,
+    clear_pending_exception, guard_void_symbol, panic_wire, read_request_byte_array, runtime,
+    runtime_unavailable_wire,
     streaming_buffer::{PullPushBuffers, mark_streaming_buffer_reusable, release_pull_lease},
+    streaming_setup_failed_wire,
     support::{
         AbortReason, FullStreamHeaderSetup, PanicHeaderAction, panic_post_header_action,
         push_unless_header_failed, setup_full_stream_with_header, setup_stream_with_header,
@@ -176,6 +178,19 @@ fn notify_local_header(
     flags.notified.store(true, Ordering::Release);
 }
 
+/// JNI setup (global refs, the chunk `byte[]`) failed before the dispatch:
+/// clear the pending Java exception and deliver the same
+/// `500 JNI streaming setup failed` as the non-header streaming symbols —
+/// not `panic_wire()`, which the bridge would log and count as a Rust panic.
+fn notify_setup_failed(
+    env: &mut jni::Env<'_>,
+    header_consumer: &JObject<'_>,
+    flags: &StreamingFlags,
+) {
+    clear_pending_exception(env);
+    notify_local_header(env, header_consumer, &streaming_setup_failed_wire(), flags);
+}
+
 /// Build the hot-path `on_header` callback shared by both `dispatch*WithHeader`
 /// JNI symbols: deliver the wire header through the promoted `Consumer` on a
 /// TLS-cached daemon-attached `JNIEnv`, then latch the outcome into the
@@ -262,7 +277,7 @@ fn setup_full_header_or_notify(
 ) -> Option<FullStreamHeaderSetup> {
     setup_full_stream_with_header(env, header_consumer, input_stream, output_stream).map_or_else(
         |_| {
-            notify_local_header(env, header_consumer, &panic_wire(), flags);
+            notify_setup_failed(env, header_consumer, flags);
             None
         },
         Some,
@@ -385,7 +400,7 @@ fn dispatch_streaming_with_header_body(env: &mut jni::Env<'_>, args: &StreamHead
     let Ok((header_global, stream_global, jvm, push_buf, push_buf_lease)) =
         setup_stream_with_header(env, args.header_consumer, args.output_stream)
     else {
-        notify_local_header(env, args.header_consumer, &panic_wire(), args.flags);
+        notify_setup_failed(env, args.header_consumer, args.flags);
         return;
     };
 
@@ -516,7 +531,7 @@ fn stream_stashed_body(env: &mut jni::Env<'_>, args: &StashStreamArgs<'_, '_>) {
     let Ok((header_global, stream_global, jvm, push_buf, push_buf_lease)) =
         setup_stream_with_header(env, args.header_consumer, args.output_stream)
     else {
-        notify_local_header(env, args.header_consumer, &panic_wire(), args.flags);
+        notify_setup_failed(env, args.header_consumer, args.flags);
         return;
     };
     let Some(runtime) = runtime() else {

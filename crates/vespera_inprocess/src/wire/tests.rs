@@ -949,3 +949,22 @@ fn panic_error_wire_flags_metadata_and_keeps_the_error_wire_shape() {
     let plain_header = std::str::from_utf8(&plain[4..4 + plain_len]).unwrap();
     assert_eq!(header.replace(r#","panicked":"true""#, ""), plain_header);
 }
+
+/// `error_wire` is public: a status that is not a three-digit HTTP status
+/// would otherwise serialize as invalid JSON (`"status":042`), so it is
+/// answered as `500`; valid statuses pass through.
+#[rstest::rstest]
+#[case(0, 500)]
+#[case(42, 500)]
+#[case(99, 500)]
+#[case(100, 100)]
+#[case(404, 404)]
+#[case(999, 999)]
+#[case(1000, 500)]
+#[case(u16::MAX, 500)]
+fn error_wire_answers_500_for_a_non_http_status(#[case] status: u16, #[case] expected: u16) {
+    let wire = crate::wire::error_wire(status, "x");
+    let len = u32::from_be_bytes(wire[..4].try_into().unwrap()) as usize;
+    let header: serde_json::Value = serde_json::from_slice(&wire[4..4 + len]).expect("valid JSON");
+    assert_eq!(header["status"], expected);
+}
