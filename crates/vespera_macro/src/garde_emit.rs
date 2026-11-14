@@ -121,11 +121,26 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
         .filter_map(|f| f.ident.as_ref())
         .collect();
 
+    // Error paths name the field as the CLIENT sent it: serde's deserialize
+    // side (`rename(deserialize = ..)` / `rename_all`, raw `r#` stripped) —
+    // the same resolution the request-view schema documents.
+    let rename_all =
+        crate::parser::extract_rename_all_for(&input.attrs, crate::parser::SerdeSide::Deserialize);
     let field_blocks: Vec<TokenStream> = per_field
         .iter()
         .filter_map(|(field, constraints)| {
             let ident = field.ident.as_ref()?;
-            emit_field_block(ident, &field.ty, constraints)
+            let wire_name = crate::parser::extract_field_rename_for(
+                &field.attrs,
+                crate::parser::SerdeSide::Deserialize,
+            )
+            .unwrap_or_else(|| {
+                crate::parser::rename_field(
+                    &crate::parser::strip_raw_prefix_owned(ident.to_string()),
+                    rename_all.as_deref(),
+                )
+            });
+            emit_field_block(ident, &wire_name, &field.ty, constraints)
         })
         .collect();
 
@@ -163,6 +178,7 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
 #[cfg(feature = "validation")]
 fn emit_field_block(
     field_ident: &syn::Ident,
+    field_name_str: &str,
     field_ty: &Type,
     c: &SchemaConstraints,
 ) -> Option<TokenStream> {
@@ -170,11 +186,10 @@ fn emit_field_block(
         return None;
     }
 
-    let field_name_str = field_ident.to_string();
     let numeric_kind = rust_numeric_kind(
         crate::schema_macro::type_utils::option_inner(field_ty).unwrap_or(field_ty),
     );
-    let rule_blocks = emit_rule_blocks(c, &field_name_str, numeric_kind.as_deref());
+    let rule_blocks = emit_rule_blocks(c, field_ident, numeric_kind.as_deref());
     let dive_block = emit_dive_block(c);
     if rule_blocks.is_empty() && dive_block.is_empty() {
         return None;
@@ -244,15 +259,16 @@ fn emit_dive_block(c: &SchemaConstraints) -> TokenStream {
 #[allow(clippy::too_many_lines)] // exhaustive rule-to-emit dispatcher
 fn emit_rule_blocks(
     c: &SchemaConstraints,
-    field_name: &str,
+    field_ident: &syn::Ident,
     numeric_kind: Option<&str>,
 ) -> TokenStream {
+    let field_name = &field_ident.to_string();
     let mut blocks: Vec<TokenStream> = Vec::new();
 
     // ── String length (min_length / max_length → length::chars) ───────
     if c.min_length.is_some() || c.max_length.is_some() {
         let min = c.min_length.unwrap_or(0);
-        let max = c.max_length.unwrap_or(usize::MAX);
+        let max = usize_bound(c.max_length);
         blocks.push(quote! {
             if let ::std::result::Result::Err(__garde_error) =
                 (::vespera::__validation::garde::rules::length::chars::apply)(
@@ -268,7 +284,7 @@ fn emit_rule_blocks(
     // ── Array length (min_items / max_items → length::simple) ─────────
     if c.min_items.is_some() || c.max_items.is_some() {
         let min = c.min_items.unwrap_or(0);
-        let max = c.max_items.unwrap_or(usize::MAX);
+        let max = usize_bound(c.max_items);
         blocks.push(quote! {
             if let ::std::result::Result::Err(__garde_error) =
                 (::vespera::__validation::garde::rules::length::simple::apply)(
@@ -283,8 +299,17 @@ fn emit_rule_blocks(
 
     // ── Numeric range (minimum / maximum → range::apply) ──────────────
     if c.minimum.is_some() || c.maximum.is_some() {
-        let min_expr = numeric_some(c.minimum, numeric_kind);
-        let max_expr = numeric_some(c.maximum, numeric_kind);
+        let bounds = numeric_some(c.minimum, Bound::Min, numeric_kind).and_then(|min| {
+            numeric_some(c.maximum, Bound::Max, numeric_kind).map(|max| (min, max))
+        });
+        let (min_expr, max_expr) = match bounds {
+            Ok(bounds) => bounds,
+            Err(msg) => {
+                let msg = format!("vespera: `#[schema(...)]` on field `{field_name}`: {msg}");
+                blocks.push(syn::Error::new(field_ident.span(), msg).to_compile_error());
+                return quote! { #(#blocks)* };
+            }
+        };
         blocks.push(quote! {
             if let ::std::result::Result::Err(__garde_error) =
                 (::vespera::__validation::garde::rules::range::apply)(
@@ -426,33 +451,96 @@ fn emit_rule_blocks(
 
 // ── helpers ──────────────────────────────────────────────────────────
 
+/// The `usize` upper bound of a length rule: the declared value, or the
+/// TARGET's `usize::MAX` — never the host's value baked in as a literal
+/// (`18446744073709551615usize` does not compile for 32-bit targets).
 #[cfg(feature = "validation")]
-fn numeric_some(value: Option<f64>, numeric_kind: Option<&str>) -> TokenStream {
-    let Some(v) = value else {
-        return quote! { ::std::option::Option::None };
-    };
+fn usize_bound(value: Option<usize>) -> TokenStream {
+    value.map_or_else(
+        || quote! { ::core::primitive::usize::MAX },
+        |max| quote! { #max },
+    )
+}
 
-    // Render the literal in a form that matches the field type so the
-    // garde `range::apply<T>` typeck succeeds.
-    numeric_kind.map_or_else(
+/// Which side of a `range` rule a bound sits on: an integer field rounds a
+/// fractional bound INWARD (`minimum` up, `maximum` down), so the runtime rule
+/// accepts exactly the integers the declared real interval contains.
+#[cfg(feature = "validation")]
+#[derive(Clone, Copy)]
+enum Bound {
+    Min,
+    Max,
+}
+
+/// Inclusive value range of a Rust integer type, as `(min, max)`.
+/// `isize` / `usize` use the 64-bit range (the host cannot know the target's
+/// pointer width; a too-large literal still fails the target's own compile).
+#[cfg(feature = "validation")]
+const fn integer_range(kind: &str) -> Option<(i128, u128)> {
+    Some(match kind.as_bytes() {
+        b"i8" => (i8::MIN as i128, i8::MAX as u128),
+        b"i16" => (i16::MIN as i128, i16::MAX as u128),
+        b"i32" => (i32::MIN as i128, i32::MAX as u128),
+        b"i64" | b"isize" => (i64::MIN as i128, i64::MAX as u128),
+        b"i128" => (i128::MIN, i128::MAX as u128),
+        b"u8" => (0, u8::MAX as u128),
+        b"u16" => (0, u16::MAX as u128),
+        b"u32" => (0, u32::MAX as u128),
+        b"u64" | b"usize" => (0, u64::MAX as u128),
+        b"u128" => (0, u128::MAX),
+        _ => return None,
+    })
+}
+
+/// Render one `range` bound in the field's own type.
+///
+/// Integer fields get a range-checked, suffixed integer literal (a bound the
+/// type cannot hold is a compile error rather than a wrapping `as` cast);
+/// float fields keep the declared value; unknown types fall back to `as _`.
+#[cfg(feature = "validation")]
+fn numeric_some(
+    value: Option<f64>,
+    bound: Bound,
+    numeric_kind: Option<&str>,
+) -> Result<TokenStream, String> {
+    let Some(v) = value else {
+        return Ok(quote! { ::std::option::Option::None });
+    };
+    let Some(kind) = numeric_kind else {
         // Unknown numeric kind — last-resort `as _` and let the user
         // see a compiler error pointing at their field type.
-        || quote! { ::std::option::Option::Some(#v as _) },
-        |kind| {
-            let ty_ident = syn::Ident::new(kind, Span::call_site());
-            let is_float = matches!(kind, "f32" | "f64");
-            if !is_float && v.fract() == 0.0 && v.is_finite() {
-                // Convert via i64 first so negative literals survive the
-                // round-trip; the trailing `as #ty_ident` puts it into the
-                // exact integer type garde's range::apply needs.
-                #[allow(clippy::cast_possible_truncation)]
-                let i = v as i64;
-                quote! { ::std::option::Option::Some(#i as #ty_ident) }
-            } else {
-                quote! { ::std::option::Option::Some(#v as #ty_ident) }
-            }
-        },
-    )
+        return Ok(quote! { ::std::option::Option::Some(#v as _) });
+    };
+    let ty_ident = syn::Ident::new(kind, Span::call_site());
+    let Some((type_min, type_max)) = integer_range(kind) else {
+        return Ok(quote! { ::std::option::Option::Some(#v as #ty_ident) });
+    };
+    // `+ 0.0` turns a `-0.0` (`minimum = -0.5` rounded up) into `0.0`, so no
+    // `-0u32` literal is ever emitted.
+    let (key, rounded) = match bound {
+        Bound::Min => ("minimum", v.ceil() + 0.0),
+        Bound::Max => ("maximum", v.floor() + 0.0),
+    };
+    // Every integer type's MIN is a power of two (exact as f64), so the lower
+    // bound compares in the float domain; the upper one compares as `u128`
+    // (`as` saturates, hence the explicit 2^128 guard).
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let fits = rounded < 340_282_366_920_938_463_463_374_607_431_768_211_456.0
+        && rounded >= type_min as f64
+        && (rounded < 0.0 || rounded as u128 <= type_max);
+    if !fits {
+        return Err(format!(
+            "`{key} = {v}` does not fit the field type `{kind}` (range {type_min}..={type_max})"
+        ));
+    }
+    let literal: TokenStream = format!("{rounded:.0}{kind}")
+        .parse()
+        .expect("an integer literal with a type suffix is a valid token stream");
+    Ok(quote! { ::std::option::Option::Some(#literal) })
 }
 
 #[cfg(feature = "validation")]

@@ -48,7 +48,10 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
     let struct_name = &input.ident;
     let rename_all =
         crate::parser::extract_rename_all_for(&input.attrs, crate::parser::SerdeSide::Deserialize);
-    let strict = extract_strict(&input.attrs);
+    let strict = match extract_strict(&input.attrs) {
+        Ok(strict) => strict,
+        Err(err) => return err.to_compile_error(),
+    };
     let struct_default = extract_struct_default(&input.attrs);
 
     let fields = match &input.data {
@@ -72,6 +75,13 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
     };
 
     let cg = process_fields(fields.iter(), rename_all.as_deref(), strict, struct_default);
+    if let Some(err) = cg.errors.iter().cloned().reduce(|mut all, err| {
+        all.combine(err);
+        all
+    }) {
+        return err.to_compile_error();
+    }
+    let (impl_generics, ty_generics, where_clause) = impl_generics(input, &cg.parsed_types);
 
     // Wildcard arm of the field-dispatch `match`: strict mode rejects an
     // unknown field name; non-strict ignores it.  Replaces the trailing
@@ -106,10 +116,11 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
         assignments,
         post_loop,
         idents,
+        ..
     } = &cg;
 
     quote! {
-        impl<__VesperaS__: Send + Sync> vespera::multipart::TryFromMultipartWithState<__VesperaS__> for #struct_name {
+        impl #impl_generics vespera::multipart::TryFromMultipartWithState<__VesperaS__> for #struct_name #ty_generics #where_clause {
             async fn try_from_multipart_with_state(
                 __multipart__: &mut vespera::axum::extract::Multipart,
                 __state__: &__VesperaS__,
@@ -155,6 +166,51 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
             }
         }
     }
+}
+
+/// `impl` generics / type generics / `where` clause of the derived impl: the
+/// struct's own parameters plus the `__VesperaS__` state parameter, `Send` on
+/// every type parameter (the parse future holds the fields across `.await`)
+/// and a `TryFromFieldWithState` bound on each parsed type that mentions one.
+fn impl_generics(
+    input: &DeriveInput,
+    parsed_types: &[syn::Type],
+) -> (TokenStream, TokenStream, TokenStream) {
+    let mut generics = input.generics.clone();
+    let type_params: Vec<syn::Ident> = generics.type_params().map(|p| p.ident.clone()).collect();
+    generics
+        .params
+        .push(syn::parse_quote!(__VesperaS__: Send + Sync));
+    let where_clause = generics.make_where_clause();
+    for ident in &type_params {
+        where_clause
+            .predicates
+            .push(syn::parse_quote!(#ident: Send));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for ty in parsed_types.iter().filter(|ty| {
+        mentions_any(quote!(#ty), &type_params) && seen.insert(quote!(#ty).to_string())
+    }) {
+        where_clause.predicates.push(syn::parse_quote!(
+            #ty: vespera::multipart::TryFromFieldWithState<__VesperaS__>
+        ));
+    }
+    let (impl_generics, _, where_clause) = generics.split_for_impl();
+    let (_, ty_generics, _) = input.generics.split_for_impl();
+    (
+        quote!(#impl_generics),
+        quote!(#ty_generics),
+        quote!(#where_clause),
+    )
+}
+
+/// Whether `tokens` contains any of `idents` (a struct type parameter).
+fn mentions_any(tokens: TokenStream, idents: &[syn::Ident]) -> bool {
+    tokens.into_iter().any(|tree| match tree {
+        proc_macro2::TokenTree::Ident(ident) => idents.contains(&ident),
+        proc_macro2::TokenTree::Group(group) => mentions_any(group.stream(), idents),
+        _ => false,
+    })
 }
 
 #[cfg(test)]
@@ -352,6 +408,128 @@ mod tests {
         assert!(
             !process_derive(&input).to_string().contains("compile_error"),
             "an explicit `unlimited` opt-out must compile"
+        );
+    }
+
+    /// Pretty-printed derive output, or the bare `compile_error!` tokens.
+    fn derive_pretty(src: &str) -> String {
+        let input: syn::DeriveInput = syn::parse_str(src).unwrap();
+        let tokens = process_derive(&input);
+        syn::parse2::<syn::File>(tokens.clone())
+            .map_or_else(|_| tokens.to_string(), |file| prettyplease::unparse(&file))
+    }
+
+    /// Every `key = value` of `form_data` / `try_from_multipart` is read, in
+    /// any order — an unrelated key before it no longer aborts the walk.
+    #[rstest::rstest]
+    #[case::form_data_limit_after_field_name(
+        "multipart_form_data_limit_after_field_name",
+        r#"struct F { #[form_data(field_name = "upload", limit = "10MiB", default)] pub data: String }"#
+    )]
+    #[case::form_data_field_name_after_limit(
+        "multipart_form_data_field_name_after_limit",
+        r#"struct F { #[form_data(limit = "1KiB", field_name = "upload")] pub data: String }"#
+    )]
+    #[case::strict_after_rename_all(
+        "multipart_strict_after_rename_all",
+        r#"#[try_from_multipart(rename_all = "camelCase", strict)] struct F { pub user_name: String }"#
+    )]
+    fn every_attribute_key_is_read(#[case] name: &str, #[case] src: &str) {
+        insta::assert_snapshot!(name, derive_pretty(src));
+    }
+
+    /// A malformed or overflowing `limit` is a spanned compile error, never a
+    /// silent `None` (runtime default cap) or a macro panic.
+    #[rstest::rstest]
+    #[case::lowercase_unit(
+        "multipart_limit_lowercase_unit",
+        r#"struct F { #[form_data(limit = "10mb")] pub data: String }"#
+    )]
+    #[case::fraction(
+        "multipart_limit_fraction",
+        r#"struct F { #[form_data(limit = "1.5MiB")] pub data: String }"#
+    )]
+    #[case::overflow(
+        "multipart_limit_overflow",
+        r#"struct F { #[form_data(limit = "99999999999999999999GiB")] pub data: String }"#
+    )]
+    #[case::multiplier_overflow(
+        "multipart_limit_multiplier_overflow",
+        r#"struct F { #[form_data(limit = "18446744073709551615KiB")] pub data: String }"#
+    )]
+    #[case::non_string(
+        "multipart_limit_non_string",
+        r"struct F { #[form_data(limit = 10)] pub data: String }"
+    )]
+    #[case::valueless(
+        "multipart_limit_valueless",
+        r"struct F { #[form_data(limit)] pub data: String }"
+    )]
+    #[case::malformed_attribute(
+        "multipart_form_data_malformed",
+        r"struct F { #[form_data(limit = )] pub data: String }"
+    )]
+    #[case::malformed_container_attribute(
+        "multipart_try_from_multipart_malformed",
+        r"#[try_from_multipart(strict = )] struct F { pub data: String }"
+    )]
+    #[case::every_bad_field_is_reported(
+        "multipart_form_data_errors_combined",
+        r"struct F { #[form_data(limit = 1)] pub a: String, #[form_data(limit = 2)] pub b: String }"
+    )]
+    fn invalid_limit_is_a_compile_error(#[case] name: &str, #[case] src: &str) {
+        let out = derive_pretty(src);
+        assert!(out.contains("compile_error"), "{out}");
+        insta::assert_snapshot!(name, out);
+    }
+
+    /// `#[serde(skip)]` / `skip_deserializing` fields are never parsed from
+    /// the form and start from their default — not a `MissingField` error.
+    #[rstest::rstest]
+    #[case::skip(
+        "multipart_serde_skip",
+        "struct F { pub name: String, #[serde(skip)] pub cache: Vec<u8> }"
+    )]
+    #[case::skip_deserializing_with_default_fn(
+        "multipart_serde_skip_deserializing_default_fn",
+        r#"struct F { #[serde(skip_deserializing, default = "seed")] pub n: u32 }"#
+    )]
+    fn skipped_fields_are_defaulted(#[case] name: &str, #[case] src: &str) {
+        let out = derive_pretty(src);
+        assert!(
+            !out.contains("\"cache\"") && !out.contains("\"n\""),
+            "{out}"
+        );
+        insta::assert_snapshot!(name, out);
+    }
+
+    /// Generic structs keep their parameters (and get the parse bounds).
+    #[rstest::rstest]
+    #[case::type_param(
+        "multipart_generic_type_param",
+        "struct F<T> { pub value: T, pub items: Vec<T>, pub name: String }"
+    )]
+    #[case::bounded_with_where(
+        "multipart_generic_where_clause",
+        "struct F<T: Clone, const N: usize> where T: Default { #[serde(default)] pub value: Option<T> }"
+    )]
+    fn generic_structs_are_supported(#[case] name: &str, #[case] src: &str) {
+        insta::assert_snapshot!(name, derive_pretty(src));
+    }
+
+    #[rstest::rstest]
+    #[case::bare("T", true)]
+    #[case::nested_group("Wrapper<[T; 2]>", true)]
+    #[case::path_with_punct("std::string::String", false)]
+    #[case::other_group("[u8; 4]", false)]
+    fn mentions_any_finds_type_params(#[case] ty: &str, #[case] expected: bool) {
+        let tokens: TokenStream = ty.parse().unwrap();
+        assert_eq!(
+            mentions_any(
+                tokens,
+                &[syn::Ident::new("T", proc_macro2::Span::call_site())]
+            ),
+            expected
         );
     }
 

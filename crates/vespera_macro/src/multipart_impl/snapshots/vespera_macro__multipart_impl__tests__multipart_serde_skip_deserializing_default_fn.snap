@@ -1,0 +1,31 @@
+---
+source: crates/vespera_macro/src/multipart_impl/mod.rs
+assertion_line: 494
+expression: out
+---
+impl<
+    __VesperaS__: Send + Sync,
+> vespera::multipart::TryFromMultipartWithState<__VesperaS__> for F {
+    async fn try_from_multipart_with_state(
+        __multipart__: &mut vespera::axum::extract::Multipart,
+        __state__: &__VesperaS__,
+    ) -> std::result::Result<Self, vespera::multipart::TypedMultipartError> {
+        while let std::option::Option::Some(__field__) = __multipart__
+            .next_field()
+            .await
+            .map_err(vespera::multipart::TypedMultipartError::from)?
+        {
+            vespera::multipart::register_multipart_part()?;
+            let __field__ = vespera::multipart::MeteredField::__from_field(__field__);
+            let __field_name__ = match __field__.name() {
+                std::option::Option::Some("") | std::option::Option::None => continue,
+                std::option::Option::Some(__name__) => __name__,
+            };
+            match __field_name__ {
+                _ => {}
+            }
+        }
+        let n: u32 = (seed)();
+        std::result::Result::Ok(Self { n })
+    }
+}

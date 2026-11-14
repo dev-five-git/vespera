@@ -1,0 +1,39 @@
+---
+source: crates/vespera_macro/src/garde_emit/tests.rs
+assertion_line: 563
+expression: out
+---
+#[allow(
+    clippy::all,
+    clippy::pedantic,
+    clippy::nursery,
+    unused_variables,
+    unused_mut,
+    unused_parens,
+    non_upper_case_globals,
+)]
+impl ::vespera::__validation::garde::Validate for U {
+    type Context = ();
+    fn validate_into(
+        &self,
+        __garde_user_ctx: &Self::Context,
+        mut __garde_path: &mut dyn ::core::ops::FnMut(
+        ) -> ::vespera::__validation::garde::Path,
+        __garde_report: &mut ::vespera::__validation::garde::Report,
+    ) {
+        let _ = __garde_user_ctx;
+        let Self { tags } = self;
+        {
+            let mut __garde_path = ::vespera::__validation::garde::util::nested_path!(
+                __garde_path, "tags"
+            );
+            let __garde_binding = &*tags;
+            if let ::std::result::Result::Err(__garde_error) = (::vespera::__validation::garde::rules::length::simple::apply)(
+                &*__garde_binding,
+                (1usize, ::core::primitive::usize::MAX),
+            ) {
+                __garde_report.append(__garde_path(), __garde_error);
+            }
+        }
+    }
+}

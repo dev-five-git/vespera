@@ -253,8 +253,30 @@ async fn limited_handler(TypedMultipart(req): TypedMultipart<LimitedReq>) -> Jso
     })
 }
 
+/// A generic form whose `form_data` / `try_from_multipart` lists carry
+/// several keys (each one read) and whose `#[serde(skip)]` field is never
+/// read from the form.
+#[derive(Multipart)]
+#[try_from_multipart(rename_all = "camelCase", strict)]
+struct GenericReq<T> {
+    #[form_data(field_name = "payload", limit = "4B")]
+    value: T,
+    #[serde(skip)]
+    skipped_cache: Vec<u8>,
+}
+
+async fn generic_handler(
+    TypedMultipart(req): TypedMultipart<GenericReq<String>>,
+) -> Json<TextResult> {
+    assert_eq!(req.skipped_cache, Vec::<u8>::new());
+    Json(TextResult {
+        text_len: u64::try_from(req.value.len()).unwrap_or(u64::MAX),
+    })
+}
+
 fn multipart_router() -> Router {
     Router::new()
+        .route("/generic", post(generic_handler))
         .route("/upload", post(upload_handler))
         .route("/capped-upload", post(capped_upload_handler))
         .route("/validated-multipart", post(validated_multipart_handler))
@@ -768,4 +790,32 @@ async fn malformed_multipart_body_exposes_stream_source_error() {
         TypedMultipartError::InvalidRequestBody { .. }
     ));
     assert!(std::error::Error::source(&error).is_some());
+}
+
+#[rstest::rstest]
+// Within `limit = "4B"` (read AFTER `field_name`) → parsed.
+#[case::within_limit("payload", b"abcd".as_slice(), 200)]
+// Over the 4-byte limit → 413: the limit is no longer dropped.
+#[case::over_limit("payload", b"abcde".as_slice(), 413)]
+// `strict` (read AFTER `rename_all`) rejects an unknown part …
+#[case::strict_unknown("other", b"x".as_slice(), 400)]
+// … including the skipped field's own name (serde never reads it either).
+#[case::skipped_field_is_unknown("skippedCache", b"x".as_slice(), 400)]
+fn generic_multipart_honours_every_attribute_key(
+    #[case] field: &str,
+    #[case] value: &[u8],
+    #[case] status: u64,
+) {
+    install_router_once();
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let wire = encode_multipart_text("----GenericBoundary", "/generic", field, value);
+    let (header, body) = decode_wire(&dispatch_from_bytes(wire, &runtime));
+    assert_eq!(header["status"].as_u64(), Some(status), "header={header:#}");
+    if status == 200 {
+        let json: Value = ::serde_json::from_slice(&body).expect("response is JSON");
+        assert_eq!(json["text_len"].as_u64(), Some(4));
+    }
 }
