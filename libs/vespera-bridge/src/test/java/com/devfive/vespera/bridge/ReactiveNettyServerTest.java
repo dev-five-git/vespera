@@ -138,7 +138,7 @@ class ReactiveNettyServerTest {
     }
 
     @Test
-    void completedResponseAfterADisconnectIsHarmless() throws Exception {
+    void aSlowDispatchIsWrittenToTheStillOpenConnection() throws Exception {
         CompletableFuture<byte[]> nativeFuture = new CompletableFuture<>();
         transport.pending = nativeFuture;
         try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), server.port())) {
@@ -155,5 +155,44 @@ class ReactiveNettyServerTest {
             byte[] head = in.readNBytes(12);
             assertEquals("HTTP/1.1 200", new String(head, StandardCharsets.US_ASCII));
         }
+    }
+
+    /**
+     * The native side completes the response although the client already
+     * disconnected (it raced the cancel): nothing is written, no second
+     * event is reported, nothing throws.
+     */
+    @Test
+    void completedResponseAfterADisconnectIsHarmless() throws Exception {
+        // A native future that ignores the cancel, like a dispatch that
+        // already finished when the cancel arrived.
+        CompletableFuture<byte[]> nativeFuture = new CompletableFuture<>() {
+            @Override
+            public boolean cancel(boolean mayInterruptIfRunning) {
+                return false;
+            }
+        };
+        transport.pending = nativeFuture;
+        try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), server.port())) {
+            socket.getOutputStream().write(
+                    "GET /slow HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\n\r\n"
+                            .getBytes(StandardCharsets.US_ASCII));
+            long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (transport.requests.isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+            assertEquals(1, transport.requests.size(), "dispatched");
+        } // the client goes away first
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (events.isEmpty() && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertEquals(1, events.size(), "the disconnect is reported");
+        assertEquals(VesperaReactiveProxyHandler.CLIENT_CLOSED_REQUEST, events.get(0).status());
+
+        assertTrue(nativeFuture.complete(responseWire(200, "{}", "late")), "completed after the disconnect");
+        Thread.sleep(200);
+        assertEquals(1, events.size(), "no second outcome for the late response");
+        assertEquals(VesperaReactiveProxyHandler.CLIENT_CLOSED_REQUEST, events.get(0).status());
     }
 }

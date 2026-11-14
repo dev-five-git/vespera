@@ -278,7 +278,8 @@ class BridgeHardeningTest {
 
         org.springframework.http.ResponseEntity<?> head =
                 WireResponseWriter.buildAsyncResponseEntityFromWire(wire, "HEAD", null);
-        assertEquals(0, ((byte[]) head.getBody()).length);
+        // No body object at all: nothing for a message converter to size.
+        assertNull(head.getBody());
         assertEquals(List.of("5"), List.of(head.getHeaders().getFirst("Content-Length")));
     }
 }

@@ -5,8 +5,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.devfive.vespera.bridge.DispatchMode;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import org.springframework.http.HttpMethod;
@@ -15,10 +17,13 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 
 @SpringBootTest(
-        classes = VesperaHttpTestApplication.class,
+        classes = {VesperaHttpTestApplication.class, DispatchRecorder.Config.class},
         webEnvironment = WebEnvironment.RANDOM_PORT,
         properties = "vespera.bridge.dispatch-mode=bidirectional-streaming")
 class VesperaProxyControllerStreamingHttpTest extends AbstractVesperaHttpIntegrationTest {
+
+    @Autowired
+    private DispatchRecorder recorder;
 
     @Test
     void bodylessGetUsesResponseOnlyStreaming() {
@@ -29,6 +34,7 @@ class VesperaProxyControllerStreamingHttpTest extends AbstractVesperaHttpIntegra
         assertEquals("ok", new String(response.getBody(), StandardCharsets.UTF_8));
         assertNotNull(response.getHeaders().getContentType());
         assertTrue(response.getHeaders().getContentType().isCompatibleWith(MediaType.TEXT_PLAIN));
+        assertEquals(DispatchMode.STREAMING, recorder.modeOf(response));
     }
 
     @Test
@@ -49,5 +55,6 @@ class VesperaProxyControllerStreamingHttpTest extends AbstractVesperaHttpIntegra
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertArrayEquals(payload, response.getBody());
+        assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING, recorder.modeOf(response));
     }
 }

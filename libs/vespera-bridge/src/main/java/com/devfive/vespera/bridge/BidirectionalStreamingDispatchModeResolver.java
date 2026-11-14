@@ -24,9 +24,10 @@ import jakarta.servlet.http.HttpServletRequest;
  * request bodies stream whenever one can exist), and the Spring
  * endpoints exactly mirror the URLs in vespera's generated
  * {@code openapi.json}.  No path-based mode discrimination means no
- * surprise divergence from the Rust router's view, and (unlike DIRECT
- * in the smart default) the Rust handler is never re-run on response
- * overflow.
+ * surprise divergence from the Rust router's view, and no response is
+ * ever held in a fixed-size buffer (DIRECT in the smart default keeps an
+ * overflowing response in the native stash and fetches or streams it from
+ * there; the handler runs once either way).
  *
  * <p>Replace this with a custom {@link DispatchModeResolver} bean if
  * your application needs different modes for different routes

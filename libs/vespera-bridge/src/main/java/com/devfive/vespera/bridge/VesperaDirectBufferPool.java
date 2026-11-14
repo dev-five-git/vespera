@@ -116,8 +116,25 @@ final class VesperaDirectBufferPool {
     }
 
     private static void rejectPooledFallback(String reason, int required) {
-        throw new BufferTooSmallException(required, reason
+        throw new PooledFallbackRejectedException(required, reason
                 + " cannot use pooled DIRECT under vespera.direct.oversize-policy=throw");
+    }
+
+    /**
+     * {@code vespera.direct.oversize-policy=throw} refused the heap fallback
+     * (a virtual thread, or a request larger than the pool cap) <em>before
+     * anything was dispatched</em>: no handler ran, and
+     * {@link #requiredSize()} is the <em>request</em> size, not a response
+     * size.  A {@link BufferTooSmallException} for callers that already
+     * catch that; the proxy streams such a request instead of treating it
+     * as a response overflow.
+     */
+    static final class PooledFallbackRejectedException extends BufferTooSmallException {
+        private static final long serialVersionUID = 1L;
+
+        PooledFallbackRejectedException(int requestSize, String message) {
+            super(requestSize, message);
+        }
     }
 
     /**
@@ -301,6 +318,10 @@ final class VesperaDirectBufferPool {
         }
     }
 
+
+    static int directBodyScratchCapacityForTest() {
+        return DIRECT_BODY_SCRATCH.get().length;
+    }
 
     static boolean directPoolPresentForTest() {
         return DIRECT_POOL.get() != null;

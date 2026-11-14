@@ -37,12 +37,18 @@ import org.springdoc.core.customizers.OpenApiCustomizer;
  *   <li><strong>Components</strong> are added by name; an identical component
  *       is shared, a different one under a clashing name is renamed
  *       {@code <label>_<name>} ({@code label} = {@code vespera} for the default
- *       app, the app name otherwise) and every {@code $ref} to it rewritten.</li>
+ *       app, the app name otherwise) and every {@code $ref} to it rewritten.
+ *       "Identical" is decided after those renames: a component that only
+ *       matches springdoc's by text but refers to a renamed one is renamed
+ *       too.</li>
  *   <li>A named app's operations gain a required app-selection header
  *       parameter ({@code vespera.bridge.app-header}, single-value enum) so
  *       "Try it out" reaches that app.</li>
  *   <li>The Rust document's top-level {@code security} is copied onto its
- *       operations that declare none; its tags are added when missing.</li>
+ *       operations that declare none; without one, those operations get an
+ *       explicit {@code security: []} when springdoc's document has a
+ *       top-level requirement (public Rust routes stay public); its tags are
+ *       added when missing.</li>
  * </ul>
  */
 final class VesperaOpenApiMerger implements OpenApiCustomizer {
@@ -108,17 +114,14 @@ final class VesperaOpenApiMerger implements OpenApiCustomizer {
         Components existing = openApi.getComponents() == null ? new Components() : openApi.getComponents();
         Map<String, String> refRenames = new HashMap<>();
         if (spec.get("components") instanceof ObjectNode components) {
-            for (Section section : SECTIONS) {
-                if (components.get(section.key()) instanceof ObjectNode entries) {
-                    resolveNames(mapper, section, entries, section.get().apply(existing), label, refRenames);
-                }
-            }
+            resolveNames(mapper, components, existing, label, refRenames);
         }
         if (!refRenames.isEmpty()) {
             rewriteRefs(spec, refRenames);
             renameSecurityRequirements(spec, securitySchemeRenames(refRenames));
         }
-        prepareOperations(spec, named ? app : null);
+        boolean hostSecured = openApi.getSecurity() != null && !openApi.getSecurity().isEmpty();
+        prepareOperations(spec, named ? app : null, hostSecured);
 
         OpenAPI vespera = mapper.treeToValue(spec, OpenAPI.class);
         if (vespera.getComponents() != null) {
@@ -133,37 +136,99 @@ final class VesperaOpenApiMerger implements OpenApiCustomizer {
         mergeTags(openApi, vespera.getTags());
     }
 
-    /**
-     * Rename the entries of {@code entries} whose name springdoc already uses
-     * for a different component; drop those that are identical (shared).
-     */
-    private static void resolveNames(ObjectMapper mapper, Section section, ObjectNode entries,
-                                     Map<String, ?> existing, String label, Map<String, String> refRenames) {
-        if (existing == null || existing.isEmpty()) {
-            return;
+    /** A Rust component whose name springdoc's document already uses. */
+    private static final class Clash {
+        final Section section;
+        final ObjectNode entries;
+        final String name;
+        final JsonNode existing;
+        String renamedTo;
+
+        Clash(Section section, ObjectNode entries, String name, JsonNode existing) {
+            this.section = section;
+            this.entries = entries;
+            this.name = name;
+            this.existing = existing;
         }
-        Map<String, JsonNode> renamed = new LinkedHashMap<>();
-        Iterator<Map.Entry<String, JsonNode>> it = entries.properties().iterator();
-        while (it.hasNext()) {
-            Map.Entry<String, JsonNode> entry = it.next();
-            String name = entry.getKey();
-            Object clash = existing.get(name);
-            if (clash == null) {
+    }
+
+    /**
+     * Rename the Rust components whose name springdoc already uses for a
+     * different component; drop those that are identical (shared).
+     *
+     * <p>"Identical" is judged on the component <em>after</em> the renames
+     * are applied to it, repeated until no new rename appears: a Rust
+     * {@code Page} that matches springdoc's {@code Page} textually but whose
+     * {@code $ref} to {@code Item} now points at the renamed
+     * {@code vespera_Item} is a different component, so it is renamed as
+     * well instead of silently adopting springdoc's {@code Item}.
+     */
+    private static void resolveNames(ObjectMapper mapper, ObjectNode components, Components existing,
+                                     String label, Map<String, String> refRenames) {
+        List<Clash> clashes = new ArrayList<>();
+        for (Section section : SECTIONS) {
+            Map<String, ?> current = section.get().apply(existing);
+            if (current == null || current.isEmpty()
+                    || !(components.get(section.key()) instanceof ObjectNode entries)) {
                 continue;
             }
-            it.remove();
-            if (mapper.valueToTree(clash).equals(entry.getValue())) {
-                continue; // identical: reuse springdoc's component
+            for (Map.Entry<String, JsonNode> entry : entries.properties()) {
+                Object clash = current.get(entry.getKey());
+                if (clash != null) {
+                    clashes.add(new Clash(section, entries, entry.getKey(), mapper.valueToTree(clash)));
+                }
             }
-            String candidate = label + "_" + name;
-            for (int n = 2; existing.containsKey(candidate) || entries.has(candidate)
-                    || renamed.containsKey(candidate); n++) {
-                candidate = label + "_" + name + "_" + n;
-            }
-            renamed.put(candidate, entry.getValue());
-            refRenames.put(ref(section.key(), name), ref(section.key(), candidate));
         }
-        renamed.forEach(entries::set);
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            for (Clash clash : clashes) {
+                if (clash.renamedTo != null) {
+                    continue;
+                }
+                JsonNode candidate = clash.entries.get(clash.name).deepCopy();
+                if (!refRenames.isEmpty()) {
+                    rewriteRefs(candidate, refRenames);
+                }
+                if (candidate.equals(clash.existing)) {
+                    continue; // identical (so far): reuse springdoc's component
+                }
+                clash.renamedTo = freeName(clash, clashes, section(existing, clash.section), label);
+                refRenames.put(ref(clash.section.key(), clash.name), ref(clash.section.key(), clash.renamedTo));
+                changed = true;
+            }
+        }
+        for (Clash clash : clashes) {
+            JsonNode value = clash.entries.remove(clash.name);
+            if (clash.renamedTo != null) {
+                clash.entries.set(clash.renamedTo, value);
+            }
+        }
+    }
+
+    private static Map<String, ?> section(Components components, Section section) {
+        return section.get().apply(components);
+    }
+
+    /** {@code <label>_<name>}, suffixed {@code _2}, {@code _3}, ... until no name in the section clashes. */
+    private static String freeName(Clash clash, List<Clash> clashes, Map<String, ?> existing, String label) {
+        String candidate = label + "_" + clash.name;
+        for (int n = 2; isTaken(candidate, clash, clashes, existing); n++) {
+            candidate = label + "_" + clash.name + "_" + n;
+        }
+        return candidate;
+    }
+
+    private static boolean isTaken(String candidate, Clash clash, List<Clash> clashes, Map<String, ?> existing) {
+        if (existing.containsKey(candidate) || clash.entries.has(candidate)) {
+            return true;
+        }
+        for (Clash other : clashes) {
+            if (other.section == clash.section && candidate.equals(other.renamedTo)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String ref(String section, String name) {
@@ -261,13 +326,18 @@ final class VesperaOpenApiMerger implements OpenApiCustomizer {
     }
 
     /**
-     * Copy the document-level {@code security} onto operations without one and,
-     * for a named app, add the app-selection header parameter.
+     * Copy the document-level {@code security} onto operations without one
+     * (or, when the Rust document has none but {@code hostSecured} — springdoc's
+     * document declares a top-level requirement that would otherwise apply
+     * to them — set {@code security: []}) and, for a named app, add the
+     * app-selection header parameter.
      */
-    private void prepareOperations(ObjectNode spec, String namedApp) {
+    private void prepareOperations(ObjectNode spec, String namedApp, boolean hostSecured) {
         JsonNode security = spec.get("security");
         boolean copySecurity = security instanceof ArrayNode array && !array.isEmpty();
-        if (!(spec.get("paths") instanceof ObjectNode paths) || (!copySecurity && namedApp == null)) {
+        boolean markPublic = !copySecurity && hostSecured;
+        if (!(spec.get("paths") instanceof ObjectNode paths)
+                || (!copySecurity && !markPublic && namedApp == null)) {
             return;
         }
         for (JsonNode item : paths) {
@@ -280,6 +350,8 @@ final class VesperaOpenApiMerger implements OpenApiCustomizer {
                 }
                 if (copySecurity && !operation.has("security")) {
                     operation.set("security", security.deepCopy());
+                } else if (markPublic && !operation.has("security")) {
+                    operation.putArray("security");
                 }
                 if (namedApp != null) {
                     ArrayNode parameters = operation.get("parameters") instanceof ArrayNode list

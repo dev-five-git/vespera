@@ -108,7 +108,19 @@ public final class VesperaClient {
 
     VesperaClient(Transport transport, @Nullable String appName) {
         this.transport = Objects.requireNonNull(transport, "transport");
-        this.appName = VesperaWireCodec.normalizedAppName(appName);
+        this.appName = clientAppName(appName);
+    }
+
+    /**
+     * The app name a client / request reports and sends: trimmed, and
+     * {@code null} for the default app ({@code null}, blank or
+     * {@code "_default"}).
+     */
+    static @Nullable String clientAppName(@Nullable String appName) {
+        String normalized = VesperaWireCodec.normalizedAppName(appName);
+        // A literal, not AppNameResolver.DEFAULT_APP: the client must not
+        // touch the servlet-typed resolver interface.
+        return "_default".equals(normalized) ? null : normalized;
     }
 
     /** A client for the default app (registered with {@code register_app} / {@code jni_app!}). */

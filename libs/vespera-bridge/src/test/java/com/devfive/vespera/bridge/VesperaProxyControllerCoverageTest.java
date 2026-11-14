@@ -3,6 +3,7 @@ package com.devfive.vespera.bridge;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -180,7 +181,8 @@ class VesperaProxyControllerCoverageTest {
 
         MockHttpServletResponse noContent = new MockHttpServletResponse();
         WireResponseWriter.writeWireResponse(heapWire(204, "ignored"), noContent, "GET");
-        assertEquals(0, noContent.getContentLength());
+        // Unset, not an explicit `Content-Length: 0` (the mock reports 0 for both).
+        assertNull(noContent.getHeader("Content-Length"));
         assertEquals(0, noContent.getContentAsByteArray().length);
 
         assertTrue(WireResponseWriter.responseStatusPermitsBody(99));
@@ -188,7 +190,7 @@ class VesperaProxyControllerCoverageTest {
         MockHttpServletResponse informational = new MockHttpServletResponse();
         WireResponseWriter.writeWireResponse(
                 heapWire(199, "ignored"), informational, "GET");
-        assertEquals(0, informational.getContentLength());
+        assertNull(informational.getHeader("Content-Length"));
         assertEquals(0, informational.getContentAsByteArray().length);
     }
 
@@ -279,35 +281,6 @@ class VesperaProxyControllerCoverageTest {
     }
 
     @Test
-    void virtualThreadOverflowWithoutRetryWritesActionable500() throws Exception {
-        previousOversizePolicy = System.getProperty("vespera.direct.oversize-policy");
-        System.setProperty("vespera.direct.oversize-policy", "throw");
-        VesperaProxyController controller = new VesperaProxyController(
-                request -> null,
-                request -> DispatchMode.DIRECT,
-                Runnable::run,
-                false);
-        MockHttpServletResponse response = new MockHttpServletResponse();
-
-        controller.dispatchDirectMode(
-                response,
-                null,
-                "GET",
-                "/health",
-                "",
-                sink -> {},
-                VesperaWireCodec.EMPTY_BODY,
-                Boolean.TRUE);
-
-        assertEquals(500, response.getStatus());
-        assertEquals("text/plain; charset=utf-8", response.getContentType());
-        String body = response.getContentAsString(StandardCharsets.UTF_8);
-        assertTrue(body.startsWith("vespera DIRECT overflow: response needs "), body);
-        assertTrue(body.endsWith("bytes; route this request via BIDIRECTIONAL_STREAMING"), body);
-        assertEquals(response.getContentAsByteArray().length, response.getContentLength());
-    }
-
-    @Test
     void directBodyScratchGrowsResetsAndShrinksWhilePreservingBytes() throws Exception {
         VesperaDirectBufferPool.clearCurrentThreadBuffers();
         byte[] large = new byte[300 * 1024];
@@ -315,13 +288,18 @@ class VesperaProxyControllerCoverageTest {
         ByteArrayOutputStream largeOut = new ByteArrayOutputStream();
         VesperaDirectBufferPool.writeDirectBody(ByteBuffer.wrap(large), largeOut);
         assertArrayEquals(large, largeOut.toByteArray());
+        assertEquals(large.length, VesperaDirectBufferPool.directBodyScratchCapacityForTest(), "grown");
 
         for (int i = 0; i < 8; i++) {
+            // Retained (above the 256 KiB retain cap) for 7 small writes...
+            assertEquals(large.length, VesperaDirectBufferPool.directBodyScratchCapacityForTest(), "write " + i);
             ByteArrayOutputStream smallOut = new ByteArrayOutputStream();
             VesperaDirectBufferPool.writeDirectBody(
                     ByteBuffer.wrap(new byte[] {(byte) i}), smallOut);
             assertArrayEquals(new byte[] {(byte) i}, smallOut.toByteArray());
         }
+        // ...and shrunk back to the 16 KiB initial size by the 8th.
+        assertEquals(16 * 1024, VesperaDirectBufferPool.directBodyScratchCapacityForTest());
     }
 
     @Test

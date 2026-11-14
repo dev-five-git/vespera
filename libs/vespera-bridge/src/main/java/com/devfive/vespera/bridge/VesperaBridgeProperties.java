@@ -645,7 +645,8 @@ public class VesperaBridgeProperties {
          * don't) when no native value was configured explicitly (this
          * property, {@code -Dvespera.limits.maxBufferedResponseBytes},
          * {@code VESPERA_MAX_BUFFERED_RESPONSE_BYTES} or a programmatic
-         * {@code configureLimits}): Rust then stops collecting an oversized
+         * {@code configureLimits}, before or after {@code init}, including a
+         * value an earlier context already forwarded): Rust then stops collecting an oversized
          * SYNC / ASYNC response before it is allocated on either heap.
          */
         void apply(long bridgeResponseCap) {

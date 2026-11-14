@@ -3,6 +3,7 @@ package kr.go.demo;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.devfive.vespera.bridge.DispatchMode;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -15,6 +16,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -29,10 +31,13 @@ import org.springframework.http.ResponseEntity;
  * without re-running the handler.
  */
 @SpringBootTest(
-        classes = VesperaHttpTestApplication.class,
+        classes = {VesperaHttpTestApplication.class, DispatchRecorder.Config.class},
         webEnvironment = WebEnvironment.RANDOM_PORT,
         properties = "vespera.bridge.dispatch-mode=smart")
 class StreamingRobustnessHttpTest extends AbstractVesperaHttpIntegrationTest {
+
+    @Autowired
+    private DispatchRecorder recorder;
 
     @LocalServerPort
     private int port;
@@ -98,9 +103,14 @@ class StreamingRobustnessHttpTest extends AbstractVesperaHttpIntegrationTest {
         ResponseEntity<byte[]> big = exchange(HttpMethod.GET, "/stream/big", null, null);
         assertEquals(HttpStatus.OK, big.getStatusCode());
         assertEquals(200 * 1024, requireBody(big).length);
+        assertEquals(DispatchMode.DIRECT, recorder.modeOf(big), "overflow fetched from the stash");
         ResponseEntity<byte[]> huge = exchange(HttpMethod.GET, "/stream/huge", null, null);
         assertEquals(HttpStatus.OK, huge.getStatusCode());
         assertEquals(5 * 1024 * 1024, requireBody(huge).length);
+        // DIRECT the first time (streamed from the stash); a route that already
+        // overflowed beyond the pool cap is streamed up front.
+        DispatchMode hugeMode = recorder.modeOf(huge);
+        assertTrue(hugeMode == DispatchMode.DIRECT || hugeMode == DispatchMode.STREAMING, String.valueOf(hugeMode));
         int[] after = runs();
         assertEquals(before[0] + 1, after[0], "200 KiB handler ran once");
         assertEquals(before[1] + 1, after[1], "5 MiB handler ran once");

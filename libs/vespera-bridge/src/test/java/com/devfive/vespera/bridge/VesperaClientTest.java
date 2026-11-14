@@ -294,9 +294,8 @@ class VesperaClientTest {
 
     @Test
     void nativeTransportRequiresAnInitializedLibrary() {
-        if (VesperaBridge.isInitialized()) {
-            return;
-        }
+        org.junit.jupiter.api.Assumptions.assumeFalse(VesperaBridge.isInitialized(),
+                "another test in this JVM loaded a native library");
         VesperaClientException e =
                 assertThrows(VesperaClientException.class, () -> VesperaClient.create().get("/x").send());
         assertTrue(e.getMessage().contains("not initialized"));
@@ -413,6 +412,74 @@ class VesperaClientTest {
         VesperaClientException e = assertThrows(VesperaClientException.class, () -> failing.post("/s")
                 .body(new ByteArrayInputStream(new byte[1]), null).send());
         assertInstanceOf(IOException.class, e.getCause());
+    }
+
+    /**
+     * The native side swallows an {@link IOException} from the request body
+     * stream (it only ends the Rust request body with an error, and the
+     * handler answers some status): the client reports it as a transport
+     * failure instead of returning that unrelated response.
+     */
+    @Test
+    void aFailingRequestBodyStreamIsATransportFailure() {
+        IOException broken = new IOException("disk gone");
+        VesperaClient swallowing = new VesperaClient(new FakeTransport() {
+            @Override
+            public byte[] dispatchStreaming(byte[] header, InputStream in, OutputStream out) {
+                byte[] chunk = new byte[16];
+                try {
+                    while (in.read(chunk, 0, chunk.length) >= 0) {
+                        // keep pulling, like the native producer
+                    }
+                } catch (IOException e) {
+                    // cleared natively: the handler sees a body error
+                }
+                return responseWire(400, "{}", null, "Failed to buffer the request body");
+            }
+        }, null);
+        InputStream failing = new InputStream() {
+            private boolean first = true;
+
+            @Override
+            public int read() throws IOException {
+                throw broken;
+            }
+
+            @Override
+            public int read(byte[] b, int off, int len) throws IOException {
+                if (first) {
+                    first = false;
+                    b[off] = 'x';
+                    return 1;
+                }
+                throw broken;
+            }
+        };
+        VesperaClientException e = assertThrows(VesperaClientException.class,
+                () -> swallowing.post("/s").body(failing, null).send());
+        assertSame(broken, e.getCause());
+
+        // Same through sendAsync(executor), which runs send() there.
+        InputStream failingAgain = new InputStream() {
+            @Override
+            public int read() throws IOException {
+                throw broken;
+            }
+        };
+        ExecutionException async = assertThrows(ExecutionException.class, () -> swallowing.post("/s")
+                .body(failingAgain, null).sendAsync(Runnable::run).get());
+        assertInstanceOf(VesperaClientException.class, async.getCause());
+        assertSame(broken, async.getCause().getCause());
+    }
+
+    @Test
+    void theDefaultAppNameReportsAsNull() {
+        assertNull(client.forApp("_default").appName());
+        assertNull(client.forApp(" _default ").appName());
+        assertNull(client.get("/a").app("_default").appName());
+        assertEquals("admin", client.forApp(" admin ").appName());
+        assertEquals("admin", client.get("/a").app("admin").appName());
+        assertEquals("VesperaClient{app=_default}", client.forApp("_default").toString());
     }
 
     @Test

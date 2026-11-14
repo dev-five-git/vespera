@@ -78,6 +78,8 @@ val isolatedJvmTest = tasks.register<Test>("isolatedJvmTest") {
     testClassesDirs = sourceSets.test.get().output.classesDirs
     classpath = sourceSets.test.get().runtimeClasspath
     useJUnitPlatform { includeTags(isolatedJvmTag) }
+    // One JVM per class: each one fixes a different process-wide setting.
+    forkEvery = 1
     testLogging.showStandardStreams = true
 }
 tasks.check { dependsOn(isolatedJvmTest) }

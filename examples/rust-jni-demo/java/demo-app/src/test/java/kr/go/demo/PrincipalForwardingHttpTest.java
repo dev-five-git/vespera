@@ -2,12 +2,14 @@ package kr.go.demo;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import com.devfive.vespera.bridge.DispatchMode;
 import jakarta.servlet.Filter;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletRequestWrapper;
 import java.nio.charset.StandardCharsets;
 import java.security.Principal;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -30,9 +32,16 @@ import org.springframework.http.ResponseEntity;
  * by wrapping it so {@code getUserPrincipal()} returns that user.
  */
 @SpringBootTest(
-        classes = {VesperaHttpTestApplication.class, PrincipalForwardingHttpTest.Authenticate.class},
+        classes = {
+            VesperaHttpTestApplication.class,
+            PrincipalForwardingHttpTest.Authenticate.class,
+            DispatchRecorder.Config.class
+        },
         webEnvironment = WebEnvironment.RANDOM_PORT)
 class PrincipalForwardingHttpTest extends AbstractVesperaHttpIntegrationTest {
+
+    @Autowired
+    private DispatchRecorder recorder;
 
     @TestConfiguration(proxyBeanMethods = false)
     static class Authenticate {
@@ -81,6 +90,7 @@ class PrincipalForwardingHttpTest extends AbstractVesperaHttpIntegrationTest {
         ResponseEntity<byte[]> response = get("alice", null, null);
         assertEquals(200, response.getStatusCode().value(), text(response));
         assertEquals("alice [] ", text(response));
+        assertEquals(DispatchMode.DIRECT, recorder.modeOf(response));
     }
 
     @Test
@@ -88,6 +98,7 @@ class PrincipalForwardingHttpTest extends AbstractVesperaHttpIntegrationTest {
         ResponseEntity<byte[]> response = get("bob", "application/x-ndjson", null);
         assertEquals(200, response.getStatusCode().value(), text(response));
         assertEquals("bob [] ", text(response));
+        assertEquals(DispatchMode.STREAMING, recorder.modeOf(response));
     }
 
     @Test
