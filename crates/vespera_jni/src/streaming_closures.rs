@@ -426,14 +426,18 @@ pub fn make_pull_closure(
         let result: jni::errors::Result<RequestChunk> =
             with_cached_daemon_env_no_frame(&jvm, |env| {
                 let n = call_input_stream_read(env, &stream, &buf)?;
-                // The cached fast path calls `read()` via `call_method_unchecked`,
-                // which does NOT surface a thrown exception as `Err` — it returns a
-                // garbage `n` with the exception left pending. A thrown `read()`
-                // must ABORT the request body so a truncated upload is rejected,
-                // and must never be misread as EOF (`n < 0`) or a chunk. (The
-                // checked fallback in `call_input_stream_read` already aborts via
-                // `?`; acting on the pending exception here gives the unchecked
-                // path identical semantics instead of interpreting the garbage `n`.)
+                // A thrown `read()` must ABORT the request body so a truncated
+                // upload is rejected, and must never be misread as EOF
+                // (`n < 0`) or a chunk. Both paths of `call_input_stream_read`
+                // already report it as `Err(JavaException)` — jni 0.22's
+                // `call_method_unchecked` post-checks the exception like the
+                // checked `call_method` (see `call_object_arg_method`) — so the
+                // `?` above aborts (`RequestChunk::Error`) and the exception
+                // is scrubbed by `with_cached_daemon_env_no_frame`. This
+                // check is defence in depth: should an `Ok(n)` ever arrive
+                // with an exception pending (a jni version whose unchecked
+                // call stops post-checking), `n` is garbage and is not
+                // interpreted.
                 if take_pending_exception(env) {
                     return Ok(RequestChunk::Error);
                 }

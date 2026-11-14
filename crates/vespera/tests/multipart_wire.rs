@@ -6,9 +6,10 @@
 //! `boundary`-delimited parts arrive at the `TypedMultipart<T>`
 //! extractor exactly as constructed.
 //!
-//! Includes a 256 KiB payload to exercise the
-//! `axum::extract::DefaultBodyLimit::disable()` layer; without it
-//! axum's default 2 MiB cap would silently truncate larger uploads.
+//! Includes a 3 MiB payload to exercise the
+//! `axum::extract::DefaultBodyLimit::disable()` layer; without it axum's
+//! default 2 MiB request-body cap rejects the upload (`413 Payload Too
+//! Large`), so the round-trip test fails.
 
 #![cfg(feature = "multipart")]
 
@@ -39,7 +40,7 @@ use ::vespera_inprocess::{dispatch_from_bytes, register_app};
 struct UploadReq {
     name: String,
     // This round-trip test intentionally accepts any size (it exercises the
-    // 256 KiB tempfile path with the body limit disabled), so it opts out of
+    // 3 MiB tempfile path with the body limit disabled), so it opts out of
     // the now-mandatory file-field cap explicitly rather than inheriting one.
     #[form_data(limit = "unlimited")]
     file: FieldData<NamedTempFile>,
@@ -290,8 +291,8 @@ fn multipart_router() -> Router {
         .route("/boolean", post(boolean_handler))
         .route("/observed", post(observed_handler))
         .route("/limited", post(limited_handler))
-        // Disable the 2 MiB default so the 256 KiB test below isn't
-        // truncated — and so end-users can document a sensible policy
+        // Disable axum's 2 MiB default so the 3 MiB upload test below is
+        // not rejected with `413` — and so end-users can document a sensible policy
         // explicitly rather than inheriting an axum default that's
         // surprising in an in-process / JNI context.  The default String
         // field cap is enforced by vespera itself, independent of this.
@@ -399,11 +400,11 @@ fn typed_multipart_large_binary_roundtrip() {
         .build()
         .expect("tokio runtime");
 
-    // 256 KiB - exercises FieldData<NamedTempFile> tempfile path AND
-    // proves DefaultBodyLimit::disable() works; without it the default
-    // 2 MiB cap would only catch this above 2 MiB, but the existence
-    // of this layer is the contract under test.
-    let size: u32 = 256 * 1024;
+    // 3 MiB (field limit unlimited) - exercises the
+    // FieldData<NamedTempFile> tempfile path AND proves
+    // DefaultBodyLimit::disable() works: the body is above axum's
+    // default 2 MiB cap, so without the layer this answers `413`.
+    let size: u32 = 3 * 1024 * 1024;
     let payload: Vec<u8> = (0..size)
         .map(|i| u8::try_from(i % 256).expect("mod 256"))
         .collect();

@@ -418,8 +418,8 @@ impl Serialize for NonNullable<'_> {
     }
 }
 
-/// `anyOf: [<schema>, {type: null}]` for a nullable schema without `type`
-/// or `$ref` whose composition keyword would otherwise still reject `null`.
+/// `anyOf: [<schema>, {type: null}]` for a nullable schema without `$ref`
+/// whose composition keyword would otherwise still reject `null`.
 struct NullableComposition<'a>(&'a Schema);
 
 impl Serialize for NullableComposition<'_> {
@@ -461,19 +461,16 @@ impl Schema {
     ///
     /// OpenAPI 3.1 has no `nullable` keyword, so it is carried by the shape:
     /// `type: [T, "null"]`, `anyOf: [{$ref}, {type: null}]` for a reference,
-    /// `null` appended to an `enum`, and — for a schema with neither `type`
-    /// nor `$ref` whose `oneOf` / `allOf` / `not` / `anyOf` would reject
-    /// `null` — `anyOf: [<schema>, {type: null}]`.  Any other type-less
-    /// schema already accepts `null` and is emitted as is.
+    /// `null` appended to an `enum`, and — for a schema without `$ref` whose
+    /// `oneOf` / `allOf` / `not` / `anyOf` would reject `null`, whether or
+    /// not it has a `type` (`type: [T, "null"]` cannot override a sibling
+    /// composition keyword) — `anyOf: [<schema>, {type: null}]`.  Any other
+    /// type-less schema already accepts `null` and is emitted as is.
     fn serialize_as<S>(&self, serializer: S, nullable: bool) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        if nullable
-            && self.ref_path.is_none()
-            && self.schema_type.is_none()
-            && self.composition_rejects_null()
-        {
+        if nullable && self.ref_path.is_none() && self.composition_rejects_null() {
             let mut out = serializer.serialize_struct("Schema", 1)?;
             out.serialize_field("anyOf", &NullableComposition(self))?;
             return out.end();
