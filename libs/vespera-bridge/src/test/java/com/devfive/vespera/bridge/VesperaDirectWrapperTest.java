@@ -28,6 +28,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class VesperaDirectWrapperTest {
 
     private static final ByteBuffer DIRECT = ByteBuffer.allocateDirect(64);
+
+    /** The Java constant mirrors {@code vespera_inprocess::MIN_DIRECT_OUT_BYTES}. */
+    @Test
+    void minDirectOutBytesMatchesTheRustConstant() throws Exception {
+        String direct = java.nio.file.Files.readString(java.nio.file.Paths.get(
+                "..", "..", "crates", "vespera_inprocess", "src", "direct.rs"));
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("pub const MIN_DIRECT_OUT_BYTES: usize = (\\d+);").matcher(direct);
+        assertTrue(m.find(), "MIN_DIRECT_OUT_BYTES not found in crates/vespera_inprocess/src/direct.rs");
+        assertEquals(Integer.parseInt(m.group(1)), VesperaBridge.MIN_DIRECT_OUT_BYTES);
+    }
     private static final ByteBuffer HEAP = ByteBuffer.allocate(64);
 
     @Test

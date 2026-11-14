@@ -344,14 +344,21 @@ public final class VesperaRequest {
         streamConsumed = true;
         byte[] header = encode(VesperaWireCodec.EMPTY_BODY);
         ExposedOutput out = new ExposedOutput();
+        ReadTracking tracked = new ReadTracking(bodyStream);
         byte[] responseHeader;
         try {
-            responseHeader = transport.dispatchStreaming(header, bodyStream, out);
+            responseHeader = transport.dispatchStreaming(header, tracked, out);
         } catch (IOException e) {
             throw new VesperaClientException(
                     "streamed response failed after body bytes were written", e);
         } catch (UnsatisfiedLinkError e) {
+            releaseUnreadStream(tracked);
             throw nativeMissing(e);
+        } catch (RuntimeException e) {
+            // e.g. "native library is not initialized": thrown before the
+            // body was touched, so the same request may be sent again.
+            releaseUnreadStream(tracked);
+            throw e;
         }
         VesperaResponse head = decode(responseHeader);
         if (out.size() == 0) {
@@ -406,6 +413,46 @@ public final class VesperaRequest {
         }
     }
 
+    /** A failed send that never read the body leaves the stream sendable again. */
+    private void releaseUnreadStream(ReadTracking tracked) {
+        if (!tracked.touched) {
+            streamConsumed = false;
+        }
+    }
+
+    /** Remembers whether the transport touched the request body stream at all. */
+    static final class ReadTracking extends java.io.FilterInputStream {
+        volatile boolean touched;
+
+        ReadTracking(InputStream in) {
+            super(in);
+        }
+
+        @Override
+        public int read() throws IOException {
+            touched = true;
+            return super.read();
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            touched = true;
+            return in.read(b, off, len);
+        }
+
+        @Override
+        public long skip(long n) throws IOException {
+            touched = true;
+            return super.skip(n);
+        }
+
+        @Override
+        public void close() throws IOException {
+            touched = true;
+            super.close();
+        }
+    }
+
     private static VesperaClientException nativeMissing(UnsatisfiedLinkError e) {
         return new VesperaClientException(
                 "vespera native dispatch symbol is unavailable (library not loaded or "
@@ -423,8 +470,13 @@ public final class VesperaRequest {
         Objects.requireNonNull(value, "header value");
         for (int i = 0; i < value.length(); i++) {
             char c = value.charAt(i);
-            if (c == '\r' || c == '\n' || c == '\0') {
-                throw new IllegalArgumentException("header value must not contain CR, LF or NUL");
+            // RFC 9110 field-value: no control characters except HTAB
+            // (CR / LF / NUL split or truncate the header; the others are
+            // rejected by servers and proxies alike).
+            if ((c < 0x20 && c != '\t') || c == 0x7F) {
+                throw new IllegalArgumentException(
+                        "header value must not contain control characters (except HTAB): 0x"
+                                + Integer.toHexString(c));
             }
         }
         return value;

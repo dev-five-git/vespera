@@ -243,9 +243,15 @@ class VesperaReactiveProxyHandlerTest {
     @Test
     void responseBodyOverTheCapIs500() {
         transport.response = responseWire(200, "{}", "r".repeat(1025));
-        Result result = call(client(handler()).get().uri("/big"));
+        Result result = call(client(handler()).get().uri("/big").header(HttpHeaders.ACCEPT, "application/json"));
         assertEquals(500, result.status());
         assertTrue(result.body().contains("max-buffered-response-bytes=1024"), result.body());
+
+        // An implicitly streamed GET is not buffered past the cap: it streams.
+        Result streamed = call(client(handler()).get().uri("/big"));
+        assertEquals(200, streamed.status());
+        assertEquals("r".repeat(1025), streamed.body());
+        assertNull(streamed.header(HttpHeaders.CONTENT_LENGTH));
     }
 
     @Test
@@ -498,6 +504,105 @@ class VesperaReactiveProxyHandlerTest {
         assertEquals("", result.body());
     }
 
+    /** An event stream fetched with {@code Accept: *}{@code /*} (or none) still streams. */
+    @Test
+    void bodylessGetWithAWildcardAcceptStreamsAnEventStream() throws Exception {
+        transport.streamImplicitRequests = true;
+        for (String accept : new String[] {null, "*/*", "text/*;q=0.5, application/json"}) {
+            WebTestClient.RequestHeadersSpec<?> spec = client(handler()).get().uri("/events");
+            if (accept != null) {
+                spec = spec.header(HttpHeaders.ACCEPT, accept);
+            }
+            Result result = call(spec);
+            assertEquals(200, result.status(), String.valueOf(accept));
+            assertEquals("text/event-stream", result.header(HttpHeaders.CONTENT_TYPE));
+            assertEquals("data: a\n\ndata: b\n\n", result.body());
+            assertNull(result.header(HttpHeaders.CONTENT_LENGTH), "streamed, not buffered");
+        }
+        assertTrue(transport.futures.isEmpty(), "never the buffered async path");
+        assertEquals(DispatchMode.STREAMING.name(), awaitEvent().mode().name());
+    }
+
+    /** An ordinary response of an implicitly streamed GET is held back and keeps its Content-Length. */
+    @Test
+    void implicitlyStreamedGetKeepsTheContentLengthOfAnInMemoryBody() throws Exception {
+        transport.response = responseWire(200, "{\"content-type\":\"application/json\"}", "{\"id\":1}");
+        Result result = call(client(handler()).get().uri("/users/1"));
+        assertEquals(200, result.status());
+        assertEquals("{\"id\":1}", result.body());
+        assertEquals("8", result.header(HttpHeaders.CONTENT_LENGTH));
+        assertTrue(transport.futures.isEmpty());
+    }
+
+    /** A concrete non-streaming Accept, a HEAD or a request body keep the buffered ASYNC path. */
+    @Test
+    void nonStreamingAcceptHeadAndBodiesStayBuffered() throws Exception {
+        call(client(handler()).get().uri("/users").header(HttpHeaders.ACCEPT, "application/json"));
+        call(client(handler()).get().uri("/users").header(HttpHeaders.ACCEPT, "text/event-stream;q=0, */*;q=0"));
+        call(client(handler()).head().uri("/users"));
+        call(client(handler()).post().uri("/users").bodyValue("x"));
+        assertEquals(4, transport.futures.size());
+    }
+
+    /** A saturated streaming pool sends an implicit candidate down the buffered path (never 503). */
+    @Test
+    void saturatedStreamingPoolFallsBackToBufferedForImplicitStreams() throws Exception {
+        VesperaStreamingExecutor streaming = new VesperaStreamingExecutor(1, 0);
+        streaming.close(); // admits nothing
+        VesperaReactiveProxyHandler handler = ReactiveTestSupport.handler(transport,
+                new ReactiveHeaderAppNameResolver("X-Vespera-App", List.of()), null, 1024, 1024,
+                "X-Request-Id", List.of(events::add), CorsHandling.RUST, streaming);
+        Result result = call(client(handler).get().uri("/users"));
+        assertEquals(200, result.status());
+        assertEquals("ok", result.body());
+        assertEquals(1, transport.futures.size());
+        assertEquals(DispatchMode.ASYNC.name(), awaitEvent().mode().name());
+        assertEquals(503, call(client(handler).get().uri("/events")
+                .header(HttpHeaders.ACCEPT, "text/event-stream")).status(), "an explicit stream still 503s");
+    }
+
+    @Test
+    void spillingGateHoldsUntilTheFlushHintOrTheLimit() throws Exception {
+        java.io.ByteArrayOutputStream sink = new java.io.ByteArrayOutputStream();
+        MockServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.get("/x"));
+        ReactiveProxyResponse out = new ReactiveProxyResponse(exchange.getResponse(), null, null, null);
+        byte[] header = responseWire(200, "{\"content-type\":\"text/plain\"}", "");
+        int headerLen = java.nio.ByteBuffer.wrap(header).getInt();
+
+        VesperaReactiveProxyHandler.SpillingGate gate =
+                new VesperaReactiveProxyHandler.SpillingGate(sink, out, "GET", 4);
+        gate.onHeader(out.applyWireHeader(header, 4, headerLen, true), "GET");
+        gate.write("abc".getBytes(), 0, 3);
+        assertEquals(0, sink.size(), "held back");
+        gate.flush(); // the native "body would wait" hint
+        assertFalse(gate.holding());
+        assertEquals("abc", sink.toString());
+        gate.write("de".getBytes(), 0, 2);
+        assertEquals("abcde", sink.toString(), "pass-through once spilled");
+        gate.finish();
+        assertNull(exchange.getResponse().getHeaders().getFirst(HttpHeaders.CONTENT_LENGTH));
+
+        java.io.ByteArrayOutputStream big = new java.io.ByteArrayOutputStream();
+        VesperaReactiveProxyHandler.SpillingGate limited =
+                new VesperaReactiveProxyHandler.SpillingGate(big, out, "GET", 4);
+        limited.onHeader(out.applyWireHeader(header, 4, headerLen, true), "GET");
+        limited.write("12345".getBytes(), 0, 5);
+        assertEquals("12345", big.toString(), "past the limit: streamed");
+
+        MockServerWebExchange small = MockServerWebExchange.from(MockServerHttpRequest.get("/y"));
+        ReactiveProxyResponse smallOut = new ReactiveProxyResponse(small.getResponse(), null, null, null);
+        java.io.ByteArrayOutputStream whole = new java.io.ByteArrayOutputStream();
+        VesperaReactiveProxyHandler.SpillingGate held =
+                new VesperaReactiveProxyHandler.SpillingGate(whole, smallOut, "GET", 1024);
+        held.onHeader(smallOut.applyWireHeader(header, 4, headerLen, true), "GET");
+        held.write('h');
+        held.write("ey".getBytes(), 0, 2);
+        assertEquals(0, whole.size());
+        held.finish();
+        assertEquals("hey", whole.toString());
+        assertEquals(3, small.getResponse().getHeaders().getContentLength());
+    }
+
     @Test
     void clientCancellationCancelsTheNativeDispatch() throws Exception {
         // Mirror the real native wiring: cancelling the future aborts native task 7.
@@ -509,7 +614,9 @@ class VesperaReactiveProxyHandlerTest {
         });
         transport.pending = nativeFuture;
         VesperaReactiveProxyHandler handler = handler();
-        MockServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.get("/slow"));
+        // A concrete non-streaming Accept: the buffered (cancellable) ASYNC path.
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/slow").header(HttpHeaders.ACCEPT, "application/json"));
         Disposable subscription = handler.handle(exchange).subscribe();
         assertEquals(1, transport.requests.size(), "dispatched before the client went away");
         subscription.dispose(); // what reactor-netty does when the connection closes

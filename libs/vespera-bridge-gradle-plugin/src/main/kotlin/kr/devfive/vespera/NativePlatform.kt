@@ -22,14 +22,17 @@ internal object NativePlatform {
     /**
      * Map `os.name` to the bridge's `native/<os>-<arch>` OS segment.
      * `darwin` contains `win`, so macOS MUST be tested first (same order as
-     * `VesperaNativeLoader`).
+     * `VesperaNativeLoader`). Any other OS is `linux` only when it says so;
+     * FreeBSD, AIX, SunOS... keep their own (sanitized) name, so a Linux
+     * library is never bundled or picked for them.
      */
     fun detectOs(osName: String): String {
         val os = osName.lowercase()
         return when {
             "mac" in os || "darwin" in os -> "macos"
             "win" in os -> "windows"
-            else -> "linux"
+            "linux" in os -> "linux"
+            else -> os.filter { it in 'a'..'z' || it in '0'..'9' }.ifEmpty { "unknown" }
         }
     }
 
