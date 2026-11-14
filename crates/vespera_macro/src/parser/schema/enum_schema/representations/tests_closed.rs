@@ -19,6 +19,10 @@ use crate::parser::schema::enum_schema::parse_enum_to_schema;
     "#[serde(tag = \"kind\", rename_all = \"snake_case\")] enum Event { PayloadSent(Payload) }"
 )]
 #[case::unknown_ref("unknown_ref", "#[serde(tag = \"type\")] enum Event { Ext(External) }")]
+#[case::borrowed_ref(
+    "borrowed_ref",
+    "#[serde(tag = \"type\")] enum Event { Borrowed(&'static Payload) }"
+)]
 #[case::closed_generic_inline(
     "closed_generic_inline",
     "#[serde(tag = \"type\")] enum Event { Wrapped(Closed<u8>), Map(std::collections::HashMap<String, u8>), Fieldless(Empty) }"

@@ -38,6 +38,11 @@ fn operation(sig: &str, form_in_query: bool) -> Operation {
     "async fn f(form: axum::extract::Form<Search>) -> String",
     true
 )]
+#[case::get_receiver_and_reference(
+    "get_receiver_and_reference",
+    "async fn f(&self, headers: &HeaderMap, Form(s): Form<Search>) -> String",
+    true
+)]
 #[case::post_form("post_form", "async fn f(Form(s): Form<Search>) -> String", false)]
 #[case::get_json("get_json", "async fn f(Json(s): Json<Search>) -> String", true)]
 fn form_location_follows_the_method(
