@@ -172,10 +172,14 @@ fn streaming_setup_failed_array<'local>(
     env: &mut jni::Env<'local>,
 ) -> jni::errors::Result<JObject<'local>> {
     clear_pending_exception(env);
-    wire_byte_array(
-        env,
-        &vespera_inprocess::error_wire(500, "JNI streaming setup failed"),
-    )
+    wire_byte_array(env, &streaming_setup_failed_wire())
+}
+
+/// The `500` wire every streaming symbol answers when its JNI setup (global
+/// refs, the chunk `byte[]`) fails before the dispatch starts — typically
+/// heap pressure, never a Rust panic, so it carries no `panicked` flag.
+pub fn streaming_setup_failed_wire() -> Vec<u8> {
+    vespera_inprocess::error_wire(500, "JNI streaming setup failed")
 }
 
 /// Read a request `byte[]` into an owned buffer, centralizing the

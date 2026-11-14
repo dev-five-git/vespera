@@ -409,9 +409,16 @@ static ERROR_WIRE_HEADERS: LazyLock<http::HeaderMap> = LazyLock::new(|| {
 ///
 /// Used by [`crate::dispatch_from_bytes`] for malformed input and by the
 /// JNI bridge for panic fallback.  The response always carries
-/// `content-type: text/plain; charset=utf-8`.
+/// `content-type: text/plain; charset=utf-8`.  A `status` outside
+/// `100..=999` (not a three-digit HTTP status) is answered as `500`, so the
+/// header is always valid JSON the host decoders accept.
 #[must_use]
 pub fn error_wire(status: u16, msg: &str) -> Vec<u8> {
+    let status = if (100..=999).contains(&status) {
+        status
+    } else {
+        500
+    };
     #[cfg(feature = "tracing")]
     crate::obs::error_response(status, msg);
     let headers = &*ERROR_WIRE_HEADERS;
