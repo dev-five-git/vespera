@@ -13,7 +13,7 @@ pub use path_scan::{fingerprints_from_scan, scan_route_folder};
 use crate::{
     error::{MacroResult, err_call_site},
     file_utils::{file_to_segments, normalize_display_path, normalize_path_key},
-    metadata::{CollectedMetadata, RouteMetadata},
+    metadata::{CfgRoute, CollectedMetadata, RouteMetadata},
     route::{doc_summary_and_description, extract_route_info, has_deprecated_attr},
     route_impl::StoredRouteInfo,
 };
@@ -149,12 +149,17 @@ fn push_stored_routes(
 /// Field-for-field and order-for-order this MUST stay identical to
 /// [`push_stored_routes`] — see the invariant documented on
 /// [`build_route_path`] and [`take_or_clone`].
+///
+/// Handlers gated by `module_cfg` (the file's module declaration chain) or
+/// by their own `#[cfg(..)]` go to `metadata.cfg_routes` instead — see
+/// [`CfgRoute`].
 fn push_parsed_routes(
     metadata: &mut CollectedMetadata,
     base_path: &str,
     module_path: &mut String,
     file_path: &mut String,
     file_ast: &syn::File,
+    module_cfg: &[String],
 ) {
     // Pre-collect (fn_item, owned RouteInfo) pairs so we can
     //   1. detect the last route up-front (symmetric with fast path),
@@ -162,11 +167,23 @@ fn push_parsed_routes(
     //      description) into RouteMetadata instead of re-cloning them.
     let mut route_entries: Vec<(&syn::ItemFn, crate::route::RouteInfo)> = Vec::new();
     for item in &file_ast.items {
-        if let Item::Fn(fn_item) = item
-            && !module_scope::is_cfg_gated(&fn_item.attrs)
-            && let Some(route_info) = extract_route_info(&fn_item.attrs)
-        {
+        let Item::Fn(fn_item) = item else { continue };
+        let Some(route_info) = extract_route_info(&fn_item.attrs) else {
+            continue;
+        };
+        let mut cfg = module_cfg.to_vec();
+        cfg.extend(module_scope::cfg_predicates(&fn_item.attrs));
+        if cfg.is_empty() {
             route_entries.push((fn_item, route_info));
+        } else {
+            metadata.cfg_routes.push(CfgRoute {
+                cfg,
+                path: build_route_path(base_path, route_info.path.as_deref()),
+                method: route_info.method,
+                module_path: module_path.clone(),
+                function_name: fn_item.sig.ident.to_string(),
+                file_path: file_path.clone(),
+            });
         }
     }
 
@@ -327,11 +344,27 @@ pub fn collect_metadata_from_files<'a>(
             // No file_asts insertion needed in fast path:
             // #[derive(Schema)] already extracts serde(default = "fn") values
             // into SCHEMA_STORAGE.field_defaults (Priority 0 in process_default_functions)
-        } else if module_scope::is_cfg_gated_module(folder_path, &segments) {
-            // Never registered by `#[route]` and declared behind `#[cfg(..)]`:
-            // the module is compiled out, so it contributes no routes.
         } else {
-            let file_ast = crate::schema_macro::file_cache::get_parsed_file(file).ok_or_else(|| err_call_site(format!("vespera! macro: cannot read or parse '{}'. Fix the Rust syntax errors in this file.", file.display())))?;
+            let parsed = crate::schema_macro::file_cache::get_parsed_file(file);
+            let module_cfg = module_scope::module_cfg_predicates(folder_path, &segments);
+            if !module_cfg.is_empty() {
+                // Never registered by `#[route]` and declared behind
+                // `#[cfg(..)]`: compiled out, or expanded after `vespera!`.
+                // rustc never reads a compiled-out file, so an unparsable one
+                // contributes nothing.
+                if let Some(file_ast) = parsed {
+                    push_parsed_routes(
+                        &mut metadata,
+                        &base_path,
+                        &mut module_path,
+                        &mut file_path,
+                        &file_ast,
+                        &module_cfg,
+                    );
+                }
+                continue;
+            }
+            let file_ast = parsed.ok_or_else(|| err_call_site(format!("vespera! macro: cannot read or parse '{}'. Fix the Rust syntax errors in this file.", file.display())))?;
 
             // `entry` hashes and probes `file_path` ONCE and hands back a
             // borrow of the slot it just filled; the previous
@@ -356,6 +389,7 @@ pub fn collect_metadata_from_files<'a>(
                 &mut module_path,
                 &mut file_path,
                 file_ast,
+                &[],
             );
         }
     }

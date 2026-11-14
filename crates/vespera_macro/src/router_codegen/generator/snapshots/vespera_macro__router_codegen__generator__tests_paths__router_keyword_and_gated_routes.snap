@@ -1,0 +1,20 @@
+---
+source: crates/vespera_macro/src/router_codegen/generator/tests_paths.rs
+expression: pretty(&metadata)
+---
+fn create_app() {
+    {
+        let __vespera_router = vespera::axum::Router::new()
+            .route("/x", vespera::axum::routing::get(crate::routes::r#type::r#match));
+        #[cfg(all(feature = "admin"))]
+        let __vespera_router = __vespera_router
+            .route("/admin", vespera::axum::routing::post(crate::routes::admin::panel));
+        #[cfg(all(feature = "admin", unix))]
+        let __vespera_router = __vespera_router
+            .route(
+                "/admin/stats/{id}",
+                vespera::axum::routing::get(crate::routes::admin::stats::stats),
+            );
+        __vespera_router
+    }
+}
