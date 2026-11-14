@@ -1,6 +1,9 @@
-// Rewrite the versions the landing documentation quotes to the workspace
-// version: the constants in `apps/landing/src/constants/index.ts` and every
-// MDX code-sample literal `DOC_VERSION_PATTERNS` matches. changepacks bumps
+// Rewrite the versions the documentation quotes to the workspace version:
+// the constants in `apps/landing/src/constants/index.ts`, every MDX
+// code-sample literal `DOC_VERSION_PATTERNS` matches, and the samples in the
+// other user-facing docs (`REPO_DOCS` / `REPO_VERSION_PATTERNS` from
+// `check-version-alignment.ts` — the READMEs that become the crates.io,
+// docs.rs and Maven Central pages). changepacks bumps
 // only the package manifests, so the release job runs this on the version PR
 // (next to the Cargo.lock sync); without it `check-version-alignment.ts`
 // fails main's lint job right after the version PR merges and the release
@@ -12,7 +15,11 @@ import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { DOC_VERSION_PATTERNS } from '../apps/landing/src/constants'
-import { minorOf } from './check-version-alignment'
+import {
+  minorOf,
+  REPO_DOCS,
+  REPO_VERSION_PATTERNS,
+} from './check-version-alignment'
 
 export interface DocVersions {
   VESPERA_VERSION: string
@@ -46,13 +53,14 @@ export function rewriteConstants(
   return out
 }
 
-/** Every `DOC_VERSION_PATTERNS` capture in an MDX page, rewritten. */
+/** Every `patterns` capture (default: an MDX page's), rewritten. */
 export function rewriteDocSamples(
   content: string,
   versions: DocVersions,
+  patterns: [RegExp, keyof DocVersions][] = DOC_VERSION_PATTERNS,
 ): string {
   let out = content
-  for (const [pattern, constant] of DOC_VERSION_PATTERNS) {
+  for (const [pattern, constant] of patterns) {
     out = out.replace(pattern, (match: string, found: string) =>
       match.replace(found, versions[constant]),
     )
@@ -88,8 +96,11 @@ function main(): number {
       rewrite(`${docs}/${file}`, (s) => rewriteDocSamples(s, versions))
     }
   }
+  for (const file of REPO_DOCS) {
+    rewrite(file, (s) => rewriteDocSamples(s, versions, REPO_VERSION_PATTERNS))
+  }
   console.info(
-    `landing documents ${Object.values(versions).join(' / ')}; ` +
+    `docs quote ${Object.values(versions).join(' / ')}; ` +
       (changed.length > 0
         ? `rewrote ${changed.join(', ')}`
         : 'already in sync'),

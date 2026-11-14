@@ -6,19 +6,19 @@ JNI bridge that lets a Java/Spring application embed a Rust [`vespera`](../../) 
 <dependency>
   <groupId>kr.devfive</groupId>
   <artifactId>vespera-bridge</artifactId>
-  <version>0.6.0</version>
+  <version>0.7.0</version>
 </dependency>
 ```
 
 ```kotlin
 dependencies {
-    implementation("kr.devfive:vespera-bridge:0.6.0")
+    implementation("kr.devfive:vespera-bridge:0.7.0")
 }
 ```
 
 ### Version compatibility
 
-- **Bridge ↔ Rust crate:** the `vespera-bridge` version must match the **minor** version of the `vespera` crate your cdylib is built with (bridge `0.6.x` ↔ `vespera = "0.6"`). The JNI symbol set and the binary wire format are only guaranteed stable within a minor line. Since 0.6 this is **checked at `VesperaBridge.init`**: the native library reports its crate version (`nativeVersion0`) and a different `major.minor` fails the init with an `IllegalStateException` naming both versions (patch levels may differ). `-Dvespera.native.versionCheck=warn` downgrades the failure to a WARNING, `off` skips the check; a native library built before 0.6 (no version symbol) only logs a WARNING.
+- **Bridge ↔ Rust crate:** the `vespera-bridge` version must match the **minor** version of the `vespera` crate your cdylib is built with (bridge `X.Y.z` ↔ `vespera = "X.Y"`). The JNI symbol set and the binary wire format are only guaranteed stable within a minor line. Since 0.6 this is **checked at `VesperaBridge.init`**: the native library reports its crate version (`nativeVersion0`) and a different `major.minor` fails the init with an `IllegalStateException` naming both versions (patch levels may differ). `-Dvespera.native.versionCheck=warn` downgrades the failure to a WARNING, `off` skips the check; a native library built before 0.6 (no version symbol) only logs a WARNING.
 - **Spring Boot:** compiled against Spring Boot 4.1 / Spring Framework 7.0; supported on **Spring Boot 3.5.x and 4.x** (Spring Framework 6.2 / 7.0, Jakarta Servlet 6.0+). The Boot 3.5 runtime is verified by the `testBoot3` Gradle task (run automatically after `./gradlew test`), which runs the unit suite against a Spring Boot 3.5 classpath. Spring Boot ≤ 3.4 / `javax.servlet` is not supported.
 - **Java:** 17+.
 
@@ -36,14 +36,14 @@ For Spring Boot apps the [`kr.devfive.vespera-bridge`](../vespera-bridge-gradle-
 
 ```kotlin
 plugins {
-    id("kr.devfive.vespera-bridge") version "0.6.0"
+    id("kr.devfive.vespera-bridge") version "0.7.0"
 }
 
 vespera {
     crateName.set("my-rust-lib")   // Cargo package name, or its underscore form "my_rust_lib"
     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
     // bridgeVersion defaults to the vespera-bridge release this plugin version was built with;
-    // set it only to pin a different bridge:  bridgeVersion.set("0.6.0")
+    // set it only to pin a different bridge:  bridgeVersion.set("0.7.0")
 }
 ```
 
@@ -80,7 +80,7 @@ Vespera has no prebuilt native library of its own — the cdylib is **your** app
 // myapp-native/build.gradle.kts
 plugins {
     `maven-publish`
-    id("kr.devfive.vespera-bridge") version "0.6.0"
+    id("kr.devfive.vespera-bridge") version "0.7.0"
 }
 group = "com.acme"
 version = "0.1.0"
@@ -1251,7 +1251,7 @@ With Spring Boot, the autoconfigurations also contribute Spring AOT hints via `@
 plugins {
     id("org.springframework.boot") version "4.1.2"
     id("org.graalvm.buildtools.native") version "1.1.14"   // the version Spring Boot manages
-    id("kr.devfive.vespera-bridge") version "..."
+    id("kr.devfive.vespera-bridge") version "0.7.0"
 }
 ```
 
