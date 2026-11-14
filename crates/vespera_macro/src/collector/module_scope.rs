@@ -164,7 +164,10 @@ mod tests {
             module_cfg_predicates(&routes, &segments),
             ["feature = \"x\""]
         );
-        assert_eq!(module_cfg_predicates(&routes, &segments[..1]), Vec::<String>::new());
+        assert_eq!(
+            module_cfg_predicates(&routes, &segments[..1]),
+            Vec::<String>::new()
+        );
     }
 
     #[rstest]
