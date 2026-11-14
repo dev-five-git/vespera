@@ -11,7 +11,9 @@ use quote::quote;
 
 use super::defaults::generate_sea_orm_default_attrs;
 use super::file_cache;
-use super::file_lookup::find_struct_from_path_detailed;
+use super::file_lookup::{
+    find_struct_from_path_detailed, requested_module_path, storage_module_path,
+};
 use super::from_model::generate_from_model_with_relations;
 use super::inline_types::{
     generate_inline_relation_type, generate_inline_relation_type_no_relations,
@@ -73,17 +75,37 @@ pub fn generate_schema_type_code(
     // names, more accurate than the parsed path for qualified ones).
     let struct_def_owned: StructMetadata;
     let schema_name_hint = input.schema_name.as_deref();
-    let struct_def = if let Some(found) = schema_storage.get(&source_type_name) {
-        found
-    } else {
-        match find_struct_from_path_detailed(&input.source_type, schema_name_hint) {
+    //
+    // Storage is keyed by the bare struct name, so a qualified source path
+    // only trusts a storage entry whose defining file belongs to the
+    // requested module (`crate::a::User` must not pick `crate::b::User`'s
+    // derive); otherwise the file lookup decides, the storage entry being the
+    // fallback when the file lookup cannot find the struct either.
+    let storage_hit = schema_storage.get(&source_type_name);
+    let storage_module = storage_hit.and_then(storage_module_path);
+    let storage_trusted = match (requested_module_path(&input.source_type), &storage_module) {
+        (Some(requested), Some(defined_in)) => &requested == defined_in,
+        _ => true,
+    };
+    let struct_def = match storage_hit {
+        Some(found) if storage_trusted => {
+            // A bare storage hit carries no module path of its own: take the
+            // defining file's so `super::`-relative relation paths resolve.
+            if source_module_path.is_empty()
+                && let Some(module) = storage_module
+            {
+                source_module_path = module;
+            }
+            found
+        }
+        _ => match find_struct_from_path_detailed(&input.source_type, schema_name_hint) {
             Ok((found, module_path)) => {
                 struct_def_owned = found;
                 source_module_path = module_path;
                 &struct_def_owned
             }
-            Err(err) => return Err(err.to_syn_error(&input.source_type)),
-        }
+            Err(err) => storage_hit.ok_or_else(|| err.to_syn_error(&input.source_type))?,
+        },
     };
 
     // Parse the struct definition
