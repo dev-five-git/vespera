@@ -4,11 +4,11 @@ use std::{
     hash::Hash,
 };
 
-use vespera_core::schema::{Discriminator, Schema, SchemaRef, SchemaType};
+use vespera_core::schema::{AdditionalProperties, Discriminator, Schema, SchemaRef, SchemaType};
 
 use super::super::{
     serde_attrs::extract_doc_comment,
-    struct_schema::{emitted_unnamed_types, with_description},
+    struct_schema::{emitted_unnamed_types, parse_struct_to_schema, with_description},
     type_schema::{parse_type_to_schema_ref, tuple_array_schema},
 };
 use super::{
@@ -118,14 +118,71 @@ pub(super) fn parse_externally_tagged_enum(
     }
 }
 
+/// The object schema of an internally tagged newtype payload that constrains
+/// unlisted properties — closed (`#[serde(deny_unknown_fields)]`,
+/// `additionalProperties: false`) or a map (`additionalProperties: <value>`)
+/// — which would reject the tag inside an `allOf`. A `$ref` payload is
+/// resolved from its Rust type (a request-view `$ref` names the `Input`
+/// component, so the `$ref` itself cannot be looked up). `None` for an
+/// open payload.
+fn closed_payload_object(
+    inner_ty: &syn::Type,
+    inner: &SchemaRef,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
+) -> Option<Schema> {
+    let schema = match inner {
+        SchemaRef::Inline(schema) => (**schema).clone(),
+        SchemaRef::Ref(_) => {
+            let syn::Type::Path(type_path) = inner_ty else {
+                return None;
+            };
+            let name = type_path.path.segments.last()?.ident.to_string();
+            let item = struct_definitions
+                .get(name.as_str())
+                .and_then(|def| syn::parse_str::<syn::ItemStruct>(def.as_ref()).ok())?;
+            parse_struct_to_schema(&item, known_schemas, struct_definitions)
+        }
+    };
+    matches!(
+        schema.additional_properties,
+        Some(AdditionalProperties::Bool(false) | AdditionalProperties::Schema(_))
+    )
+    .then_some(schema)
+}
+
+/// `object` with the required `tag` property (first in `required`); the
+/// variant doc comment, when present, replaces the payload's description.
+fn with_tag_property(
+    mut object: Schema,
+    tag: &str,
+    tag_schema: &SchemaRef,
+    description: Option<String>,
+) -> Schema {
+    object
+        .properties
+        .get_or_insert_with(BTreeMap::new)
+        .insert(tag.to_string(), tag_schema.clone());
+    object
+        .required
+        .get_or_insert_with(Vec::new)
+        .insert(0, tag.to_string());
+    if description.is_some() {
+        object.description = description;
+    }
+    object
+}
+
 /// Parse internally tagged enum: `{"tag": "VariantName", ...fields...}`
 /// Uses `OpenAPI` discriminator for the tag field.
 ///
 /// serde allows unit, struct and newtype variants here (multi-field tuple
 /// variants are a serde compile error). A newtype variant's inner value must
 /// serialize as a map, so it is emitted as
-/// `allOf: [{tag object}, <inner schema>]`; non-object inner types are
-/// rejected at `#[derive(Schema)]` time (see `validate_enum_for_schema`).
+/// `allOf: [{tag object}, <inner schema>]` — except over a closed or map
+/// payload (`additionalProperties: false | <value>`), which would reject the
+/// tag: the tag is merged into a copy of the payload object instead. Non-object inner types
+/// are rejected at `#[derive(Schema)]` time (see `validate_enum_for_schema`).
 pub(super) fn parse_internally_tagged_enum(
     enum_item: &syn::ItemEnum,
     description: Option<String>,
@@ -164,11 +221,8 @@ pub(super) fn parse_internally_tagged_enum(
                 fields.into_object_schema(variant_description)
             }
             syn::Fields::Unnamed(fields_unnamed) if fields_unnamed.unnamed.len() == 1 => {
-                let inner = parse_type_to_schema_ref(
-                    &fields_unnamed.unnamed[0].ty,
-                    known_schemas,
-                    struct_definitions,
-                );
+                let inner_ty = &fields_unnamed.unnamed[0].ty;
+                let inner = parse_type_to_schema_ref(inner_ty, known_schemas, struct_definitions);
                 let inner_type = match &inner {
                     SchemaRef::Inline(schema) => schema.schema_type,
                     SchemaRef::Ref(_) => None,
@@ -176,11 +230,25 @@ pub(super) fn parse_internally_tagged_enum(
                 match inner_type {
                     // Newtype of `()` serializes as just the tag.
                     Some(SchemaType::Null) => tag_object(variant_description),
-                    // A map-like (or referenced struct) inner value carries the tag.
-                    None | Some(SchemaType::Object) => Schema {
-                        description: variant_description,
-                        all_of: Some(vec![SchemaRef::Inline(Box::new(tag_object(None))), inner]),
-                        ..Schema::default()
+                    // A map-like (or referenced struct) inner value carries the
+                    // tag: a closed payload object as one of its own properties.
+                    None | Some(SchemaType::Object) => match closed_payload_object(
+                        inner_ty,
+                        &inner,
+                        known_schemas,
+                        struct_definitions,
+                    ) {
+                        Some(object) => {
+                            with_tag_property(object, &tag_string, &tag_schema, variant_description)
+                        }
+                        None => Schema {
+                            description: variant_description,
+                            all_of: Some(vec![
+                                SchemaRef::Inline(Box::new(tag_object(None))),
+                                inner,
+                            ]),
+                            ..Schema::default()
+                        },
                     },
                     // Newtype of a non-map value cannot carry the tag in serde;
                     // rejected at derive time, skipped here defensively.
@@ -330,3 +398,6 @@ pub(super) fn parse_untagged_enum(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_closed;

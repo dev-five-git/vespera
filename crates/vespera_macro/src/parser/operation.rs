@@ -30,6 +30,30 @@ pub struct OperationRouteConfig<'a> {
     pub request_example: Option<&'a serde_json::Value>,
     pub response_example: Option<&'a serde_json::Value>,
     pub deprecated: bool,
+    /// GET / HEAD: axum's `Form<T>` deserializes the query string (like
+    /// `Query<T>`), so it is documented as query parameters, not a body.
+    pub form_in_query: bool,
+}
+
+/// `input` with its `Form<T>` (also inside `Validated<..>`) rewritten to
+/// `Query<T>`; `None` for any other argument.
+fn form_as_query(input: &FnArg) -> Option<FnArg> {
+    let FnArg::Typed(pat_type) = input else {
+        return None;
+    };
+    let Type::Path(type_path) = unwrap_validated_type(pat_type.ty.as_ref()) else {
+        return None;
+    };
+    let mut query = type_path.clone();
+    let segment = query.path.segments.last_mut()?;
+    if segment.ident != "Form" {
+        return None;
+    }
+    segment.ident = syn::Ident::new("Query", segment.ident.span());
+    Some(FnArg::Typed(PatType {
+        ty: Box::new(Type::Path(query)),
+        ..pat_type.clone()
+    }))
 }
 
 /// Build Operation from function signature
@@ -93,6 +117,12 @@ pub fn build_operation_from_function(
 
     // Parse function parameters (skip Path extractor as we already handled it)
     for input in &sig.inputs {
+        let query_form = if config.form_in_query {
+            form_as_query(input)
+        } else {
+            None
+        };
+        let input = query_form.as_ref().unwrap_or(input);
         // Check if it's a request body (Json<T>)
         if let Some(body) = parse_request_body(input, known_schemas, struct_definitions) {
             request_body = Some(body);
@@ -409,5 +439,7 @@ fn validation_error_response() -> Response {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_form_query;
 #[cfg(test)]
 mod tests_validated;

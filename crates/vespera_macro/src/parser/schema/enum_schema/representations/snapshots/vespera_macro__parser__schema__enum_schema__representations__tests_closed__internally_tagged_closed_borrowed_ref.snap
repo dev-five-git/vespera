@@ -1,0 +1,32 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_closed.rs
+expression: "serde_json::to_string_pretty(&schema).unwrap()"
+---
+{
+  "oneOf": [
+    {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "Borrowed"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "$ref": "#/components/schemas/Payload"
+        }
+      ]
+    }
+  ],
+  "discriminator": {
+    "propertyName": "type"
+  }
+}
