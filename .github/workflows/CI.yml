@@ -777,12 +777,31 @@ jobs:
         run: cargo build -p rust-jni-demo --release
       - name: Drive the cdylib through the C ABI (Python ctypes)
         # The only test that loads the REAL cdylib through vespera.h's
-        # symbols (the Rust ffi tests link the crate statically): asserts
-        # every response and exits non-zero on a mismatch. One Linux leg is
-        # enough — the C ABI is platform-neutral and the JNI legs cover the
-        # per-platform loading.
-        if: matrix.os == 'ubuntu-latest' && matrix.java == '17'
-        run: python3 examples/rust-jni-demo/ffi/ctypes_demo.py target/release/librust_jni_demo.so
+        # symbols (the Rust ffi tests link the crate statically): resolves
+        # every prototype of vespera.h in the cdylib, calls each function,
+        # asserts every response and exits non-zero on a mismatch. Runs on
+        # every host OS (JDK 17 legs): symbol export (.so / .dylib / .dll)
+        # and the calling convention are platform-specific.
+        if: matrix.java == '17'
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Windows) lib=target/release/rust_jni_demo.dll; py=python ;;
+            macOS) lib=target/release/librust_jni_demo.dylib; py=python3 ;;
+            *) lib=target/release/librust_jni_demo.so; py=python3 ;;
+          esac
+          "$py" examples/rust-jni-demo/ffi/ctypes_demo.py "$lib"
+      - name: Compile vespera.h as C99 and C++ (warnings as errors)
+        # Syntax only (nothing linked): the header must stay valid, warning
+        # free C99 and C++ for every host toolchain. Windows uses the LLVM
+        # clang preinstalled on the runner image (MSVC headers).
+        if: matrix.java == '17'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then cc=clang; cxx=clang++; else cc=cc; cxx=c++; fi
+          flags="-Wall -Wextra -pedantic -Werror -fsyntax-only -I crates/vespera_inprocess/include"
+          "$cc" -std=c99 $flags examples/rust-jni-demo/ffi/header_check.c
+          "$cxx" -x c++ $flags examples/rust-jni-demo/ffi/header_check.c
       - name: Make gradlew executable (unix)
         if: runner.os != 'Windows'
         run: |
