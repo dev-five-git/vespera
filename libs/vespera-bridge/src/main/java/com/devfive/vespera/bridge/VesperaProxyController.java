@@ -375,6 +375,9 @@ public class VesperaProxyController {
                         maxBufferedResponseBytes);
                 return null;
             case ASYNC:
+                // A body without a Rust Content-Type is written by
+                // VesperaAsyncResponseBodyAdvice (no negotiated type).
+                VesperaAsyncResponseBodyAdvice.markProxied(request);
                 return dispatchAsyncFlow(appName, method, path, query, headers, body,
                         response, exchange);
             case STREAMING:
@@ -737,7 +740,7 @@ public class VesperaProxyController {
                 // RejectedExecutionException; translate it to a clean 503
                 // backpressure signal instead of an opaque 500.
                 .handle((resp, ex) -> ex == null ? resp
-                        : ProxyExchange.withMdc(requestId, () -> asyncFailureToResponse(ex)))
+                        : ProxyExchange.withMdc(requestId, () -> asyncFailureToResponse(ex, response)))
                 .thenAccept(entity -> {
                     if (result.setResult(entity)) {
                         exchange.complete(entity.getStatusCode().value(), response.panicked());
@@ -755,6 +758,20 @@ public class VesperaProxyController {
      * classification ({@link #isRejectedExecution}) is unit-testable without
      * a live JNI dispatch.
      */
+    static ResponseEntity<?> asyncFailureToResponse(Throwable ex, ProxyServletResponse proxied) {
+        ResponseEntity<?> entity = asyncFailureToResponse(ex);
+        String idHeader = proxied == null ? null : proxied.requestIdHeader();
+        if (idHeader == null) {
+            return entity;
+        }
+        // Echo the request id like every other mode's proxy errors. (Builder
+        // only: HttpHeaders' copy methods differ between Spring 6 and 7.)
+        return ResponseEntity.status(entity.getStatusCode())
+                .headers(entity.getHeaders())
+                .header(idHeader, proxied.requestId())
+                .body(entity.getBody());
+    }
+
     static ResponseEntity<?> asyncFailureToResponse(Throwable ex) {
         if (isRejectedExecution(ex)) {
             return ProxyErrors.entity(HttpStatus.SERVICE_UNAVAILABLE.value(),

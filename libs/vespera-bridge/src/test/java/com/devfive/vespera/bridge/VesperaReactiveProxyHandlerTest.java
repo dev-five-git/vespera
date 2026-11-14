@@ -34,7 +34,9 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.reactive.CorsWebFilter;
 import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
+import org.springframework.web.reactive.config.CorsRegistry;
 import org.springframework.web.reactive.config.EnableWebFlux;
+import org.springframework.web.reactive.config.WebFluxConfigurer;
 import org.springframework.web.server.WebFilter;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
@@ -178,6 +180,15 @@ class VesperaReactiveProxyHandlerTest {
         assertEquals("/users/42", event.path());
         assertEquals("client-id", event.requestId());
         assertFalse(event.panicked());
+    }
+
+    @Test
+    void pathParametersAreStrippedLikeTheServletProxy() throws Exception {
+        Result result = call(client(handler()).get()
+                .uri(URI.create("http://localhost/users/42;jsessionid=abc/orders;v=1;w=2?x=1")));
+        assertEquals(200, result.status());
+        assertEquals("/users/42/orders?x=1", transport.lastHeader().get("path").asText());
+        assertEquals("/users/42/orders", awaitEvent().path());
     }
 
     @Test
@@ -363,6 +374,67 @@ class VesperaReactiveProxyHandlerTest {
         Result rust = call(client(rustOwned, ProxyPathPatterns.defaults(), true, springCors())
                 .get().uri(cross).header(HttpHeaders.ORIGIN, "https://spring.example"));
         assertEquals(List.of("*"), rust.headers().getValuesAsList(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
+    }
+
+    /** {@code WebFluxConfigurer#addCorsMappings}: global CORS for {@code /**}. */
+    private static Consumer<AnnotationConfigApplicationContext> globalCorsMappings() {
+        return ctx -> ctx.registerBean("globalCors", WebFluxConfigurer.class, () -> new WebFluxConfigurer() {
+            @Override
+            public void addCorsMappings(CorsRegistry registry) {
+                registry.addMapping("/**").allowedOrigins("https://spring.example").allowedMethods("*");
+            }
+        });
+    }
+
+    @Test
+    void springCorsAppliesGlobalCorsMappingsToProxiedPaths() {
+        transport.response = responseWire(200, "{\"access-control-allow-origin\":\"*\"}", "ok");
+        VesperaReactiveProxyHandler springOwned = handler(
+                new ReactiveHeaderAppNameResolver("X-Vespera-App"), null, 1024, 1024, CorsHandling.SPRING);
+        WebTestClient client = client(springOwned, ProxyPathPatterns.defaults(), false, globalCorsMappings());
+
+        Result preflight = call(client.options().uri(URI.create("http://localhost/users"))
+                .header(HttpHeaders.ORIGIN, "https://spring.example")
+                .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "PUT"));
+        assertEquals(200, preflight.status());
+        assertEquals("https://spring.example", preflight.header(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
+        assertEquals("PUT", preflight.header(HttpHeaders.ACCESS_CONTROL_ALLOW_METHODS));
+
+        Result foreign = call(client.options().uri(URI.create("http://localhost/users"))
+                .header(HttpHeaders.ORIGIN, "https://evil.example")
+                .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "PUT"));
+        assertEquals(403, foreign.status(), "Spring applies the global CORS policy");
+        assertTrue(transport.requests.isEmpty(), "preflights never reach Rust with cors=spring");
+
+        Result actual = call(client.get().uri(URI.create("http://localhost/c"))
+                .header(HttpHeaders.ORIGIN, "https://spring.example"));
+        assertEquals(200, actual.status());
+        assertEquals(List.of("https://spring.example"),
+                actual.headers().getValuesAsList(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
+
+        Result rejected = call(client.get().uri(URI.create("http://localhost/c"))
+                .header(HttpHeaders.ORIGIN, "https://evil.example"));
+        assertEquals(403, rejected.status());
+        assertEquals(1, transport.requests.size(), "a rejected cross-origin request is not dispatched");
+    }
+
+    @Test
+    void rustCorsIgnoresGlobalCorsMappings() {
+        transport.response = responseWire(204,
+                "{\"access-control-allow-origin\":\"https://a.example\"}", "");
+        WebTestClient client = client(handler(), ProxyPathPatterns.defaults(), true, globalCorsMappings());
+        Result preflight = call(client.options().uri(URI.create("http://localhost/users"))
+                .header(HttpHeaders.ORIGIN, "https://a.example")
+                .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "PUT"));
+        assertEquals(204, preflight.status());
+        assertEquals("https://a.example", preflight.header(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
+        assertEquals(1, transport.requests.size());
+
+        transport.response = responseWire(200, "{\"access-control-allow-origin\":\"*\"}", "ok");
+        Result actual = call(client.get().uri(URI.create("http://localhost/c"))
+                .header(HttpHeaders.ORIGIN, "https://a.example"));
+        assertEquals(200, actual.status(), "no Spring CORS check on Rust-owned CORS");
+        assertEquals(List.of("*"), actual.headers().getValuesAsList(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
     }
 
     /** Fake Spring Security types (Spring Security is not on the test classpath). */

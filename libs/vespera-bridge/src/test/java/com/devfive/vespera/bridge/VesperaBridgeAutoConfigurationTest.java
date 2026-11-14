@@ -152,7 +152,18 @@ class VesperaBridgeAutoConfigurationTest {
     @Test
     void controllerDisabledPropertyStillWorks() {
         runner.withPropertyValues("vespera.bridge.controller-enabled=false")
-                .run(ctx -> assertTrue(ctx.getBeansOfType(VesperaProxyController.class).isEmpty()));
+                .run(ctx -> {
+                    assertTrue(ctx.getBeansOfType(VesperaProxyController.class).isEmpty());
+                    assertTrue(ctx.getBeansOfType(VesperaAsyncResponseBodyAdvice.class).isEmpty());
+                });
+    }
+
+    @Test
+    void asyncResponseBodyAdviceAccompaniesTheController() {
+        runner.run(ctx -> assertEquals(1, ctx.getBeansOfType(VesperaAsyncResponseBodyAdvice.class).size()));
+        // Also for a user-supplied controller.
+        runner.withUserConfiguration(CustomControllerConfig.class)
+                .run(ctx -> assertEquals(1, ctx.getBeansOfType(VesperaAsyncResponseBodyAdvice.class).size()));
     }
 
     @Test

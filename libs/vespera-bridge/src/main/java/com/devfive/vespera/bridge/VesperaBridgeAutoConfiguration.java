@@ -279,6 +279,18 @@ public class VesperaBridgeAutoConfiguration {
     }
 
     /**
+     * Writes ASYNC response bodies without a Rust {@code Content-Type} as-is,
+     * so Spring's content negotiation does not invent one (SYNC / DIRECT
+     * parity).
+     */
+    @Bean
+    @ConditionalOnBean(VesperaProxyController.class)
+    @ConditionalOnMissingBean
+    public VesperaAsyncResponseBodyAdvice vesperaAsyncResponseBodyAdvice() {
+        return new VesperaAsyncResponseBodyAdvice();
+    }
+
+    /**
      * {@code vespera.bridge.cors=rust} (default): route CORS preflights to
      * the proxy controller instead of Spring's built-in preflight handling,
      * so the Rust router (e.g. a {@code CorsLayer}) answers them.

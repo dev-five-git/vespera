@@ -81,6 +81,28 @@ class ProxyControllerBodyHeaderTest {
         }
     }
 
+    @Test
+    void asyncErrorEntitiesEchoTheRequestId() {
+        ProxyServletResponse proxied = new ProxyServletResponse(
+                new MockHttpServletResponse(), "X-Request-Id", "req-7");
+        for (Throwable failure : new Throwable[] {
+                new java.util.concurrent.CompletionException(
+                        new java.util.concurrent.RejectedExecutionException("queue full")),
+                new RuntimeException("boom"),
+                new ResponseStatusException(org.springframework.http.HttpStatusCode.valueOf(500), "too big"),
+                new java.util.concurrent.CancellationException()}) {
+            ResponseEntity<?> entity = VesperaProxyController.asyncFailureToResponse(failure, proxied);
+            assertEquals("req-7", entity.getHeaders().getFirst("X-Request-Id"), failure.toString());
+            assertEquals("text/plain;charset=utf-8", entity.getHeaders().getContentType().toString());
+        }
+        // Request ids disabled: no header.
+        ProxyServletResponse noIds = new ProxyServletResponse(new MockHttpServletResponse(), null, null);
+        assertNull(VesperaProxyController.asyncFailureToResponse(new RuntimeException("x"), noIds)
+                .getHeaders().getFirst("X-Request-Id"));
+        assertNull(VesperaProxyController.asyncFailureToResponse(new RuntimeException("x"), null)
+                .getHeaders().getFirst("X-Request-Id"));
+    }
+
     // ── ASYNC buffered-response cap parity with SYNC ─────────────────────
 
     /** Build a wire response {@code [u32 BE headerLen | header JSON | body]}. */

@@ -308,6 +308,11 @@ public class VesperaReactiveProxyHandler implements WebHandler {
         });
     }
 
+    /** Who owns CORS ({@code vespera.bridge.cors}), or {@code null} when unset. */
+    CorsHandling cors() {
+        return cors;
+    }
+
     private String resolveAppName(ServerWebExchange exchange, ProxyExchange px) {
         try {
             String app = appResolver.resolveAppName(exchange);
@@ -322,11 +327,13 @@ public class VesperaReactiveProxyHandler implements WebHandler {
 
     /**
      * The request path relative to the application
-     * ({@code spring.webflux.base-path} removed), raw (still percent-encoded);
-     * the bare application root collapses to {@code "/"}.
+     * ({@code spring.webflux.base-path} removed), raw (still percent-encoded),
+     * without {@code ;} path parameters ({@code ;jsessionid=…}, matrix
+     * variables — servlet parity, {@link PathParameters}); the bare
+     * application root collapses to {@code "/"}.
      */
     static String pathWithinApplication(ServerHttpRequest request) {
-        String path = request.getPath().pathWithinApplication().value();
+        String path = PathParameters.strip(request.getPath().pathWithinApplication().value());
         return path.isEmpty() ? "/" : path;
     }
 
