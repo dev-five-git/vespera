@@ -187,7 +187,9 @@ class ConfigurationMetadataTest {
         assertTrue(conditions.containsAll(FOREIGN_PROPERTIES), conditions.toString());
         conditions.removeAll(FOREIGN_PROPERTIES);
         assertTrue(conditions.contains(PREFIX + ".springdoc.mode"), conditions.toString());
-        assertTrue(conditions.contains("management.health.vespera.enabled"), conditions.toString());
+        // Read by VesperaBridgeHealthAutoConfiguration's own Condition (not @ConditionalOnProperty).
+        assertNotNull(properties.get(VesperaBridgeHealthAutoConfiguration.ENABLED_PROPERTY),
+                "undocumented " + VesperaBridgeHealthAutoConfiguration.ENABLED_PROPERTY);
         for (String name : conditions) {
             JsonNode property = properties.get(name);
             assertNotNull(property, "undocumented @ConditionalOnProperty " + name);

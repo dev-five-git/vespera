@@ -122,6 +122,11 @@ class ProxyOperabilityTest {
         request.setRemoteAddr("[::1]");
         request.setRemotePort(8);
         assertEquals("[::1]:8", ProxyHeaderSource.remoteAddr(request));
+        // IPv6 zone id (link-local) stripped, bracketed or not — as ReactiveHeaderSource does.
+        request.setRemoteAddr("fe80:0:0:0:0:0:0:1%eth0");
+        assertEquals("[fe80:0:0:0:0:0:0:1]:8", ProxyHeaderSource.remoteAddr(request));
+        request.setRemoteAddr("[fe80::1%25]");
+        assertEquals("[fe80::1]:8", ProxyHeaderSource.remoteAddr(request));
         request.setRemoteAddr(null);
         assertNull(ProxyHeaderSource.remoteAddr(request));
         request.setRemoteAddr("");

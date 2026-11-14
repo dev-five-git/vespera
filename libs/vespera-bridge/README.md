@@ -192,6 +192,7 @@ vespera:
       max-buffered-response-bytes: 268435456 # overrides the forwarded max-buffered-response-bytes
       dispatch-timeout: 30s                 # deadline → 504 (default: disabled); see below
       async-max-in-flight: 4096             # dispatchAsync concurrency cap → 503
+      max-request-producers: 256            # concurrent bidirectional upload producers (0 = unlimited)
       worker-threads: 8                     # shared Tokio runtime workers (default: CPUs)
       max-blocking-threads: 512             # shared runtime blocking pool
 ```
@@ -1101,6 +1102,9 @@ runs. Configuration precedence (first hit wins, then cached):
 | Chunk buffer size | `vespera.streaming.chunkBytes` | `VESPERA_STREAMING_CHUNK_BYTES` | 256 KiB | 4 KiB – 8 MiB |
 | Request channel slots | `vespera.streaming.channelCapacity` | `VESPERA_STREAMING_CHANNEL_CAPACITY` | 16 | 1 – 1024 |
 | Tokio worker threads | `vespera.runtime.workerThreads` | `VESPERA_RUNTIME_WORKERS` | logical CPUs | 1 – 1024 |
+| Concurrent upload producers (bidirectional streaming; further uploads wait for a slot) | `vespera.streaming.maxRequestProducers` | `VESPERA_MAX_STREAMING_REQUEST_PRODUCERS` | 256 | `0` = unlimited |
+
+`maxRequestProducers` is also set by `VesperaBridge.configureMaxRequestProducers(n)` and by the Spring property `vespera.bridge.native.max-request-producers`.
 
 **Java API** — call before `VesperaBridge.init(...)` for guaranteed precedence:
 
@@ -1229,7 +1233,7 @@ If the native library was never loaded (`VesperaBridge.init` not called, or it f
 
 ### Health indicator
 
-With Spring Boot Actuator on the classpath (Boot 4 `spring-boot-health` or Boot 3.5 `spring-boot-actuator` — both optional dependencies of the bridge), the `vespera` health indicator is registered: `UP` once the native library is loaded, `DOWN` (`reason: native library not initialized`) before that, `OUT_OF_SERVICE` after `VesperaBridge.shutdown(...)`. Its details carry `bridgeVersion` and the verified `nativeVersion`. Disable it with `management.health.vespera.enabled=false`; see it at `/actuator/health/vespera` (with `management.endpoint.health.show-details`).
+With Spring Boot Actuator on the classpath (Boot 4 `spring-boot-health` or Boot 3.5 `spring-boot-actuator` — both optional dependencies of the bridge), the `vespera` health indicator is registered: `UP` once the native library is loaded, `DOWN` (`reason: native library not initialized`) before that, `OUT_OF_SERVICE` after `VesperaBridge.shutdown(...)`. Its details carry `bridgeVersion` and the verified `nativeVersion`. Disable it with `management.health.vespera.enabled=false`. Like Boot's own indicators it also follows `management.health.defaults.enabled=false` while `management.health.vespera.enabled` is unset (the vespera key wins when set); see it at `/actuator/health/vespera` (with `management.endpoint.health.show-details`).
 
 ### Panics, 5xx and metrics
 
