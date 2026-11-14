@@ -1,14 +1,15 @@
 ---
-source: crates/vespera_macro/src/schema_macro/from_model/generate.rs
-expression: "run_scenario(models, new_type, source_type, rows, relations, module)"
+source: crates/vespera_macro/src/schema_macro/from_model/generate/tests.rs
+expression: "run_scenario(models, new_type, source_type, rows, &relations, module)"
 ---
 impl MemoSchema {
     pub async fn from_model(
         model: Model,
         db: &sea_orm::DatabaseConnection,
     ) -> Result<Self, sea_orm::DbErr> {
-        use sea_orm::ModelTrait;
-        let user = model.find_related(user::Entity).one(db).await?;
+        let user = sea_orm::ModelTrait::find_related(&model, user::Entity)
+            .one(db)
+            .await?;
         Ok(Self {
             id: model.id,
             user: user.map(|r| Box::new(Default::default())),

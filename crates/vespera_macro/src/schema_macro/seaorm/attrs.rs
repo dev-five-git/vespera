@@ -1,33 +1,69 @@
-/// Extract a named string value from a `sea_orm` attribute.
-fn extract_sea_orm_attr_value(attrs: &[syn::Attribute], attr_name: &str) -> Option<String> {
-    attrs.iter().find_map(|attr| {
-        if !attr.path().is_ident("sea_orm") {
-            return None;
-        }
+/// One `key` / `key = value` entry of a `#[sea_orm(...)]` attribute.
+struct SeaOrmEntry {
+    key: String,
+    value: Option<syn::Expr>,
+}
 
-        let mut found_value = None;
+/// Every entry of the field's `#[sea_orm(...)]` attributes, parsed as
+/// proper meta items: values may be any expression (`"x"`, `false`, `-1`,
+/// `0.5`, a string containing commas), list entries (`key(..)`) are skipped.
+/// A malformed attribute contributes the entries parsed before the error.
+fn sea_orm_entries(attrs: &[syn::Attribute]) -> Vec<SeaOrmEntry> {
+    let mut entries = Vec::new();
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("sea_orm")) {
         let _ = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident(attr_name) {
-                found_value = meta
-                    .value()
-                    .ok()
-                    .and_then(|v| v.parse::<syn::LitStr>().ok())
-                    .map(|lit| lit.value());
-            } else if meta.input.peek(syn::Token![=]) {
-                drop(
-                    meta.value()
-                        .and_then(syn::parse::ParseBuffer::parse::<syn::LitStr>),
-                );
-            }
+            let key = meta
+                .path
+                .get_ident()
+                .map_or_else(String::new, ToString::to_string);
+            let value = if meta.input.peek(syn::Token![=]) {
+                Some(meta.value()?.parse::<syn::Expr>()?)
+            } else {
+                if meta.input.peek(syn::token::Paren) {
+                    let content;
+                    syn::parenthesized!(content in meta.input);
+                    content.parse::<proc_macro2::TokenStream>()?;
+                }
+                None
+            };
+            entries.push(SeaOrmEntry { key, value });
             Ok(())
         });
-        found_value
-    })
+    }
+    entries
+}
+
+fn entry<'a>(entries: &'a [SeaOrmEntry], key: &str) -> Option<&'a SeaOrmEntry> {
+    entries.iter().find(|entry| entry.key == key)
+}
+
+fn string_value(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(lit),
+            ..
+        }) => Some(lit.value()),
+        _ => None,
+    }
+}
+
+/// Extract a named string value from a `sea_orm` attribute.
+fn extract_sea_orm_attr_value(attrs: &[syn::Attribute], attr_name: &str) -> Option<String> {
+    entry(&sea_orm_entries(attrs), attr_name)?
+        .value
+        .as_ref()
+        .and_then(string_value)
 }
 
 /// Extract the `from` field name from a `sea_orm` relation attribute.
 pub fn extract_belongs_to_from_field(attrs: &[syn::Attribute]) -> Option<String> {
     extract_sea_orm_attr_value(attrs, "from")
+}
+
+/// Extract the `to` field name (the referenced column) from a `sea_orm`
+/// relation attribute.
+pub fn extract_belongs_to_to_field(attrs: &[syn::Attribute]) -> Option<String> {
+    extract_sea_orm_attr_value(attrs, "to")
 }
 
 /// Extract the `relation_enum` value from a `sea_orm` attribute.
@@ -40,41 +76,15 @@ pub fn extract_via_rel(attrs: &[syn::Attribute]) -> Option<String> {
     extract_sea_orm_attr_value(attrs, "via_rel")
 }
 
-/// Extract `default_value` from a `sea_orm` attribute.
+/// Extract `default_value` from a `sea_orm` attribute: a string literal's
+/// contents, any other literal (number, bool, negative number) as written.
 pub fn extract_sea_orm_default_value(attrs: &[syn::Attribute]) -> Option<String> {
-    for attr in attrs {
-        if !attr.path().is_ident("sea_orm") {
-            continue;
-        }
-
-        let syn::Meta::List(meta_list) = &attr.meta else {
-            continue;
-        };
-        let tokens = meta_list.tokens.to_string();
-
-        if let Some(start) = tokens.find("default_value") {
-            let remaining = &tokens[start + "default_value".len()..];
-            let remaining = remaining.trim_start();
-            if let Some(after_eq) = remaining.strip_prefix('=') {
-                let value_str = after_eq.trim_start();
-                let end = value_str.find(',').unwrap_or(value_str.len());
-                let raw_value = value_str[..end].trim();
-
-                if raw_value.is_empty() {
-                    continue;
-                }
-
-                if let Some(inner) = raw_value
-                    .strip_prefix('"')
-                    .and_then(|s| s.strip_suffix('"'))
-                {
-                    return Some(inner.to_string());
-                }
-                return Some(raw_value.to_string());
-            }
-        }
-    }
-    None
+    let entries = sea_orm_entries(attrs);
+    let expr = entry(&entries, "default_value")?.value.as_ref()?;
+    string_value(expr).or_else(|| {
+        let tokens = quote::ToTokens::to_token_stream(expr).to_string();
+        Some(tokens.replace(' ', ""))
+    })
 }
 
 /// Check if a `sea_orm(default_value)` is a SQL function.
@@ -82,20 +92,29 @@ pub fn is_sql_function_default(value: &str) -> bool {
     value.contains('(')
 }
 
-/// Check if a field has `#[sea_orm(primary_key)]`.
+/// Check if a field is a database-generated primary key:
+/// `#[sea_orm(primary_key)]` without `auto_increment = false` (SeaORM's
+/// default for a primary key is auto-increment).
 pub fn has_sea_orm_primary_key(attrs: &[syn::Attribute]) -> bool {
-    for attr in attrs {
-        if !attr.path().is_ident("sea_orm") {
-            continue;
-        }
-        let syn::Meta::List(meta_list) = &attr.meta else {
-            continue;
-        };
-        if meta_list.tokens.to_string().contains("primary_key") {
-            return true;
-        }
-    }
-    false
+    let entries = sea_orm_entries(attrs);
+    let is_pk = entry(&entries, "primary_key").is_some_and(|pk| match &pk.value {
+        None => true,
+        Some(expr) => is_true(expr),
+    });
+    let auto_increment = entry(&entries, "auto_increment")
+        .and_then(|e| e.value.as_ref())
+        .is_none_or(is_true);
+    is_pk && auto_increment
+}
+
+fn is_true(expr: &syn::Expr) -> bool {
+    !matches!(
+        expr,
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Bool(syn::LitBool { value: false, .. }),
+            ..
+        })
+    )
 }
 
 #[cfg(test)]
@@ -343,5 +362,52 @@ mod tests {
     fn test_has_sea_orm_primary_key_non_list_meta() {
         let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[sea_orm = "something"] )];
         assert!(!has_sea_orm_primary_key(&attrs));
+    }
+
+    #[rstest]
+    #[case::comma_in_string(quote::quote!(#[sea_orm(default_value = "a, b")]), Some("a, b"))]
+    #[case::after_bool(
+        quote::quote!(#[sea_orm(auto_increment = false, default_value = "x")]),
+        Some("x")
+    )]
+    #[case::negative(quote::quote!(#[sea_orm(default_value = -5)]), Some("-5"))]
+    #[case::float(quote::quote!(#[sea_orm(default_value = 0.5)]), Some("0.5"))]
+    #[case::bool_literal(quote::quote!(#[sea_orm(default_value = true)]), Some("true"))]
+    #[case::key_named_like_default(quote::quote!(#[sea_orm(column_name = "default_value")]), None)]
+    #[case::list_entry(quote::quote!(#[sea_orm(indexed(unique), default_value = "1")]), Some("1"))]
+    #[case::malformed(quote::quote!(#[sea_orm(default_value)]), None)]
+    #[case::non_ident_key(quote::quote!(#[sea_orm(a::b, default_value = "2")]), Some("2"))]
+    fn default_value_is_parsed_as_meta(
+        #[case] attr: proc_macro2::TokenStream,
+        #[case] expected: Option<&str>,
+    ) {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#attr)];
+        assert_eq!(extract_sea_orm_default_value(&attrs).as_deref(), expected);
+    }
+
+    #[rstest]
+    #[case::flag(quote::quote!(#[sea_orm(primary_key)]), true)]
+    #[case::explicit_true(quote::quote!(#[sea_orm(primary_key = true)]), true)]
+    #[case::explicit_false(quote::quote!(#[sea_orm(primary_key = false)]), false)]
+    #[case::not_auto_increment(quote::quote!(#[sea_orm(primary_key, auto_increment = false)]), false)]
+    #[case::substring_only(quote::quote!(#[sea_orm(column_name = "primary_key")]), false)]
+    fn primary_key_is_parsed_as_meta(
+        #[case] attr: proc_macro2::TokenStream,
+        #[case] expected: bool,
+    ) {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#attr)];
+        assert_eq!(has_sea_orm_primary_key(&attrs), expected);
+    }
+
+    #[test]
+    fn relation_values_survive_non_string_entries() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
+            #[sea_orm(belongs_to = "super::user::Entity", on_delete = Cascade, from = "user_id", to = "id")]
+        )];
+        assert_eq!(
+            extract_belongs_to_from_field(&attrs).as_deref(),
+            Some("user_id")
+        );
+        assert_eq!(extract_belongs_to_to_field(&attrs).as_deref(), Some("id"));
     }
 }

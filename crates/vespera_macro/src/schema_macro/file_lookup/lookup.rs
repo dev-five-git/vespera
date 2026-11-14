@@ -79,7 +79,7 @@ pub(super) fn candidate_file_paths(src_dir: &Path, module_segments: &[&str]) -> 
     ]
 }
 
-//// Try to find a struct definition from a module path by reading source files.
+/// Try to find a struct definition from a module path by reading source files.
 ///
 /// This allows `schema_type`! to work with structs defined in other files, like:
 /// ```ignore

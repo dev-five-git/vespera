@@ -167,7 +167,7 @@ struct FileCache {
     /// source text — cloning it per hit copied kilobytes.
     struct_lookup: HashMap<String, PathLookupEntry<Option<Arc<StructMetadata>>>>,
     /// Cached FK column lookups plus dependency fingerprint.
-    fk_column_lookup: HashMap<(String, String), PathLookupEntry<Option<String>>>,
+    fk_column_lookup: HashMap<(String, String), PathLookupEntry<Option<(String, Option<String>)>>>,
     /// Cached module path extraction from schema paths: path_str → Vec<module segments>.
     module_path_cache: HashMap<String, Vec<String>>,
     /// Cached struct definitions from files: file_path → (fingerprint, struct_name → definition_string).

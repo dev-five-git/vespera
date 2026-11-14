@@ -2,82 +2,65 @@
 
 use std::path::Path;
 
-use super::lookup::candidate_file_paths;
+use super::lookup::find_struct_in_module;
 
-/// Find the FK column name from the target entity for a `HasMany` relation with `via_rel`.
+/// Find the FK columns from the target entity for a `HasMany` relation with `via_rel`.
 ///
 /// When a `HasMany` relation has `via_rel = "TargetUser"`, this function:
-/// 1. Looks up the target entity file (e.g., notification.rs from schema path)
+/// 1. Looks up the target entity's `Model` (e.g., in `crate::models::notification`,
+///    through its own file or the module tree)
 /// 2. Finds the field with matching `relation_enum = "TargetUser"`
-/// 3. Extracts and returns the `from` attribute value (e.g., "`target_user_id`")
+/// 3. Returns its `from` (the FK column on the target, e.g. "`target_user_id`")
+///    and `to` (the referenced column on the source, e.g. "`id`") values
 ///
-/// Returns None if the target file can't be found or parsed, or if no matching relation exists.
-#[allow(clippy::too_many_lines)]
+/// Returns None if the target model can't be found or parsed, or if no
+/// matching relation (with a `from`) exists.
 pub fn find_fk_column_from_target_entity(
     target_schema_path: &str,
     via_rel: &str,
-) -> Option<String> {
-    use crate::schema_macro::seaorm::{extract_belongs_to_from_field, extract_relation_enum};
+) -> Option<(String, Option<String>)> {
+    use crate::schema_macro::seaorm::{
+        extract_belongs_to_from_field, extract_belongs_to_to_field, extract_relation_enum,
+    };
 
     // Get CARGO_MANIFEST_DIR to locate src folder (cached to avoid repeated syscalls)
     let manifest_dir = crate::schema_macro::file_cache::get_manifest_dir()?;
     let src_dir = Path::new(&manifest_dir).join("src");
 
-    // Parse the schema path to get file path
-    // e.g., "crate :: models :: notification :: Schema" -> src/models/notification.rs
-    let segments: Vec<&str> = target_schema_path
+    // e.g., "crate :: models :: notification :: Schema" -> models::notification
+    let module_segments: Vec<&str> = target_schema_path
         .split("::")
         .map(str::trim)
-        .filter(|s| !s.is_empty() && *s != "Schema" && *s != "Entity")
+        .filter(|s| {
+            !s.is_empty() && !matches!(*s, "Schema" | "Entity" | "crate" | "self" | "super")
+        })
         .collect();
 
-    let module_segments: Vec<&str> = segments
-        .iter()
-        .filter(|s| **s != "crate" && **s != "self" && **s != "super")
-        .copied()
-        .collect();
+    let model_def = find_struct_in_module(&src_dir, &module_segments, "Model")?;
+    let model = crate::schema_macro::file_cache::parse_struct_cached(&model_def).ok()?;
 
-    if module_segments.is_empty() {
+    // Search through fields for the one with matching relation_enum
+    let syn::Fields::Named(fields_named) = &model.fields else {
         return None;
-    }
-
-    // Try different file path patterns
-    let file_paths = candidate_file_paths(&src_dir, &module_segments);
-
-    for file_path in file_paths {
-        // No `exists()` preflight: `get_struct_definition` returns `None` for
-        // a missing/unreadable file via its mtime-validated cache, so the
-        // stat is redundant (and TOCTOU-prone).
-        let Some(model_def) =
-            crate::schema_macro::file_cache::get_struct_definition(&file_path, "Model")
-        else {
-            continue;
-        };
-        let Ok(model) = crate::schema_macro::file_cache::parse_struct_cached(&model_def) else {
-            continue;
-        };
-
-        // Search through fields for the one with matching relation_enum
-        if let syn::Fields::Named(fields_named) = &model.fields {
-            for field in &fields_named.named {
-                let field_relation_enum = extract_relation_enum(&field.attrs);
-                if field_relation_enum.as_deref() == Some(via_rel) {
-                    // Found the matching field, extract FK column from `from` attribute
-                    return extract_belongs_to_from_field(&field.attrs);
-                }
-            }
-        }
-    }
-
-    None
+    };
+    let field = fields_named
+        .named
+        .iter()
+        .find(|field| extract_relation_enum(&field.attrs).as_deref() == Some(via_rel))?;
+    let from = extract_belongs_to_from_field(&field.attrs)?;
+    Some((from, extract_belongs_to_to_field(&field.attrs)))
 }
 
 #[cfg(test)]
 mod tests {
     use crate::schema_macro::file_lookup::find_struct_from_path;
 
-    use super::*;
     use tempfile::TempDir;
+
+    /// The `from` column only (the historical return value these cases pin).
+    fn find_fk_column_from_target_entity(path: &str, via_rel: &str) -> Option<String> {
+        super::find_fk_column_from_target_entity(path, via_rel).map(|(from, _)| from)
+    }
     #[test]
     fn test_find_fk_column_from_target_entity_success() {
         let temp_dir = TempDir::new().unwrap();

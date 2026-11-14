@@ -1,6 +1,5 @@
 ---
 source: examples/axum-example/tests/integration_test.rs
-assertion_line: 457
 expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
 ---
 {
@@ -6061,6 +6060,141 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "required": [
           "title",
           "tags"
+        ]
+      },
+      "TeamMemberSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "mentorTeam": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TeamSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mentorTeamId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "team": {
+            "$ref": "#/components/schemas/TeamSchema"
+          },
+          "teamId": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "teamId",
+          "team"
+        ]
+      },
+      "TeamSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "TeamWithMembers": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamWithMembers_Members"
+            }
+          },
+          "mentees": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamWithMembers_Mentees"
+            }
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "members",
+          "mentees"
+        ]
+      },
+      "TeamWithMembers_Members": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "mentorTeamId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "teamId": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "teamId"
+        ]
+      },
+      "TeamWithMembers_Mentees": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "mentorTeamId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "teamId": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "teamId"
         ]
       },
       "Telemetry": {

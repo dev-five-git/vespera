@@ -1,19 +1,19 @@
 ---
-source: crates/vespera_macro/src/schema_macro/from_model/generate.rs
-expression: "run_scenario(models, new_type, source_type, rows, relations, module)"
+source: crates/vespera_macro/src/schema_macro/from_model/generate/tests.rs
+expression: "run_scenario(models, new_type, source_type, rows, &relations, module)"
 ---
 impl UserSchema {
     pub async fn from_model(
         model: crate::models::user::Model,
         db: &sea_orm::DatabaseConnection,
     ) -> Result<Self, sea_orm::DbErr> {
-        use sea_orm::ModelTrait;
-        let target_user_notifications = crate::models::notification::Entity::TargetUserId
-            .into_column()
-            .eq(model.id.clone())
-            .into_condition();
-        let target_user_notifications = crate::models::notification::Entity::find()
-            .filter(target_user_notifications)
+        let target_user_notifications = sea_orm::QueryFilter::filter(
+                <crate::models::notification::Entity as sea_orm::EntityTrait>::find(),
+                sea_orm::ColumnTrait::eq(
+                    &crate::models::notification::Column::TargetUserId,
+                    model.id.clone(),
+                ),
+            )
             .all(db)
             .await?;
         let __parent_stub__ = Self {
