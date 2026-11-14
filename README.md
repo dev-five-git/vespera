@@ -138,7 +138,11 @@ src/routes/
 (`user_groups.rs` → `/user-groups`). An explicit `#[route(path = "...")]`
 suffix is used verbatim — `path = "/my_route"` serves `/my_route`. axum
 catch-all segments (`path = "/files/{*rest}"`) are documented as
-`/files/{rest}` with a `rest` path parameter.
+`/files/{rest}` with a `rest` path parameter. The axum 0.7 notation is
+accepted and normalized at compile time (`:id` → `{id}`, `*rest` →
+`{*rest}`, styles may be mixed); a malformed path (unbalanced braces, empty
+`{}` / `:`, a duplicate parameter, a catch-all before the last segment) is a
+compile error on the path literal.
 
 ### Route Handlers
 
