@@ -255,8 +255,9 @@ fn bare_lookup_uses_injected_call_site_definition_when_local_file_is_available()
         .find(|path| path.file_name().is_some_and(|name| name == "src"))
         .expect("this test module lives below src");
 
-    let (metadata, module_path) = find_bare_struct_in_call_site(src_dir, "InjectedCallSiteModel")
-        .expect("injected call-site definition resolves");
+    let (metadata, module_path) =
+        find_bare_struct_in_file(&call_site_file, "InjectedCallSiteModel", src_dir)
+            .expect("injected call-site definition resolves");
     assert_eq!(metadata.name, "InjectedCallSiteModel");
     assert!(module_path.starts_with(&["crate".to_string()]));
 }

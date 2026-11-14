@@ -13,6 +13,7 @@ mod from_model;
 mod generate_type;
 mod inline_types;
 mod input;
+mod module_scope;
 mod same_file_override;
 mod seaorm;
 mod transformation;

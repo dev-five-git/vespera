@@ -247,6 +247,12 @@ pub fn bump_epoch() {
     });
 }
 
+/// The current per-invocation epoch (see [`bump_epoch`]), for caches outside
+/// this module that must not outlive one macro invocation.
+pub fn current_epoch() -> u64 {
+    FILE_CACHE.with(|cache| cache.borrow().epoch)
+}
+
 /// Fetch the [`FileFingerprint`] (mtime + byte length) for `path`, using the
 /// epoch cache to avoid redundant `fs::metadata` syscalls within a single
 /// macro invocation.
