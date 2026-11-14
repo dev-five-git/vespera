@@ -568,6 +568,30 @@ mod tests {
         );
     }
 
+    /// A `$ref` branch (a newtype variant over a component) is kept as is
+    /// next to the converted unit names.
+    #[test]
+    fn flattened_unit_variants_keep_ref_branches() {
+        let schema = Schema {
+            one_of: Some(vec![
+                SchemaRef::Ref(vespera_core::schema::Reference::schema("Payload")),
+                SchemaRef::Inline(Box::new(Schema {
+                    r#enum: Some(vec![serde_json::json!("A")]),
+                    ..Schema::string()
+                })),
+            ]),
+            ..Schema::default()
+        };
+        let flattened = flattened_unit_variants(&schema).unwrap();
+        assert_eq!(
+            serde_json::to_value(&flattened).unwrap()["oneOf"],
+            serde_json::json!([
+                {"$ref": "#/components/schemas/Payload"},
+                {"type": "object", "properties": {"A": {"type": "null"}}, "required": ["A"]}
+            ])
+        );
+    }
+
     /// A macro-expanded `$ty` arrives as an invisible group.
     #[test]
     fn resolve_type_peels_invisible_groups() {

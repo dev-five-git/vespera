@@ -143,10 +143,8 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
             emit_field_block(ident, &wire_name, &field.ty, constraints)
         })
         .collect();
-
-    if field_blocks.is_empty() {
-        return TokenStream::new();
-    }
+    // Non-empty: the gate above found a field with a runtime rule, and every
+    // runtime rule emits a block.
 
     quote! {
         #[allow(
@@ -190,10 +188,8 @@ fn emit_field_block(
         crate::schema_macro::type_utils::option_inner(field_ty).unwrap_or(field_ty),
     );
     let rule_blocks = emit_rule_blocks(c, field_ident, numeric_kind.as_deref());
+    // `has_runtime_rule` holds, so at least one of the two is non-empty.
     let dive_block = emit_dive_block(c);
-    if rule_blocks.is_empty() && dive_block.is_empty() {
-        return None;
-    }
 
     let block = if crate::schema_macro::type_utils::is_option_type(field_ty) {
         // `field_ident` is `&Option<T>` after the `let Self { .. } = self` destructure.
