@@ -20,7 +20,7 @@
 //! - [`build_partial_config`] - Determine optional field configuration
 //! - [`build_rename_map`] - Create field name mapping for renames
 //! - [`filter_fields`] - Apply pick/omit filters to field list
-//! - [`extract_field_attrs`] - Extract serde attributes from fields
+//! - [`container_serde_attrs`] / [`field_serde_attrs`] - Rebuild serde attributes for the generated struct
 //!
 //! # Example
 //!
@@ -33,8 +33,13 @@
 
 use std::collections::{HashMap, HashSet};
 
+use proc_macro2::TokenStream;
+use quote::quote;
+use syn::punctuated::Punctuated;
+
 use super::input::PartialMode;
 use crate::parser::extract_rename_all;
+use crate::parser::schema::{SerdeSide, extract_field_rename_for, rename_field};
 
 /// Builds the omit set from input without cloning the source Vec.
 pub fn build_omit_set(omit: Option<&Vec<String>>) -> HashSet<String> {
@@ -66,28 +71,138 @@ pub fn build_rename_map(rename: Option<&Vec<(String, String)>>) -> HashMap<Strin
     rename.into_iter().flatten().cloned().collect()
 }
 
-/// Extracts serde attributes from a struct, excluding `rename_all`.
+/// Container serde keys that are never copied onto the generated struct:
+/// `rename_all` is re-emitted from the effective strategy, and `from` /
+/// `try_from` / `into` / `default` require impls (`From`, `TryFrom`, `Into`,
+/// `Default`) the generated type does not have.
+const CONTAINER_STRIPPED_KEYS: &[&str] = &["rename_all", "from", "try_from", "into", "default"];
+
+/// Name of a serde list item (`rename`, `default`, `with`, ...).
+fn serde_key(meta: &syn::Meta) -> String {
+    meta.path()
+        .segments
+        .last()
+        .map(|seg| seg.ident.to_string())
+        .unwrap_or_default()
+}
+
+/// Rebuilds `#[serde(...)]` attributes item by item, keeping only the items
+/// `keep` accepts. An attribute left without items is dropped; one whose list
+/// does not parse as `syn::Meta` items is kept verbatim so serde itself
+/// reports the problem.
+pub fn rebuild_serde_attrs<'a>(
+    attrs: impl IntoIterator<Item = &'a syn::Attribute>,
+    mut keep: impl FnMut(&syn::Meta) -> bool,
+) -> Vec<TokenStream> {
+    let mut out = Vec::new();
+    for attr in attrs {
+        if !attr.path().is_ident("serde") {
+            continue;
+        }
+        let Ok(items) =
+            attr.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+        else {
+            out.push(quote! { #attr });
+            continue;
+        };
+        let kept: Vec<&syn::Meta> = items.iter().filter(|meta| keep(meta)).collect();
+        if !kept.is_empty() {
+            out.push(quote! { #[serde(#(#kept),*)] });
+        }
+    }
+    out
+}
+
+/// Container serde attributes for the generated struct: every source key
+/// except [`CONTAINER_STRIPPED_KEYS`], rebuilt key by key so e.g.
+/// `deny_unknown_fields` survives next to a stripped `rename_all`.
+pub fn container_serde_attrs(attrs: &[syn::Attribute]) -> Vec<TokenStream> {
+    rebuild_serde_attrs(attrs, |meta| {
+        !CONTAINER_STRIPPED_KEYS.contains(&serde_key(meta).as_str())
+    })
+}
+
+/// Field serde attributes for the generated struct.
 ///
-/// This is used to inherit serde attributes from the source struct
-/// while handling `rename_all` separately.
-pub fn extract_serde_attrs_without_rename_all(attrs: &[syn::Attribute]) -> Vec<&syn::Attribute> {
-    attrs
-        .iter()
-        .filter(|attr| {
-            if !attr.path().is_ident("serde") {
-                return false;
+/// - `strip_rename`: drop `rename` (the caller emits the wire name itself).
+/// - `wrapped_in_option`: the field type became `Option<T>` (`partial`), so
+///   the keys typed against `T` — `default = "path"`, `with`,
+///   `serialize_with`, `deserialize_with`, `skip_serializing_if` — are
+///   dropped (a missing `Option` field already deserializes to `None`). A
+///   dropped `skip_serializing_if` becomes `skip_serializing_if =
+///   "Option::is_none"`, so an unset field stays absent from the output.
+pub fn field_serde_attrs(
+    attrs: &[syn::Attribute],
+    wrapped_in_option: bool,
+    strip_rename: bool,
+) -> Vec<TokenStream> {
+    let mut dropped_skip_if = false;
+    let mut out = rebuild_serde_attrs(attrs, |meta| {
+        let key = serde_key(meta);
+        if strip_rename && key == "rename" {
+            return false;
+        }
+        if !wrapped_in_option {
+            return true;
+        }
+        match key.as_str() {
+            "skip_serializing_if" => {
+                dropped_skip_if = true;
+                false
             }
-            // Check if this serde attr contains rename_all
-            let mut has_rename_all = false;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("rename_all") {
-                    has_rename_all = true;
-                }
-                Ok(())
-            });
-            !has_rename_all
-        })
-        .collect()
+            "with" | "serialize_with" | "deserialize_with" => false,
+            "default" => matches!(meta, syn::Meta::Path(_)),
+            _ => true,
+        }
+    });
+    if dropped_skip_if {
+        out.push(quote! { #[serde(skip_serializing_if = "Option::is_none")] });
+    }
+    out
+}
+
+/// Wire name of a field the `rename` parameter renamed: the Rust field
+/// changes, the JSON key does not. It is the source field's explicit serde
+/// `rename` (per side), else `rename_all` applied to the SOURCE field name.
+pub fn renamed_field_serde_rename(
+    attrs: &[syn::Attribute],
+    source_field_name: &str,
+    rename_all: &str,
+) -> TokenStream {
+    let serde_only: Vec<syn::Attribute> = attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("serde"))
+        .cloned()
+        .collect();
+    let fallback = || rename_field(source_field_name, Some(rename_all));
+    let ser = extract_field_rename_for(&serde_only, SerdeSide::Serialize).unwrap_or_else(fallback);
+    let de = extract_field_rename_for(&serde_only, SerdeSide::Deserialize).unwrap_or_else(fallback);
+    if ser == de {
+        quote! { #[serde(rename = #ser)] }
+    } else {
+        quote! { #[serde(rename(serialize = #ser, deserialize = #de))] }
+    }
+}
+
+/// Multipart twin of [`renamed_field_serde_rename`]: pins the form field name
+/// of a renamed field to the source's (`rename_all` applied to the SOURCE
+/// field name) with `#[form_data(field_name = "...")]`. `None` when the
+/// source already names it via `#[form_data(field_name)]` (copied as is).
+pub fn renamed_field_form_name(
+    attrs: &[syn::Attribute],
+    source_field_name: &str,
+    rename_all: &str,
+) -> Option<TokenStream> {
+    let form_data_only: Vec<syn::Attribute> = attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("form_data"))
+        .cloned()
+        .collect();
+    if extract_field_rename_for(&form_data_only, SerdeSide::Serialize).is_some() {
+        return None;
+    }
+    let name = rename_field(source_field_name, Some(rename_all));
+    Some(quote! { #[form_data(field_name = #name)] })
 }
 
 /// Extracts doc attributes from a struct or field.
@@ -114,14 +229,6 @@ pub fn determine_rename_all(
     )
 }
 
-/// Extracts serde attributes from a field.
-pub fn extract_field_serde_attrs(attrs: &[syn::Attribute]) -> Vec<&syn::Attribute> {
-    attrs
-        .iter()
-        .filter(|attr| attr.path().is_ident("serde"))
-        .collect()
-}
-
 /// Extracts `#[form_data(...)]` attributes from a field.
 ///
 /// Used in multipart mode to preserve `form_data` attributes from the source struct
@@ -130,26 +237,6 @@ pub fn extract_form_data_attrs(attrs: &[syn::Attribute]) -> Vec<&syn::Attribute>
     attrs
         .iter()
         .filter(|attr| attr.path().is_ident("form_data"))
-        .collect()
-}
-
-/// Filters out serde(rename) attributes from a list of serde attributes.
-///
-/// Used when applying a custom rename to avoid conflicts.
-pub fn filter_out_serde_rename<'a>(attrs: &[&'a syn::Attribute]) -> Vec<&'a syn::Attribute> {
-    attrs
-        .iter()
-        .filter(|attr| {
-            let mut has_rename = false;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("rename") {
-                    has_rename = true;
-                }
-                Ok(())
-            });
-            !has_rename
-        })
-        .copied()
         .collect()
 }
 
