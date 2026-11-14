@@ -36,12 +36,13 @@ public final class ReactiveIsolationDriver implements Callable<String> {
                 new ExchangePrincipalResolver(), 1024, 1024, "X-Request-Id", List.of(event -> { }),
                 CorsHandling.RUST);
 
-        MockServerWebExchange buffered = MockServerWebExchange.from(MockServerHttpRequest.post("/x")
+        MockServerWebExchange buffered = MockServerWebExchange.from(MockServerHttpRequest.post("/x;jsessionid=1")
                 .header("X-Vespera-App", "admin").header("Connection", "close").body("hi"));
         handler.handle(buffered).block(Duration.ofSeconds(5));
         require(buffered.getResponse().getStatusCode().value() == 200, "buffered status");
         require("ok".equals(buffered.getResponse().getBodyAsString().block()), "buffered body");
         require("hi".equals(transport.lastBody()), "request body");
+        require("/x".equals(transport.lastHeader().get("path").asText()), "path parameters stripped");
 
         MockServerWebExchange streamed = MockServerWebExchange.from(MockServerHttpRequest.get("/events")
                 .header(HttpHeaders.ACCEPT, "text/event-stream"));

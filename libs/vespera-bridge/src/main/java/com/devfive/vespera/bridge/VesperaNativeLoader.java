@@ -350,8 +350,8 @@ final class VesperaNativeLoader {
             requirePrivateDirectory(dir);
             return new ExtractionDir(dir, true);
         } catch (IOException | SecurityException notPrivate) {
-            Path fresh = Files.createTempDirectory(
-                    "vespera-native-", PosixFilePermissions.asFileAttribute(OWNER_ONLY_DIR));
+            Path fresh = freshTempDir(baseDir.resolve(hashDirName), notPrivate,
+                    PosixFilePermissions.asFileAttribute(OWNER_ONLY_DIR));
             fresh.toFile().deleteOnExit();
             LOG.log(System.Logger.Level.WARNING, "vespera: native extraction directory "
                     + baseDir.resolve(hashDirName) + " is not private to this user ("
@@ -385,7 +385,7 @@ final class VesperaNativeLoader {
             requireOwnedAclDirectory(dir);
             return new ExtractionDir(dir, true);
         } catch (IOException | SecurityException | UnsupportedOperationException notPrivate) {
-            Path fresh = Files.createTempDirectory("vespera-native-");
+            Path fresh = freshTempDir(dir, notPrivate);
             fresh.toFile().deleteOnExit();
             LOG.log(System.Logger.Level.WARNING, "vespera: native extraction directory " + dir
                     + " is not private to this user (" + notPrivate.getMessage()
@@ -408,7 +408,7 @@ final class VesperaNativeLoader {
             throw new UnsafeDirectoryException(dir + " is a link/junction or not a directory");
         }
         UserPrincipal owner = Files.getOwner(dir, LinkOption.NOFOLLOW_LINKS);
-        UserPrincipal me = currentUser();
+        UserPrincipal me = currentUser(dir);
         if (!owner.equals(me)) {
             throw new UnsafeDirectoryException(
                     dir + " is owned by " + owner.getName() + ", not " + me.getName());
@@ -507,7 +507,7 @@ final class VesperaNativeLoader {
         if (attrs.isSymbolicLink() || !attrs.isDirectory()) {
             throw new UnsafeDirectoryException(dir + " is a symbolic link or not a directory");
         }
-        UserPrincipal me = currentUser();
+        UserPrincipal me = currentUser(dir);
         if (!attrs.owner().equals(me)) {
             throw new UnsafeDirectoryException(
                     dir + " is owned by " + attrs.owner().getName() + ", not " + me.getName());
@@ -523,15 +523,29 @@ final class VesperaNativeLoader {
     private static volatile UserPrincipal cachedCurrentUser;
 
     /**
-     * The current OS user: the owner of a freshly created temp file (robust
-     * where {@code user.name} has no passwd entry, e.g. containers).
+     * The current OS user: the owner of a freshly created probe file (robust
+     * where {@code user.name} has no passwd entry, e.g. containers). The
+     * probe is created in {@code probeDir} — the extraction directory being
+     * verified — and only falls back to {@code java.io.tmpdir} when that
+     * fails, so {@code vespera.native.dir} works on hosts whose system temp
+     * directory is missing or read-only.
      */
-    private static UserPrincipal currentUser() throws IOException {
+    static UserPrincipal currentUser(Path probeDir) throws IOException {
         UserPrincipal cached = cachedCurrentUser;
         if (cached != null) {
             return cached;
         }
-        Path probe = Files.createTempFile("vespera-owner-", ".probe");
+        Path probe;
+        try {
+            probe = Files.createTempFile(probeDir, "vespera-owner-", ".probe");
+        } catch (IOException | SecurityException | UnsupportedOperationException inDir) {
+            try {
+                probe = Files.createTempFile("vespera-owner-", ".probe");
+            } catch (IOException inTmp) {
+                inTmp.addSuppressed(inDir);
+                throw inTmp;
+            }
+        }
         try {
             cached = Files.getOwner(probe, LinkOption.NOFOLLOW_LINKS);
         } finally {
@@ -539,6 +553,26 @@ final class VesperaNativeLoader {
         }
         cachedCurrentUser = cached;
         return cached;
+    }
+
+    /**
+     * A fresh, randomly named directory in {@code java.io.tmpdir} for this
+     * JVM only (the fallback when {@code notPrivate} rejected the configured
+     * one). When the system temp directory is unusable too, the failure
+     * names both problems instead of only the temp-directory one.
+     */
+    private static Path freshTempDir(Path rejected, Exception notPrivate,
+            java.nio.file.attribute.FileAttribute<?>... attrs) throws IOException {
+        try {
+            return Files.createTempDirectory("vespera-native-", attrs);
+        } catch (IOException tmpUnusable) {
+            IOException failure = new IOException("native extraction directory " + rejected
+                    + " is not usable (" + notPrivate.getMessage() + ") and no fallback directory could be"
+                    + " created in java.io.tmpdir (" + tmpUnusable + "). Point -D" + NATIVE_DIR_PROPERTY
+                    + " at a writable directory owned by this user.", tmpUnusable);
+            failure.addSuppressed(notPrivate);
+            throw failure;
+        }
     }
 
     /**

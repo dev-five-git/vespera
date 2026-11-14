@@ -65,24 +65,8 @@ final class RequestPaths {
         return path.substring(prefix.length());
     }
 
-    /** Drop every {@code ;param} suffix from each path segment. */
+    /** Drop every {@code ;param} suffix from each path segment ({@link PathParameters#strip}). */
     static String stripPathParameters(String path) {
-        if (path == null || path.indexOf(';') < 0) {
-            return path;
-        }
-        StringBuilder out = new StringBuilder(path.length());
-        boolean inParams = false;
-        for (int i = 0; i < path.length(); i++) {
-            char c = path.charAt(i);
-            if (c == '/') {
-                inParams = false;
-            } else if (c == ';') {
-                inParams = true;
-            }
-            if (!inParams) {
-                out.append(c);
-            }
-        }
-        return out.toString();
+        return PathParameters.strip(path);
     }
 }
