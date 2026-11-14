@@ -5,8 +5,8 @@ mod conversion;
 mod relations;
 
 pub use attrs::{
-    extract_belongs_to_from_field, extract_relation_enum, extract_sea_orm_default_value,
-    has_sea_orm_primary_key, is_sql_function_default,
+    extract_belongs_to_from_field, extract_belongs_to_to_field, extract_relation_enum,
+    extract_sea_orm_default_value, has_sea_orm_primary_key, is_sql_function_default,
 };
 pub use conversion::convert_type_with_chrono;
 #[cfg(test)]

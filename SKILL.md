@@ -696,6 +696,7 @@ Rules:
 - Only applies to single-value relations (`HasOne` / `BelongsTo`)
 - Must be opted in explicitly with `relation_adapters = [("field", AdapterStruct)]`
 - The adapter struct name is used verbatim; Vespera does not infer adapter names by convention
+- Entries naming a missing, repeated, excluded or non-`HasOne`/`BelongsTo` field are compile errors
 - Missing explicitly named adapter structs are compile errors
 - Vespera generates local compile adapters so `Option<Model>.into()` works without changing the route
 - OpenAPI references the adapter DTO's own schema (`UserInArticle`, `CategoryInArticle`), honoring any `#[schema(name = "...")]` override

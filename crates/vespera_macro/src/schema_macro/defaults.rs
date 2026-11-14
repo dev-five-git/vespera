@@ -138,42 +138,52 @@ fn sql_function_default_for_type(original_ty: &syn::Type) -> Option<(TokenStream
     };
     let segment = type_path.path.segments.last()?;
     let type_name = segment.ident.to_string();
+    // `chrono::DateTime<Tz>` keeps its zone; SeaORM's bare `DateTime` alias
+    // is the naive one.
+    let zone = if let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+        && let Some(syn::GenericArgument::Type(syn::Type::Path(zone))) = args.args.first()
+    {
+        zone.path.segments.last().map(|s| s.ident.to_string())
+    } else {
+        None
+    };
+    let epoch = quote! { vespera::chrono::DateTime::<vespera::chrono::Utc>::UNIX_EPOCH };
 
-    match type_name.as_str() {
-        "DateTimeWithTimeZone" | "DateTimeUtc" | "DateTime" => {
-            let expr = quote! {
-                vespera::chrono::DateTime::<vespera::chrono::Utc>::UNIX_EPOCH.fixed_offset()
-            };
-            Some((expr, "1970-01-01T00:00:00+00:00".to_string()))
+    match (type_name.as_str(), zone.as_deref()) {
+        ("DateTimeWithTimeZone", _) | ("DateTime", Some("FixedOffset")) => Some((
+            quote! { #epoch.fixed_offset() },
+            "1970-01-01T00:00:00+00:00".to_string(),
+        )),
+        ("DateTimeUtc", _) | ("DateTime", Some("Utc")) => {
+            Some((epoch, "1970-01-01T00:00:00Z".to_string()))
         }
-        "NaiveDateTime" => {
-            let expr = quote! {
-                vespera::chrono::NaiveDateTime::UNIX_EPOCH
-            };
-            Some((expr, "1970-01-01T00:00:00".to_string()))
-        }
-        "NaiveDate" => {
-            let expr = quote! {
-                vespera::chrono::NaiveDate::default()
-            };
-            Some((expr, "1970-01-01".to_string()))
-        }
-        "NaiveTime" | "Time" => {
-            let expr = quote! {
-                vespera::chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap()
-            };
-            Some((expr, "00:00:00".to_string()))
-        }
-        "Uuid" => Some((
+        ("DateTimeLocal", _) | ("DateTime", Some("Local")) => Some((
+            quote! { #epoch.with_timezone(&vespera::chrono::Local) },
+            "1970-01-01T00:00:00+00:00".to_string(),
+        )),
+        ("DateTime" | "NaiveDateTime", None) => Some((
+            quote! { vespera::chrono::NaiveDateTime::UNIX_EPOCH },
+            "1970-01-01T00:00:00".to_string(),
+        )),
+        ("NaiveDate" | "Date", _) => Some((
+            quote! { vespera::chrono::NaiveDate::default() },
+            "1970-01-01".to_string(),
+        )),
+        ("NaiveTime" | "Time", _) => Some((
+            quote! { vespera::chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap() },
+            "00:00:00".to_string(),
+        )),
+        ("Uuid", _) => Some((
             quote! { Default::default() },
             "00000000-0000-0000-0000-000000000000".to_string(),
         )),
-        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
-        | "usize" | "f32" | "f64" | "Decimal" => {
-            Some((quote! { Default::default() }, "0".to_string()))
-        }
-        "bool" => Some((quote! { Default::default() }, "false".to_string())),
-        "String" => Some((quote! { Default::default() }, String::new())),
+        (
+            "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
+            | "usize" | "f32" | "f64" | "Decimal",
+            _,
+        ) => Some((quote! { Default::default() }, "0".to_string())),
+        ("bool", _) => Some((quote! { Default::default() }, "false".to_string())),
+        ("String", _) => Some((quote! { Default::default() }, String::new())),
         _ => None,
     }
 }

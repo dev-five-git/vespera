@@ -32,4 +32,5 @@ fn ui_diagnostics() {
     t.compile_fail("tests/ui/schema_type_bare_missing.rs");
     t.compile_fail("tests/ui/schema_type_params_invalid.rs");
     t.compile_fail("tests/ui/schema_type_unknown_field.rs");
+    t.compile_fail("tests/ui/schema_type_conflicting_refs.rs");
 }

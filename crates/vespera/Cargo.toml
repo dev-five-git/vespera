@@ -127,7 +127,8 @@ tracing = { version = "0.1.44", default-features = false, features = ["std"], op
 # `Validated<T>` extractor and the macro-emitted `garde::Validate`
 # impls.  Not pulled into the production build.
 serde = { version = "1.0.221", features = ["derive"] }
-tokio = { version = "1.44", features = ["rt-multi-thread", "macros"] }
+# `test-util`: paused-clock tests of the cron scheduler's sleep slicing.
+tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "test-util"] }
 tower = { version = "0.5.2", features = ["util"] }
 # Integration tests for the JNI dispatch path call
 # `vespera_inprocess::{register_app, dispatch_from_json}` directly so

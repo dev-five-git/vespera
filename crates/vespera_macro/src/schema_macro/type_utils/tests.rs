@@ -307,7 +307,10 @@ fn test_resolve_type_to_absolute_path_with_generics() {
     let module_path = vec!["crate".to_string(), "models".to_string()];
     let tokens = resolve_type_to_absolute_path(&ty, &module_path);
     let output = tokens.to_string();
-    assert!(output.contains("crate :: models :: CustomType < T >"));
+    assert_eq!(
+        output,
+        "crate :: models :: CustomType < crate :: models :: T >"
+    );
 }
 
 #[test]
@@ -454,51 +457,54 @@ fn test_is_primitive_like_vec_of_datetime() {
     assert!(is_primitive_like(&ty));
 }
 
-#[test]
-fn test_normalize_known_type_in_generic_non_path_and_empty_path() {
-    let ref_ty: syn::Type = syn::parse_str("&str").unwrap();
+#[rstest]
+#[case::reference("&str", "& str")]
+#[case::leading_colon("::crate::models::CustomType", ":: crate :: models :: CustomType")]
+#[case::qualified("crate::models::CustomType", "crate :: models :: CustomType")]
+#[case::lifetime_args("Borrowed<'a>", "Borrowed < 'a >")]
+#[case::paren("(String)", "(String)")]
+#[case::unit_tuple("()", "()")]
+#[case::macro_type("m!()", "m ! ()")]
+#[case::turbofish_args("Vec::<String>", "Vec :: < String >")]
+fn resolve_type_without_module_keeps_shape(#[case] input: &str, #[case] expected: &str) {
+    let ty: syn::Type = syn::parse_str(input).unwrap();
     assert_eq!(
-        normalize_known_type_in_generic(&ref_ty, &[]).to_string(),
-        quote!(&str).to_string()
-    );
-
-    let empty_ty = empty_type_path();
-    assert_eq!(
-        normalize_known_type_in_generic(&empty_ty, &[]).to_string(),
-        quote!(#empty_ty).to_string()
+        resolve_type_to_absolute_path(&ty, &[]).to_string(),
+        expected
     );
 }
 
 #[test]
-fn test_normalize_known_type_in_generic_preserves_qualified_paths_and_leading_colon() {
-    let ty: syn::Type = syn::parse_str("::crate::models::CustomType").unwrap();
-    let output = normalize_known_type_in_generic(&ty, &[]).to_string();
-    assert!(output.contains(":: crate :: models :: CustomType"));
-}
-
-#[test]
-fn test_normalize_known_type_in_generic_preserves_qualified_paths_without_leading_colon() {
-    let ty: syn::Type = syn::parse_str("crate::models::CustomType").unwrap();
-    let output = normalize_known_type_in_generic(&ty, &[]).to_string();
-    assert!(output.contains("crate :: models :: CustomType"));
-}
-
-#[test]
-fn test_render_path_arguments_handles_lifetime_and_parenthesized_args() {
-    let lifetime_ty: syn::Type = syn::parse_str("Borrowed<'a>").unwrap();
-    let lifetime_args = match lifetime_ty {
-        syn::Type::Path(type_path) => type_path.path.segments.last().unwrap().arguments.clone(),
-        _ => panic!("expected path type"),
-    };
+fn parenthesized_path_arguments_are_kept_verbatim() {
+    let bound: syn::TraitBound = syn::parse_str("Fn(Local) -> String").unwrap();
+    let path = bound.path;
+    let ty = syn::Type::Path(syn::TypePath {
+        attrs: Vec::new(),
+        qself: None,
+        path,
+    });
     assert_eq!(
-        render_path_arguments(&lifetime_args, &[]).to_string(),
-        "< 'a >"
+        resolve_type_to_absolute_path(&ty, &[]).to_string(),
+        "Fn (Local) -> String"
     );
+}
 
-    let fn_args = PathArguments::Parenthesized(syn::parse_quote!((i32) -> String));
-    let fn_output = render_path_arguments(&fn_args, &[]).to_string();
-    assert!(fn_output.contains("(i32)"));
-    assert!(fn_output.contains("-> String"));
+#[rstest]
+#[case::bare_uuid("Uuid", "Uuid")]
+#[case::date_without_sea_orm_scope("Date", "Date")]
+#[case::sea_orm_qualified_alias(
+    "sea_orm::prelude::DateTimeUtc",
+    "vespera :: chrono :: DateTime < vespera :: chrono :: Utc >"
+)]
+#[case::external_crate_path("uuid::Uuid", "uuid :: Uuid")]
+#[case::generic_param_kept("T", "T")]
+fn resolve_type_unknown_module_cases(#[case] input: &str, #[case] expected: &str) {
+    let ty: syn::Type = syn::parse_str(input).unwrap();
+    let module = ["crate".to_string(), "nowhere".to_string()];
+    assert_eq!(
+        resolve_type_with_params(&ty, &module, &["T".to_string()]).to_string(),
+        expected
+    );
 }
 
 #[test]
@@ -562,8 +568,27 @@ fn type_default_returns_temporal_and_uuid_sentinels(
 #[case::value("Value", "vespera :: serde_json :: Value")]
 #[case::option_json_value("Option<JsonValue>", "Option < vespera :: serde_json :: Value >")]
 #[case::vec_in_generic("Vec<JsonValue>", "Vec < vespera :: serde_json :: Value >")]
-#[case::json_wrapper("Json<Payload>", "crate :: models :: doc :: Json < Payload >")]
+#[case::json_wrapper(
+    "Json<Payload>",
+    "crate :: models :: doc :: Json < crate :: models :: doc :: Payload >"
+)]
 fn json_aliases_resolve_to_public_value_path(#[case] src: &str, #[case] expected: &str) {
+    let ty: syn::Type = syn::parse_str(src).unwrap();
+    let module_path = vec!["crate".to_string(), "models".to_string(), "doc".to_string()];
+    assert_eq!(
+        resolve_type_to_absolute_path(&ty, &module_path).to_string(),
+        expected
+    );
+}
+
+/// chrono names map to `vespera::chrono` only bare; with arguments they are
+/// not the chrono re-export and are kept as written.
+#[rstest]
+#[case::naive_datetime("NaiveDateTime", "vespera :: chrono :: NaiveDateTime")]
+#[case::utc("Utc", "vespera :: chrono :: Utc")]
+#[case::fixed_offset("Option<FixedOffset>", "Option < vespera :: chrono :: FixedOffset >")]
+#[case::with_args("Local<u8>", "Local < u8 >")]
+fn chrono_names_resolve_bare_only(#[case] src: &str, #[case] expected: &str) {
     let ty: syn::Type = syn::parse_str(src).unwrap();
     let module_path = vec!["crate".to_string(), "models".to_string(), "doc".to_string()];
     assert_eq!(

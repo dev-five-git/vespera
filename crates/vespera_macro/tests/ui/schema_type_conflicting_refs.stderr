@@ -1,0 +1,41 @@
+error: `rename` names field `name`, which this type does not include: `omit` drops it
+  --> tests/ui/schema_type_conflicting_refs.rs:16:67
+   |
+16 | schema_type!(RenameOmitted from User, omit = ["name"], rename = [("name", "title")]);
+   |                                                                   ^^^^^^
+
+error: `partial` names field `name`, which this type does not include: `pick` does not list it
+  --> tests/ui/schema_type_conflicting_refs.rs:18:67
+   |
+18 | schema_type!(PartialUnpicked from User, pick = ["id"], partial = ["name"]);
+   |                                                                   ^^^^^^
+
+error: relation adapter field `owner` does not exist in type `User`. Available fields: ["id", "name"]
+  --> tests/ui/schema_type_conflicting_refs.rs:20:62
+   |
+20 | schema_type!(AdapterUnknown from User, relation_adapters = [("owner", UserCard)]);
+   |                                                              ^^^^^^^
+
+error: `relation_adapters` lists field `id` more than once
+  --> tests/ui/schema_type_conflicting_refs.rs:22:84
+   |
+22 | schema_type!(AdapterTwice from User, relation_adapters = [("id", UserCard), ("id", UserCard)]);
+   |                                                                                    ^^^^^^^^
+
+error: `relation_adapters` names field `name`, which this type does not include: `omit` drops it
+  --> tests/ui/schema_type_conflicting_refs.rs:24:79
+   |
+24 | schema_type!(AdapterOmitted from User, omit = ["name"], relation_adapters = [("name", UserCard)]);
+   |                                                                               ^^^^^^
+
+error: `relation_adapters`: field `name` of `User` is not a HasOne / BelongsTo SeaORM relation this type includes
+  --> tests/ui/schema_type_conflicting_refs.rs:26:60
+   |
+26 | schema_type!(AdapterPlain from User, relation_adapters = [("name", UserCard)]);
+   |                                                            ^^^^^^
+
+error: `add` field name `type` is not a valid Rust identifier; use letters/digits/`_` (not starting with a digit) and avoid reserved keywords
+  --> tests/ui/schema_type_conflicting_refs.rs:28:44
+   |
+28 | schema_type!(AddInvalid from User, add = [("type": i32)]);
+   |                                            ^^^^^^

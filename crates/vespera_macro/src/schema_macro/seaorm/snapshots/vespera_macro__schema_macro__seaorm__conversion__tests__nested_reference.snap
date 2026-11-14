@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/schema_macro/seaorm/conversion.rs
+expression: "convert_type_with_chrono(&ty, &module).to_string()"
+---
+& 'static [crate :: models :: memo :: MemoStatus]

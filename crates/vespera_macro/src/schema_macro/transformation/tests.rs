@@ -268,7 +268,12 @@ fn renamed_field_serde_rename_cases(
 ) {
     let attrs = parse_attrs(field_attrs);
     assert_eq!(
-        renamed_field_serde_rename(&attrs, source, rename_all).to_string(),
+        renamed_field_serde_rename(
+            &attrs,
+            source,
+            &RenameAll::new(Some(&rename_all.to_string()), &[], rename_all)
+        )
+        .to_string(),
         expected
     );
 }
@@ -409,4 +414,131 @@ fn test_should_wrap_in_option_partial_fields() {
         false,
         false
     ));
+}
+
+#[rstest]
+#[case::plain(
+    r#"#[serde(rename_all = "snake_case")]"#,
+    None,
+    "# [serde (rename_all = \"snake_case\")]"
+)]
+#[case::split(
+    r#"#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]"#,
+    None,
+    "# [serde (rename_all (serialize = \"camelCase\" , deserialize = \"snake_case\"))]"
+)]
+#[case::serialize_only(
+    r#"#[serde(rename_all(serialize = "kebab-case"))]"#,
+    None,
+    "# [serde (rename_all (serialize = \"kebab-case\" ,))]"
+)]
+#[case::deserialize_only(
+    r#"#[serde(rename_all(deserialize = "kebab-case"))]"#,
+    None,
+    "# [serde (rename_all (deserialize = \"kebab-case\"))]"
+)]
+#[case::input_wins(
+    r#"#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]"#,
+    Some("PascalCase"),
+    "# [serde (rename_all = \"PascalCase\")]"
+)]
+fn rename_all_keeps_both_sides(
+    #[case] container: &str,
+    #[case] input: Option<&str>,
+    #[case] expected: &str,
+) {
+    let attrs = parse_attrs(container);
+    let input = input.map(ToString::to_string);
+    let effective = determine_rename_all(input.as_ref(), &attrs);
+    let rename_all = RenameAll::new(input.as_ref(), &attrs, &effective);
+    assert_eq!(rename_all.attr().to_string(), expected);
+}
+
+#[test]
+fn renamed_field_follows_each_rename_all_side() {
+    let rename_all = RenameAll {
+        serialize: Some("camelCase".to_string()),
+        deserialize: None,
+    };
+    assert_eq!(
+        renamed_field_serde_rename(&[], "user_name", &rename_all).to_string(),
+        "# [serde (rename (serialize = \"userName\" , deserialize = \"user_name\"))]"
+    );
+}
+
+/// M1: serde function paths of a source in another module are re-rooted at
+/// that module (`crate::models::user::default_name`), unknown / absolute /
+/// non-path values stay as written, non-serde attributes are untouched.
+#[rstest]
+#[case::local_fn(
+    r#"#[serde(default = "default_name")]"#,
+    r#"#[serde(default = "crate::models::user::default_name")]"#
+)]
+#[case::local_module(
+    r#"#[serde(with = "codecs::as_string")]"#,
+    r#"#[serde(with = "crate::models::user::codecs::as_string")]"#
+)]
+#[case::imported_fn(
+    r#"#[serde(serialize_with = "ser")]"#,
+    r#"#[serde(serialize_with = "crate::util::ser")]"#
+)]
+#[case::all_keys(
+    r#"#[serde(rename = "x", skip_serializing_if = "is_blank", deserialize_with = "codecs::de")]"#,
+    r#"#[serde(rename = "x", skip_serializing_if = "crate::models::user::is_blank", deserialize_with = "crate::models::user::codecs::de")]"#
+)]
+#[case::std_kept(
+    r#"#[serde(skip_serializing_if = "Option::is_none")]"#,
+    r#"#[serde(skip_serializing_if = "Option::is_none")]"#
+)]
+#[case::leading_colon_kept(
+    r#"#[serde(default = "::other::f")]"#,
+    r#"#[serde(default = "::other::f")]"#
+)]
+#[case::not_a_path_kept(r#"#[serde(default = "1 + 2")]"#, r#"#[serde(default = "1 + 2")]"#)]
+#[case::flag_kept("#[serde(default)]", "#[serde(default)]")]
+#[case::non_string_kept("#[serde(default = 1)]", "#[serde(default = 1)]")]
+#[case::unparseable_kept("#[serde(default = )]", "#[serde(default = )]")]
+#[case::other_attr(
+    r#"#[schema(default = "default_name")]"#,
+    r#"#[schema(default = "default_name")]"#
+)]
+fn test_reroot_serde_paths(#[case] attr: &str, #[case] expected: &str) {
+    let (_dir, _guard) = serde_path_crate();
+    let attrs: Vec<syn::Attribute> = vec![
+        syn::parse_str::<syn::DeriveInput>(&format!("{attr} struct S;"))
+            .unwrap()
+            .attrs
+            .remove(0),
+    ];
+    let module = vec![
+        "crate".to_string(),
+        "models".to_string(),
+        "user".to_string(),
+    ];
+    let rerooted = reroot_serde_paths(&attrs, &module);
+    let expected = syn::parse_str::<syn::DeriveInput>(&format!("{expected} struct S;"))
+        .unwrap()
+        .attrs
+        .remove(0);
+    assert_eq!(
+        quote!(#(#rerooted)*).to_string(),
+        quote!(#expected).to_string()
+    );
+}
+
+fn serde_path_crate() -> (tempfile::TempDir, crate::env_access::test_env::EnvGuard) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(src.join("models")).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod models; pub mod util;").unwrap();
+    std::fs::write(src.join("models.rs"), "pub mod user;").unwrap();
+    std::fs::write(src.join("util.rs"), "pub fn ser() {}").unwrap();
+    std::fs::write(
+        src.join("models").join("user.rs"),
+        "use crate::util::ser; fn default_name() {} fn is_blank() {} mod codecs { pub mod as_string {} pub fn de() {} }",
+    )
+    .unwrap();
+    let guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    super::super::file_cache::bump_epoch();
+    (dir, guard)
 }

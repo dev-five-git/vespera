@@ -15,6 +15,10 @@
 //! - [`validate_omit_fields`] - Ensure all omit fields exist
 //! - [`validate_rename_fields`] - Ensure all rename source fields exist
 //! - [`validate_partial_fields`] - Ensure all partial fields exist
+//! - [`validate_relation_adapters`] - Ensure every adapter names a distinct
+//!   source field
+//! - [`validate_included`] - Ensure `rename` / `partial` /
+//!   `relation_adapters` name fields the DTO keeps
 //! - [`extract_source_field_names`] - Extract all field names from a struct
 //!
 //! # Example
@@ -29,6 +33,36 @@
 
 use std::collections::{BTreeSet, HashSet};
 
+use super::input::ParamSpans;
+
+/// Where a diagnostic about a field name given to a parameter points.
+pub trait ErrorAt {
+    /// The error for `field` as given to `param`.
+    fn error_at(&self, param: &str, field: &str, message: String) -> syn::Error;
+}
+
+/// Without recorded spans: the source type.
+impl ErrorAt for syn::Type {
+    fn error_at(&self, _param: &str, _field: &str, message: String) -> syn::Error {
+        syn::Error::new_spanned(self, message)
+    }
+}
+
+/// The literal the name was written as, else the source type.
+pub struct SpannedSource<'a> {
+    pub source_type: &'a syn::Type,
+    pub spans: &'a ParamSpans,
+}
+
+impl ErrorAt for SpannedSource<'_> {
+    fn error_at(&self, param: &str, field: &str, message: String) -> syn::Error {
+        match self.spans.field(param, field) {
+            Some(span) => syn::Error::new(span, message),
+            None => syn::Error::new_spanned(self.source_type, message),
+        }
+    }
+}
+
 fn sorted_source_fields(source_field_names: &HashSet<String>) -> Vec<&str> {
     source_field_names
         .iter()
@@ -42,18 +76,19 @@ fn validate_fields_exist<'a>(
     kind: &str,
     fields: impl IntoIterator<Item = &'a str>,
     source_field_names: &HashSet<String>,
-    source_type: &syn::Type,
+    at: &impl ErrorAt,
     source_type_name: &str,
 ) -> Result<(), syn::Error> {
     for field in fields {
         if !source_field_names.contains(field) {
-            let prefix = if kind == "partial" {
-                "partial field"
-            } else {
-                "field"
+            let prefix = match kind {
+                "partial" => "partial field",
+                "relation_adapters" => "relation adapter field",
+                _ => "field",
             };
-            return Err(syn::Error::new_spanned(
-                source_type,
+            return Err(at.error_at(
+                kind,
+                field,
                 format!(
                     "{prefix} `{field}` does not exist in type `{source_type_name}`. Available fields: {:?}",
                     sorted_source_fields(source_field_names)
@@ -70,14 +105,14 @@ fn validate_fields_exist<'a>(
 pub fn validate_pick_fields(
     pick_fields: Option<&Vec<String>>,
     source_field_names: &HashSet<String>,
-    source_type: &syn::Type,
+    at: &impl ErrorAt,
     source_type_name: &str,
 ) -> Result<(), syn::Error> {
     validate_fields_exist(
         "pick",
         pick_fields.into_iter().flatten().map(String::as_str),
         source_field_names,
-        source_type,
+        at,
         source_type_name,
     )
 }
@@ -88,14 +123,14 @@ pub fn validate_pick_fields(
 pub fn validate_omit_fields(
     omit_fields: Option<&Vec<String>>,
     source_field_names: &HashSet<String>,
-    source_type: &syn::Type,
+    at: &impl ErrorAt,
     source_type_name: &str,
 ) -> Result<(), syn::Error> {
     validate_fields_exist(
         "omit",
         omit_fields.into_iter().flatten().map(String::as_str),
         source_field_names,
-        source_type,
+        at,
         source_type_name,
     )
 }
@@ -124,7 +159,7 @@ fn is_valid_field_ident(name: &str) -> bool {
 pub fn validate_rename_fields(
     rename_pairs: Option<&Vec<(String, String)>>,
     source_field_names: &HashSet<String>,
-    source_type: &syn::Type,
+    at: &impl ErrorAt,
     source_type_name: &str,
 ) -> Result<(), syn::Error> {
     validate_fields_exist(
@@ -134,13 +169,14 @@ pub fn validate_rename_fields(
             .flatten()
             .map(|(from_field, _)| from_field.as_str()),
         source_field_names,
-        source_type,
+        at,
         source_type_name,
     )?;
     for (from_field, to_field) in rename_pairs.into_iter().flatten() {
         if !is_valid_field_ident(to_field) {
-            return Err(syn::Error::new_spanned(
-                source_type,
+            return Err(at.error_at(
+                "rename_to",
+                to_field,
                 format!(
                     "rename target `{to_field}` (for source field `{from_field}`) is not a valid \
                      Rust identifier; use letters/digits/`_` (not starting with a digit) and avoid \
@@ -158,12 +194,13 @@ pub fn validate_rename_fields(
 /// class of bug as an invalid `rename` target).
 pub fn validate_add_field_idents(
     add: Option<&Vec<(String, syn::Type)>>,
-    source_type: &syn::Type,
+    at: &impl ErrorAt,
 ) -> Result<(), syn::Error> {
     for (name, _) in add.into_iter().flatten() {
         if !is_valid_field_ident(name) {
-            return Err(syn::Error::new_spanned(
-                source_type,
+            return Err(at.error_at(
+                "add",
+                name,
                 format!(
                     "`add` field name `{name}` is not a valid Rust identifier; use \
                      letters/digits/`_` (not starting with a digit) and avoid reserved keywords"
@@ -180,16 +217,70 @@ pub fn validate_add_field_idents(
 pub fn validate_partial_fields(
     partial_fields: Option<&Vec<String>>,
     source_field_names: &HashSet<String>,
-    source_type: &syn::Type,
+    at: &impl ErrorAt,
     source_type_name: &str,
 ) -> Result<(), syn::Error> {
     validate_fields_exist(
         "partial",
         partial_fields.into_iter().flatten().map(String::as_str),
         source_field_names,
-        source_type,
+        at,
         source_type_name,
     )
+}
+
+/// Validates `relation_adapters`: every entry names a source field, at most
+/// once (a second adapter for the same field used to be silently ignored).
+pub fn validate_relation_adapters(
+    adapters: &[(String, syn::Ident)],
+    source_field_names: &HashSet<String>,
+    at: &impl ErrorAt,
+    source_type_name: &str,
+) -> Result<(), syn::Error> {
+    validate_fields_exist(
+        "relation_adapters",
+        adapters.iter().map(|(field, _)| field.as_str()),
+        source_field_names,
+        at,
+        source_type_name,
+    )?;
+    let mut seen = HashSet::new();
+    for (field, adapter) in adapters {
+        if !seen.insert(field.as_str()) {
+            return Err(syn::Error::new(
+                adapter.span(),
+                format!("`relation_adapters` lists field `{field}` more than once"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validates that the fields `param` (`rename`, `partial`,
+/// `relation_adapters`) names are ones the DTO keeps: naming a field that
+/// `omit` drops or `pick` leaves out used to be silently ignored.
+pub fn validate_included<'a>(
+    param: &str,
+    fields: impl IntoIterator<Item = &'a str>,
+    omit_set: &HashSet<String>,
+    pick_set: &HashSet<String>,
+    at: &impl ErrorAt,
+) -> Result<(), syn::Error> {
+    for field in fields {
+        let reason = if omit_set.contains(field) {
+            "`omit` drops it"
+        } else if !pick_set.is_empty() && !pick_set.contains(field) {
+            "`pick` does not list it"
+        } else {
+            continue;
+        };
+        return Err(at.error_at(
+            param,
+            field,
+            format!("`{param}` names field `{field}`, which this type does not include: {reason}"),
+        ));
+    }
+    Ok(())
 }
 
 /// Extracts all field names from a struct's named fields.

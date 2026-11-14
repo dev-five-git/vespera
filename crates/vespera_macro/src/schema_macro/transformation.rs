@@ -38,8 +38,9 @@ use quote::quote;
 use syn::punctuated::Punctuated;
 
 use super::input::PartialMode;
-use crate::parser::extract_rename_all;
+use super::module_scope::{Resolved, resolve_name};
 use crate::parser::schema::{SerdeSide, extract_field_rename_for, rename_field};
+use crate::parser::{extract_rename_all, extract_rename_all_for};
 
 /// Builds the omit set from input without cloning the source Vec.
 pub fn build_omit_set(omit: Option<&Vec<String>>) -> HashSet<String> {
@@ -254,6 +255,72 @@ pub fn field_serde_attrs(
     (out, adapters)
 }
 
+/// Serde keys whose string value is a function / module path.
+const SERDE_PATH_KEYS: &[&str] = &[
+    "default",
+    "skip_serializing_if",
+    "with",
+    "serialize_with",
+    "deserialize_with",
+];
+
+/// The source field's attributes with every serde function path
+/// (`default = "path"`, `skip_serializing_if`, `with`, `serialize_with`,
+/// `deserialize_with`) re-rooted at the SOURCE module: the DTO is emitted
+/// at the `schema_type!` call site, where `default_name` /
+/// `codecs::as_string` of another module did not resolve. Paths the source
+/// module does not define or import (`Option::is_none`, `String::is_empty`)
+/// are kept as written.
+pub fn reroot_serde_paths(attrs: &[syn::Attribute], module_path: &[String]) -> Vec<syn::Attribute> {
+    attrs
+        .iter()
+        .map(|attr| {
+            if !attr.path().is_ident("serde") {
+                return attr.clone();
+            }
+            let Ok(mut items) =
+                attr.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+            else {
+                return attr.clone();
+            };
+            for meta in &mut items {
+                if let syn::Meta::NameValue(nv) = meta
+                    && SERDE_PATH_KEYS.contains(&serde_key_of(&nv.path).as_str())
+                    && let syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(lit),
+                        ..
+                    }) = &mut nv.value
+                    && let Some(rerooted) = reroot_path(&lit.value(), module_path)
+                {
+                    *lit = syn::LitStr::new(&rerooted, lit.span());
+                }
+            }
+            syn::parse_quote! { #[serde(#items)] }
+        })
+        .collect()
+}
+
+fn serde_key_of(path: &syn::Path) -> String {
+    path.get_ident()
+        .map(ToString::to_string)
+        .unwrap_or_default()
+}
+
+/// `path` resolved in `module_path` (`None` when it is not a path or not
+/// known there).
+fn reroot_path(path: &str, module_path: &[String]) -> Option<String> {
+    let path: syn::Path = syn::parse_str(path).ok()?;
+    let segments: Vec<String> = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    match resolve_name(&segments, module_path) {
+        Resolved::Path(resolved) if path.leading_colon.is_none() => Some(resolved.join("::")),
+        _ => None,
+    }
+}
+
 /// The function / module path of a `with = "..."`-style key (`None` when it
 /// is not a string path; the key is then dropped).
 fn codec_path(meta: &syn::Meta) -> Option<syn::ExprPath> {
@@ -288,16 +355,17 @@ fn append_segment(path: &syn::ExprPath, segment: &str) -> syn::ExprPath {
 pub fn renamed_field_serde_rename(
     attrs: &[syn::Attribute],
     source_field_name: &str,
-    rename_all: &str,
+    rename_all: &RenameAll,
 ) -> TokenStream {
     let serde_only: Vec<syn::Attribute> = attrs
         .iter()
         .filter(|attr| attr.path().is_ident("serde"))
         .cloned()
         .collect();
-    let fallback = || rename_field(source_field_name, Some(rename_all));
-    let ser = extract_field_rename_for(&serde_only, SerdeSide::Serialize).unwrap_or_else(fallback);
-    let de = extract_field_rename_for(&serde_only, SerdeSide::Deserialize).unwrap_or_else(fallback);
+    let ser = extract_field_rename_for(&serde_only, SerdeSide::Serialize)
+        .unwrap_or_else(|| rename_field(source_field_name, rename_all.serialize.as_deref()));
+    let de = extract_field_rename_for(&serde_only, SerdeSide::Deserialize)
+        .unwrap_or_else(|| rename_field(source_field_name, rename_all.deserialize.as_deref()));
     if ser == de {
         quote! { #[serde(rename = #ser)] }
     } else {
@@ -344,6 +412,48 @@ pub fn extract_doc_attrs(attrs: &[syn::Attribute]) -> Vec<&syn::Attribute> {
         .iter()
         .filter(|attr| attr.path().is_ident("doc"))
         .collect()
+}
+
+/// The DTO's `rename_all` per serde side. A source with
+/// `#[serde(rename_all(serialize = "..", deserialize = ".."))]` keeps both
+/// sides (it used to collapse to the serialize side); `None` = no renaming.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RenameAll {
+    pub serialize: Option<String>,
+    pub deserialize: Option<String>,
+}
+
+impl RenameAll {
+    /// The sides of the source container, unless `rename_all = ".."` was
+    /// given to `schema_type!` (or the source has no per-side form): then
+    /// `effective` on both sides.
+    pub fn new(input: Option<&String>, source_attrs: &[syn::Attribute], effective: &str) -> Self {
+        let serialize = extract_rename_all_for(source_attrs, SerdeSide::Serialize);
+        let deserialize = extract_rename_all_for(source_attrs, SerdeSide::Deserialize);
+        if input.is_none() && serialize != deserialize {
+            Self {
+                serialize,
+                deserialize,
+            }
+        } else {
+            Self {
+                serialize: Some(effective.to_string()),
+                deserialize: Some(effective.to_string()),
+            }
+        }
+    }
+
+    /// The container attribute: `rename_all = ".."`, or the per-side list.
+    pub fn attr(&self) -> TokenStream {
+        match (&self.serialize, &self.deserialize) {
+            (Some(ser), Some(de)) if ser == de => quote! { #[serde(rename_all = #ser)] },
+            (ser, de) => {
+                let ser = ser.iter().map(|ser| quote! { serialize = #ser });
+                let de = de.iter().map(|de| quote! { deserialize = #de });
+                quote! { #[serde(rename_all(#(#ser,)* #(#de),*))] }
+            }
+        }
+    }
 }
 
 /// Determines the effective `rename_all` strategy.

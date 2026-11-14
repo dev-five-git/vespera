@@ -49,6 +49,7 @@ fn rel(
         relation_enum: None,
         fk_column: None,
         via_rel: None,
+        adapter: false,
     }
 }
 
@@ -86,6 +87,11 @@ const NOTIFICATION_PLAIN: &str =
     "pub struct Model {\n    pub id: i32,\n    pub message: String,\n}";
 const COMMENT_AUTHOR_ENUM: &str = "pub struct Model {\n    pub id: i32,\n    pub content: String,\n    pub author_id: i32,\n    #[sea_orm(belongs_to = \"super::user::Entity\", from = \"author_id\", to = \"id\", relation_enum = \"AuthorComments\")]\n    pub author: BelongsTo<super::user::Entity>,\n}";
 const POST_PLAIN: &str = "pub struct Model {\n    pub id: i32,\n    pub title: String,\n}";
+const NOTIFICATION_BAD_TO: &str = "pub struct Model {\n    pub id: i32,\n    #[sea_orm(belongs_to = \"super::user::Entity\", from = \"target_user_id\", to = \"user id\", relation_enum = \"TargetUser\")]\n    pub target_user: BelongsTo<super::user::Entity>,\n}";
+/// FK referencing a non-`id` source column.
+const ACCOUNT_BY_CODE: &str = "pub struct Model {\n    pub id: i32,\n    pub owner_code: String,\n    #[sea_orm(belongs_to = \"super::user::Entity\", from = \"owner_code\", to = \"code\", relation_enum = \"Owner\")]\n    pub owner: BelongsTo<super::user::Entity>,\n}";
+/// FK relation without `to` (falls back to the source `id`).
+const PROFILE_OWNER: &str = "pub struct Model {\n    pub id: i32,\n    pub owner_id: i32,\n    #[sea_orm(belongs_to = \"super::user::Entity\", from = \"owner_id\", relation_enum = \"Owner\")]\n    pub owner: BelongsTo<super::user::Entity>,\n}";
 
 /// Run one scenario inside a temp project and return the pretty
 /// impl for snapshotting.
@@ -142,7 +148,7 @@ const NOTIFICATION_BAD_FROM: &str = "pub struct Model {\n    pub id: i32,\n    #
 #[case::relation_enum_with_space(
     "author", &[],
     with_enum(rel("author", "BelongsTo", quote! { crate::models::user::Schema }, false), Some("Author Comments"), None, None),
-    "schema_type!: relation field `author` has `#[sea_orm(relation_enum = \"Author Comments\")]`, but `Author Comments` is not a valid Rust identifier"
+    "schema_type!: cannot load relation field `author`: no field of the `Model` behind `crate::models::user::Schema` has `#[sea_orm(relation_enum = \"Author Comments\", from = \"..\")]`; add it there, or `omit` the field"
 )]
 #[case::required_from_with_space(
     "author", &[],
@@ -158,6 +164,34 @@ const NOTIFICATION_BAD_FROM: &str = "pub struct Model {\n    pub id: i32,\n    #
     "notifications", &[("notification.rs", NOTIFICATION_BAD_FROM)],
     with_enum(rel("notifications", "HasMany", quote! { crate::models::notification::Schema }, false), None, None, Some("TargetUser")),
     "schema_type!: relation field `notifications` resolves its foreign key through `TargetUser` to `#[sea_orm(from = \"target user id\")]` on `crate::models::notification::Schema`, but `target user id` is not a valid Rust identifier"
+)]
+#[case::via_rel_target_to(
+    "notifications", &[("notification.rs", NOTIFICATION_BAD_TO)],
+    with_enum(rel("notifications", "HasMany", quote! { crate::models::notification::Schema }, false), None, None, Some("TargetUser")),
+    "schema_type!: relation field `notifications` has `#[sea_orm(to = \"user id\")]`, but `user id` is not a valid Rust identifier"
+)]
+// A named relation whose foreign key cannot be found used to load an empty
+// `vec![]` (HasMany) or emit an uncompilable `Relation::X` query (HasOne /
+// BelongsTo without `from`).
+#[case::has_one_enum_no_fk(
+    "author", &[],
+    with_enum(rel("author", "HasOne", quote! { crate::models::user::Schema }, true), Some("Author"), None, None),
+    "schema_type!: cannot load relation field `author`: no field of the `Model` behind `crate::models::user::Schema` has `#[sea_orm(relation_enum = \"Author\", from = \"..\")]`; add it there, or `omit` the field"
+)]
+#[case::belongs_to_enum_no_fk(
+    "author", &[],
+    with_enum(rel("author", "BelongsTo", quote! { crate::models::user::Schema }, false), Some("Author"), None, None),
+    "schema_type!: cannot load relation field `author`: no field of the `Model` behind `crate::models::user::Schema` has `#[sea_orm(relation_enum = \"Author\", from = \"..\")]`; add it there, or `omit` the field"
+)]
+#[case::has_many_via_rel_fk_not_found(
+    "notifications", &[("notification.rs", NOTIFICATION_PLAIN)],
+    with_enum(rel("notifications", "HasMany", quote! { crate::models::notification::Schema }, false), None, None, Some("NonExistentRelation")),
+    "schema_type!: cannot load relation field `notifications`: no field of the `Model` behind `crate::models::notification::Schema` has `#[sea_orm(relation_enum = \"NonExistentRelation\", from = \"..\")]`; add it there, or `omit` the field"
+)]
+#[case::has_many_enum_fk_not_found(
+    "authored_posts", &[("post.rs", POST_PLAIN)],
+    with_enum(rel("authored_posts", "HasMany", quote! { crate::models::post::Schema }, false), Some("NonExistentRelation"), None, None),
+    "schema_type!: cannot load relation field `authored_posts`: no field of the `Model` behind `crate::models::post::Schema` has `#[sea_orm(relation_enum = \"NonExistentRelation\", from = \"..\")]`; add it there, or `omit` the field"
 )]
 fn malformed_sea_orm_ident_is_an_error(
     #[case] field: &'static str,
@@ -264,30 +298,12 @@ fn malformed_sea_orm_ident_is_an_error(
         )],
         &["crate", "models", "memo"]
     )]
-#[case::enum_has_one_optional_no_fk(
-        "enum_has_one_optional_no_fk", &[], "MemoSchema", "Model",
-        &[("id", "id", false, false), ("author", "author", false, true)],
-        vec![with_enum(
-            rel("author", "HasOne", quote! { user::Schema }, true),
-            Some("Author"), None, None,
-        )],
-        &["crate", "models", "memo"]
-    )]
 #[case::enum_belongs_to_required_with_fk(
         "enum_belongs_to_required_with_fk", &[], "CommentSchema", "Model",
         &[("id", "id", false, false), ("post", "post", false, true)],
         vec![with_enum(
             rel("post", "BelongsTo", quote! { post::Schema }, false),
             Some("Post"), Some("post_id"), None,
-        )],
-        &["crate", "models", "comment"]
-    )]
-#[case::enum_belongs_to_required_no_fk(
-        "enum_belongs_to_required_no_fk", &[], "CommentSchema", "Model",
-        &[("id", "id", false, false), ("author", "author", false, true)],
-        vec![with_enum(
-            rel("author", "BelongsTo", quote! { user::Schema }, false),
-            Some("Author"), None, None,
         )],
         &["crate", "models", "comment"]
     )]
@@ -392,17 +408,6 @@ fn malformed_sea_orm_ident_is_an_error(
         )],
         &["crate", "models", "user"]
     )]
-#[case::has_many_via_rel_fk_not_found(
-        "has_many_via_rel_fk_not_found",
-        &[("notification.rs", NOTIFICATION_PLAIN)],
-        "UserSchema", "crate::models::user::Model",
-        &[("id", "id", false, false), ("notifications", "notifications", false, true)],
-        vec![with_enum(
-            rel("notifications", "HasMany", quote! { crate::models::notification::Schema }, false),
-            None, None, Some("NonExistentRelation"),
-        )],
-        &["crate", "models", "user"]
-    )]
 #[case::has_many_enum_fk_found(
         "has_many_enum_fk_found",
         &[("comment.rs", COMMENT_AUTHOR_ENUM)],
@@ -414,14 +419,25 @@ fn malformed_sea_orm_ident_is_an_error(
         )],
         &["crate", "models", "user"]
     )]
-#[case::has_many_enum_fk_not_found(
-        "has_many_enum_fk_not_found",
-        &[("post.rs", POST_PLAIN)],
+#[case::has_many_via_rel_custom_to(
+        "has_many_via_rel_custom_to",
+        &[("account.rs", ACCOUNT_BY_CODE)],
         "UserSchema", "crate::models::user::Model",
-        &[("id", "id", false, false), ("authored_posts", "authored_posts", false, true)],
+        &[("id", "id", false, false), ("accounts", "accounts", false, true)],
         vec![with_enum(
-            rel("authored_posts", "HasMany", quote! { crate::models::post::Schema }, false),
-            Some("NonExistentRelation"), None, None,
+            rel("accounts", "HasMany", quote! { crate::models::account::Schema }, false),
+            Some("Accounts"), None, Some("Owner"),
+        )],
+        &["crate", "models", "user"]
+    )]
+#[case::has_one_via_rel_fk_on_target(
+        "has_one_via_rel_fk_on_target",
+        &[("profile.rs", PROFILE_OWNER)],
+        "UserSchema", "crate::models::user::Model",
+        &[("id", "id", false, false), ("profile", "profile", false, true)],
+        vec![with_enum(
+            rel("profile", "HasOne", quote! { crate::models::profile::Schema }, true),
+            Some("Profile"), None, Some("Owner"),
         )],
         &["crate", "models", "user"]
     )]

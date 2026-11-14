@@ -1,6 +1,5 @@
 ---
 source: examples/axum-example/tests/integration_test.rs
-assertion_line: 457
 expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
 ---
 {
@@ -1366,6 +1365,34 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "text/plain": {
                 "schema": {
                   "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/memos/profile": {
+      "patch": {
+        "operationId": "patch_profile",
+        "summary": "Apply a profile patch to the default profile",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfilePatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileCard"
                 }
               }
             }
@@ -4779,6 +4806,53 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "age"
         ]
       },
+      "MemoCardResponse": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "default": "1970-01-01T00:00:00+00:00"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "status": {
+            "$ref": "#/components/schemas/MemoStatus"
+          },
+          "title": {
+            "type": "string"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserInMemoCard"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "userId": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "title",
+          "content",
+          "status",
+          "createdAt",
+          "user"
+        ]
+      },
       "MemoCommentInMemoDetail": {
         "type": "object",
         "properties": {
@@ -5560,6 +5634,71 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "locale"
         ]
       },
+      "Profile": {
+        "type": "object",
+        "properties": {
+          "bio": {
+            "type": "string",
+            "default": ""
+          },
+          "score": {
+            "type": "string"
+          },
+          "theme": {
+            "type": "string",
+            "default": "light"
+          }
+        },
+        "required": [
+          "theme",
+          "score"
+        ]
+      },
+      "ProfileCard": {
+        "type": "object",
+        "properties": {
+          "bio": {
+            "type": "string",
+            "default": ""
+          },
+          "score": {
+            "type": "string"
+          },
+          "theme": {
+            "type": "string",
+            "default": "light"
+          }
+        },
+        "required": [
+          "theme",
+          "score"
+        ]
+      },
+      "ProfilePatch": {
+        "type": "object",
+        "properties": {
+          "bio": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "score": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "theme": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "RejectionFilter": {
         "type": "object",
         "properties": {
@@ -6063,6 +6202,141 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "tags"
         ]
       },
+      "TeamMemberSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "mentorTeam": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TeamSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mentorTeamId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "team": {
+            "$ref": "#/components/schemas/TeamSchema"
+          },
+          "teamId": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "teamId",
+          "team"
+        ]
+      },
+      "TeamSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "TeamWithMembers": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamWithMembers_Members"
+            }
+          },
+          "mentees": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamWithMembers_Mentees"
+            }
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "members",
+          "mentees"
+        ]
+      },
+      "TeamWithMembers_Members": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "mentorTeamId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "teamId": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "teamId"
+        ]
+      },
+      "TeamWithMembers_Mentees": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "mentorTeamId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "teamId": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "teamId"
+        ]
+      },
       "Telemetry": {
         "type": "object",
         "description": "Any-JSON payload, a std `Duration` (`{secs, nanos}`) and an optional\nflattened block (its fields are not required).",
@@ -6371,6 +6645,22 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "format": "uint32",
             "minimum": 0,
             "maximum": 4294967295
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "UserInMemoCard": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
           },
           "name": {
             "type": "string"

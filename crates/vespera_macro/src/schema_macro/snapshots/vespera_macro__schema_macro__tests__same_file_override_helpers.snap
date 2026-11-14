@@ -1,0 +1,65 @@
+---
+source: crates/vespera_macro/src/schema_macro/mod.rs
+expression: "prettyplease::unparse(&file)"
+---
+impl From<crate::models::user::Model> for UserInArticle {
+    fn from(source: crate::models::user::Model) -> Self {
+        Self {
+            id: source.id.clone(),
+            display_name: source.display_name.clone(),
+        }
+    }
+}
+#[derive(serde::Serialize, vespera::Schema)]
+#[serde(transparent)]
+#[schema(ref = "UserInArticle", nullable)]
+struct __VesperaArticleResponseUserRelation(pub Option<UserInArticle>);
+impl Clone for __VesperaArticleResponseUserRelation {
+    fn clone(&self) -> Self {
+        Self(
+            self
+                .0
+                .as_ref()
+                .map(|dto| UserInArticle {
+                    id: dto.id.clone(),
+                    display_name: dto.display_name.clone(),
+                }),
+        )
+    }
+}
+impl Default for __VesperaArticleResponseUserRelation {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct __VesperaArticleResponseUserProxy {
+    id: i32,
+    #[serde(default)]
+    display_name: String,
+}
+impl<'de> serde::Deserialize<'de> for __VesperaArticleResponseUserRelation {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let proxy = <Option<
+            __VesperaArticleResponseUserProxy,
+        > as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(
+            Self(
+                proxy
+                    .map(|proxy| UserInArticle {
+                        id: proxy.id,
+                        display_name: proxy.display_name,
+                    }),
+            ),
+        )
+    }
+}
+impl From<Option<crate::models::user::Model>> for __VesperaArticleResponseUserRelation {
+    fn from(source: Option<crate::models::user::Model>) -> Self {
+        Self(source.map(Into::into))
+    }
+}

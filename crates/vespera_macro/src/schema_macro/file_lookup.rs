@@ -8,7 +8,7 @@ pub use fk::find_fk_column_from_target_entity;
 pub use lookup::find_struct_from_path;
 pub use lookup::{
     collect_rs_files_recursive, find_model_from_schema_path, find_struct_from_path_detailed,
-    find_struct_from_schema_path,
+    find_struct_from_schema_path, requested_module_path, storage_module_path,
 };
 
 #[cfg(test)]
