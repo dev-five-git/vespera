@@ -146,8 +146,11 @@ public class VesperaBridgeReactiveAutoConfiguration {
     @ConditionalOnBean(VesperaReactiveProxyHandler.class)
     @ConditionalOnMissingBean
     public VesperaReactiveHandlerMapping vesperaReactiveHandlerMapping(
-            VesperaReactiveProxyHandler handler, VesperaBridgeProperties props) {
-        return new VesperaReactiveHandlerMapping(handler, props.proxyPathPatterns());
+            VesperaReactiveProxyHandler handler, VesperaBridgeProperties props,
+            org.springframework.beans.factory.ListableBeanFactory beans,
+            org.springframework.core.env.Environment env) {
+        return new VesperaReactiveHandlerMapping(handler,
+                props.proxyPathPatterns(SpringdocUiPaths.excludes(beans, env, true)));
     }
 
     /** {@code vespera.bridge.cors=rust} (default): Rust answers CORS preflights. */
@@ -157,8 +160,11 @@ public class VesperaBridgeReactiveAutoConfiguration {
             matchIfMissing = true)
     @ConditionalOnMissingBean
     public VesperaReactivePreflightFilter vesperaReactivePreflightFilter(
-            VesperaReactiveProxyHandler handler, VesperaBridgeProperties props) {
-        return new VesperaReactivePreflightFilter(handler, props.proxyPathPatterns());
+            VesperaReactiveProxyHandler handler, VesperaBridgeProperties props,
+            org.springframework.beans.factory.ListableBeanFactory beans,
+            org.springframework.core.env.Environment env) {
+        return new VesperaReactivePreflightFilter(handler,
+                props.proxyPathPatterns(SpringdocUiPaths.excludes(beans, env, true)));
     }
 
     /** Log once at startup when no native library is loaded yet (the proxy answers 503 until it is). */

@@ -113,6 +113,31 @@ class VesperaSpringdocAutoConfigurationTest {
     }
 
     @Test
+    void swaggerUiIsServedBySpringdocNotProxiedToRust() throws Exception {
+        try (ConfigurableApplicationContext ctx = start()) {
+            HttpResponse<String> index = get(ctx, "/swagger-ui/index.html");
+            assertEquals(200, index.statusCode(), index.body());
+            assertTrue(index.headers().firstValue("Content-Type").orElse("").startsWith("text/html"),
+                    index.headers().toString());
+            assertTrue(index.body().contains("swagger-ui"), index.body());
+            assertEquals(200, get(ctx, "/swagger-ui/swagger-ui.css").statusCode());
+            // /swagger-ui.html redirects to the index (never reaches Rust).
+            assertEquals(302, get(ctx, "/swagger-ui.html").statusCode());
+            // Everything else is still proxied (no native library here: 503).
+            assertEquals(503, get(ctx, "/rust/items").statusCode());
+        }
+    }
+
+    @Test
+    void customSwaggerUiPathIsExcludedToo() throws Exception {
+        try (ConfigurableApplicationContext ctx = start("--springdoc.swagger-ui.path=/docs/ui.html")) {
+            assertEquals(200, get(ctx, "/docs/swagger-ui/index.html").statusCode());
+            assertEquals(302, get(ctx, "/docs/ui.html").statusCode());
+            assertEquals(503, get(ctx, "/swagger-ui/index.html").statusCode(), "the default path is Rust's again");
+        }
+    }
+
+    @Test
     void disabledIntegrationRegistersNothing() throws Exception {
         try (ConfigurableApplicationContext ctx = start("--vespera.bridge.springdoc.enabled=false")) {
             assertEquals(0, ctx.getBeanNamesForType(VesperaOpenApiDocsController.class).length);

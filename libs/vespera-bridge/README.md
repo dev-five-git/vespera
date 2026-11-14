@@ -272,7 +272,7 @@ exactly as if the proxy did not exist. With `cors=rust`, preflights for those
 paths are left to Spring too. An invalid pattern fails startup. With the
 defaults the proxy's `@RequestMapping("/**")` is left untouched; otherwise
 `VesperaProxyPathMappings` re-registers it with the include patterns plus an
-exclusion condition once the context's singletons are initialised.
+exclusion condition once the context's singletons are initialised. With springdoc's Swagger UI configured, its paths are excluded implicitly (see [springdoc-openapi](#springdoc-openapi-swagger-ui)).
 
 #### IDE support
 
@@ -538,6 +538,13 @@ pub async fn me(principal: Principal) -> String {          // 401 when anonymous
 ## springdoc-openapi (Swagger UI)
 
 An application that uses [springdoc-openapi](https://springdoc.org/) for its Java controllers gets the Rust routes into the same Swagger UI. The integration (`VesperaSpringdocAutoConfiguration`) activates by itself when springdoc is on the classpath — springdoc stays **your** dependency (`org.springdoc:springdoc-openapi-starter-webmvc-ui`, 3.x for Boot 4, 2.8+ for Boot 3.5); the bridge only compiles against it.
+
+**Swagger UI paths are never proxied.** The proxy's catch-all would otherwise win over springdoc-ui's resource handler, sending `/swagger-ui/index.html` and its assets to Rust (`404`). So when springdoc's UI is configured (the servlet `org.springdoc.webmvc.ui.SwaggerConfig` or WebFlux `org.springdoc.webflux.ui.SwaggerConfig` is a bean and `springdoc.swagger-ui.enabled` is not `false`), its paths are added to the proxy's excludes automatically:
+- `springdoc.swagger-ui.path` (default `/swagger-ui.html`);
+- `<its parent>/swagger-ui/**` (`/swagger-ui/**` by default; `/docs/swagger-ui/**` for `path: /docs/ui.html`);
+- on WebFlux also `<springdoc.webjars.prefix>/swagger-ui/**` (`/webjars/swagger-ui/**`).
+
+They are added to your `vespera.bridge.exclude-patterns` and apply to the proxy mapping, the CORS preflight routing and the WebFlux handler mapping. The API documents (`/v3/api-docs/**`) are Spring controllers and need no exclude.
 
 **Requirement:** the Rust app serves its document — add `spec_url` to `vespera!`:
 
