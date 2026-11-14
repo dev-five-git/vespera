@@ -27,6 +27,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
 import org.springframework.test.web.reactive.server.WebTestClient;
+import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.cors.CorsConfiguration;
@@ -57,6 +58,12 @@ class VesperaReactiveProxyHandlerTest {
         @GetMapping("/local")
         String local() {
             return "spring";
+        }
+
+        @CrossOrigin(origins = "https://java.example")
+        @GetMapping("/java/x")
+        String javaCors() {
+            return "java";
         }
     }
 
@@ -268,6 +275,28 @@ class VesperaReactiveProxyHandlerTest {
                 .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "PUT"));
         assertEquals(204, result.status());
         assertEquals("https://a.example", result.header(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
+        assertEquals("OPTIONS", transport.lastHeader().get("method").asText());
+    }
+
+    @Test
+    void preflightForAJavaEndpointIsAnsweredBySpring() {
+        WebTestClient client = client(handler());
+        Result allowed = call(client.options().uri(URI.create("http://localhost/java/x"))
+                .header(HttpHeaders.ORIGIN, "https://java.example")
+                .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "GET"));
+        assertEquals(200, allowed.status());
+        assertEquals("https://java.example", allowed.header(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
+        Result foreign = call(client.options().uri(URI.create("http://localhost/java/x"))
+                .header(HttpHeaders.ORIGIN, "https://evil.example")
+                .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "GET"));
+        assertEquals(403, foreign.status(), "Spring applies the @CrossOrigin policy");
+        assertTrue(transport.requests.isEmpty(), "never reached Rust");
+
+        // The Rust space next to it keeps the Rust preflight.
+        call(client.options().uri("/users")
+                .header(HttpHeaders.ORIGIN, "https://a.example")
+                .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "PUT"));
+        assertEquals(1, transport.requests.size());
         assertEquals("OPTIONS", transport.lastHeader().get("method").asText());
     }
 
