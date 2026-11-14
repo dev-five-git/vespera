@@ -29,8 +29,7 @@ pub struct RejectionFilter {
 pub async fn create_lenient(
     body: Result<Json<RejectionInput>, JsonRejection>,
 ) -> Result<Json<RejectionInput>, (StatusCode, String)> {
-    body.map(|Json(input)| Json(input))
-        .map_err(|rejection| (StatusCode::BAD_REQUEST, rejection.body_text()))
+    body.map_err(|rejection| (StatusCode::BAD_REQUEST, rejection.body_text()))
 }
 
 /// Echo the query, or name the rejection when it does not parse.
