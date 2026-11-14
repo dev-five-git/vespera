@@ -575,7 +575,9 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_AsyncDispatch_dispatch0<'
             if !matches!(scheduled, Ok(true)) {
                 let wire = match scheduled {
                     Ok(_) => runtime_unavailable_wire(),
-                    Err(_) => vespera_inprocess::error_wire(500, "failed to schedule Rust dispatch"),
+                    Err(_) => {
+                        vespera_inprocess::error_wire(500, "failed to schedule Rust dispatch")
+                    }
                 };
                 let _ = complete_future_local(env, &future_obj, &wire);
             }
