@@ -53,7 +53,8 @@ extern "C" {
 
 /* Return codes. */
 #define VESPERA_OK 0
-/* vespera_dispatch_into: the response did not fit; *written = required size. */
+/* vespera_dispatch_into: the response did not fit; *written = the size that
+ * run needed (exactly VESPERA_MIN_OUT_BYTES when the handler did not run). */
 #define VESPERA_OVERFLOW 1
 /* A required pointer was NULL, a size was out of range, or buffers overlap. */
 #define VESPERA_ERR_INVALID_ARGUMENT (-1)
@@ -65,6 +66,13 @@ extern "C" {
 #define VESPERA_ERR_RUNTIME (-4)
 /* vespera_configure_*: the setting was already fixed; nothing changed. */
 #define VESPERA_ERR_TOO_LATE (-5)
+
+/* Smallest `out_capacity` vespera_dispatch_into dispatches into: every
+ * response the engine synthesises after the handler ran (panic 500, 504,
+ * shut-down 503, ...) fits it.  A smaller buffer is answered with
+ * VESPERA_OVERFLOW and *written = VESPERA_MIN_OUT_BYTES without running the
+ * handler. */
+#define VESPERA_MIN_OUT_BYTES 1024
 
 /*
  * Completion callback of vespera_dispatch_async.  Invoked at most once
@@ -108,14 +116,21 @@ int vespera_dispatch(const uint8_t *request, size_t request_len, uint8_t **respo
 /*
  * Synchronous dispatch writing the wire response straight into the
  * caller's buffer (no Rust allocation for the response).  VESPERA_OK:
- * *written = bytes written.  VESPERA_OVERFLOW: the response needs *written
- * bytes; `out` contents are undefined and a retry RE-RUNS the handler
- * (out == NULL with out_capacity == 0 is a valid size probe).
- * VESPERA_ERR_INVALID_ARGUMENT: `written` is NULL, `out` is NULL with a
- * non-zero capacity, or the request and output buffers overlap.  Like
- * vespera_dispatch, a shut-down runtime answers a 503 wire response and a
- * runtime that could not be built a 500 one (subject to the same OVERFLOW
- * rule).
+ * *written = bytes written.  VESPERA_OVERFLOW: *written = the size the
+ * response of THAT run needed; `out` contents are undefined.
+ * `out_capacity` below VESPERA_MIN_OUT_BYTES (out == NULL with
+ * out_capacity == 0 included) is answered with VESPERA_OVERFLOW and
+ * *written = exactly VESPERA_MIN_OUT_BYTES WITHOUT running the handler —
+ * start with at least VESPERA_MIN_OUT_BYTES.  Every call that dispatches
+ * runs the handler, so a retry after an overflow runs it again (and its
+ * response, hence its size, may differ): send non-idempotent requests
+ * through vespera_dispatch instead.  VESPERA_ERR_INVALID_ARGUMENT:
+ * `written` is NULL, `out` is NULL with a non-zero capacity,
+ * `out_capacity` is above PTRDIFF_MAX, or the request and output buffers
+ * overlap (`request_len` above PTRDIFF_MAX is answered with a 400 wire
+ * response, never as an overlap).  Like vespera_dispatch, a shut-down
+ * runtime answers a 503 wire response and a runtime that could not be
+ * built a 500 one.
  */
 int vespera_dispatch_into(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *written);
 

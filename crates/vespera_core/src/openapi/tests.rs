@@ -637,34 +637,93 @@ fn merge_accepts_each_reusable_component_kind_when_it_is_the_only_nonempty_map(
 fn test_merge_top_level_servers_security_external_docs() {
     use crate::schema::ExternalDocumentation;
 
-    // base sets none of the three → adopts other's.
-    let mut base = create_base_openapi();
-    let mut other = create_base_openapi();
-    other.servers = Some(vec![Server {
-        url: "https://api.example.com".to_string(),
+    let server = |url: &str| Server {
+        url: url.to_string(),
         description: None,
         variables: None,
-    }]);
-    other.security = Some(vec![BTreeMap::from([(
-        "bearerAuth".to_string(),
-        Vec::new(),
-    )])]);
+    };
+    let requirement = |name: &str| {
+        vec![BTreeMap::from([(
+            name.to_string(),
+            vec!["scope".to_string()],
+        )])]
+    };
+
+    // base sets no servers / security; its own operation must stay public
+    // and keep the default server after the merge — other's top-level
+    // security / servers are pushed down onto other's operations only.
+    let mut base = create_base_openapi();
+    base.paths
+        .insert("/public".to_string(), create_path_item("Public"));
+    let mut other = create_base_openapi();
+    other.servers = Some(vec![server("https://api.example.com")]);
+    other.security = Some(requirement("bearerAuth"));
     other.external_docs = Some(ExternalDocumentation {
         description: None,
         url: "https://docs.example.com".to_string(),
     });
+    other
+        .paths
+        .insert("/private".to_string(), create_path_item("Private"));
+    // An operation with its own security / servers keeps them.
+    let mut own = create_path_item("Own");
+    let own_get = own.get.as_mut().unwrap();
+    own_get.security = Some(Vec::new());
+    own_get.servers = Some(vec![server("https://own.example.com")]);
+    other.paths.insert("/own".to_string(), own);
+    // A path item with its own servers keeps them in force (the top-level
+    // servers are not pushed onto its operations); security still is.
+    let mut path_servers = create_path_item("PathServers");
+    path_servers.servers = Some(vec![server("https://path.example.com")]);
+    other
+        .paths
+        .insert("/path-servers".to_string(), path_servers);
+    other.webhooks = Some(BTreeMap::from([(
+        "event".to_string(),
+        create_path_item("Event"),
+    )]));
 
     base.merge(other);
 
-    assert_eq!(
-        base.servers.as_ref().unwrap()[0].url,
-        "https://api.example.com"
-    );
-    assert!(base.security.is_some());
+    assert!(base.servers.is_none());
+    assert!(base.security.is_none());
     assert_eq!(
         base.external_docs.as_ref().unwrap().url,
         "https://docs.example.com"
     );
+    let public = base.paths["/public"].get.as_ref().unwrap();
+    assert!(public.security.is_none());
+    assert!(public.servers.is_none());
+    let private = base.paths["/private"].get.as_ref().unwrap();
+    assert_eq!(private.security, Some(requirement("bearerAuth")));
+    assert_eq!(
+        private.servers.as_ref().unwrap()[0].url,
+        "https://api.example.com"
+    );
+    let own = base.paths["/own"].get.as_ref().unwrap();
+    assert_eq!(own.security, Some(Vec::new()));
+    assert_eq!(
+        own.servers.as_ref().unwrap()[0].url,
+        "https://own.example.com"
+    );
+    let path_servers = &base.paths["/path-servers"];
+    let path_servers_get = path_servers.get.as_ref().unwrap();
+    assert_eq!(path_servers_get.security, Some(requirement("bearerAuth")));
+    assert!(path_servers_get.servers.is_none());
+    assert_eq!(
+        path_servers.servers.as_ref().unwrap()[0].url,
+        "https://path.example.com"
+    );
+    let event = base.webhooks.as_ref().unwrap()["event"]
+        .get
+        .as_ref()
+        .unwrap();
+    assert_eq!(event.security, Some(requirement("bearerAuth")));
+}
+
+#[test]
+fn test_merge_keeps_self_top_level_servers_security_external_docs() {
+    use crate::schema::ExternalDocumentation;
 
     // self-wins: base already has servers → other's ignored.
     let mut base2 = create_base_openapi();

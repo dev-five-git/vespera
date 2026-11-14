@@ -305,16 +305,69 @@ fn merge_path_item(into: &mut PathItem, other: PathItem) {
     }
 }
 
+/// Push `other`'s top-level `security` / `servers` down onto each of its own
+/// operations that has not set one, so they keep governing exactly the
+/// operations they governed in `other` once merged into a document whose
+/// top level they must not touch.
+///
+/// Servers are not pushed onto the operations of a path item with its own
+/// `servers`: path-level servers already override the top-level list there.
+fn push_down_top_level(
+    paths: &mut BTreeMap<String, PathItem>,
+    security: Option<&Vec<crate::schema::SecurityRequirement>>,
+    servers: Option<&Vec<Server>>,
+) {
+    for item in paths.values_mut() {
+        let servers = if item.servers.is_some() {
+            None
+        } else {
+            servers
+        };
+        for op in [
+            &mut item.get,
+            &mut item.post,
+            &mut item.put,
+            &mut item.patch,
+            &mut item.delete,
+            &mut item.head,
+            &mut item.options,
+            &mut item.trace,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if op.security.is_none() {
+                op.security = security.cloned();
+            }
+            if op.servers.is_none() {
+                op.servers = servers.cloned();
+            }
+        }
+    }
+}
+
 impl OpenApi {
     /// Merge another `OpenAPI` document into this one.
     ///
     /// All `paths`, `components` (schemas, responses, parameters,
     /// examples, request bodies, headers, security schemes, links,
-    /// callbacks, path items), `tags` and `x-*` extensions from `other` are
-    /// added to `self`. Top-level `servers`, `security`, and
-    /// `external_docs` are adopted from `other` only when `self` has not set
-    /// its own. On any key/field conflict, `self` takes precedence.
-    pub fn merge(&mut self, other: Self) {
+    /// callbacks, path items), webhooks, `tags` and `x-*` extensions from
+    /// `other` are added to `self`. `other`'s top-level `security` and
+    /// `servers` are never adopted (they would then govern every operation
+    /// of `self`): they are pushed down onto each of `other`'s operations
+    /// that has not set its own. Top-level `external_docs` is adopted only
+    /// when `self` has none. On any key/field conflict, `self` takes
+    /// precedence.
+    pub fn merge(&mut self, mut other: Self) {
+        push_down_top_level(
+            &mut other.paths,
+            other.security.as_ref(),
+            other.servers.as_ref(),
+        );
+        if let Some(webhooks) = other.webhooks.as_mut() {
+            push_down_top_level(webhooks, other.security.as_ref(), other.servers.as_ref());
+        }
+
         // Merge paths.  On a path-key conflict, merge per HTTP method
         // (self-wins per operation) instead of dropping the incoming
         // `PathItem` wholesale: two merged apps that both define the same
@@ -358,14 +411,8 @@ impl OpenApi {
             merge_component_map(&mut self_components.path_items, other_components.path_items);
         }
 
-        // Merge top-level servers / security / external_docs (self wins:
-        // adopt other's only when self has not set its own).
-        if self.servers.is_none() {
-            self.servers = other.servers;
-        }
-        if self.security.is_none() {
-            self.security = other.security;
-        }
+        // Top-level servers / security were pushed down onto other's
+        // operations above; external_docs is self-wins.
         if self.external_docs.is_none() {
             self.external_docs = other.external_docs;
         }

@@ -65,11 +65,13 @@ async fn echo_query(uri: axum::http::Uri) -> String {
     uri.query().unwrap_or("").to_owned()
 }
 
-/// Handler that returns immediately WITHOUT consuming the request
-/// body — used to exercise the producer's "receiver dropped" break
-/// branch in `bidirectional_streaming_inner` when chunks are pushed
-/// faster than the body is consumed.
-async fn discard_body() -> &'static str {
+/// Handler that reads ONE request frame and returns — the read starts
+/// the bidirectional producer, and returning drops the body while the
+/// producer still has chunks to push, so it takes the "receiver dropped"
+/// break branch.
+async fn first_frame_then_return(mut body: axum::body::Body) -> &'static str {
+    use http_body_util::BodyExt as _;
+    assert!(body.frame().await.is_some(), "one request frame");
     "ok"
 }
 
@@ -151,7 +153,7 @@ fn make_router() -> Router {
         .route("/echo", post(echo_bytes))
         .route("/triple", get(triple_header))
         .route("/q", get(echo_query))
-        .route("/discard", post(discard_body))
+        .route("/first-frame", post(first_frame_then_return))
         .route("/panic", get(panic_before_header))
         .route("/read-panic", post(read_then_panic))
         .route("/err-body", get(erroring_body_handler))
@@ -587,16 +589,18 @@ async fn bidirectional_with_header_invalid_method_returns_405() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bidirectional_with_header_break_when_receiver_dropped_mid_stream() {
-    // Producer pushes many non-empty chunks; the handler ignores the
-    // body and returns immediately, so the bounded 16-slot mpsc fills
-    // up, `tx.blocking_send` blocks, and once the request body is
-    // dropped (handler finished) the send fails and the producer
-    // takes the `break` branch.  Pull counter must end short of the
+    // The handler reads one frame (starting the producer) and returns,
+    // dropping the request body while the producer still has chunks: the
+    // bounded 16-slot mpsc fills up, `tx.blocking_send` fails once the
+    // receiver is gone, and the producer takes the `break` branch.  Run
+    // inside `tokio::spawn` so no pull happens inline on a `block_on`
+    // thread: every pull is the producer's.  At least one pull ran (the
+    // frame the handler read) and the counter ends short of the
     // 1000-chunk source — proving the early break ran.
     install_router();
     let wire = encode_wire(
         "POST",
-        "/discard",
+        "/first-frame",
         HashMap::from([("content-type", "application/octet-stream")]),
         &[],
     );
@@ -619,7 +623,7 @@ async fn bidirectional_with_header_break_when_receiver_dropped_mid_stream() {
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    let _ = dispatch_bidirectional_streaming_with_header(
+    let outcome = tokio::spawn(dispatch_bidirectional_streaming_with_header(
         wire,
         pull,
         move |chunk| {
@@ -627,14 +631,16 @@ async fn bidirectional_with_header_break_when_receiver_dropped_mid_stream() {
             ControlFlow::Continue(())
         },
         move |hdr| h.lock().unwrap().extend_from_slice(hdr),
-    )
-    .await;
+    ))
+    .await
+    .unwrap();
+    assert_eq!(outcome, StreamOutcome::Complete);
 
     let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
     assert_eq!(header_json["status"].as_u64(), Some(200));
     let pulled = *counter.lock().unwrap();
     assert!(
-        pulled < 1000,
+        (1..1000).contains(&pulled),
         "producer should have aborted early (got {pulled} of 1000 pulls before break)"
     );
 }

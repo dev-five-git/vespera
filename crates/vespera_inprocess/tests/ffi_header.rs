@@ -110,6 +110,10 @@ fn header_constants_match_the_rust_constants() {
         ),
         ("VESPERA_ERR_RUNTIME", i64::from(ffi::VESPERA_ERR_RUNTIME)),
         ("VESPERA_ERR_TOO_LATE", i64::from(ffi::VESPERA_ERR_TOO_LATE)),
+        (
+            "VESPERA_MIN_OUT_BYTES",
+            i64::try_from(vespera_inprocess::MIN_DIRECT_OUT_BYTES).unwrap(),
+        ),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -141,10 +145,13 @@ fn header_documents_every_synthesised_status_and_the_latin1_mapping() {
     }
 }
 
+/// Sanity check of the shipped header's shape (include guard + C linkage
+/// block); its contents are locked by the tests above.
 #[test]
-fn header_matches_the_shipped_file() {
-    let on_disk =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/include/vespera.h")).unwrap();
-    assert_eq!(on_disk.replace("\r\n", "\n"), HEADER.replace("\r\n", "\n"));
-    assert!(HEADER.contains("#ifndef VESPERA_H") && HEADER.contains("extern \"C\""));
+fn header_has_an_include_guard_and_c_linkage() {
+    let header = HEADER.replace("\r\n", "\n");
+    assert!(header.contains("#ifndef VESPERA_H\n#define VESPERA_H"));
+    assert!(
+        header.contains("extern \"C\" {") && header.trim_end().ends_with("#endif /* VESPERA_H */")
+    );
 }

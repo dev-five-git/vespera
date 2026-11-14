@@ -490,7 +490,7 @@ fn validation_items() -> Vec<ValidationErrorItem<'static>> {
 /// The hand-rolled response serializer must produce BYTE-IDENTICAL
 /// output to `serde_json` across statuses, the optional
 /// `validation_errors` array, sorted single/multi headers, non-UTF-8
-/// values (rendered `""`), and the full string escape set — proven by
+/// values (Latin-1: one char per byte), and the full string escape set — proven by
 /// both the `Vec` path and the `&mut [u8]` slice path.
 ///
 /// Both `metadata` arms of `write_response_header` (`header_write.rs`)
@@ -774,8 +774,9 @@ fn hand_serialize_matches_serde_for_tiny_header_maps() {
     // Three distinct names, every one single-valued: `len() == keys_len()`, so
     // `write_headers` takes the zero-lookup `headers.iter()` path.  Inserted
     // out of byte order (`x-…` before `content-…`) so the sort is observable,
-    // and one value carries an escape + one is non-UTF-8 (rendered `""`) to
-    // prove the borrowed-value arm escapes exactly like the `get_all` arm.
+    // and one value carries an escape + one is non-UTF-8 (Latin-1, one char
+    // per byte) to prove the borrowed-value arm escapes exactly like the
+    // `get_all` arm.
     let mut three_single = HeaderMap::new();
     three_single.insert("x-quote", HeaderValue::from_bytes(b"a\"b").unwrap());
     three_single.insert("content-type", HeaderValue::from_static("application/json"));
@@ -842,7 +843,7 @@ fn hand_serialize_matches_serde_for_heap_fallback_header_maps() {
     // 40 distinct names > STACK_CAP (32), each single-valued, so
     // `len() == keys_len()` and the heap + all-single arm is taken.  Two
     // values are deliberately non-trivial (an escape and a non-UTF-8 payload
-    // rendered `""`) to prove the borrowed-value arm escapes identically once
+    // rendered Latin-1, one char per byte) to prove the borrowed-value arm escapes identically once
     // it reads through the heap `Vec`.
     let mut heap_all_single = HeaderMap::new();
     for i in (0..40u32).rev() {
