@@ -5,26 +5,22 @@ expression: "run_scenario(models, new_type, source_type, rows, &relations, modul
 #[allow(deprecated)]
 impl CommentSchema {
     pub async fn from_model(
-        model: Model,
-        db: &sea_orm::DatabaseConnection,
+        __vespera_model: Model,
+        __vespera_db: &sea_orm::DatabaseConnection,
     ) -> Result<Self, sea_orm::DbErr> {
-        let post = <post::Entity as sea_orm::EntityTrait>::find_by_id(
-                model.post_id.clone(),
-            )
-            .one(db)
-            .await?;
+        let post = {
+            let fk_value = &__vespera_model.post_id;
+            <post::Entity as sea_orm::EntityTrait>::find_by_id(fk_value.clone())
+                .one(__vespera_db)
+                .await?
+        };
         Ok(Self {
-            id: model.id,
-            post: Box::new(
-                <post::Schema as From<
-                    _,
-                >>::from(
-                    post
-                        .ok_or_else(|| sea_orm::DbErr::RecordNotFound(
-                            format!("Required relation '{}' not found", stringify!(post)),
-                        ))?,
-                ),
-            ),
+            id: __vespera_model.id,
+            post: post
+                .ok_or_else(|| sea_orm::DbErr::RecordNotFound(
+                    format!("Required relation '{}' not found", stringify!(post)),
+                ))
+                .map(|r| Box::new(<post::Schema as From<_>>::from(r)))?,
         })
     }
 }

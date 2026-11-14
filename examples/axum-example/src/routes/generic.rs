@@ -98,3 +98,33 @@ pub async fn generic_endpoint5()
         total_page: 1,
     }))
 }
+
+/// A row type the generic source module (`models::page`) cannot name.
+#[derive(Clone, Debug, PartialEq, Serialize, serde::Deserialize, Schema)]
+pub struct PageRow {
+    pub id: i32,
+}
+
+// A generic source in another module: the call-site argument `PageRow` is
+// inserted as written (it used to resolve as `crate::models::page::PageRow`),
+// the source's own `Cursor` resolves in `models::page`, and the default
+// `M = Vec<T>` gets `T`'s value.
+vespera::schema_type!(RowPage from crate::models::page::Page<PageRow>);
+
+#[cfg(test)]
+mod generic_source_tests {
+    use super::*;
+
+    #[test]
+    fn generic_source_from_another_module() {
+        let page = crate::models::page::Page {
+            items: vec![PageRow { id: 1 }],
+            cursor: crate::models::page::Cursor { next: None },
+            sample: vec![PageRow { id: 2 }],
+        };
+        let dto = RowPage::from(page);
+        let sample: &Vec<PageRow> = &dto.sample;
+        assert_eq!((dto.items[0].id, sample[0].id), (1, 2));
+        assert_eq!(dto.cursor.next, None);
+    }
+}

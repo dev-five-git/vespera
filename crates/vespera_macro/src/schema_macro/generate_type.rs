@@ -21,7 +21,7 @@ use super::inline_types::{
     generate_inline_type_definition,
 };
 use super::input::{PartialMode, SchemaTypeInput};
-use super::instantiate::instantiate;
+use super::instantiate::instantiate_with_bindings;
 use super::module_scope::segment_ident as field_ident;
 use super::same_file_override::maybe_generate_same_file_relation_override;
 use super::seaorm::{
@@ -40,8 +40,8 @@ use super::type_utils::{
 };
 use super::validation::{
     ErrorAt, SpannedSource, extract_source_field_names, validate_add_field_idents,
-    validate_included, validate_omit_fields, validate_partial_fields, validate_pick_fields,
-    validate_relation_adapters, validate_rename_fields,
+    validate_emitted, validate_included, validate_omit_fields, validate_partial_fields,
+    validate_pick_fields, validate_relation_adapters, validate_rename_fields,
 };
 use crate::metadata::StructMetadata;
 use crate::parser::strip_raw_prefix_owned;
@@ -108,7 +108,21 @@ pub fn generate_schema_type_code(
                 source_module_path = module_path;
                 &struct_def_owned
             }
-            Err(err) => storage_hit.ok_or_else(|| err.to_syn_error(&input.source_type))?,
+            // A same-named schema of ANOTHER module is never a fallback
+            // (it used to be used silently).
+            Err(err) => {
+                let mut error = err.to_syn_error(&input.source_type);
+                if let Some(module) = &storage_module {
+                    error.combine(syn::Error::new_spanned(
+                        &input.source_type,
+                        format!(
+                            "note: `{source_type_name}` exists in `{}`, which is not the requested module",
+                            module.join("::")
+                        ),
+                    ));
+                }
+                return Err(error);
+            }
         },
     };
 
@@ -131,7 +145,13 @@ pub fn generate_schema_type_code(
         ));
     }
     // A generic source takes the call's type arguments (`Page<User>`).
-    let parsed_struct = instantiate(&parsed_struct, &input.source_type, "schema_type!")?;
+    let generic_fields: Vec<syn::Type> = parsed_struct
+        .fields
+        .iter()
+        .map(|field| field.ty.clone())
+        .collect();
+    let (parsed_struct, bindings) =
+        instantiate_with_bindings(&parsed_struct, &input.source_type, "schema_type!")?;
 
     // Extract all field names from source struct for validation
     // Include relation fields since they can be converted to Schema types
@@ -275,12 +295,19 @@ pub fn generate_schema_type_code(
     let any_garde = parsed_struct
         .fields
         .iter()
-        .any(|field| carried_field_attrs(&field.attrs, schema_derived).garde);
+        .any(|field| carried_field_attrs(&field.attrs, schema_derived, &source_module_path).garde);
+    // A carried `#[deprecated]` field: the struct (and so its serde
+    // derives) `#[allow(deprecated)]`.
+    let mut any_deprecated = false;
     // The `relation_adapters` entries a HasOne / BelongsTo field used.
     let mut used_adapters: HashSet<String> = HashSet::new();
+    // Source fields `omit` / `pick` keep that the type still does not emit,
+    // with the reason (`rename` / `partial` / `pick` naming one is an
+    // error, not a silent no-op).
+    let mut dropped: HashMap<String, &'static str> = HashMap::new();
 
     if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
-        for field in &fields_named.named {
+        for (field_index, field) in fields_named.named.iter().enumerate() {
             let rust_field_name = field.ident.as_ref().map_or_else(
                 || "unknown".to_string(),
                 |i| strip_raw_prefix_owned(i.to_string()),
@@ -296,6 +323,10 @@ pub fn generate_schema_type_code(
                 && (extract_sea_orm_default_value(&field.attrs).is_some()
                     || has_sea_orm_primary_key(&field.attrs))
             {
+                dropped.insert(
+                    rust_field_name,
+                    "`omit_default` drops it (a SeaORM default / primary key)",
+                );
                 continue;
             }
 
@@ -304,6 +335,7 @@ pub fn generate_schema_type_code(
 
             // In multipart mode, skip ALL relation fields (multipart forms can't represent nested objects)
             if input.multipart && is_relation {
+                dropped.insert(rust_field_name, "`multipart` types carry no relations");
                 continue;
             }
 
@@ -337,6 +369,10 @@ pub fn generate_schema_type_code(
                         if rel_info.relation_type == "HasMany" {
                             // HasMany is only included if explicitly picked
                             if !pick_set.contains(&rust_field_name) {
+                                dropped.insert(
+                                    rust_field_name,
+                                    "a HasMany relation is only included when `pick`ed",
+                                );
                                 continue;
                             }
                             // When HasMany IS picked, generate inline type with ALL relations stripped
@@ -438,12 +474,24 @@ pub fn generate_schema_type_code(
                             ));
                         }
                         // Fallback: skip if conversion fails
+                        dropped.insert(
+                            rust_field_name,
+                            "its SeaORM relation type could not be converted",
+                        );
                         continue;
                     }
                 } else {
                     // Convert SeaORM datetime types to chrono equivalents
                     // Also resolves local types to absolute paths
-                    let converted_ty = convert_type_with_chrono(original_ty, &source_module_path);
+                    // A generic source's field resolves before its type
+                    // arguments are inserted: they are written at the call
+                    // site, not in the source module.
+                    let converted_ty = bindings.as_ref().map_or_else(
+                        || convert_type_with_chrono(original_ty, &source_module_path),
+                        |bindings| {
+                            bindings.field_type(&generic_fields[field_index], &source_module_path)
+                        },
+                    );
                     if should_wrap_option {
                         wrapped_inner_ty = Some(converted_ty.clone());
                         (Box::new(quote! { Option<#converted_ty> }), None)
@@ -461,10 +509,13 @@ pub fn generate_schema_type_code(
 
             // Extract doc attributes to carry over comments to the generated struct
             let doc_attrs = extract_doc_attrs(&field.attrs);
-            let mut carried = carried_field_attrs(&field.attrs, schema_derived);
+            let mut carried =
+                carried_field_attrs(&field.attrs, schema_derived, &source_module_path);
             if should_wrap_option {
                 carried = carried.for_option_wrap();
             }
+            any_deprecated |= carried.deprecated;
+            let cfg_serde = carried.cfg_serde_attrs();
             if !carried.cfgs.is_empty() {
                 let cfgs = &carried.cfgs;
                 field_cfgs.insert(rust_field_name.clone(), quote! { #(#cfgs)* });
@@ -541,7 +592,10 @@ pub fn generate_schema_type_code(
                 // This is important when using schema_type! with models from other files
                 // that may have ORM-specific attributes we don't want in the generated struct
                 let is_renamed = rename_map.contains_key(&rust_field_name);
-                let adapter_prefix = format!("__vespera_{new_type_name}_{rust_field_name}");
+                let adapter_prefix = format!(
+                    "__vespera_{}_{rust_field_name}",
+                    strip_raw_prefix_owned(new_type_name.to_string())
+                );
                 let wrap = wrapped_inner_ty.as_ref().map(|inner_ty| OptionWrap {
                     adapter_prefix: &adapter_prefix,
                     inner_ty,
@@ -593,6 +647,7 @@ pub fn generate_schema_type_code(
                         #(#doc_attrs)*
                         #carried_attrs
                         #(#serde_field_attrs)*
+                        #(#cfg_serde)*
                         #serde_default_attr
                         #schema_default_attr
                         #rename_attr
@@ -614,6 +669,7 @@ pub fn generate_schema_type_code(
                         #(#doc_attrs)*
                         #carried_attrs
                         #(#serde_field_attrs)*
+                        #(#cfg_serde)*
                         #serde_default_attr
                         #schema_default_attr
                         #vis #field_ident: #field_ty
@@ -631,6 +687,31 @@ pub fn generate_schema_type_code(
             let emitted = field_tokens.last().cloned().unwrap_or_default();
             metadata_field_tokens.push(quote! { #metadata_only #emitted });
         }
+    }
+    for (param, names) in [
+        (
+            "rename",
+            input
+                .rename
+                .iter()
+                .flatten()
+                .map(|(from, _)| from.as_str())
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "partial",
+            partial_fields_to_validate
+                .into_iter()
+                .flatten()
+                .map(String::as_str)
+                .collect(),
+        ),
+        (
+            "pick",
+            input.pick.iter().flatten().map(String::as_str).collect(),
+        ),
+    ] {
+        validate_emitted(param, names, &dropped, &at)?;
     }
     // An adapter only replaces an included HasOne / BelongsTo relation: one
     // for a plain field, a HasMany, or in `multipart` mode used to be
@@ -760,6 +841,8 @@ pub fn generate_schema_type_code(
         (from_impl, from_model_impl)
     };
 
+    let allow_deprecated = any_deprecated.then(|| quote! { #[allow(deprecated)] });
+
     // Generate the new struct (with inline types for circular relations first)
     let generated_tokens: proc_macro2::TokenStream = if input.multipart {
         // Multipart mode: derive Multipart instead of serde
@@ -769,6 +852,7 @@ pub fn generate_schema_type_code(
             #(#inline_type_definitions)*
 
             #(#struct_doc_attrs)*
+            #allow_deprecated
             #[derive(vespera::Multipart, #garde_derive #clone_derive #schema_derive)]
             #(#container_garde_attrs)*
             #schema_name_attr
@@ -793,6 +877,7 @@ pub fn generate_schema_type_code(
             #(#codec_adapters)*
 
             #(#struct_doc_attrs)*
+            #allow_deprecated
             #[derive(serde::Serialize, serde::Deserialize, #garde_derive #clone_derive #schema_derive)]
             #(#container_garde_attrs)*
             #schema_name_attr

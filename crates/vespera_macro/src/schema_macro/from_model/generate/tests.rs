@@ -48,6 +48,8 @@ fn rel(
         inline_type_info: None,
         relation_enum: None,
         fk_column: None,
+        fk_optional: is_optional,
+        fk_to: None,
         via_rel: None,
         adapter: false,
     }
@@ -58,6 +60,12 @@ fn with_inline(mut info: RelationFieldInfo, type_name: &str, fields: &[&str]) ->
         syn::Ident::new(type_name, proc_macro2::Span::call_site()),
         fields.iter().map(ToString::to_string).collect(),
     ));
+    info
+}
+
+fn with_to(mut info: RelationFieldInfo, fk_column: &str, to: &str) -> RelationFieldInfo {
+    info.fk_column = Some(fk_column.to_string());
+    info.fk_to = Some(to.to_string());
     info
 }
 
@@ -75,13 +83,7 @@ fn with_enum(
 
 /// Model fixtures written under the temp project''s `src/models/`.
 const USER_PLAIN: &str = "pub struct Model {\n    pub id: i32,\n    pub name: String,\n}";
-const MEMO_REQUIRED_CIRCULAR: &str = "pub struct Model {\n    pub id: i32,\n    pub title: String,\n    pub user_id: i32,\n    #[sea_orm(belongs_to = \"super::user::Entity\", from = \"user_id\")]\n    pub user: BelongsTo<super::user::Entity>,\n}";
-const MEMO_CIRCULAR: &str = "pub struct Model {\n    pub id: i32,\n    pub title: String,\n    pub user: BelongsTo<super::user::Entity>,\n}";
-const PROFILE_CIRCULAR: &str = "pub struct Model {\n    pub id: i32,\n    pub bio: String,\n    pub user: BelongsTo<super::user::Entity>,\n}";
-const PROFILE_PLAIN: &str = "pub struct Model {\n    pub id: i32,\n    pub bio: String,\n}";
-const SETTINGS_PLAIN: &str = "pub struct Model {\n    pub id: i32,\n    pub theme: String,\n}";
 const ADDRESS_FK: &str = "pub struct Model {\n    pub id: i32,\n    pub street: String,\n    pub city_id: i32,\n    pub city: BelongsTo<super::city::Entity>,\n}";
-const TAG_FK: &str = "pub struct Model {\n    pub id: i32,\n    pub name: String,\n    pub category_id: i32,\n    pub category: BelongsTo<super::category::Entity>,\n}";
 const NOTIFICATION_TARGET_USER: &str = "pub struct Model {\n    pub id: i32,\n    pub message: String,\n    pub target_user_id: i32,\n    #[sea_orm(belongs_to = \"super::user::Entity\", from = \"target_user_id\", to = \"id\", relation_enum = \"TargetUser\")]\n    pub target_user: BelongsTo<super::user::Entity>,\n}";
 const NOTIFICATION_PLAIN: &str =
     "pub struct Model {\n    pub id: i32,\n    pub message: String,\n}";
@@ -92,6 +94,9 @@ const NOTIFICATION_BAD_TO: &str = "pub struct Model {\n    pub id: i32,\n    #[s
 const ACCOUNT_BY_CODE: &str = "pub struct Model {\n    pub id: i32,\n    pub owner_code: String,\n    #[sea_orm(belongs_to = \"super::user::Entity\", from = \"owner_code\", to = \"code\", relation_enum = \"Owner\")]\n    pub owner: BelongsTo<super::user::Entity>,\n}";
 /// FK relation without `to` (falls back to the source `id`).
 const PROFILE_OWNER: &str = "pub struct Model {\n    pub id: i32,\n    pub owner_id: i32,\n    #[sea_orm(belongs_to = \"super::user::Entity\", from = \"owner_id\", relation_enum = \"Owner\")]\n    pub owner: BelongsTo<super::user::Entity>,\n}";
+
+/// A target whose primary key is `id`, with a unique `code`.
+const OWNER_KEYED: &str = "pub struct Model {\n    #[sea_orm(primary_key)]\n    pub id: i32,\n    #[sea_orm(unique)]\n    pub code: String,\n}";
 
 /// Run one scenario inside a temp project and return the pretty
 /// impl for snapshotting.
@@ -192,6 +197,21 @@ const NOTIFICATION_BAD_FROM: &str = "pub struct Model {\n    pub id: i32,\n    #
     "authored_posts", &[("post.rs", POST_PLAIN)],
     with_enum(rel("authored_posts", "HasMany", quote! { crate::models::post::Schema }, false), Some("NonExistentRelation"), None, None),
     "schema_type!: cannot load relation field `authored_posts`: no field of the `Model` behind `crate::models::post::Schema` has `#[sea_orm(relation_enum = \"NonExistentRelation\", from = \"..\")]`; add it there, or `omit` the field"
+)]
+#[case::composite_from(
+    "author", &[],
+    with_enum(rel("author", "BelongsTo", quote! { crate::models::user::Schema }, false), None, Some("(author_id, tenant_id)"), None),
+    "schema_type!: relation field `author` has a composite key `#[sea_orm(from = \"(author_id, tenant_id)\")]`, which `from_model` cannot load; `omit` the field"
+)]
+#[case::composite_to(
+    "author", &[],
+    with_to(rel("author", "BelongsTo", quote! { crate::models::user::Schema }, false), "author_id", "(id, tenant_id)"),
+    "schema_type!: relation field `author` has a composite key `#[sea_orm(to = \"(id, tenant_id)\")]`, which `from_model` cannot load; `omit` the field"
+)]
+#[case::to_column_with_space(
+    "author", &[],
+    with_to(rel("author", "BelongsTo", quote! { crate::models::user::Schema }, false), "author_id", "author code"),
+    "schema_type!: relation field `author` has `#[sea_orm(to = \"Author code\")]`, but `Author code` is not a valid Rust identifier"
 )]
 fn malformed_sea_orm_ident_is_an_error(
     #[case] field: &'static str,
@@ -308,30 +328,6 @@ fn malformed_sea_orm_ident_is_an_error(
         &["crate", "models", "comment"]
     )]
 // File-lookup branches (models on disk).
-#[case::parent_stub_required_circular(
-        "parent_stub_required_circular",
-        &[("memo.rs", MEMO_REQUIRED_CIRCULAR), ("user.rs", USER_PLAIN)],
-        "UserSchema", "crate::models::user::Model",
-        &[("id", "id", false, false), ("name", "name", false, false), ("memos", "memos", false, true)],
-        vec![rel("memos", "HasMany", quote! { crate::models::memo::Schema }, false)],
-        &["crate", "models", "user"]
-    )]
-#[case::circular_has_one_optional(
-        "circular_has_one_optional",
-        &[("profile.rs", PROFILE_CIRCULAR)],
-        "UserSchema", "crate::models::user::Model",
-        &[("id", "id", false, false), ("profile", "profile", false, true)],
-        vec![rel("profile", "HasOne", quote! { crate::models::profile::Schema }, true)],
-        &["crate", "models", "user"]
-    )]
-#[case::circular_has_one_required(
-        "circular_has_one_required",
-        &[("profile.rs", PROFILE_CIRCULAR)],
-        "UserSchema", "crate::models::user::Model",
-        &[("id", "id", false, false), ("profile", "profile", false, true)],
-        vec![rel("profile", "HasOne", quote! { crate::models::profile::Schema }, false)],
-        &["crate", "models", "user"]
-    )]
 #[case::non_circular_has_one_fk_optional(
         "non_circular_has_one_fk_optional",
         &[("address.rs", ADDRESS_FK)],
@@ -348,22 +344,6 @@ fn malformed_sea_orm_ident_is_an_error(
         vec![rel("address", "HasOne", quote! { crate::models::address::Schema }, false)],
         &["crate", "models", "user"]
     )]
-#[case::has_many_circular(
-        "has_many_circular",
-        &[("memo.rs", MEMO_CIRCULAR)],
-        "UserSchema", "crate::models::user::Model",
-        &[("id", "id", false, false), ("memos", "memos", false, true)],
-        vec![rel("memos", "HasMany", quote! { crate::models::memo::Schema }, false)],
-        &["crate", "models", "user"]
-    )]
-#[case::has_many_fk_no_circular(
-        "has_many_fk_no_circular",
-        &[("tag.rs", TAG_FK)],
-        "UserSchema", "crate::models::user::Model",
-        &[("id", "id", false, false), ("tags", "tags", false, true)],
-        vec![rel("tags", "HasMany", quote! { crate::models::tag::Schema }, false)],
-        &["crate", "models", "user"]
-    )]
 #[case::inline_type_required_belongs_to(
         "inline_type_required_belongs_to",
         &[("user.rs", USER_PLAIN)],
@@ -374,28 +354,6 @@ fn malformed_sea_orm_ident_is_an_error(
             "MemoSchema_User", &["id", "name"],
         )],
         &["crate", "models", "memo"]
-    )]
-#[case::parent_stub_all_relation_types(
-        "parent_stub_all_relation_types",
-        &[
-            ("memo.rs", MEMO_REQUIRED_CIRCULAR),
-            ("profile.rs", PROFILE_PLAIN),
-            ("settings.rs", SETTINGS_PLAIN),
-        ],
-        "UserSchema", "crate::models::user::Model",
-        &[
-            ("id", "id", false, false),
-            ("memos", "memos", false, true),
-            ("profile", "profile", false, true),
-            ("settings", "settings", false, true),
-            ("orphan_rel", "orphan_rel", false, true),
-        ],
-        vec![
-            rel("memos", "HasMany", quote! { crate::models::memo::Schema }, false),
-            rel("profile", "HasOne", quote! { crate::models::profile::Schema }, true),
-            rel("settings", "BelongsTo", quote! { crate::models::settings::Schema }, false),
-        ],
-        &["crate", "models", "user"]
     )]
 #[case::has_many_via_rel_fk_found(
         "has_many_via_rel_fk_found",
@@ -440,6 +398,56 @@ fn malformed_sea_orm_ident_is_an_error(
             Some("Profile"), None, Some("Owner"),
         )],
         &["crate", "models", "user"]
+    )]
+// `to` names the column the FK references: the primary key keeps
+// `find_by_id`, any other column (or no model on disk to tell, and not
+// `id`) is selected by a filter on it.
+#[case::fk_to_primary_key(
+        "fk_to_primary_key",
+        &[("owner.rs", OWNER_KEYED)],
+        "AccountSchema", "crate::models::account::Model",
+        &[("id", "id", false, false), ("owner", "owner", false, true)],
+        vec![with_to(rel("owner", "BelongsTo", quote! { crate::models::owner::Schema }, false), "owner_id", "id")],
+        &["crate", "models", "account"]
+    )]
+#[case::fk_to_unique_column(
+        "fk_to_unique_column",
+        &[("owner.rs", OWNER_KEYED)],
+        "AccountSchema", "crate::models::account::Model",
+        &[("id", "id", false, false), ("owner", "owner", false, true)],
+        vec![with_to(rel("owner", "BelongsTo", quote! { crate::models::owner::Schema }, true), "owner_code", "code")],
+        &["crate", "models", "account"]
+    )]
+#[case::fk_to_without_model(
+        "fk_to_without_model",
+        &[("owner.rs", "pub struct Model { broken")],
+        "AccountSchema", "crate::models::account::Model",
+        &[("id", "id", false, false), ("owner", "owner", false, true)],
+        vec![with_to(rel("owner", "HasOne", quote! { crate::models::owner::Schema }, false), "owner_code", "code")],
+        &["crate", "models", "account"]
+    )]
+// Relation fields named like the parameters: the loaded locals `model` /
+// `db` no longer shadow them.
+#[case::relations_named_like_parameters(
+        "relations_named_like_parameters", &[], "ListingSchema", "Model",
+        &[("id", "id", false, false), ("model", "model", false, true), ("db", "db", true, true)],
+        vec![
+            with_enum(rel("model", "HasOne", quote! { bakery::Schema }, false), None, Some("model_id"), None),
+            with_enum(rel("db", "HasOne", quote! { bakery::Schema }, true), None, Some("db_id"), None),
+        ],
+        &["crate", "models", "listing"]
+    )]
+// `BelongsTo<Option<..>>` with a required key column: optional value,
+// key read without `match`.
+#[case::optional_target_required_key(
+        "optional_target_required_key", &[], "CakeSchema", "Model",
+        &[("id", "id", false, false), ("bakery", "bakery", false, true)],
+        vec![{
+            let mut info = with_enum(rel("bakery", "BelongsTo", quote! { bakery::Schema }, true), None, Some("bakery_id"), None);
+            info.fk_optional = false;
+            info
+        }],
+        &["crate", "models", "cake"]
     )]
 fn generate_from_model_scenario_snapshot(
     #[case] snapshot_name: &str,

@@ -38,7 +38,7 @@ use quote::quote;
 use syn::punctuated::Punctuated;
 
 use super::input::PartialMode;
-use super::module_scope::{Resolved, resolve_name};
+use super::module_scope::{Resolved, path_tokens, resolve_name};
 use crate::parser::schema::{SerdeSide, extract_field_rename_for, rename_field};
 use crate::parser::{extract_rename_all, extract_rename_all_for};
 
@@ -73,13 +73,15 @@ pub fn build_rename_map(rename: Option<&Vec<(String, String)>>) -> HashMap<Strin
 }
 
 /// Container serde keys that are never copied onto the generated struct:
-/// `rename_all` is re-emitted from the effective strategy, and `from` /
+/// `rename_all` is re-emitted from the effective strategy, `from` /
 /// `try_from` / `into` / `default` require impls (`From`, `TryFrom`, `Into`,
-/// `Default`) the generated type does not have.
-const CONTAINER_STRIPPED_KEYS: &[&str] = &["rename_all", "from", "try_from", "into", "default"];
+/// `Default`) the generated type does not have, and `bound` names type
+/// parameters it does not have (a generic source is instantiated).
+const CONTAINER_STRIPPED_KEYS: &[&str] =
+    &["rename_all", "from", "try_from", "into", "default", "bound"];
 
 /// Name of a serde list item (`rename`, `default`, `with`, ...).
-fn serde_key(meta: &syn::Meta) -> String {
+pub(super) fn serde_key(meta: &syn::Meta) -> String {
     meta.path()
         .segments
         .last()
@@ -173,7 +175,8 @@ pub fn field_serde_attrs(
     let mut de_fn: Option<syn::ExprPath> = None;
     let mut out = rebuild_serde_attrs(attrs, |meta| {
         let key = serde_key(meta);
-        if strip_rename && key == "rename" {
+        // `bound` names type parameters the (instantiated) DTO lacks.
+        if (strip_rename && key == "rename") || key == "bound" {
             return false;
         }
         if wrap.is_none() {
@@ -283,21 +286,29 @@ pub fn reroot_serde_paths(attrs: &[syn::Attribute], module_path: &[String]) -> V
             else {
                 return attr.clone();
             };
-            for meta in &mut items {
-                if let syn::Meta::NameValue(nv) = meta
-                    && SERDE_PATH_KEYS.contains(&serde_key_of(&nv.path).as_str())
-                    && let syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(lit),
-                        ..
-                    }) = &mut nv.value
-                    && let Some(rerooted) = reroot_path(&lit.value(), module_path)
-                {
-                    *lit = syn::LitStr::new(&rerooted, lit.span());
-                }
-            }
+            reroot_serde_metas(items.iter_mut(), module_path);
             syn::parse_quote! { #[serde(#items)] }
         })
         .collect()
+}
+
+/// [`reroot_serde_paths`] for the items of one `serde(..)` list.
+pub fn reroot_serde_metas<'a>(
+    items: impl IntoIterator<Item = &'a mut syn::Meta>,
+    module_path: &[String],
+) {
+    for meta in items {
+        if let syn::Meta::NameValue(nv) = meta
+            && SERDE_PATH_KEYS.contains(&serde_key_of(&nv.path).as_str())
+            && let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(lit),
+                ..
+            }) = &mut nv.value
+            && let Some(rerooted) = reroot_path(&lit.value(), module_path)
+        {
+            *lit = syn::LitStr::new(&rerooted, lit.span());
+        }
+    }
 }
 
 fn serde_key_of(path: &syn::Path) -> String {
@@ -316,7 +327,10 @@ fn reroot_path(path: &str, module_path: &[String]) -> Option<String> {
         .map(|segment| segment.ident.to_string())
         .collect();
     match resolve_name(&segments, module_path) {
-        Resolved::Path(resolved) if path.leading_colon.is_none() => Some(resolved.join("::")),
+        // Keyword segments (`r#type`) stay raw.
+        Resolved::Path(resolved) if path.leading_colon.is_none() => {
+            Some(path_tokens(&resolved).to_string().replace(' ', ""))
+        }
         _ => None,
     }
 }

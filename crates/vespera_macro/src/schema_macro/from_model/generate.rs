@@ -1,44 +1,53 @@
 //! Async `from_model` impl generation for SeaORM models with
-//! relations (circular handling, FK lookups, parent stubs).
+//! relations (inline types for circular relations, FK lookups).
 
 use std::collections::HashMap;
 
 use proc_macro2::TokenStream;
-use quote::{quote, quote_spanned};
+use quote::quote;
 use syn::Type;
 
 use super::super::{
-    circular::{generate_inline_struct_construction, generate_inline_type_construction},
-    file_cache::{get_circular_analysis, get_struct_from_schema_path},
+    circular::generate_inline_type_construction,
+    file_cache::{
+        get_circular_analysis, get_module_path_from_schema_path, get_struct_from_schema_path,
+    },
     seaorm::RelationFieldInfo,
     type_utils::normalize_token_str,
 };
 use super::loads::relation_load;
+use super::{DB, MODEL};
 
 /// Generate `from_model` impl for `SeaORM` Model WITH relations (async version).
 ///
-/// When circular references are detected, generates inline struct construction
-/// that excludes circular fields (sets them to default values).
+/// A relation whose target leads back to the source (circular, including
+/// self references and longer cycles) has an inline type that excludes
+/// every relation (`generate_type`), constructed from the loaded row here,
+/// so the generated loads never recurse.
 ///
 /// ```ignore
 /// impl NewType {
 ///     pub async fn from_model(
-///         model: SourceType,
-///         db: &sea_orm::DatabaseConnection,
+///         __vespera_model: SourceType,
+///         __vespera_db: &sea_orm::DatabaseConnection,
 ///     ) -> Result<Self, sea_orm::DbErr> {
 ///         // Load related entities
-///         let user = model.find_related(user::Entity).one(db).await?;
-///         let tags = model.find_related(tag::Entity).all(db).await?;
+///         let user = ...one(__vespera_db).await?;
+///         let tags = ...all(__vespera_db).await?;
 ///
 ///         Ok(Self {
-///             id: model.id,
-///             // Inline construction with circular field defaulted:
-///             user: user.map(|r| Box::new(user::Schema { id: r.id, memos: vec![], ... })),
-///             tags: tags.into_iter().map(|r| tag::Schema { ... }).collect(),
+///             id: __vespera_model.id,
+///             // Inline type of a circular relation:
+///             user: user.map(|r| Box::new(NewType_User { id: r.id, ... })),
+///             tags: tags.into_iter().map(|r| <tag::Schema as From<_>>::from(r)).collect(),
 ///         })
 ///     }
 /// }
 /// ```
+///
+/// The parameters are named `__vespera_model` / `__vespera_db` so a relation
+/// field called `model` or `db` (whose loaded value is bound to a local of
+/// that name) cannot shadow them.
 ///
 /// # Errors
 ///
@@ -46,7 +55,6 @@ use super::loads::relation_load;
 /// (`relation_enum`, `from`, or the target entity's `from` reached through
 /// `via_rel`) but is not one (e.g. `from = "author id"`) is reported as a
 /// `syn::Error` spanned on `source_type`, instead of panicking the macro.
-#[allow(clippy::too_many_lines, clippy::option_if_let_else)]
 pub fn generate_from_model_with_relations(
     new_type_name: &syn::Ident,
     source_type: &Type,
@@ -63,19 +71,6 @@ pub fn generate_from_model_with_relations(
             .unwrap_or_default()
     };
 
-    // Prefixes each per-field assignment (in `field_mappings` order) with
-    // the source field's `#[cfg(..)]`.
-    let gate = |assignments: Vec<TokenStream>| -> Vec<TokenStream> {
-        assignments
-            .into_iter()
-            .zip(field_mappings)
-            .map(|(assignment, (_, source_ident, _, _))| {
-                let cfg = cfg_of(source_ident);
-                quote! { #cfg #assignment }
-            })
-            .collect()
-    };
-
     // Build relation loading statements
     let relation_loads: Vec<TokenStream> = relation_fields
         .iter()
@@ -85,291 +80,38 @@ pub fn generate_from_model_with_relations(
         })
         .collect::<syn::Result<_>>()?;
 
-    // Check if we need a parent stub for HasMany relations with required circular back-refs
-    // This is needed when: UserSchema.memos has MemoSchema which has required user: Box<UserSchema>
-    // BUT: If the relation uses an inline type (which excludes circular fields), we don't need a parent stub
-    let needs_parent_stub = relation_fields.iter().any(|rel| {
-        // A parent stub is needed whenever a relation's inline construction can
-        // emit `__parent_stub__` for a REQUIRED circular back-reference. That
-        // is NOT HasMany-only: a required circular HasOne/BelongsTo (with no
-        // inline type) also routes through `generate_inline_struct_construction`
-        // (see the `has_circular` arm below) and references the same stub.
-        // Excluding them generated code referencing an undefined
-        // `__parent_stub__` local for that schema shape.
-        if !matches!(
-            rel.relation_type.as_str(),
-            "HasMany" | "HasOne" | "BelongsTo"
-        ) {
-            return false;
-        }
-        // If using inline type, circular fields are excluded, so no parent stub needed
-        if rel.inline_type_info.is_some() || rel.adapter {
-            return false;
-        }
-        let schema_path_str = normalize_token_str(&rel.schema_path);
-        let model_path_str = schema_path_str.replace("::Schema", "::Model");
-        let related_model = get_struct_from_schema_path(&model_path_str);
-
-        if let Some(ref model) = related_model {
-            let analysis = get_circular_analysis(source_module_path, &model.definition);
-            // Check if any circular field is a required relation
-            analysis.circular_fields.iter().any(|cf| {
-                analysis
-                    .circular_field_required
-                    .get(cf)
-                    .copied()
-                    .unwrap_or(false)
-            })
-        } else {
-            false
-        }
-    });
-
-    // Generate parent stub field assignments (non-relation fields from model)
-    let parent_stub_fields: Vec<TokenStream> = if needs_parent_stub {
-        field_mappings
-            .iter()
-            .map(|(new_ident, source_ident, _wrapped, is_relation)| {
-                if *is_relation {
-                    // For relation fields in stub, use defaults
-                    if let Some(rel) = relation_fields
-                        .iter()
-                        .find(|r| &r.field_name == source_ident)
-                    {
-                        match rel.relation_type.as_str() {
-                            _ if rel.adapter => quote! { #new_ident: Default::default() },
-                            "HasMany" => quote! { #new_ident: vec![] },
-                            _ if rel.is_optional => quote! { #new_ident: None },
-                            _ => {
-                                let message = format!(
-                                    "schema_type! cannot generate a circular parent stub for required relation field `{}`; make the relation `Option<...>` to break the cycle",
-                                    rel.field_name
-                                );
-                                let error = syn::Error::new(rel.field_name.span(), message)
-                                    .to_compile_error();
-                                quote_spanned! { rel.field_name.span() => #new_ident: { #error } }
-                            }
-                        }
-                    } else {
-                        quote! { #new_ident: Default::default() }
-                    }
-                } else {
-                    // Regular field - clone from model
-                    quote! { #new_ident: model.#source_ident.clone() }
-                }
-            })
-            .collect()
-    } else {
-        vec![]
-    };
-
     // Pre-build relation lookup for O(1) access in field assignments loop
     let relation_by_name: HashMap<&syn::Ident, &RelationFieldInfo> = relation_fields
         .iter()
         .map(|rel| (&rel.field_name, rel))
         .collect();
 
-    // Build field assignments
-    // For relation fields, check for circular references and use inline construction if needed
     let field_assignments: Vec<TokenStream> = field_mappings
         .iter()
         .map(|(new_ident, source_ident, wrapped, is_relation)| {
-            if *is_relation {
-                // Find the relation info for this field
-                if relation_by_name.get(source_ident).is_some_and(|rel| rel.adapter) {
-                    // `relation_adapters` wrapper: `From<Option<Model>>`.
-                    quote! { #new_ident: ::core::convert::From::from(#source_ident) }
-                } else if let Some(rel) = relation_by_name.get(source_ident) {
-                    let schema_path = &rel.schema_path;
-
-                    // Try to find the related MODEL definition to check for circular refs
-                    // The schema_path is like "crate::models::user::Schema", but the actual
-                    // struct is "Model" in the same module. We need to look up the Model
-                    // to see if it has relations pointing back to us.
-                    let schema_path_str = normalize_token_str(schema_path);
-
-                    // Convert schema path to model path: Schema -> Model
-                    let model_path_str = schema_path_str.replace("::Schema", "::Model");
-
-                    // Try to find the related Model definition from file
-                    let related_model_from_file = get_struct_from_schema_path(&model_path_str);
-
-                    // Get the definition string
-                    let related_def_str = related_model_from_file.as_ref().map_or("", |s| s.definition.as_str());
-
-                    // Analyze circular references, FK relations, and FK optionality in ONE pass
-                    let analysis = get_circular_analysis(source_module_path, related_def_str);
-                    let circular_fields = &analysis.circular_fields;
-                    let has_circular = !circular_fields.is_empty();
-
-                    // Check if we have inline type info - if so, use the inline type
-                    // instead of the original schema path
-                    if let Some((ref inline_type_name, ref included_fields)) = rel.inline_type_info {
-                        // Use inline type construction
-                        let inline_construct = generate_inline_type_construction(inline_type_name, included_fields, related_def_str, "r");
-
-                        match rel.relation_type.as_str() {
-                            "HasOne" | "BelongsTo" => {
-                                if rel.is_optional {
-                                    quote! {
-                                        #new_ident: #source_ident.map(|r| Box::new(#inline_construct))
-                                    }
-                                } else {
-                                    quote! {
-                                        #new_ident: Box::new({
-                                            let r = #source_ident.ok_or_else(|| sea_orm::DbErr::RecordNotFound(
-                                                format!("Required relation '{}' not found", stringify!(#source_ident))
-                                            ))?;
-                                            #inline_construct
-                                        })
-                                    }
-                                }
-                            }
-                            "HasMany" => {
-                                quote! {
-                                    #new_ident: #source_ident.into_iter().map(|r| #inline_construct).collect()
-                                }
-                            }
-                            _ => quote! { #new_ident: Default::default() },
-                        }
-                    } else {
-                        // No inline type - use original behavior
-                        match rel.relation_type.as_str() {
-                            "HasOne" | "BelongsTo" => {
-                                if has_circular {
-                                    // Use inline construction to break circular ref
-                                    let inline_construct = generate_inline_struct_construction(schema_path, related_def_str, circular_fields, "r");
-                                    if rel.is_optional {
-                                        quote! {
-                                            #new_ident: #source_ident.map(|r| Box::new(#inline_construct))
-                                        }
-                                    } else {
-                                        quote! {
-                                            #new_ident: Box::new({
-                                                let r = #source_ident.ok_or_else(|| sea_orm::DbErr::RecordNotFound(
-                                                    format!("Required relation '{}' not found", stringify!(#source_ident))
-                                                ))?;
-                                                #inline_construct
-                                            })
-                                        }
-                                    }
-                                } else {
-                                    // No circular ref - use has_fk_relations from the analysis
-                                    let target_has_fk = analysis.has_fk_relations;
-
-                                    if target_has_fk {
-                                        // Target schema has FK relations -> use async from_model()
-                                        if rel.is_optional {
-                                            quote! {
-                                                #new_ident: match #source_ident {
-                                                    Some(r) => Some(Box::new(#schema_path::from_model(r, db).await?)),
-                                                    None => None,
-                                                }
-                                            }
-                                        } else {
-                                            quote! {
-                                                #new_ident: Box::new(#schema_path::from_model(
-                                                    #source_ident.ok_or_else(|| sea_orm::DbErr::RecordNotFound(
-                                                        format!("Required relation '{}' not found", stringify!(#source_ident))
-                                                    ))?,
-                                                    db,
-                                                ).await?)
-                                            }
-                                        }
-                                    } else {
-                                        // Target schema has no FK relations -> use sync From::from()
-                                        if rel.is_optional {
-                                            quote! {
-                                                #new_ident: #source_ident.map(|r| Box::new(<#schema_path as From<_>>::from(r)))
-                                            }
-                                        } else {
-                                            quote! {
-                                                #new_ident: Box::new(<#schema_path as From<_>>::from(
-                                                    #source_ident.ok_or_else(|| sea_orm::DbErr::RecordNotFound(
-                                                        format!("Required relation '{}' not found", stringify!(#source_ident))
-                                                    ))?
-                                                ))
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            "HasMany" => {
-                                // HasMany is excluded by default, so this branch is only hit
-                                // when explicitly picked. Use inline construction (no relations).
-                                if has_circular {
-                                    // Use inline construction to break circular ref
-                                    let inline_construct = generate_inline_struct_construction(schema_path, related_def_str, circular_fields, "r");
-                                    quote! {
-                                        #new_ident: #source_ident.into_iter().map(|r| #inline_construct).collect()
-                                    }
-                                } else {
-                                    // No circular ref - use has_fk_relations from the analysis
-                                    let target_has_fk = analysis.has_fk_relations;
-
-                                    if target_has_fk {
-                                        // Target has FK relations but HasMany doesn't load nested data anyway,
-                                        // so we use inline construction (flat fields only)
-                                        let inline_construct = generate_inline_struct_construction(
-                                            schema_path,
-                                            related_def_str,
-                                            &[], // no circular fields to exclude
-                                            "r",
-                                        );
-                                        quote! {
-                                            #new_ident: #source_ident.into_iter().map(|r| #inline_construct).collect()
-                                        }
-                                    } else {
-                                        quote! {
-                                            #new_ident: #source_ident.into_iter().map(|r| <#schema_path as From<_>>::from(r)).collect()
-                                        }
-                                    }
-                                }
-                            }
-                            _ => quote! { #new_ident: Default::default() },
-                        }
-                    }
-                } else {
-                    quote! { #new_ident: Default::default() }
-                }
+            let cfg = cfg_of(source_ident);
+            let value = if *is_relation {
+                relation_by_name.get(source_ident).map_or_else(
+                    || quote! { Default::default() },
+                    |rel| relation_value(rel, source_ident, source_module_path),
+                )
             } else if *wrapped {
-                quote! { #new_ident: Some(model.#source_ident) }
+                quote! { Some(#MODEL.#source_ident) }
             } else {
-                quote! { #new_ident: model.#source_ident }
-            }
+                quote! { #MODEL.#source_ident }
+            };
+            quote! { #cfg #new_ident: #value }
         })
         .collect();
-
-    // Circular references are now handled automatically via inline construction
-    // For HasMany with required circular back-refs, we create a parent stub first
-
-    // Generate parent stub definition if needed
-    let parent_stub_fields = gate(parent_stub_fields);
-    let parent_stub_def = if needs_parent_stub {
-        quote! {
-            let __parent_stub__ = Self {
-                #(#parent_stub_fields),*
-            };
-        }
-    } else {
-        quote! {}
-    };
-
-    let field_assignments = gate(field_assignments);
 
     Ok(quote! {
         #[allow(deprecated)]
         impl #new_type_name {
-
             pub async fn from_model(
-                model: #source_type,
-                db: &sea_orm::DatabaseConnection,
+                #MODEL: #source_type,
+                #DB: &sea_orm::DatabaseConnection,
             ) -> Result<Self, sea_orm::DbErr> {
-
-
                 #(#relation_loads)*
-
-                #parent_stub_def
 
                 Ok(Self {
                     #(#field_assignments),*
@@ -377,6 +119,77 @@ pub fn generate_from_model_with_relations(
             }
         }
     })
+}
+
+/// The value of one relation field, built from the loaded local
+/// `source_ident` (`Option<Model>` / `Vec<Model>`).
+fn relation_value(
+    rel: &RelationFieldInfo,
+    source_ident: &syn::Ident,
+    source_module_path: &[String],
+) -> TokenStream {
+    let schema_path = &rel.schema_path;
+    let single = matches!(rel.relation_type.as_str(), "HasOne" | "BelongsTo");
+    let required = |value: TokenStream| {
+        quote! {
+            #source_ident.ok_or_else(|| sea_orm::DbErr::RecordNotFound(
+                format!("Required relation '{}' not found", stringify!(#source_ident))
+            )).map(|r| #value)?
+        }
+    };
+    if rel.adapter {
+        // `relation_adapters` wrapper: `From<Option<Model>>`.
+        return quote! { ::core::convert::From::from(#source_ident) };
+    }
+    if let Some((inline_type_name, included_fields)) = &rel.inline_type_info {
+        // The related model (relations stripped) behind the inline type.
+        let model_path = normalize_token_str(schema_path).replace("::Schema", "::Model");
+        let related = get_struct_from_schema_path(&model_path);
+        let related_def = related.as_ref().map_or("", |s| s.definition.as_str());
+        let construct =
+            generate_inline_type_construction(inline_type_name, included_fields, related_def, "r");
+        return match rel.relation_type.as_str() {
+            "HasMany" => quote! { #source_ident.into_iter().map(|r| #construct).collect() },
+            _ if !single => quote! { Default::default() },
+            _ if rel.is_optional => quote! { #source_ident.map(|r| Box::new(#construct)) },
+            _ => required(quote! { Box::new(#construct) }),
+        };
+    }
+    if !single {
+        return if rel.relation_type == "HasMany" {
+            quote! { #source_ident.into_iter().map(|r| <#schema_path as From<_>>::from(r)).collect() }
+        } else {
+            quote! { Default::default() }
+        };
+    }
+    // Not circular (an inline type would exist): a target with FK relations
+    // of its own loads them through its async `from_model`.
+    let model_path = normalize_token_str(schema_path).replace("::Schema", "::Model");
+    let related = get_struct_from_schema_path(&model_path);
+    let related_def = related.as_ref().map_or("", |s| s.definition.as_str());
+    let related_module = get_module_path_from_schema_path(schema_path);
+    let target_has_fk =
+        get_circular_analysis(source_module_path, &related_module, related_def).has_fk_relations;
+    match (target_has_fk, rel.is_optional) {
+        (true, true) => quote! {
+            match #source_ident {
+                Some(r) => Some(Box::new(#schema_path::from_model(r, #DB).await?)),
+                None => None,
+            }
+        },
+        (true, false) => quote! {
+            Box::new(#schema_path::from_model(
+                #source_ident.ok_or_else(|| sea_orm::DbErr::RecordNotFound(
+                    format!("Required relation '{}' not found", stringify!(#source_ident))
+                ))?,
+                #DB,
+            ).await?)
+        },
+        (false, true) => {
+            quote! { #source_ident.map(|r| Box::new(<#schema_path as From<_>>::from(r))) }
+        }
+        (false, false) => required(quote! { Box::new(<#schema_path as From<_>>::from(r)) }),
+    }
 }
 
 #[cfg(test)]

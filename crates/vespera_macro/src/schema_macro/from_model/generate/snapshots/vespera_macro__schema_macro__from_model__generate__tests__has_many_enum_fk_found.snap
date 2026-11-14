@@ -5,32 +5,23 @@ expression: "run_scenario(models, new_type, source_type, rows, &relations, modul
 #[allow(deprecated)]
 impl UserSchema {
     pub async fn from_model(
-        model: crate::models::user::Model,
-        db: &sea_orm::DatabaseConnection,
+        __vespera_model: crate::models::user::Model,
+        __vespera_db: &sea_orm::DatabaseConnection,
     ) -> Result<Self, sea_orm::DbErr> {
         let author_comments = sea_orm::QueryFilter::filter(
                 <crate::models::comment::Entity as sea_orm::EntityTrait>::find(),
                 sea_orm::ColumnTrait::eq(
                     &crate::models::comment::Column::AuthorId,
-                    model.id.clone(),
+                    __vespera_model.id.clone(),
                 ),
             )
-            .all(db)
+            .all(__vespera_db)
             .await?;
-        let __parent_stub__ = Self {
-            id: model.id.clone(),
-            author_comments: vec![],
-        };
         Ok(Self {
-            id: model.id,
+            id: __vespera_model.id,
             author_comments: author_comments
                 .into_iter()
-                .map(|r| crate::models::comment::Schema {
-                    id: r.id,
-                    content: r.content,
-                    author_id: r.author_id,
-                    author: Box::new(__parent_stub__.clone()),
-                })
+                .map(|r| <crate::models::comment::Schema as From<_>>::from(r))
                 .collect(),
         })
     }

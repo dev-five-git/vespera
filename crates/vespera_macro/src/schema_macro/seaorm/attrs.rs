@@ -56,14 +56,64 @@ fn extract_sea_orm_attr_value(attrs: &[syn::Attribute], attr_name: &str) -> Opti
 }
 
 /// Extract the `from` field name from a `sea_orm` relation attribute.
+///
+/// SeaORM accepts a field name (`user_id`), a column (`UserId`,
+/// `Column::UserId`) and a composite list (`(a, b)`); the column forms are
+/// normalized to the field name (`user_id`), a composite list to
+/// `(a, b)` of field names (see [`is_composite_columns`]).
 pub fn extract_belongs_to_from_field(attrs: &[syn::Attribute]) -> Option<String> {
-    extract_sea_orm_attr_value(attrs, "from")
+    extract_sea_orm_attr_value(attrs, "from").map(|value| normalize_columns(&value))
 }
 
 /// Extract the `to` field name (the referenced column) from a `sea_orm`
-/// relation attribute.
+/// relation attribute, normalized like [`extract_belongs_to_from_field`].
 pub fn extract_belongs_to_to_field(attrs: &[syn::Attribute]) -> Option<String> {
-    extract_sea_orm_attr_value(attrs, "to")
+    extract_sea_orm_attr_value(attrs, "to").map(|value| normalize_columns(&value))
+}
+
+/// Whether a normalized `from` / `to` value lists several columns.
+pub fn is_composite_columns(columns: &str) -> bool {
+    columns.starts_with('(')
+}
+
+/// `Column::UserId` / `UserId` / `user_id` -> `user_id`; `(A, b)` ->
+/// `(a, b)`. A value that is no column path is kept as written.
+fn normalize_columns(value: &str) -> String {
+    let trimmed = value.trim();
+    if let Some(list) = trimmed
+        .strip_prefix('(')
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        let columns: Vec<String> = list
+            .split(',')
+            .map(str::trim)
+            .filter(|column| !column.is_empty())
+            .map(column_field_name)
+            .collect();
+        return format!("({})", columns.join(", "));
+    }
+    column_field_name(trimmed)
+}
+
+/// The model field behind one column (`Column::UserId` -> `user_id`).
+fn column_field_name(column: &str) -> String {
+    let last = column.rsplit("::").next().unwrap_or(column).trim();
+    let last = last.strip_prefix("r#").unwrap_or(last);
+    if !last.starts_with(|c: char| c.is_ascii_uppercase()) {
+        return last.to_string();
+    }
+    let mut field = String::with_capacity(last.len() + 4);
+    for (index, c) in last.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if index > 0 {
+                field.push('_');
+            }
+            field.push(c.to_ascii_lowercase());
+        } else {
+            field.push(c);
+        }
+    }
+    field
 }
 
 /// Extract the `relation_enum` value from a `sea_orm` attribute.
@@ -97,12 +147,19 @@ pub fn is_sql_function_default(value: &str) -> bool {
 /// default for a primary key is auto-increment).
 pub fn has_sea_orm_primary_key(attrs: &[syn::Attribute]) -> bool {
     let entries = sea_orm_entries(attrs);
-    let is_pk =
-        entry(&entries, "primary_key").is_some_and(|pk| pk.value.as_ref().is_none_or(is_true));
     let auto_increment = entry(&entries, "auto_increment")
         .and_then(|e| e.value.as_ref())
         .is_none_or(is_true);
-    is_pk && auto_increment
+    is_primary_key_entry(&entries) && auto_increment
+}
+
+/// Whether a field is (part of) the primary key, `auto_increment` or not.
+pub fn is_sea_orm_primary_key(attrs: &[syn::Attribute]) -> bool {
+    is_primary_key_entry(&sea_orm_entries(attrs))
+}
+
+fn is_primary_key_entry(entries: &[SeaOrmEntry]) -> bool {
+    entry(entries, "primary_key").is_some_and(|pk| pk.value.as_ref().is_none_or(is_true))
 }
 
 fn is_true(expr: &syn::Expr) -> bool {
@@ -395,6 +452,33 @@ mod tests {
     ) {
         let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#attr)];
         assert_eq!(has_sea_orm_primary_key(&attrs), expected);
+        // `auto_increment = false` is still (part of) the primary key.
+        assert_eq!(
+            is_sea_orm_primary_key(&attrs),
+            expected || attr.to_string().contains("auto_increment")
+        );
+    }
+
+    // SeaORM's column forms name the model field (`Column::UserId`,
+    // `UserId` -> `user_id`); composite lists are normalized per column.
+    #[rstest]
+    #[case::field("user_id", "user_id", false)]
+    #[case::column("UserId", "user_id", false)]
+    #[case::column_path("Column::UserId", "user_id", false)]
+    #[case::raw("r#type", "type", false)]
+    #[case::composite("(Column::UserId, post_id)", "(user_id, post_id)", true)]
+    #[case::composite_spaced("( A , )", "(a)", true)]
+    fn relation_columns_are_normalized(
+        #[case] value: &str,
+        #[case] expected: &str,
+        #[case] composite: bool,
+    ) {
+        let attrs: Vec<syn::Attribute> =
+            vec![syn::parse_quote!(#[sea_orm(belongs_to, from = #value, to = #value)])];
+        let from = extract_belongs_to_from_field(&attrs).unwrap();
+        assert_eq!(from, expected);
+        assert_eq!(extract_belongs_to_to_field(&attrs).unwrap(), expected);
+        assert_eq!(is_composite_columns(&from), composite);
     }
 
     #[test]

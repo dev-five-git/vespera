@@ -2,6 +2,7 @@
 source: crates/vespera_macro/src/schema_macro/generate_type/tests_field_attrs.rs
 expression: "format!(\"{code}\\n// ---- metadata ----\\n{}\", metadata.unwrap_or_default())"
 ---
+#[allow(deprecated)]
 #[derive(vespera::Multipart, ::garde::Validate, vespera::Schema)]
 #[garde(context(Ctx))]
 #[serde(rename_all = "camelCase")]

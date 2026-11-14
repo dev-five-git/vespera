@@ -10,6 +10,7 @@ use quote::quote;
 
 use super::file_cache;
 use super::seaorm::RelationFieldInfo;
+use super::transformation::{rebuild_serde_attrs, serde_key};
 use super::type_utils::snake_to_pascal_case;
 use crate::metadata::StructMetadata;
 #[cfg(test)]
@@ -64,105 +65,114 @@ pub(super) fn related_model_type_from_schema_path(schema_path: &TokenStream) -> 
     Some(syn::Type::Path(type_path))
 }
 
-pub(super) fn build_named_struct_field_assignments(
-    struct_item: &syn::ItemStruct,
-    source_expr: &TokenStream,
-) -> syn::Result<Vec<TokenStream>> {
+/// The adapter DTO's named fields.
+pub(super) fn named_fields(struct_item: &syn::ItemStruct) -> syn::Result<Vec<&syn::Field>> {
     let syn::Fields::Named(fields_named) = &struct_item.fields else {
         return Err(syn::Error::new_spanned(
             struct_item,
             "same-file relation override DTO must be a named-field struct",
         ));
     };
-
-    let assignments = fields_named
-        .named
-        .iter()
-        .filter_map(|field| {
-            field.ident.as_ref().map(|ident| {
-                quote! { #ident: #source_expr . #ident.clone() }
-            })
-        })
-        .collect();
-
-    Ok(assignments)
+    Ok(fields_named.named.iter().collect())
 }
 
-pub(super) fn build_proxy_fields(struct_item: &syn::ItemStruct) -> syn::Result<Vec<TokenStream>> {
-    let syn::Fields::Named(fields_named) = &struct_item.fields else {
-        return Err(syn::Error::new_spanned(
-            struct_item,
-            "same-file relation override DTO must be a named-field struct",
-        ));
-    };
-
-    let fields = fields_named
-        .named
+/// `field: <source>.field[.clone()]` per DTO field, each behind the
+/// field's own `#[cfg(..)]` (a field compiled out has no assignment).
+fn field_assignments(
+    fields: &[&syn::Field],
+    source: &TokenStream,
+    clone: bool,
+) -> Vec<TokenStream> {
+    let clone = clone.then(|| quote! { .clone() });
+    fields
         .iter()
         .filter_map(|field| {
-            field.ident.as_ref().map(|ident| {
-                let ty = &field.ty;
-                let attrs: Vec<_> = field
-                    .attrs
-                    .iter()
-                    .filter(|attr| attr.path().is_ident("serde") || attr.path().is_ident("doc"))
-                    .collect();
-                quote! {
-                    #(#attrs)*
-                    #ident: #ty
-                }
-            })
+            let ident = field.ident.as_ref()?;
+            let cfgs = field
+                .attrs
+                .iter()
+                .filter(|attr| attr.path().is_ident("cfg"));
+            Some(quote! { #(#cfgs)* #ident: #source.#ident #clone })
         })
-        .collect();
-
-    Ok(fields)
+        .collect()
 }
 
-pub(super) fn build_proxy_to_dto_assignments(
-    struct_item: &syn::ItemStruct,
-) -> syn::Result<Vec<TokenStream>> {
-    let syn::Fields::Named(fields_named) = &struct_item.fields else {
-        return Err(syn::Error::new_spanned(
-            struct_item,
-            "same-file relation override DTO must be a named-field struct",
-        ));
-    };
-
-    let assignments = fields_named
-        .named
+/// The deserialize proxy's fields: the DTO's types with their `serde`,
+/// `doc` and `cfg` attributes.
+fn proxy_fields(fields: &[&syn::Field]) -> Vec<TokenStream> {
+    fields
         .iter()
         .filter_map(|field| {
-            field
-                .ident
-                .as_ref()
-                .map(|ident| quote! { #ident: proxy.#ident })
-        })
-        .collect();
-
-    Ok(assignments)
-}
-
-pub(super) fn build_clone_assignments(
-    struct_item: &syn::ItemStruct,
-) -> syn::Result<Vec<TokenStream>> {
-    let syn::Fields::Named(fields_named) = &struct_item.fields else {
-        return Err(syn::Error::new_spanned(
-            struct_item,
-            "same-file relation override DTO must be a named-field struct",
-        ));
-    };
-
-    let assignments = fields_named
-        .named
-        .iter()
-        .filter_map(|field| {
-            field.ident.as_ref().map(|ident| {
-                quote! { #ident: dto.#ident.clone() }
+            let ident = field.ident.as_ref()?;
+            let ty = &field.ty;
+            let attrs = field.attrs.iter().filter(|attr| {
+                let path = attr.path();
+                path.is_ident("serde") || path.is_ident("doc") || path.is_ident("cfg")
+            });
+            Some(quote! {
+                #(#attrs)*
+                #ident: #ty
             })
         })
-        .collect();
+        .collect()
+}
 
-    Ok(assignments)
+/// The string value of a `key = "..."` serde item, parsed as `T`.
+fn serde_value<T: syn::parse::Parse>(meta: &syn::Meta) -> Option<T> {
+    let syn::Meta::NameValue(syn::MetaNameValue {
+        value:
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(lit),
+                ..
+            }),
+        ..
+    }) = meta
+    else {
+        return None;
+    };
+    lit.parse().ok()
+}
+
+/// How the DTO's container serde attributes shape the wrapper's
+/// `Deserialize`.
+#[derive(Default)]
+struct DtoSerde {
+    /// The container attributes the proxy repeats (renames, tags,
+    /// `deny_unknown_fields`, ...).
+    proxy_attrs: Vec<TokenStream>,
+    /// `from = "T"` / `try_from = "T"`: deserialize `T`, then convert.
+    convert_from: Option<(bool, syn::Type)>,
+    /// `default` / `default = "path"`: the expression building the DTO's
+    /// default.
+    default: Option<TokenStream>,
+}
+
+/// Splits the DTO's container serde attributes: the conversion keys
+/// (`from` / `try_from` / `default`) are honoured by the generated code;
+/// the keys whose impls the proxy cannot have (`into`, `bound`, `remote`)
+/// are dropped.
+fn dto_serde(dto_struct: &syn::ItemStruct) -> DtoSerde {
+    let mut serde = DtoSerde::default();
+    let attrs = rebuild_serde_attrs(&dto_struct.attrs, |meta| match serde_key(meta).as_str() {
+        key @ ("from" | "try_from") => {
+            if let Some(ty) = serde_value::<syn::Type>(meta) {
+                serde.convert_from = Some((key == "try_from", ty));
+            }
+            false
+        }
+        "default" => {
+            let dto_ident = &dto_struct.ident;
+            serde.default = Some(serde_value::<syn::ExprPath>(meta).map_or_else(
+                || quote! { <#dto_ident as ::core::default::Default>::default() },
+                |path| quote! { #path() },
+            ));
+            false
+        }
+        "into" | "bound" | "remote" => false,
+        _ => true,
+    });
+    serde.proxy_attrs = attrs;
+    serde
 }
 
 /// The OpenAPI component name the adapter DTO is emitted under — its
@@ -201,6 +211,73 @@ fn explicit_adapter_model_type(
     related_model_type_from_schema_path(&rel_info.schema_path).ok_or_else(|| syn::Error::new_spanned(adapter_name, format!("schema_type!: relation field `{field_name}` explicitly requested adapter `{dto_name}`, but the related model type could not be resolved from its schema path")))
 }
 
+/// The wrapper's `Deserialize` body (and the proxy items it needs).
+fn deserialize_items(
+    dto_ident: &syn::Ident,
+    proxy_ident: &syn::Ident,
+    fields: &[&syn::Field],
+    serde: &DtoSerde,
+) -> (TokenStream, TokenStream) {
+    if let Some((fallible, from_ty)) = &serde.convert_from {
+        let read = quote! {
+            let value = <Option<#from_ty> as serde::Deserialize>::deserialize(deserializer)?;
+        };
+        let body = if *fallible {
+            quote! {
+                #read
+                value
+                    .map(<#dto_ident as ::core::convert::TryFrom<#from_ty>>::try_from)
+                    .transpose()
+                    .map(Self)
+                    .map_err(serde::de::Error::custom)
+            }
+        } else {
+            quote! {
+                #read
+                Ok(Self(value.map(<#dto_ident as ::core::convert::From<#from_ty>>::from)))
+            }
+        };
+        return (body, TokenStream::new());
+    }
+    let proxy_fields = proxy_fields(fields);
+    let proxy_to_dto = field_assignments(fields, &quote! { proxy }, false);
+    let proxy_attrs = &serde.proxy_attrs;
+    // A container `default` fills the missing fields from the DTO's default.
+    let default_items = serde.default.as_ref().map(|dto_default| {
+        let from_default = field_assignments(fields, &quote! { dto }, false);
+        quote! {
+            impl ::core::default::Default for #proxy_ident {
+                fn default() -> Self {
+                    let dto: #dto_ident = #dto_default;
+                    Self {
+                        #(#from_default),*
+                    }
+                }
+            }
+        }
+    });
+    let default_attr = default_items
+        .is_some()
+        .then(|| quote! { #[serde(default)] });
+    let proxy = quote! {
+        #[derive(serde::Deserialize)]
+        #(#proxy_attrs)*
+        #default_attr
+        struct #proxy_ident {
+            #(#proxy_fields),*
+        }
+
+        #default_items
+    };
+    let body = quote! {
+        let proxy = <Option<#proxy_ident> as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(Self(proxy.map(|proxy| #dto_ident {
+            #(#proxy_to_dto),*
+        })))
+    };
+    (body, proxy)
+}
+
 pub(super) fn maybe_generate_same_file_relation_override(
     new_type_name: &syn::Ident,
     field_name: &str,
@@ -210,58 +287,40 @@ pub(super) fn maybe_generate_same_file_relation_override(
 ) -> syn::Result<(TokenStream, TokenStream)> {
     let (dto_name, dto_struct) = explicit_adapter_struct(field_name, adapter_name, schema_storage)?;
     let dto_ident = adapter_name;
+    let type_name = crate::parser::strip_raw_prefix_owned(new_type_name.to_string());
+    let field_pascal = snake_to_pascal_case(field_name);
     let wrapper_ident = syn::Ident::new(
-        &format!(
-            "__Vespera{}{}Relation",
-            new_type_name,
-            snake_to_pascal_case(field_name)
-        ),
+        &format!("__Vespera{type_name}{field_pascal}Relation"),
         proc_macro2::Span::call_site(),
     );
     let proxy_ident = syn::Ident::new(
-        &format!(
-            "__Vespera{}{}Proxy",
-            new_type_name,
-            snake_to_pascal_case(field_name)
-        ),
+        &format!("__Vespera{type_name}{field_pascal}Proxy"),
         proc_macro2::Span::call_site(),
     );
     // B6: $ref the adapter DTO's own schema component (honoring its
     // `#[schema(name = ...)]` override), not the base relation schema.
     let schema_ref_name = dto_schema_ref_name(&dto_struct, &dto_name);
 
-    let dto_serde_attrs: Vec<_> = dto_struct
-        .attrs
-        .iter()
-        .filter(|attr| attr.path().is_ident("serde"))
-        .collect();
     let dto_doc_attrs: Vec<_> = dto_struct
         .attrs
         .iter()
         .filter(|attr| attr.path().is_ident("doc"))
         .collect();
 
-    let proxy_fields = build_proxy_fields(&dto_struct)?;
-    let proxy_to_dto = build_proxy_to_dto_assignments(&dto_struct)?;
-    let clone_assignments = build_clone_assignments(&dto_struct)?;
+    let fields = named_fields(&dto_struct)?;
+    let clone_assignments = field_assignments(&fields, &quote! { dto }, true);
     let model_ty = explicit_adapter_model_type(field_name, adapter_name, &dto_name, rel_info)?;
-    let source_expr = quote! { source };
-    let from_model_assignments = build_named_struct_field_assignments(&dto_struct, &source_expr)?;
+    let from_model_assignments = field_assignments(&fields, &quote! { source }, true);
+    let (deserialize_body, proxy_items) =
+        deserialize_items(dto_ident, &proxy_ident, &fields, &dto_serde(&dto_struct));
 
-    // Clone / Deserialize are implemented on the WRAPPER, field by field,
-    // never on the user's DTO: whether the DTO derives them cannot be told
-    // reliably (a `#[derive(Schema)]` storage entry has its derives
-    // stripped, `#[derive(std::clone::Clone)]` / `serde::Deserialize` are
-    // paths), and implementing them on a DTO that derives them is E0119.
+    // Every impl is on the WRAPPER, never on the user's DTO: whether the DTO
+    // derives `Clone` / `Deserialize` cannot be told reliably (a
+    // `#[derive(Schema)]` storage entry has its derives stripped,
+    // `#[derive(std::clone::Clone)]` / `serde::Deserialize` are paths), an
+    // impl on a DTO that derives them is E0119, and so is a `From<Model>`
+    // for a DTO two fields / two `schema_type!` calls adapt.
     let helpers = quote! {
-        impl From<#model_ty> for #dto_ident {
-            fn from(source: #model_ty) -> Self {
-                Self {
-                    #(#from_model_assignments),*
-                }
-            }
-        }
-
         #(#dto_doc_attrs)*
         #[derive(serde::Serialize, vespera::Schema)]
         #[serde(transparent)]
@@ -282,27 +341,22 @@ pub(super) fn maybe_generate_same_file_relation_override(
             }
         }
 
-        #[derive(serde::Deserialize)]
-        #(#dto_serde_attrs)*
-        struct #proxy_ident {
-            #(#proxy_fields),*
-        }
+        #proxy_items
 
         impl<'de> serde::Deserialize<'de> for #wrapper_ident {
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where
                 D: serde::Deserializer<'de>,
             {
-                let proxy = <Option<#proxy_ident> as serde::Deserialize>::deserialize(deserializer)?;
-                Ok(Self(proxy.map(|proxy| #dto_ident {
-                    #(#proxy_to_dto),*
-                })))
+                #deserialize_body
             }
         }
 
         impl From<Option<#model_ty>> for #wrapper_ident {
             fn from(source: Option<#model_ty>) -> Self {
-                Self(source.map(Into::into))
+                Self(source.map(|source| #dto_ident {
+                    #(#from_model_assignments),*
+                }))
             }
         }
     };
@@ -345,31 +399,85 @@ mod tests {
     }
 
     #[test]
-    fn test_build_named_struct_field_assignments_rejects_tuple_structs() {
+    fn named_fields_rejects_tuple_structs() {
         let struct_item: syn::ItemStruct = syn::parse_str("struct TupleDto(String);").unwrap();
-        let source_expr = quote!(source);
-        let error = build_named_struct_field_assignments(&struct_item, &source_expr).unwrap_err();
+        let error = named_fields(&struct_item).unwrap_err();
         assert!(error.to_string().contains("named-field struct"));
     }
 
-    #[test]
-    fn test_build_proxy_fields_rejects_tuple_structs() {
-        let struct_item: syn::ItemStruct = syn::parse_str("struct TupleDto(String);").unwrap();
-        let error = build_proxy_fields(&struct_item).unwrap_err();
-        assert!(error.to_string().contains("named-field struct"));
+    fn user_relation() -> RelationFieldInfo {
+        RelationFieldInfo {
+            field_name: syn::Ident::new("user", proc_macro2::Span::call_site()),
+            relation_type: "HasOne".to_string(),
+            schema_path: quote!(crate::models::user::Schema),
+            is_optional: true,
+            inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            fk_optional: true,
+            fk_to: None,
+            via_rel: None,
+            adapter: false,
+        }
+    }
+
+    /// The helpers for adapter DTOs: every impl lives on the wrapper (no
+    /// `impl From<Model> for Dto`, so one DTO can adapt several fields),
+    /// `#[cfg]` fields keep their cfg on each assignment, and the container
+    /// conversion keys shape the `Deserialize`.
+    #[rstest::rstest]
+    #[case::plain("adapter_plain", "struct UserInArticle { id: i32, name: String }")]
+    #[case::cfg_field(
+        "adapter_cfg_field",
+        "struct UserInArticle { id: i32, #[cfg(feature = \"x\")] #[serde(rename = \"n\")] name: String }"
+    )]
+    #[case::container_from(
+        "adapter_container_from",
+        "#[serde(from = \"UserWire\", into = \"UserWire\", rename_all = \"camelCase\")] struct UserInArticle { id: i32 }"
+    )]
+    #[case::container_try_from(
+        "adapter_container_try_from",
+        "#[serde(try_from = \"UserWire\")] struct UserInArticle { id: i32 }"
+    )]
+    #[case::container_default(
+        "adapter_container_default",
+        "#[serde(default, bound = \"\", deny_unknown_fields)] struct UserInArticle { id: i32, #[cfg(test)] name: String }"
+    )]
+    #[case::container_default_path(
+        "adapter_container_default_path",
+        "#[serde(default = \"users::fallback\")] struct UserInArticle { id: i32 }"
+    )]
+    fn adapter_helpers_snapshot(#[case] name: &str, #[case] definition: &str) {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "UserInArticle",
+            definition,
+        )]);
+        let (_, helpers) = maybe_generate_same_file_relation_override(
+            &syn::Ident::new("ArticleResponse", proc_macro2::Span::call_site()),
+            "user",
+            &syn::Ident::new("UserInArticle", proc_macro2::Span::call_site()),
+            &user_relation(),
+            &storage,
+        )
+        .unwrap();
+        let file: syn::File = syn::parse2(helpers).unwrap();
+        insta::assert_snapshot!(name, prettyplease::unparse(&file));
     }
 
     #[test]
-    fn test_build_proxy_to_dto_assignments_rejects_tuple_structs() {
-        let struct_item: syn::ItemStruct = syn::parse_str("struct TupleDto(String);").unwrap();
-        let error = build_proxy_to_dto_assignments(&struct_item).unwrap_err();
-        assert!(error.to_string().contains("named-field struct"));
-    }
-
-    #[test]
-    fn test_build_clone_assignments_rejects_tuple_structs() {
-        let struct_item: syn::ItemStruct = syn::parse_str("struct TupleDto(String);").unwrap();
-        let error = build_clone_assignments(&struct_item).unwrap_err();
+    fn adapter_requires_named_fields() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "UserInArticle",
+            "struct UserInArticle(i32);",
+        )]);
+        let error = maybe_generate_same_file_relation_override(
+            &syn::Ident::new("ArticleResponse", proc_macro2::Span::call_site()),
+            "user",
+            &syn::Ident::new("UserInArticle", proc_macro2::Span::call_site()),
+            &user_relation(),
+            &storage,
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("named-field struct"));
     }
 
@@ -383,6 +491,8 @@ mod tests {
             inline_type_info: None,
             relation_enum: None,
             fk_column: None,
+            fk_optional: true,
+            fk_to: None,
             via_rel: None,
             adapter: false,
         };
@@ -413,6 +523,8 @@ mod tests {
             inline_type_info: None,
             relation_enum: None,
             fk_column: None,
+            fk_optional: true,
+            fk_to: None,
             via_rel: None,
             adapter: false,
         };
@@ -503,6 +615,8 @@ mod tests {
             inline_type_info: None,
             relation_enum: None,
             fk_column: None,
+            fk_optional: true,
+            fk_to: None,
             via_rel: None,
             adapter: false,
         };

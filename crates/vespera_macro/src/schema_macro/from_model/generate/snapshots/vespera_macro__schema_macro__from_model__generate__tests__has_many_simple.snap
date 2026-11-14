@@ -5,14 +5,14 @@ expression: "run_scenario(models, new_type, source_type, rows, &relations, modul
 #[allow(deprecated)]
 impl UserSchema {
     pub async fn from_model(
-        model: Model,
-        db: &sea_orm::DatabaseConnection,
+        __vespera_model: Model,
+        __vespera_db: &sea_orm::DatabaseConnection,
     ) -> Result<Self, sea_orm::DbErr> {
-        let memos = sea_orm::ModelTrait::find_related(&model, memo::Entity)
-            .all(db)
+        let memos = sea_orm::ModelTrait::find_related(&__vespera_model, memo::Entity)
+            .all(__vespera_db)
             .await?;
         Ok(Self {
-            id: model.id,
+            id: __vespera_model.id,
             memos: memos
                 .into_iter()
                 .map(|r| <memo::Schema as From<_>>::from(r))
