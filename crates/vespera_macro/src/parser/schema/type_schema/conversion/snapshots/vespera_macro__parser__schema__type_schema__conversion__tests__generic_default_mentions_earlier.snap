@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/parser/schema/type_schema/conversion/tests.rs
+assertion_line: 823
+expression: "format!(\"{ty_src} => {}\", serde_json::to_string(&schema_ref).unwrap())"
+---
+Pair<u8> => {"type":"object","properties":{"a":{"type":"integer","format":"uint8","minimum":0,"maximum":255},"b":{"type":"array","items":{"type":"integer","format":"uint8","minimum":0,"maximum":255}}},"required":["a","b"]}

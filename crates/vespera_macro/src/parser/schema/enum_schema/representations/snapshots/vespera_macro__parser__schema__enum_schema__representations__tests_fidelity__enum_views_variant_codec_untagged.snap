@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
+assertion_line: 101
+expression: both_views(src)
+---
+#[serde(untagged)] enum E { #[serde(with = "m")] Newtype(Thing), Pair(u8, #[serde(with = "m")] Thing) }
+response: {"anyOf":[{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."},{"type":"array","prefixItems":[{"type":"integer","format":"uint8","minimum":0,"maximum":255},{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."}],"minItems":2,"maxItems":2}]}
+request: {"anyOf":[{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."},{"type":"array","prefixItems":[{"type":"integer","format":"uint8","minimum":0,"maximum":255},{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."}],"minItems":2,"maxItems":2}]}

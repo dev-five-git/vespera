@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
+assertion_line: 101
+expression: both_views(src)
+---
+#[serde(tag = "t", content = "c")] enum E { #[serde(deserialize_with = "d")] Newtype(u8) }
+response: {"oneOf":[{"type":"object","properties":{"c":{"type":"integer","format":"uint8","minimum":0,"maximum":255},"t":{"type":"string","enum":["Newtype"]}},"required":["t","c"]}],"discriminator":{"propertyName":"t"}}
+request: {"oneOf":[{"type":"object","properties":{"c":{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."},"t":{"type":"string","enum":["Newtype"]}},"required":["t","c"]}],"discriminator":{"propertyName":"t"}}

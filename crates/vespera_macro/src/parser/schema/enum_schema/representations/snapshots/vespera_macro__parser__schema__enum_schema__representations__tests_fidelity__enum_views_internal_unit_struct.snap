@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
+assertion_line: 101
+expression: both_views(src)
+---
+#[serde(tag = "t")] enum Msg { Ping(Ping), Boxed(Box<Ping>), Data(Payload) }
+response: {"oneOf":[{"type":"object","properties":{"t":{"type":"string","enum":["Ping"]}},"required":["t"]},{"type":"object","properties":{"t":{"type":"string","enum":["Boxed"]}},"required":["t"]},{"allOf":[{"type":"object","properties":{"t":{"type":"string","enum":["Data"]}},"required":["t"]},{"$ref":"#/components/schemas/Payload"}]}],"discriminator":{"propertyName":"t"}}
+request: {"oneOf":[{"type":"object","properties":{"t":{"type":"string","enum":["Ping"]}},"required":["t"]},{"type":"object","properties":{"t":{"type":"string","enum":["Boxed"]}},"required":["t"]},{"allOf":[{"type":"object","properties":{"t":{"type":"string","enum":["Data"]}},"required":["t"]},{"$ref":"#/components/schemas/Payload"}]}],"discriminator":{"propertyName":"t"}}

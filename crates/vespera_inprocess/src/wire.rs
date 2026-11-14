@@ -407,20 +407,34 @@ static ERROR_WIRE_HEADERS: LazyLock<http::HeaderMap> = LazyLock::new(|| {
 
 /// Build a wire-format error response with a plain-text body.
 ///
-/// Used by [`crate::dispatch_from_bytes`] for malformed input and by the
-/// JNI bridge for panic fallback.  The response always carries
-/// `content-type: text/plain; charset=utf-8`.  A `status` outside
-/// `100..=999` (not a three-digit HTTP status) is answered as `500`, so the
-/// header is always valid JSON the host decoders accept.
+/// Used by every dispatch entry point for its synthesised failures
+/// (malformed input, limits, deadline, …) and by the JNI bridge / C ABI for
+/// their setup failures (a caught panic uses [`panic_error_wire`]).  The
+/// response always carries `content-type: text/plain; charset=utf-8`.  A
+/// `status` outside `100..=999` (not a three-digit HTTP status) is answered
+/// as `500`, so the header is always valid JSON the host decoders accept.
 #[must_use]
 pub fn error_wire(status: u16, msg: &str) -> Vec<u8> {
-    let status = if (100..=999).contains(&status) {
+    #[cfg(feature = "tracing")]
+    crate::obs::error_response(error_status(status), msg);
+    error_wire_untraced(status, msg)
+}
+
+/// A `status` outside `100..=999` becomes `500` (see [`error_wire`]).
+const fn error_status(status: u16) -> u16 {
+    if matches!(status, 100..=999) {
         status
     } else {
         500
-    };
-    #[cfg(feature = "tracing")]
-    crate::obs::error_response(status, msg);
+    }
+}
+
+/// [`error_wire`] without the `tracing` hook: for a wire whose failure was
+/// already reported inside its dispatch span (a truncated stream, see
+/// `StreamOutcome::error_wire`).
+#[must_use]
+pub fn error_wire_untraced(status: u16, msg: &str) -> Vec<u8> {
+    let status = error_status(status);
     let headers = &*ERROR_WIRE_HEADERS;
     let metadata = ResponseMetadata::current();
     // Write the header + plain-text body straight into one buffer.  An error
@@ -475,8 +489,10 @@ pub fn panic_error_wire(msg: &str) -> Vec<u8> {
 /// Adapter: response parts → wire-format bytes.  Layout:
 /// `[u32 BE header_len | JSON header | raw body]`.
 ///
-/// **Reached only from [`crate::dispatch::build_422_wire`]** — a `422`
-/// response must materialise the whole wire tail into an intermediate
+/// **Reached only for a small `422`** — from the 422 branch of
+/// [`crate::dispatch::finish_buffered_wire`] (buffered / direct-write) and of
+/// [`crate::direct::finish_resumable`] (resumable DIRECT): such a response
+/// must materialise the whole wire tail into an intermediate
 /// `Vec` so its JSON body can be inspected and, on a best-effort basis,
 /// any `{"errors": [...]}` payload hoisted into the wire header's
 /// `validation_errors` field.  Java decoders can then read validation
@@ -485,8 +501,8 @@ pub fn panic_error_wire(msg: &str) -> Vec<u8> {
 ///
 /// Every non-422 status **bypasses this adapter entirely**: the buffered
 /// and direct-write dispatchers stream response frames straight into the
-/// destination buffer via [`crate::dispatch::finish_buffered_wire`] and
-/// [`crate::direct::finish_resumable`], avoiding the intermediate
+/// destination buffer (the non-422 branches of the same two functions),
+/// avoiding the intermediate
 /// `Vec` copy this helper is only worth on the cold 422 path.  Kept `pub`
 /// (not `pub(crate)`) because `alloc_budget.rs` case F asserts the 422
 /// materialise path allocates a known-bounded number of buffers and its

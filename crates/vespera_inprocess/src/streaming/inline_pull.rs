@@ -27,6 +27,18 @@
 //!   unblocked by the request-source close that follows a `504`;
 //! - **outside a spawned task**: a pull must never block a runtime worker.
 //!
+//! **Caveat — handler-side timeouts.** An inline pull blocks the polling
+//! thread *inside* `poll_frame`, so a timeout the handler itself puts around
+//! a body read (`tokio::time::timeout(d, body.frame())`, a `select!` against
+//! a `sleep`) cannot fire while that read blocks: the timer is only looked at
+//! after the poll returns, i.e. once the host source delivered a chunk, `End`
+//! or an error.  This affects at most the first [`INLINE_PULL_BUDGET`] reads
+//! of a request.  A handler that must bound those reads with its own timer
+//! should either read the body inside a spawned task (a task id disables the
+//! fast path, the producer then blocks a `spawn_blocking` thread instead) or
+//! rely on [`crate::dispatch_timeout`], which disables the fast path for the
+//! whole process.
+//!
 //! Backpressure is trivially preserved (a pull happens only when the
 //! handler asks for a frame), the [`crate::max_streaming_request_bytes`]
 //! cap is enforced on the same running total, and a pull that reports
@@ -114,6 +126,9 @@ pub(super) struct InlineState {
     open: AtomicBool,
     /// The request source was pulled inline at least once.
     touched: AtomicBool,
+    /// The dispatch finished (set by the request-source closer under the
+    /// producer-handle lock): a body that outlived it never reads again.
+    finished: AtomicBool,
 }
 
 impl InlineState {
@@ -121,7 +136,20 @@ impl InlineState {
         Arc::new(Self {
             open: AtomicBool::new(open),
             touched: AtomicBool::new(false),
+            finished: AtomicBool::new(false),
         })
+    }
+
+    /// The dispatch returned (or is unwinding): no further source reads,
+    /// inline or through a producer.
+    pub(super) fn finish(&self) {
+        self.open.store(false, Ordering::Release);
+        self.finished.store(true, Ordering::Release);
+    }
+
+    /// Whether [`InlineState::finish`] ran.
+    pub(super) fn finished(&self) -> bool {
+        self.finished.load(Ordering::Acquire)
     }
 
     /// The handler returned: no further inline pulls.

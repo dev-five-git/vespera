@@ -121,15 +121,24 @@ class VesperaBridgePlugin : Plugin<Project> {
                     // Resolved during task configuration so the action below
                     // captures only plain values (no extension / project
                     // reference at execution time — configuration-cache safe).
-                    val base = targetBase.get()
-                    val crate = ext.crateName.get()
+                    // Never `get()` here: a native-jar consumer (`crateName` +
+                    // `bundleNative = false`, no cargoRoot / targetDir) still
+                    // realises this task on `tasks --all` / IDE sync, so a
+                    // missing location only fails when the task runs.
+                    val base = targetBase.orNull
+                    val crate = ext.crateName.orNull
                     val profile = ext.cargoProfile.get()
-                    val expected = plannedBuilds.get().map { build ->
-                        ExpectedLibrary(File(base, build.relativePath), build.triple)
+                    val expected = if (base == null) {
+                        emptyList()
+                    } else {
+                        plannedBuilds.orNull.orEmpty().map { build ->
+                            ExpectedLibrary(File(base, build.relativePath), build.triple)
+                        }
                     }
                     t.doLast(object : org.gradle.api.Action<Task> {
                         override fun execute(@Suppress("UNUSED_PARAMETER") task: Task) {
-                            expected.forEach { lib -> lib.requireExists(crate, profile) }
+                            requireLocation(crate, base)
+                            expected.forEach { lib -> lib.requireExists(crate.orEmpty(), profile) }
                         }
                     })
                     // Wire cargoBuild -> verifyNativeLibs -> bundleNativeLib when opt-in.
@@ -154,9 +163,14 @@ class VesperaBridgePlugin : Plugin<Project> {
                     t.into(generatedResourcesDir)
                     // Locally built libraries win over extraNativeLibs.
                     t.duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-                    val base = targetBase.get()
-                    plannedBuilds.get().forEach { build ->
-                        t.from(File(base, build.relativePath)) { into("native/${build.platform}") }
+                    // `orNull` for the same reason as verifyNativeLibs: without a
+                    // location there is nothing to copy, and verifyNativeLibs
+                    // (a dependency) fails with the reason before this runs.
+                    val base = targetBase.orNull
+                    if (base != null) {
+                        plannedBuilds.orNull.orEmpty().forEach { build ->
+                            t.from(File(base, build.relativePath)) { into("native/${build.platform}") }
+                        }
                     }
                     if (ext.extraNativeLibs.isPresent) {
                         t.from(ext.extraNativeLibs) { include("native/**") }
@@ -218,6 +232,23 @@ class VesperaBridgePlugin : Plugin<Project> {
     internal companion object {
         /** Classpath resource (next to this class) holding the bridge version this plugin was built with. */
         const val VERSION_RESOURCE = "vespera-bridge-plugin.properties"
+
+        /**
+         * Fail `verifyNativeLibs` when the cdylib cannot be located at all.
+         * Static (companion) so the task action captures no plugin instance.
+         */
+        fun requireLocation(crate: String?, base: File?) {
+            require(crate != null) {
+                "vespera.crateName is not set: bundleNativeLib needs the Rust crate whose cdylib " +
+                    "it bundles (or set vespera.bundleNative = false when the library comes from " +
+                    "per-platform native jars)."
+            }
+            require(base != null) {
+                "Neither vespera.cargoRoot nor vespera.targetDir is set: bundleNativeLib cannot " +
+                    "locate the '$crate' cdylib. Set one of them, or vespera.bundleNative = false " +
+                    "when the library comes from per-platform native jars."
+            }
+        }
 
         /** The embedded default `bridgeVersion`, or `null` when the resource is missing. */
         fun embeddedBridgeVersion(): String? =

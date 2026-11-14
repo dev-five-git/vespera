@@ -118,13 +118,15 @@ fn run_factory_guarded<F: Fn() -> Router>(factory: &F) -> Router {
 /// Validate an app name for registration / lookup.
 ///
 /// Constraints:
-/// - non-empty after trimming whitespace
+/// - non-empty after trimming ASCII whitespace (`str::trim_ascii`, the
+///   same trim the compile-time `jni_apps!` / `ffi_apps!` checks apply — a
+///   non-ASCII space such as U+00A0 is an invalid character, never trimmed)
 /// - at most [`MAX_APP_NAME_LEN`] bytes
 /// - ASCII alphanumeric, `_`, or `-` only
 ///
 /// Returns the trimmed name on success.
 fn validate_app_name(name: &str) -> Result<&str, String> {
-    let trimmed = name.trim();
+    let trimmed = name.trim_ascii();
     if trimmed.is_empty() {
         return Err("app name must not be empty".to_owned());
     }
@@ -224,10 +226,13 @@ where
 ///
 /// `factory` runs while the registration write-path mutex (`REGISTER_LOCK`)
 /// is held, so a given name's factory runs **at most once** even under a
-/// concurrent same-name race.  It therefore MUST NOT call back into
-/// `register_app*` from within itself — doing so re-enters the non-reentrant
-/// lock and deadlocks.  Registration is a startup-time operation: build the
-/// `Router` inside `factory` without registering further apps from within it.
+/// concurrent same-name race.  A `register_app*` call made from inside
+/// `factory` (on the same thread) would re-enter that non-reentrant lock, so
+/// it is detected and rejected instead: `try_register_app_named` returns
+/// `Err` (and `register_app` / `register_app_named` are a no-op) without
+/// running the inner factory, while the outer registration proceeds.
+/// Registration is a startup-time operation: register every app from the
+/// top level, never from within another app's factory.
 pub fn try_register_app_named<F>(name: &str, factory: F) -> Result<bool, String>
 where
     F: Fn() -> Router + Send + Sync + 'static,
@@ -298,7 +303,7 @@ pub fn resolve_app_router(header: &WireRequestHeader) -> Result<Router, Vec<u8>>
     let name = header
         .app
         .as_deref()
-        .map(str::trim)
+        .map(str::trim_ascii)
         .filter(|s| !s.is_empty())
         .unwrap_or(DEFAULT_APP_NAME);
     // Lock-free fast path: default-app dispatch (the common case)

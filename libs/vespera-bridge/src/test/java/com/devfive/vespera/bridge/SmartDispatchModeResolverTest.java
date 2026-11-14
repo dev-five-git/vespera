@@ -165,16 +165,43 @@ class SmartDispatchModeResolverTest {
                 () -> new SmartDispatchModeResolver(256 * 1024, -1));
     }
 
+    /**
+     * On a platform thread a safe request takes DIRECT, whose overflow is
+     * streamed from the native stash (a large download, an SSE stream
+     * without {@code Accept: text/event-stream}). The virtual-thread
+     * buffered path has no such fallback, so safe requests stream their
+     * response there instead of failing at max-buffered-response-bytes.
+     */
     @Test
-    void safeRequestOnVirtualThreadUsesSyncOnlyWithinSyncGate() {
+    void safeRequestOnVirtualThreadStreamsTheResponseWithinTheDirectGate() {
         SmartDispatchModeResolver split = new SmartDispatchModeResolver(1024, 128);
 
-        assertEquals(DispatchMode.SYNC,
+        assertEquals(DispatchMode.STREAMING,
                 split.resolveMode(request("GET", 128), true));
+        assertEquals(DispatchMode.STREAMING,
+                split.resolveMode(request("GET", 1024), true));
         assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING,
-                split.resolveMode(request("GET", 129), true));
-        assertEquals(DispatchMode.SYNC,
+                split.resolveMode(request("GET", 1025), true));
+        assertEquals(DispatchMode.STREAMING,
                 split.resolveMode(new MockHttpServletRequest("GET", "/x"), true));
+        assertEquals(DispatchMode.STREAMING,
+                split.resolveMode(new MockHttpServletRequest("HEAD", "/x"), true));
+        // Unsafe requests keep SYNC (as on platform threads).
+        assertEquals(DispatchMode.SYNC, split.resolveMode(request("POST", 128), true));
+        // Platform threads are unchanged.
+        assertEquals(DispatchMode.DIRECT, split.resolveMode(request("GET", 128), false));
+    }
+
+    @Test
+    void parkingOptInKeepsBufferedSyncForSmallSafeRequestsOnVirtualThreads() {
+        SmartDispatchModeResolver parking = new SmartDispatchModeResolver(1024, 128, true);
+
+        assertEquals(DispatchMode.SYNC, parking.resolveMode(request("GET", 128), true));
+        assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING,
+                parking.resolveMode(request("GET", 129), true));
+        assertEquals(DispatchMode.SYNC,
+                parking.resolveMode(new MockHttpServletRequest("GET", "/x"), true));
+        assertEquals(DispatchMode.DIRECT, parking.resolveMode(request("GET", 128), false));
     }
 
     @Test

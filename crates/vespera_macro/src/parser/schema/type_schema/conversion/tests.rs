@@ -609,13 +609,15 @@ fn external_crate_path_keeps_builtin_mapping(
 #[case::sea_orm_tz("DateTimeWithTimeZone", Some("date-time"))]
 #[case::sea_orm_utc("DateTimeUtc", Some("date-time"))]
 #[case::sea_orm_local("DateTimeLocal", Some("date-time"))]
-#[case::time_offset("time::OffsetDateTime", Some("date-time"))]
+#[case::time_offset("time::OffsetDateTime", None)]
 #[case::chrono_naive("chrono::NaiveDateTime", None)]
 #[case::sea_orm_naive_alias("sea_orm::prelude::DateTime", None)]
 #[case::time_primitive("time::PrimitiveDateTime", None)]
 #[case::chrono_naive_time("NaiveTime", None)]
 #[case::time_time("time::Time", None)]
 #[case::date("NaiveDate", Some("date"))]
+#[case::sea_orm_date_alias("Date", Some("date"))]
+#[case::time_date("time::Date", None)]
 fn date_time_formats_require_an_offset(#[case] ty_src: &str, #[case] format: Option<&str>) {
     let ty: Type = syn::parse_str(ty_src).unwrap();
     let SchemaRef::Inline(schema) =
@@ -625,6 +627,37 @@ fn date_time_formats_require_an_offset(#[case] ty_src: &str, #[case] format: Opt
     };
     assert_eq!(schema.schema_type, Some(SchemaType::String), "{ty_src}");
     assert_eq!(schema.format.as_deref(), format, "{ty_src}");
+}
+
+/// The `time` crate does not write RFC 3339 (`2024-01-01 0:00:00.0
+/// +00:00:00`), and writes a tuple without `serde-human-readable`: its types
+/// are plain strings that say so. Bare `Date` / `Time` are sea-orm's chrono
+/// aliases and keep their chrono schema.
+#[rstest::rstest]
+#[case::offset("OffsetDateTime", true)]
+#[case::qualified_offset("time::OffsetDateTime", true)]
+#[case::primitive("PrimitiveDateTime", true)]
+#[case::time_date("time::Date", true)]
+#[case::time_time("time::macros::Time", true)]
+#[case::bare_date("Date", false)]
+#[case::bare_time("Time", false)]
+#[case::chrono_date("chrono::NaiveDate", false)]
+fn time_crate_types_are_described(#[case] ty_src: &str, #[case] described: bool) {
+    let ty: Type = syn::parse_str(ty_src).unwrap();
+    let SchemaRef::Inline(schema) =
+        parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions())
+    else {
+        panic!("inline schema for {ty_src}");
+    };
+    assert_eq!(schema.schema_type, Some(SchemaType::String), "{ty_src}");
+    assert_eq!(
+        schema.description.as_deref() == Some(TIME_CRATE_DESCRIPTION),
+        described,
+        "{ty_src}"
+    );
+    if described {
+        assert_eq!(schema.format, None, "{ty_src}");
+    }
 }
 
 /// `Option<()>` is `null` either way: the type is a single `"null"`.
@@ -760,5 +793,83 @@ fn generic_enum_substitutes_type_params(
             "{ty_src} => {}",
             serde_json::to_string_pretty(&schema_ref).unwrap()
         )
+    );
+}
+
+/// L7: a type argument left out takes the parameter's default, substituted
+/// over the earlier parameters (`B = Vec<A>`).
+#[rstest::rstest]
+#[case::default_struct(
+    "generic_default_struct",
+    "struct Page<T, M = Meta> { items: Vec<T>, meta: M }",
+    "Page<User>"
+)]
+#[case::default_mentions_earlier(
+    "generic_default_mentions_earlier",
+    "struct Pair<A, B = Vec<A>> { a: A, b: B }",
+    "Pair<u8>"
+)]
+fn generic_defaults_are_substituted(
+    #[case] snapshot: &str,
+    #[case] definition: &str,
+    #[case] ty_src: &str,
+) {
+    let item: syn::ItemStruct = syn::parse_str(definition).unwrap();
+    let base = item.ident.to_string();
+    let known: HashSet<String> = HashSet::from([base.clone(), "User".into(), "Meta".into()]);
+    let defs: HashMap<String, String> = HashMap::from([(base, definition.to_string())]);
+    let ty: Type = syn::parse_str(ty_src).unwrap();
+    let schema_ref = parse_type_to_schema_ref(&ty, &known, &defs);
+    insta::assert_snapshot!(
+        snapshot,
+        format!(
+            "{ty_src} => {}",
+            serde_json::to_string(&schema_ref).unwrap()
+        )
+    );
+}
+
+/// A missing argument without a default cannot be substituted: `$ref`.
+#[test]
+fn generic_missing_argument_without_default_is_a_reference() {
+    let known: HashSet<String> = HashSet::from(["Pair".to_string()]);
+    let defs = HashMap::from([(
+        "Pair".to_string(),
+        "struct Pair<A, B> { a: A, b: B }".to_string(),
+    )]);
+    let ty: Type = syn::parse_str("Pair<u8>").unwrap();
+    assert!(matches!(
+        parse_type_to_schema_ref(&ty, &known, &defs),
+        SchemaRef::Ref(_)
+    ));
+}
+
+/// A recursive generic instance whose argument reads differently than it
+/// writes (a set: `uniqueItems` on output only) is a separate `...Input`
+/// component in the request view.
+#[test]
+fn recursive_generic_instance_over_a_set_has_an_input_name() {
+    use super::super::generic_instances::take_materialized;
+    let known: HashSet<String> = HashSet::from(["Tree".to_string()]);
+    let defs = HashMap::from([(
+        "Tree".to_string(),
+        "struct Tree<T> { v: T, kids: Vec<Tree<T>> }".to_string(),
+    )]);
+    let ty: Type = syn::parse_str("Tree<HashSet<u8>>").unwrap();
+    let response = parse_type_to_schema_ref(&ty, &known, &defs);
+    let response_names: Vec<String> = take_materialized().into_keys().collect();
+    let request = crate::parser::schema::request_view::with_request_view(|| {
+        parse_type_to_schema_ref(&ty, &known, &defs)
+    });
+    let request_names: Vec<String> = take_materialized().into_keys().collect();
+    assert_eq!(response_names, ["Tree_HashSet_u8"]);
+    assert_eq!(request_names, ["Tree_HashSet_u8Input"]);
+    let (SchemaRef::Ref(response), SchemaRef::Ref(request)) = (response, request) else {
+        panic!("a recursive instance is a $ref");
+    };
+    assert_eq!(response.ref_path, "#/components/schemas/Tree_HashSet_u8");
+    assert_eq!(
+        request.ref_path,
+        "#/components/schemas/Tree_HashSet_u8Input"
     );
 }
