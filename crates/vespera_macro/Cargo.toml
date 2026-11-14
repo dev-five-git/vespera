@@ -11,6 +11,8 @@ documentation = "https://docs.rs/vespera_macro"
 readme.workspace = true
 keywords = ["openapi", "axum", "proc-macro", "swagger", "vespera"]
 categories = ["web-programming::http-server", "development-tools::procedural-macro-helpers"]
+# Contributor notes for coding agents, not part of the crate.
+exclude = ["AGENTS.md", "src/**/AGENTS.md"]
 
 [lib]
 proc-macro = true
