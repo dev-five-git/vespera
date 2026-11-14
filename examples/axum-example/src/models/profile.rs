@@ -2,11 +2,11 @@
 //! module; DTOs derived from it elsewhere (`routes::memos`) resolve them here.
 use serde::{Deserialize, Serialize};
 
-pub(crate) fn default_theme() -> String {
+pub fn default_theme() -> String {
     "light".to_string()
 }
 
-pub(crate) mod codec {
+pub mod codec {
     use serde::{Deserialize, Deserializer, Serializer};
 
     #[allow(clippy::trivially_copy_pass_by_ref)]

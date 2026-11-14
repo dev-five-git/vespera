@@ -1368,6 +1368,34 @@
         }
       }
     },
+    "/memos/profile": {
+      "patch": {
+        "operationId": "patch_profile",
+        "summary": "Apply a profile patch to the default profile",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfilePatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileCard"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/memos/{id}": {
       "get": {
         "operationId": "get_memo",

@@ -285,6 +285,21 @@ mod relation_adapter_tests {
 schema_type!(ProfileCard from crate::models::profile::Profile);
 schema_type!(ProfilePatch from crate::models::profile::Profile, partial);
 
+/// Apply a profile patch to the default profile
+#[vespera::route(patch, path = "/profile")]
+pub async fn patch_profile(Json(patch): Json<ProfilePatch>) -> Json<ProfileCard> {
+    let base = crate::models::profile::Profile {
+        theme: crate::models::profile::default_theme(),
+        score: 0,
+        bio: String::new(),
+    };
+    let mut card = ProfileCard::from(base);
+    card.theme = patch.theme.unwrap_or(card.theme);
+    card.score = patch.score.unwrap_or(card.score);
+    card.bio = patch.bio.unwrap_or(card.bio);
+    Json(card)
+}
+
 #[cfg(test)]
 mod serde_path_tests {
     use super::*;

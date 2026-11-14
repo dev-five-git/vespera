@@ -75,6 +75,8 @@ fn deprecated_fields_convert() {
     assert_eq!((dto.id, dto.old_id), (1, 2));
 }
 
+/// The derived `Validate` follows `#[schema]` constraints (`validation` feature).
+#[cfg(feature = "validation")]
 #[test]
 fn schema_constraints_follow_the_field() {
     let source = Signup {
