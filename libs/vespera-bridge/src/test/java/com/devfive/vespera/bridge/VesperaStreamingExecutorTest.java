@@ -35,6 +35,22 @@ class VesperaStreamingExecutorTest {
         }
     }
 
+    /** {@code max-threads + max-queued} beyond {@code int} saturates instead of going negative. */
+    @Test
+    void hugeCapsSaturateInsteadOfOverflowing() {
+        assertEquals(Integer.MAX_VALUE, VesperaStreamingExecutor.capacity(Integer.MAX_VALUE, 100));
+        assertEquals(Integer.MAX_VALUE, VesperaStreamingExecutor.capacity(Integer.MAX_VALUE, Integer.MAX_VALUE));
+        assertEquals(5, VesperaStreamingExecutor.capacity(2, 3));
+        try (VesperaStreamingExecutor executor = new VesperaStreamingExecutor(Integer.MAX_VALUE, 100)) {
+            assertEquals(0, executor.inUse());
+            VesperaStreamingExecutor.Reservation slot = executor.tryReserve();
+            assertNotNull(slot, "admits a stream");
+            assertEquals(1, executor.inUse());
+            slot.cancel();
+            assertEquals(0, executor.inUse());
+        }
+    }
+
     @Test
     void admitsThreadsPlusQueuedStreamsThenRejects() throws Exception {
         try (VesperaStreamingExecutor executor = new VesperaStreamingExecutor(1, 1)) {

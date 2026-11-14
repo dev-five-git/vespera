@@ -165,6 +165,46 @@ class VesperaBridgeInitTest {
         assertEquals(-1, VesperaNativeConfig.toInt(-1));
     }
 
+    /** A malformed knob value is not silently dropped: a WARNING names the property. */
+    @Test
+    void malformedKnobPropertyWarnsAndFallsBack() {
+        String property = "vespera.test.malformed-knob";
+        java.util.logging.Logger jul = java.util.logging.Logger.getLogger(VesperaBridge.class.getName());
+        java.util.List<String> warnings = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.logging.Handler capture = new java.util.logging.Handler() {
+            @Override
+            public void publish(java.util.logging.LogRecord record) {
+                if (record.getLevel() == java.util.logging.Level.WARNING) {
+                    warnings.add(record.getMessage());
+                }
+            }
+
+            @Override
+            public void flush() {}
+
+            @Override
+            public void close() {}
+        };
+        jul.addHandler(capture);
+        try {
+            System.setProperty(property, "64MiB");
+            assertEquals(-1, new VesperaNativeConfig.Knob("t", property, -1, v -> true).resolve());
+            assertEquals(0, VesperaNativeConfig.pendingOrProperty(null, property));
+            assertEquals(2, warnings.size(), warnings.toString());
+            assertTrue(warnings.get(0).contains(property) && warnings.get(0).contains("64MiB"), warnings.get(0));
+
+            warnings.clear();
+            System.setProperty(property, " 0x10 ");
+            assertEquals(16, VesperaNativeConfig.longProperty(property, 7));
+            System.clearProperty(property);
+            assertEquals(7, VesperaNativeConfig.longProperty(property, 7));
+            assertTrue(warnings.isEmpty(), warnings.toString());
+        } finally {
+            jul.removeHandler(capture);
+            System.clearProperty(property);
+        }
+    }
+
     @Test
     void pendingConfigurationOverridesSystemPropertyAndNullUsesProperty() {
         String property = "vespera.test.pending-or-property";

@@ -36,7 +36,7 @@ class DirectStashTest {
     }
 
     /** Fake stash: answers the queued fetch codes and records every call. */
-    private static final class FakeOps implements DirectStash.Ops {
+    private static class FakeOps implements DirectStash.Ops {
         final List<Integer> fetchCodes = new ArrayList<>();
         final List<Integer> fetchCapacities = new ArrayList<>();
         final List<String> calls = new ArrayList<>();
@@ -133,6 +133,28 @@ class DirectStashTest {
                         freshPool(), 1, false,
                         overflowing(new AtomicInteger(), cap + 1, DirectStash.FLAG_EXACT), tooBig, true));
         assertTrue(tooBig.calls.isEmpty());
+    }
+
+    /**
+     * A failure while fetching (direct memory exhausted growing the buffer,
+     * a failing fetch) frees the native stash entry instead of leaking it
+     * until its TTL.
+     */
+    @Test
+    void failureWhileFetchingDiscardsTheStashEntry() {
+        FakeOps ops = new FakeOps() {
+            @Override
+            public int fetch(long token, ByteBuffer out) {
+                calls.add("fetch");
+                throw new OutOfMemoryError("Direct buffer memory");
+            }
+        };
+        OutOfMemoryError oom = assertThrows(OutOfMemoryError.class,
+                () -> VesperaDirectBufferPool.dispatchViaPool(
+                        freshPool(), 1, false,
+                        overflowing(new AtomicInteger(), 70_000, DirectStash.FLAG_EXACT), ops, true));
+        assertEquals("Direct buffer memory", oom.getMessage());
+        assertEquals(List.of("fetch", "discard"), ops.calls);
     }
 
     @Test
