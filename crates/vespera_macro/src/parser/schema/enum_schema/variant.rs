@@ -87,7 +87,7 @@ pub(super) fn newtype_field_schema(
 /// Build a schema for a variant's data (tuple or struct fields)
 pub(super) fn build_variant_data_schema(
     variant: &syn::Variant,
-    enum_rename_all_fields: Option<&str>,
+    renames: super::EnumRenames<'_>,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Option<SchemaRef> {
@@ -113,12 +113,12 @@ pub(super) fn build_variant_data_schema(
         syn::Fields::Named(fields_named) => Some(SchemaRef::Inline(Box::new(
             build_struct_variant_fields(
                 fields_named,
-                enum_rename_all_fields,
+                renames.fields,
                 &variant.attrs,
                 known_schemas,
                 struct_definitions,
             )
-            .into_object_schema(None, false),
+            .into_object_schema(None, renames.deny_unknown_fields),
         ))),
     }
 }
@@ -152,7 +152,11 @@ mod tests {
         let variant: syn::Variant = syn::parse_quote!(Empty {});
         let schema = build_variant_data_schema(
             &variant,
-            None,
+            super::super::EnumRenames {
+                variants: None,
+                fields: None,
+                deny_unknown_fields: false,
+            },
             &HashSet::<String>::new(),
             &HashMap::<String, String>::new(),
         )

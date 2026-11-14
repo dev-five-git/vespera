@@ -53,6 +53,12 @@ fn render(sig_src: &str, path: &str) -> String {
     "fn update(Validated(Path(id)): Validated<Path<i64>>, Validated(Json(body)): Validated<Json<CreateUser>>) -> String",
     "/users/{id}"
 )]
+// `Cached` passes the validation rejection through: still a `422`.
+#[case::cached_validated_query(
+    "cached_validated_query",
+    "fn list(Cached(Validated(Query(f))): Cached<Validated<Query<Filter>>>) -> String",
+    "/users"
+)]
 #[case::validated_with_json(
     "validated_with_json",
     "fn create(body: ValidatedWith<Limits, Json<CreateUser>>) -> String",

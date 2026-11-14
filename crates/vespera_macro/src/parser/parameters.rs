@@ -66,9 +66,13 @@ pub fn parse_function_parameter(
     }
 }
 
+/// The binding name of an argument pattern, without a raw identifier's `r#`
+/// (`r#type: T` documents / matches the `{type}` segment).
 fn extract_param_name(pat: &Pat) -> Option<String> {
     match pat {
-        Pat::Ident(ident) => Some(ident.ident.to_string()),
+        Pat::Ident(ident) => Some(crate::parser::strip_raw_prefix_owned(
+            ident.ident.to_string(),
+        )),
         Pat::TupleStruct(tuple_struct) if tuple_struct.elems.len() == 1 => {
             extract_param_name(&tuple_struct.elems[0])
         }
@@ -221,3 +225,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod tests_shapes;

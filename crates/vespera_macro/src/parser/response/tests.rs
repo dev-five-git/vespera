@@ -690,6 +690,9 @@ fn media_shape(
 #[case::type_erased_response("-> axum::response::Response", "200", None)]
 #[case::generic_response("-> Response<Body>", "200", None)]
 #[case::redirect("-> Redirect", "3XX", None)]
+// A bare `Body` carries no `Content-Type`: description only.
+#[case::bare_body("-> Body", "200", None)]
+#[case::axum_body("-> axum::body::Body", "200", None)]
 #[case::html("-> Html<String>", "200", Some(("text/html", SchemaType::String, None)))]
 #[case::html_static("-> Html<&'static str>", "200", Some(("text/html", SchemaType::String, None)))]
 #[case::sse("-> Sse<Stream>", "200", Some(("text/event-stream", SchemaType::String, None)))]
@@ -761,6 +764,7 @@ fn result_args_ignores_non_result_types(#[case] ty: &str) {
 /// documented as any value (`{}`), not `{type: object}`.
 #[rstest]
 #[case::bare_result("-> Result")]
+#[case::json_result_one_argument("-> Json<Result<i32>>")]
 #[case::bare_fn("-> fn()")]
 fn shapeless_bodies_are_any_value(#[case] return_type: &str) {
     let responses = parse_return_type(
@@ -771,5 +775,20 @@ fn shapeless_bodies_are_any_value(#[case] return_type: &str) {
     assert_eq!(
         media_shape(&responses, "200"),
         Some(("application/json".to_string(), None, None))
+    );
+}
+
+/// `Json<Result<A, B>>` is ONE `200` body — serde's externally tagged
+/// `{"Ok": A}` / `{"Err": B}` — never a `200` / `400` split.
+#[test]
+fn json_result_is_one_externally_tagged_body() {
+    let responses = parse_return_type(
+        &parse_return_type_str("-> Json<Result<i32, String>>"),
+        &HashSet::new(),
+        &HashMap::new(),
+    );
+    insta::assert_snapshot!(
+        "json_result_one_body",
+        serde_json::to_string_pretty(&responses).unwrap()
     );
 }

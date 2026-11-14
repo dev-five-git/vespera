@@ -276,10 +276,12 @@ pub fn try_extract_schema_constraints(attrs: &[Attribute]) -> syn::Result<Schema
             } else {
                 // Unknown key — could be a struct-level key like `name`,
                 // `ref`, `nullable`, `default` that lives on the same
-                // `#[schema(...)]` attribute.  Consume any `= value`
-                // payload so `parse_nested_meta` doesn't fail at the
-                // trailing comma.
-                if let Ok(value) = meta.value() {
+                // `#[schema(...)]` attribute.  Consume any `= value` or
+                // `(...)` payload so `parse_nested_meta` doesn't fail at
+                // the trailing comma.
+                if meta.input.peek(syn::token::Paren) {
+                    meta.input.parse::<proc_macro2::Group>()?;
+                } else if let Ok(value) = meta.value() {
                     let _: syn::Expr = value.parse()?;
                 }
             }
@@ -686,6 +688,14 @@ mod tests {
         // return Err, the `if let Ok(value)` falls through, and
         // parse_nested_meta moves on.
         let c = parse(&[parse_quote!(#[schema(unknown_bare_kw, min_length = 3)])]);
+        assert_eq!(c.min_length, Some(3));
+    }
+
+    #[test]
+    fn unknown_key_with_list_payload_is_consumed() {
+        // `#[schema(unknown(a, b = 1), min_length = 3)]`: the `(...)` payload
+        // of an unrecognised key must not abort the walk.
+        let c = parse(&[parse_quote!(#[schema(unknown(a, b = 1), min_length = 3)])]);
         assert_eq!(c.min_length, Some(3));
     }
 

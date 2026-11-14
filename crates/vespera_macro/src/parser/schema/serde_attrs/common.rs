@@ -96,7 +96,8 @@ pub fn extract_schema_name_from_entity(ty: &syn::Type) -> Option<String> {
 
             // Get the second-to-last segment (module name)
             let module_segment = segments.get(segments.len() - 2)?;
-            let module_name = module_segment.ident.to_string();
+            // A raw module name (`super::r#type::Entity`) loses its `r#`.
+            let module_name = strip_raw_prefix_owned(module_segment.ident.to_string());
 
             // Convert to PascalCase (capitalize first letter)
             // Rust identifiers are guaranteed non-empty, so chars().next() always returns Some
@@ -115,6 +116,38 @@ pub fn extract_transparent(attrs: &[syn::Attribute]) -> bool {
     walk_serde_keys(attrs, |meta| {
         found |= meta.path.is_ident("transparent");
         Ok(false)
+    });
+    found
+}
+
+/// A field's `#[schema(default ...)]`: `Some(Some(v))` for `default = "v"`,
+/// `Some(None)` for a bare `default` or a non-string value, `None` when
+/// absent. Every other key's payload is consumed (a type for `value_type`),
+/// so `#[schema(format = "x", default = "1")]` still finds the default.
+#[allow(clippy::option_option)]
+pub fn extract_schema_default(attrs: &[syn::Attribute]) -> Option<Option<String>> {
+    let mut found: Option<Option<String>> = None;
+    walk_attr_keys(attrs, "schema", |meta| {
+        if meta.path.is_ident("value_type") {
+            meta.value()?.parse::<syn::Type>()?;
+            return Ok(true);
+        }
+        if !meta.path.is_ident("default") {
+            return Ok(false);
+        }
+        let value = if meta.input.peek(syn::Token![=]) {
+            match meta.value()?.parse::<syn::Expr>()? {
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) => Some(s.value()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        found.get_or_insert(value);
+        Ok(true)
     });
     found
 }
@@ -232,6 +265,13 @@ mod tests {
         let ty: syn::Type = syn::parse_str("super::user::Entity").unwrap();
         let result = extract_schema_name_from_entity(&ty);
         assert_eq!(result, Some("User".to_string()));
+    }
+
+    #[test]
+    fn test_extract_schema_name_from_entity_raw_module() {
+        let ty: syn::Type = syn::parse_str("super::r#type::Entity").unwrap();
+        let result = extract_schema_name_from_entity(&ty);
+        assert_eq!(result, Some("Type".to_string()));
     }
 
     #[test]

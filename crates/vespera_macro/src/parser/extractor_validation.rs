@@ -176,7 +176,7 @@ fn request_extractor_inner(ty: &Type) -> Option<(&'static str, &Type)> {
 }
 
 /// Collect the identifier of every path in `ty` (recursing through generic
-/// arguments and references) that names an item of the route's own module
+/// arguments, references, tuples, arrays and slices) that names an item of the route's own module
 /// `module_path` — see [`names_module_item`]. A path into another module
 /// (`serde_json::Value`, `crate::models::User`) is never collected, even when
 /// its last segment matches a local type's name. Container idents (`Vec`,
@@ -199,8 +199,18 @@ fn collect_custom_type_idents(ty: &Type, module_path: &str, out: &mut Vec<String
                 }
             }
         }
-        Type::Reference(reference) => {
-            collect_custom_type_idents(&reference.elem, module_path, out);
+        Type::Reference(syn::TypeReference { elem, .. })
+        | Type::Array(syn::TypeArray { elem, .. })
+        | Type::Slice(syn::TypeSlice { elem, .. })
+        | Type::Paren(syn::TypeParen { elem, .. })
+        | Type::Group(syn::TypeGroup { elem, .. }) => {
+            collect_custom_type_idents(elem, module_path, out);
+        }
+        // `Path<(Value, u32)>` deserializes every element.
+        Type::Tuple(tuple) => {
+            for elem in &tuple.elems {
+                collect_custom_type_idents(elem, module_path, out);
+            }
         }
         _ => {}
     }
@@ -718,12 +728,14 @@ mod tests {
     }
 
     #[test]
-    fn custom_type_collection_recurse_reference_and_ignores_tuple() {
+    fn custom_type_collection_recurses_references_and_tuples() {
         let mut idents = Vec::new();
         collect_custom_type_idents(&syn::parse_quote!(&Vec<Local>), "routes::x", &mut idents);
         assert_eq!(idents, ["Vec", "Local"]);
         collect_custom_type_idents(&syn::parse_quote!((Local,)), "routes::x", &mut idents);
-        assert_eq!(idents, ["Vec", "Local"]);
+        assert_eq!(idents, ["Vec", "Local", "Local"]);
+        collect_custom_type_idents(&syn::parse_quote!(fn()), "routes::x", &mut idents);
+        assert_eq!(idents, ["Vec", "Local", "Local"]);
     }
 
     #[test]

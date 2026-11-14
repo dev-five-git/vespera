@@ -323,7 +323,7 @@ fn test_collect_metadata_with_mod_rs() {
     let route = &metadata.routes[0];
     assert_eq!(route.function_name, "index");
     assert_eq!(route.path, "/");
-    assert_eq!(route.module_path, "routes::");
+    assert_eq!(route.module_path, "routes");
 }
 
 #[test]

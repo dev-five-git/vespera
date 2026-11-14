@@ -26,6 +26,9 @@
 //! - a tuple position is skipped / custom-converted on one side only,
 //! - a field's type is a `HashSet` / `BTreeSet` (`uniqueItems` on output
 //!   only) or a `std::time::Duration` (also read from `[secs, nanos]`),
+//! - a `#[serde(flatten)]` field is an `Option` (its keys accept anything,
+//!   failing values make it `None`), or follows a flattened map (which also
+//!   reads its keys),
 //! - an enum variant is aliased, is the `#[serde(other)]` catch-all, or has
 //!   a one-sided variant-level `serialize_with` / `deserialize_with`,
 //!
@@ -55,8 +58,8 @@ use super::{
     schema_attrs::extract_schema_constraints,
     serde_attrs::{
         SerdeSide, extract_aliases, extract_default, extract_field_codec, extract_field_rename_for,
-        extract_rename_all_fields_for, extract_rename_all_for, extract_serde_skip_flags,
-        extract_tag,
+        extract_flatten, extract_rename_all_fields_for, extract_rename_all_for,
+        extract_serde_skip_flags, extract_tag,
     },
     wire_override::container_override_type,
 };
@@ -272,7 +275,29 @@ fn struct_differs(item: &syn::ItemStruct) -> bool {
     {
         return true;
     }
-    fields.named.iter().any(field_differs)
+    fields.named.iter().any(field_differs) || flatten_differs(&fields.named)
+}
+
+/// The merged `#[serde(flatten)]` members read differently than they write
+/// (see `struct_schema::flatten`): a flattened `Option` accepts any value for
+/// its keys (it becomes `None`), and a flattened map declared before another
+/// flattened member also reads that member's keys.
+fn flatten_differs(fields: &syn::punctuated::Punctuated<syn::Field, syn::Token![,]>) -> bool {
+    let mut map_seen = false;
+    for field in fields.iter().filter(|field| extract_flatten(&field.attrs)) {
+        if map_seen || is_option_type(&field.ty) {
+            return true;
+        }
+        map_seen = is_map_type(&field.ty);
+    }
+    false
+}
+
+/// A map type serde reads through `deserialize_map` (by its last segment).
+fn is_map_type(ty: &syn::Type) -> bool {
+    matches!(ty, syn::Type::Path(path) if path.path.segments.last().is_some_and(|segment| {
+        ["HashMap", "BTreeMap", "IndexMap", "Map"].iter().any(|name| segment.ident == name)
+    }))
 }
 
 /// A named field reads differently than it writes.
@@ -445,6 +470,16 @@ mod tests {
 
     #[rstest]
     #[case::plain("struct A { x: i32, y: Option<u8> }", false)]
+    #[case::flatten_option("struct A { #[serde(flatten)] p: Option<Page> }", true)]
+    #[case::flatten_map_then_struct(
+        "struct A { #[serde(flatten)] m: HashMap<String, u8>, #[serde(flatten)] p: Page }",
+        true
+    )]
+    #[case::flatten_struct_then_map(
+        "struct A { #[serde(flatten)] p: Page, #[serde(flatten)] m: BTreeMap<String, u8> }",
+        false
+    )]
+    #[case::flatten_non_path("struct A { #[serde(flatten)] p: (Page), q: u8 }", false)]
     #[case::field_default("struct A { #[serde(default)] x: i32 }", true)]
     #[case::container_default("#[serde(default)] struct A { x: i32 }", true)]
     #[case::skip_deserializing("struct A { #[serde(skip_deserializing)] id: i32 }", true)]

@@ -154,7 +154,7 @@ mod tests {
         None,
         Some("#/components/schemas/Value")
     )]
-    #[case("Result<String, i32>", false, None, None)]
+    #[case("Result<String, i32>", false, Some(SchemaType::Object), None)]
     #[case("crate::Value", false, None, None)]
     #[case("(i32, bool)", false, Some(SchemaType::Array), None)]
     fn test_parse_type_to_schema_ref_additional_cases(
@@ -354,6 +354,36 @@ mod tests {
             }
             SchemaRef::Ref(_) => panic!("Expected inline schema for HasMany"),
         }
+    }
+
+    /// sea-orm serializes `HasMany::Unloaded` as `null`, so every form is a
+    /// nullable array.
+    #[rstest::rstest]
+    #[case::entity("has_many_entity", "HasMany<super::comment::Entity>")]
+    #[case::fallback("has_many_fallback", "HasMany<String>")]
+    #[case::no_type_argument("has_many_lifetime_only", "HasMany<'a>")]
+    fn has_many_is_nullable(#[case] name: &str, #[case] src: &str) {
+        let ty: Type = syn::parse_str(src).unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
+        insta::assert_snapshot!(
+            format!("has_many_nullable_{name}"),
+            serde_json::to_string_pretty(&schema_ref).unwrap()
+        );
+    }
+
+    /// serde writes `Result<T, E>` externally tagged: `{"Ok": T}` / `{"Err": E}`;
+    /// without both type arguments it is any value.
+    #[rstest::rstest]
+    #[case::both("result_both", "Result<String, i32>")]
+    #[case::one_argument("result_one_argument", "Result<String>")]
+    #[case::lifetime_argument("result_lifetime_argument", "Result<'static, String>")]
+    fn result_is_externally_tagged(#[case] name: &str, #[case] src: &str) {
+        let ty: Type = syn::parse_str(src).unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
+        insta::assert_snapshot!(
+            format!("result_schema_{name}"),
+            serde_json::to_string_pretty(&schema_ref).unwrap()
+        );
     }
 
     #[test]

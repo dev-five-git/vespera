@@ -1,0 +1,26 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_closed.rs
+expression: "serde_json::to_string_pretty(&schema).unwrap()"
+---
+{
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "a": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255
+        }
+      },
+      "required": [
+        "a"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "$ref": "#/components/schemas/Open"
+    }
+  ]
+}

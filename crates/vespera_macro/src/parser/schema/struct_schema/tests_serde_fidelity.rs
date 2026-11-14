@@ -94,6 +94,19 @@ fn both_views(src: &str) -> String {
     "flatten_map_and_struct",
     "struct Req { id: i32, #[serde(flatten)] page: Page, #[serde(flatten)] extra: BTreeMap<String, i64> }"
 )]
+// A map declared BEFORE a struct also reads the struct's keys (request view).
+#[case::flatten_map_before_struct(
+    "flatten_map_before_struct",
+    "struct Req { id: i32, #[serde(flatten)] extra: BTreeMap<String, i64>, #[serde(flatten)] page: Page }"
+)]
+#[case::flatten_two_maps_before_optional_struct(
+    "flatten_two_maps_before_optional_struct",
+    "struct Req { #[serde(flatten)] a: HashMap<String, u8>, #[serde(flatten)] b: HashMap<String, u16>, #[serde(flatten)] page: Option<Page> }"
+)]
+#[case::flatten_optional_map_before_struct(
+    "flatten_optional_map_before_struct",
+    "struct Req { #[serde(flatten)] extra: Option<HashMap<String, String>>, #[serde(flatten)] page: Page }"
+)]
 #[case::flatten_map_deny(
     "flatten_map_deny",
     "#[serde(deny_unknown_fields)] struct Req { id: i32, #[serde(flatten)] extra: HashMap<String, String> }"

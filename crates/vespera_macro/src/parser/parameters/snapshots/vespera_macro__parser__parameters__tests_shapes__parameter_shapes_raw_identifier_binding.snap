@@ -1,0 +1,18 @@
+---
+source: crates/vespera_macro/src/parser/parameters/tests_shapes.rs
+expression: "render(func_src, path_params)"
+---
+fn f(r#type: Path<u8>) {}
+[
+  {
+    "name": "type",
+    "in": "path",
+    "required": true,
+    "schema": {
+      "type": "integer",
+      "format": "uint8",
+      "minimum": 0,
+      "maximum": 255
+    }
+  }
+]

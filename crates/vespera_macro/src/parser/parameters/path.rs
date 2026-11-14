@@ -9,11 +9,12 @@ use vespera_core::{
 use super::shared::{input_rename_all, named_struct_fields, serde_field_name};
 use crate::{
     parser::schema::{
-        SerdeSide, apply_field_rules, extract_doc_comment, parse_type_to_schema_ref,
+        SerdeSide, apply_field_rules, extract_aliases, extract_doc_comment, extract_flatten,
+        extract_serde_skip_flags, parse_type_to_schema_ref,
         schema_attrs::extract_schema_constraints,
         wire_override::{container_override_type, field_schema_ref},
     },
-    schema_macro::type_utils::{is_map_type as utils_is_map_type, last_path_segment},
+    schema_macro::type_utils::{is_map_type as utils_is_map_type, last_path_segment, option_inner},
 };
 
 /// A required `in: path` parameter.
@@ -126,14 +127,11 @@ fn path_parameters_from(
                 depth + 1,
             );
         }
-        let rename_all = input_rename_all(&struct_item.attrs);
         return path_params
             .iter()
             .map(|name| {
-                let field = struct_item
-                    .fields
-                    .iter()
-                    .find(|field| serde_field_name(field, rename_all.as_deref()) == *name);
+                let field = find_path_field(&struct_item, name, struct_definitions, depth);
+                let field = field.as_ref();
                 let schema = field.map_or_else(string_path_schema, |field| {
                     let constraints = extract_schema_constraints(&field.attrs);
                     let mut schema = field_schema_ref(
@@ -168,7 +166,44 @@ fn path_parameters_from(
         .collect()
 }
 
-/// The per-segment type of a `Path<Map<K, V>>` (`V`) or `Path<Seq<T>>` (`T`).
+/// The field serde fills from the path segment `name`: one read under that
+/// deserialize-side name or `#[serde(alias)]`, searched through the structs
+/// of `#[serde(flatten)]` fields too; never a skipped field.
+fn find_path_field(
+    struct_item: &syn::ItemStruct,
+    name: &str,
+    struct_definitions: &HashMap<&str, &str>,
+    depth: usize,
+) -> Option<syn::Field> {
+    let rename_all = input_rename_all(&struct_item.attrs);
+    for field in &struct_item.fields {
+        let flags = extract_serde_skip_flags(&field.attrs);
+        if flags.skip || flags.skip_deserializing {
+            continue;
+        }
+        if extract_flatten(&field.attrs) {
+            let flattened = option_inner(&field.ty).unwrap_or(&field.ty);
+            if depth < MAX_CONVERSION_DEPTH
+                && let Some(inner) = named_struct_fields(flattened, struct_definitions)
+                && let Some(found) = find_path_field(&inner, name, struct_definitions, depth + 1)
+            {
+                return Some(found);
+            }
+            continue;
+        }
+        if serde_field_name(field, rename_all.as_deref()) == name
+            || extract_aliases(&field.attrs)
+                .iter()
+                .any(|alias| alias == name)
+        {
+            return Some(field.clone());
+        }
+    }
+    None
+}
+
+/// The per-segment type of a `Path<Map<K, V>>` (`V`), `Path<Seq<(K, V)>>`
+/// (`V`) or `Path<Seq<T>>` (`T`).
 fn path_collection_element(ty: &Type) -> Option<&Type> {
     let segment = last_path_segment(ty)?;
     let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
@@ -184,7 +219,12 @@ fn path_collection_element(ty: &Type) -> Option<&Type> {
         .iter()
         .any(|name| segment.ident == name)
     {
-        types.next()
+        // A sequence of `(key, value)` pairs (`Path<Vec<(String, V)>>`) gets
+        // one pair per segment: the segment itself is the `V`.
+        types.next().map(|element| match element {
+            Type::Tuple(pair) if pair.elems.len() == 2 => &pair.elems[1],
+            other => other,
+        })
     } else {
         None
     }
