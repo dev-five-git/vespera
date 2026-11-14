@@ -160,13 +160,18 @@ pub fn start_once(guard: &'static Once, jobs: impl IntoIterator<Item = CronJob>)
 /// schedulers — prefer [`start_once`] for anything that can run twice.
 /// After [`shutdown`] the schedulers exit without running anything.
 pub fn start(jobs: impl IntoIterator<Item = CronJob>) {
+    start_jobs(jobs.into_iter().collect());
+}
+
+/// The non-generic body of [`start`]: one copy of the code (and of its
+/// coverage counters) however many iterator types call it.
+fn start_jobs(jobs: Vec<CronJob>) {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         for job in jobs {
             handle.spawn(run_job(job, &CONTROLLER));
         }
         return;
     }
-    let jobs: Vec<CronJob> = jobs.into_iter().collect();
     #[cfg(any(feature = "jni", feature = "ffi"))]
     if vespera_inprocess::runtime::host_loaded() {
         vespera_inprocess::runtime::on_shared_runtime(Box::new(move |handle| {
