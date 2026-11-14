@@ -69,7 +69,9 @@ foreach ($n in $Sizes) {
   [void](Invoke-Measured $manifest @("-Z", "time-passes"))
   $wall = @(); $exp = @(); $peak = @(); $rss = @()
   for ($r = 0; $r -lt $Runs; $r++) {
-    Remove-Item "$dir\target\vespera" -Recurse -Force -ErrorAction SilentlyContinue
+    # The route cache lives under the build's target dir (rustc's --out-dir),
+    # i.e. $targetDir\vespera, not under the stress crate's own directory.
+    Remove-Item (Join-Path $targetDir "vespera") -Recurse -Force -ErrorAction SilentlyContinue
     & cargo clean --quiet -p stress-app --manifest-path $manifest --target-dir $targetDir 2>$null
     $m = Invoke-Measured $manifest @("-Z", "time-passes")
     $pass = Get-Pass $m.Err "macro_expand_crate"

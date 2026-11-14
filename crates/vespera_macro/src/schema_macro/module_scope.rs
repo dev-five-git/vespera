@@ -164,6 +164,47 @@ pub fn struct_in_items(items: &[syn::Item], name: &str) -> Option<String> {
     })
 }
 
+/// The inline `mod` chain of the struct / enum `name` in `items`: the only
+/// one of that name, or the one whose ident starts at `line`; empty (the
+/// file's top level) when it is not found — a `schema_type!` DTO is not
+/// written in the file at all.
+pub fn item_module_chain(items: &[syn::Item], name: &str, line: usize) -> Vec<String> {
+    fn walk(
+        items: &[syn::Item],
+        name: &str,
+        chain: &mut Vec<String>,
+        found: &mut Vec<(usize, Vec<String>)>,
+    ) {
+        for item in items {
+            let ident = match item {
+                syn::Item::Struct(item) => &item.ident,
+                syn::Item::Enum(item) => &item.ident,
+                syn::Item::Mod(module) => {
+                    if let Some((_, inner)) = &module.content {
+                        chain.push(ident_name(&module.ident));
+                        walk(inner, name, chain, found);
+                        chain.pop();
+                    }
+                    continue;
+                }
+                _ => continue,
+            };
+            if ident_name(ident) == name {
+                found.push((ident.span().start().line, chain.clone()));
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(items, name, &mut Vec::new(), &mut found);
+    if found.len() > 1 {
+        found.retain(|(found_line, _)| *found_line == line);
+    }
+    match found.as_slice() {
+        [(_, chain)] => chain.clone(),
+        _ => Vec::new(),
+    }
+}
+
 /// The struct `name` defined anywhere in `items` (inline modules included)
 /// when exactly one such struct exists, with the inline module chain.
 pub fn unique_nested_struct(items: &[syn::Item], name: &str) -> Option<(String, Vec<String>)> {

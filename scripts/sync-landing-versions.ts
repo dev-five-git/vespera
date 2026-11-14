@@ -61,11 +61,35 @@ export function rewriteDocSamples(
 ): string {
   let out = content
   for (const [pattern, constant] of patterns) {
-    out = out.replace(pattern, (match: string, found: string) =>
-      match.replace(found, versions[constant]),
-    )
+    out = replaceCapture(out, pattern, versions[constant])
   }
   return out
+}
+
+/**
+ * Replace capture group 1 of every `pattern` match (the first only for a
+ * non-global pattern) with `value` — at the capture's own position: the
+ * captured text may also occur earlier in the match (`v1 = "1"`).
+ */
+function replaceCapture(
+  content: string,
+  pattern: RegExp,
+  value: string,
+): string {
+  const flags = pattern.flags.includes('d') ? pattern.flags : `${pattern.flags}d`
+  const regex = new RegExp(pattern.source, flags)
+  const matches = regex.global
+    ? [...content.matchAll(regex)]
+    : [regex.exec(content)].filter((match) => match !== null)
+  let out = ''
+  let last = 0
+  for (const match of matches) {
+    const span = match.indices?.[1]
+    if (!span) continue
+    out += content.slice(last, span[0]) + value
+    last = span[1]
+  }
+  return out + content.slice(last)
 }
 
 function main(): number {

@@ -68,9 +68,7 @@ fn route_args(
     file_path: &str,
 ) -> Result<proc_macro2::TokenStream, proc_macro2::TokenStream> {
     let Ok(http_method) = HttpMethod::try_from(method) else {
-        let message = format!(
-            "vespera: route '{path}' has unsupported HTTP method '{method}'. Supported methods are GET, POST, PUT, PATCH, DELETE, HEAD, and OPTIONS."
-        );
+        let message = crate::method::unsupported_method_message(path, method);
         return Err(syn::Error::new(Span::call_site(), message).to_compile_error());
     };
     let method_path = http_method_to_token_stream(http_method);
@@ -170,20 +168,21 @@ pub fn generate_router_code(
     cron_jobs: &[CronMetadata],
 ) -> proc_macro2::TokenStream {
     let mut router_nests = Vec::new();
+    // A route's `compile_error!` is a statement ahead of the chain: spliced
+    // into `.route(..).route(..)` it would be a syntax error hiding it.
+    let mut route_errors = Vec::new();
 
     for route in &metadata.routes {
-        router_nests.push(
-            match route_args(
-                &route.method,
-                &route.path,
-                &route.module_path,
-                &route.function_name,
-                &route.file_path,
-            ) {
-                Ok(args) => quote!(.route(#args)),
-                Err(error) => error,
-            },
-        );
+        match route_args(
+            &route.method,
+            &route.path,
+            &route.module_path,
+            &route.function_name,
+            &route.file_path,
+        ) {
+            Ok(args) => router_nests.push(quote!(.route(#args))),
+            Err(error) => route_errors.push(error),
+        }
     }
 
     // Check if we need to merge specs at runtime
@@ -230,10 +229,11 @@ pub fn generate_router_code(
     // `#[cfg]`-gated routes need statements: an attribute cannot gate one
     // `.route(..)` call of a method chain.
     let gated = gated_route_statements(&metadata.cfg_routes);
-    let router_expr = if gated.is_empty() {
+    let router_expr = if gated.is_empty() && route_errors.is_empty() {
         quote!(vespera::axum::Router::new() #( #router_nests )*)
     } else {
         quote!({
+            #( #route_errors )*
             let __vespera_router = vespera::axum::Router::new() #( #router_nests )*;
             #( #gated )*
             __vespera_router

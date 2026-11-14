@@ -392,11 +392,27 @@ fn validate_responses_array(array: &syn::ExprArray) -> syn::Result<()> {
         };
         parse_http_status(lit_int, "responses")?;
         let schema = &tuple.elems[1];
-        if !matches!(schema, syn::Expr::Path(_)) {
+        let syn::Expr::Path(path) = schema else {
             return Err(syn::Error::new_spanned(
                 schema,
                 "#[route] `responses` type must be a type path, \
                  e.g. `(404, NotFoundError)` or `(400, crate::errors::BadRequestError)`.",
+            ));
+        };
+        // The response schema is recorded by the path's last identifier, so
+        // `ErrorBody::<Detail>` would silently document the bare `ErrorBody`.
+        if path
+            .path
+            .segments
+            .iter()
+            .any(|segment| !segment.arguments.is_none())
+        {
+            return Err(syn::Error::new_spanned(
+                schema,
+                "#[route] `responses` type must not have generic arguments: the \
+                 response is documented by the type's name alone, so the arguments \
+                 would be dropped. Declare a non-generic `#[derive(Schema)]` type \
+                 for this response instead.",
             ));
         }
     }

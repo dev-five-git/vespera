@@ -73,6 +73,25 @@ describe('rewriteDocSamples', () => {
     const prose = 'The 0.7 release adds X.\nserde = "1.0"\n'
     expect(rewriteDocSamples(prose, V08)).toBe(prose)
   })
+
+  it('rewrites the capture at its own position, not an earlier copy', () => {
+    const patterns: [RegExp, 'VESPERA_VERSION'][] = [
+      [/v1 = "(\d)"/g, 'VESPERA_VERSION'],
+    ]
+    expect(rewriteDocSamples('v1 = "1"\nv1 = "1"', V08, patterns)).toBe(
+      'v1 = "0.8"\nv1 = "0.8"',
+    )
+  })
+
+  it('rewrites only the first match of a non-global pattern and skips an empty capture', () => {
+    const patterns: [RegExp, 'VESPERA_VERSION'][] = [
+      [/x = "(\d)"/, 'VESPERA_VERSION'],
+      [/z(\d)?/g, 'VESPERA_VERSION'],
+    ]
+    expect(rewriteDocSamples('x = "1"\nx = "2"\nz', V08, patterns)).toBe(
+      'x = "0.8"\nx = "2"\nz',
+    )
+  })
 })
 
 describe('rewriteDocSamples with REPO_VERSION_PATTERNS', () => {

@@ -90,6 +90,12 @@ fn normalize_prefix(prefix: &LitStr) -> syn::Result<LitStr> {
         format!("/{raw}")
     };
     let normalized = with_leading_slash.trim_end_matches('/');
+    if normalized.contains([':', '*', '{', '}']) {
+        return Err(syn::Error::new(
+            prefix.span(),
+            "export_app! macro: `prefix` must be a static path: `:`, `*`, `{` and `}` are axum route-parameter syntax",
+        ));
+    }
     if normalized.contains("//") {
         return Err(syn::Error::new(
             prefix.span(),
@@ -207,12 +213,17 @@ pub fn namespace_export_schemas(
             ));
         }
     }
-    for (old_name, new_name) in &renames {
-        if old_name != new_name
-            && let Some(schema) = schemas.remove(old_name)
-        {
-            schemas.insert(new_name.clone(), schema);
-        }
+    // Remove every renamed entry before inserting any: a chained rename
+    // (`User` -> `V1User` while a real `V1User` -> `V1V1User`) must not let
+    // one insert clobber a component that is renamed later.
+    let moved: Vec<(&String, serde_json::Value)> = renames
+        .iter()
+        .filter_map(|(old_name, new_name)| {
+            schemas.remove(old_name).map(|schema| (new_name, schema))
+        })
+        .collect();
+    for (new_name, schema) in moved {
+        schemas.insert(new_name.clone(), schema);
     }
     rewrite_schema_refs(&mut value, &renames);
     *openapi = serde_json::to_string(&value)
@@ -372,6 +383,10 @@ mod tests {
     #[case("/api#section", "must be a URL path")]
     #[case("/api//users", "must not contain empty path segments")]
     #[case("/---", "must contain at least one alphanumeric character")]
+    #[case("/api/{tenant}", "must be a static path")]
+    #[case("/api/*rest", "must be a static path")]
+    #[case("/api/:id", "must be a static path")]
+    #[case("/api}", "must be a static path")]
     fn normalize_prefix_rejects_each_invalid_shape(#[case] raw: &str, #[case] expected: &str) {
         let prefix = LitStr::new(raw, proc_macro2::Span::call_site());
 
@@ -652,6 +667,38 @@ mod tests {
         namespace_export_schemas(&mut openapi, &metadata, "Media").unwrap();
 
         assert_eq!(serde_json::to_vec(&openapi).unwrap(), before);
+    }
+
+    /// A generated `X` and a generated `<Ns>X` both get namespaced; the
+    /// chained rename (`User` -> `V1User`, `V1User` -> `V1V1User`) must keep
+    /// both bodies instead of letting the first insert clobber the second.
+    #[test]
+    fn chained_namespace_renames_keep_every_schema_body() {
+        let (metadata, mut openapi) = schema_doc("/items", "struct Item { id: i32 }");
+        let schemas = openapi
+            .components
+            .as_mut()
+            .and_then(|components| components.schemas.as_mut())
+            .unwrap();
+        let item = schemas["Item"].clone();
+        let mut marker = item.clone();
+        marker.description = Some("real V1Item".to_string());
+        schemas.insert("V1Item".to_string(), marker);
+
+        namespace_export_schemas(&mut openapi, &metadata, "V1").unwrap();
+
+        let schemas = openapi
+            .components
+            .as_ref()
+            .and_then(|components| components.schemas.as_ref())
+            .unwrap();
+        assert_eq!(schemas["V1Item"].description, item.description);
+        assert_eq!(
+            schemas["V1V1Item"].description.as_deref(),
+            Some("real V1Item")
+        );
+        assert!(!schemas.contains_key("Item"));
+        assert_all_component_refs_resolve(&openapi);
     }
 
     #[test]

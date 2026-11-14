@@ -63,6 +63,39 @@ fn carried_field_attributes(#[case] snapshot: &str, #[case] input: &str) {
     );
 }
 
+const DOCUMENTED: &str = r"
+/// An upload.
+#[serde(deny_unknown_fields, default)]
+#[try_from_multipart(strict)]
+pub struct Documented {
+    pub title: String,
+}
+";
+
+/// The metadata an `ignore, name = ".."` DTO registers is the DTO the
+/// macro emits: it keeps the struct docs (the schema description) and, in
+/// `multipart` mode, the multipart container attributes instead of the
+/// serde-mode ones.
+#[rstest]
+#[case::serde(
+    "ignored_metadata_serde",
+    r#"Dto from Documented, ignore, name = "DtoSchema""#
+)]
+#[case::multipart(
+    "ignored_metadata_multipart",
+    r#"Dto from Documented, ignore, multipart, name = "DtoSchema""#
+)]
+fn ignored_metadata_matches_the_emitted_container(#[case] snapshot: &str, #[case] input: &str) {
+    let storage = HashMap::from([(
+        "Documented".to_string(),
+        StructMetadata::new("Documented".to_string(), DOCUMENTED.to_string()),
+    )]);
+    let input: SchemaTypeInput = syn::parse_str(input).unwrap();
+    let (_, metadata) = generate_schema_type_code(&input, &storage).unwrap();
+    let file: syn::File = syn::parse_str(&metadata.unwrap().definition).unwrap();
+    insta::assert_snapshot!(snapshot, prettyplease::unparse(&file));
+}
+
 #[test]
 fn raw_identifier_rename_and_add_targets() {
     let storage = HashMap::from([(

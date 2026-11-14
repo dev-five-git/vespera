@@ -115,9 +115,28 @@ fn unaddressable_handlers_are_compile_errors(
     let mut metadata = CollectedMetadata::new();
     metadata.routes.push(documented);
     metadata.cfg_routes.extend(gated);
-    let code = generate_router_code(&metadata, None, None, None, None, &[], &[]).to_string();
+    let body = generate_router_code(&metadata, None, None, None, None, &[], &[]);
+    // The error must survive parsing: spliced into the `.route(..)` chain it
+    // would be a syntax error that hides the message.
+    syn::parse2::<syn::File>(quote!(fn create_app() { #body })).expect("valid fn");
+    let code = body.to_string();
     assert!(code.contains("compile_error"), "{code}");
     assert!(code.contains(message), "{code}");
+}
+
+/// A documented route's error between two valid routes is a statement ahead
+/// of the chain, which keeps the valid routes.
+#[test]
+fn documented_route_error_is_a_statement_ahead_of_the_chain() {
+    let mut metadata = CollectedMetadata::new();
+    metadata.routes.push(route("get", "routes::users", "list"));
+    metadata
+        .routes
+        .push(route("get", "routes::my-file", "list"));
+    metadata
+        .routes
+        .push(route("post", "routes::users", "create"));
+    insta::assert_snapshot!("router_route_error_statement", pretty(&metadata));
 }
 
 #[test]

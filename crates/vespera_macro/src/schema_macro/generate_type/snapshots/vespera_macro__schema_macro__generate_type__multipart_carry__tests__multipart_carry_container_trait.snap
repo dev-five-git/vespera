@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/schema_macro/generate_type/multipart_carry.rs
+expression: "format!(\"{attrs}\\n{helper}\")"
+---
+# [try_from_multipart (strict)] # [serde (default = "__vespera_UploadDto_default")]
+# [doc (hidden)] # [allow (non_snake_case , deprecated)] fn __vespera_UploadDto_default () -> UploadDto { let source : crate :: models :: Upload = < crate :: models :: Upload as :: core :: default :: Default > :: default () ; UploadDto { title : source . title } }

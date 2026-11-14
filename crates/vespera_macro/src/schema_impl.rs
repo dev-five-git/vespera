@@ -408,29 +408,20 @@ pub fn extract_field_defaults_from_path(
         _ => return defaults,
     };
 
-    // Collect fields with function-based defaults
-    let fn_defaults: Vec<(String, String)> = fields
-        .iter()
-        .filter_map(|f| {
-            let field_name = strip_raw_prefix_owned(f.ident.as_ref()?.to_string());
-            if let Some(Some(fn_name)) = crate::parser::extract_default(&f.attrs) {
-                // Only handle simple function names (not paths like "crate::utils::default")
-                if fn_name.contains("::") {
-                    None
-                } else {
-                    Some((field_name, fn_name))
-                }
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if fn_defaults.is_empty() {
-        return defaults;
+    // Each function is looked up from the struct's own module (see
+    // `default_fns`): a bare name in the inline `mod` declaring the struct,
+    // a `crate::..` path (what `schema_type!` re-roots a source field's
+    // function to) in that module.
+    let struct_name = strip_raw_prefix_owned(input.ident.to_string());
+    let line = input.ident.span().start().line;
+    for (ident, field) in fields.iter().filter_map(|f| Some((f.ident.as_ref()?, f))) {
+        if let Some(Some(fn_path)) = crate::parser::extract_default(&field.attrs)
+            && let Some(value) =
+                default_fns::resolve_default_fn(&fn_path, &struct_name, line, file_path)
+        {
+            defaults.insert(strip_raw_prefix_owned(ident.to_string()), value);
+        }
     }
-
-    defaults.extend(extract_defaults_from_path(&fn_defaults, file_path));
     defaults
 }
 
@@ -493,24 +484,6 @@ fn serde_default_is_resolvable(
 /// A `#[schema(default ...)]` key on the field, wherever it sits in the list.
 fn has_schema_default(attrs: &[syn::Attribute]) -> bool {
     crate::parser::schema::extract_schema_default(attrs).is_some()
-}
-
-fn extract_defaults_from_path(
-    fn_defaults: &[(String, String)],
-    file_path: &Path,
-) -> BTreeMap<String, serde_json::Value> {
-    let Some(function_defaults) = cached_default_functions(file_path) else {
-        return BTreeMap::new();
-    };
-    fn_defaults
-        .iter()
-        .filter_map(|(field_name, fn_name)| {
-            function_defaults
-                .get(fn_name)
-                .cloned()
-                .map(|value| (field_name.clone(), value))
-        })
-        .collect()
 }
 
 fn cached_default_functions(file_path: &Path) -> Option<Arc<BTreeMap<String, serde_json::Value>>> {
@@ -580,6 +553,7 @@ pub fn extract_defaults_from_file(
     defaults
 }
 
+mod default_fns;
 mod serde_repr;
 
 #[cfg(test)]

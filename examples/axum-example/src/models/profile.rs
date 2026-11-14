@@ -24,7 +24,6 @@ pub mod codec {
 #[derive(Serialize, Deserialize, Clone, vespera::Schema)]
 pub struct Profile {
     #[serde(default = "default_theme")]
-    #[schema(default = "light")]
     pub theme: String,
     #[serde(with = "codec")]
     #[schema(value_type = String)]

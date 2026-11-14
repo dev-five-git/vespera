@@ -301,6 +301,8 @@ fn test_route_args_parse_headers_invalid(#[case] input: &str) {
 #[case("responses = [(\"404\", NotFoundError)]", false, vec![])] // status not int
 #[case("responses = [(404, \"NotFoundError\")]", false, vec![])] // type not a path
 #[case("responses = [(70000, NotFoundError)]", false, vec![])] // status out of u16
+#[case("responses = [(404, ErrorBody::<Detail>)]", false, vec![])] // generic args dropped
+#[case("responses = [(404, errors::<T>::ErrorBody)]", false, vec![])] // generic args mid-path
 #[case("responses = []", true, vec![])] // empty is valid (no entries)
 fn test_route_args_parse_responses(
     #[case] input: &str,

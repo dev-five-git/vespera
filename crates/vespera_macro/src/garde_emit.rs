@@ -140,7 +140,7 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
                     rename_all.as_deref(),
                 )
             });
-            emit_field_block(ident, &wire_name, &field.ty, constraints)
+            emit_field_block(ident, &wire_name, field, constraints)
         })
         .collect();
 
@@ -179,17 +179,19 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
 fn emit_field_block(
     field_ident: &syn::Ident,
     field_name_str: &str,
-    field_ty: &Type,
+    field: &syn::Field,
     c: &SchemaConstraints,
 ) -> Option<TokenStream> {
     if !c.has_runtime_rule() {
         return None;
     }
 
+    let field_ty = &field.ty;
     let numeric_kind = rust_numeric_kind(
         crate::schema_macro::type_utils::option_inner(field_ty).unwrap_or(field_ty),
     );
-    let rule_blocks = emit_rule_blocks(c, field_ident, numeric_kind.as_deref());
+    let exact = ExactBounds::from_attrs(&field.attrs);
+    let rule_blocks = emit_rule_blocks(c, &exact, field_ident, numeric_kind.as_deref());
     let dive_block = emit_dive_block(c);
     if rule_blocks.is_empty() && dive_block.is_empty() {
         return None;
@@ -259,6 +261,7 @@ fn emit_dive_block(c: &SchemaConstraints) -> TokenStream {
 #[allow(clippy::too_many_lines)] // exhaustive rule-to-emit dispatcher
 fn emit_rule_blocks(
     c: &SchemaConstraints,
+    exact: &ExactBounds,
     field_ident: &syn::Ident,
     numeric_kind: Option<&str>,
 ) -> TokenStream {
@@ -299,9 +302,11 @@ fn emit_rule_blocks(
 
     // ── Numeric range (minimum / maximum → range::apply) ──────────────
     if c.minimum.is_some() || c.maximum.is_some() {
-        let bounds = numeric_some(c.minimum, Bound::Min, numeric_kind).and_then(|min| {
-            numeric_some(c.maximum, Bound::Max, numeric_kind).map(|max| (min, max))
-        });
+        let bounds =
+            numeric_some(c.minimum, exact.minimum, Bound::Min, numeric_kind).and_then(|min| {
+                numeric_some(c.maximum, exact.maximum, Bound::Max, numeric_kind)
+                    .map(|max| (min, max))
+            });
         let (min_expr, max_expr) = match bounds {
             Ok(bounds) => bounds,
             Err(msg) => {
@@ -462,6 +467,94 @@ fn usize_bound(value: Option<usize>) -> TokenStream {
     )
 }
 
+/// An integer-literal `#[schema(minimum / maximum = ...)]` bound exactly as
+/// written (`-0` is non-negative).
+#[cfg(feature = "validation")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ExactInt {
+    negative: bool,
+    magnitude: u128,
+}
+
+#[cfg(feature = "validation")]
+impl std::fmt::Display for ExactInt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let sign = if self.negative { "-" } else { "" };
+        write!(f, "{sign}{}", self.magnitude)
+    }
+}
+
+#[cfg(feature = "validation")]
+impl ExactInt {
+    /// `5` / `-5` (an integer literal, optionally negated); `None` for
+    /// floats and anything else.
+    fn from_expr(expr: &syn::Expr) -> Option<Self> {
+        let (negative, expr) = match expr {
+            syn::Expr::Unary(syn::ExprUnary {
+                op: syn::UnOp::Neg(_),
+                expr,
+                ..
+            }) => (true, &**expr),
+            expr => (false, expr),
+        };
+        let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(lit),
+            ..
+        }) = expr
+        else {
+            return None;
+        };
+        // A trailing `key = -7` reaches us as ONE negative literal (syn's
+        // attribute value parser reads `-7` as a `Lit`), not as a negation.
+        let digits = lit.base10_digits();
+        let (negative_literal, digits) = digits
+            .strip_prefix('-')
+            .map_or((false, digits), |digits| (true, digits));
+        let magnitude = digits.parse::<u128>().ok()?;
+        Some(Self {
+            negative: negative != negative_literal && magnitude != 0,
+            magnitude,
+        })
+    }
+}
+
+/// The integer-literal `minimum` / `maximum` of a field's `#[schema(...)]`
+/// attributes (the parsed [`SchemaConstraints`] only keeps an `f64` copy).
+#[cfg(feature = "validation")]
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ExactBounds {
+    minimum: Option<ExactInt>,
+    maximum: Option<ExactInt>,
+}
+
+#[cfg(feature = "validation")]
+impl ExactBounds {
+    fn from_attrs(attrs: &[syn::Attribute]) -> Self {
+        let mut bounds = Self::default();
+        for attr in attrs.iter().filter(|attr| attr.path().is_ident("schema")) {
+            let Ok(metas) = attr.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            ) else {
+                continue;
+            };
+            for meta in metas {
+                let syn::Meta::NameValue(name_value) = meta else {
+                    continue;
+                };
+                let slot = if name_value.path.is_ident("minimum") {
+                    &mut bounds.minimum
+                } else if name_value.path.is_ident("maximum") {
+                    &mut bounds.maximum
+                } else {
+                    continue;
+                };
+                *slot = ExactInt::from_expr(&name_value.value);
+            }
+        }
+        bounds
+    }
+}
+
 /// Which side of a `range` rule a bound sits on: an integer field rounds a
 /// fractional bound INWARD (`minimum` up, `maximum` down), so the runtime rule
 /// accepts exactly the integers the declared real interval contains.
@@ -500,6 +593,7 @@ const fn integer_range(kind: &str) -> Option<(i128, u128)> {
 #[cfg(feature = "validation")]
 fn numeric_some(
     value: Option<f64>,
+    exact: Option<ExactInt>,
     bound: Bound,
     numeric_kind: Option<&str>,
 ) -> Result<TokenStream, String> {
@@ -515,6 +609,28 @@ fn numeric_some(
     let Some((type_min, type_max)) = integer_range(kind) else {
         return Ok(quote! { ::std::option::Option::Some(#v as #ty_ident) });
     };
+    if let Some(exact) = exact {
+        // An integer literal bound keeps every digit: the `f64` copy loses
+        // precision past 2^53 (`i64::MAX` would read as 2^63 and "not fit").
+        let key = match bound {
+            Bound::Min => "minimum",
+            Bound::Max => "maximum",
+        };
+        let fits = if exact.negative {
+            exact.magnitude <= type_min.unsigned_abs()
+        } else {
+            exact.magnitude <= type_max
+        };
+        if !fits {
+            return Err(format!(
+                "`{key} = {exact}` does not fit the field type `{kind}` (range {type_min}..={type_max})"
+            ));
+        }
+        let literal: TokenStream = format!("{exact}{kind}")
+            .parse()
+            .expect("an integer literal with a type suffix is a valid token stream");
+        return Ok(quote! { ::std::option::Option::Some(#literal) });
+    }
     // `+ 0.0` turns a `-0.0` (`minimum = -0.5` rounded up) into `0.0`, so no
     // `-0u32` literal is ever emitted.
     let (key, rounded) = match bound {

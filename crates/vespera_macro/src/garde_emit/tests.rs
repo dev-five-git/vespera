@@ -638,3 +638,58 @@ fn error_path_uses_the_serde_deserialize_name(#[case] name: &str, #[case] input:
 fn integer_range_covers_every_kind(#[case] kind: &str, #[case] expected: Option<(i128, u128)>) {
     assert_eq!(integer_range(kind), expected);
 }
+
+/// Integer-literal bounds keep every digit: through `f64` `i64::MAX` read as
+/// 2^63 (a false "does not fit") and `2^53 + 1` lost its last unit.
+#[rstest::rstest]
+#[case::i64_extremes("garde_bound_exact_i64_extremes", parse_quote! {
+    struct U { #[schema(minimum = -9223372036854775808, maximum = 9223372036854775807)] pub n: i64 }
+})]
+#[case::i128_extremes("garde_bound_exact_i128_extremes", parse_quote! {
+    struct U {
+        #[schema(
+            minimum = -170141183460469231731687303715884105728,
+            maximum = 170141183460469231731687303715884105727
+        )]
+        pub n: i128,
+    }
+})]
+#[case::u128_max("garde_bound_exact_u128_max", parse_quote! {
+    struct U { #[schema(maximum = 340282366920938463463374607431768211455)] pub n: u128 }
+})]
+#[case::above_2_pow_53("garde_bound_exact_above_2_pow_53", parse_quote! {
+    struct U { #[schema(minimum = 9007199254740993)] pub n: u64 }
+})]
+#[case::i64_max_plus_one("garde_bound_exact_i64_overflow", parse_quote! {
+    struct U { #[schema(maximum = 9223372036854775808)] pub n: i64 }
+})]
+#[case::negative_zero_on_unsigned("garde_bound_exact_negative_zero", parse_quote! {
+    struct U { #[schema(minimum = -0)] pub n: u32 }
+})]
+fn integer_literal_bounds_are_exact(#[case] name: &str, #[case] input: DeriveInput) {
+    insta::assert_snapshot!(name, emit_pretty(&input));
+}
+
+/// Only `#[schema]` name-value integer literals are exact; everything else
+/// (floats, other keys, flags, other attributes, unparseable args) is not.
+#[test]
+fn exact_bounds_read_only_integer_literals() {
+    let field: syn::Field = parse_quote! {
+        #[serde(default)]
+        #[schema(not a meta list)]
+        #[schema(dive, min_length = 1, minimum = 1.5, maximum = -7)]
+        pub n: i32
+    };
+    assert_eq!(
+        ExactBounds::from_attrs(&field.attrs),
+        ExactBounds {
+            minimum: None,
+            maximum: Some(ExactInt {
+                negative: true,
+                magnitude: 7,
+            }),
+        }
+    );
+    let not_a_literal: syn::Expr = parse_quote!(-x);
+    assert_eq!(ExactInt::from_expr(&not_a_literal), None);
+}

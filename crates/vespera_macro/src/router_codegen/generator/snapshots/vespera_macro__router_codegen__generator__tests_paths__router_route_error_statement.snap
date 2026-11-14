@@ -1,0 +1,15 @@
+---
+source: crates/vespera_macro/src/router_codegen/generator/tests_paths.rs
+expression: pretty(&metadata)
+---
+fn create_app() {
+    {
+        ::core::compile_error! {
+            "vespera: 'src/routes/x.rs' maps to the module path segment `my-file`, which is not a valid Rust identifier. Rename the file (or folder) to snake_case, e.g. `my_file`."
+        }
+        let __vespera_router = vespera::axum::Router::new()
+            .route("/x", vespera::axum::routing::get(crate::routes::users::list))
+            .route("/x", vespera::axum::routing::post(crate::routes::users::create));
+        __vespera_router
+    }
+}

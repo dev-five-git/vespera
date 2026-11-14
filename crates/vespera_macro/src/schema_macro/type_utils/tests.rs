@@ -556,6 +556,19 @@ fn option_inner_rejects_wrapper_without_generic_arguments() {
 #[case::naive_date("NaiveDate", serde_json::json!("1970-01-01"))]
 #[case::naive_time("NaiveTime", serde_json::json!("00:00:00"))]
 #[case::time("Time", serde_json::json!("00:00:00"))]
+// Every other `Default` a bare `#[serde(default)]` can name: wide and
+// pointer-sized integers, collections and SeaORM's `Date` alias.
+#[case::usize("usize", serde_json::json!(0))]
+#[case::isize("isize", serde_json::json!(0))]
+#[case::i128("i128", serde_json::json!(0))]
+#[case::u128("u128", serde_json::json!(0))]
+#[case::vec("Vec<String>", serde_json::json!([]))]
+#[case::vec_deque("std::collections::VecDeque<u8>", serde_json::json!([]))]
+#[case::hash_set("HashSet<String>", serde_json::json!([]))]
+#[case::btree_set("BTreeSet<i32>", serde_json::json!([]))]
+#[case::hash_map("HashMap<String, i32>", serde_json::json!({}))]
+#[case::btree_map("std::collections::BTreeMap<String, String>", serde_json::json!({}))]
+#[case::sea_orm_date("Date", serde_json::json!("1970-01-01"))]
 fn type_default_returns_temporal_and_uuid_sentinels(
     #[case] input: &str,
     #[case] expected: serde_json::Value,

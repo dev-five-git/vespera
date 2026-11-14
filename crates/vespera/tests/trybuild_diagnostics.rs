@@ -14,6 +14,8 @@ fn ui_diagnostics() {
     let t = trybuild::TestCases::new();
     // `responses` validation lives in `RouteArgs::parse` (always compiled).
     t.compile_fail("tests/ui/route_responses_invalid.rs");
+    // A generic `responses` type would be documented by its bare name.
+    t.compile_fail("tests/ui/route_responses_generic.rs");
     // A `responses` type without `#[derive(Schema)]` (dangling `$ref`).
     t.compile_fail("tests/ui/route_responses_not_schema.rs");
     // The cron-syntax validator only compiles into the proc-macro under the

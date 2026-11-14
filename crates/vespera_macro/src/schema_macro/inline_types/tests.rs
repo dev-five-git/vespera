@@ -479,6 +479,8 @@ fn raw_paths_reroot_and_cfg() {
     pub struct Model {
         pub id: i32,
         #[serde(default = "fallback")]
+        #[schema(default = "none")]
+        #[sea_orm(column_type = "Text")]
         #[cfg(feature = "x")]
         pub label: String,
         pub memo: BelongsTo<super::memo::Entity>,
@@ -503,7 +505,7 @@ fn raw_paths_reroot_and_cfg() {
     let rendered = quote!(#(#label)*).to_string();
     assert_eq!(
         rendered,
-        "# [serde (default = \"crate::models::r#type::fallback\")] # [cfg (feature = \"x\")]"
+        "# [serde (default = \"crate::models::r#type::fallback\")] # [schema (default = \"none\")] # [cfg (feature = \"x\")]"
     );
 }
 
