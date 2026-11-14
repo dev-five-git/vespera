@@ -410,6 +410,19 @@ public class VesperaBridgeProperties {
         return new ProxyPathPatterns(includePatterns, excludePatterns);
     }
 
+    /** As {@link #proxyPathPatterns()}, plus {@code implicitExcludes} (e.g. {@link SpringdocUiPaths}). */
+    ProxyPathPatterns proxyPathPatterns(java.util.Collection<String> implicitExcludes) {
+        if (implicitExcludes.isEmpty()) {
+            return proxyPathPatterns();
+        }
+        java.util.List<String> exclude = new java.util.ArrayList<>();
+        if (excludePatterns != null) {
+            exclude.addAll(excludePatterns);
+        }
+        exclude.addAll(implicitExcludes);
+        return new ProxyPathPatterns(includePatterns, exclude);
+    }
+
     /**
      * {@code vespera.bridge.request-id.*}: when enabled, the proxy uses the
      * client's request id (a 1–128 character visible-ASCII token) or

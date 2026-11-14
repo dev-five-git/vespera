@@ -332,8 +332,11 @@ public class VesperaBridgeAutoConfiguration {
             matchIfMissing = true)
     @ConditionalOnMissingBean
     public VesperaPreflightHandlerMapping vesperaPreflightHandlerMapping(
-            VesperaProxyController controller, VesperaBridgeProperties props) {
-        return new VesperaPreflightHandlerMapping(controller, props.proxyPathPatterns());
+            VesperaProxyController controller, VesperaBridgeProperties props,
+            org.springframework.beans.factory.ListableBeanFactory beans,
+            org.springframework.core.env.Environment env) {
+        return new VesperaPreflightHandlerMapping(controller,
+                props.proxyPathPatterns(SpringdocUiPaths.excludes(beans, env, false)));
     }
 
     /**
@@ -348,8 +351,11 @@ public class VesperaBridgeAutoConfiguration {
     public VesperaProxyPathMappings vesperaProxyPathMappings(
             VesperaBridgeProperties props,
             ObjectProvider<org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping>
-                    handlerMappings) {
-        return new VesperaProxyPathMappings(props.proxyPathPatterns(), handlerMappings);
+                    handlerMappings,
+            org.springframework.beans.factory.ListableBeanFactory beans,
+            org.springframework.core.env.Environment env) {
+        return new VesperaProxyPathMappings(
+                props.proxyPathPatterns(SpringdocUiPaths.excludes(beans, env, false)), handlerMappings);
     }
 
     /**
