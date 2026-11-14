@@ -169,6 +169,32 @@ class VesperaBridgePluginFunctionalTest {
     }
 
     @Test
+    fun noBuiltLibraryAtAllFailsTheBuild() {
+        // No cdylib, no extraNativeLibs: every Sync source is missing, so the
+        // Sync alone would be NO-SOURCE and the jar would ship no library.
+        setUp("")
+
+        val result = run("processResources").buildAndFail()
+
+        assertTrue(result.output.contains("Native library not found"), result.output)
+        assertTrue(result.output.contains("vespera.autoBuildCargo"), result.output)
+        assertFalse(File(dir, "build/resources/main/native").exists())
+    }
+
+    @Test
+    fun hostKeyMappedToMuslStillBundlesTheHostLibrary() {
+        assumeTrue(host == "linux-x86_64", "needs a glibc linux-x86_64 build host")
+        write("rust/target/release/libdemo.so", "glibc host")
+        write("rust/target/x86_64-unknown-linux-musl/release/libdemo.so", "musl")
+        setUp("""    targets.put("linux-x86_64", "x86_64-unknown-linux-musl")""")
+
+        run("processResources").build()
+
+        assertEquals("glibc host", resource("linux-x86_64/libdemo.so").readText())
+        assertEquals("musl", resource("linux-x86_64-musl/libdemo.so").readText())
+    }
+
+    @Test
     fun cargoBuildIsNeverUpToDate() {
         write("rust/Cargo.toml", "[workspace]\n")
         setUp(

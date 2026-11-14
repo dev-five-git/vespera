@@ -20,7 +20,9 @@ import java.util.Properties
  *    `vespera.targets` cross-build) from the Cargo target directory into a
  *    generated resources directory, merged with `vespera.extraNativeLibs`
  *    (a plugin-owned directory: a dropped target or renamed crate leaves no
- *    stale library behind).
+ *    stale library behind). It depends on `verifyNativeLibs`, which fails the
+ *    build when an expected cdylib was not built — also when none was, where
+ *    the `Sync` alone would be skipped as NO-SOURCE.
  * 2. Wires those generated resources into `processResources` under
  *    `native/<os>-<arch>/` so `VesperaBridge.init(...)` can extract it.
  * 3. Adds `kr.devfive:vespera-bridge:<bridgeVersion>` as an
@@ -106,6 +108,40 @@ class VesperaBridgePlugin : Plugin<Project> {
             }
         )
 
+        // A separate task, not a doFirst on the Sync: with no library built at
+        // all (and no extraNativeLibs) every Sync source is missing, Gradle
+        // skips the Sync as NO-SOURCE — its actions never run — and the jar
+        // would silently ship without a native library.
+        val verifyTask = project.tasks.register(
+            "verifyNativeLibs",
+            object : org.gradle.api.Action<Task> {
+                override fun execute(t: Task) {
+                    t.group = "vespera"
+                    t.description = "Fail when a cdylib bundleNativeLib should bundle was not built."
+                    // Resolved during task configuration so the action below
+                    // captures only plain values (no extension / project
+                    // reference at execution time — configuration-cache safe).
+                    val base = targetBase.get()
+                    val crate = ext.crateName.get()
+                    val profile = ext.cargoProfile.get()
+                    val expected = plannedBuilds.get().map { build ->
+                        ExpectedLibrary(File(base, build.relativePath), build.triple)
+                    }
+                    t.doLast(object : org.gradle.api.Action<Task> {
+                        override fun execute(@Suppress("UNUSED_PARAMETER") task: Task) {
+                            expected.forEach { lib -> lib.requireExists(crate, profile) }
+                        }
+                    })
+                    // Wire cargoBuild -> verifyNativeLibs -> bundleNativeLib when opt-in.
+                    t.dependsOn(
+                        ext.autoBuildCargo.map { auto ->
+                            if (auto) listOf(cargoBuildTask) else emptyList<Any>()
+                        }
+                    )
+                }
+            }
+        )
+
         val bundleTask = project.tasks.register(
             "bundleNativeLib",
             Sync::class.java,
@@ -114,42 +150,20 @@ class VesperaBridgePlugin : Plugin<Project> {
                     t.group = "vespera"
                     t.description =
                         "Sync the built cdylib(s) into generated resources/native/<os>-<arch>/ (stale libraries removed)."
+                    t.dependsOn(verifyTask)
                     t.into(generatedResourcesDir)
                     // Locally built libraries win over extraNativeLibs.
                     t.duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-                    // Resolved during task configuration so the doFirst action
-                    // below captures only plain values (no extension / project
-                    // reference at execution time — configuration-cache safe).
                     val base = targetBase.get()
-                    val crate = ext.crateName.get()
-                    val profile = ext.cargoProfile.get()
-                    val expected = plannedBuilds.get().map { build ->
-                        val src = File(base, build.relativePath)
-                        t.from(src) { into("native/${build.platform}") }
-                        ExpectedLibrary(src, build.triple)
+                    plannedBuilds.get().forEach { build ->
+                        t.from(File(base, build.relativePath)) { into("native/${build.platform}") }
                     }
                     if (ext.extraNativeLibs.isPresent) {
                         t.from(ext.extraNativeLibs) { include("native/**") }
                     }
-                    t.doFirst(object : org.gradle.api.Action<Task> {
-                        override fun execute(@Suppress("UNUSED_PARAMETER") task: Task) {
-                            expected.forEach { lib -> lib.requireExists(crate, profile) }
-                        }
-                    })
                 }
             }
         )
-
-        // Wire cargoBuild -> bundleNativeLib when opt-in.
-        bundleTask.configure(object : org.gradle.api.Action<Sync> {
-            override fun execute(t: Sync) {
-                t.dependsOn(
-                    ext.autoBuildCargo.map { auto ->
-                        if (auto) listOf(cargoBuildTask) else emptyList<Any>()
-                    }
-                )
-            }
-        })
 
         // Hook into Java resource processing + dependency wiring lazily when a
         // Java plugin creates `processResources` / `implementation`.  Avoid
