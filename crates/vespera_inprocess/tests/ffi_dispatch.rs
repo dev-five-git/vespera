@@ -5,12 +5,14 @@
 #![allow(unsafe_code)]
 
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
 use axum::Router;
 use axum::routing::get;
 use serde_json::{Value, json};
+use vespera_inprocess::MIN_DIRECT_OUT_BYTES;
 use vespera_inprocess::ffi::{
     __init, NULL_REQUEST_MSG, VESPERA_ERR_PANIC, VESPERA_ERR_REGISTRATION, VESPERA_OK,
     VESPERA_OVERFLOW, vespera_dispatch, vespera_dispatch_async, vespera_dispatch_into,
@@ -33,11 +35,21 @@ async fn boom() -> &'static str {
     panic!("ffi test handler panic")
 }
 
+/// Runs of `/count` (only `dispatch_into_never_dispatches_into_an_undersized_out`
+/// calls it).
+static COUNTED: AtomicUsize = AtomicUsize::new(0);
+
+async fn count() -> &'static str {
+    COUNTED.fetch_add(1, Ordering::SeqCst);
+    "counted"
+}
+
 fn app() -> Router {
     Router::new()
         .route("/hello", get(hello))
         .route("/big", get(big))
         .route("/boom", get(boom))
+        .route("/count", get(count))
 }
 
 fn admin_app() -> Router {
@@ -187,14 +199,15 @@ fn dispatch_into_complete_overflow_and_probe() {
     assert_eq!(parse(&buf[..written]).2, b"hello from rust");
 
     let big = request("/big", None);
-    let (code, required, _) = dispatch_into(&big, 64);
+    let (code, required, _) = dispatch_into(&big, MIN_DIRECT_OUT_BYTES);
     assert_eq!(code, VESPERA_OVERFLOW);
     assert!(required > 10_000);
     let (code, written, buf) = dispatch_into(&big, required);
     assert_eq!((code, written), (VESPERA_OK, required));
     assert_eq!(parse(&buf[..written]).2.len(), 10_000);
 
-    // Size probe: NULL buffer with zero capacity.
+    // Size probe: NULL buffer with zero capacity — answered with the
+    // minimum without dispatching.
     let mut probed = 0usize;
     // SAFETY: zero-capacity NULL output is part of the contract.
     let code = unsafe {
@@ -206,8 +219,7 @@ fn dispatch_into_complete_overflow_and_probe() {
             &raw mut probed,
         )
     };
-    assert_eq!(code, VESPERA_OVERFLOW);
-    assert!(probed > 0);
+    assert_eq!((code, probed), (VESPERA_OVERFLOW, MIN_DIRECT_OUT_BYTES));
 
     let mut buf = vec![0u8; 4096];
     let mut written = 0usize;
@@ -223,6 +235,32 @@ fn dispatch_into_complete_overflow_and_probe() {
     };
     assert_eq!(code, VESPERA_OK);
     assert_eq!(parse(&buf[..written]).0, 400);
+}
+
+/// An `out` below `MIN_DIRECT_OUT_BYTES` (the size probe included) never
+/// runs the handler, and every synthesized error fits the minimum, so a
+/// panicking handler runs once per dispatching call.
+#[test]
+fn dispatch_into_never_dispatches_into_an_undersized_out() {
+    init();
+    let req = request("/count", None);
+    for cap in [0, 1, 64, MIN_DIRECT_OUT_BYTES - 1] {
+        let (code, written, _) = dispatch_into(&req, cap);
+        assert_eq!((code, written), (VESPERA_OVERFLOW, MIN_DIRECT_OUT_BYTES));
+    }
+    assert_eq!(COUNTED.load(Ordering::SeqCst), 0);
+    let (code, written, buf) = dispatch_into(&req, MIN_DIRECT_OUT_BYTES);
+    assert_eq!(code, VESPERA_OK);
+    assert_eq!(parse(&buf[..written]).2, b"counted");
+    assert_eq!(COUNTED.load(Ordering::SeqCst), 1);
+
+    let (code, written, buf) = dispatch_into(&request("/boom", None), MIN_DIRECT_OUT_BYTES);
+    assert_eq!(code, VESPERA_OK);
+    let (status, header, _) = parse(&buf[..written]);
+    assert_eq!(
+        (status, &header["metadata"]["panicked"]),
+        (500, &json!("true"))
+    );
 }
 
 #[test]

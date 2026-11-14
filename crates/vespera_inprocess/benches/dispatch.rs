@@ -701,25 +701,22 @@ fn bench_request_headers_path(c: &mut Criterion) {
 ///
 /// - `separate_query_field_join`: the query travels in a SEPARATE wire
 ///   `query` field, so the dispatch path joins `path + '?' + query` into a
-///   fresh `String` before `Uri` parsing (the current Java-bridge encoding).
+///   fresh `String` before `Uri` parsing (still accepted from any producer).
 /// - `combined_in_path_borrow`: the query is EMBEDDED in the `path` field, so
 ///   the dispatch path borrows `path` directly and hits the empty-query
 ///   zero-join `Uri::try_from(path)` fast path.
 ///
 /// The delta isolates the per-query-request `String` join + copy that sending
-/// the combined form removes.  The servlet already has the full request URI,
-/// so the Java bridge can send `path` with the query embedded.
+/// the combined form removes.
 ///
 /// MEASURED (AMD/Windows, mimalloc): `separate_query_field_join` ~865 ns vs
 /// `combined_in_path_borrow` ~831 ns — a ~4% per-query-GET win, statistically
-/// significant (non-overlapping CIs).  REALIZATION IS GATED: embedding the
-/// query in the `path` field changes the request wire header, which is locked
-/// byte-for-byte by a CROSS-LANGUAGE golden on BOTH sides
-/// (`tests/wire_contract.rs::cross_language_request_golden_routes` and the Java
-/// `VesperaWireTest.CANONICAL_REQUEST_HEADER_JSON`).  Honouring that contract,
-/// the change is deferred to an explicit, lock-stepped both-goldens update
-/// rather than taken unilaterally for 4% on one request shape.  This A/B stays
-/// as the permanent decision record (mirrors `async_completion_ab`).
+/// significant (non-overlapping CIs).  REALIZED: the Java bridge now sends the
+/// combined form (`VesperaWireCodec.writeCombinedPath`), and the cross-language
+/// request goldens (`tests/wire_contract.rs::cross_language_request_golden_routes`
+/// and the Java `VesperaWireTest.CANONICAL_REQUEST_HEADER_JSON`, `"/users?page=1"`)
+/// were updated in lock-step.  This A/B stays as the decision record (mirrors
+/// `async_completion_ab`).
 fn bench_query_path(c: &mut Criterion) {
     install_bench_app();
 

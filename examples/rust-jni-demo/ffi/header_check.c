@@ -36,6 +36,7 @@ int main(void) {
         VESPERA_ERR_PANIC,    VESPERA_ERR_REGISTRATION, VESPERA_ERR_RUNTIME,
         VESPERA_ERR_TOO_LATE,
     };
+    size_t min_out = VESPERA_MIN_OUT_BYTES;
     (void)abi_version;
     (void)init;
     (void)dispatch;
@@ -47,5 +48,6 @@ int main(void) {
     (void)timeout;
     (void)callback;
     (void)codes;
+    (void)min_out;
     return VESPERA_ABI_VERSION == 1 ? 0 : 1;
 }

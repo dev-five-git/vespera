@@ -6,7 +6,8 @@
 //! Every case records which thread each pull ran on, so the tests pin both
 //! the observable response AND whether the fast path (or the producer) was
 //! taken.  This binary configures no dispatch timeout (the fast path is off
-//! under a deadline — covered by `dispatch_limits.rs`).
+//! under a deadline — covered by `bidirectional_inline_deadline.rs`, its own
+//! binary because the timeout is process-global).
 
 use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicUsize, Ordering};
