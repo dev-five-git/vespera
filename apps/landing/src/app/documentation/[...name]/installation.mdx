@@ -6,7 +6,7 @@ Get Vespera running in your Axum project in under five minutes.
 
 ```toml
 [dependencies]
-vespera = "0.6"
+vespera = "0.7"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 ```
@@ -107,7 +107,7 @@ To embed Vespera inside a Java/Spring application, enable the `jni` feature:
 
 ```toml
 [dependencies]
-vespera = { version = "0.6", features = ["jni"] }
+vespera = { version = "0.7", features = ["jni"] }
 ```
 
 Then add two lines to your Rust lib:
@@ -128,7 +128,7 @@ Enable the `cron` feature to schedule background tasks:
 
 ```toml
 [dependencies]
-vespera = { version = "0.6", features = ["cron"] }
+vespera = { version = "0.7", features = ["cron"] }
 ```
 
 See [Features](/documentation/features) for usage details.
