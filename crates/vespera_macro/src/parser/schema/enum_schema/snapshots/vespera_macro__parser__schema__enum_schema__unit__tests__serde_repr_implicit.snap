@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/unit.rs
+expression: "schema_json(src, request)"
+---
+{"type":"integer","enum":[0,1,2]}

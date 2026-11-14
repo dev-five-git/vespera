@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/unit.rs
+expression: "format!(\"response: {}\\nrequest:  {}\", schema_json(src, false),\nschema_json(src, true))"
+---
+response: {"oneOf":[{"type":"object","properties":{"A":{"type":"object","properties":{"x":{"type":"integer","format":"uint8"},"y":{"type":"integer","format":"uint8"}},"required":["x","y"]}},"required":["A"]}]}
+request:  {"oneOf":[{"type":"object","properties":{"A":{"type":"object","properties":{"x":{"type":"integer","format":"uint8"},"y":{"type":"integer","format":"uint8"}},"required":["y"]}},"required":["A"]}]}

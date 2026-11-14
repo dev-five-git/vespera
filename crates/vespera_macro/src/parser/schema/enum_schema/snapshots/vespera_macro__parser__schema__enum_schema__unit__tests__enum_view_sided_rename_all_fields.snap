@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/unit.rs
+expression: "format!(\"response: {}\\nrequest:  {}\", schema_json(src, false),\nschema_json(src, true))"
+---
+response: {"oneOf":[{"type":"object","properties":{"fieldOne":{"type":"integer","format":"uint8"},"t":{"type":"string","enum":["A"]}},"required":["t","fieldOne"]}],"discriminator":{"propertyName":"t"}}
+request:  {"oneOf":[{"type":"object","properties":{"FIELD_ONE":{"type":"integer","format":"uint8"},"t":{"type":"string","enum":["A"]}},"required":["t","FIELD_ONE"]}],"discriminator":{"propertyName":"t"}}
