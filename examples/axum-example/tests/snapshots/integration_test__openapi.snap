@@ -1518,7 +1518,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NetworkEndpoint"
+                "$ref": "#/components/schemas/NetworkEndpointInput"
               }
             }
           }
@@ -2929,7 +2929,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreateUuidItemRequest"
+                "$ref": "#/components/schemas/CreateUuidItemRequestInput"
               }
             }
           }
@@ -4018,6 +4018,34 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "type": "string"
             },
             "uniqueItems": true
+          }
+        },
+        "required": [
+          "name",
+          "tags"
+        ]
+      },
+      "CreateUuidItemRequestInput": {
+        "type": "object",
+        "description": "UUID item model for testing UUID format in OpenAPI",
+        "properties": {
+          "externalRef": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "External reference UUID"
+          },
+          "name": {
+            "type": "string",
+            "description": "Item name"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -5251,6 +5279,101 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "required": [
               "secs",
               "nanos"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "ip",
+          "ipv4",
+          "ipv6",
+          "bind",
+          "data_dir",
+          "homepage",
+          "timeout"
+        ]
+      },
+      "NetworkEndpointInput": {
+        "type": "object",
+        "description": "Network endpoint description built from std / `url` types.",
+        "properties": {
+          "bind": {
+            "type": "string",
+            "description": "`ip:port` — `string`."
+          },
+          "callback": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "Optional callback URL."
+          },
+          "data_dir": {
+            "type": "string",
+            "description": "Filesystem path — `string`."
+          },
+          "homepage": {
+            "type": "string",
+            "format": "uri",
+            "description": "`string` / `uri`."
+          },
+          "ip": {
+            "type": "string",
+            "description": "Either address family — `string`."
+          },
+          "ipv4": {
+            "type": "string",
+            "format": "ipv4",
+            "description": "`string` / `ipv4`."
+          },
+          "ipv6": {
+            "type": "string",
+            "format": "ipv6",
+            "description": "`string` / `ipv6`."
+          },
+          "timeout": {
+            "description": "`{\"secs\", \"nanos\"}` object (serde's std `Duration` shape).",
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "nanos": {
+                    "type": "integer",
+                    "format": "uint32",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  },
+                  "secs": {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "secs",
+                  "nanos"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "integer",
+                    "format": "uint32",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              }
             ]
           }
         },
@@ -5941,51 +6064,42 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         ]
       },
       "Telemetry": {
+        "type": "object",
         "description": "Any-JSON payload, a std `Duration` (`{secs, nanos}`) and an optional\nflattened block (its fields are not required).",
-        "allOf": [
-          {
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "elapsed": {
             "type": "object",
             "properties": {
-              "elapsed": {
-                "type": "object",
-                "properties": {
-                  "nanos": {
-                    "type": "integer",
-                    "format": "uint32",
-                    "minimum": 0,
-                    "maximum": 999999999
-                  },
-                  "secs": {
-                    "type": "integer",
-                    "format": "uint64",
-                    "minimum": 0
-                  }
-                },
-                "required": [
-                  "secs",
-                  "nanos"
-                ]
+              "nanos": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0,
+                "maximum": 999999999
               },
-              "event": {
-                "$ref": "#/components/schemas/ShapeEvent"
-              },
-              "payload": {}
+              "secs": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
             },
             "required": [
-              "payload",
-              "elapsed",
-              "event"
-            ]
+              "secs",
+              "nanos"
+            ],
+            "additionalProperties": false
           },
-          {
-            "type": "object",
-            "description": "Optional audit block flattened into [`Telemetry`].",
-            "properties": {
-              "actor": {
-                "type": "string"
-              }
-            }
-          }
+          "event": {
+            "$ref": "#/components/schemas/ShapeEvent"
+          },
+          "payload": {}
+        },
+        "required": [
+          "payload",
+          "elapsed",
+          "event"
         ]
       },
       "TermsQuery": {

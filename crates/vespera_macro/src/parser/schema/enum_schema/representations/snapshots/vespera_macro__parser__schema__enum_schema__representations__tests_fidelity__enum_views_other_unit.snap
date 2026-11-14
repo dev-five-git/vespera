@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
+assertion_line: 101
+expression: both_views(src)
+---
+enum Color { Red, Blue, #[serde(other)] Unknown }
+response: {"type":"string","enum":["Red","Blue","Unknown"]}
+request: {"oneOf":[{"type":"string","enum":["Red","Blue"]},{"type":"string","not":{"enum":["Red","Blue"]}}]}

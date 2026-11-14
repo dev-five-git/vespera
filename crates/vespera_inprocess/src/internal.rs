@@ -223,10 +223,15 @@ async fn router_oneshot(router: Router, request: Request<Body>) -> axum::respons
 /// Drive a [`Router`] with the supplied envelope fields and return
 /// raw response parts.
 ///
-/// Returns `Err((status, msg))` only for pre-dispatch errors
-/// (currently only "invalid HTTP method" → 405).  Router/handler
-/// errors cannot occur because axum routers are
-/// `Service<_, Error = Infallible>`.
+/// Returns `Err((status, msg))` for:
+/// - an invalid HTTP method → `405`;
+/// - a malformed path / query or an invalid header name / value → `400`;
+/// - a response body that errors while it is collected
+///   ([`BODY_STREAM_ERROR_MSG`]) or exceeds
+///   [`crate::max_buffered_response_bytes`] → `500`.
+///
+/// Router/handler errors cannot occur because axum routers are
+/// `Service<_, Error = Infallible>` (a handler's own error is a response).
 ///
 /// `header_bytes_owner` is the request's owning wire `Bytes` (the wire
 /// header-JSON region) when the headers are borrowed slices of it; this

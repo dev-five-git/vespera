@@ -1,0 +1,37 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_serde_fidelity.rs
+assertion_line: 209
+expression: both_views(src)
+---
+struct S { #[serde(skip_serializing_if = "Vec::is_empty")] v: Vec<u8> }
+response: {
+  "type": "object",
+  "properties": {
+    "v": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "uint8",
+        "minimum": 0,
+        "maximum": 255
+      }
+    }
+  }
+}
+request: {
+  "type": "object",
+  "properties": {
+    "v": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "uint8",
+        "minimum": 0,
+        "maximum": 255
+      }
+    }
+  },
+  "required": [
+    "v"
+  ]
+}

@@ -1,0 +1,42 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_serde_fidelity.rs
+assertion_line: 209
+expression: both_views(src)
+---
+struct Req { id: i32, #[serde(flatten)] #[schema(value_type = HashMap<String, u8>)] extra: Custom }
+response: {
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "integer",
+      "format": "int32"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "additionalProperties": {
+    "type": "integer",
+    "format": "uint8",
+    "minimum": 0,
+    "maximum": 255
+  }
+}
+request: {
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "integer",
+      "format": "int32"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "additionalProperties": {
+    "type": "integer",
+    "format": "uint8",
+    "minimum": 0,
+    "maximum": 255
+  }
+}

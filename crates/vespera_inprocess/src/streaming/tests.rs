@@ -339,6 +339,42 @@ async fn body_waits_for_a_producer_slot() {
     assert!(body.frame().await.is_none());
 }
 
+/// A body polled for the first time AFTER the dispatch finished (it was
+/// moved into a detached task) must never start the producer or call the
+/// host source: it fails with `StreamAbort`, and the close hook (nothing was
+/// read) is not called either.
+#[tokio::test]
+async fn body_polled_after_the_dispatch_finished_never_reads_the_source() {
+    let pulls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let pulls_in_source = Arc::clone(&pulls);
+    let producer_handle: RequestProducerHandle = Arc::new(Mutex::new(None));
+    let inline = InlineState::new(false);
+    let mut body = ChannelBody::new(
+        move || {
+            pulls_in_source.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            crate::RequestChunk::End
+        },
+        Arc::clone(&producer_handle),
+        0,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        Arc::clone(&inline),
+    );
+    let hook_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let closes_in_hook = Arc::clone(&hook_calls);
+    let mut source_closer =
+        RequestSourceCloser::new(Arc::clone(&producer_handle), inline, move || {
+            closes_in_hook.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+    source_closer.close_if_started();
+
+    assert!(matches!(body.frame().await, Some(Err(_))));
+    assert_eq!(pulls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(producer_handle.lock().unwrap().is_none(), "no producer");
+    assert!(body.frame().await.is_none(), "terminal after the abort");
+    drop(source_closer);
+    assert_eq!(hook_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
 #[rstest::rstest]
 #[case::unlimited(0, tokio::sync::Semaphore::MAX_PERMITS)]
 #[case::capped(8, 8)]

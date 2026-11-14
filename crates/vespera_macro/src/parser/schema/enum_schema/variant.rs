@@ -4,12 +4,14 @@ use std::{
     hash::Hash,
 };
 
-use vespera_core::schema::SchemaRef;
+use vespera_core::schema::{Schema, SchemaRef};
 
 use super::super::{
-    serde_attrs::{extract_rename_all_for, extract_serde_skip_flags},
-    struct_schema::{NamedFields, collect_named_fields, emitted_unnamed_types},
-    type_schema::{parse_type_to_schema_ref, tuple_array_schema},
+    request_view::current_side,
+    schema_attrs::extract_schema_constraints,
+    serde_attrs::{extract_field_codec, extract_rename_all_for, extract_serde_skip_flags},
+    struct_schema::{NamedFields, collect_named_fields, tuple_fields_schema},
+    wire_override::{CUSTOM_CODEC_DESCRIPTION, field_schema_ref},
 };
 
 /// Build the fields of a struct variant through the SAME field walker structs
@@ -52,6 +54,36 @@ pub(super) fn is_other_variant(variant: &syn::Variant) -> bool {
     extract_serde_skip_flags(&variant.attrs).other
 }
 
+/// `{}` for a variant whose content is written / read by a variant-level
+/// `#[serde(with | serialize_with | deserialize_with = "..")]` on the side of
+/// the view being built (its wire shape is unknown, see `wire_override`).
+/// A unit variant has no content, so it never has one.
+pub(super) fn variant_codec_schema(variant: &syn::Variant) -> Option<SchemaRef> {
+    (!matches!(variant.fields, syn::Fields::Unit)
+        && extract_field_codec(&variant.attrs).custom_for(current_side()))
+    .then(|| {
+        SchemaRef::Inline(Box::new(Schema {
+            description: Some(CUSTOM_CODEC_DESCRIPTION.to_string()),
+            ..Schema::default()
+        }))
+    })
+}
+
+/// Schema of the single field of a newtype variant on the current side.
+pub(super) fn newtype_field_schema(
+    field: &syn::Field,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
+) -> SchemaRef {
+    field_schema_ref(
+        field,
+        &extract_schema_constraints(&field.attrs),
+        current_side(),
+        known_schemas,
+        struct_definitions,
+    )
+}
+
 /// Build a schema for a variant's data (tuple or struct fields)
 pub(super) fn build_variant_data_schema(
     variant: &syn::Variant,
@@ -59,27 +91,25 @@ pub(super) fn build_variant_data_schema(
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Option<SchemaRef> {
+    let codec = variant_codec_schema(variant);
+    if codec.is_some() {
+        return codec;
+    }
     match &variant.fields {
         syn::Fields::Unit => None,
-        syn::Fields::Unnamed(fields_unnamed) => {
-            if fields_unnamed.unnamed.len() == 1 {
-                // Single field tuple variant - just the inner type
-                let inner_type = &fields_unnamed.unnamed[0].ty;
-                Some(parse_type_to_schema_ref(
-                    inner_type,
-                    known_schemas,
-                    struct_definitions,
-                ))
-            } else {
-                // Multiple fields tuple variant - array with prefixItems over
-                // the non-skipped fields
-                Some(SchemaRef::Inline(Box::new(tuple_array_schema(
-                    emitted_unnamed_types(fields_unnamed).into_iter(),
-                    known_schemas,
-                    struct_definitions,
-                ))))
-            }
+        // Single field tuple variant - just the inner type
+        syn::Fields::Unnamed(fields_unnamed) if fields_unnamed.unnamed.len() == 1 => {
+            Some(newtype_field_schema(
+                &fields_unnamed.unnamed[0],
+                known_schemas,
+                struct_definitions,
+            ))
         }
+        // Multiple fields tuple variant - array with prefixItems over the
+        // positions emitted on the current side
+        syn::Fields::Unnamed(fields_unnamed) => Some(SchemaRef::Inline(Box::new(
+            tuple_fields_schema(fields_unnamed, known_schemas, struct_definitions),
+        ))),
         syn::Fields::Named(fields_named) => Some(SchemaRef::Inline(Box::new(
             build_struct_variant_fields(
                 fields_named,
@@ -88,7 +118,7 @@ pub(super) fn build_variant_data_schema(
                 known_schemas,
                 struct_definitions,
             )
-            .into_object_schema(None),
+            .into_object_schema(None, false),
         ))),
     }
 }

@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
+assertion_line: 101
+expression: both_views(src)
+---
+#[serde(rename = "Stage", rename_all = "camelCase")] enum Stage { InProgress(u8), Done }
+response: {"oneOf":[{"type":"object","properties":{"inProgress":{"type":"integer","format":"uint8","minimum":0,"maximum":255}},"required":["inProgress"]},{"type":"string","enum":["done"]}]}
+request: {"oneOf":[{"type":"object","properties":{"inProgress":{"type":"integer","format":"uint8","minimum":0,"maximum":255}},"required":["inProgress"]},{"type":"string","enum":["done"]}]}

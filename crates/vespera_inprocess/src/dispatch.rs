@@ -381,12 +381,17 @@ pub async fn dispatch_owned(router: Router, envelope: RequestEnvelope) -> Respon
 /// bytes 0..4      : u32 BE = header_json byte length N
 /// bytes 4..4+N    : UTF-8 JSON
 ///                     (request)  { "v":1, "method", "path",
-///                                  "query"?, "headers"? }
+///                                  "query"?, "headers"?, "app"?,
+///                                  "remote_addr"?, "scheme"?,
+///                                  "principal"? }
 ///                     (response) { "v":1, "status", "headers",
-///                                  "metadata" }
+///                                  "metadata", "validation_errors"? }
 /// bytes 4+N..end  : raw body bytes (UTF-8 text or binary —
 ///                   no encoding applied)
 /// ```
+///
+/// (See the crate docs for the optional request fields, the Latin-1
+/// header-value mapping and `validation_errors` hoisting.)
 ///
 /// All failure modes return a valid wire-format response (length-
 /// prefixed) so the caller's decoder never has to special-case
@@ -394,12 +399,20 @@ pub async fn dispatch_owned(router: Router, envelope: RequestEnvelope) -> Respon
 ///
 /// * input shorter than 4 bytes → 400 with explanatory body
 /// * `header_len` exceeds input → 400
-/// * header JSON parse failure → 400
+/// * header JSON parse failure (incl. an invalid `principal`) → 400
 /// * wire version mismatch → 400
 /// * invalid app name → 400
-/// * unknown HTTP method → 405
+/// * malformed path / query or header name / value → 400
 /// * no app registered under the requested name → 404
+/// * unknown HTTP method → 405
+/// * request above [`crate::max_request_bytes`] → 413
+/// * more than [`crate::MAX_REQUEST_HEADERS`] request headers → 431
+/// * response body error, or response above
+///   [`crate::max_buffered_response_bytes`] → 500
+/// * expired [`crate::dispatch_timeout`] → 504
 /// * router/handler errors → surfaced verbatim as response wire
+///   (a handler panic unwinds to the caller; the JNI / C ABI hosts turn
+///   it into a `500` with `"panicked":"true"` metadata)
 pub fn dispatch_from_bytes(input: Vec<u8>, runtime: &tokio::runtime::Runtime) -> Vec<u8> {
     runtime.block_on(dispatch_from_bytes_async(input))
 }

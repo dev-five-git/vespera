@@ -29,7 +29,7 @@ pub struct NetworkEndpoint {
     /// Optional callback URL.
     pub callback: Option<Url>,
     /// `{"secs", "nanos"}` object (serde's std `Duration` shape).
-    pub timeout: Duration,
+    pub timeout: std::time::Duration,
 }
 
 /// Sample endpoint.

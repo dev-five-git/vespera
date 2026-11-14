@@ -266,28 +266,14 @@ fn is_primitive_type(ty: &syn::Type) -> bool {
     }
 }
 
+/// Scalar idents that serialize as a JSON primitive (never an object).
+const PRIMITIVE_IDENTS: &[&str] = &[
+    "bool", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize",
+    "f32", "f64", "char", "str", "String",
+];
+
 fn is_primitive_ident(ident: &str) -> bool {
-    matches!(
-        ident,
-        "bool"
-            | "i8"
-            | "i16"
-            | "i32"
-            | "i64"
-            | "i128"
-            | "isize"
-            | "u8"
-            | "u16"
-            | "u32"
-            | "u64"
-            | "u128"
-            | "usize"
-            | "f32"
-            | "f64"
-            | "char"
-            | "str"
-            | "String"
-    )
+    PRIMITIVE_IDENTS.contains(&ident)
 }
 
 /// Last segment ident + its first generic type argument, but only for a bare
