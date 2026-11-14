@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/args/tests.rs
+assertion_line: 535
+expression: err.to_string()
+---
+unknown #[route] argument `tag`; expected an HTTP method (get, post, put, patch, delete, head, options, trace) or one of `path`, `error_status`, `responses`, `status`, `tags`, `security`, `headers`, `operation_id`, `summary`, `request_example`, `response_example`, `deprecated`, `description`

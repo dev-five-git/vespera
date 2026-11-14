@@ -59,13 +59,11 @@ fn kebab_case_path(path: &str) -> String {
 /// makes that divergence unrepresentable.
 fn build_route_path(base_path: &str, custom_path: Option<&str>) -> String {
     let base = kebab_case_path(base_path);
-    match custom_path {
-        None => base,
-        Some(custom) => format!(
-            "{}/{}",
-            base.trim_end_matches('/'),
-            custom.trim_start_matches('/')
-        ),
+    match custom_path.map(|custom| custom.trim_start_matches('/')) {
+        // `path = "/"` (or `""`) is the file route itself: `users.rs` serves
+        // `/users`, not a `/users/` trailing-slash twin.
+        None | Some("") => base,
+        Some(custom) => format!("{}/{custom}", base.trim_end_matches('/')),
     }
 }
 
@@ -286,6 +284,7 @@ pub fn collect_metadata_from_files<'a>(
         }
     }
 
+    let folder_module = crate::router_codegen::route_dir_module_path(folder_name);
     for file in files {
         if file.extension().is_none_or(|e| e != "rs") {
             continue;
@@ -313,7 +312,7 @@ pub fn collect_metadata_from_files<'a>(
         let mut module_path = if folder_name.is_empty() {
             segments.join("::")
         } else {
-            format!("{}::{}", folder_name, segments.join("::"))
+            format!("{}::{}", folder_module, segments.join("::"))
         };
 
         let base_path = format!("/{}", segments.join("/"));
@@ -324,11 +323,7 @@ pub fn collect_metadata_from_files<'a>(
         // every non-last route but MOVED into the last route's push —
         // refcount-free amortization of two String allocations per file.
         if let Some(stored_routes) = storage_by_file.get(&file_key) {
-            let stored_names: Vec<&str> = stored_routes
-                .iter()
-                .map(|stored| stored.fn_name.as_str())
-                .collect();
-            if let Some(found) = module_scope::stored_inline_mod_route(file, &stored_names) {
+            if let Some(found) = module_scope::stored_routes_inline_module(file, stored_routes) {
                 return Err(err_call_site(module_scope::inline_mod_route_error(
                     file, &found,
                 )));

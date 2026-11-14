@@ -137,12 +137,19 @@ pub fn apply_export_prefix(metadata: &mut CollectedMetadata, prefix: &str) {
         return;
     }
 
-    for route in &mut metadata.routes {
-        route.path = if route.path == "/" {
+    let prefixed = |path: &str| {
+        if path == "/" {
             prefix.to_owned()
         } else {
-            format!("{prefix}{}", route.path)
-        };
+            format!("{prefix}{path}")
+        }
+    };
+    for route in &mut metadata.routes {
+        route.path = prefixed(&route.path);
+    }
+    // `#[cfg]`-gated routes are mounted by the same router.
+    for route in &mut metadata.cfg_routes {
+        route.path = prefixed(&route.path);
     }
 }
 
@@ -466,6 +473,32 @@ mod tests {
 
         assert_eq!(metadata.routes[0].path, "/api/admin");
         assert_eq!(metadata.routes[1].path, "/api/admin/users");
+    }
+
+    /// `#[cfg]`-gated routes are mounted by the same router, so they get the
+    /// prefix too.
+    #[test]
+    fn prefix_applies_to_cfg_gated_routes() {
+        let gated = |path: &str| crate::metadata::CfgRoute {
+            cfg: vec!["feature = \"admin\"".to_string()],
+            method: "get".to_string(),
+            path: path.to_string(),
+            module_path: "routes::admin".to_string(),
+            function_name: "list".to_string(),
+            file_path: "admin.rs".to_string(),
+        };
+        let mut metadata = CollectedMetadata::new();
+        metadata.cfg_routes.push(gated("/"));
+        metadata.cfg_routes.push(gated("/admin"));
+
+        apply_export_prefix(&mut metadata, "/api");
+
+        let paths: Vec<&str> = metadata
+            .cfg_routes
+            .iter()
+            .map(|r| r.path.as_str())
+            .collect();
+        assert_eq!(paths, ["/api", "/api/admin"]);
     }
 
     #[test]

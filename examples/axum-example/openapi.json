@@ -7076,6 +7076,14 @@
   },
   "tags": [
     {
+      "name": "secured",
+      "description": "Security-scheme demo routes"
+    },
+    {
+      "name": "events",
+      "description": "Server-sent events"
+    },
+    {
       "name": "codecs"
     },
     {
@@ -7083,10 +7091,6 @@
     },
     {
       "name": "error"
-    },
-    {
-      "name": "events",
-      "description": "Server-sent events"
     },
     {
       "name": "flatten"
@@ -7099,10 +7103,6 @@
     },
     {
       "name": "network"
-    },
-    {
-      "name": "secured",
-      "description": "Security-scheme demo routes"
     },
     {
       "name": "terms"

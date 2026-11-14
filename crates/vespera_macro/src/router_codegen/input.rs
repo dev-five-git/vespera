@@ -1,5 +1,5 @@
 use proc_macro2::Span;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use syn::{
     LitStr, bracketed,
     parse::{Parse, ParseStream},
@@ -144,8 +144,15 @@ impl Parse for AutoRouterInput {
                     }
                 }
             } else if lookahead.peek(syn::LitStr) {
+                let lit: LitStr = input.parse()?;
+                if !seen_fields.insert("dir".to_string()) {
+                    return Err(syn::Error::new(
+                        lit.span(),
+                        "duplicate field `dir` in vespera! macro",
+                    ));
+                }
                 // If just a string, treat it as dir (for backward compatibility)
-                dir = Some(input.parse()?);
+                dir = Some(lit);
             } else {
                 return Err(lookahead.error());
             }
@@ -174,12 +181,17 @@ impl Parse for AutoRouterInput {
             None => None,
         };
 
+        let dir = dir.or_else(|| {
+            crate::env_access::var("VESPERA_DIR")
+                .map(|f| LitStr::new(&f, Span::call_site()))
+                .ok()
+        });
+        if let Some(dir) = &dir {
+            super::validate_route_dir(&dir.value(), "vespera!", dir.span())?;
+        }
+
         Ok(Self {
-            dir: dir.or_else(|| {
-                crate::env_access::var("VESPERA_DIR")
-                    .map(|f| LitStr::new(&f, Span::call_site()))
-                    .ok()
-            }),
+            dir,
             openapi: openapi.or_else(|| {
                 crate::env_access::var("VESPERA_OPENAPI")
                     .map(|f| vec![LitStr::new(&f, Span::call_site())])
@@ -266,7 +278,15 @@ fn parse_tag_values(input: ParseStream) -> syn::Result<Vec<TagConfig>> {
     let mut tags = Vec::new();
 
     while !content.is_empty() {
-        tags.push(parse_tag_struct(&content)?);
+        let span = content.span();
+        let tag = parse_tag_struct(&content)?;
+        if tags.iter().any(|seen: &TagConfig| seen.name == tag.name) {
+            return Err(syn::Error::new(
+                span,
+                format!("duplicate tag name `{}` in `tags`", tag.name),
+            ));
+        }
+        tags.push(tag);
 
         if content.peek(syn::Token![,]) {
             content.parse::<syn::Token![,]>()?;
@@ -338,7 +358,21 @@ fn parse_security_scheme_values(input: ParseStream) -> syn::Result<Vec<SecurityS
     let mut schemes = Vec::new();
 
     while !content.is_empty() {
-        schemes.push(parse_security_scheme_struct(&content)?);
+        let span = content.span();
+        let scheme = parse_security_scheme_struct(&content)?;
+        if schemes
+            .iter()
+            .any(|seen: &SecuritySchemeConfig| seen.name == scheme.name)
+        {
+            return Err(syn::Error::new(
+                span,
+                format!(
+                    "duplicate security scheme name `{}` in `security_schemes`",
+                    scheme.name
+                ),
+            ));
+        }
+        schemes.push(scheme);
 
         if content.peek(syn::Token![,]) {
             content.parse::<syn::Token![,]>()?;
@@ -750,7 +784,8 @@ pub struct ProcessedVesperaInput {
     pub servers: Option<Vec<Server>>,
     pub security_schemes: Option<BTreeMap<String, SecurityScheme>>,
     pub security: Option<Vec<BTreeMap<String, Vec<String>>>>,
-    pub tag_descriptions: Option<HashMap<String, String>>,
+    /// Declared `tags = [...]` in declaration order (`(name, description)`).
+    pub tag_descriptions: Option<Vec<(String, Option<String>)>>,
     /// Apps to merge (`syn::Path` for code generation)
     pub merge: Vec<syn::Path>,
     /// `info` object fields beyond `title` / `version`.
@@ -795,12 +830,10 @@ pub fn process_vespera_input(input: AutoRouterInput) -> ProcessedVesperaInput {
             }
         }),
         security: input.security,
-        tag_descriptions: input.tags.and_then(|tags| {
-            let tags = tags
-                .into_iter()
-                .filter_map(|tag| tag.description.map(|description| (tag.name, description)))
-                .collect::<HashMap<_, _>>();
-            if tags.is_empty() { None } else { Some(tags) }
+        tag_descriptions: input.tags.filter(|tags| !tags.is_empty()).map(|tags| {
+            tags.into_iter()
+                .map(|tag| (tag.name, tag.description))
+                .collect()
         }),
         merge: input.merge.unwrap_or_default(),
         info: input.info,

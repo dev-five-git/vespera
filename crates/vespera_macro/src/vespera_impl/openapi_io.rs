@@ -19,7 +19,7 @@ use super::{
     schema_merge::SchemaMergeGuard,
 };
 
-fn display_merge_path(path: &syn::Path) -> String {
+pub(super) fn display_merge_path(path: &syn::Path) -> String {
     path.segments
         .iter()
         .map(|segment| segment.ident.to_string())
@@ -56,10 +56,10 @@ pub(super) fn content_unchanged(path: &Path, content: &str) -> bool {
         && std::fs::read_to_string(path).is_ok_and(|existing| existing == content)
 }
 
+/// Atomically replace `path` with `content` (no-op when identical) and
+/// return its metadata fingerprint.
 pub(super) fn write_if_changed(path: &Path, content: &str) -> std::io::Result<Option<u64>> {
-    if !content_unchanged(path, content) {
-        std::fs::write(path, content)?;
-    }
+    super::sidecar_write::write_atomic(path, content)?;
     Ok(path_fingerprint(path))
 }
 
@@ -241,20 +241,31 @@ pub fn ensure_openapi_files_from_cache(
 /// same shared `target/vespera/` directory, and one crate may hold several
 /// `vespera!` calls with different settings — with a shared file name, one
 /// invocation's `include_str!` could read the spec another just wrote.
-pub(super) fn embed_spec_path(tag: &str) -> std::path::PathBuf {
-    let manifest_dir = crate::env_access::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    find_target_dir(Path::new(&manifest_dir))
-        .join("vespera")
-        .join(format!("vespera_spec-{tag}.json"))
+/// It is also **content-addressed** (`hash` = the spec's content hash): the
+/// lib / bin / test targets of one package expand the same invocation in
+/// parallel and may generate different specs (see `sidecar_write`).
+pub(super) fn embed_spec_path(tag: &str, hash: u64) -> std::path::PathBuf {
+    super::sidecar_write::content_addressed(&vespera_dir(), &embed_stem(tag), hash)
+}
+
+fn embed_stem(tag: &str) -> String {
+    format!("vespera_spec-{tag}")
 }
 
 /// Path of the pretty-spec sidecar (warm-rebuild source for
-/// `openapi.json` recovery — see `ensure_openapi_files_from_cache`).
-pub(super) fn pretty_sidecar_path(tag: &str) -> std::path::PathBuf {
+/// `openapi.json` recovery — see `ensure_openapi_files_from_cache`),
+/// content-addressed like [`embed_spec_path`].
+pub(super) fn pretty_sidecar_path(tag: &str, hash: u64) -> std::path::PathBuf {
+    super::sidecar_write::content_addressed(&vespera_dir(), &pretty_stem(tag), hash)
+}
+
+fn pretty_stem(tag: &str) -> String {
+    format!("openapi_pretty-{tag}")
+}
+
+fn vespera_dir() -> std::path::PathBuf {
     let manifest_dir = crate::env_access::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    find_target_dir(Path::new(&manifest_dir))
-        .join("vespera")
-        .join(format!("openapi_pretty-{tag}.json"))
+    find_target_dir(Path::new(&manifest_dir)).join("vespera")
 }
 
 /// Build the `include_str!` tokens pointing at the embed sidecar.
@@ -289,7 +300,7 @@ pub(super) fn load_validated_sidecar_specs(
     let spec_tokens = match (spec_json_hash, spec_json_fingerprint) {
         (None, _) => None,
         (Some(expected_hash), Some(expected_fingerprint)) => {
-            let path = embed_spec_path(tag);
+            let path = embed_spec_path(tag, expected_hash);
             if !super::cache::sidecar_matches(
                 &path,
                 Some(expected_hash),
@@ -304,7 +315,7 @@ pub(super) fn load_validated_sidecar_specs(
     let pretty = match (spec_pretty_hash, spec_pretty_fingerprint) {
         (None, _) => None,
         (Some(expected_hash), Some(expected_fingerprint)) => {
-            let path = pretty_sidecar_path(tag);
+            let path = pretty_sidecar_path(tag, expected_hash);
             let content = std::fs::read_to_string(&path).ok()?;
             if super::cache::path_fingerprint(&path) != Some(expected_fingerprint)
                 && super::cache::hash_str(&content) != expected_hash
@@ -325,11 +336,13 @@ pub(super) fn load_validated_sidecar_specs(
 /// the cache itself: failures only cost a future cache miss.
 pub(super) fn write_pretty_sidecar(tag: &str, spec_pretty: Option<&str>) -> Option<u64> {
     let pretty = spec_pretty?;
-    let path = pretty_sidecar_path(tag);
+    let path = pretty_sidecar_path(tag, super::cache::hash_str(pretty));
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    write_if_changed(&path, pretty).ok().flatten()
+    let fingerprint = write_if_changed(&path, pretty).ok().flatten();
+    super::sidecar_write::prune_superseded(&path, &pretty_stem(tag));
+    fingerprint
 }
 
 /// Write compact spec JSON to target dir for `include_str!` embedding.
@@ -340,7 +353,7 @@ pub(super) fn write_spec_for_embedding(
     let Some(json) = spec_json else {
         return Ok(None);
     };
-    let spec_file = embed_spec_path(tag);
+    let spec_file = embed_spec_path(tag, super::cache::hash_str(&json));
     if let Some(parent) = spec_file.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             syn::Error::new(
@@ -363,6 +376,7 @@ pub(super) fn write_spec_for_embedding(
             ),
         )
     })?;
+    super::sidecar_write::prune_superseded(&spec_file, &embed_stem(tag));
     Ok(Some(EmbeddedSpecWrite {
         tokens: embed_tokens(&spec_file),
         fingerprint,

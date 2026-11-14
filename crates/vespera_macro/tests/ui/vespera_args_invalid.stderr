@@ -21,3 +21,9 @@ error: vespera! macro: `redoc_url` and `docs_url` both use "/docs"; each documen
    |
 18 |     let _ = vespera!(docs_url = "/docs", redoc_url = "/docs");
    |                                                      ^^^^^^^
+
+error: vespera! macro: invalid route folder `dir = "../routes"`. It must be a folder under `src/` named by module identifiers separated by `/`, e.g. `"routes"` or `"api/v1"` (no absolute paths, `..`, `\`, or empty segments).
+  --> tests/ui/vespera_args_invalid.rs:22:28
+   |
+22 |     let _ = vespera!(dir = "../routes");
+   |                            ^^^^^^^^^^^

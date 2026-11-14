@@ -13,13 +13,30 @@ pub fn scan_route_folder(folder_path: &Path) -> MacroResult<Vec<(std::path::Path
     crate::file_utils::collect_files_with_mtimes(folder_path).map_err(|e| err_call_site(format!("vespera! macro: failed to scan route folder '{}': {}. Verify the folder exists and is readable.", folder_path.display(), e)))
 }
 
-/// Build the cache fingerprint map (`.rs` files only) from a scan.
-pub fn fingerprints_from_scan(scanned: &[(std::path::PathBuf, u64)]) -> HashMap<String, u64> {
-    scanned
+/// Build the cache fingerprint map (`.rs` files only) from a scan of
+/// `folder_path`.
+///
+/// Also fingerprints `<folder>.rs` (non-`mod.rs` layout), which lives OUTSIDE
+/// the route folder yet declares its first-level modules: a `#[cfg(..)]` added
+/// to (or removed from) a `mod admin;` there changes which routes are gated,
+/// so it must invalidate the cached router like a route-file edit does.
+pub fn fingerprints_from_scan(
+    folder_path: &Path,
+    scanned: &[(std::path::PathBuf, u64)],
+) -> HashMap<String, u64> {
+    let mut fingerprints: HashMap<String, u64> = scanned
         .iter()
         .filter(|(file, _)| file.extension().is_some_and(|e| e == "rs"))
         .map(|(file, mtime)| (file.display().to_string(), *mtime))
-        .collect()
+        .collect();
+    let declarer = folder_path.with_extension("rs");
+    if let Ok(meta) = std::fs::metadata(&declarer) {
+        fingerprints.insert(
+            declarer.display().to_string(),
+            crate::file_utils::file_fingerprint(&meta),
+        );
+    }
+    fingerprints
 }
 
 #[cfg(test)]
@@ -139,6 +156,7 @@ mod tests {
             deprecated: false,
             description: None,
             fn_sig_str: "async fn get_users() -> String".to_string(),
+            inline_module: None,
             file_path: Some(relative_stored_path),
         }];
 
@@ -184,6 +202,7 @@ mod tests {
             deprecated: false,
             description: None,
             fn_sig_str: "async fn list_items() -> String".to_string(),
+            inline_module: None,
             file_path: Some(file_path.display().to_string()),
         }];
 
@@ -234,6 +253,7 @@ mod tests {
             deprecated: false,
             description: Some("Get all users".to_string()),
             fn_sig_str: "async fn get_users() -> String".to_string(),
+            inline_module: None,
             file_path: Some(file_path_str.clone()),
         }];
 
@@ -292,6 +312,7 @@ mod tests {
             deprecated: false,
             description: None,
             fn_sig_str: "async fn get_user(id: i32) -> String".to_string(),
+            inline_module: None,
             file_path: Some(file_path_str.clone()),
         }];
 
@@ -340,6 +361,7 @@ mod tests {
             deprecated: false,
             description: None,
             fn_sig_str: "async fn list_users() -> String".to_string(),
+            inline_module: None,
             file_path: Some(file_path_str),
         }];
 
@@ -385,6 +407,7 @@ mod tests {
             fn_sig_str:
                 "/// List all items\npub async fn get_items() -> String { \"items\".to_string() }"
                     .to_string(),
+            inline_module: None,
             file_path: Some(file_path_str.clone()),
         }];
 
@@ -415,6 +438,7 @@ mod tests {
             deprecated: false,
             description: None,
             fn_sig_str: "async fn get_items() -> String".to_string(),
+            inline_module: None,
             file_path: Some(file_path_str),
         }];
         let (metadata, _) =
@@ -422,6 +446,29 @@ mod tests {
         assert_eq!(metadata.routes[0].description, None);
 
         drop(temp_dir);
+    }
+
+    /// `src/routes.rs` declares the route folder's modules from outside it:
+    /// it is fingerprinted, so editing a `mod` declaration there misses the
+    /// cache.
+    #[test]
+    fn module_declarer_outside_the_folder_is_fingerprinted() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let routes = temp_dir.path().join("routes");
+        create_temp_file(&temp_dir, "routes/admin.rs", "");
+        let scanned = scan_route_folder(&routes).unwrap();
+        let declarer = temp_dir.path().join("routes.rs").display().to_string();
+
+        assert!(!fingerprints_from_scan(&routes, &scanned).contains_key(&declarer));
+        create_temp_file(&temp_dir, "routes.rs", "pub mod admin;");
+        let before = fingerprints_from_scan(&routes, &scanned);
+        assert!(before.contains_key(&declarer));
+        create_temp_file(
+            &temp_dir,
+            "routes.rs",
+            "#[cfg(feature = \"admin\")] pub mod admin;",
+        );
+        assert_ne!(fingerprints_from_scan(&routes, &scanned), before);
     }
 
     #[test]
@@ -435,7 +482,10 @@ mod tests {
         create_temp_file(&temp_dir, "data.json", "{}");
         create_temp_file(&temp_dir, "script.py", "print('hello')");
 
-        let fingerprints = fingerprints_from_scan(&scan_route_folder(temp_dir.path()).unwrap());
+        let fingerprints = fingerprints_from_scan(
+            temp_dir.path(),
+            &scan_route_folder(temp_dir.path()).unwrap(),
+        );
 
         // Only .rs files should be in fingerprints
         assert_eq!(

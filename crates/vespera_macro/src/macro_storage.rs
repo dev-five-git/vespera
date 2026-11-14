@@ -40,9 +40,7 @@ pub trait SourceIdentified {
     /// known.  Two known scopes must match; an unknown scope matches any, so an
     /// entry whose scope could not be located still replaces rather than
     /// duplicates.
-    fn scope(&self) -> Option<&str> {
-        None
-    }
+    fn scope(&self) -> Option<&str>;
 }
 
 /// Whether two entries came from the same function in the same file (and the
