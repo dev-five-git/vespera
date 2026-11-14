@@ -94,7 +94,17 @@ final class NativePlatformDetector {
         // JVM down the Windows path and makes it look for a .dll.
         if (os.contains("mac") || os.contains("darwin")) return "macos";
         if (os.contains("win")) return "windows";
-        return "linux";
+        if (os.contains("linux")) return "linux";
+        // FreeBSD, AIX, SunOS...: their own (sanitized) name, never a Linux
+        // library that would only fail to load.
+        StringBuilder sanitized = new StringBuilder(os.length());
+        for (int i = 0; i < os.length(); i++) {
+            char c = os.charAt(i);
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+                sanitized.append(c);
+            }
+        }
+        return sanitized.length() == 0 ? "unknown" : sanitized.toString();
     }
 
     static String detectArch(String osArch) {

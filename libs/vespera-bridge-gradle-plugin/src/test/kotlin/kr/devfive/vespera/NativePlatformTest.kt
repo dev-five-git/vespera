@@ -17,7 +17,12 @@ class NativePlatformTest {
         // "darwin" contains "win": it must still map to macos.
         "Darwin, macos",
         "Linux, linux",
-        "FreeBSD, linux",
+        "GNU/Linux, linux",
+        "FreeBSD, freebsd",
+        "SunOS, sunos",
+        "AIX, aix",
+        "HP-UX, hpux",
+        "///, unknown",
     )
     fun detectsTheOsSegment(osName: String, expected: String) {
         assertEquals(expected, NativePlatform.detectOs(osName))

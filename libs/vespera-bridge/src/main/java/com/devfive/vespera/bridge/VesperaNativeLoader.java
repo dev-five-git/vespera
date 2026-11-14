@@ -182,17 +182,35 @@ final class VesperaNativeLoader {
         } finally {
             closeQuietly(first[0]);
         }
-        try {
-            System.load(library.toAbsolutePath().toString());
-        } catch (UnsatisfiedLinkError loadFailure) {
-            // The bytes match the bundled resource, so the resource itself is
-            // unloadable here; don't leave a dead cached copy behind.
-            deleteAfterFailedLoad(library, Files::deleteIfExists);
-            deleteAfterFailedLoad(library.getParent(), Files::deleteIfExists);
-            throw loadFailure;
-        }
+        loadExtracted(library, System::load, Files::deleteIfExists);
         cleanupLegacyExtractions(
                 Paths.get(System.getProperty("java.io.tmpdir")), System.currentTimeMillis());
+    }
+
+    /**
+     * {@code System.load} the verified extracted copy. A copy that cannot be
+     * loaded here is deleted — its bytes match the bundled resource, so it is
+     * dead weight — except when the JVM refused it only because another class
+     * loader already holds it ("already loaded in another classloader"): that
+     * copy is fine and shared with the class loader using it (a second web app
+     * or a redeploy), so deleting it would break whoever extracts it next.
+     */
+    static void loadExtracted(Path library, NativeLibraryLoader systemLoad, TempFileDeleter deleter) {
+        try {
+            systemLoad.load(library.toAbsolutePath().toString());
+        } catch (UnsatisfiedLinkError loadFailure) {
+            if (!loadedByAnotherClassLoader(loadFailure)) {
+                deleteAfterFailedLoad(library, deleter);
+                deleteAfterFailedLoad(library.getParent(), deleter);
+            }
+            throw loadFailure;
+        }
+    }
+
+    /** The JVM's "Native Library ... already loaded in another classloader" failure. */
+    static boolean loadedByAnotherClassLoader(UnsatisfiedLinkError failure) {
+        String message = failure.getMessage();
+        return message != null && message.contains("already loaded in another classloader");
     }
 
     /**
@@ -261,7 +279,7 @@ final class VesperaNativeLoader {
      */
     static UnsatisfiedLinkError withDeploymentGuidance(UnsatisfiedLinkError failure, String libraryName) {
         String message = failure.getMessage();
-        if (message == null || !message.contains("already loaded in another classloader")) {
+        if (!loadedByAnotherClassLoader(failure)) {
             return failure;
         }
         UnsatisfiedLinkError guided = new UnsatisfiedLinkError(message

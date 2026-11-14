@@ -168,6 +168,12 @@ class VesperaClientTest {
         assertThrows(IllegalArgumentException.class, () -> client.request("GE T", "/"));
         assertThrows(IllegalArgumentException.class, () -> client.get("/").header("bad name", "v"));
         assertThrows(IllegalArgumentException.class, () -> client.get("/").header("x", "a\r\nb: c"));
+        // Every control character but HTAB is rejected (RFC 9110 field-value).
+        for (char c : new char[] {0x00, 0x01, 0x08, 0x0A, 0x0B, 0x0C, 0x0D, 0x1B, 0x1F, 0x7F}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> client.get("/").header("x", "a" + c + "b"), "0x" + Integer.toHexString(c));
+        }
+        client.get("/").header("x", "a\tb ~é"); // HTAB, SP, visible ASCII, obs-text: fine
         assertThrows(NullPointerException.class, () -> client.get("/").header("x", null));
         assertThrows(NullPointerException.class, () -> client.get(null));
         assertTrue(transport.requests.isEmpty());
@@ -356,6 +362,43 @@ class VesperaClientTest {
                 .sendAsync(Runnable::run).get();
         assertEquals(413, rejected.status());
         assertEquals("too large", rejected.bodyString());
+    }
+
+    /** "Not initialised" before the body was read: the same request can be sent again. */
+    @Test
+    void streamedBodyRejectedBeforeReadingStaysSendable() throws Exception {
+        boolean[] ready = {false};
+        FakeTransport flaky = new FakeTransport() {
+            @Override
+            public byte[] dispatchStreaming(byte[] header, InputStream in, OutputStream out)
+                    throws IOException {
+                if (!ready[0]) {
+                    throw new VesperaClientException("vespera native library is not initialized");
+                }
+                return super.dispatchStreaming(header, in, out);
+            }
+        };
+        byte[] payload = "upload".getBytes(StandardCharsets.UTF_8);
+        VesperaRequest req = new VesperaClient(flaky, null).post("/s")
+                .body(new ByteArrayInputStream(payload), null);
+        assertThrows(VesperaClientException.class, req::send);
+        ready[0] = true;
+        assertEquals(200, req.send().status(), "retried after init");
+        assertArrayEquals(payload, flaky.uploaded);
+        assertThrows(IllegalStateException.class, req::send, "now consumed");
+
+        // A failure after the body was read keeps it consumed.
+        VesperaRequest partial = new VesperaClient(new FakeTransport() {
+            @Override
+            public byte[] dispatchStreaming(byte[] header, InputStream in, OutputStream out)
+                    throws IOException {
+                in.read();
+                throw new IllegalStateException("boom");
+            }
+        }, null).post("/s").body(new ByteArrayInputStream(payload), null);
+        assertThrows(IllegalStateException.class, partial::send);
+        IllegalStateException again = assertThrows(IllegalStateException.class, partial::send);
+        assertTrue(again.getMessage().contains("already sent"), again.getMessage());
     }
 
     @Test

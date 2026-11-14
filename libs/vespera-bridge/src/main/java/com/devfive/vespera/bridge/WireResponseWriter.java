@@ -292,17 +292,41 @@ final class WireResponseWriter {
     static ResponseEntity<?> buildAsyncResponseEntityFromWire(
             byte[] wire, String method, ProxyServletResponse proxied) {
         EntityHead head = entityHead(wire, method, proxied);
-        ResponseEntity.BodyBuilder builder = ResponseEntity.status(head.status).headers(head.headers);
         if (!responseStatusPermitsBody(head.status.value())) {
             // No body object at all: a message converter would otherwise
             // add `Content-Length: 0` to a 1xx / 204 / 304.
-            return builder.build();
+            return ResponseEntity.status(head.status).headers(head.headers).build();
         }
+        boolean defer = proxied != null && head.status.value() == 200
+                && (isHead(method) || "GET".equalsIgnoreCase(method))
+                && (head.headers.getFirst(HttpHeaders.ETAG) != null
+                        || head.headers.getFirst(HttpHeaders.LAST_MODIFIED) != null);
+        Object body;
         if (head.bodyLen == 0) {
-            return builder.body(VesperaWireCodec.EMPTY_BODY);
+            // A fresh array when deferring: the validators are matched by identity.
+            body = defer ? new byte[0] : VesperaWireCodec.EMPTY_BODY;
+        } else {
+            body = new InputStreamResource(new ByteArrayInputStream(wire, head.bodyOff, head.bodyLen));
         }
-        return builder.body(new InputStreamResource(
-                new ByteArrayInputStream(wire, head.bodyOff, head.bodyLen)));
+        HttpHeaders headers = head.headers;
+        if (defer) {
+            // Spring's HttpEntityMethodProcessor answers a 200 GET / HEAD entity
+            // with 304 / 412 when the request's conditional headers match its
+            // ETag / Last-Modified. The Rust handler owns conditional requests
+            // (SYNC / DIRECT never apply Spring's check), so the validators
+            // leave the entity and VesperaAsyncResponseBodyAdvice puts them
+            // back after that check. (forEach / addAll: Spring 6.2 and 7 alike.)
+            HttpHeaders kept = new HttpHeaders();
+            HttpHeaders validators = new HttpHeaders();
+            head.headers.forEach((name, values) -> {
+                boolean validator = HttpHeaders.ETAG.equalsIgnoreCase(name)
+                        || HttpHeaders.LAST_MODIFIED.equalsIgnoreCase(name);
+                (validator ? validators : kept).addAll(name, values);
+            });
+            headers = kept;
+            proxied.deferValidators(body, validators);
+        }
+        return ResponseEntity.status(head.status).headers(headers).body(body);
     }
 
     private record EntityHead(HttpStatusCode status, HttpHeaders headers, int bodyOff, int bodyLen) {}

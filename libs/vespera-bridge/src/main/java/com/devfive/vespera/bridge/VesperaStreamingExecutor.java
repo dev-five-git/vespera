@@ -62,7 +62,13 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
                     return thread;
                 });
         this.pool.allowCoreThreadTimeOut(true);
-        this.permits = new Semaphore(this.maxThreads + this.maxQueued);
+        // long math: maxThreads + maxQueued may exceed Integer.MAX_VALUE (saturate).
+        this.permits = new Semaphore(capacity(this.maxThreads, this.maxQueued));
+    }
+
+    /** {@code maxThreads + maxQueued}, saturated at {@link Integer#MAX_VALUE} instead of overflowing. */
+    static int capacity(int maxThreads, int maxQueued) {
+        return (int) Math.min(Integer.MAX_VALUE, (long) maxThreads + (long) maxQueued);
     }
 
     /** {@code 10 × availableProcessors()} — the cap of Reactor's {@code boundedElastic}. */
@@ -80,7 +86,7 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
 
     /** Streams currently admitted (running or queued). */
     public int inUse() {
-        return maxThreads + maxQueued - permits.availablePermits();
+        return capacity(maxThreads, maxQueued) - permits.availablePermits();
     }
 
     /** Whether {@link #close()} was called. */

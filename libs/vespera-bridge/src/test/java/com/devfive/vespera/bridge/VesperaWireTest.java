@@ -382,6 +382,28 @@ class VesperaWireTest {
                 "body must be preserved verbatim even when errors are hoisted");
     }
 
+    /** A null / nested entry value is kept (as null), not a "malformed wire" NPE. */
+    @Test
+    void decodeResponse_validation_errors_tolerate_null_and_nested_values() throws Exception {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("path", "user.address");
+        entry.put("message", null);
+        entry.put("params", Map.of("min", 3));
+        entry.put("codes", List.of("a", "b"));
+        byte[] wire = buildWireResponseWithExtras(422, "application/json",
+                "{}".getBytes(StandardCharsets.UTF_8), List.of(entry));
+
+        DecodedResponse decoded = VesperaBridge.decodeResponse(wire);
+        assertEquals(422, decoded.status());
+        Map<String, Object> error = decoded.validationErrors().get(0);
+        assertEquals("user.address", error.get("path"));
+        assertTrue(error.containsKey("message"));
+        assertNull(error.get("message"));
+        assertNull(error.get("params"));
+        assertEquals(List.of("path", "message", "params", "codes"), List.copyOf(error.keySet()));
+        assertThrows(UnsupportedOperationException.class, () -> error.put("x", 1));
+    }
+
     @Test
     void decodeResponse_validation_errors_null_when_absent() throws Exception {
         // Non-422 response should have null validationErrors

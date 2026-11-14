@@ -93,7 +93,7 @@ pub async fn collect_capped(mut body: Body, max: usize) -> Result<Bytes, (u16, S
 
 /// Message of the `500` produced when a buffered response's buffer could
 /// not be allocated.
-fn response_alloc_failed_msg(len: usize) -> String {
+pub fn response_alloc_failed_msg(len: usize) -> String {
     format!("response buffer of {len} bytes could not be allocated")
 }
 

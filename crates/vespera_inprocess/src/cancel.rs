@@ -44,8 +44,9 @@ static REGISTRY: [Shard; SHARDS] = [const { Mutex::new(HashMap::with_hasher(NoHa
 /// Next token; starts at 1 so `0` can mean "not cancellable" to hosts.
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 
-/// Tokens are unique sequential integers, so they need no hashing; an
-/// identity hasher also keeps the shard maps `const`-constructible.
+/// Tokens are unique sequential integers, so they need no real hashing —
+/// one Fibonacci multiply is enough; a trivial hasher also keeps the shard
+/// maps `const`-constructible.
 #[derive(Clone, Copy, Default)]
 struct NoHash;
 
@@ -60,9 +61,15 @@ impl std::hash::BuildHasher for NoHash {
 #[derive(Default)]
 struct IdentityHasher(u64);
 
+/// `2^64 / φ` (odd): multiplying by it spreads sequential keys over the
+/// TOP bits too.  hashbrown takes its 7-bit control tag (`h2`) from the top
+/// bits of the hash, so a bare identity hash gave every small token the same
+/// tag and turned each probe into a full key compare.
+const FIBONACCI: u64 = 0x9E37_79B9_7F4A_7C15;
+
 impl std::hash::Hasher for IdentityHasher {
     fn finish(&self) -> u64 {
-        self.0
+        self.0.wrapping_mul(FIBONACCI)
     }
 
     fn write(&mut self, bytes: &[u8]) {
@@ -264,9 +271,21 @@ mod tests {
     fn identity_hasher_is_total() {
         let mut h = NoHash.build_hasher();
         h.write_u64(42);
-        assert_eq!(h.finish(), 42);
+        assert_eq!(h.finish(), 42u64.wrapping_mul(FIBONACCI));
         let mut h = IdentityHasher::default();
         h.write(&[1, 2]);
-        assert_eq!(h.finish(), (1u64 << 8) ^ 2);
+        assert_eq!(h.finish(), ((1u64 << 8) ^ 2).wrapping_mul(FIBONACCI));
+    }
+
+    #[test]
+    fn sequential_tokens_spread_over_the_top_seven_bits() {
+        let tags: std::collections::HashSet<u64> = (1..=128u64)
+            .map(|token| {
+                let mut h = NoHash.build_hasher();
+                h.write_u64(token);
+                h.finish() >> 57
+            })
+            .collect();
+        assert!(tags.len() > 64, "only {} distinct h2 tags", tags.len());
     }
 }

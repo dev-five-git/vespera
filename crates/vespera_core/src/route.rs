@@ -76,9 +76,10 @@ impl TryFrom<&str> for HttpMethod {
 }
 
 /// Parameter location in the request
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ParameterLocation {
+    #[default]
     Query,
     Header,
     Path,
@@ -99,7 +100,7 @@ pub enum ParameterStyle {
 }
 
 /// Parameter definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Parameter {
     /// Parameter name
@@ -125,6 +126,22 @@ pub struct Parameter {
     /// Whether array/object values expand into one parameter per element.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explode: Option<bool>,
+    /// Whether the parameter is deprecated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecated: Option<bool>,
+    /// Whether an empty value may be sent (query parameters only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_empty_value: Option<bool>,
+    /// Whether reserved characters are sent without percent-encoding
+    /// (query parameters only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_reserved: Option<bool>,
+    /// Named examples (mutually exclusive with `example`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub examples: Option<BTreeMap<String, Example>>,
+    /// Media type → schema, used instead of `schema` for complex values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<BTreeMap<String, MediaType>>,
 }
 
 /// Request body definition
@@ -190,7 +207,7 @@ pub struct Encoding {
 }
 
 /// Example definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Example {
     /// Example summary
@@ -202,10 +219,17 @@ pub struct Example {
     /// Example value
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<serde_json::Value>,
+    /// URL of an external example (mutually exclusive with `value`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_value: Option<String>,
 }
 
+/// A Link Object (or a Reference Object to one), kept as raw JSON:
+/// vespera never generates links, it only preserves them on round trip.
+pub type Link = serde_json::Value;
+
 /// Response definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Response {
     /// Response description
@@ -216,18 +240,42 @@ pub struct Response {
     /// Schema per Content-Type
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<BTreeMap<String, MediaType>>,
+    /// Operation links reachable from this response, keyed by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub links: Option<BTreeMap<String, Link>>,
 }
 
 /// Header definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Header {
     /// Header description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Whether the header is required
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+    /// Whether the header is deprecated
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecated: Option<bool>,
     /// Schema reference or inline schema
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<SchemaRef>,
+    /// Serialization style (headers only allow `simple`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<ParameterStyle>,
+    /// Whether array/object values expand
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explode: Option<bool>,
+    /// Example value
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub example: Option<serde_json::Value>,
+    /// Named examples (mutually exclusive with `example`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub examples: Option<BTreeMap<String, Example>>,
+    /// Media type → schema, used instead of `schema` for complex values
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<BTreeMap<String, MediaType>>,
 }
 
 /// `OpenAPI` Callback Object: runtime expression (e.g.
@@ -275,6 +323,9 @@ pub struct Operation {
     /// Alternative servers for this operation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub servers: Option<Vec<Server>>,
+    /// Specification extensions (`x-*` keys only).
+    #[serde(flatten, with = "crate::extensions")]
+    pub extensions: crate::Extensions,
 }
 
 /// Path Item definition (all HTTP methods for a specific path)
@@ -320,6 +371,9 @@ pub struct PathItem {
     /// Alternative servers for all operations in this path.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub servers: Option<Vec<Server>>,
+    /// Specification extensions (`x-*` keys only).
+    #[serde(flatten, with = "crate::extensions")]
+    pub extensions: crate::Extensions,
 }
 
 impl PathItem {
@@ -510,6 +564,7 @@ mod tests {
             external_docs: None,
             callbacks: None,
             servers: None,
+            extensions: crate::Extensions::new(),
         };
 
         // Test setting GET operation
@@ -584,6 +639,7 @@ mod tests {
             external_docs: None,
             callbacks: None,
             servers: None,
+            extensions: crate::Extensions::new(),
         };
 
         let operation2 = Operation {
@@ -599,6 +655,7 @@ mod tests {
             external_docs: None,
             callbacks: None,
             servers: None,
+            extensions: crate::Extensions::new(),
         };
 
         // Set first operation
@@ -643,6 +700,7 @@ mod tests {
                 description: None,
                 variables: None,
             }]),
+            extensions: crate::Extensions::new(),
         };
         let path_item = PathItem {
             ref_path: Some("#/paths/~1users".to_string()),

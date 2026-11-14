@@ -219,6 +219,7 @@ pub fn build_operation_from_function(
                             },
                         )])
                     }),
+                    ..Default::default()
                 });
         }
     }
@@ -310,6 +311,7 @@ pub fn build_operation_from_function(
         external_docs: None,
         callbacks: None,
         servers: None,
+        ..Default::default()
     }
 }
 
@@ -326,6 +328,7 @@ fn header_parameter(header: &HeaderParam) -> Parameter {
         example: None,
         style: None,
         explode: None,
+        ..Default::default()
     }
 }
 
@@ -404,6 +407,7 @@ fn typed_response(
         description,
         headers: None,
         content: Some(content),
+        ..Default::default()
     }
 }
 
@@ -455,6 +459,7 @@ fn validation_error_response() -> Response {
         description: "Validation failed".to_string(),
         headers: None,
         content: Some(content),
+        ..Default::default()
     }
 }
 

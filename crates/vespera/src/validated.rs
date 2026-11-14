@@ -487,6 +487,16 @@ fn envelope_response(entries: &[EnvelopeEntry]) -> Response {
         .into_response()
 }
 
+/// Minimal 422 envelope emitted when serializing the real report fails.
+///
+/// Serializing the envelope is infallible in practice (no I/O, string keys),
+/// but rendering a rejection is a request-time boundary, so the failure path
+/// emits a valid envelope instead of panicking. The field order MUST stay
+/// `message` then `path` to match the real serializer, so even this fallback
+/// honours the snapshot-locked envelope shape.
+const FALLBACK_VALIDATION_ENVELOPE: &[u8] =
+    br#"{"errors":[{"message":"request validation failed","path":""}]}"#;
+
 /// Build the canonical `422 Unprocessable Entity` response from a
 /// [`garde::Report`].
 ///
@@ -500,16 +510,6 @@ fn envelope_response(entries: &[EnvelopeEntry]) -> Response {
 /// `serde_json::json!` implementation (which used a `BTreeMap` backend).
 /// The envelope shape is a public contract locked by snapshot tests and
 /// the JNI wire header hoisting logic in `vespera_inprocess`.
-/// Minimal 422 envelope emitted when serializing the real report fails.
-///
-/// Serializing the envelope is infallible in practice (no I/O, string keys),
-/// but rendering a rejection is a request-time boundary, so the failure path
-/// emits a valid envelope instead of panicking. The field order MUST stay
-/// `message` then `path` to match the real serializer, so even this fallback
-/// honours the snapshot-locked envelope shape.
-const FALLBACK_VALIDATION_ENVELOPE: &[u8] =
-    br#"{"errors":[{"message":"request validation failed","path":""}]}"#;
-
 fn build_validation_response(report: &::garde::Report) -> Response {
     struct DisplayValue<T>(T);
 

@@ -246,9 +246,46 @@ class VesperaBridgeAutoConfigurationTest {
     }
 
     @Test
+    void bridgeExecutorDoesNotSuppressBootsApplicationTaskExecutor() {
+        // Boot's TaskExecutionAutoConfiguration backs off on ANY Executor bean;
+        // the bridge's private pool must not count as one.
+        new WebApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        org.springframework.boot.autoconfigure.task.TaskExecutionAutoConfiguration.class,
+                        VesperaBridgeCoreAutoConfiguration.class,
+                        VesperaBridgeAutoConfiguration.class))
+                .run(ctx -> {
+                    assertTrue(ctx.containsBean("applicationTaskExecutor"));
+                    assertTrue(ctx.containsBean("vesperaBridgeAsyncResponseExecutor"));
+                    assertTrue(ctx.containsBean("vesperaProxyController"));
+                    assertEquals(0, ctx.getBeansOfType(Executor.class).keySet().stream()
+                            .filter(name -> name.startsWith("vespera")).count());
+                });
+    }
+
+    @Test
+    void closingTheContextShutsTheDefaultAsyncPoolDown() {
+        ThreadPoolExecutor[] pool = {null};
+        runner.run(ctx -> pool[0] = (ThreadPoolExecutor) ctx.getBean(
+                "vesperaBridgeAsyncResponseExecutor", VesperaAsyncResponseExecutor.class).executor());
+        assertTrue(pool[0].isShutdown());
+    }
+
+    @Test
+    void plainExecutorReplacementIsUnwrapped() {
+        assertSame(CustomExecutorConfig.EXECUTOR,
+                VesperaAsyncResponseExecutor.unwrap(CustomExecutorConfig.EXECUTOR));
+        assertSame(CustomExecutorConfig.EXECUTOR,
+                VesperaAsyncResponseExecutor.unwrap(VesperaAsyncResponseExecutor.of(CustomExecutorConfig.EXECUTOR)));
+        assertThrows(IllegalStateException.class, () -> VesperaAsyncResponseExecutor.unwrap("nope"));
+        runner.withUserConfiguration(CustomExecutorConfig.class)
+                .run(ctx -> assertTrue(ctx.containsBean("vesperaProxyController")));
+    }
+
+    @Test
     void defaultAsyncResponseExecutorUsesNamedDaemonThread() {
         runner.run(ctx -> {
-            Executor executor = ctx.getBean("vesperaBridgeAsyncResponseExecutor", Executor.class);
+            Executor executor = ctx.getBean("vesperaBridgeAsyncResponseExecutor", VesperaAsyncResponseExecutor.class).executor();
             CountDownLatch done = new CountDownLatch(1);
             String[] name = {null};
             boolean[] daemon = {false};
@@ -280,8 +317,8 @@ class VesperaBridgeAutoConfigurationTest {
         // proxy maps the rejection to a 503 (see VesperaProxyController
         // .asyncFailureToResponse). The bounded queue still absorbs bursts.
         runner.run(ctx -> {
-            ThreadPoolExecutor executor = ctx.getBean(
-                    "vesperaBridgeAsyncResponseExecutor", ThreadPoolExecutor.class);
+            ThreadPoolExecutor executor = (ThreadPoolExecutor) ctx.getBean(
+                    "vesperaBridgeAsyncResponseExecutor", VesperaAsyncResponseExecutor.class).executor();
 
             assertTrue(executor.getQueue().remainingCapacity() < Integer.MAX_VALUE);
             assertInstanceOf(ThreadPoolExecutor.AbortPolicy.class, executor.getRejectedExecutionHandler());
@@ -292,8 +329,8 @@ class VesperaBridgeAutoConfigurationTest {
     void configuredAsyncPoolSizeControlsBothExecutorBounds() {
         runner.withPropertyValues("vespera.bridge.async-pool-size=3")
                 .run(ctx -> {
-                    ThreadPoolExecutor executor = ctx.getBean(
-                            "vesperaBridgeAsyncResponseExecutor", ThreadPoolExecutor.class);
+                    ThreadPoolExecutor executor = (ThreadPoolExecutor) ctx.getBean(
+                    "vesperaBridgeAsyncResponseExecutor", VesperaAsyncResponseExecutor.class).executor();
                     assertEquals(3, executor.getCorePoolSize());
                     assertEquals(3, executor.getMaximumPoolSize());
                     assertEquals(768, executor.getQueue().remainingCapacity());

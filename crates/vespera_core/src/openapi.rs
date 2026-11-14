@@ -86,6 +86,9 @@ pub struct Info {
     /// License information
     #[serde(skip_serializing_if = "Option::is_none")]
     pub license: Option<License>,
+    /// Specification extensions (`x-*` keys only, e.g. `x-logo`).
+    #[serde(flatten, with = "crate::extensions")]
+    pub extensions: crate::Extensions,
 }
 
 /// Server variable
@@ -135,7 +138,7 @@ pub struct Tag {
 }
 
 /// `OpenAPI` document (root structure)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenApi {
     /// `OpenAPI` version
@@ -166,6 +169,9 @@ pub struct OpenApi {
     /// External documentation
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_docs: Option<ExternalDocumentation>,
+    /// Specification extensions (`x-*` keys only, e.g. `x-tagGroups`).
+    #[serde(flatten, with = "crate::extensions")]
+    pub extensions: crate::Extensions,
 }
 
 /// Merge `other` map entries into `self_map` with self-wins on key
@@ -216,6 +222,18 @@ fn has_any_component_map(components: &Components) -> bool {
             .security_schemes
             .as_ref()
             .is_some_and(|entries| !entries.is_empty())
+        || components
+            .links
+            .as_ref()
+            .is_some_and(|entries| !entries.is_empty())
+        || components
+            .callbacks
+            .as_ref()
+            .is_some_and(|entries| !entries.is_empty())
+        || components
+            .path_items
+            .as_ref()
+            .is_some_and(|entries| !entries.is_empty())
 }
 
 /// Merge `other`'s per-method operations into `into` with **self-wins**
@@ -241,7 +259,11 @@ fn merge_path_item(into: &mut PathItem, other: PathItem) {
         description,
         ref_path,
         servers,
+        extensions,
     } = other;
+    for (key, value) in extensions {
+        into.extensions.entry(key).or_insert(value);
+    }
     if into.get.is_none() {
         into.get = get;
     }
@@ -287,10 +309,11 @@ impl OpenApi {
     /// Merge another `OpenAPI` document into this one.
     ///
     /// All `paths`, `components` (schemas, responses, parameters,
-    /// examples, request bodies, headers, security schemes), and `tags`
-    /// from `other` are added to `self`. Top-level `servers`, `security`,
-    /// and `external_docs` are adopted from `other` only when `self` has
-    /// not set its own. On any key/field conflict, `self` takes precedence.
+    /// examples, request bodies, headers, security schemes, links,
+    /// callbacks, path items), `tags` and `x-*` extensions from `other` are
+    /// added to `self`. Top-level `servers`, `security`, and
+    /// `external_docs` are adopted from `other` only when `self` has not set
+    /// its own. On any key/field conflict, `self` takes precedence.
     pub fn merge(&mut self, other: Self) {
         // Merge paths.  On a path-key conflict, merge per HTTP method
         // (self-wins per operation) instead of dropping the incoming
@@ -330,6 +353,9 @@ impl OpenApi {
                 &mut self_components.security_schemes,
                 other_components.security_schemes,
             );
+            merge_component_map(&mut self_components.links, other_components.links);
+            merge_component_map(&mut self_components.callbacks, other_components.callbacks);
+            merge_component_map(&mut self_components.path_items, other_components.path_items);
         }
 
         // Merge top-level servers / security / external_docs (self wins:
@@ -342,6 +368,10 @@ impl OpenApi {
         }
         if self.external_docs.is_none() {
             self.external_docs = other.external_docs;
+        }
+        // Top-level `x-*` extensions: union by key, self-wins.
+        for (key, value) in other.extensions {
+            self.extensions.entry(key).or_insert(value);
         }
         // Webhooks: union by name, self-wins on a name conflict.
         if let Some(other_webhooks) = other.webhooks {
@@ -374,3 +404,5 @@ impl OpenApi {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_spec_fields;
