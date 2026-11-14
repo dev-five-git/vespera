@@ -6,6 +6,9 @@ use serde::{
 
 /// Schema reference or inline schema.
 ///
+/// A boolean schema (`true` / `false`) deserializes to its equivalent
+/// inline object (`{}` / `{"not": {}}`).
+///
 /// Serializes untagged — a bare `{"$ref": ...}` object for
 /// [`SchemaRef::Ref`], the schema object for [`SchemaRef::Inline`].
 ///
@@ -31,7 +34,9 @@ impl<'de> Deserialize<'de> for SchemaRef {
     where
         D: serde::Deserializer<'de>,
     {
-        deserializer.deserialize_map(SchemaRefVisitor)
+        // `any`, not `map`: a JSON Schema 2020-12 boolean schema is a bare
+        // `true` / `false`, which a map-only request would reject.
+        deserializer.deserialize_any(SchemaRefVisitor)
     }
 }
 
@@ -42,6 +47,24 @@ impl<'de> serde::de::Visitor<'de> for SchemaRefVisitor {
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("an OpenAPI schema reference or inline schema object")
+    }
+
+    /// A boolean schema (OpenAPI 3.1 / JSON Schema 2020-12), stored as its
+    /// object equivalent: `true` ≡ `{}` (accepts anything), `false` ≡
+    /// `{"not": {}}` (accepts nothing).  It serializes in that object form.
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+    where
+        E: DeError,
+    {
+        let schema = if value {
+            Schema::default()
+        } else {
+            Schema {
+                not: Some(SchemaRef::Inline(Box::default())),
+                ..Schema::default()
+            }
+        };
+        Ok(SchemaRef::Inline(Box::new(schema)))
     }
 
     fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>

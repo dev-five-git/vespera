@@ -6,7 +6,7 @@
 //! API path is unchanged.
 
 use std::borrow::Cow;
-use std::fmt;
+use std::fmt::{self, Write as _};
 
 use axum::extract::multipart::{MultipartError, MultipartRejection};
 use axum::http::StatusCode;
@@ -113,6 +113,58 @@ pub(super) fn truncate_reflected_value(value: &str) -> std::borrow::Cow<'_, str>
     }
 }
 
+/// Maximum characters of a reflected, client-chosen part name echoed back in
+/// an error message or the envelope `path` (longer names end in `…`).
+pub(super) const MAX_REFLECTED_FIELD_NAME_CHARS: usize = 64;
+
+/// Write at most `max_chars` of `text`, escaping control characters
+/// (`\n`, `\u{1b}`, …) so a reflected value cannot forge log lines or
+/// terminal escapes, and appending `…` when it was cut.
+fn write_printable(f: &mut fmt::Formatter<'_>, text: &str, max_chars: usize) -> fmt::Result {
+    let mut chars = text.chars();
+    for c in chars.by_ref().take(max_chars) {
+        if c.is_control() {
+            write!(f, "{}", c.escape_default())?;
+        } else {
+            f.write_char(c)?;
+        }
+    }
+    if chars.next().is_some() {
+        f.write_char('…')?;
+    }
+    Ok(())
+}
+
+/// A client-chosen part name, displayed bounded to
+/// [`MAX_REFLECTED_FIELD_NAME_CHARS`] with control characters escaped.
+struct Reflected<'a>(&'a str);
+
+impl fmt::Display for Reflected<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_printable(f, self.0, MAX_REFLECTED_FIELD_NAME_CHARS)
+    }
+}
+
+/// An already-bounded reflected value, displayed with control characters
+/// escaped.
+struct Printable<'a>(&'a str);
+
+impl fmt::Display for Printable<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_printable(f, self.0, usize::MAX)
+    }
+}
+
+/// The envelope `path`: the reflected part name, or `""` when the error has
+/// none.  Streams through `collect_str`, which escapes exactly like a `&str`.
+struct ReflectedPath<'a>(Option<&'a str>);
+
+impl serde::Serialize for ReflectedPath<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(&Reflected(self.0.unwrap_or("")))
+    }
+}
+
 impl fmt::Display for TypedMultipartError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -123,7 +175,7 @@ impl fmt::Display for TypedMultipartError {
                 write!(f, "Invalid multipart body: {source}")
             }
             Self::MissingField { field_name } => {
-                write!(f, "Missing field: `{field_name}`")
+                write!(f, "Missing field: `{}`", Reflected(field_name))
             }
             Self::WrongFieldType {
                 field_name,
@@ -132,20 +184,24 @@ impl fmt::Display for TypedMultipartError {
             } => {
                 write!(
                     f,
-                    "Wrong type for field `{field_name}` (expected {wanted}): {source}"
+                    "Wrong type for field `{}` (expected {wanted}): {}",
+                    Reflected(field_name),
+                    // May quote the (bounded) client value, e.g. a bad bool.
+                    Printable(source)
                 )
             }
             Self::DuplicateField { field_name } => {
-                write!(f, "Duplicate field: `{field_name}`")
+                write!(f, "Duplicate field: `{}`", Reflected(field_name))
             }
             Self::UnknownField { field_name } => {
-                write!(f, "Unknown field: `{field_name}`")
+                write!(f, "Unknown field: `{}`", Reflected(field_name))
             }
             Self::InvalidEnumValue { field_name, value } => {
                 write!(
                     f,
-                    "Invalid enum value `{}` for field `{field_name}`",
-                    truncate_reflected_value(value)
+                    "Invalid enum value `{}` for field `{}`",
+                    Printable(&truncate_reflected_value(value)),
+                    Reflected(field_name)
                 )
             }
             Self::NamelessField => write!(f, "Encountered a field without a name"),
@@ -155,7 +211,8 @@ impl fmt::Display for TypedMultipartError {
             } => {
                 write!(
                     f,
-                    "Field `{field_name}` exceeds size limit of {limit_bytes} bytes"
+                    "Field `{}` exceeds size limit of {limit_bytes} bytes",
+                    Reflected(field_name)
                 )
             }
             Self::RequestTooLarge {
@@ -163,7 +220,8 @@ impl fmt::Display for TypedMultipartError {
                 limit_bytes,
             } => write!(
                 f,
-                "Multipart request exceeds aggregate size limit of {limit_bytes} bytes while reading field `{field_name}`"
+                "Multipart request exceeds aggregate size limit of {limit_bytes} bytes while reading field `{}`",
+                Reflected(field_name)
             ),
             Self::TooManyFields { limit_fields } => {
                 write!(
@@ -243,7 +301,7 @@ impl TypedMultipartError {
         serde_json::to_vec(&MultipartErrorEnvelope {
             errors: [MultipartOneError {
                 message: MultipartMessage(self),
-                path: self.field_name().unwrap_or(""),
+                path: ReflectedPath(self.field_name()),
             }],
         })
         .unwrap_or_else(|_| br#"{"errors":[{"message":"serialization error","path":""}]}"#.to_vec())
@@ -283,7 +341,7 @@ impl serde::Serialize for MultipartMessage<'_> {
 #[derive(serde::Serialize)]
 struct MultipartOneError<'a> {
     message: MultipartMessage<'a>,
-    path: &'a str,
+    path: ReflectedPath<'a>,
 }
 
 #[derive(serde::Serialize)]
