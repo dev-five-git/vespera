@@ -73,6 +73,14 @@ pub(super) fn named_struct_fields(
     matches!(struct_item.fields, syn::Fields::Named(_)).then_some(struct_item)
 }
 
+/// Whether `struct_definitions` holds `ty`'s last path segment as a struct of
+/// any shape (named, tuple or unit).
+pub(super) fn is_defined_struct(ty: &Type, struct_definitions: &HashMap<&str, &str>) -> bool {
+    crate::schema_macro::type_utils::last_path_segment(ty)
+        .and_then(|segment| struct_definitions.get(segment.ident.to_string().as_str()))
+        .is_some_and(|definition| syn::parse_str::<syn::ItemStruct>(definition).is_ok())
+}
+
 /// The container `rename_all` rule serde applies when DESERIALIZING — path
 /// and query parameters are input only.
 pub(super) fn input_rename_all(attrs: &[syn::Attribute]) -> Option<String> {

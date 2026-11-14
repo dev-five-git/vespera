@@ -2123,8 +2123,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "operationId": "redirect",
         "summary": "Redirects carry no documented body.",
         "responses": {
-          "200": {
-            "description": "Successful response"
+          "3XX": {
+            "description": "Redirect"
           }
         }
       }

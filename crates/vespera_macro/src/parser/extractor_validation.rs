@@ -1,8 +1,9 @@
 //! B2: compile-time validation that request/query extractors reference
 //! `Schema`-backed types.
 //!
-//! `Query<T>`, `Json<T>`, `Form<T>`, and `TypedMultipart<T>` only appear in the
-//! generated OpenAPI when `T` is known to Vespera (i.e. it derives `Schema`).
+//! `Query<T>` / `OptionalQuery<T>`, `Json<T>`, `Form<T>`, `TypedMultipart<T>`
+//! and `Path<T>` only appear in the generated OpenAPI when `T` is known to
+//! Vespera (i.e. it derives `Schema`).
 //! When `T` is a struct declared in the same route file that does **not** derive
 //! `Schema`, Vespera silently drops it — `Query<T>` yields no parameters and
 //! `Json<T>` falls back to a generic object — so the spec lies about the route.
@@ -24,7 +25,14 @@ use crate::metadata::CollectedMetadata;
 use crate::schema_macro::type_utils::option_inner;
 
 /// Request/query extractors whose generic argument must be a documented type.
-const REQUEST_EXTRACTORS: [&str; 4] = ["Query", "Json", "Form", "TypedMultipart"];
+const REQUEST_EXTRACTORS: [&str; 6] = [
+    "Query",
+    "OptionalQuery",
+    "Json",
+    "Form",
+    "TypedMultipart",
+    "Path",
+];
 
 /// Validate every route handler's request/query extractors against the set of
 /// `Schema`-backed type names. Returns a `compile_error!`-ready `syn::Error` on
@@ -125,7 +133,7 @@ fn check_extractors(
             };
 
             let mut idents = Vec::new();
-            collect_custom_type_idents(inner, &mut idents);
+            collect_custom_type_idents(inner, &route.module_path, &mut idents);
             for ident in idents {
                 let local_without_schema =
                     local_types.contains(&ident) && !known.contains(ident.as_str());
@@ -167,27 +175,50 @@ fn request_extractor_inner(ty: &Type) -> Option<(&'static str, &Type)> {
     Some((extractor, inner))
 }
 
-/// Collect the last path-segment identifier of `ty` and recurse through generic
-/// arguments and references. Container idents (`Vec`, `Option`, ...) and
-/// primitives are harmlessly collected too — they are filtered out later by the
-/// `local_types` / imported-route-type membership test, so no explicit
-/// allow/deny list is needed.
-fn collect_custom_type_idents(ty: &Type, out: &mut Vec<String>) {
+/// Collect the identifier of every path in `ty` (recursing through generic
+/// arguments and references) that names an item of the route's own module
+/// `module_path` — see [`names_module_item`]. A path into another module
+/// (`serde_json::Value`, `crate::models::User`) is never collected, even when
+/// its last segment matches a local type's name. Container idents (`Vec`,
+/// `Option`, ...) and primitives are harmlessly collected too — they are
+/// filtered out later by the `local_types` / imported-route-type membership
+/// test, so no explicit allow/deny list is needed.
+fn collect_custom_type_idents(ty: &Type, module_path: &str, out: &mut Vec<String>) {
     match ty {
         Type::Path(type_path) => {
             if let Some(segment) = type_path.path.segments.last() {
-                out.push(segment.ident.to_string());
+                if type_path.qself.is_none() && names_module_item(&type_path.path, module_path) {
+                    out.push(segment.ident.to_string());
+                }
                 if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                     for arg in &args.args {
                         if let syn::GenericArgument::Type(inner) = arg {
-                            collect_custom_type_idents(inner, out);
+                            collect_custom_type_idents(inner, module_path, out);
                         }
                     }
                 }
             }
         }
-        Type::Reference(reference) => collect_custom_type_idents(&reference.elem, out),
+        Type::Reference(reference) => {
+            collect_custom_type_idents(&reference.elem, module_path, out);
+        }
         _ => {}
+    }
+}
+
+/// Whether `path` names an item in scope of the module `module_path` itself:
+/// a bare `Ident`, `self::Ident`, or `crate::<module_path>::Ident`.
+fn names_module_item(path: &syn::Path, module_path: &str) -> bool {
+    let segments: Vec<String> = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    match segments.as_slice() {
+        [_] => path.leading_colon.is_none(),
+        [first, _] if first == "self" => true,
+        [first, module @ .., _] if first == "crate" => module.join("::") == module_path,
+        _ => false,
     }
 }
 
@@ -689,9 +720,9 @@ mod tests {
     #[test]
     fn custom_type_collection_recurse_reference_and_ignores_tuple() {
         let mut idents = Vec::new();
-        collect_custom_type_idents(&syn::parse_quote!(&Vec<Local>), &mut idents);
+        collect_custom_type_idents(&syn::parse_quote!(&Vec<Local>), "routes::x", &mut idents);
         assert_eq!(idents, ["Vec", "Local"]);
-        collect_custom_type_idents(&syn::parse_quote!((Local,)), &mut idents);
+        collect_custom_type_idents(&syn::parse_quote!((Local,)), "routes::x", &mut idents);
         assert_eq!(idents, ["Vec", "Local"]);
     }
 
@@ -769,3 +800,6 @@ mod tests {
         assert!(!file_declares_type(&ast, &syn::parse_quote!(helper)));
     }
 }
+
+#[cfg(test)]
+mod tests_scope;

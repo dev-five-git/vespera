@@ -37,8 +37,9 @@ pub struct OperationRouteConfig<'a> {
 }
 
 /// `input` with its `Form<T>` (also inside `Validated<..>` / `Result<..>`)
-/// rewritten to `Query<T>` — `Option<Form<T>>` to `Option<Query<T>>`, so the
-/// query parameters stay optional; `None` for any other argument.
+/// rewritten to `Query<T>`; `None` for any other argument. (`Option<Form<T>>`
+/// does not compile with axum 0.8 — `Form` has no `OptionalFromRequest` impl —
+/// it is still rewritten to an optional `Option<Query<T>>`, which is harmless.)
 fn form_as_query(input: &FnArg) -> Option<FnArg> {
     let FnArg::Typed(pat_type) = input else {
         return None;
@@ -67,6 +68,12 @@ fn form_as_query(input: &FnArg) -> Option<FnArg> {
     }))
 }
 
+/// The extractor an argument documents, seen through an `Option<..>`.
+fn path_candidate(ty: &Type) -> &Type {
+    let extractor = request_extractor(ty);
+    option_inner(extractor).map_or(extractor, request_extractor)
+}
+
 /// Build Operation from function signature
 #[allow(clippy::too_many_lines)]
 pub fn build_operation_from_function(
@@ -87,10 +94,11 @@ pub fn build_operation_from_function(
         .iter()
         .any(|input| matches!(input, FnArg::Typed(PatType { ty, .. }) if is_validated_type(ty)));
 
-    // First pass: find the first Path<T> extractor and extract its type
+    // First pass: find the first Path<T> extractor (`Option<Path<T>>` too —
+    // axum 0.8's `OptionalFromRequestParts`) and extract its type
     for input in &sig.inputs {
         if let FnArg::Typed(PatType { ty, .. }) = input
-            && let Type::Path(type_path) = request_extractor(ty.as_ref())
+            && let Type::Path(type_path) = path_candidate(ty)
             // A segment-less path names no extractor: skip it instead of panicking.
             && let Some(segment) = type_path.path.segments.last()
             && segment.ident == "Path"
@@ -140,7 +148,7 @@ pub fn build_operation_from_function(
         } else {
             // Skip Path extractor - we already handled path parameters above
             let is_path_extractor = if let FnArg::Typed(PatType { ty, .. }) = input
-                && let Type::Path(type_path) = request_extractor(ty.as_ref())
+                && let Type::Path(type_path) = path_candidate(ty)
                 && let Some(segment) = type_path.path.segments.last()
             {
                 segment.ident == "Path"
@@ -185,7 +193,9 @@ pub fn build_operation_from_function(
         // the error body is a bare `String`, not always `application/json`.
         let error_media = responses
             .iter()
-            .find(|(code, _)| code.as_str() != "200")
+            // The first error entry: success keys (`200`, `204` for
+            // `NoContent`, `3XX` for `Redirect`) are skipped.
+            .find(|(code, _)| !code.starts_with(['1', '2', '3']))
             .and_then(|(_, resp)| resp.content.as_ref()?.iter().next())
             .map(|(content_type, media)| (content_type.clone(), media.schema.clone()));
 
@@ -454,5 +464,7 @@ mod tests;
 mod tests_extractor_wrappers;
 #[cfg(test)]
 mod tests_form_query;
+#[cfg(test)]
+mod tests_request_shapes;
 #[cfg(test)]
 mod tests_validated;

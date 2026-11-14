@@ -2118,8 +2118,8 @@
         "operationId": "redirect",
         "summary": "Redirects carry no documented body.",
         "responses": {
-          "200": {
-            "description": "Successful response"
+          "3XX": {
+            "description": "Redirect"
           }
         }
       }
