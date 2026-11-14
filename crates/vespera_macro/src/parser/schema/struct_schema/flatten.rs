@@ -419,4 +419,34 @@ mod tests {
         });
         assert!(resolve_type(&ty, &known, &definitions).is_some());
     }
+
+    /// An `allOf` that does not start with an inline object (a described
+    /// `$ref`) has no mergeable keys; an inline non-`$ref` member after the
+    /// object stays an opaque member.
+    #[test]
+    fn decompose_all_of_members() {
+        let known = HashSet::<String>::new();
+        let definitions = HashMap::<String, String>::new();
+        let reference = SchemaRef::Ref(vespera_core::schema::Reference::schema("Page"));
+        let described_ref = Schema {
+            all_of: Some(vec![reference]),
+            ..Schema::default()
+        };
+        assert!(decompose(&described_ref, &known, &definitions).is_none());
+
+        let member = SchemaRef::Inline(Box::new(Schema::string()));
+        let object_then_inline = Schema {
+            all_of: Some(vec![
+                SchemaRef::Inline(Box::new(Schema::object())),
+                member.clone(),
+            ]),
+            ..Schema::default()
+        };
+        let parts = decompose(&object_then_inline, &known, &definitions).unwrap();
+        assert_eq!(parts.opaque.len(), 1);
+        assert!(matches!(
+            &parts.opaque[0],
+            SchemaRef::Inline(schema) if schema.schema_type == Some(SchemaType::String)
+        ));
+    }
 }
