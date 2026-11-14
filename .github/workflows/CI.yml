@@ -154,6 +154,43 @@ jobs:
           LOOM_MAX_PREEMPTIONS: '3'
         run: cargo test --release -p vespera_inprocess --features runtime --lib loom_
 
+  # Every other job builds the workspace, where Cargo unifies features across
+  # members (axum-example turns on cron / cron-tz, rust-jni-demo jni / ffi,
+  # testkit tracing, and the examples keep vespera's defaults) — so a
+  # reduced-feature build, and the tests gated on a feature being OFF
+  # (trybuild `cron_tz_needs_feature` / `multipart_needs_feature`, cron's
+  # `time_zone_without_feature`), never actually ran. Every command here
+  # selects ONE package with `-p` (never `--workspace`), so its features are
+  # exactly the ones on the command line.
+  features:
+    name: Feature isolation (per package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-hack
+      - name: cargo hack check --each-feature (vespera, vespera_inprocess)
+        env:
+          RUSTFLAGS: -D warnings
+        run: |
+          cargo hack check -p vespera --each-feature --no-dev-deps
+          cargo hack check -p vespera_inprocess --each-feature --no-dev-deps
+      - name: vespera without default features (incl. multipart_needs_feature UI case)
+        run: cargo test -p vespera --no-default-features
+      - name: vespera cron without cron-tz (cron_tz_needs_feature, time_zone_without_feature)
+        run: |
+          cargo test -p vespera --features cron --test trybuild_diagnostics
+          cargo test -p vespera --no-default-features --features cron --lib cron
+      - name: vespera cron-tz UI cases
+        run: cargo test -p vespera --features cron-tz --test trybuild_diagnostics
+      - name: vespera_inprocess without default features / with ffi alone
+        run: |
+          cargo test -p vespera_inprocess --no-default-features
+          cargo test -p vespera_inprocess --no-default-features --features ffi
+
   # Minimum supported Rust version of the PUBLISHED crates
   # ([workspace.package] rust-version). Examples are deliberately not held to
   # it — axum-example's sea-orm 2 / sqlx 0.9 need Rust 1.94 — so the check is
@@ -489,7 +526,7 @@ jobs:
     # unformatted/lint-failing code, a broken MSRV, a disallowed dependency,
     # a platform-specific test failure, or a broken JNI dispatch path on any
     # supported OS.
-    needs: [lint, msrv, deny, sbom, test, test-os, jni-e2e, miri, loom]
+    needs: [lint, msrv, deny, sbom, test, test-os, jni-e2e, miri, loom, features]
     permissions:
       # Actions > General > Workflow permissions for creating pull request:
       # push the version branch + create GitHub releases / tags (and attach

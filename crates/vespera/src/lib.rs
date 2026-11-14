@@ -179,6 +179,11 @@ pub mod cron;
 #[cfg_attr(docsrs, doc(cfg(feature = "cron")))]
 pub use tokio;
 
+// `tracing` alone (no `cron`, no `inprocess`) has nothing to instrument in this
+// crate; mark the optional dependency used so the build stays warning-free.
+#[cfg(all(feature = "tracing", not(feature = "cron")))]
+use tracing as _;
+
 // Re-export axum for convenience
 pub mod axum {
     pub use axum::*;
