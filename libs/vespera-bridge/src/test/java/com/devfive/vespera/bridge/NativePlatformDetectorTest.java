@@ -143,7 +143,8 @@ class NativePlatformDetectorTest {
 
     @ParameterizedTest
     @CsvSource({
-        "Windows 11, windows", "Mac OS X, macos", "Darwin, macos", "Linux, linux", "FreeBSD, linux",
+        "Windows 11, windows", "Mac OS X, macos", "Darwin, macos", "Linux, linux", "GNU/Linux, linux",
+        "FreeBSD, freebsd", "SunOS, sunos", "AIX, aix", "HP-UX, hpux", "OS/400, os400", "///, unknown",
     })
     void detectsTheOsSegment(String osName, String expected) {
         assertEquals(expected, NativePlatformDetector.detectOs(osName));

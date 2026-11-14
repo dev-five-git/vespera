@@ -107,7 +107,7 @@ vespera {
   }
   ```
 
-A ready-to-copy GitHub Actions workflow (matrix: Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64 → merge → `nativeJars` → publish on tags) lives at [`.github/workflow-templates/vespera-native-jars.yml`](../../.github/workflow-templates/vespera-native-jars.yml).
+A ready-to-copy GitHub Actions workflow (matrix: Linux x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64 → merge → `nativeJars` → publish on tags) lives at [`.github/workflow-templates/vespera-native-jars.yml`](../../.github/workflow-templates/vespera-native-jars.yml); set `GRADLE_ROOT_DIR` (the directory with `gradlew` / `settings.gradle(.kts)`, default the repository root — `prebuilt/` is created there) and `GRADLE_PROJECT_DIR` (the project applying the plugin) when your Gradle build lives in a subdirectory.
 
 ## Two-line integration
 
@@ -370,16 +370,21 @@ public class MyController {
 
 The ASYNC proxy path completes the native dispatch future from a Rust/Tokio
 worker thread, then parses the wire response on a JVM-managed executor.  The
-default bean is `vesperaBridgeAsyncResponseExecutor`, backed by
-`ForkJoinPool.commonPool()`.  Replace that bean by name to use an application
-executor:
+default bean is `vesperaBridgeAsyncResponseExecutor`, a small bounded daemon
+pool (`vespera.bridge.async-pool-size`) wrapped in `VesperaAsyncResponseExecutor`.
+The wrapper is deliberately **not** an `Executor` bean, so Spring Boot still
+creates its `applicationTaskExecutor` (Boot backs off as soon as any `Executor`
+bean exists).  Replace that bean by name to use an application executor:
 
 ```java
 @Bean("vesperaBridgeAsyncResponseExecutor")
-public Executor vesperaBridgeAsyncResponseExecutor() {
-    return Executors.newFixedThreadPool(4);
+public VesperaAsyncResponseExecutor vesperaBridgeAsyncResponseExecutor() {
+    return VesperaAsyncResponseExecutor.of(Executors.newFixedThreadPool(4));
 }
 ```
+
+A plain `Executor` bean under that name is still accepted, but then Boot does
+not create `applicationTaskExecutor`.
 
 ## WebFlux
 
@@ -401,7 +406,7 @@ SpringApplication.run(ReactiveApplication.class, args);     // spring-boot-start
 | `VesperaReactiveHandlerMapping` | order `LOWEST_PRECEDENCE - 10` | Maps `include-patterns` / `exclude-patterns`. `@Controller`s and `RouterFunction`s win; static resources come after. An `AbstractHandlerMapping`: with `cors=spring` it applies the global CORS mappings of the `WebFluxConfigurer` beans (`addCorsMappings`) to proxied paths. |
 | `VesperaReactivePreflightFilter` | (`cors=rust`) | WebFlux answers CORS preflights inside `DispatcherHandler` without invoking a handler, so this `WebFilter` routes owned-path preflights to Rust. |
 
-**Dispatch.** Requests go through `VesperaBridge.dispatchAsync`, so a Netty event loop never blocks:
+**Dispatch.** Buffered requests go through `VesperaBridge.dispatchAsync`, so a Netty event loop never blocks (streamed ones: see **Streaming** below):
 
 - The request body is aggregated with `DataBufferUtils.join`, capped by `max-buffered-request-bytes`. A declared or actual excess answers `413`.
 - The completion is published on `Schedulers.parallel()`, not on the Tokio worker that completed it.
@@ -418,7 +423,9 @@ SpringApplication.run(ReactiveApplication.class, args);     // spring-boot-start
 - `vespera.bridge.native.*`, `library-name` and `shutdown-on-close`
 - the `VesperaClient` bean
 
-**Streaming.** A request whose `Accept` header asks for `text/event-stream` or NDJSON (the same rule as `SmartDispatchModeResolver`) is dispatched through the native header-first streaming symbol (`dispatchStreamingWithHeader`) on a dedicated, bounded `VesperaStreamingExecutor` — never on Reactor's shared `Schedulers.boundedElastic()`, so SSE clients cannot starve the rest of the application's blocking work. The bytes are bridged with `DataBufferUtils.outputStreamPublisher` (backpressured, 64 KiB chunks) and written with `writeAndFlushWith`, so every chunk Rust emits is flushed to the client. A disconnect ends the blocking writer, and the native side stops on the failed write. All other requests take the buffered path. A stream that fails after the Rust header (a panic or a body error, `VesperaStreamAbortedException`) is answered like the servlet proxy does: while nothing was committed, the Rust status and headers (`Set-Cookie`, `Cache-Control`, ...) are discarded and the proxy writes its own `500` (`panic in Rust engine` / `response body stream error`, `DispatchEvent.panicked` set for a panic); once bytes reached the client, the connection is aborted so the response never looks complete.
+**Streaming.** A request whose `Accept` header asks for `text/event-stream` or NDJSON (the same rule as `SmartDispatchModeResolver`) is dispatched through the native header-first streaming symbol (`dispatchStreamingWithHeader`) on a dedicated, bounded `VesperaStreamingExecutor` — never on Reactor's shared `Schedulers.boundedElastic()`, so SSE clients cannot starve the rest of the application's blocking work. The bytes are bridged with `DataBufferUtils.outputStreamPublisher` (backpressured, 64 KiB chunks) and written with `writeAndFlushWith`, so every chunk Rust emits is flushed to the client. A disconnect ends the blocking writer, and the native side stops on the failed write.
+
+A bodyless `GET` whose `Accept` could still match a stream — none, `*/*`, `text/*` or `application/*` (what `fetch()`, `curl` and most HTTP clients send) — takes the same header-first path, because an SSE / NDJSON endpoint it did not explicitly ask for would otherwise never be sent on the buffered path (held until the buffered-response cap answered `500`). Its body is held in Java and written once with its `Content-Length` when the Rust body completes without waiting (every in-memory response), and streamed as soon as it turns out to be a stream: an event-stream / NDJSON `Content-Type`, a Rust body that waits for its next frame, or more than 1 MiB (servlet `DIRECT` parity). When the streaming executor is saturated, such a request falls back to the buffered path instead of `503`. Like every streamed response (and the servlet `SYNC` / `DIRECT` modes), it is not cancelled while the Rust handler is still producing the header; a disconnect stops it at its next write. Send a concrete non-streaming `Accept` (`application/json`) to keep a slow / long-polling `GET` on the cancellable buffered path. All other requests (`HEAD`, request bodies, non-streaming `Accept`) take the buffered path. A stream that fails after the Rust header (a panic or a body error, `VesperaStreamAbortedException`) is answered like the servlet proxy does: while nothing was committed, the Rust status and headers (`Set-Cookie`, `Cache-Control`, ...) are discarded and the proxy writes its own `500` (`panic in Rust engine` / `response body stream error`, `DispatchEvent.panicked` set for a panic); once bytes reached the client, the connection is aborted so the response never looks complete.
 
 Each streamed response holds one streaming thread for its lifetime. The pool is capped twice:
 
@@ -428,7 +435,7 @@ vespera.bridge.reactive-streaming:
   max-queued: 100    # streams waiting (FIFO) for a free thread; default 100
 ```
 
-Once `max-threads` streams run and `max-queued` more wait, a further streaming request is answered `503` with the body `vespera streaming capacity exhausted` before anything is dispatched or committed (observers see `503`, mode `STREAMING`). A client that disconnects while its stream is still queued frees its slot at once and is never dispatched to Rust. Buffered requests never use this pool. Idle streaming threads time out after 60 s; closing the context stops admitting streams and lets running ones finish. Replace the bean (`@ConditionalOnMissingBean`) to share one executor between several handlers, or pass one to the public `VesperaReactiveProxyHandler` constructor.
+Once `max-threads` streams run and `max-queued` more wait, a further explicitly streaming request is answered `503` with the body `vespera streaming capacity exhausted` before anything is dispatched or committed (observers see `503`, mode `STREAMING`). A client that disconnects while its stream is still queued frees its slot at once and is never dispatched to Rust. Buffered requests never use this pool; an implicitly streamed `GET` that finds it full is served buffered instead. Idle streaming threads time out after 60 s; closing the context stops admitting streams and lets running ones finish. Replace the bean (`@ConditionalOnMissingBean`) to share one executor between several handlers, or pass one to the public `VesperaReactiveProxyHandler` constructor.
 
 **Form bodies read by a `WebFilter`.** `exchange.getFormData()` consumes an `application/x-www-form-urlencoded` body (Spring Security's `CsrfWebFilter` calls it for every unsafe form request), and reactor-netty cannot replay it. When the body comes back empty or short, the proxy rebuilds it from the cached form data (re-encoded in the `Content-Type` charset, else UTF-8) and forwards the matching `Content-Length`. Values are grouped per name (`a=1&b=2&a=3` arrives as `a=1&a=3&b=2`).
 
@@ -1228,7 +1235,7 @@ DecodedResponse resp = VesperaBridge.decodeResponse(
 assert Arrays.equals(pdf, resp.bodyBytes()); // exact round-trip (copy on demand)
 ```
 
-A Rust handler returning a binary response (e.g. `image/png`) flows the same way: `VesperaProxyController` returns `ResponseEntity<byte[]>` for **every** content type — the wire header already carries the exact `Content-Type`, which Spring's `ByteArrayHttpMessageConverter` writes verbatim. When the Rust response has **no** `Content-Type`, the ASYNC response has none either (like SYNC / DIRECT): the autoconfigured `VesperaAsyncResponseBodyAdvice` writes the body itself, so Spring's content negotiation cannot invent one from `Accept` (a browser would otherwise get `text/html`). Register that `@ControllerAdvice` bean yourself if you wire `VesperaProxyController` without the autoconfiguration. (Before 0.2.1 text-like content types were delivered as `ResponseEntity<String>`; that path was dropped because it forced a redundant UTF-8 decode→re-encode round-trip.)
+A Rust handler returning a binary response (e.g. `image/png`) flows the same way: `VesperaProxyController` returns `ResponseEntity<byte[]>` for **every** content type — the wire header already carries the exact `Content-Type`, which Spring's `ByteArrayHttpMessageConverter` writes verbatim. The autoconfigured `VesperaAsyncResponseBodyAdvice` writes every ASYNC body itself, byte for byte (like SYNC / DIRECT): a Rust response without a `Content-Type` has none (Spring's content negotiation cannot invent one from `Accept` — a browser would otherwise get `text/html`), Spring never adds `Content-Disposition: inline;filename=f.txt` for URLs such as `/files/report.pdf`, and a Rust `200` with `ETag` / `Last-Modified` is never turned into Spring's `304` / `412` (Rust owns conditional requests in every mode). A malformed request `Content-Type` reaches Rust too (the proxy mapping declares no `consumes`, so Spring never answers `415`). Register that `@ControllerAdvice` bean yourself if you wire `VesperaProxyController` without the autoconfiguration. (Before 0.2.1 text-like content types were delivered as `ResponseEntity<String>`; that path was dropped because it forced a redundant UTF-8 decode→re-encode round-trip.)
 
 ## Multipart uploads
 

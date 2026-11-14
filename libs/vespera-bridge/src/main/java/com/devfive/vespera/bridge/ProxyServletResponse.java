@@ -123,6 +123,32 @@ final class ProxyServletResponse extends HttpServletResponseWrapper {
     }
 
     /**
+     * ETag / Last-Modified of an ASYNC {@code 200} {@code GET} / {@code HEAD}
+     * entity, held back so Spring's {@code HttpEntityMethodProcessor} does not
+     * evaluate the request's conditional headers ({@code If-None-Match} →
+     * {@code 304}) on a Rust response; {@link VesperaAsyncResponseBodyAdvice}
+     * restores them for the entity whose body is {@code body}.
+     */
+    record DeferredValidators(Object body, HttpHeaders headers) {}
+
+    /** Written by the async response executor, read by the async dispatch thread. */
+    private volatile DeferredValidators deferredValidators;
+
+    void deferValidators(Object body, HttpHeaders validators) {
+        deferredValidators = new DeferredValidators(body, validators);
+    }
+
+    /** The validators deferred for the entity whose body is {@code body} (identity), or {@code null}. */
+    HttpHeaders takeDeferredValidators(Object body) {
+        DeferredValidators deferred = deferredValidators;
+        if (deferred == null || deferred.body() != body) {
+            return null;
+        }
+        deferredValidators = null;
+        return deferred.headers();
+    }
+
+    /**
      * Apply the same {@code Access-Control-*} de-duplication to the headers
      * of an ASYNC {@code ResponseEntity} (written by Spring after the async
      * dispatch, so the wrapper never sees them) and return the headers to

@@ -143,6 +143,24 @@ class PreflightRoutingTest {
         assertEquals(2, events.size());
     }
 
+    /**
+     * The proxy declares no {@code consumes} condition: a malformed
+     * {@code Content-Type} is Rust's business, not a Spring {@code 415}.
+     */
+    @Test
+    void malformedContentTypeStillReachesTheProxy() throws Exception {
+        MockMvc mvc = mvc(ProxyPathPatterns.defaults());
+        for (String contentType : List.of("json", "application/", ";;")) {
+            MockHttpServletResponse response = mvc.perform(
+                            org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/rust/items")
+                                    .header(HttpHeaders.CONTENT_TYPE, contentType)
+                                    .content("{}"))
+                    .andReturn().getResponse();
+            assertEquals(503, response.getStatus(), contentType + ": proxied (no native library in this test)");
+        }
+        assertEquals(3, events.size());
+    }
+
     @Test
     void preflightOutsideTheProxiedSpaceIsLeftToSpring() throws Exception {
         MockMvc mvc = mvc(new ProxyPathPatterns(List.of("/api/**"), List.of()));

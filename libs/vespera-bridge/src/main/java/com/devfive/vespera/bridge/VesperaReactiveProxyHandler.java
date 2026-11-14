@@ -73,6 +73,21 @@ import java.util.function.Consumer;
  * streaming queue is full ({@code vespera.bridge.reactive-streaming.*}), the
  * request is answered {@code 503} before anything is committed.
  *
+ * <p>A bodyless {@code GET} whose {@code Accept} could still match a stream
+ * (none, {@code *}{@code /*}, {@code text/*}, {@code application/*}) takes the
+ * same header-first path, since an event stream it did not ask for would
+ * never complete on the buffered path. Its body is held in Java until it is
+ * complete (written with its {@code Content-Length}, like a buffered
+ * response) or turns out to be a stream: an event / NDJSON
+ * {@code Content-Type}, a Rust body that has to wait for its next frame, or
+ * more than {@value #IMPLICIT_BUFFER_BYTES} bytes. When the streaming
+ * executor is saturated such a request falls back to the buffered path
+ * instead of {@code 503}. Like every streamed response (and the servlet
+ * proxy's SYNC / DIRECT modes) it is not cancelled while the Rust handler is
+ * still working on the header; a disconnect stops it at its next write. A
+ * concrete non-streaming {@code Accept} ({@code application/json}) keeps the
+ * cancellable buffered path.
+ *
  * <p>Proxy-side errors use the same plain-text shape as the servlet proxy
  * ({@link ProxyErrors}); request ids, {@link DispatchObserver}s (Micrometer)
  * and {@link CorsHandling} behave as in {@link VesperaProxyController}. A
@@ -88,6 +103,9 @@ public class VesperaReactiveProxyHandler implements WebHandler {
 
     /** Size of the body chunks a streamed response is split into. */
     static final int STREAM_CHUNK_BYTES = 64 * 1024;
+
+    /** Body bytes an implicitly streamed GET holds back for a {@code Content-Length} before streaming. */
+    static final int IMPLICIT_BUFFER_BYTES = 1024 * 1024;
 
     /** Unknown-length body bound when no cap is configured (servlet parity). */
     private static final long MAX_FIXED_BODY = 64L * 1024L * 1024L;
@@ -268,9 +286,18 @@ public class VesperaReactiveProxyHandler implements WebHandler {
         ServerHttpRequest request = exchange.getRequest();
         final String appName = resolveAppName(exchange, px);
         HttpHeaders requestHeaders = request.getHeaders();
+        String accept = requestHeaders.getFirst(HttpHeaders.ACCEPT);
         final boolean streaming = !"HEAD".equals(method)
-                && SmartDispatchModeResolver.acceptsStreaming(requestHeaders.getFirst(HttpHeaders.ACCEPT));
-        px.mode = streaming ? DispatchMode.STREAMING : DispatchMode.ASYNC;
+                && SmartDispatchModeResolver.acceptsStreaming(accept);
+        // A bodyless GET that did not ask for a stream may still get one (an
+        // SSE / NDJSON endpoint fetched with `Accept: */*`): buffered, it would
+        // never be sent. It takes the header-first path too, buffering the body
+        // in Java until it would wait (servlet DIRECT parity).
+        final boolean implicitStreaming = !streaming
+                && "GET".equals(method)
+                && bodyless(requestHeaders)
+                && SmartDispatchModeResolver.mayAcceptStreaming(accept);
+        px.mode = streaming || implicitStreaming ? DispatchMode.STREAMING : DispatchMode.ASYNC;
         if (!transport.isInitialized()) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, ProxyErrors.NOT_INITIALIZED);
         }
@@ -304,8 +331,16 @@ public class VesperaReactiveProxyHandler implements WebHandler {
                     requestIdHeaderLower, px.requestId, parts.getT2().orElse(null), contentLength);
             byte[] wire = VesperaBridge.encodeRequest(appName, method, px.path, query, headers, bodyBytes);
             px.reachedRust = true;
-            return streaming ? stream(wire, out, px, method) : buffered(wire, out, px, method);
+            if (streaming) {
+                return stream(wire, out, px, method, false);
+            }
+            return implicitStreaming ? stream(wire, out, px, method, true) : buffered(wire, out, px, method);
         });
+    }
+
+    /** No request body: {@code Content-Length} absent or {@code 0}, no {@code Transfer-Encoding}. */
+    static boolean bodyless(HttpHeaders headers) {
+        return headers.getContentLength() <= 0 && headers.getFirst(HttpHeaders.TRANSFER_ENCODING) == null;
     }
 
     /** Who owns CORS ({@code vespera.bridge.cors}), or {@code null} when unset. */
@@ -421,22 +456,40 @@ public class VesperaReactiveProxyHandler implements WebHandler {
      * more). The Rust header arrives before the first body byte, while the
      * response is still uncommitted. A saturated executor answers {@code 503}
      * without dispatching.
+     *
+     * <p>{@code implicit} (a bodyless GET that did not ask for a stream): a
+     * saturated executor falls back to the buffered {@link #buffered} path
+     * instead of {@code 503}, and the body is held in Java
+     * ({@link SpillingGate}) so an ordinary response keeps its
+     * {@code Content-Length}; it starts streaming as soon as the Rust body
+     * would wait (the native flush hint), grows past
+     * {@value #IMPLICIT_BUFFER_BYTES} bytes, or the Rust
+     * {@code Content-Type} is an event / NDJSON stream.
      */
-    private Mono<Void> stream(byte[] wire, ReactiveProxyResponse out, ProxyExchange px, String method) {
+    private Mono<Void> stream(byte[] wire, ReactiveProxyResponse out, ProxyExchange px, String method,
+            boolean implicit) {
         VesperaStreamingExecutor.Reservation slot = streamingExecutor.tryReserve();
         if (slot == null) {
+            if (implicit) {
+                px.mode = DispatchMode.ASYNC;
+                return buffered(wire, out, px, method);
+            }
             px.reachedRust = false;
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, ProxyErrors.STREAMING_SATURATED);
         }
         ServerHttpResponse response = out.response;
         Executor executor = slot.executor();
+        long cap = maxBufferedResponseBytes > 0
+                ? Math.min(maxBufferedResponseBytes, IMPLICIT_BUFFER_BYTES) : IMPLICIT_BUFFER_BYTES;
         Publisher<DataBuffer> body = DataBufferUtils.outputStreamPublisher(sink -> {
-            BodyGate gate = new BodyGate(sink);
+            BodyGate gate = implicit ? new SpillingGate(sink, out, method, (int) cap) : new BodyGate(sink);
             try {
                 transport.dispatchStreaming(wire, headerBytes -> ProxyExchange.withMdc(px.requestId, () -> {
-                    gate.permit(applyStreamingHeader(headerBytes, out, method));
+                    int headerLen = VesperaWireCodec.readHeaderLength(headerBytes);
+                    gate.onHeader(out.applyWireHeader(headerBytes, 4, headerLen, true), method);
                     return null;
                 }), gate);
+                gate.finish();
             } catch (IOException failure) {
                 throw new StreamAbort(failure);
             }
@@ -447,13 +500,6 @@ public class VesperaReactiveProxyHandler implements WebHandler {
                 // submitted, or still queued): free the slot and drop the
                 // task, so a disconnected client never reaches Rust.
                 .doFinally(signal -> slot.cancel());
-    }
-
-    /** Apply a streamed wire header; returns whether body bytes may follow. */
-    static boolean applyStreamingHeader(byte[] headerBytes, ReactiveProxyResponse out, String method) {
-        int headerLen = VesperaWireCodec.readHeaderLength(headerBytes);
-        HeaderPolicy.ResponseHeaderAccumulator acc = out.applyWireHeader(headerBytes, 4, headerLen, true);
-        return WireResponseWriter.responsePermitsBody(acc.status, method);
     }
 
     /**
@@ -525,9 +571,9 @@ public class VesperaReactiveProxyHandler implements WebHandler {
     }
 
     /** Drops body writes once the Rust header forbids a body ({@code 204}, {@code 304}, ...). */
-    static final class BodyGate extends OutputStream {
-        private final OutputStream delegate;
-        private volatile boolean permitsBody = true;
+    static class BodyGate extends OutputStream {
+        final OutputStream delegate;
+        volatile boolean permitsBody = true;
 
         BodyGate(OutputStream delegate) {
             this.delegate = delegate;
@@ -535,6 +581,16 @@ public class VesperaReactiveProxyHandler implements WebHandler {
 
         void permit(boolean permitsBody) {
             this.permitsBody = permitsBody;
+        }
+
+        /** The Rust header was applied to the response (before any body byte). */
+        void onHeader(HeaderPolicy.ResponseHeaderAccumulator acc, String method) {
+            permit(WireResponseWriter.responsePermitsBody(acc.status, method));
+        }
+
+        /** The native dispatch returned normally: the body is complete. */
+        void finish() throws IOException {
+            // Pass-through: nothing held back.
         }
 
         @Override
@@ -559,6 +615,100 @@ public class VesperaReactiveProxyHandler implements WebHandler {
         @Override
         public void close() throws IOException {
             delegate.close();
+        }
+    }
+
+    /**
+     * The implicit-streaming body ({@link #stream} with {@code implicit}):
+     * holds the body back so a complete in-memory response is written once
+     * with its {@code Content-Length}, like the buffered path, and switches
+     * to pass-through ("spills") as soon as the response is a stream: an
+     * event / NDJSON {@code Content-Type}, the native flush hint (the Rust
+     * body is about to wait — never sent for an in-memory body), or more
+     * than {@code limit} bytes. Used by one streaming thread at a time.
+     */
+    static final class SpillingGate extends BodyGate {
+        private final ReactiveProxyResponse out;
+        private final String method;
+        private final int limit;
+        private HeaderPolicy.ResponseHeaderAccumulator acc;
+        /** Held body bytes; {@code null} once spilled. */
+        private java.io.ByteArrayOutputStream held = new java.io.ByteArrayOutputStream();
+
+        SpillingGate(OutputStream delegate, ReactiveProxyResponse out, String method, int limit) {
+            super(delegate);
+            this.out = out;
+            this.method = method;
+            this.limit = Math.max(0, limit);
+        }
+
+        @Override
+        void onHeader(HeaderPolicy.ResponseHeaderAccumulator acc, String method) {
+            super.onHeader(acc, method);
+            this.acc = acc;
+            for (HeaderPolicy.HeaderPair header : acc.headers) {
+                if (header.name().equalsIgnoreCase(HttpHeaders.CONTENT_TYPE)
+                        && SmartDispatchModeResolver.isStreamingMediaType(header.value())) {
+                    held = null;
+                    return;
+                }
+            }
+        }
+
+        /** Whether the body is still held back (test hook). */
+        boolean holding() {
+            return held != null;
+        }
+
+        private void spill() throws IOException {
+            java.io.ByteArrayOutputStream bytes = held;
+            held = null;
+            if (bytes != null && bytes.size() > 0) {
+                delegate.write(bytes.toByteArray());
+            }
+        }
+
+        @Override
+        public void write(int b) throws IOException {
+            write(new byte[] {(byte) b}, 0, 1);
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) throws IOException {
+            if (!permitsBody || len <= 0) {
+                return;
+            }
+            if (held == null) {
+                delegate.write(b, off, len);
+                return;
+            }
+            held.write(b, off, len);
+            if (held.size() > limit) {
+                spill();
+            }
+        }
+
+        @Override
+        public void flush() throws IOException {
+            // The native flush hint: the Rust body would wait — a stream.
+            spill();
+            delegate.flush();
+        }
+
+        @Override
+        void finish() throws IOException {
+            java.io.ByteArrayOutputStream bytes = held;
+            if (bytes == null) {
+                return;
+            }
+            held = null;
+            if (acc != null) {
+                out.setContentLength(WireResponseWriter.bufferedContentLength(
+                        acc.status, method, bytes.size(), acc.declaredContentLength()));
+            }
+            if (bytes.size() > 0) {
+                delegate.write(bytes.toByteArray());
+            }
         }
     }
 }

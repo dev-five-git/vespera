@@ -70,10 +70,31 @@ final class RequestShape {
         if (contentLength > 0) {
             return false;
         }
-        String protocol = request.getProtocol();
-        if (protocol == null || !protocol.regionMatches(true, 0, "HTTP/1.", 0, 7)) {
+        if (!HttpMethods.isSafe(method)) {
             return false;
         }
-        return HttpMethods.isSafe(method);
+        String protocol = request.getProtocol();
+        if (protocol != null && protocol.regionMatches(true, 0, "HTTP/1.", 0, 7)) {
+            // HTTP/1.x framing: no Content-Length and no Transfer-Encoding = no body.
+            return true;
+        }
+        // HTTP/2 / HTTP/3 frame the body themselves, so a GET carries no
+        // Content-Length either way. Ask the container whether the request
+        // stream already ended (END_STREAM on the HEADERS frame): safe here —
+        // only the proxy, which reads the body through getInputStream() itself,
+        // classifies requests, and a safe method has no form body for
+        // getParameter() to parse. A container that cannot tell yet answers
+        // false: the request is then treated as possibly having a body, as before.
+        return inputFinished(request);
+    }
+
+    static boolean inputFinished(HttpServletRequest request) {
+        try {
+            return request.getInputStream().isFinished();
+        } catch (java.io.IOException | RuntimeException unknown) {
+            // getReader() already used (IllegalStateException), an I/O error,
+            // or a container without the Servlet 3.1 non-blocking API.
+            return false;
+        }
     }
 }

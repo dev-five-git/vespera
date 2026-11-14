@@ -586,23 +586,35 @@ final class VesperaDirectBufferPool {
             ByteBuffer[] pool, int required, long token, int flags,
             DirectStash.Ops stash, boolean keepStash) {
         boolean eventStream = (flags & DirectStash.FLAG_STREAM) != 0;
-        while (!eventStream && required <= DIRECT_MAX_CAPACITY) {
-            if (pool[1].capacity() < required) {
-                pool[1] = ByteBuffer.allocateDirect(grownCapacity(required));
+        try {
+            while (!eventStream && required <= DIRECT_MAX_CAPACITY) {
+                if (pool[1].capacity() < required) {
+                    pool[1] = ByteBuffer.allocateDirect(grownCapacity(required));
+                }
+                int n = stash.fetch(token, pool[1]);
+                if (n >= 0) {
+                    return n;
+                }
+                if (n == Integer.MIN_VALUE) {
+                    throw new IllegalStateException(
+                            "vespera DIRECT overflow stash entry expired before it was fetched");
+                }
+                // An inexact (lower-bound) size can stay short of the real
+                // length; at the cap there is no bigger buffer to try.
+                required = pool[1].capacity() == DIRECT_MAX_CAPACITY
+                        ? Math.max(-n, DIRECT_MAX_CAPACITY + 1)
+                        : Math.max(-n, pool[1].capacity() + 1);
             }
-            int n = stash.fetch(token, pool[1]);
-            if (n >= 0) {
-                return n;
+        } catch (Throwable failure) {
+            // allocateDirect OOM (direct memory exhausted), a failing fetch...:
+            // nobody will fetch this entry any more, so free the finished
+            // response natively now instead of holding it until its TTL.
+            try {
+                stash.discard(token);
+            } catch (Throwable discardFailure) {
+                failure.addSuppressed(discardFailure);
             }
-            if (n == Integer.MIN_VALUE) {
-                throw new IllegalStateException(
-                        "vespera DIRECT overflow stash entry expired before it was fetched");
-            }
-            // An inexact (lower-bound) size can stay short of the real
-            // length; at the cap there is no bigger buffer to try.
-            required = pool[1].capacity() == DIRECT_MAX_CAPACITY
-                    ? Math.max(-n, DIRECT_MAX_CAPACITY + 1)
-                    : Math.max(-n, pool[1].capacity() + 1);
+            throw failure;
         }
         StashedOverflowException stashed =
                 new StashedOverflowException(required, token, eventStream, stash);

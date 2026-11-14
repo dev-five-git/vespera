@@ -1,3 +1,4 @@
+import java.util.zip.ZipFile
 import com.vanniktech.maven.publish.GradlePublishPlugin
 
 plugins {
@@ -145,8 +146,8 @@ mavenPublishing {
 
         licenses {
             license {
-                name.set("MIT License")
-                url.set("https://opensource.org/licenses/MIT")
+                name.set("Apache License, Version 2.0")
+                url.set("https://www.apache.org/licenses/LICENSE-2.0")
             }
         }
 
@@ -180,4 +181,66 @@ tasks.named<org.cyclonedx.gradle.CyclonedxDirectTask>("cyclonedxDirectBom") {
     jsonOutput.set(
         layout.buildDirectory.file("reports/cyclonedx-direct/${project.name}-${project.version}-cyclonedx.json"),
     )
+}
+
+// ── License ───────────────────────────────────────────────────────────────
+// The repository LICENSE (Apache-2.0, as declared in the POM) ships as
+// META-INF/LICENSE of the plugin, sources and javadoc JARs; `verifyLicense`
+// (run with `test` and `check`) locks both.
+val repositoryLicense = layout.projectDirectory.file("../../LICENSE")
+val publishedJars = tasks.withType<AbstractArchiveTask>().matching {
+    it.name in setOf("jar", "sourcesJar", "javadocJar")
+}
+publishedJars.configureEach {
+    from(repositoryLicense) {
+        into("META-INF")
+    }
+}
+
+val verifyLicense = tasks.register("verifyLicense") {
+    group = LifecycleBasePlugin.VERIFICATION_GROUP
+    description = "Fails unless the POMs declare Apache-2.0 and every published JAR ships the LICENSE."
+    val jars = publishedJars
+    val poms = tasks.withType<GenerateMavenPom>()
+    dependsOn(jars, poms)
+    val jarFiles = files(jars) // lazy: the javadoc JAR task is registered later
+    val pomFiles = files(poms)
+    val license = repositoryLicense.asFile
+    inputs.files(jarFiles, pomFiles)
+    doLast {
+        val expected = license.readText()
+        if (!expected.contains("Apache License") || !expected.contains("Version 2.0")) {
+            throw GradleException("$license is not the Apache-2.0 license the POM declares")
+        }
+        if (pomFiles.files.isEmpty() || jarFiles.files.size < 3) {
+            throw GradleException("expected POMs and the plugin/sources/javadoc JARs: $pomFiles $jarFiles")
+        }
+        pomFiles.files.forEach { pom ->
+            val text = pom.readText()
+            if (!text.contains("<name>Apache License, Version 2.0</name>") ||
+                !text.contains("<url>https://www.apache.org/licenses/LICENSE-2.0</url>") ||
+                text.contains("opensource.org/licenses/MIT")
+            ) {
+                throw GradleException("$pom must declare the Apache-2.0 license (only):\n$text")
+            }
+        }
+        jarFiles.files.forEach { jar ->
+            ZipFile(jar).use { zip ->
+                val entry = zip.getEntry("META-INF/LICENSE")
+                    ?: throw GradleException("$jar has no META-INF/LICENSE")
+                val packaged = zip.getInputStream(entry).use { it.readBytes().toString(Charsets.UTF_8) }
+                if (packaged != expected) {
+                    throw GradleException("$jar META-INF/LICENSE differs from the repository LICENSE")
+                }
+            }
+        }
+    }
+}
+
+tasks.named("check") {
+    dependsOn(verifyLicense)
+}
+
+tasks.named("test") {
+    finalizedBy(verifyLicense)
 }

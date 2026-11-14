@@ -63,7 +63,7 @@ final class VesperaNativeConfig {
         /** Pending programmatic value, else the system property, else {@code unset}. */
         long resolve() {
             Long value = pending;
-            return value != null ? value : Long.getLong(property, unset);
+            return value != null ? value : longProperty(property, unset);
         }
 
         /**
@@ -237,7 +237,32 @@ final class VesperaNativeConfig {
     }
 
     static int pendingOrProperty(Integer pendingValue, String propertyName) {
-        return pendingValue != null ? pendingValue : Integer.getInteger(propertyName, 0);
+        return pendingValue != null ? pendingValue : toInt(longProperty(propertyName, 0));
+    }
+
+    /**
+     * The system property {@code name} as a {@code long}, else {@code fallback}.
+     * Unlike {@code Long.getLong} a malformed value ({@code 64MiB},
+     * {@code 1_000}) is not silently ignored: it logs a WARNING naming the
+     * property, then falls back.
+     */
+    static long longProperty(String name, long fallback) {
+        String raw;
+        try {
+            raw = System.getProperty(name);
+        } catch (SecurityException denied) {
+            return fallback;
+        }
+        if (raw == null) {
+            return fallback;
+        }
+        try {
+            return Long.decode(raw.trim()); // what Long.getLong accepted (0x.., #..)
+        } catch (NumberFormatException malformed) {
+            LOG.log(Level.WARNING, "vespera: ignoring system property " + name + "='" + raw
+                    + "': not an integer; falling back to the default");
+            return fallback;
+        }
     }
 
     static int toInt(long value) {

@@ -240,6 +240,41 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
         return false;
     }
 
+    /**
+     * Whether a response the client {@code Accept}s could be an event stream
+     * it did not ask for explicitly: no {@code Accept}, or a range with
+     * {@code q > 0} that matches a streaming type ({@code *}{@code /*},
+     * {@code text/*}, {@code application/*} or a streaming type itself). A
+     * concrete non-streaming list ({@code application/json}) does not.
+     */
+    static boolean mayAcceptStreaming(String accept) {
+        if (accept == null || accept.isBlank()) {
+            return true;
+        }
+        for (String range : accept.toLowerCase(java.util.Locale.ROOT).split(",")) {
+            int semi = range.indexOf(';');
+            String type = (semi < 0 ? range : range.substring(0, semi)).trim();
+            if ((type.equals("*/*") || type.equals("*") || type.equals("text/*") || type.equals("application/*")
+                    || isStreamingMediaType(type))
+                    && !zeroQuality(semi < 0 ? "" : range.substring(semi))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a ({@code Content-Type}) media type, parameters ignored, is an event / NDJSON stream. */
+    static boolean isStreamingMediaType(String mediaType) {
+        if (mediaType == null) {
+            return false;
+        }
+        int semi = mediaType.indexOf(';');
+        String type = (semi < 0 ? mediaType : mediaType.substring(0, semi)).trim();
+        return type.equalsIgnoreCase("text/event-stream")
+                || type.equalsIgnoreCase("application/x-ndjson")
+                || type.equalsIgnoreCase("application/stream+json");
+    }
+
     private static boolean zeroQuality(String params) {
         for (String param : params.split(";")) {
             String p = param.trim();

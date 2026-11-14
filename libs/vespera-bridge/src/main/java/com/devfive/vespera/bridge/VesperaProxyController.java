@@ -7,7 +7,6 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -218,7 +217,7 @@ public class VesperaProxyController {
         this.appTags = AppTags.forResolver(appResolver);
     }
 
-    @RequestMapping(value = "/**", consumes = MediaType.ALL_VALUE)
+    @RequestMapping("/**")
     public Object proxy(HttpServletRequest request,
                         HttpServletResponse servletResponse) throws IOException {
         final String requestId = requestIdHeader == null
@@ -377,7 +376,7 @@ public class VesperaProxyController {
             case ASYNC:
                 // A body without a Rust Content-Type is written by
                 // VesperaAsyncResponseBodyAdvice (no negotiated type).
-                VesperaAsyncResponseBodyAdvice.markProxied(request);
+                VesperaAsyncResponseBodyAdvice.markProxied(request, response);
                 return dispatchAsyncFlow(appName, method, path, query, headers, body,
                         response, exchange);
             case STREAMING:
