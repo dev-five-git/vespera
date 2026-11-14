@@ -1400,7 +1400,7 @@ int main(void) {
 | `vespera_init()` | register the app(s) + start the shared runtime; idempotent (emitted by `ffi_app!` / `ffi_apps!`) |
 | `vespera_dispatch(req, len, &out, &out_len)` | wire in → Rust-allocated wire out; release with `vespera_free(out, out_len)` |
 | `vespera_dispatch_into(req, len, buf, cap, &written)` | wire out written into your buffer; `VESPERA_OVERFLOW` sets `written` to the required size (a retry re-runs the handler) |
-| `vespera_dispatch_async(req, len, callback, user_data)` | returns at once; `callback(user_data, resp, resp_len)` runs once, possibly on another thread, and owns `resp`; over the in-flight cap (default 4096) it gets a `503` inline |
+| `vespera_dispatch_async(req, len, callback, user_data)` | returns without waiting for the handler; `callback(user_data, resp, resp_len)` runs once, possibly on another thread and possibly before the call returns (never hold a lock across the call that the callback takes), and owns `resp`; early rejections arrive inline on the calling thread: over the in-flight cap (default 4096) `503`, NULL request `400`, too large `413`, shut down `503` |
 | `vespera_shutdown(timeout_ms)` | drain in-flight work, stop the runtime for good (later dispatches answer `503`); pending async callbacks get a `503` on a runtime worker, possibly after it returns |
 | `vespera_configure_*(value)` | set runtime / limit knobs before `vespera_init`: `worker_threads`, `max_blocking_threads`, `max_request_bytes`, `max_buffered_response_bytes`, `dispatch_timeout_ms`, `async_max_in_flight`; `VESPERA_ERR_TOO_LATE` once already fixed |
 
@@ -1416,7 +1416,7 @@ A handler that still blocks its worker thread when `vespera_shutdown` times out 
 callback never runs and its `user_data` is not released. A cdylib may
 use both `jni_apps!` and `ffi_apps!` — [`examples/rust-jni-demo`](./examples/rust-jni-demo/) does, and
 [`ffi/ctypes_demo.py`](./examples/rust-jni-demo/ffi/ctypes_demo.py) drives it from Python (CI runs it
-against the release cdylib).
+against the release cdylib on Linux, macOS and Windows, calling every `vespera.h` function, and compiles the header as C99 and C++).
 
 ## Project Structure
 
