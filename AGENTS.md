@@ -591,6 +591,16 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 #            (`runtime/gate.rs`) and the async in-flight cap shared by JNI and
 #            the C ABI (`runtime/in_flight.rs`). Custom cfg, NOT
 #            `cfg(loom)` — that flips tokio into its own loom build
+#   features per-package feature isolation (`-p`, never `--workspace`: the
+#            examples' features unify into workspace builds): `cargo hack
+#            check --each-feature --no-dev-deps` for vespera + vespera_inprocess
+#            (RUSTFLAGS=-D warnings), `cargo test -p vespera
+#            --no-default-features`, trybuild under `--features cron` /
+#            `cron-tz` + `--no-default-features --features cron --lib cron`,
+#            `cargo test -p vespera_inprocess --no-default-features` and
+#            `--no-default-features --features ffi` — the only place the
+#            feature-OFF UI cases (`cron_tz_needs_feature`,
+#            `multipart_needs_feature`) and `time_zone_without_feature` run
 #   bench           (bench.yml, PRs touching crates/**) criterion gate on the
 #                   in-process hot path: merge base vs head, 5 interleaved
 #                   paired rounds, FAIL iff median > +30% AND every round > +20%
