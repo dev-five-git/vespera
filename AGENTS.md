@@ -668,4 +668,4 @@ cargo llvm-cov report --summary-only \
 - JNI native library can be bundled inside the fat JAR for single-file deployment
 - `VesperaBridge.init()` auto-extracts bundled native lib to temp, falls back to system path
 - JNI dispatch perf benchmarks: `libs/vespera-bridge/docs/jni-before-after-2026-06-11.md` (note: root `/docs` is gitignored); PR regression gate: `jni-bench-gate.yml` (harness `libs/vespera-bridge/bench/JniDispatchBench.java`)
-- `vespera_macro` file_cache: per-macro-invocation epoch caching of `fs::metadata` (`bump_epoch` called at every file-cache-reaching entry point — `vespera!`, `schema_type!`, `schema!`, `export_app!`, `#[derive(Schema)]`); `collector.rs` clone-optimized
+- `vespera_macro` file_cache: per-macro-invocation epoch caching of `fs::metadata` (`bump_epoch` called at every file-cache-reaching entry point — `vespera!`, `schema_type!`, `schema!`, `export_app!`, `#[derive(Schema)]`, `#[cron]`); `collector.rs` clone-optimized

@@ -17,11 +17,11 @@
 //! previously paid that cost on every cache lookup, even on hits.
 //!
 //! The epoch mechanism amortises this: each file-cache-reaching top-level macro
-//! invocation (`#[derive(Schema)]`, `schema!`, `schema_type!`, `vespera!`, and
-//! `export_app!`) calls [`bump_epoch`] once at entry. Within that epoch, a given
+//! invocation (`#[derive(Schema)]`, `schema!`, `schema_type!`, `vespera!`,
+//! `export_app!`, and `#[cron]`) calls [`bump_epoch`] once at entry. Within that epoch, a given
 //! path's mtime is fetched from `fs::metadata` **at most once** and stored in
 //! `mtime_epoch_cache`. Subsequent lookups for the same path in the same epoch
-//! reuse the cached mtime without a syscall. `#[route]`, `#[cron]`, and
+//! reuse the cached mtime without a syscall. `#[route]` and
 //! `#[derive(Multipart)]` do not call into this module: they parse only the
 //! annotated item tokens and update in-memory macro storage, so they are
 //! intentionally exempt.
