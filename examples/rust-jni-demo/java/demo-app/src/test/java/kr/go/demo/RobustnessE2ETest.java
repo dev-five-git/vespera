@@ -58,7 +58,8 @@ class RobustnessE2ETest {
         assertTrue(child.waitFor(60, TimeUnit.SECONDS), "probe JVM did not exit");
         String text = output.toString(StandardCharsets.UTF_8);
         // In-flight slow dispatch drained (200), the stuck one completed with
-        // 503 when the runtime dropped it, later dispatches answer 503.
-        assertTrue(text.contains("RESULT true 200 503 503"), text);
+        // 503 when the runtime dropped it, later sync and async dispatches
+        // answer 503 (async used to answer 500).
+        assertTrue(text.contains("RESULT true 200 503 503 503"), text);
     }
 }

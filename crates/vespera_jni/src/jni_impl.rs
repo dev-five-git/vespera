@@ -531,7 +531,8 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_AsyncDispatch_dispatch0<'
             // left observably inconsistent.  The outer `catch_unwind` still
             // guards `RUNTIME.spawn` itself so a scheduling failure completes
             // the future (with a 500) instead of leaving the Java caller
-            // hanging.
+            // hanging; no runtime (shut down) answers the same `503` as every
+            // other dispatch mode.
             let scheduled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let Some(runtime) = runtime() else {
                     return false;
@@ -571,16 +572,14 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_AsyncDispatch_dispatch0<'
                 token = cancel_token;
                 true
             }));
-            if matches!(scheduled, Ok(true)) {
-                future_notified_body.store(true, Ordering::Release);
-            } else {
-                let _ = complete_future_local(
-                    env,
-                    &future_obj,
-                    &vespera_inprocess::error_wire(500, "failed to schedule Rust dispatch"),
-                );
-                future_notified_body.store(true, Ordering::Release);
+            if !matches!(scheduled, Ok(true)) {
+                let wire = match scheduled {
+                    Ok(_) => runtime_unavailable_wire(),
+                    Err(_) => vespera_inprocess::error_wire(500, "failed to schedule Rust dispatch"),
+                };
+                let _ = complete_future_local(env, &future_obj, &wire);
             }
+            future_notified_body.store(true, Ordering::Release);
 
             Ok(())
         });

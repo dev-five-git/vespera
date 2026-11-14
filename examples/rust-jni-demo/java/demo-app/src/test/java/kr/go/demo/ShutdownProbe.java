@@ -9,7 +9,8 @@ import java.util.concurrent.TimeUnit;
 /**
  * Child-JVM probe for {@link RobustnessE2ETest#shutdownDrainsAndCompletesAsyncFutures}:
  * the runtime shutdown is irreversible for the process, so it cannot run in
- * the shared test JVM.  Prints {@code RESULT <shutdown> <slow> <stuck> <after>}.
+ * the shared test JVM.  Prints
+ * {@code RESULT <shutdown> <slow> <stuck> <after> <afterAsync>}.
  */
 public final class ShutdownProbe {
 
@@ -34,7 +35,9 @@ public final class ShutdownProbe {
         int slowStatus = status(slow.get(10, TimeUnit.SECONDS));
         int stuckStatus = status(stuck.get(10, TimeUnit.SECONDS));
         int after = status(VesperaBridge.dispatchBytes(get("/health")));
-        System.out.println("RESULT " + shutdown + " " + slowStatus + " " + stuckStatus + " " + after);
+        int afterAsync = status(VesperaBridge.dispatch(get("/health")).get(10, TimeUnit.SECONDS));
+        System.out.println("RESULT " + shutdown + " " + slowStatus + " " + stuckStatus + " " + after
+                + " " + afterAsync);
         System.exit(0);
     }
 }
