@@ -322,6 +322,20 @@ public class VesperaBridge {
     }
 
     /**
+     * Configure how many bidirectional-streaming uploads may run their request
+     * producer (a thread of the shared runtime's blocking pool) at once
+     * ({@code 0} = unlimited, default 256; negative = untouched).  Further
+     * uploads wait for a slot.  System property
+     * {@code vespera.streaming.maxRequestProducers}, environment variable
+     * {@code VESPERA_MAX_STREAMING_REQUEST_PRODUCERS}.
+     *
+     * @return {@code false} when the value could not be applied (logged)
+     */
+    public static synchronized boolean configureMaxRequestProducers(int maxProducers) {
+        return VesperaNativeConfig.MAX_REQUEST_PRODUCERS.set(maxProducers, loaded);
+    }
+
+    /**
      * Clear all vespera-bridge buffers retained by the <em>current</em> Java
      * thread. This is for servlet-container shutdown/redeploy hooks that want
      * to release ThreadLocal-held app-class objects and direct buffers from
@@ -400,9 +414,13 @@ public class VesperaBridge {
      * Completing the future off the worker (a {@code spawn_blocking} hand-off)
      * was measured at ~16&times; the per-dispatch cost, so the worker-thread
      * completion is kept and this contract is documented instead &mdash; the same
-     * approach Netty and async HTTP clients take. The autoconfigured Spring proxy
-     * never selects this async path (it uses DIRECT / SYNC / streaming), so this
-     * applies only to callers composing {@link CompletableFuture}s directly.
+     * approach Netty and async HTTP clients take. Inside the bridge this path
+     * is used by the WebFlux proxy ({@link VesperaReactiveProxyHandler}, which
+     * hands the result to its own completion scheduler), by the servlet
+     * proxy's {@link DispatchMode#ASYNC} mode, by SYNC dispatches on virtual
+     * threads that park on the future ({@code ParkingDispatch}) and by
+     * {@link VesperaRequest#sendAsync()}. The contract above applies to every
+     * caller that composes {@link CompletableFuture} stages on the future.
      *
      * @param future        the future to complete with the wire response
      * @param wireRequest   length-prefixed binary wire request

@@ -42,7 +42,7 @@
     {
       "name": "management.health.vespera.enabled",
       "type": "java.lang.Boolean",
-      "description": "Whether to enable the vespera native-library health indicator (UP when the library is loaded and running, OUT_OF_SERVICE after shutdown, DOWN otherwise). Requires Spring Boot Actuator.",
+      "description": "Whether to enable the vespera native-library health indicator (UP when the library is loaded and running, OUT_OF_SERVICE after shutdown, DOWN otherwise). Requires Spring Boot Actuator. When unset, management.health.defaults.enabled applies.",
       "defaultValue": true
     }
   ],

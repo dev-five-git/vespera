@@ -523,6 +523,21 @@ public class VesperaBridgeProperties {
         /** {@code dispatchAsync} in-flight cap ({@code 0} = unlimited, native default 4096). */
         private Integer asyncMaxInFlight;
 
+        /**
+         * Concurrent bidirectional-streaming upload producers on the blocking
+         * pool ({@code 0} = unlimited, native default 256); further uploads
+         * wait for a slot.
+         */
+        private Integer maxRequestProducers;
+
+        public Integer getMaxRequestProducers() {
+            return maxRequestProducers;
+        }
+
+        public void setMaxRequestProducers(Integer maxRequestProducers) {
+            this.maxRequestProducers = maxRequestProducers;
+        }
+
         public Integer getWorkerThreads() {
             return workerThreads;
         }
@@ -621,6 +636,9 @@ public class VesperaBridgeProperties {
             }
             if (asyncMaxInFlight != null) {
                 VesperaBridge.configureAsyncMaxInFlight(asyncMaxInFlight);
+            }
+            if (maxRequestProducers != null) {
+                VesperaBridge.configureMaxRequestProducers(maxRequestProducers);
             }
         }
     }

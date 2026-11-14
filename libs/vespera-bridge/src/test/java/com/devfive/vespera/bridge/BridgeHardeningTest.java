@@ -208,6 +208,20 @@ class BridgeHardeningTest {
     }
 
     @Test
+    void healthIndicatorHonoursTheHealthDefaultsSwitch() {
+        // As Boot's @ConditionalOnEnabledHealthIndicator: defaults off disables it ...
+        runner.withPropertyValues("management.health.defaults.enabled=false")
+                .run(ctx -> assertFalse(ctx.containsBean(VesperaBridgeHealthAutoConfiguration.BEAN_NAME)));
+        // ... unless the vespera-specific key is set, which wins either way.
+        runner.withPropertyValues("management.health.defaults.enabled=false",
+                        "management.health.vespera.enabled=true")
+                .run(ctx -> assertTrue(ctx.containsBean(VesperaBridgeHealthAutoConfiguration.BEAN_NAME)));
+        runner.withPropertyValues("management.health.defaults.enabled=true",
+                        "management.health.vespera.enabled=false")
+                .run(ctx -> assertFalse(ctx.containsBean(VesperaBridgeHealthAutoConfiguration.BEAN_NAME)));
+    }
+
+    @Test
     void healthStatusFollowsInitAndShutdown() throws Exception {
         Field loaded = VesperaBridge.class.getDeclaredField("loaded");
         Field shutDown = VesperaBridge.class.getDeclaredField("shutDown");

@@ -78,7 +78,20 @@ final class ProxyHeaderSource implements VesperaBridge.HeaderSource {
         if (addr == null || addr.isEmpty()) {
             return null;
         }
-        String host = addr.indexOf(':') >= 0 && addr.charAt(0) != '[' ? "[" + addr + "]" : addr;
+        if (addr.charAt(0) == '[' && addr.endsWith("]")) {
+            addr = addr.substring(1, addr.length() - 1);
+        }
+        int zone = addr.indexOf('%');
+        if (zone >= 0 && addr.indexOf(':') >= 0) {
+            // IPv6 scope id (fe80::1%eth0) is not part of a socket address
+            // literal: Rust would reject the whole value (as the WebFlux
+            // source does, see ReactiveHeaderSource#remoteAddr).
+            addr = addr.substring(0, zone);
+        }
+        if (addr.isEmpty()) {
+            return null;
+        }
+        String host = addr.indexOf(':') >= 0 ? "[" + addr + "]" : addr;
         return host + ":" + Math.max(0, request.getRemotePort());
     }
 

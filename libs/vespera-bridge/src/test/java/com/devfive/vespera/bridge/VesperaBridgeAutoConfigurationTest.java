@@ -384,8 +384,11 @@ class VesperaBridgeAutoConfigurationTest {
                             "vespera.bridge.native.max-streaming-request-bytes=0",
                             "vespera.bridge.native.max-buffered-response-bytes=2097152",
                             "vespera.bridge.native.dispatch-timeout=30s",
-                            "vespera.bridge.native.async-max-in-flight=128")
+                            "vespera.bridge.native.async-max-in-flight=128",
+                            "vespera.bridge.native.max-request-producers=32")
                     .run(ctx -> {
+                        assertEquals(32L, pendingValue(VesperaNativeConfig.MAX_REQUEST_PRODUCERS),
+                                "forwarded to the native knob");
                         assertTrue(ctx.containsBean("vesperaBridgeNativeSettings"));
                         VesperaBridgeProperties.Native n =
                                 ctx.getBean(VesperaBridgeProperties.class).getNative();
@@ -396,8 +399,10 @@ class VesperaBridgeAutoConfigurationTest {
                         assertEquals(2097152L, n.getMaxBufferedResponseBytes());
                         assertEquals(30_000L, n.getDispatchTimeout().toMillis());
                         assertEquals(128, n.getAsyncMaxInFlight());
+                        assertEquals(32, n.getMaxRequestProducers());
                     });
         } finally {
+            VesperaNativeConfig.MAX_REQUEST_PRODUCERS.clearPendingForTest();
             VesperaNativeConfig.RUNTIME_WORKER_THREADS.clearPendingForTest();
             VesperaNativeConfig.RUNTIME_MAX_BLOCKING_THREADS.clearPendingForTest();
             VesperaNativeConfig.MAX_REQUEST_BYTES.clearPendingForTest();
@@ -406,6 +411,12 @@ class VesperaBridgeAutoConfigurationTest {
             VesperaNativeConfig.DISPATCH_TIMEOUT_MILLIS.clearPendingForTest();
             VesperaNativeConfig.ASYNC_MAX_IN_FLIGHT.clearPendingForTest();
         }
+    }
+
+    private static Long pendingValue(VesperaNativeConfig.Knob knob) throws Exception {
+        java.lang.reflect.Field pending = VesperaNativeConfig.Knob.class.getDeclaredField("pending");
+        pending.setAccessible(true);
+        return (Long) pending.get(knob);
     }
 
     @Test
