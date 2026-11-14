@@ -1,0 +1,17 @@
+error: route `/a/{x}/{y}/{z}` has 3 path parameters but `Path<(u32, u32)>` extracts 2 values
+  --> tests/ui/route_path_extractor_mismatch.rs:25:34
+   |
+25 | pub async fn tuple_too_short(_p: Path<(u32, u32)>) {}
+   |                                  ^^^^^^^^^^^^^^^^
+
+error: route `/{a}/{b}` has 2 path parameters but `Path<u32>` extracts 1 value
+  --> tests/ui/route_path_extractor_mismatch.rs:28:33
+   |
+28 | pub async fn scalar_for_two(_p: Path<u32>) {}
+   |                                 ^^^^^^^^^
+
+error: route `/{id}/{extra}` has the path parameter `{extra}`, but `Path<StrictId>` has no field for it and denies unknown fields
+  --> tests/ui/route_path_extractor_mismatch.rs:31:48
+   |
+31 | pub async fn strict_struct_unknown_segment(_p: Path<StrictId>) {}
+   |                                                ^^^^^^^^^^^^^^
