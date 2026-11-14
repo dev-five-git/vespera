@@ -52,13 +52,10 @@ pub(super) fn process_fields<'a>(
         let ty = &field.ty;
         let is_vec = is_vec_type(ty);
         let is_option = is_option_type(ty);
-        let form = match parse_form_data(&field.attrs) {
-            Ok(form) => form,
-            Err(err) => {
-                cg.errors.push(err);
-                FormDataAttrs::default()
-            }
-        };
+        let form = parse_form_data(&field.attrs).unwrap_or_else(|err| {
+            cg.errors.push(err);
+            FormDataAttrs::default()
+        });
         let default_kind = resolve_default_kind(&field.attrs, form.default, struct_default);
 
         // `#[serde(skip)]` / `skip_deserializing`: serde never reads the
