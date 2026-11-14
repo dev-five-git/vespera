@@ -18,7 +18,7 @@ jni = "0.22"
 # `time`: the shared runtime must run a timer driver — the per-dispatch
 # deadline (`VESPERA_DISPATCH_TIMEOUT_MS`) and the bounded request-producer
 # join are timer-based.  (`vespera_inprocess` already enables it.)
-tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tokio = { version = "1.44", features = ["rt-multi-thread", "time"] }
 # `FutureExt::catch_unwind` for the async dispatch panic-isolation path
 # (replaces a redundant second `tokio::spawn`).  Already in the workspace
 # dependency tree via tokio/axum/tower, so this adds no new crate to the
@@ -27,12 +27,12 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # Optional high-performance global allocator for the final cdylib.
 # Opt-in because #[global_allocator] is process-wide and must be the
 # embedding crate's decision.
-mimalloc = { version = "0.1", optional = true }
+mimalloc = { version = "0.1.43", optional = true }
 
 [dev-dependencies]
 # Shared-runtime regression test routes (test-only, never in the cdylib).
-axum = { version = "0.8", default-features = false, features = ["tokio"] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+axum = { version = "0.8.4", default-features = false, features = ["tokio"] }
+tokio = { version = "1.44", features = ["rt-multi-thread", "sync", "time"] }
 rstest = "0.28"
 
 [features]
