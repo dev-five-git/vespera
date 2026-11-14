@@ -329,7 +329,7 @@ pub fn file_path_to_module_path(file_path: &Path, src_dir: &Path) -> Vec<String>
     // `src/bin/` (`bin/tool.rs`, `bin/tool/main.rs`).
     let is_root = match names.as_slice() {
         [file] => file == "main.rs" || file == "lib.rs",
-        [bin, file] => bin == "bin" && file.ends_with(".rs"),
+        [bin, file] => bin == "bin" && Path::new(file).extension().is_some_and(|ext| ext == "rs"),
         [bin, _, file] => bin == "bin" && file == "main.rs",
         _ => false,
     };
@@ -399,7 +399,7 @@ fn schema_path_segments(path_str: &str, strip_schema: bool) -> Vec<&str> {
     path_str
         .split("::")
         .map(str::trim)
-        .filter(|s| !s.is_empty() && !(strip_schema && *s == "Schema"))
+        .filter(|s| !(s.is_empty() || (strip_schema && *s == "Schema")))
         .collect()
 }
 

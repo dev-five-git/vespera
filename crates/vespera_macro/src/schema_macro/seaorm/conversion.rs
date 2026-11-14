@@ -54,7 +54,7 @@ mod tests {
             },
         });
         let tokens = convert_type_with_chrono(&ty, &[]);
-        assert!(tokens.to_string().trim().is_empty());
+        assert_eq!(tokens.to_string().trim(), "");
     }
 
     #[rstest]

@@ -21,6 +21,8 @@ pub struct SchemaInput {
     pub omit: Option<Vec<String>>,
     /// Fields to pick (include only these fields)
     pub pick: Option<Vec<String>>,
+    /// Where each `omit` / `pick` name was written.
+    pub spans: ParamSpans,
 }
 
 impl Parse for SchemaInput {
@@ -31,6 +33,7 @@ impl Parse for SchemaInput {
 
         let mut omit = None;
         let mut pick = None;
+        let mut spans = ParamSpans::default();
 
         // Parse optional parameters
         while input.peek(Token![,]) {
@@ -54,11 +57,17 @@ impl Parse for SchemaInput {
                             "duplicate parameter `omit` in schema! invocation",
                         ));
                     }
+                    if pick.is_some() {
+                        return Err(both_filters_error(ident.span()));
+                    }
                     input.parse::<Token![=]>()?;
                     let content;
                     let _ = bracketed!(content in input);
                     let fields: Punctuated<LitStr, Token![,]> = content
                         .parse_terminated(syn::parse::ParseBuffer::parse::<LitStr>, Token![,])?;
+                    for lit in &fields {
+                        spans.record("omit", lit);
+                    }
                     omit = Some(fields.into_iter().map(|s| s.value()).collect());
                 }
                 "pick" => {
@@ -68,11 +77,17 @@ impl Parse for SchemaInput {
                             "duplicate parameter `pick` in schema! invocation",
                         ));
                     }
+                    if omit.is_some() {
+                        return Err(both_filters_error(ident.span()));
+                    }
                     input.parse::<Token![=]>()?;
                     let content;
                     let _ = bracketed!(content in input);
                     let fields: Punctuated<LitStr, Token![,]> = content
                         .parse_terminated(syn::parse::ParseBuffer::parse::<LitStr>, Token![,])?;
+                    for lit in &fields {
+                        spans.record("pick", lit);
+                    }
                     pick = Some(fields.into_iter().map(|s| s.value()).collect());
                 }
                 _ => {
@@ -84,16 +99,21 @@ impl Parse for SchemaInput {
             }
         }
 
-        // Validate: can't use both omit and pick
-        if omit.is_some() && pick.is_some() {
-            return Err(syn::Error::new(
-                input.span(),
-                "schema! macro: cannot use both `omit` and `pick` in the same invocation. Use one or the other to filter fields.",
-            ));
-        }
-
-        Ok(Self { ty, omit, pick })
+        Ok(Self {
+            ty,
+            omit,
+            pick,
+            spans,
+        })
     }
+}
+
+/// `schema!` given both filters: reported at the second one.
+fn both_filters_error(span: proc_macro2::Span) -> syn::Error {
+    syn::Error::new(
+        span,
+        "schema! macro: cannot use both `omit` and `pick` in the same invocation. Use one or the other to filter fields.",
+    )
 }
 
 /// Input for the `schema_type`! macro
@@ -145,6 +165,31 @@ pub struct SchemaTypeInput {
     /// Whether to omit fields that have database defaults (sea_orm `default_value` or `primary_key`).
     /// Use `omit_default` bare keyword to set this to true.
     pub omit_default: bool,
+    /// Where each field name of the field-list parameters was written, so
+    /// a diagnostic about one points at its literal.
+    pub spans: ParamSpans,
+}
+
+/// The source spans of the field names `schema_type!` was given, keyed by
+/// parameter (`omit`, `pick`, `partial`, `rename`, `rename_to`, `add`,
+/// `relation_adapters`) and name.
+#[derive(Clone, Debug, Default)]
+pub struct ParamSpans {
+    fields: Vec<(&'static str, String, proc_macro2::Span)>,
+}
+
+impl ParamSpans {
+    fn record(&mut self, param: &'static str, lit: &LitStr) {
+        self.fields.push((param, lit.value(), lit.span()));
+    }
+
+    /// The span of `name` as written in `param` (`None` when it was not).
+    pub fn field(&self, param: &str, name: &str) -> Option<proc_macro2::Span> {
+        self.fields
+            .iter()
+            .find(|(p, n, _)| *p == param && n == name)
+            .map(|(_, _, span)| *span)
+    }
 }
 
 /// Mode for the `partial` keyword in `schema_type`!
@@ -158,7 +203,7 @@ pub enum PartialMode {
 
 /// Helper struct to parse an add field: ("`field_name"`: Type)
 struct AddField {
-    name: String,
+    name: LitStr,
     ty: Type,
 }
 
@@ -169,17 +214,14 @@ impl Parse for AddField {
         let name: LitStr = content.parse()?;
         content.parse::<Token![:]>()?;
         let ty: Type = content.parse()?;
-        Ok(Self {
-            name: name.value(),
-            ty,
-        })
+        Ok(Self { name, ty })
     }
 }
 
 /// Helper struct to parse a rename pair: ("`old_name`", "`new_name`")
 struct RenamePair {
-    from: String,
-    to: String,
+    from: LitStr,
+    to: LitStr,
 }
 
 impl Parse for RenamePair {
@@ -189,16 +231,13 @@ impl Parse for RenamePair {
         let from: LitStr = content.parse()?;
         content.parse::<Token![,]>()?;
         let to: LitStr = content.parse()?;
-        Ok(Self {
-            from: from.value(),
-            to: to.value(),
-        })
+        Ok(Self { from, to })
     }
 }
 
 /// Helper struct to parse a relation adapter pair: ("`field_name`", AdapterIdent)
 struct RelationAdapterPair {
-    field_name: String,
+    field_name: LitStr,
     adapter: Ident,
 }
 
@@ -210,7 +249,7 @@ impl Parse for RelationAdapterPair {
         content.parse::<Token![,]>()?;
         let adapter: Ident = content.parse()?;
         Ok(Self {
-            field_name: field_name.value(),
+            field_name,
             adapter,
         })
     }
@@ -248,6 +287,7 @@ impl Parse for SchemaTypeInput {
         let mut rename_all = None;
         let mut multipart = false;
         let mut omit_default = false;
+        let mut spans = ParamSpans::default();
         // Reject a repeated parameter (e.g. `pick = .., pick = ..` or a bare
         // `partial, partial`) with a spanned error instead of letting the
         // later value silently overwrite the earlier one.
@@ -271,21 +311,29 @@ impl Parse for SchemaTypeInput {
             }
 
             match ident_str.as_str() {
-                "omit" => {
+                "omit" | "pick" => {
+                    // The second of the two is the conflicting one.
+                    if omit.is_some() || pick.is_some() {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "schema_type! macro: cannot use both `omit` and `pick` in the same invocation. Use one or the other to filter fields.",
+                        ));
+                    }
                     input.parse::<Token![=]>()?;
                     let content;
                     let _ = bracketed!(content in input);
                     let fields: Punctuated<LitStr, Token![,]> = content
                         .parse_terminated(syn::parse::ParseBuffer::parse::<LitStr>, Token![,])?;
-                    omit = Some(fields.into_iter().map(|s| s.value()).collect());
-                }
-                "pick" => {
-                    input.parse::<Token![=]>()?;
-                    let content;
-                    let _ = bracketed!(content in input);
-                    let fields: Punctuated<LitStr, Token![,]> = content
-                        .parse_terminated(syn::parse::ParseBuffer::parse::<LitStr>, Token![,])?;
-                    pick = Some(fields.into_iter().map(|s| s.value()).collect());
+                    let param = if ident_str == "omit" { "omit" } else { "pick" };
+                    for lit in &fields {
+                        spans.record(param, lit);
+                    }
+                    let names = Some(fields.into_iter().map(|s| s.value()).collect());
+                    if param == "omit" {
+                        omit = names;
+                    } else {
+                        pick = names;
+                    }
                 }
                 "rename" => {
                     input.parse::<Token![=]>()?;
@@ -293,7 +341,16 @@ impl Parse for SchemaTypeInput {
                     let _ = bracketed!(content in input);
                     let pairs: Punctuated<RenamePair, Token![,]> =
                         content.parse_terminated(RenamePair::parse, Token![,])?;
-                    rename = Some(pairs.into_iter().map(|p| (p.from, p.to)).collect());
+                    for pair in &pairs {
+                        spans.record("rename", &pair.from);
+                        spans.record("rename_to", &pair.to);
+                    }
+                    rename = Some(
+                        pairs
+                            .into_iter()
+                            .map(|p| (p.from.value(), p.to.value()))
+                            .collect(),
+                    );
                 }
                 "relation_adapters" => {
                     input.parse::<Token![=]>()?;
@@ -301,9 +358,12 @@ impl Parse for SchemaTypeInput {
                     let _ = bracketed!(content in input);
                     let pairs: Punctuated<RelationAdapterPair, Token![,]> =
                         content.parse_terminated(RelationAdapterPair::parse, Token![,])?;
+                    for pair in &pairs {
+                        spans.record("relation_adapters", &pair.field_name);
+                    }
                     relation_adapters = pairs
                         .into_iter()
-                        .map(|p| (p.field_name, p.adapter))
+                        .map(|p| (p.field_name.value(), p.adapter))
                         .collect();
                 }
                 "add" => {
@@ -312,7 +372,10 @@ impl Parse for SchemaTypeInput {
                     let _ = bracketed!(content in input);
                     let fields: Punctuated<AddField, Token![,]> =
                         content.parse_terminated(AddField::parse, Token![,])?;
-                    add = Some(fields.into_iter().map(|f| (f.name, f.ty)).collect());
+                    for field in &fields {
+                        spans.record("add", &field.name);
+                    }
+                    add = Some(fields.into_iter().map(|f| (f.name.value(), f.ty)).collect());
                 }
                 "clone" => {
                     input.parse::<Token![=]>()?;
@@ -329,6 +392,9 @@ impl Parse for SchemaTypeInput {
                             syn::parse::ParseBuffer::parse::<LitStr>,
                             Token![,],
                         )?;
+                        for lit in &fields {
+                            spans.record("partial", lit);
+                        }
                         partial = Some(PartialMode::Fields(
                             fields.into_iter().map(|s| s.value()).collect(),
                         ));
@@ -373,14 +439,6 @@ impl Parse for SchemaTypeInput {
             }
         }
 
-        // Validate: can't use both omit and pick
-        if omit.is_some() && pick.is_some() {
-            return Err(syn::Error::new(
-                input.span(),
-                "schema_type! macro: cannot use both `omit` and `pick` in the same invocation. Use one or the other to filter fields.",
-            ));
-        }
-
         let parsed = Self {
             new_type,
             source_type,
@@ -396,6 +454,7 @@ impl Parse for SchemaTypeInput {
             rename_all,
             multipart,
             omit_default,
+            spans,
         };
         Ok(parsed)
     }
@@ -431,9 +490,16 @@ mod tests {
 
     #[test]
     fn test_parse_schema_input_omit_and_pick_error() {
-        let tokens = quote::quote!(User, omit = ["a"], pick = ["b"]);
-        let result: syn::Result<SchemaInput> = syn::parse2(tokens);
-        assert!(result.is_err());
+        // Either order is rejected (at the second filter).
+        for tokens in [
+            quote::quote!(User, omit = ["a"], pick = ["b"]),
+            quote::quote!(User, pick = ["a"], omit = ["b"]),
+        ] {
+            let Err(err) = syn::parse2::<SchemaInput>(tokens) else {
+                panic!("omit + pick must be rejected");
+            };
+            assert!(err.to_string().contains("cannot use both"), "{err}");
+        }
     }
 
     #[test]

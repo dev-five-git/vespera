@@ -495,9 +495,9 @@ fn renamed_field_follows_each_rename_all_side() {
     r#"#[serde(default = "::other::f")]"#
 )]
 #[case::not_a_path_kept(r#"#[serde(default = "1 + 2")]"#, r#"#[serde(default = "1 + 2")]"#)]
-#[case::flag_kept(r#"#[serde(default)]"#, r#"#[serde(default)]"#)]
-#[case::non_string_kept(r#"#[serde(default = 1)]"#, r#"#[serde(default = 1)]"#)]
-#[case::unparseable_kept(r#"#[serde(default = )]"#, r#"#[serde(default = )]"#)]
+#[case::flag_kept("#[serde(default)]", "#[serde(default)]")]
+#[case::non_string_kept("#[serde(default = 1)]", "#[serde(default = 1)]")]
+#[case::unparseable_kept("#[serde(default = )]", "#[serde(default = )]")]
 #[case::other_attr(
     r#"#[schema(default = "default_name")]"#,
     r#"#[schema(default = "default_name")]"#

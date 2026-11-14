@@ -1,13 +1,17 @@
 error: schema! macro: cannot use both `omit` and `pick` in the same invocation. Use one or the other to filter fields.
-  --> tests/ui/schema_macro_omit_and_pick.rs:18:13
+  --> tests/ui/schema_macro_omit_and_pick.rs:18:42
    |
 18 |     let _ = schema!(User, omit = ["id"], pick = ["name"]);
-   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   |
-   = note: this error originates in the macro `schema` (in Nightly builds, run with -Z macro-backtrace for more info)
+   |                                          ^^^^
 
 error: unknown parameter: `only`. Expected `omit` or `pick`
   --> tests/ui/schema_macro_omit_and_pick.rs:22:27
    |
 22 |     let _ = schema!(User, only = ["id"]);
    |                           ^^^^
+
+error: field `nmae` does not exist in the schema of `User`. Available fields: ["id", "name"]
+  --> tests/ui/schema_macro_omit_and_pick.rs:26:35
+   |
+26 |     let _ = schema!(User, omit = ["nmae"]);
+   |                                   ^^^^^^

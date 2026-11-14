@@ -628,6 +628,7 @@ fn test_generate_schema_type_code_preserves_struct_doc() {
         rename_all: None,
         multipart: false,
         omit_default: false,
+        spans: crate::schema_macro::input::ParamSpans::default(),
     };
     let struct_def = StructMetadata {
         name: "User".to_string(),

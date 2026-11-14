@@ -144,6 +144,7 @@ mod tests {
 
     use super::*;
 
+    #[allow(clippy::needless_pass_by_value)]
     fn field(attrs: TokenStream) -> Vec<syn::Attribute> {
         let field: syn::Field = syn::parse::Parser::parse2(
             syn::Field::parse_named,

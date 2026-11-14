@@ -97,10 +97,8 @@ pub fn is_sql_function_default(value: &str) -> bool {
 /// default for a primary key is auto-increment).
 pub fn has_sea_orm_primary_key(attrs: &[syn::Attribute]) -> bool {
     let entries = sea_orm_entries(attrs);
-    let is_pk = entry(&entries, "primary_key").is_some_and(|pk| match &pk.value {
-        None => true,
-        Some(expr) => is_true(expr),
-    });
+    let is_pk =
+        entry(&entries, "primary_key").is_some_and(|pk| pk.value.as_ref().is_none_or(is_true));
     let auto_increment = entry(&entries, "auto_increment")
         .and_then(|e| e.value.as_ref())
         .is_none_or(is_true);

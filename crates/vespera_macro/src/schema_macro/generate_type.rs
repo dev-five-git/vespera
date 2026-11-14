@@ -4,7 +4,7 @@
 //! `SchemaTypeInput` (parsed `schema_type!` invocation) into the generated
 //! struct, `From`/`from_model` impls, inline circular types, and metadata.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -21,6 +21,7 @@ use super::inline_types::{
     generate_inline_type_definition,
 };
 use super::input::{PartialMode, SchemaTypeInput};
+use super::instantiate::instantiate;
 use super::module_scope::segment_ident as field_ident;
 use super::same_file_override::maybe_generate_same_file_relation_override;
 use super::seaorm::{
@@ -38,8 +39,9 @@ use super::type_utils::{
     is_seaorm_relation_type,
 };
 use super::validation::{
-    extract_source_field_names, validate_add_field_idents, validate_omit_fields,
-    validate_partial_fields, validate_pick_fields, validate_rename_fields,
+    ErrorAt, SpannedSource, extract_source_field_names, validate_add_field_idents,
+    validate_included, validate_omit_fields, validate_partial_fields, validate_pick_fields,
+    validate_relation_adapters, validate_rename_fields,
 };
 use crate::metadata::StructMetadata;
 use crate::parser::strip_raw_prefix_owned;
@@ -128,34 +130,47 @@ pub fn generate_schema_type_code(
             ),
         ));
     }
+    // A generic source takes the call's type arguments (`Page<User>`).
+    let parsed_struct = instantiate(&parsed_struct, &input.source_type, "schema_type!")?;
 
     // Extract all field names from source struct for validation
     // Include relation fields since they can be converted to Schema types
     let source_field_names = extract_source_field_names(&parsed_struct);
 
-    // Validate all field references exist in source struct
+    // Validate all field references exist in source struct; a diagnostic
+    // points at the offending name's literal.
+    let at = SpannedSource {
+        source_type: &input.source_type,
+        spans: &input.spans,
+    };
     validate_pick_fields(
         input.pick.as_ref(),
         &source_field_names,
-        &input.source_type,
+        &at,
         &source_type_name,
     )?;
     validate_omit_fields(
         input.omit.as_ref(),
         &source_field_names,
-        &input.source_type,
+        &at,
         &source_type_name,
     )?;
     validate_rename_fields(
         input.rename.as_ref(),
         &source_field_names,
-        &input.source_type,
+        &at,
+        &source_type_name,
+    )?;
+    validate_relation_adapters(
+        &input.relation_adapters,
+        &source_field_names,
+        &at,
         &source_type_name,
     )?;
     // `add` field names also become struct identifiers via `syn::Ident::new`
     // downstream, so reject a non-identifier / keyword name here as a spanned
     // error instead of panicking the proc-macro during expansion.
-    validate_add_field_idents(input.add.as_ref(), &input.source_type)?;
+    validate_add_field_idents(input.add.as_ref(), &at)?;
     let partial_fields_to_validate = match &input.partial {
         Some(PartialMode::Fields(fields)) => Some(fields),
         _ => None,
@@ -163,13 +178,40 @@ pub fn generate_schema_type_code(
     validate_partial_fields(
         partial_fields_to_validate,
         &source_field_names,
-        &input.source_type,
+        &at,
         &source_type_name,
     )?;
 
     // Build filter sets and rename map
     let omit_set = build_omit_set(input.omit.as_ref());
     let pick_set = build_pick_set(input.pick.as_ref());
+    validate_included(
+        "rename",
+        input.rename.iter().flatten().map(|(from, _)| from.as_str()),
+        &omit_set,
+        &pick_set,
+        &at,
+    )?;
+    validate_included(
+        "partial",
+        partial_fields_to_validate
+            .into_iter()
+            .flatten()
+            .map(String::as_str),
+        &omit_set,
+        &pick_set,
+        &at,
+    )?;
+    validate_included(
+        "relation_adapters",
+        input
+            .relation_adapters
+            .iter()
+            .map(|(field, _)| field.as_str()),
+        &omit_set,
+        &pick_set,
+        &at,
+    )?;
     let (partial_all, partial_set) = build_partial_config(&input.partial);
     let rename_map = build_rename_map(input.rename.as_ref());
 
@@ -237,6 +279,8 @@ pub fn generate_schema_type_code(
         .fields
         .iter()
         .any(|field| carried_field_attrs(&field.attrs, schema_derived).garde);
+    // The `relation_adapters` entries a HasOne / BelongsTo field used.
+    let mut used_adapters: HashSet<String> = HashSet::new();
 
     if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
         for field in &fields_named.named {
@@ -348,6 +392,7 @@ pub fn generate_schema_type_code(
                                     )?;
                                 relation_override_helpers.push(helper_tokens);
                                 rel_info.adapter = true;
+                                used_adapters.insert(rust_field_name.clone());
                                 (Box::new(override_field_ty), Some(rel_info))
                             } else
                             // Check for circular references and potentially use inline type
@@ -590,6 +635,23 @@ pub fn generate_schema_type_code(
             metadata_field_tokens.push(quote! { #metadata_only #emitted });
         }
     }
+    // An adapter only replaces an included HasOne / BelongsTo relation: one
+    // for a plain field, a HasMany, or in `multipart` mode used to be
+    // silently ignored.
+    if let Some((field, _)) = input
+        .relation_adapters
+        .iter()
+        .find(|(field, _)| !used_adapters.contains(field))
+    {
+        return Err(at.error_at(
+            "relation_adapters",
+            field,
+            format!(
+                "`relation_adapters`: field `{field}` of `{source_type_name}` is not a HasOne / BelongsTo SeaORM relation this type includes{}",
+                if input.multipart { " (`multipart` types carry no relations)" } else { "" }
+            ),
+        ));
+    }
 
     // Add new fields from `add` parameter
     let add_garde_skip = any_garde.then(|| quote! { #[garde(skip)] });
@@ -770,3 +832,5 @@ pub fn generate_schema_type_code(
 mod tests;
 #[cfg(test)]
 mod tests_field_attrs;
+#[cfg(test)]
+mod tests_refs;

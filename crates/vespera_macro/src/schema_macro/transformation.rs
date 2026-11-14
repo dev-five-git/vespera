@@ -322,7 +322,6 @@ fn reroot_path(path: &str, module_path: &[String]) -> Option<String> {
 }
 
 /// The function / module path of a `with = "..."`-style key (`None` when it
-
 /// is not a string path; the key is then dropped).
 fn codec_path(meta: &syn::Meta) -> Option<syn::ExprPath> {
     let syn::Meta::NameValue(nv) = meta else {
@@ -415,12 +414,6 @@ pub fn extract_doc_attrs(attrs: &[syn::Attribute]) -> Vec<&syn::Attribute> {
         .collect()
 }
 
-/// Determines the effective `rename_all` strategy.
-///
-/// Priority:
-/// 1. If `input.rename_all` is specified, use it
-/// 2. Else if source has `rename_all`, use it
-/// 3. Else default to "camelCase"
 /// The DTO's `rename_all` per serde side. A source with
 /// `#[serde(rename_all(serialize = "..", deserialize = ".."))]` keeps both
 /// sides (it used to collapse to the serialize side); `None` = no renaming.
@@ -463,6 +456,12 @@ impl RenameAll {
     }
 }
 
+/// Determines the effective `rename_all` strategy.
+///
+/// Priority:
+/// 1. If `input.rename_all` is specified, use it
+/// 2. Else if source has `rename_all`, use it
+/// 3. Else default to "camelCase"
 pub fn determine_rename_all(
     input_rename_all: Option<&String>,
     source_attrs: &[syn::Attribute],

@@ -14,6 +14,7 @@ mod from_model;
 mod generate_type;
 mod inline_types;
 mod input;
+mod instantiate;
 mod module_scope;
 mod same_file_override;
 mod seaorm;
@@ -27,7 +28,7 @@ pub use input::{SchemaInput, SchemaTypeInput};
 
 use std::collections::{HashMap, HashSet};
 
-use codegen::generate_filtered_schema;
+use codegen::{generate_filtered_schema, validate_filter_names};
 use proc_macro2::TokenStream;
 use type_utils::extract_type_name;
 
@@ -52,6 +53,9 @@ pub fn generate_schema_code(
                 format!("failed to parse struct definition for `{type_name}`: {e}"),
             )
         })?;
+
+    let parsed_struct = instantiate::instantiate(&parsed_struct, &input.ty, "schema!")?;
+    validate_filter_names(&parsed_struct, input, &type_name)?;
 
     // Build omit set
     let omit_set: HashSet<String> = input.omit.iter().flatten().cloned().collect();
