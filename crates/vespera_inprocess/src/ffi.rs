@@ -12,7 +12,7 @@
 //! | `vespera_abi_version()` | [`VESPERA_ABI_VERSION`] the library was built with |
 //! | `vespera_init()` | register apps + start the shared runtime (idempotent) |
 //! | `vespera_dispatch(req, len, &out, &out_len)` | wire in → Rust-allocated wire out |
-//! | `vespera_dispatch_into(req, len, buf, cap, &written)` | wire in → caller buffer; overflow reports the required size |
+//! | `vespera_dispatch_into(req, len, buf, cap, &written)` | wire in → caller buffer; overflow reports the required size (an `out` below [`MIN_DIRECT_OUT_BYTES`] is answered without dispatching) |
 //! | `vespera_dispatch_async(req, len, cb, user_data)` | wire in → `cb(user_data, out, out_len)` exactly once (`503` over the in-flight cap) |
 //! | `vespera_free(ptr, len)` | release a Rust-allocated response |
 //! | `vespera_shutdown(timeout_ms)` | drain + stop the shared runtime (irreversible) |
@@ -35,7 +35,9 @@ use crate::runtime::{
     AsyncPermit, RuntimeLease, async_overloaded_wire, block_on_shared_runtime, runtime,
     runtime_unavailable_wire, shutdown_runtime, try_acquire_async_permit,
 };
-use crate::{DirectWriteResult, check_ingress_cap, error_wire, panic_error_wire};
+use crate::{
+    DirectWriteResult, MIN_DIRECT_OUT_BYTES, check_ingress_cap, error_wire, panic_error_wire,
+};
 
 // `vespera_configure_*`: the C twins of the JNI `configure*0` hooks.
 pub mod configure;
@@ -53,7 +55,8 @@ pub const VESPERA_ABI_VERSION: u32 = 1;
 /// Success (a wire response was produced).
 pub const VESPERA_OK: c_int = 0;
 /// `vespera_dispatch_into`: the response did not fit; `*written` holds the
-/// required size.
+/// size that run needed (exactly [`MIN_DIRECT_OUT_BYTES`] when `out` was
+/// smaller than that and the handler did not run).
 pub const VESPERA_OVERFLOW: c_int = 1;
 /// A required pointer was NULL, a size was out of range, or buffers overlap.
 pub const VESPERA_ERR_INVALID_ARGUMENT: c_int = -1;
@@ -202,7 +205,10 @@ pub unsafe extern "C" fn vespera_dispatch(
 /// 0`); `out` must be writable for `out_capacity` bytes (or
 /// `out_capacity == 0`); `written` must be NULL or valid for one write.
 /// The request and output buffers must not overlap (checked: overlapping
-/// ranges are rejected).
+/// ranges are rejected).  An `out_capacity` below [`MIN_DIRECT_OUT_BYTES`]
+/// (including the NULL / 0 size probe) is answered with
+/// [`VESPERA_OVERFLOW`] and `*written = MIN_DIRECT_OUT_BYTES` without
+/// dispatching.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vespera_dispatch_into(
     request: *const u8,
@@ -211,20 +217,33 @@ pub unsafe extern "C" fn vespera_dispatch_into(
     out_capacity: usize,
     written: *mut usize,
 ) -> c_int {
+    // A `request_len` above `isize::MAX` is answered with a `400` wire (no
+    // buffer can be that large), so it takes no part in the overlap test:
+    // the outcome must not depend on where the buffers happen to live.
+    let request_extent = if isize::try_from(request_len).is_ok() {
+        request_len
+    } else {
+        0
+    };
     if written.is_null()
         || (out.is_null() && out_capacity != 0)
         || isize::try_from(out_capacity).is_err()
-        || ranges_overlap(request.addr(), request_len, out.addr(), out_capacity)
+        || ranges_overlap(request.addr(), request_extent, out.addr(), out_capacity)
     {
         return VESPERA_ERR_INVALID_ARGUMENT;
     }
-    let out: &mut [u8] = if out_capacity == 0 {
-        &mut []
-    } else {
-        // SAFETY: non-NULL, `out_capacity <= isize::MAX`, writable per the
-        // contract and disjoint from `request` (checked above).
-        unsafe { std::slice::from_raw_parts_mut(out, out_capacity) }
-    };
+    if out_capacity < MIN_DIRECT_OUT_BYTES {
+        // Never dispatch into a buffer a synthesized error (panic `500`,
+        // `504`, `503`) could overflow: the caller's retry would re-run the
+        // handler.  The NULL / 0 size probe lands here too.
+        // SAFETY: non-NULL (checked above), valid for a write per the contract.
+        unsafe { written.write(MIN_DIRECT_OUT_BYTES) };
+        return VESPERA_OVERFLOW;
+    }
+    // SAFETY: non-NULL (`out_capacity >= MIN_DIRECT_OUT_BYTES > 0`),
+    // `out_capacity <= isize::MAX`, writable per the contract and disjoint
+    // from `request` (checked above).
+    let out: &mut [u8] = unsafe { std::slice::from_raw_parts_mut(out, out_capacity) };
     // SAFETY: the caller's contract on `request`.
     let input = unsafe { request_slice(request, request_len) };
     let result = catch_unwind(AssertUnwindSafe(|| dispatch_direct(input, &mut *out)))
@@ -551,5 +570,70 @@ mod tests {
         assert!(out.is_null());
         assert_eq!((out_len, written), (0, 0));
         assert_eq!(vespera_abi_version(), VESPERA_ABI_VERSION);
+    }
+
+    /// An `out` below `MIN_DIRECT_OUT_BYTES` (the NULL / 0 size probe
+    /// included) is answered with `OVERFLOW` + exactly the minimum, without
+    /// dispatching — the request is not even looked at.
+    #[test]
+    fn undersized_out_overflows_without_dispatching() {
+        let mut buf = [0xAAu8; 16];
+        let mut written = 0usize;
+        // SAFETY: live, disjoint buffers; a NULL request with a non-zero
+        // length is never read on this path.
+        unsafe {
+            assert_eq!(
+                vespera_dispatch_into(
+                    std::ptr::null(),
+                    7,
+                    buf.as_mut_ptr(),
+                    buf.len(),
+                    &raw mut written
+                ),
+                VESPERA_OVERFLOW
+            );
+            assert_eq!(written, MIN_DIRECT_OUT_BYTES);
+            written = 0;
+            assert_eq!(
+                vespera_dispatch_into(
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null_mut(),
+                    0,
+                    &raw mut written
+                ),
+                VESPERA_OVERFLOW
+            );
+        }
+        assert_eq!(written, MIN_DIRECT_OUT_BYTES);
+        assert_eq!(buf, [0xAAu8; 16]);
+    }
+
+    /// A `request_len` above `isize::MAX` is a `400` wire whatever the
+    /// buffer addresses: it never counts as overlapping `out`.
+    #[test]
+    fn oversized_request_len_is_a_400_not_an_overlap() {
+        let mut buf = vec![0u8; MIN_DIRECT_OUT_BYTES];
+        let mut written = 0usize;
+        let out = buf.as_mut_ptr();
+        // SAFETY: `request` aliases `out` but its length is rejected before
+        // any read; `out` is live for its capacity.
+        let code = unsafe {
+            vespera_dispatch_into(
+                out.cast_const(),
+                usize::MAX,
+                out,
+                buf.len(),
+                &raw mut written,
+            )
+        };
+        assert_eq!(code, VESPERA_OK);
+        let wire = &buf[..written];
+        assert!(wire.ends_with(REQUEST_LEN_TOO_LARGE_MSG.as_bytes()));
+        assert!(
+            std::str::from_utf8(wire)
+                .unwrap()
+                .contains("\"status\":400")
+        );
     }
 }

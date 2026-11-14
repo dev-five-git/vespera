@@ -2,9 +2,9 @@
 //! ([`vespera_inprocess::dispatch_from_bytes`]).
 //!
 //! NOTE: this test binary does NOT call `register_app`, so the
-//! happy-path "unknown app" check naturally produces a 500.  All other
-//! checks fail BEFORE the app lookup so the absence of a router is
-//! orthogonal.
+//! happy-path "unknown app" check naturally produces a 404 ("no app
+//! registered").  All other checks fail BEFORE the app lookup so the
+//! absence of a router is orthogonal.
 
 use serde_json::Value;
 use tokio::runtime::Builder;
