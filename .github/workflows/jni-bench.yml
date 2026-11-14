@@ -35,6 +35,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          min-wrapper-count: 3
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: 'temurin'
@@ -42,8 +45,9 @@ jobs:
           cache: 'gradle'
       - uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
       - name: Build rust-jni-demo cdylib (release)
-        # mimalloc is opt-in; the bench numbers reflect the default
-        # allocator unless the cdylib is built with --features mimalloc.
+        # mimalloc is default-on for JNI cdylibs (vespera's default
+        # `mimalloc` feature, which rust-jni-demo keeps), so the numbers
+        # reflect mimalloc, not the system allocator.
         run: cargo build -p rust-jni-demo --release
       - name: Make gradlew executable
         run: |
@@ -82,18 +86,20 @@ jobs:
             echo ''
             echo '### Noise-robust ratios'
             echo '```'
-            grep -hoE 'VESPERA_BENCH summary[^<]*' \
-              examples/rust-jni-demo/java/demo-app/build/test-results/test/*.xml \
-              | sort -u || echo '(no ratio summary captured)'
+            # The fallback must follow grep itself: after `| sort -u` it
+            # would test sort's (always 0) status and never print.
+            { grep -hoE 'VESPERA_BENCH summary[^<]*' \
+                examples/rust-jni-demo/java/demo-app/build/test-results/test/*.xml \
+                || echo '(no ratio summary captured)'; } | sort -u
             echo '```'
             echo '### All bench lines'
             echo '```'
             # Bench lines (VESPERA_BENCH / ALLOC / CONC / JFR_LOAD) are
             # captured in the JUnit XML <system-out>; pull them out for a
             # quick at-a-glance view in the run summary.
-            grep -hoE 'VESPERA_(BENCH|ALLOC|CONC|JFR_LOAD)[^<]*' \
-              examples/rust-jni-demo/java/demo-app/build/test-results/test/*.xml \
-              | sort -u || echo '(no bench lines captured)'
+            { grep -hoE 'VESPERA_(BENCH|ALLOC|CONC|JFR_LOAD)[^<]*' \
+                examples/rust-jni-demo/java/demo-app/build/test-results/test/*.xml \
+                || echo '(no bench lines captured)'; } | sort -u
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload bench results

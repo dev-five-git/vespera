@@ -1,24 +1,108 @@
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{ToTokens, quote};
+use syn::meta::ParseNestedMeta;
 
 use super::fields::DefaultKind;
 use super::types::{parse_byte_unit, strip_raw_prefix};
 use crate::parser::{SerdeSide, extract_default, extract_field_rename_for, rename_field};
 
+/// Field-level `#[form_data(...)]` keys, read in ONE pass over every key so
+/// an unrelated `key = value` before the one asked for never hides it.
+#[derive(Default)]
+pub(super) struct FormDataAttrs {
+    /// `field_name = "..."` (a non-string value is ignored).
+    pub(super) field_name: Option<String>,
+    /// `limit = "..."`, validated: `"unlimited"` or a byte size.
+    pub(super) limit: Option<syn::LitStr>,
+    /// Bare `default`.
+    pub(super) default: bool,
+}
+
+/// Consume the `= value` / `(...)` payload of a key the caller does not read,
+/// so the nested-meta walk continues with the next key.
+fn skip_value(meta: &ParseNestedMeta<'_>) -> syn::Result<()> {
+    if meta.input.peek(syn::Token![=]) {
+        meta.value()?.parse::<syn::Expr>()?;
+    } else if meta.input.peek(syn::token::Paren) {
+        meta.input.parse::<proc_macro2::Group>()?;
+    }
+    Ok(())
+}
+
+/// The `= <expr>` payload of a key (`None` for a bare key).
+fn value_expr(meta: &ParseNestedMeta<'_>) -> syn::Result<Option<syn::Expr>> {
+    if meta.input.peek(syn::Token![=]) {
+        return meta.value()?.parse().map(Some);
+    }
+    skip_value(meta)?;
+    Ok(None)
+}
+
+/// The string literal of an expression, if it is one.
+fn as_lit_str(expr: Option<&syn::Expr>) -> Option<&syn::LitStr> {
+    match expr {
+        Some(syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(s),
+            ..
+        })) => Some(s),
+        _ => None,
+    }
+}
+
+/// Parse every `#[form_data(...)]` on a field. The first occurrence of a key
+/// wins; malformed syntax and an invalid `limit` are spanned errors.
+pub(super) fn parse_form_data(attrs: &[syn::Attribute]) -> syn::Result<FormDataAttrs> {
+    let mut out = FormDataAttrs::default();
+    for attr in attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("form_data"))
+    {
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("field_name") {
+                let expr = value_expr(&meta)?;
+                if out.field_name.is_none() {
+                    out.field_name = as_lit_str(expr.as_ref()).map(syn::LitStr::value);
+                }
+            } else if meta.path.is_ident("limit") {
+                let expr = value_expr(&meta)?;
+                let Some(lit) = as_lit_str(expr.as_ref()) else {
+                    let span_tokens =
+                        expr.map_or_else(|| meta.path.to_token_stream(), |e| e.to_token_stream());
+                    return Err(syn::Error::new_spanned(
+                        span_tokens,
+                        "expected `limit = \"<size>\"`, e.g. `limit = \"10MiB\"` or `limit = \"unlimited\"`",
+                    ));
+                };
+                if out.limit.is_none() {
+                    // Validate now so the error points at the literal.
+                    limit_tokens(lit)?;
+                    out.limit = Some(lit.clone());
+                }
+            } else {
+                out.default |= meta.path.is_ident("default");
+                skip_value(&meta)?;
+            }
+            Ok(())
+        })?;
+    }
+    Ok(out)
+}
+
 /// Resolve the multipart field name using serde + form_data attributes.
 ///
 /// Priority:
-/// 1. `#[form_data(field_name = "...")]`
+/// 1. `#[form_data(field_name = "...")]` (`form_field_name`)
 /// 2. `#[serde(rename = "...")]` (the deserialize side: the derive parses)
 /// 3. struct-level `rename_all` (deserialize side) applied to Rust field name
 /// 4. Rust field name as-is
 pub(super) fn resolve_field_name(
     ident: &syn::Ident,
     attrs: &[syn::Attribute],
+    form_field_name: Option<&str>,
     rename_all: Option<&str>,
 ) -> String {
-    if let Some(name) = extract_form_data_field_name(attrs) {
-        return name;
+    if let Some(name) = form_field_name {
+        return name.to_owned();
     }
     if let Some(name) = extract_field_rename_for(attrs, SerdeSide::Deserialize) {
         return name;
@@ -27,110 +111,48 @@ pub(super) fn resolve_field_name(
     rename_field(&rust_name, rename_all)
 }
 
-/// Extract `field_name` from `#[form_data(field_name = "...")]`.
-fn extract_form_data_field_name(attrs: &[syn::Attribute]) -> Option<String> {
-    for attr in attrs {
-        if attr.path().is_ident("form_data") {
-            let mut found = None;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("field_name")
-                    && let Ok(value) = meta.value()
-                    && let Ok(lit) = value.parse::<syn::LitStr>()
-                {
-                    found = Some(lit.value());
-                }
-                Ok(())
-            });
-            if found.is_some() {
-                return found;
-            }
-        }
+/// Extract the `strict` flag from `#[try_from_multipart(strict)]`, reading
+/// past any other key (`rename_all = "..."`) in the same list.
+pub(super) fn extract_strict(attrs: &[syn::Attribute]) -> syn::Result<bool> {
+    let mut strict = false;
+    for attr in attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("try_from_multipart"))
+    {
+        attr.parse_nested_meta(|meta| {
+            strict |= meta.path.is_ident("strict");
+            skip_value(&meta)
+        })?;
     }
-    None
+    Ok(strict)
 }
 
-/// Extract `strict` flag from `#[try_from_multipart(strict)]`.
-pub(super) fn extract_strict(attrs: &[syn::Attribute]) -> bool {
-    for attr in attrs {
-        if attr.path().is_ident("try_from_multipart") {
-            let mut strict = false;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("strict") {
-                    strict = true;
-                }
-                Ok(())
-            });
-            if strict {
-                return true;
-            }
-        }
-    }
-    false
+/// The `Option<usize>` tokens of a field's limit: `None` without one,
+/// `usize::MAX` for `"unlimited"`, the byte count otherwise.
+pub(super) fn extract_limit_tokens(limit: Option<&syn::LitStr>) -> TokenStream {
+    // `parse_form_data` validated the literal already.
+    limit.map_or_else(
+        || quote! { std::option::Option::None },
+        |lit| limit_tokens(lit).unwrap_or_else(syn::Error::into_compile_error),
+    )
 }
 
-/// Extract `limit` from `#[form_data(limit = "10MiB")]` and emit as `Option<usize>` tokens.
-pub(super) fn extract_limit_tokens(attrs: &[syn::Attribute]) -> TokenStream {
-    for attr in attrs {
-        if attr.path().is_ident("form_data") {
-            let mut limit_str = None;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("limit")
-                    && let Ok(value) = meta.value()
-                    && let Ok(lit) = value.parse::<syn::LitStr>()
-                {
-                    limit_str = Some(lit.value());
-                }
-                Ok(())
-            });
-            if let Some(s) = limit_str {
-                if s == "unlimited" {
-                    // `usize::MAX` is the explicit unbounded sentinel: every
-                    // limit check (`total > limit`) is byte-for-byte
-                    // equivalent to the former `None` (never triggers), but
-                    // it is DISTINGUISHABLE from an ABSENT attribute (which
-                    // stays `None` below).  That lets the runtime apply a
-                    // default cap to unannotated text fields (`String`) while
-                    // an explicit `limit = "unlimited"` opt-out stays
-                    // genuinely unbounded.
-                    return quote! { std::option::Option::Some(usize::MAX) };
-                }
-                if let Some(bytes) = parse_byte_unit(&s) {
-                    return quote! { std::option::Option::Some(#bytes) };
-                }
-            }
-        }
+/// Validate one `limit` literal into its `Option::Some(..)` tokens.
+fn limit_tokens(lit: &syn::LitStr) -> syn::Result<TokenStream> {
+    let s = lit.value();
+    if s == "unlimited" {
+        // `usize::MAX` is the explicit unbounded sentinel: every
+        // limit check (`total > limit`) is byte-for-byte
+        // equivalent to the former `None` (never triggers), but
+        // it is DISTINGUISHABLE from an ABSENT attribute (which
+        // stays `None`).  That lets the runtime apply a
+        // default cap to unannotated text fields (`String`) while
+        // an explicit `limit = "unlimited"` opt-out stays
+        // genuinely unbounded.
+        return Ok(quote! { std::option::Option::Some(usize::MAX) });
     }
-    quote! { std::option::Option::None }
-}
-
-/// Whether the field carries an explicit, VALID `#[form_data(limit = ...)]`
-/// — either `"unlimited"` or a parseable byte size (e.g. `"10MiB"`).
-///
-/// An absent attribute, a non-`limit` `form_data` key, or an unparseable
-/// value all return `false`. The `Multipart` derive treats that as a
-/// missing limit on a file field and emits a compile error, so an unbounded
-/// upload is never accepted silently.
-#[cfg(test)]
-pub(super) fn has_explicit_limit(attrs: &[syn::Attribute]) -> bool {
-    for attr in attrs {
-        if attr.path().is_ident("form_data") {
-            let mut valid = false;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("limit")
-                    && let Ok(value) = meta.value()
-                    && let Ok(lit) = value.parse::<syn::LitStr>()
-                {
-                    let s = lit.value();
-                    valid = s == "unlimited" || parse_byte_unit(&s).is_some();
-                }
-                Ok(())
-            });
-            if valid {
-                return true;
-            }
-        }
-    }
-    false
+    let bytes = parse_byte_unit(&s).map_err(|msg| syn::Error::new(lit.span(), msg))?;
+    Ok(quote! { std::option::Option::Some(#bytes) })
 }
 
 /// Resolve the default behavior for a field.
@@ -141,8 +163,12 @@ pub(super) fn has_explicit_limit(attrs: &[syn::Attribute]) -> bool {
 /// 3. `#[serde(default = "fn_path")]` — custom default function
 /// 4. Struct-level `#[serde(default)]` — all fields get `Default::default()`
 /// 5. No default — field is required
-pub(super) fn resolve_default_kind(attrs: &[syn::Attribute], struct_default: bool) -> DefaultKind {
-    if extract_form_data_default(attrs) {
+pub(super) fn resolve_default_kind(
+    attrs: &[syn::Attribute],
+    form_default: bool,
+    struct_default: bool,
+) -> DefaultKind {
+    if form_default {
         return DefaultKind::Trait;
     }
     if let Some(serde_default) = extract_default(attrs) {
@@ -152,25 +178,6 @@ pub(super) fn resolve_default_kind(attrs: &[syn::Attribute], struct_default: boo
         return DefaultKind::Trait;
     }
     DefaultKind::None
-}
-
-/// Extract `default` flag from `#[form_data(default)]`.
-fn extract_form_data_default(attrs: &[syn::Attribute]) -> bool {
-    for attr in attrs {
-        if attr.path().is_ident("form_data") {
-            let mut has_default = false;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("default") {
-                    has_default = true;
-                }
-                Ok(())
-            });
-            if has_default {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 /// Check if the struct has `#[serde(default)]` at the struct level.
@@ -204,198 +211,68 @@ mod tests {
         input.attrs
     }
 
-    #[test]
-    fn test_extract_form_data_field_name_present() {
-        let attrs = parse_attrs(r#"#[form_data(field_name = "custom")] pub x: String"#);
-        assert_eq!(
-            extract_form_data_field_name(&attrs),
-            Some("custom".to_string())
-        );
+    fn form_data(code: &str) -> FormDataAttrs {
+        parse_form_data(&parse_attrs(code)).unwrap()
     }
 
-    #[test]
-    fn test_extract_form_data_field_name_absent() {
-        assert_eq!(
-            extract_form_data_field_name(&parse_attrs("pub x: String")),
-            None
-        );
-    }
-
-    #[test]
-    fn test_extract_form_data_field_name_other_form_data_attr() {
-        let attrs = parse_attrs(r#"#[form_data(limit = "100")] pub x: String"#);
-        assert_eq!(extract_form_data_field_name(&attrs), None);
-    }
-
-    #[test]
-    fn malformed_form_data_field_name_falls_back_to_serde_rename() {
-        let field = parse_field(
-            r#"#[form_data(field_name = 42)] #[serde(rename = "wire_name")] pub rust_name: String"#,
-        );
-
-        assert_eq!(
-            resolve_field_name(field.ident.as_ref().unwrap(), &field.attrs, None),
-            "wire_name"
-        );
-    }
-
-    #[test]
-    fn valueless_form_data_field_name_falls_back_to_rust_name() {
-        let field = parse_field(r"#[form_data(field_name)] pub rust_name: String");
-
-        assert_eq!(
-            resolve_field_name(field.ident.as_ref().unwrap(), &field.attrs, None),
-            "rust_name"
-        );
-    }
-
-    #[test]
-    fn test_extract_strict_present() {
-        let attrs = parse_struct_attrs("#[try_from_multipart(strict)] struct T { }");
-        assert!(extract_strict(&attrs));
-    }
-
-    #[test]
-    fn test_extract_strict_absent() {
-        let attrs = parse_struct_attrs("struct T { }");
-        assert!(!extract_strict(&attrs));
-    }
-
-    #[test]
-    fn test_extract_strict_other_attr() {
-        let attrs =
-            parse_struct_attrs("#[try_from_multipart(rename_all = \"camelCase\")] struct T { }");
-        assert!(!extract_strict(&attrs));
-    }
-
-    #[test]
-    fn test_extract_form_data_default_present() {
-        assert!(extract_form_data_default(&parse_attrs(
-            "#[form_data(default)] pub x: i32"
-        )));
-    }
-
-    #[test]
-    fn test_extract_form_data_default_absent() {
-        assert!(!extract_form_data_default(&parse_attrs("pub x: i32")));
-    }
-
-    #[test]
-    fn test_extract_form_data_default_other_form_data() {
-        let attrs = parse_attrs(r#"#[form_data(limit = "100")] pub x: i32"#);
-        assert!(!extract_form_data_default(&attrs));
-    }
-
-    #[test]
-    fn test_extract_struct_default_present() {
-        let attrs = parse_struct_attrs("#[serde(default)] struct T { }");
-        assert!(extract_struct_default(&attrs));
-    }
-
-    #[test]
-    fn test_extract_struct_default_absent() {
-        let attrs = parse_struct_attrs("struct T { }");
-        assert!(!extract_struct_default(&attrs));
-    }
-
-    #[test]
-    fn test_resolve_default_kind_none() {
-        let attrs = parse_attrs("pub x: i32");
-        assert!(matches!(
-            resolve_default_kind(&attrs, false),
-            DefaultKind::None
-        ));
-    }
-
-    #[test]
-    fn test_resolve_default_kind_serde_default() {
-        let attrs = parse_attrs("#[serde(default)] pub x: i32");
-        assert!(matches!(
-            resolve_default_kind(&attrs, false),
-            DefaultKind::Trait
-        ));
-    }
-
-    #[test]
-    fn test_resolve_default_kind_serde_default_fn() {
-        let attrs = parse_attrs(r#"#[serde(default = "my_fn")] pub x: i32"#);
-        assert!(
-            matches!(resolve_default_kind(&attrs, false), DefaultKind::Function(ref f) if f == "my_fn")
-        );
-    }
-
-    #[test]
-    fn test_resolve_default_kind_form_data_default() {
-        let attrs = parse_attrs("#[form_data(default)] pub x: i32");
-        assert!(matches!(
-            resolve_default_kind(&attrs, false),
-            DefaultKind::Trait
-        ));
-    }
-
-    #[test]
-    fn test_resolve_default_kind_struct_level() {
-        let attrs = parse_attrs("pub x: i32");
-        assert!(matches!(
-            resolve_default_kind(&attrs, true),
-            DefaultKind::Trait
-        ));
-    }
-
-    #[test]
-    fn test_resolve_default_kind_form_data_overrides_struct_default() {
-        let attrs = parse_attrs("#[form_data(default)] pub x: i32");
-        assert!(matches!(
-            resolve_default_kind(&attrs, true),
-            DefaultKind::Trait
-        ));
-    }
-
-    #[test]
-    fn test_resolve_field_name_plain() {
-        let field = parse_field("pub my_field: String");
-        let name = resolve_field_name(field.ident.as_ref().unwrap(), &field.attrs, None);
-        assert_eq!(name, "my_field");
-    }
-
-    #[test]
-    fn test_resolve_field_name_rename_all() {
-        let field = parse_field("pub my_field: String");
-        let name = resolve_field_name(
+    fn resolve(code: &str, rename_all: Option<&str>) -> String {
+        let field = parse_field(code);
+        let form = parse_form_data(&field.attrs).unwrap();
+        resolve_field_name(
             field.ident.as_ref().unwrap(),
             &field.attrs,
-            Some("camelCase"),
-        );
-        assert_eq!(name, "myField");
+            form.field_name.as_deref(),
+            rename_all,
+        )
     }
 
-    #[test]
-    fn test_resolve_field_name_serde_rename() {
-        let field = parse_field(r#"#[serde(rename = "custom")] pub my_field: String"#);
-        let name = resolve_field_name(
-            field.ident.as_ref().unwrap(),
-            &field.attrs,
-            Some("camelCase"),
-        );
-        assert_eq!(name, "custom");
+    #[rstest]
+    #[case::present(r#"#[form_data(field_name = "custom")] pub x: String"#, Some("custom"))]
+    #[case::absent("pub x: String", None)]
+    #[case::other_key(r#"#[form_data(limit = "100")] pub x: String"#, None)]
+    #[case::after_other_key(
+        r#"#[form_data(limit = "100", default, field_name = "late")] pub x: String"#,
+        Some("late")
+    )]
+    #[case::first_attribute_wins(
+        r#"#[form_data(field_name = "a")] #[form_data(field_name = "b")] pub x: String"#,
+        Some("a")
+    )]
+    #[case::non_string(r"#[form_data(field_name = 42)] pub x: String", None)]
+    #[case::valueless(r"#[form_data(field_name)] pub x: String", None)]
+    #[case::unknown_list_key(
+        r#"#[form_data(other(a = 1), field_name = "y")] pub x: String"#,
+        Some("y")
+    )]
+    fn field_name_is_read_in_any_position(#[case] code: &str, #[case] expected: Option<&str>) {
+        assert_eq!(form_data(code).field_name.as_deref(), expected);
     }
 
-    #[test]
-    fn test_resolve_field_name_form_data_field_name() {
-        let field = parse_field(
-            r#"#[form_data(field_name = "override")] #[serde(rename = "serde_name")] pub my_field: String"#,
-        );
-        let name = resolve_field_name(
-            field.ident.as_ref().unwrap(),
-            &field.attrs,
-            Some("camelCase"),
-        );
-        assert_eq!(name, "override");
-    }
-
-    /// The derive PARSES a form, so serde's deserialize-side names apply —
-    /// the same names the request-view (`{Name}Input`) schema documents.
-    #[rstest::rstest]
+    #[rstest]
+    #[case::malformed_field_name(
+        r#"#[form_data(field_name = 42)] #[serde(rename = "wire_name")] pub rust_name: String"#,
+        None,
+        "wire_name"
+    )]
+    #[case::valueless_field_name(
+        r"#[form_data(field_name)] pub rust_name: String",
+        None,
+        "rust_name"
+    )]
+    #[case::plain("pub my_field: String", None, "my_field")]
+    #[case::rename_all("pub my_field: String", Some("camelCase"), "myField")]
+    #[case::serde_rename(
+        r#"#[serde(rename = "custom")] pub my_field: String"#,
+        Some("camelCase"),
+        "custom"
+    )]
+    #[case::form_data_over_serde(
+        r#"#[form_data(field_name = "override")] #[serde(rename = "serde_name")] pub my_field: String"#,
+        Some("camelCase"),
+        "override"
+    )]
+    // The derive PARSES a form, so serde's deserialize-side names apply —
+    // the same names the request-view (`{Name}Input`) schema documents.
     #[case::sided_rename(
         r#"#[serde(rename(serialize = "out", deserialize = "in"))] pub my_field: String"#,
         None,
@@ -411,105 +288,138 @@ mod tests {
         None,
         "form"
     )]
-    fn test_resolve_field_name_reads_deserialize_side(
+    fn test_resolve_field_name(
         #[case] src: &str,
         #[case] rename_all: Option<&str>,
         #[case] expected: &str,
     ) {
-        let field = parse_field(src);
-        let name = resolve_field_name(field.ident.as_ref().unwrap(), &field.attrs, rename_all);
-        assert_eq!(name, expected);
+        assert_eq!(resolve(src, rename_all), expected);
+    }
+
+    #[rstest]
+    #[case::present("#[try_from_multipart(strict)] struct T { }", true)]
+    #[case::absent("struct T { }", false)]
+    #[case::other_key(
+        "#[try_from_multipart(rename_all = \"camelCase\")] struct T { }",
+        false
+    )]
+    #[case::after_other_key(
+        "#[try_from_multipart(rename_all = \"camelCase\", strict)] struct T { }",
+        true
+    )]
+    #[case::after_list_key("#[try_from_multipart(x(y), strict)] struct T { }", true)]
+    fn test_extract_strict(#[case] code: &str, #[case] expected: bool) {
+        assert_eq!(extract_strict(&parse_struct_attrs(code)).unwrap(), expected);
     }
 
     #[test]
-    fn test_extract_limit_tokens_none() {
-        assert_eq!(
-            extract_limit_tokens(&parse_attrs("pub x: String")).to_string(),
-            "std :: option :: Option :: None"
+    fn malformed_try_from_multipart_is_an_error() {
+        let attrs = parse_struct_attrs("#[try_from_multipart(strict = )] struct T { }");
+        assert!(extract_strict(&attrs).is_err());
+    }
+
+    #[rstest]
+    #[case::present("#[form_data(default)] pub x: i32", true)]
+    #[case::absent("pub x: i32", false)]
+    #[case::other_key(r#"#[form_data(limit = "100")] pub x: i32"#, false)]
+    #[case::after_other_key(r#"#[form_data(field_name = "y", default)] pub x: i32"#, true)]
+    fn test_form_data_default(#[case] code: &str, #[case] expected: bool) {
+        assert_eq!(form_data(code).default, expected);
+    }
+
+    #[test]
+    fn test_extract_struct_default() {
+        assert!(extract_struct_default(&parse_struct_attrs(
+            "#[serde(default)] struct T { }"
+        )));
+        assert!(!extract_struct_default(&parse_struct_attrs("struct T { }")));
+    }
+
+    #[test]
+    fn test_resolve_default_kind() {
+        let kind = |code: &str, struct_default: bool| {
+            let attrs = parse_attrs(code);
+            let form = parse_form_data(&attrs).unwrap();
+            resolve_default_kind(&attrs, form.default, struct_default)
+        };
+        assert!(matches!(kind("pub x: i32", false), DefaultKind::None));
+        assert!(matches!(
+            kind("#[serde(default)] pub x: i32", false),
+            DefaultKind::Trait
+        ));
+        assert!(
+            matches!(kind(r#"#[serde(default = "my_fn")] pub x: i32"#, false), DefaultKind::Function(ref f) if f == "my_fn")
         );
+        assert!(matches!(
+            kind("#[form_data(default)] pub x: i32", false),
+            DefaultKind::Trait
+        ));
+        assert!(matches!(kind("pub x: i32", true), DefaultKind::Trait));
+        assert!(matches!(
+            kind("#[form_data(default)] pub x: i32", true),
+            DefaultKind::Trait
+        ));
     }
 
-    #[test]
-    fn test_extract_limit_tokens_with_value() {
-        let attrs = parse_attrs(r#"#[form_data(limit = "100")] pub x: String"#);
+    #[rstest]
+    #[case::none("pub x: String", "std :: option :: Option :: None")]
+    #[case::bytes(
+        r#"#[form_data(limit = "100")] pub x: String"#,
+        "std :: option :: Option :: Some (100usize)"
+    )]
+    // `"unlimited"` emits the `usize::MAX` unbounded sentinel (not `None`) so
+    // the runtime can tell an explicit opt-out apart from an absent attribute
+    // and still apply a default cap to the latter.
+    #[case::unlimited(
+        r#"#[form_data(limit = "unlimited")] pub x: String"#,
+        "std :: option :: Option :: Some (usize :: MAX)"
+    )]
+    #[case::mib(
+        r#"#[form_data(limit = "10MiB")] pub x: String"#,
+        "std :: option :: Option :: Some (10485760usize)"
+    )]
+    #[case::after_field_name(
+        r#"#[form_data(field_name = "f", limit = "1KiB")] pub x: String"#,
+        "std :: option :: Option :: Some (1024usize)"
+    )]
+    #[case::first_wins(
+        r#"#[form_data(limit = "1B")] #[form_data(limit = "2B")] pub x: String"#,
+        "std :: option :: Option :: Some (1usize)"
+    )]
+    fn test_extract_limit_tokens(#[case] code: &str, #[case] expected: &str) {
+        let form = form_data(code);
         assert_eq!(
-            extract_limit_tokens(&attrs).to_string(),
-            "std :: option :: Option :: Some (100usize)"
-        );
-    }
-
-    #[test]
-    fn test_extract_limit_tokens_unlimited() {
-        // `"unlimited"` now emits the `usize::MAX` unbounded sentinel (not
-        // `None`) so the runtime can tell an explicit opt-out apart from an
-        // absent attribute and still apply a default cap to the latter.
-        let attrs = parse_attrs(r#"#[form_data(limit = "unlimited")] pub x: String"#);
-        assert_eq!(
-            extract_limit_tokens(&attrs).to_string(),
-            "std :: option :: Option :: Some (usize :: MAX)"
-        );
-    }
-
-    #[test]
-    fn test_extract_limit_tokens_mib() {
-        let attrs = parse_attrs(r#"#[form_data(limit = "10MiB")] pub x: String"#);
-        let expected = 10 * 1024 * 1024;
-        assert_eq!(
-            extract_limit_tokens(&attrs).to_string(),
-            format!("std :: option :: Option :: Some ({expected}usize)")
+            extract_limit_tokens(form.limit.as_ref()).to_string(),
+            expected
         );
     }
 
     #[rstest]
-    #[case::valueless(r"#[form_data(limit)] pub file: String")]
-    #[case::non_string(r"#[form_data(limit = 10)] pub file: String")]
-    #[case::invalid_size(r#"#[form_data(limit = "not-a-size")] pub file: String"#)]
-    fn malformed_limit_is_neither_emitted_nor_treated_as_explicit(#[case] code: &str) {
-        let attrs = parse_attrs(code);
+    #[case::valueless(r"#[form_data(limit)] pub file: String", "expected `limit")]
+    #[case::non_string(r"#[form_data(limit = 10)] pub file: String", "expected `limit")]
+    #[case::invalid_size(
+        r#"#[form_data(limit = "not-a-size")] pub file: String"#,
+        "invalid `limit`"
+    )]
+    #[case::overflow(
+        r#"#[form_data(limit = "18446744073709551615KiB")] pub file: String"#,
+        "overflows"
+    )]
+    #[case::malformed(r"#[form_data(limit = )] pub file: String", "expected")]
+    fn malformed_limit_is_an_error(#[case] code: &str, #[case] message: &str) {
+        let Err(err) = parse_form_data(&parse_attrs(code)) else {
+            panic!("`{code}` must be rejected");
+        };
+        assert!(err.to_string().contains(message), "{err}");
+    }
 
-        assert_eq!(
-            extract_limit_tokens(&attrs).to_string(),
-            "std :: option :: Option :: None"
+    #[test]
+    fn extract_limit_tokens_reports_an_unvalidated_literal() {
+        let lit: syn::LitStr = syn::parse_quote!("garbage");
+        assert!(
+            extract_limit_tokens(Some(&lit))
+                .to_string()
+                .contains("compile_error")
         );
-        assert!(!has_explicit_limit(&attrs));
-    }
-
-    #[test]
-    fn test_has_explicit_limit_size() {
-        assert!(has_explicit_limit(&parse_attrs(
-            r#"#[form_data(limit = "10MiB")] pub x: String"#
-        )));
-        assert!(has_explicit_limit(&parse_attrs(
-            r#"#[form_data(limit = "100")] pub x: String"#
-        )));
-    }
-
-    #[test]
-    fn test_has_explicit_limit_unlimited() {
-        assert!(has_explicit_limit(&parse_attrs(
-            r#"#[form_data(limit = "unlimited")] pub x: String"#
-        )));
-    }
-
-    #[test]
-    fn test_has_explicit_limit_absent() {
-        assert!(!has_explicit_limit(&parse_attrs("pub x: String")));
-    }
-
-    #[test]
-    fn test_has_explicit_limit_invalid_value() {
-        // An unparseable size is NOT a valid limit — treated as missing so a
-        // file field with `limit = "garbage"` still fails the derive check.
-        assert!(!has_explicit_limit(&parse_attrs(
-            r#"#[form_data(limit = "garbage")] pub x: String"#
-        )));
-    }
-
-    #[test]
-    fn test_has_explicit_limit_other_form_data_key() {
-        // A `form_data` attr without a `limit` key does not count.
-        assert!(!has_explicit_limit(&parse_attrs(
-            r#"#[form_data(field_name = "x")] pub x: String"#
-        )));
     }
 }

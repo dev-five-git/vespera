@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/multipart_impl/mod.rs
+assertion_line: 477
+expression: out
+---
+::core::compile_error! {
+    "invalid `limit` \"1.5MiB\": expected \"unlimited\", a whole number of bytes (\"1024\") or a whole number with one of the suffixes B, KB, MB, GB, KiB, MiB, GiB (\"10MiB\")"
+}
