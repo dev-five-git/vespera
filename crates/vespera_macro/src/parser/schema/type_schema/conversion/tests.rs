@@ -593,6 +593,20 @@ fn primitive_wire_types(
     assert_eq!(schema.minimum, minimum, "{source}");
 }
 
+/// A known definition that is neither a struct nor an enum (a type alias)
+/// cannot be substituted: the generic use falls back to a `$ref`.
+#[test]
+fn generic_non_struct_definition_falls_back_to_reference() {
+    let known: HashSet<String> = HashSet::from(["Alias".to_string()]);
+    let defs: HashMap<String, String> =
+        HashMap::from([("Alias".to_string(), "type Alias<T> = Vec<T>;".to_string())]);
+    let ty: Type = syn::parse_str("Alias<i32>").unwrap();
+    let SchemaRef::Ref(reference) = parse_type_to_schema_ref(&ty, &known, &defs) else {
+        panic!("expected $ref");
+    };
+    assert_eq!(reference.ref_path, "#/components/schemas/Alias");
+}
+
 /// A concrete generic ENUM is inlined with its type arguments substituted in
 /// every variant, exactly like a generic struct (it used to become a `$ref`
 /// to the unsubstituted component, documenting `T` as an object).

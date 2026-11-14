@@ -204,6 +204,26 @@ mod tests {
         insta::assert_snapshot!(snapshot, schema_json(src, request));
     }
 
+    /// Parenthesised and invisible-group (`macro_rules!` `$e:expr`)
+    /// discriminants are evaluated through to their literal.
+    #[rstest]
+    #[case::paren(syn::parse_quote!((-4)), Some(-4))]
+    #[case::group(
+        syn::Expr::Group(syn::ExprGroup {
+            attrs: Vec::new(),
+            group_token: syn::token::Group::default(),
+            expr: Box::new(syn::parse_quote!(7)),
+        }),
+        Some(7)
+    )]
+    #[case::path(syn::parse_quote!(BASE), None)]
+    fn integer_literal_unwraps_parens_and_groups(
+        #[case] expr: syn::Expr,
+        #[case] expected: Option<i128>,
+    ) {
+        assert_eq!(super::integer_literal(&expr), expected);
+    }
+
     /// The request (`{Name}Input`) view of an enum follows the deserialize
     /// side: sided renames, `skip_deserializing` vs `skip_serializing`
     /// variants, and struct-variant field defaults.

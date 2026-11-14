@@ -224,19 +224,16 @@ fn field_codec_differs(field: &syn::Field) -> bool {
 
 /// The type's own attributes make its request view differ.
 fn directly_differs(item: &syn::Item) -> bool {
-    let attrs = match item {
-        syn::Item::Struct(item) => &item.attrs,
-        syn::Item::Enum(item) => &item.attrs,
-        _ => return false,
-    };
-    if container_override_differs(attrs) {
-        return true;
+    match item {
+        syn::Item::Struct(item) => container_override_differs(&item.attrs) || struct_differs(item),
+        syn::Item::Enum(item) => container_override_differs(&item.attrs) || enum_differs(item),
+        _ => false,
     }
-    let item = match item {
-        syn::Item::Struct(item) => item,
-        syn::Item::Enum(item) => return enum_differs(item),
-        _ => return false,
-    };
+}
+
+/// A struct reads differently than it writes (container `default`, sided
+/// `rename_all`, or a field that differs).
+fn struct_differs(item: &syn::ItemStruct) -> bool {
     let syn::Fields::Named(fields) = &item.fields else {
         return false;
     };

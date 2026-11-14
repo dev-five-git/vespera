@@ -97,7 +97,7 @@ mod tests {
         &["Serialize_repr"]
     )]
     #[case::in_inline_module(
-        "mod m { #[derive(Deserialize_repr, Schema)] #[repr(u8)] enum E { A } }",
+        "struct S; mod m { #[derive(Deserialize_repr, Schema)] #[repr(u8)] enum E { A } }",
         &["Deserialize_repr"]
     )]
     #[case::plain_serde(
@@ -118,6 +118,22 @@ mod tests {
             })
             .unwrap_or_default();
         assert_eq!(found, expected);
+    }
+
+    /// A derive the input already shows (listed in a later `#[derive]`)
+    /// is not added twice.
+    #[test]
+    fn visible_serde_repr_derive_is_not_duplicated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        std::fs::write(
+            &path,
+            "#[derive(Schema)] #[derive(Serialize_repr)] #[repr(u8)] enum E { A }",
+        )
+        .unwrap();
+        let input: syn::DeriveInput =
+            syn::parse_str("#[derive(Serialize_repr)] #[repr(u8)] enum E { A }").unwrap();
+        assert!(with_serde_repr_derives(&input, Some(&path)).is_none());
     }
 
     #[test]
