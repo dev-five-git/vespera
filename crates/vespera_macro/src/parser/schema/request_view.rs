@@ -48,6 +48,7 @@ use super::{
     serde_attrs::{
         SerdeSide, extract_default, extract_field_codec, extract_field_rename_for,
         extract_rename_all_fields_for, extract_rename_all_for, extract_serde_skip_flags,
+        extract_tag,
     },
     wire_override::container_override_type,
 };
@@ -237,6 +238,13 @@ fn struct_differs(item: &syn::ItemStruct) -> bool {
     let syn::Fields::Named(fields) = &item.fields else {
         return false;
     };
+    // serde writes a struct `tag` but never reads it (see `struct_schema`);
+    // a serialize-side `value_type` / `into` hides it from the response view.
+    if extract_tag(&item.attrs).is_some()
+        && container_override_type(&item.attrs, SerdeSide::Serialize).is_none()
+    {
+        return true;
+    }
     if fields.named.is_empty() {
         return false;
     }
@@ -413,6 +421,18 @@ mod tests {
         false
     )]
     #[case::option_with(r#"struct A { #[serde(with = "m")] x: Option<u8> }"#, true)]
+    #[case::struct_tag(r#"#[serde(tag = "type")] struct A { x: u8 }"#, true)]
+    #[case::struct_tag_no_fields(r#"#[serde(tag = "type")] struct A {}"#, true)]
+    #[case::struct_tag_value_type(
+        r#"#[schema(value_type = W)] #[serde(tag = "type")] struct A { x: u8 }"#,
+        false
+    )]
+    #[case::struct_tag_into(r#"#[serde(tag = "type", into = "W")] struct A { x: u8 }"#, true)]
+    #[case::form_data_over_serde_rename(
+        r#"struct A { #[serde(rename = "a")] #[form_data(field_name = "b")] x: u8 }"#,
+        true
+    )]
+    #[case::form_data_only(r#"struct A { #[form_data(field_name = "b")] x: u8 }"#, false)]
     fn direct_differences(#[case] src: &str, #[case] expected: bool) {
         assert_eq!(directly_differs(&syn::parse_str(src).unwrap()), expected);
     }

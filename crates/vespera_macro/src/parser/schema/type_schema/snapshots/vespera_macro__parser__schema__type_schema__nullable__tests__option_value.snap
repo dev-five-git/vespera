@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/parser/schema/type_schema/nullable.rs
+assertion_line: 107
+expression: render(ty_src)
+---
+Option<serde_json::Value> => {}

@@ -3,14 +3,14 @@ use quote::quote;
 
 use super::fields::DefaultKind;
 use super::types::{parse_byte_unit, strip_raw_prefix};
-use crate::parser::{extract_default, extract_field_rename, rename_field};
+use crate::parser::{SerdeSide, extract_default, extract_field_rename_for, rename_field};
 
 /// Resolve the multipart field name using serde + form_data attributes.
 ///
 /// Priority:
 /// 1. `#[form_data(field_name = "...")]`
-/// 2. `#[serde(rename = "...")]`
-/// 3. struct-level `rename_all` applied to Rust field name
+/// 2. `#[serde(rename = "...")]` (the deserialize side: the derive parses)
+/// 3. struct-level `rename_all` (deserialize side) applied to Rust field name
 /// 4. Rust field name as-is
 pub(super) fn resolve_field_name(
     ident: &syn::Ident,
@@ -20,7 +20,7 @@ pub(super) fn resolve_field_name(
     if let Some(name) = extract_form_data_field_name(attrs) {
         return name;
     }
-    if let Some(name) = extract_field_rename(attrs) {
+    if let Some(name) = extract_field_rename_for(attrs, SerdeSide::Deserialize) {
         return name;
     }
     let rust_name = strip_raw_prefix(&ident.to_string());
@@ -391,6 +391,34 @@ mod tests {
             Some("camelCase"),
         );
         assert_eq!(name, "override");
+    }
+
+    /// The derive PARSES a form, so serde's deserialize-side names apply —
+    /// the same names the request-view (`{Name}Input`) schema documents.
+    #[rstest::rstest]
+    #[case::sided_rename(
+        r#"#[serde(rename(serialize = "out", deserialize = "in"))] pub my_field: String"#,
+        None,
+        "in"
+    )]
+    #[case::serialize_only_rename(
+        r#"#[serde(rename(serialize = "out"))] pub my_field: String"#,
+        None,
+        "my_field"
+    )]
+    #[case::form_data_over_sided_rename(
+        r#"#[serde(rename(deserialize = "in"))] #[form_data(field_name = "form")] pub my_field: String"#,
+        None,
+        "form"
+    )]
+    fn test_resolve_field_name_reads_deserialize_side(
+        #[case] src: &str,
+        #[case] rename_all: Option<&str>,
+        #[case] expected: &str,
+    ) {
+        let field = parse_field(src);
+        let name = resolve_field_name(field.ident.as_ref().unwrap(), &field.attrs, rename_all);
+        assert_eq!(name, expected);
     }
 
     #[test]

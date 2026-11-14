@@ -335,19 +335,8 @@ fn parse_type_impl(
                                 schema.unique_items = Some(true);
                                 return SchemaRef::Inline(Box::new(schema));
                             }
-                            // Option<T> -> nullable schema
-                            match inner_schema {
-                                SchemaRef::Inline(mut schema) => {
-                                    schema.nullable = Some(true);
-                                    return SchemaRef::Inline(schema);
-                                }
-                                SchemaRef::Ref(reference) => {
-                                    // Wrap reference in an inline schema to attach nullable flag
-                                    return SchemaRef::Inline(Box::new(
-                                        Schema::nullable_reference(reference.ref_path),
-                                    ));
-                                }
-                            }
+                            // Option<T> -> nullable schema (see `nullable`)
+                            return super::nullable::nullable(inner_schema);
                         }
                     }
                     // SeaORM relation types: convert Entity to Schema reference

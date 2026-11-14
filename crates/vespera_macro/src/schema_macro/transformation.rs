@@ -39,9 +39,7 @@ use syn::punctuated::Punctuated;
 
 use super::input::PartialMode;
 use crate::parser::extract_rename_all;
-use crate::parser::schema::{
-    SerdeSide, extract_field_rename, extract_field_rename_for, rename_field,
-};
+use crate::parser::schema::{SerdeSide, extract_field_rename_for, rename_field};
 
 /// Builds the omit set from input without cloning the source Vec.
 pub fn build_omit_set(omit: Option<&Vec<String>>) -> HashSet<String> {
@@ -312,7 +310,7 @@ pub fn renamed_field_serde_rename(
 /// "...")]`, resolved in the `Multipart` derive's order:
 ///
 /// 1. the source's `#[form_data(field_name)]` -> `None` (copied as is);
-/// 2. the source's `#[serde(rename)]` (multipart mode does not copy serde
+/// 2. the source's deserialize-side `#[serde(rename)]` (multipart mode does not copy serde
 ///    attributes, so it is pinned for renamed AND kept fields);
 /// 3. `renamed` only: `rename_all` applied to the SOURCE field name (the
 ///    Rust field changed, the form field must not).
@@ -332,7 +330,7 @@ pub fn field_form_name(
     if extract_field_rename_for(&only("form_data"), SerdeSide::Serialize).is_some() {
         return None;
     }
-    let name = match extract_field_rename(&only("serde")) {
+    let name = match extract_field_rename_for(&only("serde"), SerdeSide::Deserialize) {
         Some(name) => name,
         None if renamed => rename_field(source_field_name, Some(rename_all)),
         None => return None,

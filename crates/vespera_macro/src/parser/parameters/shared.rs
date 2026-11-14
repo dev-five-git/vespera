@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use syn::Type;
-use vespera_core::schema::{Schema, SchemaRef};
+use vespera_core::schema::SchemaRef;
 
 use crate::{
     parser::schema::{
         SerdeSide, extract_field_rename_for, extract_rename_all_for, is_primitive_type,
-        rename_field, strip_raw_prefix_owned,
+        nullable_schema_ref, rename_field, strip_raw_prefix_owned,
     },
     schema_macro::type_utils::is_primitive_like as utils_is_primitive_like,
 };
@@ -16,21 +16,10 @@ pub(super) fn is_primitive_or_like(ty: &Type) -> bool {
 }
 
 pub(super) fn convert_to_inline_schema(field_schema: SchemaRef, is_optional: bool) -> SchemaRef {
-    match field_schema {
-        SchemaRef::Inline(mut schema) => {
-            if is_optional {
-                schema.nullable = Some(true);
-            }
-            SchemaRef::Inline(schema)
-        }
-        SchemaRef::Ref(r) if is_optional => SchemaRef::Inline(Box::new(Schema {
-            ref_path: Some(r.ref_path),
-            schema_type: None,
-            nullable: Some(true),
-            ..Default::default()
-        })),
-        SchemaRef::Ref(r) => SchemaRef::Ref(r),
+    if is_optional {
+        return nullable_schema_ref(field_schema);
     }
+    field_schema
 }
 
 pub(super) fn is_known_type(
