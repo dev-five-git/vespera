@@ -98,6 +98,21 @@ fn run_scenario(
     relations: &[RelationFieldInfo],
     module: &[&str],
 ) -> String {
+    pretty(
+        &try_scenario(models, new_type, source_type, rows, relations, module)
+            .expect("scenario must generate"),
+    )
+}
+
+/// [`run_scenario`] without unwrapping, for the error cases.
+fn try_scenario(
+    models: &[(&str, &str)],
+    new_type: &str,
+    source_type: &str,
+    rows: &[MappingRow],
+    relations: &[RelationFieldInfo],
+    module: &[&str],
+) -> syn::Result<TokenStream> {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let models_dir = temp_dir.path().join("src").join("models");
     std::fs::create_dir_all(&models_dir).unwrap();
@@ -107,15 +122,59 @@ fn run_scenario(
 
     let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
 
-    let tokens = generate_from_model_with_relations(
+    generate_from_model_with_relations(
         &syn::Ident::new(new_type, proc_macro2::Span::call_site()),
         &syn::parse_str::<Type>(source_type).unwrap(),
         &mappings(rows),
         relations,
         &module.iter().map(ToString::to_string).collect::<Vec<_>>(),
         &HashMap::new(),
-    );
-    pretty(&tokens)
+    )
+}
+
+/// Target entity whose `relation_enum = "TargetUser"` relation has a
+/// malformed `from` (reached through `via_rel`).
+const NOTIFICATION_BAD_FROM: &str = "pub struct Model {\n    pub id: i32,\n    #[sea_orm(belongs_to = \"super::user::Entity\", from = \"target user id\", to = \"id\", relation_enum = \"TargetUser\")]\n    pub target_user: BelongsTo<super::user::Entity>,\n}";
+
+// A malformed `#[sea_orm(...)]` identifier value is a spanned error, not a
+// `syn::Ident::new` panic.
+#[rstest]
+#[case::relation_enum_with_space(
+    "author", &[],
+    with_enum(rel("author", "BelongsTo", quote! { crate::models::user::Schema }, false), Some("Author Comments"), None, None),
+    "schema_type!: relation field `author` has `#[sea_orm(relation_enum = \"Author Comments\")]`, but `Author Comments` is not a valid Rust identifier"
+)]
+#[case::required_from_with_space(
+    "author", &[],
+    with_enum(rel("author", "BelongsTo", quote! { crate::models::user::Schema }, false), Some("Author"), Some("author id"), None),
+    "schema_type!: relation field `author` has `#[sea_orm(from = \"author id\")]`, but `author id` is not a valid Rust identifier"
+)]
+#[case::optional_from_with_dash(
+    "author", &[],
+    with_enum(rel("author", "HasOne", quote! { crate::models::user::Schema }, true), Some("Author"), Some("author-id"), None),
+    "schema_type!: relation field `author` has `#[sea_orm(from = \"author-id\")]`, but `author-id` is not a valid Rust identifier"
+)]
+#[case::via_rel_target_from(
+    "notifications", &[("notification.rs", NOTIFICATION_BAD_FROM)],
+    with_enum(rel("notifications", "HasMany", quote! { crate::models::notification::Schema }, false), None, None, Some("TargetUser")),
+    "schema_type!: relation field `notifications` resolves its foreign key through `TargetUser` to `#[sea_orm(from = \"target user id\")]` on `crate::models::notification::Schema`, but `target user id` is not a valid Rust identifier"
+)]
+fn malformed_sea_orm_ident_is_an_error(
+    #[case] field: &'static str,
+    #[case] models: &[(&str, &str)],
+    #[case] relation: RelationFieldInfo,
+    #[case] expected: &str,
+) {
+    let err = try_scenario(
+        models,
+        "UserSchema",
+        "crate::models::user::Model",
+        &[("id", "id", false, false), (field, field, false, true)],
+        &[relation],
+        &["crate", "models", "user"],
+    )
+    .expect_err("malformed identifier must be a syn::Error");
+    assert_eq!(err.to_string(), expected);
 }
 
 // ── Scenario table ───────────────────────────────────────────────

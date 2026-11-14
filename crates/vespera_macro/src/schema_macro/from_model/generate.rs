@@ -40,6 +40,13 @@ use crate::metadata::StructMetadata;
 ///     }
 /// }
 /// ```
+///
+/// # Errors
+///
+/// A `#[sea_orm(...)]` string value that must become an identifier
+/// (`relation_enum`, `from`, or the target entity's `from` reached through
+/// `via_rel`) but is not one (e.g. `from = "author id"`) is reported as a
+/// `syn::Error` spanned on `source_type`, instead of panicking the macro.
 #[allow(clippy::too_many_lines, clippy::option_if_let_else)]
 pub fn generate_from_model_with_relations(
     new_type_name: &syn::Ident,
@@ -48,25 +55,26 @@ pub fn generate_from_model_with_relations(
     relation_fields: &[RelationFieldInfo],
     source_module_path: &[String],
     _schema_storage: &HashMap<String, StructMetadata>,
-) -> TokenStream {
+) -> syn::Result<TokenStream> {
     // Build relation loading statements
     let relation_loads: Vec<TokenStream> = relation_fields
         .iter()
-        .map(|rel| {
+        .map(|rel| -> syn::Result<TokenStream> {
             let field_name = &rel.field_name;
             let entity_path = build_entity_path_from_schema_path(&rel.schema_path, source_module_path);
+            let attr_ident = |key: &str, value: &str| sea_orm_value_ident(source_type, field_name, key, value);
 
-            match rel.relation_type.as_str() {
+            Ok(match rel.relation_type.as_str() {
                 "HasOne" | "BelongsTo" => {
                     // When relation_enum is specified, use the specific Relation variant
                     // This handles cases where multiple relations point to the same Entity type
                     if let Some(ref relation_enum_name) = rel.relation_enum {
-                        let relation_variant = syn::Ident::new(relation_enum_name, proc_macro2::Span::call_site());
+                        let relation_variant = attr_ident("relation_enum", relation_enum_name)?;
 
                         if rel.is_optional {
                             // Optional FK: load only if FK value exists
                             if let Some(ref fk_col) = rel.fk_column {
-                                let fk_ident = syn::Ident::new(fk_col, proc_macro2::Span::call_site());
+                                let fk_ident = attr_ident("from", fk_col)?;
                                 quote! {
                                     let #field_name = match &model.#fk_ident {
                                         Some(fk_value) => #entity_path::find_by_id(fk_value.clone()).one(db).await?,
@@ -85,7 +93,7 @@ pub fn generate_from_model_with_relations(
                         } else {
                             // Required FK: directly query by FK value
                             if let Some(ref fk_col) = rel.fk_column {
-                                let fk_ident = syn::Ident::new(fk_col, proc_macro2::Span::call_site());
+                                let fk_ident = attr_ident("from", fk_col)?;
                                 quote! {
                                     let #field_name = #entity_path::find_by_id(model.#fk_ident.clone()).one(db).await?;
                                 }
@@ -112,8 +120,18 @@ pub fn generate_from_model_with_relations(
                     if let Some(via_rel_value) = fk_rel_source {
                         let schema_path_str = normalize_token_str(&rel.schema_path);
                         if let Some(fk_col_name) = get_fk_column(&schema_path_str, via_rel_value) {
-                            let fk_col_pascal = snake_to_pascal_case(&fk_col_name);
-                            let fk_col_ident = syn::Ident::new(&fk_col_pascal, proc_macro2::Span::call_site());
+                            // `from` of the target entity's relation named by
+                            // `via_rel` / `relation_enum`, as a `Column` variant.
+                            let fk_col_ident = attr_ident("from", &fk_col_name)
+                                .and_then(|_| attr_ident("from", &snake_to_pascal_case(&fk_col_name)))
+                                .map_err(|_| {
+                                    syn::Error::new_spanned(
+                                        source_type,
+                                        format!(
+                                            "schema_type!: relation field `{field_name}` resolves its foreign key through `{via_rel_value}` to `#[sea_orm(from = \"{fk_col_name}\")]` on `{schema_path_str}`, but `{fk_col_name}` is not a valid Rust identifier"
+                                        ),
+                                    )
+                                })?;
 
                             let entity_path_str = normalize_token_str(&entity_path);
                             let column_path_str = entity_path_str.replace(":: Entity", ":: Column");
@@ -149,9 +167,9 @@ pub fn generate_from_model_with_relations(
                     }
                 }
                 _ => quote! {},
-            }
+            })
         })
-        .collect();
+        .collect::<syn::Result<_>>()?;
 
     // Check if we need a parent stub for HasMany relations with required circular back-refs
     // This is needed when: UserSchema.memos has MemoSchema which has required user: Box<UserSchema>
@@ -418,7 +436,7 @@ pub fn generate_from_model_with_relations(
         quote! {}
     };
 
-    quote! {
+    Ok(quote! {
         impl #new_type_name {
             pub async fn from_model(
                 model: #source_type,
@@ -435,7 +453,26 @@ pub fn generate_from_model_with_relations(
                 })
             }
         }
-    }
+    })
+}
+
+/// Parses a `#[sea_orm(key = "value")]` string as an identifier (keywords
+/// accepted, like the `syn::Ident::new` it replaces), or a `syn::Error`
+/// spanned on the `schema_type!` source type naming the relation field.
+fn sea_orm_value_ident(
+    source_type: &Type,
+    field_name: &syn::Ident,
+    key: &str,
+    value: &str,
+) -> syn::Result<syn::Ident> {
+    syn::parse::Parser::parse_str(syn::ext::IdentExt::parse_any, value).map_err(|_| {
+        syn::Error::new_spanned(
+            source_type,
+            format!(
+                "schema_type!: relation field `{field_name}` has `#[sea_orm({key} = \"{value}\")]`, but `{value}` is not a valid Rust identifier"
+            ),
+        )
+    })
 }
 
 #[cfg(test)]
