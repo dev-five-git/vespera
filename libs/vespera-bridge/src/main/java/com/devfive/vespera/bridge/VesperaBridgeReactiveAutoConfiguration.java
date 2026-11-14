@@ -24,7 +24,10 @@ import org.springframework.context.annotation.ImportRuntimeHints;
  *       {@code vespera.bridge.controller-enabled=false}) mapped by
  *       {@link VesperaReactiveHandlerMapping} to
  *       {@code vespera.bridge.include-patterns} minus
- *       {@code exclude-patterns};</li>
+ *       {@code exclude-patterns}, streaming {@code text/event-stream} /
+ *       NDJSON responses on a {@link VesperaStreamingExecutor}
+ *       ({@code vespera.bridge.reactive-streaming.*}, closed with the
+ *       context);</li>
  *   <li>{@link ReactiveAppNameResolver} — {@link ReactiveHeaderAppNameResolver}
  *       on {@code vespera.bridge.app-header} restricted by
  *       {@code vespera.bridge.exposed-apps};</li>
@@ -97,6 +100,22 @@ public class VesperaBridgeReactiveAutoConfiguration {
         return props.isForwardPrincipal() ? new ExchangePrincipalResolver() : ReactivePrincipalResolver.none();
     }
 
+    /**
+     * Dedicated, bounded pool for streamed responses
+     * ({@code vespera.bridge.reactive-streaming.*}); closed with the context.
+     */
+    @Bean(destroyMethod = "close")
+    @ConditionalOnProperty(
+            prefix = "vespera.bridge",
+            name = "controller-enabled",
+            havingValue = "true",
+            matchIfMissing = true)
+    @ConditionalOnMissingBean
+    public VesperaStreamingExecutor vesperaReactiveStreamingExecutor(VesperaBridgeProperties props) {
+        VesperaBridgeProperties.ReactiveStreaming streaming = props.getReactiveStreaming();
+        return new VesperaStreamingExecutor(streaming.getMaxThreads(), streaming.getMaxQueued());
+    }
+
     @Bean
     @ConditionalOnProperty(
             prefix = "vespera.bridge",
@@ -109,7 +128,8 @@ public class VesperaBridgeReactiveAutoConfiguration {
             ReactivePrincipalResolver principalResolver,
             VesperaBridgeProperties props,
             VesperaBridgeNativeSettings nativeSettings,
-            ObjectProvider<DispatchObserver> observers) {
+            ObjectProvider<DispatchObserver> observers,
+            VesperaStreamingExecutor streamingExecutor) {
         return new VesperaReactiveProxyHandler(
                 appResolver,
                 principalResolver,
@@ -117,7 +137,8 @@ public class VesperaBridgeReactiveAutoConfiguration {
                 props.getMaxBufferedResponseBytes(),
                 props.getRequestId().effectiveHeader(),
                 observers.orderedStream().toList(),
-                props.getCors());
+                props.getCors(),
+                streamingExecutor);
     }
 
     /** Routes the proxied URL space ({@code include-patterns} / {@code exclude-patterns}) to the handler. */

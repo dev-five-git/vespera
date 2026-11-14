@@ -45,6 +45,7 @@ class ConfigurationMetadataTest {
     /** Nested property groups of {@link VesperaBridgeProperties}. */
     private static final Set<Class<?>> NESTED = Set.of(
             VesperaBridgeProperties.Native.class, VesperaBridgeProperties.RequestId.class,
+            VesperaBridgeProperties.ReactiveStreaming.class,
             VesperaSpringdocProperties.class);
 
     /** Every class whose {@code @ConditionalOnProperty} reads a property. */
@@ -219,6 +220,11 @@ class ConfigurationMetadataTest {
         assertTrue(forwardPrincipal.path("description").asText().contains("never"),
                 "forward-principal documents that the principal never comes from client headers");
         assertFalse(byName(root.path("groups")).get(PREFIX + ".native")
+                .path("description").asText().isBlank());
+        assertEquals(0, properties.get(PREFIX + ".reactive-streaming.max-threads").path("defaultValue").asInt(-1));
+        assertEquals(VesperaStreamingExecutor.DEFAULT_MAX_QUEUED,
+                properties.get(PREFIX + ".reactive-streaming.max-queued").path("defaultValue").asInt());
+        assertFalse(byName(root.path("groups")).get(PREFIX + ".reactive-streaming")
                 .path("description").asText().isBlank());
     }
 

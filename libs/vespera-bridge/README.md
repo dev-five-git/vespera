@@ -378,6 +378,7 @@ SpringApplication.run(ReactiveApplication.class, args);     // spring-boot-start
 | `ReactiveAppNameResolver` | `ReactiveHeaderAppNameResolver(vespera.bridge.app-header, vespera.bridge.exposed-apps)` | Picks the app per exchange. It uses the same allowlist and one-time WARN as the servlet `HeaderAppNameResolver`, and the selection header is never forwarded. |
 | `ReactivePrincipalResolver` | `ExchangePrincipalResolver`, or `ReactivePrincipalResolver.none()` when `forward-principal=false` | Fills the trusted `principal` wire field from `exchange.getPrincipal()`. With Spring Security WebFlux, that is the `ReactiveSecurityContextHolder` authentication. Authorities are read reflectively, and anonymous tokens are skipped. |
 | `VesperaReactiveProxyHandler` | (`controller-enabled=true`) | The `WebHandler` that dispatches to Rust. |
+| `VesperaStreamingExecutor` | (`controller-enabled=true`) `vespera.bridge.reactive-streaming.*` | Dedicated, bounded pool the streamed responses run on (see **Streaming**). Closed with the context. |
 | `VesperaReactiveHandlerMapping` | order `LOWEST_PRECEDENCE - 10` | Maps `include-patterns` / `exclude-patterns`. `@Controller`s and `RouterFunction`s win; static resources come after. |
 | `VesperaReactivePreflightFilter` | (`cors=rust`) | WebFlux answers CORS preflights inside `DispatcherHandler` without invoking a handler, so this `WebFilter` routes owned-path preflights to Rust. |
 
@@ -398,7 +399,17 @@ SpringApplication.run(ReactiveApplication.class, args);     // spring-boot-start
 - `vespera.bridge.native.*`, `library-name` and `shutdown-on-close`
 - the `VesperaClient` bean
 
-**Streaming.** A request whose `Accept` header asks for `text/event-stream` or NDJSON (the same rule as `SmartDispatchModeResolver`) is dispatched through the native header-first streaming symbol (`dispatchStreamingWithHeader`) on `Schedulers.boundedElastic()`. The bytes are bridged with `DataBufferUtils.outputStreamPublisher` (backpressured, 64 KiB chunks) and written with `writeAndFlushWith`, so every chunk Rust emits is flushed to the client. A disconnect ends the blocking writer, and the native side stops on the failed write. All other requests take the buffered path. A stream that fails after the Rust header (a panic or a body error, `VesperaStreamAbortedException`) is answered like the servlet proxy does: while nothing was committed, the Rust status and headers (`Set-Cookie`, `Cache-Control`, ...) are discarded and the proxy writes its own `500` (`panic in Rust engine` / `response body stream error`, `DispatchEvent.panicked` set for a panic); once bytes reached the client, the connection is aborted so the response never looks complete.
+**Streaming.** A request whose `Accept` header asks for `text/event-stream` or NDJSON (the same rule as `SmartDispatchModeResolver`) is dispatched through the native header-first streaming symbol (`dispatchStreamingWithHeader`) on a dedicated, bounded `VesperaStreamingExecutor` — never on Reactor's shared `Schedulers.boundedElastic()`, so SSE clients cannot starve the rest of the application's blocking work. The bytes are bridged with `DataBufferUtils.outputStreamPublisher` (backpressured, 64 KiB chunks) and written with `writeAndFlushWith`, so every chunk Rust emits is flushed to the client. A disconnect ends the blocking writer, and the native side stops on the failed write. All other requests take the buffered path. A stream that fails after the Rust header (a panic or a body error, `VesperaStreamAbortedException`) is answered like the servlet proxy does: while nothing was committed, the Rust status and headers (`Set-Cookie`, `Cache-Control`, ...) are discarded and the proxy writes its own `500` (`panic in Rust engine` / `response body stream error`, `DispatchEvent.panicked` set for a panic); once bytes reached the client, the connection is aborted so the response never looks complete.
+
+Each streamed response holds one streaming thread for its lifetime. The pool is capped twice:
+
+```yaml
+vespera.bridge.reactive-streaming:
+  max-threads: 0     # concurrent streams; default 0 = 10 x available processors
+  max-queued: 100    # streams waiting (FIFO) for a free thread; default 100
+```
+
+Once `max-threads` streams run and `max-queued` more wait, a further streaming request is answered `503` with the body `vespera streaming capacity exhausted` before anything is dispatched or committed (observers see `503`, mode `STREAMING`). Buffered requests never use this pool. Idle streaming threads time out after 60 s; closing the context stops admitting streams and lets running ones finish. Replace the bean (`@ConditionalOnMissingBean`) to share one executor between several handlers, or pass one to the public `VesperaReactiveProxyHandler` constructor.
 
 **Form bodies read by a `WebFilter`.** `exchange.getFormData()` consumes an `application/x-www-form-urlencoded` body (Spring Security's `CsrfWebFilter` calls it for every unsafe form request), and reactor-netty cannot replay it. When the body comes back empty or short, the proxy rebuilds it from the cached form data (re-encoded in the `Content-Type` charset, else UTF-8) and forwards the matching `Content-Length`. Values are grouped per name (`a=1&b=2&a=3` arrives as `a=1&a=3&b=2`).
 
@@ -407,7 +418,7 @@ SpringApplication.run(ReactiveApplication.class, args);     // spring-boot-start
 **Limitations:**
 
 - Request bodies are always aggregated; there is no streamed upload equivalent of `BIDIRECTIONAL_STREAMING`.
-- Each streamed response holds one `boundedElastic` thread for its lifetime, so size `reactor.schedulers.defaultBoundedElasticSize` for many concurrent SSE clients. An idle stream notices a disconnect only at its next write.
+- Each streamed response holds one streaming thread for its lifetime, so size `vespera.bridge.reactive-streaming.max-threads` for many concurrent SSE clients. An idle stream notices a disconnect only at its next write.
 - `HEAD` is never streamed.
 - A form body that a filter already consumed through `exchange.getFormData()` is not rebuilt (unlike the servlet proxy's parameter-map fallback).
 - A path that a user `@Controller` owns for another HTTP method answers `405` from Spring rather than falling through to Rust.
@@ -1182,7 +1193,7 @@ An incoming id (1–128 visible ASCII characters) is reused, otherwise a random 
 
 ### Errors written by the proxy
 
-Errors the proxy produces itself (unknown app 404, buffered body too large 413, buffered response too large 500, async backpressure 503, native library not initialized 503, DIRECT overflow, unexpected failures 500) are written directly as `text/plain; charset=utf-8` with the message as body, the same shape as the Rust `error_wire` responses, instead of going through Spring's `/error` page (whose shape depends on `Accept`). An unexpected exception is answered with the fixed body `vespera dispatch failed` — its message and stack trace go only to the WARN log, tagged with the request id the response echoes — so internals (hosts, paths, SQL) never reach clients. Writing such an error discards the buffered body and only the headers the proxy itself set; headers servlet filters set before the proxy ran (CORS, security headers, cookies) are kept.
+Errors the proxy produces itself (unknown app 404, buffered body too large 413, buffered response too large 500, async backpressure 503, WebFlux streaming capacity exhausted 503, native library not initialized 503, DIRECT overflow, unexpected failures 500) are written directly as `text/plain; charset=utf-8` with the message as body, the same shape as the Rust `error_wire` responses, instead of going through Spring's `/error` page (whose shape depends on `Accept`). An unexpected exception is answered with the fixed body `vespera dispatch failed` — its message and stack trace go only to the WARN log, tagged with the request id the response echoes — so internals (hosts, paths, SQL) never reach clients. Writing such an error discards the buffered body and only the headers the proxy itself set; headers servlet filters set before the proxy ran (CORS, security headers, cookies) are kept.
 
 If the native library was never loaded (`VesperaBridge.init` not called, or it failed), every proxied request is answered `503 vespera native library is not initialized` instead of escaping as an `UnsatisfiedLinkError` (whitelabel 500), and a WARN is logged once at startup.
 

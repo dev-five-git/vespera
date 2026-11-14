@@ -31,6 +31,14 @@ final class ProxyErrors {
     static final String NOT_INITIALIZED = "vespera native library is not initialized";
 
     /**
+     * Body of the WebFlux proxy {@code 503} when every streaming thread is busy
+     * and the streaming queue is full ({@link VesperaStreamingExecutor}).
+     * A compile-time constant, so the reactive proxy never loads this
+     * (servlet-dependent) class.
+     */
+    static final String STREAMING_SATURATED = "vespera streaming capacity exhausted";
+
+    /**
      * Replace what the proxy wrote into the uncommitted {@code response} with
      * the error: the buffered body is discarded ({@code resetBuffer()}) and,
      * for a {@link ProxyServletResponse}, only the headers the proxy itself
