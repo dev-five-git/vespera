@@ -49,9 +49,21 @@ impl Principal {
         self.authorities.iter().any(|a| a == authority)
     }
 
-    /// Require every one of `scopes` among [`Self::authorities`] (exact match) —
-    /// the runtime counterpart of `#[route(security = [("oauth2", [...])])]`,
-    /// for hosts that forward granted OAuth2 scopes as authorities.
+    /// Whether the host granted the OAuth2 `scope`: an authority equal to
+    /// `scope` or to `SCOPE_<scope>` — the form Spring Security's resource
+    /// server (`JwtGrantedAuthoritiesConverter`) gives token scopes, which
+    /// the Java bridge forwards unchanged.
+    #[must_use]
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.authorities
+            .iter()
+            .any(|a| a == scope || a.strip_prefix(SPRING_SCOPE_PREFIX) == Some(scope))
+    }
+
+    /// Require every one of `scopes` ([`Self::has_scope`]: `scope` or
+    /// `SCOPE_<scope>` among [`Self::authorities`]) — the runtime counterpart
+    /// of `#[route(security = [("oauth2", [...])])]`, for hosts that forward
+    /// granted OAuth2 scopes as authorities.
     ///
     /// # Errors
     ///
@@ -60,7 +72,7 @@ impl Principal {
     pub fn require_scopes(&self, scopes: &[&str]) -> Result<(), InsufficientScope> {
         let missing: Vec<String> = scopes
             .iter()
-            .filter(|scope| !self.has_authority(scope))
+            .filter(|scope| !self.has_scope(scope))
             .map(|scope| (*scope).to_owned())
             .collect();
         if missing.is_empty() {
@@ -76,6 +88,10 @@ impl Principal {
         self.attributes.get(key).map(String::as_str)
     }
 }
+
+/// Prefix Spring Security gives OAuth2 token scopes as authorities
+/// (`SCOPE_read:users`); [`Principal::has_scope`] accepts it.
+pub const SPRING_SCOPE_PREFIX: &str = "SCOPE_";
 
 /// Rejection of the [`Principal`] extractor: the request carries no
 /// principal.  Responds `401 Unauthorized` with a plain-text body.
@@ -225,6 +241,26 @@ mod tests {
             p.require_scopes(&["admin", "read:users", "delete:users"]),
             Err(InsufficientScope {
                 missing: vec!["admin".to_owned(), "delete:users".to_owned()],
+            })
+        );
+    }
+
+    /// Spring Security names token scopes `SCOPE_<scope>`; the Java bridge
+    /// forwards them as is, so they satisfy the plain scope.
+    #[test]
+    fn spring_scope_authorities_satisfy_the_scope() {
+        let p = Principal {
+            authorities: vec!["SCOPE_read:users".to_owned(), "ROLE_USER".to_owned()],
+            ..alice()
+        };
+        assert!(p.has_scope("read:users"));
+        assert!(!p.has_scope("SCOPE_"));
+        assert!(!p.has_scope("USER"));
+        assert_eq!(p.require_scopes(&["read:users"]), Ok(()));
+        assert_eq!(
+            p.require_scopes(&["write:users"]),
+            Err(InsufficientScope {
+                missing: vec!["write:users".to_owned()],
             })
         );
     }

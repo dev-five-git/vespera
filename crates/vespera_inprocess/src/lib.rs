@@ -142,6 +142,7 @@ pub use envelope::{
 };
 pub use principal::{
     INSUFFICIENT_SCOPE_MSG, InsufficientScope, MISSING_PRINCIPAL_MSG, MissingPrincipal, Principal,
+    SPRING_SCOPE_PREFIX,
 };
 pub use registry::{DEFAULT_APP_NAME, register_app, register_app_named, try_register_app_named};
 pub use streaming::{
