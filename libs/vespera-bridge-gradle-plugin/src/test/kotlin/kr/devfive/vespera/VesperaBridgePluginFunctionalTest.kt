@@ -5,6 +5,7 @@ import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
@@ -179,6 +180,51 @@ class VesperaBridgePluginFunctionalTest {
         assertTrue(result.output.contains("Native library not found"), result.output)
         assertTrue(result.output.contains("vespera.autoBuildCargo"), result.output)
         assertFalse(File(dir, "build/resources/main/native").exists())
+    }
+
+    /** The README native-jar consumer: `crateName` + `bundleNative = false`, no cargoRoot / targetDir. */
+    private fun setUpWithoutCargoRoot(vesperaBlock: String) {
+        write("settings.gradle.kts", "rootProject.name = \"consumer\"\n")
+        write(
+            "build.gradle.kts",
+            """
+            plugins {
+                java
+                id("kr.devfive.vespera-bridge")
+            }
+            vespera {
+                crateName.set("my-app")
+                bridgeVersion.set("0.0.0-test")
+            $vesperaBlock
+            }
+            tasks.withType<Sync>().configureEach { }
+            """.trimIndent(),
+        )
+    }
+
+    @Test
+    fun nativeJarConsumerWithoutCargoRootConfiguresEveryTask() {
+        setUpWithoutCargoRoot("    bundleNative.set(false)")
+
+        // `tasks --all` (and IDE sync) realises bundleNativeLib / verifyNativeLibs too.
+        val tasks = run("tasks", "--all").build()
+        assertTrue(tasks.output.contains("bundleNativeLib"), tasks.output)
+        assertTrue(tasks.output.contains("verifyNativeLibs"), tasks.output)
+
+        val resources = run("processResources").build()
+        assertNull(resources.task(":bundleNativeLib"))
+        assertFalse(File(dir, "build/resources/main/native").exists())
+    }
+
+    @Test
+    fun bundlingWithoutCargoRootFailsOnlyWhenRun() {
+        setUpWithoutCargoRoot("")
+
+        assertTrue(run("tasks", "--all").build().output.contains("bundleNativeLib"))
+
+        val result = run("processResources").buildAndFail()
+        assertTrue(result.output.contains("vespera.cargoRoot"), result.output)
+        assertTrue(result.output.contains("vespera.targetDir"), result.output)
     }
 
     @Test
