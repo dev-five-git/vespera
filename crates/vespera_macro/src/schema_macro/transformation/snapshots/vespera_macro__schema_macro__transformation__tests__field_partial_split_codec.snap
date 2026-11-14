@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/schema_macro/transformation/tests.rs
-assertion_line: 212
 expression: rendered
 ---
 # [serde (default)]

@@ -189,6 +189,12 @@ fn parse_attrs(field: &str) -> Vec<syn::Attribute> {
     true,
     false
 )]
+#[case::partial_valueless_codec_dropped(
+    "field_partial_valueless_codec",
+    r#"#[serde(serialize_with, deserialize_with(x), alias = "y")]"#,
+    true,
+    false
+)]
 #[case::unparseable_kept_verbatim("field_unparseable", "#[serde(rename = )]", true, false)]
 fn field_serde_attrs_cases(
     #[case] name: &str,
