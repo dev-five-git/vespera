@@ -39,7 +39,9 @@ use syn::punctuated::Punctuated;
 
 use super::input::PartialMode;
 use crate::parser::extract_rename_all;
-use crate::parser::schema::{SerdeSide, extract_field_rename_for, rename_field};
+use crate::parser::schema::{
+    SerdeSide, extract_field_rename, extract_field_rename_for, rename_field,
+};
 
 /// Builds the omit set from input without cloning the source Vec.
 pub fn build_omit_set(omit: Option<&Vec<String>>) -> HashSet<String> {
@@ -116,33 +118,66 @@ pub fn rebuild_serde_attrs<'a>(
 /// Container serde attributes for the generated struct: every source key
 /// except [`CONTAINER_STRIPPED_KEYS`], rebuilt key by key so e.g.
 /// `deny_unknown_fields` survives next to a stripped `rename_all`.
-pub fn container_serde_attrs(attrs: &[syn::Attribute]) -> Vec<TokenStream> {
-    rebuild_serde_attrs(attrs, |meta| {
-        !CONTAINER_STRIPPED_KEYS.contains(&serde_key(meta).as_str())
-    })
+///
+/// A struct `#[serde(tag = "...")]` writes the container's serde name as the
+/// tag value, which defaults to the Rust ident. When the source has a `tag`
+/// but no container `rename`, the DTO gets `#[serde(rename = "<Source>")]`
+/// so the tag value stays the source's (a source `rename` is copied as is).
+pub fn container_serde_attrs(attrs: &[syn::Attribute], source_ident: &str) -> Vec<TokenStream> {
+    let mut has_tag = false;
+    let mut has_rename = false;
+    let mut out = rebuild_serde_attrs(attrs, |meta| {
+        let key = serde_key(meta);
+        has_tag |= key == "tag";
+        has_rename |= key == "rename";
+        !CONTAINER_STRIPPED_KEYS.contains(&key.as_str())
+    });
+    if has_tag && !has_rename {
+        out.push(quote! { #[serde(rename = #source_ident)] });
+    }
+    out
 }
 
-/// Field serde attributes for the generated struct.
+/// A field `partial` wrapped into `Option<T>`: the context needed to keep a
+/// custom serde codec (`with` / `serialize_with` / `deserialize_with`) on it.
+pub struct OptionWrap<'a> {
+    /// Prefix of the generated adapter fns (`__vespera_<Struct>_<field>`).
+    pub adapter_prefix: &'a str,
+    /// The unwrapped field type `T`.
+    pub inner_ty: &'a TokenStream,
+}
+
+/// Field serde attributes for the generated struct, plus the adapter fns a
+/// `partial` field with a custom codec needs (empty otherwise).
 ///
 /// - `strip_rename`: drop `rename` (the caller emits the wire name itself).
-/// - `wrapped_in_option`: the field type became `Option<T>` (`partial`), so
-///   the keys typed against `T` — `default = "path"`, `with`,
-///   `serialize_with`, `deserialize_with`, `skip_serializing_if` — are
-///   dropped (a missing `Option` field already deserializes to `None`). A
-///   dropped `skip_serializing_if` becomes `skip_serializing_if =
-///   "Option::is_none"`, so an unset field stays absent from the output.
+/// - `wrap`: the field type became `Option<T>` (`partial`), so the keys
+///   typed against `T` cannot be copied verbatim:
+///   - `default = "path"` is dropped (a missing `Option` field already
+///     deserializes to `None`);
+///   - `skip_serializing_if` becomes `skip_serializing_if =
+///     "Option::is_none"`, so an unset field stays absent from the output;
+///   - `with` / `serialize_with` / `deserialize_with` are routed through
+///     generated adapters over `Option<T>` (`Some` goes through the source
+///     fn, `None` serializes as none), so the field keeps the source's wire
+///     format. Such a field also gets `default` (serde requires it for a
+///     missing field read by a custom fn) and `skip_serializing_if =
+///     "Option::is_none"`.
 pub fn field_serde_attrs(
     attrs: &[syn::Attribute],
-    wrapped_in_option: bool,
+    wrap: Option<&OptionWrap<'_>>,
     strip_rename: bool,
-) -> Vec<TokenStream> {
+) -> (Vec<TokenStream>, TokenStream) {
     let mut dropped_skip_if = false;
+    let mut kept_default = false;
+    let mut ser_fn: Option<syn::ExprPath> = None;
+    let mut de_fn: Option<syn::ExprPath> = None;
     let mut out = rebuild_serde_attrs(attrs, |meta| {
         let key = serde_key(meta);
         if strip_rename && key == "rename" {
             return false;
         }
-        if !wrapped_in_option {
+        if wrap.is_none() {
             return true;
         }
         match key.as_str() {
@@ -150,15 +185,103 @@ pub fn field_serde_attrs(
                 dropped_skip_if = true;
                 false
             }
-            "with" | "serialize_with" | "deserialize_with" => false,
-            "default" => matches!(meta, syn::Meta::Path(_)),
+            "with" | "serialize_with" | "deserialize_with" => {
+                if let Some(path) = codec_path(meta) {
+                    match key.as_str() {
+                        "with" => {
+                            ser_fn = Some(append_segment(&path, "serialize"));
+                            de_fn = Some(append_segment(&path, "deserialize"));
+                        }
+                        "serialize_with" => ser_fn = Some(path),
+                        _ => de_fn = Some(path),
+                    }
+                }
+                false
+            }
+            "default" => {
+                let bare = matches!(meta, syn::Meta::Path(_));
+                kept_default |= bare;
+                bare
+            }
             _ => true,
         }
     });
-    if dropped_skip_if {
-        out.push(quote! { #[serde(skip_serializing_if = "Option::is_none")] });
+    let Some(wrap) = wrap else {
+        return (out, TokenStream::new());
+    };
+    let inner = wrap.inner_ty;
+    let mut keys: Vec<TokenStream> = Vec::new();
+    let mut adapters = TokenStream::new();
+    if de_fn.is_some() && !kept_default {
+        keys.push(quote! { default });
     }
-    out
+    if let Some(ser) = &ser_fn {
+        let name = format!("{}_ser", wrap.adapter_prefix);
+        let ident = syn::Ident::new(&name, proc_macro2::Span::call_site());
+        keys.push(quote! { serialize_with = #name });
+        adapters.extend(quote! {
+            #[doc(hidden)]
+            #[allow(non_snake_case, clippy::ref_option)]
+            fn #ident<__S: serde::Serializer>(
+                value: &Option<#inner>,
+                serializer: __S,
+            ) -> Result<__S::Ok, __S::Error> {
+                match value {
+                    Some(inner) => #ser(inner, serializer),
+                    None => serializer.serialize_none(),
+                }
+            }
+        });
+    }
+    if let Some(de) = &de_fn {
+        let name = format!("{}_de", wrap.adapter_prefix);
+        let ident = syn::Ident::new(&name, proc_macro2::Span::call_site());
+        keys.push(quote! { deserialize_with = #name });
+        adapters.extend(quote! {
+            #[doc(hidden)]
+            #[allow(non_snake_case)]
+            fn #ident<'de, __D: serde::Deserializer<'de>>(
+                deserializer: __D,
+            ) -> Result<Option<#inner>, __D::Error> {
+                #de(deserializer).map(Some)
+            }
+        });
+    }
+    if dropped_skip_if || ser_fn.is_some() || de_fn.is_some() {
+        keys.push(quote! { skip_serializing_if = "Option::is_none" });
+    }
+    if !keys.is_empty() {
+        out.push(quote! { #[serde(#(#keys),*)] });
+    }
+    (out, adapters)
+}
+
+/// The function / module path of a `with = "..."`-style key (`None` when it
+/// is not a string path; the key is then dropped).
+fn codec_path(meta: &syn::Meta) -> Option<syn::ExprPath> {
+    let syn::Meta::NameValue(nv) = meta else {
+        return None;
+    };
+    let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Str(lit),
+        ..
+    }) = &nv.value
+    else {
+        return None;
+    };
+    lit.parse().ok()
+}
+
+/// `module` + `serialize` -> `module::serialize` (serde's `with` expansion).
+fn append_segment(path: &syn::ExprPath, segment: &str) -> syn::ExprPath {
+    let mut path = path.clone();
+    path.path
+        .segments
+        .push(syn::PathSegment::from(syn::Ident::new(
+            segment,
+            proc_macro2::Span::call_site(),
+        )));
+    path
 }
 
 /// Wire name of a field the `rename` parameter renamed: the Rust field
@@ -185,23 +308,35 @@ pub fn renamed_field_serde_rename(
 }
 
 /// Multipart twin of [`renamed_field_serde_rename`]: pins the form field name
-/// of a renamed field to the source's (`rename_all` applied to the SOURCE
-/// field name) with `#[form_data(field_name = "...")]`. `None` when the
-/// source already names it via `#[form_data(field_name)]` (copied as is).
-pub fn renamed_field_form_name(
+/// of a generated field to the source's with `#[form_data(field_name =
+/// "...")]`, resolved in the `Multipart` derive's order:
+///
+/// 1. the source's `#[form_data(field_name)]` -> `None` (copied as is);
+/// 2. the source's `#[serde(rename)]` (multipart mode does not copy serde
+///    attributes, so it is pinned for renamed AND kept fields);
+/// 3. `renamed` only: `rename_all` applied to the SOURCE field name (the
+///    Rust field changed, the form field must not).
+pub fn field_form_name(
     attrs: &[syn::Attribute],
     source_field_name: &str,
     rename_all: &str,
+    renamed: bool,
 ) -> Option<TokenStream> {
-    let form_data_only: Vec<syn::Attribute> = attrs
-        .iter()
-        .filter(|attr| attr.path().is_ident("form_data"))
-        .cloned()
-        .collect();
-    if extract_field_rename_for(&form_data_only, SerdeSide::Serialize).is_some() {
+    let only = |name: &str| -> Vec<syn::Attribute> {
+        attrs
+            .iter()
+            .filter(|attr| attr.path().is_ident(name))
+            .cloned()
+            .collect()
+    };
+    if extract_field_rename_for(&only("form_data"), SerdeSide::Serialize).is_some() {
         return None;
     }
-    let name = rename_field(source_field_name, Some(rename_all));
+    let name = match extract_field_rename(&only("serde")) {
+        Some(name) => name,
+        None if renamed => rename_field(source_field_name, Some(rename_all)),
+        None => return None,
+    };
     Some(quote! { #[form_data(field_name = #name)] })
 }
 

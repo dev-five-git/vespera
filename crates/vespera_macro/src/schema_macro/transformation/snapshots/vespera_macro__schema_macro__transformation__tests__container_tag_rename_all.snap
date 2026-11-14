@@ -1,5 +1,6 @@
 ---
 source: crates/vespera_macro/src/schema_macro/transformation/tests.rs
-expression: render(&container_serde_attrs(&item.attrs))
+expression: "render(&container_serde_attrs(&item.attrs, \"S\"))"
 ---
 # [serde (tag = "t")]
+# [serde (rename = "S")]
