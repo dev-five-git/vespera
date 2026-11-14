@@ -17,7 +17,9 @@
 //! flags byte ([`FLAG_EXACT`], [`FLAG_STREAM`]).  The token is redeemed with
 //! `fetch0` (copy into a larger buffer), `stream0` (header-first streaming)
 //! or released with `discard0`.  An unredeemed entry expires after
-//! [`STASH_TTL`]; at most [`MAX_STASHED`] entries are kept (oldest evicted).
+//! [`STASH_TTL`] (swept on every stash access — put, fetch, stream,
+//! discard); at most [`MAX_STASHED`] entries are kept (least recently
+//! stashed evicted).
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -46,9 +48,44 @@ pub const MAX_STASHED: usize = 1024;
 
 struct Stash {
     next: u64,
-    /// Token → (stashed at, response).  Tokens grow monotonically, so the
-    /// map's key order is insertion order and expiry pops from the front.
+    /// Token → (stashed at, response).  A partially fetched response is
+    /// re-stashed under its old token with a fresh timestamp, so key order
+    /// is NOT timestamp order: expiry and eviction compare timestamps.
     entries: BTreeMap<u64, (Instant, PendingDirectResponse)>,
+}
+
+impl Stash {
+    /// Move every entry older than [`STASH_TTL`] into `evicted`, then — when
+    /// `make_room` — the least recently stashed ones until one more fits.
+    fn evict(
+        &mut self,
+        now: Instant,
+        make_room: bool,
+        evicted: &mut Vec<(Instant, PendingDirectResponse)>,
+    ) {
+        let expired: Vec<u64> = self
+            .entries
+            .iter()
+            .filter(|(_, (at, _))| now.duration_since(*at) > STASH_TTL)
+            .map(|(token, _)| *token)
+            .collect();
+        evicted.extend(
+            expired
+                .iter()
+                .filter_map(|token| self.entries.remove(token)),
+        );
+        while make_room && self.entries.len() >= MAX_STASHED {
+            let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(token, _)| *token)
+            else {
+                break;
+            };
+            evicted.extend(self.entries.remove(&oldest));
+        }
+    }
 }
 
 static STASH: Mutex<Stash> = Mutex::new(Stash {
@@ -70,16 +107,7 @@ fn stash_put(token: Option<u64>, pending: PendingDirectResponse) -> u64 {
     let mut evicted = Vec::new();
     let token = {
         let mut stash = lock_stash();
-        loop {
-            let full = stash.entries.len() >= MAX_STASHED;
-            let Some(entry) = stash.entries.first_entry() else {
-                break;
-            };
-            if !full && now.duration_since(entry.get().0) <= STASH_TTL {
-                break;
-            }
-            evicted.push(entry.remove());
-        }
+        stash.evict(now, true, &mut evicted);
         let token = token.unwrap_or_else(|| {
             let token = stash.next;
             stash.next = stash.next.wrapping_add(1).max(1);
@@ -92,8 +120,17 @@ fn stash_put(token: Option<u64>, pending: PendingDirectResponse) -> u64 {
     token
 }
 
+/// Remove `token`'s entry (if still live) and sweep expired ones, so an
+/// abandoned response (and the body / connection it holds) never outlives
+/// [`STASH_TTL`] past the next stash access.  Dropped after the lock.
 fn stash_take(token: u64) -> Option<PendingDirectResponse> {
-    let removed = lock_stash().entries.remove(&token);
+    let mut evicted = Vec::new();
+    let removed = {
+        let mut stash = lock_stash();
+        stash.evict(Instant::now(), false, &mut evicted);
+        stash.entries.remove(&token)
+    };
+    drop(evicted);
     removed.map(|(_, pending)| pending)
 }
 
@@ -284,5 +321,34 @@ mod tests {
         assert_eq!(lock_stash().entries.len(), MAX_STASHED);
         clear_stash();
         assert!(lock_stash().entries.is_empty());
+
+        // Eviction follows the stash time, not the token: a re-stashed
+        // (partially fetched) low token outlives newer entries.
+        let resumed = stash_put(None, pending());
+        let newer = stash_put(None, pending());
+        let _ = stash_put(Some(resumed), stash_take(resumed).expect("live"));
+        for _ in 0..MAX_STASHED - 1 {
+            let _ = stash_put(None, pending());
+        }
+        assert!(
+            stash_take(newer).is_none(),
+            "least recently stashed evicted"
+        );
+        assert!(stash_take(resumed).is_some(), "re-stashed entry kept");
+        clear_stash();
+
+        // Expired entries are swept by any access, not only by a put.
+        let stale = Instant::now()
+            .checked_sub(STASH_TTL + Duration::from_secs(1))
+            .expect("monotonic clock far enough from its origin");
+        let expired = stash_put(None, pending());
+        let live = stash_put(None, pending());
+        lock_stash().entries.get_mut(&expired).expect("stashed").0 = stale;
+        assert!(stash_take(live).is_some());
+        assert!(
+            lock_stash().entries.is_empty(),
+            "expired entry swept by a take"
+        );
+        clear_stash();
     }
 }
