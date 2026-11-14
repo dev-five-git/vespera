@@ -85,7 +85,8 @@ abstract class VesperaBridgeExtension @Inject constructor(objects: ObjectFactory
      * build flag. `"release"` (default) → `cargo build --release` →
      * `target/release/`; `"dev"` (or `"debug"`) → plain `cargo build` →
      * `target/debug/`; any other `"<p>"` → `cargo build --profile <p>` →
-     * `target/<p>/`. Lets debug or custom-profile cdylibs be bundled
+     * `target/<p>/`, except Cargo's built-in `"test"` (→ `target/debug/`)
+     * and `"bench"` (→ `target/release/`). Lets debug or custom-profile cdylibs be bundled
      * without hand-editing the plugin (the previous hardcoded `--release`
      * forced every consumer onto the release profile).
      */
