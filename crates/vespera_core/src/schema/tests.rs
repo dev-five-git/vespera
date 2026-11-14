@@ -482,6 +482,18 @@ fn nullable_primitive_emits_type_array_with_null() {
     assert_eq!(json, r#"{"type":["string","null"]}"#);
 }
 
+/// `Option<()>`: a nullable `null` is still the single `"null"` type, never
+/// the duplicate `["null","null"]`.
+#[test]
+fn nullable_null_emits_single_null_type() {
+    let schema = Schema {
+        nullable: Some(true),
+        ..Schema::new(SchemaType::Null)
+    };
+    let json = serde_json::to_string(&schema).unwrap();
+    assert_eq!(json, r#"{"type":"null"}"#);
+}
+
 #[test]
 fn nullable_primitive_type_array_deserializes() {
     let schema: Schema = serde_json::from_str(r#"{"type":["integer","null"]}"#).unwrap();

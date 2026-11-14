@@ -102,8 +102,8 @@ fn assert_schema_matches(schema_ref: &SchemaRef, expected: &ExpectedSchema) {
         None
     )]
 #[case(
-        "-> Result<Json<User>, String>",
-        Some(ExpectedSchema { schema_type: SchemaType::Object, nullable: false, items_schema_type: None }),
+        "-> Result<Json<Vec<String>>, String>",
+        Some(ExpectedSchema { schema_type: SchemaType::Array, nullable: false, items_schema_type: Some(SchemaType::String) }),
         Some(ExpectedResponse { status: "400", schema: ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None } }),
         None
     )]
@@ -716,11 +716,9 @@ fn media_shape(
 // An unexpanded alias / non-Schema type is description-only, not `{type: object}`.
 #[case::unresolved_alias("-> ApiResult<User>", "200", None)]
 #[case::unknown_named_type("-> CustomResponse", "200", None)]
-#[case::bare_result("-> Result", "200", Some(("application/json", SchemaType::Object, None)))]
 #[case::result_lifetime_arg("-> Result<'static, Json<i32>>", "200", Some(("application/json", SchemaType::Integer, Some("int32"))))]
 #[case::header_array_in_tuple("-> (StatusCode, [(HeaderName, &'static str); 1])", "200", None)]
 #[case::reference_to_non_path("-> &'static [i32]", "200", Some(("application/json", SchemaType::Array, None)))]
-#[case::bare_fn("-> fn()", "200", Some(("application/json", SchemaType::Object, None)))]
 fn opaque_and_raw_bodies(
     #[case] return_type: &str,
     #[case] status: &str,
@@ -748,4 +746,21 @@ fn opaque_and_raw_bodies(
 fn result_args_ignores_non_result_types(#[case] ty: &str) {
     let ty: Type = syn::parse_str(ty).unwrap();
     assert!(result_args(&ty).is_none());
+}
+
+/// A body type with no known JSON shape (a bare `Result`, a fn pointer) is
+/// documented as any value (`{}`), not `{type: object}`.
+#[rstest]
+#[case::bare_result("-> Result")]
+#[case::bare_fn("-> fn()")]
+fn shapeless_bodies_are_any_value(#[case] return_type: &str) {
+    let responses = parse_return_type(
+        &parse_return_type_str(return_type),
+        &HashSet::new(),
+        &HashMap::new(),
+    );
+    assert_eq!(
+        media_shape(&responses, "200"),
+        Some(("application/json".to_string(), None, None))
+    );
 }

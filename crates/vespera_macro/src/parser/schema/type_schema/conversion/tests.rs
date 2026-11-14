@@ -192,7 +192,7 @@ fn test_hashmap_single_arg_falls_through() {
     let ty: Type = syn::parse_str("HashMap<String>").unwrap();
     let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
     if let SchemaRef::Inline(schema) = &schema_ref {
-        assert_eq!(schema.schema_type, Some(SchemaType::Object));
+        assert_eq!(schema.schema_type, None, "unknown shape: any value");
         // Should NOT have additional_properties since it fell through
         assert!(schema.additional_properties.is_none());
     } else {
@@ -492,20 +492,30 @@ fn invisible_type_group_maps_like_its_contents() {
     }
 }
 
-/// Types with no JSON shape of their own (fn pointers, `impl Trait`,
-/// trait objects) fall back to an unconstrained object schema.
+/// Types with no known JSON shape (fn pointers, `impl Trait`, trait
+/// objects, unknown types, unresolved generic parameters, bare wrappers)
+/// fall back to any value (`{}`), never `object`.
 #[rstest::rstest]
 #[case::fn_pointer("fn(i32) -> i32")]
 #[case::impl_trait("impl Iterator<Item = u8>")]
 #[case::trait_object("dyn std::any::Any")]
-fn shapeless_types_fall_back_to_object(#[case] ty_src: &str) {
+#[case::unknown_type("Unknown")]
+#[case::generic_param("T")]
+#[case::qualified_unknown("other::Thing")]
+#[case::bare_wrapper("Vec")]
+#[case::option_unknown("Option<T>")]
+fn shapeless_types_are_any_value(#[case] ty_src: &str) {
     let ty: Type = syn::parse_str(ty_src).unwrap();
-    let SchemaRef::Inline(schema) =
-        parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions())
-    else {
-        panic!("{ty_src} must not become a $ref");
-    };
-    assert_eq!(schema.schema_type, Some(SchemaType::Object), "{ty_src}");
+    let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
+    assert!(
+        matches!(schema_ref, SchemaRef::Inline(_)),
+        "{ty_src} must not become a $ref"
+    );
+    assert_eq!(
+        serde_json::to_string(&schema_ref).unwrap(),
+        "{}",
+        "{ty_src}"
+    );
 }
 
 // ========== String-serialized std::net / std::path / url types ==========
@@ -538,49 +548,149 @@ fn string_serialized_std_types(#[case] name: &str, #[case] ty_src: &str) {
     );
 }
 
-/// A user `Schema` type that happens to share a std/url name (`Url`,
-/// `IpAddr`, …) keeps its own `$ref` instead of the string mapping.
+/// A user `Schema` type that happens to share a builtin name (`Url`,
+/// `IpAddr`, `Date`, `Decimal`, `StatusCode`, …) keeps its own `$ref`
+/// instead of the builtin mapping — also through a crate-local path.
 #[rstest::rstest]
-#[case("Url")]
-#[case("IpAddr")]
-#[case("PathBuf")]
-fn user_schema_named_like_std_type_keeps_ref(#[case] ident: &str) {
+#[case("Url", "Url")]
+#[case("IpAddr", "IpAddr")]
+#[case("PathBuf", "PathBuf")]
+#[case("Date", "Date")]
+#[case("Time", "Time")]
+#[case("DateTime", "DateTime")]
+#[case("Decimal", "Decimal")]
+#[case("Uuid", "Uuid")]
+#[case("Duration", "Duration")]
+#[case("StatusCode", "StatusCode")]
+#[case("Header", "Header")]
+#[case("Path", "Path")]
+#[case("Query", "Query")]
+#[case("Json", "Json")]
+#[case("Result", "Result")]
+#[case("Date", "crate::models::Date")]
+fn user_schema_named_like_builtin_keeps_ref(#[case] ident: &str, #[case] ty_src: &str) {
     let known: HashSet<String> = HashSet::from([ident.to_string()]);
-    let ty: Type = syn::parse_str(ident).unwrap();
+    let ty: Type = syn::parse_str(ty_src).unwrap();
     let schema_ref = parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions());
     let SchemaRef::Ref(reference) = schema_ref else {
-        panic!("expected $ref for a known `{ident}` schema");
+        panic!("expected $ref for a known `{ty_src}` schema, got {schema_ref:?}");
     };
     assert_eq!(reference.ref_path, format!("#/components/schemas/{ident}"));
 }
 
-/// Every primitive arm of the wire-type table: `(type, json type, format,
-/// minimum)`.
+/// Qualified with the external crate, the builtin mapping still applies even
+/// when a same-named user schema exists.
 #[rstest::rstest]
-#[case::i8("i8", SchemaType::Integer, Some("int8"), None)]
-#[case::i16("i16", SchemaType::Integer, Some("int16"), None)]
-#[case::non_zero_i16("NonZeroI16", SchemaType::Integer, Some("int16"), None)]
-#[case::i32("i32", SchemaType::Integer, Some("int32"), None)]
-#[case::i64("i64", SchemaType::Integer, Some("int64"), None)]
-#[case::u8("u8", SchemaType::Integer, Some("uint8"), None)]
-#[case::u16("u16", SchemaType::Integer, Some("uint16"), None)]
-#[case::u32("u32", SchemaType::Integer, Some("uint32"), None)]
-#[case::u64("u64", SchemaType::Integer, Some("uint64"), None)]
-#[case::f32("f32", SchemaType::Number, Some("float"), None)]
-#[case::f64("f64", SchemaType::Number, Some("double"), None)]
-#[case::decimal("Decimal", SchemaType::String, Some("decimal"), None)]
-#[case::char("char", SchemaType::String, Some("char"), None)]
-#[case::uuid("Uuid", SchemaType::String, Some("uuid"), None)]
-#[case::non_zero_u8("NonZeroU8", SchemaType::Integer, Some("uint8"), Some(1.0))]
-#[case::non_zero_u16("NonZeroU16", SchemaType::Integer, Some("uint16"), Some(1.0))]
-#[case::non_zero_u32("NonZeroU32", SchemaType::Integer, Some("uint32"), Some(1.0))]
-#[case::non_zero_u64("NonZeroU64", SchemaType::Integer, Some("uint64"), Some(1.0))]
-#[case::non_zero_u128("NonZeroU128", SchemaType::Integer, None, Some(1.0))]
+#[case("Date", "chrono::NaiveDate", r#"{"type":"string","format":"date"}"#)]
+#[case(
+    "Decimal",
+    "rust_decimal::Decimal",
+    r#"{"type":"string","format":"decimal"}"#
+)]
+#[case("Uuid", "uuid::Uuid", r#"{"type":"string","format":"uuid"}"#)]
+#[case("StatusCode", "http::StatusCode", r#"{"type":"integer"}"#)]
+#[case("Url", "url::Url", r#"{"type":"string","format":"uri"}"#)]
+fn external_crate_path_keeps_builtin_mapping(
+    #[case] ident: &str,
+    #[case] ty_src: &str,
+    #[case] expected: &str,
+) {
+    let known: HashSet<String> = HashSet::from([ident.to_string(), "NaiveDate".to_string()]);
+    let ty: Type = syn::parse_str(ty_src).unwrap();
+    let schema_ref = parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions());
+    assert_eq!(serde_json::to_string(&schema_ref).unwrap(), expected);
+}
+
+/// RFC 3339 `date-time` / `time` require a UTC offset: only offset-carrying
+/// types use them; naive date-times / times are plain strings.
+#[rstest::rstest]
+#[case::chrono_utc("chrono::DateTime<Utc>", Some("date-time"))]
+#[case::chrono_fixed("DateTime<FixedOffset>", Some("date-time"))]
+#[case::sea_orm_tz("DateTimeWithTimeZone", Some("date-time"))]
+#[case::sea_orm_utc("DateTimeUtc", Some("date-time"))]
+#[case::sea_orm_local("DateTimeLocal", Some("date-time"))]
+#[case::time_offset("time::OffsetDateTime", Some("date-time"))]
+#[case::chrono_naive("chrono::NaiveDateTime", None)]
+#[case::sea_orm_naive_alias("sea_orm::prelude::DateTime", None)]
+#[case::time_primitive("time::PrimitiveDateTime", None)]
+#[case::chrono_naive_time("NaiveTime", None)]
+#[case::time_time("time::Time", None)]
+#[case::date("NaiveDate", Some("date"))]
+fn date_time_formats_require_an_offset(#[case] ty_src: &str, #[case] format: Option<&str>) {
+    let ty: Type = syn::parse_str(ty_src).unwrap();
+    let SchemaRef::Inline(schema) =
+        parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions())
+    else {
+        panic!("inline schema for {ty_src}");
+    };
+    assert_eq!(schema.schema_type, Some(SchemaType::String), "{ty_src}");
+    assert_eq!(schema.format.as_deref(), format, "{ty_src}");
+}
+
+/// `Option<()>` is `null` either way: the type is a single `"null"`.
+#[test]
+fn option_unit_is_single_null_type() {
+    let ty: Type = syn::parse_str("Option<()>").unwrap();
+    let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
+    assert_eq!(
+        serde_json::to_string(&schema_ref).unwrap(),
+        r#"{"type":"null"}"#
+    );
+}
+
+/// Every primitive arm of the wire-type table: `(type, json type, format,
+/// minimum, maximum)`. Unsigned widths carry their value range (`u64::MAX`
+/// is not exactly representable as a double, so `u64` has no `maximum`).
+#[rstest::rstest]
+#[case::i8("i8", SchemaType::Integer, Some("int8"), None, None)]
+#[case::i16("i16", SchemaType::Integer, Some("int16"), None, None)]
+#[case::non_zero_i16("NonZeroI16", SchemaType::Integer, Some("int16"), None, None)]
+#[case::i32("i32", SchemaType::Integer, Some("int32"), None, None)]
+#[case::i64("i64", SchemaType::Integer, Some("int64"), None, None)]
+#[case::u8("u8", SchemaType::Integer, Some("uint8"), Some(0.0), Some(255.0))]
+#[case::u16("u16", SchemaType::Integer, Some("uint16"), Some(0.0), Some(65_535.0))]
+#[case::u32(
+    "u32",
+    SchemaType::Integer,
+    Some("uint32"),
+    Some(0.0),
+    Some(4_294_967_295.0)
+)]
+#[case::u64("u64", SchemaType::Integer, Some("uint64"), Some(0.0), None)]
+#[case::f32("f32", SchemaType::Number, Some("float"), None, None)]
+#[case::f64("f64", SchemaType::Number, Some("double"), None, None)]
+#[case::decimal("Decimal", SchemaType::String, Some("decimal"), None, None)]
+#[case::char("char", SchemaType::String, Some("char"), None, None)]
+#[case::uuid("Uuid", SchemaType::String, Some("uuid"), None, None)]
+#[case::non_zero_u8(
+    "NonZeroU8",
+    SchemaType::Integer,
+    Some("uint8"),
+    Some(1.0),
+    Some(255.0)
+)]
+#[case::non_zero_u16(
+    "NonZeroU16",
+    SchemaType::Integer,
+    Some("uint16"),
+    Some(1.0),
+    Some(65_535.0)
+)]
+#[case::non_zero_u32(
+    "NonZeroU32",
+    SchemaType::Integer,
+    Some("uint32"),
+    Some(1.0),
+    Some(4_294_967_295.0)
+)]
+#[case::non_zero_u64("NonZeroU64", SchemaType::Integer, Some("uint64"), Some(1.0), None)]
+#[case::non_zero_u128("NonZeroU128", SchemaType::Integer, None, Some(1.0), None)]
 fn primitive_wire_types(
     #[case] source: &str,
     #[case] schema_type: SchemaType,
     #[case] format: Option<&str>,
     #[case] minimum: Option<f64>,
+    #[case] maximum: Option<f64>,
 ) {
     let ty: Type = syn::parse_str(source).expect("type");
     let SchemaRef::Inline(schema) =
@@ -591,4 +701,5 @@ fn primitive_wire_types(
     assert_eq!(schema.schema_type, Some(schema_type), "{source}");
     assert_eq!(schema.format.as_deref(), format, "{source}");
     assert_eq!(schema.minimum, minimum, "{source}");
+    assert_eq!(schema.maximum, maximum, "{source}");
 }

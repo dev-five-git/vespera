@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/parser/parameters.rs
-assertion_line: 162
 expression: parameters
 ---
 [
@@ -15,9 +14,7 @@ expression: parameters
             Inline(
                 Schema {
                     ref_path: None,
-                    schema_type: Some(
-                        Object,
-                    ),
+                    schema_type: None,
                     format: None,
                     title: None,
                     description: None,
