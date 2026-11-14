@@ -40,3 +40,12 @@ pub async fn legacy_path_notation(
 ) -> String {
     format!("{id}:{rest}")
 }
+
+// A parameter after a static prefix within its segment (axum's router does
+// not support text AFTER a parameter: `/{name}.png` is a compile error).
+#[vespera::route(get, path = "/report-{year}")]
+pub async fn prefixed_segment_param(
+    vespera::axum::extract::Path(year): vespera::axum::extract::Path<u16>,
+) -> String {
+    format!("report {year}")
+}

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use syn::{FnArg, Pat, PatType};
 use vespera_core::route::Parameter;
 
-use super::extractors::unwrap_validated_type;
+use super::extractors::request_extractor;
 
 mod header;
 mod path;
@@ -23,7 +23,7 @@ pub fn parse_function_parameter(
     match arg {
         FnArg::Receiver(_) => None,
         FnArg::Typed(PatType { pat, ty, .. }) => {
-            let ty = unwrap_validated_type(ty.as_ref());
+            let ty = request_extractor(ty.as_ref());
             // `Query<Struct>` documents the struct's fields, so it never needs
             // the binding name: `Query(Pagination { page, per_page })`, `_`
             // and `Query(_)` patterns all resolve here.
@@ -142,6 +142,9 @@ mod tests {
     #[case("fn test(upload: TypedMultipart<UploadRequest>) {}", vec![], vec![vec![]], "typed_multipart_body")]
     #[case("fn test(multipart: Multipart) {}", vec![], vec![vec![]], "raw_multipart_body")]
     #[case("fn test(user_agent: Option<TypedHeader<UserAgent>>, page: Option<i32>) {}", vec![], vec![vec![ParameterLocation::Header], vec![]], "optional_typed_header")]
+    #[case("fn test(q: Result<Query<QueryParams>, QueryRejection>) {}", vec![], vec![vec![ParameterLocation::Query, ParameterLocation::Query]], "result_query_struct")]
+    #[case("fn test(id: core::result::Result<Path<i32>, PathRejection>) {}", vec!["item_id".to_string()], vec![vec![ParameterLocation::Path]], "result_path_single")]
+    #[case("fn test(custom: Result<Header<CustomHeader>, HeaderRejection>) {}", vec![], vec![vec![ParameterLocation::Header]], "result_header")]
     fn parse_function_parameter_cases(
         #[case] func_src: &str,
         #[case] path_params: Vec<String>,

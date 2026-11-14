@@ -4,7 +4,7 @@ use syn::{FnArg, PatType, Type};
 use vespera_core::route::{MediaType, RequestBody};
 use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
-use super::{extractors::unwrap_validated_type, schema::parse_type_to_schema_ref};
+use super::{extractors::request_extractor, schema::parse_type_to_schema_ref};
 use crate::schema_macro::type_utils::option_inner;
 
 fn is_string_like(ty: &Type) -> bool {
@@ -89,7 +89,7 @@ fn body_for_type(
     known_schemas: &HashSet<&str>,
     struct_definitions: &std::collections::HashMap<&str, &str>,
 ) -> Option<RequestBody> {
-    let ty = unwrap_validated_type(ty);
+    let ty = request_extractor(ty);
     // `Option<Json<T>>` (and any optional body extractor) accepts a missing
     // body, so the request body is documented as not required.
     if let Some(inner) = option_inner(ty) {
@@ -190,6 +190,21 @@ mod tests {
     #[case::self_ref("fn test(&self) {}", false, "self_ref")]
     #[case::option_json("fn test(body: Option<Json<User>>) {}", true, "option_json")]
     #[case::option_query("fn test(q: Option<Query<User>>) {}", false, "option_query")]
+    #[case::result_json(
+        "fn test(body: Result<Json<User>, JsonRejection>) {}",
+        true,
+        "result_json"
+    )]
+    #[case::std_result_bytes(
+        "fn test(body: std::result::Result<Bytes, BytesRejection>) {}",
+        true,
+        "std_result_bytes"
+    )]
+    #[case::result_query(
+        "fn test(q: Result<Query<User>, QueryRejection>) {}",
+        false,
+        "result_query"
+    )]
     #[case::bytes("fn test(body: Bytes) {}", true, "bytes")]
     #[case::bytes_mut("fn test(body: axum::body::BytesMut) {}", true, "bytes_mut")]
     #[case::raw_body("fn test(body: Body) {}", true, "raw_body")]

@@ -7,7 +7,8 @@
 //! (`Router::nest("/{tenant}", app)`), so the extractor can legitimately see
 //! MORE parameters than the route's own `path` declares, never fewer. Only
 //! cases that fail whatever the prefix are rejected (error spanned on the
-//! `Path<..>` type):
+//! `Path<..>` type; `Validated` / `ValidatedWith` / `Result<_, Rejection>`
+//! wrappers are seen through):
 //! - `Path<(A, B, ..)>` with FEWER elements than the route's own parameters;
 //! - `Path<scalar>` (a primitive such as `u32` / `String`) on a route with
 //!   two or more own parameters;
@@ -26,12 +27,12 @@ use std::path::Path as FsPath;
 use quote::ToTokens;
 use syn::Type;
 
-use crate::parser::extract_path_parameters;
 use crate::parser::schema::{
     SerdeSide, extract_deny_unknown_fields, extract_field_rename_for, extract_flatten,
     extract_rename_all_for, extract_serde_skip_flags, is_primitive_type, rename_field,
     strip_raw_prefix_owned,
 };
+use crate::parser::{extract_path_parameters, request_extractor};
 
 /// Check every `Path<T>` / `Validated<Path<T>>` argument of `sig` against
 /// the `{params}` of the `#[route(path)]` (none without a `path`). Structs
@@ -62,7 +63,7 @@ pub(super) fn check_with_lookup(
         let syn::FnArg::Typed(pat_type) = input else {
             continue;
         };
-        let ty = unwrap_extractor(&pat_type.ty, "Validated").unwrap_or(&pat_type.ty);
+        let ty = request_extractor(&pat_type.ty);
         let Some(inner) = unwrap_extractor(ty, "Path") else {
             continue;
         };
@@ -326,6 +327,16 @@ mod tests {
         Some("/{id}/{x}"),
         "p: Path<Strict>",
         "route `/{id}/{x}` has the path parameter `{x}`, but `Path<Strict>` has no field for it and denies unknown fields"
+    )]
+    #[case::result_tuple_short(
+        Some("/{x}/{y}"),
+        "p: Result<Path<(u32,)>, PathRejection>",
+        "route `/{x}/{y}` has 2 path parameters but `Path<(u32,)>` extracts 1 value"
+    )]
+    #[case::validated_with_tuple_short(
+        Some("/{x}/{y}"),
+        "p: ValidatedWith<Ctx, Path<(u32,)>>",
+        "route `/{x}/{y}` has 2 path parameters but `Path<(u32,)>` extracts 1 value"
     )]
     fn rejected(#[case] path: Option<&str>, #[case] arg: &str, #[case] message: &str) {
         assert_eq!(check(path, arg), Err(message.to_string()));

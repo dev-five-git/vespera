@@ -21,8 +21,15 @@ pub async fn duplicate_param() {}
 #[route(get, path = "/files/*rest/meta")]
 pub async fn catch_all_not_last() {}
 
+#[route(get, path = "/img/{name}.png")]
+pub async fn param_with_static_suffix() {}
+
 // Accepted: mixed styles.
 #[route(get, path = "/ok/:id/{post}/*rest")]
 pub async fn mixed_styles_accepted() {}
+
+// Accepted: a static prefix before a parameter, escaped literal braces.
+#[route(get, path = "/ok/file-{name}/{{lit}}")]
+pub async fn prefixed_param_accepted() {}
 
 fn main() {}

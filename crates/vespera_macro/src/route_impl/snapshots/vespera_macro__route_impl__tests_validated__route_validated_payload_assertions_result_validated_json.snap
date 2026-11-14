@@ -1,0 +1,16 @@
+---
+source: crates/vespera_macro/src/route_impl/tests_validated.rs
+assertion_line: 68
+expression: "prettyplease::unparse(&file)"
+---
+pub async fn create(
+    body: std::result::Result<Validated<Json<CreateUser>>, ValidationRejection>,
+) -> String {
+    String::new()
+}
+const _: () = {
+    const fn __vespera_assert_validate<
+        T: ::vespera::__validation::AssertValidate + ?Sized,
+    >() {}
+    let _ = __vespera_assert_validate::<CreateUser>;
+};

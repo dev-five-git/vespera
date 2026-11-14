@@ -1,18 +1,19 @@
 /// Extract path parameters from a path string.
 ///
-/// An axum catch-all segment `{*rest}` names the parameter `rest`.
+/// An axum catch-all segment `{*rest}` names the parameter `rest`; a
+/// parameter after a static prefix (`file-{name}`) is found too, and escaped
+/// literal braces (`{{x}}`) are not parameters. A malformed segment (already
+/// rejected by [`normalize_route_path`]) contributes nothing.
 pub fn extract_path_parameters(path: &str) -> Vec<String> {
     let mut params = Vec::new();
 
     // Iterate the split lazily — no intermediate `Vec<&str>` allocation.
     for segment in path.split('/') {
-        if let Some(param) = segment
-            .strip_prefix('{')
-            .and_then(|rest| rest.strip_suffix('}'))
-        {
-            params.push(param.strip_prefix('*').unwrap_or(param).to_string());
-        } else if let Some(param) = segment.strip_prefix(':') {
+        if let Some(param) = segment.strip_prefix(':') {
             params.push(param.to_string());
+        } else {
+            let found = brace_params(path, segment).unwrap_or_default();
+            params.extend(found.into_iter().map(|(name, _)| name));
         }
     }
 
@@ -23,9 +24,30 @@ pub fn extract_path_parameters(path: &str) -> Vec<String> {
 ///
 /// axum spells a catch-all segment `{*rest}`; `OpenAPI` path templates have no
 /// wildcard syntax, so the segment is documented as the plain parameter
-/// `{rest}` (the router keeps registering `{*rest}`).
+/// `{rest}` (the router keeps registering `{*rest}`). axum's escaped literal
+/// braces `{{` / `}}` cannot appear unescaped in a template (they would read
+/// as a parameter), so they are percent-encoded (`%7B` / `%7D`).
 pub fn openapi_path_template(path: &str) -> String {
-    path.replace("{*", "{")
+    let mut out = String::with_capacity(path.len());
+    let mut in_param = false;
+    let mut chars = path.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' if !in_param && chars.next_if_eq(&'{').is_some() => out.push_str("%7B"),
+            '}' if !in_param && chars.next_if_eq(&'}').is_some() => out.push_str("%7D"),
+            '{' => {
+                in_param = true;
+                out.push('{');
+                chars.next_if_eq(&'*');
+            }
+            '}' => {
+                in_param = false;
+                out.push('}');
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Normalize a `#[route(path = "...")]` literal to axum 0.8 syntax and
@@ -35,7 +57,9 @@ pub fn openapi_path_template(path: &str) -> String {
 /// panics on them when the router is built): `:name` -> `{name}`, `*name`
 /// -> `{*name}`. Mixed styles in one path are fine. Errors: unbalanced or
 /// nested braces, an empty parameter (`{}`, `:`, `*`, `{*}`), a duplicate
-/// parameter name, and a catch-all that is not the whole last segment.
+/// parameter name, a catch-all that is not the whole last segment, and text
+/// after a parameter in its segment (`{name}.png`; a prefix — `file-{name}`
+/// — is fine).
 /// `{{` / `}}` stay literal braces (axum's escape).
 pub fn normalize_route_path(lit: &syn::LitStr) -> syn::Result<syn::LitStr> {
     let path = lit.value();
@@ -95,11 +119,23 @@ fn check_v07_name(path: &str, prefix: char, name: &str) -> Result<(), String> {
 }
 
 /// The `{name}` / `{*name}` parameters of one segment, `(name, catch_all)`.
+///
+/// axum's router (matchit 0.8) allows a static prefix before a parameter
+/// (`file-{name}`) but nothing after it — `{name}.png` / `{a}{b}` panic when
+/// the router is built — so text after a parameter is an error here.
 fn brace_params(path: &str, segment: &str) -> Result<Vec<(String, bool)>, String> {
     let mut params = Vec::new();
     let mut open: Option<String> = None;
+    let mut closed: Option<String> = None;
     let mut chars = segment.chars().peekable();
     while let Some(c) = chars.next() {
+        if let Some(raw) = &closed {
+            return Err(format!(
+                "route path `{path}`: axum's router cannot match text after the path parameter \
+                 `{{{raw}}}` in segment `{segment}`: a parameter must end its segment (a static \
+                 prefix such as `file-{{name}}` is fine)"
+            ));
+        }
         match (c, open.as_mut()) {
             ('{', None) if chars.peek() == Some(&'{') => {
                 chars.next();
@@ -129,6 +165,7 @@ fn brace_params(path: &str, segment: &str) -> Result<Vec<(String, bool)>, String
                     ));
                 }
                 params.push((name.to_string(), catch_all));
+                closed = Some(raw);
             }
             (c, Some(name)) => name.push(c),
             (_, None) => {}
@@ -156,7 +193,8 @@ mod tests {
     #[case("/files/*rest", "/files/{*rest}")]
     #[case("/a/:id/{b}/*rest", "/a/{id}/{b}/{*rest}")]
     #[case("/files/{*rest}", "/files/{*rest}")]
-    #[case("/img/{name}.png", "/img/{name}.png")]
+    #[case("/img/file-{name}", "/img/file-{name}")]
+    #[case("/img/{{{name}", "/img/{{{name}")]
     #[case("/lit/{{x}}", "/lit/{{x}}")]
     #[case("/time/a:b", "/time/a:b")]
     #[case("", "")]
@@ -183,6 +221,18 @@ mod tests {
         "/a/x{*rest}",
         "the catch-all `{*rest}` must be the whole last segment"
     )]
+    #[case::static_suffix(
+        "/img/{name}.png",
+        "axum's router cannot match text after the path parameter `{name}` in segment `{name}.png`: a parameter must end its segment (a static prefix such as `file-{name}` is fine)"
+    )]
+    #[case::two_params_one_segment(
+        "/{a}{b}",
+        "axum's router cannot match text after the path parameter `{a}` in segment `{a}{b}`: a parameter must end its segment (a static prefix such as `file-{name}` is fine)"
+    )]
+    #[case::escaped_brace_suffix(
+        "/{a}}}",
+        "axum's router cannot match text after the path parameter `{a}` in segment `{a}}}`: a parameter must end its segment (a static prefix such as `file-{name}` is fine)"
+    )]
     fn rejects_malformed_route_paths(#[case] path: &str, #[case] message: &str) {
         assert_eq!(
             normalize_path_str(path),
@@ -207,6 +257,11 @@ mod tests {
     #[case("/test/:id/test/:test_id", vec!["id", "test_id"])]
     #[case("/files/{*rest}", vec!["rest"])]
     #[case("/a/{id}/{*path}", vec!["id", "path"])]
+    #[case("/img/file-{name}", vec!["name"])]
+    #[case("/lit/{{x}}", vec![])]
+    #[case("/lit/{{x}}/{id}", vec!["id"])]
+    #[case("/a/{{{id}", vec!["id"])]
+    #[case("/bad/{id", vec![])]
     fn test_extract_path_parameters(#[case] path: &str, #[case] expected: Vec<&str>) {
         assert_eq!(extract_path_parameters(path), expected);
     }
@@ -215,6 +270,12 @@ mod tests {
     #[case("/files/{*rest}", "/files/{rest}")]
     #[case("/a/{id}/{*path}", "/a/{id}/{path}")]
     #[case("/plain/{id}", "/plain/{id}")]
+    #[case("/img/file-{name}", "/img/file-{name}")]
+    // `{{` / `}}` are literal braces, which an OpenAPI template cannot spell
+    // unescaped (it would read `{x}` as a parameter): percent-encoded.
+    #[case("/lit/{{x}}", "/lit/%7Bx%7D")]
+    #[case("/a/{{{id}", "/a/%7B{id}")]
+    #[case("/a/}}{id}", "/a/%7D{id}")]
     fn test_openapi_path_template(#[case] path: &str, #[case] expected: &str) {
         assert_eq!(openapi_path_template(path), expected);
     }

@@ -9,6 +9,7 @@ mod response;
 mod result_alias;
 pub mod schema;
 pub use extractor_validation::validate_schema_backed_extractors_with_cache;
+pub use extractors::request_extractor;
 #[cfg(feature = "validation")]
 pub use extractors::validated_payload_type;
 pub use operation::{OperationRouteConfig, build_operation_from_function};

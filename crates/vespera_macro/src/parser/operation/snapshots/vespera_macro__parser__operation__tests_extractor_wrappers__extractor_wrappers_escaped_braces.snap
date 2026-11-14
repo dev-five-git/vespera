@@ -1,0 +1,22 @@
+---
+source: crates/vespera_macro/src/parser/operation/tests_extractor_wrappers.rs
+assertion_line: 138
+expression: "serde_json::to_string_pretty(&summary).unwrap()"
+---
+{
+  "has422": false,
+  "parameters": [
+    {
+      "in": "path",
+      "name": "id",
+      "required": true,
+      "schema": {
+        "format": "uint32",
+        "maximum": 4294967295,
+        "minimum": 0,
+        "type": "integer"
+      }
+    }
+  ],
+  "requestBody": null
+}
