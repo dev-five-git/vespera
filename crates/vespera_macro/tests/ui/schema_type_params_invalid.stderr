@@ -1,10 +1,8 @@
 error: schema_type! macro: cannot use both `omit` and `pick` in the same invocation. Use one or the other to filter fields.
-  --> tests/ui/schema_type_params_invalid.rs:10:1
+  --> tests/ui/schema_type_params_invalid.rs:10:52
    |
 10 | schema_type!(BothFilters from User, omit = ["id"], pick = ["name"]);
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   |
-   = note: this error originates in the macro `schema_type` (in Nightly builds, run with -Z macro-backtrace for more info)
+   |                                                    ^^^^
 
 error: unknown parameter: `exclude`. Expected `omit`, `pick`, `rename`, `relation_adapters`, `add`, `clone`, `partial`, `ignore`, `name`, `rename_all`, `multipart`, or `omit_default`
   --> tests/ui/schema_type_params_invalid.rs:12:38

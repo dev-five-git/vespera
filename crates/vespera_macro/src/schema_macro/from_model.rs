@@ -2,35 +2,41 @@
 //!
 //! Generates async `from_model` implementations for `SeaORM` models with relations.
 
-use proc_macro2::TokenStream;
-use quote::quote;
+use proc_macro2::{TokenStream, TokenTree};
 
 mod generate;
+mod loads;
 
 pub use generate::generate_from_model_with_relations;
 
 /// Build Entity path from Schema path.
 /// e.g., `crate::models::user::Schema` -> `crate::models::user::Entity`
+///
+/// Token-level, so raw identifiers (`crate::r#type::Schema`) survive.
 pub fn build_entity_path_from_schema_path(
     schema_path: &TokenStream,
     _source_module_path: &[String],
 ) -> TokenStream {
-    // Parse the schema path, replace "Schema" with "Entity", and build Idents in one pass
-    let path_str = schema_path.to_string();
-    let path_idents: Vec<syn::Ident> = path_str
-        .split("::")
-        .map(|s| {
-            let s = s.trim();
-            let name = if s == "Schema" { "Entity" } else { s };
-            syn::Ident::new(name, proc_macro2::Span::call_site())
-        })
-        .collect();
+    replace_last_ident(schema_path, Some("Schema"), "Entity")
+}
 
-    quote! { #(#path_idents)::* }
+/// `path` with its last identifier replaced by `to` (only when it is
+/// `from`, if given).
+pub fn replace_last_ident(path: &TokenStream, from: Option<&str>, to: &str) -> TokenStream {
+    let mut tokens: Vec<TokenTree> = path.clone().into_iter().collect();
+    if let Some(last) = tokens
+        .iter()
+        .rposition(|token| matches!(token, TokenTree::Ident(_)))
+        && from.is_none_or(|from| tokens[last].to_string() == from)
+    {
+        tokens[last] = TokenTree::Ident(syn::Ident::new(to, tokens[last].span()));
+    }
+    tokens.into_iter().collect()
 }
 
 #[cfg(test)]
 mod tests {
+    use quote::quote;
     use rstest::rstest;
 
     use super::*;

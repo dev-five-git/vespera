@@ -9,12 +9,11 @@ use syn::Type;
 
 use super::super::{
     circular::{generate_inline_struct_construction, generate_inline_type_construction},
-    file_cache::{get_circular_analysis, get_fk_column, get_struct_from_schema_path},
+    file_cache::{get_circular_analysis, get_struct_from_schema_path},
     seaorm::RelationFieldInfo,
-    type_utils::{normalize_token_str, snake_to_pascal_case},
+    type_utils::normalize_token_str,
 };
-use super::build_entity_path_from_schema_path;
-use crate::metadata::StructMetadata;
+use super::loads::relation_load;
 
 /// Generate `from_model` impl for `SeaORM` Model WITH relations (async version).
 ///
@@ -54,120 +53,35 @@ pub fn generate_from_model_with_relations(
     field_mappings: &[(syn::Ident, syn::Ident, bool, bool)],
     relation_fields: &[RelationFieldInfo],
     source_module_path: &[String],
-    _schema_storage: &HashMap<String, StructMetadata>,
+    field_cfgs: &HashMap<String, TokenStream>,
 ) -> syn::Result<TokenStream> {
+    // `#[cfg(..)]` of a source field, repeated on everything touching it.
+    let cfg_of = |ident: &syn::Ident| {
+        field_cfgs
+            .get(&crate::parser::strip_raw_prefix_owned(ident.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    };
+
+    // Prefixes each per-field assignment (in `field_mappings` order) with
+    // the source field's `#[cfg(..)]`.
+    let gate = |assignments: Vec<TokenStream>| -> Vec<TokenStream> {
+        assignments
+            .into_iter()
+            .zip(field_mappings)
+            .map(|(assignment, (_, source_ident, _, _))| {
+                let cfg = cfg_of(source_ident);
+                quote! { #cfg #assignment }
+            })
+            .collect()
+    };
+
     // Build relation loading statements
     let relation_loads: Vec<TokenStream> = relation_fields
         .iter()
-        .map(|rel| -> syn::Result<TokenStream> {
-            let field_name = &rel.field_name;
-            let entity_path = build_entity_path_from_schema_path(&rel.schema_path, source_module_path);
-            let attr_ident = |key: &str, value: &str| sea_orm_value_ident(source_type, field_name, key, value);
-
-            Ok(match rel.relation_type.as_str() {
-                "HasOne" | "BelongsTo" => {
-                    // When relation_enum is specified, use the specific Relation variant
-                    // This handles cases where multiple relations point to the same Entity type
-                    if let Some(ref relation_enum_name) = rel.relation_enum {
-                        let relation_variant = attr_ident("relation_enum", relation_enum_name)?;
-
-                        if rel.is_optional {
-                            // Optional FK: load only if FK value exists
-                            if let Some(ref fk_col) = rel.fk_column {
-                                let fk_ident = attr_ident("from", fk_col)?;
-                                quote! {
-                                    let #field_name = match &model.#fk_ident {
-                                        Some(fk_value) => #entity_path::find_by_id(fk_value.clone()).one(db).await?,
-                                        None => None,
-                                    };
-                                }
-                            } else {
-                                // Fallback: use find_related with Relation enum
-                                quote! {
-                                    let #field_name = Entity::find_related(Relation::#relation_variant)
-                                        .filter(<Entity as sea_orm::EntityTrait>::PrimaryKey::eq(&model))
-                                        .one(db)
-                                        .await?;
-                                }
-                            }
-                        } else {
-                            // Required FK: directly query by FK value
-                            if let Some(ref fk_col) = rel.fk_column {
-                                let fk_ident = attr_ident("from", fk_col)?;
-                                quote! {
-                                    let #field_name = #entity_path::find_by_id(model.#fk_ident.clone()).one(db).await?;
-                                }
-                            } else {
-                                // Fallback: use find_related with Relation enum
-                                quote! {
-                                    let #field_name = Entity::find_related(Relation::#relation_variant)
-                                        .filter(<Entity as sea_orm::EntityTrait>::PrimaryKey::eq(&model))
-                                        .one(db)
-                                        .await?;
-                                }
-                            }
-                        }
-                    } else {
-                        // Standard case: single relation to target entity, use find_related
-                        quote! {
-                            let #field_name = model.find_related(#entity_path).one(db).await?;
-                        }
-                    }
-                }
-                "HasMany" => {
-                    // Try via_rel first, fall back to relation_enum as FK source
-                    let fk_rel_source = rel.via_rel.as_ref().or(rel.relation_enum.as_ref());
-                    if let Some(via_rel_value) = fk_rel_source {
-                        let schema_path_str = normalize_token_str(&rel.schema_path);
-                        if let Some(fk_col_name) = get_fk_column(&schema_path_str, via_rel_value) {
-                            // `from` of the target entity's relation named by
-                            // `via_rel` / `relation_enum`, as a `Column` variant.
-                            let fk_col_ident = attr_ident("from", &fk_col_name)
-                                .and_then(|_| attr_ident("from", &snake_to_pascal_case(&fk_col_name)))
-                                .map_err(|_| {
-                                    syn::Error::new_spanned(
-                                        source_type,
-                                        format!(
-                                            "schema_type!: relation field `{field_name}` resolves its foreign key through `{via_rel_value}` to `#[sea_orm(from = \"{fk_col_name}\")]` on `{schema_path_str}`, but `{fk_col_name}` is not a valid Rust identifier"
-                                        ),
-                                    )
-                                })?;
-
-                            let entity_path_str = normalize_token_str(&entity_path);
-                            let column_path_str = entity_path_str.replace(":: Entity", ":: Column");
-                            let column_path_idents: Vec<syn::Ident> = column_path_str
-                                .split("::")
-                                .filter_map(|s| {
-                                    let trimmed = s.trim();
-                                    if trimmed.is_empty() { None } else { Some(syn::Ident::new(trimmed, proc_macro2::Span::call_site())) }
-                                })
-                                .collect();
-
-                            quote! {
-                                let #field_name = #(#column_path_idents)::*::#fk_col_ident
-                                    .into_column()
-                                    .eq(model.id.clone())
-                                    .into_condition();
-                                let #field_name = #entity_path::find()
-                                    .filter(#field_name)
-                                    .all(db)
-                                    .await?;
-                            }
-                        } else {
-                            quote! {
-                                // WARNING: Could not find FK column for relation, using empty vec
-                                let #field_name: Vec<_> = vec![];
-                            }
-                        }
-                    } else {
-                        // Standard HasMany - use find_related
-                        quote! {
-                            let #field_name = model.find_related(#entity_path).all(db).await?;
-                        }
-                    }
-                }
-                _ => quote! {},
-            })
+        .map(|rel| {
+            let cfg = cfg_of(&rel.field_name);
+            relation_load(rel, source_type, source_module_path).map(|load| quote! { #cfg #load })
         })
         .collect::<syn::Result<_>>()?;
 
@@ -189,7 +103,7 @@ pub fn generate_from_model_with_relations(
             return false;
         }
         // If using inline type, circular fields are excluded, so no parent stub needed
-        if rel.inline_type_info.is_some() {
+        if rel.inline_type_info.is_some() || rel.adapter {
             return false;
         }
         let schema_path_str = normalize_token_str(&rel.schema_path);
@@ -223,6 +137,7 @@ pub fn generate_from_model_with_relations(
                         .find(|r| &r.field_name == source_ident)
                     {
                         match rel.relation_type.as_str() {
+                            _ if rel.adapter => quote! { #new_ident: Default::default() },
                             "HasMany" => quote! { #new_ident: vec![] },
                             _ if rel.is_optional => quote! { #new_ident: None },
                             _ => {
@@ -261,7 +176,10 @@ pub fn generate_from_model_with_relations(
         .map(|(new_ident, source_ident, wrapped, is_relation)| {
             if *is_relation {
                 // Find the relation info for this field
-                if let Some(rel) = relation_by_name.get(source_ident) {
+                if relation_by_name.get(source_ident).is_some_and(|rel| rel.adapter) {
+                    // `relation_adapters` wrapper: `From<Option<Model>>`.
+                    quote! { #new_ident: ::core::convert::From::from(#source_ident) }
+                } else if let Some(rel) = relation_by_name.get(source_ident) {
                     let schema_path = &rel.schema_path;
 
                     // Try to find the related MODEL definition to check for circular refs
@@ -426,6 +344,7 @@ pub fn generate_from_model_with_relations(
     // For HasMany with required circular back-refs, we create a parent stub first
 
     // Generate parent stub definition if needed
+    let parent_stub_fields = gate(parent_stub_fields);
     let parent_stub_def = if needs_parent_stub {
         quote! {
             let __parent_stub__ = Self {
@@ -436,13 +355,17 @@ pub fn generate_from_model_with_relations(
         quote! {}
     };
 
+    let field_assignments = gate(field_assignments);
+
     Ok(quote! {
+        #[allow(deprecated)]
         impl #new_type_name {
+
             pub async fn from_model(
                 model: #source_type,
                 db: &sea_orm::DatabaseConnection,
             ) -> Result<Self, sea_orm::DbErr> {
-                use sea_orm::ModelTrait;
+
 
                 #(#relation_loads)*
 
@@ -453,25 +376,6 @@ pub fn generate_from_model_with_relations(
                 })
             }
         }
-    })
-}
-
-/// Parses a `#[sea_orm(key = "value")]` string as an identifier (keywords
-/// accepted, like the `syn::Ident::new` it replaces), or a `syn::Error`
-/// spanned on the `schema_type!` source type naming the relation field.
-fn sea_orm_value_ident(
-    source_type: &Type,
-    field_name: &syn::Ident,
-    key: &str,
-    value: &str,
-) -> syn::Result<syn::Ident> {
-    syn::parse::Parser::parse_str(syn::ext::IdentExt::parse_any, value).map_err(|_| {
-        syn::Error::new_spanned(
-            source_type,
-            format!(
-                "schema_type!: relation field `{field_name}` has `#[sea_orm({key} = \"{value}\")]`, but `{value}` is not a valid Rust identifier"
-            ),
-        )
     })
 }
 

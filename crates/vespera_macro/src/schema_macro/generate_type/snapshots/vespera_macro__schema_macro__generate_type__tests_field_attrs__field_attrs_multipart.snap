@@ -1,0 +1,26 @@
+---
+source: crates/vespera_macro/src/schema_macro/generate_type/tests_field_attrs.rs
+expression: "format!(\"{code}\\n// ---- metadata ----\\n{}\", metadata.unwrap_or_default())"
+---
+#[derive(vespera::Multipart, ::garde::Validate, vespera::Schema)]
+#[garde(context(Ctx))]
+#[serde(rename_all = "camelCase")]
+pub struct Dto {
+    #[schema(minimum = 1)]
+    #[cfg(feature = "x")]
+    #[garde(skip)]
+    pub gated: i32,
+    #[garde(length(min = 1))]
+    #[deprecated]
+    pub title: String,
+    #[garde(skip)]
+    pub seeded: i32,
+    #[schema(default = 9)]
+    #[garde(skip)]
+    pub overridden: i32,
+    #[cfg_attr(feature = "x", schema(maximum = 3))]
+    #[garde(skip)]
+    pub plain: bool,
+}
+
+// ---- metadata ----

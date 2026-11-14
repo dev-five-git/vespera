@@ -64,23 +64,6 @@ pub(super) fn related_model_type_from_schema_path(schema_path: &TokenStream) -> 
     Some(syn::Type::Path(type_path))
 }
 
-pub(super) fn has_derive(struct_item: &syn::ItemStruct, derive_name: &str) -> bool {
-    struct_item.attrs.iter().any(|attr| {
-        if !attr.path().is_ident("derive") {
-            return false;
-        }
-
-        let mut found = false;
-        let _ = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident(derive_name) {
-                found = true;
-            }
-            Ok(())
-        });
-        found
-    })
-}
-
 pub(super) fn build_named_struct_field_assignments(
     struct_item: &syn::ItemStruct,
     source_expr: &TokenStream,
@@ -174,7 +157,7 @@ pub(super) fn build_clone_assignments(
         .iter()
         .filter_map(|field| {
             field.ident.as_ref().map(|ident| {
-                quote! { #ident: self.#ident.clone() }
+                quote! { #ident: dto.#ident.clone() }
             })
         })
         .collect();
@@ -265,54 +248,12 @@ pub(super) fn maybe_generate_same_file_relation_override(
     let source_expr = quote! { source };
     let from_model_assignments = build_named_struct_field_assignments(&dto_struct, &source_expr)?;
 
-    // Coalesced helpers: previously three separate `quote!` invocations
-    // and a `Vec<TokenStream>` accumulator were stitched together with
-    // `#(#helper_tokens)*`.  We instead build the conditional Clone /
-    // Deserialize sub-blocks as their own `TokenStream`s and splice
-    // them into a single `quote!`, producing the same emitted Rust code
-    // with one accumulator allocation removed.
-    let clone_impl = if has_derive(&dto_struct, "Clone") {
-        quote! {}
-    } else {
-        quote! {
-            impl Clone for #dto_ident {
-                fn clone(&self) -> Self {
-                    Self {
-                        #(#clone_assignments),*
-                    }
-                }
-            }
-        }
-    };
-
-    let deserialize_impl = if has_derive(&dto_struct, "Deserialize") {
-        quote! {}
-    } else {
-        quote! {
-            #[derive(serde::Deserialize)]
-            #(#dto_serde_attrs)*
-            struct #proxy_ident {
-                #(#proxy_fields),*
-            }
-
-            impl<'de> serde::Deserialize<'de> for #dto_ident {
-                fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-                where
-                    D: serde::Deserializer<'de>,
-                {
-                    let proxy = #proxy_ident::deserialize(deserializer)?;
-                    Ok(Self {
-                        #(#proxy_to_dto),*
-                    })
-                }
-            }
-        }
-    };
-
+    // Clone / Deserialize are implemented on the WRAPPER, field by field,
+    // never on the user's DTO: whether the DTO derives them cannot be told
+    // reliably (a `#[derive(Schema)]` storage entry has its derives
+    // stripped, `#[derive(std::clone::Clone)]` / `serde::Deserialize` are
+    // paths), and implementing them on a DTO that derives them is E0119.
     let helpers = quote! {
-        #clone_impl
-        #deserialize_impl
-
         impl From<#model_ty> for #dto_ident {
             fn from(source: #model_ty) -> Self {
                 Self {
@@ -322,10 +263,42 @@ pub(super) fn maybe_generate_same_file_relation_override(
         }
 
         #(#dto_doc_attrs)*
-        #[derive(serde::Serialize, serde::Deserialize, Clone, vespera::Schema)]
+        #[derive(serde::Serialize, vespera::Schema)]
         #[serde(transparent)]
         #[schema(ref = #schema_ref_name, nullable)]
         struct #wrapper_ident(pub Option<#dto_ident>);
+
+        impl Clone for #wrapper_ident {
+            fn clone(&self) -> Self {
+                Self(self.0.as_ref().map(|dto| #dto_ident {
+                    #(#clone_assignments),*
+                }))
+            }
+        }
+
+        impl Default for #wrapper_ident {
+            fn default() -> Self {
+                Self(None)
+            }
+        }
+
+        #[derive(serde::Deserialize)]
+        #(#dto_serde_attrs)*
+        struct #proxy_ident {
+            #(#proxy_fields),*
+        }
+
+        impl<'de> serde::Deserialize<'de> for #wrapper_ident {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                let proxy = <Option<#proxy_ident> as serde::Deserialize>::deserialize(deserializer)?;
+                Ok(Self(proxy.map(|proxy| #dto_ident {
+                    #(#proxy_to_dto),*
+                })))
+            }
+        }
 
         impl From<Option<#model_ty>> for #wrapper_ident {
             fn from(source: Option<#model_ty>) -> Self {
@@ -372,23 +345,6 @@ mod tests {
     }
 
     #[test]
-    fn test_has_derive_ignores_non_derive_attrs_and_detects_requested_derive() {
-        let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
-        #[serde(rename_all = "camelCase")]
-        #[derive(Clone, Debug)]
-        struct Sample {
-            value: i32,
-        }
-        "#,
-        )
-        .unwrap();
-
-        assert!(has_derive(&struct_item, "Clone"));
-        assert!(!has_derive(&struct_item, "Deserialize"));
-    }
-
-    #[test]
     fn test_build_named_struct_field_assignments_rejects_tuple_structs() {
         let struct_item: syn::ItemStruct = syn::parse_str("struct TupleDto(String);").unwrap();
         let source_expr = quote!(source);
@@ -428,6 +384,7 @@ mod tests {
             relation_enum: None,
             fk_column: None,
             via_rel: None,
+            adapter: false,
         };
 
         let storage: HashMap<String, StructMetadata> = HashMap::new();
@@ -457,6 +414,7 @@ mod tests {
             relation_enum: None,
             fk_column: None,
             via_rel: None,
+            adapter: false,
         };
 
         let storage = to_storage(vec![create_test_struct_metadata(
@@ -546,6 +504,7 @@ mod tests {
             relation_enum: None,
             fk_column: None,
             via_rel: None,
+            adapter: false,
         };
         let storage = to_storage(vec![create_test_struct_metadata(
             "UserInArticle",

@@ -1,0 +1,45 @@
+---
+source: crates/vespera_macro/src/schema_macro/generate_type/tests_field_attrs.rs
+expression: "format!(\"{code}\\n// ---- metadata ----\\n{}\", metadata.unwrap_or_default())"
+---
+#[allow(non_snake_case)]
+fn default_Dto_seeded() -> i32 {
+    "5".parse().unwrap()
+}
+#[allow(non_snake_case)]
+fn default_Dto_overridden() -> i32 {
+    "7".parse().unwrap()
+}
+#[derive(
+    serde::Serialize,
+    serde::Deserialize,
+    ::garde::Validate,
+    Clone,
+    vespera::Schema
+)]
+#[garde(context(Ctx))]
+#[serde(rename_all = "camelCase")]
+pub struct Dto {
+    #[schema(minimum = 1)]
+    #[cfg(feature = "x")]
+    #[garde(skip)]
+    pub gated: i32,
+    #[garde(length(min = 1))]
+    #[deprecated]
+    pub title: String,
+    #[garde(skip)]
+    #[serde(default = "default_Dto_seeded")]
+    #[schema(default = "5")]
+    pub seeded: i32,
+    #[schema(default = 9)]
+    #[garde(skip)]
+    #[serde(default = "default_Dto_overridden")]
+    pub overridden: i32,
+    #[cfg_attr(feature = "x", schema(maximum = 3))]
+    #[garde(skip)]
+    pub plain: bool,
+    #[garde(skip)]
+    pub extra: u8,
+}
+
+// ---- metadata ----

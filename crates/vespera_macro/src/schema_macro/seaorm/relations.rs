@@ -3,6 +3,7 @@ use quote::quote;
 use syn::Type;
 
 use super::attrs::{extract_belongs_to_from_field, extract_relation_enum, extract_via_rel};
+use crate::schema_macro::module_scope::{Resolved, path_tokens, resolve_name};
 use crate::schema_macro::type_utils::is_option_type;
 
 /// Relation field info for generating `from_model` code.
@@ -16,6 +17,10 @@ pub struct RelationFieldInfo {
     pub relation_enum: Option<String>,
     pub fk_column: Option<String>,
     pub via_rel: Option<String>,
+    /// The field is replaced by a `relation_adapters` wrapper
+    /// (`From<Option<Model>>`), so `from_model` converts instead of building
+    /// the relation schema.
+    pub adapter: bool,
 }
 
 /// Check if a field in the struct is optional (`Option<T>`).
@@ -79,6 +84,7 @@ pub fn convert_relation_type_to_schema_with_info(
                 relation_enum,
                 fk_column: None,
                 via_rel,
+                adapter: false,
             };
             Some((converted, info))
         }
@@ -95,31 +101,43 @@ pub fn convert_relation_type_to_schema_with_info(
 
 fn schema_path_tokens(path: &syn::Path, source_module_path: &[String]) -> TokenStream {
     let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
-    let absolute_segments = absolute_schema_segments(&segments, source_module_path);
-    let path_idents: Vec<syn::Ident> = absolute_segments
-        .iter()
-        .map(|s| syn::Ident::new(s, proc_macro2::Span::call_site()))
-        .collect();
-    quote! { #(#path_idents)::* }
+    path_tokens(&absolute_schema_segments(&segments, source_module_path))
 }
 
+/// The absolute schema path of a relation's entity path written in the
+/// source module: `Entity` / `self::..` name the source module itself (a
+/// self-referential relation), `super::..` / `crate::..` are taken
+/// literally, a path through an import (`use super::user;` + `user::Entity`)
+/// or a child module follows the module scope, and anything else keeps the
+/// historical sibling-module reading (`user::Entity` → `<parent>::user`).
 fn absolute_schema_segments(segments: &[String], source_module_path: &[String]) -> Vec<String> {
-    if !segments.is_empty() && segments[0] == "super" {
-        let super_count = segments.iter().take_while(|s| *s == "super").count();
-        let parent_path_len = source_module_path.len().saturating_sub(super_count);
-        let mut abs = Vec::with_capacity(parent_path_len + segments.len() - super_count);
-        abs.extend_from_slice(&source_module_path[..parent_path_len]);
-        abs.extend(segments.iter().skip(super_count).map(entity_to_schema));
-        abs
-    } else if !segments.is_empty() && segments[0] == "crate" {
-        segments.iter().map(entity_to_schema).collect()
-    } else {
-        let parent_path_len = source_module_path.len().saturating_sub(1);
-        let mut abs = Vec::with_capacity(parent_path_len + segments.len());
-        abs.extend_from_slice(&source_module_path[..parent_path_len]);
-        abs.extend(segments.iter().map(entity_to_schema));
-        abs
-    }
+    let first = segments.first().map(String::as_str);
+    let resolved = match first {
+        Some("super") => {
+            let super_count = segments.iter().take_while(|s| *s == "super").count();
+            let parent_path_len = source_module_path.len().saturating_sub(super_count);
+            source_module_path[..parent_path_len]
+                .iter()
+                .chain(&segments[super_count..])
+                .cloned()
+                .collect()
+        }
+        Some("crate") => segments.to_vec(),
+        Some("self") => in_module(source_module_path, &segments[1..]),
+        _ if segments.len() == 1 => in_module(source_module_path, segments),
+        _ => match resolve_name(segments, source_module_path) {
+            Resolved::Path(path) => path,
+            Resolved::Unknown => {
+                let parent_path_len = source_module_path.len().saturating_sub(1);
+                in_module(&source_module_path[..parent_path_len], segments)
+            }
+        },
+    };
+    resolved.iter().map(entity_to_schema).collect()
+}
+
+fn in_module(module: &[String], rest: &[String]) -> Vec<String> {
+    module.iter().chain(rest).cloned().collect()
 }
 
 fn entity_to_schema(segment: &String) -> String {
@@ -157,6 +175,7 @@ fn single_relation(
         relation_enum,
         fk_column: fk_field,
         via_rel: None,
+        adapter: false,
     };
     (converted, info)
 }
@@ -502,5 +521,40 @@ mod tests {
         assert!(output.contains("models"));
         assert!(output.contains("user"));
         assert!(output.contains("Schema"));
+    }
+
+    fn segs(path: &str) -> Vec<String> {
+        path.split("::").map(str::to_string).collect()
+    }
+
+    #[rstest::rstest]
+    #[case::self_referential("Entity", "crate::models::category::Schema")]
+    #[case::self_prefixed("self::Entity", "crate::models::category::Schema")]
+    #[case::super_sibling("super::user::Entity", "crate::models::user::Schema")]
+    #[case::crate_absolute("crate::other::Entity", "crate::other::Schema")]
+    #[case::imported_module("user::Entity", "crate::models::user::Schema")]
+    #[case::child_module("nested::Entity", "crate::models::category::nested::Schema")]
+    #[case::unknown_sibling("tag::Entity", "crate::models::tag::Schema")]
+    fn relation_paths_resolve_in_source_module(#[case] path: &str, #[case] expected: &str) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("src/models/category.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "use super::user;\npub mod nested {}\n").unwrap();
+        let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        crate::schema_macro::file_cache::bump_epoch();
+        let module = segs("crate::models::category");
+        assert_eq!(
+            absolute_schema_segments(&segs(path), &module).join("::"),
+            expected
+        );
+    }
+
+    #[test]
+    fn raw_identifier_relation_paths_render() {
+        let path: syn::Path = syn::parse_str("crate::r#type::Entity").unwrap();
+        assert_eq!(
+            schema_path_tokens(&path, &[]).to_string(),
+            "crate :: r#type :: Schema"
+        );
     }
 }

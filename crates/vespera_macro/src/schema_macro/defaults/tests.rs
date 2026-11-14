@@ -442,8 +442,8 @@ fn test_sea_orm_default_attrs_sql_function_datetime() {
     );
     let schema_str = schema.to_string();
     assert!(
-        schema_str.contains("1970-01-01T00:00:00+00:00"),
-        "DateTime should have epoch default: {schema_str}"
+        schema_str.contains("\"1970-01-01T00:00:00\""),
+        "SeaORM DateTime (naive) should have a naive epoch default: {schema_str}"
     );
     assert_eq!(fns.len(), 1);
 }
@@ -628,6 +628,7 @@ fn test_generate_schema_type_code_preserves_struct_doc() {
         rename_all: None,
         multipart: false,
         omit_default: false,
+        spans: crate::schema_macro::input::ParamSpans::default(),
     };
     let struct_def = StructMetadata {
         name: "User".to_string(),
@@ -753,4 +754,55 @@ fn sql_function_default_for_scalar_types(#[case] type_name: &str, #[case] expect
         quote::quote!(Default::default()).to_string()
     );
     assert_eq!(default, expected);
+}
+
+/// `NOW()` defaults must produce a value of the generated field's type: the
+/// UTC / local aliases are not `DateTime<FixedOffset>`, SeaORM's bare
+/// `DateTime` / `Date` are the naive types.
+#[rstest::rstest]
+#[case::with_time_zone("DateTimeWithTimeZone", "fixed_offset", "1970-01-01T00:00:00+00:00")]
+#[case::chrono_fixed("DateTime<FixedOffset>", "fixed_offset", "1970-01-01T00:00:00+00:00")]
+#[case::utc_alias("DateTimeUtc", "UNIX_EPOCH }", "1970-01-01T00:00:00Z")]
+#[case::chrono_utc("DateTime<Utc>", "UNIX_EPOCH }", "1970-01-01T00:00:00Z")]
+#[case::local_alias("DateTimeLocal", "with_timezone", "1970-01-01T00:00:00+00:00")]
+#[case::chrono_local("DateTime<Local>", "with_timezone", "1970-01-01T00:00:00+00:00")]
+#[case::naive_alias("DateTime", "NaiveDateTime :: UNIX_EPOCH", "1970-01-01T00:00:00")]
+#[case::date_alias("Date", "NaiveDate :: default", "1970-01-01")]
+#[case::unknown_zone("DateTime<Tz>", "", "")]
+fn now_default_matches_field_type(#[case] ty: &str, #[case] expr: &str, #[case] schema: &str) {
+    let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[sea_orm(default_value = "NOW()")])];
+    let struct_name = syn::Ident::new("Test", proc_macro2::Span::call_site());
+    let ty: syn::Type = syn::parse_str(ty).unwrap();
+    let mut fns = Vec::new();
+    let (_, schema_attr) =
+        generate_sea_orm_default_attrs(&attrs, &struct_name, "at", &ty, &ty, false, &mut fns);
+    if schema.is_empty() {
+        assert!(fns.is_empty() && schema_attr.is_empty());
+        return;
+    }
+    assert!(
+        schema_attr.to_string().contains(&format!("\"{schema}\"")),
+        "{schema_attr}"
+    );
+    let body = fns[0].to_string();
+    assert!(body.contains(expr), "{body}");
+}
+
+/// `primary_key, auto_increment = false` is a client-supplied key: no
+/// implicit default.
+#[rstest::rstest]
+#[case::auto_increment_default(quote::quote!(#[sea_orm(primary_key)]), true)]
+#[case::auto_increment_true(quote::quote!(#[sea_orm(primary_key, auto_increment = true)]), true)]
+#[case::auto_increment_false(quote::quote!(#[sea_orm(primary_key, auto_increment = false)]), false)]
+fn primary_key_default_respects_auto_increment(
+    #[case] attr: proc_macro2::TokenStream,
+    #[case] has_default: bool,
+) {
+    let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#attr)];
+    let struct_name = syn::Ident::new("Test", proc_macro2::Span::call_site());
+    let ty: syn::Type = syn::parse_quote!(i32);
+    let mut fns = Vec::new();
+    let (serde_attr, _) =
+        generate_sea_orm_default_attrs(&attrs, &struct_name, "id", &ty, &ty, false, &mut fns);
+    assert_eq!(!serde_attr.is_empty(), has_default);
 }

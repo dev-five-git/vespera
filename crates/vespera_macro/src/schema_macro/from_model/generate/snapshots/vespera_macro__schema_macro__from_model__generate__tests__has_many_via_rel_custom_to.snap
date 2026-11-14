@@ -1,0 +1,36 @@
+---
+source: crates/vespera_macro/src/schema_macro/from_model/generate/tests.rs
+expression: "run_scenario(models, new_type, source_type, rows, &relations, module)"
+---
+#[allow(deprecated)]
+impl UserSchema {
+    pub async fn from_model(
+        model: crate::models::user::Model,
+        db: &sea_orm::DatabaseConnection,
+    ) -> Result<Self, sea_orm::DbErr> {
+        let accounts = sea_orm::QueryFilter::filter(
+                <crate::models::account::Entity as sea_orm::EntityTrait>::find(),
+                sea_orm::ColumnTrait::eq(
+                    &crate::models::account::Column::OwnerCode,
+                    model.code.clone(),
+                ),
+            )
+            .all(db)
+            .await?;
+        let __parent_stub__ = Self {
+            id: model.id.clone(),
+            accounts: vec![],
+        };
+        Ok(Self {
+            id: model.id,
+            accounts: accounts
+                .into_iter()
+                .map(|r| crate::models::account::Schema {
+                    id: r.id,
+                    owner_code: r.owner_code,
+                    owner: Box::new(__parent_stub__.clone()),
+                })
+                .collect(),
+        })
+    }
+}

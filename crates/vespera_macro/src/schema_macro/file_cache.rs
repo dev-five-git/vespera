@@ -60,6 +60,9 @@ use super::circular::CircularAnalysis;
 use super::file_lookup::collect_rs_files_recursive;
 use crate::metadata::StructMetadata;
 
+/// A relation's FK columns: `from` and, when given, `to`.
+type FkColumns = (String, Option<String>);
+
 /// Phase-4 path-string resolution caches (struct / FK / module-path / circular
 /// lookups), split into the `lookups` sidecar to keep this file within the
 /// source-size budget. They share the parent `FILE_CACHE` + the
@@ -167,7 +170,7 @@ struct FileCache {
     /// source text — cloning it per hit copied kilobytes.
     struct_lookup: HashMap<String, PathLookupEntry<Option<Arc<StructMetadata>>>>,
     /// Cached FK column lookups plus dependency fingerprint.
-    fk_column_lookup: HashMap<(String, String), PathLookupEntry<Option<String>>>,
+    fk_column_lookup: HashMap<(String, String), PathLookupEntry<Option<FkColumns>>>,
     /// Cached module path extraction from schema paths: path_str → Vec<module segments>.
     module_path_cache: HashMap<String, Vec<String>>,
     /// Cached struct definitions from files: file_path → (fingerprint, struct_name → definition_string).
@@ -245,6 +248,12 @@ pub fn bump_epoch() {
         let mut cache = cache.borrow_mut();
         cache.epoch = cache.epoch.wrapping_add(1);
     });
+}
+
+/// The current per-invocation epoch (see [`bump_epoch`]), for caches outside
+/// this module that must not outlive one macro invocation.
+pub fn current_epoch() -> u64 {
+    FILE_CACHE.with(|cache| cache.borrow().epoch)
 }
 
 /// Fetch the [`FileFingerprint`] (mtime + byte length) for `path`, using the

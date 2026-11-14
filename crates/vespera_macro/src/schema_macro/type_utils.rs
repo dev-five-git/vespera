@@ -7,6 +7,10 @@ use quote::quote;
 use serde_json;
 use syn::{GenericArgument, PathArguments, Type};
 
+use super::module_scope::{
+    ModuleScope, Resolved, module_scope, path_tokens, resolve_name, segment_ident,
+};
+
 /// SeaORM relation wrapper kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeaOrmRelationKind {
@@ -213,155 +217,265 @@ pub fn is_primitive_or_known_type(name: &str) -> bool {
     )
 }
 
-/// `serde_json::Value` under its SeaORM aliases (`Json`, `JsonValue`) or its
-/// own bare name → a stable public path. Only without generic arguments:
-/// `Json<T>` is axum's body wrapper, not a JSON value.
-fn resolve_public_type_path(segment: &syn::PathSegment) -> Option<TokenStream> {
-    let json_value = segment.arguments.is_none()
-        && (segment.ident == "Json" || segment.ident == "JsonValue" || segment.ident == "Value");
-    json_value.then(|| quote! { vespera::serde_json::Value })
-}
-
-fn normalize_known_type_in_generic(ty: &Type, source_module_path: &[String]) -> TokenStream {
-    let Type::Path(type_path) = ty else {
-        return quote! { #ty };
-    };
-
-    let Some(segment) = type_path.path.segments.last() else {
-        return quote! { #ty };
-    };
-
-    let ident_str = segment.ident.to_string();
-
-    if let Some(public_path) = resolve_public_type_path(segment) {
-        return quote! { #public_path };
-    }
-
-    if type_path.path.segments.len() > 1 {
-        let rendered_segments: Vec<_> = type_path
-            .path
-            .segments
-            .iter()
-            .map(|segment| {
-                let ident = &segment.ident;
-                let args = render_path_arguments(&segment.arguments, source_module_path);
-                quote! { #ident #args }
-            })
-            .collect();
-
-        if type_path.path.leading_colon.is_some() {
-            return quote! { :: #(#rendered_segments)::* };
-        }
-
-        return quote! { #(#rendered_segments)::* };
-    }
-
-    if is_primitive_or_known_type(&ident_str) {
-        let ident = &segment.ident;
-        let args = render_path_arguments(&segment.arguments, source_module_path);
-        return quote! { #ident #args };
-    }
-
-    quote! { #ty }
-}
-
-fn render_path_arguments(args: &PathArguments, source_module_path: &[String]) -> TokenStream {
-    match args {
-        PathArguments::None => quote! {},
-        PathArguments::AngleBracketed(angle_args) => {
-            let rendered_args: Vec<_> = angle_args
-                .args
-                .iter()
-                .map(|arg| {
-                    if let GenericArgument::Type(inner_ty) = arg {
-                        let resolved =
-                            normalize_known_type_in_generic(inner_ty, source_module_path);
-                        quote! { #resolved }
-                    } else {
-                        quote! { #arg }
-                    }
-                })
-                .collect();
-
-            quote! { <#(#rendered_args),*> }
-        }
-        PathArguments::Parenthesized(_) => quote! { #args },
-    }
-}
-
-/// Resolve a simple type to an absolute path using the source module path.
+/// Re-express `ty`, written inside the module `source_module_path`, so it
+/// names the same type from ANY module of the crate (the generated struct
+/// lives at the macro call site, not next to its source):
 ///
-/// For example, if `source_module_path` is `["crate", "models", "memo"]` and
-/// the type is `MemoStatus`, it returns `crate::models::memo::MemoStatus`.
-///
-/// If the type is already qualified (has `::`) or is a primitive/known type,
-/// returns the original type unchanged.
+/// - names the module imports with `use` resolve through the import, never
+///   through the module path (a private import re-exported that way is
+///   `E0603`), locally defined items through the module path, and names a
+///   crate-internal glob import brings in through that glob's module;
+/// - relative multi-segment paths (`enums::Status`, `super::x::Y`) are
+///   re-rooted; external crate paths stay as written;
+/// - generic arguments are resolved recursively (`Option<Vec<T>>`,
+///   `HashMap<K, V>`, references, tuples, arrays);
+/// - SeaORM / chrono aliases become `vespera::chrono` types and the
+///   `serde_json::Value` aliases (`Json`, `JsonValue`, `Value`) become
+///   `vespera::serde_json::Value` — unless the module defines or imports a
+///   type of that name itself.
 pub fn resolve_type_to_absolute_path(ty: &Type, source_module_path: &[String]) -> TokenStream {
-    let Type::Path(type_path) = ty else {
-        return quote! { #ty };
-    };
-
-    if type_path.path.segments.is_empty() {
-        return quote! { #ty };
-    }
-
-    // If path has multiple segments (already qualified like `crate::foo::Bar`), return as-is
-    if type_path.path.segments.len() > 1 {
-        let rendered_segments: Vec<_> = type_path
-            .path
-            .segments
-            .iter()
-            .map(|segment| {
-                let ident = &segment.ident;
-                let args = render_path_arguments(&segment.arguments, source_module_path);
-                quote! { #ident #args }
-            })
-            .collect();
-
-        if type_path.path.leading_colon.is_some() {
-            return quote! { :: #(#rendered_segments)::* };
-        }
-
-        return quote! { #(#rendered_segments)::* };
-    }
-
-    // Safe after the empty-path early return above.
-    let segment = type_path
-        .path
-        .segments
-        .first()
-        .expect("type path should have at least one segment");
-
-    let ident_str = segment.ident.to_string();
-    let args = render_path_arguments(&segment.arguments, source_module_path);
-
-    if let Some(public_path) = resolve_public_type_path(segment) {
-        return quote! { #public_path };
-    }
-
-    // If it's a primitive or known type, return as-is
-    if is_primitive_or_known_type(&ident_str) {
-        let type_ident = &segment.ident;
-        return quote! { #type_ident #args };
-    }
-
-    // If no source module path, return as-is
-    if source_module_path.is_empty() {
-        let type_ident = &segment.ident;
-        return quote! { #type_ident #args };
-    }
-
-    // Build absolute path: source_module_path + type_name
-    let path_idents: Vec<syn::Ident> = source_module_path
-        .iter()
-        .map(|s| syn::Ident::new(s, proc_macro2::Span::call_site()))
-        .collect();
-    let type_ident = &segment.ident;
-
-    quote! { #(#path_idents)::* :: #type_ident #args }
+    resolve_type_with_params(ty, source_module_path, &[])
 }
 
-/// Extract the module path from a type (excluding the type name itself).
+/// [`resolve_type_to_absolute_path`] that leaves the listed generic
+/// parameter names untouched (the source struct's own `T`, ...).
+pub fn resolve_type_with_params(
+    ty: &Type,
+    source_module_path: &[String],
+    generic_params: &[String],
+) -> TokenStream {
+    let scope = module_scope(source_module_path);
+    TypeResolver {
+        module: source_module_path,
+        scope: scope.as_deref(),
+        generic_params,
+    }
+    .ty(ty)
+}
+
+struct TypeResolver<'a> {
+    module: &'a [String],
+    scope: Option<&'a ModuleScope>,
+    generic_params: &'a [String],
+}
+
+impl TypeResolver<'_> {
+    fn ty(&self, ty: &Type) -> TokenStream {
+        match ty {
+            Type::Path(type_path) if type_path.qself.is_none() => {
+                self.path(&type_path.path).unwrap_or_else(|| quote! { #ty })
+            }
+            Type::Reference(reference) => {
+                let lifetime = &reference.lifetime;
+                let mutability = &reference.mutability;
+                let elem = self.ty(&reference.elem);
+                quote! { & #lifetime #mutability #elem }
+            }
+            Type::Slice(slice) => {
+                let elem = self.ty(&slice.elem);
+                quote! { [#elem] }
+            }
+            Type::Array(array) => {
+                let elem = self.ty(&array.elem);
+                let len = &array.len;
+                quote! { [#elem; #len] }
+            }
+            Type::Tuple(tuple) => {
+                let elems: Vec<TokenStream> = tuple.elems.iter().map(|e| self.ty(e)).collect();
+                if elems.len() == 1 {
+                    quote! { (#(#elems),*,) }
+                } else {
+                    quote! { (#(#elems),*) }
+                }
+            }
+            Type::Paren(paren) => {
+                let elem = self.ty(&paren.elem);
+                quote! { (#elem) }
+            }
+            _ => quote! { #ty },
+        }
+    }
+
+    fn args(&self, args: &PathArguments) -> TokenStream {
+        match args {
+            PathArguments::None => TokenStream::new(),
+            PathArguments::AngleBracketed(angle) => {
+                let items = angle.args.iter().map(|arg| match arg {
+                    GenericArgument::Type(inner) => self.ty(inner),
+                    other => quote! { #other },
+                });
+                let colon = &angle.colon2_token;
+                quote! { #colon <#(#items),*> }
+            }
+            // `Fn(A) -> B` bounds: not a serializable field type.
+            PathArguments::Parenthesized(_) => quote! { #args },
+        }
+    }
+
+    fn path(&self, path: &syn::Path) -> Option<TokenStream> {
+        let last = path.segments.last()?;
+        if path.leading_colon.is_none() && path.segments.len() == 1 {
+            return Some(self.single(last));
+        }
+        let name = strip_raw(&last.ident);
+        if SEA_ORM_PATH_ALIASES.contains(&name.as_str())
+            && let Some(converted) = self.alias(&name, &last.arguments, true)
+        {
+            return Some(converted);
+        }
+        let mut segments: Vec<(String, TokenStream)> = path
+            .segments
+            .iter()
+            .map(|segment| (strip_raw(&segment.ident), self.args(&segment.arguments)))
+            .collect();
+        if path.leading_colon.is_some() {
+            segments[0].0.insert_str(0, "::");
+        } else if let Resolved::Path(prefix) =
+            resolve_name(std::slice::from_ref(&segments[0].0), self.module)
+        {
+            let first_args = segments.remove(0).1;
+            let mut rooted: Vec<(String, TokenStream)> = prefix
+                .into_iter()
+                .map(|s| (s, TokenStream::new()))
+                .collect();
+            if let Some(last) = rooted.last_mut() {
+                last.1 = first_args;
+            }
+            rooted.extend(segments);
+            segments = rooted;
+        }
+        Some(render_segments(&segments))
+    }
+
+    fn single(&self, segment: &syn::PathSegment) -> TokenStream {
+        let name = strip_raw(&segment.ident);
+        let ident = &segment.ident;
+        let args = self.args(&segment.arguments);
+        if self.generic_params.contains(&name) {
+            return quote! { #ident #args };
+        }
+        if let Some(scope) = self.scope {
+            if let Some(import) = scope.imports.get(&name) {
+                if first_named(import) == Some("sea_orm")
+                    && let Some(converted) = self.alias(&name, &segment.arguments, true)
+                {
+                    return converted;
+                }
+                let path = path_tokens(import);
+                return quote! { #path #args };
+            }
+            if scope.locals.contains(&name) {
+                return self.module_qualified(ident, &args);
+            }
+        }
+        let sea_orm_scope = self.scope.is_some_and(ModuleScope::has_sea_orm_glob);
+        if let Some(converted) = self.alias(&name, &segment.arguments, sea_orm_scope) {
+            return converted;
+        }
+        if matches!(name.as_str(), "Uuid" | "Decimal")
+            && let Some(glob) = self.scope.and_then(|scope| {
+                scope
+                    .globs
+                    .iter()
+                    .find(|glob| first_named(glob) == Some("sea_orm"))
+            })
+        {
+            let base = path_tokens(glob);
+            return quote! { #base :: #ident };
+        }
+        if is_primitive_or_known_type(&name) {
+            return quote! { #ident #args };
+        }
+        if let Resolved::Path(path) = resolve_name(std::slice::from_ref(&name), self.module) {
+            let path = path_tokens(&path);
+            return quote! { #path #args };
+        }
+        if self.module.is_empty() {
+            return quote! { #ident #args };
+        }
+        self.module_qualified(ident, &args)
+    }
+
+    fn module_qualified(&self, ident: &syn::Ident, args: &TokenStream) -> TokenStream {
+        let module = path_tokens(self.module);
+        quote! { #module :: #ident #args }
+    }
+
+    /// SeaORM / chrono / `serde_json` / multipart aliases. `Date` / `Time`
+    /// are SeaORM's only in a module glob-importing a SeaORM prelude (they
+    /// are `time` crate names too).
+    fn alias(&self, name: &str, args: &PathArguments, sea_orm_scope: bool) -> Option<TokenStream> {
+        let bare = args.is_none();
+        Some(match name {
+            "DateTimeWithTimeZone" if bare => {
+                quote! { vespera::chrono::DateTime<vespera::chrono::FixedOffset> }
+            }
+            "DateTimeUtc" if bare => quote! { vespera::chrono::DateTime<vespera::chrono::Utc> },
+            "DateTimeLocal" if bare => {
+                quote! { vespera::chrono::DateTime<vespera::chrono::Local> }
+            }
+            // chrono's `DateTime` always takes a time zone: the bare name is
+            // SeaORM's alias of `NaiveDateTime`.
+            "DateTime" if bare => quote! { vespera::chrono::NaiveDateTime },
+            "DateTime" => {
+                let args = self.args(args);
+                quote! { vespera::chrono::DateTime #args }
+            }
+            "Date" if bare && sea_orm_scope => quote! { vespera::chrono::NaiveDate },
+            "Time" if bare && sea_orm_scope => quote! { vespera::chrono::NaiveTime },
+            "NaiveDateTime" | "NaiveDate" | "NaiveTime" | "Utc" | "Local" | "FixedOffset"
+                if bare =>
+            {
+                let ident = syn::Ident::new(name, proc_macro2::Span::call_site());
+                quote! { vespera::chrono::#ident }
+            }
+            "Json" | "JsonValue" | "Value" if bare => quote! { vespera::serde_json::Value },
+            "FieldData" => {
+                let args = self.args(args);
+                quote! { vespera::multipart::FieldData #args }
+            }
+            "NamedTempFile" => quote! { vespera::tempfile::NamedTempFile },
+            _ => return None,
+        })
+    }
+}
+
+/// Aliases converted whatever path spells them (`sea_orm::prelude::DateTimeUtc`).
+const SEA_ORM_PATH_ALIASES: &[&str] = &[
+    "DateTimeWithTimeZone",
+    "DateTimeUtc",
+    "DateTimeLocal",
+    "FieldData",
+    "NamedTempFile",
+];
+
+fn first_named(path: &[String]) -> Option<&str> {
+    path.iter().find(|s| !s.is_empty()).map(String::as_str)
+}
+
+fn strip_raw(ident: &syn::Ident) -> String {
+    crate::parser::strip_raw_prefix_owned(ident.to_string())
+}
+
+fn render_segments(segments: &[(String, TokenStream)]) -> TokenStream {
+    let mut out = TokenStream::new();
+    for (index, (name, args)) in segments.iter().enumerate() {
+        let name = if let Some(rest) = name.strip_prefix("::") {
+            out.extend(quote! { :: });
+            rest
+        } else {
+            if index > 0 {
+                out.extend(quote! { :: });
+            }
+            name.as_str()
+        };
+        let ident = segment_ident(name);
+        out.extend(quote! { #ident #args });
+    }
+    out
+}
+
+// Extract the module path from a type (excluding the type name itself).
 /// e.g., `crate::models::memo::Model` -> `["crate", "models", "memo"]`
 pub fn extract_module_path(ty: &Type) -> Vec<String> {
     match ty {

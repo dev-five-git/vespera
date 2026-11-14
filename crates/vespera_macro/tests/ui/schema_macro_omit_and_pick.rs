@@ -1,5 +1,5 @@
 //! `schema!` accepts either `omit` or `pick`, never both, and rejects
-//! unknown parameters.
+//! unknown parameters or field names.
 #![allow(dead_code)]
 
 extern crate self as vespera;
@@ -20,6 +20,10 @@ fn both() {
 
 fn unknown() {
     let _ = schema!(User, only = ["id"]);
+}
+
+fn unknown_field() {
+    let _ = schema!(User, omit = ["nmae"]);
 }
 
 fn main() {}
