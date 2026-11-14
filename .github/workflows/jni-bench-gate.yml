@@ -27,7 +27,23 @@ on:
     paths:
       - 'crates/vespera_inprocess/**'
       - 'crates/vespera_jni/**'
+      # The `vespera` crate (jni_app! / feature wiring) and the macros that
+      # generate the bench cdylib's router are compiled into it too.
+      - 'crates/vespera/**'
+      - 'crates/vespera_macro/**'
+      - 'crates/vespera_core/**'
       - 'libs/vespera-bridge/**'
+      # The bench cdylib itself (routes, jni_app!); its Java demo apps are
+      # not part of the measurement.
+      - 'examples/rust-jni-demo/src/**'
+      - 'examples/rust-jni-demo/Cargo.toml'
+      # Dependency versions, profiles (fat LTO) and the toolchain change the
+      # measured code as much as a source edit does.
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
       - '.github/workflows/jni-bench-gate.yml'
       - 'scripts/jni-bench-interleaved.sh'
       - 'scripts/jni-bench-compare.ts'
@@ -49,6 +65,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      # The script runs the bridge's gradlew of BOTH sides; this validates the
+      # head's wrappers, and the base side is main (validated when merged).
+      - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          min-wrapper-count: 3
 
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:

@@ -502,8 +502,15 @@ props only.
 
 ### Pre-Commit (Husky)
 
-`bun run prepare` installs husky; commits trigger `.husky/` hooks (typically
-`lint`). Never bypass with `--no-verify`; fix the underlying finding.
+`bun run prepare` (run by `bun install`) installs husky, but the repository
+ships **no** `.husky/` hook on purpose: `bun run lint` runs both full clippy
+feature sets through `prelint`, minutes on a cold target dir (every fresh
+worktree), far too slow for every commit. The gate is the CI `lint` job, which
+runs the same commands (`cargo fmt --all --check`, both clippy sets,
+`cargo doc`, version alignment, oxlint, `bun test`) on every PR; run
+`bun run lint` (or `bun run lint:fix`) yourself before pushing. A local
+`.husky/pre-commit` you add is honoured — never bypass hooks with
+`--no-verify`; fix the underlying finding.
 
 ## CONVENTIONS
 
@@ -604,12 +611,15 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 #            `--no-default-features --features ffi` — the only place the
 #            feature-OFF UI cases (`cron_tz_needs_feature`,
 #            `multipart_needs_feature`) and `time_zone_without_feature` run
-#   bench           (bench.yml, PRs touching crates/**) criterion gate on the
+#   bench           (bench.yml, PRs touching crates/**, Cargo.toml/.lock, the
+#                   toolchain files) criterion gate on the
 #                   in-process hot path: merge base vs head, 5 interleaved
 #                   paired rounds, FAIL iff median > +30% AND every round > +20%
-#                   (scripts/bench-interleaved.sh)
-#   jni-bench-gate  (jni-bench-gate.yml, PRs touching vespera_inprocess /
-#                   vespera_jni / libs/vespera-bridge) the same rule over real
+#                   (scripts/bench-interleaved.sh; also fails when no bench
+#                   could be compared — a gate that measured nothing)
+#   jni-bench-gate  (jni-bench-gate.yml, PRs touching crates/vespera* /
+#                   libs/vespera-bridge / rust-jni-demo's Rust side /
+#                   Cargo.toml/.lock / toolchain / its scripts) the same rule over real
 #                   JNI dispatch: rust-jni-demo cdylib (pinned alignment
 #                   RUSTFLAGS) + bridge JAR per side, one fresh JVM per side per
 #                   round running libs/vespera-bridge/bench/JniDispatchBench.java
@@ -635,13 +645,22 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 # uploads crash reproducers. Dependabot (.github/dependabot.yml): weekly grouped
 # minor/patch PRs for cargo, the three Gradle builds, bun and github-actions
 # (dtolnay/rust-toolchain + changepacks/action are branch-pinned → ignored).
-# Third-party actions are pinned to commit SHAs; workflows default to
+# Third-party actions are pinned to commit SHAs, the tarpaulin container to
+# `<version>@sha256:<digest>`, and the Gradle wrappers twice: every job that
+# runs a gradlew starts with gradle/actions/wrapper-validation (the committed
+# gradle-wrapper.jar files) and each gradle-wrapper.properties carries the
+# distribution's `distributionSha256Sum` (bump it with distributionUrl, from
+# services.gradle.org/distributions/gradle-<v>-bin.zip.sha256). Workflows default to
 # `permissions: contents: read`. After changepacks publishes (even partially),
 # the release job runs scripts/release-artifacts.sh: it collects the published
 # .crate files (sha256 checked against crates.io) + JARs and regenerates the
-# SBOMs from the released commit in a temp worktree (a package that fails is
-# skipped, the rest still collected), then uploads them as the
-# `release-attestation-subjects` artifact. Only the separate `attest` job
+# SBOMs from the released commit in a temp worktree — that commit is the one
+# every published crate's .cargo_vcs_info.json names (they must agree; HEAD
+# only when no crate was published). Every per-package step (download,
+# checksum, JAR, SBOM — scripts/sbom.sh also keeps going past a package it
+# cannot describe) is isolated: a package that fails is skipped, the rest are
+# still collected (the step output `any` is written on every exit), then
+# uploaded as the `release-attestation-subjects` artifact. Only the separate `attest` job
 # (needs: changepacks; no checkout, only GitHub's attest actions) has
 # `id-token: write` + `attestations: write` — the release job runs the
 # unpinned changepacks CLI + build code and must not mint OIDC tokens. It runs

@@ -31,10 +31,11 @@ permissions:
 # with `git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>`.
 
 jobs:
-  # Local-only gates made mandatory: the `prelint` / `lint` / `test` root
-  # scripts (cargo fmt + both clippy feature sets + oxlint + front tests) used
-  # to run only through the husky pre-commit hook, which a contributor can
-  # skip. Mirrors `bun run lint` + `bun test` exactly.
+  # The `prelint` / `lint` / `test` root scripts (cargo fmt + both clippy
+  # feature sets + oxlint + front tests) as a mandatory gate: the repository
+  # ships no pre-commit hook (husky is installed, but `bun run lint` is too
+  # slow to run on every commit; see AGENTS.md "Pre-Commit"), so this job is
+  # the only place they are enforced. Mirrors `bun run lint` + `bun test`.
   lint:
     name: Lint (fmt, clippy, oxlint, front tests)
     runs-on: ubuntu-latest
@@ -269,6 +270,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Every job that runs a gradlew first checks the three committed
+      # gradle-wrapper.jar files against Gradle's published checksums (the
+      # distributions they download are pinned by distributionSha256Sum).
+      - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          min-wrapper-count: 3
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
@@ -384,7 +391,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     container:
-      image: xd009642/tarpaulin:develop-nightly
+      # Pinned like the actions: a version tag for humans plus the image
+      # index digest that is actually pulled (the floating `develop-nightly`
+      # tag let any upstream push change the coverage gate). 0.37.6-nightly is
+      # the release `develop-nightly` pointed at when this was pinned. Bump
+      # both together, digest from Docker Hub:
+      #   curl -s 'https://hub.docker.com/v2/repositories/xd009642/tarpaulin/tags/<tag>' | jq -r .digest
+      image: xd009642/tarpaulin:0.37.6-nightly@sha256:a46cdb85b907e37de2edda38a849024b7980b5aa90302e9f7bef36b978b2a237
       options: --security-opt seccomp=unconfined
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -576,6 +589,9 @@ jobs:
       # separate `attest` job below does that.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          min-wrapper-count: 3
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: 'temurin'
@@ -820,6 +836,9 @@ jobs:
             java: '17'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          min-wrapper-count: 3
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: 'temurin'

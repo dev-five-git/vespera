@@ -37,6 +37,13 @@ CDX_VERSION=0.5.9
 CDX_SHA256=9bd3e599314f50810c9d98b8b68a617ff9d3cc20873968d90b29d121f6b226ff
 CDX_URL="https://github.com/CycloneDX/cyclonedx-rust-cargo/releases/download/cargo-cyclonedx-$CDX_VERSION/cargo-cyclonedx-x86_64-unknown-linux-musl.tar.xz"
 
+# A package that cannot be described is reported and skipped (its SBOM is
+# removed, never left half-written); the others are still generated and the
+# script exits non-zero at the end. The release job (scripts/release-artifacts.sh)
+# relies on this to still attest the packages that did work.
+failed=0
+fail() { echo "::error::$1" >&2; failed=1; }
+
 cdx=()
 if [ -n "${CARGO_CYCLONEDX:-}" ]; then
   cdx=("$CARGO_CYCLONEDX" cyclonedx)
@@ -45,29 +52,33 @@ elif cargo cyclonedx --version >/dev/null 2>&1; then
 elif [ "$(uname -s)-$(uname -m)" = Linux-x86_64 ]; then
   tool_dir=$(mktemp -d)
   trap 'rm -rf "$tool_dir"' EXIT
-  curl -fsSL --retry 3 -o "$tool_dir/cdx.tar.xz" "$CDX_URL"
-  echo "$CDX_SHA256  $tool_dir/cdx.tar.xz" | sha256sum -c --quiet -
-  tar -xJf "$tool_dir/cdx.tar.xz" -C "$tool_dir"
-  cdx=("$tool_dir/cargo-cyclonedx-x86_64-unknown-linux-musl/cargo-cyclonedx" cyclonedx)
+  if curl -fsSL --retry 3 -o "$tool_dir/cdx.tar.xz" "$CDX_URL" &&
+    echo "$CDX_SHA256  $tool_dir/cdx.tar.xz" | sha256sum -c --quiet - &&
+    tar -xJf "$tool_dir/cdx.tar.xz" -C "$tool_dir"; then
+    cdx=("$tool_dir/cargo-cyclonedx-x86_64-unknown-linux-musl/cargo-cyclonedx" cyclonedx)
+  else
+    fail "could not download / verify cargo-cyclonedx $CDX_VERSION"
+  fi
 else
-  echo "cargo-cyclonedx not found: install it or set CARGO_CYCLONEDX" >&2
-  exit 1
+  fail "cargo-cyclonedx not found: install it or set CARGO_CYCLONEDX"
 fi
 
 # Assert an SBOM is CycloneDX JSON describing <name>@<version>. actions/attest
 # rejects a CycloneDX document without a `serialNumber` ("Unsupported SBOM
-# format"), so that is checked here too, on every PR.
+# format"), so that is checked here too, on every PR. Returns non-zero (and
+# removes the file) when it is not.
 check_sbom() { # <file> <name> <version>
-  jq -e --arg n "$2" --arg v "$3" '
+  if ! jq -e --arg n "$2" --arg v "$3" '
     .bomFormat == "CycloneDX"
     and (.specVersion | type == "string")
     and (.serialNumber | type == "string" and test("^urn:uuid:[0-9a-f-]{36}$"))
     and .metadata.component.name == $n
     and .metadata.component.version == $v
-  ' "$1" >/dev/null || {
-    echo "::error::$1 is not a CycloneDX SBOM for $2@$3" >&2
-    exit 1
-  }
+  ' "$1" >/dev/null; then
+    fail "$1 is not a CycloneDX SBOM for $2@$3"
+    rm -f "$1"
+    return 1
+  fi
   echo "ok  $(basename "$1")  ($(jq '.components // [] | length' "$1") components)"
 }
 
@@ -87,27 +98,48 @@ add_serial_number() { # <file> <name> <version>
   jq --arg s "urn:uuid:$uuid"     '{bomFormat, specVersion, serialNumber: $s} + del(.serialNumber)' "$1" >"$1.tmp"
   mv "$1.tmp" "$1"
 }
-metadata=$(cargo metadata --manifest-path "$root/Cargo.toml" --no-deps --format-version 1)
-# cargo-cyclonedx always describes every workspace member, next to its manifest.
-"${cdx[@]}" --manifest-path "$root/Cargo.toml" --format json \
-  --all-features --target all --spec-version 1.5 -q
-for crate in "${crates[@]}"; do
-  version=$(jq -r --arg n "$crate" '.packages[] | select(.name == $n) | .version' <<<"$metadata" | tr -d '\r')
-  dest="$out/$crate-$version.cdx.json"
-  mv "$root/crates/$crate/$crate.cdx.json" "$dest"
-  add_serial_number "$dest" "$crate" "$version"
-  check_sbom "$dest" "$crate" "$version"
-done
-# Drop the SBOMs of the unpublished members (examples, benches).
-jq -r '.packages[] | (.manifest_path | rtrimstr("Cargo.toml")) + .name + ".cdx.json"' <<<"$metadata" |
-  while IFS= read -r f; do rm -f "${f%$'\r'}"; done
+metadata=$(cargo metadata --manifest-path "$root/Cargo.toml" --no-deps --format-version 1) || {
+  fail "cargo metadata failed; no crate SBOMs"
+  metadata=
+}
+if [ "${#cdx[@]}" -gt 0 ] && [ -n "$metadata" ]; then
+  # cargo-cyclonedx always describes every workspace member, next to its manifest.
+  if "${cdx[@]}" --manifest-path "$root/Cargo.toml" --format json \
+    --all-features --target all --spec-version 1.5 -q; then
+    for crate in "${crates[@]}"; do
+      version=$(jq -r --arg n "$crate" '.packages[] | select(.name == $n) | .version' <<<"$metadata" | tr -d '\r')
+      dest="$out/$crate-$version.cdx.json"
+      if mv "$root/crates/$crate/$crate.cdx.json" "$dest" &&
+        add_serial_number "$dest" "$crate" "$version"; then
+        check_sbom "$dest" "$crate" "$version" || true
+      else
+        fail "could not produce the SBOM of $crate@$version"
+        rm -f "$dest" "$dest.tmp"
+      fi
+    done
+  else
+    fail "cargo-cyclonedx failed; no crate SBOMs"
+  fi
+  # Drop the SBOMs of the unpublished members (examples, benches).
+  jq -r '.packages[] | (.manifest_path | rtrimstr("Cargo.toml")) + .name + ".cdx.json"' <<<"$metadata" |
+    while IFS= read -r f; do rm -f "${f%$'\r'}"; done
+fi
 
 # ── Java libraries ─────────────────────────────────────────────────────────
 for lib in vespera-bridge vespera-bridge-gradle-plugin; do
   dir="$root/libs/$lib"
-  version=$(tr -d '\r' <"$dir/build.gradle.kts" | sed -nE 's/^version = "([^"]+)"$/\1/p')
-  (cd "$dir" && sh ./gradlew cyclonedxDirectBom --console=plain --no-daemon -q)
+  version=$( { tr -d '\r' <"$dir/build.gradle.kts" | sed -nE 's/^version = "([^"]+)"$/\1/p'; } 2>/dev/null) || version=
+  if [ -z "$version" ]; then
+    fail "could not read the version of $lib"
+    continue
+  fi
   src="$dir/build/reports/cyclonedx-direct/$lib-$version-cyclonedx.json"
-  cp "$src" "$out/"
-  check_sbom "$out/$(basename "$src")" "$lib" "$version"
+  if ! (cd "$dir" && sh ./gradlew cyclonedxDirectBom --console=plain --no-daemon -q) ||
+    ! cp "$src" "$out/"; then
+    fail "could not generate the SBOM of $lib@$version"
+    continue
+  fi
+  check_sbom "$out/$(basename "$src")" "$lib" "$version" || true
 done
+
+exit "$failed"

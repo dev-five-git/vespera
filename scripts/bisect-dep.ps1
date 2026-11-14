@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Bisect a performance (or any) regression across the published versions of ONE
-  dependency, using `cargo update -p <crate>@<ver> --precise <ver>`.
+  dependency, using `cargo update -p <crate> --precise <ver>`.
 
 .DESCRIPTION
   Like `git bisect run`, but over crates.io releases instead of commits.
