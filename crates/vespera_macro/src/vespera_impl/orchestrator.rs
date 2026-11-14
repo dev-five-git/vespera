@@ -24,12 +24,15 @@ use super::{
     },
     cron_discovery::discover_cron_jobs,
     invocation::invocation_tag,
+    merge_conflicts::check_merge_route_conflicts,
+    merge_lookup::{current_export_crate, export_key, export_spec_path, merged_export_checks},
     openapi_io::{
         ensure_openapi_files_from_cache, generate_and_write_openapi, load_validated_sidecar_specs,
         write_pretty_sidecar, write_spec_for_embedding,
     },
     path_utils::{find_folder_path, find_target_dir},
     route_merge::merge_route_storage_data,
+    sidecar_write::{content_addressed, prune_superseded},
 };
 
 /// Fold the macro-invocation-local schema/route storage into a freshly
@@ -45,10 +48,17 @@ fn finalize_metadata(
     route_storage: &[StoredRouteInfo],
     macro_label: &str,
 ) -> syn::Result<()> {
-    metadata.structs.extend(schema_storage.values().cloned());
-    merge_route_storage_data(metadata, route_storage);
+    // Key order, not `HashMap` iteration order: every lookup built from
+    // `metadata.structs` (first-wins aliases, duplicate reporting) must not
+    // depend on the hasher's per-process seed.
+    let mut keys: Vec<&String> = schema_storage.keys().collect();
+    keys.sort_unstable();
     metadata
-        .check_duplicate_schema_names()
+        .structs
+        .extend(keys.into_iter().map(|key| schema_storage[key].clone()));
+    merge_route_storage_data(metadata, route_storage);
+    crate::openapi_generator::check_duplicate_routes(metadata)
+        .and_then(|()| metadata.check_duplicate_schema_names())
         .map_err(|msg| syn::Error::new(Span::call_site(), format!("{macro_label} macro: {msg}")))
 }
 
@@ -102,7 +112,7 @@ pub fn process_vespera_macro(
     let cache_path = get_cache_path(&tag);
     let scanned = crate::collector::scan_route_folder(&folder_path)
         .map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: {e}")))?;
-    let fingerprints = crate::collector::fingerprints_from_scan(&scanned);
+    let fingerprints = crate::collector::fingerprints_from_scan(&folder_path, &scanned);
     let schema_hash = with_route_signature_hash(compute_schema_hash(schema_storage), route_storage);
     let mut merge_specs = MergeSpecCache::new();
     let config_hash = compute_config_hash_with_merge_cache(processed, &mut merge_specs);
@@ -208,6 +218,10 @@ pub fn process_vespera_macro(
 
         (metadata, spec_tokens)
     };
+    // Both branches: a cache hit only proves the parent's own sources are
+    // unchanged — a child's routes can still collide with them.
+    check_merge_route_conflicts(&metadata, &processed.merge, &mut merge_specs)?;
+    let export_checks = merged_export_checks(&processed.merge, &merge_specs);
 
     // --- Cron job discovery: CRON_STORAGE + module-tree scan fallback ---
     // `#[cron]` attributes expanded before this macro registered themselves;
@@ -223,7 +237,7 @@ pub fn process_vespera_macro(
         discover_cron_jobs(&storage, src_dir.as_deref(), call_site.as_deref())
     };
 
-    let result = Ok(generate_router_code(
+    let router = generate_router_code(
         &metadata,
         processed.docs_url.as_deref(),
         processed.redoc_url.as_deref(),
@@ -231,7 +245,12 @@ pub fn process_vespera_macro(
         spec_tokens,
         &processed.merge,
         &cron_jobs,
-    ));
+    );
+    let result = Ok(if export_checks.is_empty() {
+        router
+    } else {
+        quote! { { #(#export_checks)* #router } }
+    });
     stage("generate_router_code");
 
     if let Some(start) = profile_start {
@@ -267,6 +286,7 @@ fn finish_export_metadata(
 }
 
 /// Process `export_app` macro - extracted for testability
+#[allow(clippy::too_many_lines)]
 pub fn process_export_app(
     name: &syn::Ident,
     folder_name: &str,
@@ -296,11 +316,17 @@ pub fn process_export_app(
     let manifest_path = Path::new(manifest_dir);
     let target_dir = find_target_dir(manifest_path);
     let vespera_dir = target_dir.join("vespera");
-    let spec_file = vespera_dir.join(format!("{app_name}.openapi.json"));
+    // Crate-scoped: two crates exporting a same-named app never collide; a
+    // parent finds it through `merge_lookup::resolve_export`.
+    let export_crate = current_export_crate();
+    let spec_file = export_spec_path(&vespera_dir, &export_crate, &app_name);
+    let export_dir = spec_file.parent().unwrap_or(&vespera_dir).to_path_buf();
+    let include_stem = format!("{app_name}.openapi");
+    let export_key = export_key(&export_crate, &app_name);
     let cache_path = get_export_cache_path(&app_name, folder_name, prefix);
     let scanned = crate::collector::scan_route_folder(&folder_path)
         .map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: {e}")))?;
-    let fingerprints = crate::collector::fingerprints_from_scan(&scanned);
+    let fingerprints = crate::collector::fingerprints_from_scan(&folder_path, &scanned);
     let schema_hash = with_route_signature_hash(compute_schema_hash(schema_storage), route_storage);
     let config_hash = compute_export_config_hash(&app_name, folder_name, prefix);
     let macro_version = env!("CARGO_PKG_VERSION").to_string();
@@ -316,6 +342,8 @@ pub fn process_export_app(
     let cache_hit = cached.as_ref().is_some_and(|c| {
         c.is_fresh(&cache_key)
             && sidecar_matches(&spec_file, c.spec_json_hash, c.spec_json_fingerprint)
+            && c.spec_json_hash
+                .is_some_and(|hash| content_addressed(&export_dir, &include_stem, hash).is_file())
     });
 
     // Build a single fully-extended `metadata` per branch — previously the
@@ -324,8 +352,12 @@ pub fn process_export_app(
     // returned the un-extended snapshot, forcing the redundant re-work. Now
     // each branch returns the already-extended `CollectedMetadata` and the
     // duplicated outer pass is removed.
-    let metadata = if let (true, Some(cache)) = (cache_hit, cached) {
-        finish_export_metadata(cache.metadata, schema_storage, route_storage, prefix)?
+    let (metadata, spec_hash) = if let (true, Some(cache)) = (cache_hit, cached) {
+        let hash = cache.spec_json_hash.unwrap_or_default();
+        (
+            finish_export_metadata(cache.metadata, schema_storage, route_storage, prefix)?,
+            hash,
+        )
     } else {
         let (mut metadata, file_asts) = crate::collector::collect_metadata_from_files(scanned.iter().map(|(path, _)| path.as_path()), &folder_path, folder_name, route_storage).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to scan route folder '{folder_name}'. Error: {e}. Check that all .rs files have valid Rust syntax.")))?;
         let cache_metadata = metadata.clone();
@@ -348,9 +380,15 @@ pub fn process_export_app(
             namespace_and_serialize_export_openapi(&mut openapi_doc, &metadata, prefix)?;
 
         // Write spec to temp file for compile-time merging by parent apps
-        std::fs::create_dir_all(&vespera_dir).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to create build cache directory '{}'. Error: {}. Ensure the target directory is writable.", vespera_dir.display(), e)))?;
+        // (stable name for parents' lookups + content-addressed copy for this
+        // expansion's `include_str!`; both replaced atomically).
+        std::fs::create_dir_all(&export_dir).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to create build cache directory '{}'. Error: {}. Ensure the target directory is writable.", export_dir.display(), e)))?;
         let spec_json_fingerprint = super::openapi_io::write_if_changed(&spec_file, &spec_json).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to write OpenAPI spec file '{}'. Error: {}. Ensure the file path is writable.", spec_file.display(), e)))?;
-        let spec_json_hash = Some(hash_str(&spec_json));
+        let hash = hash_str(&spec_json);
+        let include_file = content_addressed(&export_dir, &include_stem, hash);
+        super::openapi_io::write_if_changed(&include_file, &spec_json).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to write OpenAPI spec file '{}'. Error: {}. Ensure the file path is writable.", include_file.display(), e)))?;
+        prune_superseded(&include_file, &include_stem);
+        let spec_json_hash = Some(hash);
         write_cache(
             &cache_path,
             &VesperaCache {
@@ -367,9 +405,13 @@ pub fn process_export_app(
                 spec_pretty_fingerprint: None,
             },
         );
-        metadata
+        (metadata, hash)
     };
-    let spec_path_str = crate::file_utils::path_to_include_str_literal(&spec_file);
+    let spec_path_str = crate::file_utils::path_to_include_str_literal(content_addressed(
+        &export_dir,
+        &include_stem,
+        spec_hash,
+    ));
 
     let router_code = generate_router_code(&metadata, None, None, None, None, &[], &[]);
 
@@ -380,6 +422,11 @@ pub fn process_export_app(
         impl #name {
             /// OpenAPI specification as JSON string
             pub const OPENAPI_SPEC: &'static str = include_str!(#spec_path_str);
+
+            /// Identity of this export (`<crate>/<App>`), checked at compile
+            /// time by a parent `vespera!(merge = [...])`.
+            #[doc(hidden)]
+            pub const __VESPERA_EXPORT_KEY: u64 = #export_key;
 
             /// Create the router for this app.
             /// Returns `Router<()>` which can be merged into any other router.
@@ -402,3 +449,6 @@ pub fn process_export_app(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_audit;

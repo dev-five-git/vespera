@@ -306,7 +306,7 @@ fn finish_shutdown(timeout: Duration, cleanup: fn()) {
     // A never-started runtime stays unbuilt (a concurrent first dispatch
     // that is mid-build completes first and is shut down below).
     let _ = RUNTIME.set(None);
-    let deadline = Instant::now() + timeout;
+    let deadline = deadline_after(Instant::now(), timeout);
     drain_in_flight(deadline);
     let owned = RUNTIME
         .get()
@@ -317,6 +317,14 @@ fn finish_shutdown(timeout: Duration, cleanup: fn()) {
     }
     cleanup();
     drop(HOOKS.lock().map(|mut hooks| std::mem::take(&mut *hooks)));
+}
+
+/// `now + timeout`, saturating to a far-future instant when the sum is not
+/// representable (`Duration::MAX` = wait as long as it takes) instead of
+/// panicking after the gate already closed.
+fn deadline_after(now: Instant, timeout: Duration) -> Instant {
+    const FAR_FUTURE: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
+    now.checked_add(timeout).unwrap_or_else(|| now + FAR_FUTURE)
 }
 
 /// Wait until no `RuntimeLease` is alive or `deadline` passes.
@@ -407,6 +415,14 @@ mod tests {
         assert!(!drain_in_flight(Instant::now() + Duration::from_millis(5)));
         drop(claim);
         assert!(drain_in_flight(Instant::now()));
+    }
+
+    #[test]
+    fn deadline_saturates_instead_of_overflowing() {
+        let now = Instant::now();
+        let one = Duration::from_secs(1);
+        assert_eq!(deadline_after(now, one), now + one);
+        assert!(deadline_after(now, Duration::MAX) > now + Duration::from_secs(3600));
     }
 
     #[test]

@@ -360,6 +360,7 @@ fn stored_route_signatures_contribute_to_schema_hash() {
         description: None,
         file_path: Some("src/routes/users.rs".to_string()),
         fn_sig_str: sig.to_string(),
+        inline_module: None,
     };
     let before = with_route_signature_hash(7, &[route("fn get_user () -> Result < A , B >")]);
     let after = with_route_signature_hash(7, &[route("fn get_user () -> Result < A , C >")]);
@@ -397,16 +398,32 @@ fn security_requirement_names_and_tag_descriptions_affect_config_hash() {
             ("zeta".to_string(), Vec::new()),
             ("alpha".to_string(), Vec::new()),
         ])]),
-        tag_descriptions: Some(HashMap::from([
-            ("users".to_string(), "User operations".to_string()),
-            ("admin".to_string(), "Admin operations".to_string()),
-        ])),
+        tag_descriptions: Some(vec![
+            ("users".to_string(), Some("User operations".to_string())),
+            ("admin".to_string(), Some("Admin operations".to_string())),
+        ]),
         ..base_processed()
     };
 
     assert_ne!(
         compute_config_hash(&base_processed()),
         compute_config_hash(&secured)
+    );
+    // Declaration order is output order (`tags[]`), so it is part of the key.
+    let reordered = ProcessedVesperaInput {
+        tag_descriptions: Some(vec![
+            ("admin".to_string(), Some("Admin operations".to_string())),
+            ("users".to_string(), Some("User operations".to_string())),
+        ]),
+        ..base_processed()
+    };
+    let in_order = ProcessedVesperaInput {
+        tag_descriptions: secured.tag_descriptions.clone(),
+        ..base_processed()
+    };
+    assert_ne!(
+        compute_config_hash(&in_order),
+        compute_config_hash(&reordered)
     );
 }
 
@@ -437,7 +454,11 @@ fn present_merge_sidecar_content_contributes_to_config_hash() {
     let temp = tempfile::TempDir::new().unwrap();
     let vespera_dir = temp.path().join("target/vespera");
     std::fs::create_dir_all(&vespera_dir).unwrap();
-    std::fs::write(vespera_dir.join("Child.openapi.json"), "child-v1").unwrap();
+    std::fs::write(
+        crate::vespera_impl::merge_lookup::child_spec_path(&vespera_dir, "child", "Child"),
+        "child-v1",
+    )
+    .unwrap();
     let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
     let processed = ProcessedVesperaInput {
         merge: vec![syn::parse_quote!(child::Child)],

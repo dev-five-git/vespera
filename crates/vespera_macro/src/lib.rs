@@ -435,6 +435,9 @@ pub fn export_app(input: TokenStream) -> TokenStream {
         .map(|d| d.value())
         .or_else(|| crate::env_access::var("VESPERA_DIR").ok())
         .unwrap_or_else(|| "routes".to_string());
+    if let Err(err) = router_codegen::validate_route_dir(&folder_name, "export_app!", folder_span) {
+        return err.to_compile_error().into();
+    }
     let prefix = prefix.map_or_else(String::new, |value| value.value());
     let schema_storage = schema_impl::current_crate_schemas();
     let Ok(manifest_dir) = crate::env_access::var("CARGO_MANIFEST_DIR") else {

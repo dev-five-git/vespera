@@ -177,6 +177,11 @@ pub fn inline_module_of(file: Option<&str>, fn_name: &str, line: usize) -> Optio
         }
     }
     let content = crate::schema_macro::file_cache::get_file_content(std::path::Path::new(file?))?;
+    // No `mod` anywhere: every item is top-level — skip the re-parse that
+    // `#[route]` would otherwise pay once per handler.
+    if !content.contains("mod") {
+        return Some(String::new());
+    }
     proc_macro2::fallback::force();
     let _unforce = Unforce;
     let ast = syn::parse_file(&content).ok()?;

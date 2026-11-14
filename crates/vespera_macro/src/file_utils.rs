@@ -99,8 +99,15 @@ pub fn collect_files(folder_path: &Path) -> io::Result<Vec<PathBuf>> {
 /// the OS already returned.
 pub fn collect_files_with_mtimes(folder_path: &Path) -> io::Result<Vec<(PathBuf, u64)>> {
     let mut files = Vec::new();
-    collect_with_mtimes_into(folder_path, &mut files)?;
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(canonical_dir(folder_path));
+    collect_with_mtimes_into(folder_path, &mut files, &mut visited)?;
     Ok(files)
+}
+
+/// Identity of a directory for the symlink cycle guard.
+fn canonical_dir(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Compile-time cache fingerprint for a source file's modification time.
@@ -171,12 +178,32 @@ pub fn entry_fingerprint(meta: &std::io::Result<std::fs::Metadata>) -> u64 {
     meta.as_ref().map_or(0, file_fingerprint)
 }
 
-fn collect_with_mtimes_into(folder_path: &Path, out: &mut Vec<(PathBuf, u64)>) -> io::Result<()> {
+/// Walk `folder_path`, following symlinks like rustc's module loader does: a
+/// symlinked route file or directory is part of the crate.  `visited` holds
+/// every directory already walked (canonical), so a link back to an ancestor
+/// cannot recurse forever; a dangling link is skipped.
+fn collect_with_mtimes_into(
+    folder_path: &Path,
+    out: &mut Vec<(PathBuf, u64)>,
+    visited: &mut std::collections::HashSet<PathBuf>,
+) -> io::Result<()> {
     for entry in std::fs::read_dir(folder_path)? {
         let entry = entry?;
-        let file_type = entry.file_type()?;
         let path = entry.path();
-        if file_type.is_file() {
+        let file_type = entry.file_type()?;
+        let target = if file_type.is_symlink() {
+            let Ok(target) = std::fs::metadata(&path) else {
+                continue;
+            };
+            Some(target)
+        } else {
+            None
+        };
+        let (is_file, is_dir) = target.as_ref().map_or_else(
+            || (file_type.is_file(), file_type.is_dir()),
+            |meta| (meta.is_file(), meta.is_dir()),
+        );
+        if is_file {
             // Only `.rs` files feed route discovery and cache
             // fingerprinting — both consumers (`collect_metadata_from_files`
             // and `fingerprints_from_scan`) filter by extension — so skip
@@ -185,13 +212,16 @@ fn collect_with_mtimes_into(folder_path: &Path, out: &mut Vec<(PathBuf, u64)>) -
             // file at compile time; the entry still keeps its place in the
             // list with mtime `0` (never read for non-`.rs` paths).
             let mtime = if path.extension().is_some_and(|e| e == "rs") {
-                entry_fingerprint(&entry.metadata())
+                // A link's own metadata says nothing about the file's edits.
+                target
+                    .as_ref()
+                    .map_or_else(|| entry_fingerprint(&entry.metadata()), file_fingerprint)
             } else {
                 0
             };
             out.push((path, mtime));
-        } else if file_type.is_dir() {
-            collect_with_mtimes_into(&path, out)?;
+        } else if is_dir && visited.insert(canonical_dir(&path)) {
+            collect_with_mtimes_into(&path, out, visited)?;
         }
     }
     Ok(())
@@ -411,6 +441,64 @@ mod tests {
         let nonexistent = PathBuf::from("/nonexistent/path/that/does/not/exist");
         let result = collect_files(&nonexistent);
         assert!(result.is_err());
+    }
+
+    /// Symlinked files and directories are followed (like rustc's module
+    /// loader), a link back to an ancestor is walked once, and a dangling
+    /// link is skipped.
+    #[test]
+    fn collect_files_follows_symlinks_without_cycling() {
+        #[cfg(unix)]
+        fn link(target: &Path, link: &Path, _dir: bool) -> io::Result<()> {
+            std::os::unix::fs::symlink(target, link)
+        }
+        #[cfg(windows)]
+        fn link(target: &Path, link: &Path, dir: bool) -> io::Result<()> {
+            if dir {
+                std::os::windows::fs::symlink_dir(target, link)
+            } else {
+                std::os::windows::fs::symlink_file(target, link)
+            }
+        }
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let routes = temp_dir.path().join("routes");
+        let shared = temp_dir.path().join("shared");
+        fs::create_dir_all(&routes).unwrap();
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(routes.join("own.rs"), "").unwrap();
+        fs::write(shared.join("users.rs"), "").unwrap();
+        fs::write(temp_dir.path().join("health.rs"), "").unwrap();
+        // Creating links needs privileges on Windows (Developer Mode); the
+        // walk itself is platform-neutral, so skip where it is refused.
+        if link(&shared, &routes.join("admin"), true).is_err() {
+            return;
+        }
+        link(
+            &temp_dir.path().join("health.rs"),
+            &routes.join("health.rs"),
+            false,
+        )
+        .unwrap();
+        link(&routes, &shared.join("loop"), true).unwrap();
+        link(
+            &temp_dir.path().join("gone.rs"),
+            &routes.join("gone.rs"),
+            false,
+        )
+        .unwrap();
+
+        let files = collect_files_with_mtimes(&routes).unwrap();
+        let mut names = normalize_paths(
+            &files
+                .iter()
+                .map(|(path, _)| path.clone())
+                .collect::<Vec<_>>(),
+            &routes,
+        );
+        names.sort();
+        assert_eq!(names, ["admin/users.rs", "health.rs", "own.rs"]);
+        assert!(files.iter().all(|(_, mtime)| *mtime != 0));
     }
 
     #[test]

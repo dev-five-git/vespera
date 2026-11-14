@@ -60,6 +60,9 @@ fn serialize_number_constraint_none_serializes_null() {
 #[case(2.0, true)]
 #[case(1.5, false)]
 #[case(1e20, false)]
+#[case(9_223_372_036_854_775_808.0, false)]
+#[case(-9_223_372_036_854_775_808.0, true)]
+#[case(-1e20, false)]
 fn serialize_number_constraint_preserves_value_and_uses_safe_integer_form(
     #[case] number: f64,
     #[case] should_be_integer: bool,

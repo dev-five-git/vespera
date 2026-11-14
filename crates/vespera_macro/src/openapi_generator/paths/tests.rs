@@ -346,6 +346,7 @@ fn route_storage_dedup_skips_already_in_ast() {
         description: None,
         file_path: Some(route_file_path),
         fn_sig_str: route_src.to_string(),
+        inline_module: None,
     }];
 
     let doc = generate_openapi_doc_with_metadata(
@@ -398,6 +399,7 @@ fn route_storage_fast_path_when_fn_not_in_file_cache() {
         deprecated: false,
         description: None,
         fn_sig_str: "fn get_users() -> String".to_string(),
+        inline_module: None,
         file_path: None,
     }];
 
@@ -444,6 +446,7 @@ fn route_storage_fast_path_disambiguates_same_fn_name_by_file_path() {
             deprecated: false,
             description: None,
             fn_sig_str: "fn list() -> String".to_string(),
+            inline_module: None,
             file_path: Some(users_path),
         },
         StoredRouteInfo {
@@ -463,6 +466,7 @@ fn route_storage_fast_path_disambiguates_same_fn_name_by_file_path() {
             deprecated: false,
             description: None,
             fn_sig_str: "fn list() -> i32".to_string(),
+            inline_module: None,
             file_path: Some(posts_path),
         },
     ];
@@ -547,6 +551,7 @@ fn route_storage_legacy_none_file_path_is_skipped_when_ambiguous() {
             deprecated: false,
             description: None,
             fn_sig_str: "fn list() -> bool".to_string(),
+            inline_module: None,
             file_path: None,
         },
         StoredRouteInfo {
@@ -566,6 +571,7 @@ fn route_storage_legacy_none_file_path_is_skipped_when_ambiguous() {
             deprecated: false,
             description: None,
             fn_sig_str: "fn list() -> bool".to_string(),
+            inline_module: None,
             file_path: None,
         },
     ];

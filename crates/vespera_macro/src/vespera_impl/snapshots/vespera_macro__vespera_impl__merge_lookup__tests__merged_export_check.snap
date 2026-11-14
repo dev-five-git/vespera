@@ -1,0 +1,9 @@
+---
+source: crates/vespera_macro/src/vespera_impl/merge_lookup.rs
+assertion_line: 291
+expression: "prettyplease::unparse(&syn::parse_quote!(#item)).replace(&format!(\"{}u64\",\nexport_key(\"child\", \"ChildApp\")), \"<KEY>u64\")"
+---
+const _: () = ::core::assert!(
+    Admin::__VESPERA_EXPORT_KEY == <KEY>u64,
+    "vespera! merge: `Admin` is not `export_app!(ChildApp)` of crate `child`, whose OpenAPI document was found for it — spell the merge path as `<crate>::...::ChildApp`"
+);

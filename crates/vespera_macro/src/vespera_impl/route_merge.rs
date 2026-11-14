@@ -32,11 +32,14 @@ pub(super) fn merge_route_storage_data(
                 (normalize_path_key(file_path, &cwd), stored.fn_name.as_str()),
                 stored,
             );
+        } else {
+            // Only a path-less (legacy) entry may match by name: one that
+            // knows its file belongs to that file alone.
+            fallback_by_name
+                .entry(stored.fn_name.as_str())
+                .and_modify(|slot| *slot = None)
+                .or_insert(Some(stored));
         }
-        fallback_by_name
-            .entry(stored.fn_name.as_str())
-            .and_modify(|slot| *slot = None)
-            .or_insert(Some(stored));
     }
 
     for route in &mut metadata.routes {
@@ -133,6 +136,7 @@ mod tests {
             deprecated: false,
             description: None,
             fn_sig_str: String::new(),
+            inline_module: None,
             file_path: file_path.map(str::to_string),
         }
     }
@@ -209,6 +213,7 @@ mod tests {
             deprecated: false,
             description: Some("List all users".to_string()),
             fn_sig_str: String::new(),
+            inline_module: None,
             file_path: None,
         }];
 
@@ -261,6 +266,7 @@ mod tests {
             deprecated: false,
             description: None,
             fn_sig_str: String::new(),
+            inline_module: None,
             file_path: None,
         }];
 
@@ -312,6 +318,7 @@ mod tests {
                 deprecated: false,
                 description: None,
                 fn_sig_str: String::new(),
+                inline_module: None,
                 file_path: None,
             },
             StoredRouteInfo {
@@ -331,6 +338,7 @@ mod tests {
                 deprecated: false,
                 description: None,
                 fn_sig_str: String::new(),
+                inline_module: None,
                 file_path: None,
             },
         ];
@@ -399,6 +407,52 @@ mod tests {
         );
     }
 
+    /// A stored entry WITH a file path belongs to that file only: a
+    /// same-named handler in another file must not inherit its metadata.
+    /// Only path-less (legacy) entries fall back to a unique-name match.
+    #[test]
+    fn path_scoped_entry_is_not_a_name_fallback_for_other_files() {
+        let route = |name: &str, file: &str| RouteMetadata {
+            method: "get".to_string(),
+            path: "/x".to_string(),
+            function_name: name.to_string(),
+            module_path: "routes".to_string(),
+            file_path: file.to_string(),
+            error_status: None,
+            typed_responses: None,
+            tags: None,
+            security: None,
+            headers: Vec::new(),
+            success_status: None,
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
+            description: None,
+        };
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(route("handler", "routes/users.rs"));
+        metadata.routes.push(route("handler", "routes/posts.rs"));
+        metadata.routes.push(route("legacy", "routes/legacy.rs"));
+        let storage = vec![
+            stored_route("handler", Some("routes/users.rs"), &["users-file"]),
+            stored_route("legacy", None, &["legacy"]),
+        ];
+
+        merge_route_storage_data(&mut metadata, &storage);
+
+        let tags: Vec<_> = metadata.routes.iter().map(|r| r.tags.clone()).collect();
+        assert_eq!(
+            tags,
+            [
+                Some(vec!["users-file".to_string()]),
+                None,
+                Some(vec!["legacy".to_string()]),
+            ]
+        );
+    }
+
     #[test]
     fn test_merge_route_storage_preserves_existing() {
         let mut metadata = CollectedMetadata::new();
@@ -439,6 +493,7 @@ mod tests {
             deprecated: false,
             description: Some("New description".to_string()),
             fn_sig_str: String::new(),
+            inline_module: None,
             file_path: None,
         }];
 
@@ -493,6 +548,7 @@ mod tests {
             deprecated: false,
             description: None,
             fn_sig_str: String::new(),
+            inline_module: None,
             file_path: None,
         }];
 

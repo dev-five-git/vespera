@@ -11,7 +11,14 @@ use crate::error::{MacroResult, err_call_site};
 /// each other's cache (permanent miss ping-pong) and — worse — race on
 /// the shared spec file that the generated code `include_str!`s.
 pub(super) fn current_crate_tag() -> String {
-    crate::env_access::var("CARGO_PKG_NAME").unwrap_or_else(|_| "default".to_string())
+    let package =
+        crate::env_access::var("CARGO_PKG_NAME").unwrap_or_else(|_| "default".to_string());
+    // A package's binaries are separate crates expanding the same macros in
+    // parallel with its library: give each its own build files.
+    match crate::env_access::var("CARGO_CRATE_NAME") {
+        Ok(krate) if krate != package.replace('-', "_") => format!("{package}.{krate}"),
+        _ => package,
+    }
 }
 
 /// `info.description` default: the crate's `description` from Cargo.toml
@@ -30,13 +37,16 @@ pub fn find_folder_path(folder_name: &str) -> MacroResult<std::path::PathBuf> {
             "CARGO_MANIFEST_DIR is not set. vespera macros must be used within a cargo build.",
         )
     })?;
-    let path = format!("{root}/src/{folder_name}");
-    let path = Path::new(&path);
-    if path.exists() && path.is_dir() {
-        return Ok(path.to_path_buf());
+    // The macro parsers only admit `src/`-relative module folders
+    // (`router_codegen::validate_route_dir`); an absolute path is accepted
+    // here for embedders and tests that point at a folder directly.  A
+    // relative folder is never looked up against the working directory: a
+    // missing `src/<dir>` is reported as such instead of silently scanning
+    // whatever `<cwd>/<dir>` happens to be.
+    if Path::new(folder_name).is_absolute() {
+        return Ok(PathBuf::from(folder_name));
     }
-
-    Ok(Path::new(folder_name).to_path_buf())
+    Ok(Path::new(&root).join("src").join(folder_name))
 }
 
 /// Resolve a user-supplied output path (`openapi = "..."`) against the
@@ -166,10 +176,21 @@ mod tests {
 
     #[test]
     fn test_find_folder_path_nonexistent_returns_path() {
-        // When the constructed path doesn't exist, it falls back to using folder_name directly
+        // A missing folder still resolves under `src/` — never against the
+        // working directory — so the caller reports `src/<dir>` as missing.
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
         let result = find_folder_path("nonexistent_folder_xyz").unwrap();
-        // It should return a PathBuf (either from src/nonexistent... or just the folder name)
-        assert!(result.to_string_lossy().contains("nonexistent_folder_xyz"));
+        assert_eq!(
+            result,
+            temp_dir.path().join("src").join("nonexistent_folder_xyz")
+        );
+        // Nested module folders resolve the same way.
+        assert_eq!(
+            find_folder_path("api/v1").unwrap(),
+            temp_dir.path().join("src").join("api/v1")
+        );
     }
 
     // ========== Tests for find_workspace_root ==========
@@ -381,6 +402,21 @@ mod tests {
         assert!(
             result.to_string_lossy().contains("src") && result.to_string_lossy().contains("routes")
         );
+    }
+
+    /// A binary named differently from its package gets its own tag; the
+    /// library (and its test build) keep the package name.
+    #[rstest::rstest]
+    #[case::library(Some("my_app"), "my-app")]
+    #[case::binary(Some("server"), "my-app.server")]
+    #[case::outside_cargo(None, "my-app")]
+    fn crate_tag_separates_binaries(#[case] krate: Option<&str>, #[case] expected: &str) {
+        let _pkg = crate::env_access::test_env::set_var("CARGO_PKG_NAME", "my-app");
+        let _krate = krate.map_or_else(
+            || crate::env_access::test_env::remove_var("CARGO_CRATE_NAME"),
+            |krate| crate::env_access::test_env::set_var("CARGO_CRATE_NAME", krate),
+        );
+        assert_eq!(current_crate_tag(), expected);
     }
 
     #[test]

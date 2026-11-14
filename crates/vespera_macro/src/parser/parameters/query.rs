@@ -113,6 +113,7 @@ pub(super) fn parse_query_extractor(
         example: None,
         style: None,
         explode: None,
+        ..Default::default()
     }])
 }
 
@@ -250,6 +251,7 @@ fn collect_query_struct_parameters(
             example: None,
             style: is_array.then_some(ParameterStyle::Form),
             explode: is_array.then_some(true),
+            ..Default::default()
         });
     }
     visiting.pop();

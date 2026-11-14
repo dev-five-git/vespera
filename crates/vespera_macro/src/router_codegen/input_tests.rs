@@ -228,12 +228,11 @@ fn test_process_vespera_input_tag_descriptions() {
     let input: AutoRouterInput = syn::parse2(tokens).unwrap();
     let processed = process_vespera_input(input);
     assert_eq!(
-        processed
-            .tag_descriptions
-            .as_ref()
-            .and_then(|tags| tags.get("users"))
-            .map(String::as_str),
-        Some("User operations")
+        processed.tag_descriptions,
+        Some(vec![(
+            "users".to_string(),
+            Some("User operations".to_string())
+        )])
     );
 }
 
@@ -816,4 +815,61 @@ fn test_auto_router_input_rejects_bad_info(
         .expect("must fail")
         .to_string();
     assert!(err.contains(message), "{err}");
+}
+
+/// A repeated bare-string `dir`, security scheme name or tag name is a
+/// compile error instead of a silent last-wins.
+#[rstest]
+#[case::bare_dir_twice(quote::quote!("a", "b"), "duplicate field `dir` in vespera! macro")]
+#[case::bare_dir_and_named(quote::quote!("a", dir = "b"), "duplicate field `dir` in vespera! macro")]
+#[case::named_dir_and_bare(quote::quote!(dir = "a", "b"), "duplicate field `dir` in vespera! macro")]
+#[case::scheme_name(
+    quote::quote!(security_schemes = [
+        { name = "auth", type = "http", scheme = "bearer" },
+        { name = "auth", type = "http", scheme = "basic" }
+    ]),
+    "duplicate security scheme name `auth` in `security_schemes`"
+)]
+#[case::tag_name(
+    quote::quote!(tags = [{ name = "users" }, { name = "users", description = "x" }]),
+    "duplicate tag name `users` in `tags`"
+)]
+fn repeated_names_are_rejected(#[case] tokens: proc_macro2::TokenStream, #[case] expected: &str) {
+    let Err(err) = syn::parse2::<AutoRouterInput>(tokens) else {
+        panic!("must be rejected");
+    };
+    assert_eq!(err.to_string(), expected);
+}
+
+/// `dir` must name a module folder under `src/`; nested folders are fine.
+#[test]
+fn route_dir_is_validated_at_parse_time() {
+    let processed = process_vespera_input(syn::parse2(quote::quote!(dir = "api/v1")).unwrap());
+    assert_eq!(processed.folder_name, "api/v1");
+    for tokens in [
+        quote::quote!(dir = "../routes"),
+        quote::quote!("/abs/routes"),
+    ] {
+        let Err(err) = syn::parse2::<AutoRouterInput>(tokens) else {
+            panic!("must be rejected");
+        };
+        assert!(err.to_string().contains("invalid route folder"), "{err}");
+    }
+}
+
+/// Declared tags keep their order and survive without a description.
+#[test]
+fn declared_tags_keep_order_and_descriptionless_entries() {
+    let tokens = quote::quote!(tags = [
+        { name = "zeta", description = "Last letter" },
+        { name = "alpha" }
+    ]);
+    let processed = process_vespera_input(syn::parse2(tokens).unwrap());
+    assert_eq!(
+        processed.tag_descriptions,
+        Some(vec![
+            ("zeta".to_string(), Some("Last letter".to_string())),
+            ("alpha".to_string(), None),
+        ])
+    );
 }

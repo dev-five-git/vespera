@@ -1,0 +1,11 @@
+error: export_app! macro: invalid route folder `dir = "/srv/routes"`. It must be a folder under `src/` named by module identifiers separated by `/`, e.g. `"routes"` or `"api/v1"` (no absolute paths, `..`, `\`, or empty segments).
+ --> tests/ui/export_app_dir_invalid.rs:2:47
+  |
+2 | vespera_macro::export_app!(AbsoluteApp, dir = "/srv/routes");
+  |                                               ^^^^^^^^^^^^^
+
+error: export_app! macro: invalid route folder `dir = "my-routes"`. It must be a folder under `src/` named by module identifiers separated by `/`, e.g. `"routes"` or `"api/v1"` (no absolute paths, `..`, `\`, or empty segments).
+ --> tests/ui/export_app_dir_invalid.rs:4:45
+  |
+4 | vespera_macro::export_app!(DashedApp, dir = "my-routes");
+  |                                             ^^^^^^^^^^^

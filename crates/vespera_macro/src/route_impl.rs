@@ -46,7 +46,7 @@ mod path_check;
 /// route discovery — when `file_path` is populated, the collector can
 /// build route metadata directly from this struct without re-parsing
 /// the source file with `syn::parse_file()`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct StoredRouteInfo {
     /// Function name (e.g., `"get_user"`).
     pub fn_name: String,
@@ -89,6 +89,13 @@ pub struct StoredRouteInfo {
     /// [`crate::openapi_generator`] when the source file AST is unavailable.
     /// Stores only `syn::Signature` tokens, not the handler body.
     pub fn_sig_str: String,
+    /// Inline-module path of the handler inside `file_path` (`Some("")` at
+    /// the file's top level, `Some("v2")` inside `mod v2 { .. }`; `None` when
+    /// it could not be located).  Part of the storage key, so a top-level
+    /// handler and a same-named one in an inline module never replace each
+    /// other, and lets the collector reject an inline-module handler without
+    /// re-parsing the file.
+    pub inline_module: Option<String>,
 }
 
 /// Per-crate storage for route metadata collected by `#[route]` attribute
@@ -108,6 +115,9 @@ impl SourceIdentified for StoredRouteInfo {
     }
     fn file_path(&self) -> Option<&str> {
         self.file_path.as_deref()
+    }
+    fn scope(&self) -> Option<&str> {
+        self.inline_module.as_deref()
     }
 }
 
@@ -360,6 +370,11 @@ pub fn process_route_attribute(
         deprecated: route_args.deprecated || crate::route::has_deprecated_attr(&item_fn.attrs),
         description,
         fn_sig_str: quote::quote!(#fn_sig).to_string(),
+        inline_module: crate::cron_impl::inline_module_of(
+            source_file.as_deref().and_then(std::path::Path::to_str),
+            &item_fn.sig.ident.to_string(),
+            item_fn.sig.ident.span().start().line,
+        ),
         file_path: source_file.map(|p| p.display().to_string()),
     };
     register_route(stored);
@@ -729,6 +744,7 @@ mod tests {
             description: None,
             file_path: file_path.clone(),
             fn_sig_str: "pub async fn __test_replace_route ()".to_string(),
+            inline_module: None,
         };
         register_route(base);
         register_route(StoredRouteInfo {
@@ -736,6 +752,7 @@ mod tests {
             custom_path: Some("/after".to_string()),
             file_path,
             fn_sig_str: "pub async fn __test_replace_route ()".to_string(),
+            inline_module: None,
             ..current_crate_routes()
                 .iter()
                 .find(|entry| entry.fn_name == fn_name)
@@ -751,6 +768,53 @@ mod tests {
         assert_eq!(matches.len(), 1, "same source route should replace");
         assert_eq!(matches[0].method, Some("post".to_string()));
         assert_eq!(matches[0].custom_path, Some("/after".to_string()));
+    }
+
+    /// A top-level handler and a same-named one inside an inline module are
+    /// two entries — the inline one must not overwrite (and so hide) the
+    /// top-level registration, nor vice versa.
+    #[test]
+    fn test_register_route_keys_by_inline_module() {
+        let file_path = Some("/tmp/vespera/routes/scoped.rs".to_string());
+        let fn_name = "__test_scoped_route".to_string();
+        for scope in ["", "v2"] {
+            register_route(StoredRouteInfo {
+                fn_name: fn_name.clone(),
+                file_path: file_path.clone(),
+                inline_module: Some(scope.to_string()),
+                ..StoredRouteInfo::default()
+            });
+        }
+        let scopes: Vec<_> = current_crate_routes()
+            .iter()
+            .filter(|entry| entry.fn_name == fn_name)
+            .map(|entry| entry.inline_module.clone())
+            .collect();
+        assert_eq!(scopes, [Some(String::new()), Some("v2".to_string())]);
+    }
+
+    /// `#[route]` records the handler's inline-module path from the source.
+    #[test]
+    fn test_route_attribute_records_inline_module() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("scoped_users.rs");
+        std::fs::write(
+            &file,
+            "pub mod v2 {\n    #[route(get)]\n    pub async fn scoped_list() {}\n}\n",
+        )
+        .unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let path = file.to_str();
+        assert_eq!(
+            crate::cron_impl::inline_module_of(path, "scoped_list", 3),
+            Some("v2".to_string())
+        );
+        std::fs::write(&file, "pub async fn scoped_list() {}\n").unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        assert_eq!(
+            crate::cron_impl::inline_module_of(path, "scoped_list", 1),
+            Some(String::new())
+        );
     }
 
     #[test]

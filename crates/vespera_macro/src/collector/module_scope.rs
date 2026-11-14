@@ -74,6 +74,16 @@ pub(super) fn inline_mod_route(
     items: &[Item],
     include: &dyn Fn(&str) -> bool,
 ) -> Option<(String, String)> {
+    inline_mod_route_where(items, include, &|_| true)
+}
+
+/// [`inline_mod_route`] restricted to handlers `accept` admits — every hit is
+/// considered, so a rejected first hit never hides a later one.
+fn inline_mod_route_where(
+    items: &[Item],
+    include: &dyn Fn(&str) -> bool,
+    accept: &dyn Fn(&str) -> bool,
+) -> Option<(String, String)> {
     items.iter().find_map(|item| {
         let Item::Mod(module) = item else {
             return None;
@@ -83,15 +93,14 @@ pub(super) fn inline_mod_route(
         content
             .iter()
             .find_map(|inner| match inner {
-                Item::Fn(handler)
-                    if extract_route_info(&handler.attrs).is_some()
-                        && (!gated || include(&handler.sig.ident.to_string())) =>
-                {
-                    Some((module.ident.to_string(), handler.sig.ident.to_string()))
+                Item::Fn(handler) if extract_route_info(&handler.attrs).is_some() => {
+                    let name = handler.sig.ident.to_string();
+                    ((!gated || include(&name)) && accept(&name))
+                        .then(|| (module.ident.to_string(), name))
                 }
                 _ => None,
             })
-            .or_else(|| inline_mod_route(content, include))
+            .or_else(|| inline_mod_route_where(content, include, accept))
     })
 }
 
@@ -101,6 +110,34 @@ pub(super) fn inline_mod_route_error(file: &Path, (module, handler): &(String, S
         "vespera! macro: `#[route]` handler `{handler}` is declared inside the inline module `mod {module} {{ .. }}` in '{}'. Route handlers must be top-level functions of a route file — move `{handler}` out of `mod {module}`, or into its own file `{module}.rs` next to this one.",
         file.display()
     )
+}
+
+/// `(module, handler)` of a fast-path `file`'s stored handler declared inside
+/// an inline module.  `#[route]` recorded where each handler sits, so a known
+/// inline one is rejected without re-parsing; only handlers whose scope could
+/// not be located fall back to the source scan.
+pub(super) fn stored_routes_inline_module(
+    file: &Path,
+    stored_routes: &[&crate::route_impl::StoredRouteInfo],
+) -> Option<(String, String)> {
+    if let Some(found) = stored_routes.iter().find_map(|stored| {
+        stored
+            .inline_module
+            .as_ref()
+            .filter(|module| !module.is_empty())
+            .map(|module| (module.clone(), stored.fn_name.clone()))
+    }) {
+        return Some(found);
+    }
+    let stored_names: Vec<&str> = stored_routes
+        .iter()
+        .filter(|stored| stored.inline_module.is_none())
+        .map(|stored| stored.fn_name.as_str())
+        .collect();
+    if stored_names.is_empty() {
+        return None;
+    }
+    stored_inline_mod_route(file, &stored_names)
 }
 
 /// Whether the fast-path `file` declares one of its stored handlers inside an
@@ -119,8 +156,9 @@ pub(super) fn stored_inline_mod_route(
             |item| matches!(item, Item::Fn(handler) if handler.sig.ident == name && extract_route_info(&handler.attrs).is_some()),
         )
     };
-    inline_mod_route(&ast.items, &|name| stored_names.contains(&name))
-        .filter(|(_, handler)| stored_names.contains(&handler.as_str()) && !top_level(handler))
+    inline_mod_route_where(&ast.items, &|name| stored_names.contains(&name), &|name| {
+        stored_names.contains(&name) && !top_level(name)
+    })
 }
 
 #[cfg(test)]
@@ -210,6 +248,18 @@ mod tests {
         assert_eq!(
             stored_inline_mod_route(&dir.path().join("missing.rs"), &["list"]),
             None
+        );
+        // A first hit shadowed by a top-level handler never hides a later one.
+        let shadowed = dir.path().join("shadowed.rs");
+        std::fs::write(
+            &shadowed,
+            "#[route(get)] pub async fn list() {}\nmod a { #[route(get)] pub async fn list() {} }\nmod b { #[route(post)] pub async fn create() {} }",
+        )
+        .unwrap();
+        file_cache::bump_epoch();
+        assert_eq!(
+            stored_inline_mod_route(&shadowed, &["list", "create"]),
+            Some(("b".to_string(), "create".to_string()))
         );
         let message = inline_mod_route_error(&file, &("v2".to_string(), "list".to_string()));
         assert!(

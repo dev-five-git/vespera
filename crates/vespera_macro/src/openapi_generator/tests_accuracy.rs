@@ -51,6 +51,7 @@ fn stored(fn_name: &str, sig: &str) -> StoredRouteInfo {
         description: None,
         file_path: None,
         fn_sig_str: sig.to_string(),
+        inline_module: None,
     }
 }
 

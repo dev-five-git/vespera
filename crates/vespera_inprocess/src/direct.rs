@@ -24,6 +24,20 @@ use crate::wire::{
     build_wire_header_bytes, error_wire, to_wire_bytes, write_wire_header_into_slice,
 };
 
+/// Smallest direct `out` buffer that every wire response vespera
+/// **synthesizes after the handler ran** is guaranteed to fit: the panic
+/// `500` (`"panicked":"true"`), the `504` dispatch timeout, the body-stream /
+/// header-size / buffered-size / allocation `500`s and the shut-down `503`
+/// (locked by a unit test).
+///
+/// A direct transport that answers an undersized `out` with "overflow,
+/// retry with `required` bytes" must not dispatch into a buffer smaller
+/// than this: otherwise a handler that panics (or times out) yields a
+/// synthesized error that overflows, and the caller's retry re-runs the
+/// failing handler.  The JNI `dispatchDirect0` answers an `out` below this
+/// size with `-(MIN_DIRECT_OUT_BYTES)` **without** dispatching.
+pub const MIN_DIRECT_OUT_BYTES: usize = 1024;
+
 /// Outcome of [`crate::dispatch_into_async`] / [`crate::dispatch_into`].
 ///
 /// Carries the truncation/overflow discriminant the FFI bridge relies on
