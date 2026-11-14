@@ -24,10 +24,9 @@ use super::seaorm::{
     extract_sea_orm_default_value, has_sea_orm_primary_key,
 };
 use super::transformation::{
-    build_omit_set, build_partial_config, build_pick_set, build_rename_map, determine_rename_all,
-    extract_doc_attrs, extract_field_serde_attrs, extract_form_data_attrs,
-    extract_serde_attrs_without_rename_all, filter_out_serde_rename, should_skip_field,
-    should_wrap_in_option,
+    build_omit_set, build_partial_config, build_pick_set, build_rename_map, container_serde_attrs,
+    determine_rename_all, extract_doc_attrs, extract_form_data_attrs, field_serde_attrs,
+    renamed_field_form_name, renamed_field_serde_rename, should_skip_field, should_wrap_in_option,
 };
 use super::type_utils::{
     extract_module_path, extract_type_name, is_option_type, is_seaorm_model,
@@ -38,7 +37,7 @@ use super::validation::{
     validate_partial_fields, validate_pick_fields, validate_rename_fields,
 };
 use crate::metadata::StructMetadata;
-use crate::parser::{extract_field_rename, strip_raw_prefix_owned};
+use crate::parser::strip_raw_prefix_owned;
 
 /// Generate a new struct type from an existing type with field filtering
 ///
@@ -139,9 +138,9 @@ pub fn generate_schema_type_code(
     let (partial_all, partial_set) = build_partial_config(&input.partial);
     let rename_map = build_rename_map(input.rename.as_ref());
 
-    // Extract serde attributes from source struct, excluding rename_all (we'll handle it separately)
-    let serde_attrs_without_rename_all =
-        extract_serde_attrs_without_rename_all(&parsed_struct.attrs);
+    // Container serde attributes from the source struct, rebuilt key by key
+    // without rename_all (emitted separately) and the impl-dependent keys.
+    let serde_attrs_without_rename_all = container_serde_attrs(&parsed_struct.attrs);
 
     // Extract doc comments from source struct to carry over to generated struct
     let struct_doc_attrs = extract_doc_attrs(&parsed_struct.attrs);
@@ -365,10 +364,17 @@ pub fn generate_schema_type_code(
                 if let Some(new_name) = rename_map.get(&rust_field_name) {
                     let new_field_ident =
                         syn::Ident::new(new_name, field.ident.as_ref().unwrap().span());
+                    // The form field keeps the source's name.
+                    let form_name_attr = renamed_field_form_name(
+                        &field.attrs,
+                        &rust_field_name,
+                        &effective_rename_all,
+                    );
 
                     field_tokens.push(quote! {
                         #(#doc_attrs)*
                         #(#form_data_attrs)*
+                        #form_name_attr
                         #vis #new_field_ident: #field_ty
                     });
 
@@ -399,7 +405,9 @@ pub fn generate_schema_type_code(
                 // Filter field attributes: keep serde and doc attributes, remove sea_orm and others
                 // This is important when using schema_type! with models from other files
                 // that may have ORM-specific attributes we don't want in the generated struct
-                let serde_field_attrs = extract_field_serde_attrs(&field.attrs);
+                let is_renamed = rename_map.contains_key(&rust_field_name);
+                let serde_field_attrs =
+                    field_serde_attrs(&field.attrs, should_wrap_option, is_renamed);
 
                 // Generate serde default + schema(default) from sea_orm(default_value) or primary_key
                 // Handles literal defaults, SQL function defaults, and implicit auto-increment
@@ -422,19 +430,21 @@ pub fn generate_schema_type_code(
                     let new_field_ident: syn::Ident =
                         syn::Ident::new(new_name, field.ident.as_ref().unwrap().span());
 
-                    // Filter out serde(rename) attributes from the serde attrs
-                    let filtered_attrs = filter_out_serde_rename(&serde_field_attrs);
-
-                    // Determine the JSON name: use existing serde(rename) if present, otherwise rust field name
-                    let json_name = extract_field_rename(&field.attrs)
-                        .unwrap_or_else(|| rust_field_name.clone());
+                    // The JSON key stays the source's: its explicit serde
+                    // rename, else rename_all applied to the SOURCE name
+                    // (`serde_field_attrs` already dropped `rename`).
+                    let rename_attr = renamed_field_serde_rename(
+                        &field.attrs,
+                        &rust_field_name,
+                        &effective_rename_all,
+                    );
 
                     field_tokens.push(quote! {
                         #(#doc_attrs)*
-                        #(#filtered_attrs)*
+                        #(#serde_field_attrs)*
                         #serde_default_attr
                         #schema_default_attr
-                        #[serde(rename = #json_name)]
+                        #rename_attr
                         #vis #new_field_ident: #field_ty
                     });
 

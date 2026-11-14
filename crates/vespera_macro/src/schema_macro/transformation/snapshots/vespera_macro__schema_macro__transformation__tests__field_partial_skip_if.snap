@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/schema_macro/transformation/tests.rs
+expression: "render(&field_serde_attrs(&attrs, wrapped, strip_rename))"
+---
+# [serde (default)]
+# [serde (skip_serializing_if = "Option::is_none")]

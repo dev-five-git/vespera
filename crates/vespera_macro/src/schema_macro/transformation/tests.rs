@@ -1,3 +1,5 @@
+use rstest::rstest;
+
 use super::*;
 
 #[test]
@@ -75,20 +77,6 @@ fn test_build_rename_map_none() {
 }
 
 #[test]
-fn test_extract_serde_attrs_without_rename_all() {
-    let attrs: Vec<syn::Attribute> = vec![
-        syn::parse_quote!(#[serde(rename_all = "camelCase")]),
-        syn::parse_quote!(#[serde(default)]),
-        syn::parse_quote!(#[doc = "Some doc"]),
-    ];
-
-    let filtered = extract_serde_attrs_without_rename_all(&attrs);
-
-    assert_eq!(filtered.len(), 1);
-    // Should keep #[serde(default)] but not #[serde(rename_all = ...)]
-}
-
-#[test]
 fn test_extract_doc_attrs() {
     let attrs: Vec<syn::Attribute> = vec![
         syn::parse_quote!(#[doc = "First doc"]),
@@ -128,29 +116,134 @@ fn test_determine_rename_all_default() {
     assert_eq!(result, "camelCase");
 }
 
-#[test]
-fn test_extract_field_serde_attrs() {
-    let attrs: Vec<syn::Attribute> = vec![
-        syn::parse_quote!(#[serde(rename = "userId")]),
-        syn::parse_quote!(#[doc = "The user ID"]),
-        syn::parse_quote!(#[serde(default)]),
-    ];
-
-    let serde_attrs = extract_field_serde_attrs(&attrs);
-
-    assert_eq!(serde_attrs.len(), 2);
+fn render(attrs: &[TokenStream]) -> String {
+    attrs
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-#[test]
-#[allow(clippy::similar_names)]
-fn test_filter_out_serde_rename() {
-    let attr1: syn::Attribute = syn::parse_quote!(#[serde(rename = "userId")]);
-    let attr2: syn::Attribute = syn::parse_quote!(#[serde(default)]);
-    let attrs: Vec<&syn::Attribute> = vec![&attr1, &attr2];
+fn parse_attrs(field: &str) -> Vec<syn::Attribute> {
+    syn::parse_str::<syn::ItemStruct>(&format!("struct S {{ {field} x: T }}"))
+        .unwrap()
+        .fields
+        .into_iter()
+        .next()
+        .unwrap()
+        .attrs
+}
 
-    let filtered = filter_out_serde_rename(&attrs);
+#[rstest]
+#[case::plain_field(
+    "field_plain",
+    r#"#[serde(rename = "id", default = "f")] #[doc = "d"]"#,
+    false,
+    false
+)]
+#[case::strip_rename_keeps_siblings(
+    "field_strip_rename",
+    r#"#[serde(default = "f", rename = "userId", alias = "uid")]"#,
+    false,
+    true
+)]
+#[case::only_rename_dropped(
+    "field_only_rename_dropped",
+    r#"#[serde(rename = "userId")]"#,
+    false,
+    true
+)]
+#[case::partial_drops_typed_keys(
+    "field_partial_typed_keys",
+    r#"#[serde(default = "f", with = "m", rename = "e-mail", alias = "mail")]
+       #[serde(serialize_with = "s", deserialize_with = "d")]"#,
+    true,
+    false
+)]
+#[case::partial_skip_if_becomes_is_none(
+    "field_partial_skip_if",
+    r#"#[serde(skip_serializing_if = "String::is_empty", default)]"#,
+    true,
+    false
+)]
+#[case::unparseable_kept_verbatim("field_unparseable", "#[serde(rename = )]", true, false)]
+fn field_serde_attrs_cases(
+    #[case] name: &str,
+    #[case] field_attrs: &str,
+    #[case] wrapped: bool,
+    #[case] strip_rename: bool,
+) {
+    let attrs = parse_attrs(field_attrs);
+    insta::assert_snapshot!(
+        name,
+        render(&field_serde_attrs(&attrs, wrapped, strip_rename))
+    );
+}
 
-    assert_eq!(filtered.len(), 1);
+#[rstest]
+#[case::default_and_rename_all(
+    "container_default_rename_all",
+    r#"#[serde(default, deny_unknown_fields, rename_all = "camelCase")]"#
+)]
+#[case::tag_before_rename_all(
+    "container_tag_rename_all",
+    r#"#[serde(tag = "t", rename_all = "snake_case")]"#
+)]
+#[case::conversions(
+    "container_conversions",
+    r#"#[serde(from = "W", into = "W")] #[serde(try_from = "W")] #[doc = "d"] #[serde(bound = "")]"#
+)]
+fn container_serde_attrs_cases(#[case] name: &str, #[case] struct_attrs: &str) {
+    let item: syn::ItemStruct = syn::parse_str(&format!("{struct_attrs} struct S {{}}")).unwrap();
+    insta::assert_snapshot!(name, render(&container_serde_attrs(&item.attrs)));
+}
+
+#[rstest]
+#[case::rename_all_applied(r"", "user_name", "camelCase", r#"# [serde (rename = "userName")]"#)]
+#[case::explicit_rename_wins(
+    r#"#[serde(rename = "login")]"#,
+    "user_name",
+    "camelCase",
+    r#"# [serde (rename = "login")]"#
+)]
+#[case::sided_rename(
+    r#"#[serde(rename(deserialize = "in"))]"#,
+    "user_name",
+    "snake_case",
+    r#"# [serde (rename (serialize = "user_name" , deserialize = "in"))]"#
+)]
+#[case::form_data_ignored(
+    r#"#[form_data(field_name = "x")]"#,
+    "a_b",
+    "kebab-case",
+    r#"# [serde (rename = "a-b")]"#
+)]
+fn renamed_field_serde_rename_cases(
+    #[case] field_attrs: &str,
+    #[case] source: &str,
+    #[case] rename_all: &str,
+    #[case] expected: &str,
+) {
+    let attrs = parse_attrs(field_attrs);
+    assert_eq!(
+        renamed_field_serde_rename(&attrs, source, rename_all).to_string(),
+        expected
+    );
+}
+
+#[rstest]
+#[case::rename_all_applied(r"", Some(r#"# [form_data (field_name = "filePath")]"#))]
+#[case::other_form_data(
+    r#"#[form_data(limit = "1MiB")]"#,
+    Some(r#"# [form_data (field_name = "filePath")]"#)
+)]
+#[case::explicit_field_name(r#"#[form_data(field_name = "doc")]"#, None)]
+fn renamed_field_form_name_cases(#[case] field_attrs: &str, #[case] expected: Option<&str>) {
+    let attrs = parse_attrs(field_attrs);
+    assert_eq!(
+        renamed_field_form_name(&attrs, "file_path", "camelCase").map(|t| t.to_string()),
+        expected.map(str::to_string)
+    );
 }
 
 #[test]
