@@ -131,7 +131,9 @@ pub use config::{
     set_max_streaming_request_producers, set_streaming_channel_capacity, set_streaming_chunk_bytes,
     streaming_channel_capacity, streaming_chunk_bytes,
 };
-pub use direct::{DirectWriteResult, PendingDirectResponse, ResumableDirectWrite};
+pub use direct::{
+    DirectWriteResult, MIN_DIRECT_OUT_BYTES, PendingDirectResponse, ResumableDirectWrite,
+};
 pub use dispatch::{
     check_ingress_cap, dispatch, dispatch_from_bytes, dispatch_from_bytes_async, dispatch_into,
     dispatch_into_async, dispatch_into_async_borrowed, dispatch_into_async_borrowed_resumable,

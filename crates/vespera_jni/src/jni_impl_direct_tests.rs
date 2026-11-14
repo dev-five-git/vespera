@@ -1,13 +1,27 @@
 use jni::sys::jint;
 
 use super::{
-    DIRECT_UNREPRESENTABLE, direct_complete_code, direct_overflow_code, write_response_to_out,
+    DIRECT_UNREPRESENTABLE, direct_complete_code, direct_overflow_code, undersized_out_code,
+    write_response_to_out,
 };
 
 // SAFETY (all tests below): each `out` is a live, writable `Vec<u8>`; the
 // `(out.as_mut_ptr(), out.len())` pair describes exactly its allocation, and
 // the `response` literal is a distinct Rust-owned slice that cannot alias it —
 // satisfying `write_response_to_out`'s `# Safety` contract.
+
+#[test]
+fn undersized_out_asks_for_the_minimum_without_dispatching() {
+    let min = vespera_inprocess::MIN_DIRECT_OUT_BYTES;
+    assert_eq!(undersized_out_code(0), Some(-jint::try_from(min).unwrap()));
+    assert_eq!(
+        undersized_out_code(min - 1),
+        Some(-jint::try_from(min).unwrap())
+    );
+    assert_eq!(undersized_out_code(min), None);
+    // The panic wire `dispatchDirect0` writes on an unwinding dispatch fits.
+    assert!(super::panic_wire().len() <= min);
+}
 
 #[test]
 fn response_fits_returns_len_and_writes_bytes() {

@@ -363,6 +363,7 @@ fn insert_success_response(
             },
             headers: has_header_map(ty).then(BTreeMap::new),
             content: response_content(ty, known_schemas, struct_definitions),
+            ..Default::default()
         },
     );
 }
@@ -396,6 +397,7 @@ pub fn parse_return_type(
                 description: "Error response".to_string(),
                 headers: None,
                 content: response_content(&err_ty, known_schemas, struct_definitions),
+                ..Default::default()
             },
         );
     } else {

@@ -27,6 +27,7 @@ pub(in crate::parser) fn path_parameter(name: &str, schema: SchemaRef) -> Parame
         example: None,
         style: None,
         explode: None,
+        ..Default::default()
     }
 }
 

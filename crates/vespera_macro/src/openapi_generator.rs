@@ -161,10 +161,12 @@ pub fn try_generate_openapi_doc_with_metadata(
             request_bodies: None,
             headers: None,
             security_schemes: security_config.security_schemes,
+            ..Default::default()
         }),
         security: security_config.security,
         tags,
         external_docs: None,
+        ..Default::default()
     })
 }
 

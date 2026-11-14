@@ -350,3 +350,25 @@ async fn legacy_overflow_of_a_materialised_response_reports_its_size() {
     .await;
     assert_eq!(result, DirectWriteResult::Overflow(wire.len()));
 }
+
+/// Every wire response synthesized after the handler ran fits
+/// [`MIN_DIRECT_OUT_BYTES`], so a direct transport that refuses smaller
+/// `out` buffers never makes a caller retry (re-run) a failing handler.
+#[test]
+fn synthesized_post_handler_wires_fit_the_minimum_direct_out() {
+    let mut wires = vec![
+        crate::wire::panic_error_wire("panic in Rust engine"),
+        timeout_wire(),
+        error_wire(500, BODY_STREAM_ERROR_MSG),
+        error_wire(500, crate::internal::HEADER_TOO_LARGE_MSG),
+        response_too_large_wire(usize::MAX),
+        error_wire(500, &crate::bounded::response_alloc_failed_msg(usize::MAX)),
+    ];
+    #[cfg(feature = "runtime")]
+    wires.push(error_wire(503, crate::runtime::RUNTIME_SHUT_DOWN_MSG));
+    let longest = wires.iter().map(Vec::len).max().unwrap();
+    assert!(
+        longest <= MIN_DIRECT_OUT_BYTES,
+        "a synthesized wire of {longest} bytes exceeds MIN_DIRECT_OUT_BYTES"
+    );
+}
