@@ -17,6 +17,10 @@ pub struct RelationFieldInfo {
     pub relation_enum: Option<String>,
     pub fk_column: Option<String>,
     pub via_rel: Option<String>,
+    /// The field is replaced by a `relation_adapters` wrapper
+    /// (`From<Option<Model>>`), so `from_model` converts instead of building
+    /// the relation schema.
+    pub adapter: bool,
 }
 
 /// Check if a field in the struct is optional (`Option<T>`).
@@ -80,6 +84,7 @@ pub fn convert_relation_type_to_schema_with_info(
                 relation_enum,
                 fk_column: None,
                 via_rel,
+                adapter: false,
             };
             Some((converted, info))
         }
@@ -170,6 +175,7 @@ fn single_relation(
         relation_enum,
         fk_column: fk_field,
         via_rel: None,
+        adapter: false,
     };
     (converted, info)
 }

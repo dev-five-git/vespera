@@ -357,18 +357,17 @@ mod tests {
         assert!(output.contains("impl From < Option <"));
         assert!(output.contains("for __VesperaArticleResponseUserRelation"));
         assert!(output.contains("for __VesperaArticleResponseCategoryRelation"));
-        assert!(output.contains("impl Clone for UserInArticle"));
-        assert!(output.contains("impl Clone for CategoryInArticle"));
+        assert!(output.contains("impl Clone for __VesperaArticleResponseUserRelation"));
+        assert!(!output.contains("impl Clone for UserInArticle"));
+        assert!(!output.contains("impl Clone for CategoryInArticle"));
     }
 
+    /// The adapter DTO's metadata comes from `SCHEMA_STORAGE` with its
+    /// derives stripped, so whether it derives `Clone` / `Deserialize` is
+    /// unknowable: the helpers implement both on the generated wrapper and
+    /// never on the DTO (re-implementing a derived trait is E0119).
     #[test]
-    fn test_maybe_generate_same_file_relation_override_skips_redundant_clone_and_deserialize_impls()
-    {
-        // Same-file relation override DTOs that ALREADY carry `Clone` and
-        // `Deserialize` derives must NOT have the macro re-emit those
-        // impls — otherwise the generated code would conflict with the
-        // user-provided derive.  Hits the "DTO already has derive" empty-
-        // quote branches inside `maybe_generate_same_file_relation_override`.
+    fn same_file_override_helpers_never_implement_traits_on_the_dto() {
         let rel_info = RelationFieldInfo {
             field_name: syn::Ident::new("user", proc_macro2::Span::call_site()),
             relation_type: "HasOne".to_string(),
@@ -378,14 +377,13 @@ mod tests {
             relation_enum: None,
             fk_column: None,
             via_rel: None,
+            adapter: false,
         };
-        // Bare `Clone` and `Deserialize` idents — has_derive matches the
-        // single-segment path, hitting the empty-quote branches at lines
-        // 208 (clone_impl) and 222 (deserialize_impl).
+        // As `#[derive(Schema)]` stores it: no `#[derive(...)]` attribute.
         let storage = to_storage(vec![create_test_struct_metadata(
             "UserInArticle",
-            r"#[derive(Clone, Deserialize)]
-            struct UserInArticle { id: i32, name: String }",
+            r#"#[serde(rename_all = "camelCase")]
+            struct UserInArticle { id: i32, #[serde(default)] display_name: String }"#,
         )]);
         let new_type_name = syn::Ident::new("ArticleResponse", proc_macro2::Span::call_site());
         let adapter_name = syn::Ident::new("UserInArticle", proc_macro2::Span::call_site());
@@ -399,27 +397,12 @@ mod tests {
         )
         .expect("override generation should succeed");
 
-        let output = helper_tokens.to_string();
-        let field_ty = override_field_ty.to_string();
-        assert!(
-            field_ty.contains("__VesperaArticleResponseUserRelation"),
-            "expected override field type to reference relation adapter, got: {field_ty}"
+        assert_eq!(
+            override_field_ty.to_string(),
+            "__VesperaArticleResponseUserRelation"
         );
-        // No `impl Clone for UserInArticle` — DTO already derives Clone.
-        assert!(
-            !output.contains("impl Clone for UserInArticle"),
-            "macro should skip Clone impl when DTO already derives Clone, got: {output}"
-        );
-        // No proxy `Deserialize` derive struct — DTO already derives Deserialize.
-        assert!(
-            !output.contains("__VesperaArticleResponseUserProxy"),
-            "macro should skip Deserialize proxy when DTO already derives Deserialize, got: {output}"
-        );
-        // Relation wrapper struct still emitted regardless of derives.
-        assert!(
-            output.contains("__VesperaArticleResponseUserRelation"),
-            "relation wrapper missing: {output}"
-        );
+        let file: syn::File = syn::parse2(helper_tokens).unwrap();
+        insta::assert_snapshot!("same_file_override_helpers", prettyplease::unparse(&file));
     }
 
     #[test]

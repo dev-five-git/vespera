@@ -315,6 +315,7 @@ pub fn generate_schema_type_code(
                                         schema_storage,
                                     )?;
                                 relation_override_helpers.push(helper_tokens);
+                                rel_info.adapter = true;
                                 (Box::new(override_field_ty), Some(rel_info))
                             } else
                             // Check for circular references and potentially use inline type

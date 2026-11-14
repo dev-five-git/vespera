@@ -85,6 +85,22 @@ schema_type!(
     add = [("note": String)]
 );
 
+// Adapter DTO that derives `Clone` + `Deserialize` itself (the generated
+// relation wrapper must not re-implement them on it), used WITHOUT `add`, so
+// `From<Model>` and `from_model` are generated through the wrapper.
+#[derive(serde::Serialize, serde::Deserialize, Clone, vespera::Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInMemoCard {
+    pub id: i32,
+    pub name: String,
+}
+
+schema_type!(
+    MemoCardResponse from crate::models::memo::Model,
+    omit = ["updated_at", "memo_comments"],
+    relation_adapters = [("user", UserInMemoCard)]
+);
+
 /// Create a new memo
 #[vespera::route(post)]
 pub async fn create_memo(Json(req): Json<CreateMemoRequest>) -> Json<CreateMemoRequest> {
@@ -227,4 +243,39 @@ pub async fn get_memo_summary(Path(id): Path<i32>) -> Json<MemoSummaryResponse> 
 #[vespera::route(get, path = "/format")]
 pub async fn get_memo_format() -> &'static str {
     "MemoResponse has: id, user_id, title, content, created_at (no updated_at, no user relation)"
+}
+
+#[cfg(test)]
+mod relation_adapter_tests {
+    use sea_orm::{ConnectionTrait, Database, EntityTrait};
+
+    use super::*;
+
+    /// `relation_adapters` without `add`: `from_model` converts the loaded
+    /// relation through the wrapper (`From<Option<Model>>`), and the wrapper
+    /// clones / deserializes although the DTO derives both itself.
+    #[tokio::test]
+    async fn relation_adapter_without_add_loads_clones_and_round_trips() {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        for sql in [
+            "CREATE TABLE user (id INTEGER PRIMARY KEY, email TEXT NOT NULL, name TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+            "CREATE TABLE memo (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+            "INSERT INTO user VALUES (1, 'a@b.c', 'Ann', '2024-01-01T00:00:00+00:00', '2024-01-01T00:00:00+00:00')",
+            "INSERT INTO memo VALUES (7, 1, 't', 'c', 'draft', '2024-01-01T00:00:00+00:00', '2024-01-01T00:00:00+00:00')",
+        ] {
+            db.execute_unprepared(sql).await.unwrap();
+        }
+
+        let memo = crate::models::memo::Entity::find_by_id(7)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        let card = MemoCardResponse::from_model(memo, &db).await.unwrap();
+        let json = serde_json::to_value(card.clone()).unwrap();
+        assert_eq!(json["user"], serde_json::json!({ "id": 1, "name": "Ann" }));
+
+        let back: MemoCardResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(back.user.0.map(|user| user.name).as_deref(), Some("Ann"));
+    }
 }

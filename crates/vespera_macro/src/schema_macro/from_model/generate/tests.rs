@@ -49,6 +49,7 @@ fn rel(
         relation_enum: None,
         fk_column: None,
         via_rel: None,
+        adapter: false,
     }
 }
 

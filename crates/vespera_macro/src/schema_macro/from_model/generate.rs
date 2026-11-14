@@ -80,7 +80,7 @@ pub fn generate_from_model_with_relations(
             return false;
         }
         // If using inline type, circular fields are excluded, so no parent stub needed
-        if rel.inline_type_info.is_some() {
+        if rel.inline_type_info.is_some() || rel.adapter {
             return false;
         }
         let schema_path_str = normalize_token_str(&rel.schema_path);
@@ -114,6 +114,7 @@ pub fn generate_from_model_with_relations(
                         .find(|r| &r.field_name == source_ident)
                     {
                         match rel.relation_type.as_str() {
+                            _ if rel.adapter => quote! { #new_ident: Default::default() },
                             "HasMany" => quote! { #new_ident: vec![] },
                             _ if rel.is_optional => quote! { #new_ident: None },
                             _ => {
@@ -152,7 +153,10 @@ pub fn generate_from_model_with_relations(
         .map(|(new_ident, source_ident, wrapped, is_relation)| {
             if *is_relation {
                 // Find the relation info for this field
-                if let Some(rel) = relation_by_name.get(source_ident) {
+                if relation_by_name.get(source_ident).is_some_and(|rel| rel.adapter) {
+                    // `relation_adapters` wrapper: `From<Option<Model>>`.
+                    quote! { #new_ident: ::core::convert::From::from(#source_ident) }
+                } else if let Some(rel) = relation_by_name.get(source_ident) {
                     let schema_path = &rel.schema_path;
 
                     // Try to find the related MODEL definition to check for circular refs
