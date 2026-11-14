@@ -553,7 +553,7 @@ pub fn generate_schema_type_code(
                     &relation_fields,
                     &source_module_path,
                     schema_storage,
-                )
+                )?
             } else {
                 quote! {}
             };
@@ -851,5 +851,26 @@ mod tests {
         let output = tokens.to_string();
         assert!(output.contains("pub renamed : String"));
         assert!(output.contains("renamed : source . original"));
+    }
+
+    #[test]
+    fn malformed_sea_orm_from_is_a_compile_error_not_a_panic() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "Model",
+            r#"#[sea_orm(table_name = "posts")]
+            pub struct Model {
+                pub id: i32,
+                pub author_id: i32,
+                #[sea_orm(belongs_to = "super::user::Entity", from = "author id", to = "id", relation_enum = "Author")]
+                pub author: BelongsTo<super::user::Entity>,
+            }"#,
+        )]);
+        let input: SchemaTypeInput = syn::parse2(quote!(PostSchema from Model)).unwrap();
+
+        let error = generate_schema_type_code(&input, &storage).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "schema_type!: relation field `author` has `#[sea_orm(from = \"author id\")]`, but `author id` is not a valid Rust identifier"
+        );
     }
 }
