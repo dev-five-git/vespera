@@ -171,11 +171,11 @@ No `Input` component is emitted when both views are identical or no request body
       <TableCell>`string` with `format: date`</TableCell>
     </TableRow>
     <TableRow>
-      <TableCell>`NaiveTime`</TableCell>
-      <TableCell>`string` with `format: time`</TableCell>
+      <TableCell>`NaiveTime`, `NaiveDateTime`, `PrimitiveDateTime`, `time::Time`, sea-orm `DateTime`</TableCell>
+      <TableCell>`string` (no offset, so no `time` / `date-time` format)</TableCell>
     </TableRow>
     <TableRow>
-      <TableCell>`DateTime`, `DateTimeWithTimeZone`</TableCell>
+      <TableCell>`DateTime<Tz>`, `DateTimeWithTimeZone`, `DateTimeUtc`, `OffsetDateTime`</TableCell>
       <TableCell>`string` with `format: date-time`</TableCell>
     </TableRow>
     <TableRow>
@@ -200,7 +200,7 @@ No `Input` component is emitted when both views are identical or no request body
     </TableRow>
     <TableRow>
       <TableCell>`()`</TableCell>
-      <TableCell>empty response (204 No Content)</TableCell>
+      <TableCell>empty `200` response without `content` (use `status = 204` for No Content)</TableCell>
     </TableRow>
     <TableRow>
       <TableCell>Custom struct</TableCell>

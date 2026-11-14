@@ -7,11 +7,75 @@ import {
   TableRow,
 } from '@/components/mdx/components/Table'
 
-# Migrating to 0.6
+# Migration Guide
+
+This page lists the changes that can affect an existing application, newest release first (0.8, 0.7, 0.6). Upgrade the `vespera` crate, `vespera-bridge` and the Gradle plugin together — they share one version.
+
+## Migrating to 0.8
+
+### Rust API
+
+- **`Serve` gained `serve_listener(listener)` and `serve_listener_with_graceful_shutdown(listener, signal)`** for an already-bound `tokio::net::TcpListener`. Code that only calls `.serve(..)` is unaffected; custom `Serve` implementors must add both methods.
+- **`#[vespera::cron]` without the `cron` feature** is now a compile error that names the feature (`vespera = { features = ["cron"] }`) instead of failing later inside `vespera!`.
+
+### New compile errors
+
+Code that previously compiled with a wrong spec or a router that panicked at startup now fails at compile time:
+
+- a `Path<T>` extractor that can never deserialize the route's own path parameters — a tuple with fewer elements than the route has parameters, a primitive scalar on a route with two or more parameters, or a same-file `deny_unknown_fields` struct missing one of them (extractors that read more parameters than the route declares, e.g. under a parameterised `nest`, stay accepted);
+- a malformed `#[route(path = "...")]`: unbalanced or nested braces, empty `{}` or `:`, duplicate parameter names, or a catch-all that is not the last segment. The axum 0.7 notation `:name` / `*name` is now accepted and normalized to `{name}` / `{*name}`;
+- `#[route]` `error_status` / `responses` status codes outside `100`–`599`;
+- a route or cron file whose name is not a Rust identifier (previously a macro panic);
+- a malformed SeaORM relation attribute (`relation_enum`, `from`, `via_rel`'s `from`) reached by `schema_type!` (previously a macro panic).
+
+### OpenAPI Output
+
+These change the generated document without any code change:
+
+- **`Form<T>` on `GET` / `HEAD`** is documented as query parameters (axum reads the query string there), not as a request body.
+- **`TypedHeader<T>`** header names come from `T` — the wire name for known `headers::*` types, otherwise `T` in kebab-case (`XRequestId` → `x-request-id`) — instead of the argument binding; `TypedHeader(_)` is no longer dropped.
+- **`#[serde(default)]` fields stay `required` in response schemas**; only the `{Name}Input` request view makes them optional.
+- **Type mappings:** naive date-times / times (`NaiveDateTime`, `PrimitiveDateTime`, sea-orm `DateTime`, `NaiveTime`, `time::Time`) no longer carry the offset-requiring `date-time` / `time` format; unit structs are `{type: null}`; `Option<()>` is a single `null` type; `u8`–`u64` get `minimum: 0` (and `u8` / `u16` / `u32` a `maximum`); unknown types and unresolved generic parameters are `{}` (any) instead of `{type: object}`; user `Schema` types named like builtins (`Date`, `Decimal`, `Uuid`, …) keep their `$ref`.
+- **Enums:** concrete generic enums (`ApiResponse<Vec<User>>`) are inlined with their type arguments; `serde_repr` enums are `{type: integer, enum: [...]}`; enum `{Name}Input` views follow the deserialize side; an internally tagged newtype variant over a closed or map payload merges the tag into the payload object.
+- **`cfg`-gated route modules and handlers** that `#[route]` never registered are mounted under the same `#[cfg]` instead of being dropped (they stay out of the document); a bare handler argument named like a path segment no longer adds a duplicate path parameter.
+- **`schema_type!` keeps the source wire format:** a field renamed with `rename = [("old", "new")]` keeps the source JSON key, `partial` fields keep `with` / `serialize_with` / `deserialize_with` through `Option` adapters, and container attributes are rebuilt key by key. Generated DTO JSON can differ (e.g. `userName` where it used to be `user_name`).
+
+### Runtime behaviour
+
+- `Principal::require_scopes` (and the new `has_scope`) also accept Spring Security's `SCOPE_<scope>` authorities.
+- `vespera_inprocess::error_wire` answers `500` for a status outside `100..=999`.
+- Cron jobs on the dedicated `vespera-cron` thread can use sockets (the I/O driver is enabled).
+
+### Java Bridge (`vespera-bridge`)
+
+- **New `VesperaBridgeCoreAutoConfiguration`.** The `VesperaClient` bean, `vespera.bridge.native.*` forwarding, `library-name` initialisation and `shutdown-on-close` moved into this web-agnostic autoconfiguration, so non-web applications get them too. Bean names are unchanged, but **tests or slices that list `VesperaBridgeAutoConfiguration` / `VesperaBridgeReactiveAutoConfiguration` explicitly must add `VesperaBridgeCoreAutoConfiguration`**.
+- **After `VesperaBridge.shutdown`, `dispatchAsync`** (and `VesperaClient.sendAsync` / the WebFlux proxy) completes with the same retryable `503` as every other mode instead of `500`.
+- **WebFlux streamed responses** (SSE / NDJSON) run on a dedicated, bounded `VesperaStreamingExecutor` instead of Reactor's `boundedElastic`; size it with `vespera.bridge.reactive-streaming.max-threads` / `max-queued` — beyond both, streaming requests get `503`.
+- **springdoc Swagger UI paths** (`springdoc.swagger-ui.path`, `<parent>/swagger-ui/**`, on WebFlux `<springdoc.webjars.prefix>/swagger-ui/**`) are excluded from the proxy automatically when springdoc's UI is configured.
+- **CORS preflights** for a Java handler (e.g. `@CrossOrigin`, or `consumes` / `produces` conditions) are answered by Spring with that handler's configuration even with `cors=rust`; preflights for Rust paths still reach Rust.
+- The health indicator honours `management.health.defaults.enabled=false` unless `management.health.vespera.enabled` is set.
+- New `vespera.bridge.native.max-request-producers` / `VesperaBridge.configureMaxRequestProducers(n)` for the bidirectional upload producer cap.
+
+### Gradle Plugin
+
+- **`bundleNativeLib` is a `Sync`** (was a `Copy`) into its plugin-owned generated resources directory, so a removed target or renamed crate no longer leaves a stale `native/<platform>/` library in the jar. Build scripts that looked the task up as `Copy` should use `Sync` or `AbstractCopyTask`.
+
+## Migrating to 0.7
+
+0.7 has no Rust API break; these changes are observable:
+
+- **Tracing:** with the `tracing` feature, the `vespera.dispatch` span records the matched route template as `route` (e.g. `/users/{id}`) instead of the raw request `path`. Update log queries and dashboards that filtered on `path`.
+- **Forwarded principal:** the Java bridge forwards at most 1024 authorities and 1024 attributes (the Rust wire limit) and logs a one-time warning, instead of every request of such a user failing with `400`.
+- **WebFlux proxy:** a streamed response that panics or fails before anything was committed is answered with the proxy's own `500` (Rust status and headers such as `Set-Cookie` discarded, `DispatchEvent.panicked` set); once bytes were sent the connection is aborted. Form bodies a `WebFilter` already read via `getFormData()` (Spring Security's `CsrfWebFilter`) are forwarded instead of an empty body.
+- **C ABI:** `vespera_dispatch_async` honours the async in-flight cap shared with JNI `dispatchAsync` (default 4096; over the cap the callback gets an inline `503`). New `vespera_configure_*` functions set runtime, limit, deadline and async-cap knobs before `vespera_init`.
+- **Cron:** jobs declared in `src/lib.rs` / `src/main.rs` or inside an inline `mod` resolve to their real module path.
+- **GraalVM:** WebFlux native images get the Spring Security reflection hints (`VesperaSecurityRuntimeHints`).
+
+## Migrating to 0.6
 
 The 0.6 release is a hardening pass: OpenAPI output becomes more faithful to what serde actually serializes, `Validated<T>` reports deserialization errors through the `422` envelope, and the in-process / JNI transport gets default resource limits. This page lists every change that can affect an existing 0.5 application.
 
-## OpenAPI Output
+### OpenAPI Output
 
 - **Untagged enums** emit `anyOf` (previously `oneOf`).
 - **Tuple / newtype structs, fixed-size arrays and tuples** get real `array` / inner schemas instead of a generic object.
@@ -28,7 +92,7 @@ The 0.6 release is a hardening pass: OpenAPI output becomes more faithful to wha
 - **Custom serde conversions:** a field with `#[serde(with / serialize_with / deserialize_with)]` is documented as any value (`{}`) with a note instead of its Rust type (add `#[schema(value_type = T)]` for the real shape); container `#[serde(into = "T")]` documents responses as `T` and `from` / `try_from` documents requests as `T`; an `Option` read by a custom deserializer is `required` in requests. SeaORM `Json` / `JsonValue` columns are `{}` (previously `type: object`), and `schema_type!` maps `JsonValue` to `serde_json::Value`.
 - **Serde attributes:** `flatten` on `Option<T>` makes `T`'s fields optional; an enum's `rename_all` no longer renames struct-variant fields; `rename_all_fields` and `deny_unknown_fields` (`additionalProperties: false`) are supported.
 
-## Served URLs and Build Output
+### Served URLs and Build Output
 
 - **Explicit route paths are used verbatim.** `#[route(path = "/my_route")]` now serves `/my_route` (previously kebab-cased to `/my-route`). Only segments derived from file and module names are kebab-cased. Update clients, or write the path in kebab-case yourself.
 - **`openapi = "..."` output location:** a relative path resolves against the crate's `CARGO_MANIFEST_DIR`, so workspace members write `openapi.json` next to their own `Cargo.toml`. The cache directory honours `CARGO_TARGET_DIR`.
@@ -36,7 +100,7 @@ The 0.6 release is a hardening pass: OpenAPI output becomes more faithful to wha
 - **Cron:** jobs start once per process even if `create_app()` runs several times, and run on a dedicated `vespera-cron` thread when no Tokio runtime is present.
 - **`multipart` cargo feature:** multipart support (`vespera::multipart`, `vespera::tempfile`, `#[derive(Multipart)]`, `schema_type!(..., multipart)`) moved behind the new `multipart` feature. It is in the default features, so nothing changes unless you build with `default-features = false` — then add `features = ["multipart"]` if you use multipart (otherwise `#[derive(Multipart)]` is a compile error that names the feature). `axum-extra/multipart` moved from the default list into this feature too.
 
-### New compile errors
+#### New compile errors
 
 Code that previously compiled with a silently wrong spec now fails at compile time:
 
@@ -45,7 +109,7 @@ Code that previously compiled with a silently wrong spec now fails at compile ti
 - an internally tagged enum (`#[serde(tag = "...")]`) with a scalar newtype payload,
 - duplicate explicit `operation_id`s.
 
-## OpenAPI Accuracy Changes
+### OpenAPI Accuracy Changes
 
 These changes alter the generated document of an existing application without any code change:
 
@@ -60,18 +124,18 @@ These changes alter the generated document of an existing application without an
 - **Request views (`{Name}Input`).** When serde reads a type differently than it writes it — `#[serde(default)]` on a field or the container, `skip_deserializing` or `skip_serializing` (not both), `rename(deserialize = "..")` / `rename_all(deserialize = "..")` differing from the serialize side, or a field whose type has its own input view — `Json` / `Form` / `TypedMultipart` request bodies now reference an extra `{Name}Input` component: defaulted fields are not `required`, `skip_deserializing` fields are absent, and keys use the deserialize name. The `{Name}` component (the response view) is unchanged. No `Input` component is emitted when the two views are identical or no request body uses the type. `#[schema(name = "X")]` gives `XInput`; when a type already owns that name the first free `XInput2`, `XInput3`, … is used. Generated clients will see new request types for these bodies.
 - **Query parameters** honour container `#[serde(default)]`, `Option<Query<T>>` (all optional) and destructured `Query(Filter { .. })` / `_` patterns.
 
-### New compile errors (OpenAPI accuracy)
+#### New compile errors (OpenAPI accuracy)
 
 - `#[route(responses = [(404, NotFound)])]` where `NotFound` does not implement `Schema` (previously a dangling `$ref`).
 - A `#[route]` handler inside an inline `mod name { .. }` block of a route file (it could never be mounted; move it to its own file).
 
 Route modules declared behind `#[cfg(...)]` that are compiled out, and `#[cfg]`-gated handlers, are now skipped instead of producing an unresolved path.
 
-## `Validated<T>` Deserialization Errors
+### `Validated<T>` Deserialization Errors
 
 `Validated<Json<T>>`, `Validated<Form<T>>`, `Validated<Query<T>>` and `Validated<Path<T>>` now turn **deserialization failures** (wrong type, missing field, unparsable value) into `422 Unprocessable Entity` with the same `{"errors":[{"path","message"}]}` envelope as rule violations. Previously these returned axum's plain-text rejections (`422` / `400`). Malformed JSON syntax (`400`) and `415` content-type errors are unchanged. See [Validated & 422](/documentation/concept/concept-3).
 
-## In-Process / JNI Limits
+### In-Process / JNI Limits
 
 `SYNC` and `DIRECT` dispatch now run on the **shared** multi-threaded Tokio runtime instead of a per-Java-thread runtime, so connection pools and spawned tasks work across requests. New defaults bound resource use:
 
@@ -131,7 +195,7 @@ Streaming dispatch also changed:
 - `dispatchStreaming` / `dispatchFullStreaming` throw `IOException` when the response fails **after** body bytes were written (previously a synthetic `500` header after a partial body).
 - `dispatchStreaming` hoists `422` `validation_errors` into the wire header like the buffered modes.
 
-## Java Bridge (`vespera-bridge`)
+### Java Bridge (`vespera-bridge`)
 
 1. **Spring is a provided dependency.** The bridge no longer exports `spring-boot-starter-web` / `jackson-databind`; declare them in your app if you relied on them transitively. Spring Boot 3.5 and 4 are supported.
 2. **`HEAD` keeps the real `Content-Length`** of the matching `GET` instead of `Content-Length: 0`.
@@ -152,7 +216,7 @@ Streaming dispatch also changed:
 16. **Bounded app names.** `DispatchEvent.app()` and the `app` metric tag report `UNKNOWN` for client-selected app names not known to be registered.
 17. **Version check.** `VesperaBridge.init` fails when the native library's `major.minor` differs from the bridge's; `-Dvespera.native.versionCheck=warn` or `off` relaxes it.
 
-### Gradle Plugin
+#### Gradle Plugin
 
 - `publishPlugins` fails without Plugin Portal credentials.
 - `cargoBuild` is now a `CargoBuildTask` instead of an `Exec`; build scripts that configure it as `Exec` must be updated.

@@ -539,10 +539,10 @@ with `WWW-Authenticate: Bearer error="insufficient_scope", scope="..."`.
 | `Path<T>` | Path parameters |
 | `Query<T>` | Query parameters |
 | `Json<T>` | Request body (application/json) |
-| `Form<T>` | Request body (application/x-www-form-urlencoded) |
+| `Form<T>` | Request body (application/x-www-form-urlencoded); on `GET` / `HEAD` query parameters (axum reads the query string there) |
 | `TypedMultipart<T>` | Request body (multipart/form-data) — typed with schema |
 | `Multipart` | Request body (multipart/form-data) — untyped, generic object |
-| `TypedHeader<T>` | Header parameters |
+| `TypedHeader<T>` | Header parameter named after `T` (never the argument binding): the wire name for known `headers::*` types (`UserAgent` → `User-Agent`), otherwise `T` in kebab-case (`XRequestId` → `x-request-id`); `Authorization` / `Accept` / `Content-Type` are omitted (OpenAPI forbids them as header parameters) |
 | `State<T>` | Ignored (internal) |
 
 ### Multipart Form Data
@@ -1275,8 +1275,8 @@ This automatically:
 | `Uuid` | `string` with `format: uuid` |
 | `Decimal` | `string` with `format: decimal` |
 | `NaiveDate` | `string` with `format: date` |
-| `NaiveTime` | `string` with `format: time` |
-| `DateTime`, `DateTimeWithTimeZone` | `string` with `format: date-time` |
+| `NaiveTime`, `NaiveDateTime`, `PrimitiveDateTime`, `time::Time`, sea-orm `DateTime` | `string` (no offset, so no `time` / `date-time` format) |
+| `DateTime<Tz>`, `DateTimeWithTimeZone`, `DateTimeUtc`, `OffsetDateTime` | `string` with `format: date-time` |
 | `FieldData<NamedTempFile>` | `string` with `format: binary` |
 | `Ipv4Addr` / `Ipv6Addr` | `string` with `format: ipv4` / `ipv6` |
 | `IpAddr`, `SocketAddr` (`V4` / `V6`), `PathBuf` | `string` |

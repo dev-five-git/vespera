@@ -86,7 +86,6 @@ The plugin auto-wires `bundleNativeLib` (cdylib → `resources/native/<os>-<arch
 
 ```java
 @SpringBootApplication
-@ComponentScan(basePackages = {"com.example.app", "com.devfive.vespera.bridge"})
 public class MyApp {
     public static void main(String[] args) {
         VesperaBridge.init("my_rust_lib");  // loads cdylib (bundled or system path)
@@ -95,7 +94,7 @@ public class MyApp {
 }
 ```
 
-`VesperaProxyController` is autoconfigured via Spring Boot's `AutoConfiguration.imports`. It registers a `@RequestMapping("/**")` catch-all that forwards every HTTP request to Rust. The routes published in Vespera's generated `openapi.json` are reachable at the same URLs through Spring.
+`VesperaProxyController` is autoconfigured via Spring Boot's `AutoConfiguration.imports`. It registers a `@RequestMapping("/**")` catch-all that forwards every HTTP request to Rust. The routes published in Vespera's generated `openapi.json` are reachable at the same URLs through Spring. Do **not** add `com.devfive.vespera.bridge` to `@ComponentScan`: scanning it picks the controller up as a plain `@RestController`, which fails to construct.
 
 ---
 
@@ -103,7 +102,7 @@ public class MyApp {
 
 `VesperaBridge.init("crateName")` tries two paths in order:
 
-1. **Bundled** — looks up `native/{os}-{arch}/{libname}` inside the running JAR's classpath. If found, the file is extracted to a temp file (auto-deleted on JVM exit) and loaded via `System.load`.
+1. **Bundled** — looks up `native/{os}-{arch}/{libname}` inside the running JAR's classpath. If found, the file is extracted content-addressed to `vespera-native-<sha256-prefix>/` under `vespera.native.dir` / `VESPERA_NATIVE_DIR` / `<java.io.tmpdir>/vespera-<user.name>` (kept and reused across restarts) and loaded via `System.load`.
 2. **Fallback** — `System.loadLibrary("crateName")` searches `java.library.path`.
 
 Supported platforms: `linux-x86_64`, `linux-aarch64`, `linux-x86_64-musl`, `linux-aarch64-musl`, `macos-x86_64`, `macos-aarch64`, `windows-x86_64`. On a musl (Alpine) JVM the bridge tries `native/linux-{arch}-musl/` first and falls back to the glibc `native/linux-{arch}/` library with a warning; the libc is detected from `/proc/self/maps` and can be forced with `-Dvespera.native.libc=musl|glibc`. The Gradle plugin bundles `*-linux-musl` targets under the `-musl` folder.

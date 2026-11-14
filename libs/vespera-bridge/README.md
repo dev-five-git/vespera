@@ -439,7 +439,7 @@ Once `max-threads` streams run and `max-queued` more wait, a further streaming r
 - Request bodies are always aggregated; there is no streamed upload equivalent of `BIDIRECTIONAL_STREAMING`.
 - Each streamed response holds one streaming thread for its lifetime, so size `vespera.bridge.reactive-streaming.max-threads` for many concurrent SSE clients. An idle stream notices a disconnect only at its next write.
 - `HEAD` is never streamed.
-- A form body that a filter already consumed through `exchange.getFormData()` is not rebuilt (unlike the servlet proxy's parameter-map fallback).
+- A form body that a filter already consumed through `exchange.getFormData()` is rebuilt from the cached form (see **Form bodies read by a `WebFilter`** above), so interleaved repeated names arrive grouped per name.
 - A path that a user `@Controller` owns for another HTTP method answers `405` from Spring rather than falling through to Rust.
 - The springdoc integration is servlet-only.
 - `VesperaClient.send()` blocks. From reactive code, use `sendAsync()` (`Mono.fromFuture(...)`).
@@ -1337,9 +1337,15 @@ and the Gradle plugin.
 
 See [`examples/rust-jni-demo`](../../examples/rust-jni-demo/) for a complete Rust + Spring Boot integration including build scripts, native bundling, and a curl smoke test. Its `java/demo-reactive-app` module is the WebFlux variant (reactor-netty, no servlet API), whose `ReactiveProxyE2ETest` runs against the real cdylib.
 
+## Breaking changes in 0.8
+
+1. **`VesperaBridgeCoreAutoConfiguration`.** The `VesperaClient` bean, `vespera.bridge.native.*` forwarding, `vespera.bridge.library-name` initialisation and `shutdown-on-close` now come from this new web-agnostic autoconfiguration (non-web applications get them too); bean names and `@ConditionalOnMissingBean` semantics are unchanged. Tests or slices that list `VesperaBridgeAutoConfiguration` / `VesperaBridgeReactiveAutoConfiguration` explicitly (e.g. `@ImportAutoConfiguration`, `AutoConfigurations.of(...)`) must add `VesperaBridgeCoreAutoConfiguration`.
+2. **Gradle plugin `bundleNativeLib` is a `Sync`** (was a `Copy`) into its plugin-owned generated resources directory, so a removed target or renamed crate no longer leaves a stale `native/<platform>/` library in the jar. Build scripts that looked the task up as `Copy` should use `Sync` or `AbstractCopyTask`.
+3. **Observable:** after `VesperaBridge.shutdown`, `dispatchAsync` (and `VesperaClient.sendAsync` / the WebFlux proxy) completes with `503` instead of `500`; WebFlux streamed responses run on the bounded `VesperaStreamingExecutor` (`vespera.bridge.reactive-streaming.*`, `503` beyond its capacity); springdoc Swagger UI paths are excluded from the proxy automatically; CORS preflights for Java handlers are answered by Spring even with `cors=rust`.
+
 ## Breaking changes after 0.5.0
 
-> **Behaviour changes in 0.6 (no code change required, but observable):** the buffered-response cap answers `500` instead of `413` (item 13); CORS preflights are routed to Rust by default (item 14); proxy errors keep filter-set headers and no longer echo exception messages (item 15); the `app` of `DispatchEvent` / the metrics tag is bounded (item 16); a missing native library answers `503` (item 17); a bridge/native release mismatch fails `init` (item 18).
+> **Behaviour changes in 0.6 (no code change required, but observable):** the buffered-response cap answers `500` instead of `413` (item 18); CORS preflights are routed to Rust by default (item 19); proxy errors keep filter-set headers and no longer echo exception messages (item 20); the `app` of `DispatchEvent` / the metrics tag is bounded (item 21); a missing native library answers `503` (item 22); a bridge/native release mismatch fails `init` (item 23).
 
 1. **Spring is a provided dependency.** The bridge no longer exports `spring-boot-starter-web` / `jackson-databind`; see [Dependencies](#dependencies--spring-is-provided-by-your-app). Apps that got Spring MVC or Jackson only through the bridge must declare them.
 2. **`HEAD` responses advertise the real representation length.** axum answers `HEAD` with an empty body but the `content-length` of the matching `GET`; the proxy now forwards that value (in every dispatch mode) instead of `Content-Length: 0`. When Rust declares no length and sends no body, `Content-Length` is left unset rather than `0`.
