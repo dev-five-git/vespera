@@ -311,11 +311,13 @@ pub fn collect_metadata_from_files<'a>(
                 ))
             })?;
 
-        let mut module_path = if folder_name.is_empty() {
-            segments.join("::")
-        } else {
-            format!("{}::{}", folder_module, segments.join("::"))
-        };
+        // The route dir's own `mod.rs` has no segments: its module is the
+        // route dir itself (`routes`, never `routes::`).
+        let mut module_path = std::iter::once(folder_module.as_str())
+            .chain(segments.iter().map(String::as_str))
+            .filter(|segment| !segment.is_empty())
+            .collect::<Vec<_>>()
+            .join("::");
 
         let base_path = format!("/{}", segments.join("/"));
 

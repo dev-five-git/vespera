@@ -8,9 +8,12 @@
 //!   (`FlatStructAccess`), so its own `deny_unknown_fields` never fires —
 //!   its fields are simply more keys of the outer object;
 //! - a flattened MAP reads every key still in the buffer
-//!   (`FlatMapAccess`), so it types the outer object's unlisted keys;
+//!   (`FlatMapAccess`) WITHOUT taking it: it types the outer object's
+//!   unlisted keys AND every key of a flattened member declared after it
+//!   (that member takes its keys only later), so in the request view those
+//!   members' properties must satisfy the map's value schema too;
 //! - a flattened `Option<T>` is `None` whenever `T` fails, so it never makes
-//!   a key required;
+//!   a key required, and in the request view its keys reject nothing;
 //! - a flattened unit struct reads nothing;
 //! - the OUTER `deny_unknown_fields` rejects any key no member consumed
 //!   (a map borrows, never consumes, so with it the map stays empty).
@@ -303,13 +306,58 @@ fn merge(target: &mut ObjectParts, parts: ObjectParts, optional: bool) -> bool {
     }
     target.closed |= parts.closed;
     target.additional = match (target.additional.take(), parts.additional) {
-        (Some(first), Some(second)) => Some(SchemaRef::Inline(Box::new(Schema {
-            all_of: Some(vec![first, second]),
-            ..Schema::default()
-        }))),
+        (Some(first), Some(second)) => Some(both(first, second)),
         (first, second) => first.or(second),
     };
     open
+}
+
+/// `allOf: [first, second]` — a value both schemas accept.
+fn both(first: SchemaRef, second: SchemaRef) -> SchemaRef {
+    SchemaRef::Inline(Box::new(Schema {
+        all_of: Some(vec![first, second]),
+        ..Schema::default()
+    }))
+}
+
+/// `anyOf: [schema, {}]` — documents `schema` without rejecting anything
+/// (a flattened `Option` is `None` when its value fails).
+fn lenient(schema: SchemaRef) -> SchemaRef {
+    SchemaRef::Inline(Box::new(Schema {
+        any_of: Some(vec![schema, SchemaRef::Inline(Box::default())]),
+        ..Schema::default()
+    }))
+}
+
+/// The request-view adjustments of one merged member, in declaration order:
+/// - an optional member (a flattened `Option`) is `None` whenever any of its
+///   keys fail, so its properties (and map values) reject nothing;
+/// - every non-optional map declared EARLIER also reads this member's keys
+///   (it borrows the buffered entries before this member takes them), so
+///   each of its properties must satisfy those maps' value schema too.
+///
+/// Returns the value schema later members must also satisfy.
+fn request_member(
+    parts: &mut ObjectParts,
+    optional: bool,
+    earlier_maps: Option<SchemaRef>,
+) -> Option<SchemaRef> {
+    for schema in parts.properties.values_mut() {
+        let own = std::mem::replace(schema, SchemaRef::Inline(Box::default()));
+        let own = if optional { lenient(own) } else { own };
+        *schema = match &earlier_maps {
+            Some(map_value) => both(own, map_value.clone()),
+            None => own,
+        };
+    }
+    if optional {
+        parts.additional = parts.additional.take().map(lenient);
+        return earlier_maps;
+    }
+    match (earlier_maps, parts.additional.clone()) {
+        (Some(first), Some(second)) => Some(both(first, second)),
+        (first, second) => first.or(second),
+    }
 }
 
 /// The object of `own` fields with the `flattened` members merged in.
@@ -335,6 +383,7 @@ pub(super) fn assemble(
             matches!(part, FlatPart::Known { parts, .. } if parts.additional.is_some() || parts.closed)
         });
     let mut open = false;
+    let mut earlier_maps: Option<SchemaRef> = None;
     for part in flattened {
         match part {
             FlatPart::Opaque(schema) => {
@@ -348,8 +397,15 @@ pub(super) fn assemble(
                 ..
             } if !merge_all => own.opaque.push(reference),
             FlatPart::Known {
-                parts, optional, ..
-            } => open |= merge(&mut own, parts, optional),
+                mut parts,
+                optional,
+                ..
+            } => {
+                if request {
+                    earlier_maps = request_member(&mut parts, optional, earlier_maps);
+                }
+                open |= merge(&mut own, parts, optional);
+            }
         }
     }
     let additional_properties = if open {

@@ -9,8 +9,8 @@ use std::{
 use vespera_core::schema::{Schema, SchemaRef};
 
 use super::serde_attrs::{
-    SerdeEnumRepr, extract_doc_comment, extract_enum_repr, extract_rename_all_fields_for,
-    extract_rename_all_for, extract_untagged,
+    SerdeEnumRepr, extract_deny_unknown_fields, extract_doc_comment, extract_enum_repr,
+    extract_rename_all_fields_for, extract_rename_all_for, extract_untagged,
 };
 
 mod representations;
@@ -26,6 +26,11 @@ struct EnumRenames<'a> {
     variants: Option<&'a str>,
     /// `rename_all_fields` — applies to the fields of struct variants.
     fields: Option<&'a str>,
+    /// Container `deny_unknown_fields`: serde's struct-variant visitors read
+    /// the ENUM's container attributes, so every struct variant is a closed
+    /// object (and an adjacently tagged enum accepts only its tag / content
+    /// keys).
+    deny_unknown_fields: bool,
 }
 
 /// Parses a Rust enum into an OpenAPI Schema.
@@ -55,6 +60,7 @@ pub fn parse_enum_to_schema(
     let renames = EnumRenames {
         variants: rename_all.as_deref(),
         fields: rename_all_fields.as_deref(),
+        deny_unknown_fields: extract_deny_unknown_fields(&enum_item.attrs),
     };
     let repr = extract_enum_repr(&enum_item.attrs);
     if !matches!(repr, SerdeEnumRepr::Untagged)
@@ -199,7 +205,20 @@ pub fn validate_enum_for_schema(enum_item: &syn::ItemEnum) -> syn::Result<()> {
         if fields.unnamed.len() != 1 {
             continue;
         }
-        let inner = &fields.unnamed[0].ty;
+        let field = &fields.unnamed[0];
+        // A custom codec writes / reads a wire shape the type cannot tell.
+        let codec = |attrs| {
+            let codec = super::serde_attrs::extract_field_codec(attrs);
+            codec.serialize || codec.deserialize
+        };
+        if codec(&variant.attrs) || codec(&field.attrs) {
+            continue;
+        }
+        // `#[schema(value_type = T)]` documents the payload as `T`.
+        let value_type = super::schema_attrs::extract_schema_constraints(&field.attrs).value_type;
+        let inner = value_type
+            .as_ref()
+            .map_or(&field.ty, |value_type| &value_type.0);
         if is_unambiguous_non_object(inner) {
             return Err(syn::Error::new_spanned(
                 inner,
@@ -305,90 +324,6 @@ mod tests {
 
     use super::*;
     use vespera_core::schema::{SchemaRef, SchemaType};
-
-    /// Only syntactically unambiguous non-object payloads are rejected for an
-    /// internally tagged newtype variant; path types that may be user structs
-    /// (or map-serialized std types like `Duration`) are accepted.
-    #[rstest]
-    #[case::string("String", true)]
-    #[case::integer("u64", true)]
-    #[case::str_ref("&'static str", true)]
-    #[case::std_string("std::string::String", true)]
-    #[case::vec("Vec<i32>", true)]
-    #[case::set("std::collections::BTreeSet<u8>", true)]
-    #[case::array("[u8; 4]", true)]
-    #[case::tuple("(i32, i32)", true)]
-    #[case::option_primitive("Option<bool>", true)]
-    #[case::boxed_string("Box<String>", true)]
-    #[case::unit("()", false)]
-    #[case::user_struct("Payload", false)]
-    #[case::uuid("Uuid", false)]
-    #[case::date("Date", false)]
-    #[case::time("chrono::NaiveTime", false)]
-    #[case::std_duration("std::time::Duration", false)]
-    #[case::decimal("rust_decimal::Decimal", false)]
-    #[case::user_vec("my::Vec<i32>", false)]
-    #[case::option_struct("Option<Payload>", false)]
-    #[case::map("std::collections::HashMap<String, i32>", false)]
-    #[case::parenthesized("(String)", true)]
-    #[case::option_str_ref("Option<&'static str>", true)]
-    #[case::option_parenthesized("Option<(u8)>", true)]
-    #[case::option_array("Option<[u8; 2]>", false)]
-    #[case::qualified_self("<T as Trait>::Output", false)]
-    #[case::fn_pointer("fn() -> i32", false)]
-    #[case::cow_lifetime_first("std::borrow::Cow<'static, str>", false)]
-    fn internally_tagged_newtype_payload_classification(
-        #[case] inner: &str,
-        #[case] is_error: bool,
-    ) {
-        let inner: syn::Type = syn::parse_str(inner).unwrap();
-        let enum_item: syn::ItemEnum = syn::parse_quote! {
-            #[serde(tag = "type")]
-            enum Event { Ping, Data(#inner) }
-        };
-        assert_eq!(
-            validate_enum_for_schema(&enum_item).is_err(),
-            is_error,
-            "{}",
-            quote::quote!(#inner)
-        );
-    }
-
-    /// `macro_rules!`-generated enums carry `$t:ty` payloads as invisible
-    /// `Type::Group`s; classification must look through them.
-    #[test]
-    fn invisible_type_groups_are_classified_by_their_contents() {
-        let group = |elem: syn::Type| -> syn::Type {
-            let tokens =
-                proc_macro2::Group::new(proc_macro2::Delimiter::None, quote::quote!(#elem));
-            let ty = syn::parse2(proc_macro2::TokenTree::Group(tokens).into()).unwrap();
-            assert!(
-                matches!(ty, syn::Type::Group(_)),
-                "None-delimited group parses as Type::Group"
-            );
-            ty
-        };
-        assert!(is_unambiguous_non_object(&group(syn::parse_quote!(String))));
-        assert!(!is_unambiguous_non_object(&group(syn::parse_quote!(
-            Payload
-        ))));
-        let option_of_group: syn::Type = {
-            let inner = group(syn::parse_quote!(u32));
-            syn::parse_quote!(Option<#inner>)
-        };
-        assert!(is_unambiguous_non_object(&option_of_group));
-    }
-
-    /// Multi-field tuple variants are a serde compile error under
-    /// `#[serde(tag = ...)]`; the schema check leaves that diagnosis to serde.
-    #[test]
-    fn internally_tagged_multi_field_tuple_variant_is_left_to_serde() {
-        let enum_item: syn::ItemEnum = syn::parse_quote! {
-            #[serde(tag = "type")]
-            enum Event { Ping, Pair(String, String) }
-        };
-        assert!(validate_enum_for_schema(&enum_item).is_ok());
-    }
 
     #[rstest]
     #[case(
@@ -987,3 +922,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod tests_validate;

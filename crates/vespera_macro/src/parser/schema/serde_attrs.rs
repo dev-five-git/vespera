@@ -9,7 +9,7 @@ mod rename_case;
 
 pub use codec::{extract_container_conversion, extract_field_codec};
 pub use common::{
-    capitalize_first, extract_doc_comment, extract_schema_name_from_entity,
+    capitalize_first, extract_doc_comment, extract_schema_default, extract_schema_name_from_entity,
     extract_schema_ref_override, extract_transparent, strip_raw_prefix_owned,
 };
 pub use enum_repr::{SerdeEnumRepr, extract_enum_repr, extract_tag, extract_untagged};

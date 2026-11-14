@@ -1,0 +1,16 @@
+---
+source: crates/vespera_macro/src/parser/parameters/tests_shapes.rs
+expression: "render(func_src, path_params)"
+---
+fn f(r#type: i32) {}
+[
+  {
+    "name": "type",
+    "in": "path",
+    "required": true,
+    "schema": {
+      "type": "integer",
+      "format": "int32"
+    }
+  }
+]

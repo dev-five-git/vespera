@@ -92,7 +92,9 @@ pub fn try_generate_openapi_doc_with_metadata(
     // schemas and paths are built; start from a clean slate (a previous
     // expansion on this thread may have left some behind).
     crate::parser::schema::generic_instances::take_materialized();
-    let (known_schema_names, struct_definitions) = build_schema_lookups(metadata);
+    let scoped_rust_idents = component_schemas::scoped_rust_idents(metadata);
+    let (known_schema_names, struct_definitions) =
+        build_schema_lookups(metadata, &scoped_rust_idents);
     let file_cache = file_cache.unwrap_or_else(|| build_file_cache(metadata));
     component_schemas::check_ambiguous_aliases(metadata, &file_cache, route_storage)?;
     let struct_file_index = build_struct_file_index(&file_cache);

@@ -135,15 +135,30 @@ fn collect_request_body_refs(value: &serde_json::Value, inside: bool, out: &mut 
 ///
 /// Registers ALL structs (including `include_in_openapi: false`) so that
 /// `schema_type!` generated types can reference them.
-pub(super) fn build_schema_lookups(
-    metadata: &CollectedMetadata,
-) -> (HashSet<&str>, HashMap<&str, &str>) {
+pub(super) fn build_schema_lookups<'a>(
+    metadata: &'a CollectedMetadata,
+    scoped: &'a [ScopedRustIdent<'a>],
+) -> (HashSet<&'a str>, HashMap<&'a str, &'a str>) {
     let mut known_schema_names = HashSet::with_capacity(metadata.structs.len());
     let mut struct_definitions = HashMap::with_capacity(metadata.structs.len());
 
     for struct_meta in &metadata.structs {
         struct_definitions.insert(struct_meta.name.as_str(), struct_meta.definition.as_str());
         known_schema_names.insert(struct_meta.name.as_str());
+    }
+    // A renamed type is also reachable by `module::Ident` (`b::Foo`), so a
+    // module-qualified use picks the right one of several same-named renames
+    // (see `parser::schema::definition_key`). Sorted, so a module that
+    // declares two of them resolves the same way whatever the storage order.
+    let scoped: BTreeMap<(&str, &str), &str> = scoped
+        .iter()
+        .map(|entry| ((entry.key.as_str(), entry.name), entry.definition))
+        .collect();
+    for ((scoped, _), definition) in scoped {
+        if !struct_definitions.contains_key(scoped) {
+            struct_definitions.insert(scoped, definition);
+            known_schema_names.insert(scoped);
+        }
     }
     // `#[schema(name = "X")] struct Foo` is registered as `X`, but Rust code
     // names it `Foo`: alias the Rust ident onto the same definition so every
@@ -162,6 +177,34 @@ pub(super) fn build_schema_lookups(
     }
 
     (known_schema_names, struct_definitions)
+}
+
+/// A renamed type's `module::Ident` lookup key (see [`scoped_rust_idents`]).
+pub(super) struct ScopedRustIdent<'a> {
+    key: String,
+    name: &'a str,
+    definition: &'a str,
+}
+
+/// The `module::Ident` key of every `#[schema(name = "..")]` rename whose
+/// declaring module is known from its derive source identity (see
+/// [`rust_scope::scoped_rust_ident`]).
+pub(super) fn scoped_rust_idents(metadata: &CollectedMetadata) -> Vec<ScopedRustIdent<'_>> {
+    metadata
+        .structs
+        .iter()
+        .filter_map(|meta| {
+            let key = rust_scope::scoped_rust_ident(
+                meta.source_identity.as_deref()?,
+                meta.rust_ident.as_deref()?,
+            )?;
+            Some(ScopedRustIdent {
+                key,
+                name: &meta.name,
+                definition: &meta.definition,
+            })
+        })
+        .collect()
 }
 
 /// Rust ident → (schema name → definition) of every `#[schema(name = "..")]`
@@ -493,6 +536,8 @@ fn reject_internally_tagged_non_object_refs(
     }
     Ok(())
 }
+
+mod rust_scope;
 
 #[cfg(test)]
 mod tests;

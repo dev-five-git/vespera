@@ -1,0 +1,32 @@
+---
+source: crates/vespera_macro/src/parser/schema/type_schema.rs
+expression: "serde_json::to_string_pretty(&schema_ref).unwrap()"
+---
+{
+  "type": "object",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "Ok": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "Ok"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "Err": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "Err"
+      ]
+    }
+  ]
+}

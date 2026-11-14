@@ -40,7 +40,7 @@ fn run(src: &str) -> syn::Result<()> {
 #[case::other_crate_module("pub fn handler(Json(v): Json<crate::models::Value>) {}")]
 #[case::leading_colon("pub fn handler(Json(v): Json<::Value>) {}")]
 #[case::qself("pub fn handler(Json(v): Json<<T as Tr>::Value>) {}")]
-#[case::path_tuple("pub fn handler(Path((a, b)): Path<(Value, u32)>) {}")]
+#[case::foreign_tuple("pub fn handler(Path((a, b)): Path<(serde_json::Value, u32)>) {}")]
 fn foreign_paths_are_not_local_types(#[case] handler: &str) {
     let src = format!("pub struct Value {{ pub a: i32 }} {handler}");
     assert!(run(&src).is_ok(), "{handler}");
@@ -64,6 +64,11 @@ fn foreign_paths_are_not_local_types(#[case] handler: &str) {
     "Json<Value>"
 )]
 #[case::cached("pub fn handler(v: Cached<Query<Value>>) {}", "Query<Value>")]
+// Tuples, arrays, slices (and parenthesised types) are inspected too.
+#[case::path_tuple("pub fn handler(Path((a, b)): Path<(Value, u32)>) {}", "Path<Value>")]
+#[case::array("pub fn handler(Json(v): Json<[Value; 2]>) {}", "Json<Value>")]
+#[case::boxed_slice("pub fn handler(Json(v): Json<Box<[Value]>>) {}", "Json<Value>")]
+#[case::paren("pub fn handler(Json(v): Json<(Value)>) {}", "Json<Value>")]
 fn local_paths_are_flagged(#[case] handler: &str, #[case] expected: &str) {
     let src = format!("pub struct Value {{ pub a: i32 }} {handler}");
     let message = run(&src).expect_err(handler).to_string();

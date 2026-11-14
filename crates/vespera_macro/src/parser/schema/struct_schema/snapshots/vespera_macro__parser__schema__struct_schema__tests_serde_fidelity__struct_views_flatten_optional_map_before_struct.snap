@@ -1,0 +1,57 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_serde_fidelity.rs
+expression: both_views(src)
+---
+struct Req { #[serde(flatten)] extra: Option<HashMap<String, String>>, #[serde(flatten)] page: Page }
+response: {
+  "type": "object",
+  "properties": {
+    "page": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "size": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "maximum": 4294967295
+    }
+  },
+  "required": [
+    "page",
+    "size"
+  ],
+  "additionalProperties": {
+    "type": "string"
+  }
+}
+request: {
+  "type": "object",
+  "properties": {
+    "page": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "size": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "maximum": 4294967295
+    }
+  },
+  "required": [
+    "page"
+  ],
+  "additionalProperties": {
+    "anyOf": [
+      {
+        "type": "string"
+      },
+      {}
+    ]
+  }
+}
