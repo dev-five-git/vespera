@@ -47,7 +47,7 @@ parser/schema/
 | Add struct/enum schema shape | `schema/struct_schema.rs`, `schema/enum_schema.rs` | Re-exported via `schema/mod.rs` |
 | Change serde attribute handling | `schema/serde_attrs/` | `extract.rs`, `enum_repr.rs`, `rename_case.rs` |
 | Handle new extractor | `parameters.rs` | `parse_function_parameter()`, dispatching into `parameters/` |
-| Unwrap `Validated<T>` / `Result<T, Rejection>` | `extractors.rs` | `request_extractor()` |
+| Unwrap `Validated<T>` / `Result<T, Rejection>` / `WithRejection<T, R>` / `Cached<T>` | `extractors.rs` | `request_extractor()` |
 | Reject non-`Schema` extractor types | `extractor_validation.rs` | Compile-time diagnostic |
 | Modify operation generation | `operation.rs` | `build_operation_from_function()` |
 | Add response type | `response.rs` | `parse_return_type()` |

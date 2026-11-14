@@ -237,14 +237,40 @@ pub fn read_request_byte_array(
 /// VM promotion, streaming-buffer checkout, future/header setup) —
 /// can never unwind across the `extern "system"` boundary into the JVM.
 ///
-/// A caught panic is swallowed: the inner dispatch guard already does
-/// best-effort future/header completion for the common (handler) panic;
-/// this outer guard only covers the rare setup-path panic, where no
-/// `Env` is available to complete anything anyway.  Matches the
-/// whole-body guard already used by `configureRuntime0` /
+/// Returns whether `body` panicked.  A body that runs through
+/// `EnvUnowned::with_env` must use [`guard_env_void_symbol`] instead: that
+/// call catches the panic itself, so it never reaches this guard.  Matches
+/// the whole-body guard already used by `configureRuntime0` /
 /// `configureStreaming0`.
 pub fn guard_void_symbol(body: impl FnOnce()) -> bool {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).is_err()
+}
+
+/// Run a **void** JNI symbol's `body` through `EnvUnowned::with_env` under
+/// [`guard_void_symbol`] and report whether it panicked — so the caller's
+/// panic fallback (complete the `CompletableFuture`, call the header
+/// consumer) actually runs.
+///
+/// `with_env` (jni 0.22) wraps its closure in `catch_unwind` itself and
+/// reports a panic as `Outcome::Panic` inside the returned `EnvOutcome`; it
+/// never unwinds into an enclosing `catch_unwind`.  Discarding that outcome
+/// (`let _ = unowned_env.with_env(..)`) therefore hid every panic of the
+/// body and left the fallbacks dead.  An `Err` from `body` is ignored (the
+/// body already delivered its own wire / exception).
+pub fn guard_env_void_symbol<'local>(
+    unowned_env: &mut EnvUnowned<'local>,
+    body: impl FnOnce(&mut jni::Env<'local>) -> jni::errors::Result<()>,
+) -> bool {
+    let mut body_panicked = false;
+    let outer_panicked = guard_void_symbol(|| {
+        // The panic payload is dropped inside the guard: a payload whose
+        // `Drop` panics is caught by it too.
+        body_panicked = matches!(
+            unowned_env.with_env(body).into_outcome(),
+            jni::Outcome::Panic(_)
+        );
+    });
+    outer_panicked || body_panicked
 }
 
 /// `500` wire response for a caught panic; its metadata carries
@@ -272,12 +298,14 @@ pub fn byte_array_or_empty<'local>(
 ///
 /// Runs `body` inside a `catch_unwind`-guarded `with_env` +
 /// `resolve::<ThrowRuntimeExAndDefault>` + `into_raw` shape shared by every
-/// byte-array-returning JNI dispatch symbol.  On a panic during the JNI env
-/// promotion, resolve, or into_raw stage (the boilerplate every such symbol
-/// repeats verbatim), the outer guard degrades to the standard
-/// `byte_array_or_empty(env, &panic_wire())` fallback via a second `with_env`,
-/// so a panic can never unwind across the `extern "system"` boundary into the
-/// JVM.
+/// byte-array-returning JNI dispatch symbol.  A panic in `body` degrades to
+/// the standard `byte_array_or_empty(env, &panic_wire())` answer
+/// ([`catch_or_panic_byte_array`] inside the `with_env` — `with_env` would
+/// otherwise catch it itself and `ThrowRuntimeExAndDefault` would turn it
+/// into a thrown `RuntimeException` + `null`); a panic during the JNI env
+/// promotion, resolve, or into_raw stage degrades to the same fallback via a
+/// second `with_env`, so a panic can never unwind across the
+/// `extern "system"` boundary into the JVM.
 ///
 /// The `body` closure receives the promoted `Env` and returns the
 /// `jni::errors::Result<JObject<'local>>` to hand back to Java; centralising
@@ -291,7 +319,7 @@ where
 {
     let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         unowned_env
-            .with_env(body)
+            .with_env(|env| catch_or_panic_byte_array(env, body))
             .resolve::<ThrowRuntimeExAndDefault>()
             .into_raw()
     }));
@@ -305,25 +333,18 @@ where
     })
 }
 
-/// Common **inner** panic guard for the streaming JNI symbols
-/// (`dispatchStreaming`, `dispatchFullStreaming`).
+/// Common **inner** panic guard of every byte-array-returning symbol (via
+/// [`guard_byte_array_symbol`]).
 ///
 /// Wraps `body` in `catch_unwind(AssertUnwindSafe(..))` so a panic inside the
 /// setup / read / dispatch stage cannot escape the enclosing `with_env`, and
 /// on panic degrades to the standard `byte_array_or_empty(env, &panic_wire())`
-/// fallback — same drift-prevention discipline as [`guard_byte_array_symbol`],
-/// just for the inner-guard shape both streaming symbols share.
+/// fallback.
 ///
 /// `body` receives the `Env` as an argument (not a capture) so the borrow
 /// checker sees the inner-guard reborrow of `env` end when `catch_unwind`
 /// consumes the closure; the outer `env` is then reused for the fallback
 /// without a double mutable borrow at the call site.
-///
-/// `dispatchBytes` is intentionally NOT a caller: its inner body produces
-/// `Vec<u8>` (not `JObject`), so folding it into this helper would force it
-/// to pay an unrelated `env.byte_array_from_slice(...)` inside the body just
-/// to satisfy the shared return type.  The two shapes are kept separate on
-/// purpose.
 fn catch_or_panic_byte_array<'local, F>(
     env: &mut jni::Env<'local>,
     body: F,
@@ -333,6 +354,40 @@ where
 {
     let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(env)));
     panic_result.unwrap_or_else(|_| byte_array_or_empty(env, &panic_wire()))
+}
+
+/// Inner panic guard of the two **non-header** streaming symbols
+/// (`dispatchStreaming`, `dispatchFullStreaming`), which return the response
+/// header only after the body went to the Java `OutputStream`.
+///
+/// `body` flips the `delivered` flag it is handed as soon as a response body
+/// byte was handed to Java.  A panic before that is a clean `500` panic wire
+/// (nothing was written); a panic after it would put a `500` header behind a
+/// partially written body, so it throws the documented
+/// [`VesperaStreamAbortedException`](support::AbortReason::Panicked)
+/// (`IOException`, `panicked()`) instead — the same "mid-body failure →
+/// `IOException`" contract as a body error or a failed write.
+fn catch_streaming_byte_array<'local, F>(
+    env: &mut jni::Env<'local>,
+    body: F,
+) -> jni::errors::Result<JObject<'local>>
+where
+    F: FnOnce(
+        &mut jni::Env<'local>,
+        &std::cell::Cell<bool>,
+    ) -> jni::errors::Result<JObject<'local>>,
+{
+    let delivered = std::cell::Cell::new(false);
+    let panic_result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(env, &delivered)));
+    match panic_result {
+        Ok(response) => response,
+        Err(_) if delivered.get() => {
+            throw_streaming_abort(env, AbortReason::Panicked);
+            Ok(JObject::null())
+        }
+        Err(_) => byte_array_or_empty(env, &panic_wire()),
+    }
 }
 
 #[path = "jni_impl_support.rs"]
@@ -399,9 +454,15 @@ pub use direct::stash as direct_stash;
 /// Contract (always-complete):
 /// - **success** → `future.complete(responseBytes)`
 /// - **JNI conversion failure** → `future.complete(error_wire(400, ...))`
-/// - **Rust panic / handler crash** → `future.complete(error_wire(500, "panic in Rust engine"))`
+/// - **Rust panic / handler crash** (in the handler or in this symbol's own
+///   setup) → `future.complete(panic_wire())` (`500`, `"panicked":"true"`)
 ///   The future is always completed with a valid wire response —
 ///   it is never left dangling, even on internal errors.
+///
+/// The async in-flight permit is released before every completion, also
+/// the on-thread ones (overloaded / invalid input / setup failure): a
+/// non-async continuation that dispatches again never sees this call's
+/// slot still taken.
 ///
 /// # Threading contract (IMPORTANT)
 ///
@@ -456,139 +517,145 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_AsyncDispatch_dispatch0<'
     // always-complete contract holds even on VM-promotion / scheduling
     // failures.
     //
-    // JNI-03: the entire body runs under `guard_void_symbol` so a panic
+    // JNI-03: the entire body runs under `guard_env_void_symbol` so a panic
     // in the setup that precedes the inner dispatch guard cannot unwind
-    // across this `extern "system"` boundary.
-    let panicked = guard_void_symbol(|| {
-        let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
-            if future_obj.is_null() {
-                let _ = env.throw_new(
-                    jni::jni_str!("java/lang/IllegalArgumentException"),
-                    jni::jni_str!("future must not be null"),
-                );
-                future_notified_body.store(true, Ordering::Release);
-                return Ok(());
-            }
-            // On-thread cold paths (oversized, JNI conversion failure, VM
-            // promotion / scheduling failure) complete the future via the
-            // still-valid LOCAL `future_obj` ref, so only the spawned task
-            // needs a `Global` ref (created just before the spawn below) —
-            // instead of a second one held solely for these paths.
-            // Admission control BEFORE reading the request: a saturated
-            // in-flight cap answers a retryable 503 immediately instead of
-            // queueing unbounded tasks (and their request buffers).
-            let Some(permit) = try_acquire_async_permit() else {
-                let _ = complete_future_local(env, &future_obj, &async_overloaded_wire());
-                future_notified_body.store(true, Ordering::Release);
-                return Ok(());
-            };
-            let input = match read_request_byte_array(env, &request_bytes) {
-                Ok(buf) => buf,
-                Err(err) => {
-                    let _ = complete_future_local(env, &future_obj, &err);
-                    future_notified_body.store(true, Ordering::Release);
-                    return Ok(());
-                }
-            };
-
-            // Promote the VM; on the (near-impossible) failure complete the
-            // future we already hold so it never dangles.
-            let jvm = match env.get_java_vm() {
-                Ok(jvm) => jvm,
-                Err(e) => {
-                    let _ = complete_future_local(
-                        env,
-                        &future_obj,
-                        &vespera_inprocess::error_wire(500, "JNI VM promotion failed"),
-                    );
-                    future_notified_body.store(true, Ordering::Release);
-                    return Err(e);
-                }
-            };
-
-            // The single owning global ref, created only now and moved into
-            // the spawned task (which completes the future from a worker
-            // thread).  Every on-thread path uses the local `future_obj`
-            // instead, so this is the only `Global` ref allocated per call.
-            let future_for_task = match env.new_global_ref(&future_obj) {
-                Ok(g) => g,
-                Err(e) => {
-                    let _ = complete_future_local(
-                        env,
-                        &future_obj,
-                        &vespera_inprocess::error_wire(500, "JNI global ref failed"),
-                    );
-                    future_notified_body.store(true, Ordering::Release);
-                    return Err(e);
-                }
-            };
-
-            // A panic in the dispatch future is caught **in place** with
-            // `FutureExt::catch_unwind` instead of isolating it in a second
-            // `tokio::spawn` task — same panic → 500 wire fallback (preserving
-            // always-complete semantics for the Java future), but one fewer
-            // task allocation + scheduler hop per async dispatch.  The inner
-            // spawn never bought parallelism here (the outer task awaited it
-            // immediately), so it was pure overhead.  `AssertUnwindSafe` is
-            // sound: a panic drops the half-run dispatch and we return a fresh
-            // `error_wire`; the registered `Router` is `Arc`-shared and is not
-            // left observably inconsistent.  The outer `catch_unwind` still
-            // guards `RUNTIME.spawn` itself so a scheduling failure completes
-            // the future (with a 500) instead of leaving the Java caller
-            // hanging; no runtime (shut down) answers the same `503` as every
-            // other dispatch mode.
-            let scheduled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let Some(runtime) = runtime() else {
-                    return false;
-                };
-                // Completes the future exactly once: with the response, or
-                // with a `503` if the runtime drops this task first.
-                let completion = AsyncCompletion {
-                    jvm,
-                    future: Some(future_for_task),
-                };
-                // Registered BEFORE the spawn, so a cancel can never miss it.
-                let (cancel_token, dispatch) = vespera_inprocess::cancellable(
-                    std::panic::AssertUnwindSafe(vespera_inprocess::dispatch_from_bytes_async(
-                        input,
-                    ))
-                    .catch_unwind(),
-                );
-                runtime.handle().spawn(async move {
-                    // The in-flight permit is released with the task on every
-                    // path (including runtime shutdown and cancellation) and,
-                    // on the normal path, just BEFORE the future is
-                    // completed — so a caller that observes the completion
-                    // also observes its slot as free.  The lease is held until
-                    // the completion so `shutdown_runtime`'s drain waits for it.
-                    let _lease = runtime;
-                    let response = match dispatch.await {
-                        Some(Ok(response)) => response,
-                        Some(Err(_)) => panic_wire(),
-                        // Cancelled: the handler was dropped; the Java future
-                        // is already done, so this completion is a no-op that
-                        // only keeps the always-complete contract.
-                        None => vespera_inprocess::error_wire(503, ASYNC_CANCELLED_MSG),
-                    };
-                    drop(permit);
-                    completion.complete(&response);
-                });
-                token = cancel_token;
-                true
-            }));
-            if !matches!(scheduled, Ok(true)) {
-                let wire = match scheduled {
-                    Ok(_) => runtime_unavailable_wire(),
-                    Err(_) => {
-                        vespera_inprocess::error_wire(500, "failed to schedule Rust dispatch")
-                    }
-                };
-                let _ = complete_future_local(env, &future_obj, &wire);
-            }
+    // across this `extern "system"` boundary — and is REPORTED, so the
+    // fallback below completes the future.
+    //
+    // Every on-thread completion releases the async in-flight permit FIRST:
+    // `complete` runs the future's non-async continuations inline, and one
+    // that dispatches again must not find its own slot still taken (the same
+    // order as the spawned path and the C ABI's `vespera_dispatch_async`).
+    let panicked = guard_env_void_symbol(&mut unowned_env, |env| {
+        if future_obj.is_null() {
+            let _ = env.throw_new(
+                jni::jni_str!("java/lang/IllegalArgumentException"),
+                jni::jni_str!("future must not be null"),
+            );
             future_notified_body.store(true, Ordering::Release);
+            return Ok(());
+        }
+        // On-thread cold paths (oversized, JNI conversion failure, VM
+        // promotion / scheduling failure) complete the future via the
+        // still-valid LOCAL `future_obj` ref, so only the spawned task
+        // needs a `Global` ref (created just before the spawn below) —
+        // instead of a second one held solely for these paths.
+        // Admission control BEFORE reading the request: a saturated
+        // in-flight cap answers a retryable 503 immediately instead of
+        // queueing unbounded tasks (and their request buffers).
+        let Some(permit) = try_acquire_async_permit() else {
+            let _ = complete_future_local(env, &future_obj, &async_overloaded_wire());
+            future_notified_body.store(true, Ordering::Release);
+            return Ok(());
+        };
+        let input = match read_request_byte_array(env, &request_bytes) {
+            Ok(buf) => buf,
+            Err(err) => {
+                drop(permit);
+                let _ = complete_future_local(env, &future_obj, &err);
+                future_notified_body.store(true, Ordering::Release);
+                return Ok(());
+            }
+        };
 
-            Ok(())
-        });
+        // Promote the VM; on the (near-impossible) failure complete the
+        // future we already hold so it never dangles.
+        let jvm = match env.get_java_vm() {
+            Ok(jvm) => jvm,
+            Err(e) => {
+                drop(permit);
+                let _ = complete_future_local(
+                    env,
+                    &future_obj,
+                    &vespera_inprocess::error_wire(500, "JNI VM promotion failed"),
+                );
+                future_notified_body.store(true, Ordering::Release);
+                return Err(e);
+            }
+        };
+
+        // The single owning global ref, created only now and moved into
+        // the spawned task (which completes the future from a worker
+        // thread).  Every on-thread path uses the local `future_obj`
+        // instead, so this is the only `Global` ref allocated per call.
+        let future_for_task = match env.new_global_ref(&future_obj) {
+            Ok(g) => g,
+            Err(e) => {
+                drop(permit);
+                let _ = complete_future_local(
+                    env,
+                    &future_obj,
+                    &vespera_inprocess::error_wire(500, "JNI global ref failed"),
+                );
+                future_notified_body.store(true, Ordering::Release);
+                return Err(e);
+            }
+        };
+
+        // A panic in the dispatch future is caught **in place** with
+        // `FutureExt::catch_unwind` instead of isolating it in a second
+        // `tokio::spawn` task — same panic → 500 wire fallback (preserving
+        // always-complete semantics for the Java future), but one fewer
+        // task allocation + scheduler hop per async dispatch.  The inner
+        // spawn never bought parallelism here (the outer task awaited it
+        // immediately), so it was pure overhead.  `AssertUnwindSafe` is
+        // sound: a panic drops the half-run dispatch and we return a fresh
+        // `error_wire`; the registered `Router` is `Arc`-shared and is not
+        // left observably inconsistent.  The outer `catch_unwind` still
+        // guards `RUNTIME.spawn` itself so a scheduling failure completes
+        // the future (with a 500) instead of leaving the Java caller
+        // hanging; no runtime (shut down) answers the same `503` as every
+        // other dispatch mode.
+        // The closure captures the permit by value (it moves on into the
+        // task), so a failed schedule (no runtime, or a panic) has
+        // already released it when the future is completed below.
+        let scheduled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let Some(runtime) = runtime() else {
+                return false;
+            };
+            // Completes the future exactly once: with the response, or
+            // with a `503` if the runtime drops this task first.
+            let completion = AsyncCompletion {
+                jvm,
+                future: Some(future_for_task),
+            };
+            // Registered BEFORE the spawn, so a cancel can never miss it.
+            let (cancel_token, dispatch) = vespera_inprocess::cancellable(
+                std::panic::AssertUnwindSafe(vespera_inprocess::dispatch_from_bytes_async(input))
+                    .catch_unwind(),
+            );
+            runtime.handle().spawn(async move {
+                // The in-flight permit is released with the task on every
+                // path (including runtime shutdown and cancellation) and,
+                // on the normal path, just BEFORE the future is
+                // completed — so a caller that observes the completion
+                // also observes its slot as free.  The lease is held until
+                // the completion so `shutdown_runtime`'s drain waits for it.
+                let _lease = runtime;
+                let response = match dispatch.await {
+                    Some(Ok(response)) => response,
+                    Some(Err(_)) => panic_wire(),
+                    // Cancelled: the handler was dropped; the Java future
+                    // is already done, so this completion is a no-op that
+                    // only keeps the always-complete contract.
+                    None => vespera_inprocess::error_wire(503, ASYNC_CANCELLED_MSG),
+                };
+                drop(permit);
+                completion.complete(&response);
+            });
+            token = cancel_token;
+            true
+        }));
+        if !matches!(scheduled, Ok(true)) {
+            let wire = match scheduled {
+                Ok(_) => runtime_unavailable_wire(),
+                Err(_) => vespera_inprocess::error_wire(500, "failed to schedule Rust dispatch"),
+            };
+            let _ = complete_future_local(env, &future_obj, &wire);
+        }
+        future_notified_body.store(true, Ordering::Release);
+
+        Ok(())
     });
     if panicked && !future_notified.load(Ordering::Acquire) && !future_obj.is_null() {
         let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
@@ -702,8 +769,9 @@ fn complete_async_future(
 /// header return and the `OutputStream` is **not** written to.  `422`
 /// validation errors are hoisted into the returned header like every other
 /// mode.  A failure **after** at least one chunk was written (body-stream
-/// error or the `OutputStream` throwing)
-/// throws `java.io.IOException` instead of returning a header: the bytes
+/// error, the `OutputStream` throwing, or a Rust panic — then
+/// `panicked()`) throws `VesperaStreamAbortedException` (an
+/// `IOException`) instead of returning a header: the bytes
 /// already written are truncated and the caller must abort its transport.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStreaming<'local>(
@@ -713,8 +781,9 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
     output_stream: JObject<'local>,
 ) -> jbyteArray {
     guard_byte_array_symbol(&mut unowned_env, |env| {
-        let response =
-            catch_or_panic_byte_array(env, |env| -> jni::errors::Result<JObject<'local>> {
+        let response = catch_streaming_byte_array(
+            env,
+            |env, delivered| -> jni::errors::Result<JObject<'local>> {
                 if output_stream.is_null() {
                     return wire_byte_array(
                         env,
@@ -741,10 +810,16 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                     return streaming_setup_failed_array(env);
                 };
 
+                let mut push = make_push_closure(jvm, stream_global, push_buf);
                 let dispatched = block_on_shared_runtime(
                     vespera_inprocess::dispatch_streaming_with_outcome_async(
                         input,
-                        make_push_closure(jvm, stream_global, push_buf),
+                        // This variant emits no flush hints: every call
+                        // carries body bytes.
+                        |chunk: &[u8]| {
+                            delivered.set(true);
+                            push(chunk)
+                        },
                     ),
                 );
                 mark_streaming_buffer_reusable(push_buf_lease);
@@ -756,7 +831,8 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                     }
                     Some((header_bytes, _)) => wire_byte_array(env, &header_bytes),
                 }
-            })?;
+            },
+        )?;
 
         Ok(response)
     })
@@ -785,8 +861,10 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
 /// Failure modes mirror [`Java_...dispatchStreaming`]: malformed
 /// wire / unknown version / no app / Rust panic / a failure before the first
 /// response chunk produce a normal `error_wire(...)` response in the returned
-/// bytes; a failure after response bytes were written to `outputStream`
-/// throws `java.io.IOException` (truncated response).
+/// bytes; a failure (incl. a panic) after response bytes were written to
+/// `outputStream` throws `VesperaStreamAbortedException` (`IOException`,
+/// truncated response).  `outputStream` is only written to, never flushed
+/// mid-response (the header comes back only when this call returns).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFullStreaming<
     'local,
@@ -798,8 +876,9 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
     output_stream: JObject<'local>,
 ) -> jbyteArray {
     guard_byte_array_symbol(&mut unowned_env, |env| {
-        let response =
-            catch_or_panic_byte_array(env, |env| -> jni::errors::Result<JObject<'local>> {
+        let response = catch_streaming_byte_array(
+            env,
+            |env, delivered| -> jni::errors::Result<JObject<'local>> {
                 if input_stream.is_null() || output_stream.is_null() {
                     return wire_byte_array(
                         env,
@@ -857,15 +936,23 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                     track_pull(make_pull_closure(pull_jvm, pull_global, pull_buf));
                 let mut push = make_push_closure(push_jvm, push_global, push_buf);
                 let mut captured_header: Vec<u8> = Vec::new();
-                let mut delivered = false;
                 let outcome = block_on_shared_runtime(
                     vespera_inprocess::dispatch_bidirectional_streaming_with_header_closing(
                         header_input,
                         pull,
                         // Push response body chunks to Java OutputStream on
-                        // the thread driving the dispatch.
+                        // the thread driving the dispatch.  The header-first
+                        // dispatcher also sends EMPTY flush hints; this
+                        // variant returns its header only afterwards, so a
+                        // hint is dropped: flushing the caller's stream (a
+                        // servlet response) would commit it before the status
+                        // is applied, and a hint is no body byte — a failure
+                        // after it is still a clean error response.
                         |chunk: &[u8]| {
-                            delivered = true;
+                            if chunk.is_empty() {
+                                return std::ops::ControlFlow::Continue(());
+                            }
+                            delivered.set(true);
                             push(chunk)
                         },
                         |h: &[u8]| captured_header.extend_from_slice(h),
@@ -889,13 +976,14 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                     }
                     // Failed before any response byte reached Java: a clean
                     // error response is still possible.
-                    Some(failed) if !delivered => wire_byte_array(env, &failed.error_wire()),
+                    Some(failed) if !delivered.get() => wire_byte_array(env, &failed.error_wire()),
                     Some(_) => {
                         throw_streaming_abort(env, AbortReason::BodyAborted);
                         Ok(JObject::null())
                     }
                 }
-            })?;
+            },
+        )?;
 
         Ok(response)
     })

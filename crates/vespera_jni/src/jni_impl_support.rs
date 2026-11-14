@@ -79,13 +79,24 @@ impl AbortReason {
 /// resolved — a bridge JAR older than this cdylib, or a native image whose
 /// JNI metadata does not register it — so the abort is never lost.
 pub fn throw_streaming_abort(env: &mut jni::Env<'_>, reason: AbortReason) {
-    if env
-        .throw_new(STREAM_ABORTED_CLASS, reason.message())
-        .is_err()
-    {
+    let result = env.throw_new(STREAM_ABORTED_CLASS, reason.message());
+    if !typed_throw_succeeded(&result, env.exception_check()) {
         env.exception_clear();
         let _ = env.throw_new(jni::jni_str!("java/io/IOException"), reason.message());
     }
+}
+
+/// Whether `Env::throw_new` left the requested exception pending.
+///
+/// jni 0.22 reports a SUCCESSFUL `ThrowNew` as `Err(Error::JavaException)`
+/// (the "an exception is now pending" signal meant for `?` propagation) —
+/// never `Ok`.  Treating any `Err` as a failure cleared the freshly thrown
+/// typed exception and replaced it with the plain `IOException` fallback on
+/// every call.  A lookup / constructor failure surfaces as another error
+/// variant (or leaves nothing pending).
+#[must_use]
+pub const fn typed_throw_succeeded(result: &jni::errors::Result<()>, pending: bool) -> bool {
+    pending && matches!(result, Err(jni::errors::Error::JavaException))
 }
 
 /// Liveness token for a request-pull closure handed to the bidirectional

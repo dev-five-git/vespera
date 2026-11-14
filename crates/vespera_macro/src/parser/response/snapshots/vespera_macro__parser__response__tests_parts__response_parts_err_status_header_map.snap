@@ -1,0 +1,20 @@
+---
+source: crates/vespera_macro/src/parser/response/tests_parts.rs
+assertion_line: 63
+expression: responses_json(return_type)
+---
+{
+  "200": {
+    "description": "Successful response",
+    "content": {
+      "application/json": {
+        "schema": {
+          "$ref": "#/components/schemas/User"
+        }
+      }
+    }
+  },
+  "400": {
+    "description": "Error response"
+  }
+}

@@ -5,6 +5,18 @@ use vespera_core::schema::{SchemaRef, SchemaType};
 
 use super::*;
 
+/// The (`Json`-unwrapped) body payload of a response type and whether it
+/// sets headers.
+fn extract_ok_payload_and_headers(
+    ok_ty: &Type,
+) -> (
+    Option<Type>,
+    Option<BTreeMap<String, vespera_core::route::Header>>,
+) {
+    let payload = body_element(ok_ty).map(|body| unwrap_json(body).clone());
+    (payload, has_header_map(ok_ty).then(BTreeMap::new))
+}
+
 #[derive(Debug)]
 struct ExpectedSchema {
     schema_type: SchemaType,
@@ -636,10 +648,7 @@ fn response_helpers_cover_non_string_tuple_and_reference_fallbacks() {
     assert!(!is_string_like(&tuple));
 
     let metadata_only: Type = syn::parse_quote!((StatusCode, HeaderMap));
-    assert!(std::ptr::eq(
-        tuple_body(&metadata_only),
-        &raw const metadata_only
-    ));
+    assert!(body_element(&metadata_only).is_none());
 
     let reference_to_tuple: Type = syn::parse_quote!(&(String, i32));
     assert!(result_args(&reference_to_tuple).is_none());
@@ -680,7 +689,7 @@ fn media_shape(
 #[case::impl_into_response("-> impl IntoResponse", "200", None)]
 #[case::type_erased_response("-> axum::response::Response", "200", None)]
 #[case::generic_response("-> Response<Body>", "200", None)]
-#[case::redirect("-> Redirect", "200", None)]
+#[case::redirect("-> Redirect", "3XX", None)]
 #[case::html("-> Html<String>", "200", Some(("text/html", SchemaType::String, None)))]
 #[case::html_static("-> Html<&'static str>", "200", Some(("text/html", SchemaType::String, None)))]
 #[case::sse("-> Sse<Stream>", "200", Some(("text/event-stream", SchemaType::String, None)))]
