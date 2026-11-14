@@ -625,14 +625,23 @@ public class VesperaBridge {
 
     /**
      * Thrown by {@link #dispatchDirectPooled(byte[], boolean)} when the
-     * response exceeds the out-buffer capacity and the caller disallowed
-     * automatic retry (unsafe requests).  Carries the exact
-     * buffer size needed for a successful retry.
+     * response cannot be delivered through the pooled direct buffer: it
+     * exceeds the pool cap ({@code vespera.direct.maxBufferBytes}) or is an
+     * event stream (the natively stashed response is then discarded), a
+     * stash-less overflow was not allowed to re-dispatch, or
+     * {@code vespera.direct.oversize-policy=throw} rejected the heap
+     * fallback.
+     *
+     * <p>{@link #requiredSize()} is the out-buffer capacity the response
+     * needs. It is exact for a re-dispatch overflow, but for a stashed
+     * response whose body length was not known yet it is only a
+     * <strong>lower bound</strong>.
      *
      * <p><strong>Retrying re-runs the dispatch</strong> — the Rust
      * handler executes again.  Only retry safe requests
      * (GET/HEAD/OPTIONS) automatically; for unsafe methods the caller
-     * must decide.
+     * must decide.  A response this large (or an event stream) is better
+     * served by a streaming dispatch.
      */
     public static class BufferTooSmallException extends RuntimeException {
         private final int requiredSize;
@@ -648,7 +657,7 @@ public class VesperaBridge {
             this.requiredSize = requiredSize;
         }
 
-        /** Exact out-buffer capacity needed for a successful retry. */
+        /** Out-buffer capacity the response needs: exact, or a lower bound for a stashed response (see class docs). */
         public int requiredSize() {
             return requiredSize;
         }
@@ -722,21 +731,31 @@ public class VesperaBridge {
      *
      * <p>Fallback / overflow policy:
      * <ul>
-     *   <li>Request larger than the cap → falls back to
-     *       {@link #dispatchBytes(byte[])} (safe: no dispatch has run
-     *       yet) and wraps the result.</li>
-     *   <li>Response overflow with {@code retryOnOverflow == true} →
-     *       grows the out buffer (or falls back to {@code dispatchBytes}
-     *       beyond the cap) and dispatches again.  <strong>The handler
-     *       runs twice</strong> — only pass {@code true} for safe
-     *       requests.</li>
-     *   <li>Response overflow with {@code retryOnOverflow == false} →
-     *       throws {@link BufferTooSmallException}.</li>
+     *   <li>Request larger than the cap, or a virtual thread → falls back
+     *       to {@link #dispatchBytes(byte[])} (safe: no dispatch has run
+     *       yet; fully buffered) and wraps the result — or throws
+     *       {@link BufferTooSmallException} under
+     *       {@code vespera.direct.oversize-policy=throw}.</li>
+     *   <li>Response overflow → the native side keeps the finished
+     *       response in its overflow stash and it is copied into a grown
+     *       out buffer (up to the cap).  <strong>The handler runs
+     *       once</strong>, for every method, whatever
+     *       {@code retryOnOverflow} says.</li>
+     *   <li>Response beyond the cap, or a {@code text/event-stream} → the
+     *       stashed response is discarded and
+     *       {@link BufferTooSmallException} is thrown (its size may be a
+     *       lower bound); the Spring proxy streams such responses from the
+     *       stash instead.</li>
+     *   <li>{@code retryOnOverflow} only matters for an overflow without a
+     *       stash handle: {@code true} grows the out buffer and dispatches
+     *       again (<strong>the handler runs twice</strong> — only pass
+     *       {@code true} for safe requests), {@code false} throws
+     *       {@link BufferTooSmallException}.</li>
      * </ul>
      *
      * @param wireRequest      length-prefixed binary wire request
-     * @param retryOnOverflow  whether a response overflow may re-run the
-     *                         dispatch (safe requests only)
+     * @param retryOnOverflow  whether a stash-less response overflow may
+     *                         re-run the dispatch (safe requests only)
      * @return read-only buffer view of the wire response, positioned at
      *         0 with {@code limit()} = response length
      */
