@@ -294,6 +294,19 @@ async fn main() -> std::io::Result<()> {
 }
 ```
 
+To serve a listener you bound yourself, use `serve_listener(listener)` / `serve_listener_with_graceful_shutdown(listener, signal)`. Bind port `0` and read the assigned port before serving (tests: no bind-drop-rebind race, and a client may connect right away), or hand over a socket configured with `tokio::net::TcpSocket`:
+
+```rust
+use vespera::{vespera, Serve};
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    println!("listening on {}", listener.local_addr()?);
+    vespera!(docs_url = "/docs").serve_listener(listener).await
+}
+```
+
 ## export_app! Macro
 
 Export a Vespera app from a library crate so it can be merged into a parent app:

@@ -1,5 +1,6 @@
 ---
 source: examples/axum-example/tests/integration_test.rs
+assertion_line: 446
 expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
 ---
 {
@@ -1529,6 +1530,44 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NetworkEndpoint"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/path/legacy/{id}/files/{rest}": {
+      "get": {
+        "operationId": "legacy_path_notation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0,
+              "maximum": 4294967295
+            }
+          },
+          {
+            "name": "rest",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }

@@ -7,7 +7,6 @@
 
 #![cfg(feature = "cron")]
 
-use std::net::{SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -42,14 +41,14 @@ async fn graceful_serve_stops_cron_and_waits_for_in_flight_runs() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    let probe = TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    let addr: SocketAddr = probe.local_addr().expect("local_addr");
-    drop(probe);
+    // Bound here and handed over: no bind-drop-rebind port race.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
     // The signal fires at once: the server drains immediately, then the
-    // in-flight cron run is awaited before `serve_with_graceful_shutdown`
-    // returns.
+    // in-flight cron run is awaited before the graceful serve returns.
     Router::new()
-        .serve_with_graceful_shutdown(addr, async {})
+        .serve_listener_with_graceful_shutdown(listener, async {})
         .await
         .expect("serve");
     let started = STARTED.load(Ordering::SeqCst);

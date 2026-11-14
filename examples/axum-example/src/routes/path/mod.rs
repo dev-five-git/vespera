@@ -31,3 +31,12 @@ pub async fn mod_file_with_multi_path_2(
     println!("arg: {:?}", path);
     "multi path"
 }
+
+// axum 0.7 `:param` / `*rest` notation: normalized at macro time to axum 0.8's
+// `{id}` / `{*rest}` (router and OpenAPI alike).
+#[vespera::route(get, path = "/legacy/:id/files/*rest")]
+pub async fn legacy_path_notation(
+    vespera::axum::extract::Path((id, rest)): vespera::axum::extract::Path<(u32, String)>,
+) -> String {
+    format!("{id}:{rest}")
+}

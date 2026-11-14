@@ -48,10 +48,15 @@
 //!         .await
 //! }
 //! ```
+//!
+//! [`Serve::serve_listener`] / [`Serve::serve_listener_with_graceful_shutdown`]
+//! take an already-bound [`tokio::net::TcpListener`] instead of an address —
+//! bind port `0` and read the assigned port first (tests), or configure the
+//! socket yourself.
 
 use std::{future::Future, io, net::SocketAddr};
 
-use tokio::net::ToSocketAddrs;
+use tokio::net::{TcpListener, ToSocketAddrs};
 
 /// Extension trait that adds a one-liner [`Serve::serve`] method to
 /// any [`axum::Router`].
@@ -79,6 +84,33 @@ pub trait Serve {
         addr: impl ToSocketAddrs,
         signal: impl Future<Output = ()> + Send + 'static,
     ) -> impl Future<Output = io::Result<()>>;
+
+    /// Like [`Serve::serve`], but on a listener the caller already bound —
+    /// e.g. port `0` (read the OS-assigned port with
+    /// [`TcpListener::local_addr`] before serving), a socket configured
+    /// through `tokio::net::TcpSocket`, or one inherited from a supervisor.
+    /// Connections that arrive between the bind and this call wait in the
+    /// listen backlog, so a client may connect as soon as the bind returned.
+    ///
+    /// ```no_run
+    /// use vespera::Serve;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> std::io::Result<()> {
+    ///     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    ///     println!("listening on {}", listener.local_addr()?);
+    ///     vespera::axum::Router::new().serve_listener(listener).await
+    /// }
+    /// ```
+    fn serve_listener(self, listener: TcpListener) -> impl Future<Output = io::Result<()>>;
+
+    /// [`Serve::serve_with_graceful_shutdown`] on a listener the caller
+    /// already bound (see [`Serve::serve_listener`]).
+    fn serve_listener_with_graceful_shutdown(
+        self,
+        listener: TcpListener,
+        signal: impl Future<Output = ()> + Send + 'static,
+    ) -> impl Future<Output = io::Result<()>>;
 }
 
 /// Stops `#[vespera::cron]` scheduling once a graceful shutdown begins (no-op
@@ -91,12 +123,7 @@ const fn stop_cron_scheduling() {}
 
 impl Serve for axum::Router {
     async fn serve(self, addr: impl ToSocketAddrs) -> io::Result<()> {
-        let listener = tokio::net::TcpListener::bind(addr).await?;
-        axum::serve(
-            listener,
-            self.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
+        self.serve_listener(TcpListener::bind(addr).await?).await
     }
 
     async fn serve_with_graceful_shutdown(
@@ -104,7 +131,23 @@ impl Serve for axum::Router {
         addr: impl ToSocketAddrs,
         signal: impl Future<Output = ()> + Send + 'static,
     ) -> io::Result<()> {
-        let listener = tokio::net::TcpListener::bind(addr).await?;
+        self.serve_listener_with_graceful_shutdown(TcpListener::bind(addr).await?, signal)
+            .await
+    }
+
+    async fn serve_listener(self, listener: TcpListener) -> io::Result<()> {
+        axum::serve(
+            listener,
+            self.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+    }
+
+    async fn serve_listener_with_graceful_shutdown(
+        self,
+        listener: TcpListener,
+        signal: impl Future<Output = ()> + Send + 'static,
+    ) -> io::Result<()> {
         axum::serve(
             listener,
             self.into_make_service_with_connect_info::<SocketAddr>(),
@@ -148,6 +191,20 @@ impl Serve for crate::VesperaRouter<()> {
     ) -> io::Result<()> {
         self.with_state(())
             .serve_with_graceful_shutdown(addr, signal)
+            .await
+    }
+
+    async fn serve_listener(self, listener: TcpListener) -> io::Result<()> {
+        self.with_state(()).serve_listener(listener).await
+    }
+
+    async fn serve_listener_with_graceful_shutdown(
+        self,
+        listener: TcpListener,
+        signal: impl Future<Output = ()> + Send + 'static,
+    ) -> io::Result<()> {
+        self.with_state(())
+            .serve_listener_with_graceful_shutdown(listener, signal)
             .await
     }
 }
