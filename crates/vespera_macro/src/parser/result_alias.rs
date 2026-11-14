@@ -187,14 +187,24 @@ fn apply_alias(alias: &syn::ItemType, ty: &Type) -> Option<Type> {
     if args.len() > params.len() {
         return None;
     }
-    let mut concrete: Vec<&Type> = Vec::with_capacity(params.len());
-    for (index, param) in params.iter().enumerate() {
-        concrete.push(match args.get(index) {
-            Some(arg) => arg,
-            None => &param.default.as_ref()?.1,
-        });
-    }
     let names: Vec<String> = params.iter().map(|param| param.ident.to_string()).collect();
+    let mut concrete: Vec<Type> = Vec::with_capacity(params.len());
+    for (index, param) in params.iter().enumerate() {
+        let ty = if let Some(arg) = args.get(index) {
+            (*arg).clone()
+        } else {
+            // A default may name earlier parameters (`type R<T, E =
+            // Wrapper<T>>`): they are already concrete.
+            let earlier: Vec<&Type> = concrete.iter().collect();
+            crate::parser::schema::substitute_type(
+                &param.default.as_ref()?.1,
+                &names[..index],
+                &earlier,
+            )
+        };
+        concrete.push(ty);
+    }
+    let concrete: Vec<&Type> = concrete.iter().collect();
     Some(crate::parser::schema::substitute_type(
         &alias.ty, &names, &concrete,
     ))
@@ -224,6 +234,16 @@ mod tests {
         "type R<T, E = AppError> = Result<Json<T>, E>;",
         "-> R<User>",
         "-> Result < Json < User > , AppError >"
+    )]
+    #[case::default_names_earlier_param(
+        "type R<T, E = Wrapper<T>> = Result<Json<T>, E>;",
+        "-> R<User>",
+        "-> Result < Json < User > , Wrapper < User > >"
+    )]
+    #[case::default_names_earlier_defaulted_param(
+        "type R<T, U = Vec<T>, E = Wrapper<U>> = Result<Json<U>, E>;",
+        "-> R<User>",
+        "-> Result < Json < Vec < User > > , Wrapper < Vec < User > > >"
     )]
     #[case::user_result_alias(
         "type Result<T> = std::result::Result<T, AppError>;",

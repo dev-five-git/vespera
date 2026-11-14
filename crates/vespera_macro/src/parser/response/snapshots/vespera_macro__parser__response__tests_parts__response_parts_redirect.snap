@@ -1,0 +1,10 @@
+---
+source: crates/vespera_macro/src/parser/response/tests_parts.rs
+assertion_line: 63
+expression: responses_json(return_type)
+---
+{
+  "3XX": {
+    "description": "Redirect"
+  }
+}

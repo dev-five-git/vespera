@@ -7,9 +7,13 @@ use vespera_core::{
 };
 
 use super::shared::{input_rename_all, named_struct_fields, serde_field_name};
-use crate::parser::schema::{
-    SerdeSide, apply_field_rules, extract_doc_comment, parse_type_to_schema_ref,
-    schema_attrs::extract_schema_constraints, wire_override::field_schema_ref,
+use crate::{
+    parser::schema::{
+        SerdeSide, apply_field_rules, extract_doc_comment, parse_type_to_schema_ref,
+        schema_attrs::extract_schema_constraints,
+        wire_override::{container_override_type, field_schema_ref},
+    },
+    schema_macro::type_utils::{is_map_type as utils_is_map_type, last_path_segment},
 };
 
 /// A required `in: path` parameter.
@@ -42,6 +46,8 @@ pub(in crate::parser) fn string_path_schema() -> SchemaRef {
 /// - `Path<Struct>` (a known named-field struct): each segment is typed by the
 ///   struct field with the same serde name (`rename` / `rename_all`
 ///   respected); unmatched segments fall back to `string`.
+/// - `Path<HashMap<String, V>>` / `Path<Vec<T>>`: every segment is a `V` / `T`.
+/// - a struct with container `#[serde(from = "X")]` / `try_from`: typed from `X`.
 /// - any other `Path<T>`: `T` types the segment when the route has exactly
 ///   one; with several segments a scalar cannot match them, so each is
 ///   documented as `string`.
@@ -72,7 +78,53 @@ pub(in crate::parser) fn path_extractor_parameters(
             .collect();
     }
 
+    path_parameters_from(inner_ty, path_params, known_schemas, struct_definitions, 0)
+}
+
+/// How many container `from` / `try_from` hops are followed (a cycle stops).
+const MAX_CONVERSION_DEPTH: usize = 8;
+
+fn path_parameters_from(
+    inner_ty: &Type,
+    path_params: &[String],
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
+    depth: usize,
+) -> Vec<Parameter> {
+    if let Type::Tuple(_) = inner_ty {
+        return path_extractor_parameters(inner_ty, path_params, known_schemas, struct_definitions);
+    }
+
+    // `Path<HashMap<String, V>>` / `Path<Vec<T>>`: axum hands every segment
+    // to the map / sequence, so each one is a `V` / `T` — never the whole
+    // object or array.
+    if let Some(element) = path_collection_element(inner_ty) {
+        return path_params
+            .iter()
+            .map(|name| {
+                path_parameter(
+                    name,
+                    parse_type_to_schema_ref(element, known_schemas, struct_definitions),
+                )
+            })
+            .collect();
+    }
+
     if let Some(struct_item) = named_struct_fields(inner_ty, struct_definitions) {
+        // Container `#[serde(from = "X")]` / `try_from` (or `#[schema(value_type
+        // = X)]`): the segments are deserialized as `X`, not as these fields.
+        if depth < MAX_CONVERSION_DEPTH
+            && let Some(source) =
+                container_override_type(&struct_item.attrs, SerdeSide::Deserialize)
+        {
+            return path_parameters_from(
+                &source,
+                path_params,
+                known_schemas,
+                struct_definitions,
+                depth + 1,
+            );
+        }
         let rename_all = input_rename_all(&struct_item.attrs);
         return path_params
             .iter()
@@ -113,6 +165,28 @@ pub(in crate::parser) fn path_extractor_parameters(
         .iter()
         .map(|name| path_parameter(name, string_path_schema()))
         .collect()
+}
+
+/// The per-segment type of a `Path<Map<K, V>>` (`V`) or `Path<Seq<T>>` (`T`).
+fn path_collection_element(ty: &Type) -> Option<&Type> {
+    let segment = last_path_segment(ty)?;
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    let mut types = args.args.iter().filter_map(|arg| match arg {
+        syn::GenericArgument::Type(ty) => Some(ty),
+        _ => None,
+    });
+    if utils_is_map_type(ty) {
+        types.nth(1)
+    } else if ["Vec", "VecDeque", "HashSet", "BTreeSet"]
+        .iter()
+        .any(|name| segment.ident == name)
+    {
+        types.next()
+    } else {
+        None
+    }
 }
 
 pub(super) fn parse_path_extractor(

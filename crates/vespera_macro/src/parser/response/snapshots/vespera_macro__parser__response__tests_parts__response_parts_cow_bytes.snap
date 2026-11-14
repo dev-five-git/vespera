@@ -1,0 +1,18 @@
+---
+source: crates/vespera_macro/src/parser/response/tests_parts.rs
+assertion_line: 63
+expression: responses_json(return_type)
+---
+{
+  "200": {
+    "description": "Successful response",
+    "content": {
+      "application/octet-stream": {
+        "schema": {
+          "type": "string",
+          "format": "binary"
+        }
+      }
+    }
+  }
+}
