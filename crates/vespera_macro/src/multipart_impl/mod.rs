@@ -521,7 +521,10 @@ mod tests {
     fn mentions_any_finds_type_params(#[case] ty: &str, #[case] expected: bool) {
         let tokens: TokenStream = ty.parse().unwrap();
         assert_eq!(
-            mentions_any(tokens, &[syn::Ident::new("T", proc_macro2::Span::call_site())]),
+            mentions_any(
+                tokens,
+                &[syn::Ident::new("T", proc_macro2::Span::call_site())]
+            ),
             expected
         );
     }

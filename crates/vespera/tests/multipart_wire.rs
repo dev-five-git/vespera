@@ -268,7 +268,7 @@ struct GenericReq<T> {
 async fn generic_handler(
     TypedMultipart(req): TypedMultipart<GenericReq<String>>,
 ) -> Json<TextResult> {
-    assert!(req.skipped_cache.is_empty());
+    assert_eq!(req.skipped_cache, Vec::<u8>::new());
     Json(TextResult {
         text_len: u64::try_from(req.value.len()).unwrap_or(u64::MAX),
     })
