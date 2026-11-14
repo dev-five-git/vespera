@@ -88,7 +88,7 @@ Vespera reads your handler's extractor types and maps them to OpenAPI parameters
     <TableRow>
       <TableCell>`Form<T>`</TableCell>
       <TableCell>Request body (`application/x-www-form-urlencoded`)</TableCell>
-      <TableCell></TableCell>
+      <TableCell>On `GET` / `HEAD` documented as query parameters (axum reads the query string there)</TableCell>
     </TableRow>
     <TableRow>
       <TableCell>`TypedMultipart<T>`</TableCell>
@@ -103,7 +103,7 @@ Vespera reads your handler's extractor types and maps them to OpenAPI parameters
     <TableRow>
       <TableCell>`TypedHeader<T>`</TableCell>
       <TableCell>Header parameters</TableCell>
-      <TableCell></TableCell>
+      <TableCell>Named after `T`, never the argument binding: the wire name for known `headers::*` types (`UserAgent` → `User-Agent`), otherwise `T` in kebab-case (`XRequestId` → `x-request-id`); `Authorization` / `Accept` / `Content-Type` are omitted</TableCell>
     </TableRow>
     <TableRow>
       <TableCell>`Result<E, Rejection>`</TableCell>

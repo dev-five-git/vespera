@@ -184,6 +184,7 @@ vespera:
     cors: rust                   # rust (default) | spring — who answers CORS, see "CORS"
     direct-retry-on-overflow: true # set false to avoid DIRECT retry double-execution
     forward-principal: true      # forward the authenticated principal to Rust, see "Forwarded principal"
+    multipart-passthrough: true  # proxied multipart bodies reach Rust raw, see "Multipart uploads"
     max-buffered-request-bytes: 67108864 # default 64 MiB; 0 = unlimited
     max-buffered-response-bytes: 67108864 # SYNC/ASYNC response cap → 500 (default 64 MiB; 0 = unlimited)
     native:                      # Rust-side knobs, applied before the first dispatch
@@ -438,7 +439,7 @@ Once `max-threads` streams run and `max-queued` more wait, a further streaming r
 - Request bodies are always aggregated; there is no streamed upload equivalent of `BIDIRECTIONAL_STREAMING`.
 - Each streamed response holds one streaming thread for its lifetime, so size `vespera.bridge.reactive-streaming.max-threads` for many concurrent SSE clients. An idle stream notices a disconnect only at its next write.
 - `HEAD` is never streamed.
-- A form body that a filter already consumed through `exchange.getFormData()` is not rebuilt (unlike the servlet proxy's parameter-map fallback).
+- A form body that a filter already consumed through `exchange.getFormData()` is rebuilt from the cached form (see **Form bodies read by a `WebFilter`** above), so interleaved repeated names arrive grouped per name.
 - A path that a user `@Controller` owns for another HTTP method answers `405` from Spring rather than falling through to Rust.
 - The springdoc integration is servlet-only.
 - `VesperaClient.send()` blocks. From reactive code, use `sendAsync()` (`Mono.fromFuture(...)`).
@@ -520,6 +521,7 @@ The proxy is an ordinary Spring MVC controller, so Spring Security's filter chai
 - **App selection bypasses path rules.** `X-Vespera-App` picks a whole router; restrict it with `vespera.bridge.exposed-apps` (see [Multi-app routing → Security](#security-the-app-header-is-client-controlled)) or with a custom `AppNameResolver` that checks the authenticated principal.
 - **The authenticated principal is forwarded for you — don't use headers for it.** The proxy puts the authenticated user into the trusted `principal` wire field (see [Forwarded principal](#forwarded-principal)), which a client cannot set; Rust handlers take `vespera::inprocess::Principal`. Do not identify the user from a forwarded `X-User`-style header: request headers are client-controlled unless every copy is stripped.
 - **Preflights.** With `vespera.bridge.cors=rust`, permit unauthenticated `OPTIONS` preflights (`.requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()`), or browsers cannot reach the Rust CORS layer.
+- **Multipart + CSRF.** When `CsrfFilter` looks for the token in a request *parameter* (no `X-CSRF-TOKEN` header), the container parses a multipart body to find it, and the proxy can no longer forward that body (`500`, see [Multipart uploads](#multipart-uploads)). Send the token as a header or exclude the proxied upload paths from CSRF.
 
 ### Forwarded principal
 
@@ -1183,7 +1185,7 @@ public ResponseEntity<StreamingResponseBody> download(@PathVariable String name)
 
 ### Binary upload / download
 
-The wire format carries bytes verbatim — no base64, no transcoding. A multipart file upload reaches the Rust `axum::extract::Multipart` extractor byte-for-byte:
+The wire format carries bytes verbatim — no base64, no transcoding. A multipart file upload reaches the Rust `axum::extract::Multipart` extractor byte-for-byte (through the Spring proxy too — see [Multipart uploads](#multipart-uploads)):
 
 ```java
 byte[] pdf = Files.readAllBytes(Path.of("report.pdf"));
@@ -1198,6 +1200,20 @@ assert Arrays.equals(pdf, resp.bodyBytes()); // exact round-trip (copy on demand
 
 A Rust handler returning a binary response (e.g. `image/png`) flows the same way: `VesperaProxyController` returns `ResponseEntity<byte[]>` for **every** content type — the wire header already carries the exact `Content-Type`, which Spring's `ByteArrayHttpMessageConverter` writes verbatim. (Before 0.2.1 text-like content types were delivered as `ResponseEntity<String>`; that path was dropped because it forced a redundant UTF-8 decode→re-encode round-trip.)
 
+## Multipart uploads
+
+Spring Boot registers a `StandardServletMultipartResolver`, and `DispatcherServlet` resolves multipart requests **before** it picks a handler: `getParts()` drains the servlet stream into temp files and enforces `spring.servlet.multipart.max-file-size` / `max-request-size` (1 MB / 10 MB by default). Through the proxy that meant an empty body for Rust (or a `413` from Spring for any file over 1 MB).
+
+The bridge therefore wraps the `multipartResolver` bean — Spring Boot's or one you define under that name — in a `VesperaProxyMultipartResolver` (`vespera.bridge.multipart-passthrough=true`, the default). For a multipart request it asks the handler mappings who will serve it: when that is the Vespera proxy (`include-patterns` / `exclude-patterns` and more specific Spring mappings are honoured), it reports *not multipart*, so the raw body and the original `Content-Type` (with its boundary) reach the Rust `Multipart` / `TypedMultipart` extractor byte-for-byte in every dispatch mode, and Spring's multipart size limits do not apply (Rust's own limits do — axum's `DefaultBodyLimit`, `vespera.bridge.native.max-request-bytes` / `max-streaming-request-bytes`). Every other request — a `@PostMapping` taking a `MultipartFile`, error pages — goes to the wrapped resolver unchanged, limits included. Multipart requests pay one extra handler lookup.
+
+Things that still parse the body before the proxy, and how the proxy reacts:
+
+- **Something consumed it anyway** — Spring's `MultipartFilter`, a filter calling `getParts()` or `getParameter()` (the container parses multipart bodies for parameters too: `CsrfFilter` without the token header, `HiddenHttpMethodFilter`), or a `@RequestMapping(params = ...)` condition evaluated for the request. A multipart body cannot be rebuilt faithfully (preamble, part-header spelling, size-limited parts), so instead of forwarding an empty body the proxy answers `500` `vespera: the multipart request body was consumed before the proxy could forward it (...)` and logs one WARN naming the usual causes. Exclude the proxied paths from that filter (or send the CSRF token as a header).
+- **A resolver under another bean name / a BYO controller** (`controller-enabled=false`) is not wrapped; build one yourself with `new VesperaProxyMultipartResolver(delegate, request -> ...)`.
+- **`multipart-passthrough=false`** restores Spring's parsing for every request; proxied multipart requests are then answered `500` as above.
+
+WebFlux is unaffected: it only parses multipart data when something calls `exchange.getMultipartData()`, which the reactive proxy never does (nor Spring Security's `CsrfWebFilter`, unless you enable `tokenFromMultipartDataEnabled`).
+
 ## VesperaProxyController behaviour
 
 `@RequestMapping("/**")` catches every HTTP request, regardless of method or content type, and:
@@ -1207,6 +1223,7 @@ A Rust handler returning a binary response (e.g. `image/png`) flows the same way
 3. For `SYNC` / `ASYNC` / `STREAMING` / `DIRECT` modes the body is read into `byte[]` first (bodyless requests — explicit `Content-Length: 0`, e.g. the small safe GETs the SmartDispatch resolver routes through DIRECT — skip the read and reuse a shared empty array), then encoded via `VesperaBridge.encodeRequest(...)` and dispatched through the matching native method.
    - **Form bodies consumed by Spring.** Spring's `FormContentFilter` (PUT/PATCH/DELETE) and any earlier `getParameter()` call (e.g. Spring Security's `CsrfFilter`, POST) drain an `application/x-www-form-urlencoded` body into request parameters before the proxy runs. When the stream comes back empty/short, the proxy rebuilds the body from `getParameterMap()` minus the query-string parameters (re-encoded in the charset it was decoded with) and forwards the matching `Content-Length`, so a Rust `Form<T>` extractor still sees every field. Form requests a resolver routes to `BIDIRECTIONAL_STREAMING` are served as `STREAMING` (request buffered, response streamed) for the same reason. `FormContentFilter` itself is left enabled for the host app. Values are grouped per name (`a=1&b=2&a=3` arrives as `a=1&a=3&b=2`).
 4. Sync/async responses are parsed straight from the wire response via the allocation-lean `WireHeaderReader` (status + headers) and returned as `ResponseEntity<byte[]>` for **every** `Content-Type` — the body is sliced once from the wire tail; the `Content-Type` header is carried verbatim, so no text/binary branching is needed.  Streaming and DIRECT modes write status/headers and body straight to the servlet response.
+   - **Multipart bodies are never parsed by Spring** for proxied requests (see [Multipart uploads](#multipart-uploads)); one that something else consumed first is answered `500` instead of being forwarded empty.
 5. `BIDIRECTIONAL_STREAMING` hands Rust a gated wrapper of the servlet `InputStream`. A handler that returns without draining the request body can leave the Rust request producer parked in `read()` (it is detached after a bounded join); once the native call returns, the gate makes every further read return `-1` without touching the servlet stream, and if a read was still in flight the proxy sets `Connection: close` (when the response is not committed yet; otherwise best effort — the container sees that read finish on its own) so a keep-alive connection is never reused at an unknown stream position.
 
 ## Operability
@@ -1320,9 +1337,15 @@ and the Gradle plugin.
 
 See [`examples/rust-jni-demo`](../../examples/rust-jni-demo/) for a complete Rust + Spring Boot integration including build scripts, native bundling, and a curl smoke test. Its `java/demo-reactive-app` module is the WebFlux variant (reactor-netty, no servlet API), whose `ReactiveProxyE2ETest` runs against the real cdylib.
 
+## Breaking changes in 0.8
+
+1. **`VesperaBridgeCoreAutoConfiguration`.** The `VesperaClient` bean, `vespera.bridge.native.*` forwarding, `vespera.bridge.library-name` initialisation and `shutdown-on-close` now come from this new web-agnostic autoconfiguration (non-web applications get them too); bean names and `@ConditionalOnMissingBean` semantics are unchanged. Tests or slices that list `VesperaBridgeAutoConfiguration` / `VesperaBridgeReactiveAutoConfiguration` explicitly (e.g. `@ImportAutoConfiguration`, `AutoConfigurations.of(...)`) must add `VesperaBridgeCoreAutoConfiguration`.
+2. **Gradle plugin `bundleNativeLib` is a `Sync`** (was a `Copy`) into its plugin-owned generated resources directory, so a removed target or renamed crate no longer leaves a stale `native/<platform>/` library in the jar. Build scripts that looked the task up as `Copy` should use `Sync` or `AbstractCopyTask`.
+3. **Observable:** after `VesperaBridge.shutdown`, `dispatchAsync` (and `VesperaClient.sendAsync` / the WebFlux proxy) completes with `503` instead of `500`; WebFlux streamed responses run on the bounded `VesperaStreamingExecutor` (`vespera.bridge.reactive-streaming.*`, `503` beyond its capacity); springdoc Swagger UI paths are excluded from the proxy automatically; CORS preflights for Java handlers are answered by Spring even with `cors=rust`.
+
 ## Breaking changes after 0.5.0
 
-> **Behaviour changes in 0.6 (no code change required, but observable):** the buffered-response cap answers `500` instead of `413` (item 13); CORS preflights are routed to Rust by default (item 14); proxy errors keep filter-set headers and no longer echo exception messages (item 15); the `app` of `DispatchEvent` / the metrics tag is bounded (item 16); a missing native library answers `503` (item 17); a bridge/native release mismatch fails `init` (item 18).
+> **Behaviour changes in 0.6 (no code change required, but observable):** the buffered-response cap answers `500` instead of `413` (item 18); CORS preflights are routed to Rust by default (item 19); proxy errors keep filter-set headers and no longer echo exception messages (item 20); the `app` of `DispatchEvent` / the metrics tag is bounded (item 21); a missing native library answers `503` (item 22); a bridge/native release mismatch fails `init` (item 23).
 
 1. **Spring is a provided dependency.** The bridge no longer exports `spring-boot-starter-web` / `jackson-databind`; see [Dependencies](#dependencies--spring-is-provided-by-your-app). Apps that got Spring MVC or Jackson only through the bridge must declare them.
 2. **`HEAD` responses advertise the real representation length.** axum answers `HEAD` with an empty body but the `content-length` of the matching `GET`; the proxy now forwards that value (in every dispatch mode) instead of `Content-Length: 0`. When Rust declares no length and sends no body, `Content-Length` is left unset rather than `0`.

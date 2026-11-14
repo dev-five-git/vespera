@@ -19,6 +19,10 @@ vespera:
     max-buffered-response-bytes: 67108864 # 64 MiB, 0 = unlimited
     async-pool-size: 0                   # 0 = max(2, min(4, CPUs))
     clear-threadlocals-after-request: false
+    forward-principal: true              # authenticated principal → Rust Principal
+    reactive-streaming:                  # WebFlux only, see below
+      max-threads: 0                     # 0 = 10 x available processors
+      max-queued: 100
     request-id:
       enabled: true
       header: X-Request-Id
@@ -34,6 +38,7 @@ vespera:
       max-buffered-response-bytes: 268435456
       dispatch-timeout: 30s
       async-max-in-flight: 4096
+      max-request-producers: 256
       worker-threads: 8
       max-blocking-threads: 512
 ```
@@ -52,6 +57,8 @@ vespera:
 | `max-buffered-response-bytes` | 64 MiB | Response cap for `SYNC` / `ASYNC` → `500`. Forwarded to the native buffered-response cap unless that is set explicitly |
 | `async-pool-size` | `0` | Threads of the executor that parses `ASYNC` responses; `0` keeps `max(2, min(4, CPUs))` |
 | `clear-threadlocals-after-request` | `false` | `true` clears the per-thread direct/header buffers after every request (redeploy-heavy containers) |
+| `forward-principal` | `true` | Forward the authenticated principal to Rust in the trusted `principal` wire field, see below; `false` forwards none |
+| `reactive-streaming.max-threads` / `.max-queued` | `0` (= 10 × CPUs) / `100` | WebFlux only: streamed responses that run / wait; beyond both → `503`, see below |
 | `request-id.enabled` / `.header` | `true` / `X-Request-Id` | Request-id propagation, see below |
 | `library-name` | none | Crate name the autoconfiguration loads with `VesperaBridge.init(...)` when the application has not done it |
 | `shutdown-on-close` / `shutdown-timeout` | `false` / `10s` | Stop the Rust runtime when the context closes, see below |
@@ -119,6 +126,8 @@ vespera:
 | `group` (default) | One Swagger UI definition per app (`vespera`, `vespera (admin)`), served verbatim at `/v3/api-docs/vespera/<app>`. springdoc's own document stays listed as `application` and is selected first |
 | `merge` | Rust paths, components and tags are merged into springdoc's `/v3/api-docs`. Java paths win on a clash, a clashing component is renamed `vespera_<Name>` (`<app>_<Name>`) with its `$ref`s rewritten, and a named app's operations get the required `X-Vespera-App` header parameter |
 
+**Swagger UI paths are never proxied.** When springdoc's UI is configured (its `SwaggerConfig` is a bean and `springdoc.swagger-ui.enabled` is not `false`), `springdoc.swagger-ui.path` (default `/swagger-ui.html`), `<its parent>/swagger-ui/**` and, on WebFlux, `<springdoc.webjars.prefix>/swagger-ui/**` are added to `exclude-patterns` automatically, so `/swagger-ui/index.html` is served by springdoc instead of reaching Rust.
+
 Only the default app and `exposed-apps` are documented unless `apps` is set. To read the document from somewhere else (for example the `openapi.json` written at build time, bundled as a resource), declare your own `VesperaOpenApiSource` bean. The proxy's `/**` catch-all is hidden from springdoc's document.
 
 ## Native Limits, Timeouts and Runtime
@@ -132,6 +141,7 @@ Only the default app and `exposed-apps` are documented unless `apps` is set. To 
 | `max-buffered-response-bytes` | `vespera.limits.maxBufferedResponseBytes` / `VESPERA_MAX_BUFFERED_RESPONSE_BYTES` | 256 MiB | `500` |
 | `dispatch-timeout` | `vespera.dispatch.timeoutMillis` / `VESPERA_DISPATCH_TIMEOUT_MS` | disabled | `504` |
 | `async-max-in-flight` | `vespera.async.maxInFlight` / `VESPERA_ASYNC_MAX_IN_FLIGHT` | 4096 | `503` |
+| `max-request-producers` | `vespera.streaming.maxRequestProducers` / `VESPERA_MAX_STREAMING_REQUEST_PRODUCERS` | 256 | further bidirectional uploads wait for a slot |
 | `worker-threads` | `vespera.runtime.workerThreads` / `VESPERA_RUNTIME_WORKERS` | logical CPUs | — |
 | `max-blocking-threads` | `vespera.runtime.maxBlockingThreads` / `VESPERA_RUNTIME_MAX_BLOCKING_THREADS` | 512 | work queues |
 
@@ -143,10 +153,43 @@ Outside Spring, call the Java API before the first dispatch. Each method returns
 VesperaBridge.configureRuntime(8, 512);          // workers, max blocking threads
 VesperaBridge.configureDispatchTimeout(30_000);  // milliseconds
 VesperaBridge.configureAsyncMaxInFlight(4096);
+VesperaBridge.configureMaxRequestProducers(256);
 VesperaBridge.init("my_rust_lib");
 ```
 
 `configureLimits(...)` sets the body caps the same way, and `configureStreaming(chunkBytes, channelCapacity)` tunes streaming (see [Streaming & Multi-App](/documentation/theme/theme-3)).
+
+## Forwarded Principal
+
+The proxy sends the request's authenticated principal to Rust in the wire header's `principal` field — a side channel only the bridge writes, never built from client headers. The default `ServletPrincipalResolver` forwards `HttpServletRequest.getUserPrincipal()` by name plus, when Spring Security is on the classpath, the `Authentication`'s authorities (on WebFlux `ExchangePrincipalResolver` reads `exchange.getPrincipal()`). Anonymous requests forward nothing. Rust handlers extract it:
+
+```rust
+use vespera::inprocess::Principal;
+
+#[vespera::route(get)]
+pub async fn me(principal: Principal) -> String { // 401 when anonymous
+    principal.name
+}
+```
+
+`vespera.bridge.forward-principal: false` forwards no principal; a custom `PrincipalResolver` (`ReactivePrincipalResolver` on WebFlux) bean replaces the default. At most 1024 authorities and 1024 attributes are forwarded (the Rust wire limit; a one-time warning is logged when truncating).
+
+## WebFlux
+
+Spring WebFlux applications (`spring-boot-starter-webflux`, reactor-netty) get a non-blocking proxy from the same JAR instead of `VesperaProxyController`: `VesperaBridgeReactiveAutoConfiguration` activates only for `REACTIVE` web applications, so an app gets exactly one of the two proxies. WebFlux and Reactor are compile-only dependencies of the bridge. Initialisation is the same (`VesperaBridge.init(...)` or `library-name`).
+
+- Requests go through `dispatchAsync`, so a Netty event loop never blocks. The request body is aggregated (capped by `max-buffered-request-bytes`, `413`); a client disconnect cancels the native task.
+- A request whose `Accept` asks for `text/event-stream` or NDJSON is streamed on a dedicated, bounded `VesperaStreamingExecutor` — one thread per stream:
+
+  ```yaml
+  vespera.bridge.reactive-streaming:
+    max-threads: 0     # concurrent streams; 0 = 10 x available processors
+    max-queued: 100    # streams waiting for a free thread
+  ```
+
+  Beyond both a streaming request is answered `503` before anything is dispatched; a client that disconnects while queued is never dispatched to Rust.
+- `app-header` / `exposed-apps`, `include-patterns` / `exclude-patterns`, `cors`, `forward-principal`, `request-id.*`, `native.*`, observers / metrics and the health indicator work as on the servlet side. `dispatch-mode`, `direct-retry-on-overflow`, `async-pool-size` and `clear-threadlocals-after-request` do not apply, and the springdoc document integration is servlet-only.
+- Replaceable beans (`@ConditionalOnMissingBean`): `ReactiveAppNameResolver`, `ReactivePrincipalResolver`, `VesperaReactiveProxyHandler`, `VesperaStreamingExecutor`, `VesperaReactiveHandlerMapping`, `VesperaReactivePreflightFilter`.
 
 ## Request IDs
 
@@ -162,7 +205,7 @@ An incoming id (1–128 visible ASCII characters) is reused, otherwise a random 
 
 - **Health:** with Spring Boot Actuator on the classpath the `vespera` health indicator reports `UP` once the native library is loaded, `DOWN` before that and `OUT_OF_SERVICE` after `VesperaBridge.shutdown(...)`; details carry `bridgeVersion` and `nativeVersion`. Disable it with `management.health.vespera.enabled=false`.
 - **Metrics:** register `DispatchObserver` beans to receive a `DispatchEvent(app, mode, method, path, status, durationNanos, panicked, requestId)` per request. With Micrometer and a `MeterRegistry` bean, a timer `vespera.bridge.dispatch` tagged `app`, `mode`, `status` and `outcome` (`SUCCESS`, `CLIENT_ERROR`, `SERVER_ERROR`, `PANIC`, …) is autoconfigured.
-- **Rust-side tracing:** enable `vespera`'s opt-in `tracing` feature (`features = ["jni", "tracing"]`) and install a `tracing` subscriber in the Rust library to get a `vespera.dispatch` span per request (`mode`, `method`, `path` without the query string, `app`, `status`, `duration_ms`, `panicked`) plus WARN / ERROR events for malformed wire (`400`), limits (`413` / `431` / `504`), runtime shut down (`503`), engine `5xx` and panics.
+- **Rust-side tracing:** enable `vespera`'s opt-in `tracing` feature (`features = ["jni", "tracing"]`) and install a `tracing` subscriber in the Rust library to get a `vespera.dispatch` span per request (`mode`, `method`, `route` — the matched route template such as `/users/{id}`, never the concrete path — `app`, `status`, `duration_ms`, `panicked`) plus WARN / ERROR events for malformed wire (`400`), limits (`413` / `431` / `504`), runtime shut down (`503`), engine `5xx` and panics.
 - **Panics:** a Rust panic answers `500` with `"panicked":"true"` in the wire metadata and is logged at WARN together with every other `5xx`.
 - **Proxy errors** are `text/plain` (the same shape as Rust's `error_wire`). Unexpected failures answer the fixed body `vespera dispatch failed`, with the details only in the WARN log; a native library that was never loaded answers `503`.
 

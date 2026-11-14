@@ -316,6 +316,21 @@ public class VesperaBridgeAutoConfiguration {
     }
 
     /**
+     * {@code vespera.bridge.multipart-passthrough} (default {@code true}):
+     * wrap the {@code multipartResolver} bean in a
+     * {@link VesperaProxyMultipartResolver} so {@code DispatcherServlet}
+     * leaves multipart requests the proxy handles unparsed (raw body to
+     * Rust, no Spring multipart size limits); Spring controllers keep normal
+     * multipart handling. Static: a {@code BeanPostProcessor}.
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "vespera.bridge", name = "multipart-passthrough", havingValue = "true",
+            matchIfMissing = true)
+    public static VesperaProxyMultipartResolver.Installer vesperaProxyMultipartResolverInstaller() {
+        return new VesperaProxyMultipartResolver.Installer();
+    }
+
+    /**
      * Log once at startup when no native library is loaded yet: until it is,
      * the proxy answers every request {@code 503} (see the
      * {@code vespera} health indicator with Spring Boot Actuator).

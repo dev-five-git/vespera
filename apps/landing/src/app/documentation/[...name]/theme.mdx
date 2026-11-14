@@ -18,7 +18,8 @@ A traditional microservice setup adds a full HTTP round-trip between Java and Ru
 - [jni_app! & VesperaBridge](/documentation/theme/theme-1) — Rust setup, Java setup, native library loading
 - [Dispatch Modes & Wire Format](/documentation/theme/theme-2) — all seven dispatch methods, binary wire layout, `SmartDispatchModeResolver` defaults
 - [Streaming & Multi-App](/documentation/theme/theme-3) — streaming tuning, multi-app routing, virtual thread notes, 0.2.0 breaking changes
-- [Spring Configuration](/documentation/theme/theme-4) — every `vespera.bridge.*` property, proxied paths, CORS, native limits and timeouts, request ids, health and metrics, shutdown, native library loading (musl / Alpine)
+- [Spring Configuration](/documentation/theme/theme-4) — every `vespera.bridge.*` property, proxied paths, CORS, native limits and timeouts, request ids, health and metrics, shutdown, native library loading (musl / Alpine), WebFlux, forwarded principal
+- [C ABI (Non-JVM Hosts)](/documentation/theme/theme-5) — `vespera::ffi_app!` / `ffi_apps!`, `include/vespera.h`, `vespera_dispatch` & co.
 
 ## Two-Line Integration
 
@@ -36,7 +37,6 @@ vespera::jni_app!(create_app);
 
 ```java
 @SpringBootApplication
-@ComponentScan(basePackages = {"com.example.app", "com.devfive.vespera.bridge"})
 public class MyApp {
     public static void main(String[] args) {
         VesperaBridge.init("my_rust_lib");
@@ -45,4 +45,6 @@ public class MyApp {
 }
 ```
 
-That's it. `VesperaProxyController` is autoconfigured and forwards every HTTP request to Rust. Zero controller code, zero `application.yml` config, zero extra imports beyond the Spring Boot starter.
+That's it. `VesperaProxyController` is autoconfigured and forwards every HTTP request to Rust. Zero controller code, zero `application.yml` config, zero extra imports beyond the Spring Boot starter. Do **not** add `com.devfive.vespera.bridge` to `@ComponentScan` — scanning it picks the controller up as a plain `@RestController`, which fails to construct.
+
+Spring WebFlux applications get a non-blocking proxy from the same JAR instead (see [Spring Configuration](/documentation/theme/theme-4)), and non-JVM hosts (C/C++, Go, Python, .NET, Node) can load the same library through the [C ABI](/documentation/theme/theme-5).
