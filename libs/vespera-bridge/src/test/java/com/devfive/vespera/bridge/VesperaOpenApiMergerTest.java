@@ -126,6 +126,40 @@ class VesperaOpenApiMergerTest {
     }
 
     @Test
+    void renamedSecuritySchemesAreRenamedInSecurityRequirements() {
+        String spec = DEFAULT_SPEC.replace("\"/internal/stats\": {\"get\": {",
+                "\"/internal/stats\": {\"get\": {\"security\": [{\"bearer\": [\"read\"], \"apiKey\": []}], ");
+        OpenAPI doc = springdocDocument();
+        // springdoc already has a *different* `bearer` (a JWT one).
+        doc.getComponents().addSecuritySchemes("bearer", new io.swagger.v3.oas.models.security.SecurityScheme()
+                .type(io.swagger.v3.oas.models.security.SecurityScheme.Type.HTTP)
+                .scheme("bearer").bearerFormat("JWT"));
+        // Keep /internal/** so the operation-level requirement is merged too.
+        new VesperaOpenApiMerger(app -> bytes(spec), List.of("_default"),
+                ProxyPathPatterns.defaults(), "X-App").customise(doc);
+
+        assertEquals("JWT", doc.getComponents().getSecuritySchemes().get("bearer").getBearerFormat());
+        assertNotNull(doc.getComponents().getSecuritySchemes().get("vespera_bearer"));
+        // Copied top-level requirement: references the renamed key.
+        assertEquals(List.of("vespera_bearer"), List.copyOf(doc.getPaths().get("/users/{id}").getGet()
+                .getSecurity().get(0).keySet()));
+        // Operation-level requirement: renamed key, order and scopes kept, other keys untouched.
+        Map<String, List<String>> requirement = doc.getPaths().get("/internal/stats").getGet().getSecurity().get(0);
+        assertEquals(List.of("vespera_bearer", "apiKey"), List.copyOf(requirement.keySet()));
+        assertEquals(List.of("read"), requirement.get("vespera_bearer"));
+        assertTrue(doc.getPaths().get("/public").getGet().getSecurity().isEmpty());
+        // springdoc's own operations are untouched.
+        assertNull(doc.getPaths().get("/java/hello").getGet().getSecurity());
+    }
+
+    @Test
+    void securitySchemeRenamesComeFromTheSchemeRefsOnly() {
+        assertEquals(Map.of("a/b", "vespera_a/b"), VesperaOpenApiMerger.securitySchemeRenames(Map.of(
+                "#/components/securitySchemes/a~1b", "#/components/securitySchemes/vespera_a~1b",
+                "#/components/schemas/User", "#/components/schemas/vespera_User")));
+    }
+
+    @Test
     void namedAppsGetTheAppHeaderAndLoseClashingPaths() {
         OpenAPI doc = new OpenAPI();
         merger(app -> bytes("_default".equals(app) ? DEFAULT_SPEC : ADMIN_SPEC), List.of("_default", "admin"))

@@ -116,6 +116,7 @@ final class VesperaOpenApiMerger implements OpenApiCustomizer {
         }
         if (!refRenames.isEmpty()) {
             rewriteRefs(spec, refRenames);
+            renameSecurityRequirements(spec, securitySchemeRenames(refRenames));
         }
         prepareOperations(spec, named ? app : null);
 
@@ -192,6 +193,70 @@ final class VesperaOpenApiMerger implements OpenApiCustomizer {
                     rewriteRefs(element, renames);
                 }
             }
+        }
+    }
+
+    /** The renamed security schemes ({@code old name → new name}) among {@code refRenames}. */
+    static Map<String, String> securitySchemeRenames(Map<String, String> refRenames) {
+        String prefix = "#/components/securitySchemes/";
+        Map<String, String> names = new HashMap<>();
+        refRenames.forEach((from, to) -> {
+            if (from.startsWith(prefix) && to.startsWith(prefix)) {
+                names.put(unescape(from.substring(prefix.length())), unescape(to.substring(prefix.length())));
+            }
+        });
+        return names;
+    }
+
+    private static String unescape(String pointerToken) {
+        return pointerToken.replace("~1", "/").replace("~0", "~");
+    }
+
+    /**
+     * Security requirement objects reference schemes by <em>key</em>
+     * ({@code [{"bearer": []}]}), not by {@code $ref}: rename those keys in
+     * the document-level {@code security} and in every operation's.
+     */
+    private static void renameSecurityRequirements(ObjectNode spec, Map<String, String> renames) {
+        if (renames.isEmpty()) {
+            return;
+        }
+        renameRequirementKeys(spec.get("security"), renames);
+        if (!(spec.get("paths") instanceof ObjectNode paths)) {
+            return;
+        }
+        for (JsonNode item : paths) {
+            if (item instanceof ObjectNode pathItem) {
+                for (String method : OPERATIONS) {
+                    if (pathItem.get(method) instanceof ObjectNode operation) {
+                        renameRequirementKeys(operation.get("security"), renames);
+                    }
+                }
+            }
+        }
+    }
+
+    private static void renameRequirementKeys(JsonNode security, Map<String, String> renames) {
+        if (!(security instanceof ArrayNode requirements)) {
+            return;
+        }
+        for (JsonNode requirement : requirements) {
+            if (!(requirement instanceof ObjectNode object)) {
+                continue;
+            }
+            boolean touched = false;
+            for (String key : renames.keySet()) {
+                touched |= object.has(key);
+            }
+            if (!touched) {
+                continue;
+            }
+            // Rebuild in order so the requirement keeps its key order.
+            Map<String, JsonNode> entries = new LinkedHashMap<>();
+            object.properties().forEach(entry ->
+                    entries.put(renames.getOrDefault(entry.getKey(), entry.getKey()), entry.getValue()));
+            object.removeAll();
+            entries.forEach(object::set);
         }
     }
 
