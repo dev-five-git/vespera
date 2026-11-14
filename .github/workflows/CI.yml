@@ -154,6 +154,43 @@ jobs:
           LOOM_MAX_PREEMPTIONS: '3'
         run: cargo test --release -p vespera_inprocess --features runtime --lib loom_
 
+  # Every other job builds the workspace, where Cargo unifies features across
+  # members (axum-example turns on cron / cron-tz, rust-jni-demo jni / ffi,
+  # testkit tracing, and the examples keep vespera's defaults) — so a
+  # reduced-feature build, and the tests gated on a feature being OFF
+  # (trybuild `cron_tz_needs_feature` / `multipart_needs_feature`, cron's
+  # `time_zone_without_feature`), never actually ran. Every command here
+  # selects ONE package with `-p` (never `--workspace`), so its features are
+  # exactly the ones on the command line.
+  features:
+    name: Feature isolation (per package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-hack
+      - name: cargo hack check --each-feature (vespera, vespera_inprocess)
+        env:
+          RUSTFLAGS: -D warnings
+        run: |
+          cargo hack check -p vespera --each-feature --no-dev-deps
+          cargo hack check -p vespera_inprocess --each-feature --no-dev-deps
+      - name: vespera without default features (incl. multipart_needs_feature UI case)
+        run: cargo test -p vespera --no-default-features
+      - name: vespera cron without cron-tz (cron_tz_needs_feature, time_zone_without_feature)
+        run: |
+          cargo test -p vespera --features cron --test trybuild_diagnostics
+          cargo test -p vespera --no-default-features --features cron --lib cron
+      - name: vespera cron-tz UI cases
+        run: cargo test -p vespera --features cron-tz --test trybuild_diagnostics
+      - name: vespera_inprocess without default features / with ffi alone
+        run: |
+          cargo test -p vespera_inprocess --no-default-features
+          cargo test -p vespera_inprocess --no-default-features --features ffi
+
   # Minimum supported Rust version of the PUBLISHED crates
   # ([workspace.package] rust-version). Examples are deliberately not held to
   # it — axum-example's sea-orm 2 / sqlx 0.9 need Rust 1.94 — so the check is
@@ -171,6 +208,38 @@ jobs:
       - name: cargo check (published crates, all features)
         run: >-
           cargo check --all-features
+          -p vespera -p vespera_core -p vespera_macro
+          -p vespera_inprocess -p vespera_jni
+
+  # Lower bounds of the PUBLISHED crates' direct dependencies: resolve every
+  # direct dependency to the minimum its `Cargo.toml` allows (transitive ones
+  # stay at their newest compatible release) and build. A bound below an API
+  # the code uses (e.g. `tokio::task::try_id`, stable since tokio 1.41) or
+  # below what another dependency needs fails here instead of in a user's
+  # lockfile. The examples are dropped from the workspace first: their own
+  # loose bounds are not published. NOT a release gate (absent from the
+  # changepacks `needs:`): because transitive dependencies float, a new
+  # upstream release can break this job without any change in this
+  # repository, and that must not block a release — fix the bound in a
+  # follow-up PR instead.
+  minimal-versions:
+    name: Minimal versions (direct deps)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          # `-Z direct-minimal-versions` is nightly-only; pinned like miri.
+          toolchain: nightly-2026-08-29
+      - name: Restrict the workspace to the published crates
+        run: |
+          sed -i 's|^members = .*|members = ["crates/*"]|; s|^default-members = .*|default-members = ["crates/*"]|' Cargo.toml
+      - name: cargo update -Z direct-minimal-versions
+        run: cargo +nightly-2026-08-29 update -Z direct-minimal-versions
+      - name: cargo check (published crates, all features)
+        run: >-
+          cargo +nightly-2026-08-29 check --all-features
           -p vespera -p vespera_core -p vespera_macro
           -p vespera_inprocess -p vespera_jni
 
@@ -489,7 +558,7 @@ jobs:
     # unformatted/lint-failing code, a broken MSRV, a disallowed dependency,
     # a platform-specific test failure, or a broken JNI dispatch path on any
     # supported OS.
-    needs: [lint, msrv, deny, sbom, test, test-os, jni-e2e, miri, loom]
+    needs: [lint, msrv, deny, sbom, test, test-os, jni-e2e, miri, loom, features]
     permissions:
       # Actions > General > Workflow permissions for creating pull request:
       # push the version branch + create GitHub releases / tags (and attach
@@ -777,12 +846,31 @@ jobs:
         run: cargo build -p rust-jni-demo --release
       - name: Drive the cdylib through the C ABI (Python ctypes)
         # The only test that loads the REAL cdylib through vespera.h's
-        # symbols (the Rust ffi tests link the crate statically): asserts
-        # every response and exits non-zero on a mismatch. One Linux leg is
-        # enough — the C ABI is platform-neutral and the JNI legs cover the
-        # per-platform loading.
-        if: matrix.os == 'ubuntu-latest' && matrix.java == '17'
-        run: python3 examples/rust-jni-demo/ffi/ctypes_demo.py target/release/librust_jni_demo.so
+        # symbols (the Rust ffi tests link the crate statically): resolves
+        # every prototype of vespera.h in the cdylib, calls each function,
+        # asserts every response and exits non-zero on a mismatch. Runs on
+        # every host OS (JDK 17 legs): symbol export (.so / .dylib / .dll)
+        # and the calling convention are platform-specific.
+        if: matrix.java == '17'
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Windows) lib=target/release/rust_jni_demo.dll; py=python ;;
+            macOS) lib=target/release/librust_jni_demo.dylib; py=python3 ;;
+            *) lib=target/release/librust_jni_demo.so; py=python3 ;;
+          esac
+          "$py" examples/rust-jni-demo/ffi/ctypes_demo.py "$lib"
+      - name: Compile vespera.h as C99 and C++ (warnings as errors)
+        # Syntax only (nothing linked): the header must stay valid, warning
+        # free C99 and C++ for every host toolchain. Windows uses the LLVM
+        # clang preinstalled on the runner image (MSVC headers).
+        if: matrix.java == '17'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then cc=clang; cxx=clang++; else cc=cc; cxx=c++; fi
+          flags="-Wall -Wextra -pedantic -Werror -fsyntax-only -I crates/vespera_inprocess/include"
+          "$cc" -std=c99 $flags examples/rust-jni-demo/ffi/header_check.c
+          "$cxx" -x c++ $flags examples/rust-jni-demo/ffi/header_check.c
       - name: Make gradlew executable (unix)
         if: runner.os != 'Windows'
         run: |

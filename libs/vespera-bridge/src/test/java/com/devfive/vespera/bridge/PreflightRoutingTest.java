@@ -17,6 +17,8 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.context.annotation.AnnotationConfigUtils;
 import org.springframework.web.context.support.GenericWebApplicationContext;
@@ -40,6 +42,18 @@ class PreflightRoutingTest {
         @GetMapping("/java/x")
         String x() {
             return "java";
+        }
+
+        @CrossOrigin(origins = "https://java.example")
+        @PostMapping(value = "/api/orders", consumes = "application/json")
+        String order(@RequestBody String body) {
+            return body;
+        }
+
+        @CrossOrigin(origins = "https://java.example")
+        @PostMapping(value = "/api/keyed", headers = "X-Api=1")
+        String keyed() {
+            return "keyed";
         }
     }
 
@@ -86,6 +100,32 @@ class PreflightRoutingTest {
         MockHttpServletResponse foreign = preflight(mvc, "/java/x", "https://evil.example", "GET");
         assertEquals(403, foreign.getStatus(), "Spring applies the @CrossOrigin policy");
         assertTrue(events.isEmpty(), "the proxy never ran");
+    }
+
+    /**
+     * A preflight carries none of the actual request's headers, so Spring's
+     * preflight matching skips {@code consumes} / {@code headers}; the
+     * lookup must too, or the proxy's catch-all would win.
+     */
+    @Test
+    void preflightForAJavaEndpointWithConsumesOrHeadersConditionsIsAnsweredBySpring() throws Exception {
+        MockMvc mvc = mvc(ProxyPathPatterns.defaults());
+        for (String path : List.of("/api/orders", "/api/keyed")) {
+            MockHttpServletResponse allowed = mvc.perform(options(path)
+                            .header(HttpHeaders.ORIGIN, "https://java.example")
+                            .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                            .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "content-type, x-api"))
+                    .andReturn().getResponse();
+            assertEquals(200, allowed.getStatus(), path);
+            assertEquals("https://java.example", allowed.getHeader(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN), path);
+            assertEquals(403, preflight(mvc, path, "https://evil.example", "POST").getStatus(),
+                    "Spring applies the @CrossOrigin policy to " + path);
+        }
+        assertTrue(events.isEmpty(), "the proxy never ran");
+
+        // A method only the proxy serves on the same path still goes to Rust.
+        assertEquals(503, preflight(mvc, "/api/orders", "https://a.example", "PUT").getStatus());
+        assertEquals(1, events.size());
     }
 
     @Test

@@ -60,9 +60,10 @@ extern "C" {
 
 /*
  * Completion callback of vespera_dispatch_async.  Invoked at most once
- * (exactly once except for the vespera_shutdown case below), possibly on
- * another thread: inline on the calling thread when the request is rejected
- * before dispatch, otherwise on a runtime worker thread — including when
+ * (exactly once except for the vespera_shutdown case below), possibly
+ * before vespera_dispatch_async returns: inline on the calling thread when
+ * the request is rejected before dispatch (400 / 413 / 503), otherwise on a
+ * runtime worker thread — including when
  * vespera_shutdown drops a pending dispatch with a 503, which can happen
  * after vespera_shutdown has returned.  The callback OWNS `response` and
  * must release it with vespera_free(response, response_len).  It must not
@@ -86,8 +87,10 @@ int vespera_init(void);
  * Synchronous dispatch.  `request` must be readable for `request_len`
  * bytes (may be NULL when request_len == 0).  On VESPERA_OK, *response /
  * *response_len hold a Rust-allocated wire response the caller owns and
- * must release with vespera_free.  VESPERA_ERR_INVALID_ARGUMENT when
- * `response` or `response_len` is NULL (nothing is written).
+ * must release with vespera_free (`request` NULL with a non-zero
+ * `request_len`, or `request_len` above PTRDIFF_MAX, is answered with a 400
+ * wire response).  VESPERA_ERR_INVALID_ARGUMENT when `response` or
+ * `response_len` is NULL (nothing is written).
  */
 int vespera_dispatch(const uint8_t *request, size_t request_len, uint8_t **response, size_t *response_len);
 
@@ -103,13 +106,19 @@ int vespera_dispatch(const uint8_t *request, size_t request_len, uint8_t **respo
 int vespera_dispatch_into(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *written);
 
 /*
- * Asynchronous dispatch: returns immediately; `callback(user_data, ...)`
- * receives the wire response once (inline on this thread when the request
- * is rejected before dispatch: too many async dispatches in flight → 503,
- * see vespera_configure_async_max_in_flight; runtime shut down → 503).
- * `user_data` is passed through untouched and must be usable from any
- * thread.  VESPERA_ERR_INVALID_ARGUMENT (callback never called) when
- * `callback` is NULL.
+ * Asynchronous dispatch: returns without waiting for the handler;
+ * `callback(user_data, ...)` receives the wire response once.  It runs
+ * INLINE on this thread, before vespera_dispatch_async returns, when the
+ * request is rejected before dispatch: too many async dispatches in flight
+ * → 503 (see vespera_configure_async_max_in_flight), `request` NULL with a
+ * non-zero `request_len` or `request_len` above PTRDIFF_MAX → 400, request
+ * above the size cap → 413 (see vespera_configure_max_request_bytes),
+ * runtime shut down → 503.  Otherwise it runs on a runtime worker, which
+ * may also happen before vespera_dispatch_async returns: do not hold a
+ * lock across this call that the callback takes, and have `user_data`
+ * ready before calling.  `user_data` is passed through untouched and must
+ * be usable from any thread.  VESPERA_ERR_INVALID_ARGUMENT (callback never
+ * called) when `callback` is NULL.
  */
 int vespera_dispatch_async(const uint8_t *request, size_t request_len, vespera_callback callback, void *user_data);
 

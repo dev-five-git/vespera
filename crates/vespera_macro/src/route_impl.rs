@@ -37,6 +37,8 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::macro_storage::{CrateStorage, SourceIdentified};
 use crate::{args, metadata::HeaderParam};
+
+mod path_check;
 /// Metadata stored by `#[route]` for later consumption by `vespera!()`.
 ///
 /// Each invocation of `#[route]` pushes one entry into [`ROUTE_STORAGE`].
@@ -307,6 +309,11 @@ pub fn process_route_attribute(
     let item_fn: RouteFnHead = syn::parse2(item.clone()).map_err(|e| syn::Error::new(e.span(), "#[route] attribute: can only be applied to functions, not other items. Move or remove the attribute."))?;
     validate_route_fn(&item_fn)?;
     let source_file = proc_macro2::Span::call_site().local_file();
+    path_check::check_path_extractors(
+        &item_fn.sig,
+        route_args.path.as_ref().map(syn::LitStr::value).as_deref(),
+        source_file.as_deref(),
+    )?;
     let fn_sig = &stored_signature(&item_fn.sig, source_file.as_deref());
 
     // Store route metadata for later consumption by vespera!() macro

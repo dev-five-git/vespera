@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/parser/request_body.rs
-assertion_line: 207
 expression: body
 ---
 Some(
@@ -15,9 +14,7 @@ Some(
                     Inline(
                         Schema {
                             ref_path: None,
-                            schema_type: Some(
-                                Object,
-                            ),
+                            schema_type: None,
                             format: None,
                             title: None,
                             description: None,

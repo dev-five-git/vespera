@@ -9,8 +9,13 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.http.server.reactive.ServerHttpRequestDecorator;
+import org.springframework.http.server.reactive.ServerHttpResponse;
+import org.springframework.http.server.reactive.ServerHttpResponseDecorator;
 import org.springframework.web.cors.reactive.CorsUtils;
+import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.reactive.HandlerMapping;
+import org.springframework.web.reactive.result.method.RequestMappingInfo;
+import org.springframework.web.reactive.result.method.RequestMappingInfoHandlerMapping;
 import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.ServerWebExchangeDecorator;
 import org.springframework.web.server.WebFilter;
@@ -42,7 +47,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * {@link ApplicationContext}) it asks the application's
  * {@link HandlerMapping}s, in order, which handler the actual request
  * ({@code Access-Control-Request-Method}, same path, without {@code Origin})
- * would get. When that is not the Vespera proxy (a {@code @RestController}
+ * would get; annotated controllers are first matched against the preflight
+ * itself with Spring's preflight rules, which skip {@code consumes} /
+ * {@code produces} / {@code headers} conditions. When that is not the Vespera proxy (a {@code @RestController}
  * with {@code @CrossOrigin}, a router function, an actuator endpoint …), or a
  * mapping rejects it (e.g. {@code 405}), the preflight continues down the
  * chain and Spring answers it with that handler's CORS configuration. The
@@ -81,7 +88,17 @@ public final class VesperaReactivePreflightFilter implements WebFilter, Ordered,
         }
         ServerWebExchange actual = actualRequest(exchange);
         return Flux.fromIterable(all)
-                .concatMap(mapping -> mapping.getHandler(actual))
+                .concatMap(mapping -> {
+                    if (mapping instanceof RequestMappingInfoHandlerMapping infoMapping) {
+                        HandlerMethod best = bestPreflightMatch(infoMapping, privateView(exchange));
+                        if (best != null) {
+                            return Mono.just(best);
+                        }
+                    }
+                    // Other mappings, and a controller mapping without a
+                    // preflight match (its 405 / 415 … still counts).
+                    return mapping.getHandler(actual);
+                })
                 .next()
                 .map(found -> found instanceof VesperaReactiveProxyHandler)
                 // No mapping at all: the proxy owns the path per its patterns.
@@ -89,6 +106,56 @@ public final class VesperaReactivePreflightFilter implements WebFilter, Ordered,
                 // A mapping claims the path but rejects the request (405 …).
                 .onErrorReturn(Boolean.FALSE)
                 .flatMap(rust -> rust ? handler.handle(exchange) : chain.filter(exchange));
+    }
+
+    /**
+     * The handler method an annotated-controller mapping would pick for the
+     * real {@code preflight}, with Spring's own preflight matching (the
+     * method condition matches {@code Access-Control-Request-Method};
+     * {@code consumes} / {@code produces} / {@code headers} conditions are
+     * skipped, since a preflight carries none of the actual request's
+     * headers), or {@code null}. Asking the mapping with the actual request
+     * instead would miss {@code @PostMapping(headers = "X-Api=1")} and leave
+     * the preflight to the proxy.
+     */
+    static HandlerMethod bestPreflightMatch(RequestMappingInfoHandlerMapping mapping, ServerWebExchange preflight) {
+        RequestMappingInfo bestInfo = null;
+        HandlerMethod best = null;
+        for (Map.Entry<RequestMappingInfo, HandlerMethod> entry : mapping.getHandlerMethods().entrySet()) {
+            RequestMappingInfo match = entry.getKey().getMatchingCondition(preflight);
+            if (match != null && (bestInfo == null || match.compareTo(bestInfo, preflight) < 0)) {
+                bestInfo = match;
+                best = entry.getValue();
+            }
+        }
+        return best;
+    }
+
+    /**
+     * The preflight itself with private attributes and private response
+     * headers (a mapping's CORS processor writes {@code Vary} even for a
+     * non-CORS request; it must not reach the real response).
+     */
+    static ServerWebExchange privateView(ServerWebExchange preflight) {
+        HttpHeaders responseHeaders = new HttpHeaders();
+        ServerHttpResponse response = new ServerHttpResponseDecorator(preflight.getResponse()) {
+            @Override
+            public HttpHeaders getHeaders() {
+                return responseHeaders;
+            }
+        };
+        Map<String, Object> attributes = new ConcurrentHashMap<>(preflight.getAttributes());
+        return new ServerWebExchangeDecorator(preflight) {
+            @Override
+            public ServerHttpResponse getResponse() {
+                return response;
+            }
+
+            @Override
+            public Map<String, Object> getAttributes() {
+                return attributes;
+            }
+        };
     }
 
     /**
@@ -120,16 +187,10 @@ public final class VesperaReactivePreflightFilter implements WebFilter, Ordered,
                 return headers;
             }
         };
-        Map<String, Object> attributes = new ConcurrentHashMap<>(preflight.getAttributes());
-        return new ServerWebExchangeDecorator(preflight) {
+        return new ServerWebExchangeDecorator(privateView(preflight)) {
             @Override
             public ServerHttpRequest getRequest() {
                 return request;
-            }
-
-            @Override
-            public Map<String, Object> getAttributes() {
-                return attributes;
             }
         };
     }

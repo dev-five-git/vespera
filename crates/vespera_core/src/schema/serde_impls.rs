@@ -509,8 +509,9 @@ impl Serialize for Schema {
             // `NullableScalarType` (no temporary `Vec`); plain scalar → `T`
             // directly (`SchemaTypeWire::Single` is untagged, so a bare
             // `SchemaType` is byte-identical). Both avoid the previous
-            // per-schema `SchemaTypeWire` value.
-            if self.nullable == Some(true) {
+            // per-schema `SchemaTypeWire` value. A nullable `null` (e.g.
+            // `Option<()>`) stays the single `"null"` (never `["null","null"]`).
+            if self.nullable == Some(true) && schema_type != SchemaType::Null {
                 out.serialize_field("type", &NullableScalarType(schema_type))?;
             } else {
                 out.serialize_field("type", &schema_type)?;
