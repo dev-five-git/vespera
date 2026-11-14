@@ -621,3 +621,20 @@ fn numeric_bounds_are_checked_against_the_field_type(
 fn error_path_uses_the_serde_deserialize_name(#[case] name: &str, #[case] input: DeriveInput) {
     insta::assert_snapshot!(name, emit_pretty(&input));
 }
+
+/// Every integer kind maps to its own range (pointer-sized kinds use the
+/// widest range; non-integers have none).
+#[rstest::rstest]
+#[case("i8", Some((i128::from(i8::MIN), 127)))]
+#[case("i16", Some((i128::from(i16::MIN), 32_767)))]
+#[case("i32", Some((i128::from(i32::MIN), 2_147_483_647)))]
+#[case("i64", Some((i128::from(i64::MIN), 9_223_372_036_854_775_807)))]
+#[case("isize", Some((i128::from(i64::MIN), 9_223_372_036_854_775_807)))]
+#[case("i128", Some((i128::MIN, 170_141_183_460_469_231_731_687_303_715_884_105_727)))]
+#[case("u8", Some((0, 255)))]
+#[case("u16", Some((0, 65_535)))]
+#[case("u32", Some((0, 4_294_967_295)))]
+#[case("f64", None)]
+fn integer_range_covers_every_kind(#[case] kind: &str, #[case] expected: Option<(i128, u128)>) {
+    assert_eq!(integer_range(kind), expected);
+}

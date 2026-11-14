@@ -473,6 +473,10 @@ mod tests {
         "multipart_try_from_multipart_malformed",
         r"#[try_from_multipart(strict = )] struct F { pub data: String }"
     )]
+    #[case::every_bad_field_is_reported(
+        "multipart_form_data_errors_combined",
+        r"struct F { #[form_data(limit = 1)] pub a: String, #[form_data(limit = 2)] pub b: String }"
+    )]
     fn invalid_limit_is_a_compile_error(#[case] name: &str, #[case] src: &str) {
         let out = derive_pretty(src);
         assert!(out.contains("compile_error"), "{out}");
