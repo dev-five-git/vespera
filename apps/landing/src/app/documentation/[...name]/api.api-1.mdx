@@ -136,7 +136,8 @@ checked.)
 
 The scopes only *document* the requirement. When the host forwards the granted
 scopes as `vespera::inprocess::Principal` authorities (feature `inprocess`),
-`principal.require_scopes(&["read:users"])?` enforces them, answering `403`
+`principal.require_scopes(&["read:users"])?` enforces them (an authority
+`read:users` or Spring Security's `SCOPE_read:users` both count), answering `403`
 with `WWW-Authenticate: Bearer error="insufficient_scope", scope="..."`.
 
 ## Environment Variable Fallbacks
