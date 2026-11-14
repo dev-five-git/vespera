@@ -43,10 +43,11 @@ use std::{
 use quote::ToTokens;
 
 use super::{
+    enum_schema::derives_serde_repr,
     schema_attrs::extract_schema_constraints,
     serde_attrs::{
         SerdeSide, extract_default, extract_field_codec, extract_field_rename_for,
-        extract_rename_all_for, extract_serde_skip_flags,
+        extract_rename_all_fields_for, extract_rename_all_for, extract_serde_skip_flags,
     },
     wire_override::container_override_type,
 };
@@ -231,8 +232,10 @@ fn directly_differs(item: &syn::Item) -> bool {
     if container_override_differs(attrs) {
         return true;
     }
-    let syn::Item::Struct(item) = item else {
-        return false;
+    let item = match item {
+        syn::Item::Struct(item) => item,
+        syn::Item::Enum(item) => return enum_differs(item),
+        _ => return false,
     };
     let syn::Fields::Named(fields) = &item.fields else {
         return false;
@@ -246,15 +249,45 @@ fn directly_differs(item: &syn::Item) -> bool {
     {
         return true;
     }
-    fields.named.iter().any(|field| {
-        let skip = extract_serde_skip_flags(&field.attrs);
-        !skip.fully_skipped()
-            && (skip.skip_deserializing
-                || skip.skip_serializing
-                || field_codec_differs(field)
-                || extract_default(&field.attrs).is_some()
-                || extract_field_rename_for(&field.attrs, SerdeSide::Serialize)
-                    != extract_field_rename_for(&field.attrs, SerdeSide::Deserialize))
+    fields.named.iter().any(field_differs)
+}
+
+/// A named field reads differently than it writes.
+fn field_differs(field: &syn::Field) -> bool {
+    let skip = extract_serde_skip_flags(&field.attrs);
+    !skip.fully_skipped()
+        && (skip.skip_deserializing
+            || skip.skip_serializing
+            || field_codec_differs(field)
+            || extract_default(&field.attrs).is_some()
+            || sided_differs(|side| extract_field_rename_for(&field.attrs, side)))
+}
+
+/// `extract` yields a different value per serde direction.
+fn sided_differs<T: PartialEq>(extract: impl Fn(SerdeSide) -> T) -> bool {
+    extract(SerdeSide::Serialize) != extract(SerdeSide::Deserialize)
+}
+
+/// An enum reads differently than it writes: one-sided `rename_all` /
+/// `rename_all_fields` / `serde_repr`, a variant that is only skipped in one
+/// direction or renamed per direction, or a struct-variant field that
+/// differs like a struct field does.
+fn enum_differs(item: &syn::ItemEnum) -> bool {
+    let attrs = &item.attrs;
+    if sided_differs(|side| extract_rename_all_for(attrs, side))
+        || sided_differs(|side| extract_rename_all_fields_for(attrs, side))
+        || sided_differs(|side| derives_serde_repr(attrs, side))
+    {
+        return true;
+    }
+    item.variants.iter().any(|variant| {
+        let skip = extract_serde_skip_flags(&variant.attrs);
+        !skip.skip
+            && (skip.skip_serializing != skip.skip_deserializing
+                || sided_differs(|side| extract_field_rename_for(&variant.attrs, side))
+                || sided_differs(|side| extract_rename_all_for(&variant.attrs, side))
+                || matches!(&variant.fields, syn::Fields::Named(fields)
+                    if fields.named.iter().any(field_differs)))
     })
 }
 
@@ -348,7 +381,26 @@ mod tests {
     )]
     #[case::empty_container_default("#[serde(default)] struct A {}", false)]
     #[case::tuple("struct A(#[serde(default)] u8);", false)]
-    #[case::enum_item("enum E { A { #[serde(default)] x: u8 } }", false)]
+    #[case::enum_variant_field_default("enum E { A { #[serde(default)] x: u8 } }", true)]
+    #[case::enum_plain("enum E { A, B(u8), C { x: u8 } }", false)]
+    #[case::enum_sided_rename_all(
+        r#"#[serde(rename_all(deserialize = "lowercase"))] enum E { A }"#,
+        true
+    )]
+    #[case::enum_same_rename_all(r#"#[serde(rename_all = "lowercase")] enum E { A }"#, false)]
+    #[case::enum_sided_rename_all_fields(
+        r#"#[serde(rename_all_fields(serialize = "camelCase"))] enum E { A { x_y: u8 } }"#,
+        true
+    )]
+    #[case::enum_variant_sided_rename(r#"enum E { #[serde(rename(deserialize = "a"))] A }"#, true)]
+    #[case::enum_variant_skip_serializing("enum E { A, #[serde(skip_serializing)] B }", true)]
+    #[case::enum_variant_skip_deserializing("enum E { A, #[serde(skip_deserializing)] B }", true)]
+    #[case::enum_variant_skipped("enum E { A, #[serde(skip)] B }", false)]
+    #[case::enum_serialize_repr_only("#[derive(Serialize_repr)] #[repr(u8)] enum E { A }", true)]
+    #[case::enum_serde_repr_both(
+        "#[derive(Serialize_repr, Deserialize_repr)] #[repr(u8)] enum E { A }",
+        false
+    )]
     #[case::into_only(r#"#[serde(into = "W")] struct A { x: u8 }"#, true)]
     #[case::from_only(r#"#[serde(from = "W")] struct A(u8);"#, true)]
     #[case::into_and_from_same(r#"#[serde(into = "W", from = "W")] struct A { x: u8 }"#, false)]

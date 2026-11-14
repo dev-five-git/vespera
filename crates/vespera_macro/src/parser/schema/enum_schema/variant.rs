@@ -7,7 +7,7 @@ use std::{
 use vespera_core::schema::SchemaRef;
 
 use super::super::{
-    serde_attrs::{extract_rename_all, extract_serde_skip_flags},
+    serde_attrs::{extract_rename_all_for, extract_serde_skip_flags},
     struct_schema::{NamedFields, collect_named_fields, emitted_unnamed_types},
     type_schema::{parse_type_to_schema_ref, tuple_array_schema},
 };
@@ -22,7 +22,8 @@ pub(super) fn build_struct_variant_fields(
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> NamedFields {
-    let variant_rename_all = extract_rename_all(variant_attrs);
+    let variant_rename_all =
+        extract_rename_all_for(variant_attrs, super::super::request_view::current_side());
     collect_named_fields(
         fields_named,
         variant_rename_all.as_deref().or(enum_rename_all_fields),
@@ -32,12 +33,18 @@ pub(super) fn build_struct_variant_fields(
     )
 }
 
-/// `true` when a variant never appears in serialized output
-/// (`#[serde(skip)]`, `#[serde(skip_serializing)]`), so it is left out of the
-/// schema entirely.
+/// `true` when a variant never appears on the wire in the direction of the
+/// view being built, so it is left out of the schema entirely:
+/// `#[serde(skip)]`, plus `skip_serializing` in the response view or
+/// `skip_deserializing` in the request (`{Name}Input`) view.
 pub(super) fn is_variant_omitted(variant: &syn::Variant) -> bool {
     let flags = extract_serde_skip_flags(&variant.attrs);
-    flags.skip || flags.skip_serializing
+    flags.skip
+        || if super::super::request_view::in_request_view() {
+            flags.skip_deserializing
+        } else {
+            flags.skip_serializing
+        }
 }
 
 /// `true` for the `#[serde(other)]` catch-all unit variant.

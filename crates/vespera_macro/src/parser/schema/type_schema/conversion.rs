@@ -8,7 +8,6 @@ use std::{
     cell::Cell,
     collections::{HashMap, HashSet},
     hash::Hash,
-    rc::Rc,
 };
 
 use syn::Type;
@@ -23,13 +22,14 @@ thread_local! {
 }
 
 use super::super::{
+    enum_schema::parse_enum_to_schema,
     generics::substitute_type,
     request_view,
     serde_attrs::{capitalize_first, extract_schema_name_from_entity, extract_schema_ref_override},
     struct_schema::parse_struct_to_schema,
 };
 
-/// Parse a known schema's definition into a shared `syn::ItemStruct`.
+/// Parse a known schema's definition (a struct or an enum) into a `syn::Item`.
 ///
 /// MUST NOT memoise the parsed AST in a `thread_local` (or any storage that
 /// outlives the macro invocation).  A `syn::ItemStruct` parsed during real
@@ -39,8 +39,46 @@ use super::super::{
 /// and abort the compile ("procedural macro API is used outside of a procedural
 /// macro" -> STATUS_STACK_BUFFER_OVERRUN).  Every AST returned here is therefore
 /// dropped within the same invocation that parsed it.
-fn parse_struct_def(def: &str) -> Option<Rc<syn::ItemStruct>> {
-    syn::parse_str::<syn::ItemStruct>(def).ok().map(Rc::new)
+fn parse_schema_def(def: &str) -> Option<SchemaDef> {
+    match syn::parse_str::<syn::Item>(def).ok()? {
+        syn::Item::Struct(item) => Some(SchemaDef::Struct(item)),
+        syn::Item::Enum(item) => Some(SchemaDef::Enum(item)),
+        _ => None,
+    }
+}
+
+/// A known schema's parsed definition.
+enum SchemaDef {
+    Struct(syn::ItemStruct),
+    Enum(syn::ItemEnum),
+}
+
+impl SchemaDef {
+    const fn attrs(&self) -> &Vec<syn::Attribute> {
+        match self {
+            Self::Struct(item) => &item.attrs,
+            Self::Enum(item) => &item.attrs,
+        }
+    }
+
+    const fn generics_mut(&mut self) -> &mut syn::Generics {
+        match self {
+            Self::Struct(item) => &mut item.generics,
+            Self::Enum(item) => &mut item.generics,
+        }
+    }
+
+    /// Every field type of the definition (all variants of an enum).
+    fn field_types_mut(&mut self) -> Vec<&mut Type> {
+        match self {
+            Self::Struct(item) => item.fields.iter_mut().map(|field| &mut field.ty).collect(),
+            Self::Enum(item) => item
+                .variants
+                .iter_mut()
+                .flat_map(|variant| variant.fields.iter_mut().map(|field| &mut field.ty))
+                .collect(),
+        }
+    }
 }
 
 /// Whether `ident` names a type that this crate already knows how to map to
@@ -478,14 +516,14 @@ fn parse_type_impl(
                     matches!(&segment.arguments, syn::PathArguments::AngleBracketed(_));
                 let maybe_has_schema_attr = def_str.is_some_and(|d| d.contains("[schema"));
                 let parsed_def = if is_generic || maybe_has_schema_attr {
-                    def_str.and_then(parse_struct_def)
+                    def_str.and_then(parse_schema_def)
                 } else {
                     None
                 };
 
-                if let Some(parsed_struct) = &parsed_def
+                if let Some(parsed_item) = &parsed_def
                     && let Some((schema_name, nullable)) =
-                        extract_schema_ref_override(&parsed_struct.attrs)
+                        extract_schema_ref_override(parsed_item.attrs())
                 {
                     return SchemaRef::Inline(Box::new(Schema {
                         ref_path: Some(format!("#/components/schemas/{schema_name}")),
@@ -499,13 +537,10 @@ fn parse_type_impl(
                 if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                     // This is a concrete generic type like GenericStruct<String>
                     // Inline the schema by substituting generic parameters with concrete types
-                    if let Some(parsed_rc) = parsed_def {
-                        // Clone the memoised AST before mutating it for generic
-                        // substitution (cheaper than the prior re-parse).
-                        let mut parsed = (*parsed_rc).clone();
-                        // Extract generic parameter names from the struct definition
+                    if let Some(mut parsed) = parsed_def {
+                        // Extract generic parameter names from the definition
                         let generic_params: Vec<String> = parsed
-                            .generics
+                            .generics_mut()
                             .params
                             .iter()
                             .filter_map(|param| {
@@ -533,15 +568,17 @@ fn parse_type_impl(
                         // Substitute generic parameters with concrete types in all fields
                         if generic_params.len() == concrete_types.len() {
                             // (named AND tuple fields — tuple structs now map
-                            // to their inner / prefixItems schema).
-                            for field in &mut parsed.fields {
-                                field.ty =
-                                    substitute_type(&field.ty, &generic_params, &concrete_types);
+                            // to their inner / prefixItems schema; every
+                            // variant's fields for an enum).
+                            for field_ty in parsed.field_types_mut() {
+                                *field_ty =
+                                    substitute_type(field_ty, &generic_params, &concrete_types);
                             }
 
-                            // Remove generics from the struct (it's now concrete)
-                            parsed.generics.params.clear();
-                            parsed.generics.where_clause = None;
+                            // Remove generics from the definition (it's now concrete)
+                            let generics = parsed.generics_mut();
+                            generics.params.clear();
+                            generics.where_clause = None;
 
                             // Inline the substituted struct, unless it
                             // contains itself — then it becomes the named
@@ -560,7 +597,18 @@ fn parse_type_impl(
                                 name.push_str("Input");
                             }
                             return super::generic_instances::inline_or_reference(&name, || {
-                                parse_struct_to_schema(&parsed, known_schemas, struct_definitions)
+                                match &parsed {
+                                    SchemaDef::Struct(item) => parse_struct_to_schema(
+                                        item,
+                                        known_schemas,
+                                        struct_definitions,
+                                    ),
+                                    SchemaDef::Enum(item) => parse_enum_to_schema(
+                                        item,
+                                        known_schemas,
+                                        struct_definitions,
+                                    ),
+                                }
                             });
                         }
                     }

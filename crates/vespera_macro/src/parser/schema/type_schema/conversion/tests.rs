@@ -592,3 +592,48 @@ fn primitive_wire_types(
     assert_eq!(schema.format.as_deref(), format, "{source}");
     assert_eq!(schema.minimum, minimum, "{source}");
 }
+
+/// A concrete generic ENUM is inlined with its type arguments substituted in
+/// every variant, exactly like a generic struct (it used to become a `$ref`
+/// to the unsubstituted component, documenting `T` as an object).
+#[rstest::rstest]
+#[case::externally_tagged(
+    "generic_enum_external",
+    "ApiResponse",
+    "enum ApiResponse<T> { Ok(T), Err { message: String } }",
+    "ApiResponse<Vec<User>>"
+)]
+#[case::internally_tagged(
+    "generic_enum_internal",
+    "Event",
+    r#"#[serde(tag = "type")] enum Event<P> { Created { payload: P }, Deleted }"#,
+    "Event<i32>"
+)]
+#[case::two_params(
+    "generic_enum_two_params",
+    "Either",
+    "enum Either<L, R> { Left(L), Right(R) }",
+    "Either<String, Option<User>>"
+)]
+fn generic_enum_substitutes_type_params(
+    #[case] snapshot: &str,
+    #[case] base: &str,
+    #[case] definition: &str,
+    #[case] ty_src: &str,
+) {
+    let known: HashSet<String> = HashSet::from([base.to_string(), "User".to_string()]);
+    let defs: HashMap<String, String> = HashMap::from([(base.to_string(), definition.to_string())]);
+    let ty: Type = syn::parse_str(ty_src).unwrap();
+    let schema_ref = parse_type_to_schema_ref(&ty, &known, &defs);
+    assert!(
+        matches!(schema_ref, SchemaRef::Inline(_)),
+        "generic enum is inlined"
+    );
+    insta::assert_snapshot!(
+        snapshot,
+        format!(
+            "{ty_src} => {}",
+            serde_json::to_string_pretty(&schema_ref).unwrap()
+        )
+    );
+}

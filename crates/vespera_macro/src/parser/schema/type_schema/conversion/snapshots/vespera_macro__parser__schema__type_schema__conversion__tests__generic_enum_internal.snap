@@ -1,0 +1,44 @@
+---
+source: crates/vespera_macro/src/parser/schema/type_schema/conversion/tests.rs
+expression: "format!(\"{ty_src} => {}\", serde_json::to_string_pretty(&schema_ref).unwrap())"
+---
+Event<i32> => {
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "payload": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "Created"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "Deleted"
+          ]
+        }
+      },
+      "required": [
+        "type"
+      ]
+    }
+  ],
+  "discriminator": {
+    "propertyName": "type"
+  }
+}

@@ -1,0 +1,41 @@
+---
+source: crates/vespera_macro/src/parser/schema/type_schema/conversion/tests.rs
+expression: "format!(\"{ty_src} => {}\", serde_json::to_string_pretty(&schema_ref).unwrap())"
+---
+ApiResponse<Vec<User>> => {
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "Ok": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/User"
+          }
+        }
+      },
+      "required": [
+        "Ok"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "Err": {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "message"
+          ]
+        }
+      },
+      "required": [
+        "Err"
+      ]
+    }
+  ]
+}

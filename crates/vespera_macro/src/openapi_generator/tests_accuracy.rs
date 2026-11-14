@@ -291,3 +291,27 @@ fn identical_or_unused_request_views_emit_nothing() {
         .collect();
     assert_eq!(names, ["Holder", "Opt", "Out"]);
 }
+
+/// An enum whose request view differs (here a deserialize-only variant name)
+/// gets an `{Name}Input` component, and the request body references it
+/// through the containing struct's input view.
+#[test]
+fn enums_get_input_components() {
+    let mut metadata = CollectedMetadata::new();
+    metadata.structs.push(schema(
+        "Mode",
+        r#"pub enum Mode { #[serde(rename(deserialize = "on"))] On, Off }"#,
+    ));
+    metadata
+        .structs
+        .push(schema("Toggle", "pub struct Toggle { pub mode: Mode }"));
+    metadata.routes.push(post("/toggle", "toggle"));
+    let storage = [stored_post(
+        "toggle",
+        "async fn toggle(Json(t): Json<Toggle>) -> Json<Toggle>",
+    )];
+
+    let doc = generate(&metadata, &storage);
+
+    insta::assert_snapshot!("accuracy_enum_input_components", pretty(&doc));
+}

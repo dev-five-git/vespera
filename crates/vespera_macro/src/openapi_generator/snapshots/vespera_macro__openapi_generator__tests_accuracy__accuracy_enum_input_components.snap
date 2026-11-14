@@ -1,0 +1,80 @@
+---
+source: crates/vespera_macro/src/openapi_generator/tests_accuracy.rs
+expression: pretty(&doc)
+---
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/toggle": {
+      "post": {
+        "operationId": "toggle",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToggleInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Toggle"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Mode": {
+        "type": "string",
+        "enum": [
+          "On",
+          "Off"
+        ]
+      },
+      "ModeInput": {
+        "type": "string",
+        "enum": [
+          "on",
+          "Off"
+        ]
+      },
+      "Toggle": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/Mode"
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      },
+      "ToggleInput": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/ModeInput"
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      }
+    }
+  }
+}
