@@ -1,0 +1,23 @@
+error: route `/a/{x}/{y}/{z}` has 3 path parameters but `Path<(u32, u32)>` extracts 2 values
+  --> tests/ui/route_path_extractor_mismatch.rs:18:34
+   |
+18 | pub async fn tuple_too_short(_p: Path<(u32, u32)>) {}
+   |                                  ^^^^^^^^^^^^^^^^
+
+error: route `/{x}` has 1 path parameter but `Path<(u32, String, bool)>` extracts 3 values
+  --> tests/ui/route_path_extractor_mismatch.rs:21:33
+   |
+21 | pub async fn tuple_too_long(_p: Path<(u32, String, bool)>) {}
+   |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: route `/{a}/{b}` has 2 path parameters but `Path<u32>` extracts 1 value
+  --> tests/ui/route_path_extractor_mismatch.rs:24:33
+   |
+24 | pub async fn scalar_for_two(_p: Path<u32>) {}
+   |                                 ^^^^^^^^^
+
+error: route `/orgs/{org}` has no path parameter `{id}` for the required field `id` of `Path<OrgUser>`; add `{id}` to the route path, or make the field `Option<_>` / `#[serde(default)]`
+  --> tests/ui/route_path_extractor_mismatch.rs:27:47
+   |
+27 | pub async fn struct_field_without_segment(_p: Path<OrgUser>) {}
+   |                                               ^^^^^^^^^^^^^
