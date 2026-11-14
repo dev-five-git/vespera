@@ -3,8 +3,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::support::{
     AbortReason, PanicHeaderAction, STREAM_ABORTED_CLASS, panic_post_header_action,
-    push_unless_header_failed, should_fire_fallback_header,
+    push_unless_header_failed, should_fire_fallback_header, typed_throw_succeeded,
 };
+
+#[test]
+fn typed_throw_is_kept_when_jni_reports_the_pending_exception() {
+    use jni::errors::Error;
+    // jni 0.22: a successful ThrowNew returns Err(JavaException) with the
+    // new exception pending — the typed abort must be kept, not replaced.
+    assert!(typed_throw_succeeded(&Err(Error::JavaException), true));
+    // Nothing pending, or a lookup / constructor failure: fall back.
+    assert!(!typed_throw_succeeded(&Err(Error::JavaException), false));
+    assert!(!typed_throw_succeeded(&Err(Error::WrongObjectType), true));
+    assert!(!typed_throw_succeeded(&Err(Error::ThrowFailed(-1)), true));
+    assert!(!typed_throw_succeeded(&Ok(()), false));
+}
 
 #[test]
 fn push_gate_aborts_without_writing_when_header_delivery_failed() {

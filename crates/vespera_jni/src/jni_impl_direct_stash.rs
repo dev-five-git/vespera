@@ -33,7 +33,9 @@ use vespera_inprocess::{PendingDirectResponse, ResumableDirectWrite};
 use super::{
     DIRECT_UNREPRESENTABLE, block_on_shared_runtime, direct_complete_code, run_direct_symbol,
 };
-use crate::jni_impl::{guard_void_symbol, runtime_unavailable_wire};
+use crate::jni_impl::{
+    guard_env_void_symbol, guard_void_symbol, panic_wire, runtime_unavailable_wire,
+};
 
 /// Bytes of the stash handle written into `out` on overflow.
 pub const STASH_HANDLE_LEN: usize = 9;
@@ -208,6 +210,12 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_DirectStash_dispatchResum
 /// `Integer.MIN_VALUE` when the token is unknown (expired / evicted /
 /// already redeemed) or `out` is not a direct buffer.  A configured
 /// dispatch timeout bounds the call (`504` wire).
+///
+/// A Rust panic while the stashed body is read (the handler's body stream
+/// panicked) is never reported as `Integer.MIN_VALUE` — that would read as
+/// "expired": it answers the `500` panic wire (`"panicked":"true"`) when it
+/// fits in `out` (it always does in practice), and otherwise — or for a
+/// panic outside that guard — throws `RuntimeException`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_devfive_vespera_bridge_DirectStash_fetch0<'local>(
     mut unowned_env: EnvUnowned<'local>,
@@ -216,44 +224,66 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_DirectStash_fetch0<'local
     out_buf: JByteBuffer<'local>,
 ) -> jint {
     let mut code = DIRECT_UNREPRESENTABLE;
-    let _ = guard_void_symbol(|| {
+    let mut fetch_panicked = false;
+    let panicked = guard_env_void_symbol(&mut unowned_env, |env| {
+        if out_buf.is_null() {
+            return Ok(());
+        }
+        let out_addr = env.get_direct_buffer_address(&out_buf)?;
+        let out_cap = env.get_direct_buffer_capacity(&out_buf)?;
+        // SAFETY: `out_buf` is a live direct buffer (pinned by its local
+        // ref for the whole call) covering `out_cap` writable bytes —
+        // the Java caller only passes its own pooled direct buffers.
+        // The slice never escapes this synchronous `block_on`.
+        let out = unsafe { std::slice::from_raw_parts_mut(out_addr, out_cap) };
+        let fetched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            fetch_into(token, &mut *out)
+        }));
+        fetch_panicked = fetched.is_err();
+        code = fetched.unwrap_or_else(|_| write_complete_wire(out, &panic_wire()));
+        Ok(())
+    });
+    // A panic outside the fetch guard, or a panic wire that did not fit.
+    if panicked || (fetch_panicked && code == DIRECT_UNREPRESENTABLE) {
         let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
-            if out_buf.is_null() {
-                return Ok(());
-            }
-            let out_addr = env.get_direct_buffer_address(&out_buf)?;
-            let out_cap = env.get_direct_buffer_capacity(&out_buf)?;
-            let Some(pending) = take_stashed(token) else {
-                return Ok(());
-            };
-            // SAFETY: `out_buf` is a live direct buffer (pinned by its local
-            // ref for the whole call) covering `out_cap` writable bytes —
-            // the Java caller only passes its own pooled direct buffers.
-            // The slice never escapes this synchronous `block_on`.
-            let out = unsafe { std::slice::from_raw_parts_mut(out_addr, out_cap) };
-            code = match block_on_shared_runtime(pending.write_into(&mut *out)) {
-                Some(ResumableDirectWrite::Complete(n)) => direct_complete_code(n),
-                Some(ResumableDirectWrite::Overflow(pending)) => {
-                    let code = pending_code(&pending);
-                    let key = u64::try_from(token).unwrap_or_default();
-                    stash_put(Some(key), pending);
-                    code
-                }
-                // No runtime (shut down): the stashed response is dropped;
-                // answer with the runtime-unavailable wire when it fits.
-                None => {
-                    let wire = runtime_unavailable_wire();
-                    out.get_mut(..wire.len())
-                        .map_or(DIRECT_UNREPRESENTABLE, |dst| {
-                            dst.copy_from_slice(&wire);
-                            direct_complete_code(wire.len())
-                        })
-                }
-            };
+            let _ = env.throw_new(
+                jni::jni_str!("java/lang/RuntimeException"),
+                jni::jni_str!("panic in Rust engine while fetching a stashed DIRECT response"),
+            );
             Ok(())
         });
-    });
+    }
     code
+}
+
+/// Redeem stash entry `token` into `out` (the body of `fetch0`, run under
+/// its panic guard).
+fn fetch_into(token: jlong, out: &mut [u8]) -> jint {
+    let Some(pending) = take_stashed(token) else {
+        return DIRECT_UNREPRESENTABLE;
+    };
+    match block_on_shared_runtime(pending.write_into(&mut *out)) {
+        Some(ResumableDirectWrite::Complete(n)) => direct_complete_code(n),
+        Some(ResumableDirectWrite::Overflow(pending)) => {
+            let code = pending_code(&pending);
+            let key = u64::try_from(token).unwrap_or_default();
+            stash_put(Some(key), pending);
+            code
+        }
+        // No runtime (shut down): the stashed response is dropped;
+        // answer with the runtime-unavailable wire when it fits.
+        None => write_complete_wire(out, &runtime_unavailable_wire()),
+    }
+}
+
+/// Copy a complete wire response into `out`: its length, or
+/// `DIRECT_UNREPRESENTABLE` when it does not fit.
+fn write_complete_wire(out: &mut [u8], wire: &[u8]) -> jint {
+    out.get_mut(..wire.len())
+        .map_or(DIRECT_UNREPRESENTABLE, |dst| {
+            dst.copy_from_slice(wire);
+            direct_complete_code(wire.len())
+        })
 }
 
 /// `com.devfive.vespera.bridge.DirectStash.discard0(long) -> void`

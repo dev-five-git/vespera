@@ -1,0 +1,49 @@
+---
+source: crates/vespera_macro/src/parser/operation/tests_request_shapes.rs
+assertion_line: 147
+expression: "serde_json::to_string_pretty(&summary).unwrap()"
+---
+{
+  "has422": false,
+  "parameters": [
+    {
+      "in": "query",
+      "name": "since",
+      "required": true,
+      "schema": {
+        "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+      }
+    },
+    {
+      "in": "query",
+      "name": "tags",
+      "required": true,
+      "schema": {
+        "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+      }
+    },
+    {
+      "in": "query",
+      "name": "until",
+      "required": false,
+      "schema": {
+        "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+      }
+    },
+    {
+      "in": "query",
+      "name": "plain",
+      "required": false,
+      "schema": {
+        "format": "uint32",
+        "maximum": 4294967295,
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    }
+  ],
+  "requestBody": null
+}

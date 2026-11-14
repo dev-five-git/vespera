@@ -1,0 +1,27 @@
+---
+source: crates/vespera_macro/src/parser/operation/tests_request_shapes.rs
+assertion_line: 147
+expression: "serde_json::to_string_pretty(&summary).unwrap()"
+---
+{
+  "has422": false,
+  "parameters": [
+    {
+      "in": "path",
+      "name": "a",
+      "required": true,
+      "schema": {
+        "type": "string"
+      }
+    },
+    {
+      "in": "path",
+      "name": "b",
+      "required": true,
+      "schema": {
+        "type": "string"
+      }
+    }
+  ],
+  "requestBody": null
+}

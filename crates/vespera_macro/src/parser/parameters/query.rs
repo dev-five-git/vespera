@@ -7,36 +7,51 @@ use vespera_core::{
 };
 
 use super::shared::{
-    convert_to_inline_schema, input_rename_all, is_known_type, is_primitive_or_like,
-    named_struct_fields, serde_field_name,
+    convert_to_inline_schema, input_rename_all, is_defined_struct, is_known_type,
+    is_primitive_or_like, named_struct_fields, serde_field_name,
 };
 use crate::{
     parser::schema::{
-        SerdeSide, apply_field_rules, extract_default, extract_doc_comment, extract_flatten,
-        extract_serde_skip_flags, parse_struct_to_schema, parse_type_to_schema_ref,
-        schema_attrs::extract_schema_constraints, wire_override::field_schema_ref,
+        SerdeSide, apply_field_rules, extract_default, extract_doc_comment, extract_field_codec,
+        extract_flatten, extract_serde_skip_flags, parse_struct_to_schema,
+        parse_type_to_schema_ref,
+        schema_attrs::extract_schema_constraints,
+        wire_override::{container_override_type, field_schema_ref},
     },
     schema_macro::type_utils::{is_map_type as utils_is_map_type, is_option_type, option_inner},
 };
 
-/// `Query<Struct>` / `Option<Query<Struct>>` → one parameter per field.
+/// `Query<Struct>` / `axum_extra::extract::OptionalQuery<Struct>` → one
+/// parameter per field.
 ///
-/// axum 0.8 implements `OptionalFromRequestParts` for `Query`, so an
-/// `Option<Query<T>>` handler accepts a request without (valid) query
-/// parameters: every documented parameter is then optional.
+/// `OptionalQuery<T>` yields `None` for a request without a query string, so
+/// every documented parameter is then optional. (`Option<Query<T>>` does not
+/// compile with axum 0.8 — `Query` has no `OptionalFromRequestParts` impl —
+/// it is still read as optional, which is harmless.)
+///
+/// A known named-field struct always answers here, even when none of its
+/// fields is documentable (all skipped, only a flattened map, `{}`): it must
+/// never fall through to [`parse_query_extractor`]'s single parameter named
+/// after the binding, which would be a required parameter nobody sends.
 pub(super) fn parse_query_struct_extractor(
     ty: &Type,
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) -> Option<Vec<Parameter>> {
     let (query_ty, optional) = option_inner(ty).map_or((ty, false), |inner| (inner, true));
-    let inner_ty = query_inner(query_ty)?;
+    let (inner_ty, optional_query) = query_inner(query_ty)?;
     if utils_is_map_type(inner_ty) {
         return None;
     }
-    let mut parameters =
-        parse_query_struct_to_parameters(inner_ty, known_schemas, struct_definitions)?;
-    if optional {
+    let mut parameters = if let Some(parameters) =
+        parse_query_struct_to_parameters(inner_ty, known_schemas, struct_definitions)
+    {
+        parameters
+    } else {
+        named_struct_fields(inner_ty, struct_definitions)?;
+        Vec::new()
+    };
+    if optional || optional_query {
         for parameter in &mut parameters {
             parameter.required = Some(false);
         }
@@ -44,37 +59,43 @@ pub(super) fn parse_query_struct_extractor(
     Some(parameters)
 }
 
-/// `T` of a `Query<T>` type.
-fn query_inner(ty: &Type) -> Option<&Type> {
+/// `T` of a `Query<T>` / `OptionalQuery<T>` type, and whether it is the
+/// optional `axum_extra::extract::OptionalQuery`.
+fn query_inner(ty: &Type) -> Option<(&Type, bool)> {
     let Type::Path(type_path) = ty else {
         return None;
     };
     let segment = type_path.path.segments.last()?;
-    if segment.ident != "Query" {
+    let optional = segment.ident == "OptionalQuery";
+    if !optional && segment.ident != "Query" {
         return None;
     }
     let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
         return None;
     };
     match args.args.first() {
-        Some(syn::GenericArgument::Type(inner_ty)) => Some(inner_ty),
+        Some(syn::GenericArgument::Type(inner_ty)) => Some((inner_ty, optional)),
         _ => None,
     }
 }
 
-/// `Query<T>` for a non-struct known `T` (struct `T`s are handled by
-/// [`parse_query_struct_extractor`] first): one parameter named after the
-/// binding.
+/// `Query<T>` for a known `T` that is not a struct (e.g. an internally
+/// tagged enum; struct `T`s are handled by [`parse_query_struct_extractor`]
+/// first): one parameter named after the binding — with the default `style:
+/// form, explode: true` an object schema's properties are the query keys.
+/// A tuple struct cannot be read from a query string's key/value pairs, so it
+/// documents nothing.
 pub(super) fn parse_query_extractor(
     param_name: &str,
     ty: &Type,
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) -> Option<Vec<Parameter>> {
-    let inner_ty = query_inner(ty)?;
+    let (inner_ty, optional) = query_inner(ty)?;
     if utils_is_map_type(inner_ty)
         || is_primitive_or_like(inner_ty)
         || !is_known_type(inner_ty, known_schemas, struct_definitions)
+        || is_defined_struct(inner_ty, struct_definitions)
     {
         return None;
     }
@@ -83,7 +104,7 @@ pub(super) fn parse_query_extractor(
         name: param_name.to_string(),
         r#in: ParameterLocation::Query,
         description: None,
-        required: Some(true),
+        required: Some(!optional),
         schema: Some(parse_type_to_schema_ref(
             inner_ty,
             known_schemas,
@@ -144,6 +165,21 @@ fn collect_query_struct_parameters(
         return;
     }
     visiting.push(struct_name);
+    // Container `#[serde(from = "X")]` / `try_from` (or `#[schema(value_type =
+    // X)]`): serde reads `X` from the query string, never this struct's own
+    // fields.
+    if let Some(source) = container_override_type(&struct_item.attrs, SerdeSide::Deserialize) {
+        collect_query_struct_parameters(
+            &source,
+            force_optional,
+            known_schemas,
+            struct_definitions,
+            visiting,
+            parameters,
+        );
+        visiting.pop();
+        return;
+    }
     let rename_all = input_rename_all(&struct_item.attrs);
     // Container `#[serde(default)]` fills every missing field from
     // `Default`, so no field of this struct is required in the query string.
@@ -172,6 +208,10 @@ fn collect_query_struct_parameters(
         // #[serde(default)] fields are optional in request inputs even
         // when the Rust type is non-Option (B4: request optional).
         let has_default = extract_default(&field.attrs).is_some();
+        // serde fills an absent `Option` field with `None` only when it reads
+        // the field itself: a custom `deserialize_with` / `with` makes the key
+        // mandatory (`missing_field`) unless the field has a `default`.
+        let absent_is_none = is_optional && !extract_field_codec(&field.attrs).deserialize;
         let mut field_schema = field_schema_ref(
             field,
             &extract_schema_constraints(&field.attrs),
@@ -205,7 +245,7 @@ fn collect_query_struct_parameters(
             r#in: ParameterLocation::Query,
             // The field's doc comment documents the parameter.
             description: extract_doc_comment(&field.attrs),
-            required: Some(!(force_optional || is_optional || has_default || container_default)),
+            required: Some(!(force_optional || absent_is_none || has_default || container_default)),
             schema: Some(convert_to_inline_schema(field_schema, is_optional)),
             example: None,
             style: is_array.then_some(ParameterStyle::Form),

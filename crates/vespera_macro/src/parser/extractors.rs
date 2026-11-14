@@ -1,13 +1,32 @@
 use syn::{GenericArgument, PathArguments, Type, punctuated::Punctuated, token::Comma};
 
 /// The extractor a handler argument documents: `ty` with every
-/// `Validated<E>` / `ValidatedWith<C, E>` and `Result<E, Rejection>` wrapper
-/// removed (in any nesting). A `Result` argument hands the rejection to the
-/// handler, but the request still carries — and is documented with — what `E`
-/// extracts. `Option<E>` is kept: it changes requiredness, so each caller
-/// unwraps it itself.
+/// `Validated<E>` / `ValidatedWith<C, E>`, `Result<E, Rejection>`,
+/// `axum_extra::extract::WithRejection<E, R>` and
+/// `axum_extra::extract::Cached<E>` wrapper removed (in any nesting). A
+/// `Result` / `WithRejection` argument only changes how the rejection is
+/// answered and `Cached` only memoizes the extraction: the request still
+/// carries — and is documented with — what `E` extracts. `Option<E>` is kept:
+/// it changes requiredness, so each caller unwraps it itself.
 pub fn request_extractor(mut ty: &Type) -> &Type {
-    while let Some(inner) = validated_inner_type(ty).or_else(|| result_ok_type(ty)) {
+    while let Some(inner) = validated_inner_type(ty).or_else(|| transparent_inner(ty)) {
+        ty = inner;
+    }
+    ty
+}
+
+/// `E` of a wrapper that extracts exactly what `E` extracts: `Result<E, _>`,
+/// `WithRejection<E, R>` and `Cached<E>` (their FIRST type argument).
+fn transparent_inner(ty: &Type) -> Option<&Type> {
+    result_ok_type(ty)
+        .or_else(|| extractor_inner_type(ty, "WithRejection"))
+        .or_else(|| extractor_inner_type(ty, "Cached"))
+}
+
+/// `ty` with every [`transparent_inner`] wrapper removed (`Validated` kept).
+#[cfg(feature = "validation")]
+fn strip_transparent(mut ty: &Type) -> &Type {
+    while let Some(inner) = transparent_inner(ty) {
         ty = inner;
     }
     ty
@@ -65,9 +84,9 @@ const PAYLOAD_EXTRACTORS: [&str; 5] = ["Json", "Form", "Query", "Path", "TypedMu
 /// payload type cannot be named syntactically.
 #[cfg(feature = "validation")]
 pub fn validated_payload_type(ty: &Type) -> Option<&Type> {
-    // `Result<Validated<E<U>>, _>` still validates `U` (the handler only
-    // receives the rejection instead of the automatic `422`).
-    let extractor = validated_inner_type(result_ok_type(ty).unwrap_or(ty))?;
+    // `Result<Validated<E<U>>, _>` / `WithRejection<Validated<E<U>>, R>` still
+    // validate `U` (only the rejection is answered differently).
+    let extractor = validated_inner_type(strip_transparent(ty))?;
     PAYLOAD_EXTRACTORS
         .iter()
         .find_map(|name| extractor_inner_type(extractor, name))
@@ -145,6 +164,18 @@ mod tests {
     )]
     #[case::lifetime_first("Result<'a, R>", "Result < 'a , R >")]
     #[case::reference("&Json<U>", "& Json < U >")]
+    #[case::with_rejection("WithRejection<Json<U>, ApiError>", "Json < U >")]
+    #[case::with_rejection_qualified(
+        "axum_extra::extract::WithRejection<Query<F>, ApiError>",
+        "Query < F >"
+    )]
+    #[case::cached("axum_extra::extract::Cached<Path<u32>>", "Path < u32 >")]
+    #[case::cached_with_rejection_validated(
+        "Cached<WithRejection<Validated<Form<U>>, R>>",
+        "Form < U >"
+    )]
+    #[case::bare_with_rejection("WithRejection", "WithRejection")]
+    #[case::cached_lifetime("Cached<'a>", "Cached < 'a >")]
     fn request_extractor_unwraps_result_and_validated(#[case] src: &str, #[case] expected: &str) {
         let ty: Type = syn::parse_str(src).unwrap();
         let inner = request_extractor(&ty);
@@ -160,6 +191,8 @@ mod tests {
     #[case::path("Validated<Path<(i64, String)>>", Some("(i64 , String)"))]
     #[case::multipart("Validated<TypedMultipart<Upload>>", Some("Upload"))]
     #[case::custom_extractor("Validated<MyExtractor<User>>", None)]
+    #[case::with_rejection_validated("WithRejection<Validated<Json<User>>, R>", Some("User"))]
+    #[case::cached_result_validated("Cached<Result<Validated<Query<F>>, R>>", Some("F"))]
     #[case::not_validated("Json<User>", None)]
     fn finds_validated_payload(#[case] src: &str, #[case] expected: Option<&str>) {
         let ty: Type = syn::parse_str(src).unwrap();
