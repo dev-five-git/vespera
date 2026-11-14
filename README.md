@@ -31,7 +31,7 @@ let app = vespera!(openapi = "openapi.json", docs_url = "/docs");
 
 ```toml
 [dependencies]
-vespera = "0.7"
+vespera = "0.8"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 ```
@@ -1073,7 +1073,7 @@ Schedule background tasks with `#[vespera::cron]`. A tiny built-in tokio schedul
 
 ```toml
 [dependencies]
-vespera = { version = "0.7", features = ["cron"] }
+vespera = { version = "0.8", features = ["cron"] }
 ```
 
 `cron` pulls in croner, whose `derive_builder` dependency builds `syn` 2 (vespera's own
@@ -1135,7 +1135,7 @@ with `tz`. Time zones need the opt-in `cron-tz` feature (it adds
 ~7 MB of generated source, which is why it is not part of `cron`):
 
 ```toml
-vespera = { version = "0.7", features = ["cron", "cron-tz"] }
+vespera = { version = "0.8", features = ["cron", "cron-tz"] }
 ```
 
 ```rust
@@ -1312,7 +1312,7 @@ Embed your Vespera router inside a Java/Spring application — no TCP, no JSON e
 
 ```rust
 // Cargo.toml
-// vespera = { version = "0.7", features = ["jni"] }
+// vespera = { version = "0.8", features = ["jni"] }
 
 pub fn create_app() -> axum::Router {
     vespera!(title = "My API")
@@ -1352,7 +1352,7 @@ pub async fn me(principal: Principal) -> String { // 401 when anonymous; Option<
 ### Rust-side observability (`tracing` feature)
 
 ```toml
-vespera = { version = "0.7", features = ["jni", "tracing"] }
+vespera = { version = "0.8", features = ["jni", "tracing"] }
 ```
 
 With the opt-in `tracing` feature every in-process / JNI dispatch runs inside a
@@ -1376,7 +1376,7 @@ The `ffi` feature exposes the same in-process dispatch through a stable C ABI, s
 host that can load a shared library embeds the app without HTTP or a JVM:
 
 ```rust
-// Cargo.toml: vespera = { version = "0.7", features = ["ffi"] }, crate-type = ["cdylib"]
+// Cargo.toml: vespera = { version = "0.8", features = ["ffi"] }, crate-type = ["cdylib"]
 pub fn create_app() -> axum::Router {
     vespera!(title = "My API")
 }

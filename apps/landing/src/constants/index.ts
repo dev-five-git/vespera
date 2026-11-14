@@ -7,9 +7,9 @@
  * release the pending changepacks will produce. The release job bumps them
  * (and the samples) on the version PR via `scripts/sync-landing-versions.ts`.
  */
-export const VESPERA_VERSION = '0.7'
-export const VESPERA_BRIDGE_VERSION = '0.7.0'
-export const VESPERA_BRIDGE_PLUGIN_VERSION = '0.7.0'
+export const VESPERA_VERSION = '0.8'
+export const VESPERA_BRIDGE_VERSION = '0.8.0'
+export const VESPERA_BRIDGE_PLUGIN_VERSION = '0.8.0'
 
 /**
  * Every version literal the documentation samples quote (capture group 1),
