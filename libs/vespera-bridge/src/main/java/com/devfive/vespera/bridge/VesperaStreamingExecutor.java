@@ -108,29 +108,43 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
     /**
      * One admitted stream: {@link #executor()} runs its single task on the
      * pool and frees the slot when the task ends; {@link #cancel()} frees a
-     * slot whose task never started.
+     * slot whose task has not started running yet: never submitted, or
+     * submitted but still waiting in the pool queue (the client went away
+     * while queued). A cancelled queued task is removed from the queue and,
+     * should a worker already have taken it, skipped: the native dispatch
+     * never runs for a disconnected client.
      */
     final class Reservation {
         private static final int RESERVED = 0;
-        private static final int STARTED = 1;
-        private static final int RELEASED = 2;
+        private static final int QUEUED = 1;
+        private static final int RUNNING = 2;
+        /** Terminal: the permit was released (task ended, cancelled or rejected). */
+        private static final int RELEASED = 3;
 
         private final AtomicInteger state = new AtomicInteger(RESERVED);
+        private volatile Runnable queued;
 
         /** Runs the (single) task of this stream on the pool; later tasks are ignored. */
         Executor executor() {
             return task -> {
-                if (!state.compareAndSet(RESERVED, STARTED)) {
+                Runnable pooled = () -> {
+                    // Cancelled while it waited in the queue: never run it
+                    // (the permit was already released by cancel()).
+                    if (!state.compareAndSet(QUEUED, RUNNING)) {
+                        return;
+                    }
+                    try {
+                        task.run();
+                    } finally {
+                        release();
+                    }
+                };
+                queued = pooled;
+                if (!state.compareAndSet(RESERVED, QUEUED)) {
                     return;
                 }
                 try {
-                    pool.execute(() -> {
-                        try {
-                            task.run();
-                        } finally {
-                            release();
-                        }
-                    });
+                    pool.execute(pooled);
                 } catch (RejectedExecutionException closed) {
                     release();
                     throw closed;
@@ -138,10 +152,24 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
             };
         }
 
-        /** Free the slot when the task never started (the stream was cancelled first). */
+        /**
+         * Free the slot when the task has not started running (the stream was
+         * cancelled first, possibly while queued); a no-op once it runs or ended.
+         */
         void cancel() {
-            if (state.compareAndSet(RESERVED, RELEASED)) {
-                permits.release();
+            while (true) {
+                int current = state.get();
+                if (current != RESERVED && current != QUEUED) {
+                    return;
+                }
+                if (state.compareAndSet(current, RELEASED)) {
+                    permits.release();
+                    Runnable pooled = queued;
+                    if (current == QUEUED && pooled != null) {
+                        pool.remove(pooled);
+                    }
+                    return;
+                }
             }
         }
 

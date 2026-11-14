@@ -436,7 +436,9 @@ public class VesperaReactiveProxyHandler implements WebHandler {
         }, response.bufferFactory(), executor, STREAM_CHUNK_BYTES);
         return response.writeAndFlushWith(Flux.from(body).map(Mono::just))
                 .doOnSuccess(ignored -> px.complete(out.status(), out.panicked()))
-                // Cancelled / failed before the pool ran the task: free the slot.
+                // Cancelled / failed before the pool ran the task (never
+                // submitted, or still queued): free the slot and drop the
+                // task, so a disconnected client never reaches Rust.
                 .doFinally(signal -> slot.cancel());
     }
 

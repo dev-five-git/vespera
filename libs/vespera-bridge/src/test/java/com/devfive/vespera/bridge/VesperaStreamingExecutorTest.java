@@ -65,8 +65,8 @@ class VesperaStreamingExecutorTest {
             second.executor().execute(queuedRuns::incrementAndGet);
             // Only the first task of a reservation runs.
             second.executor().execute(queuedRuns::incrementAndGet);
-            // Cancelling a started reservation does not free its slot early.
-            second.cancel();
+            // Cancelling a running reservation does not free its slot early.
+            first.cancel();
             assertEquals(2, executor.inUse());
             assertNull(executor.tryReserve());
 
@@ -74,6 +74,43 @@ class VesperaStreamingExecutorTest {
             awaitIdle(executor);
             assertEquals(1, queuedRuns.get());
             assertNotNull(executor.tryReserve(), "slots come back when the streams end");
+        }
+    }
+
+    @Test
+    void cancellingAQueuedReservationDropsItsTaskAndFreesTheSlot() throws Exception {
+        try (VesperaStreamingExecutor executor = new VesperaStreamingExecutor(1, 1)) {
+            CountDownLatch release = new CountDownLatch(1);
+            CountDownLatch started = new CountDownLatch(1);
+            AtomicInteger queuedRuns = new AtomicInteger();
+            VesperaStreamingExecutor.Reservation running = executor.tryReserve();
+            VesperaStreamingExecutor.Reservation queued = executor.tryReserve();
+            running.executor().execute(() -> {
+                started.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+            // Submitted, but waiting for the only thread.
+            queued.executor().execute(queuedRuns::incrementAndGet);
+            assertEquals(2, executor.inUse());
+
+            // The client went away while queued: the slot comes back at once.
+            queued.cancel();
+            queued.cancel();
+            assertEquals(1, executor.inUse());
+            VesperaStreamingExecutor.Reservation next = executor.tryReserve();
+            assertNotNull(next, "the queued slot is free again");
+            next.cancel();
+
+            release.countDown();
+            awaitIdle(executor);
+            Thread.sleep(50);
+            assertEquals(0, queuedRuns.get(), "a cancelled queued task never runs");
+            assertEquals(0, executor.inUse());
         }
     }
 
