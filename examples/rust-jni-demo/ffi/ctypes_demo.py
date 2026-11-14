@@ -33,6 +33,7 @@ VESPERA_OVERFLOW = 1
 VESPERA_ERR_INVALID_ARGUMENT = -1
 VESPERA_ERR_RUNTIME = -4
 VESPERA_ERR_TOO_LATE = -5
+VESPERA_MIN_OUT_BYTES = 1024
 
 lib = ctypes.CDLL(str(sys.argv[1] if len(sys.argv) > 1 else DEFAULT_LIB))
 u8p = ctypes.POINTER(ctypes.c_uint8)
@@ -180,17 +181,21 @@ on_inline = CALLBACK(lambda _u, response, n: (inline.append(decode(ctypes.string
 check(lib.vespera_dispatch_async(None, 5, on_inline, None) == VESPERA_OK, "async NULL request -> OK")
 check(len(inline) == 1 and inline[0]["status"] == 400, f"async 400 delivered inline before returning ({inline})")
 
-# vespera_dispatch_into: size probe, overflow, then an exact fit.
+# vespera_dispatch_into: a buffer below VESPERA_MIN_OUT_BYTES (the NULL / 0
+# probe included) is answered with OVERFLOW + the minimum WITHOUT running the
+# handler; at the minimum the dispatch runs.
 request = encode("GET", "/health")
-rc, required, _ = dispatch_into(request, 0)
-check(rc == VESPERA_OVERFLOW and required > 0, f"dispatch_into size probe -> OVERFLOW, {required} bytes")
-rc, needed, _ = dispatch_into(request, required - 1)
-check((rc, needed) == (VESPERA_OVERFLOW, required), f"dispatch_into one byte short -> OVERFLOW ({rc}, {needed})")
-rc, written, wire = dispatch_into(request, required)
+for capacity in (0, VESPERA_MIN_OUT_BYTES - 1):
+    rc, needed, _ = dispatch_into(request, capacity)
+    check(
+        (rc, needed) == (VESPERA_OVERFLOW, VESPERA_MIN_OUT_BYTES),
+        f"dispatch_into {capacity}-byte buffer -> OVERFLOW, minimum ({rc}, {needed})",
+    )
+rc, written, wire = dispatch_into(request, VESPERA_MIN_OUT_BYTES)
 header, body = decode(wire)
 check(
-    (rc, written, header["status"], body) == (VESPERA_OK, required, 200, b"ok"),
-    f"dispatch_into exact buffer -> 200 ok ({rc} {written} {header['status']} {body!r})",
+    (rc, header["status"], body) == (VESPERA_OK, 200, b"ok"),
+    f"dispatch_into minimum buffer -> 200 ok ({rc} {written} {header['status']} {body!r})",
 )
 check(
     lib.vespera_dispatch_into(request, len(request), None, 16, ctypes.byref(ctypes.c_size_t()))

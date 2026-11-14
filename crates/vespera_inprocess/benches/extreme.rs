@@ -37,8 +37,8 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use http_body_util::BodyExt;
 use tokio::runtime::Runtime;
 use vespera_inprocess::{
-    RequestChunk, dispatch_bidirectional_streaming, dispatch_from_bytes, dispatch_from_bytes_async,
-    dispatch_streaming_async, register_app_named,
+    MAX_REQUEST_HEADERS, RequestChunk, dispatch_bidirectional_streaming, dispatch_from_bytes,
+    dispatch_from_bytes_async, dispatch_streaming_async, register_app_named,
 };
 
 struct Counting;
@@ -322,20 +322,22 @@ fn bench_route_table(c: &mut Criterion) {
     group.finish();
 }
 
-/// Many request headers (parse + HeaderMap build): ns/header must be flat.
+/// Many request headers (parse + HeaderMap build): ns/header must be flat up to
+/// [`MAX_REQUEST_HEADERS`]; the rungs above it measure the `431` rejection.
 fn bench_request_headers(c: &mut Criterion) {
     install_default();
     let runtime = Runtime::new().expect("runtime");
     let mut group = c.benchmark_group("request_headers");
     heavy(&mut group);
-    for n in ladder(&[10, 100, 1_000, 5_000], &[10_000]) {
+    for n in ladder(&[10, 100, 1_000, MAX_REQUEST_HEADERS, 5_000], &[10_000]) {
         let headers: Vec<(String, String)> = (0..n)
             .map(|i| (format!("x-req-{i}"), format!("value-{i}-abcdefghijklmnop")))
             .collect();
         let wire = wire_json("GET", "/ok", "", &headers, None, &[]);
+        let expected = if n <= MAX_REQUEST_HEADERS { 200 } else { 431 };
         expect_status(
             &dispatch_from_bytes(wire.clone(), &runtime),
-            200,
+            expected,
             "request_headers",
         );
         group.throughput(Throughput::Elements(n as u64));
@@ -627,8 +629,10 @@ fn bench_registry(c: &mut Criterion) {
 }
 
 /// Thread scaling of the synchronous entry point: `T` OS threads, each with its own
-/// current-thread runtime (the JNI `dispatchBytes` shape), hammer `dispatch_from_bytes`
-/// for a fixed window. Prints total ops/s and efficiency vs. one thread (ideal = 100%).
+/// current-thread runtime, hammer `dispatch_from_bytes` for a fixed window. Prints total
+/// ops/s and efficiency vs. one thread (ideal = 100%). Not the JNI `dispatchBytes` shape
+/// (that blocks every caller on the one shared multi-thread runtime): the private runtimes
+/// isolate the dispatch path's own scaling from runtime contention.
 fn bench_thread_scaling(_c: &mut Criterion) {
     const WINDOW_MS: u64 = 1_500;
     install_default();

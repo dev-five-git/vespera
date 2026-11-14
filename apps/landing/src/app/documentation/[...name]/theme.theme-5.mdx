@@ -42,7 +42,7 @@ The hand-written header ships with the `vespera_inprocess` crate as `include/ves
 |----------|----------|
 | `int vespera_init(void)` | Registers the apps and starts the shared runtime. Idempotent. `VESPERA_ERR_REGISTRATION` / `VESPERA_ERR_PANIC` / `VESPERA_ERR_RUNTIME` on failure |
 | `int vespera_dispatch(req, len, uint8_t **out, size_t *out_len)` | Synchronous; on `VESPERA_OK` the caller owns `*out` and releases it with `vespera_free` |
-| `int vespera_dispatch_into(req, len, out, cap, size_t *written)` | Writes into the caller's buffer. `VESPERA_OVERFLOW` sets `*written` to the required size (a retry re-runs the handler; `NULL` / `0` is a size probe) |
+| `int vespera_dispatch_into(req, len, out, cap, size_t *written)` | Writes into the caller's buffer. `VESPERA_OVERFLOW` sets `*written` to the size that run needed; every call that dispatches runs the handler, so a retry runs it again (send non-idempotent requests through `vespera_dispatch`). A `cap` below `VESPERA_MIN_OUT_BYTES` (1024, `NULL` / `0` included) answers `VESPERA_OVERFLOW` with `*written = 1024` without running the handler |
 | `int vespera_dispatch_async(req, len, cb, user_data)` | Returns at once; `cb(user_data, resp, resp_len)` runs once — inline for early rejections (`400` / `413` / `503`), otherwise on a runtime worker, possibly before the call returns. The callback owns `resp` |
 | `void vespera_free(ptr, len)` | Releases a response; `NULL` is a no-op |
 | `int vespera_shutdown(uint64_t timeout_ms)` | Stops the runtime for good: new dispatches answer `503`, in-flight ones get up to the timeout |
