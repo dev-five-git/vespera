@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/schema_macro/transformation/tests.rs
+expression: rendered
+---
+# [serde (alias = "y")]

@@ -9,13 +9,15 @@ use std::{
 use vespera_core::schema::{Schema, SchemaRef};
 
 use super::serde_attrs::{
-    SerdeEnumRepr, extract_doc_comment, extract_enum_repr, extract_rename_all,
-    extract_rename_all_fields, extract_untagged,
+    SerdeEnumRepr, extract_doc_comment, extract_enum_repr, extract_rename_all_fields_for,
+    extract_rename_all_for, extract_untagged,
 };
 
 mod representations;
 mod unit;
 mod variant;
+
+pub(super) use unit::derives_serde_repr;
 
 /// The two serde renaming rules an enum container can carry.
 #[derive(Clone, Copy)]
@@ -39,8 +41,15 @@ pub fn parse_enum_to_schema(
             super::type_schema::parse_type_to_schema_ref(&ty, known_schemas, struct_definitions);
         return super::struct_schema::with_description(schema_ref, enum_description);
     }
-    let rename_all = extract_rename_all(&enum_item.attrs);
-    let rename_all_fields = extract_rename_all_fields(&enum_item.attrs);
+    // `serde_repr`: the enum is its integer discriminant on this side.
+    if let Some(schema) = unit::parse_serde_repr_enum(enum_item, enum_description.clone()) {
+        return schema;
+    }
+    // Names follow the serde direction of the view being built: the request
+    // (`{Name}Input`) view uses the deserialize-side renames.
+    let side = super::request_view::current_side();
+    let rename_all = extract_rename_all_for(&enum_item.attrs, side);
+    let rename_all_fields = extract_rename_all_fields_for(&enum_item.attrs, side);
     // Container `rename_all` renames VARIANTS only; struct-variant fields
     // follow `rename_all_fields` (a variant-level `rename_all` still wins).
     let renames = EnumRenames {

@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/unit.rs
+expression: "format!(\"response: {}\\nrequest:  {}\", schema_json(src, false),\nschema_json(src, true))"
+---
+response: {"type":"string","enum":["out","B"]}
+request:  {"type":"string","enum":["in","B"]}

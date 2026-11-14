@@ -1,0 +1,37 @@
+---
+source: crates/vespera_macro/src/parser/schema/type_schema/conversion/tests.rs
+expression: "format!(\"{ty_src} => {}\", serde_json::to_string_pretty(&schema_ref).unwrap())"
+---
+Either<String, Option<User>> => {
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "Left": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "Left"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "Right": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/User"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "Right"
+      ]
+    }
+  ]
+}
