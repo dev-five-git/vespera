@@ -18,6 +18,8 @@ expression: "serde_json::to_string_pretty(&summary).unwrap()"
       "required": false,
       "schema": {
         "format": "uint32",
+        "maximum": 4294967295,
+        "minimum": 0,
         "type": [
           "integer",
           "null"

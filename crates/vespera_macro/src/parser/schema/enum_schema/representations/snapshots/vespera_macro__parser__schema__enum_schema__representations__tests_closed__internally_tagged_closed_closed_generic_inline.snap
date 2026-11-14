@@ -15,7 +15,9 @@ expression: "serde_json::to_string_pretty(&schema).unwrap()"
         },
         "v": {
           "type": "integer",
-          "format": "uint8"
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255
         }
       },
       "required": [
@@ -39,7 +41,9 @@ expression: "serde_json::to_string_pretty(&schema).unwrap()"
       ],
       "additionalProperties": {
         "type": "integer",
-        "format": "uint8"
+        "format": "uint8",
+        "minimum": 0,
+        "maximum": 255
       }
     },
     {

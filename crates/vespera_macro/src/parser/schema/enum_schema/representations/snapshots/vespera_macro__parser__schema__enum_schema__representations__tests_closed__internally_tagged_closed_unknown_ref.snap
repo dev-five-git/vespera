@@ -20,9 +20,7 @@ expression: "serde_json::to_string_pretty(&schema).unwrap()"
             "type"
           ]
         },
-        {
-          "type": "object"
-        }
+        {}
       ]
     }
   ],

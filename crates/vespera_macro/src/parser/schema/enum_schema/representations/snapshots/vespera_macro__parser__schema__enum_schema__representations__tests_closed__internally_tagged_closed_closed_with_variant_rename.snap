@@ -9,7 +9,9 @@ expression: "serde_json::to_string_pretty(&schema).unwrap()"
       "properties": {
         "id": {
           "type": "integer",
-          "format": "uint32"
+          "format": "uint32",
+          "minimum": 0,
+          "maximum": 4294967295
         },
         "kind": {
           "type": "string",
