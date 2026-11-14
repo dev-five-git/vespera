@@ -7,9 +7,12 @@
 // It also checks
 //   3. the versions the landing documentation quotes
 //      (`apps/landing/src/constants/index.ts` — the single source the MDX code
-//      samples are tested against in `docs-versions.test.ts`).
+//      samples are tested against in `docs-versions.test.ts`), and
+//   4. the versions the other user-facing docs quote (`REPO_DOCS`: the root
+//      README is every crate's crates.io page, `crates/vespera/src/lib.rs`
+//      the docs.rs front page, the bridge README the Maven Central one).
 //
-// Rule for 3: compared at `major.minor` level only (the docs say
+// Rule for 3 and 4: compared at `major.minor` level only (the docs say
 // `vespera = "0.6"` and `vespera-bridge:0.6.0`, and the bridge is
 // minor-compatible with the crate), and a documented version passes when it
 // matches EITHER the current workspace version OR the version the pending
@@ -26,6 +29,54 @@ import { join } from 'node:path'
 import * as landing from '../apps/landing/src/constants'
 
 export const LEVELS = ['none', 'Patch', 'Minor', 'Major'] as const
+
+type DocConstant = (typeof landing.DOC_VERSION_PATTERNS)[number][1]
+
+/**
+ * Docs outside the landing site whose code samples quote package versions.
+ * `sync-landing-versions.ts` rewrites them on the version PR like the landing
+ * pages; the published `.crate` / JAR READMEs can never be replaced, so a
+ * stale pin here ships for good.
+ */
+export const REPO_DOCS = [
+  'README.md',
+  'SKILL.md',
+  'crates/vespera/src/lib.rs',
+  'examples/rust-jni-demo/README.md',
+  'libs/vespera-bridge/README.md',
+]
+
+/**
+ * `DOC_VERSION_PATTERNS` for `REPO_DOCS`: the crate pins are not anchored to
+ * the line start (only to a non-name character before `vespera`), since
+ * these files also quote them in comments
+ * (`//! vespera = "0.8"`, `// Cargo.toml: vespera = { version = ... }`).
+ */
+export const REPO_VERSION_PATTERNS: [RegExp, DocConstant][] = [
+  [/(?<![\w-])vespera = "([0-9][^"]*)"/g, 'VESPERA_VERSION'],
+  [/(?<![\w-])vespera = \{ version = "([0-9][^"]*)"/g, 'VESPERA_VERSION'],
+  ...landing.DOC_VERSION_PATTERNS.filter(([, c]) => c !== 'VESPERA_VERSION'),
+]
+
+/** Every `REPO_VERSION_PATTERNS` capture in `content`, with its line. */
+export function repoDocVersions(
+  content: string,
+): { line: number; version: string }[] {
+  const found: { line: number; version: string; index: number }[] = []
+  for (const [pattern] of REPO_VERSION_PATTERNS) {
+    for (const match of content.matchAll(pattern)) {
+      const index = match.index ?? 0
+      found.push({
+        line: content.slice(0, index).split('\n').length,
+        version: match[1],
+        index,
+      })
+    }
+  }
+  return found
+    .sort((a, b) => a.index - b.index)
+    .map(({ line, version }) => ({ line, version }))
+}
 export type Level = (typeof LEVELS)[number]
 
 /** `major.minor` of a version string (`"0.6"` / `"0.6.0"` / `"0.6.0-rc.1"`). */
@@ -59,6 +110,9 @@ export function checkDocumentedVersions(
   documented: Record<string, string>,
   current: string,
   pending: Level,
+  where = 'landing',
+  fix = 'update apps/landing/src/constants/index.ts and the MDX samples ' +
+    '(docs-versions.test.ts lists them)',
 ): string[] {
   const next = bumpVersion(current, pending)
   const accepted = new Set([minorOf(current), minorOf(next)])
@@ -67,14 +121,13 @@ export function checkDocumentedVersions(
   for (const [name, version] of Object.entries(documented)) {
     const minor = minorOf(version)
     if (minor === null) {
-      errors.push(`landing ${name} = "${version}" is not a version`)
+      errors.push(`${where} ${name} = "${version}" is not a version`)
     } else if (!accepted.has(minor)) {
       errors.push(
-        `landing ${name} = "${version}" (${minor}) does not match the ` +
+        `${where} ${name} = "${version}" (${minor}) does not match the ` +
           `workspace ${current}` +
           (next === current ? '' : ` / pending release ${next}`) +
-          ` — expected ${allowed}; update apps/landing/src/constants/index.ts ` +
-          'and the MDX samples (docs-versions.test.ts lists them)',
+          ` — expected ${allowed}; ${fix}`,
       )
     }
   }
@@ -170,6 +223,20 @@ function main(): number {
     errors.push(
       ...checkDocumentedVersions(documented, workspaceVersion, pending),
     )
+    // 4. versions quoted by the other user-facing docs
+    for (const file of REPO_DOCS) {
+      for (const { line, version } of repoDocVersions(read(file))) {
+        errors.push(
+          ...checkDocumentedVersions(
+            { [`${file}:${line}`]: version },
+            workspaceVersion,
+            pending,
+            'quoted',
+            'run `bun scripts/sync-landing-versions.ts`',
+          ),
+        )
+      }
+    }
   }
 
   if (errors.length > 0) {
@@ -178,7 +245,8 @@ function main(): number {
   }
   console.info(
     `all ${PACKAGES.length} packages at ${workspaceVersion}, pending bump: ` +
-      `${pending}; landing documents ${Object.values(documented).join(' / ')}`,
+      `${pending}; landing documents ${Object.values(documented).join(' / ')}` +
+      `; ${REPO_DOCS.length} other docs checked`,
   )
   return 0
 }

@@ -779,7 +779,7 @@ schema_type!(PatchUploadRequest from CreateUploadRequest, multipart, partial, om
 
 **Dependencies required in your Cargo.toml:**
 ```toml
-vespera = "0.6"                # Includes multipart support natively
+vespera = "0.7"                # Includes multipart support natively
 tempfile = "3"                 # For NamedTempFile file uploads
 ```
 

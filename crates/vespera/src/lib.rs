@@ -10,7 +10,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! vespera = "0.5"
+//! vespera = "0.7"
 //! tokio = { version = "1", features = ["full"] }
 //! serde = { version = "1", features = ["derive"] }
 //! ```
