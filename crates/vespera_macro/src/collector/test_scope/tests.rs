@@ -9,7 +9,7 @@ use super::*;
 use crate::metadata::{StructMetadata, TestOnlyRoute};
 
 #[rstest]
-#[case::test("test", true)]
+#[case::bare_test("test", true)]
 #[case::negated("not (test)", false)]
 #[case::all_with_test("all (test , feature = \"x\")", true)]
 #[case::any_with_other("any (test , feature = \"x\")", false)]
