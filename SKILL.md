@@ -252,7 +252,7 @@ pub async fn reindex() {}
 
 | Axum Extractor | OpenAPI Location | Notes |
 |----------------|------------------|-------|
-| `Path<T>` | path parameter | T can be tuple or struct (struct fields matched by serde name); `{*rest}` → `{rest}` |
+| `Path<T>` | path parameter | T can be tuple or struct (struct fields matched by serde name); `{*rest}` → `{rest}`; a tuple longer than the route's params (nest prefix) is aligned from the end; `file-{name}` ok, `{name}.png` is a compile error |
 | `Query<T>` | query parameters | Struct fields become params; skip/flatten honoured; `Vec<T>` → `style: form, explode: true` |
 | `Json<T>` | requestBody | application/json |
 | `Form<T>` | requestBody | application/x-www-form-urlencoded |
@@ -263,6 +263,7 @@ pub async fn reindex() {}
 | `State<T>` | **ignored** | Internal, not API |
 | `Extension<T>` | **ignored** | Internal, not API |
 | `TypedHeader<T>` | header parameter | |
+| `Result<E, Rejection>` | same as `E` | still required; handler gets the rejection |
 | `HeaderMap` | **ignored** | Too dynamic |
 
 `TypedMultipart<T>`, `#[derive(Multipart)]` and `schema_type!(..., multipart)` need

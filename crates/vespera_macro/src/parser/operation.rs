@@ -5,9 +5,10 @@ use vespera_core::route::{MediaType, Operation, Parameter, ParameterLocation, Re
 use vespera_core::schema::{Reference, Schema, SchemaRef, SchemaType};
 
 use crate::metadata::HeaderParam;
+use crate::schema_macro::type_utils::option_inner;
 
 use super::{
-    extractors::{is_validated_type, unwrap_validated_type},
+    extractors::{is_validated_type, request_extractor},
     parameters::{
         parse_function_parameter, path_extractor_parameters, path_parameter, string_path_schema,
     },
@@ -35,13 +36,17 @@ pub struct OperationRouteConfig<'a> {
     pub form_in_query: bool,
 }
 
-/// `input` with its `Form<T>` (also inside `Validated<..>`) rewritten to
-/// `Query<T>`; `None` for any other argument.
+/// `input` with its `Form<T>` (also inside `Validated<..>` / `Result<..>`)
+/// rewritten to `Query<T>` — `Option<Form<T>>` to `Option<Query<T>>`, so the
+/// query parameters stay optional; `None` for any other argument.
 fn form_as_query(input: &FnArg) -> Option<FnArg> {
     let FnArg::Typed(pat_type) = input else {
         return None;
     };
-    let Type::Path(type_path) = unwrap_validated_type(pat_type.ty.as_ref()) else {
+    let extractor = request_extractor(pat_type.ty.as_ref());
+    let (extractor, optional) = option_inner(extractor)
+        .map_or((extractor, false), |inner| (request_extractor(inner), true));
+    let Type::Path(type_path) = extractor else {
         return None;
     };
     let mut query = type_path.clone();
@@ -50,8 +55,14 @@ fn form_as_query(input: &FnArg) -> Option<FnArg> {
         return None;
     }
     segment.ident = syn::Ident::new("Query", segment.ident.span());
+    let query = Type::Path(query);
+    let ty: Type = if optional {
+        syn::parse_quote!(Option<#query>)
+    } else {
+        query
+    };
     Some(FnArg::Typed(PatType {
-        ty: Box::new(Type::Path(query)),
+        ty: Box::new(ty),
         ..pat_type.clone()
     }))
 }
@@ -79,7 +90,7 @@ pub fn build_operation_from_function(
     // First pass: find the first Path<T> extractor and extract its type
     for input in &sig.inputs {
         if let FnArg::Typed(PatType { ty, .. }) = input
-            && let Type::Path(type_path) = unwrap_validated_type(ty.as_ref())
+            && let Type::Path(type_path) = request_extractor(ty.as_ref())
             // A segment-less path names no extractor: skip it instead of panicking.
             && let Some(segment) = type_path.path.segments.last()
             && segment.ident == "Path"
@@ -129,7 +140,7 @@ pub fn build_operation_from_function(
         } else {
             // Skip Path extractor - we already handled path parameters above
             let is_path_extractor = if let FnArg::Typed(PatType { ty, .. }) = input
-                && let Type::Path(type_path) = unwrap_validated_type(ty.as_ref())
+                && let Type::Path(type_path) = request_extractor(ty.as_ref())
                 && let Some(segment) = type_path.path.segments.last()
             {
                 segment.ident == "Path"
@@ -439,6 +450,8 @@ fn validation_error_response() -> Response {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_extractor_wrappers;
 #[cfg(test)]
 mod tests_form_query;
 #[cfg(test)]

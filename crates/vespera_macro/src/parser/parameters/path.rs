@@ -37,7 +37,8 @@ pub(in crate::parser) fn string_path_schema() -> SchemaRef {
 /// handler's `Path<T>` extractor:
 ///
 /// - `Path<(A, B)>`: positional — the n-th tuple element types the n-th
-///   segment (missing positions fall back to `string`).
+///   segment (missing positions fall back to `string`); a longer tuple is
+///   aligned from the end (its leading elements belong to a nest prefix).
 /// - `Path<Struct>` (a known named-field struct): each segment is typed by the
 ///   struct field with the same serde name (`rename` / `rename_all`
 ///   respected); unmatched segments fall back to `string`.
@@ -51,13 +52,18 @@ pub(in crate::parser) fn path_extractor_parameters(
     struct_definitions: &HashMap<&str, &str>,
 ) -> Vec<Parameter> {
     if let Type::Tuple(tuple) = inner_ty {
+        // axum fills the tuple in full-path order, so a tuple LONGER than the
+        // route's own parameters starts with the ones a nest prefix
+        // (`Router::nest("/{tenant}", ..)`) supplies: the route's segments are
+        // its LAST elements.
+        let offset = tuple.elems.len().saturating_sub(path_params.len());
         return path_params
             .iter()
             .enumerate()
             .map(|(idx, name)| {
                 let schema = tuple
                     .elems
-                    .get(idx)
+                    .get(offset + idx)
                     .map_or_else(string_path_schema, |elem| {
                         parse_type_to_schema_ref(elem, known_schemas, struct_definitions)
                     });

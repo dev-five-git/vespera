@@ -19,8 +19,9 @@ use std::collections::{HashMap, HashSet};
 use proc_macro2::Span;
 use syn::Type;
 
-use super::extractors::unwrap_validated_type;
+use super::extractors::request_extractor;
 use crate::metadata::CollectedMetadata;
+use crate::schema_macro::type_utils::option_inner;
 
 /// Request/query extractors whose generic argument must be a documented type.
 const REQUEST_EXTRACTORS: [&str; 4] = ["Query", "Json", "Form", "TypedMultipart"];
@@ -116,7 +117,9 @@ fn check_extractors(
             let syn::FnArg::Typed(syn::PatType { ty, .. }) = input else {
                 continue;
             };
-            let unwrapped = unwrap_validated_type(ty.as_ref());
+            // `Option<E>` documents `E` (as optional), so it is checked too.
+            let unwrapped = request_extractor(ty.as_ref());
+            let unwrapped = option_inner(unwrapped).map_or(unwrapped, request_extractor);
             let Some((extractor, inner)) = request_extractor_inner(unwrapped) else {
                 continue;
             };
@@ -433,6 +436,22 @@ mod tests {
         ";
         let err = run(src, "handler", &[]).expect_err("should error");
         assert!(err.to_string().contains("Json<Local>"), "{err}");
+    }
+
+    #[test]
+    fn result_and_option_wrapped_extractors_flag_inner_local_struct() {
+        for arg in [
+            "b: Result<Json<Local>, JsonRejection>",
+            "b: std::result::Result<Query<Local>, QueryRejection>",
+            "b: Option<Form<Local>>",
+            "b: Option<Validated<Json<Local>>>",
+        ] {
+            let src = format!(
+                "pub struct Local {{ pub a: i32 }} pub fn handler({arg}) -> String {{ String::new() }}"
+            );
+            let err = run(&src, "handler", &[]).expect_err(arg);
+            assert!(err.to_string().contains("<Local>"), "{arg}: {err}");
+        }
     }
 
     #[test]

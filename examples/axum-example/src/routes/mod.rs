@@ -24,6 +24,7 @@ pub mod health;
 pub mod memos;
 pub mod network;
 pub mod path;
+pub mod rejection;
 pub mod secured;
 pub mod shapes;
 pub mod r#type;

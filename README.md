@@ -144,8 +144,11 @@ catch-all segments (`path = "/files/{*rest}"`) are documented as
 `/files/{rest}` with a `rest` path parameter. The axum 0.7 notation is
 accepted and normalized at compile time (`:id` → `{id}`, `*rest` →
 `{*rest}`, styles may be mixed); a malformed path (unbalanced braces, empty
-`{}` / `:`, a duplicate parameter, a catch-all before the last segment) is a
-compile error on the path literal.
+`{}` / `:`, a duplicate parameter, a catch-all before the last segment, text
+after a parameter in its segment such as `{name}.png`, which axum's router
+cannot match) is a compile error on the path literal. A static prefix is fine
+(`/report-{year}` documents `year`); escaped literal braces `{{` / `}}` are not
+parameters and are documented percent-encoded (`%7B` / `%7D`).
 
 ### Route Handlers
 
@@ -543,6 +546,7 @@ with `WWW-Authenticate: Bearer error="insufficient_scope", scope="..."`.
 | `TypedMultipart<T>` | Request body (multipart/form-data) — typed with schema |
 | `Multipart` | Request body (multipart/form-data) — untyped, generic object |
 | `TypedHeader<T>` | Header parameters |
+| `Result<E, Rejection>` | Same as `E` (still required) — the handler receives the rejection |
 | `State<T>` | Ignored (internal) |
 
 ### Multipart Form Data
@@ -1291,6 +1295,7 @@ Request / response bodies follow what axum actually sends:
 | Handler type | OpenAPI |
 |--------------|---------|
 | `Path<Struct>` | one path parameter per `{name}`, typed by the field with that serde name |
+| `Path<(A, B, ..)>` longer than the route's own `{params}` | the route's parameters are typed by the LAST elements (leading ones come from a `Router::nest("/{tenant}", ..)` prefix) |
 | `Query<Struct>` | one query parameter per field; `#[serde(skip)]` / `skip_deserializing` fields are omitted, `#[serde(flatten)]` structs are expanded; `Vec<T>` fields use `style: form, explode: true` (repeated keys need `axum_extra::extract::Query`) |
 | `Option<Json<T>>` | `requestBody.required: false` |
 | `Bytes` / `BytesMut` / `Body` argument | `application/octet-stream` binary request body |

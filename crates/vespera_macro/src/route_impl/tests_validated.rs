@@ -41,6 +41,16 @@ use super::*;
         }
     )
 )]
+#[case::result_validated_json(
+    "result_validated_json",
+    quote!(
+        pub async fn create(
+            body: std::result::Result<Validated<Json<CreateUser>>, ValidationRejection>,
+        ) -> String {
+            String::new()
+        }
+    )
+)]
 #[case::generic_handler_skipped(
     "generic_handler_skipped",
     quote!(

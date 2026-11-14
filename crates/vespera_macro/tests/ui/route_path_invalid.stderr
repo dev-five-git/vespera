@@ -33,3 +33,9 @@ error: route path `/files/*rest/meta`: the catch-all `{*rest}` must be the whole
    |
 21 | #[route(get, path = "/files/*rest/meta")]
    |                     ^^^^^^^^^^^^^^^^^^^
+
+error: route path `/img/{name}.png`: axum's router cannot match text after the path parameter `{name}` in segment `{name}.png`: a parameter must end its segment (a static prefix such as `file-{name}` is fine)
+  --> tests/ui/route_path_invalid.rs:24:21
+   |
+24 | #[route(get, path = "/img/{name}.png")]
+   |                     ^^^^^^^^^^^^^^^^^

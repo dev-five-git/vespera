@@ -1,9 +1,43 @@
 use syn::{GenericArgument, PathArguments, Type, punctuated::Punctuated, token::Comma};
 
-/// If `ty` is `Validated<Inner>` or `ValidatedWith<Ctx, Inner>`, return
-/// `Inner`; otherwise return `ty`.
-pub(super) fn unwrap_validated_type(ty: &Type) -> &Type {
-    validated_inner_type(ty).unwrap_or(ty)
+/// The extractor a handler argument documents: `ty` with every
+/// `Validated<E>` / `ValidatedWith<C, E>` and `Result<E, Rejection>` wrapper
+/// removed (in any nesting). A `Result` argument hands the rejection to the
+/// handler, but the request still carries — and is documented with — what `E`
+/// extracts. `Option<E>` is kept: it changes requiredness, so each caller
+/// unwraps it itself.
+pub fn request_extractor(mut ty: &Type) -> &Type {
+    while let Some(inner) = validated_inner_type(ty).or_else(|| result_ok_type(ty)) {
+        ty = inner;
+    }
+    ty
+}
+
+/// `T` of `Result<T, E>` / `std::result::Result<T, E>` /
+/// `core::result::Result<T, E>` (two type arguments: a one-argument
+/// `io::Result<T>`-style alias is not the prelude `Result`).
+fn result_ok_type(ty: &Type) -> Option<&Type> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+    if type_path.qself.is_some() {
+        return None;
+    }
+    let segments: Vec<String> = type_path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    let is_result = match segments.as_slice() {
+        [result] => result == "Result" && type_path.path.leading_colon.is_none(),
+        [krate, module, result] => {
+            (krate == "std" || krate == "core") && module == "result" && result == "Result"
+        }
+        _ => false,
+    };
+    let args = extractor_args(ty, "Result").filter(|args| is_result && args.len() == 2)?;
+    as_type(args.first())
 }
 
 /// Return true when the type is a `Validated<...>` or `ValidatedWith<..., ...>`
@@ -31,7 +65,9 @@ const PAYLOAD_EXTRACTORS: [&str; 5] = ["Json", "Form", "Query", "Path", "TypedMu
 /// payload type cannot be named syntactically.
 #[cfg(feature = "validation")]
 pub fn validated_payload_type(ty: &Type) -> Option<&Type> {
-    let extractor = validated_inner_type(ty)?;
+    // `Result<Validated<E<U>>, _>` still validates `U` (the handler only
+    // receives the rejection instead of the automatic `422`).
+    let extractor = validated_inner_type(result_ok_type(ty).unwrap_or(ty))?;
     PAYLOAD_EXTRACTORS
         .iter()
         .find_map(|name| extractor_inner_type(extractor, name))
@@ -85,12 +121,39 @@ mod tests {
     fn unwraps_validated_inner_extractor(#[case] src: &str, #[case] expected: &str) {
         let ty: Type = syn::parse_str(src).unwrap();
         assert!(is_validated_type(&ty));
-        let inner = unwrap_validated_type(&ty);
+        let inner = request_extractor(&ty);
+        assert_eq!(quote::quote!(#inner).to_string(), expected);
+    }
+
+    #[rstest]
+    #[case::result("Result<Json<User>, JsonRejection>", "Json < User >")]
+    #[case::std_result("std::result::Result<Query<F>, R>", "Query < F >")]
+    #[case::core_result("::core::result::Result<Path<u32>, R>", "Path < u32 >")]
+    #[case::result_validated("Result<Validated<Json<U>>, R>", "Json < U >")]
+    #[case::validated_result("Validated<Result<Json<U>, R>>", "Json < U >")]
+    #[case::option_kept("Option<Json<U>>", "Option < Json < U > >")]
+    #[case::one_argument_alias("io::Result<Json<U>>", "io :: Result < Json < U > >")]
+    #[case::bare_one_argument("Result<Json<U>>", "Result < Json < U > >")]
+    #[case::leading_colon_bare("::Result<Json<U>, R>", ":: Result < Json < U > , R >")]
+    #[case::other_crate(
+        "my::result::Result<Json<U>, R>",
+        "my :: result :: Result < Json < U > , R >"
+    )]
+    #[case::qself(
+        "<T as Tr>::Result<Json<U>, R>",
+        "< T as Tr > :: Result < Json < U > , R >"
+    )]
+    #[case::lifetime_first("Result<'a, R>", "Result < 'a , R >")]
+    #[case::reference("&Json<U>", "& Json < U >")]
+    fn request_extractor_unwraps_result_and_validated(#[case] src: &str, #[case] expected: &str) {
+        let ty: Type = syn::parse_str(src).unwrap();
+        let inner = request_extractor(&ty);
         assert_eq!(quote::quote!(#inner).to_string(), expected);
     }
 
     #[cfg(feature = "validation")]
     #[rstest]
+    #[case::result_validated_json("Result<Validated<Json<User>>, R>", Some("User"))]
     #[case::json("Validated<Json<User>>", Some("User"))]
     #[case::form("Validated<axum::Form<User>>", Some("User"))]
     #[case::query("ValidatedWith<Ctx, Query<Filter>>", Some("Filter"))]
@@ -116,6 +179,6 @@ mod tests {
         let ty: Type = syn::parse_str(src).unwrap();
         assert!(validated_inner_type(&ty).is_none());
         assert!(!is_validated_type(&ty));
-        assert!(std::ptr::eq(unwrap_validated_type(&ty), &raw const ty));
+        assert!(std::ptr::eq(request_extractor(&ty), &raw const ty));
     }
 }

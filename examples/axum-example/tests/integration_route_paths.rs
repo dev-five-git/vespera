@@ -14,6 +14,25 @@ async fn axum_07_notation_dispatches() {
     assert_eq!(response.text(), "7:a/b.txt");
 }
 
+/// `/report-{year}`: a parameter after a static prefix in its segment routes
+/// and is documented (the template keeps the prefix).
+#[tokio::test]
+async fn prefixed_segment_parameter_dispatches_and_is_documented() {
+    let server = TestServer::new(create_app().await);
+
+    server
+        .get("/path/report-2026")
+        .await
+        .assert_text("report 2026");
+
+    let spec: serde_json::Value = server.get("/openapi.json").await.json();
+    let params = &spec["paths"]["/path/report-{year}"]["get"]["parameters"];
+    assert_eq!(params[0]["name"], "year");
+    assert_eq!(params[0]["in"], "path");
+    assert_eq!(params[0]["schema"]["format"], "uint16");
+    assert_eq!(params.as_array().unwrap().len(), 1);
+}
+
 #[tokio::test]
 async fn axum_07_notation_is_documented_as_openapi_template() {
     let server = TestServer::new(create_app().await);
