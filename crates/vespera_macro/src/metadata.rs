@@ -216,6 +216,20 @@ pub struct CollectedMetadata {
     /// `#[cfg(..)]`-gated routes mounted conditionally, never documented
     #[serde(default)]
     pub cfg_routes: Vec<CfgRoute>,
+    /// Entries of `routes` behind a test-only `#[cfg(..)]`: mounted, never
+    /// documented (see `collector::test_scope`)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub test_only_routes: Vec<TestOnlyRoute>,
+}
+
+/// A compiled route (in `CollectedMetadata::routes`) that only exists in
+/// `cfg(test)` builds; identified like `ROUTE_STORAGE` entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestOnlyRoute {
+    /// `RouteMetadata::file_path` of the route
+    pub file_path: String,
+    /// `RouteMetadata::function_name` of the route
+    pub function_name: String,
 }
 
 impl CollectedMetadata {
@@ -225,6 +239,7 @@ impl CollectedMetadata {
             structs: Vec::new(),
             crons: Vec::new(),
             cfg_routes: Vec::new(),
+            test_only_routes: Vec::new(),
         }
     }
 

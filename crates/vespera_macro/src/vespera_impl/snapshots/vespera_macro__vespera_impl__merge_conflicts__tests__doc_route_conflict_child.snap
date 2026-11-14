@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/vespera_impl/merge_conflicts.rs
+expression: err
+---
+vespera! macro: route `GET /redoc` is served by both `redoc_url` and merged app `child::UsersApp` — axum panics when merging overlapping routes; remove one or give the child app a distinct `export_app!(..., prefix = "...")`

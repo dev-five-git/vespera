@@ -1217,7 +1217,7 @@ let app = vespera!(
 );
 ```
 
-Relative paths resolve against the crate's `CARGO_MANIFEST_DIR` (the directory holding its `Cargo.toml`), so workspace members write next to their own manifest. vespera's build cache lives under the cargo target directory (`CARGO_TARGET_DIR` is honoured).
+Relative paths resolve against the crate's `CARGO_MANIFEST_DIR` (the directory holding its `Cargo.toml`), so workspace members write next to their own manifest. vespera's build cache lives under the target directory of the running cargo build (read off rustc's `--out-dir`, so dependencies and a relative `CARGO_TARGET_DIR` agree with the parent crate); set `VESPERA_TARGET_DIR` to override it. The OpenAPI document never describes `#[cfg(test)]`-only routes or schemas, so `cargo build`, `cargo test` and rust-analyzer all write the same file.
 
 ### Custom Route Folder
 

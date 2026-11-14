@@ -38,6 +38,99 @@ fn duplicate_route_is_rejected_without_a_spec() {
     insta::assert_snapshot!("duplicate_route_without_spec", err.to_string());
 }
 
+/// `/{id}` GET next to `/{user_id}` DELETE in one file: axum panics on the
+/// differently named parameters of one path shape whatever the methods.
+#[test]
+fn param_name_only_difference_is_rejected() {
+    let temp_dir = TempDir::new().unwrap();
+    let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
+    let routes = temp_dir.path().join("src").join("routes");
+    fs::create_dir_all(&routes).unwrap();
+    fs::write(
+        routes.join("users.rs"),
+        "#[vespera::route(get, path = \"/{id}\")] pub async fn get_user() {}\n#[vespera::route(delete, path = \"/{user_id}\")] pub async fn delete_user() {}\n",
+    )
+    .unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+
+    let err = process_vespera_macro(
+        &spec_less("routes"),
+        &HashMap::new(),
+        &[],
+        Span::call_site(),
+    )
+    .expect_err("conflicting parameter names");
+    insta::assert_snapshot!("param_name_conflict_without_spec", err.to_string());
+}
+
+/// A documentation route shadowing an app route is a compile error.
+#[test]
+fn doc_route_shadowing_an_app_route_is_rejected() {
+    let temp_dir = TempDir::new().unwrap();
+    let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
+    let routes = temp_dir.path().join("src").join("routes");
+    fs::create_dir_all(&routes).unwrap();
+    fs::write(
+        routes.join("docs.rs"),
+        "#[vespera::route(get)] pub async fn page() {}\n",
+    )
+    .unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+
+    let input = ProcessedVesperaInput {
+        docs_url: Some("/docs".to_string()),
+        ..spec_less("routes")
+    };
+    let err = process_vespera_macro(&input, &HashMap::new(), &[], Span::call_site())
+        .expect_err("docs_url shadows GET /docs");
+    insta::assert_snapshot!("doc_route_conflict_end_to_end", err.to_string());
+}
+
+/// rust-analyzer keeps a renamed handler's old `ROUTE_STORAGE` entry; the
+/// router must mount only functions the file still declares.
+#[test]
+fn stale_storage_entries_of_renamed_handlers_are_ignored() {
+    let temp_dir = TempDir::new().unwrap();
+    let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
+    let routes = temp_dir.path().join("src").join("routes");
+    fs::create_dir_all(&routes).unwrap();
+    let file = routes.join("users.rs");
+    fs::write(&file, "#[vespera::route(get)] pub async fn list_v2() {}\n").unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    let stored = |name: &str| crate::route_impl::StoredRouteInfo {
+        fn_name: name.to_string(),
+        method: Some("get".to_string()),
+        file_path: Some(file.display().to_string()),
+        fn_sig_str: format!("async fn {name}()"),
+        inline_module: Some(String::new()),
+        ..Default::default()
+    };
+    let storage = [stored("list"), stored("list_v2")];
+
+    let generated = process_vespera_macro(
+        &spec_less("routes"),
+        &HashMap::new(),
+        &storage,
+        Span::call_site(),
+    )
+    .unwrap()
+    .to_string();
+    assert!(generated.contains("list_v2"), "{generated}");
+    assert!(!generated.contains("users :: list)"), "{generated}");
+    let exported = process_export_app(
+        &syn::parse_quote!(UsersApp),
+        "routes",
+        &HashMap::new(),
+        &temp_dir.path().to_string_lossy(),
+        &storage,
+        "",
+        Span::call_site(),
+    )
+    .unwrap()
+    .to_string();
+    assert!(!exported.contains("users :: list)"), "{exported}");
+}
+
 /// Crate-root handlers are named without a module prefix.
 #[test]
 fn duplicate_route_names_crate_root_handlers() {

@@ -1,0 +1,186 @@
+//! Unit tests for `collector::test_scope`.
+
+use std::fs;
+
+use rstest::rstest;
+use tempfile::TempDir;
+
+use super::*;
+use crate::metadata::{StructMetadata, TestOnlyRoute};
+
+#[rstest]
+#[case::bare_test("test", true)]
+#[case::negated("not (test)", false)]
+#[case::all_with_test("all (test , feature = \"x\")", true)]
+#[case::any_with_other("any (test , feature = \"x\")", false)]
+#[case::any_of_test_only("any (test , all (test , unix))", true)]
+#[case::empty_any("any ()", false)]
+#[case::feature("feature = \"x\"", false)]
+#[case::platform("unix", false)]
+#[case::malformed("all ((", false)]
+fn test_only_predicates(#[case] predicate: &str, #[case] expected: bool) {
+    assert_eq!(is_test_only_predicate(predicate), expected);
+}
+
+/// `src/` of a fresh crate with `files` (relative to `src/`).
+fn crate_with(files: &[(&str, &str)]) -> TempDir {
+    let dir = TempDir::new().unwrap();
+    for (relative, content) in files {
+        let path = dir.path().join("src").join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+    crate::schema_macro::file_cache::bump_epoch();
+    dir
+}
+
+#[test]
+fn files_behind_test_only_module_declarations() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "mod routes; #[cfg(test)] mod test_support; #[cfg(feature = \"x\")] mod extra;",
+        ),
+        (
+            "routes/mod.rs",
+            "pub mod users; #[cfg(all(test, unix))] mod fixtures; #[cfg(test)] mod r#async;",
+        ),
+        ("routes/users.rs", ""),
+        ("routes/fixtures.rs", ""),
+        ("routes/async.rs", ""),
+        ("test_support/mod.rs", "pub mod models;"),
+        ("test_support/models.rs", ""),
+        ("extra.rs", ""),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    let gated = |scope: &mut TestScope, relative: &str| scope.file_test_only(&src.join(relative));
+    assert!(!gated(&mut scope, "lib.rs"));
+    assert!(!gated(&mut scope, "routes/users.rs"));
+    assert!(gated(&mut scope, "routes/fixtures.rs"));
+    assert!(gated(&mut scope, "routes/async.rs"));
+    assert!(gated(&mut scope, "test_support/mod.rs"));
+    assert!(gated(&mut scope, "test_support/models.rs"));
+    // Feature predicates are not interpreted.
+    assert!(!gated(&mut scope, "extra.rs"));
+    // Missing files, files outside `src/` and an unknown `src/` never are.
+    assert!(!gated(&mut scope, "missing.rs"));
+    assert!(!scope.file_test_only(&krate.path().join("Cargo.toml")));
+    assert!(!TestScope::new(None).file_test_only(&src.join("routes/fixtures.rs")));
+}
+
+#[test]
+fn functions_behind_test_only_cfg() {
+    let krate = crate_with(&[
+        (
+            "gated.rs",
+            "#[cfg(test)] pub async fn a() {} pub async fn b() {} #[cfg(test)] pub async fn r#type() {} #[cfg(unix)] pub async fn c() {} pub struct S;",
+        ),
+        ("plain.rs", "pub async fn a() {}"),
+        ("broken.rs", "#[cfg(test)] fn ("),
+    ]);
+    let src = krate.path().join("src");
+    let mut fns: Vec<String> = test_only_fns(&src.join("gated.rs")).into_iter().collect();
+    fns.sort();
+    assert_eq!(fns, ["a", "type"]);
+    assert!(test_only_fns(&src.join("plain.rs")).is_empty());
+    assert!(test_only_fns(&src.join("broken.rs")).is_empty());
+    assert!(test_only_fns(&src.join("missing.rs")).is_empty());
+}
+
+fn schema(name: &str, identity: Option<String>) -> StructMetadata {
+    let mut schema = StructMetadata::new(name.to_string(), format!("struct {name} {{}}"));
+    schema.source_identity = identity;
+    schema
+}
+
+fn route(file_path: &str, function_name: &str) -> crate::metadata::RouteMetadata {
+    serde_json::from_value(serde_json::json!({
+        "method": "get", "path": format!("/{function_name}"),
+        "function_name": function_name, "module_path": "routes::x", "file_path": file_path,
+    }))
+    .unwrap()
+}
+
+/// The documented view drops test-only routes and schemas — gated items,
+/// items in gated inline modules and items of gated files — and borrows
+/// when there is nothing to drop.
+#[test]
+fn documented_view_leaves_out_test_only_items() {
+    let krate = crate_with(&[
+        ("lib.rs", "mod models; #[cfg(test)] mod test_models;"),
+        (
+            "models.rs",
+            "pub struct Kept {}\n#[cfg(test)]\nmod tests {\n    pub struct Fixture {}\n    pub enum Nested { A }\n}\n#[cfg(test)] pub enum Alone { A }\nmod open { pub struct Inner {} }\nfn helper() {}\n",
+        ),
+        ("test_models.rs", "pub struct OnlyInTests {}"),
+        ("broken.rs", "#[cfg(test)] struct ("),
+        ("plain.rs", "pub struct Plain {}"),
+    ]);
+    let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", krate.path());
+    let src = krate.path().join("src");
+    let at = |file: &str, ident: &str, line: usize| {
+        Some(format!("{}::{ident}@{line}:11", src.join(file).display()))
+    };
+    let mut metadata = CollectedMetadata::new();
+    metadata.routes = vec![route("users.rs", "list"), route("users.rs", "debug")];
+    metadata.structs = vec![
+        schema("Kept", at("models.rs", "Kept", 1)),
+        schema("Fixture", at("models.rs", "Fixture", 4)),
+        schema("Nested", at("models.rs", "Nested", 5)),
+        schema("Alone", at("models.rs", "Alone", 7)),
+        schema("Inner", at("models.rs", "Inner", 8)),
+        // Same name on another line: not the gated item.
+        schema("Fixture", at("models.rs", "Fixture", 1)),
+        schema("OnlyInTests", at("test_models.rs", "OnlyInTests", 1)),
+        schema("Broken", at("broken.rs", "Broken", 1)),
+        schema("Plain", at("plain.rs", "Plain", 1)),
+        schema("Gone", at("gone.rs", "Gone", 1)),
+        schema("Unknown", None),
+        schema("Malformed", Some("no-position".to_string())),
+        StructMetadata::new_model("Model".to_string(), String::new()),
+    ];
+    assert!(matches!(documented_view(&metadata), Cow::Owned(_)));
+    metadata.test_only_routes.push(TestOnlyRoute {
+        file_path: "users.rs".to_string(),
+        function_name: "debug".to_string(),
+    });
+    let view = documented_view(&metadata);
+    let routes: Vec<_> = view
+        .routes
+        .iter()
+        .map(|r| r.function_name.as_str())
+        .collect();
+    assert_eq!(routes, ["list"]);
+    let structs: Vec<_> = view.structs.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        structs,
+        [
+            "Kept",
+            "Inner",
+            "Fixture",
+            "Broken",
+            "Plain",
+            "Gone",
+            "Unknown",
+            "Malformed",
+            "Model"
+        ]
+    );
+
+    let mut plain = CollectedMetadata::new();
+    plain.structs = vec![schema("Kept", at("models.rs", "Kept", 1))];
+    plain.routes = vec![route("users.rs", "list")];
+    assert!(matches!(documented_view(&plain), Cow::Borrowed(_)));
+}
+
+#[rstest]
+#[case::unix("/src/models.rs::User@12:11", Some(("/src/models.rs", "User", 12)))]
+#[case::windows(r"C:\src\models.rs::User@3:0", Some((r"C:\src\models.rs", "User", 3)))]
+#[case::no_position("src/models.rs::User", None)]
+#[case::no_ident("src/models.rs@1:0", None)]
+#[case::no_column("src/models.rs::User@1", None)]
+#[case::bad_line("src/models.rs::User@x:0", None)]
+fn source_identities_parse(#[case] identity: &str, #[case] expected: Option<(&str, &str, usize)>) {
+    assert_eq!(parse_identity(identity), expected);
+}

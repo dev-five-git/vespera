@@ -28,6 +28,53 @@ pub fn var(key: &str) -> Result<String, VarError> {
     })
 }
 
+/// Test-override key for [`compiler_args`] (newline-separated arguments);
+/// not a valid environment variable name, so it never shadows a real one.
+pub const COMPILER_ARGS_KEY: &str = "\u{0}vespera:compiler-args";
+
+/// The command line of the process the macro expands in, `@argfile`s
+/// expanded (cargo moves long rustc command lines into one).
+///
+/// A proc macro runs inside the compiler (`rustc`, `rustdoc`,
+/// `clippy-driver`), so this is the compiler's own invocation — the only
+/// place a macro can observe what cargo is building: `--test` for a test
+/// harness build (`cfg(test)` is otherwise invisible to proc macros) and
+/// `--out-dir <target>/<profile>/deps` for the real target directory.  In a
+/// proc-macro server (rust-analyzer) it is the server's command line.
+/// Honours the per-thread test override [`COMPILER_ARGS_KEY`].
+pub fn compiler_args() -> Vec<String> {
+    static ARGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    if let Some(value) = test_env::lookup(COMPILER_ARGS_KEY) {
+        return value
+            .into_os_string()
+            .map(|args| {
+                args.to_string_lossy()
+                    .split('\n')
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    ARGS.get_or_init(|| {
+        expand_argfiles(std::env::args_os().map(|arg| arg.to_string_lossy().into_owned()))
+    })
+    .clone()
+}
+
+/// Replace every readable `@path` argument by the lines of that file (the
+/// rustc argfile format: one argument per line).
+fn expand_argfiles(args: impl Iterator<Item = String>) -> Vec<String> {
+    args.flat_map(|arg| {
+        arg.strip_prefix('@')
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map_or_else(
+                || vec![arg.clone()],
+                |content| content.lines().map(str::to_owned).collect(),
+            )
+    })
+    .collect()
+}
+
 /// Per-thread environment overrides for unit tests.
 ///
 /// Each libtest test runs on its own thread, so an override is invisible to
@@ -175,6 +222,36 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    #[test]
+    fn compiler_args_expand_argfiles_and_honour_the_override() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let argfile = temp.path().join("rustc.args");
+        std::fs::write(&argfile, "--crate-name\ndemo\n--test\n").unwrap();
+        let args = [
+            "rustc".to_owned(),
+            format!("@{}", argfile.display()),
+            "@missing-argfile".to_owned(),
+        ];
+        assert_eq!(
+            expand_argfiles(args.into_iter()),
+            [
+                "rustc",
+                "--crate-name",
+                "demo",
+                "--test",
+                "@missing-argfile"
+            ]
+        );
+        // The test binary's own command line (no rustc flags).
+        assert!(!compiler_args().iter().any(|arg| arg == "--test"));
+        {
+            let _args = set_var(COMPILER_ARGS_KEY, "rustc\n--test");
+            assert_eq!(compiler_args(), ["rustc", "--test"]);
+        }
+        let _args = remove_var(COMPILER_ARGS_KEY);
+        assert_eq!(compiler_args(), Vec::<String>::new());
     }
 
     #[cfg(unix)]

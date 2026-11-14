@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/vespera_impl/merge_lookup.rs
+expression: "ambiguous(\"dep::ChildApp\").unwrap().replace(&export_root(dir).display().to_string(),\n\"<EXPORT>\")"
+---
+vespera! merge: `dep::ChildApp` does not name the crate that exports `ChildApp`, and several crates did: `child`, `other` (under '<EXPORT>') — spell the merge path as `<crate>::...::ChildApp`, or delete the stale directories

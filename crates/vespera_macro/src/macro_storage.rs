@@ -87,9 +87,104 @@ pub fn current_crate_items<T>(storage: &CrateStorage<T>) -> Arc<Vec<T>> {
         .unwrap_or_else(|| Arc::new(Vec::new()))
 }
 
+/// The entries whose source file still declares their function.
+///
+/// [`register`] replaces an entry only when the SAME function is expanded
+/// again, so in a long-lived rust-analyzer proc-macro server a renamed or
+/// deleted handler / job leaves its old entry behind — and `vespera!` would
+/// mount a function that no longer exists.  Entries are checked against the
+/// current file text (the fingerprint-validated `file_cache`, so a file is
+/// read once per change); one without a file path or whose file cannot be
+/// read is kept.  Borrows when nothing is stale — always under rustc, whose
+/// storage only ever holds the current compilation.
+pub fn retain_declared<T: Clone + SourceIdentified>(items: &[T]) -> std::borrow::Cow<'_, [T]> {
+    let declared = |item: &T| {
+        item.file_path().is_none_or(|file| {
+            crate::schema_macro::file_cache::get_file_content(std::path::Path::new(file))
+                .is_none_or(|content| declares_fn(&content, item.fn_name()))
+        })
+    };
+    if items.iter().all(declared) {
+        std::borrow::Cow::Borrowed(items)
+    } else {
+        std::borrow::Cow::Owned(
+            items
+                .iter()
+                .filter(|item| declared(item))
+                .cloned()
+                .collect(),
+        )
+    }
+}
+
+/// Whether `content` contains `fn <name>` (the name as a whole identifier,
+/// separated from `fn` by whitespace).  Textual on purpose — a cheap check
+/// that never parses; a mention in a comment only keeps an entry alive.
+fn declares_fn(content: &str, name: &str) -> bool {
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    content.match_indices(name).any(|(at, _)| {
+        let ends_ident = content[at + name.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !is_ident(c));
+        let before = &content[..at];
+        let keyword = before.trim_end();
+        ends_ident
+            && keyword.len() < before.len()
+            && keyword
+                .strip_suffix("fn")
+                .is_some_and(|rest| rest.chars().next_back().is_none_or(|c| !is_ident(c)))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[rstest::rstest]
+    #[case::plain("pub async fn get_user() {}", "get_user", true)]
+    #[case::newline("fn\n  get_user()", "get_user", true)]
+    #[case::raw("pub fn r#type() {}", "r#type", true)]
+    #[case::at_start_of_file("fn a() {}", "a", true)]
+    #[case::renamed("pub async fn get_user_v2() {}", "get_user", false)]
+    #[case::prefix_ident("pub async fn my_get_user() {}", "get_user", false)]
+    #[case::not_a_declaration("let get_user = 1; get_user();", "get_user", false)]
+    #[case::fn_suffix_of_ident("pub async fnx get_user() {}", "get_user", false)]
+    #[case::no_space("fn(get_user)", "get_user", false)]
+    #[case::absent("", "get_user", false)]
+    fn declares_fn_matches_whole_declarations(
+        #[case] content: &str,
+        #[case] name: &str,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(declares_fn(content, name), expected);
+    }
+
+    /// A renamed handler's old entry is dropped; entries without a readable
+    /// file are kept, and nothing is cloned when nothing is stale.
+    #[test]
+    fn retain_declared_drops_entries_whose_function_is_gone() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let file = temp.path().join("users.rs");
+        std::fs::write(&file, "pub async fn renamed() {}").unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let path = file.display().to_string();
+        let items = vec![
+            entry("old_name", &path, "stale"),
+            entry("renamed", &path, "live"),
+            entry("anything", "missing/file.rs", "unreadable"),
+            TestEntry {
+                file_path: None,
+                ..entry("pathless", "", "pathless")
+            },
+        ];
+        let kept = retain_declared(&items);
+        assert!(matches!(kept, std::borrow::Cow::Owned(_)));
+        let payloads: Vec<_> = kept.iter().map(|item| item.payload).collect();
+        assert_eq!(payloads, ["live", "unreadable", "pathless"]);
+        let live = retain_declared(&items[1..]);
+        assert!(matches!(live, std::borrow::Cow::Borrowed(_)));
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct TestEntry {

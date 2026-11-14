@@ -44,14 +44,26 @@ pub(super) fn discover_cron_jobs(
     storage: &[StoredCronInfo],
     src_dir: Option<&Path>,
     call_site: Option<&Path>,
-) -> Vec<CronMetadata> {
+) -> Result<Vec<CronMetadata>, String> {
     let mut canonical_paths = HashMap::new();
     // Most projects declare no `#[vespera::cron]` jobs: without stored jobs
-    // or a `cron(` attribute anywhere under `src/`, nothing is parsed.
+    // or a `cron(` attribute anywhere under `src/` (or in the call-site file),
+    // nothing is parsed.
     let tree = src_dir
-        .filter(|src_dir| !storage.is_empty() || has_cron_attribute(src_dir))
+        .filter(|src_dir| {
+            !storage.is_empty()
+                || has_cron_attribute(src_dir)
+                || call_site
+                    .and_then(file_cache::get_file_content)
+                    .is_some_and(|content| content.contains(CRON_ATTR_MARKER))
+        })
         .and_then(|src_dir| crate_tree(src_dir, call_site));
-    let mut jobs = stored_jobs(storage, src_dir, tree.as_ref(), &mut canonical_paths);
+    let placement = Placement {
+        src_dir,
+        tree: tree.as_ref(),
+        call_site: call_site.map(canonical_display),
+    };
+    let mut jobs = stored_jobs(storage, &placement, &mut canonical_paths)?;
     if let Some(tree) = tree {
         // A scanned job is known when a stored one sits in the same file with
         // the same function name AND module path — same-named jobs in
@@ -77,54 +89,98 @@ pub(super) fn discover_cron_jobs(
             ))
         }));
     }
-    jobs
+    Ok(jobs)
+}
+
+/// Where the crate's sources are, for placing stored jobs.
+struct Placement<'a> {
+    src_dir: Option<&'a Path>,
+    tree: Option<&'a ModuleTree>,
+    /// Canonical display of the `vespera!` call-site file.
+    call_site: Option<String>,
 }
 
 /// Convert `CRON_STORAGE` entries.  The module path is the one `tree`
 /// declares the function in (in the entry's inline module when it recorded
 /// one, else the file's first declaration of that name); without a match (no
 /// tree, `#[path]` module, macro-generated function) it is derived from the
-/// file path relative to `src/` plus the recorded inline module.
+/// file path relative to `src/` plus the recorded inline module.  A file
+/// outside `src/` (an example, an integration test, a custom `[lib] path`) is
+/// placed relative to the call-site file, which is then the crate root; one
+/// that is neither is a compile error — an absolute path is no module path.
 fn stored_jobs(
     storage: &[StoredCronInfo],
-    src_dir: Option<&Path>,
-    tree: Option<&ModuleTree>,
+    placement: &Placement<'_>,
     canonical_paths: &mut HashMap<PathBuf, String>,
-) -> Vec<CronMetadata> {
+) -> Result<Vec<CronMetadata>, String> {
     // Skip the `fs::canonicalize` syscall on `<manifest>/src` when there is
     // nothing to place.
     if storage.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let src_display = src_dir.map(canonical_display).unwrap_or_default();
+    let src_display = placement.src_dir.map(canonical_display).unwrap_or_default();
     storage
         .iter()
         .map(|s| {
-            let module_path = s
-                .file_path
-                .as_ref()
-                .map(|fp| {
+            let module_path = match s.file_path.as_ref() {
+                Some(fp) => {
                     let normalized = canonicalized_cron_path(fp, canonical_paths);
                     let inline = s.inline_module.as_deref();
-                    let declared =
-                        tree.and_then(|tree| tree.module_of(&normalized, inline, &s.fn_name));
-                    declared.unwrap_or_else(|| {
-                        let relative = normalized
-                            .strip_prefix(&src_display)
-                            .map_or(&*normalized, |rest| rest.trim_start_matches('/'));
-                        join_module(&cron_module_path(relative), inline.unwrap_or_default())
-                    })
-                })
-                .unwrap_or_default();
-            CronMetadata {
+                    let declared = placement
+                        .tree
+                        .and_then(|tree| tree.module_of(&normalized, inline, &s.fn_name));
+                    match declared {
+                        Some(declared) => declared,
+                        None => join_module(
+                            &derived_module_path(&normalized, &src_display, placement, s)?,
+                            inline.unwrap_or_default(),
+                        ),
+                    }
+                }
+                None => String::new(),
+            };
+            Ok(CronMetadata {
                 expression: s.expression.clone(),
                 function_name: s.fn_name.clone(),
                 module_path,
                 file_path: s.file_path.clone().unwrap_or_default(),
                 options: s.options.clone(),
-            }
+            })
         })
         .collect()
+}
+
+/// Module path of a stored job's file the module tree did not place:
+/// relative to `src/`, else relative to the call-site file's directory with
+/// the call-site file itself as the crate root.
+fn derived_module_path(
+    normalized: &str,
+    src_display: &str,
+    placement: &Placement<'_>,
+    stored: &StoredCronInfo,
+) -> Result<String, String> {
+    if let Some(rest) = normalized.strip_prefix(src_display)
+        && (src_display.is_empty() || rest.starts_with('/'))
+    {
+        return Ok(cron_module_path(rest.trim_start_matches('/')));
+    }
+    let call_site = placement.call_site.as_deref().unwrap_or_default();
+    if normalized == call_site {
+        return Ok(String::new());
+    }
+    let call_site_dir = call_site.rsplit_once('/').map_or("", |(dir, _)| dir);
+    match normalized.strip_prefix(call_site_dir) {
+        Some(rest) if !call_site_dir.is_empty() && rest.starts_with('/') => {
+            Ok(cron_module_path(rest.trim_start_matches('/')))
+        }
+        _ => Err(format!(
+            "vespera! macro: cannot place `#[cron]` job `{}` from '{normalized}': the file is \
+             neither under '{src_display}' nor next to the `vespera!` call site '{call_site}', \
+             so it has no module path in this crate — declare the job in a module of the crate \
+             that calls `vespera!`",
+            stored.fn_name
+        )),
+    }
 }
 
 /// Whether any `.rs` file under `src/` contains a cron attribute.
@@ -137,8 +193,8 @@ fn has_cron_attribute(src_dir: &Path) -> bool {
 /// The module tree that contains the `vespera!` call site; without call-site
 /// information (unit tests) the library root wins over the binary root.
 fn crate_tree(src_dir: &Path, call_site: Option<&Path>) -> Option<ModuleTree> {
-    let call_site = call_site.map(canonical_display);
-    let mut trees = crate_roots(src_dir, call_site.is_some())
+    let call_site_display = call_site.map(canonical_display);
+    let mut trees = crate_roots(src_dir, call_site_display.is_some())
         .into_iter()
         .filter(|root| root.is_file())
         .map(|root| {
@@ -147,10 +203,24 @@ fn crate_tree(src_dir: &Path, call_site: Option<&Path>) -> Option<ModuleTree> {
             let mod_dir = root.parent().unwrap_or(src_dir).to_path_buf();
             ModuleTree::from_root(&root, &mod_dir)
         });
-    match call_site {
-        Some(call_site) => trees.find(|tree| tree.files.contains(&call_site)),
-        None => trees.next(),
+    match (call_site, call_site_display) {
+        (Some(call_site), Some(display)) => trees
+            .find(|tree| tree.files.contains(&display))
+            .or_else(|| outside_src_tree(src_dir, call_site, &display)),
+        _ => trees.next(),
     }
+}
+
+/// A `vespera!` call site outside `src/` — an example, an integration test,
+/// a bench or a custom `[lib] path` — is (by far most often) its crate's root
+/// file: its module tree starts there, with child modules next to it.
+fn outside_src_tree(src_dir: &Path, call_site: &Path, display: &str) -> Option<ModuleTree> {
+    let src_prefix = format!("{}/", canonical_display(src_dir));
+    if display.starts_with(&src_prefix) {
+        return None;
+    }
+    let mod_dir = call_site.parent()?;
+    Some(ModuleTree::from_root(call_site, mod_dir))
 }
 
 /// The crate roots Cargo discovers under `src/`: `lib.rs`, `main.rs` and —
@@ -412,6 +482,108 @@ mod tests {
 
     use super::*;
 
+    fn discover(
+        storage: &[StoredCronInfo],
+        src_dir: Option<&Path>,
+        call_site: Option<&Path>,
+    ) -> Vec<CronMetadata> {
+        discover_cron_jobs(storage, src_dir, call_site).unwrap()
+    }
+
+    /// `vespera!` in an example / integration test (outside `src/`): the
+    /// call-site file is the crate root, its `mod`s resolve next to it, and
+    /// jobs there — stored or not — get real module paths.
+    #[test]
+    fn call_site_outside_src_is_the_crate_root() {
+        let krate = crate_with(&[("lib.rs", "")]);
+        let examples = krate.path().join("examples");
+        fs::create_dir_all(examples.join("demo")).unwrap();
+        let root = examples.join("demo").join("main.rs");
+        fs::write(
+            &root,
+            r#"mod jobs; #[cron("1 * * * * *")] pub async fn root_job() {}"#,
+        )
+        .unwrap();
+        let jobs_file = examples.join("demo").join("jobs.rs");
+        fs::write(
+            &jobs_file,
+            r#"#[cron("2 * * * * *")] pub async fn tick() {} #[cron("3 * * * * *")] pub async fn late() {}"#,
+        )
+        .unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let src = krate.path().join("src");
+        let storage = [stored("tick", Some(jobs_file.display().to_string()))];
+        let jobs = discover(&storage, Some(&src), Some(&root));
+        assert_eq!(
+            summary(&jobs),
+            rows(&[
+                ("", "root_job", "1 * * * * *"),
+                ("jobs", "late", "3 * * * * *"),
+                ("jobs", "tick", "0 0 0 * * *"),
+            ])
+        );
+        // Without a tree to consult the stored file is still placed relative
+        // to the call site (here: `examples/demo` is not under `src/`).
+        let placement = Placement {
+            src_dir: Some(&src),
+            tree: None,
+            call_site: Some(canonical_display(&root)),
+        };
+        let placed = stored_jobs(
+            &[
+                stored("tick", Some(jobs_file.display().to_string())),
+                stored("root_job", Some(root.display().to_string())),
+            ],
+            &placement,
+            &mut HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            summary(&placed),
+            rows(&[
+                ("", "root_job", "0 0 0 * * *"),
+                ("jobs", "tick", "0 0 0 * * *")
+            ])
+        );
+    }
+
+    /// A stored job whose file is neither under `src/` nor next to the call
+    /// site has no module path: a compile error, not an absolute-path module.
+    #[test]
+    fn stored_job_outside_the_crate_is_an_error() {
+        let krate = crate_with(&[("lib.rs", "")]);
+        let elsewhere = TempDir::new().unwrap();
+        let stray = elsewhere.path().join("stray.rs");
+        fs::write(&stray, r#"#[cron("1 * * * * *")] pub async fn stray() {}"#).unwrap();
+        let src = krate.path().join("src");
+        let storage = [stored("stray", Some(stray.display().to_string()))];
+        for call_site in [Some(src.join("lib.rs")), None] {
+            let error = discover_cron_jobs(&storage, Some(&src), call_site.as_deref()).unwrap_err();
+            assert!(
+                error.contains("cannot place `#[cron]` job `stray`"),
+                "unexpected error: {error}"
+            );
+        }
+        // A sibling directory sharing the `src` prefix is not `src/`.
+        let src2 = krate.path().join("src2");
+        fs::create_dir_all(&src2).unwrap();
+        let sibling = src2.join("job.rs");
+        fs::write(&sibling, "").unwrap();
+        let placement = Placement {
+            src_dir: Some(&src),
+            tree: None,
+            call_site: Some(canonical_display(&src.join("lib.rs"))),
+        };
+        assert!(
+            stored_jobs(
+                &[stored("job", Some(sibling.display().to_string()))],
+                &placement,
+                &mut HashMap::new()
+            )
+            .is_err()
+        );
+    }
+
     /// Write `files` (relative to `src/`) into a fresh temp crate and return it.
     fn crate_with(files: &[(&str, &str)]) -> TempDir {
         let dir = TempDir::new().expect("temp dir");
@@ -469,7 +641,7 @@ mod tests {
             stored_in("tick", &lib, "b", "2 * * * * *"),
             stored_in("tick", &src.join("x.rs"), "e", "4 * * * * *"),
         ];
-        let jobs = discover_cron_jobs(&storage, Some(&src), Some(&lib));
+        let jobs = discover(&storage, Some(&src), Some(&lib));
         assert_eq!(
             summary(&jobs),
             rows(&[
@@ -508,7 +680,7 @@ mod tests {
 
     #[test]
     fn storage_entries_without_src_dir_keep_their_derived_paths() {
-        let jobs = discover_cron_jobs(
+        let jobs = discover(
             &[
                 stored("no_file", None),
                 stored("missing", Some("does/not/exist.rs".to_owned())),
@@ -593,7 +765,7 @@ mod tests {
         ]);
         let src = krate.path().join("src");
         let early = src.join("early.rs").display().to_string();
-        let jobs = discover_cron_jobs(&[stored("early_job", Some(early))], Some(&src), None);
+        let jobs = discover(&[stored("early_job", Some(early))], Some(&src), None);
         assert_eq!(
             summary(&jobs),
             vec![
@@ -648,7 +820,7 @@ mod tests {
             .then(|| stored("a", Some(src.join("a.rs").display().to_string())))
             .into_iter()
             .collect();
-        let jobs = discover_cron_jobs(&storage, Some(&src), None);
+        let jobs = discover(&storage, Some(&src), None);
         assert_eq!(jobs.len(), storage.len());
     }
 
@@ -690,7 +862,7 @@ mod tests {
         ]);
         let src = krate.path().join("src");
         let call_site = call_site.map(|file| src.join(file));
-        let jobs = discover_cron_jobs(&[], Some(&src), call_site.as_deref());
+        let jobs = discover(&[], Some(&src), call_site.as_deref());
         let names: Vec<_> = jobs.iter().map(|job| job.function_name.as_str()).collect();
         assert_eq!(names, expected);
     }
@@ -706,7 +878,7 @@ mod tests {
         let src = krate.path().join("src");
         let server = src.join("bin").join("server.rs");
         let storage = [stored("tick", Some(server.display().to_string()))];
-        let jobs = discover_cron_jobs(&storage, Some(&src), Some(&server));
+        let jobs = discover(&storage, Some(&src), Some(&server));
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].module_path, "");
     }
@@ -715,7 +887,7 @@ mod tests {
     fn crate_without_a_root_file_contributes_nothing() {
         let krate = crate_with(&[("jobs.rs", r#"#[cron("1 * * * * *")] pub async fn job() {}"#)]);
         let src = krate.path().join("src");
-        assert!(discover_cron_jobs(&[], Some(&src), None).is_empty());
+        assert!(discover(&[], Some(&src), None).is_empty());
     }
 
     fn rows(rows: &[(&str, &str, &str)]) -> Vec<(String, String, String)> {
@@ -771,7 +943,7 @@ mod tests {
             stored("pathed_job", Some(x)),
         ];
         let stored_expr = "0 0 0 * * *";
-        let jobs = discover_cron_jobs(&storage, Some(&src), Some(&src.join("lib.rs")));
+        let jobs = discover(&storage, Some(&src), Some(&src.join("lib.rs")));
         assert_eq!(
             summary(&jobs),
             rows(&[
@@ -799,7 +971,7 @@ mod tests {
         ]);
         let src = krate.path().join("src");
         let main = src.join("main.rs").display().to_string();
-        let jobs = discover_cron_jobs(
+        let jobs = discover(
             &[stored("bin_job", Some(main))],
             Some(&src),
             Some(&src.join("orphan.rs")),

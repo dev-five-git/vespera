@@ -24,7 +24,7 @@ use super::{
     },
     cron_discovery::discover_cron_jobs,
     invocation::invocation_tag,
-    merge_conflicts::check_merge_route_conflicts,
+    merge_conflicts::{check_merge_route_conflicts, doc_routes},
     merge_lookup::{current_export_crate, export_key, export_spec_path, merged_export_checks},
     openapi_io::{
         ensure_openapi_files_from_cache, generate_and_write_openapi, load_validated_sidecar_specs,
@@ -70,6 +70,10 @@ pub fn process_vespera_macro(
     route_storage: &[StoredRouteInfo],
     folder_span: Span,
 ) -> syn::Result<proc_macro2::TokenStream> {
+    // Drop rust-analyzer leftovers of renamed / deleted handlers (see
+    // `macro_storage::retain_declared`).
+    let route_storage = crate::macro_storage::retain_declared(route_storage);
+    let route_storage: &[StoredRouteInfo] = &route_storage;
     let profile_start = if crate::env_access::var("VESPERA_PROFILE").is_ok() {
         eprintln!(
             "[vespera-profile] storage at expansion: {} routes, {} schemas",
@@ -115,6 +119,7 @@ pub fn process_vespera_macro(
     let fingerprints = crate::collector::fingerprints_from_scan(&folder_path, &scanned);
     let schema_hash = with_route_signature_hash(compute_schema_hash(schema_storage), route_storage);
     let mut merge_specs = MergeSpecCache::new();
+    merge_specs.check_unambiguous(&processed.merge)?;
     let config_hash = compute_config_hash_with_merge_cache(processed, &mut merge_specs);
     stage("fingerprints + hashes");
 
@@ -220,7 +225,12 @@ pub fn process_vespera_macro(
     };
     // Both branches: a cache hit only proves the parent's own sources are
     // unchanged — a child's routes can still collide with them.
-    check_merge_route_conflicts(&metadata, &processed.merge, &mut merge_specs)?;
+    check_merge_route_conflicts(
+        &metadata,
+        &doc_routes(processed),
+        &processed.merge,
+        &mut merge_specs,
+    )?;
     let export_checks = merged_export_checks(&processed.merge, &merge_specs);
 
     // --- Cron job discovery: CRON_STORAGE + module-tree scan fallback ---
@@ -230,11 +240,13 @@ pub fn process_vespera_macro(
     // rust-analyzer proc-macro server never picks up another crate's jobs.
     let cron_jobs = {
         let storage = crate::cron_impl::current_crate_crons();
+        let storage = crate::macro_storage::retain_declared(&storage);
         let src_dir = crate::env_access::var("CARGO_MANIFEST_DIR")
             .ok()
             .map(|dir| PathBuf::from(dir).join("src"));
         let call_site = Span::call_site().local_file();
         discover_cron_jobs(&storage, src_dir.as_deref(), call_site.as_deref())
+            .map_err(|message| syn::Error::new(Span::call_site(), message))?
     };
 
     let router = generate_router_code(
@@ -296,6 +308,10 @@ pub fn process_export_app(
     prefix: &str,
     folder_span: Span,
 ) -> syn::Result<proc_macro2::TokenStream> {
+    // Drop rust-analyzer leftovers of renamed / deleted handlers (see
+    // `macro_storage::retain_declared`).
+    let route_storage = crate::macro_storage::retain_declared(route_storage);
+    let route_storage: &[StoredRouteInfo] = &route_storage;
     let profile_start = if crate::env_access::var("VESPERA_PROFILE").is_ok() {
         Some(std::time::Instant::now())
     } else {
@@ -321,7 +337,9 @@ pub fn process_export_app(
     let export_crate = current_export_crate();
     let spec_file = export_spec_path(&vespera_dir, &export_crate, &app_name);
     let export_dir = spec_file.parent().unwrap_or(&vespera_dir).to_path_buf();
-    let include_stem = format!("{app_name}.openapi");
+    // Per build variant (see `path_utils::target_variant`): the library and
+    // its test harness never prune each other's `include_str!` target.
+    let include_stem = format!("{app_name}.openapi{}", super::path_utils::target_variant());
     let export_key = export_key(&export_crate, &app_name);
     let cache_path = get_export_cache_path(&app_name, folder_name, prefix);
     let scanned = crate::collector::scan_route_folder(&folder_path)
@@ -367,17 +385,20 @@ pub fn process_export_app(
         // silently dropped from the spec — reject them at compile time.
         crate::parser::validate_schema_backed_extractors_with_cache(&metadata, &file_asts)?;
 
+        // Never document `cfg(test)`-only items (see `collector::test_scope`).
+        let documented = crate::collector::test_scope::documented_view(&metadata);
         let mut openapi_doc = crate::openapi_generator::try_generate_openapi_doc_with_metadata(
             None,
             None,
             None,
             None,
-            &metadata,
+            &documented,
             Some(file_asts),
             route_storage,
         )?;
         let spec_json =
-            namespace_and_serialize_export_openapi(&mut openapi_doc, &metadata, prefix)?;
+            namespace_and_serialize_export_openapi(&mut openapi_doc, &documented, prefix)?;
+        drop(documented);
 
         // Write spec to temp file for compile-time merging by parent apps
         // (stable name for parents' lookups + content-addressed copy for this
@@ -452,3 +473,6 @@ mod tests;
 
 #[cfg(test)]
 mod tests_audit;
+
+#[cfg(test)]
+mod tests_variants;

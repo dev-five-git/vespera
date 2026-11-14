@@ -77,7 +77,15 @@ pub fn generate_and_write_openapi(
     route_storage: &[StoredRouteInfo],
     merge_specs: &mut MergeSpecCache,
 ) -> MacroResult<OpenApiWriteResult> {
+    // The document never describes `cfg(test)`-only routes / schemas: every
+    // build (library, test harness, rust-analyzer) writes the same files.
+    let documented = crate::collector::test_scope::documented_view(metadata);
+    let metadata: &CollectedMetadata = &documented;
     if input.openapi_file_names.is_empty() && !serves_spec(input) {
+        // No document, but a route naming an undeclared scheme (or scope) is
+        // still a mistake: check it against the declared schemes plus those
+        // the merged children publish, like the document path does.
+        validate_security_without_doc(input, metadata, merge_specs)?;
         return Ok(OpenApiWriteResult {
             spec_json: None,
             spec_pretty: None,
@@ -196,6 +204,38 @@ pub fn generate_and_write_openapi(
         spec_json,
         spec_pretty,
     })
+}
+
+/// [`validate_security_references`] for an expansion that generates no
+/// document: the app's own `security_schemes` plus every scheme a merged
+/// child's exported spec declares (an unreadable child contributes none).
+/// Opt-in like the document path: only when the app declares schemes.
+fn validate_security_without_doc(
+    input: &ProcessedVesperaInput,
+    metadata: &CollectedMetadata,
+    merge_specs: &mut MergeSpecCache,
+) -> MacroResult<()> {
+    let Some(own) = &input.security_schemes else {
+        return Ok(());
+    };
+    let mut schemes = own.clone();
+    for merge_path in &input.merge {
+        let Some((_, spec_file)) = merge_specs.spec_file_for(merge_path) else {
+            continue;
+        };
+        if let MergeSpecRead::Present(content) = merge_specs.read(&spec_file)
+            && let Ok(child) = serde_json::from_str::<vespera_core::openapi::OpenApi>(content)
+        {
+            let child_schemes = child
+                .components
+                .and_then(|components| components.security_schemes)
+                .unwrap_or_default();
+            for (name, scheme) in child_schemes {
+                schemes.entry(name).or_insert(scheme);
+            }
+        }
+    }
+    validate_security_references(metadata, &schemes, input.security.as_deref())
 }
 
 /// Write cached OpenAPI spec to output files if they are stale or missing.

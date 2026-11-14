@@ -176,6 +176,25 @@ impl MergeSpecCache {
         super::merge_lookup::resolve_export(merge_path, &self.aliases, self.dir.as_ref()?)
     }
 
+    /// Reject a merge path whose export several crates published (see
+    /// `merge_lookup::ambiguous_export_error`), spanned on that path.
+    pub(super) fn check_unambiguous(&self, merge: &[syn::Path]) -> syn::Result<()> {
+        let Some(dir) = self.dir.as_ref() else {
+            return Ok(());
+        };
+        merge.iter().try_for_each(|merge_path| {
+            super::merge_lookup::ambiguous_export_error(merge_path, &self.aliases, dir).map_or(
+                Ok(()),
+                |message| {
+                    Err(syn::Error::new(
+                        syn::spanned::Spanned::span(merge_path),
+                        message,
+                    ))
+                },
+            )
+        })
+    }
+
     /// `(export name, spec sidecar)` backing `merge_path`.
     pub(super) fn spec_file_for(&self, merge_path: &syn::Path) -> Option<(String, PathBuf)> {
         self.resolve(merge_path)

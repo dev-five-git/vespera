@@ -43,4 +43,7 @@ fn ui_diagnostics() {
     // resolves to a stand-in derive whose `compile_error!` names the feature.
     #[cfg(not(feature = "multipart"))]
     t.compile_fail("tests/ui/multipart_needs_feature.rs");
+    // Two fields resolving to one multipart field name.
+    #[cfg(feature = "multipart")]
+    t.compile_fail("tests/ui/multipart_duplicate_field.rs");
 }

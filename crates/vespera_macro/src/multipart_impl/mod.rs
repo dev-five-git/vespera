@@ -477,6 +477,14 @@ mod tests {
         "multipart_form_data_errors_combined",
         r"struct F { #[form_data(limit = 1)] pub a: String, #[form_data(limit = 2)] pub b: String }"
     )]
+    #[case::duplicate_wire_name_by_field_name(
+        "multipart_duplicate_wire_name_field_name",
+        r#"struct F { pub file: String, #[form_data(field_name = "file")] pub upload: String }"#
+    )]
+    #[case::duplicate_wire_name_by_serde_rename(
+        "multipart_duplicate_wire_name_serde_rename",
+        r#"#[serde(rename_all = "camelCase")] struct F { pub user_id: String, #[serde(rename = "userId")] pub uid: String }"#
+    )]
     fn invalid_limit_is_a_compile_error(#[case] name: &str, #[case] src: &str) {
         let out = derive_pretty(src);
         assert!(out.contains("compile_error"), "{out}");

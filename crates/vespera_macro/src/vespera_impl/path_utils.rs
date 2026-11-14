@@ -15,9 +15,50 @@ pub(super) fn current_crate_tag() -> String {
         crate::env_access::var("CARGO_PKG_NAME").unwrap_or_else(|_| "default".to_string());
     // A package's binaries are separate crates expanding the same macros in
     // parallel with its library: give each its own build files.
-    match crate::env_access::var("CARGO_CRATE_NAME") {
+    let base = match crate::env_access::var("CARGO_CRATE_NAME") {
         Ok(krate) if krate != package.replace('-', "_") => format!("{package}.{krate}"),
         _ => package,
+    };
+    format!("{base}{}", target_variant())
+}
+
+/// Suffix that keeps the build files of one crate's concurrently compiled
+/// variants apart: `.bin` for a binary (cargo sets `CARGO_BIN_NAME` — a
+/// binary named like its package has the library's crate name), then
+/// [`build_variant`].
+///
+/// The library, its `cargo test` harness build and rust-analyzer all expand
+/// the same `vespera!` with possibly different `#[cfg(test)]` items; sharing
+/// one cache and one content-addressed sidecar stem, each build pruned the
+/// file the other's `include_str!` still pointed at.
+pub(super) fn target_variant() -> String {
+    let bin = if crate::env_access::var_os("CARGO_BIN_NAME").is_some() {
+        ".bin"
+    } else {
+        ""
+    };
+    format!(
+        "{bin}{}",
+        variant_of(
+            &crate::env_access::compiler_args(),
+            std::env::current_exe().ok().as_deref()
+        )
+    )
+}
+
+/// `.ide` inside rust-analyzer's proc-macro server (`exe`), `.test` for a
+/// `rustc --test` harness build (the only trace of `cfg(test)` a proc macro
+/// can observe), else `""`.
+fn variant_of(args: &[String], exe: Option<&Path>) -> &'static str {
+    let in_ide = exe
+        .and_then(Path::file_name)
+        .is_some_and(|name| name.to_string_lossy().contains("rust-analyzer"));
+    if in_ide {
+        ".ide"
+    } else if args.iter().any(|arg| arg == "--test") {
+        ".test"
+    } else {
+        ""
     }
 }
 
@@ -81,14 +122,48 @@ thread_local! {
 
 /// The cargo target directory for the crate at `manifest_path`.
 ///
-/// Honours `CARGO_TARGET_DIR` (a relative value is taken relative to the
-/// workspace root, the directory cargo runs rustc from); otherwise
-/// `<workspace root>/target`.
+/// 1. `VESPERA_TARGET_DIR` (relative: against the workspace root) — an
+///    explicit override, e.g. for builds outside cargo;
+/// 2. the target directory of the running compilation, read off rustc's
+///    `--out-dir <target>/<profile>/deps` — the only answer that is right for
+///    every crate in the build: a registry / git dependency has no workspace
+///    of its own (its `export_app!` spec would land in its source directory,
+///    where the parent never looks), and a relative `CARGO_TARGET_DIR` is
+///    relative to wherever cargo was started;
+/// 3. `CARGO_TARGET_DIR` (relative: against the workspace root);
+/// 4. `<workspace root>/target` (rust-analyzer and other non-cargo hosts).
 pub fn find_target_dir(manifest_path: &Path) -> PathBuf {
-    target_dir_in(
-        &find_workspace_root(manifest_path),
-        crate::env_access::var_os("CARGO_TARGET_DIR"),
-    )
+    let workspace_root = || find_workspace_root(manifest_path);
+    if let Some(dir) = crate::env_access::var_os("VESPERA_TARGET_DIR").filter(|dir| !dir.is_empty())
+    {
+        return workspace_root().join(dir);
+    }
+    compiler_target_dir(&crate::env_access::compiler_args()).unwrap_or_else(|| {
+        target_dir_in(
+            &workspace_root(),
+            crate::env_access::var_os("CARGO_TARGET_DIR"),
+        )
+    })
+}
+
+/// `<target>` from an absolute rustc `--out-dir <target>/[<triple>/]<profile>/{deps,examples}`
+/// (with a `--target` triple: `<target>/<triple>`, consistently for every
+/// crate of that build).  `None` for any other output directory.
+fn compiler_target_dir(args: &[String]) -> Option<PathBuf> {
+    let out_dir = args
+        .windows(2)
+        .find_map(|pair| (pair[0] == "--out-dir").then(|| pair[1].as_str()))
+        .or_else(|| args.iter().find_map(|arg| arg.strip_prefix("--out-dir=")))?;
+    let out_dir = Path::new(out_dir);
+    let kind = out_dir.file_name()?;
+    if kind != "deps" && kind != "examples" {
+        return None;
+    }
+    out_dir
+        .parent()
+        .and_then(Path::parent)
+        .filter(|target| target.is_absolute())
+        .map(Path::to_path_buf)
 }
 
 /// `CARGO_TARGET_DIR` (when non-empty; an absolute value replaces the root
@@ -407,16 +482,92 @@ mod tests {
     /// A binary named differently from its package gets its own tag; the
     /// library (and its test build) keep the package name.
     #[rstest::rstest]
-    #[case::library(Some("my_app"), "my-app")]
-    #[case::binary(Some("server"), "my-app.server")]
-    #[case::outside_cargo(None, "my-app")]
-    fn crate_tag_separates_binaries(#[case] krate: Option<&str>, #[case] expected: &str) {
-        let _pkg = crate::env_access::test_env::set_var("CARGO_PKG_NAME", "my-app");
+    #[case::library(Some("my_app"), None, "", "my-app")]
+    #[case::binary(Some("server"), Some("server"), "", "my-app.server.bin")]
+    #[case::binary_named_like_the_package(Some("my_app"), Some("my-app"), "", "my-app.bin")]
+    #[case::library_test_harness(Some("my_app"), None, "rustc\n--test", "my-app.test")]
+    #[case::binary_test_harness(Some("my_app"), Some("my-app"), "rustc\n--test", "my-app.bin.test")]
+    #[case::outside_cargo(None, None, "", "my-app")]
+    fn crate_tag_separates_binaries_and_test_builds(
+        #[case] krate: Option<&str>,
+        #[case] bin: Option<&str>,
+        #[case] args: &str,
+        #[case] expected: &str,
+    ) {
+        use crate::env_access::test_env::{remove_var, set_var};
+        let _pkg = set_var("CARGO_PKG_NAME", "my-app");
         let _krate = krate.map_or_else(
-            || crate::env_access::test_env::remove_var("CARGO_CRATE_NAME"),
-            |krate| crate::env_access::test_env::set_var("CARGO_CRATE_NAME", krate),
+            || remove_var("CARGO_CRATE_NAME"),
+            |krate| set_var("CARGO_CRATE_NAME", krate),
         );
+        let _bin = bin.map_or_else(
+            || remove_var("CARGO_BIN_NAME"),
+            |bin| set_var("CARGO_BIN_NAME", bin),
+        );
+        let _args = set_var(crate::env_access::COMPILER_ARGS_KEY, args);
         assert_eq!(current_crate_tag(), expected);
+    }
+
+    #[rstest::rstest]
+    #[case::plain_rustc(&["rustc"], Some("rustc"), "")]
+    #[case::test_harness(&["rustc", "--test"], Some("rustc"), ".test")]
+    #[case::rust_analyzer(&["--test"], Some("rust-analyzer-proc-macro-srv"), ".ide")]
+    #[case::rust_analyzer_exe(&[], Some("rust-analyzer.exe"), ".ide")]
+    #[case::unknown_exe(&[], None, "")]
+    fn build_variant_tells_test_and_ide_builds_apart(
+        #[case] args: &[&str],
+        #[case] exe: Option<&str>,
+        #[case] expected: &str,
+    ) {
+        let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+        let exe = exe.map(|name| Path::new("/toolchain/bin").join(name));
+        assert_eq!(variant_of(&args, exe.as_deref()), expected);
+    }
+
+    fn absolute(path: &str) -> PathBuf {
+        std::env::temp_dir().join(path)
+    }
+
+    #[rstest::rstest]
+    #[case::deps(&["--out-dir", "{t}/debug/deps"], Some("{t}"))]
+    #[case::cross_target(&["--out-dir", "{t}/x86_64-unknown-linux-gnu/release/deps"], Some("{t}/x86_64-unknown-linux-gnu"))]
+    #[case::examples(&["--out-dir={t}/debug/examples"], Some("{t}"))]
+    #[case::doc_output(&["--out-dir", "{t}/doc"], None)]
+    #[case::relative(&["--out-dir", "target/debug/deps"], None)]
+    #[case::shallow(&["--out-dir", "/deps"], None)]
+    #[case::missing_value(&["--out-dir"], None)]
+    #[case::absent(&["rustc"], None)]
+    fn target_dir_is_read_off_the_out_dir(#[case] args: &[&str], #[case] expected: Option<&str>) {
+        let target = absolute("vespera-target").display().to_string();
+        let args: Vec<String> = args.iter().map(|arg| arg.replace("{t}", &target)).collect();
+        let expected = expected.map(|path| PathBuf::from(path.replace("{t}", &target)));
+        assert_eq!(compiler_target_dir(&args), expected);
+    }
+
+    /// `VESPERA_TARGET_DIR` beats the compiler's `--out-dir`, which beats
+    /// `CARGO_TARGET_DIR`.
+    #[test]
+    fn target_dir_precedence() {
+        use crate::env_access::test_env::{remove_var, set_var};
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+        let built = absolute("vespera-built");
+        let _cargo = set_var("CARGO_TARGET_DIR", "cargo-target");
+        let _args = set_var(
+            crate::env_access::COMPILER_ARGS_KEY,
+            format!(
+                "rustc\n--out-dir\n{}",
+                built.join("debug").join("deps").display()
+            ),
+        );
+        {
+            let _vespera = set_var("VESPERA_TARGET_DIR", "custom");
+            assert_eq!(find_target_dir(root), root.join("custom"));
+        }
+        let _vespera = set_var("VESPERA_TARGET_DIR", "");
+        assert_eq!(find_target_dir(root), built);
+        let _args = remove_var(crate::env_access::COMPILER_ARGS_KEY);
+        assert_eq!(find_target_dir(root), root.join("cargo-target"));
     }
 
     #[test]

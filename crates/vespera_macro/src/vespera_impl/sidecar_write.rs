@@ -3,7 +3,8 @@
 //! A package's lib, bin and test targets expand the same `vespera!` /
 //! `export_app!` in parallel `rustc` processes.  Their specs can differ (e.g.
 //! `#[cfg(test)]` routes), so a shared file rewritten in place could be read
-//! half-written or with the other target's content.  Two measures prevent it:
+//! half-written or with the other target's content.  Three measures prevent
+//! it:
 //!
 //! * **atomic replace** — content goes to a unique temp file first and is
 //!   renamed over the target, so a reader sees the old or the new file, never
@@ -11,7 +12,17 @@
 //! * **content addressing** — `include_str!` targets carry the content hash in
 //!   their name, so each expansion embeds exactly the bytes it generated.
 //!   Superseded files are pruned once they are old enough that no in-flight
-//!   compilation can still be about to read them.
+//!   compilation can still be about to read them;
+//! * **per-variant names** — the library, a binary, the `--test` harness and
+//!   rust-analyzer get their own file stems (`path_utils::target_variant`),
+//!   so pruning only ever removes an older file of the SAME build variant.
+//!   Sharing one stem, `cargo test` pruned the library's still-referenced
+//!   file once it was ten minutes old (it is never rewritten while its
+//!   content is unchanged), and the next `cargo build` failed to read it.
+//!
+//! A kept file's mtime is deliberately never refreshed: it is an
+//! `include_str!` input in cargo's dep-info, and an mtime newer than the
+//! build start makes cargo rebuild the crate on every invocation.
 
 use std::{
     io,
