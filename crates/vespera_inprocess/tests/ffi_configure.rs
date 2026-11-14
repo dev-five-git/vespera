@@ -67,6 +67,19 @@ fn start_async(req: &[u8]) -> mpsc::Receiver<Vec<u8>> {
     rx
 }
 
+/// Frees its response and dispatches `GET /fast` from inside the callback,
+/// handing the boxed sender on to that dispatch's `on_response`.
+unsafe extern "C" fn chain_fast(user_data: *mut c_void, response: *mut u8, len: usize) {
+    let req = request("GET", "/fast", b"");
+    // SAFETY: the response is freed once; `user_data` (the boxed sender)
+    // moves to the nested dispatch, whose callback reclaims it.
+    unsafe {
+        vespera_free(response, len);
+        let code = vespera_dispatch_async(req.as_ptr(), req.len(), Some(on_response), user_data);
+        assert_eq!(code, VESPERA_OK);
+    }
+}
+
 fn recv(rx: &mpsc::Receiver<Vec<u8>>) -> (u64, Vec<u8>) {
     parse(&rx.recv_timeout(Duration::from_secs(10)).unwrap())
 }
@@ -122,6 +135,23 @@ fn configure_applies_once_and_caps_async_dispatches() {
         recv(&start_async(&request("GET", "/fast", b""))),
         (200, b"fast".to_vec())
     );
+
+    // A callback that dispatches again finds its own slot already free:
+    // at cap 1 the chained request is served, not answered `503`.
+    let (tx, rx) = mpsc::channel();
+    let req = request("GET", "/fast", b"");
+    // SAFETY: live request; the boxed sender is reclaimed by `on_response`
+    // of the chained dispatch.
+    let code = unsafe {
+        vespera_dispatch_async(
+            req.as_ptr(),
+            req.len(),
+            Some(chain_fast),
+            Box::into_raw(Box::new(tx)).cast::<c_void>(),
+        )
+    };
+    assert_eq!(code, VESPERA_OK);
+    assert_eq!(recv(&rx), (200, b"fast".to_vec()));
 
     // The configured request cap applies to the C ABI too.
     assert_eq!(dispatch(&request("POST", "/echo", &[b'x'; 2048])).0, 413);
