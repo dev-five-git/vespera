@@ -249,6 +249,9 @@ pub fn process_cron_attribute(
     item: proc_macro2::TokenStream,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let args: CronArgs = syn::parse2(attr)?;
+    // `inline_module_of` reads the source file through the file cache; a
+    // fresh epoch re-checks its mtime (rust-analyzer's long-lived server).
+    crate::schema_macro::file_cache::bump_epoch();
     // Compile-time cron-syntax validation (gated by the `cron` feature, enabled
     // transitively by `vespera`'s `cron` feature). A malformed expression is a
     // span-attached compile error here instead of a failure at app startup.

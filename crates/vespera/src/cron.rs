@@ -137,6 +137,13 @@ impl CronJob {
 ///
 /// `vespera!` emits one `static` guard per invocation, so each app's jobs are
 /// scheduled once per process no matter how often its router is built.
+///
+/// The jobs run on the Tokio runtime current at the FIRST call (see
+/// [`start`]) and are never restarted: if that runtime is short-lived — a
+/// `#[tokio::test]`, or a temporary `Runtime::new()?.block_on(create_app())`
+/// used only to dump the OpenAPI document or warm up — the jobs stop with it.
+/// Build the app first on the runtime that serves it (or outside any runtime,
+/// which uses a dedicated `vespera-cron` thread).
 pub fn start_once(guard: &'static Once, jobs: impl IntoIterator<Item = CronJob>) {
     guard.call_once(|| start(jobs));
 }
@@ -331,8 +338,11 @@ fn spawn_scheduler_thread(jobs: Vec<CronJob>) {
 }
 
 fn run_scheduler_thread(jobs: Vec<CronJob>) {
+    // `enable_all`, not just timers: jobs on this thread commonly reach a
+    // database or HTTP client, which panic ("IO is disabled") on a runtime
+    // without the I/O driver.
     let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
+        .enable_all()
         .build()
         .expect("vespera: cron scheduler runtime");
     runtime.block_on(async move {
@@ -481,7 +491,11 @@ mod tests {
 
     fn no_runtime_tick() -> JobFuture {
         Box::pin(async {
-            NO_RUNTIME_TICKS.fetch_add(1, Ordering::SeqCst);
+            // Socket I/O panics ("IO is disabled") unless the scheduler
+            // thread's runtime enables the I/O driver.
+            if tokio::net::TcpListener::bind("127.0.0.1:0").await.is_ok() {
+                NO_RUNTIME_TICKS.fetch_add(1, Ordering::SeqCst);
+            }
         })
     }
 
@@ -796,7 +810,8 @@ mod tests {
     }
 
     /// Outside any runtime (plain `#[test]`, JNI `JNI_OnLoad`) `start` must
-    /// not panic: the jobs run on the dedicated scheduler thread.
+    /// not panic: the jobs run on the dedicated scheduler thread, whose
+    /// runtime has the I/O driver (the job binds a socket).
     #[test]
     fn start_without_runtime_uses_background_thread() {
         assert!(tokio::runtime::Handle::try_current().is_err());
