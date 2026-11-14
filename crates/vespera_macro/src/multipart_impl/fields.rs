@@ -198,18 +198,14 @@ fn push_post_loop<'a>(
             DefaultKind::Container => quote! { __vespera_default__.#ident },
             DefaultKind::Trait | DefaultKind::None => return,
         };
-        cg.post_loop.push(if is_vec {
-            quote! {
-                let #ident: #ty = if #ident.is_empty() { #fallback } else { #ident };
-            }
+        // One-line `quote!` bodies: llvm coverage never marks the inner lines
+        // of a multi-line `quote!` nested in this `if` as executed.
+        let binding = if is_vec {
+            quote! { let #ident: #ty = if #ident.is_empty() { #fallback } else { #ident }; }
         } else {
-            quote! {
-                let #ident: #ty = match #ident {
-                    std::option::Option::None => #fallback,
-                    __vespera_some__ => __vespera_some__,
-                };
-            }
-        });
+            quote! { let #ident: #ty = match #ident { std::option::Option::None => #fallback, __vespera_some__ => __vespera_some__ }; }
+        };
+        cg.post_loop.push(binding);
         return;
     }
 

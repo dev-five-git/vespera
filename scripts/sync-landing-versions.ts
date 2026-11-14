@@ -76,7 +76,9 @@ function replaceCapture(
   pattern: RegExp,
   value: string,
 ): string {
-  const flags = pattern.flags.includes('d') ? pattern.flags : `${pattern.flags}d`
+  const flags = pattern.flags.includes('d')
+    ? pattern.flags
+    : `${pattern.flags}d`
   const regex = new RegExp(pattern.source, flags)
   const matches = regex.global
     ? [...content.matchAll(regex)]
