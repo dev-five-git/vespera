@@ -1,0 +1,86 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_serde_fidelity.rs
+assertion_line: 209
+expression: both_views(src)
+---
+struct S { ttl: std::time::Duration }
+response: {
+  "type": "object",
+  "properties": {
+    "ttl": {
+      "type": "object",
+      "properties": {
+        "nanos": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "maximum": 999999999
+        },
+        "secs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "secs",
+        "nanos"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "ttl"
+  ]
+}
+request: {
+  "type": "object",
+  "properties": {
+    "ttl": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "nanos": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "secs": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "secs",
+            "nanos"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0,
+              "maximum": 4294967295
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        }
+      ]
+    }
+  },
+  "required": [
+    "ttl"
+  ]
+}

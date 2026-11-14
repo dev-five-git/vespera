@@ -83,28 +83,21 @@ pub fn extract_rename_all_for(attrs: &[syn::Attribute], side: SerdeSide) -> Opti
     }
 
     // Fallback: check for #[try_from_multipart(rename_all = "...")]
-    for attr in attrs {
-        if attr.path().is_ident("try_from_multipart") {
-            let mut found_rename_all = None;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("rename_all")
-                    && let Ok(value) = meta.value()
-                    && let Ok(syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(s),
-                        ..
-                    })) = value.parse::<syn::Expr>()
-                {
-                    found_rename_all = Some(s.value());
-                }
-                Ok(())
-            });
-            if found_rename_all.is_some() {
-                return found_rename_all;
-            }
-        }
-    }
+    string_attr_value(attrs, "try_from_multipart", "rename_all")
+}
 
-    None
+/// The string value of `key` in the first `#[attr(...)]` list carrying it;
+/// other `key = value` entries are skipped instead of aborting the walk.
+fn string_attr_value(attrs: &[syn::Attribute], attr: &str, key: &str) -> Option<String> {
+    let mut found = None;
+    walk_attr_keys(attrs, attr, |meta| {
+        if !meta.path.is_ident(key) {
+            return Ok(false);
+        }
+        found.get_or_insert(meta.value()?.parse::<syn::LitStr>()?.value());
+        Ok(true)
+    });
+    found
 }
 
 /// Field / variant `rename` (the serialize side). Schemas are shared by
@@ -132,27 +125,22 @@ pub fn extract_field_rename_for(attrs: &[syn::Attribute], side: SerdeSide) -> Op
 
 /// `#[form_data(field_name = "...")]`.
 fn extract_form_data_field_name(attrs: &[syn::Attribute]) -> Option<String> {
-    for attr in attrs {
-        if attr.path().is_ident("form_data") {
-            let mut found_field_name = None;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("field_name")
-                    && let Ok(value) = meta.value()
-                    && let Ok(syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(s),
-                        ..
-                    })) = value.parse::<syn::Expr>()
-                {
-                    found_field_name = Some(s.value());
-                }
-                Ok(())
-            });
-            if found_field_name.is_some() {
-                return found_field_name;
-            }
+    string_attr_value(attrs, "form_data", "field_name")
+}
+
+/// `#[serde(alias = "...")]` names of a field / variant, in declaration
+/// order. serde's `Deserialize` also accepts each of them in place of the
+/// (deserialize-side) name; `Serialize` never writes them.
+pub fn extract_aliases(attrs: &[syn::Attribute]) -> Vec<String> {
+    let mut aliases = Vec::new();
+    walk_serde_keys(attrs, |meta| {
+        if !meta.path.is_ident("alias") {
+            return Ok(false);
         }
-    }
-    None
+        aliases.push(meta.value()?.parse::<syn::LitStr>()?.value());
+        Ok(true)
+    });
+    aliases
 }
 
 /// Extract skip attribute from field attributes
@@ -287,10 +275,19 @@ pub fn extract_serde_skip_flags(attrs: &[syn::Attribute]) -> SerdeSkipFlags {
 /// Returns `false` when any `#[serde(...)]` list failed to parse.
 pub(super) fn walk_serde_keys(
     attrs: &[syn::Attribute],
+    on_key: impl FnMut(&syn::meta::ParseNestedMeta<'_>) -> syn::Result<bool>,
+) -> bool {
+    walk_attr_keys(attrs, "serde", on_key)
+}
+
+/// [`walk_serde_keys`] over the `#[name(...)]` attributes.
+pub(super) fn walk_attr_keys(
+    attrs: &[syn::Attribute],
+    name: &str,
     mut on_key: impl FnMut(&syn::meta::ParseNestedMeta<'_>) -> syn::Result<bool>,
 ) -> bool {
     let mut all_parsed = true;
-    for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident(name)) {
         let parsed = attr.parse_nested_meta(|meta| {
             if !on_key(&meta)? {
                 if meta.input.peek(syn::Token![=]) {
@@ -712,6 +709,46 @@ mod tests {
         };
 
         assert_eq!(extract_rename_all(&attrs).as_deref(), Some("snake_case"));
+    }
+
+    /// Keys before the wanted one (`strict`, `x = 1`) never abort the walk.
+    #[rstest]
+    #[case::multipart_after_key(
+        r#"#[try_from_multipart(strict, rename_all = "camelCase")]"#,
+        Some("camelCase")
+    )]
+    #[case::multipart_after_value(
+        r#"#[try_from_multipart(limit = "1MiB", rename_all = "camelCase")]"#,
+        Some("camelCase")
+    )]
+    #[case::multipart_non_string("#[try_from_multipart(rename_all = 1)]", None)]
+    fn multipart_rename_all_after_any_key(#[case] src: &str, #[case] expected: Option<&str>) {
+        let item: syn::ItemStruct = syn::parse_str(&format!("{src} struct S;")).unwrap();
+        assert_eq!(extract_rename_all(&item.attrs).as_deref(), expected);
+    }
+
+    #[rstest]
+    #[case::after_limit(r#"#[form_data(limit = "1MiB", field_name = "f")]"#, Some("f"))]
+    #[case::alone(r#"#[form_data(field_name = "f")]"#, Some("f"))]
+    #[case::none(r#"#[form_data(limit = "1MiB")]"#, None)]
+    fn form_data_field_name_after_any_key(#[case] src: &str, #[case] expected: Option<&str>) {
+        let item: syn::ItemStruct = syn::parse_str(&format!("struct S {{ {src} x: u8 }}")).unwrap();
+        let field = item.fields.iter().next().unwrap();
+        assert_eq!(
+            extract_field_rename_for(&field.attrs, SerdeSide::Deserialize).as_deref(),
+            expected
+        );
+    }
+
+    #[rstest]
+    #[case::none(r#"#[serde(rename = "a")]"#, &[])]
+    #[case::one(r#"#[serde(alias = "a")]"#, &["a"])]
+    #[case::many(r#"#[serde(alias = "a", default, alias = "b")] #[serde(alias = "c")]"#, &["a", "b", "c"])]
+    #[case::non_string("#[serde(alias = 1)]", &[])]
+    fn aliases(#[case] src: &str, #[case] expected: &[&str]) {
+        let item: syn::ItemStruct = syn::parse_str(&format!("struct S {{ {src} x: u8 }}")).unwrap();
+        let field = item.fields.iter().next().unwrap();
+        assert_eq!(extract_aliases(&field.attrs), expected);
     }
 
     #[test]

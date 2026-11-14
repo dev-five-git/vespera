@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
+assertion_line: 101
+expression: both_views(src)
+---
+enum E { Triple(u8, #[serde(skip_serializing)] u16, #[serde(skip_deserializing)] u32) }
+response: {"oneOf":[{"type":"object","properties":{"Triple":{"type":"array","prefixItems":[{"type":"integer","format":"uint8","minimum":0,"maximum":255},{"type":"integer","format":"uint32","minimum":0,"maximum":4294967295}],"minItems":2,"maxItems":2}},"required":["Triple"]}]}
+request: {"oneOf":[{"type":"object","properties":{"Triple":{"type":"array","prefixItems":[{"type":"integer","format":"uint8","minimum":0,"maximum":255},{"type":"integer","format":"uint16","minimum":0,"maximum":65535}],"minItems":2,"maxItems":2}},"required":["Triple"]}]}

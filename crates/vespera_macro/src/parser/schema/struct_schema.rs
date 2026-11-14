@@ -10,21 +10,27 @@ use std::{
 };
 
 use syn::Fields;
-use vespera_core::schema::{AdditionalProperties, Schema, SchemaRef, SchemaType};
+use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
 use super::{
     garde_rules::{apply_garde_rules, extract_garde_rules},
     schema_attrs::{SchemaConstraints, extract_schema_constraints},
     serde_attrs::{
-        SerdeSide, extract_default, extract_deny_unknown_fields, extract_doc_comment,
-        extract_field_codec, extract_field_rename_for, extract_flatten, extract_rename_all,
-        extract_rename_all_for, extract_schema_ref_override, extract_serde_skip_flags, extract_tag,
-        extract_transparent, rename_field, strip_raw_prefix_owned,
+        SerdeSide, extract_aliases, extract_default, extract_deny_unknown_fields,
+        extract_doc_comment, extract_field_codec, extract_field_rename_for, extract_flatten,
+        extract_rename_all, extract_rename_all_for, extract_schema_ref_override,
+        extract_serde_skip_flags, extract_tag, extract_transparent, rename_field,
+        strip_raw_prefix_owned,
     },
-    type_schema::{parse_type_to_schema_ref, tuple_array_schema},
+    type_schema::parse_type_to_schema_ref,
     wire_override::{current_container_override, field_schema_ref},
 };
-use crate::schema_macro::type_utils::{is_option_type, option_inner};
+use crate::schema_macro::type_utils::is_option_type;
+
+mod flatten;
+
+pub(super) use flatten::resolve_type;
+use flatten::{FlatPart, flatten_part};
 
 /// Parses a Rust struct into an `OpenAPI` Schema.
 ///
@@ -34,7 +40,7 @@ use crate::schema_macro::type_utils::{is_option_type, option_inner};
 ///   `#[serde(default)]` field stays present on output; inside
 ///   `request_view::with_request_view` (the `{Name}Input` view) it is optional
 /// - Doc comments as descriptions
-/// - Serde attributes (rename, `rename_all`, skip, default)
+/// - Serde attributes (rename, `rename_all`, skip, default, alias, flatten)
 ///
 /// Tuple structs follow serde's wire shape: a newtype `struct Id(u64)` is its
 /// inner schema, a multi-field `struct Pair(A, B)` is a fixed-length array.
@@ -156,25 +162,18 @@ fn parse_struct_body(
                 fields.required.insert(0, tag);
             }
 
-            // `deny_unknown_fields` → closed object. serde does not support
-            // it together with `flatten`, so a flattening struct stays open.
-            let closed =
-                fields.flattened.is_empty() && extract_deny_unknown_fields(&struct_item.attrs);
-            let mut schema = fields.into_object_schema(struct_description);
-            if closed {
-                schema.additional_properties = Some(AdditionalProperties::Bool(false));
-            }
-            schema
+            // `deny_unknown_fields` → closed object (see `into_object_schema`
+            // for how it combines with `flatten`).
+            fields.into_object_schema(
+                struct_description,
+                extract_deny_unknown_fields(&struct_item.attrs),
+            )
         }
-        // `struct Pair(A, B)` → `[A, B]` (fully skipped positions are not
-        // serialized, so they are not array items either).
+        // `struct Pair(A, B)` → `[A, B]` (positions skipped on the current
+        // side are not serialized / read, so they are not array items).
         Fields::Unnamed(fields_unnamed) => Schema {
             description: struct_description,
-            ..tuple_array_schema(
-                emitted_unnamed_types(fields_unnamed).into_iter(),
-                known_schemas,
-                struct_definitions,
-            )
+            ..tuple_fields_schema(fields_unnamed, known_schemas, struct_definitions)
         },
         // `struct Marker;` → serde writes (and reads) a unit struct as `null`.
         Fields::Unit => Schema {
@@ -184,16 +183,46 @@ fn parse_struct_body(
     }
 }
 
-/// Types of the tuple fields that appear on the wire: fully skipped fields
-/// (`#[serde(skip)]`, or `skip_serializing` + `skip_deserializing`) are
-/// dropped, matching serde's tuple-struct / tuple-variant length.
-pub(super) fn emitted_unnamed_types(fields: &syn::FieldsUnnamed) -> Vec<&syn::Type> {
-    fields
+/// Fixed-length array of a tuple struct / tuple variant on the side of the
+/// view being built: a position skipped on that side
+/// (`#[serde(skip)]`, `skip_serializing` in the response view,
+/// `skip_deserializing` in the request view) is neither written nor read,
+/// and each position honours its `#[schema(value_type)]` / `#[schema(any)]` /
+/// serde `with` family (see [`field_schema_ref`]).
+pub(super) fn tuple_fields_schema(
+    fields: &syn::FieldsUnnamed,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
+) -> Schema {
+    let side = super::request_view::current_side();
+    let prefix_items: Vec<SchemaRef> = fields
         .unnamed
         .iter()
-        .filter(|field| !extract_serde_skip_flags(&field.attrs).fully_skipped())
-        .map(|field| &field.ty)
-        .collect()
+        .filter(|field| {
+            let flags = extract_serde_skip_flags(&field.attrs);
+            !(flags.skip
+                || match side {
+                    SerdeSide::Serialize => flags.skip_serializing,
+                    SerdeSide::Deserialize => flags.skip_deserializing,
+                })
+        })
+        .map(|field| {
+            field_schema_ref(
+                field,
+                &extract_schema_constraints(&field.attrs),
+                side,
+                known_schemas,
+                struct_definitions,
+            )
+        })
+        .collect();
+    let len = prefix_items.len();
+    Schema {
+        prefix_items: Some(prefix_items),
+        min_items: Some(len),
+        max_items: Some(len),
+        ..Schema::new(SchemaType::Array)
+    }
 }
 
 /// The ONLY non-skipped field, if exactly one remains.
@@ -231,42 +260,62 @@ pub(super) fn with_description(schema_ref: SchemaRef, description: Option<String
 pub(super) struct NamedFields {
     pub properties: BTreeMap<String, SchemaRef>,
     pub required: Vec<String>,
-    /// `#[serde(flatten)]` field schemas, composed via `allOf`.
-    pub flattened: Vec<SchemaRef>,
+    /// `#[serde(flatten)]` members (see [`flatten`]).
+    flattened: Vec<FlatPart>,
+    /// Request view: required fields that also accept `#[serde(alias)]`
+    /// names — exactly one name of each group must be present.
+    alias_groups: Vec<Vec<String>>,
 }
 
 impl NamedFields {
-    /// Object schema for these fields; flattened fields turn the result into
-    /// `allOf: [<own properties>, ...flattened]`.
-    pub(super) fn into_object_schema(self, description: Option<String>) -> Schema {
-        let inline_schema = Schema {
-            schema_type: Some(SchemaType::Object),
-            properties: (!self.properties.is_empty()).then_some(self.properties),
-            required: (!self.required.is_empty()).then_some(self.required),
-            ..Schema::object_empty()
-        };
-        if self.flattened.is_empty() {
-            return Schema {
-                description,
-                ..inline_schema
-            };
-        }
-        let mut all_of = vec![SchemaRef::Inline(Box::new(inline_schema))];
-        all_of.extend(self.flattened);
-        Schema {
+    /// Object schema for these fields, `#[serde(flatten)]` members merged in
+    /// (see [`flatten::assemble`]); `deny_unknown_fields` closes it.
+    pub(super) fn into_object_schema(
+        self,
+        description: Option<String>,
+        deny_unknown_fields: bool,
+    ) -> Schema {
+        let constraints = self
+            .alias_groups
+            .into_iter()
+            .map(|names| {
+                SchemaRef::Inline(Box::new(Schema {
+                    one_of: Some(
+                        names
+                            .into_iter()
+                            .map(|name| {
+                                SchemaRef::Inline(Box::new(Schema {
+                                    required: Some(vec![name]),
+                                    ..Schema::default()
+                                }))
+                            })
+                            .collect(),
+                    ),
+                    ..Schema::default()
+                }))
+            })
+            .collect();
+        flatten::assemble(
+            flatten::ObjectParts {
+                properties: self.properties,
+                required: self.required,
+                constraints,
+                ..flatten::ObjectParts::default()
+            },
+            self.flattened,
             description,
-            all_of: Some(all_of),
-            ..Default::default()
-        }
+            deny_unknown_fields,
+        )
     }
 }
 
 /// Walk named fields applying every field-level attribute vespera understands:
 /// `#[serde(skip)]` (and `skip_serializing` + `skip_deserializing`),
-/// `#[serde(flatten)]`, `#[serde(rename)]` / `rename_all`, doc comments,
-/// `#[schema(...)]` constraints (incl. `any`), and `required` inference
-/// (`Option<T>`, `skip_serializing`, and `skip_serializing_if` fields are not
-/// required).
+/// `#[serde(flatten)]`, `#[serde(rename)]` / `rename_all` / `alias`, doc
+/// comments, `#[schema(...)]` constraints (incl. `any`), and `required`
+/// inference (`Option<T>`, `skip_serializing`, and `skip_serializing_if`
+/// fields are not required in the response view; `default` fields in the
+/// request view).
 pub(super) fn collect_named_fields(
     fields_named: &syn::FieldsNamed,
     rename_all: Option<&str>,
@@ -279,9 +328,15 @@ pub(super) fn collect_named_fields(
         ..NamedFields::default()
     };
     // Request view (see `request_view`): fields serde never reads are
-    // dropped, keys use the deserialize name, and `#[serde(default)]`
-    // (field or container) makes a field optional.
+    // dropped, keys use the deserialize name, `#[serde(default)]` (field or
+    // container) makes a field optional, and aliases are accepted keys.
     let request = super::request_view::in_request_view();
+    // Field-level rename takes precedence over rename_all.
+    let side = if request {
+        SerdeSide::Deserialize
+    } else {
+        SerdeSide::Serialize
+    };
     for field in &fields_named.named {
         let skip_flags = extract_serde_skip_flags(&field.attrs);
         if skip_flags.fully_skipped() || (request && skip_flags.skip_deserializing) {
@@ -289,10 +344,8 @@ pub(super) fn collect_named_fields(
         }
 
         if extract_flatten(&field.attrs) {
-            out.flattened.push(option_inner(&field.ty).map_or_else(
-                || parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions),
-                |inner| optional_flattened_schema(inner, known_schemas, struct_definitions),
-            ));
+            out.flattened
+                .push(flatten_part(field, side, known_schemas, struct_definitions));
             continue;
         }
 
@@ -300,12 +353,6 @@ pub(super) fn collect_named_fields(
             || "unknown".to_string(),
             |i| strip_raw_prefix_owned(i.to_string()),
         );
-        // Field-level rename takes precedence over rename_all.
-        let side = if request {
-            SerdeSide::Deserialize
-        } else {
-            SerdeSide::Serialize
-        };
         let field_name = extract_field_rename_for(&field.attrs, side)
             .unwrap_or_else(|| rename_field(&rust_field_name, rename_all));
 
@@ -361,63 +408,35 @@ pub(super) fn collect_named_fields(
         // field itself: a custom `deserialize_with` makes it mandatory.
         let absent_is_none = is_option_type(&field.ty)
             && !(request && extract_field_codec(&field.attrs).deserialize);
+
+        // `#[serde(alias = "..")]`: serde's Deserialize also accepts each
+        // alias as the key (a second key for the same field is a "duplicate
+        // field" error), so in the request view every alias is a property
+        // with the field's schema, and a required field needs exactly one of
+        // its names.
+        let aliases = if request {
+            extract_aliases(&field.attrs)
+        } else {
+            Vec::new()
+        };
+        for alias in &aliases {
+            out.properties
+                .entry(alias.clone())
+                .or_insert_with(|| schema_ref.clone());
+        }
         if !absent_is_none && !optional {
-            out.required.push(field_name.clone());
+            if aliases.is_empty() {
+                out.required.push(field_name.clone());
+            } else {
+                let mut names = vec![field_name.clone()];
+                names.extend(aliases);
+                out.alias_groups.push(names);
+            }
         }
 
         out.properties.insert(field_name, schema_ref);
     }
     out
-}
-
-/// Schema of a `#[serde(flatten)] Option<Inner>` field.
-///
-/// serde deserializes the flattened `Inner` only when all of its fields are
-/// present and yields `None` otherwise, so none of `Inner`'s fields may be
-/// `required` in the composed object.
-fn optional_flattened_schema(
-    inner: &syn::Type,
-    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
-    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
-) -> SchemaRef {
-    without_required(
-        parse_type_to_schema_ref(inner, known_schemas, struct_definitions),
-        known_schemas,
-        struct_definitions,
-    )
-}
-
-/// `schema_ref` with every `required` list dropped, recursively through
-/// `allOf` members. A `$ref` cannot be relaxed in place, so a referenced
-/// known struct is inlined; a `$ref` without a parseable struct definition
-/// (e.g. an enum) is kept as-is.
-fn without_required(
-    schema_ref: SchemaRef,
-    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
-    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
-) -> SchemaRef {
-    let mut schema = match schema_ref {
-        SchemaRef::Inline(schema) => *schema,
-        SchemaRef::Ref(reference) => {
-            let Some(struct_item) = reference
-                .ref_path
-                .strip_prefix("#/components/schemas/")
-                .and_then(|name| struct_definitions.get(name))
-                .and_then(|def| syn::parse_str::<syn::ItemStruct>(def.as_ref()).ok())
-            else {
-                return SchemaRef::Ref(reference);
-            };
-            parse_struct_to_schema(&struct_item, known_schemas, struct_definitions)
-        }
-    };
-    schema.required = None;
-    schema.all_of = schema.all_of.take().map(|members| {
-        members
-            .into_iter()
-            .map(|member| without_required(member, known_schemas, struct_definitions))
-            .collect()
-    });
-    SchemaRef::Inline(Box::new(schema))
 }
 
 /// Document a field's validation rules on its schema: the `#[garde(...)]`
@@ -518,3 +537,6 @@ mod tests_wire_override;
 
 #[cfg(test)]
 mod tests_wire_names;
+
+#[cfg(test)]
+mod tests_serde_fidelity;

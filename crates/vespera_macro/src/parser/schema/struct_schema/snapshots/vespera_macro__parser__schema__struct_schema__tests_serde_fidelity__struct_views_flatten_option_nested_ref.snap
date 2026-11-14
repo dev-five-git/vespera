@@ -1,0 +1,28 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_serde_fidelity.rs
+assertion_line: 209
+expression: both_views(src)
+---
+struct Req { #[serde(flatten)] meta: Option<Meta> }
+response: {
+  "type": "object",
+  "properties": {
+    "by": {
+      "type": "string"
+    },
+    "tag": {
+      "type": "string"
+    }
+  }
+}
+request: {
+  "type": "object",
+  "properties": {
+    "by": {
+      "type": "string"
+    },
+    "tag": {
+      "type": "string"
+    }
+  }
+}

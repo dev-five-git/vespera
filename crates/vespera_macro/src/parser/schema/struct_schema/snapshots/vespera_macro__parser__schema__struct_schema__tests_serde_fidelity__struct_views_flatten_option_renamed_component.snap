@@ -1,0 +1,42 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_serde_fidelity.rs
+assertion_line: 209
+expression: both_views(src)
+---
+struct Req { id: i32, #[serde(flatten)] named: Option<Named> }
+response: {
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "integer",
+      "format": "int32"
+    },
+    "n": {
+      "type": "integer",
+      "format": "uint8",
+      "minimum": 0,
+      "maximum": 255
+    }
+  },
+  "required": [
+    "id"
+  ]
+}
+request: {
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "integer",
+      "format": "int32"
+    },
+    "n": {
+      "type": "integer",
+      "format": "uint8",
+      "minimum": 0,
+      "maximum": 255
+    }
+  },
+  "required": [
+    "id"
+  ]
+}

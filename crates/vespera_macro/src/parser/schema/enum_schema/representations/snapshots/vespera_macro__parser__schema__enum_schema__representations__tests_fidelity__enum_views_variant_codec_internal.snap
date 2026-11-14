@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
+assertion_line: 101
+expression: both_views(src)
+---
+#[serde(tag = "t")] enum E { #[serde(with = "m")] Named { a: u8 }, #[serde(with = "m")] Newtype(Payload) }
+response: {"oneOf":[{"allOf":[{"type":"object","properties":{"t":{"type":"string","enum":["Named"]}},"required":["t"]},{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."}]},{"allOf":[{"type":"object","properties":{"t":{"type":"string","enum":["Newtype"]}},"required":["t"]},{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."}]}],"discriminator":{"propertyName":"t"}}
+request: {"oneOf":[{"allOf":[{"type":"object","properties":{"t":{"type":"string","enum":["Named"]}},"required":["t"]},{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."}]},{"allOf":[{"type":"object","properties":{"t":{"type":"string","enum":["Newtype"]}},"required":["t"]},{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."}]}],"discriminator":{"propertyName":"t"}}

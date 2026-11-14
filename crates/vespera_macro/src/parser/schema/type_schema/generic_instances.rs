@@ -10,7 +10,9 @@
 //! The component name is the base schema name followed by every type
 //! argument, flattened and joined with `_`: `Tree<i32>` → `Tree_i32`,
 //! `Tree<Vec<User>>` → `Tree_Vec_User`, `Pair<A, Option<B>>` →
-//! `Pair_A_Option_B`. Non-recursive generics stay inline.
+//! `Pair_A_Option_B` (see [`instance_name`] for how `_` in identifiers,
+//! arrays, slices and tuples are spelled so that different types never share
+//! a name). Non-recursive generics stay inline.
 //!
 //! The state is thread-local. `parallel_filter_map` workers hand their
 //! materialised components back to the calling thread
@@ -46,13 +48,21 @@ pub fn instance_name<'a>(base: &str, args: impl IntoIterator<Item = &'a Type>) -
     name
 }
 
-/// Append `_<segment>` for every name inside `ty`.
+/// Append `_<segment>` for every name inside `ty` (prefix order: a generic
+/// segment's arguments follow it).
+///
+/// The encoding is injective for a fixed arity per type name: an `_` inside
+/// an identifier is written `-` (`my_type` → `my-type`, so it never reads as
+/// a separator), and the structural markers carry a `.` (which no
+/// identifier contains) together with their size — `[T; 4]` → `_Array.4_T`,
+/// `[T]` → `_Slice._T`, `(A, B)` → `_Tuple.2_A_B`, anything else (`impl
+/// Trait`, `dyn Trait`, …) → `_.Value`.
 fn push_type_segments(name: &mut String, ty: &Type) {
     match ty {
         Type::Path(type_path) => {
             if let Some(segment) = type_path.path.segments.last() {
                 name.push('_');
-                name.push_str(&segment.ident.to_string());
+                name.push_str(&segment.ident.to_string().replace('_', "-"));
                 if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                     for arg in &args.args {
                         if let syn::GenericArgument::Type(inner) = arg {
@@ -66,25 +76,42 @@ fn push_type_segments(name: &mut String, ty: &Type) {
         Type::Paren(paren) => push_type_segments(name, &paren.elem),
         Type::Group(group) => push_type_segments(name, &group.elem),
         Type::Array(array) => {
-            name.push_str("_Array");
+            name.push_str("_Array.");
+            push_array_len(name, &array.len);
             push_type_segments(name, &array.elem);
         }
         Type::Slice(slice) => {
-            name.push_str("_Array");
+            name.push_str("_Slice.");
             push_type_segments(name, &slice.elem);
         }
-        Type::Tuple(tuple) if tuple.elems.is_empty() => name.push_str("_Unit"),
         Type::Tuple(tuple) => {
-            name.push_str("_Tuple");
+            name.push_str("_Tuple.");
+            name.push_str(&tuple.elems.len().to_string());
             for elem in &tuple.elems {
                 push_type_segments(name, elem);
             }
         }
-        _ => name.push_str("_Value"),
+        _ => name.push_str("_.Value"),
     }
 }
 
-/// Inline the generic instantiation `name`, built by `build`, unless that
+/// The length of `[T; len]`: an integer literal as written, a const path as
+/// its (escaped) name, anything else as `N`.
+fn push_array_len(name: &mut String, len: &syn::Expr) {
+    match len {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(int),
+            ..
+        }) => name.push_str(int.base10_digits()),
+        syn::Expr::Path(path) => name.push_str(&path.path.segments.last().map_or_else(
+            || "N".to_string(),
+            |segment| segment.ident.to_string().replace('_', "-"),
+        )),
+        _ => name.push('N'),
+    }
+}
+
+// Inline the generic instantiation `name`, built by `build`, unless that
 /// would recurse forever — then a `$ref` to the materialised component.
 pub fn inline_or_reference(name: &str, build: impl FnOnce() -> Schema) -> SchemaRef {
     let definition = DEFINITIONS.with(|stack| {
@@ -154,16 +181,40 @@ mod tests {
     #[case::two_args("Pair", &["A", "Option<B>"], "Pair_A_Option_B")]
     #[case::reference("Page", &["&'static str"], "Page_str")]
     #[case::paren("Page", &["(u8)"], "Page_u8")]
-    #[case::array_slice("Page", &["[u8; 4]", "&[u8]"], "Page_Array_u8_Array_u8")]
-    #[case::tuples("Page", &["()", "(u8, bool)"], "Page_Unit_Tuple_u8_bool")]
-    #[case::other("Page", &["impl Trait"], "Page_Value")]
+    #[case::array_slice("Page", &["[u8; 4]", "&[u8]"], "Page_Array.4_u8_Slice._u8")]
+    #[case::array_const_len("Page", &["[u8; LEN_MAX]"], "Page_Array.LEN-MAX_u8")]
+    #[case::array_expr_len("Page", &["[u8; 2 * 2]"], "Page_Array.N_u8")]
+    #[case::tuples("Page", &["()", "(u8, bool)"], "Page_Tuple.0_Tuple.2_u8_bool")]
+    #[case::other("Page", &["impl Trait"], "Page_.Value")]
     #[case::qualified_self("Page", &["<T as Tr>::Out"], "Page_Out")]
+    #[case::underscore_ident("Pair", &["A_B", "C"], "Pair_A-B_C")]
     fn instance_names(#[case] base: &str, #[case] args: &[&str], #[case] expected: &str) {
         let types: Vec<Type> = args
             .iter()
             .map(|arg| syn::parse_str(arg).unwrap())
             .collect();
         assert_eq!(instance_name(base, &types), expected);
+    }
+
+    /// Distinct argument lists never share a component name (each pair
+    /// collided before: `_` inside identifiers, array lengths, tuple arity,
+    /// array vs slice).
+    #[rstest]
+    #[case::underscore(&["A_B", "C"], &["A", "B_C"])]
+    #[case::array_len(&["[u8; 4]"], &["[u8; 8]"])]
+    #[case::array_vs_slice(&["[u8; 4]"], &["&[u8]"])]
+    #[case::tuple_arity(&["(A, B)", "(C,)"], &["(A,)", "(B, C)"])]
+    #[case::marker_vs_ident(&["[u8]"], &["Array<u8>"])]
+    fn instance_names_are_injective(#[case] left: &[&str], #[case] right: &[&str]) {
+        let parse = |args: &[&str]| -> Vec<Type> {
+            args.iter()
+                .map(|arg| syn::parse_str(arg).unwrap())
+                .collect()
+        };
+        assert_ne!(
+            instance_name("Pair", &parse(left)),
+            instance_name("Pair", &parse(right))
+        );
     }
 
     #[test]

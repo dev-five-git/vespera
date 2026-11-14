@@ -1,0 +1,48 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_serde_fidelity.rs
+assertion_line: 209
+expression: both_views(src)
+---
+#[serde(deny_unknown_fields)] struct Req { id: i32, #[serde(flatten)] meta: Meta }
+response: {
+  "type": "object",
+  "properties": {
+    "by": {
+      "type": "string"
+    },
+    "id": {
+      "type": "integer",
+      "format": "int32"
+    },
+    "tag": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "tag",
+    "by"
+  ],
+  "additionalProperties": false
+}
+request: {
+  "type": "object",
+  "properties": {
+    "by": {
+      "type": "string"
+    },
+    "id": {
+      "type": "integer",
+      "format": "int32"
+    },
+    "tag": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "tag",
+    "by"
+  ],
+  "additionalProperties": false
+}

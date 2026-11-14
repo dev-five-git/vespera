@@ -1,0 +1,41 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_serde_fidelity.rs
+assertion_line: 209
+expression: both_views(src)
+---
+struct P(#[serde(with = "ts")] DateTime<Utc>, #[schema(value_type = String)] Id, #[serde(serialize_with = "f")] u8);
+response: {
+  "type": "array",
+  "prefixItems": [
+    {
+      "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+    },
+    {
+      "type": "string"
+    },
+    {
+      "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+    }
+  ],
+  "minItems": 3,
+  "maxItems": 3
+}
+request: {
+  "type": "array",
+  "prefixItems": [
+    {
+      "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+    },
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer",
+      "format": "uint8",
+      "minimum": 0,
+      "maximum": 255
+    }
+  ],
+  "minItems": 3,
+  "maxItems": 3
+}

@@ -1,0 +1,115 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_serde_fidelity.rs
+assertion_line: 209
+expression: both_views(src)
+---
+#[serde(deny_unknown_fields)] struct A { #[serde(alias = "nm", alias = "n")] name: String, #[serde(alias = "yrs", default)] age: u8, #[serde(alias = "ident")] id: u64, note: Option<String> }
+response: {
+  "type": "object",
+  "properties": {
+    "age": {
+      "type": "integer",
+      "format": "uint8",
+      "minimum": 0,
+      "maximum": 255
+    },
+    "id": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "name": {
+      "type": "string"
+    },
+    "note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "name",
+    "age",
+    "id"
+  ],
+  "additionalProperties": false
+}
+request: {
+  "type": "object",
+  "properties": {
+    "age": {
+      "type": "integer",
+      "format": "uint8",
+      "minimum": 0,
+      "maximum": 255
+    },
+    "id": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "ident": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "n": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "nm": {
+      "type": "string"
+    },
+    "note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "yrs": {
+      "type": "integer",
+      "format": "uint8",
+      "minimum": 0,
+      "maximum": 255
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "required": [
+            "name"
+          ]
+        },
+        {
+          "required": [
+            "nm"
+          ]
+        },
+        {
+          "required": [
+            "n"
+          ]
+        }
+      ]
+    },
+    {
+      "oneOf": [
+        {
+          "required": [
+            "id"
+          ]
+        },
+        {
+          "required": [
+            "ident"
+          ]
+        }
+      ]
+    }
+  ]
+}

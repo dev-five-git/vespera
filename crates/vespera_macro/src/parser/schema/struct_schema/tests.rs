@@ -821,7 +821,7 @@ fn malformed_named_field_uses_unknown_property_name() {
 }
 
 #[test]
-fn schema_any_field_forces_object_without_type_conversion() {
+fn schema_any_field_is_any_value_without_type_conversion() {
     let item: syn::ItemStruct = syn::parse_quote! {
         struct Opaque { #[schema(any)] payload: CustomType }
     };
@@ -830,15 +830,18 @@ fn schema_any_field_forces_object_without_type_conversion() {
         &HashSet::<String>::new(),
         &HashMap::<String, String>::new(),
     );
+    // `#[schema(any)]` is any JSON value — `{}`, not `{type: object}`, which
+    // would reject a string / number / array.
     assert_eq!(
-        field_schema(&schema, "payload").schema_type,
-        Some(SchemaType::Object)
+        serde_json::to_string(field_schema(&schema, "payload")).unwrap(),
+        "{}"
     );
 }
 
 /// Container/field serde attributes that change the object's shape:
 /// `flatten` of an `Option` relaxes the inner fields, `deny_unknown_fields`
-/// closes the object (unless it flattens, which serde does not support).
+/// closes the object — also around the keys a flattened struct reads, which
+/// are merged in so `additionalProperties: false` sees them.
 #[rstest]
 #[case::flatten_option_known_struct(
     "flatten_option_known_struct",
@@ -864,8 +867,8 @@ fn schema_any_field_forces_object_without_type_conversion() {
     "deny_unknown_fields_closed",
     r#"#[serde(deny_unknown_fields, rename_all = "camelCase")] struct Strict { user_id: i32 }"#
 )]
-#[case::deny_unknown_fields_with_flatten_open(
-    "deny_unknown_fields_with_flatten_open",
+#[case::deny_unknown_fields_with_flatten_closed(
+    "deny_unknown_fields_with_flatten_closed",
     r"#[serde(deny_unknown_fields)] struct Strict { id: i32, #[serde(flatten)] page: Page }"
 )]
 fn serde_shape_attributes(#[case] name: &str, #[case] src: &str) {

@@ -17,7 +17,7 @@ use std::{
     hash::Hash,
 };
 
-use vespera_core::schema::{Schema, SchemaRef, SchemaType};
+use vespera_core::schema::{Schema, SchemaRef};
 
 use super::{
     schema_attrs::{SchemaConstraints, extract_schema_constraints},
@@ -39,9 +39,9 @@ pub fn field_schema_ref(
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> SchemaRef {
-    // `#[schema(any)]` is the generic `{type: "object"}` escape hatch.
+    // `#[schema(any)]` is the "any JSON value" (`{}`) escape hatch.
     if constraints.is_any() {
-        return SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)));
+        return SchemaRef::Inline(Box::default());
     }
     if let Some(value_type) = &constraints.value_type {
         return parse_type_to_schema_ref(&value_type.0, known_schemas, struct_definitions);
