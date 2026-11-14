@@ -71,10 +71,10 @@ public final class VesperaRequest {
 
     /**
      * Route this request to the named app instead of the client's
-     * ({@code null} / blank = the default app).
+     * ({@code null} / blank / {@code "_default"} = the default app).
      */
     public VesperaRequest app(@Nullable String appName) {
-        this.appName = VesperaWireCodec.normalizedAppName(appName);
+        this.appName = VesperaClient.clientAppName(appName);
         return this;
     }
 
@@ -349,8 +349,12 @@ public final class VesperaRequest {
         try {
             responseHeader = transport.dispatchStreaming(header, tracked, out);
         } catch (IOException e) {
-            throw new VesperaClientException(
+            VesperaClientException failure = new VesperaClientException(
                     "streamed response failed after body bytes were written", e);
+            if (tracked.readFailure != null && tracked.readFailure != e) {
+                failure.addSuppressed(tracked.readFailure);
+            }
+            throw failure;
         } catch (UnsatisfiedLinkError e) {
             releaseUnreadStream(tracked);
             throw nativeMissing(e);
@@ -359,6 +363,13 @@ public final class VesperaRequest {
             // body was touched, so the same request may be sent again.
             releaseUnreadStream(tracked);
             throw e;
+        }
+        IOException readFailure = tracked.readFailure;
+        if (readFailure != null) {
+            // The native side turned it into a request-body error and the
+            // handler answered something (400 / 500 / even 200): the response
+            // does not describe the request the caller meant to send.
+            throw new VesperaClientException("reading the request body InputStream failed", readFailure);
         }
         VesperaResponse head = decode(responseHeader);
         if (out.size() == 0) {
@@ -420,9 +431,15 @@ public final class VesperaRequest {
         }
     }
 
-    /** Remembers whether the transport touched the request body stream at all. */
+    /**
+     * Remembers whether the transport touched the request body stream at all,
+     * and the first {@link IOException} reading it threw: the native side
+     * swallows that exception (it only ends the request body with an error),
+     * so {@link #sendStreaming()} rethrows it after the dispatch.
+     */
     static final class ReadTracking extends java.io.FilterInputStream {
         volatile boolean touched;
+        volatile IOException readFailure;
 
         ReadTracking(InputStream in) {
             super(in);
@@ -431,13 +448,29 @@ public final class VesperaRequest {
         @Override
         public int read() throws IOException {
             touched = true;
-            return super.read();
+            try {
+                return super.read();
+            } catch (IOException e) {
+                recordFailure(e);
+                throw e;
+            }
         }
 
         @Override
         public int read(byte[] b, int off, int len) throws IOException {
             touched = true;
-            return in.read(b, off, len);
+            try {
+                return in.read(b, off, len);
+            } catch (IOException e) {
+                recordFailure(e);
+                throw e;
+            }
+        }
+
+        private void recordFailure(IOException e) {
+            if (readFailure == null) {
+                readFailure = e;
+            }
         }
 
         @Override

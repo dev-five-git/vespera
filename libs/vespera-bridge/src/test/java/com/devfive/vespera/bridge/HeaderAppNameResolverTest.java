@@ -95,14 +95,35 @@ class HeaderAppNameResolverTest {
     @Test
     void emptyOrBlankAllowlistKeepsTheUnrestrictedBehaviour() {
         List<String> blanks = new ArrayList<>(Arrays.asList(" ", null, ""));
-        for (HeaderAppNameResolver unrestricted : List.of(
-                new HeaderAppNameResolver("X-Vespera-App", List.of()),
-                new HeaderAppNameResolver("X-Vespera-App", blanks),
-                new HeaderAppNameResolver("X-Vespera-App", null))) {
-            assertFalse(unrestricted.isRestricted());
-            // First non-default selection logs the one-time WARN, the second does not.
-            assertEquals("admin", unrestricted.resolveAppName(selecting("admin")));
-            assertEquals("admin", unrestricted.resolveAppName(selecting("admin")));
+        ch.qos.logback.classic.Logger logger = (ch.qos.logback.classic.Logger)
+                org.slf4j.LoggerFactory.getLogger(HeaderAppNameResolver.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> warnings =
+                new ch.qos.logback.core.read.ListAppender<>();
+        warnings.start();
+        logger.addAppender(warnings);
+        try {
+            for (HeaderAppNameResolver unrestricted : List.of(
+                    new HeaderAppNameResolver("X-Vespera-App", List.of()),
+                    new HeaderAppNameResolver("X-Vespera-App", blanks),
+                    new HeaderAppNameResolver("X-Vespera-App", null))) {
+                warnings.list.clear();
+                assertFalse(unrestricted.isRestricted());
+                // The default app never warns; the first non-default selection
+                // logs the one-time WARN, the second does not.
+                unrestricted.resolveAppName(selecting("_default"));
+                assertEquals(0, warnings.list.size());
+                assertEquals("admin", unrestricted.resolveAppName(selecting("admin")));
+                assertEquals("admin", unrestricted.resolveAppName(selecting("admin")));
+                assertEquals("public", unrestricted.resolveAppName(selecting("public")));
+                assertEquals(1, warnings.list.size(), "logged once per resolver");
+                ch.qos.logback.classic.spi.ILoggingEvent warning = warnings.list.get(0);
+                assertEquals(ch.qos.logback.classic.Level.WARN, warning.getLevel());
+                assertTrue(warning.getFormattedMessage().contains("vespera.bridge.exposed-apps is not set"),
+                        warning.getFormattedMessage());
+                assertTrue(warning.getFormattedMessage().contains("'admin'"), warning.getFormattedMessage());
+            }
+        } finally {
+            logger.detachAppender(warnings);
         }
     }
 

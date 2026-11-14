@@ -5,10 +5,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.devfive.vespera.bridge.DispatchMode;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import org.springframework.http.HttpHeaders;
@@ -18,10 +20,13 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 
 @SpringBootTest(
-        classes = VesperaHttpTestApplication.class,
+        classes = {VesperaHttpTestApplication.class, DispatchRecorder.Config.class},
         webEnvironment = WebEnvironment.RANDOM_PORT,
         properties = "vespera.bridge.dispatch-mode=smart")
 class VesperaProxyControllerSmartHttpTest extends AbstractVesperaHttpIntegrationTest {
+
+    @Autowired
+    private DispatchRecorder recorder;
 
     private static final byte[] VALID_DOCUMENT = ("{"
                     + "\"documentType\":\"regulation\","
@@ -45,6 +50,7 @@ class VesperaProxyControllerSmartHttpTest extends AbstractVesperaHttpIntegration
         assertNotNull(response.getHeaders().getContentType());
         assertTrue(response.getHeaders().getContentType().isCompatibleWith(MediaType.TEXT_PLAIN));
         assertEquals(2, response.getHeaders().getContentLength());
+        assertEquals(DispatchMode.DIRECT, recorder.modeOf(response));
     }
 
     @Test
@@ -61,6 +67,7 @@ class VesperaProxyControllerSmartHttpTest extends AbstractVesperaHttpIntegration
         assertTrue(json.path("valid").asBoolean());
         assertTrue(json.path("documentId").asText().startsWith("DOC-"));
         assertEquals(0, json.path("errors").size());
+        assertEquals(DispatchMode.SYNC, recorder.modeOf(response));
     }
 
     @Test
@@ -100,6 +107,7 @@ class VesperaProxyControllerSmartHttpTest extends AbstractVesperaHttpIntegration
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertArrayEquals(payload, requireBody(response));
+        assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING, recorder.modeOf(response));
     }
 
     @Test

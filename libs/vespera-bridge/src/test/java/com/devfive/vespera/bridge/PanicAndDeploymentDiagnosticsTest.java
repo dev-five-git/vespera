@@ -88,20 +88,28 @@ class PanicAndDeploymentDiagnosticsTest {
         WireResponseWriter.applyDecodedHeader(wire(PANIC_HEADER, ""), streaming, "GET");
         assertTrue(streaming.panicked());
 
+        // ASYNC: the entity builder the controller's ASYNC flow uses.
         MockHttpServletResponse raw = new MockHttpServletResponse();
         ProxyServletResponse async = new ProxyServletResponse(raw, "X-Request-Id", "id-9");
-        ResponseEntity<byte[]> entity = WireResponseWriter.buildResponseEntityFromWire(wire, "GET", async);
+        ResponseEntity<?> entity = WireResponseWriter.buildAsyncResponseEntityFromWire(wire, "GET", async);
         assertTrue(async.panicked());
         assertEquals("id-9", entity.getHeaders().getFirst("X-Request-Id"));
-        assertEquals("panic in Rust engine", new String(entity.getBody(), StandardCharsets.UTF_8));
+        try (java.io.InputStream body = ((org.springframework.core.io.InputStreamResource) entity.getBody())
+                .getInputStream()) {
+            assertEquals("panic in Rust engine", new String(body.readAllBytes(), StandardCharsets.UTF_8));
+        }
+        // The byte[] builder (buildCappedResponseEntityFromWire) flags it too.
+        ProxyServletResponse capped = new ProxyServletResponse(raw, "X-Request-Id", "id-9");
+        WireResponseWriter.buildResponseEntityFromWire(wire, "GET", capped);
+        assertTrue(capped.panicked());
 
         ProxyServletResponse calm = new ProxyServletResponse(raw, "X-Request-Id", "id-9");
-        ResponseEntity<byte[]> rustId = WireResponseWriter.buildResponseEntityFromWire(
+        ResponseEntity<?> rustId = WireResponseWriter.buildAsyncResponseEntityFromWire(
                 wire("{\"status\":200,\"headers\":{\"x-request-id\":\"rust\"}}", "ok"), "GET", calm);
         assertFalse(calm.panicked());
         assertEquals("rust", rustId.getHeaders().getFirst("X-Request-Id"));
         assertEquals(1, rustId.getHeaders().getValuesAsList("X-Request-Id").size());
-        ResponseEntity<byte[]> noId = WireResponseWriter.buildResponseEntityFromWire(
+        ResponseEntity<?> noId = WireResponseWriter.buildAsyncResponseEntityFromWire(
                 wire("{\"status\":200,\"headers\":{}}", "ok"), "GET",
                 new ProxyServletResponse(raw, "X-Request-Id", null));
         assertEquals(null, noId.getHeaders().getFirst("X-Request-Id"));

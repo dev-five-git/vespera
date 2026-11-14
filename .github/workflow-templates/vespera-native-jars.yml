@@ -94,11 +94,14 @@ jobs:
         run: |
           mkdir -p "stage/native/$PLATFORM"
           cp "target/release/$FILE" "stage/native/$PLATFORM/$FILE"
+      # `overwrite`: "Re-run failed jobs" keeps the artifacts of the earlier
+      # attempt in the run, and a second upload under the same name fails.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: native-${{ matrix.platform }}
+          name: native-lib-${{ matrix.platform }}
           path: stage/
           if-no-files-found: error
+          overwrite: true
 
   native-jars:
     needs: build
@@ -114,9 +117,10 @@ jobs:
           java-version: "17"
       # Every artifact holds native/<platform>/<lib>; merged they form the
       # nativeJarsDir layout the plugin packages from.
+      # `native-lib-*` only: never the `native-jars` output of a previous attempt.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: native-*
+          pattern: native-lib-*
           path: ${{ env.GRADLE_ROOT_DIR }}/prebuilt
           merge-multiple: true
       # The wrapper of the Gradle build root runs; -p (absolute) selects the
@@ -130,6 +134,7 @@ jobs:
           name: native-jars
           path: ${{ env.GRADLE_PROJECT_DIR }}/build/libs/*.jar
           if-no-files-found: error
+          overwrite: true
       - name: Publish
         if: startsWith(github.ref, 'refs/tags/')
         # Supply the repository credentials your `publishing {}` block reads.

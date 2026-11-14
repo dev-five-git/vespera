@@ -301,6 +301,13 @@ final class WireResponseWriter {
                 && (isHead(method) || "GET".equalsIgnoreCase(method))
                 && (head.headers.getFirst(HttpHeaders.ETAG) != null
                         || head.headers.getFirst(HttpHeaders.LAST_MODIFIED) != null);
+        if (isHead(method) && !defer) {
+            // HEAD never carries body bytes: no body object, so no message
+            // converter can add `Content-Length: 0` when Rust declared no
+            // length (SYNC / DIRECT leave it unset too — see
+            // bufferedContentLength).
+            return ResponseEntity.status(head.status).headers(head.headers).build();
+        }
         Object body;
         if (head.bodyLen == 0) {
             // A fresh array when deferring: the validators are matched by identity.

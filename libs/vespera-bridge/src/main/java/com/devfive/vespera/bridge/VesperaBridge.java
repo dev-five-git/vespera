@@ -30,8 +30,10 @@ import java.util.function.Consumer;
  *   bytes 0..4    : u32 BE = header_json byte length N
  *   bytes 4..4+N  : UTF-8 JSON header
  *                     (request)  { "v":1, "method", "path", "query"?,
- *                                  "headers"?, "app"?, "remote_addr"?, "scheme"? }
- *                     (response) { "v":1, "status", "headers", "metadata" }
+ *                                  "headers"?, "app"?, "remote_addr"?, "scheme"?,
+ *                                  "principal"? }
+ *                     (response) { "v":1, "status", "headers", "metadata",
+ *                                  "validation_errors"? }
  *   bytes 4+N..   : raw body bytes (no encoding applied)
  * </pre>
  *
@@ -97,8 +99,8 @@ public class VesperaBridge {
      *                          {@code null} when the response is not a
      *                          422 or doesn't carry the {@code
      *                          validation_errors} wire header field.
-     *                          Each entry typically has {@code path},
-     *                          {@code code}, and {@code message} keys.
+     *                          Each entry has {@code path} and
+     *                          {@code message} keys.
      */
     public record DecodedResponse(
             int status,
@@ -211,13 +213,30 @@ public class VesperaBridge {
         if (!loaded) {
             return false;
         }
-        long millis = timeout.isNegative() ? 0 : timeout.toMillis();
+        long millis = shutdownTimeoutMillis(timeout);
         try {
             boolean stopped = shutdown0(millis);
             shutDown |= stopped;
             return stopped;
         } catch (UnsatisfiedLinkError olderNativeLibrary) {
             return false;
+        }
+    }
+
+    /**
+     * {@code timeout} in milliseconds for {@link #shutdown0}: {@code 0} when
+     * negative, {@link Long#MAX_VALUE} when it does not fit a {@code long}
+     * ({@code ChronoUnit.FOREVER.getDuration()} — "wait as long as it takes";
+     * the native side saturates the deadline).
+     */
+    static long shutdownTimeoutMillis(Duration timeout) {
+        if (timeout.isNegative()) {
+            return 0;
+        }
+        try {
+            return timeout.toMillis();
+        } catch (ArithmeticException tooLong) {
+            return Long.MAX_VALUE;
         }
     }
 

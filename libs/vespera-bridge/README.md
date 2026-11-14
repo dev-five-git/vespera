@@ -307,9 +307,11 @@ Resolve the app name however you like — URL path segment, subdomain, JWT claim
 ```java
 @Bean
 public AppNameResolver myAppResolver() {
-    // Example: app name comes from the FIRST path segment
-    //   /admin/dashboard  →  app "admin", path "/dashboard"
-    //   /public/info      →  app "public", path "/info"
+    // Example: app name comes from the FIRST path segment.  The proxy
+    // forwards the full application path (no prefix stripping), so the
+    // Rust app routes it as-is:
+    //   /admin/dashboard  →  app "admin", path "/admin/dashboard"
+    //   /public/info      →  app "public", path "/public/info"
     return request -> {
         String uri = request.getRequestURI();
         if (uri.startsWith("/admin/")) return "admin";
@@ -581,7 +583,7 @@ pub fn create_app() -> axum::Router {
 }
 ```
 
-The bridge fetches it **in-process** (a native `GET /openapi.json` dispatch, no HTTP or socket), so it is always the document of the loaded cdylib, including any `merge = [...]`. A different route goes in `vespera.bridge.springdoc.spec-path` (per app: `spec-paths.<app>`); to read it from somewhere else (e.g. the `openapi.json` written by `vespera!(openapi = ...)`, bundled as a resource), register your own `VesperaOpenApiSource` bean.
+The bridge fetches it **in-process** (a native `GET /openapi.json` dispatch, no HTTP or socket), so it is always the document of the loaded cdylib, including any `merge = [...]`. A different route goes in `vespera.bridge.springdoc.spec-path` (per app: `spec-paths.<app>`; an app name with `_`, such as `_default` or `my_app`, needs Spring Boot's bracketed map-key form `spec-paths.[my_app]`, because the binder drops the `_` from an unbracketed key); to read it from somewhere else (e.g. the `openapi.json` written by `vespera!(openapi = ...)`, bundled as a resource), register your own `VesperaOpenApiSource` bean.
 
 Two modes (`vespera.bridge.springdoc.mode`):
 
@@ -599,6 +601,7 @@ vespera:
       spec-path: /openapi.json     # the Rust spec_url, dispatched in-process
       spec-paths:
         admin: /admin/openapi.json # per-app override
+        "[my_app]": /my/openapi.json # a name with `_` needs the bracketed key
       apps: [_default, admin]      # default: _default + vespera.bridge.exposed-apps
       docs-path: /v3/api-docs/vespera # group mode: documents served at <docs-path>/<app> (trailing / ignored; "/" or a pattern fails the startup)
       display-name: vespera        # group mode: Swagger UI label (named apps: "vespera (admin)")
@@ -1261,9 +1264,9 @@ WebFlux is unaffected: it only parses multipart data when something calls `excha
 
 1. Collects all incoming headers (lowercased keys), minus hop-by-hop headers and the app-selection header.
 2. Asks the configured `DispatchModeResolver` which mode serves this request (default since 0.2.0: `SmartDispatchModeResolver` — DIRECT for small/bodyless safe requests, SYNC for small unsafe requests, BIDIRECTIONAL_STREAMING for everything else; opt out with `vespera.bridge.dispatch-mode=bidirectional-streaming`).
-3. For `SYNC` / `ASYNC` / `STREAMING` / `DIRECT` modes the body is read into `byte[]` first (bodyless requests — explicit `Content-Length: 0`, e.g. the small safe GETs the SmartDispatch resolver routes through DIRECT — skip the read and reuse a shared empty array), then encoded via `VesperaBridge.encodeRequest(...)` and dispatched through the matching native method.
+3. For `SYNC` / `ASYNC` / `STREAMING` / `DIRECT` modes the body is read into `byte[]` first (provably bodyless requests — `Content-Length: 0`, or a safe `GET` / `HEAD` / `OPTIONS` without `Content-Length` and `Transfer-Encoding` (HTTP/1.x; on HTTP/2 when the stream already ended), e.g. the small safe GETs the SmartDispatch resolver routes through DIRECT — skip the read and reuse a shared empty array), then encoded via `VesperaBridge.encodeRequest(...)` and dispatched through the matching native method.
    - **Form bodies consumed by Spring.** Spring's `FormContentFilter` (PUT/PATCH/DELETE) and any earlier `getParameter()` call (e.g. Spring Security's `CsrfFilter`, POST) drain an `application/x-www-form-urlencoded` body into request parameters before the proxy runs. When the stream comes back empty/short, the proxy rebuilds the body from `getParameterMap()` minus the query-string parameters (re-encoded in the charset it was decoded with) and forwards the matching `Content-Length`, so a Rust `Form<T>` extractor still sees every field. Form requests a resolver routes to `BIDIRECTIONAL_STREAMING` are served as `STREAMING` (request buffered, response streamed) for the same reason. `FormContentFilter` itself is left enabled for the host app. Values are grouped per name (`a=1&b=2&a=3` arrives as `a=1&a=3&b=2`).
-4. Sync/async responses are parsed straight from the wire response via the allocation-lean `WireHeaderReader` (status + headers) and returned as `ResponseEntity<byte[]>` for **every** `Content-Type` — the body is sliced once from the wire tail; the `Content-Type` header is carried verbatim, so no text/binary branching is needed.  Streaming and DIRECT modes write status/headers and body straight to the servlet response.
+4. Buffered responses are parsed straight from the wire response via the allocation-lean `WireHeaderReader` (status + headers); the `Content-Type` header is carried verbatim for **every** content type, so no text/binary branching is needed. `SYNC`, `STREAMING` and `DIRECT` write status/headers and body straight to the servlet response. `ASYNC` returns a `DeferredResult<ResponseEntity<?>>` whose body is a zero-copy `InputStreamResource` view of the wire tail (no body object for `HEAD` or a no-body status), written byte for byte by `VesperaAsyncResponseBodyAdvice`.
    - **Multipart bodies are never parsed by Spring** for proxied requests (see [Multipart uploads](#multipart-uploads)); one that something else consumed first is answered `500` instead of being forwarded empty.
 5. `BIDIRECTIONAL_STREAMING` hands Rust a gated wrapper of the servlet `InputStream`. A handler that returns without draining the request body can leave the Rust request producer parked in `read()` (it is detached after a bounded join); once the native call returns, the gate makes every further read return `-1` without touching the servlet stream, and if a read was still in flight the proxy sets `Connection: close` (when the response is not committed yet; otherwise best effort — the container sees that read finish on its own) so a keep-alive connection is never reused at an unknown stream position.
 

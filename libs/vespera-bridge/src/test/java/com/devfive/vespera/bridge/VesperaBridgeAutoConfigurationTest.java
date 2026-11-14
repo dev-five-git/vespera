@@ -424,6 +424,8 @@ class VesperaBridgeAutoConfigurationTest {
 
     @Test
     void nativePropertiesBindAndAreForwardedBeforeTheController() {
+        org.junit.jupiter.api.Assumptions.assumeFalse(VesperaBridge.isInitialized(),
+                "pending values exist only before the library loads");
         try {
             runner.withPropertyValues(
                             "vespera.bridge.native.worker-threads=3",
@@ -435,8 +437,15 @@ class VesperaBridgeAutoConfigurationTest {
                             "vespera.bridge.native.async-max-in-flight=128",
                             "vespera.bridge.native.max-request-producers=32")
                     .run(ctx -> {
-                        assertEquals(32L, pendingValue(VesperaNativeConfig.MAX_REQUEST_PRODUCERS),
-                                "forwarded to the native knob");
+                        // Every knob is forwarded (pending until the library loads).
+                        assertEquals(3L, pendingValue(VesperaNativeConfig.RUNTIME_WORKER_THREADS));
+                        assertEquals(64L, pendingValue(VesperaNativeConfig.RUNTIME_MAX_BLOCKING_THREADS));
+                        assertEquals(1048576L, pendingValue(VesperaNativeConfig.MAX_REQUEST_BYTES));
+                        assertEquals(0L, pendingValue(VesperaNativeConfig.MAX_STREAMING_REQUEST_BYTES));
+                        assertEquals(2097152L, pendingValue(VesperaNativeConfig.MAX_BUFFERED_RESPONSE_BYTES));
+                        assertEquals(30_000L, pendingValue(VesperaNativeConfig.DISPATCH_TIMEOUT_MILLIS));
+                        assertEquals(128L, pendingValue(VesperaNativeConfig.ASYNC_MAX_IN_FLIGHT));
+                        assertEquals(32L, pendingValue(VesperaNativeConfig.MAX_REQUEST_PRODUCERS));
                         assertTrue(ctx.containsBean("vesperaBridgeNativeSettings"));
                         VesperaBridgeProperties.Native n =
                                 ctx.getBean(VesperaBridgeProperties.class).getNative();

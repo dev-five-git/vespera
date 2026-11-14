@@ -87,6 +87,14 @@ final class DirectModeDispatcher {
                             WireResponseWriter.applyDecodedHeader(headerBytes, response, method)),
                     bodyOut));
             return;
+        } catch (VesperaDirectBufferPool.PooledFallbackRejectedException rejected) {
+            // oversize-policy=throw refused the heap fallback before anything
+            // was dispatched (virtual thread / request beyond the pool cap):
+            // no handler ran and no response overflowed, so stream this one
+            // request (any method — it runs once) without remembering the
+            // route as an overflowing one.
+            streamResponse(response, appName, method, path, query, headers, body);
+            return;
         } catch (VesperaBridge.BufferTooSmallException overflow) {
             // The first dispatch already ran; its oversized result was discarded.
             if (retry) {

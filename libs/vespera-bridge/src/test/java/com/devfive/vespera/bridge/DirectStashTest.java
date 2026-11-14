@@ -2,7 +2,6 @@ package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -193,7 +192,6 @@ class DirectStashTest {
         handle.putLong(0, TOKEN).put(8, (byte) 0xFF);
         assertEquals(TOKEN, DirectStash.token(handle));
         assertEquals(0xFF, DirectStash.flags(handle));
-        assertSame(DirectStash.NATIVE, DirectStash.NATIVE);
         assertThrows(IllegalArgumentException.class,
                 () -> DirectStash.dispatchResumable(ByteBuffer.allocate(1), 1, handle));
         assertThrows(UnsatisfiedLinkError.class,

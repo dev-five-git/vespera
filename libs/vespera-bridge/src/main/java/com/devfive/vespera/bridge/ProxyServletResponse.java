@@ -42,6 +42,16 @@ final class ProxyServletResponse extends HttpServletResponseWrapper {
     private boolean panicked;
     /** Headers the proxy wrote, as alternating name / value entries. Lazily created. */
     private List<String> written;
+    /**
+     * Values of filter-set {@code Access-Control-*} headers a Rust value
+     * replaced ({@code cors=rust}), restored by {@link #resetProxyOutput()}.
+     * Lazily created.
+     */
+    private Map<String, List<String>> replacedCors;
+    /** Guards {@link #asyncClosed} against the ASYNC executor's header writes. */
+    private final Object asyncLock = new Object();
+    /** Set once the ASYNC request ended (timeout, error, completion). */
+    private boolean asyncClosed;
 
     /**
      * @param requestIdHeader header carrying the request id, or {@code null} when disabled
@@ -86,7 +96,10 @@ final class ProxyServletResponse extends HttpServletResponseWrapper {
             case DROP -> {
                 return;
             }
-            case REPLACE -> super.setHeader(name, value);
+            case REPLACE -> {
+                rememberReplaced(name);
+                super.setHeader(name, value);
+            }
             default -> super.addHeader(name, value);
         }
         remember(name, value);
@@ -95,11 +108,27 @@ final class ProxyServletResponse extends HttpServletResponseWrapper {
     @Override
     public void setHeader(String name, String value) {
         claimsRequestId(name);
-        if (corsAction(name) == CorsAction.DROP) {
+        CorsAction action = corsAction(name);
+        if (action == CorsAction.DROP) {
             return;
+        }
+        if (action == CorsAction.REPLACE) {
+            rememberReplaced(name);
         }
         super.setHeader(name, value);
         remember(name, value);
+    }
+
+    /** Keep the current (filter-set) values of {@code name} before a Rust value replaces them. */
+    private void rememberReplaced(String name) {
+        Collection<String> current = super.getHeaders(name);
+        if (current == null || current.isEmpty()) {
+            return;
+        }
+        if (replacedCors == null) {
+            replacedCors = new LinkedHashMap<>();
+        }
+        replacedCors.putIfAbsent(name, new ArrayList<>(current));
     }
 
     private enum CorsAction { ADD, REPLACE, DROP }
@@ -156,33 +185,54 @@ final class ProxyServletResponse extends HttpServletResponseWrapper {
      * already carries are left out; with {@code RUST}, they are set on the
      * response directly (replacing Spring's) and left out of the entity.
      * Uses only {@link HttpHeaders} methods present in Spring 6.2 and 7.
+     *
+     * <p>Runs on the ASYNC response executor: the servlet response is only
+     * read and written while the async request is still open
+     * ({@link #closeAsync()} not called yet), never after a timeout / error /
+     * completion handed it back to the container (which may recycle it).
      */
     HttpHeaders dedupeCorsHeaders(HttpHeaders entityHeaders) {
         if (cors == null) {
             return entityHeaders;
         }
-        boolean[] clash = {false};
-        entityHeaders.forEach((name, values) -> clash[0] |= isCorsClash(name));
-        if (!clash[0]) {
-            return entityHeaders;
-        }
-        HttpHeaders kept = new HttpHeaders();
-        entityHeaders.forEach((name, values) -> {
-            if (!isCorsClash(name)) {
-                kept.addAll(name, values);
-            } else if (cors == CorsHandling.RUST) {
-                boolean first = true;
-                for (String value : values) {
-                    if (first) {
-                        super.setHeader(name, value);
-                        first = false;
-                    } else {
-                        super.addHeader(name, value);
+        synchronized (asyncLock) {
+            if (asyncClosed) {
+                return entityHeaders;
+            }
+            boolean[] clash = {false};
+            entityHeaders.forEach((name, values) -> clash[0] |= isCorsClash(name));
+            if (!clash[0]) {
+                return entityHeaders;
+            }
+            HttpHeaders kept = new HttpHeaders();
+            entityHeaders.forEach((name, values) -> {
+                if (!isCorsClash(name)) {
+                    kept.addAll(name, values);
+                } else if (cors == CorsHandling.RUST) {
+                    boolean first = true;
+                    for (String value : values) {
+                        if (first) {
+                            super.setHeader(name, value);
+                            first = false;
+                        } else {
+                            super.addHeader(name, value);
+                        }
                     }
                 }
-            }
-        });
-        return kept;
+            });
+            return kept;
+        }
+    }
+
+    /**
+     * The ASYNC request ended (timeout, error or completion): from now on the
+     * executor-side {@link #dedupeCorsHeaders} leaves the servlet response
+     * alone.  Waits for a de-duplication already in progress.
+     */
+    void closeAsync() {
+        synchronized (asyncLock) {
+            asyncClosed = true;
+        }
     }
 
     private boolean isCorsClash(String name) {
@@ -254,8 +304,26 @@ final class ProxyServletResponse extends HttpServletResponseWrapper {
                 foreign.put(name, values);
             }
         }
+        if (replacedCors != null) {
+            // A filter-set CORS header a Rust value replaced (cors=rust): its
+            // Rust value was dropped above, put the filter's back.
+            replacedCors.forEach((name, values) -> {
+                if (!containsName(foreign, name)) {
+                    foreign.put(name, values);
+                }
+            });
+        }
         reset();
         foreign.forEach((name, values) -> values.forEach(value -> super.addHeader(name, value)));
+    }
+
+    private static boolean containsName(Map<String, List<String>> headers, String name) {
+        for (String key : headers.keySet()) {
+            if (key.equalsIgnoreCase(name)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** A reset (proxy-written error) drops every header; keep echoing the request id. */
@@ -263,6 +331,7 @@ final class ProxyServletResponse extends HttpServletResponseWrapper {
     public void reset() {
         super.reset();
         written = null;
+        replacedCors = null;
         upstreamRequestId = false;
         if (defaultApplied) {
             applyDefaultRequestId();

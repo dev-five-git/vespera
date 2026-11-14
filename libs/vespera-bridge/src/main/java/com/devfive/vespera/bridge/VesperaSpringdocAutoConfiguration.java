@@ -17,6 +17,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.ImportRuntimeHints;
 
 /**
  * springdoc-openapi integration: the Rust routes show up in the application's
@@ -48,6 +49,7 @@ import org.springframework.context.annotation.Configuration;
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @ConditionalOnProperty(prefix = "springdoc.api-docs", name = "enabled", matchIfMissing = true)
 @EnableConfigurationProperties(VesperaBridgeProperties.class)
+@ImportRuntimeHints(VesperaSpringdocRuntimeHints.class)
 public class VesperaSpringdocAutoConfiguration {
 
     public VesperaSpringdocAutoConfiguration() {

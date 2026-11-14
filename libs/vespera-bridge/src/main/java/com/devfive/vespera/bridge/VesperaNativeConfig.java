@@ -113,9 +113,15 @@ final class VesperaNativeConfig {
             apply(resolve(), hook);
         }
 
-        /** Whether a programmatic value is pending or the system property is set. */
+        /**
+         * Whether a value was configured explicitly: a programmatic value is
+         * pending, the native side already confirmed applying one (a
+         * {@code configure*} call after {@link VesperaBridge#init(String)}),
+         * or the system property is set.
+         */
         boolean explicitlyConfigured() {
-            return pending != null || System.getProperty(property) != null;
+            return pending != null || applied != Long.MIN_VALUE
+                    || System.getProperty(property) != null;
         }
 
         /**
@@ -234,6 +240,18 @@ final class VesperaNativeConfig {
             }
             return false;
         }
+    }
+
+    /** The pending {@code {chunkBytes, channelCapacity}} (tests), {@code null} when none. */
+    static int[] pendingStreamingForTest() {
+        Integer chunk = pendingChunkBytes;
+        Integer capacity = pendingChannelCapacity;
+        return chunk == null || capacity == null ? null : new int[] {chunk, capacity};
+    }
+
+    static void clearPendingStreamingForTest() {
+        pendingChunkBytes = null;
+        pendingChannelCapacity = null;
     }
 
     static int pendingOrProperty(Integer pendingValue, String propertyName) {

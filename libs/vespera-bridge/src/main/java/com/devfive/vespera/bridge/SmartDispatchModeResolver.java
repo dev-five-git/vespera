@@ -3,8 +3,8 @@ package com.devfive.vespera.bridge;
 import jakarta.servlet.http.HttpServletRequest;
 
 /**
- * Opt-in {@link DispatchModeResolver} that picks the cheapest safe
- * JNI path per request (measured on a small {@code GET /health}
+ * The autoconfigured default {@link DispatchModeResolver} (see below): picks
+ * the cheapest safe JNI path per request (measured on a small {@code GET /health}
  * round-trip: DIRECT 2.2&nbsp;µs / SYNC 3.2&nbsp;µs / bidirectional
  * streaming 24.1&nbsp;µs):
  *

@@ -2,6 +2,7 @@ package kr.go.demo;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import com.devfive.vespera.bridge.DispatchMode;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayInputStream;
@@ -12,6 +13,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -32,9 +34,16 @@ import org.springframework.web.multipart.MultipartFile;
  * parsing and limits.
  */
 @SpringBootTest(
-        classes = {VesperaHttpTestApplication.class, MultipartUploadHttpTest.JavaUpload.class},
+        classes = {
+            VesperaHttpTestApplication.class,
+            MultipartUploadHttpTest.JavaUpload.class,
+            DispatchRecorder.Config.class
+        },
         webEnvironment = WebEnvironment.RANDOM_PORT)
 class MultipartUploadHttpTest extends AbstractVesperaHttpIntegrationTest {
+
+    @Autowired
+    private DispatchRecorder recorder;
 
     private static final String BOUNDARY = "----vesperaE2E9x8y7z";
 
@@ -61,17 +70,17 @@ class MultipartUploadHttpTest extends AbstractVesperaHttpIntegrationTest {
 
     @Test
     void smallUploadReachesRust() throws Exception {
-        assertRustSawUpload(patternedBytes(10_000), false);
+        assertRustSawUpload(patternedBytes(10_000), false, DispatchMode.SYNC);
     }
 
     @Test
     void uploadOverSpringsDefaultMaxFileSizeReachesRust() throws Exception {
-        assertRustSawUpload(patternedBytes(1_500_000), false);
+        assertRustSawUpload(patternedBytes(1_500_000), false, DispatchMode.BIDIRECTIONAL_STREAMING);
     }
 
     @Test
     void chunkedUploadReachesRust() throws Exception {
-        assertRustSawUpload(patternedBytes(300_000), true);
+        assertRustSawUpload(patternedBytes(300_000), true, DispatchMode.BIDIRECTIONAL_STREAMING);
     }
 
     @Test
@@ -83,9 +92,11 @@ class MultipartUploadHttpTest extends AbstractVesperaHttpIntegrationTest {
         assertEquals(413, tooLarge.statusCode(), tooLarge.body());
     }
 
-    private void assertRustSawUpload(byte[] file, boolean chunked) throws Exception {
+    private void assertRustSawUpload(byte[] file, boolean chunked, DispatchMode expectedMode) throws Exception {
         HttpResponse<String> response = post("/upload", multipart(file), chunked);
         assertEquals(200, response.statusCode(), response.body());
+        assertEquals(expectedMode, recorder.eventFor(
+                response.headers().firstValue("X-Request-Id").orElse(null)).mode());
         JsonNode parts = objectMapper.readTree(response.body()).path("parts");
         assertEquals(2, parts.size(), response.body());
         assertEquals("title", parts.get(0).path("name").asText());

@@ -59,6 +59,26 @@ class VesperaSpringdocSupportTest {
     }
 
     @Test
+    void specPathKeysWithUnderscoresSurviveSpringBinding() {
+        org.springframework.boot.context.properties.source.MapConfigurationPropertySource source =
+                new org.springframework.boot.context.properties.source.MapConfigurationPropertySource(Map.of(
+                        "x.spec-paths._default", "/root.json",
+                        "x.spec-paths.my_app", "/my.json",
+                        "x.spec-paths.[other_app]", "/other.json",
+                        "x.spec-paths.Admin", "/admin.json"));
+        VesperaSpringdocProperties props = new org.springframework.boot.context.properties.bind.Binder(source)
+                .bind("x", VesperaSpringdocProperties.class).get();
+        // Unbracketed keys lose `_` (and case) in binding; still matched.
+        assertEquals("/root.json", props.specPathFor("_default"));
+        assertEquals("/my.json", props.specPathFor("my_app"));
+        assertEquals("/admin.json", props.specPathFor("Admin"));
+        // The bracketed form keeps the name verbatim.
+        assertEquals("/other.json", props.specPathFor("other_app"));
+        assertEquals("/openapi.json", props.specPathFor("unknown_app"));
+        assertEquals("myapp-2", VesperaSpringdocProperties.boundMapKey("My_App-2"));
+    }
+
+    @Test
     void specPathsDocsPathAndDisplayNamesAreNormalized() {
         VesperaSpringdocProperties props = new VesperaSpringdocProperties();
         assertEquals("/openapi.json", props.specPathFor("_default"));

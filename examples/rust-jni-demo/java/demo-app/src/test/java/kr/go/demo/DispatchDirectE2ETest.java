@@ -91,8 +91,14 @@ class DispatchDirectE2ETest {
     @Test
     @Order(2)
     void mediumBodyTriggersOutBufferGrowth() throws Exception {
-        // 100 KiB response > 64 KiB initial out buffer → overflow →
-        // grow → re-dispatch (retryOnOverflow=true; /echo is safe).
+        // 100 KiB response > 64 KiB initial out buffer → overflow → the
+        // finished response is stashed natively and fetched into a grown out
+        // buffer (the handler is not re-run). Start from fresh 64 KiB buffers
+        // and prove the out buffer really grew: the view shares its capacity.
+        VesperaBridge.clearCurrentThreadBuffers();
+        ByteBuffer view = VesperaBridge.dispatchDirectPooled(echoWire(randomBody(100 * 1024, 2)), true);
+        assertTrue(view.capacity() > 64 * 1024,
+                "out buffer grew past the 64 KiB initial capacity: " + view.capacity());
         assertDirectMatchesBytes(100 * 1024, 2);
     }
 

@@ -57,7 +57,10 @@ public class VesperaSpringdocProperties {
 
     /**
      * Per-app overrides of {@link #specPath} (app name to path), for apps
-     * whose {@code vespera!} uses another {@code spec_url}.
+     * whose {@code vespera!} uses another {@code spec_url}.  Spring Boot
+     * strips {@code _} and other special characters from an unbracketed map
+     * key, so write {@code spec-paths.[my_app]} / {@code spec-paths.[_default]}
+     * (the unbracketed form is still matched as a fallback).
      */
     private Map<String, String> specPaths = new LinkedHashMap<>();
 
@@ -168,6 +171,13 @@ public class VesperaSpringdocProperties {
     /** The Rust spec route of {@code app}: its {@link #specPaths} entry or {@link #specPath}. */
     String specPathFor(String app) {
         String path = specPaths.get(app);
+        if (path == null && app != null) {
+            // Spring Boot's map binding drops characters other than [a-z0-9-.]
+            // from an unbracketed key and lower-cases it (`spec-paths._default`
+            // binds as "default", `spec-paths.my_app` as "myapp"); the
+            // bracketed form (`spec-paths.[my_app]`) keeps the name verbatim.
+            path = specPaths.get(boundMapKey(app));
+        }
         if (path == null || path.isBlank()) {
             path = specPath;
         }
@@ -176,6 +186,18 @@ public class VesperaSpringdocProperties {
         }
         path = path.trim();
         return path.startsWith("/") ? path : "/" + path;
+    }
+
+    /** {@code app} as Spring Boot binds an unbracketed map key: lower case, only {@code [a-z0-9-]}. */
+    static String boundMapKey(String app) {
+        StringBuilder key = new StringBuilder(app.length());
+        for (int i = 0; i < app.length(); i++) {
+            char c = Character.toLowerCase(app.charAt(i));
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+                key.append(c);
+            }
+        }
+        return key.toString();
     }
 
     /** {@link #docsPath} without a trailing slash, always starting with {@code /}. */
