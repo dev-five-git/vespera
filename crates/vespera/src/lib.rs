@@ -110,7 +110,19 @@ pub mod docs {
 pub use vespera_core::openapi::OpenApi;
 
 // Re-export macros from vespera_macro
-pub use vespera_macro::{Schema, cron, export_app, route, schema, schema_type, vespera};
+pub use vespera_macro::{Schema, export_app, route, schema, schema_type, vespera};
+
+/// `#[vespera::cron("...")]` — a scheduled job started by `vespera!`.
+#[cfg(feature = "cron")]
+#[cfg_attr(docsrs, doc(cfg(feature = "cron")))]
+pub use vespera_macro::cron;
+
+// Without the `cron` feature `#[vespera::cron]` still resolves, but to a
+// stand-in attribute that expands to a `compile_error!` naming the feature
+// (instead of `vespera!` later emitting an unresolved `vespera::cron::...`).
+#[cfg(not(feature = "cron"))]
+#[doc(hidden)]
+pub use vespera_macro::cron_feature_disabled as cron;
 
 /// `#[derive(Multipart)]` — typed `multipart/form-data` extraction for
 /// `multipart::TypedMultipart` (also emitted by `schema_type!(..., multipart)`).
