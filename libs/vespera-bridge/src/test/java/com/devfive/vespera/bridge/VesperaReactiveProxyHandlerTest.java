@@ -29,6 +29,7 @@ import org.springframework.mock.web.server.MockServerWebExchange;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.reactive.CorsWebFilter;
@@ -64,6 +65,18 @@ class VesperaReactiveProxyHandlerTest {
         @GetMapping("/java/x")
         String javaCors() {
             return "java";
+        }
+
+        @CrossOrigin(origins = "https://java.example")
+        @PostMapping(value = "/java/orders", consumes = "application/json")
+        String orders() {
+            return "orders";
+        }
+
+        @CrossOrigin(origins = "https://java.example")
+        @PostMapping(value = "/java/keyed", headers = "X-Api=1")
+        String keyed() {
+            return "keyed";
         }
     }
 
@@ -298,6 +311,20 @@ class VesperaReactiveProxyHandlerTest {
                 .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "PUT"));
         assertEquals(1, transport.requests.size());
         assertEquals("OPTIONS", transport.lastHeader().get("method").asText());
+    }
+
+    @Test
+    void preflightForAJavaEndpointWithConsumesOrHeadersConditionsIsAnsweredBySpring() {
+        WebTestClient client = client(handler());
+        for (String path : List.of("/java/orders", "/java/keyed")) {
+            Result allowed = call(client.options().uri(URI.create("http://localhost" + path))
+                    .header(HttpHeaders.ORIGIN, "https://java.example")
+                    .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "content-type, x-api"));
+            assertEquals(200, allowed.status(), path);
+            assertEquals("https://java.example", allowed.header(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN), path);
+        }
+        assertTrue(transport.requests.isEmpty(), "never reached Rust");
     }
 
     @Test
