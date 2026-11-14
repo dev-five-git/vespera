@@ -1,6 +1,7 @@
 package kr.go.demo;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.devfive.vespera.bridge.VesperaBridge;
@@ -9,7 +10,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -17,39 +20,50 @@ import org.junit.jupiter.api.Test;
  * A {@code CompletableFuture.complete} that throws must not leave a pending
  * Java exception on the Tokio worker that later completes another future.
  *
- * <p>The runtime is pinned to ONE worker so the poisoned and the healthy
- * completion share a thread. The worker count is fixed for the process on the
- * first dispatch, so this class is tagged {@code isolated-jvm} and runs in a
- * JVM of its own ({@code isolatedJvmTest}, one JVM per class).
+ * <p>Both completions must run on the same Tokio worker thread, so this class
+ * is tagged {@code isolated-jvm}: the {@code isolatedJvmTest} JVM runs the
+ * shared runtime with ONE worker ({@code vespera.runtime.workerThreads=1},
+ * fixed when the runtime is built), and the test asserts the two completions
+ * really shared a thread.
  */
 @Tag("isolated-jvm")
+@Order(3)
 class AsyncDispatchExceptionHygieneTest {
     private static final Map<String, String> HEADERS = Map.of("accept", "application/json");
     private static final int TIMEOUT_SECONDS = 10;
 
     @BeforeAll
     static void setUp() {
-        assertTrue(VesperaBridge.configureRuntime(1, 0), "one worker, applied before the first dispatch");
         VesperaBridge.init("rust_jni_demo");
     }
 
     @Test
     void throwingFutureCompleteDoesNotPoisonNextAsyncCompletion() throws Exception {
-        poisonAsyncCompletion();
+        Thread poisoned = poisonAsyncCompletion();
 
-        CompletableFuture<byte[]> healthy = new CompletableFuture<>();
+        AtomicReference<Thread> completedOn = new AtomicReference<>();
+        CompletableFuture<byte[]> healthy = new CompletableFuture<>() {
+            @Override
+            public boolean complete(byte[] value) {
+                completedOn.set(Thread.currentThread());
+                return super.complete(value);
+            }
+        };
         VesperaBridge.dispatchAsync(healthy, healthRequest());
 
         byte[] wireResponse = healthy.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
         assertEquals(200, VesperaBridge.decodeResponse(wireResponse).status());
+        assertSame(poisoned, completedOn.get(), "both completions ran on the one worker thread");
     }
 
-    private static void poisonAsyncCompletion() throws InterruptedException {
+    private static Thread poisonAsyncCompletion() throws InterruptedException {
         CountDownLatch completeCalled = new CountDownLatch(1);
         AtomicInteger completeCalls = new AtomicInteger();
+        AtomicReference<Thread> completedOn = new AtomicReference<>();
         CompletableFuture<byte[]> throwingFuture = new CompletableFuture<>() {
             @Override
             public boolean complete(byte[] value) {
+                completedOn.set(Thread.currentThread());
                 completeCalls.incrementAndGet();
                 completeCalled.countDown();
                 throw new RuntimeException("intentional complete() failure");
@@ -62,6 +76,7 @@ class AsyncDispatchExceptionHygieneTest {
                 completeCalled.await(TIMEOUT_SECONDS, TimeUnit.SECONDS),
                 "poison future complete() must be invoked");
         assertEquals(1, completeCalls.get(), "poison future complete() call count");
+        return completedOn.get();
     }
 
     private static byte[] healthRequest() {
