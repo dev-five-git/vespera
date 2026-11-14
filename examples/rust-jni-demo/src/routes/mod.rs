@@ -5,3 +5,4 @@ pub mod form;
 pub mod headers;
 pub mod health;
 pub mod stream;
+pub mod upload;

@@ -152,6 +152,20 @@ public class VesperaBridgeProperties {
     private boolean forwardPrincipal = true;
 
     /**
+     * Servlet proxy only: whether the {@code multipartResolver} bean (Spring
+     * Boot's {@code StandardServletMultipartResolver} or your own) is wrapped
+     * in a {@link VesperaProxyMultipartResolver}, so {@code DispatcherServlet}
+     * does not parse multipart requests the Vespera proxy handles — their raw
+     * body (and boundary) reach the Rust {@code Multipart} extractor
+     * byte-for-byte, and {@code spring.servlet.multipart.max-file-size} /
+     * {@code max-request-size} do not apply to them.  Spring controllers keep
+     * normal multipart handling.  Default {@code true}; {@code false} restores
+     * Spring's parsing for every request (proxied multipart requests are then
+     * answered {@code 500}, their body having been consumed).
+     */
+    private boolean multipartPassthrough = true;
+
+    /**
      * Maximum request-body bytes the Spring proxy may buffer for
      * SYNC/ASYNC/DIRECT/STREAMING dispatch modes, and the WebFlux proxy, which
      * always aggregates the request body ({@code 413} when exceeded).  The
@@ -310,6 +324,14 @@ public class VesperaBridgeProperties {
 
     public void setForwardPrincipal(boolean forwardPrincipal) {
         this.forwardPrincipal = forwardPrincipal;
+    }
+
+    public boolean isMultipartPassthrough() {
+        return multipartPassthrough;
+    }
+
+    public void setMultipartPassthrough(boolean multipartPassthrough) {
+        this.multipartPassthrough = multipartPassthrough;
     }
 
     public long getMaxBufferedRequestBytes() {

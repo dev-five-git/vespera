@@ -356,9 +356,10 @@ public class VesperaProxyController {
         // @RequestBody, which we cannot use because it would consume
         // the InputStream and leave the bidirectional path empty).
         if (effectiveMode == DispatchMode.BIDIRECTIONAL_STREAMING) {
+            InputStream requestBody = streamingRequestBody(request, shape);
             exchange.reachedRust = true;
             dispatchBidirectional(request, response, appName, method, path, query,
-                    forwardedHeaders(request, null, exchange));
+                    forwardedHeaders(request, null, exchange), requestBody);
             return null;
         }
         // Every other mode materialises the REQUEST body (STREAMING only
@@ -540,7 +541,22 @@ public class VesperaProxyController {
         }
         // Spring's FormContentFilter / an earlier getParameter() call may have
         // consumed a form-urlencoded body into request parameters already.
-        return FormBodySupport.recoverConsumedBody(request, body, contentLength);
+        body = FormBodySupport.recoverConsumedBody(request, body, contentLength);
+        // A multipart body parsed into parts cannot be rebuilt: fail loudly.
+        MultipartBodySupport.rejectIfConsumed(request, shape, body);
+        return body;
+    }
+
+    /**
+     * The servlet request stream handed to {@code BIDIRECTIONAL_STREAMING},
+     * after checking that a multipart body was not already consumed (see
+     * {@link MultipartBodySupport}).
+     */
+    static InputStream streamingRequestBody(HttpServletRequest request, RequestShape shape)
+            throws IOException {
+        InputStream in = request.getInputStream();
+        MultipartBodySupport.rejectIfConsumed(request, shape, in);
+        return in;
     }
 
     static byte[] readBufferedBody(InputStream in, long contentLength, long cap)
@@ -782,7 +798,7 @@ public class VesperaProxyController {
     private void dispatchBidirectional(
             HttpServletRequest request, HttpServletResponse response,
             String appName, String method, String path, String query,
-            VesperaBridge.HeaderSource headers) throws IOException {
+            VesperaBridge.HeaderSource headers, InputStream servletBody) throws IOException {
         byte[] wireHeader = VesperaBridge.encodeRequestHeader(
                 appName, method, path, query, headers);
         WireResponseWriter.BodyPermittingOutputStream bodyOut =
@@ -790,7 +806,7 @@ public class VesperaProxyController {
         // The Rust request producer can be detached while still parked in
         // read() (bounded join); the gate keeps it off the servlet stream
         // once the dispatch returned.
-        GatedRequestInputStream requestBody = new GatedRequestInputStream(request.getInputStream());
+        GatedRequestInputStream requestBody = new GatedRequestInputStream(servletBody);
         DirectModeDispatcher.HeaderFirstStream stream = () -> VesperaBridge.dispatchFullStreamingWithHeader(
                 wireHeader,
                 headerBytes -> bodyOut.applyPermitsBody(
