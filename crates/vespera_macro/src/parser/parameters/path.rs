@@ -237,6 +237,22 @@ mod tests {
     use super::parse_path_extractor;
     use crate::parser::parameters::parse_function_parameter;
 
+    /// Lifetime / const arguments are skipped when picking the element type.
+    #[rstest::rstest]
+    #[case::map_with_lifetime("HashMap<'a, String, u64>", Some("u64"))]
+    #[case::vec_with_lifetime("Vec<'a, u32>", Some("u32"))]
+    #[case::map_without_value("HashMap<'a, String>", None)]
+    #[case::plain("u64", None)]
+    #[case::other_generic("Option<u64>", None)]
+    fn collection_element_skips_non_type_arguments(
+        #[case] ty: &str,
+        #[case] expected: Option<&str>,
+    ) {
+        let ty: syn::Type = syn::parse_str(ty).unwrap();
+        let element = super::path_collection_element(&ty).map(|t| quote::quote!(#t).to_string());
+        assert_eq!(element.as_deref(), expected);
+    }
+
     #[test]
     fn path_param_by_name_match() {
         let func: syn::ItemFn = syn::parse_str("fn test(user_id: i32) {}").unwrap();
