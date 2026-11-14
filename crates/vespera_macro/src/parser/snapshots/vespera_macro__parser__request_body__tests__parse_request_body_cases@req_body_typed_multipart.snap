@@ -14,9 +14,7 @@ Some(
                     Inline(
                         Schema {
                             ref_path: None,
-                            schema_type: Some(
-                                Object,
-                            ),
+                            schema_type: None,
                             format: None,
                             title: None,
                             description: None,

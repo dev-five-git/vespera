@@ -141,6 +141,46 @@ fn string_with_format(format: &str) -> SchemaRef {
     schema_with_format(Schema::string(), format)
 }
 
+/// Inline unsigned integer schema: OpenAPI `format`, `minimum: 0` and, when
+/// given, the width's `maximum`.
+fn unsigned_integer(format: &str, maximum: Option<f64>) -> SchemaRef {
+    SchemaRef::Inline(Box::new(Schema {
+        format: Some(format.to_string()),
+        minimum: Some(0.0),
+        maximum,
+        ..Schema::integer()
+    }))
+}
+
+/// Whether `path` is qualified with a crate whose types the builtin table
+/// maps (`chrono::NaiveDate`, `sea_orm::prelude::Decimal`, `std::net::..`),
+/// so a same-named user schema cannot be meant.
+fn is_external_crate_path(path: &syn::Path) -> bool {
+    path.segments.len() > 1
+        && path.segments.first().is_some_and(|root| {
+            matches!(
+                root.ident.to_string().as_str(),
+                "std"
+                    | "core"
+                    | "alloc"
+                    | "chrono"
+                    | "time"
+                    | "sea_orm"
+                    | "rust_decimal"
+                    | "bigdecimal"
+                    | "uuid"
+                    | "url"
+                    | "http"
+                    | "axum"
+                    | "axum_extra"
+                    | "headers"
+                    | "serde_json"
+                    | "tempfile"
+                    | "vespera"
+            )
+        })
+}
+
 /// Check if a type is a primitive Rust type that maps directly to a JSON Schema type.
 pub fn is_primitive_type(ty: &Type) -> bool {
     match ty {
@@ -203,10 +243,10 @@ fn parse_type_impl(
         Type::Path(type_path) => {
             let path = &type_path.path;
             // Get the last segment as the type name (handles paths like crate::TestStruct).
-            // A segment-less path falls back to the default inline object schema instead
-            // of panicking the proc macro.
+            // A segment-less path falls back to any value (`{}`) instead of
+            // panicking the proc macro.
             let Some(segment) = path.segments.last() else {
-                return SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)));
+                return SchemaRef::Inline(Box::default());
             };
             let ident_str = segment.ident.to_string();
 
@@ -347,7 +387,14 @@ fn parse_type_impl(
                 // `serde_json::Value` accepts any JSON value → `{}`.
                 return SchemaRef::Inline(Box::default());
             }
+            // A user `#[derive(Schema)]` type named like a builtin (`Date`,
+            // `Decimal`, `StatusCode`, `Ipv4Addr`, ...) keeps its `$ref`,
+            // unless the path is qualified with the external crate
+            // (`chrono::DateTime<Utc>`, `rust_decimal::Decimal`).
+            let user_shadowed =
+                known_schemas.contains(ident_str.as_str()) && !is_external_crate_path(path);
             let primitive_result: Option<SchemaRef> = match ident_str.as_str() {
+                _ if user_shadowed => None,
                 // Signed integers: use OpenAPI format registry
                 // https://spec.openapis.org/registry/format/index.html
                 // (std::num::NonZeroI* share the base wire type.)
@@ -355,11 +402,13 @@ fn parse_type_impl(
                 "i16" | "NonZeroI16" => Some(integer_with_format("int16")),
                 "i32" | "NonZeroI32" => Some(integer_with_format("int32")),
                 "i64" | "NonZeroI64" => Some(integer_with_format("int64")),
-                // Unsigned integers: use OpenAPI format registry
-                "u8" => Some(integer_with_format("uint8")),
-                "u16" => Some(integer_with_format("uint16")),
-                "u32" => Some(integer_with_format("uint32")),
-                "u64" => Some(integer_with_format("uint64")),
+                // Unsigned integers: use OpenAPI format registry, plus the
+                // value range (`u64::MAX` is not exactly representable as a
+                // JSON-schema double, so `u64` carries `minimum` only).
+                "u8" => Some(unsigned_integer("uint8", Some(u8::MAX.into()))),
+                "u16" => Some(unsigned_integer("uint16", Some(u16::MAX.into()))),
+                "u32" => Some(unsigned_integer("uint32", Some(u32::MAX.into()))),
+                "u64" => Some(unsigned_integer("uint64", None)),
                 // i128, isize, StatusCode: no standard format in the registry
                 "i128" | "isize" | "StatusCode" | "NonZeroI128" | "NonZeroIsize" => {
                     Some(SchemaRef::Inline(Box::new(Schema::integer())))
@@ -378,44 +427,51 @@ fn parse_type_impl(
                 "char" => Some(string_with_format("char")),
                 "Uuid" => Some(string_with_format("uuid")),
                 "String" | "str" => Some(SchemaRef::Inline(Box::new(Schema::string()))),
-                // Date-time types from chrono and time crates
-                "DateTime"
-                | "NaiveDateTime"
-                | "DateTimeWithTimeZone"
-                | "DateTimeUtc"
-                | "DateTimeLocal"
-                | "OffsetDateTime"
-                | "PrimitiveDateTime" => Some(string_with_format("date-time")),
+                // Date-time types from chrono and time crates. RFC 3339
+                // `date-time` / `time` REQUIRE a UTC offset, so only the
+                // offset-carrying types use those formats: `DateTime<Tz>`
+                // (chrono), sea-orm's `DateTimeWithTimeZone` / `DateTimeUtc` /
+                // `DateTimeLocal` and `OffsetDateTime` (time).
+                "DateTime" if !segment.arguments.is_none() => Some(string_with_format("date-time")),
+                "DateTimeWithTimeZone" | "DateTimeUtc" | "DateTimeLocal" | "OffsetDateTime" => {
+                    Some(string_with_format("date-time"))
+                }
+                // Naive (offset-less) date-times and times: chrono
+                // `NaiveDateTime` / `NaiveTime`, time `PrimitiveDateTime` /
+                // `Time`, and sea-orm's argument-less `DateTime` / `Time`
+                // aliases of the chrono naive types. No registered format
+                // fits (`date-time` / `time` would reject the offset-less
+                // value) and the lexical form differs between crates
+                // (`T` vs space separator), so they are plain strings.
+                "DateTime" | "NaiveDateTime" | "PrimitiveDateTime" | "NaiveTime" | "Time" => {
+                    Some(SchemaRef::Inline(Box::new(Schema::string())))
+                }
                 "NaiveDate" | "Date" => Some(string_with_format("date")),
-                "NaiveTime" | "Time" => Some(string_with_format("time")),
                 "Duration" => Some(duration_schema(path)),
                 // File upload types (vespera::multipart / tempfile)
                 // FieldData<NamedTempFile> → string with binary format
                 "FieldData" | "NamedTempFile" => Some(string_with_format("binary")),
                 // std::net / std::path / url: serde's human-readable impls
                 // write each as a JSON string (`"127.0.0.1"`, `"[::1]:80"`,
-                // `"/tmp/x"`, `"https://a.b/"`). A same-named `Schema` type of
-                // the user's own wins over the std/url mapping.
+                // `"/tmp/x"`, `"https://a.b/"`). (A same-named `Schema` type
+                // of the user's own wins, see `user_shadowed`.)
                 "Ipv4Addr" | "Ipv6Addr" | "Url" | "IpAddr" | "SocketAddr" | "SocketAddrV4"
-                | "SocketAddrV6" | "PathBuf"
-                    if !known_schemas.contains(ident_str.as_str()) =>
-                {
-                    Some(string_like_std_schema(&ident_str))
-                }
+                | "SocketAddrV6" | "PathBuf" => Some(string_like_std_schema(&ident_str)),
                 // std::num::NonZeroU* can never be 0, so they carry `minimum: 1`
                 // (signed NonZeroI* share the base integer arms above).
-                "NonZeroU8" => Some(non_zero_unsigned(Some("uint8"))),
-                "NonZeroU16" => Some(non_zero_unsigned(Some("uint16"))),
-                "NonZeroU32" => Some(non_zero_unsigned(Some("uint32"))),
-                "NonZeroU64" => Some(non_zero_unsigned(Some("uint64"))),
-                "NonZeroU128" | "NonZeroUsize" => Some(non_zero_unsigned(None)),
+                "NonZeroU8" => Some(non_zero_unsigned(Some("uint8"), Some(u8::MAX.into()))),
+                "NonZeroU16" => Some(non_zero_unsigned(Some("uint16"), Some(u16::MAX.into()))),
+                "NonZeroU32" => Some(non_zero_unsigned(Some("uint32"), Some(u32::MAX.into()))),
+                "NonZeroU64" => Some(non_zero_unsigned(Some("uint64"), None)),
+                "NonZeroU128" | "NonZeroUsize" => Some(non_zero_unsigned(None, None)),
                 // Standard library types that should not be referenced
                 // Note: HashMap and BTreeMap are handled above in generic types
                 "Vec" | "VecDeque" | "LinkedList" | "HashSet" | "BTreeSet" | "Option" | "Box"
                 | "Arc" | "Rc" | "Cow" | "NonZero" | "Result" | "Json" | "Path" | "Query"
                 | "Header" => {
-                    // These are not schema types, return object schema
-                    Some(SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object))))
+                    // These are not schema types (and without arguments
+                    // carry no payload type): any value.
+                    Some(SchemaRef::Inline(Box::default()))
                 }
                 _ => None,
             };
@@ -570,9 +626,11 @@ fn parse_type_impl(
                 let component = request_view::input_component(&component).unwrap_or(component);
                 SchemaRef::Ref(Reference::schema(&component))
             } else {
-                // For unknown custom types, return object schema instead of reference
-                // This prevents creating invalid references to non-existent schemas
-                SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)))
+                // An unknown custom type (or an unresolved generic parameter
+                // `T`) has no known wire shape: any value (`{}`), never a
+                // `$ref` to a non-existent component, and not `object` — the
+                // type may well serialize as a string or number.
+                SchemaRef::Inline(Box::default())
             }
         }
         Type::Reference(type_ref) => {
@@ -617,7 +675,9 @@ fn parse_type_impl(
         Type::Group(group) => {
             parse_type_to_schema_ref(&group.elem, known_schemas, struct_definitions)
         }
-        _ => SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object))),
+        // fn pointers, `impl Trait`, `dyn Trait`, `!`, macros: no JSON
+        // shape of their own → any value.
+        _ => SchemaRef::Inline(Box::default()),
     }
 }
 
@@ -753,11 +813,13 @@ fn string_like_std_schema(ident: &str) -> SchemaRef {
     }
 }
 
-/// Integer schema (with optional OpenAPI format) constrained to `minimum: 1`.
-fn non_zero_unsigned(format: Option<&str>) -> SchemaRef {
+/// Integer schema (with optional OpenAPI format) constrained to `minimum: 1`
+/// and, when given, the width's `maximum`.
+fn non_zero_unsigned(format: Option<&str>, maximum: Option<f64>) -> SchemaRef {
     SchemaRef::Inline(Box::new(Schema {
         format: format.map(str::to_string),
         minimum: Some(1.0),
+        maximum,
         ..Schema::integer()
     }))
 }

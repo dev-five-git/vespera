@@ -157,9 +157,10 @@ fn parse_struct_body(
                 struct_definitions,
             )
         },
+        // `struct Marker;` → serde writes (and reads) a unit struct as `null`.
         Fields::Unit => Schema {
             description: struct_description,
-            ..Schema::object_empty()
+            ..Schema::new(SchemaType::Null)
         },
     }
 }

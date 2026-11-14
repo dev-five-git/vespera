@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/parser/schema/struct_schema/tests.rs
-assertion_line: 863
 expression: "serde_json::to_string_pretty(&schema).unwrap()"
 ---
 {
@@ -34,7 +33,9 @@ expression: "serde_json::to_string_pretty(&schema).unwrap()"
             },
             "value": {
               "type": "integer",
-              "format": "uint8"
+              "format": "uint8",
+              "minimum": 0,
+              "maximum": 255
             }
           }
         }
