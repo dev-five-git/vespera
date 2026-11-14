@@ -124,7 +124,7 @@ fn range_emit_uses_field_numeric_type() {
     };
     let out = emit_to_string(s);
     assert!(out.contains("range :: apply"));
-    assert!(out.contains("as u32"));
+    assert!(out.contains("0u32") && out.contains("150u32"), "{out}");
 }
 
 #[test]
@@ -536,4 +536,105 @@ fn option_with_lifetime_only_arg_falls_through_find_map() {
     };
     let out = emit_to_string(s);
     assert!(out.contains("length :: chars :: apply"));
+}
+
+// ── audit fixes: portable usize bounds, checked numeric bounds, serde paths ─
+
+/// Pretty-print the emitted impl (or `compile_error!`s) for a snapshot.
+fn emit_pretty(input: &DeriveInput) -> String {
+    let constraints = constraints_for(input);
+    let tokens = emit_garde_validate(input, &constraints);
+    let file: syn::File = syn::parse2(tokens).expect("emitted tokens parse as items");
+    prettyplease::unparse(&file)
+}
+
+/// A one-sided length bound must not bake the HOST's `usize::MAX` into the
+/// generated code (`18446744073709551615usize` overflows on 32-bit targets).
+#[rstest::rstest]
+#[case::chars_min_only("garde_length_min_only", parse_quote! {
+    struct U { #[schema(min_length = 3)] pub name: String }
+})]
+#[case::items_min_only("garde_items_min_only", parse_quote! {
+    struct U { #[schema(min_items = 1)] pub tags: Vec<String> }
+})]
+fn one_sided_length_bound_uses_portable_usize_max(#[case] name: &str, #[case] input: DeriveInput) {
+    let out = emit_pretty(&input);
+    assert!(!out.contains("18446744073709551615"), "{out}");
+    insta::assert_snapshot!(name, out);
+}
+
+/// Integer bounds are range-checked against the field type and fractional
+/// bounds rounded inward (`minimum` up, `maximum` down) instead of `as`-cast.
+#[rstest::rstest]
+#[case::negative_min_on_unsigned("garde_bound_negative_min_u32", parse_quote! {
+    struct U { #[schema(minimum = -1)] pub n: u32 }
+})]
+#[case::max_overflows_u8("garde_bound_max_overflows_u8", parse_quote! {
+    struct U { #[schema(maximum = 300)] pub n: u8 }
+})]
+#[case::min_underflows_i8("garde_bound_min_underflows_i8", parse_quote! {
+    struct U { #[schema(minimum = -129)] pub n: i8 }
+})]
+#[case::fractional_rounds_inward("garde_bound_fractional_int", parse_quote! {
+    struct U { #[schema(minimum = 1.5, maximum = 9.5)] pub n: i32 }
+})]
+#[case::type_extremes_fit("garde_bound_type_extremes", parse_quote! {
+    struct U { #[schema(minimum = -128, maximum = 127)] pub n: Option<i8> }
+})]
+#[case::float_field_unchanged("garde_bound_float_field", parse_quote! {
+    struct U { #[schema(minimum = 0.5, maximum = 1.5)] pub n: f32 }
+})]
+#[case::u128_overflow("garde_bound_u128_overflow", parse_quote! {
+    struct U { #[schema(maximum = 1e40)] pub n: u128 }
+})]
+#[case::negative_fraction_rounds_to_zero("garde_bound_negative_zero", parse_quote! {
+    struct U { #[schema(minimum = -0.5)] pub n: u32 }
+})]
+#[case::u64_large_fits("garde_bound_u64_large", parse_quote! {
+    struct U { #[schema(maximum = 10000000000000000000)] pub n: u64 }
+})]
+fn numeric_bounds_are_checked_against_the_field_type(
+    #[case] name: &str,
+    #[case] input: DeriveInput,
+) {
+    insta::assert_snapshot!(name, emit_pretty(&input));
+}
+
+/// The 422 error path is the name the client SENT (serde's deserialize
+/// side), not the Rust identifier.
+#[rstest::rstest]
+#[case::rename_all("garde_path_rename_all", parse_quote! {
+    #[serde(rename_all = "camelCase")]
+    struct U { #[schema(min_length = 1)] pub user_name: String }
+})]
+#[case::raw_ident("garde_path_raw_ident", parse_quote! {
+    struct U { #[schema(min_length = 1, pattern = "^a")] pub r#type: String }
+})]
+#[case::field_rename_wins("garde_path_field_rename", parse_quote! {
+    #[serde(rename_all = "camelCase")]
+    struct U {
+        #[serde(rename(serialize = "out", deserialize = "in"))]
+        #[schema(min_length = 1)]
+        pub user_name: String,
+    }
+})]
+fn error_path_uses_the_serde_deserialize_name(#[case] name: &str, #[case] input: DeriveInput) {
+    insta::assert_snapshot!(name, emit_pretty(&input));
+}
+
+/// Every integer kind maps to its own range (pointer-sized kinds use the
+/// widest range; non-integers have none).
+#[rstest::rstest]
+#[case("i8", Some((i128::from(i8::MIN), 127)))]
+#[case("i16", Some((i128::from(i16::MIN), 32_767)))]
+#[case("i32", Some((i128::from(i32::MIN), 2_147_483_647)))]
+#[case("i64", Some((i128::from(i64::MIN), 9_223_372_036_854_775_807)))]
+#[case("isize", Some((i128::from(i64::MIN), 9_223_372_036_854_775_807)))]
+#[case("i128", Some((i128::MIN, 170_141_183_460_469_231_731_687_303_715_884_105_727)))]
+#[case("u8", Some((0, 255)))]
+#[case("u16", Some((0, 65_535)))]
+#[case("u32", Some((0, 4_294_967_295)))]
+#[case("f64", None)]
+fn integer_range_covers_every_kind(#[case] kind: &str, #[case] expected: Option<(i128, u128)>) {
+    assert_eq!(integer_range(kind), expected);
 }
