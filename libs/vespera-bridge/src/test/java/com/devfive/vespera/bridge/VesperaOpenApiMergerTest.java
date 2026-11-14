@@ -153,6 +153,61 @@ class VesperaOpenApiMergerTest {
     }
 
     @Test
+    void aTextuallyEqualComponentReferringToARenamedOneIsRenamedToo() {
+        // Java: Item (a string) and Page -> Item. Rust: a different Item (an
+        // object) and a Page whose JSON equals Java's Page before the rename.
+        OpenAPI doc = new OpenAPI().components(new Components()
+                .addSchemas("Item", new StringSchema())
+                .addSchemas("Page", new Schema<>().$ref("#/components/schemas/Item")));
+        String spec = """
+                {
+                  "openapi": "3.1.0",
+                  "info": {"title": "Rust", "version": "1.0.0"},
+                  "paths": {"/page": {"get": {"responses": {"200": {"description": "ok",
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Page"}}}}}}}},
+                  "components": {"schemas": {
+                    "Page": {"$ref": "#/components/schemas/Item"},
+                    "Item": {"type": "object", "properties": {"id": {"type": "integer"}}}
+                  }}
+                }
+                """;
+        merger(app -> bytes(spec), List.of("_default")).customise(doc);
+
+        Map<String, Schema> schemas = doc.getComponents().getSchemas();
+        assertEquals("#/components/schemas/Item", schemas.get("Page").get$ref(), "Java's Page untouched");
+        assertNotNull(schemas.get("vespera_Item"));
+        assertEquals("#/components/schemas/vespera_Item", schemas.get("vespera_Page").get$ref(),
+                "Rust's Page keeps pointing at Rust's Item");
+        assertEquals("#/components/schemas/vespera_Page", doc.getPaths().get("/page").getGet()
+                .getResponses().get("200").getContent().get("application/json").getSchema().get$ref());
+    }
+
+    @Test
+    void publicRustOperationsDoNotInheritJavasTopLevelSecurity() {
+        String spec = """
+                {
+                  "openapi": "3.1.0",
+                  "info": {"title": "Rust", "version": "1.0.0"},
+                  "paths": {
+                    "/open": {"get": {"responses": {"200": {"description": "ok"}}}},
+                    "/locked": {"get": {"security": [{"key": []}], "responses": {"200": {"description": "ok"}}}}
+                  }
+                }
+                """;
+        OpenAPI doc = springdocDocument().addSecurityItem(
+                new io.swagger.v3.oas.models.security.SecurityRequirement().addList("javaJwt"));
+        merger(app -> bytes(spec), List.of("_default")).customise(doc);
+
+        assertTrue(doc.getPaths().get("/open").getGet().getSecurity().isEmpty(), "explicitly public");
+        assertEquals(List.of("key"), List.copyOf(doc.getPaths().get("/locked").getGet()
+                .getSecurity().get(0).keySet()));
+        // Without a Java top-level requirement nothing is added.
+        OpenAPI plain = springdocDocument();
+        merger(app -> bytes(spec), List.of("_default")).customise(plain);
+        assertNull(plain.getPaths().get("/open").getGet().getSecurity());
+    }
+
+    @Test
     void securitySchemeRenamesComeFromTheSchemeRefsOnly() {
         assertEquals(Map.of("a/b", "vespera_a/b"), VesperaOpenApiMerger.securitySchemeRenames(Map.of(
                 "#/components/securitySchemes/a~1b", "#/components/securitySchemes/vespera_a~1b",

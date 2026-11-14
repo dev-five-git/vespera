@@ -131,7 +131,7 @@ class VesperaStreamingExecutorTest {
     }
 
     @Test
-    void cancellingAnUnstartedReservationFreesTheSlotOnce() {
+    void cancellingAnUnstartedReservationFreesTheSlotOnce() throws Exception {
         try (VesperaStreamingExecutor executor = new VesperaStreamingExecutor(1, 0)) {
             VesperaStreamingExecutor.Reservation slot = executor.tryReserve();
             assertNotNull(slot);
@@ -139,10 +139,11 @@ class VesperaStreamingExecutorTest {
             slot.cancel();
             slot.cancel();
             assertEquals(0, executor.inUse());
-            AtomicInteger runs = new AtomicInteger();
-            // A cancelled reservation never runs its task.
-            slot.executor().execute(runs::incrementAndGet);
-            assertEquals(0, runs.get());
+            CountDownLatch ran = new CountDownLatch(1);
+            // A cancelled reservation never runs its task (on any thread):
+            // give a wrongly submitted task time to run before asserting.
+            slot.executor().execute(ran::countDown);
+            assertFalse(ran.await(300, TimeUnit.MILLISECONDS), "a cancelled reservation ran its task");
             assertEquals(0, executor.inUse());
         }
     }

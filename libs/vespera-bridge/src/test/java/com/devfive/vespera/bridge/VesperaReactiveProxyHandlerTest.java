@@ -717,8 +717,13 @@ class VesperaReactiveProxyHandlerTest {
     @Test
     void failuresBeforeTheResponseBecomePlainText500() {
         transport.response = new byte[] {0, 0, 0, 99, 1}; // header length beyond the buffer
-        Result result = call(client(handler()).get().uri("/broken"));
+        // A concrete non-streaming Accept: the buffered ASYNC decode path (a
+        // bodyless GET without one takes the implicit-streaming path).
+        Result result = call(client(handler()).get().uri("/broken")
+                .header(HttpHeaders.ACCEPT, "application/json"));
         assertEquals(500, result.status());
         assertEquals(ProxyErrors.GENERIC_FAILURE, result.body());
+        assertEquals(1, transport.requests.size());
+        assertEquals(1, transport.futures.size(), "the buffered ASYNC path, not a stream");
     }
 }

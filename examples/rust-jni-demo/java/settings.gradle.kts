@@ -6,9 +6,10 @@ pluginManagement {
     }
     // demo-app applies `kr.devfive.vespera-bridge` WITHOUT a version so it
     // always resolves the plugin built from this repository — CI publishes it
-    // to mavenLocal right before this build, and the plugin is not on the
-    // Gradle Plugin Portal, so a hard-coded pin becomes unresolvable the moment
-    // the in-repo version is bumped.  `plugins { id(..) version ".." }` cannot
+    // to mavenLocal right before this build.  The Gradle Plugin Portal only has
+    // released versions, so a hard-coded pin would either resolve a stale
+    // release or become unresolvable the moment the in-repo version is bumped
+    // ahead of the next release.  `plugins { id(..) version ".." }` cannot
     // take an expression, hence the resolution strategy.  Real consumers pin a
     // released version instead.
     resolutionStrategy {

@@ -464,6 +464,20 @@ class NativeImageMetadataTest {
     }
 
     @Test
+    void springdocAutoConfigurationImportsTheDocsControllerHints() {
+        assertEquals(List.of(VesperaSpringdocRuntimeHints.class),
+                importedHints(VesperaSpringdocAutoConfiguration.class));
+    }
+
+    @Test
+    void springdocHintsCoverTheReflectivelyMappedDocsMethod() {
+        RuntimeHints hints = new RuntimeHints();
+        new VesperaSpringdocRuntimeHints().registerHints(hints, getClass().getClassLoader());
+        // VesperaOpenApiDocsMapping registers it via getMethod("openApi", String.class).
+        assertInvokable(hints, VesperaOpenApiDocsController.class.getName(), "openApi");
+    }
+
+    @Test
     void runtimeHintsCoverProxyMethodLookup() {
         RuntimeHints hints = new RuntimeHints();
         new VesperaBridgeRuntimeHints().registerHints(hints, getClass().getClassLoader());

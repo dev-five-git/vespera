@@ -121,12 +121,17 @@ class SmartDispatchModeResolverTest {
 
     @Test
     void resolveModeDoesNotMutateRequestAttributesOnSafeHotPath() {
-        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
+        // The only attribute either entry point stores is the cached RequestShape
+        // (computed once per request); no virtual-thread flag or other per-request
+        // attribute — the controller passes the virtual-thread flag in.
+        java.util.List<String> shapeOnly = java.util.List.of(RequestShape.class.getName());
+        MockHttpServletRequest controllerPath = new MockHttpServletRequest("GET", "/x");
+        assertEquals(DispatchMode.DIRECT, resolver.resolveMode(controllerPath, false));
+        assertEquals(shapeOnly, java.util.Collections.list(controllerPath.getAttributeNames()));
 
-        assertEquals(DispatchMode.DIRECT, resolver.resolveMode(req, false));
-
-        assertNull(req.getAttribute(
-                "com.devfive.vespera.bridge.SmartDispatchModeResolver.currentThreadIsVirtual"));
+        MockHttpServletRequest publicPath = new MockHttpServletRequest("GET", "/x");
+        assertEquals(DispatchMode.DIRECT, resolver.resolveMode(publicPath));
+        assertEquals(shapeOnly, java.util.Collections.list(publicPath.getAttributeNames()));
     }
 
     @Test

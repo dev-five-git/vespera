@@ -207,7 +207,79 @@ class ProxyControllerBodyHeaderTest {
         assertEquals("a=1; b=2", previous.get("cookie"));
     }
 
-    private static Map<String, String> previousLinkedHashMapCollect(MockHttpServletRequest req) {
+    /**
+     * {@code MockHttpServletRequest} folds {@code Accept}/{@code accept} into one
+     * name, so the test above never reaches the merge branch. A container that
+     * reports each spelling separately does: the case variants must merge into
+     * one lower-cased entry, both before and after the eight-name inline window.
+     */
+    @Test
+    void caseVariantHeaderNamesAreMergedIntoOneEntry() {
+        for (int filler : new int[] {0, 12}) {
+            CaseSensitiveHeadersRequest req = new CaseSensitiveHeadersRequest();
+            req.add("Connection", "X-Hop");
+            req.add("X-Hop", "drop-me");
+            for (int i = 0; i < filler; i++) {
+                req.add("X-Filler-" + i, "v" + i);
+            }
+            req.add("Accept", "text/html");
+            req.add("Cookie", "a=1");
+            req.add("accept", "application/json");
+            req.add("cookie", "b=2");
+            req.add("COOKIE", "c=3");
+
+            Map<String, String> previous = previousLinkedHashMapCollect(req);
+            assertEquals("text/html, application/json", previous.get("accept"));
+            assertEquals("a=1; b=2; c=3", previous.get("cookie"));
+
+            Map<String, String> collected = new LinkedHashMap<>();
+            HeaderPolicy.forEachRequestHeader(req, (name, value) -> {
+                assertNull(collected.put(name, value), "one entry per lower-cased name: " + name);
+            });
+            assertEquals(previous, collected);
+            assertEquals(new java.util.ArrayList<>(previous.keySet()),
+                    new java.util.ArrayList<>(collected.keySet()), "first-seen order");
+            assertFalse(collected.containsKey("x-hop"));
+            assertFalse(collected.containsKey("connection"));
+
+            byte[] expected = VesperaBridge.encodeRequest(null, "GET", "/x", null, previous, null);
+            byte[] actual = VesperaBridge.encodeRequest(null, "GET", "/x", null,
+                    (VesperaBridge.HeaderSource) sink -> HeaderPolicy.forEachRequestHeader(req, sink),
+                    null);
+            assertArrayEquals(expected, actual);
+        }
+    }
+
+    /** Reports header names with their original case, one entry per spelling. */
+    private static final class CaseSensitiveHeadersRequest extends MockHttpServletRequest {
+        private final Map<String, java.util.List<String>> exact = new LinkedHashMap<>();
+
+        CaseSensitiveHeadersRequest() {
+            super("GET", "/x");
+        }
+
+        void add(String name, String value) {
+            exact.computeIfAbsent(name, n -> new java.util.ArrayList<>()).add(value);
+        }
+
+        @Override
+        public java.util.Enumeration<String> getHeaderNames() {
+            return java.util.Collections.enumeration(exact.keySet());
+        }
+
+        @Override
+        public java.util.Enumeration<String> getHeaders(String name) {
+            return java.util.Collections.enumeration(exact.getOrDefault(name, java.util.List.of()));
+        }
+
+        @Override
+        public String getHeader(String name) {
+            java.util.List<String> values = exact.get(name);
+            return values == null ? null : values.get(0);
+        }
+    }
+
+    private static Map<String, String> previousLinkedHashMapCollect(jakarta.servlet.http.HttpServletRequest req) {
         Map<String, String> merged = new LinkedHashMap<>(32);
         java.util.Enumeration<String> names = req.getHeaderNames();
         java.util.Set<String> connectionTokens = null;

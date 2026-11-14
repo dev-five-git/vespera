@@ -16,9 +16,11 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * The ASYNC response entity is a plain {@code byte[]}: Spring must serve it
- * exactly like SYNC / DIRECT — no {@code 206} for a {@code Range} request, no
- * {@code Accept-Ranges}, and the Rust {@code Content-Type} untouched.
+ * The buffered response entities — the ASYNC one (a zero-copy
+ * {@code InputStreamResource}, {@code /streamed}) and the {@code byte[]} one
+ * ({@code /file}) — must be served exactly like SYNC / DIRECT: no {@code 206}
+ * for a {@code Range} request, no {@code Accept-Ranges}, and the Rust
+ * {@code Content-Type} untouched.
  */
 class AsyncResponseEntityRangeTest {
 

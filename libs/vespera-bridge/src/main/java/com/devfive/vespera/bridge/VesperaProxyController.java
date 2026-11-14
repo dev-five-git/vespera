@@ -306,7 +306,11 @@ public class VesperaProxyController {
         final String appName = resolveAppName(request, exchange);
         final Boolean currentThreadIsVirtual;
         final DispatchMode mode;
-        if (modeResolver instanceof SmartDispatchModeResolver smartResolver) {
+        // Exactly the built-in class: a subclass may override
+        // resolveMode(HttpServletRequest), which the package-private fast
+        // path below would bypass.
+        if (modeResolver.getClass() == SmartDispatchModeResolver.class) {
+            SmartDispatchModeResolver smartResolver = (SmartDispatchModeResolver) modeResolver;
             boolean virtualThread = VesperaDirectBufferPool.currentThreadIsVirtual();
             currentThreadIsVirtual = Boolean.valueOf(virtualThread);
             mode = smartResolver.resolveMode(request, virtualThread);
@@ -633,9 +637,10 @@ public class VesperaProxyController {
      * drops both the body-sized {@code Arrays.copyOfRange} and the
      * {@code ResponseEntity<byte[]>} object that the prior
      * {@code buildResponseEntityFromWire} path allocated per response.
-     * Mirrors {@link #dispatchDirectMode}; the async path still uses
-     * {@code buildResponseEntityFromWire} (Spring async completion), but
-     * returns a zero-copy {@code Resource} view over the wire body.
+     * Mirrors {@link #dispatchDirectMode}; the async path returns a
+     * {@code ResponseEntity} instead ({@code buildAsyncResponseEntityFromWire},
+     * Spring async completion) whose body is a zero-copy
+     * {@code InputStreamResource} view over the wire body.
      */
     static void dispatchSync(
             HttpServletResponse response,
@@ -715,16 +720,24 @@ public class VesperaProxyController {
         final long cap = javaResponseCap(maxBufferedResponseBytes);
         CompletableFuture<byte[]> nativeResult = VesperaBridge.dispatch(wireReq);
         // An async timeout answers the ProxyErrors 503 (newAsyncResult).
+        // Every end of the async request first closes the response to the
+        // executor-side entity build (it may still be running, and must not
+        // touch a response the container is completing or has recycled).
         result.onTimeout(() -> {
+            response.closeAsync();
             nativeResult.cancel(false);
             exchange.complete(HttpStatus.SERVICE_UNAVAILABLE.value(), response.panicked());
         });
         result.onError(failure -> {
+            response.closeAsync();
             nativeResult.cancel(false);
             exchange.complete(500, response.panicked());
         });
         // Any other end of the async request (a no-op once the result is in).
-        result.onCompletion(() -> nativeResult.cancel(false));
+        result.onCompletion(() -> {
+            response.closeAsync();
+            nativeResult.cancel(false);
+        });
         nativeResult
                 .thenApplyAsync(
                         wireResp -> ProxyExchange.withMdc(requestId,
@@ -905,6 +918,11 @@ public class VesperaProxyController {
      * (e.g. DELETE → 204 then 404), so the controller never double-executes
      * a handler whose response could change.
      */
+    /** Whether a recorded DIRECT overflow makes this route stream up front (tests). */
+    boolean avoidsDirect(String appName, String method, String path, String query) {
+        return direct.shouldAvoidDirect(appName, method, path, query);
+    }
+
     void dispatchDirectMode(
             HttpServletResponse response,
             String appName, String method, String path, String query,

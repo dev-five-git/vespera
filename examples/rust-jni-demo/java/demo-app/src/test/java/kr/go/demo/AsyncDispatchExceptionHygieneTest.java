@@ -10,15 +10,26 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+/**
+ * A {@code CompletableFuture.complete} that throws must not leave a pending
+ * Java exception on the Tokio worker that later completes another future.
+ *
+ * <p>The runtime is pinned to ONE worker so the poisoned and the healthy
+ * completion share a thread. The worker count is fixed for the process on the
+ * first dispatch, so this class is tagged {@code isolated-jvm} and runs in a
+ * JVM of its own ({@code isolatedJvmTest}, one JVM per class).
+ */
+@Tag("isolated-jvm")
 class AsyncDispatchExceptionHygieneTest {
     private static final Map<String, String> HEADERS = Map.of("accept", "application/json");
     private static final int TIMEOUT_SECONDS = 10;
 
     @BeforeAll
     static void setUp() {
-        System.setProperty("vespera.runtime.workerThreads", "1");
+        assertTrue(VesperaBridge.configureRuntime(1, 0), "one worker, applied before the first dispatch");
         VesperaBridge.init("rust_jni_demo");
     }
 

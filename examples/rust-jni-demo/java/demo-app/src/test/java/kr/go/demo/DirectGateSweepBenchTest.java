@@ -23,12 +23,12 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
  * the request and the response size.  Gated behind {@code -Dvespera.bench=true}.
  *
  * <p>The crossover is coupled to {@code vespera.direct.maxRetainedBytes} (the
- * pooled direct-buffer retention cap, default 256&nbsp;KiB): a response larger
- * than the cap makes every DIRECT dispatch shrink the buffer, overflow, grow,
- * and <strong>re-run the handler</strong>.  Re-run with
- * {@code -Dvespera.direct.maxRetainedBytes=2097152} (and a matching
- * {@code -Dvespera.direct.maxBufferBytes}) to see DIRECT without that penalty —
- * which is the configuration a raised gate would need.
+ * pooled direct-buffer retention cap, default 2&nbsp;MiB): a response larger
+ * than the cap makes the next DIRECT dispatch start from a shrunk buffer,
+ * overflow, and fetch the stashed response into a grown buffer (an extra
+ * native copy; the handler still runs once).  Lower it, e.g.
+ * {@code -Dvespera.direct.maxRetainedBytes=262144}, to see that penalty inside
+ * the swept sizes.
  */
 @EnabledIfSystemProperty(named = "vespera.bench", matches = "true")
 class DirectGateSweepBenchTest {
@@ -96,7 +96,7 @@ class DirectGateSweepBenchTest {
 
     @Test
     void directGateSweep() throws IOException {
-        long retain = Long.getLong("vespera.direct.maxRetainedBytes", 256 * 1024L);
+        long retain = Long.getLong("vespera.direct.maxRetainedBytes", 2 * 1024 * 1024L);
         System.out.printf("VESPERA_BENCH gate_sweep config retain_bytes=%d%n", retain);
 
         for (int kib : SIZES_KIB) {

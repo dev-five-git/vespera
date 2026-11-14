@@ -438,10 +438,11 @@ final class VesperaWireCodec {
      * Internal: serialise the wire request header JSON
      * <strong>byte-direct</strong> into the per-thread {@link #HEADER_BUF}
      * — no Jackson generator (and its per-call object + scratch buffer)
-     * is allocated.  Emits the same shape and field order the prior
-     * {@code JsonGenerator} path did ({@code v}, {@code method},
-     * {@code path}, optional {@code query}/{@code headers}/{@code app}),
-     * with the same omission rules.  String values are escaped + UTF-8
+     * is allocated.  Emits {@code v}, {@code method}, {@code path} (with the
+     * query string appended as {@code ?query} — no separate {@code query}
+     * field is written), then the optional {@code headers} and {@code app}
+     * fields (the {@link HeaderSource} overload adds {@code remote_addr},
+     * {@code scheme} and {@code principal} before {@code app}).  String values are escaped + UTF-8
      * encoded by {@link #writeJsonString} using exactly the escape set
      * Jackson's {@code UTF8JsonGenerator} produced (the quote, the
      * backslash, and the C0 controls; {@code /} and non-ASCII pass

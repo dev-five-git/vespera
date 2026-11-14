@@ -7,7 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.devfive.vespera.bridge.DispatchEvent;
 import com.devfive.vespera.bridge.DispatchObserver;
-import com.devfive.vespera.bridge.VesperaBridge;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -28,8 +27,9 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 
 /**
- * Operability end to end: {@code vespera.bridge.library-name} auto-init (or a
- * no-op when another test class already loaded the library), client address
+ * Operability end to end: {@code vespera.bridge.library-name} (a no-op here,
+ * another test class already loaded the library; the real auto-init is
+ * {@link LibraryNameAutoInitIsolatedTest}), client address
  * and scheme forwarding, request ids, and {@link DispatchObserver} events for
  * normal and panicking dispatches.
  */
@@ -97,11 +97,6 @@ class OperabilityHttpTest {
 
     private static String requestIdOf(ResponseEntity<byte[]> response) {
         return response.getHeaders().getFirst("X-Request-Id");
-    }
-
-    @Test
-    void libraryNameLeavesTheLibraryInitialised() {
-        assertTrue(VesperaBridge.isInitialized());
     }
 
     @Test

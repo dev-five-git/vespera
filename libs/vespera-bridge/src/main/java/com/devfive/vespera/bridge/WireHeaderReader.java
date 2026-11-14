@@ -22,8 +22,12 @@ import java.util.function.BiConsumer;
  * <p>Not a general JSON validator: it assumes the well-formed,
  * fixed-schema header produced by the Rust {@code serde_json} side. Only
  * the quote / backslash / control escapes and raw UTF-8 that
- * {@code serde_json} emits are handled. Unknown fields ({@code v},
- * {@code metadata}, {@code validation_errors}, …) are skipped.
+ * {@code serde_json} emits are handled. {@link #apply} reads only
+ * {@code status}, {@code headers} and — for a {@code PanicFlagSink} — the
+ * {@code "panicked"} entry of {@code metadata}; every other field
+ * ({@code v}, {@code validation_errors}, …) is skipped there. The full
+ * decode ({@code metadata} and {@code validation_errors} included) is the
+ * {@code DecodedResponse} path below.
  */
 final class WireHeaderReader {
 

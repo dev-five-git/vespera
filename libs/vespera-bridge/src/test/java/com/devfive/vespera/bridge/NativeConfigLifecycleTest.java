@@ -21,6 +21,35 @@ class NativeConfigLifecycleTest {
     }
 
     @Test
+    void aValueAppliedAfterInitCountsAsExplicitlyConfigured() {
+        VesperaNativeConfig.Knob knob = new VesperaNativeConfig.Knob(
+                "test.cap", "vespera.test.round6.cap", -1, value -> true);
+        assertFalse(knob.explicitlyConfigured());
+        // init(...) already loaded the library: applied directly, never pending.
+        assertTrue(knob.set(512L * 1024 * 1024, true));
+        assertTrue(knob.explicitlyConfigured(),
+                "a programmatic configureLimits after init must not be overridden by Spring's default");
+        assertTrue(knob.enforcesAtMost(1024L * 1024 * 1024));
+
+        VesperaNativeConfig.Knob rejected = new VesperaNativeConfig.Knob(
+                "test.cap", "vespera.test.round6.cap", -1, value -> false);
+        assertFalse(rejected.set(5, true));
+        assertFalse(rejected.explicitlyConfigured(), "a value the native side refused is not configured");
+        assertTrue(rejected.set(-1, true), "unset sentinel: no-op");
+        assertFalse(rejected.explicitlyConfigured());
+    }
+
+    @Test
+    void shutdownTimeoutIsClampedInsteadOfOverflowing() {
+        assertEquals(0, VesperaBridge.shutdownTimeoutMillis(java.time.Duration.ofSeconds(-1)));
+        assertEquals(1500, VesperaBridge.shutdownTimeoutMillis(java.time.Duration.ofMillis(1500)));
+        assertEquals(Long.MAX_VALUE, VesperaBridge.shutdownTimeoutMillis(
+                java.time.temporal.ChronoUnit.FOREVER.getDuration()));
+        assertEquals(Long.MAX_VALUE, VesperaBridge.shutdownTimeoutMillis(
+                java.time.Duration.ofSeconds(Long.MAX_VALUE / 1000 + 1)));
+    }
+
+    @Test
     void requestProducerKnobUsesTheStreamingProperty() {
         VesperaNativeConfig.Knob knob = VesperaNativeConfig.MAX_REQUEST_PRODUCERS;
         assertEquals("vespera.streaming.maxRequestProducers", knob.property);
