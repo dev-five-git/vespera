@@ -6,13 +6,13 @@ JNI bridge that lets a Java/Spring application embed a Rust [`vespera`](../../) 
 <dependency>
   <groupId>kr.devfive</groupId>
   <artifactId>vespera-bridge</artifactId>
-  <version>0.8.0</version>
+  <version>0.8.1</version>
 </dependency>
 ```
 
 ```kotlin
 dependencies {
-    implementation("kr.devfive:vespera-bridge:0.8.0")
+    implementation("kr.devfive:vespera-bridge:0.8.1")
 }
 ```
 
@@ -36,14 +36,14 @@ For Spring Boot apps the [`kr.devfive.vespera-bridge`](../vespera-bridge-gradle-
 
 ```kotlin
 plugins {
-    id("kr.devfive.vespera-bridge") version "0.8.0"
+    id("kr.devfive.vespera-bridge") version "0.8.1"
 }
 
 vespera {
     crateName.set("my-rust-lib")   // Cargo package name, or its underscore form "my_rust_lib"
     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
     // bridgeVersion defaults to the vespera-bridge release this plugin version was built with;
-    // set it only to pin a different bridge:  bridgeVersion.set("0.8.0")
+    // set it only to pin a different bridge:  bridgeVersion.set("0.8.1")
 }
 ```
 
@@ -80,7 +80,7 @@ Vespera has no prebuilt native library of its own — the cdylib is **your** app
 // myapp-native/build.gradle.kts
 plugins {
     `maven-publish`
-    id("kr.devfive.vespera-bridge") version "0.8.0"
+    id("kr.devfive.vespera-bridge") version "0.8.1"
 }
 group = "com.acme"
 version = "0.1.0"
@@ -1332,7 +1332,7 @@ With Spring Boot, the autoconfigurations also contribute Spring AOT hints via `@
 plugins {
     id("org.springframework.boot") version "4.1.2"
     id("org.graalvm.buildtools.native") version "1.1.14"   // the version Spring Boot manages
-    id("kr.devfive.vespera-bridge") version "0.8.0"
+    id("kr.devfive.vespera-bridge") version "0.8.1"
 }
 ```
 
