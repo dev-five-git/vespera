@@ -257,9 +257,10 @@ fn input_names_skip_unparsable_definitions() {
     assert_eq!(names.len(), 1);
 }
 
-/// Candidates whose built request view equals the response view (here a
-/// field-level `default` the response already treats as optional) and inputs
-/// no request body reaches emit no `Input` component.
+/// Inputs no request body reaches emit no `Input` component (`Out`). A
+/// field-level `default` makes the request view differ: serde always writes
+/// the field, so the response keeps it required while `OptInput` does not
+/// (and `Holder` follows transitively).
 #[test]
 fn identical_or_unused_request_views_emit_nothing() {
     let mut metadata = CollectedMetadata::new();
@@ -289,5 +290,5 @@ fn identical_or_unused_request_views_emit_nothing() {
         .unwrap()
         .keys()
         .collect();
-    assert_eq!(names, ["Holder", "Opt", "Out"]);
+    assert_eq!(names, ["Holder", "HolderInput", "Opt", "OptInput", "Out"]);
 }

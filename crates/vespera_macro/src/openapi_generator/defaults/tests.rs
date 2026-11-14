@@ -403,7 +403,7 @@ fn process_default_functions_demotes_unresolvable_fn_default_from_required() {
     );
     schema.required = Some(vec!["name".to_string(), "tags".to_string()]);
 
-    process_default_functions(&struct_item, Some(&file_ast), &mut schema, &BTreeMap::new());
+    request_view_defaults(&struct_item, Some(&file_ast), &mut schema);
 
     let required = schema.required.as_ref().expect("required present");
     assert!(
@@ -442,7 +442,7 @@ fn process_default_functions_demotes_simple_default_without_type_default() {
     );
     schema.required = Some(vec!["name".to_string(), "tags".to_string()]);
 
-    process_default_functions(&struct_item, None, &mut schema, &BTreeMap::new());
+    request_view_defaults(&struct_item, None, &mut schema);
 
     let required = schema.required.as_ref().expect("required present");
     assert!(required.contains(&"name".to_string()));
@@ -468,10 +468,72 @@ fn process_default_functions_demotes_required_when_default_resolvable() {
     );
     schema.required = Some(vec!["sort".to_string()]);
 
-    process_default_functions(&struct_item, Some(&file_ast), &mut schema, &BTreeMap::new());
+    request_view_defaults(&struct_item, Some(&file_ast), &mut schema);
 
     assert!(schema.required.is_none(), "serde-default field is optional");
     assert_inline_default(schema.properties.as_ref().unwrap(), "sort", &json!("asc"));
+}
+
+/// [`process_default_functions_for`] building the request (`{Name}Input`) view.
+fn request_view_defaults(
+    struct_item: &syn::ItemStruct,
+    file_ast: Option<&syn::File>,
+    schema: &mut Schema,
+) {
+    process_default_functions_for(
+        struct_item,
+        file_ast,
+        schema,
+        &BTreeMap::new(),
+        SerdeSide::Deserialize,
+    );
+}
+
+#[rstest]
+#[case::simple_default(r"pub struct R { #[serde(default)] pub on: bool, pub name: String }")]
+#[case::fn_default(r#"pub struct R { #[serde(default = "d")] pub on: bool, pub name: String }"#)]
+fn process_default_functions_keeps_required_in_response_view(#[case] src: &str) {
+    // serde always WRITES a `#[serde(default)]` field: the response
+    // (serialize) view keeps it required; only the request view demotes it.
+    let file_ast: syn::File = syn::parse_str("fn d() -> bool { true }").unwrap();
+    let struct_item: syn::ItemStruct = syn::parse_str(src).unwrap();
+    let mut schema = Schema::object();
+    let props = schema.properties.get_or_insert_with(BTreeMap::new);
+    props.insert(
+        "on".to_string(),
+        SchemaRef::Inline(Box::new(Schema::boolean())),
+    );
+    props.insert(
+        "name".to_string(),
+        SchemaRef::Inline(Box::new(Schema::string())),
+    );
+    schema.required = Some(vec!["on".to_string(), "name".to_string()]);
+    let required_before = schema.required.clone();
+
+    process_default_functions_for(
+        &struct_item,
+        Some(&file_ast),
+        &mut schema,
+        &BTreeMap::new(),
+        SerdeSide::Serialize,
+    );
+    assert_eq!(
+        schema.required, required_before,
+        "response view keeps required"
+    );
+
+    process_default_functions_for(
+        &struct_item,
+        Some(&file_ast),
+        &mut schema,
+        &BTreeMap::new(),
+        SerdeSide::Deserialize,
+    );
+    assert_eq!(
+        schema.required,
+        Some(vec!["name".to_string()]),
+        "request view demotes"
+    );
 }
 
 // ---------- any_field_carries_default_relevant_attr ----------
