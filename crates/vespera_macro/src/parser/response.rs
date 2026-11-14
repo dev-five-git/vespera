@@ -76,27 +76,28 @@ fn is_non_body_type(ty: &Type) -> bool {
 /// not unwrapped): the last non-metadata element of a tuple
 /// (`(StatusCode, HeaderMap, Json<T>)` → `Json<T>`), `None` when the type is
 /// metadata only (`()`, `StatusCode`, `HeaderMap`, `(StatusCode, CookieJar)`),
-/// otherwise the type itself.
+/// otherwise the type itself. A nested response tuple (`(StatusCode,
+/// (HeaderMap, Json<T>))` — the last element only has to be
+/// `IntoResponse`) is searched the same way.
 fn body_element(ty: &Type) -> Option<&Type> {
     match ty {
-        Type::Tuple(tuple) => tuple
-            .elems
-            .iter()
-            .rev()
-            .find(|elem| !is_non_body_type(elem)),
+        Type::Tuple(tuple) => body_element(
+            tuple
+                .elems
+                .iter()
+                .rev()
+                .find(|elem| !is_non_body_type(elem))?,
+        ),
         _ if is_non_body_type(ty) => None,
         _ => Some(ty),
     }
 }
 
 /// Whether a response type sets headers through a `HeaderMap` (bare or as a
-/// tuple element).
+/// tuple element, nested tuples included).
 fn has_header_map(ty: &Type) -> bool {
     match ty {
-        Type::Tuple(tuple) => tuple
-            .elems
-            .iter()
-            .any(|elem| is_keyword_type(elem, &KeywordType::HeaderMap)),
+        Type::Tuple(tuple) => tuple.elems.iter().any(has_header_map),
         _ => is_keyword_type(ty, &KeywordType::HeaderMap),
     }
 }
@@ -349,6 +350,12 @@ fn success_key(ty: &Type) -> &'static str {
     }
 }
 
+/// `std::convert::Infallible` (by its last segment) or the never type `!`:
+/// an error type no value inhabits.
+fn is_infallible(ty: &Type) -> bool {
+    matches!(ty, Type::Never(_)) || last_ident_is(ty, "Infallible")
+}
+
 fn insert_success_response(
     responses: &mut BTreeMap<String, Response>,
     ty: &Type,
@@ -390,19 +397,32 @@ pub fn parse_return_type(
     };
     if let Some((ok_ty, err_ty)) = extract_result_types(ty) {
         insert_success_response(&mut responses, &ok_ty, known_schemas, struct_definitions);
+        // `Result<T, Infallible>` / `Result<T, !>` never takes the error side.
+        if is_infallible(&err_ty) {
+            return responses;
+        }
         // The error body is found like the success one: `(StatusCode,
         // Json<E>)`, `(HeaderMap, Json<E>)` and header arrays document `E`; a
         // metadata-only error (`StatusCode`, `(StatusCode, HeaderMap)`) has
-        // no content. The default error status is `400`.
-        responses.insert(
-            "400".to_string(),
-            Response {
-                description: "Error response".to_string(),
+        // no content. The default error status is `400`; an error that is a
+        // `Redirect` / `NoContent` is keyed like the success side (`3XX` /
+        // `204`), never overwriting the success entry.
+        let key = match success_key(&err_ty) {
+            "200" => "400",
+            key => key,
+        };
+        responses
+            .entry(key.to_string())
+            .or_insert_with(|| Response {
+                description: if key == "3XX" {
+                    "Redirect".to_string()
+                } else {
+                    "Error response".to_string()
+                },
                 headers: None,
                 content: response_content(&err_ty, known_schemas, struct_definitions),
                 ..Default::default()
-            },
-        );
+            });
     } else {
         insert_success_response(&mut responses, ty, known_schemas, struct_definitions);
     }

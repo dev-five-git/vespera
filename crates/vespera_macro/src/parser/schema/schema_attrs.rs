@@ -163,7 +163,8 @@ impl SchemaConstraints {
 
     /// `true` when at least one constraint produces a `garde` runtime rule
     /// (excludes pure-OpenAPI annotations such as `example` / `read_only` /
-    /// `write_only` / `unique_items`).
+    /// `write_only` / `unique_items` / `exclusive_minimum` /
+    /// `exclusive_maximum` / `multiple_of`, which have no garde counterpart).
     ///
     /// Consumed by `garde_emit::emit_garde_validate` (gated on the
     /// `validation` feature) and by the unit tests below.  When the macro
@@ -179,9 +180,6 @@ impl SchemaConstraints {
             || self.pattern.is_some()
             || self.minimum.is_some()
             || self.maximum.is_some()
-            || self.exclusive_minimum.is_some()
-            || self.exclusive_maximum.is_some()
-            || self.multiple_of.is_some()
             || self.min_items.is_some()
             || self.max_items.is_some()
             || matches!(
@@ -380,13 +378,12 @@ fn expr_to_json_value(expr: &Expr) -> syn::Result<serde_json::Value> {
             if let syn::UnOp::Neg(_) = unary.op
                 && let Expr::Lit(ExprLit { lit, .. }) = unary.expr.as_ref()
             {
-                let positive = lit_to_json_value(lit)?;
-                // Try integer first so that `example = -5` round-trips
-                // as `serde_json::json!(-5)` (i64) and not as the
-                // semantically equal but type-distinct `-5.0` (f64).
-                if let Some(i) = positive.as_i64() {
-                    return Ok(serde_json::json!(-i));
+                // Integers negate exactly (`-5` stays an integer and
+                // `i64::MIN` round-trips).
+                if let Lit::Int(int) = lit {
+                    return int_to_json_value(int, true);
                 }
+                let positive = lit_to_json_value(lit)?;
                 if let Some(n) = positive.as_f64() {
                     return Ok(serde_json::json!(-n));
                 }
@@ -408,13 +405,29 @@ fn lit_to_json_value(lit: &Lit) -> syn::Result<serde_json::Value> {
     match lit {
         Lit::Str(s) => Ok(serde_json::Value::String(s.value())),
         Lit::Bool(b) => Ok(serde_json::Value::Bool(b.value)),
-        Lit::Int(i) => Ok(serde_json::json!(i.base10_parse::<i64>()?)),
+        Lit::Int(i) => int_to_json_value(i, false),
         Lit::Float(f) => Ok(serde_json::json!(f.base10_parse::<f64>()?)),
         other => Err(syn::Error::new_spanned(
             other,
             "unsupported literal type for `example`",
         )),
     }
+}
+
+/// An integer literal (negated when `negative`) as an exact JSON integer
+/// (`i64`, else `u64`); a value outside both ranges becomes the nearest
+/// float rather than a compile error.
+#[allow(clippy::cast_precision_loss)] // the nearest float is the intent
+fn int_to_json_value(int: &syn::LitInt, negative: bool) -> syn::Result<serde_json::Value> {
+    let Ok(value) = int.base10_parse::<i128>() else {
+        let float = int.base10_parse::<f64>()?;
+        return Ok(serde_json::json!(if negative { -float } else { float }));
+    };
+    let value = if negative { -value } else { value };
+    Ok(i64::try_from(value)
+        .map(serde_json::Value::from)
+        .or_else(|_| u64::try_from(value).map(serde_json::Value::from))
+        .unwrap_or_else(|_| serde_json::json!(value as f64)))
 }
 
 // ── tests ────────────────────────────────────────────────────────────
@@ -620,6 +633,19 @@ mod tests {
         // it is exercised separately by `example_with_various_...`).
         let c = parse(&[parse_quote!(#[schema(example = -2.5)])]);
         assert_eq!(c.example, Some(serde_json::json!(-2.5)));
+    }
+
+    /// Integer examples beyond `i64` stay exact `u64` JSON numbers (and
+    /// `i64::MIN` an integer); anything wider falls back to a float.
+    #[rstest::rstest]
+    #[case::u64_max(parse_quote!(#[schema(example = 18446744073709551615)]), serde_json::json!(u64::MAX))]
+    #[case::i64_min(parse_quote!(#[schema(example = -9223372036854775808)]), serde_json::json!(i64::MIN))]
+    #[case::beyond_u64(parse_quote!(#[schema(example = 18446744073709551616)]), serde_json::json!(2_f64.powi(64)))]
+    #[case::below_i64(parse_quote!(#[schema(example = -9223372036854775809)]), serde_json::json!(-(2_f64.powi(63))))]
+    #[case::beyond_i128(parse_quote!(#[schema(example = 340282366920938463463374607431768211456)]), serde_json::json!(2_f64.powi(128)))]
+    #[case::below_i128(parse_quote!(#[schema(example = -340282366920938463463374607431768211456)]), serde_json::json!(-(2_f64.powi(128))))]
+    fn example_wide_integers(#[case] attr: Attribute, #[case] expected: serde_json::Value) {
+        assert_eq!(parse(&[attr]).example, Some(expected));
     }
 
     #[test]

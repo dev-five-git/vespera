@@ -29,57 +29,8 @@ use super::super::{
     struct_schema::parse_struct_to_schema,
 };
 
-/// Parse a known schema's definition (a struct or an enum) into a `syn::Item`.
-///
-/// MUST NOT memoise the parsed AST in a `thread_local` (or any storage that
-/// outlives the macro invocation).  A `syn::ItemStruct` parsed during real
-/// proc-macro expansion holds bridge-backed `proc_macro2` tokens whose `Drop`
-/// calls into the proc-macro bridge; if such a value survived in TLS until the
-/// proc-macro server thread exits, that drop would run with NO active expansion
-/// and abort the compile ("procedural macro API is used outside of a procedural
-/// macro" -> STATUS_STACK_BUFFER_OVERRUN).  Every AST returned here is therefore
-/// dropped within the same invocation that parsed it.
-fn parse_schema_def(def: &str) -> Option<SchemaDef> {
-    match syn::parse_str::<syn::Item>(def).ok()? {
-        syn::Item::Struct(item) => Some(SchemaDef::Struct(item)),
-        syn::Item::Enum(item) => Some(SchemaDef::Enum(item)),
-        _ => None,
-    }
-}
-
-/// A known schema's parsed definition.
-enum SchemaDef {
-    Struct(syn::ItemStruct),
-    Enum(syn::ItemEnum),
-}
-
-impl SchemaDef {
-    const fn attrs(&self) -> &Vec<syn::Attribute> {
-        match self {
-            Self::Struct(item) => &item.attrs,
-            Self::Enum(item) => &item.attrs,
-        }
-    }
-
-    const fn generics_mut(&mut self) -> &mut syn::Generics {
-        match self {
-            Self::Struct(item) => &mut item.generics,
-            Self::Enum(item) => &mut item.generics,
-        }
-    }
-
-    /// Every field type of the definition (all variants of an enum).
-    fn field_types_mut(&mut self) -> Vec<&mut Type> {
-        match self {
-            Self::Struct(item) => item.fields.iter_mut().map(|field| &mut field.ty).collect(),
-            Self::Enum(item) => item
-                .variants
-                .iter_mut()
-                .flat_map(|variant| variant.fields.iter_mut().map(|field| &mut field.ty))
-                .collect(),
-        }
-    }
-}
+mod schema_def;
+use schema_def::{SchemaDef, parse_schema_def};
 
 /// Whether `ident` names a type that this crate already knows how to map to
 /// an OpenAPI schema — Rust primitives, `String`/`str`, the chrono/time
@@ -344,10 +295,15 @@ fn parse_type_impl(
                         }
                     }
                     // SeaORM relation types: convert Entity to Schema reference
-                    "HasOne" => {
-                        // HasOne<Entity> -> nullable reference to corresponding Schema
+                    "HasOne" | "BelongsTo" => {
+                        // HasOne<Entity> / BelongsTo<Entity> (SeaORM 2.0 also
+                        // spells `BelongsTo<Option<Entity>>`) -> nullable
+                        // reference to the corresponding Schema
                         if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
-                            && let Some(schema_name) = extract_schema_name_from_entity(inner_ty)
+                            && let Some(schema_name) = extract_schema_name_from_entity(
+                                crate::schema_macro::type_utils::option_inner(inner_ty)
+                                    .unwrap_or(inner_ty),
+                            )
                         {
                             return SchemaRef::Inline(Box::new(Schema::nullable_reference(
                                 format!("#/components/schemas/{schema_name}"),
@@ -677,11 +633,9 @@ fn parse_type_impl(
                         if generic_params.len() == concrete_types.len() {
                             // (named AND tuple fields — tuple structs now map
                             // to their inner / prefixItems schema; every
-                            // variant's fields for an enum).
-                            for field_ty in parsed.field_types_mut() {
-                                *field_ty =
-                                    substitute_type(field_ty, &generic_params, &concrete_types);
-                            }
+                            // variant's fields for an enum) and in the types
+                            // its attributes name (`value_type`, `into`).
+                            parsed.substitute(&generic_params, &concrete_types);
 
                             // Remove generics from the definition (it's now concrete)
                             let generics = parsed.generics_mut();
@@ -692,9 +646,20 @@ fn parse_type_impl(
                             // contains itself — then it becomes the named
                             // component `Base_Arg..` (see `generic_instances`).
                             let base = component_name(resolved_name, def_str);
-                            let mut name = super::generic_instances::instance_name(
+                            // A module-scoped argument (`b::Foo`, renamed
+                            // apart from `a::Foo`) is spelled by its component.
+                            let scoped = |path: &syn::Path| {
+                                let key = crate::parser::schema::definition_key(path, |key| {
+                                    known_schemas.contains(key)
+                                })
+                                .filter(|key| key.contains("::"))?;
+                                let def = struct_definitions.get(key.as_str()).map(AsRef::as_ref);
+                                Some(component_name(key, def))
+                            };
+                            let mut name = super::generic_instances::instance_name_with(
                                 &base,
                                 concrete_types.iter().copied(),
+                                &scoped,
                             );
                             // A request-view instantiation differs from the
                             // response one when it names an input type.
@@ -838,23 +803,25 @@ fn is_unsigned_int_type(ty: &Type) -> bool {
 /// - SeaORM's aliases `Json` (`sea_orm::prelude::Json`) and `JsonValue`
 ///   (`sea_orm::JsonValue`), qualified or not — but only WITHOUT generic
 ///   arguments: `Json<T>` is axum's body wrapper, not a JSON value;
-/// - a bare `Value` / `Json` / `JsonValue` that is not a known component
-///   schema (a user `#[derive(Schema)] struct Value` keeps its `$ref`).
+/// - a `Value` / `Json` / `JsonValue` that is not a known component schema
+///   (a user `#[derive(Schema)] struct Json` keeps its `$ref`, also as
+///   `crate::models::Json`) unless the path names `serde_json` / `sea_orm`.
 fn is_json_value_path(
     path: &syn::Path,
     last: &syn::PathSegment,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
 ) -> bool {
-    let segments = &path.segments;
     let alias = last.ident == "Json" || last.ident == "JsonValue";
     if !(alias || last.ident == "Value") || !last.arguments.is_none() {
         return false;
     }
-    if segments.len() == 1 {
-        !known_schemas.contains(last.ident.to_string().as_str())
-    } else {
-        alias || segments.iter().any(|segment| segment.ident == "serde_json")
-    }
+    let qualified = path
+        .segments
+        .iter()
+        .any(|segment| segment.ident == "serde_json" || (alias && segment.ident == "sea_orm"));
+    qualified
+        || ((alias || path.segments.len() == 1)
+            && !known_schemas.contains(last.ident.to_string().as_str()))
 }
 
 /// Description of a `time` crate value (see [`time_crate_schema`]).

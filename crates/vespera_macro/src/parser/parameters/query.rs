@@ -7,16 +7,15 @@ use vespera_core::{
 };
 
 use super::shared::{
-    convert_to_inline_schema, input_rename_all, is_defined_struct, is_known_type,
-    is_primitive_or_like, named_struct_fields, serde_field_name,
+    convert_to_inline_schema, deserialized_instead, deserialized_source, input_rename_all,
+    is_defined_struct, is_known_type, is_primitive_or_like, named_struct_fields, serde_field_name,
 };
 use crate::{
     parser::schema::{
         SerdeSide, apply_field_rules, extract_default, extract_doc_comment, extract_field_codec,
         extract_flatten, extract_serde_skip_flags, parse_struct_to_schema,
-        parse_type_to_schema_ref,
-        schema_attrs::extract_schema_constraints,
-        wire_override::{container_override_type, field_schema_ref},
+        parse_type_to_schema_ref, request_view::component_of_input,
+        schema_attrs::extract_schema_constraints, wire_override::field_schema_ref,
     },
     schema_macro::type_utils::{is_map_type as utils_is_map_type, is_option_type, option_inner},
 };
@@ -40,6 +39,9 @@ pub(super) fn parse_query_struct_extractor(
 ) -> Option<Vec<Parameter>> {
     let (query_ty, optional) = option_inner(ty).map_or((ty, false), |inner| (inner, true));
     let (inner_ty, optional_query) = query_inner(query_ty)?;
+    // A `from = "E"` / `transparent` chain ending in a non-struct (an enum)
+    // is documented by [`parse_query_extractor`] instead.
+    let inner_ty = &deserialized_source(inner_ty, struct_definitions);
     if utils_is_map_type(inner_ty) {
         return None;
     }
@@ -84,14 +86,18 @@ fn query_inner(ty: &Type) -> Option<(&Type, bool)> {
 /// first): one parameter named after the binding — with the default `style:
 /// form, explode: true` an object schema's properties are the query keys.
 /// A tuple struct cannot be read from a query string's key/value pairs, so it
-/// documents nothing.
+/// documents nothing. A struct read through `from = "E"` / `transparent`
+/// documents `E`.
 pub(super) fn parse_query_extractor(
     param_name: &str,
     ty: &Type,
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) -> Option<Vec<Parameter>> {
-    let (inner_ty, optional) = query_inner(ty)?;
+    let (query_ty, outer_optional) = option_inner(ty).map_or((ty, false), |inner| (inner, true));
+    let (inner_ty, optional_query) = query_inner(query_ty)?;
+    let optional = outer_optional || optional_query;
+    let inner_ty = &deserialized_source(inner_ty, struct_definitions);
     if utils_is_map_type(inner_ty)
         || is_primitive_or_like(inner_ty)
         || !is_known_type(inner_ty, known_schemas, struct_definitions)
@@ -167,9 +173,9 @@ fn collect_query_struct_parameters(
     }
     visiting.push(struct_name);
     // Container `#[serde(from = "X")]` / `try_from` (or `#[schema(value_type =
-    // X)]`): serde reads `X` from the query string, never this struct's own
-    // fields.
-    if let Some(source) = container_override_type(&struct_item.attrs, SerdeSide::Deserialize) {
+    // X)]`), or `#[serde(transparent)]`: serde reads `X` / the single field's
+    // type from the query string, never this struct's own fields.
+    if let Some(source) = deserialized_instead(&struct_item) {
         collect_query_struct_parameters(
             &source,
             force_optional,
@@ -223,7 +229,9 @@ fn collect_query_struct_parameters(
 
         if let SchemaRef::Ref(ref_ref) = &field_schema
             && let Some(type_name) = ref_ref.ref_path.strip_prefix("#/components/schemas/")
-            && let Some(struct_def) = struct_definitions.get(type_name)
+            // A request-view `$ref` names the `Input` component.
+            && let type_name = component_of_input(type_name).unwrap_or_else(|| type_name.to_string())
+            && let Some(struct_def) = struct_definitions.get(type_name.as_str())
             && let Ok(nested_struct_item) = syn::parse_str::<syn::ItemStruct>(struct_def)
         {
             let nested_schema =

@@ -106,7 +106,7 @@ pub(super) fn prune_unreferenced_inputs(
 }
 
 /// Component names of the `$ref`s inside `value`, counting only those under
-/// a `requestBody` unless `inside` is already set.
+/// a `requestBody` or `parameters` unless `inside` is already set.
 fn collect_request_body_refs(value: &serde_json::Value, inside: bool, out: &mut Vec<String>) {
     match value {
         serde_json::Value::Object(map) => {
@@ -119,7 +119,9 @@ fn collect_request_body_refs(value: &serde_json::Value, inside: bool, out: &mut 
                 {
                     out.push(name.to_string());
                 }
-                collect_request_body_refs(child, inside || key == "requestBody", out);
+                // Request bodies and parameters are both deserialized.
+                let request = key == "requestBody" || key == "parameters";
+                collect_request_body_refs(child, inside || request, out);
             }
         }
         serde_json::Value::Array(items) => {

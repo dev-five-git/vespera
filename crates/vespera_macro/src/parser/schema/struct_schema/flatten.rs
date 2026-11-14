@@ -108,12 +108,23 @@ pub(super) fn flatten_part(
             Some(schema.clone()),
         ),
     };
-    match resolved
+    let decomposed = resolved
         .as_ref()
-        .and_then(|schema| decompose(schema, known_schemas, struct_definitions))
-    {
+        .and_then(|schema| decompose(schema, known_schemas, struct_definitions));
+    // An externally tagged enum's unit variants are keys when flattened.
+    let schema = resolved
+        .as_ref()
+        .and_then(flattened_unit_variants)
+        .map_or(schema, |flattened| SchemaRef::Inline(Box::new(flattened)));
+    match decomposed {
         Some(parts) => FlatPart::Known {
-            reference,
+            // A unit struct (`null`) has no keys: its `$ref` would make an
+            // `allOf` member nothing satisfies next to the object.
+            reference: reference.filter(|_| {
+                resolved
+                    .as_ref()
+                    .is_some_and(|schema| schema.schema_type != Some(SchemaType::Null))
+            }),
             parts,
             optional,
         },
@@ -124,6 +135,60 @@ pub(super) fn flatten_part(
         }))),
         None => FlatPart::Opaque(schema),
     }
+}
+
+/// The flattened form of an externally tagged enum `schema` with unit
+/// variants: serde writes (and reads) a flattened unit variant as the key
+/// `{"A": null}`, never as the string `"A"`, so every `{type: string, enum:
+/// [..]}` branch (or the whole schema of a unit-only enum) becomes one
+/// `{A: null}` object per name. `None` when there is no such branch.
+fn flattened_unit_variants(schema: &Schema) -> Option<Schema> {
+    let unit_keys = |schema: &Schema| {
+        (schema.schema_type == Some(SchemaType::String) && schema.not.is_none())
+            .then_some(schema.r#enum.as_ref())
+            .flatten()
+            .map(|keys| {
+                keys.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(|key| {
+                        SchemaRef::Inline(Box::new(Schema {
+                            description: schema.description.clone(),
+                            properties: Some(BTreeMap::from([(
+                                key.to_string(),
+                                SchemaRef::Inline(Box::new(Schema::new(SchemaType::Null))),
+                            )])),
+                            required: Some(vec![key.to_string()]),
+                            ..Schema::object()
+                        }))
+                    })
+                    .collect::<Vec<_>>()
+            })
+    };
+    let Some(branches) = &schema.one_of else {
+        return unit_keys(schema).map(|one_of| Schema {
+            description: schema.description.clone(),
+            one_of: Some(one_of),
+            ..Schema::default()
+        });
+    };
+    let mut changed = false;
+    let one_of = branches
+        .iter()
+        .flat_map(|branch| match branch {
+            SchemaRef::Inline(inline) => unit_keys(inline).map_or_else(
+                || vec![branch.clone()],
+                |keys| {
+                    changed = true;
+                    keys
+                },
+            ),
+            SchemaRef::Ref(_) => vec![branch.clone()],
+        })
+        .collect();
+    changed.then(|| Schema {
+        one_of: Some(one_of),
+        ..schema.clone()
+    })
 }
 
 /// The schema of the user type `ty` names (through `Box` / `Arc` / `Rc` /
@@ -460,6 +525,47 @@ mod tests {
         ]);
         let ty: syn::Type = syn::parse_str(ty).unwrap();
         assert_eq!(resolve_type(&ty, &known, &definitions).is_some(), resolved);
+    }
+
+    /// A flattened unit struct reads and writes no keys: it contributes
+    /// nothing (never an `allOf` member `$ref` to its `null` component).
+    #[test]
+    fn flattened_unit_struct_contributes_nothing() {
+        let known = HashSet::from(["Marker".to_string()]);
+        let definitions = HashMap::from([("Marker".to_string(), "struct Marker;".to_string())]);
+        let item: syn::ItemStruct =
+            syn::parse_str("struct S { id: u8, #[serde(flatten)] marker: Marker }").unwrap();
+        let schema = parse_struct_to_schema(&item, &known, &definitions);
+        insta::assert_snapshot!(
+            "flatten_unit_struct",
+            serde_json::to_string(&schema).unwrap()
+        );
+    }
+
+    /// serde writes a flattened externally tagged unit variant as the key
+    /// `{"A": null}` (`FlatMapSerializer::serialize_unit_variant`), never
+    /// as the string `"A"`.
+    #[rstest]
+    #[case::mixed("mixed", "struct S { id: u8, #[serde(flatten)] kind: Kind }")]
+    #[case::unit_only("unit_only", "struct S { #[serde(flatten)] mode: Option<Mode> }")]
+    fn flattened_unit_variants_are_keys(#[case] name: &str, #[case] src: &str) {
+        let known = HashSet::from(["Kind".to_string(), "Mode".to_string()]);
+        let definitions = HashMap::from([
+            (
+                "Kind".to_string(),
+                "enum Kind { A, #[serde(alias = \"bee\")] B { x: u8 } }".to_string(),
+            ),
+            (
+                "Mode".to_string(),
+                "enum Mode { On, #[serde(rename = \"off\")] Off }".to_string(),
+            ),
+        ]);
+        let item: syn::ItemStruct = syn::parse_str(src).unwrap();
+        let schema = parse_struct_to_schema(&item, &known, &definitions);
+        insta::assert_snapshot!(
+            format!("flatten_unit_variants_{name}"),
+            serde_json::to_string_pretty(&schema).unwrap()
+        );
     }
 
     /// A macro-expanded `$ty` arrives as an invisible group.

@@ -1,0 +1,7 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
+expression: both_views(src)
+---
+#[serde(tag = "t")] enum Shape { #[serde(other)] Unknown }
+response: {"oneOf":[{"type":"object","properties":{"t":{"type":"string","enum":["Unknown"]}},"required":["t"]}],"discriminator":{"propertyName":"t"}}
+request: {"oneOf":[{"type":"object","properties":{"t":{"type":"string"}},"required":["t"]}],"discriminator":{"propertyName":"t"}}

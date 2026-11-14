@@ -60,12 +60,11 @@ fn result_ok_type(ty: &Type) -> Option<&Type> {
 }
 
 /// Return true when the type is a `Validated<...>` or `ValidatedWith<..., ...>`
-/// extractor wrapper, also behind `Cached<..>` / `Option<..>` (which pass the
-/// validation rejection — the `422` — through unchanged).
+/// extractor wrapper, also behind `Cached<..>` (which passes the validation
+/// rejection — the `422` — through unchanged). `Option<Validated<..>>` is not
+/// an extractor: `Validated` has no `Optional*` impl, so it never compiles.
 pub(super) fn is_validated_type(mut ty: &Type) -> bool {
-    while let Some(inner) =
-        extractor_inner_type(ty, "Cached").or_else(|| extractor_inner_type(ty, "Option"))
-    {
+    while let Some(inner) = extractor_inner_type(ty, "Cached") {
         ty = inner;
     }
     validated_inner_type(ty).is_some()
@@ -221,13 +220,14 @@ mod tests {
         assert!(std::ptr::eq(request_extractor(&ty), &raw const ty));
     }
 
-    /// `Cached` / `Option` pass the `Validated` rejection (`422`) through.
+    /// `Cached` passes the `Validated` rejection (`422`) through; `Option`
+    /// cannot wrap `Validated` (no `Optional*` impl), so it is not unwrapped.
     #[rstest]
     #[case::cached("Cached<Validated<Query<F>>>", true)]
-    #[case::option("Option<Validated<Query<F>>>", true)]
-    #[case::cached_option("Cached<Option<ValidatedWith<C, Query<F>>>>", true)]
+    #[case::option("Option<Validated<Query<F>>>", false)]
+    #[case::nested_cached("Cached<Cached<ValidatedWith<C, Query<F>>>>", true)]
     #[case::cached_plain("Cached<Query<F>>", false)]
-    fn validated_behind_cached_or_option(#[case] src: &str, #[case] expected: bool) {
+    fn validated_behind_cached(#[case] src: &str, #[case] expected: bool) {
         let ty: Type = syn::parse_str(src).unwrap();
         assert_eq!(is_validated_type(&ty), expected);
     }

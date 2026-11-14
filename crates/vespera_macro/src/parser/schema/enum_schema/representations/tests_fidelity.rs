@@ -61,6 +61,19 @@ fn both_views(src: &str) -> String {
     "other_internal",
     r#"#[serde(tag = "t")] enum Shape { Circle { r: u8 }, #[serde(other)] Unknown }"#
 )]
+// The catch-all is the only readable variant: any string, never `enum: []`.
+#[case::other_only_unit(
+    "other_only_unit",
+    "enum Color { #[serde(skip_deserializing)] Red, #[serde(other)] Unknown }"
+)]
+#[case::other_only_external(
+    "other_only_external",
+    "enum Shape { #[serde(skip_deserializing)] Square(u8), #[serde(other)] Unknown }"
+)]
+#[case::other_only_internal(
+    "other_only_internal",
+    r#"#[serde(tag = "t")] enum Shape { #[serde(other)] Unknown }"#
+)]
 // M5: an internally tagged newtype over a unit struct is the tag alone.
 #[case::internal_unit_struct(
     "internal_unit_struct",

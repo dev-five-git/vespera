@@ -19,6 +19,8 @@ mod paths;
 mod route_claims;
 #[cfg(test)]
 mod tests_accuracy;
+#[cfg(test)]
+mod tests_parser_views;
 
 use component_schemas::{
     build_file_cache, build_schema_lookups, build_struct_file_index, parse_component_schemas,

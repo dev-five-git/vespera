@@ -54,25 +54,14 @@ pub fn parse_struct_to_schema(
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Schema {
-    let params: Vec<syn::Type> = struct_item
-        .generics
-        .type_params()
-        .map(|param| {
-            let ident = &param.ident;
-            syn::parse_quote!(#ident)
-        })
-        .collect();
-    if params.is_empty() {
-        return parse_struct_body(struct_item, known_schemas, struct_definitions);
-    }
     // The generic definition's own component: `Tree<T>` inside `Tree<T>`
     // refers back to `Tree` instead of materialising `Tree_T`.
-    let component = crate::schema_impl::extract_schema_name_attr(&struct_item.attrs)
-        .unwrap_or_else(|| struct_item.ident.to_string());
-    let instance = super::generic_instances::instance_name(&component, &params);
-    super::generic_instances::with_self_instance(instance, component, || {
-        parse_struct_body(struct_item, known_schemas, struct_definitions)
-    })
+    super::generic_instances::with_definition(
+        &struct_item.ident,
+        &struct_item.generics,
+        &struct_item.attrs,
+        || parse_struct_body(struct_item, known_schemas, struct_definitions),
+    )
 }
 
 fn parse_struct_body(
