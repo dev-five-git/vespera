@@ -50,6 +50,7 @@ class ConfigurationMetadataTest {
 
     /** Every class whose {@code @ConditionalOnProperty} reads a property. */
     private static final List<Class<?>> AUTO_CONFIGURATIONS = List.of(
+            VesperaBridgeCoreAutoConfiguration.class,
             VesperaBridgeAutoConfiguration.class,
             VesperaBridgeReactiveAutoConfiguration.class,
             VesperaBridgeMetricsAutoConfiguration.class,

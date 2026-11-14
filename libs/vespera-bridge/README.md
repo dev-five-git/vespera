@@ -141,7 +141,7 @@ Out of the box the autoconfigure module wires up:
 | **Dispatch mode** | [`SmartDispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/SmartDispatchModeResolver.java) since 0.2.0 — picks per request: [`DIRECT`](src/main/java/com/devfive/vespera/bridge/DispatchMode.java) (pooled direct buffers, no JNI array copies) for small/bodyless safe requests (GET/HEAD/OPTIONS, Content-Length absent or ≤ 1 MiB) ~2.2 µs; `SYNC` (heap-buffered) for small unsafe requests (POST/PUT/PATCH/DELETE ≤ 256 KiB) ~3.2 µs; `BIDIRECTIONAL_STREAMING` for the rest ~24.1 µs | Property `vespera.bridge.dispatch-mode: bidirectional-streaming` (opt out, restore pre-0.2.0 default), or custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean |
 | **URL pattern** | Single `@RequestMapping("/**")` catch-all — every vespera router URL exactly mirrors the published OpenAPI path | Properties `vespera.bridge.include-patterns` / `vespera.bridge.exclude-patterns` (see [Proxied paths](#proxied-paths-include--exclude-patterns)), or `vespera.bridge.controller-enabled: false` and your own controller |
 | **Body handling** | Servlet `InputStream` straight through to Rust (no buffering) for streaming modes; full read for sync/async | (encoded by the chosen `DispatchMode`) |
-| **Programmatic client** | A [`VesperaClient`](src/main/java/com/devfive/vespera/bridge/VesperaClient.java) bean for the default app (see [Programmatic client](#programmatic-client-vesperaclient)), also with `controller-enabled: false` | Your own `VesperaClient` bean (e.g. `VesperaClient.create().forApp("admin")`) |
+| **Programmatic client** | A [`VesperaClient`](src/main/java/com/devfive/vespera/bridge/VesperaClient.java) bean for the default app (see [Programmatic client](#programmatic-client-vesperaclient)), also with `controller-enabled: false` and in non-web applications (`spring.main.web-application-type=none`) | Your own `VesperaClient` bean (e.g. `VesperaClient.create().forApp("admin")`) |
 
 Why `smart` as the default mode (since 0.2.0)? Measured on a small `GET /health` round-trip through the real JNI boundary the cheapest safe path per request is 7–11× cheaper than unconditional streaming:
 
@@ -213,6 +213,23 @@ programmatic value equal to a knob's "unset" sentinel — `<= 0` for
 async cap — is ignored and never shadows the system property or environment
 variable (e.g. `configureRuntime(8, 0)` keeps
 `-Dvespera.runtime.maxBlockingThreads`).
+
+`vespera.bridge.native.*` is forwarded in every Spring Boot application,
+including non-web ones (`spring.main.web-application-type=none`), by
+`VesperaBridgeCoreAutoConfiguration`. That configuration has no web
+condition.
+
+> **Cron jobs fix the runtime size at `init`.** When the Rust library has
+> `#[vespera::cron]` jobs, `VesperaBridge.init(...)` starts the shared Tokio
+> runtime right after loading, so the jobs run without waiting for a first
+> request. If you call `init` yourself **before** `SpringApplication.run`, the
+> runtime is built before Spring can forward
+> `vespera.bridge.native.worker-threads` / `max-blocking-threads`. Those two
+> values are then logged and ignored. Either let Spring load the library
+> (`vespera.bridge.library-name`, which applies `vespera.bridge.native.*`
+> first), or call `VesperaBridge.configureRuntime(workers, maxBlocking)` (or
+> set `-Dvespera.runtime.workerThreads` / `-Dvespera.runtime.maxBlockingThreads`)
+> before `init`.
 
 `dispatch-timeout` bounds the **whole dispatch** (handler + body) for the
 buffered modes (`SYNC`, `ASYNC`, `DIRECT`) — expiry answers `504`. For the
@@ -869,8 +886,12 @@ CompletableFuture<VesperaResponse> f = client.get("/x").sendAsync();
   never derives it from headers.
 - **Spring:** the autoconfiguration exposes a `VesperaClient` bean (default
   app; `@ConditionalOnMissingBean`), also when
-  `vespera.bridge.controller-enabled=false`. It is created after
-  `vespera.bridge.native.*` / `library-name` are applied.
+  `vespera.bridge.controller-enabled=false`. It also exists in a non-web
+  application (`spring.main.web-application-type=none`: a batch job, worker
+  or scheduler). `VesperaBridgeCoreAutoConfiguration` owns it together with
+  `vespera.bridge.native.*`, `library-name` and `shutdown-on-close` and has
+  no web condition. It is created after `vespera.bridge.native.*` /
+  `library-name` are applied.
 
 ```java
 @Service

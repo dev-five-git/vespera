@@ -1,6 +1,5 @@
 package com.devfive.vespera.bridge;
 
-import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -37,10 +36,14 @@ import org.springframework.context.annotation.ImportRuntimeHints;
  *       {@code vespera.bridge.forward-principal=false};</li>
  *   <li>{@link VesperaReactivePreflightFilter} with
  *       {@code vespera.bridge.cors=rust} (default);</li>
- *   <li>the same native settings ({@code vespera.bridge.native.*},
- *       {@code library-name}, {@code shutdown-on-close}) and
- *       {@link VesperaClient} beans as the servlet configuration.</li>
  * </ul>
+ *
+ * <p>The native settings ({@code vespera.bridge.native.*},
+ * {@code library-name}, {@code shutdown-on-close}) and the
+ * {@link VesperaClient} come from {@link VesperaBridgeCoreAutoConfiguration},
+ * which runs first and in every application type. The client's
+ * {@code send()} blocks: from reactive code use {@code sendAsync()} (a
+ * {@code CompletableFuture}, e.g. via {@code Mono.fromFuture}).
  *
  * <p>The servlet-only properties {@code dispatch-mode},
  * {@code direct-retry-on-overflow}, {@code async-pool-size} and
@@ -49,7 +52,7 @@ import org.springframework.context.annotation.ImportRuntimeHints;
  * streaming for {@code text/event-stream} / NDJSON).
  */
 // Class-name guards: skipped cleanly when WebFlux / Reactor are absent.
-@AutoConfiguration
+@AutoConfiguration(after = VesperaBridgeCoreAutoConfiguration.class)
 @ConditionalOnClass(name = {
         "org.springframework.web.reactive.DispatcherHandler",
         "reactor.core.publisher.Mono"})
@@ -57,36 +60,6 @@ import org.springframework.context.annotation.ImportRuntimeHints;
 @EnableConfigurationProperties(VesperaBridgeProperties.class)
 @ImportRuntimeHints(VesperaSecurityRuntimeHints.class)
 public class VesperaBridgeReactiveAutoConfiguration {
-
-    /** As the servlet configuration: forwards {@code vespera.bridge.native.*} before the first dispatch. */
-    @Bean
-    @ConditionalOnMissingBean
-    public VesperaBridgeNativeSettings vesperaBridgeNativeSettings(VesperaBridgeProperties props) {
-        return VesperaBridgeNativeSettings.apply(props);
-    }
-
-    /** {@code vespera.bridge.shutdown-on-close=true}: as the servlet configuration. */
-    @Bean
-    @ConditionalOnProperty(prefix = "vespera.bridge", name = "shutdown-on-close", havingValue = "true")
-    public DisposableBean vesperaBridgeShutdown(
-            VesperaBridgeNativeSettings nativeSettings, VesperaBridgeProperties props) {
-        return () -> {
-            if (nativeSettings.autoInitialized()) {
-                VesperaBridge.shutdown(props.getShutdownTimeout());
-            }
-        };
-    }
-
-    /**
-     * Programmatic in-process client. Its {@code send()} blocks: from reactive
-     * code use {@code sendAsync()} (a {@code CompletableFuture}, e.g. via
-     * {@code Mono.fromFuture}) instead.
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    public VesperaClient vesperaClient(VesperaBridgeNativeSettings nativeSettings) {
-        return VesperaClient.create();
-    }
 
     @Bean
     @ConditionalOnMissingBean

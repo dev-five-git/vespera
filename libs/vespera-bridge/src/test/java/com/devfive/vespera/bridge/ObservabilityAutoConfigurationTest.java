@@ -29,7 +29,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
 class ObservabilityAutoConfigurationTest {
 
     private final WebApplicationContextRunner runner = new WebApplicationContextRunner()
-            .withConfiguration(AutoConfigurations.of(
+            .withConfiguration(AutoConfigurations.of(VesperaBridgeCoreAutoConfiguration.class,
                     VesperaBridgeAutoConfiguration.class,
                     VesperaBridgeMetricsAutoConfiguration.class));
 
@@ -131,7 +131,7 @@ class ObservabilityAutoConfigurationTest {
         assertTrue(props.isShutdownOnClose());
         assertTrue(new VesperaBridgeNativeSettings(true).autoInitialized());
         // An auto-initialised settings bean triggers the (not-loaded → no-op) shutdown.
-        new VesperaBridgeAutoConfiguration()
+        new VesperaBridgeCoreAutoConfiguration()
                 .vesperaBridgeShutdown(new VesperaBridgeNativeSettings(true), props).destroy();
     }
 

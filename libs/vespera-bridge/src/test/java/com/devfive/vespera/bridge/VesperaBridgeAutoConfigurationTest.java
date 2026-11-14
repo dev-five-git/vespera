@@ -41,7 +41,7 @@ class VesperaBridgeAutoConfigurationTest {
     // sees user-supplied beans — same ordering as a real Boot app.
     private final WebApplicationContextRunner runner =
             new WebApplicationContextRunner()
-                    .withConfiguration(AutoConfigurations.of(VesperaBridgeAutoConfiguration.class));
+                    .withConfiguration(AutoConfigurations.of(VesperaBridgeCoreAutoConfiguration.class, VesperaBridgeAutoConfiguration.class));
 
     @Test
     void exposedAppsPropertyRestrictsTheDefaultAppResolver() {
@@ -145,7 +145,7 @@ class VesperaBridgeAutoConfigurationTest {
     @Test
     void autoConfigurationBacksOffOutsideServletWebApps() {
         new org.springframework.boot.test.context.runner.ApplicationContextRunner()
-                .withConfiguration(AutoConfigurations.of(VesperaBridgeAutoConfiguration.class))
+                .withConfiguration(AutoConfigurations.of(VesperaBridgeCoreAutoConfiguration.class, VesperaBridgeAutoConfiguration.class))
                 .run(ctx -> assertTrue(ctx.getBeansOfType(VesperaProxyController.class).isEmpty()));
     }
 

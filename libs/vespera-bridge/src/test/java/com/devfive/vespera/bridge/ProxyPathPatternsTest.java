@@ -51,7 +51,7 @@ class ProxyPathPatternsTest {
 
     private final WebApplicationContextRunner runner = new WebApplicationContextRunner()
             .withUserConfiguration(Mvc.class, OtherController.class)
-            .withConfiguration(AutoConfigurations.of(VesperaBridgeAutoConfiguration.class));
+            .withConfiguration(AutoConfigurations.of(VesperaBridgeCoreAutoConfiguration.class, VesperaBridgeAutoConfiguration.class));
 
     private static MockHttpServletRequest request(String method, String path) {
         MockHttpServletRequest request = new MockHttpServletRequest(method, path);

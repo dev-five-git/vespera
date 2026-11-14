@@ -253,7 +253,7 @@ class PrincipalForwardingTest {
     // ── autoconfiguration ──
 
     private final WebApplicationContextRunner runner = new WebApplicationContextRunner()
-            .withConfiguration(AutoConfigurations.of(VesperaBridgeAutoConfiguration.class));
+            .withConfiguration(AutoConfigurations.of(VesperaBridgeCoreAutoConfiguration.class, VesperaBridgeAutoConfiguration.class));
 
     @Configuration(proxyBeanMethods = false)
     static class CustomResolver {

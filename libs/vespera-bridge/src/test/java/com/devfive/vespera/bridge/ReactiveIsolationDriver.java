@@ -51,7 +51,7 @@ public final class ReactiveIsolationDriver implements Callable<String> {
 
         AtomicReference<String> failure = new AtomicReference<>();
         new ReactiveWebApplicationContextRunner()
-                .withConfiguration(AutoConfigurations.of(VesperaBridgeReactiveAutoConfiguration.class))
+                .withConfiguration(AutoConfigurations.of(VesperaBridgeCoreAutoConfiguration.class, VesperaBridgeReactiveAutoConfiguration.class))
                 .withUserConfiguration(WebFluxConfig.class)
                 .run(ctx -> {
                     if (ctx.getStartupFailure() != null) {
