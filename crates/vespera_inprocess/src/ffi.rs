@@ -300,8 +300,10 @@ fn prepare_async(input: RequestInput<'_>) -> Result<AsyncClaim, Vec<u8>> {
 }
 
 /// The spawned async dispatch: poll it under `catch_unwind` (a handler
-/// panic answers a `500` panic wire), deliver, then release the in-flight
-/// slot and the lease so a shutdown drain waits for the callback too.
+/// panic answers a `500` panic wire), release the in-flight slot, deliver,
+/// then release the lease so a shutdown drain waits for the callback too.
+/// The slot goes first (as in JNI `dispatchAsync`): a callback that
+/// dispatches again must not find its own finished request still counted.
 async fn run_async(
     input: Vec<u8>,
     permit: AsyncPermit,
@@ -314,8 +316,9 @@ async fn run_async(
             .unwrap_or_else(|_| Poll::Ready(panic_wire()))
     })
     .await;
+    drop(permit);
     completion.deliver(wire);
-    drop((permit, lease));
+    drop(lease);
 }
 
 /// `int vespera_dispatch_async(const uint8_t*, size_t, vespera_callback,
