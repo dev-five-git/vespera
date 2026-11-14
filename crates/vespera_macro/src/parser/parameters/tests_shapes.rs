@@ -77,6 +77,11 @@ fn render(func_src: &str, path_params: &[&str]) -> String {
     "fn f(q: Query<Paged<Filter, i64>>) {}",
     &[]
 )]
+#[case::query_generic_lifetime_argument(
+    "query_generic_lifetime_argument",
+    "fn f(q: Query<Paged<'static, Filter>>) {}",
+    &[]
+)]
 #[case::query_generic_missing_argument("query_generic_missing_argument", "fn f(q: Query<Paged>) {}", &[])]
 #[case::path_generic("path_generic", "fn f(p: Path<Keyed<i64>>) {}", &["key"])]
 // L8: `Path<Vec<(String, V)>>` is one `(name, value)` pair per segment.

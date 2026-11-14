@@ -376,6 +376,7 @@ mod tests {
     #[rstest::rstest]
     #[case::both("result_both", "Result<String, i32>")]
     #[case::one_argument("result_one_argument", "Result<String>")]
+    #[case::lifetime_argument("result_lifetime_argument", "Result<'static, String>")]
     fn result_is_externally_tagged(#[case] name: &str, #[case] src: &str) {
         let ty: Type = syn::parse_str(src).unwrap();
         let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());

@@ -235,6 +235,7 @@ mod tests {
     fn known_type_non_path_type_is_false() {
         let ty: Type = syn::parse_str("(i32, String)").unwrap();
         assert!(!is_known_type(&ty, &HashSet::new(), &HashMap::new()));
+        assert!(!is_defined_struct(&ty, &HashMap::new()));
     }
 
     #[test]
