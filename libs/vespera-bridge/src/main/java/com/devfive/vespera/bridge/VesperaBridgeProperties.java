@@ -259,7 +259,7 @@ public class VesperaBridgeProperties {
      * {@code 404}).  Also limits which CORS preflights {@code cors=rust}
      * routes to Rust.
      */
-    private List<String> includePatterns = new ArrayList<>(ProxyPathPatterns.DEFAULT_INCLUDE);
+    private List<String> includePatterns = new ArrayList<>(ProxyPathDefaults.INCLUDE);
 
     /**
      * Path patterns (Spring {@code PathPattern} syntax) the proxy controller

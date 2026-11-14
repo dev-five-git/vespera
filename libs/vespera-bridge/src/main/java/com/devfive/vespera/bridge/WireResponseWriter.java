@@ -65,7 +65,11 @@ final class WireResponseWriter {
      * advertises, or {@link #NO_CONTENT_LENGTH} to leave it unset.
      *
      * <ul>
-     *   <li>No-body status ({@code 1xx}/{@code 204}/{@code 304}) → {@code 0}.</li>
+     *   <li>No-body status ({@code 1xx}/{@code 204}/{@code 304}) → unset: a
+     *       {@code 1xx}/{@code 204} must not carry {@code Content-Length},
+     *       and a {@code 304}'s would describe the selected representation,
+     *       not the (empty) message body, so a synthesised {@code 0} is
+     *       wrong for all of them (RFC 9110 §8.6).</li>
      *   <li>{@code HEAD} → the Rust-declared {@code content-length} (the
      *       GET-equivalent representation length axum computes) when present
      *       and valid; otherwise the wire body length if the handler produced
@@ -77,7 +81,7 @@ final class WireResponseWriter {
     static long bufferedContentLength(
             int status, String method, long bodyLen, long declaredContentLength) {
         if (!responseStatusPermitsBody(status)) {
-            return 0L;
+            return NO_CONTENT_LENGTH;
         }
         if (isHead(method)) {
             if (declaredContentLength >= 0) {
@@ -289,6 +293,11 @@ final class WireResponseWriter {
             byte[] wire, String method, ProxyServletResponse proxied) {
         EntityHead head = entityHead(wire, method, proxied);
         ResponseEntity.BodyBuilder builder = ResponseEntity.status(head.status).headers(head.headers);
+        if (!responseStatusPermitsBody(head.status.value())) {
+            // No body object at all: a message converter would otherwise
+            // add `Content-Length: 0` to a 1xx / 204 / 304.
+            return builder.build();
+        }
         if (head.bodyLen == 0) {
             return builder.body(VesperaWireCodec.EMPTY_BODY);
         }

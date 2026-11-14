@@ -48,7 +48,7 @@ final class VesperaSwaggerUiUrls {
                 swaggerUi.setUrlsPrimaryName(APPLICATION);
             }
         }
-        String base = props.normalizedDocsPath();
+        String base = props.validatedDocsPath();
         for (String app : apps) {
             String name = groupName(app);
             if (urls.stream().noneMatch(url -> name.equals(url.getName()))) {

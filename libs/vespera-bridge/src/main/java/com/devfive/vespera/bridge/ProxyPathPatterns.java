@@ -26,9 +26,12 @@ import java.util.List;
 public final class ProxyPathPatterns {
 
     /** The default include list: the whole URL space. */
-    public static final List<String> DEFAULT_INCLUDE = List.of("/**");
+    public static final List<String> DEFAULT_INCLUDE = ProxyPathDefaults.INCLUDE;
 
-    private static final ProxyPathPatterns DEFAULT = new ProxyPathPatterns(DEFAULT_INCLUDE, List.of());
+    /** Built on first use: parsing needs spring-web, which a non-web app lacks. */
+    private static final class DefaultHolder {
+        static final ProxyPathPatterns DEFAULT = new ProxyPathPatterns(DEFAULT_INCLUDE, List.of());
+    }
 
     private final List<String> include;
     private final List<String> exclude;
@@ -50,7 +53,7 @@ public final class ProxyPathPatterns {
 
     /** {@code /**} with no exclusions — the historical catch-all. */
     public static ProxyPathPatterns defaults() {
-        return DEFAULT;
+        return DefaultHolder.DEFAULT;
     }
 
     public List<String> include() {

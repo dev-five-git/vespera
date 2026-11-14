@@ -46,6 +46,44 @@ class RequestPathsTest {
                 request(uri, context, servletPath, match)));
     }
 
+    /**
+     * The servlet path is decoded and normalised by the container, the
+     * request URI is not: the prefix is stripped by matching decoded raw
+     * segments, so the forwarded remainder stays raw.
+     */
+    @ParameterizedTest
+    @CsvSource({
+            // uri, servletPath, expected
+            "/%61pi/users, /api, /users",
+            "/%61pi/users%2Fx, /api, /users%2Fx",
+            "//api/users, /api, /users",
+            "/api//users, /api, //users",
+            "//api//v1/users, /api/v1, /users",
+            // encodedSolidusHandling=decode: one raw segment holds two decoded ones
+            "/api%2Fv1/users, /api/v1, /users",
+            // encodedSolidusHandling=passthrough: %2F stays part of the remainder
+            "/api/%2F/users, /api, /%2F/users",
+            // dot segments the container resolved
+            "/api/x/../users, /api, /users",
+            "/x/../api/users, /api, /users",
+            "/api/./users, /api, /users",
+            "/%2e%2e/api/users, /api, /users",
+            "/api;v=1/users, /api, /users",
+            // non-ASCII servlet path
+            "/%C3%A9t%C3%A9/users, /été, /users",
+    })
+    void prefixStripMatchesDecodedSegments(String uri, String servletPath, String expected) {
+        assertEquals(expected, RequestPaths.pathWithinApplication(
+                request(uri, "", servletPath, MappingMatch.PATH)));
+    }
+
+    @Test
+    void unmatchablePrefixFallsBackToTheEncodedPathInfo() {
+        MockHttpServletRequest request = request("/elsewhere/x", "", "/api", MappingMatch.PATH);
+        request.setPathInfo("/us ers/é%");
+        assertEquals("/us%20ers/%C3%A9%25", RequestPaths.pathWithinApplication(request));
+    }
+
     @Test
     void containersWithoutMappingSupportAreTreatedAsUnmapped() {
         MockHttpServletRequest unsupported = new MockHttpServletRequest("GET", "/v1/health") {

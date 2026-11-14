@@ -80,9 +80,12 @@ public enum DispatchMode {
      * small, bounded, safe requests (GET/HEAD/OPTIONS with
      * {@code Content-Length} absent or &le; 1 MiB —
      * the DIRECT gate {@code DEFAULT_MAX_DIRECT_BYTES}; the 256 KiB
-     * figure is the separate {@link #SYNC} gate).
-     * The safety gate matters because a response that overflows
-     * the pooled direct buffer re-runs the Rust handler once.  Never
+     * figure is the separate {@link #SYNC} gate) on a platform thread
+     * (on a virtual thread it picks response-only {@link #STREAMING}).
+     * A response that overflows the pooled direct buffer is kept in the
+     * native stash and fetched into a grown buffer, or — beyond the pool
+     * cap, or a {@code text/event-stream} — streamed from the stash, so
+     * the Rust handler runs once.  Never
      * selected by the conservative opt-out
      * {@link BidirectionalStreamingDispatchModeResolver}; large or
      * unbounded bodies always belong on
