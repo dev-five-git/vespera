@@ -486,8 +486,10 @@ Spring MVC answers every CORS **preflight** (`OPTIONS` with `Origin` and `Access
 
 | Value | Preflights | `Access-Control-*` on responses |
 |---|---|---|
-| `rust` (default) | Routed to the proxy by a highest-precedence handler mapping (`VesperaPreflightHandlerMapping`), so the Rust router answers them — configure a `tower_http::cors::CorsLayer` there | A Rust header replaces one Spring or a filter already set |
+| `rust` (default) | Routed to the proxy by a highest-precedence handler mapping (`VesperaPreflightHandlerMapping`), so the Rust router answers them — configure a `tower_http::cors::CorsLayer` there. A preflight whose actual request a Java handler serves (see below) stays with Spring | A Rust header replaces one Spring or a filter already set |
 | `spring` | Answered by Spring MVC (`WebMvcConfigurer#addCorsMappings`, `@CrossOrigin`) or Spring Security `http.cors()` — the pre-0.6 behaviour | A Rust header is dropped when Spring already set it |
+
+**Java endpoints keep their own CORS.** With `rust`, a preflight is routed to Rust only when Rust would also serve the actual request. The bridge asks the application's other handler mappings which handler `Access-Control-Request-Method` + the same path would reach. When that handler is a Java one (a `@RestController` with `@CrossOrigin` at `/java/x`, a router function, an actuator endpoint), or a Java mapping rejects the request (for example `405`), Spring answers the preflight with that handler's CORS configuration. Rust paths are unchanged. The same rule applies to the servlet `VesperaPreflightHandlerMapping` and the WebFlux `VesperaReactivePreflightFilter`. It holds only when they are context beans (the autoconfigured ones are). Built by hand outside a context, they route every owned preflight to Rust.
 
 With `rust`, do not also configure Spring CORS for proxied paths, and do not enable Spring Security's `http.cors()` (its `CorsFilter` answers preflights before they reach Spring MVC). Without a CORS layer in Rust, a preflight gets whatever the router answers for `OPTIONS` (axum: `405` for a route without an `OPTIONS` handler).
 
