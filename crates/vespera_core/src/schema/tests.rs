@@ -811,6 +811,49 @@ mod nullable_and_boolean_schemas {
         },
         json!({"anyOf": [{"type": "integer"}, {"type": "null"}]})
     )]
+    // A `type` does not help: `type: [T, "null"]` admits `null`, but the
+    // sibling composition keyword still rejects it, so the whole schema is
+    // wrapped exactly like the type-less case.
+    #[case::typed_one_of_wrapped(
+        Schema {
+            one_of: Some(vec![inline(Schema::object_empty())]),
+            nullable: Some(true),
+            ..Schema::object_empty()
+        },
+        json!({"anyOf": [{"type": "object", "oneOf": [{"type": "object"}]}, {"type": "null"}]})
+    )]
+    #[case::typed_all_of_wrapped(
+        Schema {
+            all_of: Some(vec![SchemaRef::Ref(Reference::schema("A"))]),
+            nullable: Some(true),
+            ..Schema::object_empty()
+        },
+        json!({"anyOf": [{"type": "object", "allOf": [{"$ref": "#/components/schemas/A"}]}, {"type": "null"}]})
+    )]
+    #[case::typed_not_wrapped(
+        Schema {
+            not: Some(inline(Schema::integer())),
+            nullable: Some(true),
+            ..Schema::string()
+        },
+        json!({"anyOf": [{"type": "string", "not": {"type": "integer"}}, {"type": "null"}]})
+    )]
+    #[case::typed_any_of_without_null_wrapped(
+        Schema {
+            any_of: Some(vec![inline(Schema::integer())]),
+            nullable: Some(true),
+            ..Schema::integer()
+        },
+        json!({"anyOf": [{"type": "integer", "anyOf": [{"type": "integer"}]}, {"type": "null"}]})
+    )]
+    #[case::typed_any_of_with_null_unchanged(
+        Schema {
+            any_of: Some(vec![inline(Schema::integer()), inline(Schema::new(SchemaType::Null))]),
+            nullable: Some(true),
+            ..Schema::integer()
+        },
+        json!({"type": ["integer", "null"], "anyOf": [{"type": "integer"}, {"type": "null"}]})
+    )]
     #[case::typeless_unconstrained_already_accepts_null(
         Schema { description: Some("anything".into()), nullable: Some(true), ..Schema::default() },
         json!({"description": "anything"})
