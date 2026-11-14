@@ -15,11 +15,19 @@
  *                  response: {"v":1,"status","headers","metadata",
  *                             "validation_errors"?}
  *   bytes 4+N..  : raw body bytes
- * Every failure that can be expressed as HTTP (malformed wire 400, unknown
- * app 404, body too large 413, handler panic 500 with metadata
- * "panicked":"true", runtime shut down 503, deadline 504) is returned as a
- * normal wire response with VESPERA_OK.  Negative return codes are reserved
- * for API misuse and conditions where no response can be produced.
+ * HEADER VALUES use a Latin-1 mapping (one JSON char U+0000..U+00FF per
+ * byte), the way servlet containers expose raw header bytes.  Request: a
+ * value whose chars are all <= U+00FF becomes one byte per char; a value
+ * with any wider char is sent as its UTF-8 bytes.  Response: every value
+ * byte (including obs-text >= 0x80) is one char, so re-encoding the chars as
+ * Latin-1 restores the exact bytes.  ASCII is byte-identical either way.
+ * Every failure that can be expressed as HTTP (malformed wire / request
+ * 400, unknown app 404, invalid HTTP method 405, body too large 413, more
+ * than 1024 request headers 431, handler panic 500 with metadata
+ * "panicked":"true", shared runtime could not be built 500, runtime shut
+ * down 503, deadline 504) is returned as a normal wire response with
+ * VESPERA_OK.  Negative return codes are reserved for API misuse and
+ * conditions where no response can be produced.
  *
  * THREAD SAFETY: every function may be called concurrently from any number
  * of host threads.  The synchronous dispatch functions block the calling
@@ -62,8 +70,9 @@ extern "C" {
  * Completion callback of vespera_dispatch_async.  Invoked at most once
  * (exactly once except for the vespera_shutdown case below), possibly
  * before vespera_dispatch_async returns: inline on the calling thread when
- * the request is rejected before dispatch (400 / 413 / 503), otherwise on a
- * runtime worker thread — including when
+ * the request is rejected before dispatch (400 / 413 / 503, or 500 when the
+ * shared runtime could not be built), otherwise on a runtime worker thread —
+ * including when
  * vespera_shutdown drops a pending dispatch with a 503, which can happen
  * after vespera_shutdown has returned.  The callback OWNS `response` and
  * must release it with vespera_free(response, response_len).  It must not
@@ -89,8 +98,10 @@ int vespera_init(void);
  * *response_len hold a Rust-allocated wire response the caller owns and
  * must release with vespera_free (`request` NULL with a non-zero
  * `request_len`, or `request_len` above PTRDIFF_MAX, is answered with a 400
- * wire response).  VESPERA_ERR_INVALID_ARGUMENT when `response` or
- * `response_len` is NULL (nothing is written).
+ * wire response; a shut-down runtime with 503 and a runtime that could not
+ * be built with 500 — the dispatch never runs).
+ * VESPERA_ERR_INVALID_ARGUMENT when `response` or `response_len` is NULL
+ * (nothing is written).
  */
 int vespera_dispatch(const uint8_t *request, size_t request_len, uint8_t **response, size_t *response_len);
 
@@ -101,7 +112,10 @@ int vespera_dispatch(const uint8_t *request, size_t request_len, uint8_t **respo
  * bytes; `out` contents are undefined and a retry RE-RUNS the handler
  * (out == NULL with out_capacity == 0 is a valid size probe).
  * VESPERA_ERR_INVALID_ARGUMENT: `written` is NULL, `out` is NULL with a
- * non-zero capacity, or the request and output buffers overlap.
+ * non-zero capacity, or the request and output buffers overlap.  Like
+ * vespera_dispatch, a shut-down runtime answers a 503 wire response and a
+ * runtime that could not be built a 500 one (subject to the same OVERFLOW
+ * rule).
  */
 int vespera_dispatch_into(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *written);
 
@@ -113,7 +127,8 @@ int vespera_dispatch_into(const uint8_t *request, size_t request_len, uint8_t *o
  * → 503 (see vespera_configure_async_max_in_flight), `request` NULL with a
  * non-zero `request_len` or `request_len` above PTRDIFF_MAX → 400, request
  * above the size cap → 413 (see vespera_configure_max_request_bytes),
- * runtime shut down → 503.  Otherwise it runs on a runtime worker, which
+ * runtime shut down → 503, shared runtime could not be built → 500.
+ * Otherwise it runs on a runtime worker, which
  * may also happen before vespera_dispatch_async returns: do not hold a
  * lock across this call that the callback takes, and have `user_data`
  * ready before calling.  `user_data` is passed through untouched and must

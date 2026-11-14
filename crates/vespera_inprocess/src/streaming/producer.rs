@@ -78,10 +78,18 @@ fn lock_producer_handle(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Whether the request producer task was started — i.e. the handler read
-/// at least one body chunk, which lazily spawns the producer.
-fn producer_was_started(producer_handle: &RequestProducerHandle) -> bool {
-    lock_producer_handle(producer_handle).is_some()
+/// Mark the dispatch finished and report whether the request producer task
+/// was started — i.e. the handler read at least one body chunk, which lazily
+/// spawns the producer.
+///
+/// Both happen under the producer-handle lock, the lock
+/// [`ChannelBody::start_producer`] holds while it checks the flag and spawns:
+/// a producer is therefore either started (and seen here, so the source is
+/// closed and the producer joined) or never started at all.
+fn finish_and_check_started(producer_handle: &RequestProducerHandle, inline: &InlineState) -> bool {
+    let handle = lock_producer_handle(producer_handle);
+    inline.finish();
+    handle.is_some()
 }
 
 /// RAII guard that closes the request body source **exactly once** if the
@@ -119,10 +127,17 @@ impl<C: FnOnce()> RequestSourceCloser<C> {
     /// read) that runs only AFTER the response is fully drained, so a panicking
     /// hook is contained rather than allowed to abort the process or fail an
     /// already-produced response.
+    ///
+    /// The first call also marks the dispatch **finished**: a request body
+    /// that outlived the dispatch (moved into a detached `tokio::spawn` task)
+    /// never starts the producer afterwards — its next poll fails with
+    /// [`StreamAbort`] instead of calling a host source whose caller frame
+    /// (e.g. the Java `InputStream` of a returned JNI call) is gone.
     pub fn close_if_started(&mut self) {
-        if let Some(close) = self.close.take()
-            && (self.inline.touched() || producer_was_started(&self.producer_handle))
-        {
+        let Some(close) = self.close.take() else {
+            return;
+        };
+        if finish_and_check_started(&self.producer_handle, &self.inline) || self.inline.touched() {
             // `AssertUnwindSafe`: the hook is `FnOnce()` best-effort cleanup and
             // the producer is being torn down regardless, so swallowing its
             // panic leaves no observable state inconsistent.
@@ -221,17 +236,24 @@ impl ChannelBody {
 
     /// Start the producer on the first poll, once a producer slot
     /// ([`max_streaming_request_producers`]) is available.  `Pending` while
-    /// waiting for a slot (no thread is held meanwhile).
-    pub(super) fn poll_start_producer(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    /// waiting for a slot (no thread is held meanwhile).  `Err` when the
+    /// dispatch already finished (see [`RequestSourceCloser::close_if_started`]):
+    /// the source is then dropped unread.
+    pub(super) fn poll_start_producer(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), StreamAbort>> {
         if self.rx.is_none() && self.pull_chunk.is_some() {
             let Poll::Ready(permit) = self.poll_producer_slot(cx) else {
                 return Poll::Pending;
             };
-            if let Some(pull) = self.pull_chunk.take() {
-                self.start_producer(pull, permit);
+            if let Some(pull) = self.pull_chunk.take()
+                && !self.start_producer(pull, permit)
+            {
+                return Poll::Ready(Err(StreamAbort));
             }
         }
-        Poll::Ready(())
+        Poll::Ready(Ok(()))
     }
 
     /// Acquire one producer slot: an uncontended `try_acquire_owned` costs
@@ -258,15 +280,30 @@ impl ChannelBody {
         Poll::Ready(acquired.ok())
     }
 
-    fn start_producer(&mut self, pull: PullChunk, permit: Option<OwnedSemaphorePermit>) {
+    /// Spawn the producer — unless the dispatch already finished, in which
+    /// case `pull` and the slot are dropped unused and `false` is returned.
+    /// The check and the spawn run under the producer-handle lock, so they
+    /// cannot interleave with the dispatcher's finish + "was it started?"
+    /// check ([`finish_and_check_started`]).
+    fn start_producer(&mut self, pull: PullChunk, permit: Option<OwnedSemaphorePermit>) -> bool {
+        let producer_handle = Arc::clone(&self.producer_handle);
+        let mut handle = lock_producer_handle(&producer_handle);
+        if self.inline.finished() {
+            return false;
+        }
         // Bounded mpsc (default 16 slots, see effective_streaming_channel_capacity)
         // — gives natural backpressure between the pull_chunk producer
         // thread and the axum handler consumer. The channel is created
         // with the producer so unpolled bodies avoid both pieces of setup.
         let (tx, rx) = tokio::sync::mpsc::channel::<RequestFrame>(self.capacity);
         self.rx = Some(rx);
-        let handle = spawn_request_producer(pull, tx, Arc::clone(&self.clean_end), permit);
-        store_request_producer_handle(&self.producer_handle, handle);
+        *handle = Some(spawn_request_producer(
+            pull,
+            tx,
+            Arc::clone(&self.clean_end),
+            permit,
+        ));
+        true
     }
 }
 
@@ -281,8 +318,10 @@ impl HttpBody for ChannelBody {
         if let Some(frame) = self.poll_inline() {
             return Poll::Ready(frame);
         }
-        if self.poll_start_producer(cx).is_pending() {
-            return Poll::Pending;
+        match self.poll_start_producer(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(abort)) => return Poll::Ready(Some(Err(abort))),
+            Poll::Ready(Ok(())) => {}
         }
 
         let Some(rx) = self.rx.as_mut() else {
@@ -467,13 +506,6 @@ fn spawn_request_producer(
         // tx / tx_fallback dropped at end of scope → axum sees end-of-stream
         // (or the forwarded error above).
     })
-}
-
-fn store_request_producer_handle(
-    producer_handle: &RequestProducerHandle,
-    handle: tokio::task::JoinHandle<()>,
-) {
-    *lock_producer_handle(producer_handle) = Some(handle);
 }
 
 /// Join the request producer (if it was started), waiting at most

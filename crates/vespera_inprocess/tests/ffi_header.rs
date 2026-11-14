@@ -117,6 +117,30 @@ fn header_constants_match_the_rust_constants() {
     assert_eq!(defines(HEADER), expected);
 }
 
+/// The header's prose documents every status the engine synthesises (the
+/// `error_wire` call sites) and the header-value Latin-1 mapping, so a C
+/// host can handle them without reading the Rust sources.
+#[test]
+fn header_documents_every_synthesised_status_and_the_latin1_mapping() {
+    for documented in [
+        "400",
+        "404",
+        "405",
+        "413",
+        "431",
+        "\"panicked\":\"true\"",
+        "could not be built 500",
+        "503",
+        "504",
+        "Latin-1",
+    ] {
+        assert!(
+            HEADER.replace("\r\n", "\n").contains(documented),
+            "vespera.h does not document {documented:?}"
+        );
+    }
+}
+
 #[test]
 fn header_matches_the_shipped_file() {
     let on_disk =
