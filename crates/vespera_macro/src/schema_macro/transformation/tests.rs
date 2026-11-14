@@ -155,14 +155,37 @@ fn parse_attrs(field: &str) -> Vec<syn::Attribute> {
 )]
 #[case::partial_drops_typed_keys(
     "field_partial_typed_keys",
-    r#"#[serde(default = "f", with = "m", rename = "e-mail", alias = "mail")]
-       #[serde(serialize_with = "s", deserialize_with = "d")]"#,
+    r#"#[serde(default = "f", rename = "e-mail", alias = "mail")]"#,
     true,
     false
 )]
 #[case::partial_skip_if_becomes_is_none(
     "field_partial_skip_if",
     r#"#[serde(skip_serializing_if = "String::is_empty", default)]"#,
+    true,
+    false
+)]
+#[case::partial_with_module(
+    "field_partial_with_module",
+    r#"#[serde(default = "f", with = "codec::as_string", rename = "e-mail")]"#,
+    true,
+    false
+)]
+#[case::partial_split_codec(
+    "field_partial_split_codec",
+    r#"#[serde(serialize_with = "s")] #[serde(deserialize_with = "d", default)]"#,
+    true,
+    false
+)]
+#[case::partial_serialize_only(
+    "field_partial_serialize_only",
+    r#"#[serde(serialize_with = "s", skip_serializing_if = "is_zero")]"#,
+    true,
+    false
+)]
+#[case::partial_non_string_codec_dropped(
+    "field_partial_non_string_codec",
+    r"#[serde(with = 42, alias = 'x')]",
     true,
     false
 )]
@@ -174,10 +197,19 @@ fn field_serde_attrs_cases(
     #[case] strip_rename: bool,
 ) {
     let attrs = parse_attrs(field_attrs);
-    insta::assert_snapshot!(
-        name,
-        render(&field_serde_attrs(&attrs, wrapped, strip_rename))
-    );
+    let inner_ty = quote!(T);
+    let wrap = OptionWrap {
+        adapter_prefix: "__vespera_Dto_x",
+        inner_ty: &inner_ty,
+    };
+    let (attrs, adapters) = field_serde_attrs(&attrs, wrapped.then_some(&wrap), strip_rename);
+    let mut rendered = render(&attrs);
+    if !adapters.is_empty() {
+        let file: syn::File = syn::parse2(adapters).unwrap();
+        rendered.push_str("\n---\n");
+        rendered.push_str(&prettyplease::unparse(&file));
+    }
+    insta::assert_snapshot!(name, rendered);
 }
 
 #[rstest]
@@ -189,13 +221,17 @@ fn field_serde_attrs_cases(
     "container_tag_rename_all",
     r#"#[serde(tag = "t", rename_all = "snake_case")]"#
 )]
+#[case::tag_with_source_rename(
+    "container_tag_source_rename",
+    r#"#[serde(tag = "t")] #[serde(rename = "wire")]"#
+)]
 #[case::conversions(
     "container_conversions",
     r#"#[serde(from = "W", into = "W")] #[serde(try_from = "W")] #[doc = "d"] #[serde(bound = "")]"#
 )]
 fn container_serde_attrs_cases(#[case] name: &str, #[case] struct_attrs: &str) {
     let item: syn::ItemStruct = syn::parse_str(&format!("{struct_attrs} struct S {{}}")).unwrap();
-    insta::assert_snapshot!(name, render(&container_serde_attrs(&item.attrs)));
+    insta::assert_snapshot!(name, render(&container_serde_attrs(&item.attrs, "S")));
 }
 
 #[rstest]
@@ -232,16 +268,37 @@ fn renamed_field_serde_rename_cases(
 }
 
 #[rstest]
-#[case::rename_all_applied(r"", Some(r#"# [form_data (field_name = "filePath")]"#))]
+#[case::rename_all_applied(r"", true, Some(r#"# [form_data (field_name = "filePath")]"#))]
 #[case::other_form_data(
     r#"#[form_data(limit = "1MiB")]"#,
+    true,
     Some(r#"# [form_data (field_name = "filePath")]"#)
 )]
-#[case::explicit_field_name(r#"#[form_data(field_name = "doc")]"#, None)]
-fn renamed_field_form_name_cases(#[case] field_attrs: &str, #[case] expected: Option<&str>) {
+#[case::explicit_field_name(r#"#[form_data(field_name = "doc")]"#, true, None)]
+#[case::serde_rename_before_rename_all(
+    r#"#[serde(rename = "upload")]"#,
+    true,
+    Some(r#"# [form_data (field_name = "upload")]"#)
+)]
+#[case::form_data_before_serde_rename(
+    r#"#[serde(rename = "upload")] #[form_data(field_name = "doc")]"#,
+    true,
+    None
+)]
+#[case::kept_field_serde_rename(
+    r#"#[serde(rename = "upload")]"#,
+    false,
+    Some(r#"# [form_data (field_name = "upload")]"#)
+)]
+#[case::kept_field_plain(r"", false, None)]
+fn field_form_name_cases(
+    #[case] field_attrs: &str,
+    #[case] renamed: bool,
+    #[case] expected: Option<&str>,
+) {
     let attrs = parse_attrs(field_attrs);
     assert_eq!(
-        renamed_field_form_name(&attrs, "file_path", "camelCase").map(|t| t.to_string()),
+        field_form_name(&attrs, "file_path", "camelCase", renamed).map(|t| t.to_string()),
         expected.map(str::to_string)
     );
 }

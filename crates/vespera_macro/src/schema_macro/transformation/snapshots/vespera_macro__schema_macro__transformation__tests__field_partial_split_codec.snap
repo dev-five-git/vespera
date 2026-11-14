@@ -1,0 +1,26 @@
+---
+source: crates/vespera_macro/src/schema_macro/transformation/tests.rs
+assertion_line: 212
+expression: rendered
+---
+# [serde (default)]
+# [serde (serialize_with = "__vespera_Dto_x_ser" , deserialize_with = "__vespera_Dto_x_de" , skip_serializing_if = "Option::is_none")]
+---
+#[doc(hidden)]
+#[allow(non_snake_case, clippy::ref_option)]
+fn __vespera_Dto_x_ser<__S: serde::Serializer>(
+    value: &Option<T>,
+    serializer: __S,
+) -> Result<__S::Ok, __S::Error> {
+    match value {
+        Some(inner) => s(inner, serializer),
+        None => serializer.serialize_none(),
+    }
+}
+#[doc(hidden)]
+#[allow(non_snake_case)]
+fn __vespera_Dto_x_de<'de, __D: serde::Deserializer<'de>>(
+    deserializer: __D,
+) -> Result<Option<T>, __D::Error> {
+    d(deserializer).map(Some)
+}
