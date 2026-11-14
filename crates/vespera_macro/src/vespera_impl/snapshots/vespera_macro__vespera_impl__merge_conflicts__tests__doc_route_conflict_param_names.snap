@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/vespera_impl/merge_conflicts.rs
+expression: err
+---
+vespera! macro: route `GET /api/{name}` of `spec_url` and `/api/{id}` of this app are the same route with different parameter names — `spec_url` adds a `GET /api/{name}` route; move the documentation to an unused path

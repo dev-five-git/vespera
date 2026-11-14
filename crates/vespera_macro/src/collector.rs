@@ -7,6 +7,7 @@ use syn::Item;
 
 mod module_scope;
 mod path_scan;
+pub mod test_scope;
 
 pub use path_scan::{fingerprints_from_scan, scan_route_folder};
 
@@ -285,6 +286,7 @@ pub fn collect_metadata_from_files<'a>(
     }
 
     let folder_module = crate::router_codegen::route_dir_module_path(folder_name);
+    let mut test_scope = test_scope::TestScope::current();
     for file in files {
         if file.extension().is_none_or(|e| e != "rs") {
             continue;
@@ -328,6 +330,21 @@ pub fn collect_metadata_from_files<'a>(
                     file, &found,
                 )));
             }
+            // Compiled routes behind a test-only `#[cfg(..)]` (a test build
+            // registered them): mounted, but never documented.
+            let file_test_only = test_scope.file_test_only(file);
+            let test_fns = test_scope::test_only_fns(file);
+            metadata.test_only_routes.extend(
+                stored_routes
+                    .iter()
+                    .filter(|stored| {
+                        file_test_only || test_fns.contains(stored.fn_name.trim_start_matches("r#"))
+                    })
+                    .map(|stored| crate::metadata::TestOnlyRoute {
+                        file_path: file_path.clone(),
+                        function_name: stored.fn_name.clone(),
+                    }),
+            );
             push_stored_routes(
                 &mut metadata,
                 &base_path,

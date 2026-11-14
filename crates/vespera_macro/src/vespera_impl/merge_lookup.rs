@@ -152,13 +152,7 @@ pub(super) fn resolve_export(
         }
     }
     // Renamed dependency: the only crate that exported this app name.
-    let mut exporters: Vec<String> = std::fs::read_dir(export_root(vespera_dir))
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().join(format!("{app}.openapi.json")).is_file())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
+    let mut exporters = exporters_of(vespera_dir, &app);
     let krate = if exporters.len() == 1 {
         exporters.pop()?
     } else {
@@ -168,6 +162,51 @@ pub(super) fn resolve_export(
         spec_file: export_spec_path(vespera_dir, &krate, &app),
         krate,
         app,
+    })
+}
+
+/// Every crate directory under [`export_root`] holding `app`'s spec, sorted.
+fn exporters_of(vespera_dir: &Path, app: &str) -> Vec<String> {
+    let mut exporters: Vec<String> = std::fs::read_dir(export_root(vespera_dir))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().join(format!("{app}.openapi.json")).is_file())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    exporters.sort();
+    exporters
+}
+
+/// The compile error for a merge path that only the renamed-dependency
+/// fallback could resolve while several crates exported that app name — e.g.
+/// a stale `export/<old crate>/` directory left by a renamed crate.  Guessing
+/// one would merge an arbitrary document (the key assertion then fails with a
+/// misleading message), so the candidates are listed instead.
+pub(super) fn ambiguous_export_error(
+    merge_path: &syn::Path,
+    aliases: &HashMap<String, Vec<String>>,
+    vespera_dir: &Path,
+) -> Option<String> {
+    let resolved = resolve_export(merge_path, aliases, vespera_dir)?;
+    if resolved.spec_file.is_file() {
+        return None;
+    }
+    let exporters = exporters_of(vespera_dir, &resolved.app);
+    (exporters.len() > 1).then(|| {
+        format!(
+            "vespera! merge: `{}` does not name the crate that exports `{app}`, and several \
+             crates did: {} (under '{}') — spell the merge path as `<crate>::...::{app}`, or \
+             delete the stale directories",
+            super::openapi_io::display_merge_path(merge_path),
+            exporters
+                .iter()
+                .map(|krate| format!("`{krate}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            export_root(vespera_dir).display(),
+            app = resolved.app,
+        )
     })
 }
 
@@ -285,6 +324,28 @@ mod tests {
             resolve("dep::ChildApp", "", dir),
             Some(pair("parent", "ChildApp"))
         );
+        // ... and the ambiguity itself is a compile error naming the
+        // candidates; a found or unique export is not.
+        let ambiguous = |path: &str| {
+            ambiguous_export_error(&syn::parse_str(path).unwrap(), &HashMap::new(), dir)
+        };
+        insta::assert_snapshot!(
+            "ambiguous_export",
+            ambiguous("dep::ChildApp")
+                .unwrap()
+                .replace(&export_root(dir).display().to_string(), "<EXPORT>")
+        );
+        assert_eq!(ambiguous("child::ChildApp"), None);
+        assert_eq!(ambiguous("dep::OnlyApp"), None);
+        assert_eq!(ambiguous("dep::Missing"), None);
+        assert_eq!(
+            ambiguous_export_error(
+                &syn::parse_str("dep::ChildApp").unwrap(),
+                &HashMap::new(),
+                &dir.join("absent")
+            ),
+            None
+        );
         assert_eq!(
             resolve("dep::Missing", "", dir),
             Some(pair("parent", "Missing"))
@@ -321,6 +382,32 @@ mod tests {
         let _manifest = crate::env_access::test_env::remove_var("CARGO_MANIFEST_DIR");
         let cache = super::super::cache::MergeSpecCache::with_call_site(None);
         assert!(merged_export_checks(&merge, &cache).is_empty());
+    }
+
+    /// `vespera!` rejects an ambiguous merge path before anything is merged;
+    /// without a locatable target directory there is nothing to check.
+    #[test]
+    fn ambiguous_merge_paths_are_rejected_by_the_cache() {
+        let temp = TempDir::new().unwrap();
+        let _crate = crate::env_access::test_env::set_var("CARGO_CRATE_NAME", "parent");
+        let merge: Vec<syn::Path> = vec![syn::parse_quote!(dep::ChildApp)];
+        {
+            let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
+            let vespera_dir =
+                crate::vespera_impl::path_utils::find_target_dir(temp.path()).join("vespera");
+            let cache = super::super::cache::MergeSpecCache::with_call_site(None);
+            cache.check_unambiguous(&merge).unwrap();
+            publish(&vespera_dir, "child", "ChildApp");
+            publish(&vespera_dir, "stale_child", "ChildApp");
+            let error = cache.check_unambiguous(&merge).unwrap_err().to_string();
+            assert!(
+                error.contains("`child`, `stale_child`"),
+                "unexpected error: {error}"
+            );
+        }
+        let _manifest = crate::env_access::test_env::remove_var("CARGO_MANIFEST_DIR");
+        let cache = super::super::cache::MergeSpecCache::with_call_site(None);
+        cache.check_unambiguous(&merge).unwrap();
     }
 
     #[test]

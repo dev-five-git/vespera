@@ -99,9 +99,9 @@ pub fn collect_files(folder_path: &Path) -> io::Result<Vec<PathBuf>> {
 /// the OS already returned.
 pub fn collect_files_with_mtimes(folder_path: &Path) -> io::Result<Vec<(PathBuf, u64)>> {
     let mut files = Vec::new();
-    let mut visited = std::collections::HashSet::new();
-    visited.insert(canonical_dir(folder_path));
-    collect_with_mtimes_into(folder_path, &mut files, &mut visited)?;
+    let mut ancestors = std::collections::HashSet::new();
+    ancestors.insert(canonical_dir(folder_path));
+    collect_with_mtimes_into(folder_path, &mut files, &mut ancestors)?;
     Ok(files)
 }
 
@@ -179,13 +179,15 @@ pub fn entry_fingerprint(meta: &std::io::Result<std::fs::Metadata>) -> u64 {
 }
 
 /// Walk `folder_path`, following symlinks like rustc's module loader does: a
-/// symlinked route file or directory is part of the crate.  `visited` holds
-/// every directory already walked (canonical), so a link back to an ancestor
-/// cannot recurse forever; a dangling link is skipped.
+/// symlinked route file or directory is part of the crate.  `ancestors` holds
+/// the (canonical) directories on the current recursion path only, so a link
+/// back to an ancestor cannot recurse forever while a sibling alias of an
+/// already-walked directory (`routes/v2 -> v1`) is still walked — rustc
+/// compiles it as its own module tree; a dangling link is skipped.
 fn collect_with_mtimes_into(
     folder_path: &Path,
     out: &mut Vec<(PathBuf, u64)>,
-    visited: &mut std::collections::HashSet<PathBuf>,
+    ancestors: &mut std::collections::HashSet<PathBuf>,
 ) -> io::Result<()> {
     for entry in std::fs::read_dir(folder_path)? {
         let entry = entry?;
@@ -220,8 +222,12 @@ fn collect_with_mtimes_into(
                 0
             };
             out.push((path, mtime));
-        } else if is_dir && visited.insert(canonical_dir(&path)) {
-            collect_with_mtimes_into(&path, out, visited)?;
+        } else if is_dir {
+            let canonical = canonical_dir(&path);
+            if ancestors.insert(canonical.clone()) {
+                collect_with_mtimes_into(&path, out, ancestors)?;
+                ancestors.remove(&canonical);
+            }
         }
     }
     Ok(())
@@ -467,6 +473,8 @@ mod tests {
         fs::create_dir_all(&routes).unwrap();
         fs::create_dir_all(&shared).unwrap();
         fs::write(routes.join("own.rs"), "").unwrap();
+        fs::create_dir_all(routes.join("v1")).unwrap();
+        fs::write(routes.join("v1").join("items.rs"), "").unwrap();
         fs::write(shared.join("users.rs"), "").unwrap();
         fs::write(temp_dir.path().join("health.rs"), "").unwrap();
         // Creating links needs privileges on Windows (Developer Mode); the
@@ -481,6 +489,9 @@ mod tests {
         )
         .unwrap();
         link(&routes, &shared.join("loop"), true).unwrap();
+        // A sibling alias of an already-walked directory is its own module
+        // tree (`routes::v2`), not a cycle.
+        link(&routes.join("v1"), &routes.join("v2"), true).unwrap();
         link(
             &temp_dir.path().join("gone.rs"),
             &routes.join("gone.rs"),
@@ -497,7 +508,16 @@ mod tests {
             &routes,
         );
         names.sort();
-        assert_eq!(names, ["admin/users.rs", "health.rs", "own.rs"]);
+        assert_eq!(
+            names,
+            [
+                "admin/users.rs",
+                "health.rs",
+                "own.rs",
+                "v1/items.rs",
+                "v2/items.rs"
+            ]
+        );
         assert!(files.iter().all(|(_, mtime)| *mtime != 0));
     }
 

@@ -16,6 +16,7 @@ use crate::{
 mod component_schemas;
 mod defaults;
 mod paths;
+mod route_claims;
 #[cfg(test)]
 mod tests_accuracy;
 
@@ -27,6 +28,7 @@ pub use defaults::extract_default_value_from_function;
 pub use defaults::find_function_in_file;
 use paths::build_path_items;
 pub use paths::{check_duplicate_routes, find_duplicate_operation_id};
+pub use route_claims::{RouteClaims, RouteConflict};
 
 /// OpenAPI security data parsed from the `vespera!` macro.
 #[derive(Default)]

@@ -46,6 +46,11 @@ pub(super) fn process_fields<'a>(
         parsed_types: Vec::new(),
         errors: Vec::new(),
     };
+    // Wire name -> the field that claimed it first: two fields resolving to
+    // one multipart name would make the second `match` arm unreachable and
+    // leave that field permanently missing / defaulted.
+    let mut wire_names: std::collections::HashMap<String, &syn::Ident> =
+        std::collections::HashMap::new();
 
     for field in fields {
         let ident = field.ident.as_ref().unwrap();
@@ -76,6 +81,16 @@ pub(super) fn process_fields<'a>(
 
         let field_name =
             resolve_field_name(ident, &field.attrs, form.field_name.as_deref(), rename_all);
+        if let Some(first) = wire_names.insert(field_name.clone(), ident) {
+            cg.errors.push(syn::Error::new(
+                ident.span(),
+                format!(
+                    "Multipart: fields `{first}` and `{ident}` both read the multipart field \
+                     \"{field_name}\" — give one a distinct `#[form_data(field_name = \"...\")]` \
+                     or `#[serde(rename = \"...\")]`"
+                ),
+            ));
+        }
         let limit_tokens = extract_limit_tokens(form.limit.as_ref());
 
         let parse_ty = if is_option || is_vec {

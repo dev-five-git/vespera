@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/vespera_impl/merge_conflicts.rs
+expression: err
+---
+vespera! macro: route `GET /docs` is served by both this app and `docs_url` — `docs_url` adds a `GET /docs` route; move the documentation to an unused path

@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/vespera_impl/orchestrator/tests_audit.rs
+expression: err.to_string()
+---
+vespera! macro: conflicting route parameters: `/users/{user_id}` (`routes::users::delete_user`) and `/users/{id}` (`routes::users::get_user`) are the same route with different parameter names — axum panics on them when the router is built; use the same parameter names

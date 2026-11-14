@@ -791,9 +791,16 @@ fn merged_children_with_same_operation_id_is_a_compile_error() {
 /// of the flaky merge / sidecar / from_model failures under multi-threaded
 /// `cargo test`.
 #[rstest::rstest]
-#[case::declared_by_child("childAuth", true)]
-#[case::declared_nowhere("ghostAuth", false)]
-fn security_references_are_validated_after_merge(#[case] scheme: &str, #[case] ok: bool) {
+#[case::declared_by_child("childAuth", true, true)]
+#[case::declared_by_child_without_doc("childAuth", true, false)]
+#[case::declared_nowhere("ghostAuth", false, true)]
+#[case::declared_nowhere_without_doc("ghostAuth", false, false)]
+#[case::declared_by_parent_without_doc("parentAuth", true, false)]
+fn security_references_are_validated_after_merge(
+    #[case] scheme: &str,
+    #[case] ok: bool,
+    #[case] with_doc: bool,
+) {
     let temp_dir = TempDir::new().unwrap();
     let target_dir = temp_dir.path().join("target/vespera");
     fs::create_dir_all(&target_dir).unwrap();
@@ -813,6 +820,9 @@ fn security_references_are_validated_after_merge(#[case] scheme: &str, #[case] o
 
     let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
     let mut processed = merge_input(syn::parse_quote!(plugin_a::PluginA));
+    if !with_doc {
+        processed.docs_url = None;
+    }
     processed.security_schemes = Some(std::collections::BTreeMap::from([(
         "parentAuth".to_string(),
         serde_json::from_value(serde_json::json!({ "type": "http", "scheme": "basic" })).unwrap(),
@@ -854,6 +864,59 @@ fn security_references_are_validated_after_merge(#[case] scheme: &str, #[case] o
             insta::assert_snapshot!("merged_security_reference_unknown_error", error.to_string());
         }
     }
+}
+
+/// Without a document, a merged child that is missing, unreadable or not
+/// located contributes no schemes — the app's own still validate.
+#[test]
+fn security_without_doc_skips_unusable_children() {
+    let temp_dir = TempDir::new().unwrap();
+    let target_dir = temp_dir.path().join("target/vespera");
+    fs::write(
+        crate::vespera_impl::merge_lookup::child_spec_path(&target_dir, "broken", "Broken"),
+        "{ not json",
+    )
+    .unwrap();
+    let mut processed = ProcessedVesperaInput {
+        merge: vec![
+            syn::parse_quote!(broken::Broken),
+            syn::parse_quote!(missing::Missing),
+        ],
+        security_schemes: Some(std::collections::BTreeMap::from([(
+            "parentAuth".to_string(),
+            serde_json::from_value(serde_json::json!({ "type": "http", "scheme": "basic" }))
+                .unwrap(),
+        )])),
+        ..ProcessedVesperaInput::default()
+    };
+    let mut metadata = CollectedMetadata::new();
+    metadata.routes.push(
+        serde_json::from_value(serde_json::json!({
+            "method": "get", "path": "/s", "function_name": "s",
+            "module_path": "routes::s", "file_path": "virtual/s.rs",
+            "security": [{ "parentAuth": [] }]
+        }))
+        .unwrap(),
+    );
+    let run = |processed: &ProcessedVesperaInput| {
+        generate_and_write_openapi(
+            processed,
+            &metadata,
+            HashMap::new(),
+            &[],
+            &mut MergeSpecCache::new(),
+        )
+        .map(|result| result.spec_json)
+    };
+    {
+        let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
+        assert_eq!(run(&processed).unwrap(), None);
+    }
+    let _env_guard = test_env::remove_var("CARGO_MANIFEST_DIR");
+    assert_eq!(run(&processed).unwrap(), None);
+    // Without declared schemes nothing is enforced (opt-in).
+    processed.security_schemes = None;
+    assert_eq!(run(&processed).unwrap(), None);
 }
 
 #[test]

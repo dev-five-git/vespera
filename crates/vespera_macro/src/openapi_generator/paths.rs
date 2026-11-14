@@ -234,7 +234,7 @@ fn assemble_path_items(
     // Borrows from `metadata`, which outlives this loop — the map is only ever
     // read inside the duplicate-route error branch below, so cloning the path
     // and handler name for every route was two wasted allocations per route.
-    let mut claimed: HashMap<(&str, HttpMethod), &str> = HashMap::new();
+    let mut claimed: HashMap<(String, HttpMethod), &str> = HashMap::new();
     for (idx, method, operation) in results {
         let route_meta = &metadata.routes[idx];
         if let Some(tags) = &route_meta.tags {
@@ -242,12 +242,13 @@ fn assemble_path_items(
                 all_tags.insert(tag.clone());
             }
         }
-        let path_item = paths
-            .entry(openapi_path_template(&route_meta.path))
-            .or_default();
+        // Keyed by the OpenAPI template (the `PathItem` key), so `{*rest}`
+        // and `{rest}` spellings of one entry name the earlier handler.
+        let template = openapi_path_template(&route_meta.path);
+        let path_item = paths.entry(template.clone()).or_default();
         if path_item.try_set_operation(method, operation).is_some() {
             let previous = claimed
-                .get(&(route_meta.path.as_str(), method))
+                .get(&(template, method))
                 .copied()
                 .unwrap_or("<unknown>");
             return Err(syn::Error::new(
@@ -260,10 +261,7 @@ fn assemble_path_items(
                 ),
             ));
         }
-        claimed.insert(
-            (route_meta.path.as_str(), method),
-            route_meta.function_name.as_str(),
-        );
+        claimed.insert((template, method), route_meta.function_name.as_str());
     }
     Ok(())
 }
@@ -401,26 +399,20 @@ fn handler_display(route: &crate::metadata::RouteMetadata) -> String {
     }
 }
 
-/// Reject two handlers mapped to one `(method, path)`.
+/// Reject two handlers mapped to one `(method, path)`, and one path shape
+/// spelled with different parameter names (see [`super::route_claims`]).
 ///
 /// Runs on every `vespera!` / `export_app!` expansion — not only when an
-/// OpenAPI document is generated — because axum panics on the duplicate the
+/// OpenAPI document is generated — because axum panics on the overlap the
 /// moment the router is built, so a spec-less app would otherwise compile.
 /// `#[cfg]`-gated routes are left out: their predicates may be exclusive.
 pub fn check_duplicate_routes(metadata: &CollectedMetadata) -> Result<(), String> {
-    let mut claimed: HashMap<(String, String), String> = HashMap::new();
+    let mut claims = super::route_claims::RouteClaims::default();
     for route in &metadata.routes {
-        let method = route.method.to_ascii_uppercase();
-        let key = (method, openapi_path_template(&route.path));
         let handler = handler_display(route);
-        if let Some(previous) = claimed.get(&key) {
-            return Err(format!(
-                "duplicate route: `{} {}` is defined by both `{previous}` and `{handler}` — \
-                 each (method, path) pair must map to exactly one handler",
-                key.0, route.path
-            ));
-        }
-        claimed.insert(key, handler);
+        claims
+            .claim(&route.method, &route.path, &handler)
+            .map_err(|conflict| conflict.message(&route.path, &handler))?;
     }
     Ok(())
 }
