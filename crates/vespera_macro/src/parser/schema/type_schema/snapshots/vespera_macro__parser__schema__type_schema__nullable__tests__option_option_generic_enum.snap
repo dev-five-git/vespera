@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/parser/schema/type_schema/nullable.rs
+assertion_line: 107
+expression: render(ty_src)
+---
+Option<Option<Either<A, B>>> => {"anyOf":[{"oneOf":[{"type":"object","properties":{"Left":{"$ref":"#/components/schemas/A"}},"required":["Left"]},{"type":"object","properties":{"Right":{"$ref":"#/components/schemas/B"}},"required":["Right"]}]},{"type":"null"}]}

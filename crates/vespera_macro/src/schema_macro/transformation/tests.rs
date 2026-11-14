@@ -297,6 +297,11 @@ fn renamed_field_serde_rename_cases(
     Some(r#"# [form_data (field_name = "upload")]"#)
 )]
 #[case::kept_field_plain(r"", false, None)]
+#[case::deserialize_side_rename(
+    r#"#[serde(rename(serialize = "out", deserialize = "in"))]"#,
+    false,
+    Some(r#"# [form_data (field_name = "in")]"#)
+)]
 fn field_form_name_cases(
     #[case] field_attrs: &str,
     #[case] renamed: bool,

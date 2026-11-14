@@ -14,8 +14,8 @@
 //! ## Field Name Resolution Priority
 //!
 //! 1. `#[form_data(field_name = "...")]` — explicit override (highest priority)
-//! 2. `#[serde(rename = "...")]` — serde field rename
-//! 3. `#[serde(rename_all = "...")]` or `#[try_from_multipart(rename_all = "...")]` applied to Rust name
+//! 2. `#[serde(rename = "...")]` — serde field rename (deserialize side)
+//! 3. `#[serde(rename_all = "...")]` (deserialize side) or `#[try_from_multipart(rename_all = "...")]` applied to Rust name
 //! 4. Rust field name as-is (lowest priority)
 
 mod attrs;
@@ -46,7 +46,8 @@ pub fn feature_disabled_error(input: &DeriveInput) -> TokenStream {
 /// Process the `#[derive(TryFromMultipart)]` macro input.
 pub fn process_derive(input: &DeriveInput) -> TokenStream {
     let struct_name = &input.ident;
-    let rename_all = crate::parser::extract_rename_all(&input.attrs);
+    let rename_all =
+        crate::parser::extract_rename_all_for(&input.attrs, crate::parser::SerdeSide::Deserialize);
     let strict = extract_strict(&input.attrs);
     let struct_default = extract_struct_default(&input.attrs);
 
@@ -216,6 +217,17 @@ mod tests {
         )
         .unwrap();
         assert!(process_derive(&input).to_string().contains("\"userName\""));
+    }
+
+    #[test]
+    fn test_process_derive_reads_deserialize_side_rename_all() {
+        let input: syn::DeriveInput = syn::parse_str(
+            r#"#[serde(rename_all(serialize = "SCREAMING_SNAKE_CASE", deserialize = "camelCase"))] struct MyForm { pub user_name: String }"#,
+        )
+        .unwrap();
+        let code = process_derive(&input).to_string();
+        assert!(code.contains("\"userName\""));
+        assert!(!code.contains("\"USER_NAME\""));
     }
 
     #[test]

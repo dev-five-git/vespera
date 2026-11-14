@@ -1,0 +1,24 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_wire_names.rs
+assertion_line: 47
+expression: "format!(\"response:\\n{}\\nrequest:\\n{}\", render(src, false), render(src, true))"
+---
+response:
+{
+  "type": "object",
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": [
+        "Ping"
+      ]
+    }
+  },
+  "required": [
+    "type"
+  ]
+}
+request:
+{
+  "type": "object"
+}

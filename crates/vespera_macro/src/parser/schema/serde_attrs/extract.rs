@@ -116,12 +116,22 @@ pub fn extract_field_rename(attrs: &[syn::Attribute]) -> Option<String> {
 
 /// Field / variant `rename` for `side`, falling back to
 /// `#[form_data(field_name = "...")]`.
+///
+/// On the read side `form_data(field_name)` comes FIRST: the `Multipart`
+/// derive (its only reader) parses a form field by that name before any serde
+/// rename, so the request view documents what the parser accepts. The write
+/// side keeps serde's name (what a `Serialize` derive emits).
 pub fn extract_field_rename_for(attrs: &[syn::Attribute], side: SerdeSide) -> Option<String> {
-    if let Some(name) = extract_sided_key(attrs, "rename", side) {
+    if side == SerdeSide::Deserialize
+        && let Some(name) = extract_form_data_field_name(attrs)
+    {
         return Some(name);
     }
+    extract_sided_key(attrs, "rename", side).or_else(|| extract_form_data_field_name(attrs))
+}
 
-    // Fallback: check for #[form_data(field_name = "...")]
+/// `#[form_data(field_name = "...")]`.
+fn extract_form_data_field_name(attrs: &[syn::Attribute]) -> Option<String> {
     for attr in attrs {
         if attr.path().is_ident("form_data") {
             let mut found_field_name = None;
@@ -142,7 +152,6 @@ pub fn extract_field_rename_for(attrs: &[syn::Attribute], side: SerdeSide) -> Op
             }
         }
     }
-
     None
 }
 

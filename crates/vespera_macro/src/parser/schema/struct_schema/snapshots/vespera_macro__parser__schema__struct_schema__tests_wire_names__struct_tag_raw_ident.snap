@@ -1,0 +1,42 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_wire_names.rs
+assertion_line: 47
+expression: "format!(\"response:\\n{}\\nrequest:\\n{}\", render(src, false), render(src, true))"
+---
+response:
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "t": {
+      "type": "string",
+      "enum": [
+        "Match"
+      ]
+    }
+  },
+  "required": [
+    "t",
+    "id"
+  ]
+}
+request:
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "maximum": 4294967295
+    }
+  },
+  "required": [
+    "id"
+  ]
+}
