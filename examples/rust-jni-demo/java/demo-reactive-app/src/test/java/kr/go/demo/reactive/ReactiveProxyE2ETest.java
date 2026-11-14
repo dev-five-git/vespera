@@ -225,7 +225,7 @@ class ReactiveProxyE2ETest {
         }
     }
 
-    /** `fetch()` / `curl` send `*/*`: an event stream must still arrive, not buffer forever. */
+    // fetch() / curl send a wildcard Accept (*/*): an event stream must still arrive, not buffer forever.
     @Test
     void eventStreamWithAWildcardAcceptStillStreams() throws Exception {
         HttpResponse<InputStream> response = http.send(
