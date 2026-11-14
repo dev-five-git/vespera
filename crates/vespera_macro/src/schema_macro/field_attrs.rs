@@ -82,6 +82,45 @@ fn filtered_cfg_attr(
     (!kept.is_empty()).then(|| quote! { #[cfg_attr(#predicate, #(#kept),*)] })
 }
 
+impl CarriedAttrs {
+    /// The carried `#[schema(..)]` attributes of a field `partial` wraps in
+    /// `Option`: `default` is dropped (the field is `None` when absent — the
+    /// source's serde default function is dropped too, so its documented
+    /// default no longer holds) and `value_type = T` becomes
+    /// `value_type = Option<T>`. An attribute left empty is removed; one
+    /// that does not parse is kept as written.
+    pub fn for_option_wrap(mut self) -> Self {
+        self.schema = self
+            .schema
+            .into_iter()
+            .filter_map(|attr| {
+                let Ok(metas) =
+                    attr.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+                else {
+                    return Some(attr);
+                };
+                let kept: Vec<syn::Meta> = metas
+                    .into_iter()
+                    .filter(|meta| !meta.path().is_ident("default"))
+                    .map(|meta| match meta {
+                        syn::Meta::NameValue(mut nv) if nv.path.is_ident("value_type") => {
+                            let value = &nv.value;
+                            // A type is no expression: carry it verbatim.
+                            nv.value =
+                                syn::Expr::Verbatim(quote! { ::std::option::Option<#value> });
+                            syn::Meta::NameValue(nv)
+                        }
+                        other => other,
+                    })
+                    .collect();
+                (!kept.is_empty()).then(|| syn::parse_quote! { #[schema(#(#kept),*)] })
+            })
+            .collect();
+        self.schema_default = false;
+        self
+    }
+}
+
 /// Whether a `#[schema(..)]` attribute sets `default`.
 fn schema_has_default(attr: &syn::Attribute) -> bool {
     let mut found = false;
@@ -165,6 +204,24 @@ mod tests {
             carried_field_attrs(&field(attrs), true).schema_default,
             expected
         );
+    }
+
+    #[rstest]
+    #[case::only_default(quote!(#[schema(default = "x")]), "")]
+    #[case::mixed(
+        quote!(#[schema(min_length = 1, default = "x")]),
+        "# [schema (min_length = 1)]"
+    )]
+    #[case::no_default(quote!(#[schema(minimum = 1)]), "# [schema (minimum = 1)]")]
+    #[case::value_type(
+        quote!(#[schema(value_type = String)]),
+        "# [schema (value_type = :: std :: option :: Option < String >)]"
+    )]
+    #[case::unparseable(quote!(#[schema(= 1)]), "# [schema (= 1)]")]
+    fn option_wrap_attrs(#[case] attrs: TokenStream, #[case] expected: &str) {
+        let carried = carried_field_attrs(&field(attrs), true).for_option_wrap();
+        assert!(!carried.schema_default);
+        assert_eq!(render(&carried), expected);
     }
 
     #[test]

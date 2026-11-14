@@ -279,3 +279,25 @@ mod relation_adapter_tests {
         assert_eq!(back.user.0.map(|user| user.name).as_deref(), Some("Ann"));
     }
 }
+
+// Serde function paths of a source in another module (`default_theme`,
+// `codec`) resolve in that module, not here.
+schema_type!(ProfileCard from crate::models::profile::Profile);
+schema_type!(ProfilePatch from crate::models::profile::Profile, partial);
+
+#[cfg(test)]
+mod serde_path_tests {
+    use super::*;
+
+    #[test]
+    fn source_module_serde_paths_resolve() {
+        let card: ProfileCard = serde_json::from_str(r#"{"score":"7"}"#).unwrap();
+        assert_eq!((card.theme.as_str(), card.score), ("light", 7));
+        assert_eq!(
+            serde_json::to_value(&card).unwrap(),
+            serde_json::json!({ "theme": "light", "score": "7" })
+        );
+        let patch: ProfilePatch = serde_json::from_str(r#"{"score":"3"}"#).unwrap();
+        assert_eq!((patch.theme, patch.score), (None, Some(3)));
+    }
+}

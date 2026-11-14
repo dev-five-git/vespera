@@ -38,6 +38,7 @@ use quote::quote;
 use syn::punctuated::Punctuated;
 
 use super::input::PartialMode;
+use super::module_scope::{Resolved, resolve_name};
 use crate::parser::schema::{SerdeSide, extract_field_rename_for, rename_field};
 use crate::parser::{extract_rename_all, extract_rename_all_for};
 
@@ -254,7 +255,74 @@ pub fn field_serde_attrs(
     (out, adapters)
 }
 
+/// Serde keys whose string value is a function / module path.
+const SERDE_PATH_KEYS: &[&str] = &[
+    "default",
+    "skip_serializing_if",
+    "with",
+    "serialize_with",
+    "deserialize_with",
+];
+
+/// The source field's attributes with every serde function path
+/// (`default = "path"`, `skip_serializing_if`, `with`, `serialize_with`,
+/// `deserialize_with`) re-rooted at the SOURCE module: the DTO is emitted
+/// at the `schema_type!` call site, where `default_name` /
+/// `codecs::as_string` of another module did not resolve. Paths the source
+/// module does not define or import (`Option::is_none`, `String::is_empty`)
+/// are kept as written.
+pub fn reroot_serde_paths(attrs: &[syn::Attribute], module_path: &[String]) -> Vec<syn::Attribute> {
+    attrs
+        .iter()
+        .map(|attr| {
+            if !attr.path().is_ident("serde") {
+                return attr.clone();
+            }
+            let Ok(mut items) =
+                attr.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+            else {
+                return attr.clone();
+            };
+            for meta in &mut items {
+                if let syn::Meta::NameValue(nv) = meta
+                    && SERDE_PATH_KEYS.contains(&serde_key_of(&nv.path).as_str())
+                    && let syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(lit),
+                        ..
+                    }) = &mut nv.value
+                    && let Some(rerooted) = reroot_path(&lit.value(), module_path)
+                {
+                    *lit = syn::LitStr::new(&rerooted, lit.span());
+                }
+            }
+            syn::parse_quote! { #[serde(#items)] }
+        })
+        .collect()
+}
+
+fn serde_key_of(path: &syn::Path) -> String {
+    path.get_ident()
+        .map(ToString::to_string)
+        .unwrap_or_default()
+}
+
+/// `path` resolved in `module_path` (`None` when it is not a path or not
+/// known there).
+fn reroot_path(path: &str, module_path: &[String]) -> Option<String> {
+    let path: syn::Path = syn::parse_str(path).ok()?;
+    let segments: Vec<String> = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    match resolve_name(&segments, module_path) {
+        Resolved::Path(resolved) if path.leading_colon.is_none() => Some(resolved.join("::")),
+        _ => None,
+    }
+}
+
 /// The function / module path of a `with = "..."`-style key (`None` when it
+
 /// is not a string path; the key is then dropped).
 fn codec_path(meta: &syn::Meta) -> Option<syn::ExprPath> {
     let syn::Meta::NameValue(nv) = meta else {

@@ -3,6 +3,7 @@ pub mod config;
 pub mod document;
 pub mod memo;
 pub mod memo_comment;
+pub mod profile;
 pub mod single;
 pub mod single_rel;
 pub mod team;

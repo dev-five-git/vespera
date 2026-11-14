@@ -5606,6 +5606,71 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "locale"
         ]
       },
+      "Profile": {
+        "type": "object",
+        "properties": {
+          "bio": {
+            "type": "string",
+            "default": ""
+          },
+          "score": {
+            "type": "string"
+          },
+          "theme": {
+            "type": "string",
+            "default": "light"
+          }
+        },
+        "required": [
+          "theme",
+          "score"
+        ]
+      },
+      "ProfileCard": {
+        "type": "object",
+        "properties": {
+          "bio": {
+            "type": "string",
+            "default": ""
+          },
+          "score": {
+            "type": "string"
+          },
+          "theme": {
+            "type": "string",
+            "default": "light"
+          }
+        },
+        "required": [
+          "theme",
+          "score"
+        ]
+      },
+      "ProfilePatch": {
+        "type": "object",
+        "properties": {
+          "bio": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "score": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "theme": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "RejectionFilter": {
         "type": "object",
         "properties": {

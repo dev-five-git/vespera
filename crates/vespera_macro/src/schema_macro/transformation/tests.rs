@@ -465,3 +465,80 @@ fn renamed_field_follows_each_rename_all_side() {
         "# [serde (rename (serialize = \"userName\" , deserialize = \"user_name\"))]"
     );
 }
+
+/// M1: serde function paths of a source in another module are re-rooted at
+/// that module (`crate::models::user::default_name`), unknown / absolute /
+/// non-path values stay as written, non-serde attributes are untouched.
+#[rstest]
+#[case::local_fn(
+    r#"#[serde(default = "default_name")]"#,
+    r#"#[serde(default = "crate::models::user::default_name")]"#
+)]
+#[case::local_module(
+    r#"#[serde(with = "codecs::as_string")]"#,
+    r#"#[serde(with = "crate::models::user::codecs::as_string")]"#
+)]
+#[case::imported_fn(
+    r#"#[serde(serialize_with = "ser")]"#,
+    r#"#[serde(serialize_with = "crate::util::ser")]"#
+)]
+#[case::all_keys(
+    r#"#[serde(rename = "x", skip_serializing_if = "is_blank", deserialize_with = "codecs::de")]"#,
+    r#"#[serde(rename = "x", skip_serializing_if = "crate::models::user::is_blank", deserialize_with = "crate::models::user::codecs::de")]"#
+)]
+#[case::std_kept(
+    r#"#[serde(skip_serializing_if = "Option::is_none")]"#,
+    r#"#[serde(skip_serializing_if = "Option::is_none")]"#
+)]
+#[case::leading_colon_kept(
+    r#"#[serde(default = "::other::f")]"#,
+    r#"#[serde(default = "::other::f")]"#
+)]
+#[case::not_a_path_kept(r#"#[serde(default = "1 + 2")]"#, r#"#[serde(default = "1 + 2")]"#)]
+#[case::flag_kept(r#"#[serde(default)]"#, r#"#[serde(default)]"#)]
+#[case::non_string_kept(r#"#[serde(default = 1)]"#, r#"#[serde(default = 1)]"#)]
+#[case::unparseable_kept(r#"#[serde(default = )]"#, r#"#[serde(default = )]"#)]
+#[case::other_attr(
+    r#"#[schema(default = "default_name")]"#,
+    r#"#[schema(default = "default_name")]"#
+)]
+fn test_reroot_serde_paths(#[case] attr: &str, #[case] expected: &str) {
+    let (_dir, _guard) = serde_path_crate();
+    let attrs: Vec<syn::Attribute> = vec![
+        syn::parse_str::<syn::DeriveInput>(&format!("{attr} struct S;"))
+            .unwrap()
+            .attrs
+            .remove(0),
+    ];
+    let module = vec![
+        "crate".to_string(),
+        "models".to_string(),
+        "user".to_string(),
+    ];
+    let rerooted = reroot_serde_paths(&attrs, &module);
+    let expected = syn::parse_str::<syn::DeriveInput>(&format!("{expected} struct S;"))
+        .unwrap()
+        .attrs
+        .remove(0);
+    assert_eq!(
+        quote!(#(#rerooted)*).to_string(),
+        quote!(#expected).to_string()
+    );
+}
+
+fn serde_path_crate() -> (tempfile::TempDir, crate::env_access::test_env::EnvGuard) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(src.join("models")).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod models; pub mod util;").unwrap();
+    std::fs::write(src.join("models.rs"), "pub mod user;").unwrap();
+    std::fs::write(src.join("util.rs"), "pub fn ser() {}").unwrap();
+    std::fs::write(
+        src.join("models").join("user.rs"),
+        "use crate::util::ser; fn default_name() {} fn is_blank() {} mod codecs { pub mod as_string {} pub fn de() {} }",
+    )
+    .unwrap();
+    let guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    super::super::file_cache::bump_epoch();
+    (dir, guard)
+}

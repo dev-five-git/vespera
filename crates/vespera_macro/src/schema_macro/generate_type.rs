@@ -30,8 +30,8 @@ use super::seaorm::{
 use super::transformation::{
     OptionWrap, RenameAll, build_omit_set, build_partial_config, build_pick_set, build_rename_map,
     container_serde_attrs, determine_rename_all, extract_doc_attrs, extract_form_data_attrs,
-    field_form_name, field_serde_attrs, renamed_field_serde_rename, should_skip_field,
-    should_wrap_in_option,
+    field_form_name, field_serde_attrs, renamed_field_serde_rename, reroot_serde_paths,
+    should_skip_field, should_wrap_in_option,
 };
 use super::type_utils::{
     extract_module_path, extract_type_name, is_option_type, is_seaorm_model,
@@ -419,7 +419,10 @@ pub fn generate_schema_type_code(
 
             // Extract doc attributes to carry over comments to the generated struct
             let doc_attrs = extract_doc_attrs(&field.attrs);
-            let carried = carried_field_attrs(&field.attrs, schema_derived);
+            let mut carried = carried_field_attrs(&field.attrs, schema_derived);
+            if should_wrap_option {
+                carried = carried.for_option_wrap();
+            }
             if !carried.cfgs.is_empty() {
                 let cfgs = &carried.cfgs;
                 field_cfgs.insert(rust_field_name.clone(), quote! { #(#cfgs)* });
@@ -501,8 +504,11 @@ pub fn generate_schema_type_code(
                     adapter_prefix: &adapter_prefix,
                     inner_ty,
                 });
-                let (serde_field_attrs, adapters) =
-                    field_serde_attrs(&field.attrs, wrap.as_ref(), is_renamed);
+                let (serde_field_attrs, adapters) = field_serde_attrs(
+                    &reroot_serde_paths(&field.attrs, &source_module_path),
+                    wrap.as_ref(),
+                    is_renamed,
+                );
                 codec_adapters.push(adapters);
 
                 // Generate serde default + schema(default) from sea_orm(default_value) or primary_key
