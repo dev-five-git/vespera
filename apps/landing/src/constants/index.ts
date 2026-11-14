@@ -19,7 +19,11 @@ export const VESPERA_BRIDGE_PLUGIN_VERSION = '0.7.0'
  */
 export const DOC_VERSION_PATTERNS: [
   RegExp,
-  'VESPERA_VERSION' | 'VESPERA_BRIDGE_VERSION' | 'VESPERA_BRIDGE_PLUGIN_VERSION',
+  (
+    | 'VESPERA_VERSION'
+    | 'VESPERA_BRIDGE_VERSION'
+    | 'VESPERA_BRIDGE_PLUGIN_VERSION'
+  ),
 ][] = [
   [/^vespera = "([^"]+)"/gm, 'VESPERA_VERSION'],
   [/^vespera = \{ version = "([^"]+)"/gm, 'VESPERA_VERSION'],
