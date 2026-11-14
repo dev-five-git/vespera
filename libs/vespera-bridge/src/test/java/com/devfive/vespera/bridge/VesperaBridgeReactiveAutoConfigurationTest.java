@@ -90,6 +90,32 @@ class VesperaBridgeReactiveAutoConfigurationTest {
     }
 
     @Test
+    void streamingExecutorIsBoundedConfigurableAndClosedWithTheContext() {
+        VesperaStreamingExecutor[] seen = new VesperaStreamingExecutor[1];
+        reactive.withPropertyValues(
+                        "vespera.bridge.reactive-streaming.max-threads=3",
+                        "vespera.bridge.reactive-streaming.max-queued=7")
+                .run(ctx -> {
+                    VesperaStreamingExecutor executor = ctx.getBean(VesperaStreamingExecutor.class);
+                    assertEquals(3, executor.maxThreads());
+                    assertEquals(7, executor.maxQueued());
+                    assertFalse(executor.isClosed());
+                    seen[0] = executor;
+                });
+        assertTrue(seen[0].isClosed(), "closed on context close");
+        reactive.run(ctx -> {
+            VesperaStreamingExecutor executor = ctx.getBean(VesperaStreamingExecutor.class);
+            assertEquals(VesperaStreamingExecutor.defaultMaxThreads(), executor.maxThreads());
+            assertEquals(VesperaStreamingExecutor.DEFAULT_MAX_QUEUED, executor.maxQueued());
+        });
+        reactive.withPropertyValues("vespera.bridge.controller-enabled=false").run(ctx ->
+                assertTrue(ctx.getBeansOfType(VesperaStreamingExecutor.class).isEmpty()));
+        VesperaStreamingExecutor mine = new VesperaStreamingExecutor(1, 0);
+        reactive.withBean(VesperaStreamingExecutor.class, () -> mine).run(ctx ->
+                assertSame(mine, ctx.getBean(VesperaStreamingExecutor.class)));
+    }
+
+    @Test
     void userBeansWin() {
         ReactiveAppNameResolver apps = exchange -> "custom";
         ReactivePrincipalResolver principals = exchange -> Mono.just(VesperaPrincipal.of("svc"));

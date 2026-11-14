@@ -8,6 +8,13 @@
       "description": "Rust-side runtime knobs forwarded to the VesperaBridge configure* methods during context startup, before the first native dispatch. Unset values keep the native default (or the vespera.limits.* / vespera.dispatch.* / vespera.async.* / vespera.runtime.* system properties and their VESPERA_* environment variables)."
     },
     {
+      "name": "vespera.bridge.reactive-streaming",
+      "type": "com.devfive.vespera.bridge.VesperaBridgeProperties$ReactiveStreaming",
+      "sourceType": "com.devfive.vespera.bridge.VesperaBridgeProperties",
+      "sourceMethod": "getReactiveStreaming()",
+      "description": "WebFlux proxy only: the dedicated, bounded thread pool (VesperaStreamingExecutor) streamed text/event-stream / NDJSON responses run on, one thread per stream for its lifetime, instead of Reactor's shared boundedElastic scheduler. Once max-threads streams run and max-queued more wait, further streaming requests are answered 503 before anything is committed. Closed with the application context."
+    },
+    {
       "name": "vespera.bridge.springdoc",
       "type": "com.devfive.vespera.bridge.VesperaSpringdocProperties",
       "sourceType": "com.devfive.vespera.bridge.VesperaBridgeProperties",

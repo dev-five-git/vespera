@@ -31,6 +31,10 @@ final class ReactiveTestSupport {
         volatile byte[] streamHeader = responseWire(200, "{\"content-type\":\"text/event-stream\"}", "");
         volatile List<String> streamChunks = List.of("data: a\n\n", "data: b\n\n");
         volatile Throwable streamFailure;
+        /** When set, a streaming dispatch blocks on it (holding its thread) before the header. */
+        volatile java.util.concurrent.CountDownLatch streamGate;
+        /** Released once each time a streaming dispatch starts. */
+        final java.util.concurrent.Semaphore streamsEntered = new java.util.concurrent.Semaphore(0);
 
         @Override
         public boolean isInitialized() {
@@ -50,6 +54,16 @@ final class ReactiveTestSupport {
         public void dispatchStreaming(byte[] wireRequest, Consumer<byte[]> headerConsumer, OutputStream body)
                 throws IOException {
             requests.add(wireRequest);
+            streamsEntered.release();
+            java.util.concurrent.CountDownLatch gate = streamGate;
+            if (gate != null) {
+                try {
+                    gate.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(interrupted);
+                }
+            }
             headerConsumer.accept(streamHeader);
             for (String chunk : streamChunks) {
                 body.write(chunk.getBytes(StandardCharsets.UTF_8));
@@ -77,8 +91,15 @@ final class ReactiveTestSupport {
     static VesperaReactiveProxyHandler handler(FakeTransport transport, ReactiveAppNameResolver apps,
             ReactivePrincipalResolver principals, long maxRequest, long maxResponse, String requestIdHeader,
             List<DispatchObserver> observers, CorsHandling cors) {
+        return handler(transport, apps, principals, maxRequest, maxResponse, requestIdHeader, observers, cors,
+                new VesperaStreamingExecutor(4, 16));
+    }
+
+    static VesperaReactiveProxyHandler handler(FakeTransport transport, ReactiveAppNameResolver apps,
+            ReactivePrincipalResolver principals, long maxRequest, long maxResponse, String requestIdHeader,
+            List<DispatchObserver> observers, CorsHandling cors, VesperaStreamingExecutor streaming) {
         return new VesperaReactiveProxyHandler(apps, principals, maxRequest, maxResponse, requestIdHeader,
-                observers, cors, transport, Schedulers.parallel(), Schedulers.boundedElastic());
+                observers, cors, transport, Schedulers.parallel(), streaming);
     }
 
     static byte[] responseWire(int status, String headersJson, String body) {

@@ -40,6 +40,9 @@ import java.util.List;
  *     request-id:
  *       enabled: true             # read / generate, forward, echo and MDC the request id
  *       header: X-Request-Id
+ *     reactive-streaming:         # WebFlux only: pool of streamed (SSE / NDJSON) responses
+ *       max-threads: 0            # 0 = 10 x CPUs
+ *       max-queued: 100           # beyond threads + queue: 503
  *     native:                     # Rust-side knobs, applied before the first dispatch
  *       worker-threads: 8
  *       max-blocking-threads: 256
@@ -222,6 +225,9 @@ public class VesperaBridgeProperties {
     /** Request-id handling of the proxy controller. */
     private final RequestId requestId = new RequestId();
 
+    /** Thread pool of the WebFlux proxy's streamed responses. */
+    private final ReactiveStreaming reactiveStreaming = new ReactiveStreaming();
+
     /**
      * springdoc-openapi integration ({@code vespera.bridge.springdoc.*}):
      * shows the Rust app's OpenAPI document in the application's Swagger UI.
@@ -370,6 +376,10 @@ public class VesperaBridgeProperties {
         return requestId;
     }
 
+    public ReactiveStreaming getReactiveStreaming() {
+        return reactiveStreaming;
+    }
+
     public VesperaSpringdocProperties getSpringdoc() {
         return springdoc;
     }
@@ -439,6 +449,48 @@ public class VesperaBridgeProperties {
         /** The header the controller uses, or {@code null} when disabled. */
         String effectiveHeader() {
             return enabled && header != null && !header.isBlank() ? header.trim() : null;
+        }
+    }
+
+    /**
+     * {@code vespera.bridge.reactive-streaming.*}: the dedicated, bounded
+     * {@link VesperaStreamingExecutor} the WebFlux proxy runs streamed
+     * responses ({@code text/event-stream} / NDJSON) on — each holds one
+     * thread for its lifetime, so they never touch Reactor's shared
+     * {@code boundedElastic}.  Once {@link #maxThreads} streams run and
+     * {@link #maxQueued} more wait, further streaming requests get
+     * {@code 503}.  Servlet applications ignore it.
+     */
+    public static class ReactiveStreaming {
+        /**
+         * Streamed responses that run concurrently (one thread each).
+         * Default {@code 0} = 10 × available processors (the cap of Reactor's
+         * {@code boundedElastic}).
+         */
+        private int maxThreads = 0;
+
+        /**
+         * Streamed responses that wait (FIFO) for a free thread once
+         * {@code max-threads} run; beyond that the proxy answers {@code 503}.
+         * Default {@code 100}; {@code 0} rejects as soon as every thread is
+         * busy.
+         */
+        private int maxQueued = 100; // VesperaStreamingExecutor.DEFAULT_MAX_QUEUED (a literal for the metadata)
+
+        public int getMaxThreads() {
+            return maxThreads;
+        }
+
+        public void setMaxThreads(int maxThreads) {
+            this.maxThreads = maxThreads;
+        }
+
+        public int getMaxQueued() {
+            return maxQueued;
+        }
+
+        public void setMaxQueued(int maxQueued) {
+            this.maxQueued = maxQueued;
         }
     }
 

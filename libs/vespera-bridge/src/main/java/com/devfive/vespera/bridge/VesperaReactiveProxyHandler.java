@@ -64,11 +64,14 @@ import java.util.function.Consumer;
  * {@code Accept} names a streaming media type ({@code text/event-stream},
  * {@code application/x-ndjson}, {@code application/stream+json}) is served
  * by the native response-streaming symbol
- * ({@link VesperaBridge#dispatchStreamingWithHeader}) on Reactor's
- * bounded-elastic scheduler, bridged with backpressure through
+ * ({@link VesperaBridge#dispatchStreamingWithHeader}) on a dedicated, bounded
+ * {@link VesperaStreamingExecutor} (never Reactor's shared
+ * {@code boundedElastic}), bridged with backpressure through
  * {@link DataBufferUtils#outputStreamPublisher}: each stream occupies one
- * bounded-elastic thread while it runs, and a client disconnect stops the
- * Rust stream at its next write.
+ * streaming thread while it runs, and a client disconnect stops the Rust
+ * stream at its next write. When every streaming thread is busy and the
+ * streaming queue is full ({@code vespera.bridge.reactive-streaming.*}), the
+ * request is answered {@code 503} before anything is committed.
  *
  * <p>Proxy-side errors use the same plain-text shape as the servlet proxy
  * ({@link ProxyErrors}); request ids, {@link DispatchObserver}s (Micrometer)
@@ -144,12 +147,33 @@ public class VesperaReactiveProxyHandler implements WebHandler {
     /** Where the buffered response is written once the native future completed (off the Tokio worker). */
     private final Scheduler completionScheduler;
     /** Where the blocking native streaming dispatch runs. */
-    private final Scheduler streamingScheduler;
+    private final VesperaStreamingExecutor streamingExecutor;
 
     /** Handler with the defaults: no principal, 64 MiB buffered caps, no request ids. */
     public VesperaReactiveProxyHandler(ReactiveAppNameResolver appResolver) {
         this(appResolver, null, VesperaProxyController.DEFAULT_MAX_BUFFERED_REQUEST_BYTES,
                 VesperaProxyController.DEFAULT_MAX_BUFFERED_RESPONSE_BYTES, null, List.of(), null);
+    }
+
+    /**
+     * Constructor with a default {@link VesperaStreamingExecutor}
+     * ({@link VesperaStreamingExecutor#defaultMaxThreads()} threads,
+     * {@value VesperaStreamingExecutor#DEFAULT_MAX_QUEUED} queued) owned by
+     * this handler; its idle threads time out on their own.
+     *
+     * @see #VesperaReactiveProxyHandler(ReactiveAppNameResolver, ReactivePrincipalResolver, long,
+     *      long, String, List, CorsHandling, VesperaStreamingExecutor)
+     */
+    public VesperaReactiveProxyHandler(ReactiveAppNameResolver appResolver,
+                                       ReactivePrincipalResolver principalResolver,
+                                       long maxBufferedRequestBytes,
+                                       long maxBufferedResponseBytes,
+                                       String requestIdHeader,
+                                       List<DispatchObserver> observers,
+                                       CorsHandling cors) {
+        this(appResolver, principalResolver, maxBufferedRequestBytes, maxBufferedResponseBytes,
+                requestIdHeader, observers, cors,
+                new VesperaStreamingExecutor(0, VesperaStreamingExecutor.DEFAULT_MAX_QUEUED));
     }
 
     /**
@@ -162,6 +186,7 @@ public class VesperaReactiveProxyHandler implements WebHandler {
      * @param requestIdHeader         request-id header, or {@code null} to disable request ids
      * @param observers               notified after every proxied request
      * @param cors                    who owns CORS, or {@code null} to pass Rust's headers through
+     * @param streamingExecutor       where streamed responses run (the caller closes it)
      */
     public VesperaReactiveProxyHandler(ReactiveAppNameResolver appResolver,
                                        ReactivePrincipalResolver principalResolver,
@@ -169,9 +194,10 @@ public class VesperaReactiveProxyHandler implements WebHandler {
                                        long maxBufferedResponseBytes,
                                        String requestIdHeader,
                                        List<DispatchObserver> observers,
-                                       CorsHandling cors) {
+                                       CorsHandling cors,
+                                       VesperaStreamingExecutor streamingExecutor) {
         this(appResolver, principalResolver, maxBufferedRequestBytes, maxBufferedResponseBytes,
-                requestIdHeader, observers, cors, NATIVE, Schedulers.parallel(), Schedulers.boundedElastic());
+                requestIdHeader, observers, cors, NATIVE, Schedulers.parallel(), streamingExecutor);
     }
 
     VesperaReactiveProxyHandler(ReactiveAppNameResolver appResolver,
@@ -183,7 +209,7 @@ public class VesperaReactiveProxyHandler implements WebHandler {
                                 CorsHandling cors,
                                 Transport transport,
                                 Scheduler completionScheduler,
-                                Scheduler streamingScheduler) {
+                                VesperaStreamingExecutor streamingExecutor) {
         this.appResolver = Objects.requireNonNull(appResolver, "appResolver");
         this.principalResolver = principalResolver == null ? ReactivePrincipalResolver.none() : principalResolver;
         this.maxBufferedRequestBytes = Math.max(0, maxBufferedRequestBytes);
@@ -199,7 +225,7 @@ public class VesperaReactiveProxyHandler implements WebHandler {
                 ? header.exposedApps() : null);
         this.transport = Objects.requireNonNull(transport, "transport");
         this.completionScheduler = Objects.requireNonNull(completionScheduler, "completionScheduler");
-        this.streamingScheduler = Objects.requireNonNull(streamingScheduler, "streamingScheduler");
+        this.streamingExecutor = Objects.requireNonNull(streamingExecutor, "streamingExecutor");
     }
 
     @Override
@@ -383,14 +409,20 @@ public class VesperaReactiveProxyHandler implements WebHandler {
 
     /**
      * Response streaming: the blocking native symbol runs on
-     * {@link #streamingScheduler}; its {@code OutputStream} is bridged to the
+     * {@link #streamingExecutor}; its {@code OutputStream} is bridged to the
      * response with backpressure (a write blocks until the client demands
      * more). The Rust header arrives before the first body byte, while the
-     * response is still uncommitted.
+     * response is still uncommitted. A saturated executor answers {@code 503}
+     * without dispatching.
      */
     private Mono<Void> stream(byte[] wire, ReactiveProxyResponse out, ProxyExchange px, String method) {
+        VesperaStreamingExecutor.Reservation slot = streamingExecutor.tryReserve();
+        if (slot == null) {
+            px.reachedRust = false;
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, ProxyErrors.STREAMING_SATURATED);
+        }
         ServerHttpResponse response = out.response;
-        Executor executor = task -> streamingScheduler.schedule(task);
+        Executor executor = slot.executor();
         Publisher<DataBuffer> body = DataBufferUtils.outputStreamPublisher(sink -> {
             BodyGate gate = new BodyGate(sink);
             try {
@@ -403,7 +435,9 @@ public class VesperaReactiveProxyHandler implements WebHandler {
             }
         }, response.bufferFactory(), executor, STREAM_CHUNK_BYTES);
         return response.writeAndFlushWith(Flux.from(body).map(Mono::just))
-                .doOnSuccess(ignored -> px.complete(out.status(), out.panicked()));
+                .doOnSuccess(ignored -> px.complete(out.status(), out.panicked()))
+                // Cancelled / failed before the pool ran the task: free the slot.
+                .doFinally(signal -> slot.cancel());
     }
 
     /** Apply a streamed wire header; returns whether body bytes may follow. */

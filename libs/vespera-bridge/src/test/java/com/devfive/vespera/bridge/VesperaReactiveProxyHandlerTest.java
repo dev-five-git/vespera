@@ -394,6 +394,56 @@ class VesperaReactiveProxyHandlerTest {
     }
 
     @Test
+    void saturatedStreamingPoolAnswers503WithoutDispatching() throws Exception {
+        // One streaming thread, one queue slot.
+        VesperaStreamingExecutor streaming = new VesperaStreamingExecutor(1, 1);
+        VesperaReactiveProxyHandler handler = ReactiveTestSupport.handler(transport,
+                new ReactiveHeaderAppNameResolver("X-Vespera-App", List.of()), null, 1024, 1024,
+                "X-Request-Id", List.of(events::add), CorsHandling.RUST, streaming);
+        java.util.concurrent.CountDownLatch gate = new java.util.concurrent.CountDownLatch(1);
+        transport.streamGate = gate;
+        try {
+            // The first stream holds the only thread; the second waits in the queue.
+            Disposable running = handler.handle(sse("/one")).subscribe();
+            assertTrue(transport.streamsEntered.tryAcquire(5, java.util.concurrent.TimeUnit.SECONDS));
+            Disposable queued = handler.handle(sse("/two")).subscribe();
+            assertEquals(2, streaming.inUse());
+
+            Result rejected = call(client(handler).get().uri("/three")
+                    .header(HttpHeaders.ACCEPT, "text/event-stream"));
+            assertEquals(503, rejected.status());
+            assertEquals(ProxyErrors.STREAMING_SATURATED, rejected.body());
+            assertTrue(rejected.header("X-Request-Id") != null);
+            assertEquals(1, transport.requests.size(), "never reached Rust");
+            DispatchEvent event = awaitEvent();
+            assertEquals(503, event.status());
+            assertEquals(DispatchMode.STREAMING, event.mode());
+            // Buffered requests never touch the streaming pool.
+            assertEquals(200, call(client(handler).get().uri("/plain")).status());
+
+            gate.countDown();
+            long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (streaming.inUse() > 0 && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+            assertEquals(0, streaming.inUse(), "slots are freed when the streams end");
+            running.dispose();
+            queued.dispose();
+            transport.streamGate = null;
+            assertEquals(200, call(client(handler).get().uri("/four")
+                    .header(HttpHeaders.ACCEPT, "text/event-stream")).status());
+        } finally {
+            gate.countDown();
+            streaming.close();
+        }
+    }
+
+    private static MockServerWebExchange sse(String path) {
+        return MockServerWebExchange.from(MockServerHttpRequest.get(path)
+                .header(HttpHeaders.ACCEPT, "text/event-stream"));
+    }
+
+    @Test
     void failuresBeforeTheResponseBecomePlainText500() {
         transport.response = new byte[] {0, 0, 0, 99, 1}; // header length beyond the buffer
         Result result = call(client(handler()).get().uri("/broken"));
