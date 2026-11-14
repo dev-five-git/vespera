@@ -1,21 +1,24 @@
 //! `#[route]` check that a `Path<T>` extractor can deserialize the route's
-//! path parameters. A mismatch used to compile, document the segments as
-//! `string`, and fail on every request (axum's `Path` rejection: `500` for a
-//! wrong argument count, `400` for a missing struct field).
+//! path parameters. A definite mismatch used to compile, document the
+//! segments as `string`, and fail on every request (axum's `Path`
+//! rejection: `500` for a wrong argument count, `400` for an unknown field).
 //!
-//! Checked (error spanned on the `Path<..>` type):
-//! - `Path<(A, B, ..)>`: the tuple length must equal the parameter count.
-//! - `Path<scalar>` (a primitive such as `u32` / `String`): exactly one
-//!   parameter.
-//! - `Path<Struct>` (a named-field struct declared in the route's own file):
-//!   every field serde requires (not `Option`, no field / container
-//!   `default`, not `skip` / `skip_deserializing`) must name a parameter (its
-//!   serde name or an `alias`); with `deny_unknown_fields`, every parameter
-//!   must name a field. A struct with a `#[serde(flatten)]` field is not
-//!   checked, and a parameter without a field is otherwise fine (serde
-//!   ignores unknown keys).
+//! The app may be mounted under a parameterised prefix
+//! (`Router::nest("/{tenant}", app)`), so the extractor can legitimately see
+//! MORE parameters than the route's own `path` declares, never fewer. Only
+//! cases that fail whatever the prefix are rejected (error spanned on the
+//! `Path<..>` type):
+//! - `Path<(A, B, ..)>` with FEWER elements than the route's own parameters;
+//! - `Path<scalar>` (a primitive such as `u32` / `String`) on a route with
+//!   two or more own parameters;
+//! - `Path<Struct>` (a named-field struct declared in the route's own file)
+//!   with `#[serde(deny_unknown_fields)]` when one of the route's own
+//!   parameters matches no field (by serde name or `alias`). Structs with a
+//!   `#[serde(flatten)]` field or generics are not checked.
 //!
-//! Anything else (`HashMap`, `Vec`, a type declared elsewhere, generics) is
+//! A longer tuple, a scalar on a route with 0 / 1 own parameters, and a
+//! struct field without a matching segment are accepted (a prefix may supply
+//! the rest); anything else (`HashMap`, `Vec`, a type declared elsewhere) is
 //! left to axum.
 
 use std::path::Path as FsPath;
@@ -25,9 +28,9 @@ use syn::Type;
 
 use crate::parser::extract_path_parameters;
 use crate::parser::schema::{
-    SerdeSide, extract_default, extract_deny_unknown_fields, extract_field_rename_for,
-    extract_flatten, extract_rename_all_for, extract_serde_skip_flags, is_primitive_type,
-    rename_field, strip_raw_prefix_owned,
+    SerdeSide, extract_deny_unknown_fields, extract_field_rename_for, extract_flatten,
+    extract_rename_all_for, extract_serde_skip_flags, is_primitive_type, rename_field,
+    strip_raw_prefix_owned,
 };
 
 /// Check every `Path<T>` / `Validated<Path<T>>` argument of `sig` against
@@ -105,10 +108,10 @@ fn mismatch(
     };
     match inner {
         Type::Tuple(tuple) => {
-            (tuple.elems.len() != params.len()).then(|| extracts(tuple.elems.len()))
+            (tuple.elems.len() < params.len()).then(|| extracts(tuple.elems.len()))
         }
         Type::Paren(paren) => mismatch(&paren.elem, params, route_path, lookup),
-        _ if is_primitive_type(inner) => (params.len() != 1).then(|| extracts(1)),
+        _ if is_primitive_type(inner) => (params.len() >= 2).then(|| extracts(1)),
         Type::Path(type_path)
             if type_path.qself.is_none() && type_path.path.segments.len() == 1 =>
         {
@@ -132,11 +135,13 @@ fn struct_mismatch(
     let syn::Fields::Named(fields) = &item.fields else {
         return None;
     };
-    if !item.generics.params.is_empty() || fields.named.iter().any(|f| extract_flatten(&f.attrs)) {
+    if !extract_deny_unknown_fields(&item.attrs)
+        || !item.generics.params.is_empty()
+        || fields.named.iter().any(|f| extract_flatten(&f.attrs))
+    {
         return None;
     }
     let rename_all = extract_rename_all_for(&item.attrs, SerdeSide::Deserialize);
-    let container_default = extract_default(&item.attrs).is_some();
     let mut matched = vec![false; params.len()];
     for field in &fields.named {
         let skip = extract_serde_skip_flags(&field.attrs);
@@ -144,30 +149,11 @@ fn struct_mismatch(
             continue;
         }
         let names = field_wire_names(field, rename_all.as_deref());
-        let mut found = false;
         for (seen, param) in matched.iter_mut().zip(params) {
-            if names.contains(param) {
-                *seen = true;
-                found = true;
-            }
-        }
-        let optional =
-            container_default || extract_default(&field.attrs).is_some() || is_option(&field.ty);
-        if !found && !optional {
-            let rust_name = field
-                .ident
-                .as_ref()
-                .map_or_else(String::new, ToString::to_string);
-            return Some(format!(
-                "route {route_path} has no path parameter `{{{wire}}}` for the required field `{rust_name}` of `Path<{ty}>`; add `{{{wire}}}` to the route path, or make the field `Option<_>` / `#[serde(default)]`",
-                wire = names[0],
-                ty = type_display(inner),
-            ));
+            *seen |= names.contains(param);
         }
     }
-    if extract_deny_unknown_fields(&item.attrs)
-        && let Some((param, _)) = params.iter().zip(&matched).find(|(_, seen)| !**seen)
-    {
+    if let Some((param, _)) = params.iter().zip(&matched).find(|(_, seen)| !**seen) {
         return Some(format!(
             "route {route_path} has the path parameter `{{{param}}}`, but `Path<{}>` has no field for it and denies unknown fields",
             type_display(inner),
@@ -206,10 +192,6 @@ fn field_wire_names(field: &syn::Field, rename_all: Option<&str>) -> Vec<String>
     names
 }
 
-fn is_option(ty: &Type) -> bool {
-    matches!(ty, Type::Path(p) if p.path.segments.last().is_some_and(|s| s.ident == "Option"))
-}
-
 /// `quote` spacing (`(u32 , String)`) tidied for a diagnostic.
 fn type_display(ty: &Type) -> String {
     ty.to_token_stream()
@@ -237,14 +219,24 @@ mod tests {
         struct Renamed { #[serde(rename = "userId")] user_id: u32 }
         #[serde(rename_all = "camelCase")]
         struct Camel { user_id: u32 }
-        struct Aliased { #[serde(alias = "uid", default = "f")] id: u32, #[serde(alias = "o")] org: String }
-        struct Optional { id: u32, page: Option<u32>, #[serde(default)] size: u32, #[serde(skip)] cache: u8 }
-        #[serde(default)]
-        struct AllDefault { id: u32, other: u32 }
-        struct Flat { #[serde(flatten)] rest: Ids }
+        #[serde(deny_unknown_fields)]
+        struct StrictAliased {
+            #[serde(alias = "uid", default = "f")] id: u32,
+            #[serde(rename(deserialize = "organization"), alias = "o")] org: String,
+            #[serde(default)] page: u32,
+        }
+        #[serde(deny_unknown_fields)]
+        struct StrictTuple(u32);
+        #[serde(deny_unknown_fields)]
+        struct StrictSkip { id: u32, #[serde(skip)] x: u8 }
+        #[serde(deny_unknown_fields)]
+        struct StrictFlat { #[serde(flatten)] rest: Ids }
         #[serde(deny_unknown_fields)]
         struct Strict { id: u32 }
-        struct Generic<T> { id: T }
+        #[serde(deny_unknown_fields, rename_all = "camelCase")]
+        struct StrictCamel { user_id: u32 }
+        #[serde(deny_unknown_fields)]
+        struct StrictGeneric<T> { id: T }
     "#;
 
     fn lookup(name: &str) -> Option<syn::ItemStruct> {
@@ -271,16 +263,27 @@ mod tests {
     #[case::vec(Some("/{a}/{b}"), "p: Path<Vec<(String, String)>>")]
     #[case::unknown_type(Some("/{a}/{b}"), "p: Path<Elsewhere>")]
     #[case::qualified_struct(Some("/{a}"), "p: Path<other::Ids>")]
+    // A nest prefix (`/{tenant}`) may supply MORE parameters than the
+    // route's own path declares.
+    #[case::tuple_longer_nest_prefix(Some("/{id}"), "Path((t, id)): Path<(String, u32)>")]
+    #[case::tuple_without_path(None, "p: Path<(String,)>")]
+    #[case::scalar_without_path(None, "p: Path<String>")]
     #[case::struct_exact(Some("/{org}/{id}"), "p: Path<Ids>")]
     #[case::struct_extra_param(Some("/{org}/{id}/{x}"), "p: Path<Ids>")]
+    #[case::struct_field_from_prefix(Some("/{id}"), "p: Path<Ids>")]
     #[case::struct_renamed(Some("/{userId}"), "p: Path<Renamed>")]
-    #[case::struct_rename_all(Some("/{userId}"), "p: Path<Camel>")]
-    #[case::struct_alias(Some("/{o}"), "p: Path<Aliased>")]
-    #[case::struct_optional(Some("/{id}"), "p: Path<Optional>")]
-    #[case::container_default(Some("/{x}"), "p: Path<AllDefault>")]
-    #[case::flatten(Some("/{x}"), "p: Path<Flat>")]
+    #[case::struct_rename_all_mismatch_lenient(Some("/{user_id}"), "p: Path<Camel>")]
     #[case::strict_exact(Some("/{id}"), "p: Path<Strict>")]
-    #[case::generic(Some("/{x}"), "p: Path<Generic<u32>>")]
+    #[case::strict_field_from_prefix(None, "p: Path<Strict>")]
+    #[case::strict_alias(Some("/{uid}/{o}"), "p: Path<StrictAliased>")]
+    #[case::strict_rename_all(Some("/{userId}"), "p: Path<StrictCamel>")]
+    #[case::strict_flatten(Some("/{x}"), "p: Path<StrictFlat>")]
+    #[case::strict_generic(Some("/{x}"), "p: Path<StrictGeneric<u32>>")]
+    #[case::strict_generic_inferred(Some("/{x}"), "p: Path<StrictGeneric>")]
+    #[case::strict_tuple_struct(Some("/{x}"), "p: Path<StrictTuple>")]
+    #[case::paren_tuple(Some("/{a}/{b}"), "p: Path<((u32, u32))>")]
+    #[case::lifetime_argument(Some("/{a}/{b}"), "p: Path<'static>")]
+    #[case::receiver(Some("/{a}/{b}"), "&self, p: Path<(u32, u32)>")]
     #[case::no_path_extractor(None, "Json(b): Json<(u32, u32)>")]
     fn accepted(#[case] path: Option<&str>, #[case] arg: &str) {
         assert_eq!(check(path, arg), Ok(()));
@@ -292,35 +295,30 @@ mod tests {
         "Path(p): Path<(A, B)>",
         "route `/a/{x}/{y}/{z}` has 3 path parameters but `Path<(A, B)>` extracts 2 values"
     )]
-    #[case::tuple_long(
-        Some("/{x}"),
-        "p: Path<(u32, String)>",
-        "route `/{x}` has 1 path parameter but `Path<(u32, String)>` extracts 2 values"
-    )]
     #[case::validated_tuple(
-        Some("/{x}"),
-        "p: Validated<Path<(u32, u32)>>",
-        "route `/{x}` has 1 path parameter but `Path<(u32, u32)>` extracts 2 values"
+        Some("/{x}/{y}"),
+        "p: Validated<Path<(u32,)>>",
+        "route `/{x}/{y}` has 2 path parameters but `Path<(u32,)>` extracts 1 value"
     )]
     #[case::scalar_two(
         Some("/{a}/{b}"),
         "p: axum::extract::Path<u32>",
         "route `/{a}/{b}` has 2 path parameters but `Path<u32>` extracts 1 value"
     )]
-    #[case::scalar_none(
-        None,
-        "p: Path<String>",
-        "route without `path` has 0 path parameters but `Path<String>` extracts 1 value"
-    )]
-    #[case::struct_missing_field(
-        Some("/{org}"),
-        "p: Path<Ids>",
-        "route `/{org}` has no path parameter `{id}` for the required field `id` of `Path<Ids>`; add `{id}` to the route path, or make the field `Option<_>` / `#[serde(default)]`"
-    )]
-    #[case::struct_rename_all_missing(
+    #[case::strict_rename_all_mismatch(
         Some("/{user_id}"),
-        "p: Path<Camel>",
-        "route `/{user_id}` has no path parameter `{userId}` for the required field `user_id` of `Path<Camel>`; add `{userId}` to the route path, or make the field `Option<_>` / `#[serde(default)]`"
+        "p: Path<StrictCamel>",
+        "route `/{user_id}` has the path parameter `{user_id}`, but `Path<StrictCamel>` has no field for it and denies unknown fields"
+    )]
+    #[case::strict_skipped_field(
+        Some("/{id}/{x}"),
+        "p: Path<StrictSkip>",
+        "route `/{id}/{x}` has the path parameter `{x}`, but `Path<StrictSkip>` has no field for it and denies unknown fields"
+    )]
+    #[case::paren_tuple_short(
+        Some("/{a}/{b}/{c}"),
+        "p: Path<((u32, u32))>",
+        "route `/{a}/{b}/{c}` has 3 path parameters but `Path<(u32, u32)>` extracts 2 values"
     )]
     #[case::strict_extra(
         Some("/{id}/{x}"),
