@@ -15,6 +15,7 @@ use super::{
     path::extract_path_parameters,
     request_body::parse_request_body,
     response::parse_return_type,
+    schema::request_view::with_request_view,
 };
 
 #[derive(Clone, Copy, Default)]
@@ -114,12 +115,10 @@ pub fn build_operation_from_function(
     // This is the primary source of truth for path parameters
     let mut placeholder_path_params = 0;
     if let Some(ty) = &path_extractor_type {
-        parameters.extend(path_extractor_parameters(
-            ty,
-            &path_params,
-            known_schemas,
-            struct_definitions,
-        ));
+        // Parameters are deserialized: they document the request view.
+        parameters.extend(with_request_view(|| {
+            path_extractor_parameters(ty, &path_params, known_schemas, struct_definitions)
+        }));
     } else {
         // No Path extractor found, but path has parameters - use String as
         // default (placeholders a bare `name: T` argument below may type).
@@ -157,13 +156,15 @@ pub fn build_operation_from_function(
             };
 
             if !is_path_extractor
-                && let Some(params) = parse_function_parameter(
-                    input,
-                    &path_params,
-                    &path_param_set,
-                    known_schemas,
-                    struct_definitions,
-                )
+                && let Some(params) = with_request_view(|| {
+                    parse_function_parameter(
+                        input,
+                        &path_params,
+                        &path_param_set,
+                        known_schemas,
+                        struct_definitions,
+                    )
+                })
             {
                 parameters.extend(params);
             }
@@ -245,8 +246,14 @@ pub fn build_operation_from_function(
     // `error_status`), drop the auto-default `400` that `parse_return_type`
     // infers for `Result<_, E>` — unless `400` is itself among the declared
     // codes. The inferred success (200) response is unaffected.
-    let declares_errors = config.typed_responses.is_some_and(|r| !r.is_empty())
-        || config.error_status.is_some_and(|s| !s.is_empty());
+    // Only error codes (`>= 400`) count: a `responses = [(202, T)]` entry
+    // declares another success, not the route's errors.
+    let declares_errors = config
+        .typed_responses
+        .is_some_and(|typed| typed.iter().any(|(code, _)| *code >= 400))
+        || config
+            .error_status
+            .is_some_and(|codes| codes.iter().any(|code| *code >= 400));
     if declares_errors {
         let declares_400 = config
             .typed_responses
@@ -275,16 +282,17 @@ pub fn build_operation_from_function(
     }
 
     // Feature 2: re-key the inferred success response under the declared
-    // non-200 status (`status = <u16>`). No-body success statuses (204 No
-    // Content, 304 Not Modified) must not carry a response body.
+    // non-200 status (`status = <u16>`, validated 2xx) unless `responses =
+    // [(N, T)]` documents it explicitly. No-body success statuses (204 No
+    // Content, 205 Reset Content) must not carry a response body.
     if let Some(success) = config.success_status
         && success != 200
         && let Some(mut response) = responses.remove("200")
     {
-        if matches!(success, 204 | 304) {
+        if matches!(success, 204 | 205) {
             response.content = None;
         }
-        responses.insert(success.to_string(), response);
+        responses.entry(success.to_string()).or_insert(response);
     }
 
     Operation {
@@ -471,5 +479,7 @@ mod tests_extractor_wrappers;
 mod tests_form_query;
 #[cfg(test)]
 mod tests_request_shapes;
+#[cfg(test)]
+mod tests_status;
 #[cfg(test)]
 mod tests_validated;

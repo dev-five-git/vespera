@@ -39,6 +39,13 @@ pub(super) fn parse_unit_enum_to_schema(
         );
     }
 
+    // Only the catch-all is readable: any string.
+    if catch_all && enum_values.is_empty() {
+        return Schema {
+            description,
+            ..Schema::string()
+        };
+    }
     if catch_all {
         return Schema {
             description,
@@ -66,8 +73,12 @@ pub(super) fn parse_unit_enum_to_schema(
 }
 
 /// `{type: string, not: {enum: known}}` — the names a `#[serde(other)]`
-/// variant is deserialized from.
+/// variant is deserialized from (any string when no other name is known: an
+/// empty `enum` is not valid JSON Schema).
 pub(super) fn other_tag_schema(known: Vec<serde_json::Value>) -> Schema {
+    if known.is_empty() {
+        return Schema::string();
+    }
     Schema {
         not: Some(SchemaRef::Inline(Box::new(Schema {
             r#enum: Some(known),
@@ -127,7 +138,8 @@ pub fn derives_serde_repr(attrs: &[syn::Attribute], side: SerdeSide) -> bool {
 /// A `serde_repr` enum on the current side is its integer discriminant:
 /// `{type: integer, enum: [..]}`. Explicit discriminants are taken literally
 /// (`= 3`, `= -1`), implicit ones count up from the previous variant (`0`
-/// for the first). serde attributes (`rename`, `skip`) do not apply. A
+/// for the first). serde attributes (`rename`, `skip`) do not apply, except
+/// `#[serde(other)]`, which makes the request view accept any integer. A
 /// discriminant that is not an integer literal (`= BASE + 1`) cannot be
 /// evaluated here, so the schema is a plain `{type: integer}`.
 pub(super) fn parse_serde_repr_enum(
@@ -141,6 +153,19 @@ pub(super) fn parse_serde_repr_enum(
             .all(|variant| matches!(variant.fields, syn::Fields::Unit))
     {
         return None;
+    }
+    // `Deserialize_repr` reads any unknown discriminant as the
+    // `#[serde(other)]` variant, so every integer is accepted.
+    if in_request_view()
+        && enum_item
+            .variants
+            .iter()
+            .any(super::variant::is_other_variant)
+    {
+        return Some(Schema {
+            description,
+            ..Schema::integer()
+        });
     }
     let mut next = Some(0_i128);
     let mut values = Some(Vec::with_capacity(enum_item.variants.len()));
@@ -245,6 +270,18 @@ mod tests {
         "serde_repr_request_integer",
         "#[derive(Deserialize_repr)] #[repr(u8)] enum E { A = 3, B }",
         true
+    )]
+    // `Deserialize_repr` reads any unknown discriminant as the
+    // `#[serde(other)]` variant; the response still lists the discriminants.
+    #[case::request_side_other(
+        "serde_repr_request_other",
+        "#[derive(Serialize_repr, Deserialize_repr)] #[repr(u8)] enum E { A = 3, #[serde(other)] Unknown }",
+        true
+    )]
+    #[case::response_side_other(
+        "serde_repr_response_other",
+        "#[derive(Serialize_repr, Deserialize_repr)] #[repr(u8)] enum E { A = 3, #[serde(other)] Unknown }",
+        false
     )]
     #[case::response_side_deserialize_repr_only(
         "serde_repr_response_names",

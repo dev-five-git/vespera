@@ -6,8 +6,9 @@ use vespera_core::schema::SchemaRef;
 use crate::{
     parser::schema::{
         SerdeSide, definition_key, extract_field_rename_for, extract_rename_all_for,
-        is_primitive_type, nullable_schema_ref, rename_field, strip_raw_prefix_owned,
-        substitute_type,
+        extract_serde_skip_flags, extract_transparent, is_primitive_type, nullable_schema_ref,
+        rename_field, strip_raw_prefix_owned, substitute_type,
+        wire_override::container_override_type,
     },
     schema_macro::type_utils::is_primitive_like as utils_is_primitive_like,
 };
@@ -125,6 +126,48 @@ pub(super) fn named_struct_fields(
         field.ty = substitute_type(&field.ty, &names, &concrete);
     }
     Some(struct_item)
+}
+
+/// How many container `from` / `try_from` / `transparent` hops are followed
+/// (a cycle stops).
+pub(super) const MAX_CONVERSION_DEPTH: usize = 8;
+
+/// The type serde reads INSTEAD of `struct_item`'s own fields: the container
+/// `from` / `try_from` (or `#[schema(value_type)]`) source, or the single
+/// field of a `#[serde(transparent)]` struct (serde requires every other
+/// field to be skipped).
+pub(super) fn deserialized_instead(struct_item: &syn::ItemStruct) -> Option<Type> {
+    container_override_type(&struct_item.attrs, SerdeSide::Deserialize).or_else(|| {
+        extract_transparent(&struct_item.attrs)
+            .then(|| {
+                struct_item
+                    .fields
+                    .iter()
+                    .find(|field| {
+                        let flags = extract_serde_skip_flags(&field.attrs);
+                        !(flags.skip || flags.skip_deserializing)
+                    })
+                    .map(|field| field.ty.clone())
+            })
+            .flatten()
+    })
+}
+
+/// `ty` with every container conversion / `transparent` hop followed: the
+/// type a `Query<ty>` / `Path<ty>` actually reads (`ty` itself when it is
+/// not such a struct).
+pub(super) fn deserialized_source(ty: &Type, struct_definitions: &HashMap<&str, &str>) -> Type {
+    let mut current = ty.clone();
+    for _ in 0..MAX_CONVERSION_DEPTH {
+        match named_struct_fields(&current, struct_definitions)
+            .as_ref()
+            .and_then(deserialized_instead)
+        {
+            Some(source) => current = source,
+            None => break,
+        }
+    }
+    current
 }
 
 /// Whether `struct_definitions` holds `ty`'s last path segment as a struct of

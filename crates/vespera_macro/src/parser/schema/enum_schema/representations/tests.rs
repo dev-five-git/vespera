@@ -2,7 +2,15 @@ use std::collections::{HashMap, HashSet};
 
 use crate::parser::schema::enum_schema::parse_enum_to_schema;
 use insta::{assert_debug_snapshot, with_settings};
-use vespera_core::schema::{SchemaRef, SchemaType};
+use vespera_core::schema::{Schema, SchemaRef, SchemaType};
+
+/// The inline schema `schema_ref` must be (a `$ref` fails the test).
+fn inline(schema_ref: &SchemaRef) -> &Schema {
+    match schema_ref {
+        SchemaRef::Inline(schema) => schema,
+        SchemaRef::Ref(reference) => panic!("expected an inline schema, got {reference:?}"),
+    }
+}
 
 // Internally tagged enum tests
 #[test]
@@ -36,13 +44,12 @@ fn test_internally_tagged_enum_unit_variants() {
     assert_eq!(one_of.len(), 2);
 
     // Each variant should be an object with "type" property
-    if let SchemaRef::Inline(ping) = &one_of[0] {
+    {
+        let ping = inline(&one_of[0]);
         let props = ping.properties.as_ref().expect("properties missing");
         assert!(props.contains_key("type"));
         let required = ping.required.as_ref().expect("required missing");
         assert!(required.contains(&"type".to_string()));
-    } else {
-        panic!("Expected inline schema");
     }
 }
 
@@ -76,13 +83,12 @@ fn test_internally_tagged_enum_struct_variants() {
     assert_eq!(one_of.len(), 2);
 
     // Created variant should have kind, id, and name
-    if let SchemaRef::Inline(created) = &one_of[0] {
+    {
+        let created = inline(&one_of[0]);
         let props = created.properties.as_ref().expect("properties missing");
         assert!(props.contains_key("kind"));
         assert!(props.contains_key("id"));
         assert!(props.contains_key("name"));
-    } else {
-        panic!("Expected inline schema");
     }
 }
 
@@ -106,9 +112,11 @@ fn test_internally_tagged_enum_with_rename_all() {
     );
 
     let one_of = schema.one_of.expect("one_of missing");
-    if let SchemaRef::Inline(active) = &one_of[0] {
+    {
+        let active = inline(&one_of[0]);
         let props = active.properties.as_ref().expect("properties missing");
-        if let SchemaRef::Inline(type_schema) = props.get("type").expect("type missing") {
+        {
+            let type_schema = inline(props.get("type").expect("type missing"));
             let enum_vals = type_schema.r#enum.as_ref().expect("enum values missing");
             assert_eq!(enum_vals[0].as_str().unwrap(), "active_user");
         }
@@ -146,7 +154,8 @@ fn test_adjacently_tagged_enum_basic() {
     assert_eq!(one_of.len(), 2);
 
     // Each variant should have "type" and "data" properties
-    if let SchemaRef::Inline(success) = &one_of[0] {
+    {
+        let success = inline(&one_of[0]);
         let props = success.properties.as_ref().expect("properties missing");
         assert!(props.contains_key("type"));
         assert!(props.contains_key("data"));
@@ -154,8 +163,6 @@ fn test_adjacently_tagged_enum_basic() {
         let required = success.required.as_ref().expect("required missing");
         assert!(required.contains(&"type".to_string()));
         assert!(required.contains(&"data".to_string()));
-    } else {
-        panic!("Expected inline schema");
     }
 }
 
@@ -182,7 +189,8 @@ fn test_adjacently_tagged_enum_with_unit_variant() {
     assert_eq!(one_of.len(), 2);
 
     // Ping (unit variant) should only have "type", no "payload"
-    if let SchemaRef::Inline(ping) = &one_of[0] {
+    {
+        let ping = inline(&one_of[0]);
         let props = ping.properties.as_ref().expect("properties missing");
         assert!(props.contains_key("type"));
         assert!(!props.contains_key("payload")); // Unit variant has no content
@@ -193,7 +201,8 @@ fn test_adjacently_tagged_enum_with_unit_variant() {
     }
 
     // Message should have both "type" and "payload"
-    if let SchemaRef::Inline(message) = &one_of[1] {
+    {
+        let message = inline(&one_of[1]);
         let props = message.properties.as_ref().expect("properties missing");
         assert!(props.contains_key("type"));
         assert!(props.contains_key("payload"));
@@ -223,22 +232,26 @@ fn test_adjacently_tagged_enum_tuple_variant() {
     assert_eq!(one_of.len(), 2);
 
     // Int variant - content should be integer schema
-    if let SchemaRef::Inline(int_variant) = &one_of[0] {
+    {
+        let int_variant = inline(&one_of[0]);
         let props = int_variant.properties.as_ref().expect("properties missing");
         let content = props.get("c").expect("content missing");
-        if let SchemaRef::Inline(content_schema) = content {
+        {
+            let content_schema = inline(content);
             assert_eq!(content_schema.schema_type, Some(SchemaType::Integer));
         }
     }
 
     // Pair variant - content should be array with prefixItems
-    if let SchemaRef::Inline(pair_variant) = &one_of[1] {
+    {
+        let pair_variant = inline(&one_of[1]);
         let props = pair_variant
             .properties
             .as_ref()
             .expect("properties missing");
         let content = props.get("c").expect("content missing");
-        if let SchemaRef::Inline(content_schema) = content {
+        {
+            let content_schema = inline(content);
             assert_eq!(content_schema.schema_type, Some(SchemaType::Array));
             assert!(content_schema.prefix_items.is_some());
         }
@@ -276,17 +289,15 @@ fn test_untagged_enum_basic() {
     assert_eq!(one_of.len(), 2);
 
     // First variant should be string schema directly (not wrapped in object)
-    if let SchemaRef::Inline(string_variant) = &one_of[0] {
+    {
+        let string_variant = inline(&one_of[0]);
         assert_eq!(string_variant.schema_type, Some(SchemaType::String));
-    } else {
-        panic!("Expected inline schema");
     }
 
     // Second variant should be integer schema directly
-    if let SchemaRef::Inline(int_variant) = &one_of[1] {
+    {
+        let int_variant = inline(&one_of[1]);
         assert_eq!(int_variant.schema_type, Some(SchemaType::Integer));
-    } else {
-        panic!("Expected inline schema");
     }
 }
 
@@ -315,7 +326,8 @@ fn test_untagged_enum_struct_variants() {
     assert_eq!(one_of.len(), 2);
 
     // User variant should be object with name and age (no wrapper)
-    if let SchemaRef::Inline(user) = &one_of[0] {
+    {
+        let user = inline(&one_of[0]);
         assert_eq!(user.schema_type, Some(SchemaType::Object));
         let props = user.properties.as_ref().expect("properties missing");
         assert!(props.contains_key("name"));
@@ -346,7 +358,8 @@ fn test_untagged_enum_unit_variant() {
     assert_eq!(one_of.len(), 2);
 
     // Unit variant in untagged enum should be null
-    if let SchemaRef::Inline(nothing) = &one_of[0] {
+    {
+        let nothing = inline(&one_of[0]);
         assert_eq!(nothing.schema_type, Some(SchemaType::Null));
     }
 }
@@ -450,7 +463,8 @@ fn test_externally_tagged_empty_struct_variant() {
     assert_eq!(one_of.len(), 2);
 
     // Empty variant should have properties with Empty key pointing to object with no properties
-    if let SchemaRef::Inline(empty_variant) = &one_of[0] {
+    {
+        let empty_variant = inline(&one_of[0]);
         let props = empty_variant
             .properties
             .as_ref()
@@ -616,11 +630,8 @@ fn test_untagged_tuple_variant_with_known_schema_ref() {
     }
 
     // Second variant (String) should be inline string schema directly
-    if let SchemaRef::Inline(simple_variant) = &one_of[1] {
-        assert_eq!(simple_variant.schema_type, Some(SchemaType::String));
-    } else {
-        panic!("Expected inline schema");
-    }
+    let simple_variant = inline(&one_of[1]);
+    assert_eq!(simple_variant.schema_type, Some(SchemaType::String));
 }
 
 #[test]
@@ -689,12 +700,14 @@ fn test_untagged_multi_field_tuple_variant() {
     assert_eq!(one_of.len(), 3);
 
     // Single-field tuple should be string schema directly
-    if let SchemaRef::Inline(text_variant) = &one_of[0] {
+    {
+        let text_variant = inline(&one_of[0]);
         assert_eq!(text_variant.schema_type, Some(SchemaType::String));
     }
 
     // Multi-field tuple (Pair) should be array with prefixItems
-    if let SchemaRef::Inline(pair_variant) = &one_of[1] {
+    {
+        let pair_variant = inline(&one_of[1]);
         assert_eq!(pair_variant.schema_type, Some(SchemaType::Array));
         let prefix_items = pair_variant
             .prefix_items
@@ -706,7 +719,8 @@ fn test_untagged_multi_field_tuple_variant() {
     }
 
     // Multi-field tuple (Triple) should be array with 3 prefixItems
-    if let SchemaRef::Inline(triple_variant) = &one_of[2] {
+    {
+        let triple_variant = inline(&one_of[2]);
         assert_eq!(triple_variant.schema_type, Some(SchemaType::Array));
         let prefix_items = triple_variant
             .prefix_items

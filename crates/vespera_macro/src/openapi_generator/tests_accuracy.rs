@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// A GET route at `path` whose handler signature is `sig`.
-fn route(path: &str, fn_name: &str) -> RouteMetadata {
+pub(super) fn route(path: &str, fn_name: &str) -> RouteMetadata {
     RouteMetadata {
         method: "get".to_string(),
         path: path.to_string(),
@@ -32,7 +32,7 @@ fn route(path: &str, fn_name: &str) -> RouteMetadata {
     }
 }
 
-fn stored(fn_name: &str, sig: &str) -> StoredRouteInfo {
+pub(super) fn stored(fn_name: &str, sig: &str) -> StoredRouteInfo {
     StoredRouteInfo {
         fn_name: fn_name.to_string(),
         method: Some("get".to_string()),
@@ -55,7 +55,7 @@ fn stored(fn_name: &str, sig: &str) -> StoredRouteInfo {
     }
 }
 
-fn schema(name: &str, definition: &str) -> StructMetadata {
+pub(super) fn schema(name: &str, definition: &str) -> StructMetadata {
     StructMetadata::new(name.to_string(), definition.to_string())
 }
 
@@ -69,11 +69,11 @@ fn renamed(name: &str, ident: &str, definition: &str) -> StructMetadata {
     }
 }
 
-fn generate(metadata: &CollectedMetadata, storage: &[StoredRouteInfo]) -> OpenApi {
+pub(super) fn generate(metadata: &CollectedMetadata, storage: &[StoredRouteInfo]) -> OpenApi {
     generate_openapi_doc_with_metadata(None, None, None, None, metadata, None, storage)
 }
 
-fn pretty(doc: &OpenApi) -> String {
+pub(super) fn pretty(doc: &OpenApi) -> String {
     serde_json::to_string_pretty(doc).unwrap()
 }
 
@@ -162,14 +162,14 @@ fn recursive_generic_instantiation_becomes_a_component() {
     insta::assert_snapshot!("accuracy_recursive_generic_component", pretty(&doc));
 }
 
-fn post(path: &str, fn_name: &str) -> RouteMetadata {
+pub(super) fn post(path: &str, fn_name: &str) -> RouteMetadata {
     RouteMetadata {
         method: "post".to_string(),
         ..route(path, fn_name)
     }
 }
 
-fn stored_post(fn_name: &str, sig: &str) -> StoredRouteInfo {
+pub(super) fn stored_post(fn_name: &str, sig: &str) -> StoredRouteInfo {
     StoredRouteInfo {
         method: Some("post".to_string()),
         ..stored(fn_name, sig)

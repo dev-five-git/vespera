@@ -39,6 +39,20 @@ pub fn parse_enum_to_schema(
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Schema {
+    // `List<T>` inside the generic `List<T>` refers back to `List`.
+    super::generic_instances::with_definition(
+        &enum_item.ident,
+        &enum_item.generics,
+        &enum_item.attrs,
+        || parse_enum_body(enum_item, known_schemas, struct_definitions),
+    )
+}
+
+fn parse_enum_body(
+    enum_item: &syn::ItemEnum,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
+) -> Schema {
     let enum_description = extract_doc_comment(&enum_item.attrs);
     // `#[schema(value_type)]` / serde `into` / `from` (see `wire_override`).
     if let Some(ty) = super::wire_override::current_container_override(&enum_item.attrs) {
@@ -396,8 +410,8 @@ mod tests {
         }
         ",
         1,
-        Some(SchemaType::String),
-        0, // single-field tuple variant stored as object with inline schema
+        SchemaType::String,
+        0, // single-field tuple variant: the field schema itself
         "tuple_single"
     )]
     #[case(
@@ -407,7 +421,7 @@ mod tests {
         }
         ",
         1,
-        Some(SchemaType::Array),
+        SchemaType::Array,
         2, // tuple array prefix_items length
         "tuple_multi"
     )]
@@ -418,14 +432,14 @@ mod tests {
         }
         ",
         1,
-        Some(SchemaType::Object),
-        0, // not an array; ignore prefix_items length
+        SchemaType::Object,
+        0, // not an array: no prefix_items
         "named_object"
     )]
     fn test_parse_enum_to_schema_tuple_and_named_variants(
         #[case] enum_src: &str,
         #[case] expected_one_of_len: usize,
-        #[case] expected_inner_type: Option<SchemaType>,
+        #[case] expected_inner_type: SchemaType,
         #[case] expected_prefix_items_len: usize,
         #[case] suffix: &str,
     ) {
@@ -438,47 +452,25 @@ mod tests {
         let one_of = schema.clone().one_of.expect("one_of missing");
         assert_eq!(one_of.len(), expected_one_of_len);
 
-        if let Some(inner_expected) = expected_inner_type {
-            if let SchemaRef::Inline(obj) = &one_of[0] {
-                let props = obj.properties.as_ref().expect("props missing");
-                // take first property value
-                let inner_schema = props.values().next().expect("no property value");
-                match inner_expected {
-                    SchemaType::Array => {
-                        if let SchemaRef::Inline(array_schema) = inner_schema {
-                            assert_eq!(array_schema.schema_type, Some(SchemaType::Array));
-                            if expected_prefix_items_len > 0 {
-                                assert_eq!(
-                                    array_schema.prefix_items.as_ref().unwrap().len(),
-                                    expected_prefix_items_len
-                                );
-                            }
-                        } else {
-                            panic!("Expected inline array schema");
-                        }
-                    }
-                    SchemaType::Object => {
-                        if let SchemaRef::Inline(inner_obj) = inner_schema {
-                            assert_eq!(inner_obj.schema_type, Some(SchemaType::Object));
-                            let inner_props = inner_obj.properties.as_ref().unwrap();
-                            assert!(inner_props.contains_key("id"));
-                            assert!(inner_props.contains_key("note"));
-                            assert!(
-                                inner_obj
-                                    .required
-                                    .as_ref()
-                                    .unwrap()
-                                    .contains(&"id".to_string())
-                            );
-                        } else {
-                            panic!("Expected inline object schema");
-                        }
-                    }
-                    _ => {}
-                }
-            } else {
-                panic!("Expected inline schema in one_of");
-            }
+        let SchemaRef::Inline(obj) = &one_of[0] else {
+            panic!("Expected inline schema in one_of");
+        };
+        let props = obj.properties.as_ref().expect("props missing");
+        // The variant's payload: the first (only) property value.
+        let Some(SchemaRef::Inline(inner)) = props.values().next() else {
+            panic!("Expected an inline payload schema");
+        };
+        // Every case checks the payload type (`tuple_single` too).
+        assert_eq!(inner.schema_type, Some(expected_inner_type));
+        assert_eq!(
+            inner.prefix_items.as_ref().map_or(0, Vec::len),
+            expected_prefix_items_len
+        );
+        if expected_inner_type == SchemaType::Object {
+            let inner_props = inner.properties.as_ref().unwrap();
+            assert!(inner_props.contains_key("id"));
+            assert!(inner_props.contains_key("note"));
+            assert!(inner.required.as_ref().unwrap().contains(&"id".to_string()));
         }
 
         with_settings!({ snapshot_path => "snapshots", snapshot_suffix => format!("tuple_named_{}", suffix) }, {

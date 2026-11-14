@@ -1,0 +1,121 @@
+---
+source: crates/vespera_macro/src/openapi_generator/tests_parser_views.rs
+expression: "serde_json::to_string_pretty(&components).unwrap()"
+---
+{
+  "List": {
+    "oneOf": [
+      {
+        "type": "string",
+        "enum": [
+          "Nil"
+        ]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "Cons": {
+            "type": "array",
+            "prefixItems": [
+              {},
+              {
+                "$ref": "#/components/schemas/List"
+              }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "required": [
+          "Cons"
+        ]
+      }
+    ]
+  },
+  "List_i32": {
+    "oneOf": [
+      {
+        "type": "string",
+        "enum": [
+          "Nil"
+        ]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "Cons": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "integer",
+                "format": "int32"
+              },
+              {
+                "$ref": "#/components/schemas/List_i32"
+              }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "required": [
+          "Cons"
+        ]
+      }
+    ]
+  },
+  "Tree": {
+    "type": "object",
+    "properties": {
+      "children": {
+        "type": "array",
+        "default": [],
+        "items": {
+          "$ref": "#/components/schemas/Tree"
+        }
+      },
+      "value": {}
+    },
+    "required": [
+      "value",
+      "children"
+    ]
+  },
+  "Tree_i32": {
+    "type": "object",
+    "properties": {
+      "children": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Tree_i32"
+        }
+      },
+      "value": {
+        "type": "integer",
+        "format": "int32"
+      }
+    },
+    "required": [
+      "value",
+      "children"
+    ]
+  },
+  "Tree_i32Input": {
+    "type": "object",
+    "properties": {
+      "children": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Tree_i32Input"
+        }
+      },
+      "value": {
+        "type": "integer",
+        "format": "int32"
+      }
+    },
+    "required": [
+      "value"
+    ]
+  }
+}

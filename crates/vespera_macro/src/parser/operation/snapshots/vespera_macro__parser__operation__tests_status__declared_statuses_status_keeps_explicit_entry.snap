@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/parser/operation/tests_status.rs
+expression: "render(sig, success_status, typed, error_status)"
+---
+201: {"application/json":{"schema":{"$ref":"#/components/schemas/Created"}}}

@@ -267,17 +267,32 @@ fn generic_struct_with_constraints_produces_compile_error() {
     assert!(out.contains("generic"));
 }
 
-#[test]
-fn annotation_only_constraints_emit_nothing() {
-    // example / read_only / write_only / unique_items / multiple_of /
-    // exclusive bounds are OpenAPI annotations only; they should not
-    // drag a Validate impl into existence on their own.
-    let s: DeriveInput = parse_quote! {
-        struct Doc {
-            #[schema(read_only, example = "abc", unique_items, multiple_of = 0.5)]
-            pub id: String,
-        }
-    };
+// example / read_only / write_only / unique_items / multiple_of /
+// exclusive bounds are OpenAPI annotations only; they should not drag a
+// Validate impl (or, on a generic type, the "generic types" compile error)
+// into existence on their own.
+#[rstest::rstest]
+#[case::plain(parse_quote! {
+    struct Doc {
+        #[schema(read_only, example = "abc", unique_items, multiple_of = 0.5)]
+        pub id: String,
+    }
+})]
+#[case::generic_multiple_of(parse_quote! {
+    struct Page<T> {
+        #[schema(multiple_of = 10)]
+        pub size: u32,
+        pub items: Vec<T>,
+    }
+})]
+#[case::generic_exclusive_bounds(parse_quote! {
+    struct Range<T> {
+        #[schema(exclusive_minimum, exclusive_maximum)]
+        pub value: i32,
+        pub tag: T,
+    }
+})]
+fn annotation_only_constraints_emit_nothing(#[case] s: DeriveInput) {
     assert_eq!(emit_to_string(s), "");
 }
 

@@ -1,0 +1,42 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests.rs
+expression: "serde_json::to_string_pretty(&schema).unwrap()"
+---
+{
+  "allOf": [
+    {
+      "type": "object"
+    },
+    {
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "A": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "A"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "B": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "B"
+              ]
+            }
+          ]
+        },
+        {}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_closed.rs
+expression: "serde_json::to_string_pretty(&schema).unwrap()"
+---
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "Created"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "discriminator": {
+    "propertyName": "type"
+  }
+}

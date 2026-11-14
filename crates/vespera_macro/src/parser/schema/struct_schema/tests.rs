@@ -855,8 +855,10 @@ fn schema_any_field_is_any_value_without_type_conversion() {
     "flatten_option_nested_flatten",
     r"struct Outer { #[serde(flatten)] meta: Option<Meta> }"
 )]
-#[case::flatten_option_enum_ref_kept(
-    "flatten_option_enum_ref_kept",
+// A flattened unit enum is a `{"A": null}` key (serde's flat map), not the
+// `"A"` string its `$ref` describes.
+#[case::flatten_option_unit_enum_keys(
+    "flatten_option_unit_enum_keys",
     r"struct Outer { #[serde(flatten)] kind: Option<Kind> }"
 )]
 #[case::flatten_required_struct_unchanged(

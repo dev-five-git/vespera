@@ -1,0 +1,42 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/flatten.rs
+expression: "serde_json::to_string_pretty(&schema).unwrap()"
+---
+{
+  "allOf": [
+    {
+      "type": "object"
+    },
+    {
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "On": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "On"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "off": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "off"
+              ]
+            }
+          ]
+        },
+        {}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,141 @@
+---
+source: crates/vespera_macro/src/openapi_generator/tests_parser_views.rs
+expression: doc
+---
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/by/{sort}": {
+      "get": {
+        "operationId": "by",
+        "parameters": [
+          {
+            "name": "sort",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/SortInput"
+            }
+          },
+          {
+            "name": "x_sort",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/SortInput"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/list": {
+      "get": {
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "sort",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/SortInput"
+            }
+          },
+          {
+            "name": "inner",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "in": {
+                  "type": "integer",
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255
+                }
+              },
+              "required": [
+                "in"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sort"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Inner": {
+        "type": "object",
+        "properties": {
+          "Out": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0,
+            "maximum": 255
+          }
+        },
+        "required": [
+          "Out"
+        ]
+      },
+      "ListQuery": {
+        "type": "object",
+        "properties": {
+          "inner": {
+            "$ref": "#/components/schemas/Inner"
+          },
+          "sort": {
+            "$ref": "#/components/schemas/Sort"
+          }
+        },
+        "required": [
+          "sort",
+          "inner"
+        ]
+      },
+      "Sort": {
+        "type": "string",
+        "enum": [
+          "ASC",
+          "DESC"
+        ]
+      },
+      "SortInput": {
+        "type": "string",
+        "enum": [
+          "asc",
+          "desc"
+        ]
+      }
+    }
+  }
+}
