@@ -19,7 +19,8 @@
 # Runs ONLY in the main-only release job, right after changepacks published, and
 # never publishes or attests anything itself. It writes:
 #   <out-dir>/artifacts/   the published files: <crate>-<v>.crate (the tarball
-#                          `cargo publish` uploaded, checked against the SHA-256
+#                          `cargo publish` uploaded, or else the one crates.io
+#                          serves; either way checked against the SHA-256
 #                          crates.io reports) and the Maven JARs (main, sources,
 #                          javadoc) the Gradle publish task built
 #   <out-dir>/sbom/        the matching CycloneDX SBOMs (scripts/sbom.sh)
@@ -216,12 +217,13 @@ for p in "${paths[@]}"; do
           continue
         fi
       elif [ ! -f "$file" ]; then
-        # Checked against crates.io below, so a non-identical repackage is
-        # refused rather than attested.
-        echo "::warning::$crate-$version.crate not left by cargo publish; repackaging"
-        file="$src/target/package/$crate-$version.crate"
-        if ! cargo package --no-verify --manifest-path "$src/Cargo.toml" -p "$crate"; then
-          fail "could not repackage $crate@$version; not attesting it"
+        # Newer cargo no longer leaves the uploaded .crate behind, and a
+        # repackage is not byte-identical (0.7.0), so fetch what crates.io
+        # serves; it is checked against the crates.io checksum below.
+        echo "::warning::$crate-$version.crate not left by cargo publish; downloading it from crates.io"
+        file="$src/$crate-$version.crate"
+        if ! curl_get "https://static.crates.io/crates/$crate/$crate-$version.crate" "$file"; then
+          fail "could not download $crate@$version from crates.io; not attesting it"
           continue
         fi
       fi
