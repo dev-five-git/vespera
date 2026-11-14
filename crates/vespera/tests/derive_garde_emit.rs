@@ -284,3 +284,49 @@ fn nested_validation_outer_and_inner_violations_both_reported() {
     assert!(paths.iter().any(|p| p == "order_id"));
     assert!(paths.iter().any(|p| p == "primary_address.postal_code"));
 }
+
+// ── error paths follow serde's deserialize-side names ───────────
+
+#[derive(Schema, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct RenamedFields {
+    #[schema(min_length = 3)]
+    user_name: String,
+    #[schema(min_length = 1)]
+    r#type: String,
+    #[serde(rename(serialize = "out", deserialize = "in"))]
+    #[schema(minimum = 2.5, maximum = 9.5)]
+    count: u8,
+}
+
+#[test]
+fn error_paths_use_the_serde_wire_names() {
+    let r = RenamedFields {
+        user_name: "ab".to_owned(),
+        r#type: String::new(),
+        count: 2,
+    };
+    let report = r.validate().expect_err("three violations");
+    let mut paths: Vec<String> = report.iter().map(|(p, _)| p.to_string()).collect();
+    paths.sort();
+    assert_eq!(paths, ["in", "type", "userName"]);
+}
+
+#[test]
+fn fractional_bounds_on_integer_fields_round_inward() {
+    let ok = |count| {
+        RenamedFields {
+            user_name: "abc".to_owned(),
+            r#type: "t".to_owned(),
+            count,
+        }
+        .validate()
+        .is_ok()
+    };
+    // `minimum = 2.5` → 3, `maximum = 9.5` → 9.
+    assert!(!ok(2));
+    assert!(ok(3));
+    assert!(ok(9));
+    assert!(!ok(10));
+}

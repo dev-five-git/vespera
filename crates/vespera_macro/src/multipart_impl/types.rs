@@ -80,9 +80,14 @@ pub(super) fn strip_raw_prefix(s: &str) -> String {
 
 /// Parse a human-readable byte unit string into bytes.
 ///
-/// Supports: `"10MiB"`, `"1GB"`, `"500KB"`, `"1024"`, `"unlimited"`.
-pub(super) fn parse_byte_unit(s: &str) -> Option<usize> {
-    let s = s.trim();
+/// Supports a whole number of bytes (`"1024"`) or a whole number followed by
+/// one of the case-sensitive suffixes `B`, `KB`, `MB`, `GB`, `KiB`, `MiB`,
+/// `GiB` (`"10MiB"`, `"500 KB"`). (`"unlimited"` is handled by the caller.)
+///
+/// Anything else — `"10mb"`, `"1.5MiB"`, a size that overflows `usize` — is
+/// an `Err` carrying the user-facing message.
+pub(super) fn parse_byte_unit(s: &str) -> Result<usize, String> {
+    let trimmed = s.trim();
 
     // Binary and decimal suffixes, longest first to avoid prefix collisions
     let suffixes: &[(&str, usize)] = &[
@@ -95,14 +100,31 @@ pub(super) fn parse_byte_unit(s: &str) -> Option<usize> {
         ("B", 1),
     ];
 
-    for (suffix, multiplier) in suffixes {
-        if let Some(num_str) = s.strip_suffix(suffix) {
-            return num_str.trim().parse::<usize>().ok().map(|n| n * multiplier);
-        }
+    let (num_str, multiplier) = suffixes
+        .iter()
+        .find_map(|(suffix, multiplier)| {
+            trimmed
+                .strip_suffix(suffix)
+                .map(|num| (num.trim(), *multiplier))
+        })
+        .unwrap_or((trimmed, 1));
+    let digits = !num_str.is_empty() && num_str.bytes().all(|b| b.is_ascii_digit());
+    if !digits {
+        return Err(format!(
+            "invalid `limit` {s:?}: expected \"unlimited\", a whole number of bytes (\"1024\") \
+             or a whole number with one of the suffixes B, KB, MB, GB, KiB, MiB, GiB (\"10MiB\")"
+        ));
     }
-
-    // Plain number (bytes)
-    s.parse::<usize>().ok()
+    num_str
+        .parse::<usize>()
+        .ok()
+        .and_then(|n| n.checked_mul(multiplier))
+        .ok_or_else(|| {
+            format!(
+                "`limit` {s:?} overflows the maximum size ({} bytes)",
+                usize::MAX
+            )
+        })
 }
 
 #[cfg(test)]
@@ -112,22 +134,36 @@ mod tests {
 
     #[test]
     fn test_parse_byte_unit() {
-        assert_eq!(parse_byte_unit("10MiB"), Some(10 * 1024 * 1024));
-        assert_eq!(parse_byte_unit("50MiB"), Some(50 * 1024 * 1024));
-        assert_eq!(parse_byte_unit("1GB"), Some(1_000_000_000));
-        assert_eq!(parse_byte_unit("500KB"), Some(500_000));
-        assert_eq!(parse_byte_unit("1024"), Some(1024));
-        assert_eq!(parse_byte_unit("0"), Some(0));
-        assert_eq!(parse_byte_unit("invalid"), None);
+        assert_eq!(parse_byte_unit("10MiB"), Ok(10 * 1024 * 1024));
+        assert_eq!(parse_byte_unit("50MiB"), Ok(50 * 1024 * 1024));
+        assert_eq!(parse_byte_unit("1GB"), Ok(1_000_000_000));
+        assert_eq!(parse_byte_unit("500KB"), Ok(500_000));
+        assert_eq!(parse_byte_unit("1024"), Ok(1024));
+        assert_eq!(parse_byte_unit("0"), Ok(0));
     }
 
     #[test]
     fn test_parse_byte_unit_all_suffixes() {
-        assert_eq!(parse_byte_unit("1GiB"), Some(1024 * 1024 * 1024));
-        assert_eq!(parse_byte_unit("2KiB"), Some(2 * 1024));
-        assert_eq!(parse_byte_unit("3MB"), Some(3_000_000));
-        assert_eq!(parse_byte_unit("4B"), Some(4));
-        assert_eq!(parse_byte_unit("  5MiB  "), Some(5 * 1024 * 1024));
+        assert_eq!(parse_byte_unit("1GiB"), Ok(1024 * 1024 * 1024));
+        assert_eq!(parse_byte_unit("2KiB"), Ok(2 * 1024));
+        assert_eq!(parse_byte_unit("3MB"), Ok(3_000_000));
+        assert_eq!(parse_byte_unit("4B"), Ok(4));
+        assert_eq!(parse_byte_unit("  5MiB  "), Ok(5 * 1024 * 1024));
+        assert_eq!(parse_byte_unit("10 MB"), Ok(10_000_000));
+    }
+
+    #[rstest::rstest]
+    #[case::word("invalid", "invalid `limit`")]
+    #[case::lowercase_unit("10mb", "invalid `limit`")]
+    #[case::fraction("1.5MiB", "invalid `limit`")]
+    #[case::sign("+5", "invalid `limit`")]
+    #[case::suffix_only("MiB", "invalid `limit`")]
+    #[case::empty("", "invalid `limit`")]
+    #[case::number_overflow("99999999999999999999", "overflows")]
+    #[case::multiplier_overflow("18446744073709551615KiB", "overflows")]
+    fn test_parse_byte_unit_rejects(#[case] input: &str, #[case] message: &str) {
+        let err = parse_byte_unit(input).unwrap_err();
+        assert!(err.contains(message), "{input}: {err}");
     }
 
     #[test]

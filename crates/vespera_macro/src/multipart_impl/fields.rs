@@ -2,8 +2,11 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Type;
 
-use super::attrs::{extract_limit_tokens, resolve_default_kind, resolve_field_name};
+use super::attrs::{
+    FormDataAttrs, extract_limit_tokens, parse_form_data, resolve_default_kind, resolve_field_name,
+};
 use super::types::{extract_inner_generic, is_option_type, is_vec_type};
+use crate::parser::schema::extract_serde_skip_flags;
 
 /// Collected codegen fragments for each struct field.
 pub(super) struct FieldCodegen<'a> {
@@ -11,6 +14,11 @@ pub(super) struct FieldCodegen<'a> {
     pub(super) assignments: Vec<TokenStream>,
     pub(super) post_loop: Vec<TokenStream>,
     pub(super) idents: Vec<&'a syn::Ident>,
+    /// The type each parsed (non-skipped) field is read as — the
+    /// `TryFromFieldWithState` bound a generic struct's impl needs.
+    pub(super) parsed_types: Vec<Type>,
+    /// Malformed `#[form_data(...)]` attributes.
+    pub(super) errors: Vec<syn::Error>,
 }
 
 /// How a missing field should be handled.
@@ -35,6 +43,8 @@ pub(super) fn process_fields<'a>(
         assignments: Vec::new(),
         post_loop: Vec::new(),
         idents: Vec::new(),
+        parsed_types: Vec::new(),
+        errors: Vec::new(),
     };
 
     for field in fields {
@@ -42,15 +52,41 @@ pub(super) fn process_fields<'a>(
         let ty = &field.ty;
         let is_vec = is_vec_type(ty);
         let is_option = is_option_type(ty);
-        let field_name = resolve_field_name(ident, &field.attrs, rename_all);
-        let limit_tokens = extract_limit_tokens(&field.attrs);
-        let default_kind = resolve_default_kind(&field.attrs, struct_default);
+        let form = match parse_form_data(&field.attrs) {
+            Ok(form) => form,
+            Err(err) => {
+                cg.errors.push(err);
+                FormDataAttrs::default()
+            }
+        };
+        let default_kind = resolve_default_kind(&field.attrs, form.default, struct_default);
+
+        // `#[serde(skip)]` / `skip_deserializing`: serde never reads the
+        // field, so neither does the form parser — it starts from its
+        // default (`default = "fn"` if given) instead of being required.
+        let skip = extract_serde_skip_flags(&field.attrs);
+        if skip.skip || skip.skip_deserializing {
+            let init = match &default_kind {
+                DefaultKind::Function(fn_path) => default_fn_call(ident, fn_path),
+                DefaultKind::Trait | DefaultKind::None => {
+                    quote! { ::core::default::Default::default() }
+                }
+            };
+            cg.post_loop.push(quote! { let #ident: #ty = #init; });
+            cg.idents.push(ident);
+            continue;
+        }
+
+        let field_name =
+            resolve_field_name(ident, &field.attrs, form.field_name.as_deref(), rename_all);
+        let limit_tokens = extract_limit_tokens(form.limit.as_ref());
 
         let parse_ty = if is_option || is_vec {
             extract_inner_generic(ty).unwrap_or_else(|| ty.clone())
         } else {
             ty.clone()
         };
+        cg.parsed_types.push(parse_ty.clone());
 
         push_declaration(&mut cg, ident, ty, is_vec, is_option);
         push_assignment(
@@ -163,25 +199,34 @@ fn post_loop_binding(
 
 /// Post-loop binding for `default = "path::to::fn"`.
 fn default_fn_post_loop(ident: &syn::Ident, ty: &Type, fn_path: &str) -> TokenStream {
+    let default_fn = default_fn_expr(ident, fn_path);
+    quote! { let #ident: #ty = #ident.unwrap_or_else(#default_fn); }
+}
+
+/// Initialiser calling `default = "path::to::fn"` (for a skipped field).
+fn default_fn_call(ident: &syn::Ident, fn_path: &str) -> TokenStream {
+    let default_fn = default_fn_expr(ident, fn_path);
+    quote! { (#default_fn)() }
+}
+
+/// The `default = "path::to::fn"` function as an expression.
+fn default_fn_expr(ident: &syn::Ident, fn_path: &str) -> TokenStream {
     // A malformed user-supplied `default = "..."` path must surface as a
     // clean, span-attached compile error at the field — not an internal
     // macro panic (`.expect`) that prints no source location and aborts
     // expansion of the whole derive.
     match syn::parse_str::<syn::ExprPath>(fn_path) {
-        Ok(path) => quote! { let #ident: #ty = #ident.unwrap_or_else(#path); },
+        Ok(path) => quote! { #path },
         Err(err) => {
             let compile_err = syn::Error::new_spanned(
                 ident,
                 format!("invalid `default` function path `{fn_path}`: {err}"),
             )
             .to_compile_error();
-            // Emit the diagnostic and still bind `#ident` (unreachable
+            // Emit the diagnostic and still yield a function (unreachable
             // fallback) so the malformed default does not cascade into
             // spurious "cannot find value" errors downstream.
-            quote! {
-                #compile_err
-                let #ident: #ty = #ident.unwrap_or_else(|| ::core::unreachable!());
-            }
+            quote! { { #compile_err || ::core::unreachable!() } }
         }
     }
 }

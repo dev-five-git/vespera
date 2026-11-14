@@ -1,0 +1,61 @@
+---
+source: crates/vespera_macro/src/multipart_impl/mod.rs
+assertion_line: 436
+expression: derive_pretty(src)
+---
+impl<
+    __VesperaS__: Send + Sync,
+> vespera::multipart::TryFromMultipartWithState<__VesperaS__> for F {
+    async fn try_from_multipart_with_state(
+        __multipart__: &mut vespera::axum::extract::Multipart,
+        __state__: &__VesperaS__,
+    ) -> std::result::Result<Self, vespera::multipart::TypedMultipartError> {
+        let mut user_name: std::option::Option<String> = std::option::Option::None;
+        while let std::option::Option::Some(__field__) = __multipart__
+            .next_field()
+            .await
+            .map_err(vespera::multipart::TypedMultipartError::from)?
+        {
+            vespera::multipart::register_multipart_part()?;
+            let __field__ = vespera::multipart::MeteredField::__from_field(__field__);
+            let __field_name__ = match __field__.name() {
+                std::option::Option::Some("") | std::option::Option::None => {
+                    return std::result::Result::Err(
+                        vespera::multipart::TypedMultipartError::NamelessField,
+                    );
+                }
+                std::option::Option::Some(__name__) => __name__,
+            };
+            match __field_name__ {
+                "userName" => {
+                    if user_name.is_none() {
+                        user_name = std::option::Option::Some(
+                            <String as vespera::multipart::TryFromFieldWithState<
+                                __VesperaS__,
+                            >>::try_from_field_with_state(
+                                    __field__,
+                                    std::option::Option::None,
+                                    __state__,
+                                )
+                                .await?,
+                        );
+                    } else {
+                        return std::result::Result::Err(vespera::multipart::TypedMultipartError::DuplicateField {
+                            field_name: std::string::String::from("userName"),
+                        });
+                    }
+                }
+                _ => {
+                    return std::result::Result::Err(vespera::multipart::TypedMultipartError::UnknownField {
+                        field_name: std::string::String::from(__field_name__),
+                    });
+                }
+            }
+        }
+        let user_name = user_name
+            .ok_or(vespera::multipart::TypedMultipartError::MissingField {
+                field_name: std::string::String::from("userName"),
+            })?;
+        std::result::Result::Ok(Self { user_name })
+    }
+}
