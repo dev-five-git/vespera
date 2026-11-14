@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/parser/schema/type_schema/conversion/tests.rs
-assertion_line: 412
 expression: "format!(\"{ty_src} => {json}\")"
 ---
-NonZero<u16> => {"type":"integer","format":"uint16","minimum":1}
+NonZero<u16> => {"type":"integer","format":"uint16","minimum":1,"maximum":65535}

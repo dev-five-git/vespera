@@ -1226,7 +1226,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "required": true,
             "schema": {
               "type": "integer",
-              "format": "uint32"
+              "format": "uint32",
+              "minimum": 0,
+              "maximum": 4294967295
             }
           },
           {
@@ -1238,7 +1240,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
                 "integer",
                 "null"
               ],
-              "format": "uint32"
+              "format": "uint32",
+              "minimum": 0,
+              "maximum": 4294967295
             }
           }
         ],
@@ -1878,7 +1882,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "required": true,
             "schema": {
               "type": "integer",
-              "format": "uint32"
+              "format": "uint32",
+              "minimum": 0,
+              "maximum": 4294967295
             }
           },
           {
@@ -2156,7 +2162,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "required": true,
             "schema": {
               "type": "integer",
-              "format": "uint32"
+              "format": "uint32",
+              "minimum": 0,
+              "maximum": 4294967295
             }
           }
         ],
@@ -2222,7 +2230,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "required": true,
             "schema": {
               "type": "integer",
-              "format": "uint32"
+              "format": "uint32",
+              "minimum": 0,
+              "maximum": 4294967295
             }
           }
         ],
@@ -2300,7 +2310,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "required": true,
             "schema": {
               "type": "integer",
-              "format": "uint32"
+              "format": "uint32",
+              "minimum": 0,
+              "maximum": 4294967295
             }
           },
           {
@@ -2312,10 +2324,30 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
                 "integer",
                 "null"
               ],
-              "format": "uint32"
+              "format": "uint32",
+              "minimum": 0,
+              "maximum": 4294967295
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/type": {
+      "get": {
+        "operationId": "match",
+        "summary": "Mounted as `crate::routes::r#type::r#match`; operationId `match`.",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -2595,7 +2627,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "required": true,
             "schema": {
               "type": "integer",
-              "format": "uint32"
+              "format": "uint32",
+              "minimum": 0,
+              "maximum": 4294967295
             }
           }
         ],
@@ -2690,7 +2724,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "required": true,
             "schema": {
               "type": "integer",
-              "format": "uint32"
+              "format": "uint32",
+              "minimum": 0,
+              "maximum": 4294967295
             }
           }
         ],
@@ -3181,7 +3217,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "required": true,
             "schema": {
               "type": "integer",
-              "format": "uint64"
+              "format": "uint64",
+              "minimum": 0
             }
           }
         ],
@@ -3387,7 +3424,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "properties": {
           "age": {
             "type": "integer",
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           },
           "array": {
             "type": "array",
@@ -3469,7 +3508,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "properties": {
           "age": {
             "type": "integer",
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           },
           "array": {
             "type": "array",
@@ -3581,7 +3622,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           },
           "retryCount": {
             "type": "integer",
-            "format": "uint8"
+            "format": "uint8",
+            "minimum": 0,
+            "maximum": 255
           },
           "separator": {
             "type": "string",
@@ -3837,7 +3880,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "properties": {
           "id": {
             "type": "integer",
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           },
           "name": {
             "type": "string"
@@ -4103,7 +4148,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "properties": {
           "code": {
             "type": "integer",
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           },
           "error": {
             "type": "string"
@@ -4119,7 +4166,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "properties": {
           "code": {
             "type": "integer",
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           },
           "error": {
             "type": "string"
@@ -4380,9 +4429,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "name": {
             "type": "string"
           },
-          "value": {
-            "type": "object"
-          }
+          "value": {}
         },
         "required": [
           "value",
@@ -4395,12 +4442,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "name": {
             "type": "string"
           },
-          "value": {
-            "type": "object"
-          },
-          "value2": {
-            "type": "object"
-          }
+          "value": {},
+          "value2": {}
         },
         "required": [
           "value",
@@ -4498,7 +4541,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "properties": {
           "item_id": {
             "type": "integer",
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           },
           "slug": {
             "type": "string"
@@ -4533,7 +4578,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "properties": {
           "age": {
             "type": "integer",
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           },
           "name": {
             "type": "string"
@@ -4543,7 +4590,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "integer",
               "null"
             ],
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           }
         },
         "required": [
@@ -5080,9 +5129,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "properties": {
           "items": {
             "type": "array",
-            "items": {
-              "type": "object"
-            }
+            "items": {}
           },
           "page": {
             "type": "integer",
@@ -5193,7 +5240,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "digestHour": {
             "type": "integer",
             "format": "uint8",
-            "default": 9
+            "default": 9,
+            "minimum": 0,
+            "maximum": 255
           },
           "emailOptIn": {
             "type": "boolean",
@@ -5221,7 +5270,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "digestHour": {
             "type": "integer",
             "format": "uint8",
-            "default": 9
+            "default": 9,
+            "minimum": 0,
+            "maximum": 255
           },
           "emailOptIn": {
             "type": "boolean",
@@ -5322,7 +5373,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "properties": {
               "jobId": {
                 "type": "integer",
-                "format": "uint32"
+                "format": "uint32",
+                "minimum": 0,
+                "maximum": 4294967295
               },
               "kind": {
                 "type": "string",
@@ -5345,7 +5398,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               },
               "jobId": {
                 "type": "integer",
-                "format": "uint32"
+                "format": "uint32",
+                "minimum": 0,
+                "maximum": 4294967295
               },
               "kind": {
                 "type": "string",
@@ -5591,7 +5646,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "properties": {
           "age": {
             "type": "integer",
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           },
           "name": {
             "type": "string"
@@ -5610,7 +5667,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "integer",
               "null"
             ],
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           },
           "name": {
             "type": [
@@ -5625,7 +5684,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "properties": {
           "age": {
             "type": "integer",
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           },
           "name": {
             "type": "string"
@@ -5768,7 +5829,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "properties": {
           "age": {
             "type": "integer",
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           },
           "name": {
             "type": "string"
@@ -5784,7 +5847,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "properties": {
           "age": {
             "type": "integer",
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           },
           "name": {
             "type": "string"
@@ -5794,7 +5859,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "integer",
               "null"
             ],
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           }
         },
         "required": [
@@ -5891,7 +5958,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "integer",
               "null"
             ],
-            "format": "uint8"
+            "format": "uint8",
+            "minimum": 0,
+            "maximum": 255
           },
           "separator": {
             "type": [
@@ -5975,7 +6044,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           },
           "id": {
             "type": "integer",
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           },
           "internal_score": {
             "type": [
@@ -6001,7 +6072,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "properties": {
           "id": {
             "type": "integer",
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           },
           "name": {
             "type": "string"
@@ -6138,7 +6211,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           },
           "id": {
             "type": "integer",
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           },
           "name": {
             "type": "string"
@@ -6195,7 +6270,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "properties": {
           "id": {
             "type": "integer",
-            "format": "uint32"
+            "format": "uint32",
+            "minimum": 0,
+            "maximum": 4294967295
           },
           "name": {
             "type": "string"

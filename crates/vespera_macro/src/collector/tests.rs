@@ -705,10 +705,12 @@ fn collect_metadata_rejects_file_outside_folder() {
 }
 
 /// A route module declared behind `#[cfg(..)]` that `#[route]` never
-/// registered is compiled out: the slow path skips it, while `#[cfg]`-gated
-/// handlers in an ungated file are skipped individually.
+/// registered (compiled out, or not expanded yet when `vespera!` ran) and
+/// `#[cfg]`-gated handlers in an ungated file stay out of the documented
+/// routes; they are recorded with their predicates so the router mounts them
+/// under the same `#[cfg]`.
 #[test]
-fn cfg_gated_route_modules_and_handlers_are_skipped() {
+fn cfg_gated_route_modules_and_handlers_are_mounted_conditionally() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     create_temp_file(
         &temp_dir,
@@ -723,16 +725,18 @@ fn cfg_gated_route_modules_and_handlers_are_skipped() {
     create_temp_file(
         &temp_dir,
         "admin.rs",
-        "#[route(get)] pub async fn panel() {}\n",
+        "#[route(get)] pub async fn panel() {}\npub mod stats;\n#[cfg(any())] pub mod broken;\n",
     );
     create_temp_file(
         &temp_dir,
         "admin/stats.rs",
-        "#[route(get)] pub async fn stats() {}\n",
+        "#[cfg(unix)] #[route(get, path = \"/{id}\")] pub async fn stats() {}\n",
     );
+    // Never read by rustc while the module is compiled out.
+    create_temp_file(&temp_dir, "admin/broken.rs", "pub fn broken( {");
     crate::schema_macro::file_cache::bump_epoch();
 
-    let (metadata, _) = collect_metadata(temp_dir.path(), "routes", &[]).unwrap();
+    let (metadata, file_asts) = collect_metadata(temp_dir.path(), "routes", &[]).unwrap();
 
     let names: Vec<&str> = metadata
         .routes
@@ -740,6 +744,23 @@ fn cfg_gated_route_modules_and_handlers_are_skipped() {
         .map(|route| route.function_name.as_str())
         .collect();
     assert_eq!(names, ["list"]);
+    assert!(!file_asts.keys().any(|file| file.contains("admin")));
+    let mut gated: Vec<String> = metadata
+        .cfg_routes
+        .iter()
+        .map(|route| {
+            format!(
+                "{} {} {}::{} [{}]",
+                route.method,
+                route.path,
+                route.module_path,
+                route.function_name,
+                route.cfg.join(" & ")
+            )
+        })
+        .collect();
+    gated.sort();
+    insta::assert_snapshot!("cfg_gated_routes", gated.join("\n"));
 }
 
 #[test]

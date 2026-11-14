@@ -4,11 +4,14 @@
 //! compiled: `#[cfg(feature = "admin")] mod admin;` removes `admin.rs` (and
 //! everything below it) when the feature is off. `#[route]` records every
 //! handler it expands into `ROUTE_STORAGE`, so a gated module that IS
-//! compiled reaches the collector through the fast path. The slow path (a
-//! file `#[route]` never registered) therefore skips files whose module
-//! declaration chain carries `#[cfg(..)]`, and handlers that are themselves
-//! `#[cfg(..)]`-gated — emitting `routes::admin::handler` for a module the
-//! compiler removed would be a confusing "unresolved path" error.
+//! compiled normally reaches the collector through the fast path. The slow
+//! path (a file `#[route]` never registered) cannot tell a compiled-out
+//! module from one that was merely expanded after `vespera!`, so handlers
+//! whose module declaration chain — or the handler itself — carries
+//! `#[cfg(..)]` are recorded with those predicates: the router mounts them
+//! under the same `#[cfg(..)]` (emitting `routes::admin::handler` for a
+//! module the compiler removed would be an "unresolved path" error) and the
+//! OpenAPI document leaves them out.
 //!
 //! Handlers inside an inline `mod name { .. }` block are rejected with a
 //! clear error: the file-based router only addresses top-level functions of
@@ -26,31 +29,41 @@ pub(super) fn is_cfg_gated(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| attr.path().is_ident("cfg"))
 }
 
-/// Whether one of the `mod` declarations that make the route file with
-/// module `segments` (relative to `folder_path`) part of the crate is
-/// `#[cfg(..)]`-gated.
+/// The predicates of the `#[cfg(..)]` attributes in `attrs`, as token text.
+pub(super) fn cfg_predicates(attrs: &[syn::Attribute]) -> Vec<String> {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("cfg"))
+        .filter_map(|attr| attr.meta.require_list().ok())
+        .map(|list| list.tokens.to_string())
+        .collect()
+}
+
+/// The `#[cfg(..)]` predicates on the `mod` declarations that make the route
+/// file with module `segments` (relative to `folder_path`) part of the crate.
 ///
-/// `segments == ["admin", "users"]` checks `mod admin;` (declared in
+/// `segments == ["admin", "users"]` reads `mod admin;` (declared in
 /// `<folder>/mod.rs` or `<folder>.rs`) and `mod users;` (declared in
 /// `<folder>/admin/mod.rs` or `<folder>/admin.rs`).
-pub(super) fn is_cfg_gated_module(folder_path: &Path, segments: &[String]) -> bool {
+pub(super) fn module_cfg_predicates(folder_path: &Path, segments: &[String]) -> Vec<String> {
     let mut parent = folder_path.to_path_buf();
+    let mut predicates = Vec::new();
     for segment in segments {
-        let declarers = [parent.join("mod.rs"), parent.with_extension("rs")];
-        let gated = declarers.iter().any(|declarer| {
-            file_cache::get_parsed_file(declarer).is_some_and(|file| {
-                file.items.iter().any(|item| {
-                    matches!(item, Item::Mod(module)
-                        if module.ident == segment.as_str() && is_cfg_gated(&module.attrs))
-                })
-            })
-        });
-        if gated {
-            return true;
+        for declarer in [parent.join("mod.rs"), parent.with_extension("rs")] {
+            let Some(file) = file_cache::get_parsed_file(&declarer) else {
+                continue;
+            };
+            for item in &file.items {
+                if let Item::Mod(module) = item
+                    && module.ident == segment.as_str()
+                {
+                    predicates.extend(cfg_predicates(&module.attrs));
+                }
+            }
         }
         parent.push(segment);
     }
-    false
+    predicates
 }
 
 /// `(module, handler)` of the first `#[route]` handler declared inside an
@@ -117,20 +130,21 @@ mod tests {
     use super::*;
 
     #[rstest]
-    #[case::plain_module("mod admin;", &["admin"], false)]
-    #[case::gated_module("#[cfg(feature = \"admin\")] mod admin;", &["admin"], true)]
-    #[case::other_module_gated("#[cfg(test)] mod tests; mod admin;", &["admin"], false)]
-    #[case::folder_root(r#"#[cfg(feature = "x")] mod admin;"#, &[], false)]
+    #[case::plain_module("mod admin;", &["admin"], &[])]
+    #[case::gated_module("#[cfg(feature = \"admin\")] mod admin;", &["admin"], &["feature = \"admin\""])]
+    #[case::two_cfgs("#[cfg(unix)] #[cfg(test)] #[cfg] mod admin;", &["admin"], &["unix", "test"])]
+    #[case::other_module_gated("#[cfg(test)] mod tests; mod admin;", &["admin"], &[])]
+    #[case::folder_root(r#"#[cfg(feature = "x")] mod admin;"#, &[], &[])]
     fn module_declaration_cfg(
         #[case] mod_rs: &str,
         #[case] segments: &[&str],
-        #[case] expected: bool,
+        #[case] expected: &[&str],
     ) {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("mod.rs"), mod_rs).unwrap();
         file_cache::bump_epoch();
         let segments: Vec<String> = segments.iter().map(ToString::to_string).collect();
-        assert_eq!(is_cfg_gated_module(dir.path(), &segments), expected);
+        assert_eq!(module_cfg_predicates(dir.path(), &segments), expected);
     }
 
     #[test]
@@ -146,8 +160,14 @@ mod tests {
         .unwrap();
         file_cache::bump_epoch();
         let segments = ["admin".to_string(), "users".to_string()];
-        assert!(is_cfg_gated_module(&routes, &segments));
-        assert!(!is_cfg_gated_module(&routes, &segments[..1]));
+        assert_eq!(
+            module_cfg_predicates(&routes, &segments),
+            ["feature = \"x\""]
+        );
+        assert_eq!(
+            module_cfg_predicates(&routes, &segments[..1]),
+            Vec::<String>::new()
+        );
     }
 
     #[rstest]

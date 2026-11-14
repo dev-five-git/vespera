@@ -10,6 +10,7 @@ expression: field_json(field_src)
   "items": {
     "type": "integer",
     "format": "uint8",
+    "minimum": 0,
     "maximum": 9
   },
   "minItems": 1

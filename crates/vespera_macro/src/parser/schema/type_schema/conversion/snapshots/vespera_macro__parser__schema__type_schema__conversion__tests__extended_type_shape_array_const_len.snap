@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/parser/schema/type_schema/conversion/tests.rs
-assertion_line: 412
 expression: "format!(\"{ty_src} => {json}\")"
 ---
-[u8; N] => {"type":"array","items":{"type":"integer","format":"uint8"}}
+[u8; N] => {"type":"array","items":{"type":"integer","format":"uint8","minimum":0,"maximum":255}}
