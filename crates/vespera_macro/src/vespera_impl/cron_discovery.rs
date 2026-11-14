@@ -138,15 +138,42 @@ fn has_cron_attribute(src_dir: &Path) -> bool {
 /// information (unit tests) the library root wins over the binary root.
 fn crate_tree(src_dir: &Path, call_site: Option<&Path>) -> Option<ModuleTree> {
     let call_site = call_site.map(canonical_display);
-    let mut trees = ["lib.rs", "main.rs"]
+    let mut trees = crate_roots(src_dir, call_site.is_some())
         .into_iter()
-        .map(|root| src_dir.join(root))
         .filter(|root| root.is_file())
-        .map(|root| ModuleTree::from_root(&root, src_dir));
+        .map(|root| {
+            // A crate root's `mod` declarations resolve next to it
+            // (`src/bin/server.rs` → `src/bin/<name>.rs`).
+            let mod_dir = root.parent().unwrap_or(src_dir).to_path_buf();
+            ModuleTree::from_root(&root, &mod_dir)
+        });
     match call_site {
         Some(call_site) => trees.find(|tree| tree.files.contains(&call_site)),
         None => trees.next(),
     }
+}
+
+/// The crate roots Cargo discovers under `src/`: `lib.rs`, `main.rs` and —
+/// only when a call site can pick among them — every binary in `src/bin/`
+/// (`<name>.rs` and `<name>/main.rs`), in name order.
+fn crate_roots(src_dir: &Path, with_binaries: bool) -> Vec<PathBuf> {
+    let mut roots = vec![src_dir.join("lib.rs"), src_dir.join("main.rs")];
+    if with_binaries && let Ok(entries) = std::fs::read_dir(src_dir.join("bin")) {
+        let mut binaries: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .map(|path| {
+                if path.is_dir() {
+                    path.join("main.rs")
+                } else {
+                    path
+                }
+            })
+            .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+            .collect();
+        binaries.sort();
+        roots.extend(binaries);
+    }
+    roots
 }
 
 /// Files reachable from one crate root plus the `#[cron]` jobs declared in
@@ -630,6 +657,8 @@ mod tests {
     #[case::library_call_site(Some("lib.rs"), vec!["lib_job"])]
     #[case::binary_call_site(Some("main.rs"), vec!["bin_job"])]
     #[case::outside_both_trees(Some("orphan.rs"), vec![])]
+    #[case::binary_target(Some("bin/server.rs"), vec!["server_tasks_job", "server_job"])]
+    #[case::binary_dir_target(Some("bin/worker/main.rs"), vec!["worker_job"])]
     #[case::unknown_call_site_prefers_library(None, vec!["lib_job"])]
     fn scan_uses_the_tree_containing_the_call_site(
         #[case] call_site: Option<&str>,
@@ -645,12 +674,41 @@ mod tests {
                 r#"#[cron("2 * * * * *")] pub async fn bin_job() {}"#,
             ),
             ("orphan.rs", ""),
+            (
+                "bin/server.rs",
+                r#"mod tasks; #[cron("3 * * * * *")] pub async fn server_job() {}"#,
+            ),
+            (
+                "bin/tasks.rs",
+                r#"#[cron("4 * * * * *")] pub async fn server_tasks_job() {}"#,
+            ),
+            (
+                "bin/worker/main.rs",
+                r#"#[cron("5 * * * * *")] pub async fn worker_job() {}"#,
+            ),
+            ("bin/README.md", "not a crate root"),
         ]);
         let src = krate.path().join("src");
         let call_site = call_site.map(|file| src.join(file));
         let jobs = discover_cron_jobs(&[], Some(&src), call_site.as_deref());
         let names: Vec<_> = jobs.iter().map(|job| job.function_name.as_str()).collect();
         assert_eq!(names, expected);
+    }
+
+    /// A job stored from a binary's root file lives at that crate's root,
+    /// not at `crate::bin::server`.
+    #[test]
+    fn binary_root_jobs_are_placed_at_the_crate_root() {
+        let krate = crate_with(&[(
+            "bin/server.rs",
+            r#"#[cron("1 * * * * *")] pub async fn tick() {}"#,
+        )]);
+        let src = krate.path().join("src");
+        let server = src.join("bin").join("server.rs");
+        let storage = [stored("tick", Some(server.display().to_string()))];
+        let jobs = discover_cron_jobs(&storage, Some(&src), Some(&server));
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].module_path, "");
     }
 
     #[test]

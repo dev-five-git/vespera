@@ -149,24 +149,37 @@ pub enum MergeSpecRead {
 
 pub struct MergeSpecCache {
     dir: Option<PathBuf>,
+    /// `use` aliases of the `vespera!` call-site file (see `merge_lookup`).
+    aliases: HashMap<String, Vec<String>>,
     reads: HashMap<PathBuf, MergeSpecRead>,
 }
 
 impl MergeSpecCache {
     pub(super) fn new() -> Self {
+        Self::with_call_site(proc_macro2::Span::call_site().local_file().as_deref())
+    }
+
+    /// Resolve merge paths against the `use` items of `call_site`.
+    pub(super) fn with_call_site(call_site: Option<&Path>) -> Self {
         Self {
             dir: merge_spec_dir(),
+            aliases: super::merge_lookup::use_aliases(call_site),
             reads: HashMap::new(),
         }
     }
 
+    /// The export backing `merge_path` (see `merge_lookup::resolve_export`).
+    pub(super) fn resolve(
+        &self,
+        merge_path: &syn::Path,
+    ) -> Option<super::merge_lookup::ResolvedExport> {
+        super::merge_lookup::resolve_export(merge_path, &self.aliases, self.dir.as_ref()?)
+    }
+
+    /// `(export name, spec sidecar)` backing `merge_path`.
     pub(super) fn spec_file_for(&self, merge_path: &syn::Path) -> Option<(String, PathBuf)> {
-        let dir = self.dir.as_ref()?;
-        let struct_name = merge_path.segments.last()?.ident.to_string();
-        Some((
-            struct_name.clone(),
-            dir.join(format!("{struct_name}.openapi.json")),
-        ))
+        self.resolve(merge_path)
+            .map(|resolved| (resolved.app, resolved.spec_file))
     }
 
     /// Read a child app's exported spec sidecar, memoized per path.
@@ -336,14 +349,9 @@ pub(super) fn hash_invocation_settings(
             }
         }
     }
-    if let Some(ref descriptions) = processed.tag_descriptions {
-        let mut names: Vec<_> = descriptions.keys().collect();
-        names.sort_unstable();
-        for name in names {
-            name.hash(hasher);
-            descriptions[name].hash(hasher);
-        }
-    }
+    // Declaration order is part of the output (`tags[]` order), so it is
+    // hashed as declared.
+    processed.tag_descriptions.hash(hasher);
     for merge_path in &processed.merge {
         quote!(#merge_path).to_string().hash(hasher);
     }

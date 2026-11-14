@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/vespera_impl/orchestrator/tests_audit.rs
+assertion_line: 33
+expression: err.to_string()
+---
+vespera! macro: duplicate route: `GET /users` is defined by both `routes::users::a` and `routes::users::b` — each (method, path) pair must map to exactly one handler

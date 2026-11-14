@@ -26,14 +26,15 @@ pub use defaults::extract_default_value_from_function;
 #[cfg(test)]
 pub use defaults::find_function_in_file;
 use paths::build_path_items;
-pub use paths::find_duplicate_operation_id;
+pub use paths::{check_duplicate_routes, find_duplicate_operation_id};
 
 /// OpenAPI security data parsed from the `vespera!` macro.
 #[derive(Default)]
 pub struct OpenApiSecurity {
     pub security_schemes: Option<BTreeMap<String, SecurityScheme>>,
     pub security: Option<Vec<SecurityRequirement>>,
-    pub tag_descriptions: Option<HashMap<String, String>>,
+    /// Declared top-level tags in declaration order (`(name, description)`).
+    pub tag_descriptions: Option<Vec<(String, Option<String>)>>,
 }
 
 /// Generate `OpenAPI` document from collected metadata.
@@ -91,6 +92,7 @@ pub fn try_generate_openapi_doc_with_metadata(
     crate::parser::schema::generic_instances::take_materialized();
     let (known_schema_names, struct_definitions) = build_schema_lookups(metadata);
     let file_cache = file_cache.unwrap_or_else(|| build_file_cache(metadata));
+    component_schemas::check_ambiguous_aliases(metadata, &file_cache, route_storage)?;
     let struct_file_index = build_struct_file_index(&file_cache);
     stage("lookups + file index");
     // `{Name}Input` request views (installed for this generation only). A
@@ -209,29 +211,32 @@ pub fn validate_security_references(
         .map_err(|error| fail("top-level `security`", &error))
 }
 
+/// The document's `tags[]`: the declared `tags = [...]` first, in declaration
+/// order (OpenAPI tools render tags in array order) and with or without a
+/// description, then every other tag a route uses, sorted by name.
 fn build_tags(
     mut all_tags: std::collections::BTreeSet<String>,
-    tag_descriptions: Option<&HashMap<String, String>>,
+    declared: Option<&Vec<(String, Option<String>)>>,
 ) -> Option<Vec<Tag>> {
-    if let Some(descriptions) = tag_descriptions {
-        all_tags.extend(descriptions.keys().cloned());
+    let declared = declared.map_or(&[][..], Vec::as_slice);
+    for (name, _) in declared {
+        all_tags.remove(name);
     }
-    (!all_tags.is_empty()).then(|| {
-        all_tags
-            .into_iter()
-            .map(|name| Tag {
-                description: tag_descriptions
-                    .and_then(|descriptions| descriptions.get(&name).cloned()),
-                name,
-                external_docs: None,
-            })
-            .collect()
-    })
+    let tags: Vec<Tag> = declared
+        .iter()
+        .map(|(name, description)| (name.clone(), description.clone()))
+        .chain(all_tags.into_iter().map(|name| (name, None)))
+        .map(|(name, description)| Tag {
+            name,
+            description,
+            external_docs: None,
+        })
+        .collect();
+    (!tags.is_empty()).then_some(tags)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
 
     use rstest::rstest;
     use vespera_core::schema::{SecurityScheme, SecuritySchemeType};
@@ -463,6 +468,7 @@ mod tests {
             description: Some("A secured route".to_string()),
             file_path: None,
             fn_sig_str: "async fn secure_route() -> &'static str".to_string(),
+            inline_module: None,
         }];
 
         let doc = generate_openapi_doc_with_metadata(
@@ -591,6 +597,7 @@ mod tests {
             description: None,
             file_path: None,
             fn_sig_str: "async fn get_user() -> &'static str".to_string(),
+            inline_module: None,
         }];
 
         let doc = generate_openapi_doc_with_metadata(
@@ -654,6 +661,7 @@ mod tests {
             description: None,
             file_path: None,
             fn_sig_str: "async fn get_user() -> &'static str".to_string(),
+            inline_module: None,
         }];
 
         let doc = generate_openapi_doc_with_metadata(
@@ -728,6 +736,7 @@ mod tests {
             description: None,
             file_path: None,
             fn_sig_str: "async fn create_user(vespera::axum::Json(user): vespera::axum::Json<User>) -> vespera::axum::Json<User>".to_string(),
+            inline_module: None,
         }];
 
         let doc = generate_openapi_doc_with_metadata(
@@ -786,6 +795,7 @@ mod tests {
             description: None,
             file_path: None,
             fn_sig_str: "async fn list_users() -> &'static str".to_string(),
+            inline_module: None,
         }];
 
         let doc = generate_openapi_doc_with_metadata(
@@ -795,10 +805,13 @@ mod tests {
             Some(OpenApiSecurity {
                 security_schemes: None,
                 security: None,
-                tag_descriptions: Some(HashMap::from([
-                    ("admin".to_string(), "Admin operations".to_string()),
-                    ("users".to_string(), "User operations".to_string()),
-                ])),
+                // Declared order is kept (`users` before `admin`), and a
+                // description-less declared tag (`audit`) is still listed.
+                tag_descriptions: Some(vec![
+                    ("users".to_string(), Some("User operations".to_string())),
+                    ("admin".to_string(), Some("Admin operations".to_string())),
+                    ("audit".to_string(), None),
+                ]),
             }),
             &metadata,
             None,

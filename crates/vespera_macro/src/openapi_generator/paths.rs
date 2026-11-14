@@ -401,6 +401,30 @@ fn handler_display(route: &crate::metadata::RouteMetadata) -> String {
     }
 }
 
+/// Reject two handlers mapped to one `(method, path)`.
+///
+/// Runs on every `vespera!` / `export_app!` expansion — not only when an
+/// OpenAPI document is generated — because axum panics on the duplicate the
+/// moment the router is built, so a spec-less app would otherwise compile.
+/// `#[cfg]`-gated routes are left out: their predicates may be exclusive.
+pub fn check_duplicate_routes(metadata: &CollectedMetadata) -> Result<(), String> {
+    let mut claimed: HashMap<(String, String), String> = HashMap::new();
+    for route in &metadata.routes {
+        let method = route.method.to_ascii_uppercase();
+        let key = (method, openapi_path_template(&route.path));
+        let handler = handler_display(route);
+        if let Some(previous) = claimed.get(&key) {
+            return Err(format!(
+                "duplicate route: `{} {}` is defined by both `{previous}` and `{handler}` — \
+                 each (method, path) pair must map to exactly one handler",
+                key.0, route.path
+            ));
+        }
+        claimed.insert(key, handler);
+    }
+    Ok(())
+}
+
 /// Find the first `operationId` shared by two operations across `paths`.
 ///
 /// Used after merging child-app specs (`merge = [...]`), where only the

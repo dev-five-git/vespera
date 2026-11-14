@@ -680,6 +680,10 @@ fn kebab_case_preserves_parameter_underscores() {
 #[case::explicit_kept("/user_groups", Some("/my_route"), "/user-groups/my_route")]
 #[case::explicit_param("/", Some("/{item_id}/sub_path"), "/{item_id}/sub_path")]
 #[case::explicit_without_slash("/a_b/", Some("c_d"), "/a-b/c_d")]
+// `path = "/"` names the file route itself, not a trailing-slash twin.
+#[case::explicit_root_in_file("/users", Some("/"), "/users")]
+#[case::explicit_empty_in_file("/users", Some(""), "/users")]
+#[case::explicit_root_at_root("/", Some("/"), "/")]
 fn route_path_kebab_cases_only_the_file_base(
     #[case] base: &str,
     #[case] custom: Option<&str>,
@@ -808,9 +812,60 @@ fn stored_inline_module_route_is_a_compile_error() {
         deprecated: false,
         description: None,
         fn_sig_str: "async fn list()".to_string(),
+        inline_module: None,
         file_path: Some(file.display().to_string()),
     }];
 
     let error = collect_metadata(temp_dir.path(), "routes", &storage).unwrap_err();
     assert!(error.to_string().contains("`list`"), "{error}");
+}
+
+/// A nested route folder (`dir = "api/v1"`) maps to a nested module path.
+#[test]
+fn nested_route_folder_becomes_a_module_path() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    create_temp_file(
+        &temp_dir,
+        "users.rs",
+        "#[route(get)] pub async fn list() {}\n",
+    );
+    crate::schema_macro::file_cache::bump_epoch();
+    let (metadata, _) = collect_metadata(temp_dir.path(), "api/v1", &[]).unwrap();
+    assert_eq!(metadata.routes[0].module_path, "api::v1::users");
+}
+
+/// `#[route]` recorded the scope: an inline-module handler is rejected from
+/// the stored entry alone, and a known top-level one needs no source scan.
+#[rstest]
+#[case::inline(Some("v2::inner"), true)]
+#[case::top_level(Some(""), false)]
+fn stored_inline_module_scope_is_authoritative(
+    #[case] inline_module: Option<&str>,
+    #[case] rejected: bool,
+) {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    // The source text disagrees with the stored scope on purpose (an IDE
+    // buffer ahead of the disk): the stored scope wins.
+    let file = create_temp_file(
+        &temp_dir,
+        "users.rs",
+        "mod v2 { #[route(get)] pub async fn list() {} }\n",
+    );
+    crate::schema_macro::file_cache::bump_epoch();
+    let storage = [StoredRouteInfo {
+        fn_name: "list".to_string(),
+        method: Some("get".to_string()),
+        fn_sig_str: "async fn list()".to_string(),
+        inline_module: inline_module.map(str::to_string),
+        file_path: Some(file.display().to_string()),
+        ..StoredRouteInfo::default()
+    }];
+
+    let result = collect_metadata(temp_dir.path(), "routes", &storage);
+    if rejected {
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("`mod v2::inner { .. }`"), "{error}");
+    } else {
+        assert_eq!(result.unwrap().0.routes.len(), 1);
+    }
 }

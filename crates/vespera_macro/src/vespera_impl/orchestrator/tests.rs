@@ -375,8 +375,12 @@ fn test_process_export_app_write_spec_error() {
     let vespera_dir = temp_dir.path().join("target").join("vespera");
     fs::create_dir_all(&vespera_dir).expect("Failed to create vespera dir");
     // Create a directory where the spec file should be written
-    fs::create_dir(vespera_dir.join("TestApp.openapi.json"))
-        .expect("Failed to create blocking dir");
+    fs::create_dir(crate::vespera_impl::merge_lookup::child_spec_path(
+        &vespera_dir,
+        &crate::vespera_impl::merge_lookup::current_export_crate(),
+        "TestApp",
+    ))
+    .expect("Failed to create blocking dir");
 
     let name: syn::Ident = syn::parse_quote!(TestApp);
     let folder_path = temp_dir.path().to_string_lossy().to_string();

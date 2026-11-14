@@ -8,6 +8,7 @@ mod export;
 mod generator;
 mod info;
 mod input;
+mod route_dir;
 mod security_dsl;
 
 pub use export::{
@@ -17,3 +18,4 @@ pub use generator::generate_router_code;
 #[cfg(test)]
 pub use info::InfoArgs;
 pub use input::{AutoRouterInput, ProcessedVesperaInput, process_vespera_input};
+pub use route_dir::{route_dir_module_path, validate_route_dir};

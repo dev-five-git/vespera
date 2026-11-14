@@ -7,10 +7,13 @@
 mod cache;
 mod cron_discovery;
 mod invocation;
+mod merge_conflicts;
+mod merge_lookup;
 mod openapi_io;
 mod orchestrator;
 mod path_utils;
 mod route_merge;
 mod schema_merge;
+mod sidecar_write;
 
 pub use orchestrator::{process_export_app, process_vespera_macro};

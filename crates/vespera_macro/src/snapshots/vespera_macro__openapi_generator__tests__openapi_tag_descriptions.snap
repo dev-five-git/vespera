@@ -1,5 +1,6 @@
 ---
 source: crates/vespera_macro/src/openapi_generator.rs
+assertion_line: 815
 expression: "serde_json::to_string_pretty(&doc).unwrap()"
 ---
 {
@@ -32,12 +33,15 @@ expression: "serde_json::to_string_pretty(&doc).unwrap()"
   },
   "tags": [
     {
+      "name": "users",
+      "description": "User operations"
+    },
+    {
       "name": "admin",
       "description": "Admin operations"
     },
     {
-      "name": "users",
-      "description": "User operations"
+      "name": "audit"
     }
   ]
 }

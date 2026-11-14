@@ -18,4 +18,8 @@ fn docs_urls_colliding() {
     let _ = vespera!(docs_url = "/docs", redoc_url = "/docs");
 }
 
+fn dir_outside_src() {
+    let _ = vespera!(dir = "../routes");
+}
+
 fn main() {}

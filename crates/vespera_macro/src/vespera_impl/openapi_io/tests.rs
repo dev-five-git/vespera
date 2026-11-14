@@ -311,8 +311,11 @@ fn test_generate_and_write_openapi_with_merge_and_valid_spec() {
     // Write a valid OpenAPI spec file
     let spec_content =
         r#"{"openapi":"3.1.0","info":{"title":"Child API","version":"1.0.0"},"paths":{}}"#;
-    fs::write(target_dir.join("ChildApp.openapi.json"), spec_content)
-        .expect("Failed to write spec file");
+    fs::write(
+        crate::vespera_impl::merge_lookup::child_spec_path(&target_dir, "child", "ChildApp"),
+        spec_content,
+    )
+    .expect("Failed to write spec file");
 
     // Point CARGO_MANIFEST_DIR (thread-locally) at the temp project
     let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
@@ -367,12 +370,12 @@ fn merged_child_schema_conflict_is_a_spanned_compile_error() {
         .to_string()
     };
     fs::write(
-        target_dir.join("PluginA.openapi.json"),
+        crate::vespera_impl::merge_lookup::child_spec_path(&target_dir, "plugin_a", "PluginA"),
         spec("id", "string"),
     )
     .unwrap();
     fs::write(
-        target_dir.join("PluginB.openapi.json"),
+        crate::vespera_impl::merge_lookup::child_spec_path(&target_dir, "plugin_b", "PluginB"),
         spec("collisionMarker", "boolean"),
     )
     .unwrap();
@@ -418,7 +421,11 @@ fn merge_resolves_child_specs_through_a_symlinked_manifest_dir() {
         "info": { "title": "child", "version": "1.0.0" },
         "paths": { "/child": { "get": { "operationId": "child", "responses": {} } } }
     });
-    fs::write(target_dir.join("ChildApp.openapi.json"), child.to_string()).unwrap();
+    fs::write(
+        crate::vespera_impl::merge_lookup::child_spec_path(&target_dir, "child", "ChildApp"),
+        child.to_string(),
+    )
+    .unwrap();
     let link = temp_dir.path().join("link");
     std::os::unix::fs::symlink(&real, &link).unwrap();
 
@@ -597,7 +604,11 @@ fn merge_reports_missing_and_malformed_child_specs() {
     .expect_err("missing child sidecar must fail");
     assert!(missing.to_string().contains("failed to read child spec"));
 
-    fs::write(vespera_dir.join("BrokenChild.openapi.json"), "not-json").unwrap();
+    fs::write(
+        crate::vespera_impl::merge_lookup::child_spec_path(&vespera_dir, "child", "BrokenChild"),
+        "not-json",
+    )
+    .unwrap();
     let malformed = generate_and_write_openapi(
         &merge_input(syn::parse_quote!(child::BrokenChild)),
         &CollectedMetadata::new(),
@@ -628,8 +639,8 @@ fn sidecar_validation_covers_missing_fingerprints_corruption_and_success() {
     let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
     let vespera_dir = temp.path().join("target/vespera");
     fs::create_dir_all(&vespera_dir).unwrap();
-    let compact = embed_spec_path("t");
-    let pretty = pretty_sidecar_path("t");
+    let compact = embed_spec_path("t", hash_str("compact"));
+    let pretty = pretty_sidecar_path("t", hash_str("pretty"));
     fs::write(&compact, "compact").unwrap();
     fs::write(&pretty, "pretty").unwrap();
     let compact_fp = path_fingerprint(&compact).unwrap();
@@ -700,8 +711,9 @@ fn embedding_reports_directory_creation_and_spec_write_errors() {
 
     let write_temp = TempDir::new().unwrap();
     let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", write_temp.path());
-    let spec_path = embed_spec_path("t");
+    let spec_path = embed_spec_path("t", hash_str("{}"));
     fs::create_dir_all(&spec_path).unwrap();
+    fs::write(spec_path.join("occupied"), "").unwrap();
     let Err(write_error) = write_spec_for_embedding("t", Some("{}".to_string())) else {
         panic!("a directory cannot be overwritten as a spec file");
     };
@@ -727,8 +739,16 @@ fn merged_children_with_same_operation_id_is_a_compile_error() {
         })
         .to_string()
     };
-    fs::write(target_dir.join("PluginA.openapi.json"), spec("/a/health")).unwrap();
-    fs::write(target_dir.join("PluginB.openapi.json"), spec("/b/health")).unwrap();
+    fs::write(
+        crate::vespera_impl::merge_lookup::child_spec_path(&target_dir, "plugin_a", "PluginA"),
+        spec("/a/health"),
+    )
+    .unwrap();
+    fs::write(
+        crate::vespera_impl::merge_lookup::child_spec_path(&target_dir, "plugin_b", "PluginB"),
+        spec("/b/health"),
+    )
+    .unwrap();
 
     let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
     let mut processed = merge_input(syn::parse_quote!(plugin_a::PluginA));
@@ -770,7 +790,11 @@ fn security_references_are_validated_after_merge(#[case] scheme: &str, #[case] o
             "securitySchemes": { "childAuth": { "type": "http", "scheme": "bearer" } }
         }
     });
-    fs::write(target_dir.join("PluginA.openapi.json"), child.to_string()).unwrap();
+    fs::write(
+        crate::vespera_impl::merge_lookup::child_spec_path(&target_dir, "plugin_a", "PluginA"),
+        child.to_string(),
+    )
+    .unwrap();
 
     let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
     let mut processed = merge_input(syn::parse_quote!(plugin_a::PluginA));

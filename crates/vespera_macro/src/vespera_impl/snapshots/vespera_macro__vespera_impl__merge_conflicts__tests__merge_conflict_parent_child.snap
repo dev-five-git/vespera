@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/vespera_impl/merge_conflicts.rs
+assertion_line: 130
+expression: err
+---
+vespera! macro: route `GET /users/{id}` is served by both this app and merged app `child::UsersApp` — axum panics when merging overlapping routes; remove one or give the child app a distinct `export_app!(..., prefix = "...")`
