@@ -580,3 +580,19 @@ fn json_aliases_resolve_to_public_value_path(#[case] src: &str, #[case] expected
         expected
     );
 }
+
+/// chrono names map to `vespera::chrono` only bare; with arguments they are
+/// not the chrono re-export and are kept as written.
+#[rstest]
+#[case::naive_datetime("NaiveDateTime", "vespera :: chrono :: NaiveDateTime")]
+#[case::utc("Utc", "vespera :: chrono :: Utc")]
+#[case::fixed_offset("Option<FixedOffset>", "Option < vespera :: chrono :: FixedOffset >")]
+#[case::with_args("Local<u8>", "Local < u8 >")]
+fn chrono_names_resolve_bare_only(#[case] src: &str, #[case] expected: &str) {
+    let ty: syn::Type = syn::parse_str(src).unwrap();
+    let module_path = vec!["crate".to_string(), "models".to_string(), "doc".to_string()];
+    assert_eq!(
+        resolve_type_to_absolute_path(&ty, &module_path).to_string(),
+        expected
+    );
+}

@@ -298,3 +298,14 @@ fn qualified_schema_path_ignores_empty_namespace_segments() {
     assert_eq!(metadata.name, "Model");
     assert!(metadata.definition.contains("pub struct Model"));
 }
+
+/// Only normal path components name modules (a `..` is skipped).
+#[test]
+fn test_file_path_to_module_path_skips_parent_components() {
+    let src_dir = Path::new("/project/src");
+    let file_path = Path::new("/project/src/../models/user.rs");
+    assert_eq!(
+        file_path_to_module_path(file_path, src_dir),
+        vec!["crate", "models", "user"]
+    );
+}

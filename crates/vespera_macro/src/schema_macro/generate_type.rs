@@ -247,10 +247,7 @@ pub fn generate_schema_type_code(
     // `Vec::new()`: they hold only the subset of fields that are relations or
     // carry SeaORM defaults, so sizing them to the full field count would
     // over-allocate for the common struct that has neither.
-    let field_capacity = match &parsed_struct.fields {
-        syn::Fields::Named(fields_named) => fields_named.named.len(),
-        _ => 0,
-    };
+    let field_capacity = parsed_struct.fields.len();
     let mut field_tokens = Vec::with_capacity(field_capacity);
     // Track field mappings for From impl: (new_field_ident, source_field_ident, wrapped_in_option, is_relation)
     let mut field_mappings: Vec<(syn::Ident, syn::Ident, bool, bool)> =

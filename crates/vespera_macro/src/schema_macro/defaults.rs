@@ -140,14 +140,12 @@ fn sql_function_default_for_type(original_ty: &syn::Type) -> Option<(TokenStream
     let type_name = segment.ident.to_string();
     // `chrono::DateTime<Tz>` keeps its zone; SeaORM's bare `DateTime` alias
     // is the naive one.
-    let zone = match &segment.arguments {
-        syn::PathArguments::AngleBracketed(args) => args.args.first().and_then(|arg| match arg {
-            syn::GenericArgument::Type(syn::Type::Path(zone)) => {
-                zone.path.segments.last().map(|s| s.ident.to_string())
-            }
-            _ => None,
-        }),
-        _ => None,
+    let zone = if let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+        && let Some(syn::GenericArgument::Type(syn::Type::Path(zone))) = args.args.first()
+    {
+        zone.path.segments.last().map(|s| s.ident.to_string())
+    } else {
+        None
     };
     let epoch = quote! { vespera::chrono::DateTime::<vespera::chrono::Utc>::UNIX_EPOCH };
 
