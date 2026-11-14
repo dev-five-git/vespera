@@ -69,6 +69,7 @@
 //! [`dispatch_from_bytes`] calls reuse the cached router via
 //! [`Router::clone`], which is cheap because axum's router is
 //! internally `Arc`-shared.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 /// Run `$body` (an `async` block body) inside a `vespera.dispatch` span with
 /// the given `mode` when the `tracing` feature is on; expands to the bare
@@ -98,6 +99,7 @@ mod envelope;
 // `ffi_app!` / `ffi_apps!`; header in `include/vespera.h`.
 // SAFETY SCOPE: the C entry points dereference host-supplied pointers.
 #[cfg(feature = "ffi")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ffi")))]
 #[allow(unsafe_code)]
 pub mod ffi;
 mod header_latin1;
@@ -108,6 +110,7 @@ mod principal;
 mod registry;
 // Shared host runtime (feature `runtime`) used by JNI and the C ABI.
 #[cfg(feature = "runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub mod runtime;
 mod streaming;
 mod wire;

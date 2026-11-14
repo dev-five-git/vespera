@@ -12,6 +12,13 @@ readme.workspace = true
 keywords = ["axum", "in-process", "ffi", "dispatch", "vespera"]
 categories = ["web-programming::http-server", "network-programming"]
 
+[package.metadata.docs.rs]
+# Document the feature-gated `ffi` (C ABI) and `runtime` modules and badge
+# them with the feature that enables them (`doc(cfg)`). Not `all-features`:
+# `bench-support` is a `#[doc(hidden)]` criterion scaffold, not API.
+features = ["connect-info", "tracing", "runtime", "ffi"]
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 # Compiles the criterion A/B "before" twins (serde-based wire header
 # parse/serialize, the `http::request::Builder` request build, the
