@@ -154,6 +154,30 @@ impl StructMetadata {
     }
 }
 
+/// A route handler the collector found only on disk, behind `#[cfg(..)]`.
+///
+/// `#[route]` records every handler it expands, so a handler missing from
+/// `ROUTE_STORAGE` whose module declaration chain (or the handler itself) is
+/// `#[cfg(..)]`-gated is either compiled out or was simply not expanded yet
+/// when `vespera!` ran (expansion order). The macro cannot evaluate the
+/// predicates, so the router mounts the handler under the same `#[cfg(..)]`
+/// and the compiler decides; the OpenAPI document leaves it out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CfgRoute {
+    /// `#[cfg(..)]` predicates (token text) that must all hold
+    pub cfg: Vec<String>,
+    /// HTTP method
+    pub method: String,
+    /// Route path
+    pub path: String,
+    /// Module path
+    pub module_path: String,
+    /// Function name
+    pub function_name: String,
+    /// File path (diagnostics)
+    pub file_path: String,
+}
+
 /// Cron job metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CronMetadata {
@@ -189,6 +213,9 @@ pub struct CollectedMetadata {
     /// Cron jobs
     #[serde(default)]
     pub crons: Vec<CronMetadata>,
+    /// `#[cfg(..)]`-gated routes mounted conditionally, never documented
+    #[serde(default)]
+    pub cfg_routes: Vec<CfgRoute>,
 }
 
 impl CollectedMetadata {
@@ -197,6 +224,7 @@ impl CollectedMetadata {
             routes: Vec::new(),
             structs: Vec::new(),
             crons: Vec::new(),
+            cfg_routes: Vec::new(),
         }
     }
 

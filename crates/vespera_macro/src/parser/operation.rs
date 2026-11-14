@@ -236,7 +236,8 @@ pub fn build_operation_from_function(
         operation_id: config
             .operation_id
             .map(str::to_owned)
-            .or_else(|| Some(sig.ident.to_string())),
+            // `fn r#match` → operationId `match`, not `r#match`.
+            .or_else(|| Some(syn::ext::IdentExt::unraw(&sig.ident).to_string())),
         tags: config.tags.map(<[std::string::String]>::to_vec),
         summary: config.summary.map(str::to_owned),
         description: None,

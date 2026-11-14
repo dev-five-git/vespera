@@ -16,6 +16,16 @@ async fn test_health_endpoint() {
     response.assert_text("ok");
 }
 
+/// `routes/type.rs` (`mod r#type;`) with `fn r#match` is mounted; the
+/// `#[cfg(any())]` module `disabled` is not.
+#[tokio::test]
+async fn test_keyword_and_cfg_gated_modules() {
+    let server = TestServer::new(create_app().await);
+
+    server.get("/type").await.assert_text("match");
+    server.get("/disabled").await.assert_status_not_found();
+}
+
 #[tokio::test]
 async fn test_mod_file_endpoint() {
     let app = create_app().await;

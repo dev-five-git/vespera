@@ -198,10 +198,12 @@ fn test_build_operation_without_tags() {
     assert_eq!(op.tags, None);
 }
 
-#[test]
-fn test_build_operation_operation_id() {
-    let op = build("fn my_handler() -> String", "/test", None);
-    assert_eq!(op.operation_id, Some("my_handler".to_string()));
+#[rstest]
+#[case::plain("fn my_handler() -> String", "my_handler")]
+#[case::raw_keyword("fn r#match() -> String", "match")]
+fn test_build_operation_operation_id(#[case] sig: &str, #[case] expected: &str) {
+    let op = build(sig, "/test", None);
+    assert_eq!(op.operation_id.as_deref(), Some(expected));
 }
 
 #[test]

@@ -2294,6 +2294,24 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         }
       }
     },
+    "/type": {
+      "get": {
+        "operationId": "match",
+        "summary": "Mounted as `crate::routes::r#type::r#match`; operationId `match`.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/typed-form": {
       "get": {
         "operationId": "list_file_uploads",
