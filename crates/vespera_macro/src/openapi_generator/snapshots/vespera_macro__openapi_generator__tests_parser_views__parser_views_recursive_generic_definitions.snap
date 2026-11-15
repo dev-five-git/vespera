@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/openapi_generator/tests_parser_views.rs
-assertion_line: 142
 expression: "serde_json::to_string_pretty(&components).unwrap()"
 ---
 {
@@ -45,6 +44,39 @@ expression: "serde_json::to_string_pretty(&components).unwrap()"
       {
         "type": "object",
         "properties": {
+          "Cons": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "integer",
+                "format": "int32"
+              },
+              {
+                "$ref": "#/components/schemas/List_i32"
+              }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "required": [
+          "Cons"
+        ],
+        "maxProperties": 1
+      }
+    ]
+  },
+  "List_i32.Input": {
+    "oneOf": [
+      {
+        "type": "string",
+        "enum": [
+          "Nil"
+        ]
+      },
+      {
+        "type": "object",
+        "properties": {
           "Nil": {
             "type": "null"
           }
@@ -65,7 +97,7 @@ expression: "serde_json::to_string_pretty(&components).unwrap()"
                 "format": "int32"
               },
               {
-                "$ref": "#/components/schemas/List_i32"
+                "$ref": "#/components/schemas/List_i32.Input"
               }
             ],
             "minItems": 2,

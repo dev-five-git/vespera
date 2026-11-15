@@ -362,9 +362,8 @@ fn parse_bool_or_default_true(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Res
 /// Parse an `example = ...` value into a `serde_json::Value`.
 ///
 /// Accepts string / integer / float / boolean literals, and `null`.  More
-/// complex shapes (objects, arrays) are not supported in attribute form —
-/// users wanting structured examples should populate `example` programmatically
-/// or via `#[schema(default = "...")]` which is already handled elsewhere.
+/// complex shapes (objects, arrays) are not supported in attribute form.
+/// (`#[schema(default = ..)]` sets the OpenAPI `default`, not an example.)
 fn parse_example_value(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<serde_json::Value> {
     let value = meta.value()?;
     let expr: Expr = value.parse()?;

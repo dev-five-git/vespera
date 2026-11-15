@@ -1,0 +1,26 @@
+---
+source: crates/vespera_macro/src/parser/parameters/tests_shapes.rs
+expression: "render(func_src, path_params)"
+---
+fn f(p: Path<Slugged>) {}
+[
+  {
+    "name": "org_id",
+    "in": "path",
+    "required": true,
+    "schema": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    }
+  },
+  {
+    "name": "slug",
+    "in": "path",
+    "required": true,
+    "schema": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+]
