@@ -47,6 +47,54 @@ impl ToTokens for Rule {
 
 type Rules = Punctuated<Rule, syn::Token![,]>;
 
+impl Rule {
+    fn name(&self) -> String {
+        match self {
+            Self::Bare(name) | Self::List(name, _) | Self::Value(name, _) => name.to_string(),
+        }
+    }
+}
+
+/// The rules of a `garde(..)` meta (`None` when it is not a rule list).
+fn meta_rules(meta: &syn::Meta) -> Option<Rules> {
+    let list = meta.require_list().ok()?;
+    syn::parse::Parser::parse2(Rules::parse_terminated, list.tokens.clone()).ok()
+}
+
+/// Whether a `garde(..)` meta sets `skip` (no rule may join it) or `dive`
+/// (garde rejects it next to `inner(..)`): a field `partial` wraps in
+/// `Option` then keeps its rules as written.
+pub fn garde_meta_pins_rules(meta: &syn::Meta) -> bool {
+    meta_rules(meta).is_some_and(|rules| {
+        rules
+            .iter()
+            .any(|rule| matches!(rule.name().as_str(), "skip" | "dive"))
+    })
+}
+
+/// A `garde(..)` meta of a field `partial` wraps in `Option`: its rules
+/// move into `inner(..)`, which garde applies to the `Some` value — so
+/// `custom(..)` still gets the source's `&T` (it got `&Option<T>`, E0308)
+/// and a source `inner(..)` still checks the elements (it checked the
+/// `Option`'s value). The field-level settings (`adapt`, `rename`, `code`)
+/// stay outside, and so does a `matches(other)` whose `other` is wrapped
+/// too (`wrapped`): both `Option`s then compare. A meta that is not a rule
+/// list is kept as written.
+pub fn option_wrap_garde_meta(meta: &syn::Meta, wrapped: &dyn Fn(&str) -> bool) -> syn::Meta {
+    let Some(rules) = meta_rules(meta) else {
+        return meta.clone();
+    };
+    let (outer, inner): (Vec<Rule>, Vec<Rule>) = rules.into_iter().partition(|rule| match rule {
+        Rule::List(name, args) if name == "matches" => syn::parse2::<syn::Ident>(args.clone())
+            .is_ok_and(|other| wrapped(&other.unraw().to_string())),
+        _ => matches!(rule.name().as_str(), "adapt" | "rename" | "code"),
+    });
+    let inner = (!inner.is_empty()).then(|| quote!(inner(#(#inner),*)));
+    let path = meta.path();
+    let rules = outer.iter().map(ToTokens::to_token_stream).chain(inner);
+    syn::parse_quote!(#path(#(#rules),*))
+}
+
 /// A `garde(..)` meta (the attribute's, or one inside a `cfg_attr`) with the
 /// source module's paths re-rooted at `module_path`.
 pub fn reroot_garde_meta(meta: &syn::Meta, module_path: &[String]) -> syn::Meta {

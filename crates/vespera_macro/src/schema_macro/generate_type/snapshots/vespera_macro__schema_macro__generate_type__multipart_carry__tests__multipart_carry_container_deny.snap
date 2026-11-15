@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/schema_macro/generate_type/multipart_carry.rs
+expression: "format!(\"{attrs}\\n{helper}\")"
+---
+# [serde (deny_unknown_fields)]

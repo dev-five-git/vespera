@@ -39,8 +39,8 @@ use syn::punctuated::Punctuated;
 
 use super::input::PartialMode;
 use super::module_scope::{Resolved, path_tokens, resolve_name};
+use crate::parser::extract_rename_all_for;
 use crate::parser::schema::{SerdeSide, extract_field_rename_for, rename_field};
-use crate::parser::{extract_rename_all, extract_rename_all_for};
 
 /// Builds the omit set from input without cloning the source Vec.
 pub fn build_omit_set(omit: Option<&Vec<String>>) -> HashSet<String> {
@@ -125,7 +125,10 @@ pub fn rebuild_serde_attrs<'a>(
 /// but no container `rename`, the DTO gets `#[serde(rename = "<Source>")]`
 /// so the tag value stays the source's (a source `rename` is copied as is;
 /// a one-sided `rename(serialize = "..")` gets the other side,
-/// `rename(deserialize = "<Source>")`, and vice versa).
+/// `rename(deserialize = "<Source>")`, and vice versa). Only the serialize
+/// side writes the tag: serde never reads a struct's internal tag on input,
+/// so the deserialize side merely keeps the container name serde hands the
+/// deserializer (`deserialize_struct`) the source's.
 pub fn container_serde_attrs(attrs: &[syn::Attribute], source_ident: &str) -> Vec<TokenStream> {
     let mut has_tag = false;
     let (mut ser_renamed, mut de_renamed) = (false, false);
@@ -631,18 +634,51 @@ impl RenameAll {
     }
 }
 
+/// serde's `rename_all` rules (`serde_derive::internals::case::RULES`).
+const RENAME_RULES: [&str; 8] = [
+    "lowercase",
+    "UPPERCASE",
+    "PascalCase",
+    "camelCase",
+    "snake_case",
+    "SCREAMING_SNAKE_CASE",
+    "kebab-case",
+    "SCREAMING-KEBAB-CASE",
+];
+
+/// The `rename_all = ".."` parameter's rule, checked against serde's list:
+/// a `multipart` DTO derives no serde, so a typo used to be accepted and
+/// silently rename nothing.
+pub fn rename_rule(lit: &syn::LitStr) -> syn::Result<String> {
+    let rule = lit.value();
+    if RENAME_RULES.contains(&rule.as_str()) {
+        return Ok(rule);
+    }
+    let expected = RENAME_RULES.map(|rule| format!("{rule:?}")).join(", ");
+    Err(syn::Error::new(
+        lit.span(),
+        format!("unknown rename rule `rename_all = {rule:?}`, expected one of {expected}"),
+    ))
+}
+
 /// Determines the effective `rename_all` strategy.
 ///
 /// Priority:
 /// 1. If `input.rename_all` is specified, use it
-/// 2. Else if source has `rename_all`, use it
+/// 2. Else if source has `rename_all` (its `side`), use it
 /// 3. Else default to "camelCase"
+///
+/// `multipart` mode reads the deserialize side, like the `Multipart`
+/// derive of the source (it used the serialize side, so a source with
+/// `rename_all(serialize = .., deserialize = ..)` expected other form
+/// field names).
 pub fn determine_rename_all(
     input_rename_all: Option<&String>,
     source_attrs: &[syn::Attribute],
+    side: SerdeSide,
 ) -> String {
     input_rename_all.map_or_else(
-        || extract_rename_all(source_attrs).unwrap_or_else(|| "camelCase".to_string()),
+        || extract_rename_all_for(source_attrs, side).unwrap_or_else(|| "camelCase".to_string()),
         std::clone::Clone::clone,
     )
 }

@@ -1,8 +1,8 @@
 //! The source attributes a `schema_type!(..., multipart)` DTO keeps for the
 //! `Multipart` derive, which honours serde's missing-field rules: a field's
 //! `#[serde(default)]` / `default = "fn"` / `skip` / `skip_deserializing`,
-//! the container's `#[serde(default)]` / `default = "fn"`, and
-//! `#[try_from_multipart(..)]` (`strict`).
+//! the container's `#[serde(default)]` / `default = "fn"` and
+//! `deny_unknown_fields`, and `#[try_from_multipart(..)]` (`strict`).
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -26,7 +26,8 @@ fn serde_metas(attrs: &[syn::Attribute]) -> Vec<syn::Meta> {
 }
 
 /// The field's missing-field keys — `default` (bare, or `= "fn"` re-rooted
-/// at the source module), `skip`, `skip_deserializing` — as one
+/// at the source module), `skip`, `skip_deserializing` — and its `alias`es
+/// (the derive accepts a part under them; they used to be dropped) as one
 /// `#[serde(..)]`. `wrapped` (`partial` made the field `Option<T>`) drops
 /// `default = "fn"`: it returns `T`, and a missing `Option` is `None` anyway.
 pub(super) fn field_attr(
@@ -40,7 +41,9 @@ pub(super) fn field_attr(
             syn::Meta::Path(path) => ["default", "skip", "skip_deserializing"]
                 .iter()
                 .any(|key| path.is_ident(key)),
-            syn::Meta::NameValue(nv) => !wrapped && nv.path.is_ident("default"),
+            syn::Meta::NameValue(nv) => {
+                nv.path.is_ident("alias") || (!wrapped && nv.path.is_ident("default"))
+            }
             syn::Meta::List(_) => false,
         })
         .collect();
@@ -73,8 +76,11 @@ pub(super) fn container(
         .filter(|attr| attr.path().is_ident("try_from_multipart"));
     let default = container_default(source_attrs, module_path, source_type, dto, assignments);
     let default_attr = default.attrs;
+    // The derive rejects unknown parts under it (and the schema is closed).
+    let deny = crate::parser::extract_deny_unknown_fields(source_attrs)
+        .then(|| quote! { #[serde(deny_unknown_fields)] });
     ContainerCarry {
-        attrs: quote! { #(#strict)* #default_attr },
+        attrs: quote! { #(#strict)* #deny #default_attr },
         helper: default.helper,
     }
 }
@@ -154,6 +160,7 @@ mod tests {
     #[case::skips(quote!(#[serde(skip)] #[serde(skip_deserializing)]), false, "# [serde (skip , skip_deserializing)]")]
     #[case::list_and_others(quote!(#[serde(rename(deserialize = "a"), flatten)] #[doc = "d"]), false, "")]
     #[case::unparseable(quote!(#[serde(= nonsense)]), false, "")]
+    #[case::alias(quote!(#[serde(alias = "a", default = "f")]), true, "# [serde (alias = \"a\")]")]
     fn field_attr_keeps_missing_field_keys(
         #[case] source: TokenStream,
         #[case] wrapped: bool,
@@ -174,6 +181,7 @@ mod tests {
     #[case::no_assignments("multipart_carry_container_no_assignments", quote!(#[serde(default)] #[try_from_multipart(strict)]), false)]
     #[case::non_string_default("multipart_carry_container_non_string", quote!(#[serde(default = 5)]), true)]
     #[case::no_default("multipart_carry_container_none", quote!(#[serde(rename_all = "camelCase")]), true)]
+    #[case::deny_unknown_fields("multipart_carry_container_deny", quote!(#[serde(deny_unknown_fields)]), true)]
     fn container_carries_default_and_strict(
         #[case] name: &str,
         #[case] source: TokenStream,

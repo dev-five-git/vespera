@@ -182,6 +182,38 @@ fn type_arguments(ty: &syn::Type) -> Result<Vec<&syn::Type>, ()> {
         .collect()
 }
 
+/// `Self` in the field TYPES of `item` (`Vec<Self>`, `Option<Box<Self>>`,
+/// `Self::Assoc`) spelled with the struct's name and its own type
+/// parameters (`Category`, `Page<T>`), before the type arguments are
+/// inserted and the names rooted at the source module. Emitted on the DTO,
+/// a bare `Self` named the DTO (a `From` type mismatch) and a rooted one
+/// was `crate::m::Self` (E0433).
+pub fn name_self_in_types(item: &mut syn::ItemStruct) {
+    let (_, ty_generics, _) = item.generics.split_for_impl();
+    let ident = &item.ident;
+    let named: syn::PathSegment = syn::parse_quote!(#ident #ty_generics);
+    let mut visitor = SelfType(named);
+    for field in &mut item.fields {
+        syn::visit_mut::VisitMut::visit_type_mut(&mut visitor, &mut field.ty);
+    }
+}
+
+/// The [`name_self_in_types`] walker: the first segment of a `Self` path.
+struct SelfType(syn::PathSegment);
+
+impl syn::visit_mut::VisitMut for SelfType {
+    fn visit_type_path_mut(&mut self, ty: &mut syn::TypePath) {
+        if ty.qself.is_none()
+            && ty.path.leading_colon.is_none()
+            && let Some(first) = ty.path.segments.first_mut()
+            && first.ident == "Self"
+        {
+            *first = self.0.clone();
+        }
+        syn::visit_mut::visit_type_path_mut(self, ty);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use quote::ToTokens;
@@ -218,6 +250,22 @@ mod tests {
         let ty: syn::Type = syn::parse_str(ty).unwrap();
         let instance = instantiate(&item, &ty, "schema!").unwrap();
         assert_eq!(instance.to_token_stream().to_string(), expected);
+    }
+
+    /// M3 (round 17): `Self` in a field type names the source struct.
+    #[rstest]
+    #[case::plain(
+        "pub struct C { pub kids: Vec<Self>, pub up: Option<Box<Self>>, pub a: Self::A, pub q: <Self as X>::Y }",
+        "pub struct C { pub kids : Vec < C > , pub up : Option < Box < C > > , pub a : C :: A , pub q : < C as X > :: Y }"
+    )]
+    #[case::generic(
+        "pub struct P<T> { pub next: Option<Box<Self>>, pub other: ::Self }",
+        "pub struct P < T > { pub next : Option < Box < P < T > > > , pub other : :: Self }"
+    )]
+    fn names_self_in_types(#[case] item: &str, #[case] expected: &str) {
+        let mut item: syn::ItemStruct = syn::parse_str(item).unwrap();
+        name_self_in_types(&mut item);
+        assert_eq!(item.to_token_stream().to_string(), expected);
     }
 
     #[rstest]

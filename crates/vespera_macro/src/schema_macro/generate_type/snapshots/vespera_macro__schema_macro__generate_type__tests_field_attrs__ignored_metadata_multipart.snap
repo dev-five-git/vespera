@@ -5,6 +5,7 @@ expression: "prettyplease::unparse(&file)"
 /// An upload.
 #[serde(rename_all = "camelCase")]
 #[try_from_multipart(strict)]
+#[serde(deny_unknown_fields)]
 #[serde(default = "__vespera_Dto_default")]
 pub struct Dto {
     pub title: String,
