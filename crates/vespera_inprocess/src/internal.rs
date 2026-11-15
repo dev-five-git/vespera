@@ -365,7 +365,10 @@ fn build_uri(path: &str, query: &str) -> Result<Uri, (u16, String)> {
 /// insertion pass — `HeaderName::from_bytes` already ASCII-lowercased the
 /// name, so the `== CONTENT_TYPE` standard-header comparison is the same
 /// cheap discriminant compare each site already used.  `default_json_when_absent`
-/// requests the `application/json` default when no `Content-Type` was seen.
+/// requests the `application/json` default when no `Content-Type` was seen;
+/// it applies only while [`crate::default_json_content_type`] is `true` (the
+/// default — `set_default_json_content_type(false)` /
+/// `VESPERA_DEFAULT_JSON_CONTENT_TYPE=false` turn it off process-wide).
 ///
 /// **Security (CSRF):** the default makes axum's `Json<T>` accept a body that
 /// arrived with no `Content-Type` at all.  A browser can send such a body
@@ -375,7 +378,8 @@ fn build_uri(path: &str, query: &str) -> Result<Uri, (u16, String)> {
 /// on the host's CSRF protection (Spring Security `CsrfFilter` /
 /// `CsrfWebFilter`), `SameSite` session cookies, or an `Origin` /
 /// `Sec-Fetch-Site` / custom-header check.  A handler-side `Content-Type`
-/// check does not help: the handler sees the defaulted value.
+/// check does not help: the handler sees the defaulted value.  Browser-facing
+/// apps should turn the default off, so `Json<T>` answers such a body `415`.
 /// Returns `Err((400, _))` for a malformed header, upholding the "every
 /// failure returns a wire response" contract.  `#[inline]` so both call sites
 /// keep the same inlined codegen as the prior copy-pasted shape.
@@ -388,6 +392,11 @@ fn build_axum_request_inner<'h>(
     header_bytes_owner: Option<&Bytes>,
     default_json_when_absent: bool,
 ) -> Result<Request<Body>, (u16, String)> {
+    // The process-wide knob (`set_default_json_content_type`) is read on
+    // every build — not only when the caller asks for the default — so the
+    // first dispatch fixes it, like the other dispatch knobs.
+    let default_json_when_absent =
+        crate::config::default_json_content_type() & default_json_when_absent;
     let mut request = Request::new(body);
     *request.method_mut() = http_method;
     *request.uri_mut() = uri;

@@ -13,9 +13,10 @@ use axum::Router;
 use axum::routing::{get, post};
 use vespera_inprocess::ffi::{
     VESPERA_ERR_TOO_LATE, VESPERA_OK, vespera_configure_async_max_in_flight,
-    vespera_configure_dispatch_timeout_ms, vespera_configure_max_blocking_threads,
-    vespera_configure_max_buffered_response_bytes, vespera_configure_max_request_bytes,
-    vespera_configure_worker_threads, vespera_dispatch, vespera_dispatch_async, vespera_free,
+    vespera_configure_default_json_content_type, vespera_configure_dispatch_timeout_ms,
+    vespera_configure_max_blocking_threads, vespera_configure_max_buffered_response_bytes,
+    vespera_configure_max_request_bytes, vespera_configure_worker_threads, vespera_dispatch,
+    vespera_dispatch_async, vespera_free,
 };
 use vespera_inprocess::runtime::{ASYNC_OVERLOADED_MSG, async_in_flight};
 
@@ -29,6 +30,14 @@ fn app() -> Router {
         .route("/slow", get(slow))
         .route("/fast", get(|| async { "fast" }))
         .route("/echo", post(|body: String| async move { body }))
+        .route("/echo_ct", post(echo_ct))
+}
+
+async fn echo_ct(headers: axum::http::HeaderMap) -> String {
+    headers
+        .get("content-type")
+        .map_or("MISSING", |v| v.to_str().unwrap_or("?"))
+        .to_owned()
 }
 
 vespera_inprocess::ffi_app!(app);
@@ -100,13 +109,14 @@ fn dispatch(req: &[u8]) -> (u64, Vec<u8>) {
 
 #[test]
 fn configure_applies_once_and_caps_async_dispatches() {
-    let knobs: [&dyn Fn() -> i32; 6] = [
+    let knobs: [&dyn Fn() -> i32; 7] = [
         &|| vespera_configure_worker_threads(2),
         &|| vespera_configure_max_blocking_threads(16),
         &|| vespera_configure_max_request_bytes(1024),
         &|| vespera_configure_max_buffered_response_bytes(1 << 20),
         &|| vespera_configure_dispatch_timeout_ms(10_000),
         &|| vespera_configure_async_max_in_flight(1),
+        &|| vespera_configure_default_json_content_type(0),
     ];
     for knob in knobs {
         assert_eq!(knob(), VESPERA_OK);
@@ -158,5 +168,12 @@ fn configure_applies_once_and_caps_async_dispatches() {
     assert_eq!(
         dispatch(&request("POST", "/echo", b"hi")),
         (200, b"hi".to_vec())
+    );
+
+    // `vespera_configure_default_json_content_type(0)`: an untyped body is
+    // no longer given `application/json`.
+    assert_eq!(
+        dispatch(&request("POST", "/echo_ct", b"{}")),
+        (200, b"MISSING".to_vec())
     );
 }

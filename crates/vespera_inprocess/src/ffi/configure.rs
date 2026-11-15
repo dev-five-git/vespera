@@ -76,6 +76,15 @@ pub extern "C" fn vespera_configure_async_max_in_flight(max_in_flight: usize) ->
     configure(|| set_async_max_in_flight(max_in_flight))
 }
 
+/// `int vespera_configure_default_json_content_type(int)` — whether a
+/// non-empty request body without a `Content-Type` is given
+/// `application/json` ([`crate::set_default_json_content_type`]; `0` = no,
+/// any other value = yes, the default).  Browser-facing apps should pass `0`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vespera_configure_default_json_content_type(enabled: c_int) -> c_int {
+    configure(|| crate::set_default_json_content_type(enabled != 0))
+}
+
 #[cfg(test)]
 mod tests {
     //! The guard only; the symbols themselves change process-wide state and

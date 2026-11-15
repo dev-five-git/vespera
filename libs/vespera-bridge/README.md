@@ -194,6 +194,7 @@ vespera:
       dispatch-timeout: 30s                 # deadline → 504 (default: disabled); see below
       async-max-in-flight: 4096             # dispatchAsync concurrency cap → 503
       max-request-producers: 256            # concurrent bidirectional upload producers (0 = unlimited)
+      default-json-content-type: false      # untyped request body NOT given application/json (default true); see "Spring Security"
       worker-threads: 8                     # shared Tokio runtime workers (default: CPUs)
       max-blocking-threads: 512             # shared runtime blocking pool
 ```
@@ -201,7 +202,8 @@ vespera:
 `vespera.bridge.native.*` is forwarded to the `VesperaBridge.configure*`
 methods during context startup, before the proxy serves a request. Unset keys
 keep the native default (or the `vespera.limits.*` / `vespera.dispatch.*` /
-`vespera.async.*` / `vespera.runtime.*` system properties and their `VESPERA_*`
+`vespera.async.*` / `vespera.runtime.*` / `vespera.streaming.*` /
+`vespera.request.*` system properties and their `VESPERA_*`
 environment variables). A value that arrives after the setting was fixed is
 logged and ignored — after the first native dispatch, and also when a system
 property already fixed it at `init` (see below).
@@ -539,7 +541,7 @@ With `rust`, do not also configure Spring CORS for proxied paths, and do not ena
 The proxy is an ordinary Spring MVC controller, so Spring Security's filter chain runs in front of it:
 
 - **CSRF blocks proxied writes by default.** With Spring Security on the classpath, `CsrfFilter` rejects every `POST` / `PUT` / `PATCH` / `DELETE` without a CSRF token with `403` before the proxy runs. For a token-authenticated JSON API, disable CSRF for the proxied paths (`http.csrf(csrf -> csrf.ignoringRequestMatchers("/api/**"))`) or implement the token exchange; keep it for cookie-session browser forms.
-- **`Json<T>` is no CSRF defence here.** Rust gives a request body without `Content-Type` the header `content-type: application/json` (bidirectional streaming: unless the request declares `Content-Length: 0`), so axum's `Json<T>` accepts it. A browser can send such a body cross-site as a CORS "simple" request — `fetch(url, {method: "POST", credentials: "include", body: new Blob(['{...}'])})` sends no `Content-Type` and no preflight — with the victim's session cookie, and the proxy forwards the cookie-derived principal. If you disable CSRF for cookie-authenticated proxied paths, use `SameSite=Lax`/`Strict` session cookies or check `Origin` / `Sec-Fetch-Site` (or require a custom request header, which forces a preflight) in Spring or in the Rust handler. Checking `Content-Type` in the handler does not help: the handler sees the defaulted value.
+- **`Json<T>` is no CSRF defence here.** Rust gives a request body without `Content-Type` the header `content-type: application/json` (bidirectional streaming: unless the request declares `Content-Length: 0`), so axum's `Json<T>` accepts it. A browser can send such a body cross-site as a CORS "simple" request — `fetch(url, {method: "POST", credentials: "include", body: new Blob(['{...}'])})` sends no `Content-Type` and no preflight — with the victim's session cookie, and the proxy forwards the cookie-derived principal. If you disable CSRF for cookie-authenticated proxied paths, use `SameSite=Lax`/`Strict` session cookies or check `Origin` / `Sec-Fetch-Site` (or require a custom request header, which forces a preflight) in Spring or in the Rust handler. Checking `Content-Type` in the handler does not help: the handler sees the defaulted value. **Recommended for browser-facing apps: turn the default off** with `vespera.bridge.native.default-json-content-type=false` (or `VesperaBridge.configureDefaultJsonContentType(false)` before the first dispatch, `-Dvespera.request.defaultJsonContentType=false`, `VESPERA_DEFAULT_JSON_CONTENT_TYPE=false`): an untyped body then reaches Rust without `Content-Type` and `Json<T>` answers `415`. The default stays `true` for compatibility with clients that omit the header.
 - **Match on the path Rust sees.** Authorization rules match the servlet path. The proxy forwards the path *within the application* (context path and a prefix servlet mapping stripped, `;` path parameters dropped — see [Operability](#client-address-scheme-and-servlet-path)), so write rules against that path, not the raw request URI, and keep Spring's default `StrictHttpFirewall` (it rejects encoded `/`, `;`, `..` that could make a path look different to Spring and to Rust).
 - **App selection bypasses path rules.** `X-Vespera-App` picks a whole router; restrict it with `vespera.bridge.exposed-apps` (see [Multi-app routing → Security](#security-the-app-header-is-client-controlled)) or with a custom `AppNameResolver` that checks the authenticated principal.
 - **The authenticated principal is forwarded for you — don't use headers for it.** The proxy puts the authenticated user into the trusted `principal` wire field (see [Forwarded principal](#forwarded-principal)), which a client cannot set; Rust handlers take `vespera::inprocess::Principal`. Do not identify the user from a forwarded `X-User`-style header: request headers are client-controlled unless every copy is stripped.
@@ -1172,6 +1174,8 @@ chunk every configured value up to 256 applies unchanged, but `configureStreamin
 runs with 8 slots, silently (no warning).
 
 `maxRequestProducers` is also set by `VesperaBridge.configureMaxRequestProducers(n)` and by the Spring property `vespera.bridge.native.max-request-producers`.
+
+Whether a non-empty request body without `Content-Type` is given `content-type: application/json` (default `true`) is set the same way: `VesperaBridge.configureDefaultJsonContentType(boolean)` > `-Dvespera.request.defaultJsonContentType=true|false` > `VESPERA_DEFAULT_JSON_CONTENT_TYPE` > `true`; Spring: `vespera.bridge.native.default-json-content-type`. Set it to `false` for browser-facing apps (see *Spring Security*, "`Json<T>` is no CSRF defence here").
 
 **Java API** — call before `VesperaBridge.init(...)` for guaranteed precedence:
 

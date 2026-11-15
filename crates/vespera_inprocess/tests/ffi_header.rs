@@ -114,6 +114,7 @@ fn header_prototypes_match_the_exported_symbols() {
     let _: extern "C" fn(usize) -> c_int = ffi::vespera_configure_max_buffered_response_bytes;
     let _: extern "C" fn(u64) -> c_int = ffi::vespera_configure_dispatch_timeout_ms;
     let _: extern "C" fn(usize) -> c_int = ffi::vespera_configure_async_max_in_flight;
+    let _: extern "C" fn(c_int) -> c_int = ffi::vespera_configure_default_json_content_type;
     let callback: Option<VesperaCallback> = None;
     let _: Option<unsafe extern "C" fn(*mut c_void, *mut u8, usize)> = callback;
 
@@ -134,6 +135,7 @@ fn header_prototypes_match_the_exported_symbols() {
             "int vespera_configure_max_buffered_response_bytes(size_t max_bytes)",
             "int vespera_configure_dispatch_timeout_ms(uint64_t timeout_ms)",
             "int vespera_configure_async_max_in_flight(size_t max_in_flight)",
+            "int vespera_configure_default_json_content_type(int enabled)",
         ]
     );
 }
