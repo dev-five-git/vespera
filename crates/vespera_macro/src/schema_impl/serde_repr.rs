@@ -65,7 +65,7 @@ pub(super) fn with_multipart_vec_defaults(
     let mut data = data.clone();
     let mut changed = false;
     for field in data.fields.iter_mut().filter(|field| {
-        is_vec(&field.ty)
+        crate::multipart_impl::is_vec_type(&field.ty)
             && crate::parser::extract_default(&field.attrs).is_none()
             && !crate::multipart_impl::has_form_data_default(&field.attrs)
     }) {
@@ -76,12 +76,6 @@ pub(super) fn with_multipart_vec_defaults(
         data: syn::Data::Struct(data),
         ..input.clone()
     })
-}
-
-/// `Vec<T>` / `std::vec::Vec<T>` (the Multipart derive's repeated part).
-fn is_vec(ty: &syn::Type) -> bool {
-    matches!(ty, syn::Type::Path(path) if path.qself.is_none()
-        && path.path.segments.last().is_some_and(|segment| segment.ident == "Vec"))
 }
 
 /// The derives among `names` of THE source declaration of the enum (or,
@@ -332,6 +326,12 @@ mod tests {
         "#[derive(Multipart, Schema)] struct U { files: Vec<FieldData<u8>>, tags: std::vec::Vec<String>, \
          #[serde(default)] own: Vec<u8>, #[form_data(default)] kept: Vec<u8>, name: String, opt: Option<Vec<u8>> }",
         Some(vec!["files", "tags"])
+    )]
+    // L1 (round 13): the derive's own predicate decides: `alloc::vec::Vec`
+    // is a repeated part, another crate's `Vec` a single (required) one.
+    #[case::shared_vec_predicate(
+        "#[derive(Multipart)] struct U { files: alloc::vec::Vec<u8>, fixed: heapless::Vec<u32, 8> }",
+        Some(vec!["files"])
     )]
     #[case::qualified_derive("#[derive(vespera::Multipart)] struct U { files: Vec<u8> }", Some(vec!["files"]))]
     #[case::no_vec_field("#[derive(Multipart)] struct U { name: String }", None)]

@@ -11,7 +11,7 @@ use super::{
     file_cache::{get_circular_analysis, get_module_path_from_schema_path},
     file_lookup::find_model_from_schema_path,
     seaorm::{RelationFieldInfo, convert_type_with_chrono},
-    transformation::reroot_serde_paths,
+    transformation::{RenameAll, reroot_serde_paths},
     type_utils::{is_seaorm_relation_type, snake_to_pascal_case},
 };
 use crate::parser::{extract_rename_all, extract_skip};
@@ -22,8 +22,9 @@ pub struct InlineRelationType {
     pub type_name: syn::Ident,
     /// Fields to include (excluding circular references)
     pub fields: Vec<InlineField>,
-    /// The effective `rename_all` strategy
-    pub rename_all: String,
+    /// The target model's `rename_all`, per serde side (camelCase when it
+    /// has none)
+    pub rename_all: RenameAll,
 }
 
 /// A field in an inline relation type
@@ -172,9 +173,12 @@ fn generate_inline_type_core(
         Vec::new()
     };
 
-    // Get rename_all from model (or default to camelCase)
-    let rename_all =
+    // The model's rename_all (or camelCase), both sides: a split
+    // `rename_all(serialize = .., deserialize = ..)` used to collapse to the
+    // serialize side, so the inline type read the wrong keys.
+    let effective =
         extract_rename_all(&parsed_model.attrs).unwrap_or_else(|| "camelCase".to_string());
+    let rename_all = RenameAll::new(None, &parsed_model.attrs, &effective);
 
     // Generate inline type name: {SchemaName}_{Field}
     // Use custom schema name if provided, otherwise use the Rust struct name
@@ -280,7 +284,7 @@ fn ident_safe(name: &str) -> String {
 /// Generate the struct definition `TokenStream` for an inline relation type.
 pub fn generate_inline_type_definition(inline_type: &InlineRelationType) -> TokenStream {
     let type_name = &inline_type.type_name;
-    let rename_all = &inline_type.rename_all;
+    let rename_all = inline_type.rename_all.attr();
 
     let field_tokens: Vec<TokenStream> = inline_type
         .fields
@@ -298,7 +302,7 @@ pub fn generate_inline_type_definition(inline_type: &InlineRelationType) -> Toke
 
     quote! {
         #[derive(Clone, serde::Serialize, serde::Deserialize, vespera::Schema)]
-        #[serde(rename_all = #rename_all)]
+        #rename_all
         pub struct #type_name {
             #(#field_tokens),*
         }

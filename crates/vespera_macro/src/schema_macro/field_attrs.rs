@@ -9,6 +9,7 @@ use quote::quote;
 use syn::punctuated::Punctuated;
 
 use super::cfg_eval::Predicate;
+use super::garde_paths::{reroot_garde_attr, reroot_garde_meta};
 use super::transformation::{reroot_serde_metas, serde_key};
 
 /// What a source field contributes to the generated field.
@@ -22,9 +23,11 @@ pub struct CarriedAttrs {
     /// `#[cfg_attr(pred, serde(..))]` items (paths re-rooted at the source
     /// module), emitted after `other`.
     pub cfg_serde: Vec<(Predicate, Vec<syn::Meta>)>,
-    /// `#[cfg_attr(pred, schema(..))]` items (only when `Schema` is
-    /// derived), as `#[schema(..)]` attributes: `partial` rewrites them like
-    /// [`Self::schema`].
+    /// `#[cfg_attr(pred, schema(..))]` items, as `#[schema(..)]` attributes:
+    /// `partial` rewrites them like [`Self::schema`]. Emitted only where
+    /// `Schema` is derived; otherwise the registered metadata (which reads
+    /// no `cfg_attr`) gets the statically active ones
+    /// ([`Self::active_cfg_schema`]).
     pub cfg_schema: Vec<(Predicate, syn::Attribute)>,
     /// The `#[cfg(..)]` attributes alone: they also gate the field's
     /// assignment in the generated `From` / `from_model`.
@@ -62,6 +65,7 @@ pub fn carried_field_attrs(
             carried.schema.push(attr.clone());
         } else if path.is_ident("garde") {
             carried.garde = true;
+            let attr = reroot_garde_attr(attr, module_path);
             carried.other.push(quote! { #attr });
         } else if path.is_ident("deprecated") {
             carried.deprecated = true;
@@ -89,9 +93,10 @@ fn has_serde_rename(attrs: &[syn::Attribute]) -> bool {
         .any(|items| items.iter().any(|item| serde_key(item) == "rename"))
 }
 
-/// `#[cfg_attr(pred, a, b)]` keeping only `schema` (when derived), `garde`,
-/// `deprecated` and `doc` (into `other`) and `serde` (into `cfg_serde`,
-/// without `rename` unless `keep_rename`); nothing when it does not parse.
+/// `#[cfg_attr(pred, a, b)]` keeping only `schema` (into `cfg_schema`),
+/// `garde` (paths re-rooted), `deprecated` and `doc` (into `other`) and
+/// `serde` (into `cfg_serde`, without `rename` unless `keep_rename`);
+/// nothing when it does not parse.
 fn filtered_cfg_attr(
     attr: &syn::Attribute,
     (schema_derived, keep_rename, module_path): (bool, bool, &[String]),
@@ -105,21 +110,25 @@ fn filtered_cfg_attr(
     }) else {
         return;
     };
-    let mut kept: Vec<&syn::Meta> = Vec::new();
+    let mut kept: Vec<syn::Meta> = Vec::new();
     for meta in &metas {
         let path = meta.path();
         carried.garde |= path.is_ident("garde");
         carried.deprecated |= path.is_ident("deprecated");
         if path.is_ident("serde") {
             carried_cfg_serde(&predicate, meta, (keep_rename, module_path), carried);
-        } else if schema_derived && path.is_ident("schema") {
+        } else if path.is_ident("schema") {
             let attr: syn::Attribute = syn::parse_quote! { #[#meta] };
-            if schema_has_default(&attr) {
+            // Gates the SeaORM-derived default of the emitted field only
+            // (the metadata reads no `cfg_attr`).
+            if schema_derived && schema_has_default(&attr) {
                 carried.schema_default_cfgs.push(predicate.clone());
             }
             carried.cfg_schema.push((predicate.clone(), attr));
-        } else if path.is_ident("garde") || path.is_ident("deprecated") || path.is_ident("doc") {
-            kept.push(meta);
+        } else if path.is_ident("garde") {
+            kept.push(reroot_garde_meta(meta, module_path));
+        } else if path.is_ident("deprecated") || path.is_ident("doc") {
+            kept.push(meta.clone());
         }
     }
     if !kept.is_empty() {
@@ -261,6 +270,17 @@ impl CarriedAttrs {
             .collect()
     }
 
+    /// The `#[schema(..)]` of the `cfg_attr`s whose predicate is known to
+    /// hold (the metadata of an `ignore` type reads no `cfg_attr`; it used
+    /// to drop them all).
+    pub fn active_cfg_schema(&self) -> Vec<&syn::Attribute> {
+        self.cfg_schema
+            .iter()
+            .filter(|(predicate, _)| super::cfg_eval::statically_active(predicate))
+            .map(|(_, attr)| attr)
+            .collect()
+    }
+
     /// The `#[cfg_attr(pred, serde(..))]` attributes.
     pub fn cfg_serde_attrs(&self) -> Vec<TokenStream> {
         self.cfg_serde
@@ -352,10 +372,11 @@ mod tests {
         true,
         "# [cfg_attr (feature = \"x\" , schema (minimum = 1))]"
     )]
+    // Collected without a derive too: the metadata keeps the active ones.
     #[case::cfg_attr_schema_not_derived(
         quote!(#[cfg_attr(feature = "x", schema(minimum = 1))]),
         false,
-        ""
+        "# [cfg_attr (feature = \"x\" , schema (minimum = 1))]"
     )]
     #[case::cfg_attr_all_kinds(
         quote!(#[cfg_attr(all(), garde(skip), deprecated, doc = "d")]),
@@ -488,6 +509,21 @@ mod tests {
     fn flags(#[case] attrs: TokenStream, #[case] garde: bool, #[case] deprecated: bool) {
         let carried = carried_field_attrs(&field(attrs), true, &[], false);
         assert_eq!((carried.garde, carried.deprecated), (garde, deprecated));
+    }
+
+    /// L11 (round 13): the `cfg_attr` schema items whose predicate holds
+    /// go to the metadata of an `ignore` type; unknown / false ones do not.
+    #[test]
+    fn active_cfg_schema_keeps_known_true_predicates() {
+        let attrs = field(quote!(
+            #[cfg_attr(all(), schema(minimum = 1))]
+            #[cfg_attr(any(), schema(maximum = 2))]
+            #[cfg_attr(unix_like_unknown, schema(maximum = 3))]
+        ));
+        let carried = carried_field_attrs(&attrs, false, &[], false);
+        let active = carried.active_cfg_schema();
+        assert_eq!(quote!(#(#active)*).to_string(), "# [schema (minimum = 1)]");
+        assert!(carried.schema_default_cfgs.is_empty());
     }
 
     #[test]

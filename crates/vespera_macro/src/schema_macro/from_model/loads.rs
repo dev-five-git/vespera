@@ -11,7 +11,7 @@ use syn::Type;
 
 use super::super::{
     file_cache::{get_fk_column, get_struct_from_schema_path},
-    seaorm::{RelationFieldInfo, is_composite_columns, is_sea_orm_primary_key},
+    seaorm::{RelationFieldInfo, is_composite_columns, is_sea_orm_primary_key, normalize_columns},
     type_utils::{normalize_token_str, snake_to_pascal_case},
 };
 use super::{DB, MODEL, build_entity_path_from_schema_path};
@@ -29,6 +29,7 @@ pub(super) fn relation_load(
     rel: &RelationFieldInfo,
     source_type: &Type,
     source_module_path: &[String],
+    source_fields: &syn::Fields,
 ) -> syn::Result<TokenStream> {
     let field_name = &rel.field_name;
     let entity_path = build_entity_path_from_schema_path(&rel.schema_path, source_module_path);
@@ -113,7 +114,13 @@ pub(super) fn relation_load(
                 ),
             )
         })?;
-    let to_ident = ident("to", to.as_deref().unwrap_or("id"))?;
+    // `to` names a column of the SOURCE model (`Column::Address2Id` is its
+    // `address_2_id` field), so it is normalized against the source fields.
+    let to = to.map_or_else(
+        || "id".to_string(),
+        |to| normalize_columns(&to, source_fields),
+    );
+    let to_ident = ident("to", &to)?;
     let column = column_path(&entity_path);
     Ok(quote! {
         let #field_name = sea_orm::QueryFilter::filter(

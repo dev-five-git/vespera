@@ -1,0 +1,111 @@
+---
+source: crates/vespera_macro/src/schema_macro/generate_type/tests_round13.rs
+assertion_line: 60
+expression: code
+---
+#[cfg(feature = "pg")]
+#[allow(non_snake_case)]
+fn default_Dto_id_0() -> i64 {
+    Default::default()
+}
+#[cfg(not(feature = "pg"))]
+#[allow(non_snake_case)]
+fn default_Dto_id_1() -> i32 {
+    Default::default()
+}
+#[cfg(feature = "x")]
+#[allow(non_snake_case)]
+fn default_Dto_seeded() -> i32 {
+    "5".parse().unwrap()
+}
+#[cfg(feature = "pg")]
+#[doc(hidden)]
+#[allow(non_snake_case, clippy::ref_option)]
+fn __vespera_Dto_at_3_ser<__S: serde::Serializer>(
+    value: &Option<String>,
+    serializer: __S,
+) -> Result<__S::Ok, __S::Error> {
+    match value {
+        Some(inner) => codec::serialize(inner, serializer),
+        None => serializer.serialize_none(),
+    }
+}
+#[cfg(feature = "pg")]
+#[doc(hidden)]
+#[allow(non_snake_case)]
+fn __vespera_Dto_at_3_de<'de, __D: serde::Deserializer<'de>>(
+    deserializer: __D,
+) -> Result<Option<String>, __D::Error> {
+    codec::deserialize(deserializer).map(Some)
+}
+#[cfg(not(feature = "pg"))]
+#[doc(hidden)]
+#[allow(non_snake_case, clippy::ref_option)]
+fn __vespera_Dto_at_4_ser<__S: serde::Serializer>(
+    value: &Option<String>,
+    serializer: __S,
+) -> Result<__S::Ok, __S::Error> {
+    match value {
+        Some(inner) => codec::serialize(inner, serializer),
+        None => serializer.serialize_none(),
+    }
+}
+#[cfg(not(feature = "pg"))]
+#[doc(hidden)]
+#[allow(non_snake_case)]
+fn __vespera_Dto_at_4_de<'de, __D: serde::Deserializer<'de>>(
+    deserializer: __D,
+) -> Result<Option<String>, __D::Error> {
+    codec::deserialize(deserializer).map(Some)
+}
+#[derive(serde::Serialize, serde::Deserialize, Clone, vespera::Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct Dto {
+    #[cfg(feature = "pg")]
+    #[serde(default = "default_Dto_id_0")]
+    #[schema(default = "0")]
+    pub id: i64,
+    #[cfg(not(feature = "pg"))]
+    #[serde(default = "default_Dto_id_1")]
+    #[schema(default = "0")]
+    pub id: i32,
+    #[cfg(feature = "x")]
+    #[serde(default = "default_Dto_seeded")]
+    #[schema(default = "5")]
+    pub seeded: i32,
+    #[cfg(feature = "pg")]
+    #[serde(
+        default,
+        serialize_with = "__vespera_Dto_at_3_ser",
+        deserialize_with = "__vespera_Dto_at_3_de",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub at: Option<String>,
+    #[cfg(not(feature = "pg"))]
+    #[serde(
+        default,
+        serialize_with = "__vespera_Dto_at_4_ser",
+        deserialize_with = "__vespera_Dto_at_4_de",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub at: Option<String>,
+    pub plain: bool,
+}
+#[allow(deprecated)]
+impl From<Source> for Dto {
+    fn from(source: Source) -> Self {
+        Self {
+            #[cfg(feature = "pg")]
+            id: source.id,
+            #[cfg(not(feature = "pg"))]
+            id: source.id,
+            #[cfg(feature = "x")]
+            seeded: source.seeded,
+            #[cfg(feature = "pg")]
+            at: Some(source.at),
+            #[cfg(not(feature = "pg"))]
+            at: Some(source.at),
+            plain: source.plain,
+        }
+    }
+}

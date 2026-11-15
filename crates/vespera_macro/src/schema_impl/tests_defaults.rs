@@ -333,3 +333,14 @@ fn skipped_field_default_is_not_validated(
         ok
     );
 }
+
+/// L2 (round 13): the per-file default-fn cache is keyed by the unrawed
+/// name, as every lookup asks (`default = "r#type"` missed it).
+#[test]
+fn default_function_cache_keys_are_unrawed() {
+    let file = syn::parse_file("fn r#type() -> i32 { 5 } fn plain() -> i32 { 6 }").unwrap();
+    let values = extract_default_functions_from_file(&file);
+    assert_eq!(values.get("type"), Some(&serde_json::json!(5)));
+    assert_eq!(values.get("plain"), Some(&serde_json::json!(6)));
+    assert!(!values.contains_key("r#type"));
+}

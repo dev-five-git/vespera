@@ -26,7 +26,10 @@ fn inline(name: &str, rename_all: &str, fields: Vec<InlineField>) -> InlineRelat
     InlineRelationType {
         type_name: syn::Ident::new(name, proc_macro2::Span::call_site()),
         fields,
-        rename_all: rename_all.to_string(),
+        rename_all: RenameAll {
+            serialize: Some(rename_all.to_string()),
+            deserialize: Some(rename_all.to_string()),
+        },
     }
 }
 
@@ -177,7 +180,10 @@ fn inline_field_struct_holds_constructor_inputs() {
 fn inline_relation_type_struct_holds_constructor_inputs() {
     let inline_type = inline("TestRelation", "SCREAMING_SNAKE_CASE", vec![]);
     assert_eq!(inline_type.type_name.to_string(), "TestRelation");
-    assert_eq!(inline_type.rename_all, "SCREAMING_SNAKE_CASE");
+    assert_eq!(
+        inline_type.rename_all.attr().to_string(),
+        "# [serde (rename_all = \"SCREAMING_SNAKE_CASE\")]"
+    );
     assert!(inline_type.fields.is_empty());
 }
 
@@ -622,4 +628,28 @@ fn inline_type_name_is_a_valid_ident(
     )
     .unwrap();
     assert_eq!(result.type_name.to_string(), expected);
+}
+
+/// L15 (round 13): a split `rename_all(serialize = .., deserialize = ..)`
+/// on the target model keeps both sides; the inline type used to emit the
+/// serialize side for both, so it deserialized camelCase keys.
+#[test]
+fn split_rename_all_keeps_both_sides() {
+    let model_def = r#"#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+        pub struct Model {
+            pub id: i32,
+            pub user_name: String,
+        }"#;
+    let result = generate_inline_relation_type_no_relations_from_def(
+        &syn::Ident::new("UserSchema", proc_macro2::Span::call_site()),
+        &rel("memos", "HasMany", quote!(super::memo::Schema)),
+        &[],
+        None,
+        model_def,
+    )
+    .expect("plain fields remain");
+    assert_eq!(
+        result.rename_all.attr().to_string(),
+        "# [serde (rename_all (serialize = \"camelCase\" , deserialize = \"snake_case\"))]"
+    );
 }

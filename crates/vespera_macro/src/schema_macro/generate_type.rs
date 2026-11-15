@@ -12,11 +12,9 @@ use quote::quote;
 use super::defaults::{gate_sea_orm_defaults, generate_sea_orm_default_attrs};
 use super::field_attrs::carried_field_attrs;
 use super::file_cache;
-use super::file_lookup::{
-    call_site_definition, find_struct_from_path_detailed, reexported_module, requested_module_path,
-    storage_module_path,
-};
-use super::from_model::generate_from_model_with_relations;
+use super::file_lookup::call_site_module;
+use super::from_model::{FieldMapping, generate_from_model_with_relations};
+use super::garde_paths::reroot_garde_attr;
 use super::inline_types::{
     generate_inline_relation_type, generate_inline_relation_type_no_relations,
     generate_inline_type_definition,
@@ -40,10 +38,9 @@ use super::type_utils::{
     is_seaorm_relation_type,
 };
 use super::validation::{
-    ErrorAt, SpannedSource, extract_source_field_names, validate_add_field_idents,
-    validate_emitted, validate_included, validate_omit_fields, validate_partial_fields,
-    validate_pick_fields, validate_relation_adapters, validate_rename_fields,
-    validate_unique_field_names,
+    SpannedSource, extract_source_field_names, validate_add_field_idents, validate_included,
+    validate_omit_fields, validate_partial_fields, validate_pick_fields,
+    validate_relation_adapters, validate_rename_fields,
 };
 use crate::metadata::StructMetadata;
 use crate::parser::strip_raw_prefix_owned;
@@ -60,86 +57,11 @@ pub fn generate_schema_type_code(
     // Extract type name from the source Type
     let source_type_name = extract_type_name(&input.source_type)?;
 
-    // Extract the module path for resolving relative paths in relation types
-    // This may be empty for simple names like `Model` - will be overridden below if found from file
-    let mut source_module_path = extract_module_path(&input.source_type);
-
-    // Find struct definition - check SCHEMA_STORAGE first (no file I/O),
-    // fall back to file lookup for types not registered (e.g., SeaORM Model).
-    //
-    // The storage-then-file-lookup resolution is identical for qualified
-    // (`crate::models::user::Model`) and simple (`Model`) source paths, so a
-    // single branch serves both and `find_struct_from_path_detailed` is called
-    // exactly once and matched. The previous `else if let Ok(..) else match ..`
-    // shape re-ran the full directory candidate scan + file parse a SECOND time
-    // on a lookup miss purely to surface the error — wasted work that doubled
-    // the cost of every "struct not found" compile error.
-    //
-    // When the struct is found via the file, the module path derived from the
-    // actual file location overrides `source_module_path` so relative relation
-    // paths like `super::user::Entity` resolve correctly (crucial for simple
-    // names, more accurate than the parsed path for qualified ones).
-    let struct_def_owned: StructMetadata;
-    let schema_name_hint = input.schema_name.as_deref();
-    //
-    // Storage is keyed by the bare struct name, so a qualified source path
-    // only trusts a storage entry whose defining file belongs to the
-    // requested module (`crate::a::User` must not pick `crate::b::User`'s
-    // derive); otherwise the file lookup decides, the storage entry being the
-    // fallback when the file lookup cannot find the struct either.
-    let storage_hit = super::storage_entry(schema_storage, &source_type_name);
-    let storage_module = storage_hit.and_then(storage_module_path);
-    // A re-export (`pub use user::User;` in `models`) names the same item.
-    let requested = requested_module_path(&input.source_type);
-    // A bare name resolves in the call-site file: a definition there wins
-    // over a same-named `#[derive(Schema)]` another file registered.
-    let local = storage_hit
-        .filter(|_| requested.is_none())
-        .and_then(|stored| call_site_definition(stored, &input.source_type, schema_name_hint));
-    let storage_trusted = local.is_none()
-        && match (&requested, &storage_module) {
-            (Some(requested), Some(defined_in)) => {
-                requested == defined_in
-                    || reexported_module(requested, &source_type_name).as_ref() == Some(defined_in)
-            }
-            _ => true,
-        };
-    let struct_def = match storage_hit {
-        Some(found) if storage_trusted => {
-            // The defining file's module (else the absolute requested one),
-            // never the path as written: `models::user::User` / `super::User`
-            // would re-root every field type and serde path against it.
-            if let Some(module) = storage_module.or(requested) {
-                source_module_path = module;
-            }
-            found
-        }
-        _ => match local.map_or_else(
-            || find_struct_from_path_detailed(&input.source_type, schema_name_hint),
-            Ok,
-        ) {
-            Ok((found, module_path)) => {
-                struct_def_owned = found;
-                source_module_path = module_path;
-                &struct_def_owned
-            }
-            // A same-named schema of ANOTHER module is never a fallback
-            // (it used to be used silently).
-            Err(err) => {
-                let mut error = err.to_syn_error(&input.source_type);
-                if let Some(module) = &storage_module {
-                    error.combine(syn::Error::new_spanned(
-                        &input.source_type,
-                        format!(
-                            "note: `{source_type_name}` exists in `{}`, which is not the requested module",
-                            module.join("::")
-                        ),
-                    ));
-                }
-                return Err(error);
-            }
-        },
-    };
+    // SCHEMA_STORAGE first (no file I/O), else a file lookup (e.g. a SeaORM
+    // Model); the defining module overrides the path as written.
+    let (struct_def, defined_in) =
+        resolve::resolve_source(input, &source_type_name, schema_storage)?;
+    let source_module_path = defined_in.unwrap_or_else(|| extract_module_path(&input.source_type));
 
     // Parse the struct definition
     let parsed_struct: syn::ItemStruct = file_cache::parse_struct_cached(&struct_def.definition)
@@ -276,17 +198,12 @@ pub fn generate_schema_type_code(
     // Generate new struct with filtered fields
     let new_type_name = &input.new_type;
     // Pre-size the two dense per-field codegen vectors from the source field
-    // count so a many-field struct fills them without the Vec's early doubling
-    // reallocations (the previous `Vec::new()` reallocated at 1, 2, 4, 8, ...).
-    // The sparser relation / inline / default / override vectors below stay
-    // `Vec::new()`: they hold only the subset of fields that are relations or
-    // carry SeaORM defaults, so sizing them to the full field count would
-    // over-allocate for the common struct that has neither.
+    // count (the sparser relation / inline / default / override vectors stay
+    // `Vec::new()`: most structs have neither).
     let field_capacity = parsed_struct.fields.len();
     let mut field_tokens = Vec::with_capacity(field_capacity);
-    // Track field mappings for From impl: (new_field_ident, source_field_ident, wrapped_in_option, is_relation)
-    let mut field_mappings: Vec<(syn::Ident, syn::Ident, bool, bool)> =
-        Vec::with_capacity(field_capacity);
+    // The source field behind every emitted field (`From`, `from_model`).
+    let mut field_mappings: Vec<FieldMapping> = Vec::with_capacity(field_capacity);
     // Track relation field info for from_model generation
     let mut relation_fields: Vec<RelationFieldInfo> = Vec::new();
     // Track inline types that need to be generated for circular relations
@@ -301,9 +218,6 @@ pub fn generate_schema_type_code(
     // attributes: the registered metadata feeds the OpenAPI document even
     // when `ignore` leaves the emitted struct without a `Schema` derive.
     let mut metadata_field_tokens: Vec<TokenStream> = Vec::with_capacity(field_capacity);
-    // `#[cfg(..)]` of each source field (by source name), repeated on its
-    // `From` / `from_model` assignment.
-    let mut field_cfgs: HashMap<String, TokenStream> = HashMap::new();
     let schema_derived = !input.ignore_schema;
     // A source field with `#[garde(..)]` makes the DTO derive
     // `garde::Validate`; every other field then needs `#[garde(skip)]`.
@@ -329,6 +243,25 @@ pub fn generate_schema_type_code(
     // error, not a silent no-op).
     let mut dropped: HashMap<String, &'static str> = HashMap::new();
     let mut relation_names: HashSet<String> = HashSet::new();
+    // `#[cfg]` twins (one name, several fields): their generated helpers
+    // are named by field index, the names would collide otherwise.
+    let twin_names: HashSet<String> = {
+        let mut seen = HashSet::new();
+        parsed_struct
+            .fields
+            .iter()
+            .filter_map(|field| field.ident.as_ref())
+            .map(|ident| strip_raw_prefix_owned(ident.to_string()))
+            .filter(|name| !seen.insert(name.clone()))
+            .collect()
+    };
+    // The module the DTO is emitted in (`None` unknown): a `From` reading a
+    // field it cannot see is not emitted.
+    let call_site = call_site_module();
+    let mut all_readable = true;
+    // A source container default fills a missing `Vec` part itself (the
+    // Multipart derive reads the container's value, not `[]`).
+    let container_default = crate::parser::extract_default(&parsed_struct.attrs).is_some();
 
     if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
         let pk_count = primary_key_count(fields_named);
@@ -367,6 +300,14 @@ pub fn generate_schema_type_code(
             if is_relation {
                 relation_names.insert(rust_field_name.clone());
             }
+            // The field's `#[cfg]`, repeated on its helpers and assignments,
+            // and the name its helpers are generated under.
+            let field_cfg = assignments::field_cfg(&field.attrs);
+            let helper_key = if twin_names.contains(&rust_field_name) {
+                format!("{rust_field_name}_{field_index}")
+            } else {
+                rust_field_name.clone()
+            };
             // Get field components, applying partial wrapping if needed
             let original_ty = &field.ty;
             let should_wrap_option = should_wrap_in_option(
@@ -411,7 +352,8 @@ pub fn generate_schema_type_code(
                                 input.schema_name.as_deref(),
                             ) {
                                 let inline_type_def = generate_inline_type_definition(&inline_type);
-                                inline_type_definitions.push(inline_type_def);
+                                inline_type_definitions
+                                    .push(assignments::gate_items(&field_cfg, inline_type_def));
 
                                 let inline_type_name = &inline_type.type_name;
                                 let included_fields: Vec<String> = inline_type
@@ -452,7 +394,8 @@ pub fn generate_schema_type_code(
                                         schema_storage,
                                         input.derive_clone,
                                     )?;
-                                relation_override_helpers.push(helper_tokens);
+                                relation_override_helpers
+                                    .push(assignments::gate_items(&field_cfg, helper_tokens));
                                 rel_info.adapter = true;
                                 used_adapters.insert(rust_field_name.clone());
                                 (Box::new(override_field_ty), Some(rel_info))
@@ -466,7 +409,8 @@ pub fn generate_schema_type_code(
                             ) {
                                 // Generate inline type definition
                                 let inline_type_def = generate_inline_type_definition(&inline_type);
-                                inline_type_definitions.push(inline_type_def);
+                                inline_type_definitions
+                                    .push(assignments::gate_items(&field_cfg, inline_type_def));
 
                                 // Use inline type instead of direct schema reference
                                 let inline_type_name = &inline_type.type_name;
@@ -529,16 +473,26 @@ pub fn generate_schema_type_code(
                     }
                 };
 
-            // Collect relation info — `.extend(...)` keeps the push site
-            // out of an explicit closure so the coverage tracker
-            // attributes the call to this source line.
+            // Collect relation info (paired with its field by position).
+            let relation = relation_info.as_ref().map(|_| relation_fields.len());
             relation_fields.extend(relation_info);
-            let vis: &syn::Visibility = &field.vis;
+            // `pub(super)` / `pub(in ..)` name source-relative modules.
+            let vis = assignments::dto_visibility(&field.vis);
+            all_readable &= relation.is_some()
+                || assignments::readable_from(
+                    &field.vis,
+                    &source_module_path,
+                    call_site.as_deref(),
+                );
             let source_field_ident: syn::Ident = field.ident.clone().unwrap();
+            // A `rename`d field gets the new name; the wire name stays.
+            let new_name = rename_map.get(&rust_field_name);
+            let dto_field_ident =
+                new_name.map_or_else(|| source_field_ident.clone(), |name| field_ident(name));
 
             // Extract doc attributes to carry over comments to the generated struct
             let doc_attrs = extract_doc_attrs(&field.attrs);
-            let renamed = rename_map.contains_key(&rust_field_name);
+            let renamed = new_name.is_some();
             let mut carried =
                 carried_field_attrs(&field.attrs, schema_derived, &source_module_path, renamed);
             if should_wrap_option {
@@ -546,23 +500,26 @@ pub fn generate_schema_type_code(
             }
             any_deprecated |= carried.deprecated;
             let cfg_serde = carried.cfg_serde_attrs();
-            if !carried.cfgs.is_empty() {
-                let cfgs = &carried.cfgs;
-                field_cfgs.insert(rust_field_name.clone(), quote! { #(#cfgs)* });
-            }
             let carried_schema = &carried.schema;
             let carried_other = &carried.other;
             let garde_skip = (any_garde && !carried.garde).then(|| quote! { #[garde(skip)] });
             // `#[schema]` only where `Schema` is derived (a bare `#[schema]`
-            // is an unknown attribute otherwise); the metadata keeps them.
+            // is an unknown attribute otherwise); the metadata keeps them,
+            // a `cfg_attr` one when its predicate is known to hold.
             let (emitted_schema, mut metadata_only) = if schema_derived {
-                (quote! { #(#carried_schema)* }, TokenStream::new())
+                let cfg_schema = carried.cfg_schema_attrs();
+                (
+                    quote! { #(#carried_schema)* #(#cfg_schema)* },
+                    TokenStream::new(),
+                )
             } else {
-                (TokenStream::new(), quote! { #(#carried_schema)* })
+                let active = carried.active_cfg_schema();
+                (
+                    TokenStream::new(),
+                    quote! { #(#carried_schema)* #(#active)* },
+                )
             };
-            let cfg_schema = carried.cfg_schema_attrs();
-            let carried_attrs =
-                quote! { #emitted_schema #(#cfg_schema)* #(#carried_other)* #garde_skip };
+            let carried_attrs = quote! { #emitted_schema #(#carried_other)* #garde_skip };
 
             if input.multipart {
                 // Multipart mode: emit form_data attrs, suppress serde attrs
@@ -573,66 +530,39 @@ pub fn generate_schema_type_code(
                     &source_module_path,
                     should_wrap_option,
                 );
+                // A bare `Vec` reads "no parts" as `[]`: the request schema
+                // must not list it as required (a hand-written Multipart
+                // struct gets the same in its stored definition).
+                let vec_default = (!should_wrap_option
+                    && !container_default
+                    && crate::multipart_impl::is_vec_type(original_ty)
+                    && crate::parser::extract_default(&field.attrs).is_none()
+                    && !crate::multipart_impl::has_form_data_default(&field.attrs))
+                .then(|| quote! { #[form_data(default)] });
+                // The form field keeps the source's name (a source
+                // `#[serde(rename)]` keeps naming it).
+                let form_name_attr = field_form_name(
+                    &field.attrs,
+                    &rust_field_name,
+                    &effective_rename_all,
+                    renamed,
+                );
 
-                // Check if field should be renamed (rename still applies to Rust field names)
-                if let Some(new_name) = rename_map.get(&rust_field_name) {
-                    let new_field_ident = field_ident(new_name);
-                    // The form field keeps the source's name.
-                    let form_name_attr = field_form_name(
-                        &field.attrs,
-                        &rust_field_name,
-                        &effective_rename_all,
-                        true,
-                    );
-
-                    field_tokens.push(quote! {
-                        #(#doc_attrs)*
-                        #carried_attrs
-                        #(#form_data_attrs)*
-                        #serde_carry
-                        #form_name_attr
-                        #vis #new_field_ident: #field_ty
-                    });
-
-                    field_mappings.push((
-                        new_field_ident,
-                        source_field_ident,
-                        should_wrap_option,
-                        is_relation,
-                    ));
-                } else {
-                    let field_ident = field.ident.clone().unwrap();
-                    // A source `#[serde(rename)]` keeps naming the form field.
-                    let form_name_attr = field_form_name(
-                        &field.attrs,
-                        &rust_field_name,
-                        &effective_rename_all,
-                        false,
-                    );
-
-                    field_tokens.push(quote! {
-                        #(#doc_attrs)*
-                        #carried_attrs
-                        #(#form_data_attrs)*
-                        #serde_carry
-                        #form_name_attr
-                        #vis #field_ident: #field_ty
-                    });
-
-                    field_mappings.push((
-                        field_ident.clone(),
-                        field_ident,
-                        should_wrap_option,
-                        is_relation,
-                    ));
-                }
+                field_tokens.push(quote! {
+                    #(#doc_attrs)*
+                    #carried_attrs
+                    #(#form_data_attrs)*
+                    #vec_default
+                    #serde_carry
+                    #form_name_attr
+                    #vis #dto_field_ident: #field_ty
+                });
             } else {
-                // Normal (serde) mode: emit serde attrs
-                // Filter field attributes: keep serde and doc attributes, remove sea_orm and others
-                // This is important when using schema_type! with models from other files
-                // that may have ORM-specific attributes we don't want in the generated struct
+                // Normal (serde) mode: keep serde and doc attributes, drop
+                // sea_orm and others (a model of another file may carry
+                // ORM-specific attributes the DTO must not).
                 let adapter_prefix = format!(
-                    "__vespera_{}_{rust_field_name}",
+                    "__vespera_{}_{helper_key}",
                     strip_raw_prefix_owned(new_type_name.to_string())
                 );
                 let wrap = wrapped_inner_ty.as_ref().map(|inner_ty| OptionWrap {
@@ -644,19 +574,25 @@ pub fn generate_schema_type_code(
                     wrap.as_ref(),
                     renamed,
                 );
-                codec_adapters.push(adapters);
+                codec_adapters.push(assignments::gate_items(&field_cfg, adapters));
 
                 // Generate serde default + schema(default) from sea_orm(default_value) or primary_key
                 // Handles literal defaults, SQL function defaults, and implicit auto-increment
+                let mut field_defaults = Vec::new();
                 let generated = generate_sea_orm_default_attrs(
                     &field.attrs,
                     new_type_name,
-                    &rust_field_name,
+                    &helper_key,
                     original_ty,
                     &field_ty,
                     should_wrap_option || is_option_type(original_ty),
                     pk_count,
-                    &mut default_functions,
+                    &mut field_defaults,
+                );
+                default_functions.extend(
+                    field_defaults
+                        .into_iter()
+                        .map(|function| assignments::gate_items(&field_cfg, function)),
                 );
                 let (serde_default_attr, schema_default_attr) =
                     gate_sea_orm_defaults(generated, &carried, schema_derived);
@@ -671,121 +607,46 @@ pub fn generate_schema_type_code(
                     TokenStream::new()
                 };
 
-                // Check if field should be renamed
-                if let Some(new_name) = rename_map.get(&rust_field_name) {
-                    // Create new identifier for the field
-                    let new_field_ident: syn::Ident = field_ident(new_name);
+                // The JSON key of a renamed field stays the source's: its
+                // explicit serde rename, else rename_all applied to the
+                // SOURCE name (`serde_field_attrs` already dropped `rename`).
+                let rename_attr = new_name.map(|_| {
+                    renamed_field_serde_rename(&field.attrs, &rust_field_name, &rename_all)
+                });
 
-                    // The JSON key stays the source's: its explicit serde
-                    // rename, else rename_all applied to the SOURCE name
-                    // (`serde_field_attrs` already dropped `rename`).
-                    let rename_attr =
-                        renamed_field_serde_rename(&field.attrs, &rust_field_name, &rename_all);
-
-                    field_tokens.push(quote! {
-                        #(#doc_attrs)*
-                        #carried_attrs
-                        #(#serde_field_attrs)*
-                        #(#cfg_serde)*
-                        #serde_default_attr
-                        #schema_default_attr
-                        #rename_attr
-                        #vis #new_field_ident: #field_ty
-                    });
-
-                    // Track mapping: new field name <- source field name
-                    field_mappings.push((
-                        new_field_ident,
-                        source_field_ident,
-                        should_wrap_option,
-                        is_relation,
-                    ));
-                } else {
-                    // No rename, keep field with serde and doc attrs
-                    let field_ident = field.ident.clone().unwrap();
-
-                    field_tokens.push(quote! {
-                        #(#doc_attrs)*
-                        #carried_attrs
-                        #(#serde_field_attrs)*
-                        #(#cfg_serde)*
-                        #serde_default_attr
-                        #schema_default_attr
-                        #vis #field_ident: #field_ty
-                    });
-
-                    // Track mapping: same name
-                    field_mappings.push((
-                        field_ident.clone(),
-                        field_ident,
-                        should_wrap_option,
-                        is_relation,
-                    ));
-                }
+                field_tokens.push(quote! {
+                    #(#doc_attrs)*
+                    #carried_attrs
+                    #(#serde_field_attrs)*
+                    #(#cfg_serde)*
+                    #serde_default_attr
+                    #schema_default_attr
+                    #rename_attr
+                    #vis #dto_field_ident: #field_ty
+                });
             }
+            field_mappings.push(FieldMapping {
+                new_ident: dto_field_ident,
+                source_ident: source_field_ident,
+                wrapped: should_wrap_option,
+                relation,
+                cfg: field_cfg,
+            });
             let emitted = field_tokens.last().cloned().unwrap_or_default();
             metadata_field_tokens.push(quote! { #metadata_only #emitted });
         }
     }
-    for (param, names) in [
-        (
-            "rename",
-            input
-                .rename
-                .iter()
-                .flatten()
-                .map(|(from, _)| from.as_str())
-                .collect::<Vec<_>>(),
-        ),
-        (
-            "partial",
-            partial_fields_to_validate
-                .into_iter()
-                .flatten()
-                .map(String::as_str)
-                .collect(),
-        ),
-        (
-            "pick",
-            input.pick.iter().flatten().map(String::as_str).collect(),
-        ),
-    ] {
-        validate_emitted(param, names, &dropped, &at)?;
-    }
-    // `partial` never wraps an (included) relation, whose shape comes from the
-    // relation conversion; naming one used to be silently ignored.
-    if let Some(field) = partial_fields_to_validate
-        .into_iter()
-        .flatten()
-        .find(|field| relation_names.contains(*field))
-    {
-        return Err(at.error_at("partial", field, format!("`partial` names the SeaORM relation `{field}`, which `partial` never makes optional: omit it (`omit = [\"{field}\"]`) or declare the patch field with `add`")));
-    }
-    // An adapter only replaces an included HasOne / BelongsTo relation: one
-    // for a plain field, a HasMany, or in `multipart` mode used to be
-    // silently ignored.
-    if let Some((field, _)) = input
-        .relation_adapters
-        .iter()
-        .find(|(field, _)| !used_adapters.contains(field))
-    {
-        return Err(at.error_at(
-            "relation_adapters",
-            field,
-            format!(
-                "`relation_adapters`: field `{field}` of `{source_type_name}` is not a HasOne / BelongsTo SeaORM relation this type includes{}",
-                if input.multipart { " (`multipart` types carry no relations)" } else { "" }
-            ),
-        ));
-    }
-
-    validate_unique_field_names(
-        field_mappings
-            .iter()
-            .map(|(ident, source, ..)| (ident.to_string(), source.to_string())),
-        input.rename.as_ref(),
-        input.add.as_ref(),
+    checks::check_emitted(
+        input,
+        partial_fields_to_validate,
+        &checks::Emitted {
+            dropped: &dropped,
+            relation_names: &relation_names,
+            used_adapters: &used_adapters,
+            field_mappings: &field_mappings,
+        },
         &at,
+        &source_type_name,
     )?;
     // Add new fields from `add` parameter
     let add_garde_skip = any_garde.then(|| quote! { #[garde(skip)] });
@@ -807,13 +668,15 @@ pub fn generate_schema_type_code(
         input.derive_clone
     };
     // Source `#[garde(..)]` rules come with the derive that reads them
-    // (and the source container's own `#[garde(..)]`, e.g. `context`).
+    // (and the source container's own `#[garde(..)]`, e.g. `context`, its
+    // paths re-rooted at the source module).
     let garde_derive = any_garde.then(|| quote! { ::garde::Validate, });
-    let container_garde_attrs: Vec<&syn::Attribute> = if any_garde {
+    let container_garde_attrs: Vec<syn::Attribute> = if any_garde {
         parsed_struct
             .attrs
             .iter()
             .filter(|attr| attr.path().is_ident("garde"))
+            .map(|attr| reroot_garde_attr(attr, &source_module_path))
             .collect()
     } else {
         Vec::new()
@@ -840,19 +703,22 @@ pub fn generate_schema_type_code(
     }
 
     // Check if there are any relation fields
-    let has_relation_fields = field_mappings.iter().any(|(_, _, _, is_rel)| *is_rel);
+    let has_relation_fields = field_mappings
+        .iter()
+        .any(|mapping| mapping.relation.is_some());
+    // The DTO can be built from a source value: no `add` fields, no
+    // relations (absent from the source `Model`) and every source field
+    // readable from the call site (a private field of another module is
+    // E0616; the `From` is left out instead).
+    let buildable = input.add.is_none() && !has_relation_fields && all_readable;
 
     // In multipart mode, skip From and from_model impls entirely
     let source_type: &syn::Type = &input.source_type;
     let (from_impl, from_model_impl) = if input.multipart {
         (quote! {}, quote! {})
     } else {
-        // Generate From impl only if:
-        // 1. `add` is not used (can't auto-populate added fields)
-        // 2. There are no relation fields (relation fields don't exist on source Model)
-        let from_impl = if input.add.is_none() && !has_relation_fields {
-            let field_assignments =
-                assignments::source_field_assignments(&field_mappings, &field_cfgs, false);
+        let from_impl = if buildable {
+            let field_assignments = assignments::source_field_assignments(&field_mappings, false);
 
             quote! {
                 #[allow(deprecated)]
@@ -872,14 +738,15 @@ pub fn generate_schema_type_code(
         // - No relations: Use `From` trait (generated above)
         // - Has relations: async fn from_model(model: Model, db: &DatabaseConnection) -> Result<Self, DbErr>
         let from_model_impl =
-            if is_source_seaorm_model && input.add.is_none() && has_relation_fields {
+            if is_source_seaorm_model && input.add.is_none() && has_relation_fields && all_readable
+            {
                 generate_from_model_with_relations(
                     new_type_name,
                     source_type,
                     &field_mappings,
                     &relation_fields,
                     &source_module_path,
-                    &field_cfgs,
+                    &parsed_struct.fields,
                 )?
             } else {
                 quote! {}
@@ -894,16 +761,17 @@ pub fn generate_schema_type_code(
     // Multipart derive — also the ones the registered metadata repeats.
     // Multipart mode emits `#[serde(rename_all = ...)]` so Multipart applies
     // the rename at runtime AND the Schema derive reads it via the
-    // extract_rename_all() fallback for OpenAPI field naming.
+    // extract_rename_all() fallback for OpenAPI field naming. Both modes
+    // keep a source container `#[serde(default)]` as a DTO-building fn.
+    let default_assignments =
+        buildable.then(|| assignments::source_field_assignments(&field_mappings, true));
     let (container_attrs, container_default_fn) = if input.multipart {
-        let assignments = (input.add.is_none() && !has_relation_fields)
-            .then(|| assignments::source_field_assignments(&field_mappings, &field_cfgs, true));
         let carry = multipart_carry::container(
             &parsed_struct.attrs,
             &source_module_path,
             source_type,
             new_type_name,
-            assignments.as_deref(),
+            default_assignments.as_deref(),
         );
         let container_carry = carry.attrs;
         (
@@ -914,12 +782,21 @@ pub fn generate_schema_type_code(
             carry.helper,
         )
     } else {
+        let carry = multipart_carry::container_default(
+            &parsed_struct.attrs,
+            &source_module_path,
+            source_type,
+            new_type_name,
+            default_assignments.as_deref(),
+        );
+        let default_attr = carry.attrs;
         (
             quote! {
                 #rename_all_attr
                 #(#serde_attrs_without_rename_all)*
+                #default_attr
             },
-            quote! {},
+            carry.helper,
         )
     };
 
@@ -956,6 +833,8 @@ pub fn generate_schema_type_code(
             // Serde codec adapters for `partial` fields with `with` & co.
             #(#codec_adapters)*
 
+            #container_default_fn
+
             #(#struct_doc_attrs)*
             #allow_deprecated
             #[derive(serde::Serialize, serde::Deserialize, #garde_derive #clone_derive #schema_derive)]
@@ -990,7 +869,9 @@ pub fn generate_schema_type_code(
 }
 
 mod assignments;
+mod checks;
 mod multipart_carry;
+mod resolve;
 
 #[cfg(test)]
 mod tests;
@@ -998,3 +879,5 @@ mod tests;
 mod tests_field_attrs;
 #[cfg(test)]
 mod tests_refs;
+#[cfg(test)]
+mod tests_round13;

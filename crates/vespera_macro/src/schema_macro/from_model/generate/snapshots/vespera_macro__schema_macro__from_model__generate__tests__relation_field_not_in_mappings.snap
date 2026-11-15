@@ -1,5 +1,6 @@
 ---
 source: crates/vespera_macro/src/schema_macro/from_model/generate/tests.rs
+assertion_line: 465
 expression: "run_scenario(models, new_type, source_type, rows, &relations, module)"
 ---
 #[allow(deprecated)]
@@ -8,9 +9,6 @@ impl TestSchema {
         __vespera_model: Model,
         __vespera_db: &sea_orm::DatabaseConnection,
     ) -> Result<Self, sea_orm::DbErr> {
-        let user = sea_orm::ModelTrait::find_related(&__vespera_model, user::Entity)
-            .one(__vespera_db)
-            .await?;
         Ok(Self {
             id: __vespera_model.id,
             owner: Default::default(),

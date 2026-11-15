@@ -16,9 +16,11 @@ fn test_get_fk_column_cache_hit() {
 
 /// Path-keyed lookup caches survive epoch bumps so repeated `schema_type!`
 /// expansions in one crate share path resolution work. Staleness is guarded
-/// by the lower file-content / struct-definition mtime caches.
+/// by `path_lookup_fingerprint` (the entry is served again only while it
+/// matches): the next epoch's identical lookup is a cache HIT.
 #[test]
 fn path_lookup_caches_survive_epoch_bumps() {
+    let hits = || FILE_CACHE.with(|cache| cache.borrow().fk_column_cache_hits);
     // Fresh epoch; cache a (negative) FK result for this epoch.
     bump_epoch();
     let _ = get_fk_column("ra::stale::Schema", "Rel");
@@ -37,6 +39,10 @@ fn path_lookup_caches_survive_epoch_bumps() {
         fk_lookup_contains("ra::stale::Schema", "Rel"),
         "lookup entry must remain cached when the epoch advances"
     );
+    // ...and it is served from the cache, not recomputed.
+    let before = hits();
+    let _ = get_fk_column("ra::stale::Schema", "Rel");
+    assert_eq!(hits(), before + 1, "the next epoch's lookup must hit");
 }
 
 #[test]
@@ -144,6 +150,7 @@ fn test_missing_file_content_is_negative_cached_within_epoch() {
     reset_metadata_call_count();
     bump_epoch();
     let before = metadata_call_count();
+    let reads = read_attempt_count();
 
     assert!(get_struct_definition(&missing_path, "Missing").is_none());
     assert!(get_struct_definition(&missing_path, "Missing").is_none());
@@ -152,6 +159,13 @@ fn test_missing_file_content_is_negative_cached_within_epoch() {
         metadata_call_count() - before,
         1,
         "missing file should be stat'd once in one epoch"
+    );
+    // The negative cache itself: one read attempt, not one per lookup (the
+    // stat count above is 1 through the mtime cache alone).
+    assert_eq!(
+        read_attempt_count() - reads,
+        1,
+        "missing file should be read once in one epoch"
     );
 }
 

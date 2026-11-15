@@ -1031,7 +1031,8 @@ schema_type!(PatchUploadRequest from CreateUploadRequest, multipart, partial, om
 
 When `multipart` is enabled:
 - Derives `Multipart` instead of `Serialize`/`Deserialize`
-- Suppresses `#[serde(...)]` attributes (multipart parsing is not serde-based)
+- Copies only the `#[serde(...)]` keys the `Multipart` derive honours: the field's `default` / `default = "fn"` / `skip` / `skip_deserializing` and the container's `default`; `#[serde(rename_all = "...")]` is emitted with the effective strategy
+- Marks bare `Vec<T>` fields `#[form_data(default)]` (no parts = `[]`, so the schema does not require them)
 - Preserves `#[form_data(...)]` attributes from source struct
 - Skips SeaORM relation fields (nested objects can't be represented in multipart forms)
 - Does not generate `From` impl

@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use rstest::rstest;
 
 use super::*;
@@ -21,15 +19,21 @@ fn pretty(tokens: &TokenStream) -> String {
 /// `(source_field, target_field, wrapped, is_relation)` mapping row.
 type MappingRow = (&'static str, &'static str, bool, bool);
 
-fn mappings(rows: &[MappingRow]) -> Vec<(syn::Ident, syn::Ident, bool, bool)> {
+fn mappings(rows: &[MappingRow], relations: &[RelationFieldInfo]) -> Vec<FieldMapping> {
+    let ident = |name: &str| syn::Ident::new(name, proc_macro2::Span::call_site());
     rows.iter()
-        .map(|(source, target, wrapped, is_relation)| {
-            (
-                syn::Ident::new(source, proc_macro2::Span::call_site()),
-                syn::Ident::new(target, proc_macro2::Span::call_site()),
-                *wrapped,
-                *is_relation,
-            )
+        .map(|(source, target, wrapped, is_relation)| FieldMapping {
+            new_ident: ident(source),
+            source_ident: ident(target),
+            wrapped: *wrapped,
+            // A relation row without a `RelationFieldInfo` points past them.
+            relation: is_relation.then(|| {
+                relations
+                    .iter()
+                    .position(|rel| rel.field_name == target)
+                    .unwrap_or(usize::MAX)
+            }),
+            cfg: TokenStream::new(),
         })
         .collect()
 }
@@ -136,10 +140,10 @@ fn try_scenario(
     generate_from_model_with_relations(
         &syn::Ident::new(new_type, proc_macro2::Span::call_site()),
         &syn::parse_str::<Type>(source_type).unwrap(),
-        &mappings(rows),
+        &mappings(rows, relations),
         relations,
         &module.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        &HashMap::new(),
+        &syn::Fields::Unit,
     )
 }
 
@@ -510,4 +514,59 @@ fn target_schema_call_follows_its_schema_type(#[case] user: &str, #[case] expect
     .unwrap();
     let rendered = tokens.to_string();
     assert!(rendered.contains(expected), "{rendered}");
+}
+
+/// L13 / L14 (round 13): `#[cfg]` twin relation fields each keep their OWN
+/// relation (paired by position — a by-name lookup gave both the first
+/// twin's), and a `via_rel` `to` names a column of the SOURCE model
+/// (`Column::Address2Id` is its `address_2_id` field, not `address2_id`).
+#[test]
+fn cfg_twin_relations_and_via_rel_to_column() {
+    const NOTIFICATION_ADDRESS_TO: &str = "pub struct Model {\n    pub id: i32,\n    pub target_user_id: i32,\n    #[sea_orm(belongs_to = \"super::user::Entity\", from = \"target_user_id\", to = \"Column::Address2Id\", relation_enum = \"TargetUser\")]\n    pub target_user: BelongsTo<super::user::Entity>,\n}";
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let models_dir = temp_dir.path().join("src").join("models");
+    std::fs::create_dir_all(&models_dir).unwrap();
+    std::fs::write(models_dir.join("notification.rs"), NOTIFICATION_ADDRESS_TO).unwrap();
+    let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
+    let ident = |name: &str| syn::Ident::new(name, proc_macro2::Span::call_site());
+    let user = || quote! { crate::models::user::Schema };
+    let relations = [
+        rel("owner", "HasOne", user(), true),
+        rel("owner", "BelongsTo", user(), false),
+        with_enum(
+            rel(
+                "notifications",
+                "HasMany",
+                quote! { crate::models::notification::Schema },
+                false,
+            ),
+            None,
+            None,
+            Some("TargetUser"),
+        ),
+    ];
+    let mapping = |name: &str, relation: Option<usize>, cfg: TokenStream| FieldMapping {
+        new_ident: ident(name),
+        source_ident: ident(name),
+        wrapped: false,
+        relation,
+        cfg,
+    };
+    let mappings = [
+        mapping("id", None, TokenStream::new()),
+        mapping("owner", Some(0), quote!(#[cfg(feature = "a")])),
+        mapping("owner", Some(1), quote!(#[cfg(not(feature = "a"))])),
+        mapping("notifications", Some(2), TokenStream::new()),
+    ];
+    let source_fields: syn::FieldsNamed = syn::parse_quote!({ pub id: i32, pub address_2_id: i32 });
+    let tokens = generate_from_model_with_relations(
+        &ident("UserSchema"),
+        &syn::parse_str::<Type>("crate::models::user::Model").unwrap(),
+        &mappings,
+        &relations,
+        &["crate", "models", "user"].map(String::from),
+        &syn::Fields::Named(source_fields),
+    )
+    .unwrap();
+    insta::assert_snapshot!("cfg_twin_relations_and_via_rel_to_column", pretty(&tokens));
 }

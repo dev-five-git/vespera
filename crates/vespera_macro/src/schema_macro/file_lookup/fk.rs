@@ -9,7 +9,9 @@ use super::lookup::find_struct_in_module;
 ///    through its own file or the module tree)
 /// 2. Finds the field with matching `relation_enum = "TargetUser"`
 /// 3. Returns its `from` (the FK column on the target, e.g. "`target_user_id`")
-///    and `to` (the referenced column on the source, e.g. "`id`") values
+///    and `to` (the referenced column on the source, e.g. "`id`") values;
+///    `to` as written — it names a SOURCE column, so the caller normalizes
+///    it against the source model's fields
 ///
 /// Returns None if the target model can't be found or parsed, or if no
 /// matching relation (with a `from`) exists.
@@ -18,7 +20,7 @@ pub fn find_fk_column_from_target_entity(
     via_rel: &str,
 ) -> Option<(String, Option<String>)> {
     use crate::schema_macro::seaorm::{
-        extract_belongs_to_from_field, extract_belongs_to_to_field, extract_relation_enum,
+        extract_belongs_to_from_field, extract_belongs_to_to_raw, extract_relation_enum,
     };
 
     let layout = crate::schema_macro::crate_layout::crate_layout()?;
@@ -45,7 +47,7 @@ pub fn find_fk_column_from_target_entity(
         .iter()
         .find(|field| extract_relation_enum(&field.attrs).as_deref() == Some(via_rel))?;
     let from = extract_belongs_to_from_field(&field.attrs, &model.fields)?;
-    Some((from, extract_belongs_to_to_field(&field.attrs)))
+    Some((from, extract_belongs_to_to_raw(&field.attrs)))
 }
 
 #[cfg(test)]
@@ -109,13 +111,35 @@ pub struct Model {
             "Should find FK column from mod.rs"
         );
     }
+    /// A target path without module segments (`crate::Schema`) searches
+    /// the crate root: the root's `Model` answers, and a crate without
+    /// `src/` has none (the old test, named "empty module segments return
+    /// None", passed only for that reason).
     #[test]
-    fn test_find_fk_column_from_target_entity_empty_module_segments() {
+    fn test_find_fk_column_from_target_entity_crate_root() {
         let temp_dir = TempDir::new().unwrap();
         let _env_guard =
             crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
-        let result = find_fk_column_from_target_entity("crate::Schema", "SomeRelation");
-        assert!(result.is_none(), "Empty module segments should return None");
+        crate::schema_macro::file_cache::bump_epoch();
+        assert!(
+            find_fk_column_from_target_entity("crate::Schema", "SomeRelation").is_none(),
+            "a crate without src/ has no root Model"
+        );
+        let src_dir = temp_dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            src_dir.join("lib.rs"),
+            r#"pub struct Model { pub id: i32, pub owner_id: i32,
+                #[sea_orm(belongs_to = "super::user::Entity", from = "owner_id", to = "Column::Id", relation_enum = "SomeRelation")]
+                pub owner: BelongsTo<super::user::Entity> }"#,
+        )
+        .unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        assert_eq!(
+            super::find_fk_column_from_target_entity("crate::Schema", "SomeRelation"),
+            // `to` as written: it names a column of the SOURCE model.
+            Some(("owner_id".to_string(), Some("Column::Id".to_string())))
+        );
     }
     #[test]
     fn test_find_fk_column_from_target_entity_file_not_found() {

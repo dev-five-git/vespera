@@ -42,7 +42,10 @@ struct Cursor {
 fn open_file(path: &Path, force_mod_rs: bool) -> Option<Cursor> {
     let file = file_cache::get_parsed_file(path)?;
     let stem = path.file_stem()?.to_string_lossy().into_owned();
-    let mod_rs = force_mod_rs || matches!(stem.as_str(), "mod" | "lib" | "main");
+    // A `lib.rs` / `main.rs` below the crate root is an ordinary module
+    // file (rustc reads its children from `<dir>/main/`); the roots are
+    // opened with `force_mod_rs`.
+    let mod_rs = force_mod_rs || stem == "mod";
     Some(Cursor {
         items: file.items,
         file_dir: path.parent()?.to_path_buf(),
@@ -789,7 +792,8 @@ pub fn segment_ident(segment: &str) -> syn::Ident {
 }
 
 /// The words `syn` refuses to parse as an identifier (its
-/// `accept_as_ident`), `_` excepted.
+/// `accept_as_ident`), `_` excepted, plus `gen` (reserved in edition 2024 —
+/// `r#gen` is valid in every edition, so it is always written raw).
 fn is_keyword(word: &str) -> bool {
     matches!(
         word,
@@ -812,6 +816,7 @@ fn is_keyword(word: &str) -> bool {
             | "final"
             | "fn"
             | "for"
+            | "gen"
             | "if"
             | "impl"
             | "in"

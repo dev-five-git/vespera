@@ -604,7 +604,7 @@ fn extract_default_functions_from_file(
                 return None;
             };
             crate::openapi_generator::extract_default_value_from_function(func)
-                .map(|value| (func.sig.ident.to_string(), value))
+                .map(|value| (strip_raw_prefix_owned(func.sig.ident.to_string()), value))
         })
         .collect()
 }

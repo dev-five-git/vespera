@@ -1,0 +1,52 @@
+---
+source: crates/vespera_macro/src/schema_macro/from_model/generate/tests.rs
+assertion_line: 571
+expression: pretty(&tokens)
+---
+#[allow(deprecated)]
+impl UserSchema {
+    pub async fn from_model(
+        __vespera_model: crate::models::user::Model,
+        __vespera_db: &sea_orm::DatabaseConnection,
+    ) -> Result<Self, sea_orm::DbErr> {
+        #[cfg(feature = "a")]
+        let owner = sea_orm::ModelTrait::find_related(
+                &__vespera_model,
+                crate::models::user::Entity,
+            )
+            .one(__vespera_db)
+            .await?;
+        #[cfg(not(feature = "a"))]
+        let owner = sea_orm::ModelTrait::find_related(
+                &__vespera_model,
+                crate::models::user::Entity,
+            )
+            .one(__vespera_db)
+            .await?;
+        let notifications = sea_orm::QueryFilter::filter(
+                <crate::models::notification::Entity as sea_orm::EntityTrait>::find(),
+                sea_orm::ColumnTrait::eq(
+                    &crate::models::notification::Column::TargetUserId,
+                    __vespera_model.address_2_id.clone(),
+                ),
+            )
+            .all(__vespera_db)
+            .await?;
+        Ok(Self {
+            id: __vespera_model.id,
+            #[cfg(feature = "a")]
+            owner: owner
+                .map(|r| Box::new(<crate::models::user::Schema as From<_>>::from(r))),
+            #[cfg(not(feature = "a"))]
+            owner: owner
+                .ok_or_else(|| sea_orm::DbErr::RecordNotFound(
+                    format!("Required relation '{}' not found", stringify!(owner)),
+                ))
+                .map(|r| Box::new(<crate::models::user::Schema as From<_>>::from(r)))?,
+            notifications: notifications
+                .into_iter()
+                .map(|r| <crate::models::notification::Schema as From<_>>::from(r))
+                .collect(),
+        })
+    }
+}

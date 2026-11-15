@@ -1,0 +1,30 @@
+---
+source: crates/vespera_macro/src/schema_macro/generate_type/tests_round13.rs
+assertion_line: 126
+expression: code
+---
+#[doc(hidden)]
+#[allow(non_snake_case, deprecated, unused_variables)]
+fn __vespera_SettingsDto_default() -> SettingsDto {
+    let source: Settings = <Settings as ::core::default::Default>::default();
+    SettingsDto {
+        a: source.a,
+        b: ::core::option::Option::None,
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize, Clone, vespera::Schema)]
+#[serde(rename_all = "camelCase")]
+#[serde(default = "__vespera_SettingsDto_default")]
+pub struct SettingsDto {
+    pub a: i32,
+    pub b: Option<String>,
+}
+#[allow(deprecated)]
+impl From<Settings> for SettingsDto {
+    fn from(source: Settings) -> Self {
+        Self {
+            a: source.a,
+            b: Some(source.b),
+        }
+    }
+}

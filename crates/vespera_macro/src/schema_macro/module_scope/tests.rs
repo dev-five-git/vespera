@@ -544,10 +544,28 @@ fn item_module_chain_cached_unparsable_file() {
 #[case::raw_input("r#type", "r#type")]
 #[case::keyword("type", "r#type")]
 #[case::reserved("yield", "r#yield")]
-#[case::edition_word("gen", "gen")]
+// L7 (round 13): `gen` is reserved in edition 2024 (`r#gen` is valid in
+// every edition).
+#[case::edition_word("gen", "r#gen")]
 #[case::root("self", "self")]
 #[case::underscored("_private", "_private")]
 #[case::non_ascii("caf\u{e9}", "caf\u{e9}")]
 fn segment_ident_builds_plain_and_raw_idents(#[case] segment: &str, #[case] expected: &str) {
     assert_eq!(segment_ident(segment).to_string(), expected);
+}
+
+/// L6 (round 13): a `main.rs` / `lib.rs` below the crate root is a plain
+/// module file: its inline `mod inner { pub mod y; }` lives in
+/// `main/inner/y.rs` (it was looked up in `inner/y.rs`, like a `mod.rs`).
+#[test]
+fn nested_main_rs_is_not_a_mod_rs() {
+    let (_dir, _guard) = temp_crate(&[
+        ("lib.rs", "pub mod models;"),
+        ("models.rs", "pub mod main;"),
+        ("models/main.rs", "pub mod inner { pub mod y; }"),
+        ("models/main/inner/y.rs", "pub struct Y { pub id: i32 }"),
+        ("models/inner/y.rs", "pub struct Wrong { pub id: i32 }"),
+    ]);
+    let items = module_items(&segs("crate::models::main::inner::y")).unwrap();
+    assert_eq!(struct_names(&items), ["Y"]);
 }

@@ -57,6 +57,12 @@ pub fn statically_inactive(attrs: &[syn::Attribute]) -> bool {
     })
 }
 
+/// Whether `predicate` is known to hold (`all()`, `true`, an enabled
+/// `feature = ".."` inside rustc); unknown counts as not active.
+pub fn statically_active(predicate: &Predicate) -> bool {
+    eval(predicate, memoized_features().as_ref().as_deref()) == Some(true)
+}
+
 /// [`enabled_features`], computed once per process (the compiler's command
 /// line cannot change); a per-thread test override of the arguments is read
 /// afresh.
