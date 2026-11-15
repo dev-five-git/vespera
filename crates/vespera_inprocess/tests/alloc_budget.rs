@@ -339,37 +339,46 @@ fn allocation_budgets() {
 // and SHOULD then tighten the constant.  Most of each count is axum
 // `router.oneshot` + tokio `block_on` (framework), not vespera wire code.
 //
-// Measured 2026-11 (round 14) per feature set, no realloc in any case:
+// Measured 2026-11 (round 14), no realloc in any case:
 //
-// | case | base | `tracing` |
-// |------|------|-----------|
-// | A    | 11   | 13        |
-// | B    | 19   | 21        |
-// | C    | 34   | 36        |
-// | D    | 14   | 16        |
-// | E    | 13   | 15        |
-// | F    | 19   | 21        |
+// | case | `-p vespera_inprocess` | `-p ... --features tracing` | workspace |
+// |------|------------------------|-----------------------------|-----------|
+// | A    | 11                     | 13                          | 15        |
+// | B    | 19                     | 21                          | 23        |
+// | C    | 34                     | 36                          | 38        |
+// | D    | 14                     | 16                          | 17        |
+// | E    | 13                     | 15                          | 16        |
+// | F    | 19                     | 21                          | 22        |
 //
-// `connect-info`, `runtime`, `ffi` and `bench-support` add nothing.
-//
-// TRACING_EXTRA: with `tracing` (on in every workspace test build, through
-// `examples/testkit`) each dispatch pays two more allocations (the larger
-// instrumented future crosses tokio's 2 KiB debug `block_on` box threshold),
-// even with no subscriber installed.
-const TRACING_EXTRA: usize = if cfg!(feature = "tracing") { 2 } else { 0 };
+// The package-only column is the same with `--no-default-features`,
+// `connect-info`, `runtime`, `ffi` or `bench-support` (local Windows; the
+// Linux "Feature isolation" job passes it).  The workspace column is
+// identical on Linux, Windows and macOS CI (`Test`, `Test (windows-latest)`,
+// `Test (macos-latest)`, branch coverage): there `tracing` is on (through
+// `examples/testkit`) and the examples unify more dependency features, which
+// add further framework allocations.  `tracing` is the cfg this binary can
+// see, so it selects the workspace budgets; a package-only `--features
+// tracing` run counts less and passes them.
+const fn budget(package: usize, workspace: usize) -> usize {
+    if cfg!(feature = "tracing") {
+        workspace
+    } else {
+        package
+    }
+}
 // The request-header `Vec` is pre-reserved at `TYPICAL_HEADER_CAP` (16) and
 // the common non-standard names of the set (`x-request-id`,
 // `x-forwarded-for`, `x-forwarded-proto`) are interned (`header_names.rs`):
 // a re-introduced realloc or name copy trips BUDGET_HEADERS_POST.
-const BUDGET_BODYLESS_BORROWED: usize = 11 + TRACING_EXTRA; // borrowed: no clone / no output Vec / no body copy
-const BUDGET_SMALL_POST: usize = 19 + TRACING_EXTRA; // borrowed: +1 body copy over bodyless
-const BUDGET_HEADERS_POST: usize = 34 + TRACING_EXTRA; // borrowed: 16 headers, header Vec pre-reserved at 16
+const BUDGET_BODYLESS_BORROWED: usize = budget(11, 15); // borrowed: no clone / no output Vec / no body copy
+const BUDGET_SMALL_POST: usize = budget(19, 23); // borrowed: +1 body copy over bodyless
+const BUDGET_HEADERS_POST: usize = budget(34, 38); // borrowed: 16 headers, header Vec pre-reserved at 16
 // The OWNED wire path shares the request's owning header `Bytes` to build the
 // `Uri` (`Uri::from_maybe_shared` via `slice_from_owner`): a re-introduced
 // path copy trips MATERIALISE / DISPATCH_INTO.
-const BUDGET_MATERIALISE: usize = 14 + TRACING_EXTRA; // dispatch_from_bytes: +input clone +response Vec, URI shared
-const BUDGET_DISPATCH_INTO: usize = 13 + TRACING_EXTRA; // dispatch_into: +input clone, reused out, URI shared
+const BUDGET_MATERIALISE: usize = budget(14, 17); // dispatch_from_bytes: +input clone +response Vec, URI shared
+const BUDGET_DISPATCH_INTO: usize = budget(13, 16); // dispatch_into: +input clone, reused out, URI shared
 // 422 materialise path: the hoisted `validation_errors` JSON is folded into
 // the response-`Vec` capacity estimate (no mid-write realloc) and hoisted
 // error strings borrow from the 422 body.
-const BUDGET_VALIDATE_422: usize = 19 + TRACING_EXTRA; // realloc-free, borrowed-string 422 hoist
+const BUDGET_VALIDATE_422: usize = budget(19, 22); // realloc-free, borrowed-string 422 hoist
