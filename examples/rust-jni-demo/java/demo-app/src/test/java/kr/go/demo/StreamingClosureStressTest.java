@@ -62,7 +62,8 @@ import static org.junit.jupiter.api.Assertions.fail;
  *
  * <p>Verification per iteration:
  * <ul>
- *   <li>Random 1 MiB body driven by a single shared {@link Random}
+ *   <li>Random 1 MiB body (more than two chunks for larger chunk
+ *       sizes, see {@link #PAYLOAD_BYTES}) driven by a single shared {@link Random}
  *       seed ({@code SEED}) for deterministic replay.</li>
  *   <li>SHA-256 of the body that left the JVM == SHA-256 of the body
  *       that came back through {@code /echo/stream}.</li>
@@ -72,10 +73,9 @@ import static org.junit.jupiter.api.Assertions.fail;
  *       method IDs were called repeatedly per dispatch.  With the
  *       default 256 KiB streaming chunk size and a 1 MiB payload the
  *       Rust side performs ~4 pulls + 1 EOF read and ~4 pushes
- *       per iteration.  (Assertions only require {@code > 1} — they
- *       are robust to chunk-size tuning down to 4 KiB or up to
- *       512 KiB; below the multi-chunk threshold the test would need
- *       to bump the payload.)</li>
+ *       per iteration.  (Assertions only require {@code > 1}; the
+ *       payload grows past two chunks for chunk sizes of 512 KiB and
+ *       up, so any supported chunk size, 4 KiB – 8 MiB, passes.)</li>
  *   <li>For the header-streaming path: {@code Consumer.accept} fires
  *       <strong>exactly once</strong> and <strong>before</strong> the
  *       first {@code OutputStream.write}; header decodes as wire JSON
@@ -116,10 +116,13 @@ class StreamingClosureStressTest {
 
     /** 1 MiB — well above the default 256 KiB streaming chunk so each
      * dispatch pulls/pushes ~4 chunks, exercising the cached path
-     * several times per call.  Assertions only require {@code > 1}
-     * chunk so the test stays valid across the supported chunk-size
-     * range (4 KiB – 8 MiB). */
-    private static final int PAYLOAD_BYTES = 1024 * 1024;
+     * several times per call — or, when the effective chunk size
+     * ({@code vespera.streaming.chunkBytes}, resolved like the native
+     * side does) is 512 KiB or more, two chunks plus one byte, so the
+     * {@code > 1} pull/push assertions hold across the whole supported
+     * chunk-size range (4 KiB – 8 MiB). */
+    private static final int PAYLOAD_BYTES =
+            payloadBytes(NonHeaderStreamingE2ETest.effectiveStreamingChunkBytes());
 
     private static final int BIDI_ITERATIONS = 1000;
     private static final int HEADER_STREAMING_ITERATIONS = 500;
@@ -135,6 +138,22 @@ class StreamingClosureStressTest {
     @BeforeAll
     static void loadNative() {
         VesperaBridge.init("rust_jni_demo");
+    }
+
+    /** At least 1 MiB and always more than two streaming chunks. */
+    static int payloadBytes(int chunkBytes) {
+        return Math.max(1024 * 1024, 2 * chunkBytes + 1);
+    }
+
+    @Test
+    @Order(0)
+    void payloadSpansSeveralChunksAcrossTheSupportedChunkRange() {
+        assertEquals(1024 * 1024, payloadBytes(4 * 1024));
+        assertEquals(1024 * 1024, payloadBytes(256 * 1024));
+        assertEquals(1024 * 1024 + 1, payloadBytes(512 * 1024));
+        assertEquals(2 * 1024 * 1024 + 1, payloadBytes(1024 * 1024));
+        assertEquals(16 * 1024 * 1024 + 1, payloadBytes(8 * 1024 * 1024));
+        assertTrue(PAYLOAD_BYTES > 2 * NonHeaderStreamingE2ETest.effectiveStreamingChunkBytes());
     }
 
     private static byte[] sha256(byte[] data) {
