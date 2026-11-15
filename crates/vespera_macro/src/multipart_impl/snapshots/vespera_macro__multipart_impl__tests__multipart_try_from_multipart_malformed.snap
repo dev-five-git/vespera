@@ -4,5 +4,5 @@ assertion_line: 477
 expression: out
 ---
 ::core::compile_error! {
-    "unexpected end of input, expected an expression"
+    "unexpected end of input, expected boolean literal"
 }

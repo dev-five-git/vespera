@@ -6644,8 +6644,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "$ref": "#/components/schemas/SingleRelSchema_Single"
           },
           "username": {
-            "type": "string",
-            "default": ""
+            "type": "string"
           }
         },
         "required": [
@@ -6678,8 +6677,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             ]
           },
           "username": {
-            "type": "string",
-            "default": ""
+            "type": "string"
           }
         },
         "required": [

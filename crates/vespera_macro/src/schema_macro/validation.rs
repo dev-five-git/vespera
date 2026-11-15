@@ -222,12 +222,12 @@ pub fn validate_add_field_idents(
 
 /// Validates that no `rename` target or `add` field reuses the name of
 /// another field of the generated type (`kept` are the emitted source
-/// fields' names, after renaming): rustc would only report E0124 at a
+/// fields' `(emitted, source)` names): rustc would only report E0124 at a
 /// generated ident, without naming the argument at fault.  Two kept source
-/// fields of one name (`#[cfg]` twins) are not this argument's doing and
-/// stay allowed.
+/// fields of one source name (`#[cfg]` twins, renamed or not) are not this
+/// argument's doing and stay allowed.
 pub fn validate_unique_field_names(
-    kept: impl IntoIterator<Item = String>,
+    kept: impl IntoIterator<Item = (String, String)>,
     rename_pairs: Option<&Vec<(String, String)>>,
     add: Option<&Vec<(String, syn::Type)>>,
     at: &impl ErrorAt,
@@ -238,10 +238,12 @@ pub fn validate_unique_field_names(
         .flatten()
         .map(|(_, to)| (unraw(to), to))
         .collect();
-    let mut seen: HashSet<String> = HashSet::new();
-    for name in kept {
+    let mut sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (name, source) in kept {
         let name = unraw(&name);
-        if !seen.insert(name.clone())
+        let source = unraw(&source);
+        if let Some(previous) = sources.insert(name.clone(), source.clone())
+            && previous != source
             && let Some(written) = renamed.get(&name)
         {
             return Err(at.error_at(
@@ -251,6 +253,7 @@ pub fn validate_unique_field_names(
             ));
         }
     }
+    let mut seen: HashSet<String> = sources.into_keys().collect();
     for (written, _) in add.into_iter().flatten() {
         let name = unraw(written);
         if !seen.insert(name.clone()) {
@@ -594,14 +597,17 @@ mod tests {
     /// A `rename` target / `add` name equal to another generated field is a
     /// named error; same-named kept source fields (`#[cfg]` twins) are not.
     #[rstest::rstest]
-    #[case::rename_onto_kept(&["name", "name"], &[("id", "name")], &[], Some("`rename` target `name`"))]
-    #[case::two_renames_one_target(&["x", "x"], &[("a", "x"), ("b", "x")], &[], Some("`rename` target `x`"))]
-    #[case::add_onto_kept(&["id", "name"], &[], &["id"], Some("`add` field `id`"))]
-    #[case::raw_add_onto_kept(&["r#type"], &[], &["type"], Some("`add` field `type`"))]
-    #[case::cfg_twins(&["id", "id"], &[], &[], None)]
-    #[case::distinct(&["id", "label"], &[("name", "label")], &["extra"], None)]
+    #[case::rename_onto_kept(&[("name", "name"), ("name", "id")], &[("id", "name")], &[], Some("`rename` target `name`"))]
+    #[case::two_renames_one_target(&[("x", "a"), ("x", "b")], &[("a", "x"), ("b", "x")], &[], Some("`rename` target `x`"))]
+    #[case::add_onto_kept(&[("id", "id"), ("name", "name")], &[], &["id"], Some("`add` field `id`"))]
+    #[case::raw_add_onto_kept(&[("r#type", "r#type")], &[], &["type"], Some("`add` field `type`"))]
+    #[case::cfg_twins(&[("id", "id"), ("id", "id")], &[], &[], None)]
+    // Renamed `#[cfg]` twins map to one target from one source name: they
+    // used to be rejected as a duplicate.
+    #[case::renamed_cfg_twins(&[("key", "id"), ("key", "id")], &[("id", "key")], &[], None)]
+    #[case::distinct(&[("id", "id"), ("label", "name")], &[("name", "label")], &["extra"], None)]
     fn unique_field_names(
-        #[case] kept: &[&str],
+        #[case] kept: &[(&str, &str)],
         #[case] renames: &[(&str, &str)],
         #[case] add: &[&str],
         #[case] error: Option<&str>,
@@ -616,7 +622,8 @@ mod tests {
             .map(|name| ((*name).to_string(), syn::parse_quote!(i32)))
             .collect();
         let result = validate_unique_field_names(
-            kept.iter().map(ToString::to_string),
+            kept.iter()
+                .map(|(name, source)| ((*name).to_string(), (*source).to_string())),
             Some(&renames),
             Some(&add),
             &ty,

@@ -14,7 +14,7 @@ pub(super) struct FormDataAttrs {
     pub(super) field_name: Option<String>,
     /// `limit = "..."`, validated: `"unlimited"` or a byte size.
     pub(super) limit: Option<syn::LitStr>,
-    /// Bare `default`.
+    /// `default` / `default = true` (`default = false` is no default).
     pub(super) default: bool,
 }
 
@@ -27,6 +27,16 @@ fn skip_value(meta: &ParseNestedMeta<'_>) -> syn::Result<()> {
         meta.input.parse::<proc_macro2::Group>()?;
     }
     Ok(())
+}
+
+/// A flag key's value, as `axum_typed_multipart` reads it: a bare `key` /
+/// `key = true` is `true`, `key = false` is `false`.
+fn flag_value(meta: &ParseNestedMeta<'_>) -> syn::Result<bool> {
+    if meta.input.peek(syn::Token![=]) {
+        return Ok(meta.value()?.parse::<syn::LitBool>()?.value);
+    }
+    skip_value(meta)?;
+    Ok(true)
 }
 
 /// The `= <expr>` payload of a key (`None` for a bare key).
@@ -78,8 +88,9 @@ pub(super) fn parse_form_data(attrs: &[syn::Attribute]) -> syn::Result<FormDataA
                     limit_tokens(lit)?;
                     out.limit = Some(lit.clone());
                 }
+            } else if meta.path.is_ident("default") {
+                out.default |= flag_value(&meta)?;
             } else {
-                out.default |= meta.path.is_ident("default");
                 skip_value(&meta)?;
             }
             Ok(())
@@ -128,7 +139,10 @@ pub(super) fn extract_strict(attrs: &[syn::Attribute]) -> syn::Result<bool> {
         .filter(|attr| attr.path().is_ident("try_from_multipart"))
     {
         attr.parse_nested_meta(|meta| {
-            strict |= meta.path.is_ident("strict");
+            if meta.path.is_ident("strict") {
+                strict |= flag_value(&meta)?;
+                return Ok(());
+            }
             skip_value(&meta)
         })?;
     }
@@ -323,6 +337,9 @@ mod tests {
         true
     )]
     #[case::after_list_key("#[try_from_multipart(x(y), strict)] struct T { }", true)]
+    // L10 (round 12): the value is read (`strict = false` used to be true).
+    #[case::explicit_true("#[try_from_multipart(strict = true)] struct T { }", true)]
+    #[case::explicit_false("#[try_from_multipart(strict = false)] struct T { }", false)]
     fn test_extract_strict(#[case] code: &str, #[case] expected: bool) {
         assert_eq!(extract_strict(&parse_struct_attrs(code)).unwrap(), expected);
     }
@@ -331,6 +348,8 @@ mod tests {
     fn malformed_try_from_multipart_is_an_error() {
         let attrs = parse_struct_attrs("#[try_from_multipart(strict = )] struct T { }");
         assert!(extract_strict(&attrs).is_err());
+        let attrs = parse_struct_attrs("#[try_from_multipart(strict = \"yes\")] struct T { }");
+        assert!(extract_strict(&attrs).is_err());
     }
 
     #[rstest]
@@ -338,8 +357,17 @@ mod tests {
     #[case::absent("pub x: i32", false)]
     #[case::other_key(r#"#[form_data(limit = "100")] pub x: i32"#, false)]
     #[case::after_other_key(r#"#[form_data(field_name = "y", default)] pub x: i32"#, true)]
+    // L10 (round 12): `default = false` used to read as `default`.
+    #[case::explicit_true("#[form_data(default = true)] pub x: i32", true)]
+    #[case::explicit_false("#[form_data(default = false)] pub x: i32", false)]
     fn test_form_data_default(#[case] code: &str, #[case] expected: bool) {
         assert_eq!(form_data(code).default, expected);
+    }
+
+    #[test]
+    fn non_bool_form_data_default_is_an_error() {
+        let attrs = parse_attrs("#[form_data(default = 1)] pub x: i32");
+        assert!(parse_form_data(&attrs).is_err());
     }
 
     #[test]

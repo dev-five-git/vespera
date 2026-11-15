@@ -899,7 +899,7 @@ schema_type!(CreatePostRequest from crate::models::post::Model, omit_default);
 ```
 
 `omit_default` detects fields with:
-- `#[sea_orm(primary_key)]` — auto-increment / generated IDs
+- `#[sea_orm(primary_key)]` — auto-increment IDs, following SeaORM: the single primary key of a non-`String` / non-`Uuid` type, or one marked `auto_increment = true` (natural `String` / `Uuid` keys and composite keys are client-supplied and kept)
 - `#[sea_orm(default_value = "...")]` — SQL defaults like `NOW()`, `gen_random_uuid()`, literals
 
 Can be combined with other parameters:
@@ -915,8 +915,8 @@ Fields with database defaults automatically get `default` values in the generate
 
 | SeaORM Attribute | OpenAPI Default |
 |-----------------|-----------------|
-| `primary_key` (Uuid) | `"00000000-0000-0000-0000-000000000000"` |
-| `primary_key` (i32/i64) | `0` |
+| `primary_key` (i32/i64, single key) | `0` |
+| `primary_key, auto_increment = true` (Uuid) | `"00000000-0000-0000-0000-000000000000"` |
 | `default_value = "NOW()"` | `"1970-01-01T00:00:00+00:00"` |
 | `default_value = "gen_random_uuid()"` | `"00000000-0000-0000-0000-000000000000"` |
 | `default_value = "true"` | `true` (literal passthrough) |

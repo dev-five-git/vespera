@@ -6640,8 +6640,7 @@
             "$ref": "#/components/schemas/SingleRelSchema_Single"
           },
           "username": {
-            "type": "string",
-            "default": ""
+            "type": "string"
           }
         },
         "required": [
@@ -6674,8 +6673,7 @@
             ]
           },
           "username": {
-            "type": "string",
-            "default": ""
+            "type": "string"
           }
         },
         "required": [

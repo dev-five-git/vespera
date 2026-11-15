@@ -194,12 +194,13 @@ pub(super) fn find_struct_with_call_site(
             module_path,
         ));
     }
-    // `crate::models::User` through `pub use user::User;` in `models`.
-    if let Some(defined_in) = reexported_module(&module_path, &struct_name) {
+    // `crate::models::User` through `pub use user::User;` (or `pub use
+    // user::Model as User;`) in `models`.
+    if let Some((defined_in, defined_name)) = reexported_item(&module_path, &struct_name) {
         let segments: Vec<&str> = defined_in[1..].iter().map(String::as_str).collect();
-        if let Some(definition) = find_struct_in_module(src_dir, &segments, &struct_name) {
+        if let Some(definition) = find_struct_in_module(src_dir, &segments, &defined_name) {
             return Ok((
-                StructMetadata::new_model(struct_name, definition),
+                StructMetadata::new_model(defined_name, definition),
                 defined_in,
             ));
         }
@@ -211,9 +212,27 @@ pub(super) fn find_struct_with_call_site(
         candidate_file_paths(src_dir, &module_segments).into()
     };
     searched.extend(layout.roots.iter().cloned());
+    // `entity::user::Model` with no local `entity` module: a dependency
+    // crate (the usual SeaORM layout) the compiler links as `--extern`.
+    if is_extern_crate(&module_part[0]) {
+        return Err(LookupError::ExternalCrate {
+            path: module_part.join("::"),
+        });
+    }
     Err(LookupError::NotFound {
         struct_name,
         searched,
+    })
+}
+
+/// Whether `name` is a crate the compiler links (`--extern name=..`,
+/// options like `priv:` stripped); never outside rustc.
+fn is_extern_crate(name: &str) -> bool {
+    crate::env_access::compiler_args().windows(2).any(|pair| {
+        pair[0] == "--extern" && {
+            let spec = pair[1].split('=').next().unwrap_or_default();
+            spec.rsplit(':').next() == Some(name)
+        }
     })
 }
 
@@ -270,13 +289,18 @@ fn absolute_module_path(
 
 /// Definition of `struct_name` in the crate module `module_segments`
 /// (crate-relative; empty = crate root): the module's own file first (fast,
-/// also for trees without a crate root on disk), then the module tree.
+/// also for trees without a crate root on disk) unless a parent declares
+/// the module with `#[path]` / inline, then the module tree.
 pub(super) fn find_struct_in_module(
     src_dir: &Path,
     module_segments: &[&str],
     struct_name: &str,
 ) -> Option<String> {
-    if !module_segments.is_empty() {
+    let roots = super::super::crate_layout::crate_layout().map(|layout| layout.roots);
+    let roots = roots.unwrap_or_default();
+    if !module_segments.is_empty()
+        && crate::schema_macro::module_scope::fast_path_is_plain(src_dir, &roots, module_segments)
+    {
         for file_path in candidate_file_paths(src_dir, module_segments) {
             // No `exists()` preflight: `get_struct_definition` reads through the
             // mtime-validated cache and returns `None` for a missing/unreadable
@@ -495,27 +519,39 @@ pub fn storage_module_path(metadata: &StructMetadata) -> Option<Vec<String>> {
 }
 
 /// The module a `use` re-export in `module` (absolute, `crate::..`) takes
-/// `name` from: `pub use user::User;` in `crate::models` gives
-/// `crate::models::user`.  Chained re-exports are followed (a few hops);
-/// `None` when `module` neither imports `name` under its own name nor
-/// imports it from inside the crate.
+/// `name` from, under its own name: `pub use user::User;` in
+/// `crate::models` gives `crate::models::user` (see [`reexported_item`]).
 pub fn reexported_module(module: &[String], name: &str) -> Option<Vec<String>> {
+    reexported_item(module, name)
+        .filter(|(_, defined)| defined == name)
+        .map(|(module, _)| module)
+}
+
+/// The module and item name a `use` re-export in `module` (absolute,
+/// `crate::..`) takes `name` from: `pub use user::User;` in
+/// `crate::models` gives `(crate::models::user, User)`, `pub use
+/// user::Model as User;` gives `(crate::models::user, Model)`.  Chained
+/// re-exports are followed (a few hops); `None` when `module` does not
+/// import `name` from inside the crate.
+pub fn reexported_item(module: &[String], name: &str) -> Option<(Vec<String>, String)> {
     let mut current = module.to_vec();
+    let mut current_name = name.to_string();
     for _ in 0..8 {
         let crate::schema_macro::module_scope::Resolved::Path(mut path) =
-            crate::schema_macro::module_scope::resolve_name(&[name.to_string()], &current)
+            crate::schema_macro::module_scope::resolve_name(&[current_name.clone()], &current)
         else {
             break;
         };
+        let last = path.pop();
         if path.first().map(String::as_str) != Some("crate")
-            || path.pop().as_deref() != Some(name)
-            || path == current
+            || (path == current && last.as_deref() == Some(current_name.as_str()))
         {
             break;
         }
         current = path;
+        current_name = last.unwrap_or_default();
     }
-    (current != module).then_some(current)
+    (current != module || current_name != name).then_some((current, current_name))
 }
 
 /// The absolute module a qualified source path (`models::user::Model`,

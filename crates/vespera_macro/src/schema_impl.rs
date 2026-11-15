@@ -391,12 +391,16 @@ pub fn process_derive_schema(
         .map(|file_path| extract_field_defaults_from_path(input, file_path))
         .unwrap_or_default();
 
-    if let Err(error) = validate_serde_default_values(input, &field_defaults) {
+    // Without the call-site file no default function can be looked up: the
+    // static check is skipped (the default is then left undocumented).
+    let file_known = call_site_file.is_some();
+    if let Err(error) = validate_serde_default_values(input, &field_defaults, file_known) {
         return (None, error.to_compile_error());
     }
 
     // Schema-derived types appear in OpenAPI spec (include_in_openapi: true)
-    let repr_input = serde_repr::with_serde_repr_derives(input, call_site_file.as_deref());
+    let repr_input = serde_repr::with_serde_repr_derives(input, call_site_file.as_deref())
+        .or_else(|| serde_repr::with_multipart_vec_defaults(input, call_site_file.as_deref()));
     let mut metadata = build_struct_metadata(
         repr_input.as_ref().unwrap_or(input),
         schema_name,
@@ -459,6 +463,14 @@ pub fn extract_field_defaults_from_path(
     let struct_name = strip_raw_prefix_owned(input.ident.to_string());
     let line = input.ident.span().start().line;
     for (ident, field) in fields.iter().filter_map(|f| Some((f.ident.as_ref()?, f))) {
+        // The Multipart derive fills a `#[form_data(default)]` field with
+        // `Default::default()`, whatever serde default it also names.
+        if form_data_default_wins(field) {
+            if let Some(value) = crate::schema_macro::type_utils::get_type_default(&field.ty) {
+                defaults.insert(strip_raw_prefix_owned(ident.to_string()), value);
+            }
+            continue;
+        }
         if let Some(Some(fn_path)) = crate::parser::extract_default(&field.attrs)
             && let Some(value) =
                 default_fns::resolve_default_fn(&fn_path, &struct_name, line, file_path)
@@ -469,9 +481,19 @@ pub fn extract_field_defaults_from_path(
     defaults
 }
 
+/// A multipart field whose `#[form_data(default)]` decides the missing-part
+/// value (`Default::default()`) over its serde default.
+fn form_data_default_wins(field: &syn::Field) -> bool {
+    extract_default(&field.attrs).is_some()
+        && crate::multipart_impl::has_form_data_default(&field.attrs)
+}
+
+/// `file_known`: the call-site file is known, so `default = "fn"` values
+/// could be resolved (without it they are not checked).
 fn validate_serde_default_values(
     input: &syn::DeriveInput,
     field_defaults: &BTreeMap<String, serde_json::Value>,
+    file_known: bool,
 ) -> Result<(), syn::Error> {
     let fields = match &input.data {
         syn::Data::Struct(data) => match &data.fields {
@@ -492,7 +514,10 @@ fn validate_serde_default_values(
         if skip.skip || skip.skip_deserializing {
             continue;
         }
+        // `#[form_data(default)]`: the type's `Default` is the value.
+        let default_kind = default_kind.filter(|_| !form_data_default_wins(field));
         if has_schema_default(&field.attrs)
+            || (default_kind.is_some() && !file_known)
             || serde_default_is_resolvable(field, default_kind.as_ref(), field_defaults)
         {
             continue;

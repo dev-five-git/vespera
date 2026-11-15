@@ -162,11 +162,12 @@ fn absolute_schema_segments(segments: &[String], source_module_path: &[String]) 
         }
         Some("crate") => segments.to_vec(),
         Some("self") => in_module(source_module_path, &segments[1..]),
-        // `use super::user::Entity as UserEntity;` + `BelongsTo<UserEntity>`.
+        // `use super::user::Entity as UserEntity;` + `BelongsTo<UserEntity>`
+        // (an import of another crate too, like a multi-segment path).
         Some(name) if segments.len() == 1 && name != "Entity" => {
             match resolve_name(segments, source_module_path) {
-                Resolved::Path(path) if path.first().is_some_and(|root| root == "crate") => path,
-                _ => in_module(source_module_path, segments),
+                Resolved::Path(path) => path,
+                Resolved::Unknown => in_module(source_module_path, segments),
             }
         }
         _ if segments.len() == 1 => in_module(source_module_path, segments),
@@ -201,7 +202,7 @@ fn single_relation(
     schema_path: TokenStream,
     optional_target: bool,
 ) -> (TokenStream, RelationFieldInfo) {
-    let fk_field = extract_belongs_to_from_field(field_attrs);
+    let fk_field = extract_belongs_to_from_field(field_attrs, &parsed_struct.fields);
     let relation_enum = extract_relation_enum(field_attrs);
     let fk_optional = fk_field
         .as_ref()
@@ -606,6 +607,9 @@ mod tests {
     #[case::child_module("nested::Entity", "crate::models::category::nested::Schema")]
     #[case::unknown_sibling("tag::Entity", "crate::models::tag::Schema")]
     #[case::imported_entity_alias("UserEntity", "crate::models::user::Schema")]
+    // L14 (round 12): an alias imported from another crate follows that
+    // import (it used to name `crate::models::category::ExtEntity`).
+    #[case::external_entity_alias("ExtEntity", "entity_crate::user::Schema")]
     #[case::unimported_single("Other", "crate::models::category::Other")]
     fn relation_paths_resolve_in_source_module(#[case] path: &str, #[case] expected: &str) {
         let dir = tempfile::TempDir::new().unwrap();
@@ -613,7 +617,7 @@ mod tests {
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(
             &file,
-            "use super::user;\nuse super::user::Entity as UserEntity;\npub mod nested {}\n",
+            "use super::user;\nuse super::user::Entity as UserEntity;\nuse entity_crate::user::Entity as ExtEntity;\npub mod nested {}\n",
         )
         .unwrap();
         let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());

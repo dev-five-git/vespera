@@ -27,7 +27,7 @@ pub(super) fn with_serde_repr_derives(
     if !file.contains("_repr") {
         return None;
     }
-    let source_derives = source_repr_derives(&file, &input.ident)?;
+    let source_derives = source_derives(&file, &input.ident, &SERDE_REPR_DERIVES, false)?;
     let missing: Vec<&str> = source_derives
         .into_iter()
         .filter(|name| !derives(&input.attrs, name))
@@ -43,7 +43,49 @@ pub(super) fn with_serde_repr_derives(
     Some(input)
 }
 
-/// The `serde_repr` derives of THE source declaration of the enum `ident`.
+/// A `#[derive(Multipart)]` struct (that derive is as invisible to `Schema`
+/// as `serde_repr`'s): its `Vec<T>` fields without a default of their own
+/// get `#[form_data(default)]` in the stored definition. The Multipart
+/// derive reads "no parts" as `[]`, so the request schema must not list
+/// them as `required` (the schema parser reads that attribute).
+pub(super) fn with_multipart_vec_defaults(
+    input: &syn::DeriveInput,
+    call_site_file: Option<&Path>,
+) -> Option<syn::DeriveInput> {
+    let syn::Data::Struct(data) = &input.data else {
+        return None;
+    };
+    let path = call_site_file?;
+    let file = crate::schema_macro::file_cache::get_file_content(path)?;
+    if !file.contains("Multipart")
+        || source_derives(&file, &input.ident, &["Multipart"], true)?.is_empty()
+    {
+        return None;
+    }
+    let mut data = data.clone();
+    let mut changed = false;
+    for field in data.fields.iter_mut().filter(|field| {
+        is_vec(&field.ty)
+            && crate::parser::extract_default(&field.attrs).is_none()
+            && !crate::multipart_impl::has_form_data_default(&field.attrs)
+    }) {
+        field.attrs.push(syn::parse_quote!(#[form_data(default)]));
+        changed = true;
+    }
+    changed.then(|| syn::DeriveInput {
+        data: syn::Data::Struct(data),
+        ..input.clone()
+    })
+}
+
+/// `Vec<T>` / `std::vec::Vec<T>` (the Multipart derive's repeated part).
+fn is_vec(ty: &syn::Type) -> bool {
+    matches!(ty, syn::Type::Path(path) if path.qself.is_none()
+        && path.path.segments.last().is_some_and(|segment| segment.ident == "Vec"))
+}
+
+/// The derives among `names` of THE source declaration of the enum (or,
+/// with `is_struct`, the struct) `ident`.
 ///
 /// Same-named enums may live in different inline `mod`s (or fn bodies) of one
 /// file, so the declaration is matched by the ident's `line:column`; when no
@@ -54,7 +96,12 @@ pub(super) fn with_serde_repr_derives(
 /// The file is parsed with proc-macro2's fallback forced so its spans carry
 /// real positions (compiler spans of re-parsed text all point at the call
 /// site), and every result is computed before normal mode is restored.
-fn source_repr_derives(content: &str, ident: &syn::Ident) -> Option<Vec<&'static str>> {
+fn source_derives(
+    content: &str,
+    ident: &syn::Ident,
+    names: &[&'static str],
+    is_struct: bool,
+) -> Option<Vec<&'static str>> {
     /// Restores proc-macro2's normal mode even if parsing panics.
     struct Unforce;
     impl Drop for Unforce {
@@ -62,26 +109,41 @@ fn source_repr_derives(content: &str, ident: &syn::Ident) -> Option<Vec<&'static
             proc_macro2::fallback::unforce();
         }
     }
-    struct Finder {
+    struct Finder<'n> {
         ident: String,
+        names: &'n [&'static str],
+        is_struct: bool,
         found: Vec<((usize, usize), Vec<&'static str>)>,
     }
-    impl<'ast> syn::visit::Visit<'ast> for Finder {
-        fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
-            if item.ident == self.ident {
-                let start = item.ident.span().start();
-                let repr = SERDE_REPR_DERIVES
-                    .into_iter()
-                    .filter(|name| derives(&item.attrs, name))
+    impl Finder<'_> {
+        fn record(&mut self, ident: &syn::Ident, attrs: &[syn::Attribute], is_struct: bool) {
+            if is_struct == self.is_struct && *ident == self.ident {
+                let start = ident.span().start();
+                let found = self
+                    .names
+                    .iter()
+                    .copied()
+                    .filter(|name| derives(attrs, name))
                     .collect();
-                self.found.push(((start.line, start.column), repr));
+                self.found.push(((start.line, start.column), found));
             }
+        }
+    }
+    impl<'ast> syn::visit::Visit<'ast> for Finder<'_> {
+        fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
+            self.record(&item.ident, &item.attrs, false);
             syn::visit::visit_item_enum(self, item);
+        }
+        fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+            self.record(&item.ident, &item.attrs, true);
+            syn::visit::visit_item_struct(self, item);
         }
     }
     let start = ident.span().start();
     let mut finder = Finder {
         ident: ident.to_string(),
+        names,
+        is_struct,
         found: Vec::new(),
     };
     proc_macro2::fallback::force();
@@ -239,6 +301,79 @@ mod tests {
         std::fs::write(&path, source).unwrap();
         let input: syn::DeriveInput = syn::parse_str("#[repr(u8)] enum E { A }").unwrap();
         assert!(with_serde_repr_derives(&input, Some(&path)).is_none());
+    }
+
+    /// L9 (round 12): the Multipart derive fills an absent `Vec<T>` part with
+    /// `[]`, so its fields (without a default of their own) are stored with
+    /// `#[form_data(default)]`: the request schema used to require them.
+    #[rstest]
+    #[case::multipart(
+        "#[derive(Multipart, Schema)] struct U { files: Vec<FieldData<u8>>, tags: std::vec::Vec<String>, \
+         #[serde(default)] own: Vec<u8>, #[form_data(default)] kept: Vec<u8>, name: String, opt: Option<Vec<u8>> }",
+        Some(vec!["files", "tags"])
+    )]
+    #[case::qualified_derive("#[derive(vespera::Multipart)] struct U { files: Vec<u8> }", Some(vec!["files"]))]
+    #[case::no_vec_field("#[derive(Multipart)] struct U { name: String }", None)]
+    #[case::not_multipart(
+        "#[derive(Schema)] struct U { files: Vec<u8> } struct Multipart;",
+        None
+    )]
+    #[case::other_struct("#[derive(Multipart)] struct V { files: Vec<u8> }", None)]
+    fn multipart_vec_fields_get_a_form_data_default(
+        #[case] source: &str,
+        #[case] expected: Option<Vec<&str>>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        std::fs::write(&path, source).unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let file = syn::parse_file(source).unwrap();
+        let item = file
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Struct(item) if item.ident == "U" => Some(item.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                syn::parse_quote!(
+                    struct U {
+                        files: Vec<u8>,
+                    }
+                )
+            });
+        let mut input: syn::DeriveInput = item.into();
+        input.attrs.retain(|attr| !attr.path().is_ident("derive"));
+        let defaulted = with_multipart_vec_defaults(&input, Some(&path)).map(|input| {
+            let syn::Data::Struct(data) = input.data else {
+                unreachable!()
+            };
+            data.fields
+                .iter()
+                .filter(|field| {
+                    field
+                        .attrs
+                        .last()
+                        .is_some_and(|attr| attr.path().is_ident("form_data"))
+                        && crate::multipart_impl::has_form_data_default(&field.attrs)
+                        && field.ident.as_ref().is_some_and(|ident| ident != "kept")
+                })
+                .map(|field| field.ident.as_ref().unwrap().to_string())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            defaulted,
+            expected.map(|names| names.into_iter().map(String::from).collect())
+        );
+    }
+
+    #[test]
+    fn multipart_vec_defaults_need_a_struct_and_a_file() {
+        let input: syn::DeriveInput = syn::parse_str("enum E { A }").unwrap();
+        assert!(with_multipart_vec_defaults(&input, Some(Path::new("missing.rs"))).is_none());
+        let input: syn::DeriveInput = syn::parse_str("struct S { v: Vec<u8> }").unwrap();
+        assert!(with_multipart_vec_defaults(&input, None).is_none());
+        assert!(with_multipart_vec_defaults(&input, Some(Path::new("missing.rs"))).is_none());
     }
 
     #[test]

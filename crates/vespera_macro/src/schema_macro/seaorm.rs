@@ -7,7 +7,7 @@ mod relations;
 pub use attrs::{
     extract_belongs_to_from_field, extract_belongs_to_to_field, extract_relation_enum,
     extract_sea_orm_default_value, has_sea_orm_primary_key, is_composite_columns,
-    is_sea_orm_primary_key, is_sql_function_default,
+    is_sea_orm_primary_key, is_sql_function_default, primary_key_count,
 };
 pub use conversion::convert_type_with_chrono;
 #[cfg(test)]
@@ -78,11 +78,14 @@ pub struct Model {
         assert!(result.is_ok());
         let (tokens, _metadata) = result.unwrap();
         let output = tokens.to_string();
-        // Should have inline type definition for circular relation
-        assert!(output.contains("MemoSchema"));
-        assert!(output.contains("user"));
-        // BelongsTo is optional by default, so should have Option<Box<...>>
-        assert!(output.contains("Option < Box <"));
+        // The circular relation is an inline type (the target without its
+        // back-reference), not the target's Schema (T6: only `Option < Box <`
+        // was checked, which the non-circular path emits too).
+        assert!(output.contains("pub struct MemoSchema_User"), "{output}");
+        assert!(
+            output.contains("pub user : Option < Box < MemoSchema_User >> }"),
+            "{output}"
+        );
     }
 
     #[test]
@@ -133,11 +136,13 @@ pub struct Model {
         assert!(result.is_ok());
         let (tokens, _metadata) = result.unwrap();
         let output = tokens.to_string();
-        // Should have inline type definition for circular relation
-        assert!(output.contains("UserSchema"));
-        assert!(output.contains("profile"));
-        // HasOne with required FK should have Box<...> (not Option<Box<...>>)
-        assert!(output.contains("pub profile : Box <"), "{output}");
+        // Inline type for the circular relation; HasOne with required FK
+        // should have Box<...> (not Option<Box<...>>)
+        assert!(output.contains("pub struct UserSchema_Profile"), "{output}");
+        assert!(
+            output.contains("pub profile : Box < UserSchema_Profile >"),
+            "{output}"
+        );
         assert!(!output.contains("Option < Box"), "{output}");
     }
 
@@ -198,16 +203,12 @@ pub struct Model {
         let output = tokens.to_string();
         // Should have inline type definition for circular relation
         assert!(
-            output.contains("MemoSchema"),
-            "Should contain MemoSchema: {output}"
-        );
-        assert!(
-            output.contains("user"),
-            "Should contain user field: {output}"
+            output.contains("pub struct MemoSchema_User"),
+            "Should define the inline type: {output}"
         );
         // BelongsTo with required FK (user_id: i32) should generate Box<...> not Option<Box<...>>
         assert!(
-            output.contains("pub user : Box <"),
+            output.contains("pub user : Box < MemoSchema_User >"),
             "BelongsTo with required FK should generate Box<>, not Option<Box<>>. Output: {output}"
         );
     }
@@ -245,7 +246,7 @@ pub struct Model {
             .expect("user field not found");
 
         // Debug: Check if extract_belongs_to_from_field works
-        let fk_field = extract_belongs_to_from_field(&user_field.attrs);
+        let fk_field = extract_belongs_to_from_field(&user_field.attrs, &syn::Fields::Unit);
         assert_eq!(
             fk_field,
             Some("user_id".to_string()),
@@ -287,7 +288,7 @@ pub struct Model {
         let attrs1: Vec<syn::Attribute> = vec![syn::parse_quote!(
             #[sea_orm(belongs_to, from = "user_id", to = "id")]
         )];
-        let result1 = extract_belongs_to_from_field(&attrs1);
+        let result1 = extract_belongs_to_from_field(&attrs1, &syn::Fields::Unit);
         assert_eq!(
             result1,
             Some("user_id".to_string()),
@@ -298,7 +299,7 @@ pub struct Model {
         let attrs2: Vec<syn::Attribute> = vec![syn::parse_quote!(
             #[sea_orm(belongs_to = "super::user::Entity", from = "user_id", to = "id")]
         )];
-        let result2 = extract_belongs_to_from_field(&attrs2);
+        let result2 = extract_belongs_to_from_field(&attrs2, &syn::Fields::Unit);
         assert_eq!(
             result2,
             Some("user_id".to_string()),
