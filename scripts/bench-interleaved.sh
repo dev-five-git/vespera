@@ -42,11 +42,23 @@ limit_mean=${REGRESS_MEAN:-0.30}
 limit_lower=${REGRESS_LOWER:-0.20}
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
-work=${WORK_DIR:-$(mktemp -d)}
+# A work dir this script created (no WORK_DIR) is removed on exit: it holds
+# two release target dirs (several GB). A caller-supplied WORK_DIR is kept.
+if [ -n "${WORK_DIR:-}" ]; then
+  work=$WORK_DIR
+  owned_work=
+else
+  work=$(mktemp -d)
+  owned_work=$work
+fi
 base_tree="$work/base-tree"
 
 git -C "$repo" worktree add --detach "$base_tree" "$base_rev" >/dev/null
-trap 'git -C "$repo" worktree remove --force "$base_tree" >/dev/null 2>&1 || true' EXIT
+cleanup() {
+  git -C "$repo" worktree remove --force "$base_tree" >/dev/null 2>&1 || true
+  if [ -n "$owned_work" ]; then rm -rf "$owned_work"; fi
+}
+trap cleanup EXIT
 
 # Each side gets its OWN fresh target dir. A shared (or pre-existing) one is
 # unsafe: cargo keys workspace members relative to the workspace root, so both

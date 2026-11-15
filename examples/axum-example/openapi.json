@@ -995,6 +995,7 @@
           "form"
         ],
         "summary": "Upload a file via raw multipart form data",
+        "description": "A malformed multipart body (or one over the body limit) answers `400`\ninstead of panicking the handler.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1012,6 +1013,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ContactFormResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }

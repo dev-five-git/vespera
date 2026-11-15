@@ -12,8 +12,11 @@ name: Bench
 #   confidence limit of the median, 93.75% for N=5). See the header of
 #   scripts/bench-interleaved.sh for the full method and why a shared/prebuilt
 #   target dir would silently benchmark one binary against itself.
-# - Cargo.toml remains a trigger so dependency/profile changes are covered,
-#   but a PR whose only relevant edits are version assignments is skipped.
+# - Cargo.toml / Cargo.lock remain triggers so dependency/profile changes are
+#   covered, but a PR whose only relevant edits are version assignments (the
+#   workspace release version in Cargo.toml and the workspace members'
+#   `version` entries in Cargo.lock, which every version PR rewrites) is
+#   skipped.
 #
 # Why interleaved: runner conditions drift on a minutes scale, so measuring the
 # baseline in one block and the PR in a later block turned drift into fake
@@ -99,15 +102,18 @@ jobs:
           should_run=false
           while IFS= read -r path; do
             case "$path" in
-              crates/*|Cargo.lock|rust-toolchain|rust-toolchain.toml|.cargo/*|.github/workflows/bench.yml|scripts/bench-interleaved.sh)
+              crates/*|rust-toolchain|rust-toolchain.toml|.cargo/*|.github/workflows/bench.yml|scripts/bench-interleaved.sh)
                 should_run=true
                 ;;
             esac
           done < <(git diff --name-only "$merge_base" "$HEAD_SHA")
 
           # Compare parsed TOML after removing only changepacks-managed release
-          # versions. External dependency versions, profiles, features, and any
-          # unparseable change fail safe by keeping the gate enabled.
+          # versions (Cargo.toml: the workspace version and the internal crates'
+          # path-dependency versions; Cargo.lock: the `version` of source-less
+          # packages, i.e. workspace members). External dependency versions,
+          # profiles, features, lockfile resolutions, and any unparseable
+          # change fail safe by keeping the gate enabled.
           if ! python3 - "$merge_base" "$HEAD_SHA" <<'PY'
           import copy
           import subprocess
@@ -115,9 +121,9 @@ jobs:
           import tomllib
 
 
-          def cargo_toml_at(revision):
+          def toml_at(revision, path):
               contents = subprocess.check_output(
-                  ["git", "show", f"{revision}:Cargo.toml"],
+                  ["git", "show", f"{revision}:{path}"],
                   text=True,
                   encoding="utf-8",
               )
@@ -145,14 +151,26 @@ jobs:
               return normalized
 
 
-          base = without_release_versions(cargo_toml_at(sys.argv[1]))
-          head = without_release_versions(cargo_toml_at(sys.argv[2]))
-          version_only = base == head
+          def without_member_versions(lockfile):
+              normalized = copy.deepcopy(lockfile)
+              for package in normalized.get("package", []):
+                  if isinstance(package, dict) and "source" not in package:
+                      package.pop("version", None)
+              return normalized
+
+
+          base_rev, head_rev = sys.argv[1], sys.argv[2]
+          version_only = without_release_versions(
+              toml_at(base_rev, "Cargo.toml")
+          ) == without_release_versions(toml_at(head_rev, "Cargo.toml"))
+          version_only = version_only and without_member_versions(
+              toml_at(base_rev, "Cargo.lock")
+          ) == without_member_versions(toml_at(head_rev, "Cargo.lock"))
           print(f"cargo_version_only={str(version_only).lower()}")
           raise SystemExit(0 if version_only else 1)
           PY
           then
-            echo "::notice::Could not prove Cargo.toml changes are version-only; keeping the performance gate enabled."
+            echo "::notice::Could not prove Cargo.toml / Cargo.lock changes are version-only; keeping the performance gate enabled."
             should_run=true
           fi
 

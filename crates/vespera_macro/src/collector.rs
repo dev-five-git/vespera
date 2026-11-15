@@ -219,7 +219,8 @@ fn push_parsed_routes(
     }
 }
 
-/// Collect routes and structs from a folder.
+/// Collect routes from a folder (structs come from `SCHEMA_STORAGE`, not
+/// from this scan).
 ///
 /// When `route_storage` contains entries with `file_path`, files covered by
 /// `ROUTE_STORAGE` skip expensive `syn::parse_file()` — route metadata is built

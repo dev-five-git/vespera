@@ -176,6 +176,35 @@ fn test_process_cron_attribute_valid() {
     );
 }
 
+/// A rejected `#[cron]` keeps the function next to its error: the module
+/// scan may still schedule it, and a dropped function would add an
+/// unresolved-name error inside the `vespera!` expansion.
+#[test]
+fn rejected_cron_keeps_the_item() {
+    let item = quote!(
+        pub async fn job() {}
+    );
+    let output = cron_attribute(quote!("0 * * * * *", overlap = "queue"), item).to_string();
+    assert!(output.starts_with(":: core :: compile_error !"), "{output}");
+    assert!(output.ends_with("pub async fn job () { }"), "{output}");
+}
+
+#[test]
+fn accepted_cron_emits_the_expansion() {
+    let output = cron_attribute(
+        quote!("0 * * * * *"),
+        quote!(
+            pub async fn accepted_job() {}
+        ),
+    )
+    .to_string();
+    assert!(
+        output.starts_with("pub async fn accepted_job () { }"),
+        "{output}"
+    );
+    assert!(output.contains("__vespera_cron_send_check"), "{output}");
+}
+
 #[test]
 fn test_process_cron_attribute_invalid_expression() {
     let attr = quote!(123);

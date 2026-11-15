@@ -42,7 +42,8 @@ pub fn paths_equal_normalized(left: Option<&str>, right: Option<&str>) -> bool {
 ///
 /// Relative paths are absolutized against `cwd`, `.`/`..` components are folded,
 /// separators normalize to `/`, the Windows `\\?\` verbatim prefix is stripped,
-/// and (Windows only) the drive letter case is folded.
+/// and (Windows only) the **whole key** is ASCII-lowercased (paths compare
+/// case-insensitively there, not just the drive letter).
 pub fn normalize_path_key(path: &str, cwd: &Path) -> String {
     use std::path::Component;
 

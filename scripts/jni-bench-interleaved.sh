@@ -39,7 +39,15 @@ rounds=${ROUNDS:-5}
 export RUSTFLAGS=${JNI_BENCH_RUSTFLAGS:-"-C llvm-args=-align-all-functions=6 -C llvm-args=-align-all-nofallthru-blocks=5"}
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
-work=${WORK_DIR:-$(mktemp -d)}
+# A work dir this script created (no WORK_DIR) is removed on exit: it holds
+# two release target dirs (several GB). A caller-supplied WORK_DIR is kept.
+if [ -n "${WORK_DIR:-}" ]; then
+  work=$WORK_DIR
+  owned_work=
+else
+  work=$(mktemp -d)
+  owned_work=$work
+fi
 mkdir -p "$work/results"
 base_tree="$work/base-tree"
 
@@ -58,7 +66,11 @@ case "$(uname -s)" in
 esac
 
 git -C "$repo" -c core.longpaths=true worktree add --detach "$base_tree" "$base_rev" >/dev/null
-trap 'git -C "$repo" worktree remove --force "$base_tree" >/dev/null 2>&1 || true' EXIT
+cleanup() {
+  git -C "$repo" worktree remove --force "$base_tree" >/dev/null 2>&1 || true
+  if [ -n "$owned_work" ]; then rm -rf "$owned_work"; fi
+}
+trap cleanup EXIT
 
 # Each side gets its OWN target dir: cargo keys workspace members relative to
 # the workspace root, so a shared one would judge the second build fresh and
