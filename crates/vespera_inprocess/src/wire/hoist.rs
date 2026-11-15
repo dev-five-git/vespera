@@ -94,70 +94,76 @@ fn set_once<'de, A: serde::de::MapAccess<'de>, T: Deserialize<'de>>(
     Ok(())
 }
 
-impl<'de> Deserialize<'de> for HoistEnvelope<'de> {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct V;
-        impl<'de> serde::de::Visitor<'de> for V {
-            type Value = HoistEnvelope<'de>;
+/// Map-only visitor behind [`HoistEnvelope`]'s `Deserialize`.
+struct EnvelopeVisitor;
 
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("a validation envelope object")
-            }
+impl<'de> serde::de::Visitor<'de> for EnvelopeVisitor {
+    type Value = HoistEnvelope<'de>;
 
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                mut access: A,
-            ) -> Result<Self::Value, A::Error> {
-                let mut errors = None;
-                while let Some(key) = access.next_key::<&'de str>()? {
-                    if key == "errors" {
-                        set_once(&mut access, &mut errors, "errors")?;
-                    } else {
-                        access.next_value::<serde::de::IgnoredAny>()?;
-                    }
-                }
-                let errors = errors.ok_or_else(|| serde::de::Error::missing_field("errors"))?;
-                Ok(HoistEnvelope { errors })
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a validation envelope object")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(
+        self,
+        mut access: A,
+    ) -> Result<Self::Value, A::Error> {
+        let mut errors = None;
+        while let Some(key) = access.next_key::<&'de str>()? {
+            if key == "errors" {
+                set_once(&mut access, &mut errors, "errors")?;
+            } else {
+                access.next_value::<serde::de::IgnoredAny>()?;
             }
         }
-        deserializer.deserialize_map(V)
+        let errors = errors.ok_or_else(|| serde::de::Error::missing_field("errors"))?;
+        Ok(HoistEnvelope { errors })
+    }
+}
+
+impl<'de> Deserialize<'de> for HoistEnvelope<'de> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(EnvelopeVisitor)
+    }
+}
+
+/// Map-only visitor behind [`HoistErrorIn`]'s `Deserialize`.
+struct ErrorVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ErrorVisitor {
+    type Value = HoistErrorIn<'de>;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a validation error object")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(
+        self,
+        mut access: A,
+    ) -> Result<Self::Value, A::Error> {
+        let (mut path, mut code, mut message): (Opt<'de>, Opt<'de>, Opt<'de>) = (None, None, None);
+        while let Some(key) = access.next_key::<&'de str>()? {
+            match key {
+                "path" => set_once(&mut access, &mut path, "path")?,
+                "code" => set_once(&mut access, &mut code, "code")?,
+                "message" => set_once(&mut access, &mut message, "message")?,
+                _ => {
+                    access.next_value::<serde::de::IgnoredAny>()?;
+                }
+            }
+        }
+        let (path, code, message) = (path.flatten(), code.flatten(), message.flatten());
+        Ok(HoistErrorIn {
+            path,
+            code,
+            message,
+        })
     }
 }
 
 impl<'de> Deserialize<'de> for HoistErrorIn<'de> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct V;
-        impl<'de> serde::de::Visitor<'de> for V {
-            type Value = HoistErrorIn<'de>;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("a validation error object")
-            }
-
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                mut access: A,
-            ) -> Result<Self::Value, A::Error> {
-                let (mut path, mut code, mut message): (Opt<'de>, Opt<'de>, Opt<'de>) =
-                    (None, None, None);
-                while let Some(key) = access.next_key::<&'de str>()? {
-                    match key {
-                        "path" => set_once(&mut access, &mut path, "path")?,
-                        "code" => set_once(&mut access, &mut code, "code")?,
-                        "message" => set_once(&mut access, &mut message, "message")?,
-                        _ => {
-                            access.next_value::<serde::de::IgnoredAny>()?;
-                        }
-                    }
-                }
-                Ok(HoistErrorIn {
-                    path: path.flatten(),
-                    code: code.flatten(),
-                    message: message.flatten(),
-                })
-            }
-        }
-        deserializer.deserialize_map(V)
+        deserializer.deserialize_map(ErrorVisitor)
     }
 }
 
