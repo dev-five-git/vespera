@@ -6,8 +6,8 @@ use vespera_core::schema::SchemaRef;
 use crate::{
     parser::schema::{
         SerdeSide, definition_key, extract_field_rename_for, extract_rename_all_for,
-        extract_serde_skip_flags, extract_transparent, is_primitive_type, nullable_schema_ref,
-        rename_field, strip_raw_prefix_owned, substitute_type,
+        extract_transparent, is_primitive_type, nullable_schema_ref, rename_field,
+        single_emitted_field, strip_raw_prefix_owned, substitute_type,
         wire_override::container_override_type,
     },
     schema_macro::type_utils::is_primitive_like as utils_is_primitive_like,
@@ -61,13 +61,23 @@ pub(super) fn is_known_type(
 }
 
 /// The struct named by `ty`'s last path segment, when `struct_definitions`
-/// holds it as a struct with **named** fields.
+/// holds it as a struct with **named** fields (see [`struct_definition`]).
+pub(super) fn named_struct_fields(
+    ty: &Type,
+    struct_definitions: &HashMap<&str, &str>,
+) -> Option<syn::ItemStruct> {
+    struct_definition(ty, struct_definitions)
+        .filter(|struct_item| matches!(struct_item.fields, syn::Fields::Named(_)))
+}
+
+/// The struct named by `ty`'s last path segment, of any shape (named, tuple
+/// or unit), when `struct_definitions` holds it.
 ///
 /// A generic struct's field types are instantiated with `ty`'s type
 /// arguments (`Paged<Filter>` → `T` = `Filter`; a missing argument takes the
 /// parameter's default), so a flattened `T` or a `T`-typed field documents
 /// the concrete type.
-pub(super) fn named_struct_fields(
+pub(super) fn struct_definition(
     ty: &Type,
     struct_definitions: &HashMap<&str, &str>,
 ) -> Option<syn::ItemStruct> {
@@ -78,9 +88,6 @@ pub(super) fn named_struct_fields(
     let key = definition_key(&type_path.path, |key| struct_definitions.contains_key(key))?;
     let mut struct_item =
         syn::parse_str::<syn::ItemStruct>(struct_definitions.get(key.as_str())?).ok()?;
-    if !matches!(struct_item.fields, syn::Fields::Named(_)) {
-        return None;
-    }
     let names: Vec<String> = struct_item
         .generics
         .type_params()
@@ -132,24 +139,17 @@ pub(super) fn named_struct_fields(
 /// (a cycle stops).
 pub(super) const MAX_CONVERSION_DEPTH: usize = 8;
 
-/// The type serde reads INSTEAD of `struct_item`'s own fields: the container
-/// `from` / `try_from` (or `#[schema(value_type)]`) source, or the single
-/// field of a `#[serde(transparent)]` struct (serde requires every other
-/// field to be skipped).
+/// The type serde reads INSTEAD of `struct_item`'s own fields (named or
+/// tuple): the container `from` / `try_from` (or `#[schema(value_type)]`)
+/// source, or the transparent field of a `#[serde(transparent)]` struct —
+/// serde's rule: the only field that is not `PhantomData`, not skipped and
+/// not `#[serde(default)]` on the deserialize side.
 pub(super) fn deserialized_instead(struct_item: &syn::ItemStruct) -> Option<Type> {
     container_override_type(&struct_item.attrs, SerdeSide::Deserialize).or_else(|| {
         extract_transparent(&struct_item.attrs)
-            .then(|| {
-                struct_item
-                    .fields
-                    .iter()
-                    .find(|field| {
-                        let flags = extract_serde_skip_flags(&field.attrs);
-                        !(flags.skip || flags.skip_deserializing)
-                    })
-                    .map(|field| field.ty.clone())
-            })
+            .then(|| single_emitted_field(struct_item.fields.iter(), SerdeSide::Deserialize))
             .flatten()
+            .map(|field| field.ty.clone())
     })
 }
 
@@ -159,7 +159,7 @@ pub(super) fn deserialized_instead(struct_item: &syn::ItemStruct) -> Option<Type
 pub(super) fn deserialized_source(ty: &Type, struct_definitions: &HashMap<&str, &str>) -> Type {
     let mut current = ty.clone();
     for _ in 0..MAX_CONVERSION_DEPTH {
-        match named_struct_fields(&current, struct_definitions)
+        match struct_definition(&current, struct_definitions)
             .as_ref()
             .and_then(deserialized_instead)
         {

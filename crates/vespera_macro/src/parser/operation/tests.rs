@@ -74,18 +74,13 @@ fn assert_body(op: &Operation, expected: Option<&ExpectedBody>) {
         None => assert!(op.request_body.is_none()),
         Some(exp) => {
             let body = op.request_body.as_ref().expect("request body expected");
-            let media = body
-                .content
-                .get(exp.content_type)
-                .or_else(|| {
-                    // allow fallback to the only available content type if expected is absent
-                    if body.content.len() == 1 {
-                        body.content.values().next()
-                    } else {
-                        None
-                    }
-                })
-                .expect("expected content type");
+            let media = body.content.get(exp.content_type).unwrap_or_else(|| {
+                panic!(
+                    "expected {}, got {:?}",
+                    exp.content_type,
+                    body.content.keys()
+                )
+            });
             if let Some(schema_ty) = &exp.schema {
                 match media.schema.as_ref().expect("schema expected") {
                     SchemaRef::Inline(schema) => {
@@ -111,22 +106,30 @@ fn assert_params(op: &Operation, expected: &[ExpectedParam]) {
     }
 }
 
+/// Exactly the `expected` statuses are documented (no stray inferred one).
 fn assert_responses(op: &Operation, expected: &[ExpectedResp]) {
+    assert_eq!(
+        op.responses.keys().collect::<Vec<_>>(),
+        expected.iter().map(|exp| exp.status).collect::<Vec<_>>()
+    );
     for exp in expected {
-        let resp = op.responses.get(exp.status).expect("response missing");
+        let resp = &op.responses[exp.status];
+        // `schema: None` = a description-only response (no body).
+        let Some(schema_ty) = &exp.schema else {
+            assert!(resp.content.is_none(), "{}: {:?}", exp.status, resp.content);
+            continue;
+        };
         let media = resp
             .content
             .as_ref()
             .and_then(|c| c.get("application/json"))
             .or_else(|| resp.content.as_ref().and_then(|c| c.get("text/plain")))
             .expect("media type missing");
-        if let Some(schema_ty) = &exp.schema {
-            match media.schema.as_ref().expect("schema expected") {
-                SchemaRef::Inline(schema) => {
-                    assert_eq!(schema.schema_type, Some(*schema_ty));
-                }
-                SchemaRef::Ref(_) => panic!("expected inline schema"),
+        match media.schema.as_ref().expect("schema expected") {
+            SchemaRef::Inline(schema) => {
+                assert_eq!(schema.schema_type, Some(*schema_ty));
             }
+            SchemaRef::Ref(_) => panic!("expected inline schema"),
         }
     }
 }
@@ -320,13 +323,18 @@ fn test_build_operation_summary_and_deprecated() {
         Some(ExpectedBody { content_type: "text/plain", schema: Some(SchemaType::String) }),
         vec![ExpectedResp { status: "200", schema: Some(SchemaType::String) }]
     )]
+// A declared status on a handler without an error body is still documented,
+// description only.
 #[case(
         "fn no_error_extra() -> String",
         "/plain",
         Some(&[500u16][..]),
         vec![],
         None,
-        vec![ExpectedResp { status: "200", schema: Some(SchemaType::String) }]
+        vec![
+            ExpectedResp { status: "200", schema: Some(SchemaType::String) },
+            ExpectedResp { status: "500", schema: None },
+        ]
     )]
 #[case(
         "fn create() -> Result<String, String>",
@@ -391,6 +399,16 @@ fn typed_responses_use_schema_refs_and_override_error_status() {
         }
         SchemaRef::Inline(_) => panic!("typed response must use schema ref"),
     }
+    // Replaced, not merged with the inferred `text/plain` error body.
+    assert_eq!(
+        response
+            .content
+            .as_ref()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        ["application/json"]
+    );
     assert!(op.responses.contains_key("500"));
 }
 
@@ -699,10 +717,10 @@ fn test_non_path_extractor_with_query() {
         None,
     );
 
-    // Test: Query params should be extended to parameters
-    // But QueryParams is not in known_schemas/struct_definitions so it won't appear
-    // The key is that it doesn't treat Query as a Path extractor (line 85 returns false)
-    assert!(op.request_body.is_none()); // Query is not a body
+    // QueryParams is not in known_schemas/struct_definitions, so it documents
+    // no parameter (and `/search` has no segment to type); Query is no body.
+    assert!(op.parameters.is_none(), "{:?}", op.parameters);
+    assert!(op.request_body.is_none());
 }
 
 #[test]
@@ -825,14 +843,12 @@ fn test_non_path_extractor_generates_params_and_extends() {
         OperationRouteConfig::default(),
     );
 
-    // Query is not Path (line 85 returns false)
-    // parse_function_parameter returns Some for Query<SearchParams>
-    // Line 89: parameters.extend(params)
-    // TypedHeader also generates a header parameter
-    assert!(op.parameters.is_some());
-    let params = op.parameters.unwrap();
-    // Should have query param(s) and header param
-    assert!(!params.is_empty());
+    // `Query<SearchParams>` documents its field `q`. `TypedHeader<Authorization>`
+    // documents nothing: OpenAPI forbids an `Authorization` header parameter
+    // (it belongs to a security scheme).
+    let params = op.parameters.expect("query parameters");
+    let params: Vec<_> = params.iter().map(|p| (p.name.as_str(), p.r#in)).collect();
+    assert_eq!(params, [("q", ParameterLocation::Query)]);
 }
 
 #[test]
@@ -922,7 +938,13 @@ fn path_parameters_are_deduplicated(#[case] snapshot: &str, #[case] sig: &str, #
         snapshot,
         params
             .iter()
-            .map(|p| (p.name.as_str(), p.r#in, param_schema_type(p)))
+            .map(|p| {
+                (
+                    p.name.as_str(),
+                    p.r#in,
+                    serde_json::to_string(&p.schema).unwrap(),
+                )
+            })
             .collect::<Vec<_>>()
     );
 }

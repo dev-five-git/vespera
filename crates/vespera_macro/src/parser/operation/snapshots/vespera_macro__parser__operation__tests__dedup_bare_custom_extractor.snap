@@ -1,18 +1,16 @@
 ---
 source: crates/vespera_macro/src/parser/operation/tests.rs
-expression: "params.iter().map(|p|\n(p.name.as_str(), p.r#in, param_schema_type(p))).collect::<Vec<_>>()"
+expression: "params.iter().map(|p|\n{\n    (p.name.as_str(), p.r#in, serde_json::to_string(&p.schema).unwrap(),)\n}).collect::<Vec<_>>()"
 ---
 [
     (
         "org",
         Path,
-        None,
+        "{\"type\":\"string\"}",
     ),
     (
         "repo",
         Path,
-        Some(
-            String,
-        ),
+        "{\"type\":\"string\"}",
     ),
 ]

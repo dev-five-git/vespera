@@ -1,0 +1,15 @@
+---
+source: crates/vespera_macro/src/parser/parameters/tests_shapes.rs
+expression: "render(func_src, path_params)"
+---
+fn f(q: Query<FromTuple>) {}
+[
+  {
+    "name": "q",
+    "in": "query",
+    "required": true,
+    "schema": {
+      "type": "string"
+    }
+  }
+]

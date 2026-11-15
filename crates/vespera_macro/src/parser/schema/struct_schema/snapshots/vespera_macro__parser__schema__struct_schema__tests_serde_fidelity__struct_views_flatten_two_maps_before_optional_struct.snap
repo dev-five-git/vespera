@@ -20,7 +20,7 @@ response: {
     }
   },
   "additionalProperties": {
-    "allOf": [
+    "anyOf": [
       {
         "type": "integer",
         "format": "uint8",

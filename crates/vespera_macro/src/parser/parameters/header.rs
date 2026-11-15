@@ -85,7 +85,8 @@ fn parse_header(
 }
 
 /// Wire names of the well-known `headers::*` typed headers.  Any other type is
-/// treated as a custom header and named after its Rust binding instead.
+/// treated as a custom header named after its kebab-cased type name instead
+/// (`XRequestId` → `x-request-id`; see [`typed_header_parameter`]).
 fn known_typed_header_name(ident: &str) -> Option<&'static str> {
     Some(match ident {
         "Authorization" => "Authorization",
