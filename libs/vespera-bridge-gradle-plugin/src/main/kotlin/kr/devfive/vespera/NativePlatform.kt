@@ -194,8 +194,25 @@ internal object NativePlatform {
             "vespera.targets key '$key' must look like '<os>-<arch>' with os one of " +
                 "windows, macos, linux (e.g. 'linux-x86_64', 'macos-aarch64'), or 'linux-<arch>-musl'."
         }
+        val arch = key.substringAfter('-').removeSuffix(MUSL_SUFFIX)
+        val loaderArch = loaderArch(arch)
+        require(loaderArch == arch) {
+            "vespera.targets key '$key': the bridge loader never looks up arch '$arch' (the JVM " +
+                "reports it as '$loaderArch'); use '${key.replace(arch, loaderArch)}'."
+        }
         return key.substringBefore('-')
     }
+
+    /**
+     * The arch segment the bridge loader (`NativePlatformDetector`) looks up
+     * for a JVM on [arch]: [detectArch]'s aliases (`amd64`, `arm64`), and
+     * `arm` for a 32-bit ARM name (`armv7`, `armhf`, ...), which is what the
+     * JVM reports as `os.arch` there.
+     */
+    private fun loaderArch(arch: String): String =
+        if (ARM32_ALIAS.matches(arch)) "arm" else detectArch(arch)
+
+    private val ARM32_ALIAS = Regex("armv[0-9][a-z0-9_]*|armhf|armel")
 
     /**
      * Map a Cargo profile name to its `target/` output subdirectory.

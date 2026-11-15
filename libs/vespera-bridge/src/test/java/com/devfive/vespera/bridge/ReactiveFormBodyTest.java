@@ -51,6 +51,12 @@ class ReactiveFormBodyTest {
     }
 
     private void start(boolean consumingFilter) {
+        start(consumingFilter
+                ? (exchange, chain) -> exchange.getFormData().then(chain.filter(exchange))
+                : null);
+    }
+
+    private void start(WebFilter consumingFilter) {
         VesperaReactiveProxyHandler handler = ReactiveTestSupport.handler(transport,
                 new ReactiveHeaderAppNameResolver("X-Vespera-App"), null, 1 << 20, 1 << 20,
                 null, List.of(), CorsHandling.RUST);
@@ -58,9 +64,8 @@ class ReactiveFormBodyTest {
         ctx.register(WebFluxConfig.class);
         ctx.registerBean(VesperaReactiveHandlerMapping.class,
                 () -> new VesperaReactiveHandlerMapping(handler, ProxyPathPatterns.defaults()));
-        if (consumingFilter) {
-            ctx.registerBean("csrfLike", WebFilter.class,
-                    () -> (exchange, chain) -> exchange.getFormData().then(chain.filter(exchange)));
+        if (consumingFilter != null) {
+            ctx.registerBean("csrfLike", WebFilter.class, () -> consumingFilter);
         }
         ctx.refresh();
         server = HttpServer.create().host("127.0.0.1").port(0)
@@ -69,13 +74,36 @@ class ReactiveFormBodyTest {
     }
 
     private void post(String contentType, String body) throws Exception {
-        HttpResponse<String> response = HttpClient.newHttpClient().send(
+        assertEquals(200, send(contentType, body).statusCode());
+    }
+
+    private HttpResponse<String> send(String contentType, String body) throws Exception {
+        return HttpClient.newHttpClient().send(
                 HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + "/form?q=1"))
                         .header("Content-Type", contentType)
                         .timeout(Duration.ofSeconds(10))
                         .POST(HttpRequest.BodyPublishers.ofString(body)).build(),
                 HttpResponse.BodyHandlers.ofString());
-        assertEquals(200, response.statusCode());
+    }
+
+    private static final String MULTIPART = "multipart/form-data; boundary=XyZ";
+    private static final String MULTIPART_BODY = "--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n"
+            + "1\r\n--XyZ--\r\n";
+
+    @Test
+    void multipartConsumedByAFilterAnswers500InsteadOfAnEmptyBody() throws Exception {
+        start((exchange, chain) -> exchange.getMultipartData().then(chain.filter(exchange)));
+        HttpResponse<String> response = send(MULTIPART, MULTIPART_BODY);
+        assertEquals(500, response.statusCode());
+        assertEquals(ReactiveFormBodySupport.MULTIPART_CONSUMED_MSG, response.body());
+        assertEquals(0, transport.requests.size(), "never forwarded to Rust");
+    }
+
+    @Test
+    void unconsumedMultipartIsForwardedByteForByte() throws Exception {
+        start(false);
+        post(MULTIPART, MULTIPART_BODY);
+        assertEquals(MULTIPART_BODY, transport.lastBody());
     }
 
     @Test

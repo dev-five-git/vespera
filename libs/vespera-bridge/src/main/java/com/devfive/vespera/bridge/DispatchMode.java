@@ -78,7 +78,9 @@ public enum DispatchMode {
      * <p>Selected by the autoconfigured
      * {@link SmartDispatchModeResolver} (default since 0.2.0) for
      * small, bounded, safe requests (GET/HEAD/OPTIONS with
-     * {@code Content-Length} absent or &le; 1 MiB —
+     * {@code Content-Length} &le; 1 MiB, or provably bodyless — a chunked
+     * GET, or an HTTP/2 GET whose request stream is still open, streams
+     * instead —
      * the DIRECT gate {@code DEFAULT_MAX_DIRECT_BYTES}; the 256 KiB
      * figure is the separate {@link #SYNC} gate) on a platform thread
      * (on a virtual thread it picks response-only {@link #STREAMING}).

@@ -18,12 +18,9 @@ import java.io.InputStream;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
-import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.RejectedExecutionException;
 
 /**
  * Catch-all proxy controller — autoconfigured by
@@ -226,6 +223,9 @@ public class VesperaProxyController {
                 new ProxyServletResponse(servletResponse, requestIdHeader, requestId, cors);
         final ProxyExchange exchange =
                 new ProxyExchange(log, observers, appTags, request.getMethod(), requestId);
+        // Restored (not removed) afterwards: a filter that put its own id
+        // logs with it after chain.doFilter.
+        final String previousMdcId = requestId == null ? null : MDC.get(MDC_REQUEST_ID);
         if (requestId != null) {
             MDC.put(MDC_REQUEST_ID, requestId);
         }
@@ -252,7 +252,7 @@ public class VesperaProxyController {
             throw failure;
         } finally {
             if (requestId != null) {
-                MDC.remove(MDC_REQUEST_ID);
+                ProxyExchange.restoreMdc(previousMdcId);
             }
         }
     }
@@ -586,7 +586,7 @@ public class VesperaProxyController {
 
     static byte[] readBufferedBody(InputStream in, long contentLength, long cap)
             throws IOException {
-        if (cap > 0 && contentLength < 0) {
+        if (cap > 0 && contentLength <= 0) {
             long cappedPlusOne = cap == Long.MAX_VALUE ? Long.MAX_VALUE : cap + 1;
             long effectiveLimit = Math.min(cappedPlusOne, MAX_BUFFERED_BODY);
             int readLimit = (int) effectiveLimit;
@@ -607,7 +607,9 @@ public class VesperaProxyController {
             // yields a correctly-sized smaller array).
             return in.readNBytes((int) contentLength);
         }
-        // Unknown length (-1) with NO soft cap: a buffered mode is the
+        // Unknown length (-1, or a Content-Length of 0 on a request that is
+        // not provably bodyless — e.g. one that also carries
+        // Transfer-Encoding) with NO soft cap: a buffered mode is the
         // WRONG path for an open-ended stream (it should have been routed
         // to BIDIRECTIONAL_STREAMING). Bound the read at MAX_FIXED_BODY
         // (64 MiB) instead of the ~2 GiB single-array ceiling, so a
@@ -616,7 +618,7 @@ public class VesperaProxyController {
         // byte past the bound distinguishes "exactly at the bound" from
         // "over". Known-length bodies keep the documented `cap=0`
         // "unlimited" behaviour below.
-        if (contentLength < 0) {
+        if (contentLength <= 0) {
             byte[] body = in.readNBytes(MAX_FIXED_BODY + 1);
             rejectAboveDefaultBufferedLimit(body.length);
             return body;
@@ -703,7 +705,7 @@ public class VesperaProxyController {
      * what the handler produced — the same status the native cap answers),
      * never the request-size status {@code 413}.
      */
-    private static void rejectOversizedBufferedResponse(byte[] wireResp, long maxBufferedResponseBytes) {
+    static void rejectOversizedBufferedResponse(byte[] wireResp, long maxBufferedResponseBytes) {
         long cap = Math.max(0, maxBufferedResponseBytes);
         if (cap <= 0) {
             return;
@@ -738,7 +740,7 @@ public class VesperaProxyController {
             ProxyServletResponse response, ProxyExchange exchange) {
         byte[] wireReq = VesperaBridge.encodeRequest(
                 appName, method, path, query, headers, body);
-        DeferredResult<ResponseEntity<?>> result = newAsyncResult(response);
+        DeferredResult<ResponseEntity<?>> result = AsyncProxyResponses.newAsyncResult(response);
         final String requestId = exchange.requestId;
         final long cap = javaResponseCap(maxBufferedResponseBytes);
         CompletableFuture<byte[]> nativeResult = VesperaBridge.dispatch(wireReq);
@@ -754,7 +756,7 @@ public class VesperaProxyController {
         result.onError(failure -> {
             response.closeAsync();
             nativeResult.cancel(false);
-            exchange.complete(500, response.panicked());
+            AsyncProxyResponses.reportAsyncError(exchange, failure, response.panicked());
         });
         // Any other end of the async request (a no-op once the result is in).
         result.onCompletion(() -> {
@@ -764,7 +766,7 @@ public class VesperaProxyController {
         nativeResult
                 .thenApplyAsync(
                         wireResp -> ProxyExchange.withMdc(requestId,
-                                () -> buildCappedAsyncResponseEntity(wireResp, method, cap, response)),
+                                () -> AsyncProxyResponses.buildCappedAsyncResponseEntity(wireResp, method, cap, response)),
                         asyncResponseExecutor)
                 // The async executor uses AbortPolicy (NOT CallerRunsPolicy):
                 // under saturation the heavy wire response build must NOT run on
@@ -775,94 +777,13 @@ public class VesperaProxyController {
                 // RejectedExecutionException; translate it to a clean 503
                 // backpressure signal instead of an opaque 500.
                 .handle((resp, ex) -> ex == null ? resp
-                        : ProxyExchange.withMdc(requestId, () -> asyncFailureToResponse(ex, response)))
+                        : ProxyExchange.withMdc(requestId, () -> AsyncProxyResponses.asyncFailureToResponse(ex, response)))
                 .thenAccept(entity -> {
                     if (result.setResult(entity)) {
                         exchange.complete(entity.getStatusCode().value(), response.panicked());
                     }
                 });
         return result;
-    }
-
-    /**
-     * The ASYNC {@link DeferredResult} (Spring's default async timeout). Its
-     * timeout result is the {@link ProxyErrors} plain-text {@code 503} with
-     * the request id echoed: without one, Spring raises
-     * {@code AsyncRequestTimeoutException}, which Spring Boot renders through
-     * its {@code /error} page instead of the proxy's error shape.
-     */
-    static DeferredResult<ResponseEntity<?>> newAsyncResult(ProxyServletResponse response) {
-        return new DeferredResult<>(null, () -> asyncTimeoutResponse(response));
-    }
-
-    static ResponseEntity<?> asyncTimeoutResponse(ProxyServletResponse response) {
-        ResponseEntity<byte[]> entity = ProxyErrors.entity(
-                HttpStatus.SERVICE_UNAVAILABLE.value(), "vespera: async dispatch timed out");
-        String idHeader = response == null ? null : response.requestIdHeader();
-        if (idHeader == null) {
-            return entity;
-        }
-        // Builder only: HttpHeaders' copy methods differ between Spring 6 and 7.
-        return ResponseEntity.status(entity.getStatusCode())
-                .headers(entity.getHeaders())
-                .header(idHeader, response.requestId())
-                .body(entity.getBody());
-    }
-
-    /**
-     * Map an async-dispatch failure to a {@link ProxyErrors} plain-text
-     * response: a saturated-executor rejection becomes a
-     * {@code 503 Service Unavailable} backpressure signal, a
-     * {@link ResponseStatusException} (e.g. the buffered-response cap) its
-     * status, anything else a {@code 500}.  Package-private + static so the
-     * classification ({@link #isRejectedExecution}) is unit-testable without
-     * a live JNI dispatch.
-     */
-    static ResponseEntity<?> asyncFailureToResponse(Throwable ex, ProxyServletResponse proxied) {
-        ResponseEntity<?> entity = asyncFailureToResponse(ex);
-        String idHeader = proxied == null ? null : proxied.requestIdHeader();
-        if (idHeader == null) {
-            return entity;
-        }
-        // Echo the request id like every other mode's proxy errors. (Builder
-        // only: HttpHeaders' copy methods differ between Spring 6 and 7.)
-        return ResponseEntity.status(entity.getStatusCode())
-                .headers(entity.getHeaders())
-                .header(idHeader, proxied.requestId())
-                .body(entity.getBody());
-    }
-
-    static ResponseEntity<?> asyncFailureToResponse(Throwable ex) {
-        if (isRejectedExecution(ex)) {
-            return ProxyErrors.entity(HttpStatus.SERVICE_UNAVAILABLE.value(),
-                    "vespera: async response executor saturated");
-        }
-        Throwable cause = ex instanceof CompletionException && ex.getCause() != null
-                ? ex.getCause() : ex;
-        if (cause instanceof CancellationException) {
-            // The request already ended (timeout / disconnect) and cancelled
-            // the native dispatch; this entity is never sent.
-            return ProxyErrors.entity(HttpStatus.SERVICE_UNAVAILABLE.value(),
-                    "vespera: dispatch cancelled");
-        }
-        if (cause instanceof ResponseStatusException rejected) {
-            return ProxyErrors.entity(rejected.getStatusCode().value(), rejected.getReason());
-        }
-        log.warn("vespera async dispatch failed", cause);
-        return ProxyErrors.entity(500, ProxyErrors.describe(cause));
-    }
-
-    /** Whether {@code ex} (or any cause in its chain) is a rejected submission. */
-    static boolean isRejectedExecution(Throwable ex) {
-        for (Throwable t = ex; t != null; t = t.getCause()) {
-            if (t instanceof RejectedExecutionException) {
-                return true;
-            }
-            if (t == t.getCause()) {
-                break;
-            }
-        }
-        return false;
     }
 
     /**
@@ -980,26 +901,4 @@ public class VesperaProxyController {
         direct.dispatch(response, appName, method, path, query, headers, body,
                 currentThreadIsVirtual, exchange);
     }
-
-    /**
-     * Build the buffered {@code ASYNC} response entity, enforcing the
-     * {@code vespera.bridge.max-buffered-response-bytes} cap FIRST — parity with
-     * the {@code SYNC} path ({@link #dispatchSync} via
-     * {@link #rejectOversizedBufferedResponse}). Without this a custom
-     * {@link DispatchModeResolver} returning {@link DispatchMode#ASYNC} would
-     * heap-buffer an arbitrarily large Rust response (retained until Spring finishes writing it), defeating the
-     * cap and risking OOM / GC pressure. Runs on the async response executor
-     * (NOT the Tokio completion thread), so the cap check stays off the native
-     * worker. Package-private + static so the cap wiring is unit-testable
-     * without a live JNI dispatch.
-     * The body is a zero-copy view
-     * ({@link WireResponseWriter#buildAsyncResponseEntityFromWire}).
-     */
-    static ResponseEntity<?> buildCappedAsyncResponseEntity(
-            byte[] wire, String method, long maxBufferedResponseBytes,
-            ProxyServletResponse response) {
-        rejectOversizedBufferedResponse(wire, maxBufferedResponseBytes);
-        return WireResponseWriter.buildAsyncResponseEntityFromWire(wire, method, response);
-    }
-
 }

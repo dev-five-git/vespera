@@ -842,8 +842,10 @@ final class VesperaWireCodec {
                 // BMP branch below would produce is invalid UTF-8, and a
                 // `\uD800` JSON escape is rejected by the Rust wire parser
                 // (a Rust String cannot hold it → 400 malformed wire). Emit
-                // U+FFFD (EF BF BD) instead — what String.getBytes(UTF_8)
-                // does — so the request still reaches the handler.
+                // U+FFFD (EF BF BD) instead — the client's query / body
+                // encoding (VesperaClient.utf8) does the same, while
+                // String.getBytes(UTF_8) would emit '?' — so the request
+                // still reaches the handler.
                 out.put(0xEF);
                 out.put(0xBF);
                 out.put(0xBD);

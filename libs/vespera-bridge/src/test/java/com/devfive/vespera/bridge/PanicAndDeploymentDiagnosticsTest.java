@@ -100,7 +100,7 @@ class PanicAndDeploymentDiagnosticsTest {
         }
         // The capped builder the controller's ASYNC flow calls flags it too.
         ProxyServletResponse capped = new ProxyServletResponse(raw, "X-Request-Id", "id-9");
-        VesperaProxyController.buildCappedAsyncResponseEntity(wire, "GET", 0, capped);
+        AsyncProxyResponses.buildCappedAsyncResponseEntity(wire, "GET", 0, capped);
         assertTrue(capped.panicked());
 
         ProxyServletResponse calm = new ProxyServletResponse(raw, "X-Request-Id", "id-9");

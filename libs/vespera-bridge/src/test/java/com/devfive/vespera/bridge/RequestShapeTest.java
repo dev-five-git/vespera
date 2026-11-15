@@ -17,6 +17,8 @@ class RequestShapeTest {
         for (String method : new String[] {"GET", "head", "options"}) {
             assertTrue(HttpMethods.isSafe(method), method);
         }
+        // TRACE is safe and idempotent in RFC 9110, but excluded on purpose
+        // (no fast path: it takes the conservative SYNC route).
         for (String method : new String[] {"POST", "PATCH", "CONNECT", "TRACE", ""}) {
             assertFalse(HttpMethods.isIdempotent(method), method);
             assertFalse(HttpMethods.isSafe(method), method);

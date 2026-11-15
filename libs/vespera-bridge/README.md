@@ -138,7 +138,7 @@ Out of the box the autoconfigure module wires up:
 | Concern | Default | Override |
 |---|---|---|
 | **App selection** | Read `X-Vespera-App` request header; absent → default app. **Client-controlled — restrict it with `vespera.bridge.exposed-apps`** (see [Multi-app routing → Security](#security-the-app-header-is-client-controlled)) | Properties `vespera.bridge.app-header` / `vespera.bridge.exposed-apps`, or custom [`AppNameResolver`](src/main/java/com/devfive/vespera/bridge/AppNameResolver.java) bean |
-| **Dispatch mode** | [`SmartDispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/SmartDispatchModeResolver.java) since 0.2.0 — picks per request: [`DIRECT`](src/main/java/com/devfive/vespera/bridge/DispatchMode.java) (pooled direct buffers, no JNI array copies) for small/bodyless safe requests (GET/HEAD/OPTIONS, Content-Length absent or ≤ 1 MiB) ~2.2 µs (response-only `STREAMING` on a virtual thread); `SYNC` (heap-buffered) for small unsafe requests (POST/PUT/PATCH/DELETE ≤ 256 KiB) ~3.2 µs; `BIDIRECTIONAL_STREAMING` for the rest ~24.1 µs | Property `vespera.bridge.dispatch-mode: bidirectional-streaming` (opt out, restore pre-0.2.0 default), or custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean |
+| **Dispatch mode** | [`SmartDispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/SmartDispatchModeResolver.java) since 0.2.0 — picks per request: [`DIRECT`](src/main/java/com/devfive/vespera/bridge/DispatchMode.java) (pooled direct buffers, no JNI array copies) for small/bodyless safe requests (GET/HEAD/OPTIONS with Content-Length ≤ 1 MiB, or provably bodyless — a chunked or still-open HTTP/2 GET streams) ~2.2 µs (response-only `STREAMING` on a virtual thread); `SYNC` (heap-buffered) for small unsafe requests (POST/PUT/PATCH/DELETE ≤ 256 KiB) ~3.2 µs; `BIDIRECTIONAL_STREAMING` for the rest ~24.1 µs | Property `vespera.bridge.dispatch-mode: bidirectional-streaming` (opt out, restore pre-0.2.0 default), or custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean |
 | **URL pattern** | Single `@RequestMapping("/**")` catch-all — every vespera router URL exactly mirrors the published OpenAPI path | Properties `vespera.bridge.include-patterns` / `vespera.bridge.exclude-patterns` (see [Proxied paths](#proxied-paths-include--exclude-patterns)), or `vespera.bridge.controller-enabled: false` and your own controller |
 | **Body handling** | Servlet `InputStream` straight through to Rust (no buffering) for `BIDIRECTIONAL_STREAMING`; read fully (capped by `max-buffered-request-bytes`) for `SYNC` / `ASYNC` / `DIRECT` / response-only `STREAMING` | (encoded by the chosen `DispatchMode`) |
 | **Programmatic client** | A [`VesperaClient`](src/main/java/com/devfive/vespera/bridge/VesperaClient.java) bean for the default app (see [Programmatic client](#programmatic-client-vesperaclient)), also with `controller-enabled: false` and in non-web applications (`spring.main.web-application-type=none`) | Your own `VesperaClient` bean (e.g. `VesperaClient.create().forApp("admin")`) |
@@ -147,7 +147,7 @@ Why `smart` as the default mode (since 0.2.0)? Measured on a small `GET /health`
 
 | Request shape | Mode | ns/round-trip |
 |---|---|---|
-| Small/bodyless + safe (GET/HEAD/OPTIONS, Content-Length absent or ≤ 1 MiB) | `DIRECT` (`STREAMING` on a virtual thread) | ~2,200 (~7,700) |
+| Small/bodyless + safe (GET/HEAD/OPTIONS, Content-Length ≤ 1 MiB or provably bodyless) | `DIRECT` (`STREAMING` on a virtual thread) | ~2,200 (~7,700) |
 | Small (≤ 256 KiB Content-Length) + unsafe (POST/PUT/PATCH/DELETE) | `SYNC` | ~3,200 |
 | Large or unknown-length body | `BIDIRECTIONAL_STREAMING` | ~24,100 |
 
@@ -438,7 +438,7 @@ SpringApplication.run(ReactiveApplication.class, args);     // spring-boot-start
 
 **Streaming.** A request whose `Accept` header asks for `text/event-stream` or NDJSON (the same rule as `SmartDispatchModeResolver`) is dispatched through the native header-first streaming symbol (`dispatchStreamingWithHeader`) on a dedicated, bounded `VesperaStreamingExecutor` — never on Reactor's shared `Schedulers.boundedElastic()`, so SSE clients cannot starve the rest of the application's blocking work. The bytes are bridged with `DataBufferUtils.outputStreamPublisher` (backpressured, 64 KiB chunks) and written with `writeAndFlushWith`, so every chunk Rust emits is flushed to the client. A disconnect ends the blocking writer, and the native side stops on the failed write.
 
-A bodyless `GET` whose `Accept` could still match a stream — none, `*/*`, `text/*` or `application/*` (what `fetch()`, `curl` and most HTTP clients send) — takes the same header-first path, because an SSE / NDJSON endpoint it did not explicitly ask for would otherwise never be sent on the buffered path (held until the buffered-response cap answered `500`). Its body is held in Java and written once with its `Content-Length` when the Rust body completes without waiting (every in-memory response), and streamed as soon as it turns out to be a stream: an event-stream / NDJSON `Content-Type`, a Rust body that waits for its next frame, or more than `min(max-buffered-response-bytes, 1 MiB)` bytes (1 MiB when the cap is `0` / unlimited; servlet `DIRECT` parity). When the streaming executor is saturated, such a request falls back to the buffered path instead of `503`. Like every streamed response (and the servlet `SYNC` / `DIRECT` modes), it is not cancelled while the Rust handler is still producing the header; a disconnect stops it at its next write. Send a concrete non-streaming `Accept` (`application/json`) to keep a slow / long-polling `GET` on the cancellable buffered path. All other requests (`HEAD`, request bodies, non-streaming `Accept`) take the buffered path. A stream that fails after the Rust header (a panic or a body error, `VesperaStreamAbortedException`) is answered like the servlet proxy does: while nothing was committed, the Rust status and headers (`Set-Cookie`, `Cache-Control`, ...) are discarded and the proxy writes its own `500` (`panic in Rust engine` / `response body stream error`, `DispatchEvent.panicked` set for a panic); once bytes reached the client, the connection is aborted so the response never looks complete.
+A bodyless `GET` whose `Accept` could still match a stream — none, `*/*`, `text/*` or `application/*` (what `fetch()`, `curl` and most HTTP clients send) — takes the same header-first path, because an SSE / NDJSON endpoint it did not explicitly ask for would otherwise never be sent on the buffered path (held until the buffered-response cap answered `500`). Its body is held in Java and written once with its `Content-Length` when the Rust body completes without waiting (every in-memory response), and streamed as soon as it turns out to be a stream: an event-stream / NDJSON `Content-Type`, a Rust body that waits for its next frame, or more than `min(max-buffered-response-bytes, 1 MiB)` bytes (1 MiB when the cap is `0` / unlimited; servlet `DIRECT` parity). When the streaming executor is saturated, such a request falls back to the buffered path instead of `503`. Like every streamed response (and the servlet `SYNC` / `DIRECT` modes), it is not cancelled while the Rust handler is still producing the header; a disconnect stops it at its next write. Send a concrete non-streaming `Accept` (`application/json`) to keep a slow / long-polling `GET` on the cancellable buffered path. All other requests (`HEAD`, request bodies, non-streaming `Accept`) take the buffered path. A stream that fails after the Rust header (a panic or a body error, `VesperaStreamAbortedException`) is answered like the servlet proxy does: an explicit stream holds its first body bytes until the Rust body would wait (or more than 64 KiB, or the end of the body), so while nothing was committed the Rust status and headers (`Set-Cookie`, `Cache-Control`, ...) are discarded and the proxy writes its own `500` (`panic in Rust engine` / `response body stream error`, `DispatchEvent.panicked` set for a panic); once bytes reached the client, the connection is aborted so the response never looks complete.
 
 Each streamed response holds one streaming thread for its lifetime. The pool is capped twice:
 
@@ -596,7 +596,7 @@ pub fn create_app() -> axum::Router {
 }
 ```
 
-The bridge fetches it **in-process** (a native `GET /openapi.json` dispatch, no HTTP or socket), so it is always the document of the loaded cdylib, including any `merge = [...]`. A different route goes in `vespera.bridge.springdoc.spec-path` (per app: `spec-paths.<app>`; an app name with `_`, such as `_default` or `my_app`, needs Spring Boot's bracketed map-key form `spec-paths.[my_app]`, because the binder drops the `_` from an unbracketed key); to read it from somewhere else (e.g. the `openapi.json` written by `vespera!(openapi = ...)`, bundled as a resource), register your own `VesperaOpenApiSource` bean.
+The bridge fetches it **in-process** (a native `GET /openapi.json` dispatch, no HTTP or socket), so it is always the document of the loaded cdylib, including any `merge = [...]`. A different route goes in `vespera.bridge.springdoc.spec-path` (per app: `spec-paths.<app>`; for an app name with `_`, such as `_default` or `my_app`, Spring Boot's bracketed map-key form `spec-paths.[my_app]` is recommended: the binder drops the `_` and lower-cases an unbracketed key, and the bridge then matches the app by that bound form, so `spec-paths.my_app` still works but collides with an app named `myapp` (both bind to `myapp`)); to read it from somewhere else (e.g. the `openapi.json` written by `vespera!(openapi = ...)`, bundled as a resource), register your own `VesperaOpenApiSource` bean.
 
 Two modes (`vespera.bridge.springdoc.mode`):
 
@@ -614,7 +614,7 @@ vespera:
       spec-path: /openapi.json     # the Rust spec_url, dispatched in-process
       spec-paths:
         admin: /admin/openapi.json # per-app override
-        "[my_app]": /my/openapi.json # a name with `_` needs the bracketed key
+        "[my_app]": /my/openapi.json # recommended for a name with `_` (unbracketed it binds as "myapp")
       apps: [_default, admin]      # default: _default + vespera.bridge.exposed-apps
       docs-path: /v3/api-docs/vespera # group mode: documents served at <docs-path>/<app> (trailing / ignored; "/" or a pattern fails the startup)
       display-name: vespera        # group mode: Swagger UI label (named apps: "vespera (admin)")
@@ -881,11 +881,13 @@ All dispatch modes share **one** process-wide multi-threaded Tokio runtime;
 thread footprint no longer scales with the servlet pool size. On a large
 servlet pool (e.g. 200 Tomcat threads) the steady-state cost is:
 
-- **Off-heap**: the `DIRECT` fast path keeps per-platform-thread pooled
-  direct `ByteBuffer`s (64 KiB → `vespera.direct.maxBufferBytes`, default
-  4 MiB), so up to `poolThreads × maxBufferBytes` retained direct memory
-  once each thread has served a large response (adaptive shrink reclaims it
-  after idle dispatches). Lower `vespera.direct.maxBufferBytes` if off-heap
+- **Off-heap**: the `DIRECT` fast path keeps two pooled direct
+  `ByteBuffer`s per platform thread — a response buffer (64 KiB →
+  `vespera.direct.maxBufferBytes`, default 4 MiB) and a request buffer (it
+  grows to the largest `DIRECT` request, at most 1 MiB) — so up to
+  `poolThreads × (maxBufferBytes + ~1 MiB)` retained direct memory once each
+  thread has served a large response (adaptive shrink reclaims it after idle
+  dispatches). Lower `vespera.direct.maxBufferBytes` if off-heap
   pressure matters more than the DIRECT copy savings.
 - **Runtime workers**: one fixed set of async workers for the whole process
   (default: logical CPUs). `SYNC`/`DIRECT` drive their request future on the
@@ -1353,7 +1355,7 @@ The JAR ships GraalVM reachability metadata under `META-INF/native-image/kr.devf
 | `resource-config.json` | Bundled libraries `native/<platform>/<lib>` and `vespera-bridge.properties`. |
 | `reflect-config.json` | `Thread.isVirtual()` (looked up reflectively; the bridge targets Java 17). |
 
-With Spring Boot, the autoconfigurations also contribute Spring AOT hints via `@ImportRuntimeHints`: `VesperaBridgeRuntimeHints` (servlet only) for the proxy handler method the CORS preflight mapping resolves by reflection, and `VesperaSecurityRuntimeHints` (servlet and WebFlux) for Spring Security's `Authentication.getAuthorities()` / `GrantedAuthority.getAuthority()` when Spring Security is present (forwarded principal authorities). Anonymous authentication is recognised by class name, so `anonymousUser` is never forwarded even without a reflection hint. So a Spring Boot app that already builds natively only needs the `org.graalvm.buildtools.native` plugin:
+With Spring Boot, the autoconfigurations also contribute Spring AOT hints via `@ImportRuntimeHints`: `VesperaBridgeRuntimeHints` (servlet only) for the proxy handler method the CORS preflight mapping resolves by reflection, and `VesperaSecurityRuntimeHints` (servlet and WebFlux) for Spring Security's `Authentication.getAuthorities()` / `GrantedAuthority.getAuthority()` when Spring Security is present (forwarded principal authorities), and `VesperaSpringdocRuntimeHints` (springdoc integration) for `VesperaOpenApiDocsController#openApi(String)`, which group mode registers programmatically (without it a native image fails at startup with `NoSuchMethodException`). Anonymous authentication is recognised by class name, so `anonymousUser` is never forwarded even without a reflection hint. So a Spring Boot app that already builds natively only needs the `org.graalvm.buildtools.native` plugin:
 
 ```kotlin
 plugins {
@@ -1437,7 +1439,7 @@ Pre-0.2.0 the autoconfigured default was [`BidirectionalStreamingDispatchModeRes
 
 | Request shape | Pre-0.2.0 mode | 0.2.0+ mode |
 |---|---|---|
-| Small/bodyless safe (GET/HEAD/OPTIONS, ≤ 1 MiB CL or no CL) | `STREAMING` / `BIDIRECTIONAL_STREAMING` | `DIRECT` |
+| Small/bodyless safe (GET/HEAD/OPTIONS, ≤ 1 MiB CL or provably bodyless) | `STREAMING` / `BIDIRECTIONAL_STREAMING` | `DIRECT` |
 | Small unsafe (POST/PUT/PATCH/DELETE, ≤ 256 KiB CL) | `BIDIRECTIONAL_STREAMING` | `SYNC` |
 | Large or unknown-length body | `BIDIRECTIONAL_STREAMING` | `BIDIRECTIONAL_STREAMING` |
 

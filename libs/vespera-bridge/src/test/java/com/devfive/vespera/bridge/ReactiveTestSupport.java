@@ -31,6 +31,8 @@ final class ReactiveTestSupport {
         volatile byte[] streamHeader = responseWire(200, "{\"content-type\":\"text/event-stream\"}", "");
         volatile List<String> streamChunks = List.of("data: a\n\n", "data: b\n\n");
         volatile Throwable streamFailure;
+        /** Cleared: the chunks are written with no flush hint (coalesced, ready at once). */
+        volatile boolean streamFlush = true;
         /** When set, implicitly streamed GETs replay streamHeader / streamChunks too. */
         volatile boolean streamImplicitRequests;
         /** When set, a streaming dispatch blocks on it (holding its thread) before the header. */
@@ -79,7 +81,9 @@ final class ReactiveTestSupport {
             headerConsumer.accept(streamHeader);
             for (String chunk : streamChunks) {
                 body.write(chunk.getBytes(StandardCharsets.UTF_8));
-                body.flush();
+                if (streamFlush) {
+                    body.flush();
+                }
             }
             if (streamFailure instanceof IOException io) {
                 throw io;

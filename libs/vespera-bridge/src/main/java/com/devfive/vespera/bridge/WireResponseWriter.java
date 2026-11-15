@@ -4,6 +4,8 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.http.InvalidMediaTypeException;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 
 import java.io.ByteArrayInputStream;
@@ -261,15 +263,28 @@ final class WireResponseWriter {
     static ResponseEntity<?> buildAsyncResponseEntityFromWire(
             byte[] wire, String method, ProxyServletResponse proxied) {
         EntityHead head = entityHead(wire, method, proxied);
+        // Spring parses the entity's Content-Type (MediaType.parseMediaType)
+        // before any body advice runs, so a value it cannot parse (`json`)
+        // would turn the response into a Spring 500, where SYNC / DIRECT pass
+        // it through verbatim. Such a value leaves the entity and the advice
+        // sets it on the servlet response directly.
+        boolean rawContentType = !parsableContentType(head.headers.getFirst(HttpHeaders.CONTENT_TYPE));
         if (!responseStatusPermitsBody(head.status.value())) {
             // No body object at all: a message converter would otherwise
-            // add `Content-Length: 0` to a 1xx / 204 / 304.
-            return ResponseEntity.status(head.status).headers(head.headers).build();
+            // add `Content-Length: 0` to a 1xx / 204 / 304. (No advice runs
+            // without a body: an unparsable Content-Type of a bodiless
+            // status is dropped.)
+            return ResponseEntity.status(head.status)
+                    .headers(rawContentType ? withoutContentType(head.headers) : head.headers).build();
         }
-        boolean defer = proxied != null && head.status.value() == 200
+        boolean deferValidators = head.status.value() == 200
                 && (isHead(method) || "GET".equalsIgnoreCase(method))
                 && (head.headers.getFirst(HttpHeaders.ETAG) != null
                         || head.headers.getFirst(HttpHeaders.LAST_MODIFIED) != null);
+        boolean defer = proxied != null && (deferValidators || rawContentType);
+        if (proxied == null && rawContentType) {
+            head = new EntityHead(head.status, withoutContentType(head.headers), head.bodyOff, head.bodyLen);
+        }
         if (isHead(method) && !defer) {
             // HEAD never carries body bytes: no body object, so no message
             // converter can add `Content-Length: 0` when Rust declared no
@@ -295,14 +310,42 @@ final class WireResponseWriter {
             HttpHeaders kept = new HttpHeaders();
             HttpHeaders validators = new HttpHeaders();
             head.headers.forEach((name, values) -> {
-                boolean validator = HttpHeaders.ETAG.equalsIgnoreCase(name)
-                        || HttpHeaders.LAST_MODIFIED.equalsIgnoreCase(name);
-                (validator ? validators : kept).addAll(name, values);
+                boolean validator = deferValidators && (HttpHeaders.ETAG.equalsIgnoreCase(name)
+                        || HttpHeaders.LAST_MODIFIED.equalsIgnoreCase(name));
+                boolean rawType = rawContentType && HttpHeaders.CONTENT_TYPE.equalsIgnoreCase(name);
+                (validator || rawType ? validators : kept).addAll(name, values);
             });
             headers = kept;
             proxied.deferValidators(body, validators);
         }
         return ResponseEntity.status(head.status).headers(headers).body(body);
+    }
+
+    /**
+     * A copy of {@code headers} without {@code Content-Type} (forEach / addAll:
+     * {@code HttpHeaders.remove} differs between Spring 6.2 and 7).
+     */
+    static HttpHeaders withoutContentType(HttpHeaders headers) {
+        HttpHeaders kept = new HttpHeaders();
+        headers.forEach((name, values) -> {
+            if (!HttpHeaders.CONTENT_TYPE.equalsIgnoreCase(name)) {
+                kept.addAll(name, values);
+            }
+        });
+        return kept;
+    }
+
+    /** Whether Spring can parse {@code contentType} ({@code null}: absent, nothing to parse). */
+    static boolean parsableContentType(String contentType) {
+        if (contentType == null) {
+            return true;
+        }
+        try {
+            MediaType.parseMediaType(contentType);
+            return true;
+        } catch (InvalidMediaTypeException unparsable) {
+            return false;
+        }
     }
 
     private record EntityHead(HttpStatusCode status, HttpHeaders headers, int bodyOff, int bodyLen) {}

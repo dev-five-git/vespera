@@ -50,20 +50,20 @@ class ProxyControllerBodyHeaderTest {
         // /error page).
         Throwable rejected = new java.util.concurrent.CompletionException(
                 new java.util.concurrent.RejectedExecutionException("queue full"));
-        assertTrue(VesperaProxyController.isRejectedExecution(rejected));
-        assertFalse(VesperaProxyController.isRejectedExecution(new RuntimeException("boom")));
+        assertTrue(AsyncProxyResponses.isRejectedExecution(rejected));
+        assertFalse(AsyncProxyResponses.isRejectedExecution(new RuntimeException("boom")));
 
-        ResponseEntity<?> resp = VesperaProxyController.asyncFailureToResponse(rejected);
+        ResponseEntity<?> resp = AsyncProxyResponses.asyncFailureToResponse(rejected);
         assertEquals(503, resp.getStatusCode().value());
         assertEquals("text/plain;charset=utf-8", resp.getHeaders().getContentType().toString());
 
-        ResponseEntity<?> boom = VesperaProxyController.asyncFailureToResponse(
+        ResponseEntity<?> boom = AsyncProxyResponses.asyncFailureToResponse(
                 new java.util.concurrent.CompletionException(new RuntimeException("boom")));
         assertEquals(500, boom.getStatusCode().value());
         assertEquals("vespera dispatch failed",
                 new String((byte[]) boom.getBody(), StandardCharsets.UTF_8));
 
-        ResponseEntity<?> tooLarge = VesperaProxyController.asyncFailureToResponse(
+        ResponseEntity<?> tooLarge = AsyncProxyResponses.asyncFailureToResponse(
                 new ResponseStatusException(org.springframework.http.HttpStatusCode.valueOf(413), "big"));
         assertEquals(413, tooLarge.getStatusCode().value());
         assertEquals("big", new String((byte[]) tooLarge.getBody(), StandardCharsets.UTF_8));
@@ -74,7 +74,7 @@ class ProxyControllerBodyHeaderTest {
                 new java.util.concurrent.CancellationException(),
                 new java.util.concurrent.CompletionException(
                         new java.util.concurrent.CancellationException())}) {
-            ResponseEntity<?> gone = VesperaProxyController.asyncFailureToResponse(cancelled);
+            ResponseEntity<?> gone = AsyncProxyResponses.asyncFailureToResponse(cancelled);
             assertEquals(503, gone.getStatusCode().value());
             assertEquals("vespera: dispatch cancelled",
                     new String((byte[]) gone.getBody(), StandardCharsets.UTF_8));
@@ -91,15 +91,15 @@ class ProxyControllerBodyHeaderTest {
                 new RuntimeException("boom"),
                 new ResponseStatusException(org.springframework.http.HttpStatusCode.valueOf(500), "too big"),
                 new java.util.concurrent.CancellationException()}) {
-            ResponseEntity<?> entity = VesperaProxyController.asyncFailureToResponse(failure, proxied);
+            ResponseEntity<?> entity = AsyncProxyResponses.asyncFailureToResponse(failure, proxied);
             assertEquals("req-7", entity.getHeaders().getFirst("X-Request-Id"), failure.toString());
             assertEquals("text/plain;charset=utf-8", entity.getHeaders().getContentType().toString());
         }
         // Request ids disabled: no header.
         ProxyServletResponse noIds = new ProxyServletResponse(new MockHttpServletResponse(), null, null);
-        assertNull(VesperaProxyController.asyncFailureToResponse(new RuntimeException("x"), noIds)
+        assertNull(AsyncProxyResponses.asyncFailureToResponse(new RuntimeException("x"), noIds)
                 .getHeaders().getFirst("X-Request-Id"));
-        assertNull(VesperaProxyController.asyncFailureToResponse(new RuntimeException("x"), null)
+        assertNull(AsyncProxyResponses.asyncFailureToResponse(new RuntimeException("x"), null)
                 .getHeaders().getFirst("X-Request-Id"));
     }
 
@@ -131,17 +131,17 @@ class ProxyControllerBodyHeaderTest {
         byte[] oversized = wireResponseWithBody(100);
         ResponseStatusException tooLarge = assertThrows(
                 ResponseStatusException.class,
-                () -> VesperaProxyController.buildCappedAsyncResponseEntity(oversized, "GET", 10, null));
+                () -> AsyncProxyResponses.buildCappedAsyncResponseEntity(oversized, "GET", 10, null));
         assertEquals(500, tooLarge.getStatusCode().value());
 
         byte[] small = wireResponseWithBody(5);
         ResponseEntity<?> ok =
-                VesperaProxyController.buildCappedAsyncResponseEntity(small, "GET", 1000, null);
+                AsyncProxyResponses.buildCappedAsyncResponseEntity(small, "GET", 1000, null);
         assertEquals(200, ok.getStatusCode().value());
         assertEquals(5, bodyBytes(ok).length);
 
         ResponseEntity<?> unlimited =
-                VesperaProxyController.buildCappedAsyncResponseEntity(oversized, "GET", 0, null);
+                AsyncProxyResponses.buildCappedAsyncResponseEntity(oversized, "GET", 0, null);
         assertEquals(200, unlimited.getStatusCode().value());
         assertEquals(100, bodyBytes(unlimited).length);
     }

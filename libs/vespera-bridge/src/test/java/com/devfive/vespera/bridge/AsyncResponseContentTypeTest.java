@@ -48,9 +48,27 @@ class AsyncResponseContentTypeTest {
                         wire("{}", ""), "GET", null));
                 case "typed" -> result.setResult(WireResponseWriter.buildAsyncResponseEntityFromWire(
                         wire("{\"content-type\":\"application/json\"}", "{}"), "GET", null));
-                default -> result.setResult(VesperaProxyController.asyncFailureToResponse(
+                default -> result.setResult(AsyncProxyResponses.asyncFailureToResponse(
                         new RuntimeException("boom"), null));
             }
+            return result;
+        }
+
+        /** A Rust Content-Type Spring cannot parse; {@code status} 204 has no body. */
+        @org.springframework.web.bind.annotation.RequestMapping(
+                value = "/raw/{status}",
+                method = {org.springframework.web.bind.annotation.RequestMethod.GET,
+                        org.springframework.web.bind.annotation.RequestMethod.POST})
+        Object raw(HttpServletRequest request, jakarta.servlet.http.HttpServletResponse servletResponse,
+                @org.springframework.web.bind.annotation.PathVariable("status") int status) {
+            ProxyServletResponse proxied = new ProxyServletResponse(servletResponse, null, null);
+            VesperaAsyncResponseBodyAdvice.markProxied(request, proxied);
+            byte[] h = ("{\"v\":1,\"status\":" + status + ",\"headers\":{\"content-type\":\"json\","
+                    + "\"etag\":\"\\\"v1\\\"\"},\"metadata\":{}}").getBytes(StandardCharsets.UTF_8);
+            byte[] b = "{}".getBytes(StandardCharsets.UTF_8);
+            byte[] w = ByteBuffer.allocate(4 + h.length + b.length).putInt(h.length).put(h).put(b).array();
+            DeferredResult<Object> result = new DeferredResult<>();
+            result.setResult(WireResponseWriter.buildAsyncResponseEntityFromWire(w, request.getMethod(), proxied));
             return result;
         }
 
@@ -127,6 +145,25 @@ class AsyncResponseContentTypeTest {
         assertNull(response.getContentType(), "no Content-Type invented from Accept");
         assertNull(response.getHeader("Content-Type"));
         assertEquals(path.equals("/bare") ? "raw body" : "", response.getContentAsString());
+    }
+
+    /** SYNC / DIRECT parity: an unparsable Rust Content-Type passes through instead of a Spring 500. */
+    @ParameterizedTest
+    @ValueSource(strings = {"GET", "POST"})
+    void unparsableRustContentTypePassesThrough(String method) throws Exception {
+        MockHttpServletResponse response = call(
+                org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request(
+                        org.springframework.http.HttpMethod.valueOf(method), "/raw/201"));
+        assertEquals(201, response.getStatus());
+        assertEquals("json", response.getHeader("Content-Type"));
+        assertEquals("\"v1\"", response.getHeader("ETag"));
+        assertEquals("{}", response.getContentAsString());
+
+        MockHttpServletResponse noBody = call(get("/raw/204"));
+        assertEquals(204, noBody.getStatus());
+        assertNull(noBody.getHeader("Content-Type"), "dropped: a 204 has no body to describe");
+        assertTrue(WireResponseWriter.parsableContentType(null));
+        assertTrue(WireResponseWriter.parsableContentType("text/plain; charset=utf-8"));
     }
 
     @ParameterizedTest

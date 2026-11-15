@@ -13,6 +13,7 @@ import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.http.server.ServerHttpRequest;
 import org.springframework.http.server.ServerHttpResponse;
 import org.springframework.http.server.ServletServerHttpRequest;
+import org.springframework.http.server.ServletServerHttpResponse;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyAdvice;
 
@@ -78,6 +79,14 @@ public final class VesperaAsyncResponseBodyAdvice implements ResponseBodyAdvice<
         if (marker instanceof ProxyServletResponse proxied) {
             HttpHeaders validators = proxied.takeDeferredValidators(body);
             if (validators != null) {
+                // A Content-Type Spring cannot parse goes on the servlet
+                // response itself: ServletServerHttpResponse parses its
+                // headers' Content-Type when it writes them.
+                String rawContentType = validators.getFirst(HttpHeaders.CONTENT_TYPE);
+                if (rawContentType != null && response instanceof ServletServerHttpResponse servletOut) {
+                    validators = WireResponseWriter.withoutContentType(validators);
+                    servletOut.getServletResponse().setHeader(HttpHeaders.CONTENT_TYPE, rawContentType);
+                }
                 HttpHeaders out = response.getHeaders();
                 validators.forEach(out::addAll);
             }

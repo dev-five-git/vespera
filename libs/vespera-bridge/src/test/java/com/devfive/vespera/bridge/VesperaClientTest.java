@@ -182,6 +182,38 @@ class VesperaClientTest {
     }
 
     @Test
+    void rawQueryRejectsAFragmentLikeThePath() {
+        // The URI parser would cut the query at '#' and silently drop `b=2`.
+        assertThrows(IllegalArgumentException.class, () -> client.get("/s").rawQuery("a=1#x&b=2"));
+        assertEquals(0, transport.requests.size());
+    }
+
+    @Test
+    void unpairedSurrogatesBecomeTheReplacementCharacterEverywhere() throws IOException {
+        String lone = "a\uD800";
+        client.post("/s").query("q", lone).text(lone).send();
+        byte[] wire = transport.requests.get(0);
+        // U+FFFD (EF BF BD), as in the path and the headers — never '?' (%3F).
+        assertEquals("/s?q=a%EF%BF%BD", header(wire).get("path").asText());
+        assertArrayEquals(new byte[] {'a', (byte) 0xEF, (byte) 0xBF, (byte) 0xBD}, body(wire));
+
+        client.post("/s").json("\uDC00").send();
+        assertArrayEquals(new byte[] {(byte) 0xEF, (byte) 0xBF, (byte) 0xBD}, body(transport.requests.get(1)));
+        String paired = "😀";
+        assertArrayEquals(paired.getBytes(StandardCharsets.UTF_8), VesperaClient.utf8(paired));
+    }
+
+    @Test
+    void decodeOnlyCharsetIsRejectedWithAClearMessage() {
+        java.nio.charset.Charset decodeOnly = java.nio.charset.Charset.availableCharsets().values().stream()
+                .filter(cs -> !cs.canEncode()).findFirst().orElse(null);
+        org.junit.jupiter.api.Assumptions.assumeTrue(decodeOnly != null, "the JDK ships a decode-only charset");
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> client.post("/s").body("x", "text/plain; charset=" + decodeOnly.name()));
+        assertTrue(rejected.getMessage().contains("can only decode"), rejected.getMessage());
+    }
+
+    @Test
     void appSelectionFromClientAndRequest() throws IOException {
         VesperaClient admin = client.forApp("  admin ");
         assertEquals("admin", admin.appName());

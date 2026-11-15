@@ -144,6 +144,59 @@ class ReactiveStreamAbortTest {
     }
 
     @Test
+    void bodyThatFailsBeforeItsFirstFlushHintIsReplacedByA500() throws Exception {
+        // Rust coalesced a ready event and the error: one body write, no flush
+        // hint. The event must not commit Rust's 200 and headers.
+        transport.streamHeader = RUST_HEADER;
+        transport.streamChunks = List.of("data: 1\n\n");
+        transport.streamFlush = false;
+        transport.streamFailure = new VesperaStreamAbortedException(BODY_ABORTED);
+
+        Result result = stream();
+
+        assertEquals(500, result.status());
+        assertEquals(ProxyErrors.STREAM_ABORTED, result.body());
+        assertNull(result.header(HttpHeaders.SET_COOKIE), "Rust's Set-Cookie is dropped");
+        assertNull(result.header(HttpHeaders.CACHE_CONTROL), "Rust's Cache-Control is dropped");
+        assertEquals(500, awaitEvent().status());
+    }
+
+    @Test
+    void bodyGateHoldsUntilTheFlushHintTheChunkLimitOrTheEnd() throws IOException {
+        java.io.ByteArrayOutputStream sink = new java.io.ByteArrayOutputStream();
+        VesperaReactiveProxyHandler.BodyGate gate = new VesperaReactiveProxyHandler.BodyGate(sink);
+        gate.write('a');
+        assertEquals(0, sink.size(), "held until the flush hint");
+        gate.flush();
+        assertEquals("a", sink.toString());
+        assertFalse(gate.pending());
+        gate.write('b');
+        assertEquals("ab", sink.toString(), "pass-through once released");
+
+        java.io.ByteArrayOutputStream big = new java.io.ByteArrayOutputStream();
+        VesperaReactiveProxyHandler.BodyGate limited = new VesperaReactiveProxyHandler.BodyGate(big);
+        limited.write(new byte[VesperaReactiveProxyHandler.STREAM_CHUNK_BYTES], 0,
+                VesperaReactiveProxyHandler.STREAM_CHUNK_BYTES);
+        assertEquals(0, big.size());
+        limited.write('x');
+        assertEquals(VesperaReactiveProxyHandler.STREAM_CHUNK_BYTES + 1, big.size(), "released past the limit");
+
+        java.io.ByteArrayOutputStream ended = new java.io.ByteArrayOutputStream();
+        VesperaReactiveProxyHandler.BodyGate finished = new VesperaReactiveProxyHandler.BodyGate(ended);
+        finished.write(new byte[] {'z'}, 0, 1);
+        finished.write(new byte[0], 0, 0);
+        finished.finish();
+        assertEquals("z", ended.toString(), "released at the end of the body");
+
+        java.io.ByteArrayOutputStream none = new java.io.ByteArrayOutputStream();
+        VesperaReactiveProxyHandler.BodyGate noBody = new VesperaReactiveProxyHandler.BodyGate(none);
+        noBody.permit(false);
+        noBody.write('n');
+        noBody.finish();
+        assertEquals(0, none.size(), "a no-body status drops the bytes");
+    }
+
+    @Test
     void plainIOExceptionWithThePanicMessageCountsAsAPanic() throws Exception {
         // Fallback when the cdylib could not resolve the typed exception class.
         transport.streamHeader = RUST_HEADER;

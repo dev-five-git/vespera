@@ -73,18 +73,19 @@ internal object NativeJars {
                 archiveVersion.convention(version)
                 archiveClassifier.set(platform)
                 destinationDirectory.convention(libsDir)
-                // Plain values only: configuration-cache safe.
-                val dir = sourceDir.orNull?.asFile
-                // Without a source directory there is nothing to copy (an
-                // absent provider would fail while Gradle resolves the copy
-                // sources, before requireLibrary could explain why).
-                if (dir != null) {
-                    from(sourceDir) { include("native/$platform/**") }
+                // Providers only, read when the task runs (configuration-cache
+                // safe): an eager `tasks.withType<Jar> {}` above the
+                // `vespera {}` block realises this task before nativeJarsDir /
+                // crateName are set. Without a source directory there is
+                // nothing to copy (an absent provider would fail while Gradle
+                // resolves the copy sources, before requireLibrary could
+                // explain why).
+                from(sourceDir.map { listOf(it) }.orElse(emptyList())) { include("native/$platform/**") }
+                val dirP = sourceDir.map { it.asFile }
+                val libFileP = ext.crateName.zip(ext.libName.orElse("")) { crate, lib ->
+                    NativePlatform.mapLibraryName(os, NativePlatform.libraryStem(crate, lib.ifEmpty { null }))
                 }
-                val libFile = ext.crateName.orNull?.let {
-                    NativePlatform.mapLibraryName(os, NativePlatform.libraryStem(it, ext.libName.orNull))
-                }
-                doFirst(Action<Task> { requireLibrary(platform, dir, libFile) })
+                doFirst(Action<Task> { requireLibrary(platform, dirP.orNull, libFileP.orNull) })
             })
             aggregate.configure(Action<Task> { dependsOn(jar) })
         })

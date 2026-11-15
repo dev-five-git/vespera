@@ -234,6 +234,10 @@ class VesperaProxyControllerCoverageTest {
                         .getLogger(VesperaProxyController.class);
         ch.qos.logback.classic.Level previousLevel = logger.getLevel();
         logger.setLevel(ch.qos.logback.classic.Level.DEBUG);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> logged =
+                new ch.qos.logback.core.read.ListAppender<>();
+        logged.start();
+        logger.addAppender(logged);
         try {
             VesperaProxyController controller = new VesperaProxyController(
                     request -> null, request -> DispatchMode.DIRECT, Runnable::run, false);
@@ -244,11 +248,21 @@ class VesperaProxyControllerCoverageTest {
                     new MockHttpServletResponse(), null, "POST", "/echo", "",
                     sink -> {}, new byte[] {1}, Boolean.FALSE, null));
             assertTrue(warned.get());
+            java.util.List<ch.qos.logback.classic.Level> levels = logged.list.stream()
+                    .filter(event -> event.getFormattedMessage().contains("routed unsafe method POST"))
+                    .map(ch.qos.logback.classic.spi.ILoggingEvent::getLevel)
+                    .toList();
+            assertEquals(java.util.List.of(ch.qos.logback.classic.Level.WARN, ch.qos.logback.classic.Level.DEBUG),
+                    levels, "one WARN, then DEBUG only");
 
             logger.setLevel(ch.qos.logback.classic.Level.INFO);
+            logged.list.clear();
             assertThrows(UnsatisfiedLinkError.class, () -> controller.dispatchDirectMode(
                     new MockHttpServletResponse(), null, "POST", "/echo", "",
                     sink -> {}, new byte[] {1}, Boolean.FALSE, null));
+            assertTrue(logged.list.stream().noneMatch(
+                    event -> event.getFormattedMessage().contains("routed unsafe method")),
+                    "nothing at INFO once warned");
 
             // With an exchange the downgrade is what gets reported.
             ProxyExchange exchange = new ProxyExchange(
@@ -260,6 +274,7 @@ class VesperaProxyControllerCoverageTest {
                     sink -> {}, new byte[] {1}, Boolean.FALSE, exchange));
             assertEquals(DispatchMode.SYNC, exchange.mode);
         } finally {
+            logger.detachAppender(logged);
             logger.setLevel(previousLevel);
             warned.set(previousWarned);
         }
@@ -317,16 +332,60 @@ class VesperaProxyControllerCoverageTest {
                 return this;
             }
         };
-        assertFalse(VesperaProxyController.isRejectedExecution(cyclic));
+        assertFalse(AsyncProxyResponses.isRejectedExecution(cyclic));
 
-        ResponseEntity<?> bare = VesperaProxyController.asyncFailureToResponse(
+        // A two-element cycle through the standard getCause() (which maps a
+        // self-cause to null, so the check above alone never meets it).
+        RuntimeException a = new RuntimeException("a");
+        RuntimeException b = new RuntimeException("b", a);
+        a.initCause(b);
+        org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(java.time.Duration.ofSeconds(5), () -> {
+            assertFalse(AsyncProxyResponses.isRejectedExecution(a));
+            assertEquals(500, AsyncProxyResponses.asyncErrorStatus(a));
+            assertEquals(500, AsyncProxyResponses.asyncFailureToResponse(a).getStatusCode().value());
+        });
+
+        ResponseEntity<?> bare = AsyncProxyResponses.asyncFailureToResponse(
                 new IllegalStateException());
         assertEquals(500, bare.getStatusCode().value());
         assertEquals("vespera dispatch failed",
                 new String((byte[]) bare.getBody(), StandardCharsets.UTF_8));
-        ResponseEntity<?> emptyCompletion = VesperaProxyController.asyncFailureToResponse(
+        ResponseEntity<?> emptyCompletion = AsyncProxyResponses.asyncFailureToResponse(
                 new CompletionException(null));
         assertEquals(500, emptyCompletion.getStatusCode().value());
+    }
+
+    @Test
+    void zeroContentLengthOnABodiedRequestIsReadAsUnknownLength() throws java.io.IOException {
+        // CL 0 + Transfer-Encoding (not provably bodyless): the cap still applies.
+        org.springframework.web.server.ResponseStatusException tooLarge = org.junit.jupiter.api.Assertions.assertThrows(
+                org.springframework.web.server.ResponseStatusException.class,
+                () -> VesperaProxyController.readBufferedBody(
+                        new java.io.ByteArrayInputStream(new byte[20]), 0, 10));
+        assertEquals(413, tooLarge.getStatusCode().value());
+        assertEquals(5, VesperaProxyController.readBufferedBody(
+                new java.io.ByteArrayInputStream(new byte[5]), 0, 10).length);
+        assertEquals(20, VesperaProxyController.readBufferedBody(
+                new java.io.ByteArrayInputStream(new byte[20]), 0, 0).length);
+    }
+
+    @Test
+    void asyncClientDisconnectIsReported499AndOtherErrors500() {
+        java.util.List<DispatchEvent> seen = new java.util.ArrayList<>();
+        org.slf4j.Logger quiet = org.slf4j.LoggerFactory.getLogger("test.async-error");
+
+        ProxyExchange gone = new ProxyExchange(quiet, java.util.List.of(seen::add), "GET", "rid");
+        gone.reachedRust = true;
+        AsyncProxyResponses.reportAsyncError(gone,
+                new IllegalStateException(new java.io.IOException("Broken pipe")), false);
+        assertEquals(499, seen.get(0).status());
+        assertFalse(gone.reachedRust, "a disconnect is not an answer of the selected app");
+
+        ProxyExchange failed = new ProxyExchange(quiet, java.util.List.of(seen::add), "GET", "rid");
+        failed.reachedRust = true;
+        AsyncProxyResponses.reportAsyncError(failed, new IllegalStateException("boom"), false);
+        assertEquals(500, seen.get(1).status());
+        assertTrue(failed.reachedRust);
     }
 
     @Test

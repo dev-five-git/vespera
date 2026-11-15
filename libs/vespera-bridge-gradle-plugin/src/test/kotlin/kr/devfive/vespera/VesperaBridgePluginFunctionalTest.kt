@@ -182,6 +182,51 @@ class VesperaBridgePluginFunctionalTest {
         assertFalse(File(dir, "build/resources/main/native").exists())
     }
 
+    /** `tasks.withType<Task> {}` above `vespera {}`: every task is realised before the block runs. */
+    private fun setUpEager() {
+        write("settings.gradle.kts", "rootProject.name = \"consumer\"\n")
+        write(
+            "build.gradle.kts",
+            """
+            plugins {
+                java
+                id("kr.devfive.vespera-bridge")
+            }
+            tasks.withType<Task> { }
+            vespera {
+                crateName.set("demo")
+                cargoRoot.set(layout.projectDirectory.dir("rust"))
+                bridgeVersion.set("0.0.0-test")
+                extraNativeLibs.set(layout.projectDirectory.dir("prebuilt"))
+            }
+            """.trimIndent(),
+        )
+    }
+
+    @Test
+    fun eagerlyRealisedTasksStillBundleTheLibraries() {
+        val hostLib = NativePlatform.mapLibraryName(hostOs, "demo")
+        write("rust/target/release/$hostLib", "host")
+        write("prebuilt/native/$extraPlatform/libdemo.dylib", "extra")
+        setUpEager()
+
+        val result = run("processResources").build()
+
+        assertEquals(TaskOutcome.SUCCESS, result.task(":bundleNativeLib")?.outcome)
+        assertEquals("host", resource("$host/$hostLib").readText())
+        assertEquals("extra", resource("$extraPlatform/libdemo.dylib").readText())
+    }
+
+    @Test
+    fun eagerlyRealisedVerifyStillFailsOnAMissingLibrary() {
+        write("prebuilt/native/$extraPlatform/libdemo.dylib", "extra")
+        setUpEager()
+
+        val result = run("processResources").buildAndFail()
+
+        assertTrue(result.output.contains("Native library not found"), result.output)
+    }
+
     /** The README native-jar consumer: `crateName` + `bundleNative = false`, no cargoRoot / targetDir. */
     private fun setUpWithoutCargoRoot(vesperaBlock: String) {
         write("settings.gradle.kts", "rootProject.name = \"consumer\"\n")
@@ -270,6 +315,12 @@ class VesperaBridgePluginFunctionalTest {
                 packageName.set("demo")
                 targets.put("$crossPlatform", "$crossTriple")
             """ + printCommands,
+            // A declared output: without `upToDateWhen { false }` the second
+            // run would be UP-TO-DATE (a task without outputs never is, so
+            // the assertion would hold either way).
+            extra = """
+                tasks.named("cargoBuild") { outputs.file(layout.buildDirectory.file("cargo-marker")) }
+            """,
         )
 
         val first = run("cargoBuild").build()
