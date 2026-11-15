@@ -17,6 +17,7 @@ mod representations;
 mod unit;
 mod variant;
 
+pub(super) use representations::without_single_key_bounds;
 pub(super) use unit::derives_serde_repr;
 
 /// The two serde renaming rules an enum container can carry.

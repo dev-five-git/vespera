@@ -104,7 +104,7 @@ pub(super) fn build_variant_data_schema(
         // Multiple fields tuple variant - array with prefixItems over the
         // positions emitted on the current side
         syn::Fields::Unnamed(fields_unnamed) => Some(SchemaRef::Inline(Box::new(
-            tuple_fields_schema(fields_unnamed, known_schemas, struct_definitions),
+            tuple_fields_schema(fields_unnamed, false, known_schemas, struct_definitions),
         ))),
         syn::Fields::Named(fields_named) => Some(SchemaRef::Inline(Box::new(
             build_struct_variant_fields(

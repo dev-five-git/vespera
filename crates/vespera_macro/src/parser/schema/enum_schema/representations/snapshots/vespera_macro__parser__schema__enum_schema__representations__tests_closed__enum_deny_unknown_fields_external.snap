@@ -25,7 +25,8 @@ expression: "serde_json::to_string_pretty(&schema).unwrap()"
       },
       "required": [
         "S"
-      ]
+      ],
+      "maxProperties": 1
     },
     {
       "type": "object",
@@ -52,7 +53,8 @@ expression: "serde_json::to_string_pretty(&schema).unwrap()"
       },
       "required": [
         "T"
-      ]
+      ],
+      "maxProperties": 1
     },
     {
       "type": "object",
@@ -63,7 +65,8 @@ expression: "serde_json::to_string_pretty(&schema).unwrap()"
       },
       "required": [
         "N"
-      ]
+      ],
+      "maxProperties": 1
     },
     {
       "type": "string",

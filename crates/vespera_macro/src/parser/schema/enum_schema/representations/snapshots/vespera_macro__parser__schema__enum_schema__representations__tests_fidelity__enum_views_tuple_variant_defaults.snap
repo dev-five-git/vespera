@@ -1,0 +1,7 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
+expression: both_views(src)
+---
+enum E { P(u8, #[serde(default)] u8), Q(#[serde(default)] u8, u8, #[serde(default)] u8) }
+response: {"oneOf":[{"type":"object","properties":{"P":{"type":"array","prefixItems":[{"type":"integer","format":"uint8","minimum":0,"maximum":255},{"type":"integer","format":"uint8","minimum":0,"maximum":255}],"minItems":2,"maxItems":2}},"required":["P"],"maxProperties":1},{"type":"object","properties":{"Q":{"type":"array","prefixItems":[{"type":"integer","format":"uint8","minimum":0,"maximum":255},{"type":"integer","format":"uint8","minimum":0,"maximum":255},{"type":"integer","format":"uint8","minimum":0,"maximum":255}],"minItems":3,"maxItems":3}},"required":["Q"],"maxProperties":1}]}
+request: {"oneOf":[{"type":"object","properties":{"P":{"type":"array","prefixItems":[{"type":"integer","format":"uint8","minimum":0,"maximum":255},{"type":"integer","format":"uint8","minimum":0,"maximum":255}],"minItems":1,"maxItems":2}},"required":["P"],"maxProperties":1},{"type":"object","properties":{"Q":{"type":"array","prefixItems":[{"type":"integer","format":"uint8","minimum":0,"maximum":255},{"type":"integer","format":"uint8","minimum":0,"maximum":255},{"type":"integer","format":"uint8","minimum":0,"maximum":255}],"minItems":2,"maxItems":3}},"required":["Q"],"maxProperties":1}]}
