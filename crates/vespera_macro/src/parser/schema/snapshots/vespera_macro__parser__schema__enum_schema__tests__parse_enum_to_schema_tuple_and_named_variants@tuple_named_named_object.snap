@@ -219,7 +219,9 @@ Schema {
                     ),
                     additional_properties: None,
                     min_properties: None,
-                    max_properties: None,
+                    max_properties: Some(
+                        1,
+                    ),
                     enum: None,
                     all_of: None,
                     any_of: None,

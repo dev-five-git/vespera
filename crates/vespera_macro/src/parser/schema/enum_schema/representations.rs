@@ -109,12 +109,16 @@ pub(super) fn parse_externally_tagged_enum(
         if let Some(data_schema) =
             build_variant_data_schema(variant, renames, known_schemas, struct_definitions)
         {
-            // Tuple / struct variant: {"VariantName": <data>}
+            // Tuple / struct variant: {"VariantName": <data>} — exactly
+            // that one key: serde_json's `deserialize_enum` rejects anything
+            // after the variant entry (see `without_single_key_bounds` for
+            // the contexts that merge more keys next to it).
             for key in keys {
                 one_of_schemas.push(SchemaRef::Inline(Box::new(Schema {
                     description: variant_description.clone(),
                     properties: Some(BTreeMap::from([(key.clone(), data_schema.clone())])),
                     required: Some(vec![key]),
+                    max_properties: Some(1),
                     ..Schema::object()
                 })));
             }
@@ -133,6 +137,34 @@ pub(super) fn parse_externally_tagged_enum(
         one_of: non_empty(one_of_schemas),
         ..Schema::new(SchemaType::Object)
     }
+}
+
+/// `schema` without the `maxProperties: 1` of its externally tagged data
+/// branches (see [`parse_externally_tagged_enum`]), for a context where
+/// serde reads the enum from a map holding other keys too — a `flatten`ed
+/// enum (`FlatMapDeserializer` picks the variant key out of the buffered
+/// map) or an internally tagged newtype payload (next to the tag). `None`
+/// when there is no such branch.
+pub(in crate::parser::schema) fn without_single_key_bounds(schema: &Schema) -> Option<Schema> {
+    let branches = schema.one_of.as_ref()?;
+    let mut changed = false;
+    let one_of = branches
+        .iter()
+        .map(|branch| match branch {
+            SchemaRef::Inline(inline) if inline.max_properties == Some(1) => {
+                changed = true;
+                SchemaRef::Inline(Box::new(Schema {
+                    max_properties: None,
+                    ..(**inline).clone()
+                }))
+            }
+            other => other.clone(),
+        })
+        .collect();
+    changed.then(|| Schema {
+        one_of: Some(one_of),
+        ..schema.clone()
+    })
 }
 
 /// The object schema of an internally tagged newtype payload that constrains
@@ -260,14 +292,21 @@ pub(super) fn parse_internally_tagged_enum(
                     // A map-like (or referenced struct) inner value carries the
                     // tag: a closed payload object as one of its own properties.
                     None | Some(SchemaType::Object) => {
-                        match payload.and_then(closed_payload_object) {
+                        match payload.clone().and_then(closed_payload_object) {
                             Some(object) => with_tag_property(
                                 object,
                                 &tag_string,
                                 &tag_schema,
                                 variant_description,
                             ),
-                            None => tag_and(inner, variant_description),
+                            // An externally tagged enum payload is read from the
+                            // map left once the tag is taken out.
+                            None => match payload.as_ref().and_then(without_single_key_bounds) {
+                                Some(open) => {
+                                    tag_and(SchemaRef::Inline(Box::new(open)), variant_description)
+                                }
+                                None => tag_and(inner, variant_description),
+                            },
                         }
                     }
                     // A `$ref` to a non-object component is reported once
@@ -335,9 +374,11 @@ pub(super) fn parse_adjacently_tagged_enum(
             if !absent_is_none {
                 required.push(content_string.clone());
             }
-        } else if renames.deny_unknown_fields && matches!(variant.fields, syn::Fields::Unit) {
-            // serde reads a unit variant's content key when present (as
-            // `null`), so the closed object must list it — optional.
+        } else if matches!(variant.fields, syn::Fields::Unit) {
+            // serde reads a unit variant's content key when present — even
+            // in an open container it is the content, never an ignored key —
+            // and accepts only `null` (`UntaggedUnitVisitor`), so it is
+            // listed, optional (serde never writes it).
             properties.insert(
                 content_string.clone(),
                 SchemaRef::Inline(Box::new(Schema::new(SchemaType::Null))),
@@ -422,7 +463,7 @@ pub(super) fn parse_untagged_enum(
             }
             (None, syn::Fields::Unnamed(fields_unnamed)) => Schema {
                 description: variant_description,
-                ..tuple_fields_schema(fields_unnamed, known_schemas, struct_definitions)
+                ..tuple_fields_schema(fields_unnamed, false, known_schemas, struct_definitions)
             },
             (None, syn::Fields::Named(fields_named)) => build_struct_variant_fields(
                 fields_named,

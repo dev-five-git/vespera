@@ -13,7 +13,8 @@ Either<String, Option<User>> => {
       },
       "required": [
         "Left"
-      ]
+      ],
+      "maxProperties": 1
     },
     {
       "type": "object",
@@ -31,7 +32,8 @@ Either<String, Option<User>> => {
       },
       "required": [
         "Right"
-      ]
+      ],
+      "maxProperties": 1
     }
   ]
 }

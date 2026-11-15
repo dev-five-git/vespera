@@ -1,8 +1,7 @@
 ---
 source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
-assertion_line: 144
 expression: both_views(src)
 ---
 enum E { Score(#[schema(maximum = 10)] u8), Pair(#[garde(length(chars, min = 1))] String, #[doc = " Position."] #[deprecated] u8) }
-response: {"oneOf":[{"type":"object","properties":{"Score":{"type":"integer","format":"uint8","minimum":0,"maximum":10}},"required":["Score"]},{"type":"object","properties":{"Pair":{"type":"array","prefixItems":[{"type":"string","minLength":1},{"type":"integer","format":"uint8","description":"Position.","minimum":0,"maximum":255,"deprecated":true}],"minItems":2,"maxItems":2}},"required":["Pair"]}]}
-request: {"oneOf":[{"type":"object","properties":{"Score":{"type":"integer","format":"uint8","minimum":0,"maximum":10}},"required":["Score"]},{"type":"object","properties":{"Pair":{"type":"array","prefixItems":[{"type":"string","minLength":1},{"type":"integer","format":"uint8","description":"Position.","minimum":0,"maximum":255,"deprecated":true}],"minItems":2,"maxItems":2}},"required":["Pair"]}]}
+response: {"oneOf":[{"type":"object","properties":{"Score":{"type":"integer","format":"uint8","minimum":0,"maximum":10}},"required":["Score"],"maxProperties":1},{"type":"object","properties":{"Pair":{"type":"array","prefixItems":[{"type":"string","minLength":1},{"type":"integer","format":"uint8","description":"Position.","minimum":0,"maximum":255,"deprecated":true}],"minItems":2,"maxItems":2}},"required":["Pair"],"maxProperties":1}]}
+request: {"oneOf":[{"type":"object","properties":{"Score":{"type":"integer","format":"uint8","minimum":0,"maximum":10}},"required":["Score"],"maxProperties":1},{"type":"object","properties":{"Pair":{"type":"array","prefixItems":[{"type":"string","minLength":1},{"type":"integer","format":"uint8","description":"Position.","minimum":0,"maximum":255,"deprecated":true}],"minItems":2,"maxItems":2}},"required":["Pair"],"maxProperties":1}]}

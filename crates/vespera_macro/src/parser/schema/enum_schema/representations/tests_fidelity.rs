@@ -16,6 +16,7 @@ fn both_views(src: &str) -> String {
         "Ping".to_string(),
         "Payload".to_string(),
         "Closed".to_string(),
+        "Shape".to_string(),
     ]);
     let definitions = HashMap::from([
         ("Ping".to_string(), "struct Ping;".to_string()),
@@ -26,6 +27,10 @@ fn both_views(src: &str) -> String {
         (
             "Payload".to_string(),
             "struct Payload { id: u32 }".to_string(),
+        ),
+        (
+            "Shape".to_string(),
+            "enum Shape { Square(u8), Circle { r: u8 } }".to_string(),
         ),
     ]);
     let response = parse_enum_to_schema(&item, &known, &definitions);
@@ -139,6 +144,24 @@ fn both_views(src: &str) -> String {
 #[case::positional_field_rules(
     "positional_field_rules",
     r#"enum E { Score(#[schema(maximum = 10)] u8), Pair(#[garde(length(chars, min = 1))] String, #[doc = " Position."] #[deprecated] u8) }"#
+)]
+// Round 10: a tuple-variant position with `#[serde(default)]` may be
+// omitted on input (trailing items are read from their defaults).
+#[case::tuple_variant_defaults(
+    "tuple_variant_defaults",
+    "enum E { P(u8, #[serde(default)] u8), Q(#[serde(default)] u8, u8, #[serde(default)] u8) }"
+)]
+// Round 10: an adjacently tagged unit variant reads a present content key,
+// accepting only `null` (open container too).
+#[case::adjacent_unit_content(
+    "adjacent_unit_content",
+    r#"#[serde(tag = "t", content = "c")] enum E { U, S(u8) }"#
+)]
+// Round 10: an externally tagged payload of an internally tagged newtype
+// sits next to the tag, so its branches lose `maxProperties: 1`.
+#[case::internal_external_payload(
+    "internal_external_payload",
+    r#"#[serde(tag = "type")] enum E { A(Shape), B(Option<Shape>) }"#
 )]
 fn enum_views(#[case] name: &str, #[case] src: &str) {
     insta::assert_snapshot!(format!("enum_views_{name}"), both_views(src));

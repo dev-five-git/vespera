@@ -28,7 +28,8 @@ expression: "serde_json::to_string_pretty(&components).unwrap()"
         },
         "required": [
           "Cons"
-        ]
+        ],
+        "maxProperties": 1
       }
     ]
   },
@@ -60,7 +61,8 @@ expression: "serde_json::to_string_pretty(&components).unwrap()"
         },
         "required": [
           "Cons"
-        ]
+        ],
+        "maxProperties": 1
       }
     ]
   },

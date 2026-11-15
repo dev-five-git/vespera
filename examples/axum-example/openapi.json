@@ -3583,6 +3583,9 @@
             "type": "object",
             "description": "Empty response (unit variant)",
             "properties": {
+              "data": {
+                "type": "null"
+              },
               "type": {
                 "type": "string",
                 "enum": [
@@ -4719,7 +4722,8 @@
             },
             "required": [
               "A"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4743,7 +4747,8 @@
             },
             "required": [
               "B"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4755,7 +4760,8 @@
             },
             "required": [
               "C"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4766,7 +4772,8 @@
             },
             "required": [
               "D"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4780,7 +4787,8 @@
             },
             "required": [
               "E"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4802,7 +4810,8 @@
             },
             "required": [
               "F"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4816,7 +4825,8 @@
             },
             "required": [
               "G"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4830,7 +4840,8 @@
             },
             "required": [
               "H"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4841,7 +4852,8 @@
             },
             "required": [
               "I"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4855,7 +4867,8 @@
             },
             "required": [
               "J"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4876,7 +4889,8 @@
             },
             "required": [
               "K"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4890,7 +4904,8 @@
             },
             "required": [
               "L"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4907,7 +4922,8 @@
             },
             "required": [
               "M"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4924,7 +4940,8 @@
             },
             "required": [
               "N"
-            ]
+            ],
+            "maxProperties": 1
           }
         ]
       },
@@ -5043,7 +5060,8 @@
             },
             "required": [
               "Created"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -5064,7 +5082,8 @@
             },
             "required": [
               "Updated"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -5077,7 +5096,8 @@
             },
             "required": [
               "Deleted"
-            ]
+            ],
+            "maxProperties": 1
           }
         ]
       },

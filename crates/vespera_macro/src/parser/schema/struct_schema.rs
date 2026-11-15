@@ -157,7 +157,12 @@ fn parse_struct_body(
         // side are not serialized / read, so they are not array items).
         Fields::Unnamed(fields_unnamed) => Schema {
             description: struct_description,
-            ..tuple_fields_schema(fields_unnamed, known_schemas, struct_definitions)
+            ..tuple_fields_schema(
+                fields_unnamed,
+                extract_default(&struct_item.attrs).is_some(),
+                known_schemas,
+                struct_definitions,
+            )
         },
         // `struct Marker;` → serde writes (and reads) a unit struct as `null`.
         Fields::Unit => Schema {
@@ -172,14 +177,19 @@ fn parse_struct_body(
 /// (`#[serde(skip)]`, `skip_serializing` in the response view,
 /// `skip_deserializing` in the request view) is neither written nor read,
 /// and each position honours its `#[schema(value_type)]` / `#[schema(any)]` /
-/// serde `with` family (see [`field_schema_ref`]).
+/// serde `with` family (see [`field_schema_ref`]). serde reads a missing
+/// trailing position from its `#[serde(default)]` (or the container's, for
+/// a tuple struct — `container_default`; serde_derive
+/// `expr_is_missing_seq`), so the request view only requires the positions
+/// up to the last one without a default.
 pub(super) fn tuple_fields_schema(
     fields: &syn::FieldsUnnamed,
+    container_default: bool,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Schema {
     let side = super::request_view::current_side();
-    let prefix_items: Vec<SchemaRef> = fields
+    let emitted: Vec<&syn::Field> = fields
         .unnamed
         .iter()
         .filter(|field| {
@@ -190,16 +200,27 @@ pub(super) fn tuple_fields_schema(
                     SerdeSide::Deserialize => flags.skip_deserializing,
                 })
         })
+        .collect();
+    let len = emitted.len();
+    let min_items = match side {
+        SerdeSide::Serialize => len,
+        SerdeSide::Deserialize if container_default => 0,
+        SerdeSide::Deserialize => emitted
+            .iter()
+            .rposition(|field| extract_default(&field.attrs).is_none())
+            .map_or(0, |last| last + 1),
+    };
+    let prefix_items = emitted
+        .into_iter()
         .map(|field| {
             let schema_ref =
                 positional_field_schema(field, side, known_schemas, struct_definitions);
             annotate_field(schema_ref, field, false, false)
         })
         .collect();
-    let len = prefix_items.len();
     Schema {
         prefix_items: Some(prefix_items),
-        min_items: Some(len),
+        min_items: Some(min_items),
         max_items: Some(len),
         ..Schema::new(SchemaType::Array)
     }

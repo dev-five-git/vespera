@@ -16,7 +16,8 @@ ApiResponse<Vec<User>> => {
       },
       "required": [
         "Ok"
-      ]
+      ],
+      "maxProperties": 1
     },
     {
       "type": "object",
@@ -35,7 +36,8 @@ ApiResponse<Vec<User>> => {
       },
       "required": [
         "Err"
-      ]
+      ],
+      "maxProperties": 1
     }
   ]
 }

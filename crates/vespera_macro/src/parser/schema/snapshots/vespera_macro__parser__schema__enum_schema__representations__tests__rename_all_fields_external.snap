@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests.rs
-assertion_line: 809
 expression: "serde_json::to_string_pretty(&schema).unwrap()"
 ---
 {
@@ -23,7 +22,8 @@ expression: "serde_json::to_string_pretty(&schema).unwrap()"
       },
       "required": [
         "user_created"
-      ]
+      ],
+      "maxProperties": 1
     },
     {
       "type": "object",
@@ -43,7 +43,8 @@ expression: "serde_json::to_string_pretty(&schema).unwrap()"
       },
       "required": [
         "user_deleted"
-      ]
+      ],
+      "maxProperties": 1
     }
   ]
 }
