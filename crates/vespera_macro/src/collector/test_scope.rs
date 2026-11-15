@@ -126,10 +126,12 @@ impl TestScope {
             } else {
                 vec![parent.join("mod.rs"), parent.with_extension("rs")]
             };
-            if declarers
-                .iter()
-                .any(|declarer| self.gated_mods_of(declarer).contains(segment))
-            {
+            let rest = &segments[depth..];
+            if declarers.iter().any(|declarer| {
+                self.gated_mods_of(declarer)
+                    .iter()
+                    .any(|gated| chain_starts_with(rest, gated))
+            }) {
                 return true;
             }
             parent.push(segment);
@@ -137,21 +139,49 @@ impl TestScope {
         false
     }
 
+    /// A declarer's test-gated `mod`s as `::`-joined paths relative to it:
+    /// `b` for a top-level `#[cfg(test)] mod b;`, `a::b` for one declared
+    /// inside an inline `mod a { .. }` (whose file is `<dir>/a/b.rs`).
     fn gated_mods_of(&mut self, declarer: &Path) -> &HashSet<String> {
-        /// A declarer's test-gated `mod` names, kept while it is unchanged.
+        /// A declarer's test-gated `mod` paths, kept while it is unchanged.
         struct GatedMods(HashSet<String>);
         self.gated_mods
             .entry(declarer.to_path_buf())
             .or_insert_with(|| {
                 let gated = file_cache::derived(declarer, |content| {
-                    GatedMods(gating_names(content, |item| match item {
-                        Item::Mod(module) if attrs_test_only(&module.attrs) => Some(&module.ident),
-                        _ => None,
-                    }))
+                    let mut paths = HashSet::new();
+                    if may_gate_tests(content)
+                        && let Ok(ast) = syn::parse_file(content)
+                    {
+                        gated_mod_paths(&ast.items, "", &mut paths);
+                    }
+                    GatedMods(paths)
                 });
                 gated.map(|gated| gated.0.clone()).unwrap_or_default()
             })
     }
+}
+
+/// Collect the test-gated `mod`s among `items` (prefixed by `prefix`),
+/// recursing into the ungated inline modules: a gated inline module gates
+/// everything it nests, so its own name is enough.
+fn gated_mod_paths(items: &[Item], prefix: &str, out: &mut HashSet<String>) {
+    for item in items {
+        let Item::Mod(module) = item else { continue };
+        let path = format!("{prefix}{}", syn::ext::IdentExt::unraw(&module.ident));
+        if attrs_test_only(&module.attrs) {
+            out.insert(path);
+        } else if let Some((_, content)) = &module.content {
+            gated_mod_paths(content, &format!("{path}::"), out);
+        }
+    }
+}
+
+/// Whether the module chain `rest` begins with the `::`-joined `path`.
+fn chain_starts_with(rest: &[String], path: &str) -> bool {
+    let mut rest = rest.iter();
+    path.split("::")
+        .all(|part| rest.next().is_some_and(|segment| segment == part))
 }
 
 /// The unraw names `pick` selects among the top-level items of `content`,

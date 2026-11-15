@@ -650,7 +650,12 @@ fn error_path_uses_the_serde_deserialize_name(#[case] name: &str, #[case] input:
 #[case("u8", Some((0, 255)))]
 #[case("u16", Some((0, 65_535)))]
 #[case("u32", Some((0, 4_294_967_295)))]
+#[case("u64", Some((0, 18_446_744_073_709_551_615)))]
+#[case("usize", Some((0, 18_446_744_073_709_551_615)))]
+#[case("u128", Some((0, 340_282_366_920_938_463_463_374_607_431_768_211_455)))]
+#[case("f32", None)]
 #[case("f64", None)]
+#[case("String", None)]
 fn integer_range_covers_every_kind(#[case] kind: &str, #[case] expected: Option<(i128, u128)>) {
     assert_eq!(integer_range(kind), expected);
 }

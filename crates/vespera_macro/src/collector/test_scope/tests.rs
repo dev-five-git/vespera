@@ -69,6 +69,35 @@ fn files_behind_test_only_module_declarations() {
     assert!(!TestScope::new(None).file_test_only(&src.join("routes/fixtures.rs")));
 }
 
+/// An out-of-line `#[cfg(test)] mod` declared inside an inline module gates
+/// its file (`mod a { #[cfg(test)] mod b; }` loads `src/a/b.rs`), however
+/// deep the inline nesting; an ungated sibling stays production.
+#[test]
+fn test_only_mods_inside_inline_modules() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "mod a { #[cfg(test)] mod b; mod c; mod d { #[cfg(test)] mod e; } } #[cfg(test)] mod t { mod u; }",
+        ),
+        ("a/b.rs", "pub mod deep;"),
+        ("a/b/deep.rs", ""),
+        ("a/c.rs", ""),
+        ("a/d/e.rs", ""),
+        ("t/u.rs", ""),
+        ("b.rs", ""),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    let gated = |scope: &mut TestScope, relative: &str| scope.file_test_only(&src.join(relative));
+    assert!(gated(&mut scope, "a/b.rs"));
+    assert!(gated(&mut scope, "a/b/deep.rs"));
+    assert!(gated(&mut scope, "a/d/e.rs"));
+    assert!(gated(&mut scope, "t/u.rs"));
+    assert!(!gated(&mut scope, "a/c.rs"));
+    // `b` is gated only as `a::b`, not at the crate root.
+    assert!(!gated(&mut scope, "b.rs"));
+}
+
 /// `.` / `..` fold without touching the filesystem; relative paths are
 /// absolutized; climbing above the root is no path.
 #[test]

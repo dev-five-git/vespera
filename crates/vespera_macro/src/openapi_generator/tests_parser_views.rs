@@ -1,11 +1,12 @@
 //! End-to-end checks of parser views: request parameters read through the
-//! request (deserialize) view, transparent extractor containers, recursive
-//! generic enums and flattened members.
+//! request (deserialize) view, transparent and enum-sourced extractors,
+//! recursive generic definitions, a generic instance name colliding with a
+//! user schema, and generic instances' `default = "fn"` values.
 
 use super::tests_accuracy::{generate, pretty, route, schema, stored};
 use crate::metadata::CollectedMetadata;
 
-/// One GET route `/{id}` per `(fn_name, signature)` over `structs`.
+/// One GET route per `(path, fn_name, signature)` over `structs`.
 fn doc_for(structs: &[(&str, &str)], routes: &[(&str, &str, &str)]) -> String {
     let mut metadata = CollectedMetadata::new();
     for (name, definition) in structs {

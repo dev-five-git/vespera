@@ -1,17 +1,23 @@
 error: invalid security scheme type: `magic`. Expected `apiKey`, `http`, `mutualTLS`, `oauth2`, or `openIdConnect`
- --> tests/ui/vespera_security_servers_invalid.rs:6:66
+ --> tests/ui/vespera_security_servers_invalid.rs:7:66
   |
-6 |     let _ = vespera!(security_schemes = [{ name = "auth", type = "magic" }]);
+7 |     let _ = vespera!(security_schemes = [{ name = "auth", type = "magic" }]);
   |                                                                  ^^^^^^^
 
 error: vespera! macro: security scheme `key` of type `apiKey` is missing required field `in` (one of "query", "header", or "cookie")
-  --> tests/ui/vespera_security_servers_invalid.rs:10:42
+  --> tests/ui/vespera_security_servers_invalid.rs:11:42
    |
-10 |     let _ = vespera!(security_schemes = [{ name = "key", type = "apiKey", header_name = "X-Key" }]);
+11 |     let _ = vespera!(security_schemes = [{ name = "key", type = "apiKey", header_name = "X-Key" }]);
    |                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-error: invalid server URL: `localhost:3000`. URL must start with `http://`, `https://` or `/` (a URL relative to the document's host)
-  --> tests/ui/vespera_security_servers_invalid.rs:14:41
+error: vespera! macro: security scheme name "Bearer Auth" must match `^[a-zA-Z0-9.\-_]+$` (it is a `components.securitySchemes` key)
+  --> tests/ui/vespera_security_servers_invalid.rs:15:51
    |
-14 |     let _ = vespera!(servers = [{ url = "localhost:3000" }]);
+15 |     let _ = vespera!(security_schemes = [{ name = "Bearer Auth", type = "http", scheme = "bearer" }]);
+   |                                                   ^^^^^^^^^^^^^
+
+error: invalid server URL: `localhost:3000`. URL must start with `http://`, `https://` or `/` (a URL relative to the document's host)
+  --> tests/ui/vespera_security_servers_invalid.rs:19:41
+   |
+19 |     let _ = vespera!(servers = [{ url = "localhost:3000" }]);
    |                                         ^^^^^^^^^^^^^^^^

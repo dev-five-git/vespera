@@ -104,7 +104,7 @@ fn test_process_vespera_macro_collect_metadata_error() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let _manifest = isolated_manifest_dir(&temp_dir);
 
-    // Create an invalid route file (will cause parse error but collect_metadata handles it)
+    // An invalid route file: collect_metadata fails to parse it.
     create_temp_file(&temp_dir, "invalid.rs", "not valid rust code {{{");
 
     let processed = ProcessedVesperaInput {
@@ -124,7 +124,7 @@ fn test_process_vespera_macro_collect_metadata_error() {
         literal_hash: None,
     };
 
-    // This exercises the collect_metadata path (which handles parse errors gracefully)
+    // The parse error propagates out of collect_metadata as a macro error.
     let result = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
     // An unparseable route file is a scan error naming the folder.
     let err = result
