@@ -393,8 +393,15 @@ pub async fn finish_resumable(
                 > u64::try_from(out.len()).unwrap_or(u64::MAX)
         });
     if overflow_now {
+        // The header already serialized into `out` when it fit (a body
+        // overflow / event stream): copy those bytes instead of serializing
+        // it a second time.
+        let header = out.get(..header_total).map_or_else(
+            || build_wire_header_bytes(status, &headers, &metadata),
+            <[u8]>::to_vec,
+        );
         return ResumableDirectWrite::Overflow(PendingDirectResponse::with_body(
-            build_wire_header_bytes(status, &headers, &metadata),
+            header,
             Vec::new(),
             body,
             prefers_streaming,

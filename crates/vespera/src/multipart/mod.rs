@@ -14,7 +14,8 @@
 //! - [`TryFromFieldWithState<S>`] — Trait for parsing a single multipart field
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
+use std::sync::{Mutex, PoisonError};
 
 use axum::extract::multipart::Field;
 use axum::extract::{FromRequest, Request};
@@ -339,6 +340,13 @@ pub const DEFAULT_MULTIPART_MAX_FIELDS: usize = 1024;
 static DEFAULT_MULTIPART_TOTAL_LIMIT: AtomicUsize =
     AtomicUsize::new(DEFAULT_MULTIPART_MAX_TOTAL_BYTES);
 static DEFAULT_MULTIPART_FIELD_LIMIT: AtomicUsize = AtomicUsize::new(DEFAULT_MULTIPART_MAX_FIELDS);
+/// Sequence lock over the two default limits above: odd while
+/// [`set_default_multipart_limits`] is writing, bumped by two per write, so
+/// [`default_multipart_limits`] never returns a mixed (new total, old
+/// field count) pair — and still reads with plain loads, no lock.
+static DEFAULT_MULTIPART_LIMITS_SEQ: AtomicU64 = AtomicU64::new(0);
+/// Serializes the (rare, startup) writers of the default limits.
+static DEFAULT_MULTIPART_LIMITS_WRITER: Mutex<()> = Mutex::new(());
 
 /// Aggregate resource policy for [`TypedMultipart`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -363,10 +371,19 @@ impl MultipartLimits {
 /// Return the process-wide default aggregate multipart policy.
 #[must_use]
 pub fn default_multipart_limits() -> MultipartLimits {
-    MultipartLimits::new(
-        DEFAULT_MULTIPART_TOTAL_LIMIT.load(Ordering::Relaxed),
-        DEFAULT_MULTIPART_FIELD_LIMIT.load(Ordering::Relaxed),
-    )
+    // Seqlock read: retry while a write is in progress (odd) or one
+    // completed between the two sequence loads.
+    loop {
+        let seq = DEFAULT_MULTIPART_LIMITS_SEQ.load(Ordering::Acquire);
+        let limits = MultipartLimits::new(
+            DEFAULT_MULTIPART_TOTAL_LIMIT.load(Ordering::Relaxed),
+            DEFAULT_MULTIPART_FIELD_LIMIT.load(Ordering::Relaxed),
+        );
+        fence(Ordering::Acquire);
+        if seq & 1 == 0 && DEFAULT_MULTIPART_LIMITS_SEQ.load(Ordering::Relaxed) == seq {
+            return limits;
+        }
+    }
 }
 
 /// Set the process-wide default aggregate multipart policy.
@@ -374,11 +391,22 @@ pub fn default_multipart_limits() -> MultipartLimits {
 /// Prefer calling this during application startup, before request handling. For
 /// per-route policies use [`TypedMultipartWithLimits`], which avoids global
 /// process state and is therefore safer in tests and multi-tenant apps.
+///
+/// The pair is replaced atomically: a concurrent request sees either the
+/// previous limits or `limits`, never one field of each.
 pub fn set_default_multipart_limits(limits: MultipartLimits) -> MultipartLimits {
-    MultipartLimits::new(
+    let _writer = DEFAULT_MULTIPART_LIMITS_WRITER
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let seq = DEFAULT_MULTIPART_LIMITS_SEQ.load(Ordering::Relaxed);
+    DEFAULT_MULTIPART_LIMITS_SEQ.store(seq.wrapping_add(1), Ordering::Relaxed);
+    fence(Ordering::Release);
+    let previous = MultipartLimits::new(
         DEFAULT_MULTIPART_TOTAL_LIMIT.swap(limits.max_total_bytes, Ordering::Relaxed),
         DEFAULT_MULTIPART_FIELD_LIMIT.swap(limits.max_fields, Ordering::Relaxed),
-    )
+    );
+    DEFAULT_MULTIPART_LIMITS_SEQ.store(seq.wrapping_add(2), Ordering::Release);
+    previous
 }
 
 #[derive(Debug)]

@@ -11,7 +11,7 @@ use axum::body::Body;
 use http_body_util::BodyExt;
 
 use crate::bounded::{Deadline, Prefetched422, prefetch_422_body, timeout_wire};
-use crate::dispatch::{cap_and_split, parse_validate_resolve};
+use crate::dispatch::{cap_and_split, parse_validate_resolve, path_bytes_for_owned};
 use crate::internal::{BODY_SINK_STOPPED_MSG, BODY_STREAM_ERROR_MSG, dispatch_and_split};
 use crate::wire::{
     WIRE_HEADER_RESERVE, build_wire_header_bytes, build_wire_header_bytes_hoisting, error_wire,
@@ -177,10 +177,11 @@ where
             &header.method,
             &header.path,
             &header.query,
-            None,
+            // Owned wire path: the URI shares the path bytes of
+            // `header_bytes` (no `Uri::try_from(&str)` copy), and plain-value
+            // `HeaderValue`s are constructed zero-copy from them too.
+            path_bytes_for_owned(&header_bytes, &header),
             header.iter_str_pairs(),
-            // Owned wire path: share `header_bytes` so plain-value
-            // `HeaderValue`s are constructed zero-copy.
             Some(&header_bytes),
             Body::from(body_bytes),
             default_json_when_absent,
@@ -539,19 +540,16 @@ where
     // signal only that a non-empty body should default.  Computed before
     // `body_bytes` is moved.
     let default_json_when_absent = !body_bytes.is_empty();
-    // Streaming is dominated by body throughput, so the owned-path URI
-    // zero-copy is not worth threading here — pass `None` (the URI is parsed
-    // from the borrowed path by `build_uri`, exactly as before).  Header
-    // values, however, are still inserted into the request `HeaderMap` per
-    // request — share `header_bytes` so each plain value is constructed
-    // zero-copy via `HeaderValue::from_maybe_shared`.
+    // Owned wire path: the URI shares the path bytes of `header_bytes` (the
+    // buffered paths' zero-copy URI), and each plain header value is
+    // constructed zero-copy via `HeaderValue::from_maybe_shared`.
     let (status, headers, metadata, body) = match deadline
         .run(pin!(dispatch_and_split(
             router,
             &header.method,
             &header.path,
             &header.query,
-            None,
+            path_bytes_for_owned(&header_bytes, &header),
             header.iter_str_pairs(),
             Some(&header_bytes),
             Body::from(body_bytes),
@@ -865,17 +863,15 @@ where
     // the bodyful bidirectional requests that are this path's reason to
     // exist, instead of leaving extractor behaviour mode-dependent.
     let default_json_when_absent = true;
-    // See the response-streaming sibling: streaming is body-throughput bound,
-    // so pass `None` rather than threading the owned-path URI zero-copy here.
-    // Share `header_bytes` for the per-request `HeaderValue` insertions so
-    // each plain value is constructed zero-copy.
+    // Owned wire path: zero-copy URI + header values, as in the
+    // response-streaming sibling.
     let dispatched = deadline
         .run(pin!(dispatch_and_split(
             router,
             &header.method,
             &header.path,
             &header.query,
-            None,
+            path_bytes_for_owned(&header_bytes, &header),
             header.iter_str_pairs(),
             Some(&header_bytes),
             body,

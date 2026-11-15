@@ -25,6 +25,23 @@ async fn echo(body: Bytes) -> Bytes {
     body
 }
 
+/// Echo every request header (`name: value` lines, raw value bytes), the
+/// URI and the body.
+async fn headers_echo(request: axum::extract::Request) -> Vec<u8> {
+    let mut out = format!("{}\n", request.uri()).into_bytes();
+    for (name, value) in request.headers() {
+        out.extend_from_slice(name.as_str().as_bytes());
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(value.as_bytes());
+        out.push(b'\n');
+    }
+    let body = axum::body::to_bytes(request.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    out.extend_from_slice(&body);
+    out
+}
+
 async fn streamed() -> Response {
     let chunks = futures_util::stream::iter([
         Ok::<_, std::io::Error>(Bytes::from_static(b"stream-")),
@@ -51,6 +68,7 @@ fn install() {
                 .route("/stream", get(streamed))
                 .route("/echo", post(echo))
                 .route("/reject", post(reject))
+                .route("/headers", get(headers_echo).post(headers_echo))
         });
     });
 }
@@ -291,6 +309,54 @@ fn borrowed_matches_byte_path_bodyless_with_body_and_422() {
             &reference[..],
             "{method} {path}: borrowed direct-write must be byte-identical to the byte path"
         );
+    }
+}
+
+/// A borrowed request with headers reaches the handler exactly as on the
+/// owned byte path — escaped (owned) values, Latin-1 values, interned and
+/// other names, a query, duplicate names and a body included.
+#[test]
+fn borrowed_headered_request_matches_byte_path() {
+    install();
+    let rt = runtime();
+    let cases: [(&str, &[u8]); 5] = [
+        (
+            r#"{"v":1,"method":"GET","path":"/headers","headers":{"accept":"*/*","x-a":"1"}}"#,
+            b"",
+        ),
+        (
+            r#"{"v":1,"method":"GET","path":"/headers?q=1","headers":{"x-esc":"a\"b\u0041","x-a":"plain","x-l1":"résumé"}}"#,
+            b"",
+        ),
+        (
+            r#"{"v":1,"method":"GET","path":"/headers","query":"page=2","headers":{"x-a":"1","x-a":"2"}}"#,
+            b"",
+        ),
+        (
+            r#"{"v":1,"method":"POST","path":"/headers","headers":{"content-type":"text/plain","x-b":"body"}}"#,
+            b"payload bytes",
+        ),
+        (
+            r#"{"v":1,"method":"POST","path":"/headers","headers":{"x-only":"1"}}"#,
+            b"{}",
+        ),
+    ];
+    for (header, body) in cases {
+        let mut wire = u32::try_from(header.len()).unwrap().to_be_bytes().to_vec();
+        wire.extend_from_slice(header.as_bytes());
+        wire.extend_from_slice(body);
+        let reference = dispatch_from_bytes(wire.clone(), &rt);
+        let (meta, echoed) = decode(&reference);
+        assert_eq!(meta["status"], 200, "{header}");
+        assert!(echoed.starts_with(b"/headers"), "{header}");
+        let mut out = vec![0u8; reference.len() + 64];
+        let result = rt.block_on(dispatch_into_async_borrowed(&wire, &mut out));
+        assert_eq!(
+            result,
+            DirectWriteResult::Complete(reference.len()),
+            "{header}"
+        );
+        assert_eq!(&out[..reference.len()], &reference[..], "{header}");
     }
 }
 

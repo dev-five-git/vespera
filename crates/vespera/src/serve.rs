@@ -121,6 +121,18 @@ use crate::cron::shutdown as stop_cron_scheduling;
 #[cfg(not(feature = "cron"))]
 const fn stop_cron_scheduling() {}
 
+/// Accept connections with `TCP_NODELAY` set: `axum::serve` leaves Nagle on,
+/// so a response written in several pieces (chunked / streamed bodies, a
+/// header flushed before its body) could wait for the peer's delayed ACK —
+/// up to ~40 ms per exchange.  A socket that cannot take the option is
+/// served as is.
+fn no_delay(
+    listener: TcpListener,
+) -> axum::serve::TapIo<TcpListener, fn(&mut tokio::net::TcpStream)> {
+    use axum::serve::ListenerExt as _;
+    listener.tap_io(|stream| drop(stream.set_nodelay(true)))
+}
+
 impl Serve for axum::Router {
     async fn serve(self, addr: impl ToSocketAddrs) -> io::Result<()> {
         self.serve_listener(TcpListener::bind(addr).await?).await
@@ -137,7 +149,7 @@ impl Serve for axum::Router {
 
     async fn serve_listener(self, listener: TcpListener) -> io::Result<()> {
         axum::serve(
-            listener,
+            no_delay(listener),
             self.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
@@ -149,7 +161,7 @@ impl Serve for axum::Router {
         signal: impl Future<Output = ()> + Send + 'static,
     ) -> io::Result<()> {
         axum::serve(
-            listener,
+            no_delay(listener),
             self.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .with_graceful_shutdown(async move {

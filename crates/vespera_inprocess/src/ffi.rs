@@ -304,7 +304,13 @@ impl Completion {
 
 impl Drop for Completion {
     fn drop(&mut self) {
-        self.deliver(error_wire(503, ASYNC_DROPPED_MSG));
+        // Only an undelivered completion (the task dropped mid-await) builds
+        // the `503`: on the normal path `deliver` already ran, and building
+        // (then discarding) the wire anyway cost an allocation per call and,
+        // under `tracing`, logged a spurious `503` WARN for every success.
+        if self.target.is_some() {
+            self.deliver(error_wire(503, ASYNC_DROPPED_MSG));
+        }
     }
 }
 
@@ -333,7 +339,8 @@ fn prepare_async(input: RequestInput<'_>) -> Result<AsyncClaim, Vec<u8>> {
 /// drain waits for the callback too.  Dropped mid-await by a shutdown,
 /// `completion` (the last parameter) drops before `lease`: same order.
 async fn run_async(input: Vec<u8>, lease: RuntimeLease, mut completion: Completion) {
-    let mut dispatch = Box::pin(crate::dispatch_from_bytes_async(input));
+    // Pinned in place: the spawned task is already heap-allocated.
+    let mut dispatch = std::pin::pin!(crate::dispatch_from_bytes_async(input));
     let wire = std::future::poll_fn(|cx| {
         catch_unwind(AssertUnwindSafe(|| dispatch.as_mut().poll(cx)))
             .unwrap_or_else(|_| Poll::Ready(panic_wire()))
@@ -669,5 +676,44 @@ mod tests {
                 .unwrap()
                 .contains("\"status\":400")
         );
+    }
+
+    /// A delivered completion builds no `503` on drop (it used to build one
+    /// and, under `tracing`, log it as a WARN for every successful call); an
+    /// undelivered one still answers the `503` (and logs it once).
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn delivered_completion_builds_no_503_on_drop() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+
+        static EVENTS: AtomicUsize = AtomicUsize::new(0);
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        struct CountEvents;
+        impl<S: tracing::Subscriber> Layer<S> for CountEvents {
+            fn on_event(&self, _: &tracing::Event<'_>, _: Context<'_, S>) {
+                EVENTS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        unsafe extern "C" fn sink(_: *mut c_void, response: *mut u8, len: usize) {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            // SAFETY: the callback owns the response handed to it.
+            unsafe { vespera_free(response, len) };
+        }
+        let completion = || Completion {
+            target: Some((sink as VesperaCallback, std::ptr::null_mut())),
+            permit: None,
+        };
+        let subscriber = tracing_subscriber::registry().with(CountEvents);
+        tracing::subscriber::with_default(subscriber, || {
+            let mut delivered = completion();
+            delivered.deliver(vec![0u8; 4]);
+            drop(delivered);
+            assert_eq!(EVENTS.load(Ordering::SeqCst), 0, "no spurious 503 WARN");
+            assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+            drop(completion());
+            assert_eq!(EVENTS.load(Ordering::SeqCst), 1, "the dropped task's 503");
+            assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+        });
     }
 }

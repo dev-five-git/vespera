@@ -698,6 +698,15 @@ fn bench_request_headers_path(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("dispatch_from_bytes", n), &n, |b, _| {
             b.iter(|| dispatch_from_bytes(wire.clone(), &runtime));
         });
+        // The borrowed DIRECT path (JNI `dispatchDirect0` / C
+        // `vespera_dispatch_into`), the default for small GETs: measures the
+        // per-header name / value cost on the path the Java proxy takes most
+        // (interned common names; promoting the input to a shared `Bytes`
+        // measured slower here, 1.74 -> 1.82-1.88 us at 16 headers).
+        group.bench_with_input(BenchmarkId::new("borrowed_dispatch_into", n), &n, |b, _| {
+            let mut out = vec![0u8; 4096];
+            b.iter(|| runtime.block_on(dispatch_into_async_borrowed(&wire, &mut out)));
+        });
     }
 
     group.finish();

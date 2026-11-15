@@ -38,11 +38,30 @@ use tokio::sync::oneshot;
 
 const SHARDS: usize = 16;
 
-type Shard = Mutex<HashMap<u64, oneshot::Sender<Infallible>, NoHash>>;
+type ShardMap = HashMap<u64, oneshot::Sender<Infallible>, NoHash>;
 
-static REGISTRY: [Shard; SHARDS] = [const { Mutex::new(HashMap::with_hasher(NoHash)) }; SHARDS];
+/// One registry shard, alone on its cache line(s): sequential tokens land
+/// on adjacent shards, so unpadded mutexes (~48 B) would share lines and
+/// bounce them between the threads registering / cancelling concurrently.
+/// 128 B covers the adjacent-line prefetch pair of current x86 / Apple cores.
+#[repr(align(128))]
+struct Shard(Mutex<ShardMap>);
+
+impl Shard {
+    fn lock(&self) -> std::sync::MutexGuard<'_, ShardMap> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+static REGISTRY: [Shard; SHARDS] =
+    [const { Shard(Mutex::new(HashMap::with_hasher(NoHash))) }; SHARDS];
+
+/// [`AtomicU64`] on its own cache line, apart from the shards it indexes.
+#[repr(align(128))]
+struct PaddedCounter(AtomicU64);
+
 /// Next token; starts at 1 so `0` can mean "not cancellable" to hosts.
-static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
+static NEXT_TOKEN: PaddedCounter = PaddedCounter(AtomicU64::new(1));
 
 /// Tokens are unique sequential integers, so they need no real hashing —
 /// one Fibonacci multiply is enough; a trivial hasher also keeps the shard
@@ -100,10 +119,10 @@ struct Deregister(u64);
 
 impl Drop for Deregister {
     fn drop(&mut self) {
-        shard(self.0)
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.0);
+        // The sender drops after the guard (statement end): never wake
+        // under the shard lock.
+        let sender = shard(self.0).lock().remove(&self.0);
+        drop(sender);
     }
 }
 
@@ -115,12 +134,9 @@ impl Drop for Deregister {
 /// Register-then-spawn: the token is live as soon as this returns, so the
 /// host may cancel even before the returned future is first polled.
 pub fn cancellable<F: Future>(future: F) -> (u64, impl Future<Output = Option<F::Output>>) {
-    let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
+    let token = NEXT_TOKEN.0.fetch_add(1, Ordering::Relaxed);
     let (tx, mut rx) = oneshot::channel::<Infallible>();
-    shard(token)
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(token, tx);
+    shard(token).lock().insert(token, tx);
     let guard = Deregister(token);
     let wrapped = async move {
         let _guard = guard;
@@ -149,20 +165,17 @@ pub fn cancellable<F: Future>(future: F) -> (u64, impl Future<Output = Option<F:
 /// Returns `false` for `0`, an unknown token, or one whose future already
 /// finished or was dropped: cancelling late is always harmless.
 pub fn cancel(token: u64) -> bool {
-    shard(token)
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .remove(&token)
-        .is_some()
+    // Taken out under the lock, dropped (waking the future's task) after
+    // it is released: the wake-up may run arbitrary waker code, which must
+    // neither lengthen the critical section nor re-enter the shard.
+    let sender = shard(token).lock().remove(&token);
+    sender.is_some()
 }
 
 /// Number of currently registered (live, not yet cancelled) cancellable
 /// futures across all shards — a diagnostic for leak checks.
 pub fn cancellable_in_flight() -> usize {
-    REGISTRY
-        .iter()
-        .map(|s| s.lock().unwrap_or_else(PoisonError::into_inner).len())
-        .sum()
+    REGISTRY.iter().map(|s| s.lock().len()).sum()
 }
 
 #[cfg(test)]
@@ -186,10 +199,48 @@ mod tests {
     }
 
     fn registered(token: u64) -> bool {
-        shard(token)
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains_key(&token)
+        shard(token).lock().contains_key(&token)
+    }
+
+    /// `cancel` wakes the future's task only after releasing the shard lock:
+    /// a waker that touches the registry (here: reads it) must not deadlock
+    /// on a lock its own `cancel` still holds.
+    #[test]
+    fn cancel_wakes_outside_the_shard_lock() {
+        struct RegistryWaker(Arc<AtomicBool>);
+        impl std::task::Wake for RegistryWaker {
+            fn wake(self: Arc<Self>) {
+                let _ = cancellable_in_flight();
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let woke = Arc::new(AtomicBool::new(false));
+        let (token, fut) = cancellable(std::future::pending::<()>());
+        let worker = std::thread::spawn({
+            let woke = Arc::clone(&woke);
+            move || {
+                let waker = std::task::Waker::from(Arc::new(RegistryWaker(woke)));
+                let mut cx = std::task::Context::from_waker(&waker);
+                let mut fut = std::pin::pin!(fut);
+                assert!(fut.as_mut().poll(&mut cx).is_pending());
+                let (done_tx, done_rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || done_tx.send(cancel(token)));
+                let cancelled = done_rx
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .expect("cancel deadlocked waking under the shard lock");
+                assert!(cancelled);
+                assert_eq!(fut.as_mut().poll(&mut cx), Poll::Ready(None));
+            }
+        });
+        worker.join().unwrap();
+        assert!(woke.load(Ordering::SeqCst));
+        assert!(!registered(token));
+    }
+
+    #[test]
+    fn shards_and_counter_sit_on_their_own_cache_lines() {
+        assert_eq!(std::mem::align_of::<Shard>(), 128);
+        assert_eq!(std::mem::align_of::<PaddedCounter>(), 128);
     }
 
     #[tokio::test]
