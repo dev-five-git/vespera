@@ -454,6 +454,11 @@ fn find_alias<'a>(
             })
             .cloned()
             .collect();
+        // `super::` never names the handler module's own alias: with only
+        // that one left, the type is not expanded.
+        if named.is_empty() && matches!(qualifier, Qualifier::Super) {
+            return None;
+        }
         // Not declared in that module itself (a `pub use` re-export): any
         // unique definition.
         if !named.is_empty() {

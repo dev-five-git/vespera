@@ -1,0 +1,77 @@
+---
+source: crates/vespera_macro/src/parser/schema/embedded/tests.rs
+expression: both_views(src)
+---
+#[serde(tag = "t")] enum E { A(Tree<u8>) }
+response: {
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "kids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/Tree_u8"
+          }
+        },
+        "t": {
+          "type": "string",
+          "enum": [
+            "A"
+          ]
+        },
+        "v": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255
+        }
+      },
+      "required": [
+        "t",
+        "v",
+        "kids"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "discriminator": {
+    "propertyName": "t"
+  }
+}
+request: {
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "kids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/Tree_u8"
+          }
+        },
+        "t": {
+          "type": "string",
+          "enum": [
+            "A"
+          ]
+        },
+        "v": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255
+        }
+      },
+      "required": [
+        "t",
+        "v",
+        "kids"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "discriminator": {
+    "propertyName": "t"
+  }
+}

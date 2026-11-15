@@ -20,7 +20,8 @@ expression: "serde_json::to_string_pretty(&responses).unwrap()"
               },
               "required": [
                 "Ok"
-              ]
+              ],
+              "maxProperties": 1
             },
             {
               "type": "object",
@@ -31,7 +32,8 @@ expression: "serde_json::to_string_pretty(&responses).unwrap()"
               },
               "required": [
                 "Err"
-              ]
+              ],
+              "maxProperties": 1
             }
           ]
         }

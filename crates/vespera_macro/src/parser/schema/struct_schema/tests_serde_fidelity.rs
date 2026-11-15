@@ -262,6 +262,12 @@ fn both_views(src: &str) -> String {
     "alias_optional",
     r#"struct A { #[serde(alias = "nm")] name: Option<String>, #[serde(alias = "a", alias = "b", default)] x: u8 }"#
 )]
+// Round 16 S-L1: an alias equal to the wire name, or repeated, is that one
+// name (see `serde_accepts_duplicate_aliases`).
+#[case::alias_duplicates(
+    "alias_duplicates",
+    r#"#[serde(rename_all = "camelCase")] struct A { #[serde(alias = "userId")] user_id: u64, #[serde(alias = "a", alias = "a")] b: Option<u8>, #[serde(alias = "c", alias = "c")] d: u8 }"#
+)]
 #[case::flatten_aliased(
     "flatten_aliased",
     "#[serde(deny_unknown_fields)] struct Req { id: i32, #[serde(flatten)] a: Aliased }"
@@ -356,4 +362,22 @@ fn flattened_input_components_are_resolved() {
         "struct_views_flattened_input_components",
         format!("{optional}\n{nested}")
     );
+}
+
+/// serde_derive keeps a field's accepted names in a set: an alias equal to
+/// the wire name, or given twice, compiles and is just that name.
+#[test]
+#[allow(dead_code, clippy::duplicated_attributes)]
+fn serde_accepts_duplicate_aliases() {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct A {
+        #[serde(alias = "userId")]
+        user_id: u64,
+        #[serde(alias = "a", alias = "a")]
+        b: Option<u8>,
+    }
+    assert!(serde_json::from_str::<A>(r#"{"userId":1}"#).is_ok());
+    assert!(serde_json::from_str::<A>(r#"{"userId":1,"a":2}"#).is_ok());
+    assert!(serde_json::from_str::<A>(r#"{"userId":1,"a":2,"b":3}"#).is_err());
 }

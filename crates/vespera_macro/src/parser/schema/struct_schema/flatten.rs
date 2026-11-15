@@ -25,11 +25,12 @@
 //! key). Members whose keys are known are therefore MERGED into one object;
 //! only members whose keys cannot be known (a flattened enum, an
 //! unresolvable type) stay `allOf` members — and they keep the merged object
-//! open. Such a member's resolved schema is inlined without its
-//! `additionalProperties: false` (a closed enum's branches): it never sees
-//! the outer keys, so it must not reject them. A newtype / transparent
-//! wrapper (`allOf: [$ref]`) and a recursive generic instance (its
-//! materialised component) are merged like the struct they name.
+//! open. Such a member's resolved schema is inlined with every object inside
+//! it reopened (see `embedded`: closed branches, map variants, `$ref`
+//! branches): it never sees the outer keys, so it must not reject them. A
+//! newtype / transparent wrapper (`allOf: [$ref]`) and a recursive generic
+//! instance (its materialised component) are merged like the struct or
+//! flattened like the enum they name.
 
 use std::{
     borrow::Borrow,
@@ -42,6 +43,7 @@ use vespera_core::schema::{AdditionalProperties, Schema, SchemaRef, SchemaType};
 
 use super::{
     super::{
+        embedded::{open_embedded, unwrap_wrappers, without_unlisted_bounds},
         enum_schema::{parse_enum_to_schema, without_other_map, without_single_key_bounds},
         request_view,
         schema_attrs::extract_schema_constraints,
@@ -119,34 +121,15 @@ pub(super) fn flatten_part(
         // own, but its materialised component.
         SchemaRef::Ref(reference) => (
             resolve_type(ty, known_schemas, struct_definitions)
-                .or_else(|| materialized_component(reference)),
+                .or_else(|| resolve_reference(reference, known_schemas, struct_definitions)),
             Some(schema.clone()),
         ),
     };
-    let decomposed = resolved
+    if let Some(parts) = resolved
         .as_ref()
-        .and_then(|schema| decompose(schema, known_schemas, struct_definitions));
-    // An externally tagged enum's variant key sits among the other keys and
-    // its unit variants are keys when flattened.
-    let schema = resolved
-        .as_ref()
-        .and_then(|resolved| {
-            // Each step rewrites the result of the previous one, if any.
-            let step = |done: Option<Schema>, rewrite: fn(&Schema) -> Option<Schema>| {
-                rewrite(done.as_ref().unwrap_or(resolved)).or(done)
-            };
-            let open = step(None, without_single_key_bounds);
-            let flattened = step(open, flattened_unit_variants);
-            // serde never hands an unknown key to a flattened `other`.
-            let flattened = step(flattened, without_other_map);
-            // A closed (`deny_unknown_fields`) member that cannot be merged
-            // only sees the keys the outer struct does not know: it must not
-            // reject them, so its copy is reopened.
-            step(flattened, without_closed)
-        })
-        .map_or(schema, |flattened| SchemaRef::Inline(Box::new(flattened)));
-    match decomposed {
-        Some(parts) => FlatPart::Known {
+        .and_then(|schema| decompose(schema, known_schemas, struct_definitions))
+    {
+        return FlatPart::Known {
             // A unit struct (`null`) has no keys: its `$ref` would make an
             // `allOf` member nothing satisfies next to the object.
             reference: reference.filter(|_| {
@@ -156,13 +139,42 @@ pub(super) fn flatten_part(
             }),
             parts,
             optional,
-        },
+        };
+    }
+    // A newtype / transparent wrapper around an enum is flattened like that
+    // enum. An externally tagged enum's variant key sits among the other
+    // keys and its unit variants are keys when flattened.
+    let schema = resolved
+        .map(|resolved| unwrap_wrappers(resolved, known_schemas, struct_definitions))
+        .and_then(|resolved| {
+            // Each step rewrites the result of the previous one, if any.
+            let step = |done: Option<Schema>, rewrite: fn(&Schema) -> Option<Schema>| {
+                rewrite(done.as_ref().unwrap_or(&resolved)).or(done)
+            };
+            let open = step(None, without_single_key_bounds);
+            let flattened = step(open, flattened_unit_variants);
+            // serde never hands an unknown key to a flattened `other`.
+            let flattened = step(flattened, without_other_map);
+            // A member that cannot be merged only sees the keys the outer
+            // struct does not know: no object inside it (a closed struct, a
+            // map, a nested enum's single-key branch) may reject them.
+            open_embedded(
+                flattened.as_ref().unwrap_or(&resolved),
+                &without_unlisted_bounds,
+                known_schemas,
+                struct_definitions,
+            )
+            .or(flattened)
+        })
+        .map_or(schema, |flattened| SchemaRef::Inline(Box::new(flattened)));
+    if optional {
         // serde turns any failure of the inner value into `None`.
-        None if optional => FlatPart::Opaque(SchemaRef::Inline(Box::new(Schema {
+        FlatPart::Opaque(SchemaRef::Inline(Box::new(Schema {
             any_of: Some(vec![schema, SchemaRef::Inline(Box::default())]),
             ..Schema::default()
-        }))),
-        None => FlatPart::Opaque(schema),
+        })))
+    } else {
+        FlatPart::Opaque(schema)
     }
 }
 
@@ -399,45 +411,22 @@ fn referenced_parts(
     let SchemaRef::Ref(reference) = member else {
         return None;
     };
-    let name = reference.ref_path.strip_prefix("#/components/schemas/")?;
-    let source = request_view::component_of_input(name).unwrap_or_else(|| name.to_string());
-    let schema = resolve_name(&source, known_schemas, struct_definitions)
-        .or_else(|| generic_instances::materialized(name))?;
+    let schema = resolve_reference(reference, known_schemas, struct_definitions)?;
     decompose(&schema, known_schemas, struct_definitions)
 }
 
-/// The materialised component of a recursive generic instance `$ref`.
-fn materialized_component(reference: &vespera_core::schema::Reference) -> Option<Schema> {
-    generic_instances::materialized(reference.ref_path.strip_prefix("#/components/schemas/")?)
-}
-
-/// `schema` without `additionalProperties: false` (on itself and on every
-/// inline `oneOf` / `anyOf` / `allOf` branch, recursively); `None` when it
-/// has none.
-fn without_closed(schema: &Schema) -> Option<Schema> {
-    let mut changed = false;
-    let mut open = schema.clone();
-    if matches!(
-        open.additional_properties,
-        Some(AdditionalProperties::Bool(false))
-    ) {
-        open.additional_properties = None;
-        changed = true;
-    }
-    for branches in [&mut open.one_of, &mut open.any_of, &mut open.all_of]
-        .into_iter()
-        .flatten()
-    {
-        for branch in branches {
-            if let SchemaRef::Inline(inline) = branch
-                && let Some(reopened) = without_closed(inline)
-            {
-                **inline = reopened;
-                changed = true;
-            }
-        }
-    }
-    changed.then_some(open)
+/// The schema of the component a `$ref` names, when its definition is known
+/// (an `Input` component maps back to its source type; a recursive generic
+/// instance is its materialised component).
+pub(in crate::parser::schema) fn resolve_reference(
+    reference: &vespera_core::schema::Reference,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
+) -> Option<Schema> {
+    let name = reference.ref_path.strip_prefix("#/components/schemas/")?;
+    let source = request_view::component_of_input(name).unwrap_or_else(|| name.to_string());
+    resolve_name(&source, known_schemas, struct_definitions)
+        .or_else(|| generic_instances::materialized(name))
 }
 
 /// Merge `parts` into `target`; `optional` parts (a flattened `Option`)

@@ -7,10 +7,14 @@ use std::{
 use vespera_core::schema::{AdditionalProperties, Discriminator, Schema, SchemaRef, SchemaType};
 
 use super::super::{
+    embedded::{constrains_unlisted, open_embedded, unwrap_wrappers},
     request_view::in_request_view,
     schema_attrs::extract_schema_constraints,
     serde_attrs::{extract_doc_comment, extract_field_codec},
-    struct_schema::{flattened_unit_variants, resolve_type, tuple_fields_schema, with_description},
+    struct_schema::{
+        flattened_unit_variants, resolve_reference, resolve_type, tuple_fields_schema,
+        with_description,
+    },
 };
 use super::{
     EnumRenames,
@@ -401,14 +405,20 @@ pub(super) fn parse_internally_tagged_enum(
                 // request-view `$ref` names the `Input` component, so the
                 // `$ref` itself cannot be looked up) — the `value_type`, when
                 // present, since that is what `inner` documents.
+                // A recursive generic instance has no definition of its own,
+                // but its materialised component; a newtype / transparent
+                // wrapper is read like the value it wraps.
                 let payload = match &inner {
                     SchemaRef::Inline(schema) => Some((**schema).clone()),
-                    SchemaRef::Ref(_) => {
+                    SchemaRef::Ref(reference) => {
                         let value_type = extract_schema_constraints(&field.attrs).value_type;
                         let declared = value_type.as_ref().map_or(&field.ty, |ty| &ty.0);
-                        resolve_type(declared, known_schemas, struct_definitions)
+                        resolve_type(declared, known_schemas, struct_definitions).or_else(|| {
+                            resolve_reference(reference, known_schemas, struct_definitions)
+                        })
                     }
-                };
+                }
+                .map(|payload| unwrap_wrappers(payload, known_schemas, struct_definitions));
                 // An externally tagged enum payload is read from the map left
                 // once the tag is taken out: its variant key sits next to the
                 // tag, and serde writes a unit variant as that key
@@ -431,15 +441,33 @@ pub(super) fn parse_internally_tagged_enum(
                         // A map-like (or referenced struct) inner value carries
                         // the tag: a closed payload object as one of its own
                         // properties.
+                        // An enum payload's closed / map branches (also
+                        // nested, through `$ref`s) list the tag the same way.
                         None | Some(SchemaType::Object) => {
-                            match payload.and_then(closed_payload_object) {
-                                Some(object) => with_tag_property(
+                            let reopen = |object: &Schema| {
+                                constrains_unlisted(object).then(|| {
+                                    with_tag_property(
+                                        object.clone(),
+                                        &tag_string,
+                                        &tag_schema,
+                                        None,
+                                    )
+                                })
+                            };
+                            let opened = payload.as_ref().and_then(|payload| {
+                                open_embedded(payload, &reopen, known_schemas, struct_definitions)
+                            });
+                            match (payload.and_then(closed_payload_object), opened) {
+                                (Some(object), _) => with_tag_property(
                                     object,
                                     &tag_string,
                                     &tag_schema,
                                     variant_description,
                                 ),
-                                None => tag_and(inner, variant_description),
+                                (None, Some(open)) => {
+                                    tag_and(SchemaRef::Inline(Box::new(open)), variant_description)
+                                }
+                                (None, None) => tag_and(inner, variant_description),
                             }
                         }
                         // A non-object payload (a `$ref` to a non-object

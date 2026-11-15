@@ -29,6 +29,7 @@
 //! - [`parse_enum_to_schema`] - Convert enum to JSON Schema (oneOf or enum array)
 //! - [`extract_rename_all`] - Extract serde `rename_all` attribute
 
+mod embedded;
 mod enum_schema;
 mod garde_rules;
 mod generics;
