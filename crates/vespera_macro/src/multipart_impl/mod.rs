@@ -79,7 +79,9 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
     // serde's container default: bound once after the read loop (it is not
     // held across an `.await`), every field without a default of its own
     // takes its value from it.
-    let container_default = match extract_struct_default(&input.attrs) {
+    let struct_default_kind = extract_struct_default(&input.attrs);
+    let container_trait_default = matches!(struct_default_kind, DefaultKind::Trait);
+    let container_default = match struct_default_kind {
         DefaultKind::Trait => Some(quote! { ::core::default::Default::default() }),
         DefaultKind::Function(fn_path) => Some(default_fn_call(struct_name, &fn_path, &locals)),
         DefaultKind::None | DefaultKind::Container => None,
@@ -101,7 +103,7 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
     }) {
         return err.to_compile_error();
     }
-    let (impl_generics, ty_generics, where_clause) = impl_generics(input, &cg.parsed_types);
+    let (impl_generics, ty_generics, where_clause) = impl_generics(input, &cg, container_trait_default);
 
     // Wildcard arm of the field-dispatch `match`: strict mode rejects an
     // unknown field name; non-strict ignores it.  Replaces the trailing
@@ -195,7 +197,8 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
 /// and a `TryFromFieldWithState` bound on each parsed type that mentions one.
 fn impl_generics(
     input: &DeriveInput,
-    parsed_types: &[syn::Type],
+    cg: &fields::FieldCodegen<'_>,
+    container_trait_default: bool,
 ) -> (TokenStream, TokenStream, TokenStream) {
     let mut generics = input.generics.clone();
     let type_params: Vec<syn::Ident> = generics.type_params().map(|p| p.ident.clone()).collect();
@@ -208,16 +211,27 @@ fn impl_generics(
             .predicates
             .push(syn::parse_quote!(#ident: Send));
     }
-    let mut seen = std::collections::HashSet::new();
-    for ty in parsed_types.iter().filter(|ty| {
+    let (_, ty_generics, _) = input.generics.split_for_impl();
+    let generic = |ty: &&syn::Type, seen: &mut std::collections::HashSet<String>| {
         mentions_any(quote!(#ty), &type_params) && seen.insert(quote!(#ty).to_string())
-    }) {
+    };
+    let mut seen = std::collections::HashSet::new();
+    for ty in cg.parsed_types.iter().filter(|ty| generic(ty, &mut seen)) {
         where_clause.predicates.push(syn::parse_quote!(
             #ty: vespera::multipart::TryFromFieldWithState<__VesperaS__>
         ));
     }
+    // serde's inferred bounds: a defaulted field of a generic type, and the
+    // container default of a generic struct.
+    let mut seen = std::collections::HashSet::new();
+    for ty in cg.default_types.iter().filter(|ty| generic(ty, &mut seen)) {
+        where_clause.predicates.push(syn::parse_quote!(#ty: ::core::default::Default));
+    }
+    if container_trait_default && !type_params.is_empty() {
+        let name = &input.ident;
+        where_clause.predicates.push(syn::parse_quote!(#name #ty_generics: ::core::default::Default));
+    }
     let (impl_generics, _, where_clause) = generics.split_for_impl();
-    let (_, ty_generics, _) = input.generics.split_for_impl();
     (
         quote!(#impl_generics),
         quote!(#ty_generics),
@@ -562,6 +576,16 @@ mod tests {
     #[case::bounded_with_where(
         "multipart_generic_where_clause",
         "struct F<T: Clone, const N: usize> where T: Default { #[serde(default)] pub value: Option<T> }"
+    )]
+    // serde's inferred `Default` bounds: once per generic defaulted type
+    // (a skipped field too), never for a concrete one.
+    #[case::default_bounds(
+        "multipart_generic_default_bounds",
+        "struct F<T, U> { #[serde(default)] pub n: T, #[serde(default)] pub m: T, #[serde(skip)] pub cache: U, #[serde(default)] pub name: String }"
+    )]
+    #[case::container_default(
+        "multipart_generic_container_default",
+        "#[serde(default)] struct F<T> { pub n: T }"
     )]
     fn generic_structs_are_supported(#[case] name: &str, #[case] src: &str) {
         insta::assert_snapshot!(name, derive_pretty(src));

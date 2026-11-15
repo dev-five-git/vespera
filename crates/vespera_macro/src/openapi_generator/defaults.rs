@@ -69,7 +69,7 @@ pub(super) fn process_default_functions(
 
 /// [`process_default_functions`] for the `side` view of the struct: the
 /// request (`{Name}Input`) view keys its properties by the deserialize name.
-pub(super) fn process_default_functions_for(
+pub(crate) fn process_default_functions_for(
     struct_item: &syn::ItemStruct,
     file_ast: Option<&syn::File>,
     schema: &mut vespera_core::schema::Schema,

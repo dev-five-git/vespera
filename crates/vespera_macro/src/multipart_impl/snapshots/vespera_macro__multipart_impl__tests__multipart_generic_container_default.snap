@@ -1,0 +1,53 @@
+---
+source: crates/vespera_macro/src/multipart_impl/mod.rs
+expression: derive_pretty(src)
+---
+impl<
+    T,
+    __VesperaS__: Send + Sync,
+> vespera::multipart::TryFromMultipartWithState<__VesperaS__> for F<T>
+where
+    T: Send,
+    T: vespera::multipart::TryFromFieldWithState<__VesperaS__>,
+    F<T>: ::core::default::Default,
+{
+    async fn try_from_multipart_with_state(
+        __multipart__: &mut vespera::axum::extract::Multipart,
+        __state__: &__VesperaS__,
+    ) -> std::result::Result<Self, vespera::multipart::TypedMultipartError> {
+        let mut n: std::option::Option<T> = std::option::Option::None;
+        while let std::option::Option::Some(__field__) = __multipart__
+            .next_field()
+            .await
+            .map_err(vespera::multipart::TypedMultipartError::from)?
+        {
+            vespera::multipart::register_multipart_part()?;
+            let __field__ = vespera::multipart::MeteredField::__from_field(__field__);
+            let __field_name__ = match __field__.name() {
+                std::option::Option::Some("") | std::option::Option::None => continue,
+                std::option::Option::Some(__name__) => __name__,
+            };
+            match __field_name__ {
+                "n" => {
+                    n = std::option::Option::Some(
+                        <T as vespera::multipart::TryFromFieldWithState<
+                            __VesperaS__,
+                        >>::try_from_field_with_state(
+                                __field__,
+                                std::option::Option::None,
+                                __state__,
+                            )
+                            .await?,
+                    );
+                }
+                _ => {}
+            }
+        }
+        let __vespera_default__: Self = ::core::default::Default::default();
+        let n: T = match n {
+            std::option::Option::Some(__vespera_value__) => __vespera_value__,
+            std::option::Option::None => __vespera_default__.n,
+        };
+        std::result::Result::Ok(Self { n })
+    }
+}

@@ -183,6 +183,33 @@ async fn multipart_schema_type_keeps_the_source_defaults_skip_and_strict() {
     assert_eq!(patch.tags, ["fallback"]);
 }
 
+/// Generic structs get serde's `Default` bounds: `T: Default` for a field
+/// default of type `T` (also a skipped one), `Self: Default` for a container
+/// default.
+#[derive(Multipart, Debug)]
+pub struct GenericField<T, U> {
+    #[serde(default)]
+    pub n: T,
+    #[serde(skip)]
+    pub cache: U,
+}
+
+#[derive(Multipart, Debug, Default)]
+#[serde(default)]
+pub struct GenericContainer<T> {
+    pub n: T,
+}
+
+#[tokio::test]
+async fn generic_defaults_get_default_bounds() {
+    let field: GenericField<u32, u8> = parse(&[]).await.unwrap();
+    assert_eq!((field.n, field.cache), (0, 0));
+    let container: GenericContainer<u32> = parse(&[("n", "4")]).await.unwrap();
+    assert_eq!(container.n, 4);
+    let container: GenericContainer<u32> = parse(&[]).await.unwrap();
+    assert_eq!(container.n, 0);
+}
+
 #[test]
 fn serde_schema_type_of_a_default_fn_source_compiles_and_defaults() {
     let view: SourceView = serde_json::from_str("{}").unwrap();

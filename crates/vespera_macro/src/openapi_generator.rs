@@ -26,6 +26,7 @@ use component_schemas::{
     build_file_cache, build_schema_lookups, build_struct_file_index, parse_component_schemas,
 };
 pub use defaults::extract_default_value_from_function;
+pub(crate) use defaults::process_default_functions_for;
 #[cfg(test)]
 pub use defaults::find_function_in_file;
 use paths::build_path_items;

@@ -148,6 +148,12 @@ fn test_schema_macro_with_optional_fields() {
 
     let properties = user_schema.properties.unwrap();
     assert_eq!(properties.len(), 4);
+    // The component schema's `default` too: `schema!` applies the same
+    // default post-processing.
+    let vespera::schema::SchemaRef::Inline(bio) = &properties["bio"] else {
+        panic!("inline bio");
+    };
+    assert_eq!(bio.default, Some(json!("")));
 
     // Required is nullability-only, matching the OpenAPI component schema:
     // 'id'/'name' are non-Option, and 'bio' is non-Option too — its

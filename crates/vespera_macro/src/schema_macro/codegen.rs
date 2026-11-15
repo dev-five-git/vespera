@@ -12,7 +12,7 @@
 //! (required-by-nullability, doc descriptions, `flatten`/`transparent`
 //! composition, field constraints, and `$ref` references).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -39,8 +39,19 @@ pub fn generate_filtered_schema(
     omit_set: &HashSet<String>,
     pick_set: &HashSet<String>,
     schema_storage: &HashMap<String, StructMetadata>,
+    field_defaults: &BTreeMap<String, serde_json::Value>,
 ) -> TokenStream {
-    let schema = build_filtered_schema(struct_item, omit_set, pick_set, schema_storage);
+    let mut schema = build_filtered_schema(struct_item, omit_set, pick_set, schema_storage);
+    // The same `default` post-processing the component schema gets (the
+    // derive's pre-extracted `field_defaults`, `#[schema(default)]`, type
+    // defaults); filtered-out fields have no property to receive one.
+    crate::openapi_generator::process_default_functions_for(
+        struct_item,
+        None,
+        &mut schema,
+        field_defaults,
+        crate::parser::schema::SerdeSide::Serialize,
+    );
     // Serialize at compile time; the runtime value is reconstructed from
     // this spec so it cannot diverge from the OpenAPI component schema.
     let json = serde_json::to_string(&schema).expect("Schema serialization is infallible");
@@ -179,7 +190,7 @@ fn filter_struct_fields(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeMap, HashMap, HashSet};
 
     use crate::metadata::StructMetadata;
 
@@ -321,9 +332,14 @@ mod tests {
     #[test]
     fn generate_emits_from_compiled_json_call() {
         let item = parse(r"pub struct S { pub a: String }");
-        let output =
-            generate_filtered_schema(&item, &HashSet::new(), &HashSet::new(), &empty_storage())
-                .to_string();
+        let output = generate_filtered_schema(
+            &item,
+            &HashSet::new(),
+            &HashSet::new(),
+            &empty_storage(),
+            &BTreeMap::new(),
+        )
+        .to_string();
         assert!(
             output.contains("from_compiled_json"),
             "schema! must emit a from_compiled_json reconstruction, got: {output}"
@@ -331,6 +347,52 @@ mod tests {
         // The serialized spec carries the property + required set.
         assert!(output.contains("properties"), "spec must carry properties");
         assert!(output.contains("required"), "spec must carry required");
+    }
+
+    /// `schema!` carries the same `default`s as the component schema: the
+    /// derive's pre-extracted fn default, a type default, an explicit
+    /// `#[schema(default)]` — and none for an omitted field.
+    #[test]
+    fn generate_applies_field_defaults() {
+        let item = parse(
+            r#"pub struct S {
+                #[serde(default = "limit")] pub limit: u32,
+                #[serde(default)] pub bio: String,
+                #[schema(default = "7")] pub page: u32,
+                #[serde(default = "gone")] pub gone: u32,
+            }"#,
+        );
+        let defaults = BTreeMap::from([
+            ("limit".to_string(), serde_json::json!(10)),
+            ("gone".to_string(), serde_json::json!(1)),
+        ]);
+        let omit = HashSet::from(["gone".to_string()]);
+        let output =
+            generate_filtered_schema(&item, &omit, &HashSet::new(), &empty_storage(), &defaults);
+        let syn::Expr::Call(call) = syn::parse2::<syn::Expr>(output).unwrap() else {
+            panic!("a call");
+        };
+        let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(json),
+            ..
+        }) = &call.args[0]
+        else {
+            panic!("a string literal");
+        };
+        let spec: serde_json::Value = serde_json::from_str(&json.value()).unwrap();
+        let defaults: Vec<_> = ["limit", "bio", "page", "gone"]
+            .iter()
+            .map(|field| spec["properties"][field]["default"].clone())
+            .collect();
+        assert_eq!(
+            defaults,
+            [
+                serde_json::json!(10),
+                serde_json::json!(""),
+                serde_json::json!(7),
+                serde_json::Value::Null
+            ]
+        );
     }
 
     #[test]
