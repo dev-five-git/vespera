@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use vespera::{
     Schema,
     axum::{Json, http::StatusCode, http::header::HeaderMap, response::IntoResponse},
-    axum_extra::extract::cookie::CookieJar,
+    axum_extra::extract::cookie::{Cookie, CookieJar},
 };
 
 #[derive(Serialize, Deserialize, Schema)]
@@ -95,11 +95,13 @@ pub async fn status_code_endpoint(
 }
 
 /// Logout endpoint that uses CookieJar to clear cookies
+///
+/// Removing `session` from the jar sends an expiring `Set-Cookie`.
 #[vespera::route(post, path = "/cookie-jar-logout", tags = ["error"])]
 pub async fn cookie_jar_endpoint(
     jar: CookieJar,
 ) -> Result<(CookieJar, Json<()>), (StatusCode, String)> {
-    Ok((jar, Json(())))
+    Ok((jar.remove(Cookie::from("session")), Json(())))
 }
 
 /// Returns its error through the crate-wide `ApiResult` alias, which

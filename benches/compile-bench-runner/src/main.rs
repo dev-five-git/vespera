@@ -16,8 +16,8 @@
 //! ```
 //!
 //! Methodology: each iteration runs `cargo clean -p <target>` and removes
-//! `<target-dir>/vespera` (the route cache) to force a full
-//! re-expansion, then `cargo rustc … -- -Z time-passes` and parses the pass
+//! `<target-dir>/vespera` and `<target-dir>/<triple>/vespera` (the route
+//! cache) to force a full re-expansion, then `cargo rustc … -- -Z time-passes` and parses the pass
 //! time. Compile time has only *positive* noise (a busy machine only ever
 //! adds time), so `min` is the robust point estimate; `median`/`mean`/`sd`
 //! are reported too. Gross outliers (> 3x median, e.g. AV/FS hiccups) are
@@ -26,7 +26,7 @@
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 struct Args {
@@ -113,12 +113,49 @@ fn extract_pass_time(stderr: &str, pass: &str) -> Option<f64> {
     None
 }
 
-/// `<target-dir>/vespera`, where `vespera!` keeps its route cache
-/// (`routes-<tag>.cache`) and spec sidecars: `VESPERA_TARGET_DIR` when set
-/// (a relative value resolved against the workspace root, as the macro does),
-/// else cargo's `target_directory`.  `None` (with a warning) when neither is
+/// Where `vespera!` keeps its route cache (`routes-<tag>.cache`) and spec
+/// sidecars.
+#[derive(Debug, PartialEq)]
+enum CacheDir {
+    /// `<VESPERA_TARGET_DIR>/vespera` (a relative value resolved against the
+    /// workspace root, as the macro does).
+    Exact(PathBuf),
+    /// Cargo's `target_directory`: the macro caches under
+    /// `<target>/vespera`, or `<target>/<triple>/vespera` when a target
+    /// triple is configured (`build.target` / `CARGO_BUILD_TARGET`; it reads
+    /// the target directory off rustc's `--out-dir`).
+    UnderTarget(PathBuf),
+}
+
+impl CacheDir {
+    /// The cache directories to clear before a measured run: for a target
+    /// directory, `<target>/vespera` plus every `<target>/<dir>/vespera`
+    /// directory (re-listed each run: a triple directory appears with the
+    /// first build).
+    fn dirs(&self) -> Vec<PathBuf> {
+        match self {
+            Self::Exact(dir) => vec![dir.clone()],
+            Self::UnderTarget(target) => {
+                let mut dirs = vec![target.join("vespera")];
+                if let Ok(entries) = fs::read_dir(target) {
+                    let mut nested: Vec<PathBuf> = entries
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.path().join("vespera"))
+                        .filter(|dir| dir.is_dir())
+                        .collect();
+                    nested.sort();
+                    dirs.extend(nested);
+                }
+                dirs
+            }
+        }
+    }
+}
+
+/// [`CacheDir`] of the measured build: `VESPERA_TARGET_DIR` when set, else
+/// cargo's `target_directory`.  `None` (with a warning) when neither is
 /// known.
-fn vespera_build_dir() -> Option<PathBuf> {
+fn vespera_build_dir() -> Option<CacheDir> {
     let dir = locate_vespera_build_dir();
     if dir.is_none() {
         eprintln!("[warn] target directory unknown: vespera's route cache is not cleared");
@@ -126,7 +163,7 @@ fn vespera_build_dir() -> Option<PathBuf> {
     dir
 }
 
-fn locate_vespera_build_dir() -> Option<PathBuf> {
+fn locate_vespera_build_dir() -> Option<CacheDir> {
     let metadata = || {
         let out = cargo()
             .args(["metadata", "--format-version", "1", "--no-deps"])
@@ -143,15 +180,15 @@ fn locate_vespera_build_dir() -> Option<PathBuf> {
 fn build_dir_from(
     override_dir: Option<PathBuf>,
     metadata: impl FnOnce() -> Option<String>,
-) -> Option<PathBuf> {
+) -> Option<CacheDir> {
     match override_dir {
-        Some(dir) if dir.is_absolute() => Some(dir.join("vespera")),
-        Some(dir) => Some(
+        Some(dir) if dir.is_absolute() => Some(CacheDir::Exact(dir.join("vespera"))),
+        Some(dir) => Some(CacheDir::Exact(
             metadata_path(&metadata()?, "workspace_root")?
                 .join(dir)
                 .join("vespera"),
-        ),
-        None => metadata_path(&metadata()?, "target_directory").map(|dir| dir.join("vespera")),
+        )),
+        None => metadata_path(&metadata()?, "target_directory").map(CacheDir::UnderTarget),
     }
 }
 
@@ -171,13 +208,13 @@ fn metadata_path(metadata: &str, field: &str) -> Option<PathBuf> {
     None
 }
 
-fn measure_once(target: &str, pass: &str, vespera_dir: Option<&Path>) -> Option<f64> {
+fn measure_once(target: &str, pass: &str, vespera_dir: Option<&CacheDir>) -> Option<f64> {
     // Force a full re-expansion of the fixture lib (deps stay built).
     let _ = cargo().args(["clean", "-p", target]).status();
     // `cargo clean -p` keeps `<target>/vespera/`: its route cache would turn
     // every measured run into a cache hit that skips route collection,
     // validation and OpenAPI generation (the code macro changes touch).
-    if let Some(dir) = vespera_dir {
+    for dir in vespera_dir.map_or_else(Vec::new, CacheDir::dirs) {
         let _ = fs::remove_dir_all(dir);
     }
     let out = cargo()
@@ -256,7 +293,7 @@ fn main() {
     );
     let mut samples = Vec::new();
     for i in 0..args.runs {
-        match measure_once(&args.target, &args.pass, vespera_dir.as_deref()) {
+        match measure_once(&args.target, &args.pass, vespera_dir.as_ref()) {
             Some(t) => {
                 eprintln!("  run {:>2}: {t:.4}s", i + 1);
                 samples.push(t);
@@ -376,17 +413,41 @@ mod tests {
             || Some(r#"{"target_directory":"/ws/target","workspace_root":"/ws"}"#.to_owned());
         assert_eq!(
             build_dir_from(Some(PathBuf::from("tgt")), json),
-            Some(PathBuf::from("/ws").join("tgt").join("vespera"))
+            Some(CacheDir::Exact(
+                PathBuf::from("/ws").join("tgt").join("vespera")
+            ))
         );
         let absolute = env::temp_dir().join("tgt");
         assert_eq!(
             build_dir_from(Some(absolute.clone()), || None),
-            Some(absolute.join("vespera"))
+            Some(CacheDir::Exact(absolute.join("vespera")))
         );
         assert_eq!(
             build_dir_from(None, json),
-            Some(PathBuf::from("/ws/target").join("vespera"))
+            Some(CacheDir::UnderTarget(PathBuf::from("/ws/target")))
         );
         assert_eq!(build_dir_from(None, || None), None);
+    }
+
+    /// With a target triple the macro caches under `<target>/<triple>/vespera`:
+    /// that directory is cleared too, so no measured run is a cache hit.
+    #[test]
+    fn cache_dirs_include_the_target_triple_directory() {
+        let target = env::temp_dir().join(format!("vespera-bench-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&target);
+        let triple = target.join("x86_64-unknown-linux-gnu");
+        fs::create_dir_all(triple.join("vespera")).unwrap();
+        fs::create_dir_all(target.join("debug")).unwrap();
+        assert_eq!(
+            CacheDir::UnderTarget(target.clone()).dirs(),
+            [target.join("vespera"), triple.join("vespera")]
+        );
+        let exact = target.join("custom");
+        assert_eq!(CacheDir::Exact(exact.clone()).dirs(), [exact]);
+        fs::remove_dir_all(&target).unwrap();
+        assert_eq!(
+            CacheDir::UnderTarget(target.clone()).dirs(),
+            [target.join("vespera")]
+        );
     }
 }

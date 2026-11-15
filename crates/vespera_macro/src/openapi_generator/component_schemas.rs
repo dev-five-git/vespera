@@ -17,9 +17,11 @@ use crate::{
 /// The `{Name}Input` request-view names for the documented types (see
 /// [`request_view`]). A view can only differ through a `serde` attribute,
 /// a `#[form_data(default)]`, a one-sided `Serialize_repr` /
-/// `Deserialize_repr` derive or a `HashSet` / `BTreeSet` / `Duration` type
-/// (`request_view::type_view_differs`), so definitions mentioning none of
-/// them are not even parsed.
+/// `Deserialize_repr` derive, a `HashSet` / `BTreeSet` / `Duration` /
+/// `Decimal` type (`request_view::type_view_differs`) or an externally
+/// tagged enum mixing unit and data variants (`{"Unit": null}` is also
+/// read), so definitions mentioning none of them (and no `enum`) are not
+/// even parsed.
 pub(super) fn input_names(
     metadata: &CollectedMetadata,
     known_schema_names: &HashSet<&str>,
@@ -31,9 +33,17 @@ pub(super) fn input_names(
         .filter(|s| s.include_in_openapi)
         .collect();
     if !documented.iter().any(|s| {
-        ["serde", "form_data", "_repr", "Set", "Duration"]
-            .iter()
-            .any(|needle| s.definition.contains(needle))
+        [
+            "serde",
+            "form_data",
+            "_repr",
+            "Set",
+            "Duration",
+            "Decimal",
+            "enum",
+        ]
+        .iter()
+        .any(|needle| s.definition.contains(needle))
     }) {
         return std::sync::Arc::default();
     }

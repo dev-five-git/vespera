@@ -74,14 +74,14 @@ pub async fn contact(Form(input): Form<ContactFormRequest>) -> Json<ContactFormR
 
 /// Upload a file via raw multipart form data
 ///
-/// A malformed multipart body (or one over the body limit) answers `400`
-/// instead of panicking the handler.
-#[route(post, path = "/upload", tags = ["form"], error_status = [400])]
+/// A malformed multipart body answers `400` and one over the body limit
+/// `413` (axum's `MultipartError::status`) instead of panicking the handler.
+#[route(post, path = "/upload", tags = ["form"], error_status = [400, 413])]
 pub async fn upload(
     mut multipart: Multipart,
 ) -> Result<Json<ContactFormResponse>, (StatusCode, String)> {
     let bad_request = |error: vespera::axum::extract::multipart::MultipartError| {
-        (StatusCode::BAD_REQUEST, error.body_text())
+        (error.status(), error.body_text())
     };
     while let Some(field) = multipart.next_field().await.map_err(bad_request)? {
         let _name = field.name().unwrap_or("unknown").to_string();

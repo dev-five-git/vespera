@@ -541,6 +541,7 @@
           "error"
         ],
         "summary": "Logout endpoint that uses CookieJar to clear cookies",
+        "description": "Removing `session` from the jar sends an expiring `Set-Cookie`.",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -995,7 +996,7 @@
           "form"
         ],
         "summary": "Upload a file via raw multipart form data",
-        "description": "A malformed multipart body (or one over the body limit) answers `400`\ninstead of panicking the handler.",
+        "description": "A malformed multipart body answers `400` and one over the body limit\n`413` (axum's `MultipartError::status`) instead of panicking the handler.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1018,6 +1019,16 @@
             }
           },
           "400": {
+            "description": "Error response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "413": {
             "description": "Error response",
             "content": {
               "text/plain": {
@@ -1935,7 +1946,7 @@
           "secured"
         ],
         "summary": "Current user",
-        "description": "Requires `Authorization: Bearer <token>`; answers 401 otherwise.",
+        "description": "Requires `Authorization: Bearer <token>`; answers 401 with a `WWW-Authenticate: Bearer` challenge otherwise.",
         "responses": {
           "200": {
             "description": "Successful response",

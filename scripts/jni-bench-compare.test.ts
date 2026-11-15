@@ -6,6 +6,7 @@ import {
   median,
   pairedChanges,
   parseRound,
+  parseThreshold,
   renderMarkdown,
 } from './jni-bench-compare'
 
@@ -89,5 +90,21 @@ describe('evaluate', () => {
   it('ignores a mode present on one side only', () => {
     const verdicts = evaluate([new Map([['a', 1]])], [new Map([['b', 2]])], T)
     expect(verdicts).toEqual([])
+  })
+})
+
+describe('parseThreshold', () => {
+  it.each([
+    [undefined, 0.3],
+    ['0.25', 0.25],
+    [' 1 ', 1],
+    ['0', 0],
+    ['30%', undefined],
+    ['abc', undefined],
+    ['', undefined],
+    ['-0.1', undefined],
+    ['Infinity', undefined],
+  ])('%p -> %p', (raw, expected) => {
+    expect(parseThreshold(raw, 0.3)).toBe(expected)
   })
 })

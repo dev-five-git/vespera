@@ -9,7 +9,9 @@
 //! `security = []` documents an explicitly unauthenticated operation.
 //!
 //! The scheme only *documents* auth — enforcing it stays the handler's (or a
-//! middleware's) job, shown here with a plain `HeaderMap` check.
+//! middleware's) job, shown here with a plain `HeaderMap` check. A `401`
+//! carries the `WWW-Authenticate` challenge RFC 9110 requires, and a
+//! missing scope answers `403` with RFC 6750's `insufficient_scope` error.
 //!
 //! The routes also show the per-operation metadata attributes:
 //! `operation_id`, `summary`, `description`, `response_example`,
@@ -20,9 +22,20 @@ use vespera::{
     Schema,
     axum::{
         Json,
-        http::{HeaderMap, StatusCode, header::AUTHORIZATION},
+        http::{
+            HeaderMap, HeaderName, StatusCode,
+            header::{AUTHORIZATION, WWW_AUTHENTICATE},
+        },
     },
 };
+
+/// An auth failure: the status plus its `WWW-Authenticate` challenge.
+pub type AuthError = (StatusCode, [(HeaderName, &'static str); 1]);
+
+/// `401` challenging the caller for `scheme` credentials.
+const fn unauthorized(scheme: &'static str) -> AuthError {
+    (StatusCode::UNAUTHORIZED, [(WWW_AUTHENTICATE, scheme)])
+}
 
 /// The authenticated caller.
 #[derive(Debug, Serialize, Deserialize, Schema)]
@@ -44,17 +57,17 @@ pub const DEMO_API_KEY: &str = "demo-key";
     security = ["bearerAuth"],
     operation_id = "getCurrentUser",
     summary = "Current user",
-    description = "Requires `Authorization: Bearer <token>`; answers 401 otherwise.",
+    description = "Requires `Authorization: Bearer <token>`; answers 401 with a `WWW-Authenticate: Bearer` challenge otherwise.",
     response_example = r#"{"id": 1, "name": "demo"}"#,
     error_status = [401]
 )]
-pub async fn current_user(headers: HeaderMap) -> Result<Json<CurrentUser>, StatusCode> {
+pub async fn current_user(headers: HeaderMap) -> Result<Json<CurrentUser>, AuthError> {
     let token = headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
     if token != Some(DEMO_TOKEN) {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(unauthorized("Bearer"));
     }
     Ok(Json(CurrentUser {
         id: 1,
@@ -76,9 +89,9 @@ pub async fn current_user(headers: HeaderMap) -> Result<Json<CurrentUser>, Statu
     deprecated,
     error_status = [401]
 )]
-pub async fn legacy_reports(headers: HeaderMap) -> Result<Json<Vec<String>>, StatusCode> {
+pub async fn legacy_reports(headers: HeaderMap) -> Result<Json<Vec<String>>, AuthError> {
     if headers.get("x-api-key").and_then(|v| v.to_str().ok()) != Some(DEMO_API_KEY) {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(unauthorized("ApiKey"));
     }
     Ok(Json(vec!["2026-q1".to_string(), "2026-q2".to_string()]))
 }
@@ -104,7 +117,7 @@ pub const READ_USERS_TOKEN: &str = "read-users-token";
     security = [("oauth2", ["read:users"]), ("oidc", ["openid", "read:users"])],
     error_status = [401, 403]
 )]
-pub async fn user_directory(headers: HeaderMap) -> Result<Json<Vec<String>>, StatusCode> {
+pub async fn user_directory(headers: HeaderMap) -> Result<Json<Vec<String>>, AuthError> {
     match headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -112,7 +125,13 @@ pub async fn user_directory(headers: HeaderMap) -> Result<Json<Vec<String>>, Sta
     {
         Some(READ_USERS_TOKEN) => Ok(Json(vec!["alice".to_string(), "bob".to_string()])),
         // Authenticated, but the token lacks the `read:users` scope.
-        Some(DEMO_TOKEN) => Err(StatusCode::FORBIDDEN),
-        _ => Err(StatusCode::UNAUTHORIZED),
+        Some(DEMO_TOKEN) => Err((
+            StatusCode::FORBIDDEN,
+            [(
+                WWW_AUTHENTICATE,
+                r#"Bearer error="insufficient_scope", scope="read:users""#,
+            )],
+        )),
+        _ => Err(unauthorized("Bearer")),
     }
 }

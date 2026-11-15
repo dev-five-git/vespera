@@ -144,16 +144,36 @@ function readSide(dir: string, side: 'base' | 'head'): Map<string, number>[] {
   return Array.from(rounds, (r) => r ?? new Map())
 }
 
+/**
+ * A threshold env value (a fraction, `0.30` = +30%), `fallback` when unset.
+ * `undefined` for anything that is not a finite number >= 0 (`30%`, `abc`,
+ * an empty string): `NaN` would make every comparison false and pass the
+ * gate vacuously.
+ */
+export function parseThreshold(
+  raw: string | undefined,
+  fallback: number,
+): number | undefined {
+  if (raw === undefined) return fallback
+  if (!/^\s*\d+(\.\d+)?\s*$/.test(raw)) return undefined
+  return Number(raw)
+}
+
 function main(): number {
   const dir = process.argv[2]
   if (!dir) {
     console.error('usage: bun scripts/jni-bench-compare.ts <results-dir>')
     return 2
   }
-  const t: Thresholds = {
-    mean: Number(process.env.REGRESS_MEAN ?? '0.30'),
-    lower: Number(process.env.REGRESS_LOWER ?? '0.20'),
+  const mean = parseThreshold(process.env.REGRESS_MEAN, 0.3)
+  const lower = parseThreshold(process.env.REGRESS_LOWER, 0.2)
+  if (mean === undefined || lower === undefined) {
+    console.error(
+      '::error::REGRESS_MEAN / REGRESS_LOWER must be non-negative numbers (fractions, e.g. 0.30).',
+    )
+    return 2
   }
+  const t: Thresholds = { mean, lower }
   const verdicts = evaluate(readSide(dir, 'base'), readSide(dir, 'head'), t)
   const report = renderMarkdown(verdicts, t)
   process.stdout.write(report)
