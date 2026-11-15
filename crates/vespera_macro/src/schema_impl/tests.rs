@@ -857,12 +857,15 @@ fn internally_tagged_newtype_validation(
 
 #[test]
 fn process_derive_schema_returns_all_unresolved_serde_default_errors() {
+    // Bare defaults of types without a static default: a function default
+    // is not checked here (no call-site file in a unit test, see
+    // `function_default_without_call_site_file_is_not_checked`).
     let input: syn::DeriveInput = syn::parse_quote! {
         struct InvalidDefaults {
-            #[serde(default = "default_first")]
-            first: String,
-            #[serde(default = "default_second")]
-            second: i32,
+            #[serde(default)]
+            first: Opaque,
+            #[serde(default)]
+            second: Other,
         }
     };
 
@@ -920,9 +923,9 @@ fn serde_default_validation_accepts_schema_function_and_type_defaults() {
     };
     let function_values = BTreeMap::from([("name".to_string(), serde_json::json!("guest"))]);
 
-    assert!(validate_serde_default_values(&explicit_schema, &BTreeMap::new()).is_ok());
-    assert!(validate_serde_default_values(&resolved_function, &function_values).is_ok());
-    assert!(validate_serde_default_values(&type_default, &BTreeMap::new()).is_ok());
+    assert!(validate_serde_default_values(&explicit_schema, &BTreeMap::new(), true).is_ok());
+    assert!(validate_serde_default_values(&resolved_function, &function_values, true).is_ok());
+    assert!(validate_serde_default_values(&type_default, &BTreeMap::new(), true).is_ok());
 }
 
 #[test]

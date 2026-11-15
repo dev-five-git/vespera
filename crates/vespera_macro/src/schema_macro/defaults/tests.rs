@@ -57,7 +57,7 @@ fn test_sea_orm_default_attrs_valid_literal_keeps_parse_unwrap() {
     let ty: syn::Type = syn::parse_str("i32").unwrap();
     let mut fns = Vec::new();
     let (serde, _schema) =
-        generate_sea_orm_default_attrs(&attrs, &struct_name, "count", &ty, &ty, false, &mut fns);
+        generate_sea_orm_default_attrs(&attrs, &struct_name, "count", &ty, &ty, false, 1, &mut fns);
     assert!(serde.to_string().contains("serde"));
     assert_eq!(fns.len(), 1);
     let body = fns[0].to_string();
@@ -82,7 +82,7 @@ fn test_sea_orm_default_attrs_invalid_literal_emits_compile_error() {
     let ty: syn::Type = syn::parse_str("i32").unwrap();
     let mut fns = Vec::new();
     let (serde, _schema) =
-        generate_sea_orm_default_attrs(&attrs, &struct_name, "count", &ty, &ty, false, &mut fns);
+        generate_sea_orm_default_attrs(&attrs, &struct_name, "count", &ty, &ty, false, 1, &mut fns);
     assert!(serde.to_string().contains("serde"));
     assert_eq!(fns.len(), 1);
     let body = fns[0].to_string();
@@ -103,7 +103,7 @@ fn test_sea_orm_default_attrs_optional_field_skips() {
     let ty: syn::Type = syn::parse_str("i32").unwrap();
     let mut fns = Vec::new();
     let (serde, schema) =
-        generate_sea_orm_default_attrs(&attrs, &struct_name, "count", &ty, &ty, true, &mut fns);
+        generate_sea_orm_default_attrs(&attrs, &struct_name, "count", &ty, &ty, true, 1, &mut fns);
     assert!(serde.is_empty());
     assert!(schema.is_empty());
     assert!(fns.is_empty());
@@ -116,7 +116,7 @@ fn test_sea_orm_default_attrs_no_default_and_no_pk() {
     let ty: syn::Type = syn::parse_str("String").unwrap();
     let mut fns = Vec::new();
     let (serde, schema) =
-        generate_sea_orm_default_attrs(&attrs, &struct_name, "email", &ty, &ty, false, &mut fns);
+        generate_sea_orm_default_attrs(&attrs, &struct_name, "email", &ty, &ty, false, 1, &mut fns);
     assert!(serde.is_empty());
     assert!(schema.is_empty());
     assert!(fns.is_empty());
@@ -129,7 +129,7 @@ fn test_sea_orm_default_attrs_primary_key_generates_defaults() {
     let ty: syn::Type = syn::parse_str("i32").unwrap();
     let mut fns = Vec::new();
     let (serde, schema) =
-        generate_sea_orm_default_attrs(&attrs, &struct_name, "id", &ty, &ty, false, &mut fns);
+        generate_sea_orm_default_attrs(&attrs, &struct_name, "id", &ty, &ty, false, 1, &mut fns);
     let serde_str = serde.to_string();
     assert!(
         serde_str.contains("serde"),
@@ -156,6 +156,7 @@ fn test_sea_orm_default_attrs_sql_function_generates_defaults() {
         &ty,
         &ty,
         false,
+        1,
         &mut fns,
     );
     let serde_str = serde.to_string();
@@ -179,7 +180,7 @@ fn test_sea_orm_default_attrs_sql_function_uuid() {
     let ty: syn::Type = syn::parse_str("Uuid").unwrap();
     let mut fns = Vec::new();
     let (serde, schema) =
-        generate_sea_orm_default_attrs(&attrs, &struct_name, "id", &ty, &ty, false, &mut fns);
+        generate_sea_orm_default_attrs(&attrs, &struct_name, "id", &ty, &ty, false, 1, &mut fns);
     let serde_str = serde.to_string();
     assert!(
         serde_str.contains("serde"),
@@ -201,7 +202,7 @@ fn test_sea_orm_default_attrs_sql_function_unknown_type_skips() {
     let ty: syn::Type = syn::parse_str("MyCustomType").unwrap();
     let mut fns = Vec::new();
     let (serde, schema) =
-        generate_sea_orm_default_attrs(&attrs, &struct_name, "field", &ty, &ty, false, &mut fns);
+        generate_sea_orm_default_attrs(&attrs, &struct_name, "field", &ty, &ty, false, 1, &mut fns);
     assert!(serde.is_empty(), "unknown type should skip serde default");
     assert!(schema.is_empty(), "unknown type should skip schema default");
     assert!(fns.is_empty());
@@ -222,7 +223,7 @@ fn test_sea_orm_default_attrs_existing_serde_default(#[case] serde_attr: proc_ma
     let ty: syn::Type = syn::parse_str("i32").unwrap();
     let mut fns = Vec::new();
     let (serde, schema) =
-        generate_sea_orm_default_attrs(&attrs, &struct_name, "count", &ty, &ty, false, &mut fns);
+        generate_sea_orm_default_attrs(&attrs, &struct_name, "count", &ty, &ty, false, 1, &mut fns);
     assert!(serde.is_empty());
     assert_eq!(schema.to_string(), "# [schema (default)]");
     assert!(fns.is_empty());
@@ -234,8 +235,16 @@ fn test_sea_orm_default_attrs_non_parseable_type() {
     let struct_name = syn::Ident::new("Test", proc_macro2::Span::call_site());
     let ty: syn::Type = syn::parse_str("MyEnum").unwrap();
     let mut fns = Vec::new();
-    let (serde, schema) =
-        generate_sea_orm_default_attrs(&attrs, &struct_name, "status", &ty, &ty, false, &mut fns);
+    let (serde, schema) = generate_sea_orm_default_attrs(
+        &attrs,
+        &struct_name,
+        "status",
+        &ty,
+        &ty,
+        false,
+        1,
+        &mut fns,
+    );
     // serde attr empty (non-parseable type)
     assert!(serde.is_empty());
     // schema attr still generated
@@ -254,7 +263,7 @@ fn test_sea_orm_default_attrs_full_generation() {
     let ty: syn::Type = syn::parse_str("i32").unwrap();
     let mut fns = Vec::new();
     let (serde, schema) =
-        generate_sea_orm_default_attrs(&attrs, &struct_name, "count", &ty, &ty, false, &mut fns);
+        generate_sea_orm_default_attrs(&attrs, &struct_name, "count", &ty, &ty, false, 1, &mut fns);
     // Both serde and schema attrs should be generated
     let serde_str = serde.to_string();
     assert!(
@@ -367,7 +376,7 @@ fn test_sea_orm_default_attrs_sql_function_non_path_type() {
     let ty: syn::Type = syn::parse_str("&str").unwrap();
     let mut fns = Vec::new();
     let (serde, schema) =
-        generate_sea_orm_default_attrs(&attrs, &struct_name, "field", &ty, &ty, false, &mut fns);
+        generate_sea_orm_default_attrs(&attrs, &struct_name, "field", &ty, &ty, false, 1, &mut fns);
     assert!(serde.is_empty(), "non-Path type should skip serde default");
     assert!(
         schema.is_empty(),
@@ -389,6 +398,7 @@ fn test_sea_orm_default_attrs_sql_function_datetime() {
         &ty,
         &ty,
         false,
+        1,
         &mut fns,
     );
     let serde_str = serde.to_string();
@@ -417,6 +427,7 @@ fn test_sea_orm_default_attrs_sql_function_naive_datetime() {
         &ty,
         &ty,
         false,
+        1,
         &mut fns,
     );
     let serde_str = serde.to_string();
@@ -445,6 +456,7 @@ fn test_sea_orm_default_attrs_sql_function_naive_date() {
         &ty,
         &ty,
         false,
+        1,
         &mut fns,
     );
     let serde_str = serde.to_string();
@@ -473,6 +485,7 @@ fn test_sea_orm_default_attrs_sql_function_naive_time() {
         &ty,
         &ty,
         false,
+        1,
         &mut fns,
     );
     let serde_str = serde.to_string();
@@ -501,6 +514,7 @@ fn test_sea_orm_default_attrs_sql_function_time_type() {
         &ty,
         &ty,
         false,
+        1,
         &mut fns,
     );
     let serde_str = serde.to_string();
@@ -735,7 +749,7 @@ fn now_default_matches_field_type(#[case] ty: &str, #[case] expr: &str, #[case] 
     let ty: syn::Type = syn::parse_str(ty).unwrap();
     let mut fns = Vec::new();
     let (_, schema_attr) =
-        generate_sea_orm_default_attrs(&attrs, &struct_name, "at", &ty, &ty, false, &mut fns);
+        generate_sea_orm_default_attrs(&attrs, &struct_name, "at", &ty, &ty, false, 1, &mut fns);
     if schema.is_empty() {
         assert!(fns.is_empty() && schema_attr.is_empty());
         return;
@@ -771,7 +785,7 @@ fn now_default_with_existing_serde_default(#[case] ty: &str, #[case] expected: &
     let ty: syn::Type = syn::parse_str(ty).unwrap();
     let mut fns = Vec::new();
     let (serde_attr, schema_attr) =
-        generate_sea_orm_default_attrs(&attrs, &struct_name, "at", &ty, &ty, false, &mut fns);
+        generate_sea_orm_default_attrs(&attrs, &struct_name, "at", &ty, &ty, false, 1, &mut fns);
     assert!(fns.is_empty() && serde_attr.is_empty());
     assert_eq!(schema_attr.to_string(), expected);
 }
@@ -791,6 +805,101 @@ fn primary_key_default_respects_auto_increment(
     let ty: syn::Type = syn::parse_quote!(i32);
     let mut fns = Vec::new();
     let (serde_attr, _) =
-        generate_sea_orm_default_attrs(&attrs, &struct_name, "id", &ty, &ty, false, &mut fns);
+        generate_sea_orm_default_attrs(&attrs, &struct_name, "id", &ty, &ty, false, 1, &mut fns);
     assert_eq!(!serde_attr.is_empty(), has_default);
+}
+
+/// SeaORM's derive makes a `String` / `Uuid` key and every column of a
+/// composite key `auto_increment = false`: no implicit default (and
+/// `omit_default` keeps them), where every key used to get `""` / `0`.
+#[rstest::rstest]
+#[case::integer("#[sea_orm(primary_key)] pub id: i32,", "pub id :", true)]
+#[case::natural_string(
+    "#[sea_orm(primary_key)] pub username: String,",
+    "pub username :",
+    false
+)]
+#[case::composite(
+    "#[sea_orm(primary_key)] pub a_id: i32, #[sea_orm(primary_key)] pub b_id: i32,",
+    "pub a_id :",
+    false
+)]
+fn natural_and_composite_keys_have_no_implicit_default(
+    #[case] keys: &str,
+    #[case] key_field: &str,
+    #[case] defaulted: bool,
+) {
+    let definition = format!("pub struct Model {{ {keys} pub name: String }}");
+    let storage = to_storage(vec![create_test_struct_metadata("Model", &definition)]);
+    let generate = |tokens: proc_macro2::TokenStream| {
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let (tokens, _) = generate_schema_type_code(&input, &storage).unwrap();
+        tokens.to_string()
+    };
+    let output = generate(quote!(Dto from Model));
+    assert_eq!(output.contains("serde (default ="), defaulted, "{output}");
+    let output = generate(quote!(Dto from Model, omit_default));
+    assert_eq!(output.contains(key_field), !defaulted, "{output}");
+}
+
+/// A `cfg_attr`-gated `serde(default)` / `schema(default ..)` gates the
+/// SeaORM-derived default instead of doubling it (serde `default` twice
+/// with the cfg on) or dropping its documented value (with the cfg off).
+#[rstest::rstest]
+#[case::cfg_serde_default(
+    "#[sea_orm(default_value = 5)] #[cfg_attr(feature = \"x\", serde(default))] pub n: i32",
+    &[
+        "# [cfg_attr (not (any (feature = \"x\")) , serde (default = \"default_Dto_n\"))]",
+        "# [cfg_attr (not (any (feature = \"x\")) , schema (default = \"5\"))]",
+        "# [cfg_attr (any (feature = \"x\") , schema (default))]",
+    ]
+)]
+#[case::cfg_schema_default(
+    "#[sea_orm(default_value = 5)] #[cfg_attr(feature = \"x\", schema(default = 7))] pub n: i32",
+    &[
+        "# [serde (default = \"default_Dto_n\")]",
+        "# [cfg_attr (not (any (feature = \"x\")) , schema (default = \"5\"))]",
+    ]
+)]
+#[case::both(
+    "#[sea_orm(default_value = 5)] #[cfg_attr(a, serde(default))] #[cfg_attr(b, schema(default = 7))] pub n: i32",
+    &[
+        "# [cfg_attr (not (any (a)) , serde (default = \"default_Dto_n\"))]",
+        "# [cfg_attr (not (any (b)) , cfg_attr (not (any (a)) , schema (default = \"5\")))]",
+        "# [cfg_attr (not (any (b)) , cfg_attr (any (a) , schema (default)))]",
+    ]
+)]
+fn cfg_gated_overrides_gate_the_sea_orm_default(#[case] field: &str, #[case] expected: &[&str]) {
+    let definition = format!("pub struct Model {{ {field} }}");
+    let storage = to_storage(vec![create_test_struct_metadata("Model", &definition)]);
+    let input: SchemaTypeInput = syn::parse2(quote!(Dto from Model)).unwrap();
+    let output = generate_schema_type_code(&input, &storage)
+        .unwrap()
+        .0
+        .to_string();
+    for piece in expected {
+        assert!(output.contains(piece), "{piece} in {output}");
+    }
+    assert!(!output.contains("# [schema (default = \"5\")]"), "{output}");
+}
+
+/// Without a `Schema` derive the metadata reads no `cfg_attr`: only the
+/// serde default is gated.
+#[test]
+fn cfg_serde_default_without_schema_derive_gates_serde_only() {
+    let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[cfg_attr(a, serde(default))])];
+    let carried = crate::schema_macro::field_attrs::carried_field_attrs(&attrs, false, &[], false);
+    let (serde, schema) = gate_sea_orm_defaults(
+        (
+            quote!(#[serde(default = "f")]),
+            quote!(#[schema(default = "5")]),
+        ),
+        &carried,
+        false,
+    );
+    assert_eq!(
+        serde.to_string(),
+        "# [cfg_attr (not (any (a)) , serde (default = \"f\"))]"
+    );
+    assert_eq!(schema.to_string(), "# [schema (default = \"5\")]");
 }

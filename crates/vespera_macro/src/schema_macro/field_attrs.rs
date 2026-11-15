@@ -34,19 +34,27 @@ pub struct CarriedAttrs {
     /// Any `#[deprecated]` (the DTO's derives then read a deprecated field:
     /// the generated items `#[allow(deprecated)]`).
     pub deprecated: bool,
-    /// A `#[schema(default ..)]` is present (the SeaORM-derived default
-    /// must not add a second one).
+    /// An unconditional `#[schema(default ..)]` is present (the
+    /// SeaORM-derived default must not add a second one).
     pub schema_default: bool,
+    /// The predicates of `#[cfg_attr(pred, schema(default ..))]`: the
+    /// SeaORM-derived default applies only where none of them holds.
+    pub schema_default_cfgs: Vec<Predicate>,
 }
 
 /// Collects the carried attributes of one source field (defined in
-/// `module_path`).
+/// `module_path`); `renamed`: the `rename` parameter renames the field (its
+/// wire name is then pinned by `schema_type!`).
 pub fn carried_field_attrs(
     attrs: &[syn::Attribute],
     schema_derived: bool,
     module_path: &[String],
+    renamed: bool,
 ) -> CarriedAttrs {
     let mut carried = CarriedAttrs::default();
+    // A `cfg_attr` serde `rename` is kept unless the field's name is already
+    // fixed: a second `rename` would be a duplicate.
+    let keep_rename = !renamed && !has_serde_rename(attrs);
     for attr in attrs {
         let path = attr.path();
         if path.is_ident("schema") {
@@ -62,20 +70,31 @@ pub fn carried_field_attrs(
             carried.cfgs.push(attr.clone());
             carried.other.push(quote! { #attr });
         } else if path.is_ident("cfg_attr") {
-            filtered_cfg_attr(attr, schema_derived, module_path, &mut carried);
+            let context = (schema_derived, keep_rename, module_path);
+            filtered_cfg_attr(attr, context, &mut carried);
         }
     }
     carried
 }
 
+/// Whether a top-level `#[serde(..)]` of the field sets `rename`.
+fn has_serde_rename(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("serde"))
+        .filter_map(|attr| {
+            attr.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+                .ok()
+        })
+        .any(|items| items.iter().any(|item| serde_key(item) == "rename"))
+}
+
 /// `#[cfg_attr(pred, a, b)]` keeping only `schema` (when derived), `garde`,
 /// `deprecated` and `doc` (into `other`) and `serde` (into `cfg_serde`,
-/// without `rename`: the generated field's name is fixed by `schema_type!`,
-/// a second `rename` would be a duplicate); nothing when it does not parse.
+/// without `rename` unless `keep_rename`); nothing when it does not parse.
 fn filtered_cfg_attr(
     attr: &syn::Attribute,
-    schema_derived: bool,
-    module_path: &[String],
+    (schema_derived, keep_rename, module_path): (bool, bool, &[String]),
     carried: &mut CarriedAttrs,
 ) {
     let Ok((predicate, metas)) = attr.parse_args_with(|input: syn::parse::ParseStream| {
@@ -92,10 +111,12 @@ fn filtered_cfg_attr(
         carried.garde |= path.is_ident("garde");
         carried.deprecated |= path.is_ident("deprecated");
         if path.is_ident("serde") {
-            carried_cfg_serde(&predicate, meta, module_path, carried);
+            carried_cfg_serde(&predicate, meta, (keep_rename, module_path), carried);
         } else if schema_derived && path.is_ident("schema") {
             let attr: syn::Attribute = syn::parse_quote! { #[#meta] };
-            carried.schema_default |= schema_has_default(&attr);
+            if schema_has_default(&attr) {
+                carried.schema_default_cfgs.push(predicate.clone());
+            }
             carried.cfg_schema.push((predicate.clone(), attr));
         } else if path.is_ident("garde") || path.is_ident("deprecated") || path.is_ident("doc") {
             kept.push(meta);
@@ -112,7 +133,7 @@ fn filtered_cfg_attr(
 fn carried_cfg_serde(
     predicate: &Predicate,
     meta: &syn::Meta,
-    module_path: &[String],
+    (keep_rename, module_path): (bool, &[String]),
     carried: &mut CarriedAttrs,
 ) {
     let Ok(list) = meta.require_list() else {
@@ -124,7 +145,7 @@ fn carried_cfg_serde(
     };
     let mut items: Vec<syn::Meta> = items
         .into_iter()
-        .filter(|item| serde_key(item) != "rename")
+        .filter(|item| keep_rename || serde_key(item) != "rename")
         .collect();
     reroot_serde_metas(items.iter_mut(), module_path);
     if !items.is_empty() {
@@ -216,7 +237,17 @@ impl CarriedAttrs {
         }
         self.cfg_serde.retain(|(_, items)| !items.is_empty());
         self.schema_default = false;
+        self.schema_default_cfgs.clear();
         self
+    }
+
+    /// The predicates of the carried `#[cfg_attr(pred, serde(default ..))]`.
+    pub fn cfg_serde_default_predicates(&self) -> Vec<Predicate> {
+        self.cfg_serde
+            .iter()
+            .filter(|(_, items)| items.iter().any(|item| serde_key(item) == "default"))
+            .map(|(predicate, _)| predicate.clone())
+            .collect()
     }
 
     /// The `#[cfg_attr(pred, schema(..))]` attributes.
@@ -289,18 +320,26 @@ mod tests {
 
     #[rstest]
     // `serde` inside `cfg_attr` is carried (paths the source module knows
-    // are re-rooted; `dflt` is unknown here)
-    // without `rename`; a non-list `serde` / unparseable list is
+    // are re-rooted; `dflt` is unknown here), its `rename` too when the
+    // field has none of its own; a non-list `serde` / unparseable list is
     // dropped.
     #[case::cfg_attr_serde(
         quote!(#[cfg_attr(feature = "x", serde(rename = "a", alias = "b", default = "dflt"), garde(skip))]),
         true,
-        "# [cfg_attr (feature = \"x\" , garde (skip))] # [cfg_attr (feature = \"x\" , serde (alias = \"b\" , default = \"dflt\"))]"
+        "# [cfg_attr (feature = \"x\" , garde (skip))] # [cfg_attr (feature = \"x\" , serde (rename = \"a\" , alias = \"b\" , default = \"dflt\"))]"
     )]
+    // The cfg-gated rename names the field when the feature is on; it used
+    // to be dropped, leaving the plain field name.
     #[case::cfg_attr_serde_only_rename(
         quote!(#[cfg_attr(all(), serde(rename = "a"))]),
         true,
-        ""
+        "# [cfg_attr (all () , serde (rename = \"a\"))]"
+    )]
+    // A field already renamed keeps one `rename`: the cfg-gated one goes.
+    #[case::cfg_attr_serde_rename_already_renamed(
+        quote!(#[serde(rename = "b")] #[cfg_attr(all(), serde(rename = "a", alias = "c"))]),
+        true,
+        "# [cfg_attr (all () , serde (alias = \"c\"))]"
     )]
     #[case::cfg_attr_serde_not_list(quote!(#[cfg_attr(all(), serde)]), true, "")]
     #[case::cfg_attr_serde_unparseable(quote!(#[cfg_attr(all(), serde(= 1))]), true, "")]
@@ -338,7 +377,12 @@ mod tests {
     ) {
         let module = ["crate", "m"].map(String::from);
         assert_eq!(
-            render(&carried_field_attrs(&field(attrs), schema_derived, &module)),
+            render(&carried_field_attrs(
+                &field(attrs),
+                schema_derived,
+                &module,
+                false
+            )),
             expected
         );
     }
@@ -355,13 +399,47 @@ mod tests {
         true
     )]
     #[case::unparseable(quote!(#[schema(= 1)]), false)]
-    // A `schema(default ..)` inside `cfg_attr` counts too.
-    #[case::cfg_attr_default(quote!(#[cfg_attr(feature = "x", schema(default = 5))]), true)]
+    // A `schema(default ..)` inside `cfg_attr` is no unconditional
+    // override: it only gates the SeaORM-derived default (it used to drop
+    // it, so the generated serde default had no documented value with the
+    // cfg off).
+    #[case::cfg_attr_default(quote!(#[cfg_attr(feature = "x", schema(default = 5))]), false)]
     fn detects_schema_default(#[case] attrs: TokenStream, #[case] expected: bool) {
         assert_eq!(
-            carried_field_attrs(&field(attrs), true, &[]).schema_default,
+            carried_field_attrs(&field(attrs), true, &[], false).schema_default,
             expected
         );
+    }
+
+    #[test]
+    fn collects_cfg_default_predicates() {
+        let attrs = field(quote!(
+            #[cfg_attr(feature = "x", schema(default = 5))]
+            #[cfg_attr(feature = "y", serde(default))]
+            #[cfg_attr(feature = "z", serde(alias = "q"))]
+        ));
+        let carried = carried_field_attrs(&attrs, true, &[], false);
+        let schema: Vec<String> = carried
+            .schema_default_cfgs
+            .iter()
+            .map(|p| quote!(#p).to_string())
+            .collect();
+        let serde: Vec<String> = carried
+            .cfg_serde_default_predicates()
+            .iter()
+            .map(|p| quote!(#p).to_string())
+            .collect();
+        assert_eq!(schema, ["feature = \"x\""]);
+        assert_eq!(serde, ["feature = \"y\""]);
+        assert!(carried.for_option_wrap().schema_default_cfgs.is_empty());
+    }
+
+    /// The `rename` parameter pins the wire name: a cfg-gated rename is
+    /// dropped.
+    #[test]
+    fn renamed_field_drops_cfg_rename() {
+        let attrs = field(quote!(#[cfg_attr(all(), serde(rename = "a"))]));
+        assert_eq!(render(&carried_field_attrs(&attrs, true, &[], true)), "");
     }
 
     #[rstest]
@@ -398,7 +476,7 @@ mod tests {
         "# [cfg_attr (feature = \"x\" , schema (value_type = :: std :: option :: Option < String >))]"
     )]
     fn option_wrap_attrs(#[case] attrs: TokenStream, #[case] expected: &str) {
-        let carried = carried_field_attrs(&field(attrs), true, &[]).for_option_wrap();
+        let carried = carried_field_attrs(&field(attrs), true, &[], false).for_option_wrap();
         assert!(!carried.schema_default);
         assert_eq!(render(&carried), expected);
     }
@@ -408,13 +486,13 @@ mod tests {
     #[case::deprecated(quote!(#[deprecated]), false, true)]
     #[case::cfg_attr_deprecated(quote!(#[cfg_attr(all(), deprecated)]), false, true)]
     fn flags(#[case] attrs: TokenStream, #[case] garde: bool, #[case] deprecated: bool) {
-        let carried = carried_field_attrs(&field(attrs), true, &[]);
+        let carried = carried_field_attrs(&field(attrs), true, &[], false);
         assert_eq!((carried.garde, carried.deprecated), (garde, deprecated));
     }
 
     #[test]
     fn collects_cfgs() {
-        let carried = carried_field_attrs(&field(quote!(#[cfg(test)])), true, &[]);
+        let carried = carried_field_attrs(&field(quote!(#[cfg(test)])), true, &[], false);
         assert_eq!(carried.cfgs.len(), 1);
     }
 }

@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::defaults::generate_sea_orm_default_attrs;
+use super::defaults::{gate_sea_orm_defaults, generate_sea_orm_default_attrs};
 use super::field_attrs::carried_field_attrs;
 use super::file_cache;
 use super::file_lookup::{
@@ -27,7 +27,7 @@ use super::module_scope::segment_ident as field_ident;
 use super::same_file_override::maybe_generate_same_file_relation_override;
 use super::seaorm::{
     RelationFieldInfo, convert_relation_type_to_schema_with_info, convert_type_with_chrono,
-    extract_sea_orm_default_value, has_sea_orm_primary_key,
+    extract_sea_orm_default_value, has_sea_orm_primary_key, primary_key_count,
 };
 use super::transformation::{
     OptionWrap, RenameAll, build_omit_set, build_partial_config, build_pick_set, build_rename_map,
@@ -307,10 +307,9 @@ pub fn generate_schema_type_code(
     let schema_derived = !input.ignore_schema;
     // A source field with `#[garde(..)]` makes the DTO derive
     // `garde::Validate`; every other field then needs `#[garde(skip)]`.
-    let any_garde = parsed_struct
-        .fields
-        .iter()
-        .any(|field| carried_field_attrs(&field.attrs, schema_derived, &source_module_path).garde);
+    let any_garde = parsed_struct.fields.iter().any(|field| {
+        carried_field_attrs(&field.attrs, schema_derived, &source_module_path, false).garde
+    });
     // A carried `#[deprecated]` field: the struct (and so its serde
     // derives) `#[allow(deprecated)]`.
     let mut any_deprecated = false;
@@ -323,6 +322,7 @@ pub fn generate_schema_type_code(
     let mut relation_names: HashSet<String> = HashSet::new();
 
     if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
+        let pk_count = primary_key_count(fields_named);
         for (field_index, field) in fields_named.named.iter().enumerate() {
             let rust_field_name = field.ident.as_ref().map_or_else(
                 || "unknown".to_string(),
@@ -337,7 +337,7 @@ pub fn generate_schema_type_code(
             // Apply omit_default: skip fields with sea_orm(default_value) or sea_orm(primary_key)
             if input.omit_default
                 && (extract_sea_orm_default_value(&field.attrs).is_some()
-                    || has_sea_orm_primary_key(&field.attrs))
+                    || has_sea_orm_primary_key(&field.attrs, &field.ty, pk_count))
             {
                 dropped.insert(
                     rust_field_name,
@@ -529,8 +529,9 @@ pub fn generate_schema_type_code(
 
             // Extract doc attributes to carry over comments to the generated struct
             let doc_attrs = extract_doc_attrs(&field.attrs);
+            let renamed = rename_map.contains_key(&rust_field_name);
             let mut carried =
-                carried_field_attrs(&field.attrs, schema_derived, &source_module_path);
+                carried_field_attrs(&field.attrs, schema_derived, &source_module_path, renamed);
             if should_wrap_option {
                 carried = carried.for_option_wrap();
             }
@@ -621,7 +622,6 @@ pub fn generate_schema_type_code(
                 // Filter field attributes: keep serde and doc attributes, remove sea_orm and others
                 // This is important when using schema_type! with models from other files
                 // that may have ORM-specific attributes we don't want in the generated struct
-                let is_renamed = rename_map.contains_key(&rust_field_name);
                 let adapter_prefix = format!(
                     "__vespera_{}_{rust_field_name}",
                     strip_raw_prefix_owned(new_type_name.to_string())
@@ -633,24 +633,24 @@ pub fn generate_schema_type_code(
                 let (serde_field_attrs, adapters) = field_serde_attrs(
                     &reroot_serde_paths(&field.attrs, &source_module_path),
                     wrap.as_ref(),
-                    is_renamed,
+                    renamed,
                 );
                 codec_adapters.push(adapters);
 
                 // Generate serde default + schema(default) from sea_orm(default_value) or primary_key
                 // Handles literal defaults, SQL function defaults, and implicit auto-increment
-                let (serde_default_attr, schema_default_attr): (
-                    proc_macro2::TokenStream,
-                    proc_macro2::TokenStream,
-                ) = generate_sea_orm_default_attrs(
+                let generated = generate_sea_orm_default_attrs(
                     &field.attrs,
                     new_type_name,
                     &rust_field_name,
                     original_ty,
                     &field_ty,
                     should_wrap_option || is_option_type(original_ty),
+                    pk_count,
                     &mut default_functions,
                 );
+                let (serde_default_attr, schema_default_attr) =
+                    gate_sea_orm_defaults(generated, &carried, schema_derived);
                 // The source's own `#[schema(default ..)]` wins; without a
                 // `Schema` derive the attribute only goes to the metadata.
                 let schema_default_attr = if carried.schema_default {
@@ -771,7 +771,9 @@ pub fn generate_schema_type_code(
     }
 
     validate_unique_field_names(
-        field_mappings.iter().map(|(ident, ..)| ident.to_string()),
+        field_mappings
+            .iter()
+            .map(|(ident, source, ..)| (ident.to_string(), source.to_string())),
         input.rename.as_ref(),
         input.add.as_ref(),
         &at,

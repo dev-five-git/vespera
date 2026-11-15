@@ -98,7 +98,7 @@ fn field_assignments(
 }
 
 /// The deserialize proxy's fields: the DTO's types with their `serde`,
-/// `doc` and `cfg` attributes.
+/// `doc` and `cfg` attributes and the `serde` items of a `cfg_attr`.
 fn proxy_fields(fields: &[&syn::Field]) -> Vec<TokenStream> {
     fields
         .iter()
@@ -109,10 +109,48 @@ fn proxy_fields(fields: &[&syn::Field]) -> Vec<TokenStream> {
                 let path = attr.path();
                 path.is_ident("serde") || path.is_ident("doc") || path.is_ident("cfg")
             });
+            let cfg_serde = cfg_attr_serde(&field.attrs, |_| true);
             Some(quote! {
                 #(#attrs)*
+                #(#cfg_serde)*
                 #ident: #ty
             })
+        })
+        .collect()
+}
+
+/// `#[cfg_attr(pred, serde(..), ..)]` of `attrs` reduced to the `serde`
+/// items `keep` accepts (`rename_all` / `rename` must reach the proxy: it
+/// otherwise reads other names than the DTO writes).
+fn cfg_attr_serde(attrs: &[syn::Attribute], keep: impl Fn(&syn::Meta) -> bool) -> Vec<TokenStream> {
+    use syn::punctuated::Punctuated;
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("cfg_attr"))
+        .filter_map(|attr| {
+            let (predicate, metas) = attr
+                .parse_args_with(|input: syn::parse::ParseStream| {
+                    let predicate: super::cfg_eval::Predicate = input.parse()?;
+                    input.parse::<syn::Token![,]>()?;
+                    Ok((
+                        predicate,
+                        Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated(input)?,
+                    ))
+                })
+                .ok()?;
+            let items: Vec<syn::Meta> = metas
+                .iter()
+                .filter(|meta| meta.path().is_ident("serde"))
+                .filter_map(|meta| {
+                    meta.require_list()
+                        .ok()?
+                        .parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+                        .ok()
+                })
+                .flatten()
+                .filter(|item| keep(item))
+                .collect();
+            (!items.is_empty()).then(|| quote! { #[cfg_attr(#predicate, serde(#(#items),*))] })
         })
         .collect()
 }
@@ -172,6 +210,15 @@ fn dto_serde(dto_struct: &syn::ItemStruct) -> DtoSerde {
         _ => true,
     });
     serde.proxy_attrs = attrs;
+    // A cfg-gated conversion key cannot be honoured conditionally: dropped.
+    serde
+        .proxy_attrs
+        .extend(cfg_attr_serde(&dto_struct.attrs, |meta| {
+            !matches!(
+                serde_key(meta).as_str(),
+                "from" | "try_from" | "default" | "into" | "bound" | "remote"
+            )
+        }));
     serde
 }
 
@@ -460,6 +507,12 @@ mod tests {
     #[case::container_default_path(
         "adapter_container_default_path",
         "#[serde(default = \"users::fallback\")] struct UserInArticle { id: i32 }"
+    )]
+    // L13 (round 12): `cfg_attr` serde items reach the proxy (a cfg-gated
+    // conversion key is dropped, non-serde items and unparseable ones too).
+    #[case::cfg_attr_serde(
+        "adapter_cfg_attr_serde",
+        "#[cfg_attr(feature = \"x\", serde(rename_all = \"camelCase\", from = \"W\"), schema(name = \"Q\"))] #[cfg_attr(all(), serde(default))] #[cfg_attr(feature)] struct UserInArticle { #[cfg_attr(feature = \"x\", serde(rename = \"uid\"), garde(skip))] user_id: i32, #[cfg_attr(all(), serde, schema(minimum = 1))] other: i32 }"
     )]
     fn adapter_helpers_snapshot(#[case] name: &str, #[case] definition: &str) {
         let storage = to_storage(vec![create_test_struct_metadata(

@@ -235,8 +235,28 @@ fn test_generate_schema_type_code_seaorm_model_detection() {
 
     assert!(result.is_ok());
     let (tokens, _metadata) = result.unwrap();
-    let output = tokens.to_string();
-    assert!(output.contains("UserSchema"));
+    // Without relations a SeaORM model converts through `From`.
+    assert!(has_from_impl(&tokens), "{tokens}");
+    assert!(!tokens.to_string().contains("fn from_model"), "{tokens}");
+
+    // The `#[sea_orm(..)]` container attribute is what makes the relation
+    // struct a SeaORM model: with it the DTO gets `from_model`, without it
+    // (a plain struct of the same shape) it does not.
+    let relation_model = |container: &str| {
+        let definition = format!(
+            "{container} pub struct Model {{ pub id: i32, pub user: BelongsTo<super::user::Entity> }}"
+        );
+        let storage = to_storage(vec![create_test_struct_metadata("Model", &definition)]);
+        let input: SchemaTypeInput = syn::parse2(quote!(MemoSchema from Model)).unwrap();
+        generate_schema_type_code(&input, &storage)
+            .unwrap()
+            .0
+            .to_string()
+    };
+    let seaorm = relation_model("#[sea_orm(table_name = \"memos\")]");
+    assert!(seaorm.contains("fn from_model"), "{seaorm}");
+    let plain = relation_model("");
+    assert!(!plain.contains("fn from_model"), "{plain}");
 }
 
 // Test tuple struct handling
@@ -450,8 +470,13 @@ fn test_generate_schema_type_code_belongs_to_relation() {
     assert!(result.is_ok());
     let (tokens, _metadata) = result.unwrap();
     let output = tokens.to_string();
-    // BelongsTo should be included (converted to Box<UserSchema> or similar)
-    assert!(output.contains("user"));
+    // BelongsTo becomes the target's schema (boxed; required with the
+    // non-null `user_id`); `user_id` alone must not satisfy the check
+    // (`contains("user")` did).
+    assert!(
+        output.contains("pub user : Box < user :: Schema >"),
+        "{output}"
+    );
 }
 
 // Coverage test for HasOne relation type
@@ -504,9 +529,10 @@ fn test_generate_schema_type_code_seaorm_model_with_relation_generates_from_mode
     let (tokens, _metadata) = result.unwrap();
     let output = tokens.to_string();
     // Should have relation field
-    assert!(output.contains("user"));
+    assert!(output.contains("pub user :"), "{output}");
     // No regular From impl: relation fields need the async from_model.
     assert!(!has_from_impl(&tokens), "{output}");
+    assert!(output.contains("pub async fn from_model"), "{output}");
 }
 
 // Test for from_model generation with relations
@@ -533,7 +559,8 @@ fn test_generate_schema_type_code_from_model_generation() {
     let (tokens, _metadata) = result.unwrap();
     let output = tokens.to_string();
     // Has relation field
-    assert!(output.contains("user"));
-    // Relations disable the automatic From impl.
+    assert!(output.contains("pub user :"), "{output}");
+    // Relations disable the automatic From impl; `from_model` replaces it.
     assert!(!has_from_impl(&tokens), "{output}");
+    assert!(output.contains("pub async fn from_model"), "{output}");
 }

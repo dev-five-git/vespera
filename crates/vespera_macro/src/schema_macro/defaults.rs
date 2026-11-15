@@ -7,6 +7,8 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
+use super::cfg_eval::Predicate;
+use super::field_attrs::CarriedAttrs;
 use super::seaorm::{
     extract_sea_orm_default_value, has_sea_orm_primary_key, is_sql_function_default,
 };
@@ -27,7 +29,8 @@ use crate::parser::extract_default;
 ///    Generates parse-based default function + schema default.
 /// 2. **SQL function defaults** (`default_value = "NOW()"`, `"gen_random_uuid()"`):
 ///    Generates type-specific default function + schema default with type's zero value.
-/// 3. **Primary key** (implicit auto-increment):
+/// 3. **Primary key** (implicit auto-increment, see [`has_sea_orm_primary_key`]
+///    — `primary_key_count` is the model's number of key columns):
 ///    Treated as having an implicit default — generates type-specific default.
 ///
 /// Skips serde default generation when:
@@ -36,6 +39,7 @@ use crate::parser::extract_default;
 ///   `#[schema(default)]` marker is emitted: serde applies the field's own
 ///   default, not the SeaORM one)
 /// - For literal defaults: the field type doesn't implement `FromStr`
+#[allow(clippy::too_many_arguments)]
 pub(super) fn generate_sea_orm_default_attrs(
     original_attrs: &[syn::Attribute],
     struct_name: &syn::Ident,
@@ -43,6 +47,7 @@ pub(super) fn generate_sea_orm_default_attrs(
     original_ty: &syn::Type,
     field_ty: &dyn quote::ToTokens,
     is_optional_or_partial: bool,
+    primary_key_count: usize,
     default_functions: &mut Vec<TokenStream>,
 ) -> (TokenStream, TokenStream) {
     // Don't generate defaults for optional/partial fields
@@ -52,7 +57,7 @@ pub(super) fn generate_sea_orm_default_attrs(
 
     // Check for sea_orm(default_value) and sea_orm(primary_key)
     let default_value = extract_sea_orm_default_value(original_attrs);
-    let has_pk = has_sea_orm_primary_key(original_attrs);
+    let has_pk = has_sea_orm_primary_key(original_attrs, original_ty, primary_key_count);
 
     // No default source found
     if default_value.is_none() && !has_pk {
@@ -132,6 +137,51 @@ pub(super) fn generate_sea_orm_default_attrs(
             (serde_default_attr, schema_default_attr)
         }
     }
+}
+
+/// Gates the SeaORM-derived `(serde, schema)` defaults on the field's
+/// `cfg_attr` overrides. Where a `cfg_attr(P, serde(default ..))` holds,
+/// serde applies the field's own default (the generated `default = ".."`
+/// would be a second `default`, which serde rejects) and the bare
+/// `#[schema(default)]` marker documents it; where a `cfg_attr(Q,
+/// schema(default ..))` holds, that one documents the field. Without a
+/// `Schema` derive (`schema_derived` false) the schema attribute goes to
+/// the metadata, which reads no `cfg_attr`: it is left as is.
+pub(super) fn gate_sea_orm_defaults(
+    (serde_attr, schema_attr): (TokenStream, TokenStream),
+    carried: &CarriedAttrs,
+    schema_derived: bool,
+) -> (TokenStream, TokenStream) {
+    let serde_cfgs = carried.cfg_serde_default_predicates();
+    if serde_cfgs.is_empty() || (serde_attr.is_empty() && schema_attr.is_empty()) {
+        return (
+            serde_attr,
+            gate_attrs(schema_attr, &carried.schema_default_cfgs),
+        );
+    }
+    let serde_attr = gate_attrs(serde_attr, &serde_cfgs);
+    if !schema_derived {
+        return (serde_attr, schema_attr);
+    }
+    let mut schema = gate_attrs(schema_attr, &serde_cfgs);
+    schema.extend(quote! { #[cfg_attr(any(#(#serde_cfgs),*), schema(default))] });
+    (serde_attr, gate_attrs(schema, &carried.schema_default_cfgs))
+}
+
+/// `#[a] #[b]` -> `#[cfg_attr(not(any(P, ..)), a)] ..`: the attributes
+/// apply only where none of `predicates` holds (unchanged without any).
+fn gate_attrs(attrs: TokenStream, predicates: &[Predicate]) -> TokenStream {
+    if predicates.is_empty() {
+        return attrs;
+    }
+    let attrs = syn::parse::Parser::parse2(syn::Attribute::parse_outer, attrs).unwrap_or_default();
+    attrs
+        .iter()
+        .map(|attr| {
+            let meta = &attr.meta;
+            quote! { #[cfg_attr(not(any(#(#predicates),*)), #meta)] }
+        })
+        .collect()
 }
 
 /// `ident` without a raw `r#` prefix (it goes into generated fn names).

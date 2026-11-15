@@ -183,6 +183,29 @@ fn path_through_external_crate_import_is_an_error() {
     assert!(message.contains("another crate"), "{message}");
 }
 
+/// L3 (round 12): a path written through a dependency crate the call site
+/// never imports (`entity::user::Model`) is that crate's, not a missing
+/// `src/entity/user.rs`: it used to be a NotFound listing local files.
+#[rstest]
+#[case::plain_extern("--extern\nentity=/deps/libentity.rlib", true)]
+#[case::extern_option("--extern\npriv:entity=/deps/libentity.rlib", true)]
+#[case::other_extern("--extern\nserde=/deps/libserde.rlib", false)]
+#[case::not_rustc("", false)]
+fn unimported_dependency_path_is_external(#[case] args: &str, #[case] external: bool) {
+    let (_dir, _guard) = temp_crate("lib.rs");
+    let _args = crate::env_access::test_env::set_var(
+        crate::env_access::COMPILER_ARGS_KEY,
+        format!("rustc\n--crate-name\napp\n{args}"),
+    );
+    let err = lookup("entity::user::Model", None).unwrap_err();
+    assert_eq!(
+        matches!(&err, LookupError::ExternalCrate { path } if path == "entity::user"),
+        external,
+        "{err:?}"
+    );
+    assert_eq!(matches!(err, LookupError::NotFound { .. }), !external);
+}
+
 /// L17: in an integration test, `crate::` is the test crate (`tests/`), not
 /// the library's `src/`.
 #[test]
@@ -369,10 +392,13 @@ fn reexporting_crate() -> (TempDir, crate::env_access::test_env::EnvGuard) {
     for (path, content) in [
         ("lib.rs", "pub mod common;\npub mod models;"),
         ("common.rs", "pub struct Money(pub i64);"),
-        ("models/mod.rs", "pub mod user;\npub use user::User;"),
+        (
+            "models/mod.rs",
+            "pub mod user;\npub use user::User;\npub use user::Model as Account;",
+        ),
         (
             "models/user.rs",
-            "use crate::common::Money;\npub struct User { pub price: Money }",
+            "use crate::common::Money;\npub struct User { pub price: Money }\npub struct Model { pub owner: Money }",
         ),
     ] {
         let path = dir.path().join("src").join(path);
@@ -461,6 +487,70 @@ fn cfg_inactive_structs_are_skipped(#[case] cfg: &str, #[case] expected: &str) {
     assert!(in_items.contains(expected), "{in_items}");
 }
 
+/// MED-2 (round 12): a parent declaring the module with `#[path]` (one cfg
+/// twin of it) or inline overrides `src/<module>.rs`: the fast path used to
+/// read the plain file whatever the declaration said.
+#[rstest]
+#[case::redirected_twin_on("--cfg\nfeature=\"v2\"", "crate::models::Model", "pub v2")]
+#[case::redirected_twin_off("--cfg\nfeature=\"other\"", "crate::models::Model", "pub v1")]
+#[case::nested_redirect("--cfg\nfeature=\"v2\"", "crate::models::user::User", "pub v2_user")]
+#[case::inline_parent("--cfg\nfeature=\"other\"", "crate::shadow::Model", "pub inline")]
+fn parent_declarations_override_the_module_file(
+    #[case] cfg: &str,
+    #[case] path: &str,
+    #[case] expected: &str,
+) {
+    let dir = TempDir::new().unwrap();
+    let files = [
+        (
+            "lib.rs",
+            "#[cfg(feature = \"v2\")] #[path = \"models_v2.rs\"] pub mod models;\n\
+             #[cfg(not(feature = \"v2\"))] pub mod models;\n\
+             pub mod shadow { pub struct Model { pub inline: i32 } }",
+        ),
+        (
+            "models.rs",
+            "pub mod user;\npub struct Model { pub v1: i32 }",
+        ),
+        ("models/user.rs", "pub struct User { pub v1_user: i32 }"),
+        (
+            "models_v2.rs",
+            "pub mod user;\npub struct Model { pub v2: i32 }",
+        ),
+        // A `#[path]` file is mod-rs like: its `mod user;` is `src/user.rs`.
+        ("user.rs", "pub struct User { pub v2_user: i32 }"),
+        ("shadow.rs", "pub struct Model { pub stale: i32 }"),
+    ];
+    for (file, content) in files {
+        let file = dir.path().join("src").join(file);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, content).unwrap();
+    }
+    let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    let _args = crate::env_access::test_env::set_var(
+        crate::env_access::COMPILER_ARGS_KEY,
+        format!("rustc\n--crate-name\napp\n{cfg}"),
+    );
+    bump_epoch();
+    let (metadata, _) = lookup(path, None).unwrap();
+    assert!(
+        metadata.definition.contains(expected),
+        "{}",
+        metadata.definition
+    );
+    let module: Vec<String> = path
+        .rsplit_once("::")
+        .unwrap()
+        .0
+        .split("::")
+        .map(String::from)
+        .collect();
+    let items = crate::schema_macro::module_scope::module_items(&module).unwrap();
+    let name = path.rsplit("::").next().unwrap();
+    let in_items = crate::schema_macro::module_scope::struct_in_items(&items, name).unwrap();
+    assert!(in_items.contains(expected), "{in_items}");
+}
+
 #[test]
 fn reexported_module_follows_crate_imports_only() {
     let (_dir, _guard) = reexporting_crate();
@@ -475,6 +565,19 @@ fn reexported_module_follows_crate_imports_only() {
         None
     );
     assert_eq!(reexported_module(&module("crate::models"), "Missing"), None);
+    // L4 (round 12): an `as` alias is followed to the item it renames.
+    assert_eq!(reexported_module(&module("crate::models"), "Account"), None);
+    assert_eq!(
+        reexported_item(&module("crate::models"), "Account"),
+        Some((module("crate::models::user"), "Model".to_string()))
+    );
+    let (metadata, defined_in) = lookup("crate::models::Account", None).unwrap();
+    assert!(
+        metadata.definition.contains("owner"),
+        "{}",
+        metadata.definition
+    );
+    assert_eq!(defined_in.join("::"), "crate::models::user");
 }
 
 /// A bare source name: the call-site file's own definition is preferred

@@ -60,15 +60,21 @@ fn extract_sea_orm_attr_value(attrs: &[syn::Attribute], attr_name: &str) -> Opti
 /// SeaORM accepts a field name (`user_id`), a column (`UserId`,
 /// `Column::UserId`) and a composite list (`(a, b)`); the column forms are
 /// normalized to the field name (`user_id`), a composite list to
-/// `(a, b)` of field names (see [`is_composite_columns`]).
-pub fn extract_belongs_to_from_field(attrs: &[syn::Attribute]) -> Option<String> {
-    extract_sea_orm_attr_value(attrs, "from").map(|value| normalize_columns(&value))
+/// `(a, b)` of field names (see [`is_composite_columns`]). A column names
+/// the field of `fields` (the relation's own model) SeaORM's derive turns
+/// into it (`address_2_id` -> `Address2Id`), else its capitals are split.
+pub fn extract_belongs_to_from_field(
+    attrs: &[syn::Attribute],
+    fields: &syn::Fields,
+) -> Option<String> {
+    extract_sea_orm_attr_value(attrs, "from").map(|value| normalize_columns(&value, fields))
 }
 
 /// Extract the `to` field name (the referenced column) from a `sea_orm`
 /// relation attribute, normalized like [`extract_belongs_to_from_field`].
 pub fn extract_belongs_to_to_field(attrs: &[syn::Attribute]) -> Option<String> {
-    extract_sea_orm_attr_value(attrs, "to").map(|value| normalize_columns(&value))
+    extract_sea_orm_attr_value(attrs, "to")
+        .map(|value| normalize_columns(&value, &syn::Fields::Unit))
 }
 
 /// Whether a normalized `from` / `to` value lists several columns.
@@ -78,7 +84,7 @@ pub fn is_composite_columns(columns: &str) -> bool {
 
 /// `Column::UserId` / `UserId` / `user_id` -> `user_id`; `(A, b)` ->
 /// `(a, b)`. A value that is no column path is kept as written.
-fn normalize_columns(value: &str) -> String {
+fn normalize_columns(value: &str, fields: &syn::Fields) -> String {
     let trimmed = value.trim();
     if let Some(list) = trimmed
         .strip_prefix('(')
@@ -88,19 +94,29 @@ fn normalize_columns(value: &str) -> String {
             .split(',')
             .map(str::trim)
             .filter(|column| !column.is_empty())
-            .map(column_field_name)
+            .map(|column| column_field_name(column, fields))
             .collect();
         return format!("({})", columns.join(", "));
     }
-    column_field_name(trimmed)
+    column_field_name(trimmed, fields)
 }
 
-/// The model field behind one column (`Column::UserId` -> `user_id`).
-fn column_field_name(column: &str) -> String {
+/// The model field behind one column (`Column::UserId` -> `user_id`): the
+/// field of `fields` whose PascalCase form is the column (SeaORM's
+/// `DeriveEntityModel` naming, so `Address2Id` is `address_2_id`), else the
+/// column's capitals split (`address2_id`).
+fn column_field_name(column: &str, fields: &syn::Fields) -> String {
     let last = column.rsplit("::").next().unwrap_or(column).trim();
     let last = last.strip_prefix("r#").unwrap_or(last);
     if !last.starts_with(|c: char| c.is_ascii_uppercase()) {
         return last.to_string();
+    }
+    let named = fields.iter().filter_map(|field| field.ident.as_ref());
+    if let Some(field) = named
+        .map(|ident| crate::parser::strip_raw_prefix_owned(ident.to_string()))
+        .find(|name| crate::schema_macro::type_utils::snake_to_pascal_case(name) == last)
+    {
+        return field;
     }
     let mut field = String::with_capacity(last.len() + 4);
     for (index, c) in last.chars().enumerate() {
@@ -155,15 +171,52 @@ pub fn is_sql_function_default(value: &str) -> bool {
         && args.ends_with(')')
 }
 
-/// Check if a field is a database-generated primary key:
-/// `#[sea_orm(primary_key)]` without `auto_increment = false` (SeaORM's
-/// default for a primary key is auto-increment).
-pub fn has_sea_orm_primary_key(attrs: &[syn::Attribute]) -> bool {
+/// Check if a field is a database-generated primary key, mirroring
+/// SeaORM's `DeriveEntityModel`: `#[sea_orm(primary_key)]` is
+/// auto-increment only when it is the model's single primary key
+/// (`primary_key_count == 1`) and either says `auto_increment = true` or,
+/// with no `auto_increment`, its type is not a `String` / `Uuid` (SeaORM
+/// makes those natural keys `auto_increment = false`).
+pub fn has_sea_orm_primary_key(
+    attrs: &[syn::Attribute],
+    ty: &syn::Type,
+    primary_key_count: usize,
+) -> bool {
     let entries = sea_orm_entries(attrs);
-    let auto_increment = entry(&entries, "auto_increment")
-        .and_then(|e| e.value.as_ref())
-        .is_none_or(is_true);
-    is_primary_key_entry(&entries) && auto_increment
+    if !is_primary_key_entry(&entries) || primary_key_count != 1 {
+        return false;
+    }
+    entry(&entries, "auto_increment").map_or_else(
+        || !is_natural_key_type(ty),
+        |e| e.value.as_ref().is_none_or(is_true),
+    )
+}
+
+/// SeaORM's `NOT_AUTO_INCRE_TYPE_SUFFIX`: a key type (`Option<..>`
+/// unwrapped) whose tokens end in `String` / `Uuid`.
+fn is_natural_key_type(ty: &syn::Type) -> bool {
+    let tokens = quote::ToTokens::to_token_stream(ty)
+        .to_string()
+        .replace(' ', "");
+    let inner = tokens
+        .strip_prefix("Option<")
+        .and_then(|rest| rest.strip_suffix('>'))
+        .unwrap_or(&tokens);
+    inner.ends_with("String") || inner.ends_with("Uuid")
+}
+
+/// How many distinct fields of a model are (part of) its primary key; a
+/// `#[cfg]` twin pair under one name counts once.
+pub fn primary_key_count(fields: &syn::FieldsNamed) -> usize {
+    let mut names: Vec<String> = fields
+        .named
+        .iter()
+        .filter(|field| is_sea_orm_primary_key(&field.attrs))
+        .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names.len()
 }
 
 /// Whether a field is (part of) the primary key, `auto_increment` or not.
@@ -196,7 +249,7 @@ mod tests {
         let attrs: Vec<syn::Attribute> =
             vec![syn::parse_quote!(#[sea_orm(belongs_to, from = "user_id", to = "id")])];
         assert_eq!(
-            extract_belongs_to_from_field(&attrs),
+            extract_belongs_to_from_field(&attrs, &syn::Fields::Unit),
             Some("user_id".to_string())
         );
     }
@@ -204,18 +257,24 @@ mod tests {
     #[test]
     fn test_extract_belongs_to_from_field_without_from() {
         let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[sea_orm(belongs_to, to = "id")])];
-        assert_eq!(extract_belongs_to_from_field(&attrs), None);
+        assert_eq!(
+            extract_belongs_to_from_field(&attrs, &syn::Fields::Unit),
+            None
+        );
     }
 
     #[test]
     fn test_extract_belongs_to_from_field_no_sea_orm_attr() {
         let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[serde(skip)])];
-        assert_eq!(extract_belongs_to_from_field(&attrs), None);
+        assert_eq!(
+            extract_belongs_to_from_field(&attrs, &syn::Fields::Unit),
+            None
+        );
     }
 
     #[test]
     fn test_extract_belongs_to_from_field_empty_attrs() {
-        assert_eq!(extract_belongs_to_from_field(&[]), None);
+        assert_eq!(extract_belongs_to_from_field(&[], &syn::Fields::Unit), None);
     }
 
     #[test]
@@ -406,38 +465,38 @@ mod tests {
     #[test]
     fn test_has_sea_orm_primary_key_true() {
         let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[sea_orm(primary_key)])];
-        assert!(has_sea_orm_primary_key(&attrs));
+        assert!(has_sea_orm_primary_key(&attrs, &syn::parse_quote!(i32), 1));
     }
 
     #[test]
     fn test_has_sea_orm_primary_key_with_other_attrs() {
         let attrs: Vec<syn::Attribute> =
             vec![syn::parse_quote!(#[sea_orm(primary_key, default_value = "gen_random_uuid()")])];
-        assert!(has_sea_orm_primary_key(&attrs));
+        assert!(has_sea_orm_primary_key(&attrs, &syn::parse_quote!(i32), 1));
     }
 
     #[test]
     fn test_has_sea_orm_primary_key_false() {
         let attrs: Vec<syn::Attribute> =
             vec![syn::parse_quote!(#[sea_orm(default_value = "NOW()")])];
-        assert!(!has_sea_orm_primary_key(&attrs));
+        assert!(!has_sea_orm_primary_key(&attrs, &syn::parse_quote!(i32), 1));
     }
 
     #[test]
     fn test_has_sea_orm_primary_key_no_sea_orm_attr() {
         let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[serde(default)])];
-        assert!(!has_sea_orm_primary_key(&attrs));
+        assert!(!has_sea_orm_primary_key(&attrs, &syn::parse_quote!(i32), 1));
     }
 
     #[test]
     fn test_has_sea_orm_primary_key_empty_attrs() {
-        assert!(!has_sea_orm_primary_key(&[]));
+        assert!(!has_sea_orm_primary_key(&[], &syn::parse_quote!(i32), 1));
     }
 
     #[test]
     fn test_has_sea_orm_primary_key_non_list_meta() {
         let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[sea_orm = "something"] )];
-        assert!(!has_sea_orm_primary_key(&attrs));
+        assert!(!has_sea_orm_primary_key(&attrs, &syn::parse_quote!(i32), 1));
     }
 
     #[rstest]
@@ -472,12 +531,63 @@ mod tests {
         #[case] expected: bool,
     ) {
         let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#attr)];
-        assert_eq!(has_sea_orm_primary_key(&attrs), expected);
+        assert_eq!(
+            has_sea_orm_primary_key(&attrs, &syn::parse_quote!(i32), 1),
+            expected
+        );
         // `auto_increment = false` is still (part of) the primary key.
         assert_eq!(
             is_sea_orm_primary_key(&attrs),
             expected || attr.to_string().contains("auto_increment")
         );
+    }
+
+    // SeaORM's `DeriveEntityModel`: a String / Uuid key and every column of
+    // a composite key are `auto_increment = false` unless said otherwise.
+    #[rstest]
+    #[case::integer(quote::quote!(#[sea_orm(primary_key)]), quote::quote!(i64), 1, true)]
+    #[case::string(quote::quote!(#[sea_orm(primary_key)]), quote::quote!(String), 1, false)]
+    #[case::uuid(quote::quote!(#[sea_orm(primary_key)]), quote::quote!(uuid::Uuid), 1, false)]
+    #[case::optional_uuid(quote::quote!(#[sea_orm(primary_key)]), quote::quote!(Option<Uuid>), 1, false)]
+    #[case::string_forced(
+        quote::quote!(#[sea_orm(primary_key, auto_increment = true)]),
+        quote::quote!(String),
+        1,
+        true
+    )]
+    #[case::bare_flag(quote::quote!(#[sea_orm(primary_key, auto_increment)]), quote::quote!(String), 1, true)]
+    #[case::composite(quote::quote!(#[sea_orm(primary_key)]), quote::quote!(i32), 2, false)]
+    #[case::composite_forced(
+        quote::quote!(#[sea_orm(primary_key, auto_increment = true)]),
+        quote::quote!(i32),
+        2,
+        false
+    )]
+    fn primary_key_auto_increment_follows_sea_orm(
+        #[case] attr: proc_macro2::TokenStream,
+        #[case] ty: proc_macro2::TokenStream,
+        #[case] count: usize,
+        #[case] expected: bool,
+    ) {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#attr)];
+        let ty: syn::Type = syn::parse_quote!(#ty);
+        assert_eq!(has_sea_orm_primary_key(&attrs, &ty, count), expected);
+    }
+
+    #[test]
+    fn primary_key_count_counts_distinct_names() {
+        let fields: syn::FieldsNamed = syn::parse_quote!({
+            #[cfg(a)]
+            #[sea_orm(primary_key)]
+            id: i32,
+            #[cfg(not(a))]
+            #[sea_orm(primary_key)]
+            id: i64,
+            #[sea_orm(primary_key, auto_increment = false)]
+            other: i32,
+            plain: i32,
+        });
+        assert_eq!(primary_key_count(&fields), 2);
     }
 
     // SeaORM's column forms name the model field (`Column::UserId`,
@@ -496,10 +606,34 @@ mod tests {
     ) {
         let attrs: Vec<syn::Attribute> =
             vec![syn::parse_quote!(#[sea_orm(belongs_to, from = #value, to = #value)])];
-        let from = extract_belongs_to_from_field(&attrs).unwrap();
+        let from = extract_belongs_to_from_field(&attrs, &syn::Fields::Unit).unwrap();
         assert_eq!(from, expected);
         assert_eq!(extract_belongs_to_to_field(&attrs).unwrap(), expected);
         assert_eq!(is_composite_columns(&from), composite);
+    }
+
+    // L15 (round 12): SeaORM names `address_2_id`'s column `Address2Id`; the
+    // capital split (`address2_id`) missed the field, so a nullable FK was
+    // read as required.
+    #[rstest]
+    #[case::digit_word("Column::Address2Id", "address_2_id")]
+    #[case::composite("(Address2Id, UserId)", "(address_2_id, user_id)")]
+    #[case::raw_field("Type", "type")]
+    #[case::unknown_column("Column::OtherId", "other_id")]
+    fn from_columns_match_model_fields(#[case] value: &str, #[case] expected: &str) {
+        let fields: syn::FieldsNamed = syn::parse_quote!({
+            pub id: i32,
+            pub address_2_id: Option<i32>,
+            pub user_id: i32,
+            pub r#type: String,
+        });
+        let attrs: Vec<syn::Attribute> =
+            vec![syn::parse_quote!(#[sea_orm(belongs_to, from = #value, to = "Id")])];
+        let fields = syn::Fields::Named(fields);
+        assert_eq!(
+            extract_belongs_to_from_field(&attrs, &fields).as_deref(),
+            Some(expected)
+        );
     }
 
     #[test]
@@ -508,7 +642,7 @@ mod tests {
             #[sea_orm(belongs_to = "super::user::Entity", on_delete = Cascade, from = "user_id", to = "id")]
         )];
         assert_eq!(
-            extract_belongs_to_from_field(&attrs).as_deref(),
+            extract_belongs_to_from_field(&attrs, &syn::Fields::Unit).as_deref(),
             Some("user_id")
         );
         assert_eq!(extract_belongs_to_to_field(&attrs).as_deref(), Some("id"));
