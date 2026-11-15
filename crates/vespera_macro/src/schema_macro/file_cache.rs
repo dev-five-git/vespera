@@ -213,6 +213,9 @@ struct FileCache {
     /// fetched during this invocation and `fs::metadata` is skipped.
     /// When the epoch differs the entry is stale and the syscall runs again.
     mtime_epoch_cache: HashMap<PathBuf, (u64, Option<FileFingerprint>)>,
+    /// Set by [`bump_epoch`] (see [`sources_stable`]): a fingerprint / file
+    /// list validated in an earlier epoch is still valid.
+    sources_stable: bool,
 }
 
 thread_local! {
@@ -238,6 +241,7 @@ thread_local! {
         struct_def_cache_hits: 0,
         epoch: 0,
         mtime_epoch_cache: HashMap::with_capacity(32),
+        sources_stable: false,
     });
 }
 
@@ -253,10 +257,32 @@ thread_local! {
 /// Across epochs the full mtime check still runs, preserving the existing
 /// invalidation semantics for long-lived processes (e.g. rust-analyzer).
 pub fn bump_epoch() {
+    let stable = sources_stable();
     FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         cache.epoch = cache.epoch.wrapping_add(1);
+        cache.sources_stable = stable;
     });
+}
+
+/// Whether the sources cannot change for the rest of this process: the
+/// macro runs inside the compiler (`--crate-name` on its command line),
+/// not in rust-analyzer's long-lived proc-macro server.  One compilation
+/// reads each source file once; the macro itself only ever writes `.json`
+/// files, never anything this cache reads.  Then a fingerprint or directory
+/// listing is fetched once per process instead of once per invocation.
+fn sources_stable() -> bool {
+    static STABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let compute = || {
+        !crate::macro_storage::in_long_lived_server()
+            && crate::env_access::compiler_args()
+                .iter()
+                .any(|arg| arg == "--crate-name")
+    };
+    if crate::env_access::compiler_args_overridden() {
+        return compute();
+    }
+    *STABLE.get_or_init(compute)
 }
 
 /// The current per-invocation epoch (see [`bump_epoch`]), for caches outside
@@ -282,7 +308,7 @@ fn get_fingerprint_cached(cache: &mut FileCache, path: &Path) -> Option<FileFing
 fn lookup_fingerprint(cache: &mut FileCache, path: &Path) -> Option<FileFingerprint> {
     let current_epoch = cache.epoch;
     if let Some(&(entry_epoch, fingerprint)) = cache.mtime_epoch_cache.get(path)
-        && entry_epoch == current_epoch
+        && (entry_epoch == current_epoch || cache.sources_stable)
     {
         return fingerprint;
     }
@@ -461,7 +487,7 @@ fn ensure_file_list_untracked(cache: &mut FileCache, src_dir: &Path) -> Arc<[Pat
     let current_epoch = cache.epoch;
 
     if let Some(entry) = cache.file_lists.get(src_dir)
-        && entry.last_epoch_validated == current_epoch
+        && (entry.last_epoch_validated == current_epoch || cache.sources_stable)
     {
         return Arc::clone(&entry.files);
     }

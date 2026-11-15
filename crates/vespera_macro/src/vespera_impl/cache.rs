@@ -152,8 +152,12 @@ pub enum MergeSpecRead {
 
 pub struct MergeSpecCache {
     dir: Option<PathBuf>,
-    /// `use` aliases of the `vespera!` call-site file (see `merge_lookup`).
-    aliases: HashMap<String, Vec<String>>,
+    /// The `vespera!` call-site file.
+    call_site: Option<PathBuf>,
+    /// `use` aliases of the call-site file (see `merge_lookup`), read on the
+    /// first merge-path resolution: a `vespera!` without `merge = [..]`
+    /// never parses its call-site file.
+    aliases: std::cell::OnceCell<HashMap<String, Vec<String>>>,
     reads: HashMap<PathBuf, MergeSpecRead>,
 }
 
@@ -166,9 +170,15 @@ impl MergeSpecCache {
     pub(super) fn with_call_site(call_site: Option<&Path>) -> Self {
         Self {
             dir: merge_spec_dir(),
-            aliases: super::merge_lookup::use_aliases(call_site),
+            call_site: call_site.map(Path::to_path_buf),
+            aliases: std::cell::OnceCell::new(),
             reads: HashMap::new(),
         }
+    }
+
+    fn aliases(&self) -> &HashMap<String, Vec<String>> {
+        self.aliases
+            .get_or_init(|| super::merge_lookup::use_aliases(self.call_site.as_deref()))
     }
 
     /// The export backing `merge_path` (see `merge_lookup::resolve_export`).
@@ -176,7 +186,7 @@ impl MergeSpecCache {
         &self,
         merge_path: &syn::Path,
     ) -> Option<super::merge_lookup::ResolvedExport> {
-        super::merge_lookup::resolve_export(merge_path, &self.aliases, self.dir.as_ref()?)
+        super::merge_lookup::resolve_export(merge_path, self.aliases(), self.dir.as_ref()?)
     }
 
     /// Reject a merge path whose export several crates published (see
@@ -186,7 +196,7 @@ impl MergeSpecCache {
             return Ok(());
         };
         merge.iter().try_for_each(|merge_path| {
-            super::merge_lookup::ambiguous_export_error(merge_path, &self.aliases, dir).map_or(
+            super::merge_lookup::ambiguous_export_error(merge_path, self.aliases(), dir).map_or(
                 Ok(()),
                 |message| {
                     Err(syn::Error::new(
