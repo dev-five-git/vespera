@@ -15,6 +15,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
 import org.springframework.context.ApplicationContext;
@@ -34,6 +35,7 @@ import org.springframework.web.util.ServletRequestPathUtils;
  * proxy's request mapping is narrowed so excluded paths find no proxy handler
  * and fall through to the rest of Spring MVC.
  */
+@ExtendWith(NativeConfigReset.class)
 class ProxyPathPatternsTest {
 
     @Configuration(proxyBeanMethods = false)

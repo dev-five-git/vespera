@@ -12,6 +12,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Field;
 import java.time.Duration;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
@@ -25,6 +26,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
  * Micrometer observer, request-id wiring, {@code library-name} auto-init and
  * {@code shutdown-on-close}.
  */
+@ExtendWith(NativeConfigReset.class)
 class ObservabilityAutoConfigurationTest {
 
     private final WebApplicationContextRunner runner = new WebApplicationContextRunner()

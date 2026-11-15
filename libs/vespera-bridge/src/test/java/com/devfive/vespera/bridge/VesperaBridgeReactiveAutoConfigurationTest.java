@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ReactiveWebApplicationContextRunner;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
@@ -24,6 +25,7 @@ import reactor.core.publisher.Mono;
  * web application (the servlet configuration only in a SERVLET one), every
  * bean replaceable, and the autoconfigured proxy reachable end to end.
  */
+@ExtendWith(NativeConfigReset.class)
 class VesperaBridgeReactiveAutoConfigurationTest {
 
     @Configuration(proxyBeanMethods = false)

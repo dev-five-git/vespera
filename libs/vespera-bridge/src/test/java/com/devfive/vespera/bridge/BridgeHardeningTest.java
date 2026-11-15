@@ -14,8 +14,8 @@ import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -27,6 +27,7 @@ import org.springframework.web.servlet.HandlerExecutionChain;
  * bridge/native version check and the Actuator health indicator — the parts
  * that do not need a loaded cdylib (the E2E suite covers the rest).
  */
+@ExtendWith(NativeConfigReset.class)
 class BridgeHardeningTest {
 
     private final WebApplicationContextRunner runner = new WebApplicationContextRunner()
@@ -34,7 +35,6 @@ class BridgeHardeningTest {
                     VesperaBridgeAutoConfiguration.class,
                     VesperaBridgeHealthAutoConfiguration.class));
 
-    @AfterEach
     void clearPendingResponseCap() {
         VesperaNativeConfig.MAX_BUFFERED_RESPONSE_BYTES.clearPendingForTest();
     }

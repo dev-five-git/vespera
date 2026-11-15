@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import java.lang.reflect.Field;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.context.runner.ReactiveWebApplicationContextRunner;
@@ -17,6 +18,7 @@ import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
  * hook and {@link VesperaClient} exist in a non-web application too, and
  * exactly once next to the servlet / WebFlux proxy.
  */
+@ExtendWith(NativeConfigReset.class)
 class VesperaBridgeCoreAutoConfigurationTest {
 
     private static final AutoConfigurations ALL = AutoConfigurations.of(

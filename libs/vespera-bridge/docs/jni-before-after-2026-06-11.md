@@ -215,7 +215,9 @@ Two further changes, paired same-session benches (GET /health, 100k iters, mimal
 | bidirectional_streaming | 37,543* | 32,326 | **2,605** | **-93%** |
 | async_completable_future | 22,038 | 19,468 | ~15,000 | **-32%** |
 
-\* with the 256 KiB chunk default: each streaming dispatch allocated+zeroed fresh 256 KiB Java arrays (bidi: two), costing ~10µs each — this addendum's TLS pooling (per-OS-thread cached Global<JByteArray>, fresh-alloc fallback when leased/reentrant) removes that per-dispatch cost entirely while keeping the 256 KiB throughput benefit for large transfers. mimalloc is opt-in via the vespera `mimalloc` cargo feature.
+\* with the 256 KiB chunk default: each streaming dispatch allocated+zeroed fresh 256 KiB Java arrays (bidi: two), costing ~10µs each — this addendum's TLS pooling (per-OS-thread cached Global<JByteArray>, fresh-alloc fallback when leased/reentrant) removes that per-dispatch cost entirely while keeping the 256 KiB throughput benefit for large transfers. mimalloc was opt-in via the vespera `mimalloc` cargo feature at the time of this measurement.
+
+> **Superseded later:** `mimalloc` is now a **default** feature of `vespera` (with `jni` it is the cdylib's `#[global_allocator]` unless you opt out); `default-features = false` drops it and keeps the system allocator.
 
 ## Concurrency frontier (B + C rounds, 32-logical-core machine)
 
