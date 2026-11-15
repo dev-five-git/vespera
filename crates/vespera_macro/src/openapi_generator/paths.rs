@@ -496,9 +496,30 @@ pub(super) type OperationBuilder<'a> = dyn Fn(
 /// forced fallback mode even when a worker panics.
 struct FallbackGuard;
 
+#[cfg(test)]
+thread_local! {
+    static FALLBACK_FORCED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+impl FallbackGuard {
+    fn force() -> Self {
+        proc_macro2::fallback::force();
+        #[cfg(test)]
+        FALLBACK_FORCED.with(|forced| forced.set(true));
+        Self
+    }
+
+    #[cfg(test)]
+    fn is_forced() -> bool {
+        FALLBACK_FORCED.with(std::cell::Cell::get)
+    }
+}
+
 impl Drop for FallbackGuard {
     fn drop(&mut self) {
         proc_macro2::fallback::unforce();
+        #[cfg(test)]
+        FALLBACK_FORCED.with(|forced| forced.set(false));
     }
 }
 
@@ -545,9 +566,24 @@ pub(super) fn parallel_filter_map<T: Sync, R: Send>(
         return jobs.iter().filter_map(|job| f(job).transpose()).collect();
     }
 
-    proc_macro2::fallback::force();
-    let _guard = FallbackGuard;
+    // The panic error is built only once the guard has restored normal
+    // mode: a `syn::Error` created on this thread keeps its span, and a
+    // fallback span would make `to_compile_error()` (run in compiler mode)
+    // panic with "compiler/fallback mismatch", hiding the worker's message.
+    let outcome = {
+        let _guard = FallbackGuard::force();
+        run_parallel(jobs, f, workers)
+    };
+    outcome.unwrap_or_else(|message| Err(worker_panic_error(&message)))
+}
 
+/// The parallel section of [`parallel_filter_map`]; runs with the fallback
+/// forced. `Err` carries a worker's panic message (no span is created here).
+fn run_parallel<T: Sync, R: Send>(
+    jobs: &[T],
+    f: &(dyn Fn(&T) -> syn::Result<Option<R>> + Sync),
+    workers: usize,
+) -> Result<syn::Result<Vec<R>>, String> {
     let chunk_size = jobs.len().div_ceil(workers);
     // Workers do not inherit the caller's thread-locals.
     let input_names = request_view::snapshot();
@@ -573,18 +609,21 @@ pub(super) fn parallel_filter_map<T: Sync, R: Send>(
         for handle in handles {
             let worker_result = handle
                 .join()
-                .map_err(|panic| worker_panic_error(panic.as_ref()))?;
+                .map_err(|panic| panic_message(panic.as_ref()))?;
             let (chunk_results, materialized) =
-                worker_result.map_err(|panic| worker_panic_error(panic.as_ref()))?;
+                worker_result.map_err(|panic| panic_message(panic.as_ref()))?;
             generic_instances::merge_materialized(materialized);
-            results.extend(chunk_results?);
+            match chunk_results {
+                Ok(chunk_results) => results.extend(chunk_results),
+                Err(error) => return Ok(Err(error)),
+            }
         }
-        Ok(results)
+        Ok(Ok(results))
     })
 }
 
-fn worker_panic_error(panic: &(dyn std::any::Any + Send)) -> syn::Error {
-    let message = panic.downcast_ref::<&str>().map_or_else(
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    panic.downcast_ref::<&str>().map_or_else(
         || {
             panic.downcast_ref::<String>().map_or_else(
                 || "parallel macro worker panicked".to_string(),
@@ -592,6 +631,15 @@ fn worker_panic_error(panic: &(dyn std::any::Any + Send)) -> syn::Error {
             )
         },
         |message| (*message).to_string(),
+    )
+}
+
+/// Must run with the fallback no longer forced (see [`parallel_filter_map`]).
+fn worker_panic_error(message: &str) -> syn::Error {
+    #[cfg(test)]
+    assert!(
+        !FallbackGuard::is_forced(),
+        "worker panic error built while the fallback is forced"
     );
     syn::Error::new(
         proc_macro2::Span::call_site(),

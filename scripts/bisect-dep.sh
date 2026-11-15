@@ -34,12 +34,23 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 lock="$root/Cargo.lock"
 backup="$lock.bisect-backup"
 
-mapfile -t versions < <(
-  curl -fsS -A 'vespera-bisect-dep (https://github.com/dev-five-git/vespera)' \
-    "https://crates.io/api/v1/crates/$crate/versions" |
-    jq -r '.versions[] | select((.yanked | not) and (.num | test("-") | not)) | .num' |
-    sed 's/+.*//' | sort -uV
-)
+# Fetched and parsed outside the process substitution below: `set -e` cannot
+# see a failure inside `< <(...)`, which would otherwise surface as a
+# misleading "good must be older than bad" error.
+json=$(curl -fsS -A 'vespera-bisect-dep (https://github.com/dev-five-git/vespera)' \
+  "https://crates.io/api/v1/crates/$crate/versions") || {
+  echo "crates.io lookup failed for '$crate' (network error or unknown crate)" >&2
+  exit 2
+}
+nums=$(jq -r '.versions[] | select((.yanked | not) and (.num | test("-") | not)) | .num' <<<"$json") || {
+  echo "unexpected crates.io response for '$crate'" >&2
+  exit 2
+}
+mapfile -t versions < <(sed 's/+.*//' <<<"$nums" | sed '/^$/d' | sort -uV)
+if [ "${#versions[@]}" -eq 0 ]; then
+  echo "crates.io lists no stable, non-yanked release of '$crate'" >&2
+  exit 2
+fi
 
 index_of() {
   local i

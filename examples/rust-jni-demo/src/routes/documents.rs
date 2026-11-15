@@ -115,20 +115,18 @@ fn validate_document(req: &ValidateDocumentRequest) -> ValidationResult {
         });
     }
 
+    let title_chars = req.title.chars().count();
     if req.title.trim().is_empty() {
         errors.push(ValidationError {
             code: "TITLE_EMPTY".into(),
             field: "title".into(),
             message: "Document title is required".into(),
         });
-    } else if req.title.len() > MAX_TITLE_LEN {
+    } else if title_chars > MAX_TITLE_LEN {
         errors.push(ValidationError {
             code: "TITLE_TOO_LONG".into(),
             field: "title".into(),
-            message: format!(
-                "Title exceeds {MAX_TITLE_LEN} characters (got {})",
-                req.title.len()
-            ),
+            message: format!("Title exceeds {MAX_TITLE_LEN} characters (got {title_chars})"),
         });
     }
 
@@ -280,4 +278,42 @@ fn generate_document_id() -> String {
         .unwrap_or_default()
         .as_millis();
     format!("DOC-{ts}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn title_errors(title: String) -> Vec<String> {
+        let request = ValidateDocumentRequest {
+            document_type: "memo".into(),
+            title,
+            content: "one two three four five six seven eight nine ten".into(),
+            author: String::new(),
+            department: String::new(),
+            classification: "public".into(),
+            effective_date: "2026-01-01".into(),
+            expiry_date: None,
+        };
+        validate_document(&request)
+            .errors
+            .into_iter()
+            .filter(|error| error.code == "TITLE_TOO_LONG")
+            .map(|error| error.message)
+            .collect()
+    }
+
+    /// The limit counts characters, not UTF-8 bytes: 200 Korean characters
+    /// (600 bytes) fit, 201 are reported with their character count.
+    #[test]
+    fn title_limit_counts_characters() {
+        assert_eq!(
+            title_errors("\u{AC00}".repeat(MAX_TITLE_LEN)),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            title_errors("\u{AC00}".repeat(MAX_TITLE_LEN + 1)),
+            ["Title exceeds 200 characters (got 201)"]
+        );
+    }
 }

@@ -913,6 +913,12 @@ fn parallel_filter_map_converts_worker_panic_to_syn_error() {
         Ok(Some(*value))
     })
     .expect_err("worker panic must become syn error");
+    // Built after the fallback guard dropped (`worker_panic_error` asserts it).
+    assert!(
+        error
+            .to_string()
+            .starts_with("vespera: parallel OpenAPI worker failed: ")
+    );
     assert!(error.to_string().contains("worker panic"));
 }
 
@@ -920,13 +926,9 @@ fn parallel_filter_map_converts_worker_panic_to_syn_error() {
 #[case::borrowed(&"borrowed panic", "borrowed panic")]
 #[case::owned(&String::from("owned panic"), "owned panic")]
 #[case::opaque(&17usize, "parallel macro worker panicked")]
-fn worker_panic_error_extracts_supported_payloads(
+fn panic_message_extracts_supported_payloads(
     #[case] panic: &(dyn std::any::Any + Send),
     #[case] expected: &str,
 ) {
-    assert!(
-        super::worker_panic_error(panic)
-            .to_string()
-            .contains(expected)
-    );
+    assert_eq!(super::panic_message(panic), expected);
 }

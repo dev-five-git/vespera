@@ -38,10 +38,19 @@ $root = Split-Path -Parent $PSScriptRoot
 $lock = Join-Path $root 'Cargo.lock'
 $backup = "$lock.bisect-backup"
 
-$resp = Invoke-RestMethod -Uri "https://crates.io/api/v1/crates/$Crate/versions" `
-    -UserAgent 'vespera-bisect-dep (https://github.com/dev-five-git/vespera)'
-$all = $resp.versions | Where-Object { -not $_.yanked -and $_.num -notmatch '-' } |
-    ForEach-Object { [version]($_.num -replace '\+.*$', '') } | Sort-Object -Unique
+# -ErrorAction Stop: under 'Continue' a failed lookup (network error, unknown
+# crate) would leave $resp empty and surface as the misleading Good/Bad error.
+try {
+    $resp = Invoke-RestMethod -Uri "https://crates.io/api/v1/crates/$Crate/versions" `
+        -UserAgent 'vespera-bisect-dep (https://github.com/dev-five-git/vespera)' -ErrorAction Stop
+} catch {
+    throw "crates.io lookup failed for '$Crate' (network error or unknown crate): $($_.Exception.Message)"
+}
+$all = @($resp.versions | Where-Object { -not $_.yanked -and $_.num -notmatch '-' } |
+    ForEach-Object { [version]($_.num -replace '\+.*$', '') } | Sort-Object -Unique)
+if ($all.Count -eq 0) {
+    throw "crates.io lists no stable, non-yanked release of '$Crate'."
+}
 $lo = [array]::IndexOf($all, [version]$Good)
 $hi = [array]::IndexOf($all, [version]$Bad)
 if ($lo -lt 0 -or $hi -lt 0 -or $lo -ge $hi) {

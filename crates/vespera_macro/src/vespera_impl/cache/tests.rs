@@ -568,8 +568,37 @@ fn rs_fingerprints_skip_other_extensions_and_survive_nesting() {
         rust_only.iter().all(|(_, fingerprint)| *fingerprint != 0),
         "every `.rs` file must carry a real fingerprint: {rust_only:?}"
     );
+    let digest = hash_rs_fingerprints(scanned.clone());
+    assert_eq!(
+        digest,
+        hash_rs_fingerprints(
+            scanned
+                .iter()
+                .filter(|(path, _)| !path.ends_with("README.md"))
+                .cloned()
+                .collect()
+        ),
+        "a non-`.rs` file must not take part in the digest"
+    );
+    assert_eq!(
+        digest,
+        hash_rs_fingerprints(
+            scanned
+                .iter()
+                .map(|(path, fingerprint)| {
+                    let fingerprint = if path.ends_with("README.md") {
+                        fingerprint ^ 1
+                    } else {
+                        *fingerprint
+                    };
+                    (path.clone(), fingerprint)
+                })
+                .collect()
+        ),
+        "editing a non-`.rs` file must not move the digest"
+    );
     assert_ne!(
-        hash_rs_fingerprints(scanned.clone()),
+        digest,
         hash_rs_fingerprints(
             scanned
                 .into_iter()
