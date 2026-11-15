@@ -619,8 +619,8 @@ fn merge_same_path_adopts_empty_slots_and_preserves_occupied_slots_for_every_fie
 #[case(serde_json::json!({"requestBodies":{"shared":{"required":true,"content":{}}}}))]
 #[case(serde_json::json!({"headers":{"shared":{"description":"trace header","schema":{"type":"string"}}}}))]
 #[case(serde_json::json!({"links":{"shared":{"operationId":"getUser"}}}))]
-#[case(serde_json::json!({"callbacks":{"shared":{"{$request.body#/url}":{"post":{"responses":{}}}}}}))]
-#[case(serde_json::json!({"pathItems":{"shared":{"get":{"responses":{}}}}}))]
+#[case(serde_json::json!({"callbacks":{"shared":{"{$request.body#/url}":{"post":{"responses":{"200":{"description":"ok"}}}}}}}))]
+#[case(serde_json::json!({"pathItems":{"shared":{"get":{"responses":{"200":{"description":"ok"}}}}}}))]
 fn merge_accepts_each_reusable_component_kind_when_it_is_the_only_nonempty_map(
     #[case] expected: serde_json::Value,
 ) {

@@ -1,4 +1,16 @@
 //! Route-related structure definitions
+//!
+//! # Reference Objects
+//!
+//! Only schema positions ([`SchemaRef`]) accept an OpenAPI Reference Object
+//! (`{"$ref": ...}`). [`Parameter`], [`RequestBody`], [`Response`],
+//! [`Header`] and [`Example`] are always inline: vespera never emits a
+//! reference there, and a document that does (e.g. an external spec with
+//! `"200": {"$ref": "#/components/responses/Ok"}`) fails to deserialize
+//! (`missing field ...`). Inline those references before loading such a
+//! document into [`crate::openapi::OpenApi`]. Accepting them would need a
+//! `RefOr<T>` in every such field, a breaking change of these public types.
+//! ([`Link`] is raw JSON, so a referenced link round-trips.)
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -99,7 +111,7 @@ pub enum ParameterStyle {
     DeepObject,
 }
 
-/// Parameter definition
+/// Parameter definition (inline only, see [Reference Objects](self#reference-objects))
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Parameter {
@@ -144,7 +156,7 @@ pub struct Parameter {
     pub content: Option<BTreeMap<String, MediaType>>,
 }
 
-/// Request body definition
+/// Request body definition (inline only, see [Reference Objects](self#reference-objects))
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestBody {
@@ -206,7 +218,7 @@ pub struct Encoding {
     pub allow_reserved: Option<bool>,
 }
 
-/// Example definition
+/// Example definition (inline only, see [Reference Objects](self#reference-objects))
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Example {
@@ -228,7 +240,7 @@ pub struct Example {
 /// vespera never generates links, it only preserves them on round trip.
 pub type Link = serde_json::Value;
 
-/// Response definition
+/// Response definition (inline only, see [Reference Objects](self#reference-objects))
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Response {
@@ -245,7 +257,7 @@ pub struct Response {
     pub links: Option<BTreeMap<String, Link>>,
 }
 
-/// Header definition
+/// Header definition (inline only, see [Reference Objects](self#reference-objects))
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Header {
@@ -307,8 +319,9 @@ pub struct Operation {
     pub request_body: Option<RequestBody>,
     /// Response definitions (status code -> Response)
     /// (optional in 3.1 — e.g. a webhook or callback operation may omit it;
-    /// always serialized, as `{}` when empty)
-    #[serde(default)]
+    /// omitted when empty: a Responses Object must hold at least one
+    /// response, so `{}` would be invalid)
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub responses: BTreeMap<String, Response>,
     /// Security requirements
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -729,7 +742,7 @@ mod tests {
     #[test]
     fn callbacks_nest_name_then_expression_then_path_item() {
         let json = serde_json::json!({
-            "responses": {},
+            "responses": { "200": { "description": "ok" } },
             "callbacks": {
                 "onData": {
                     "{$request.query.callbackUrl}/data": {
@@ -786,5 +799,33 @@ mod tests {
         assert_eq!(map.get(&HttpMethod::Get), Some(&"GET method"));
         assert_eq!(map.get(&HttpMethod::Post), Some(&"POST method"));
         assert_eq!(map.get(&HttpMethod::Put), None);
+    }
+
+    /// Round 13: an empty Responses Object is invalid OpenAPI, so an
+    /// operation without responses omits the key instead of writing `{}`.
+    #[test]
+    fn operation_without_responses_omits_the_key() {
+        let operation = Operation {
+            summary: Some("pet created".to_owned()),
+            ..Operation::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&operation).unwrap(),
+            serde_json::json!({"summary": "pet created"})
+        );
+    }
+
+    /// The documented limitation (module docs, "Reference Objects"): a
+    /// Reference Object outside a schema position does not deserialize.
+    #[test]
+    fn reference_object_outside_a_schema_is_rejected() {
+        let error = serde_json::from_value::<Operation>(serde_json::json!({
+            "responses": {"200": {"$ref": "#/components/responses/Ok"}}
+        }))
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("missing field `description`"),
+            "{error}"
+        );
     }
 }
