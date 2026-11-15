@@ -1,5 +1,6 @@
 package com.devfive.vespera.bridge;
 
+import java.time.Duration;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -56,9 +57,15 @@ public class VesperaBridgeCoreAutoConfiguration {
     @ConditionalOnProperty(prefix = "vespera.bridge", name = "shutdown-on-close", havingValue = "true")
     public DisposableBean vesperaBridgeShutdown(
             VesperaBridgeNativeSettings nativeSettings, VesperaBridgeProperties props) {
+        return shutdownOnClose(nativeSettings, props, timeout -> VesperaBridge.shutdown(timeout));
+    }
+
+    /** {@link #vesperaBridgeShutdown} with the shutdown action as a test seam. */
+    static DisposableBean shutdownOnClose(VesperaBridgeNativeSettings nativeSettings,
+            VesperaBridgeProperties props, java.util.function.Consumer<Duration> shutdown) {
         return () -> {
             if (nativeSettings.autoInitialized()) {
-                VesperaBridge.shutdown(props.getShutdownTimeout());
+                shutdown.accept(props.getShutdownTimeout());
             }
         };
     }
@@ -74,5 +81,19 @@ public class VesperaBridgeCoreAutoConfiguration {
     @ConditionalOnMissingBean
     public VesperaClient vesperaClient(VesperaBridgeNativeSettings nativeSettings) {
         return VesperaClient.create();
+    }
+
+    /**
+     * The not-initialized startup WARN of the servlet and WebFlux
+     * autoconfigurations: names the proxy only when one exists
+     * ({@code vespera.bridge.controller-enabled=false} leaves only
+     * {@link VesperaClient}). Lives here, servlet- and WebFlux-free, so both
+     * web stacks share it.
+     */
+    static String startupWarning(boolean proxy) {
+        return "vespera native library is not initialized: "
+                + (proxy ? "the proxy answers 503" : "VesperaClient requests fail")
+                + " until VesperaBridge.init(...) runs. Call it before SpringApplication.run "
+                + "or set vespera.bridge.library-name.";
     }
 }
