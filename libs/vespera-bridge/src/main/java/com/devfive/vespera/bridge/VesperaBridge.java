@@ -79,8 +79,7 @@ public class VesperaBridge {
     /** The cdylib is loaded (set before the pending configuration is applied); guarded by the class lock. */
     private static boolean nativeLoaded = false;
     private static volatile boolean shutDown = false;
-    /** Name passed to the first successful {@link #init(String)} — used to
-     *  reject a later re-init with a <em>different</em> library name. */
+    /** Library of the first successful {@link #init(String)}; a re-init with another name is rejected. */
     private static String loadedLibraryName;
 
     /**
@@ -375,6 +374,17 @@ public class VesperaBridge {
     }
 
     /**
+     * Whether Rust gives a non-empty request body without {@code Content-Type} {@code application/json}
+     * (default {@code true}; property {@code vespera.request.defaultJsonContentType}, env
+     * {@code VESPERA_DEFAULT_JSON_CONTENT_TYPE}).  Pass {@code false} for browser-facing apps: a
+     * cross-site untyped body needs no CORS preflight and the default makes axum's {@code Json<T>}
+     * accept it.  Returns {@code false} when the value could not be applied (logged).
+     */
+    public static synchronized boolean configureDefaultJsonContentType(boolean enabled) {
+        return VesperaNativeConfig.DEFAULT_JSON_CONTENT_TYPE.set(enabled ? 1 : 0, nativeLoaded);
+    }
+
+    /**
      * Clear all vespera-bridge buffers retained by the <em>current</em> Java
      * thread. This is for servlet-container shutdown/redeploy hooks that want
      * to release ThreadLocal-held app-class objects and direct buffers from
@@ -387,25 +397,16 @@ public class VesperaBridge {
         WireHeaderReader.clearCurrentThreadBuffers();
     }
 
-    // Optional configuration hooks (see VesperaNativeConfig).  Each returns
-    // whether the Rust side applied the value; a native library that predates
-    // a hook throws UnsatisfiedLinkError, which VesperaNativeConfig tolerates.
-    // Values meaning "untouched": <= 0 for the streaming / runtime hooks,
-    // negative for the limit / timeout / async hooks (where 0 = unlimited).
+    // Optional configuration hooks (see VesperaNativeConfig): each returns whether Rust applied the
+    // value (an older library throws UnsatisfiedLinkError, tolerated there).  "Untouched": <= 0 for
+    // the streaming / runtime hooks, negative for the limit / timeout / async hooks (0 = unlimited).
     static native boolean configureStreaming0(int chunkBytes, int channelCapacity);
-
     static native boolean configureRuntime0(int workerThreads);
-
     static native boolean configureMaxBlockingThreads0(int maxBlockingThreads);
-
     static native boolean configureMaxRequestBytes0(long maxBytes);
-
     static native boolean configureMaxStreamingRequestBytes0(long maxBytes);
-
     static native boolean configureMaxBufferedResponseBytes0(long maxBytes);
-
     static native boolean configureDispatchTimeout0(long timeoutMillis);
-
     static native boolean configureAsyncMaxInFlight0(int maxInFlight);
 
     /**

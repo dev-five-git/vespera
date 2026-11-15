@@ -42,9 +42,10 @@ use crate::{
 // `vespera_configure_*`: the C twins of the JNI `configure*0` hooks.
 pub mod configure;
 pub use configure::{
-    vespera_configure_async_max_in_flight, vespera_configure_dispatch_timeout_ms,
-    vespera_configure_max_blocking_threads, vespera_configure_max_buffered_response_bytes,
-    vespera_configure_max_request_bytes, vespera_configure_worker_threads,
+    vespera_configure_async_max_in_flight, vespera_configure_default_json_content_type,
+    vespera_configure_dispatch_timeout_ms, vespera_configure_max_blocking_threads,
+    vespera_configure_max_buffered_response_bytes, vespera_configure_max_request_bytes,
+    vespera_configure_worker_threads,
 };
 
 /// The hand-written C header (`include/vespera.h`) matching these symbols.

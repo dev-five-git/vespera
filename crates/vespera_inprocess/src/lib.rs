@@ -137,11 +137,12 @@ pub use axum::Router;
 pub use bounded::DISPATCH_TIMEOUT_MSG;
 pub use cancel::{cancel, cancellable, cancellable_in_flight};
 pub use config::{
-    DEFAULT_MAX_BUFFERED_RESPONSE_BYTES, DEFAULT_MAX_REQUEST_BYTES,
-    DEFAULT_MAX_STREAMING_REQUEST_PRODUCERS, DEFAULT_STREAMING_CHANNEL_CAPACITY,
-    DEFAULT_STREAMING_CHUNK_BYTES, dispatch_timeout, effective_streaming_channel_capacity,
-    max_buffered_response_bytes, max_request_bytes, max_streaming_request_bytes,
-    max_streaming_request_producers, request_exceeds_limit, set_dispatch_timeout,
+    DEFAULT_DEFAULT_JSON_CONTENT_TYPE, DEFAULT_MAX_BUFFERED_RESPONSE_BYTES,
+    DEFAULT_MAX_REQUEST_BYTES, DEFAULT_MAX_STREAMING_REQUEST_PRODUCERS,
+    DEFAULT_STREAMING_CHANNEL_CAPACITY, DEFAULT_STREAMING_CHUNK_BYTES, default_json_content_type,
+    dispatch_timeout, effective_streaming_channel_capacity, max_buffered_response_bytes,
+    max_request_bytes, max_streaming_request_bytes, max_streaming_request_producers,
+    request_exceeds_limit, set_default_json_content_type, set_dispatch_timeout,
     set_max_buffered_response_bytes, set_max_request_bytes, set_max_streaming_request_bytes,
     set_max_streaming_request_producers, set_streaming_channel_capacity, set_streaming_chunk_bytes,
     streaming_channel_capacity, streaming_chunk_bytes,

@@ -577,6 +577,23 @@ public class VesperaBridgeProperties {
          */
         private Integer maxRequestProducers;
 
+        /**
+         * Whether Rust gives a non-empty request body without a Content-Type the
+         * header {@code content-type: application/json} (native default
+         * {@code true}). Set {@code false} for browser-facing apps: a browser can
+         * send an untyped body cross-site without a CORS preflight, and the
+         * default makes axum's {@code Json<T>} accept it ({@code false}: 415).
+         */
+        private Boolean defaultJsonContentType;
+
+        public Boolean getDefaultJsonContentType() {
+            return defaultJsonContentType;
+        }
+
+        public void setDefaultJsonContentType(Boolean defaultJsonContentType) {
+            this.defaultJsonContentType = defaultJsonContentType;
+        }
+
         public Integer getMaxRequestProducers() {
             return maxRequestProducers;
         }
@@ -716,6 +733,9 @@ public class VesperaBridgeProperties {
             }
             if (maxRequestProducers != null) {
                 VesperaBridge.configureMaxRequestProducers(maxRequestProducers);
+            }
+            if (defaultJsonContentType != null) {
+                VesperaBridge.configureDefaultJsonContentType(defaultJsonContentType);
             }
         }
     }
