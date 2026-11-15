@@ -101,6 +101,13 @@ abstract class CargoBuildTask : DefaultTask() {
 
     @TaskAction
     fun build() {
+        if (!workingDirectory.isPresent) {
+            throw org.gradle.api.GradleException(
+                "vespera.autoBuildCargo needs vespera.cargoRoot: the directory `cargo build` runs in " +
+                    "(the Cargo workspace or package root). vespera.targetDir only says where the " +
+                    "built library is read from.",
+            )
+        }
         val dir = workingDirectory.get().asFile
         val targetDir = cargoTargetDir.orNull
         plannedCommands().forEach { cmd ->

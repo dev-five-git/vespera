@@ -154,21 +154,26 @@ internal object NativePlatform {
         else -> null
     }
 
-    private val JSON_NAME = Regex(""""name"\s*:\s*"([^"\\]+)"""")
-
     /**
      * Pick the Cargo package whose underscore form is [crateName] from
-     * `cargo metadata --no-deps --format-version 1` output: a name `n` with
-     * `n != crateName` and `n.replace('-', '_') == crateName` (so the demo's
-     * `rust_jni_demo` resolves to the `rust-jni-demo` package). Falls back to
-     * [crateName] when there is none (an underscore package name, or no
-     * metadata). A plain scan of `"name":"..."` suffices: the only other
-     * `name` equal to the underscore form is the lib target itself.
+     * `cargo metadata --no-deps --format-version 1` output: a
+     * `packages[*].name` `n` with `n != crateName` and
+     * `n.replace('-', '_') == crateName` (so the demo's `rust_jni_demo`
+     * resolves to the `rust-jni-demo` package). Only package names count —
+     * target (`[[bin]]`, test, ...) and dependency names are ignored. Falls
+     * back to [crateName] when there is none (an underscore package name, or
+     * no / unparseable metadata).
      */
     fun resolvePackageName(crateName: String, metadataJson: String?): String {
         if (metadataJson.isNullOrBlank()) return crateName
-        return JSON_NAME.findAll(metadataJson)
-            .map { it.groupValues[1] }
+        val root = try {
+            groovy.json.JsonSlurper().parseText(metadataJson)
+        } catch (e: RuntimeException) {
+            return crateName
+        }
+        val packages = (root as? Map<*, *>)?.get("packages") as? List<*> ?: return crateName
+        return packages.asSequence()
+            .mapNotNull { (it as? Map<*, *>)?.get("name") as? String }
             .firstOrNull { it != crateName && it.replace('-', '_') == crateName }
             ?: crateName
     }

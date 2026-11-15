@@ -83,7 +83,8 @@ class JsonEncodingSurrogateTest {
         VesperaWireCodec.ExposedByteArrayOutputStream buf =
                 new VesperaWireCodec.ExposedByteArrayOutputStream(64);
         VesperaWireCodec.writePrincipal(buf, new VesperaPrincipal(
-                "al\uDC00ice", List.of("ROLE_\uD83D"), Map.of("k\uD800", "v\uDFFF")));
+                "al\uDC00ice", List.of("ROLE_\uD83D"), Map.of("k\uD800", "v\uDFFF")),
+                VesperaWireCodec.principalLimit(null));
         String json = strictUtf8(buf.backingArray(), 0, buf.size());
         assertTrue(json.contains("\"al" + REPLACEMENT + "ice\""), json);
         assertTrue(json.contains("\"ROLE_" + REPLACEMENT + "\""), json);

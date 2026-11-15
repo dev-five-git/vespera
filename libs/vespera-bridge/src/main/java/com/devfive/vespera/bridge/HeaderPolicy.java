@@ -49,7 +49,7 @@ final class HeaderPolicy {
 
     /**
      * Apply a Rust wire response header to the servlet response, dropping the
-     * hop-by-hop / framing headers the proxy owns ({@link #HOP_BY_HOP_RESPONSE_HEADERS}).
+     * hop-by-hop / framing headers the proxy owns ({@link #isHopByHopResponseHeader}).
      */
     static void addServletResponseHeaders(
             HttpServletResponse response, ResponseHeaderAccumulator headers) {

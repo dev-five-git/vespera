@@ -265,6 +265,8 @@ class VesperaDirectWrapperTest {
                     VesperaBridge.BufferTooSmallException.class,
                     () -> VesperaDirectBufferPool.dispatchDirectPooled(new byte[17], false, true));
             assertEquals(17, virtual.requiredSize());
+            assertFalse(virtual.dispatched());
+            assertTrue(new VesperaBridge.BufferTooSmallException(17).dispatched());
             assertTrue(virtual.getMessage().contains("virtual thread"), virtual.getMessage());
 
             VesperaBridge.BufferTooSmallException encoded = assertThrows(

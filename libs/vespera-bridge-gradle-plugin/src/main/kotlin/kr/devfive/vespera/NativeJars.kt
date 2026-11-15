@@ -73,9 +73,14 @@ internal object NativeJars {
                 archiveVersion.convention(version)
                 archiveClassifier.set(platform)
                 destinationDirectory.convention(libsDir)
-                from(sourceDir) { include("native/$platform/**") }
                 // Plain values only: configuration-cache safe.
                 val dir = sourceDir.orNull?.asFile
+                // Without a source directory there is nothing to copy (an
+                // absent provider would fail while Gradle resolves the copy
+                // sources, before requireLibrary could explain why).
+                if (dir != null) {
+                    from(sourceDir) { include("native/$platform/**") }
+                }
                 val libFile = ext.crateName.orNull?.let {
                     NativePlatform.mapLibraryName(os, NativePlatform.libraryStem(it, ext.libName.orNull))
                 }

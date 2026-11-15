@@ -98,9 +98,9 @@ class PanicAndDeploymentDiagnosticsTest {
                 .getInputStream()) {
             assertEquals("panic in Rust engine", new String(body.readAllBytes(), StandardCharsets.UTF_8));
         }
-        // The byte[] builder (buildCappedResponseEntityFromWire) flags it too.
+        // The capped builder the controller's ASYNC flow calls flags it too.
         ProxyServletResponse capped = new ProxyServletResponse(raw, "X-Request-Id", "id-9");
-        WireResponseWriter.buildResponseEntityFromWire(wire, "GET", capped);
+        VesperaProxyController.buildCappedAsyncResponseEntity(wire, "GET", 0, capped);
         assertTrue(capped.panicked());
 
         ProxyServletResponse calm = new ProxyServletResponse(raw, "X-Request-Id", "id-9");

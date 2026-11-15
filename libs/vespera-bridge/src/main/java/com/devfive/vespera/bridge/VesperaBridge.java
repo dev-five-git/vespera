@@ -672,15 +672,16 @@ public class VesperaBridge {
      * fallback.
      *
      * <p>{@link #requiredSize()} is the out-buffer capacity the response
-     * needs. It is exact for a re-dispatch overflow, but for a stashed
-     * response whose body length was not known yet it is only a
-     * <strong>lower bound</strong>.
+     * needs: exact for a re-dispatch overflow, only a <strong>lower
+     * bound</strong> for a stashed response whose body length was not known.
+     * <strong>Retrying re-runs the dispatch</strong> (the Rust handler runs
+     * again): retry only safe requests (GET/HEAD/OPTIONS) automatically;
+     * such a response is better served by a streaming dispatch.
      *
-     * <p><strong>Retrying re-runs the dispatch</strong> — the Rust
-     * handler executes again.  Only retry safe requests
-     * (GET/HEAD/OPTIONS) automatically; for unsafe methods the caller
-     * must decide.  A response this large (or an event stream) is better
-     * served by a streaming dispatch.
+     * <p>The {@code oversize-policy=throw} rejection fails <em>before</em>
+     * dispatching: {@link #dispatched()} is {@code false}, no handler ran, and
+     * {@code requiredSize()} is the <em>request</em> size — use a non-DIRECT
+     * dispatch (such as {@link #dispatchBytes}) for that request.
      */
     public static class BufferTooSmallException extends RuntimeException {
         private final int requiredSize;
@@ -696,9 +697,14 @@ public class VesperaBridge {
             this.requiredSize = requiredSize;
         }
 
-        /** Out-buffer capacity the response needs: exact, or a lower bound for a stashed response (see class docs). */
+        /** Out-buffer capacity the response needs, or the request size when not {@link #dispatched()} (class docs). */
         public int requiredSize() {
             return requiredSize;
+        }
+
+        /** Whether the handler ran: {@code false} only for the {@code oversize-policy=throw} rejection. */
+        public boolean dispatched() {
+            return true;
         }
     }
 

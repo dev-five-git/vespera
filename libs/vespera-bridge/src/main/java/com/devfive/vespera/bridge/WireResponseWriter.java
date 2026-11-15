@@ -10,7 +10,6 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.util.Arrays;
 import java.util.Objects;
 
 /**
@@ -132,7 +131,7 @@ final class WireResponseWriter {
     /**
      * Sibling of {@link #applyWireHeaderToResponse(byte[], int, int, HttpServletResponse)}
      * that emits into a Spring {@link HttpHeaders} — used by
-     * {@link #buildResponseEntityFromWire} on the ASYNC dispatch path, with
+     * {@link #buildAsyncResponseEntityFromWire} on the ASYNC dispatch path, with
      * the same hop-by-hop / content-length / Connection-nominated filtering.
      */
     private static HeaderPolicy.ResponseHeaderAccumulator applyWireHeaderToHttpHeaders(
@@ -245,49 +244,19 @@ final class WireResponseWriter {
     // ── Async (ResponseEntity) ────────────────────────────────────────────
 
     /**
-     * Build a {@link ResponseEntity} straight from the wire response: status
-     * + headers via {@link WireHeaderReader} (no {@code DecodedResponse}
-     * graph) and the body as a {@code byte[]} copy of the wire tail. A plain
-     * {@code byte[]} body (not a {@code Resource}) keeps Spring from adding
-     * {@code Accept-Ranges}, answering {@code Range} requests with {@code 206}
-     * or guessing a {@code Content-Type} from a resource name, so ASYNC
-     * responses match SYNC / DIRECT. Pure Java — run on the controller's
-     * async response executor, never the native completion thread.
-     */
-    static ResponseEntity<byte[]> buildResponseEntityFromWire(byte[] wire) {
-        return buildResponseEntityFromWire(wire, null);
-    }
-
-    static ResponseEntity<byte[]> buildResponseEntityFromWire(byte[] wire, String method) {
-        return buildResponseEntityFromWire(wire, method, null);
-    }
-
-    /**
-     * As {@link #buildResponseEntityFromWire(byte[], String)}, also flagging a
-     * caught Rust panic on {@code proxied} and echoing its request id unless
-     * the Rust response set that header itself ({@code proxied} may be
-     * {@code null}).
-     */
-    static ResponseEntity<byte[]> buildResponseEntityFromWire(
-            byte[] wire, String method, ProxyServletResponse proxied) {
-        EntityHead head = entityHead(wire, method, proxied);
-        // Builder, not the (body, HttpHeaders, status) constructor: that
-        // overload is new in Spring Framework 7, so linking against it would
-        // throw NoSuchMethodError on a Spring Boot 3.x (Framework 6) runtime.
-        return ResponseEntity.status(head.status)
-                .headers(head.headers)
-                .body(Arrays.copyOfRange(wire, head.bodyOff, head.bodyOff + head.bodyLen));
-    }
-
-    /**
-     * The ASYNC response entity without copying the body out of the wire
-     * array: a non-empty body is an {@link InputStreamResource} over a
-     * {@link ByteArrayInputStream} window of {@code wire}, which Spring's
+     * The ASYNC response entity, built straight from the wire response:
+     * status + headers via {@link WireHeaderReader} (no
+     * {@code DecodedResponse} graph), and the body without copying it out of
+     * the wire array: a non-empty body is an {@link InputStreamResource} over
+     * a {@link ByteArrayInputStream} window of {@code wire}, which Spring's
      * {@code ResourceHttpMessageConverter} writes with one
      * {@code transferTo} call.  Exactly {@code InputStreamResource} (not a
      * subclass): Spring skips {@code Range} / {@code Accept-Ranges} handling
-     * for that type, so the response matches SYNC / DIRECT like the
-     * {@code byte[]} variant ({@link #buildResponseEntityFromWire}).
+     * for that type, so the response matches SYNC / DIRECT.  {@code proxied}
+     * (may be {@code null}) is flagged on a caught Rust panic and gets its
+     * request id echoed unless the Rust response set that header itself.
+     * Pure Java — run on the controller's async response executor, never the
+     * native completion thread.
      */
     static ResponseEntity<?> buildAsyncResponseEntityFromWire(
             byte[] wire, String method, ProxyServletResponse proxied) {

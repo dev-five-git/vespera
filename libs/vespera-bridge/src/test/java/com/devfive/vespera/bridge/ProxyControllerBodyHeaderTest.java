@@ -131,20 +131,27 @@ class ProxyControllerBodyHeaderTest {
         byte[] oversized = wireResponseWithBody(100);
         ResponseStatusException tooLarge = assertThrows(
                 ResponseStatusException.class,
-                () -> VesperaProxyController.buildCappedResponseEntityFromWire(oversized, "GET", 10));
+                () -> VesperaProxyController.buildCappedAsyncResponseEntity(oversized, "GET", 10, null));
         assertEquals(500, tooLarge.getStatusCode().value());
-        assertEquals(500, assertThrows(ResponseStatusException.class,
-                () -> VesperaProxyController.buildCappedAsyncResponseEntity(oversized, "GET", 10, null))
-                .getStatusCode().value());
 
         byte[] small = wireResponseWithBody(5);
         ResponseEntity<?> ok =
-                VesperaProxyController.buildCappedResponseEntityFromWire(small, "GET", 1000);
+                VesperaProxyController.buildCappedAsyncResponseEntity(small, "GET", 1000, null);
         assertEquals(200, ok.getStatusCode().value());
+        assertEquals(5, bodyBytes(ok).length);
 
         ResponseEntity<?> unlimited =
-                VesperaProxyController.buildCappedResponseEntityFromWire(oversized, "GET", 0);
+                VesperaProxyController.buildCappedAsyncResponseEntity(oversized, "GET", 0, null);
         assertEquals(200, unlimited.getStatusCode().value());
+        assertEquals(100, bodyBytes(unlimited).length);
+    }
+
+    private static byte[] bodyBytes(ResponseEntity<?> entity) {
+        try (InputStream in = ((Resource) entity.getBody()).getInputStream()) {
+            return in.readAllBytes();
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
     }
 
     @Test
@@ -308,7 +315,12 @@ class ProxyControllerBodyHeaderTest {
     void bodylessGetWithoutContentLengthReadsEmpty() throws IOException {
         // No Content-Length, no body — definitelyBodyless() is true, so the
         // servlet InputStream is never touched.
-        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
+        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x") {
+            @Override
+            public jakarta.servlet.ServletInputStream getInputStream() {
+                throw new AssertionError("a provably bodyless request must not open the stream");
+            }
+        };
         assertEquals(0, VesperaProxyController.readBody(req).length);
     }
 
@@ -551,11 +563,12 @@ class ProxyControllerBodyHeaderTest {
 
     @Test
     void asyncHeadAdvertisesRustDeclaredLengthWithEmptyBody() throws IOException {
-        ResponseEntity<?> entity = WireResponseWriter.buildResponseEntityFromWire(
-                heapWire(AXUM_HEAD_HEADER, ""), "HEAD");
+        ResponseEntity<?> entity = WireResponseWriter.buildAsyncResponseEntityFromWire(
+                heapWire(AXUM_HEAD_HEADER, ""), "HEAD", null);
 
         assertEquals(17, entity.getHeaders().getContentLength());
-        assertEquals(0, ((byte[]) entity.getBody()).length);
+        // No body object: a message converter could otherwise rewrite the length.
+        assertNull(entity.getBody());
     }
 
     @Test
@@ -567,8 +580,8 @@ class ProxyControllerBodyHeaderTest {
                 heapWire("{\"status\":200,\"headers\":{}}", ""), sync, "HEAD");
         assertFalse(sync.containsHeader("Content-Length"));
 
-        ResponseEntity<?> entity = WireResponseWriter.buildResponseEntityFromWire(
-                heapWire("{\"status\":200,\"headers\":{}}", ""), "HEAD");
+        ResponseEntity<?> entity = WireResponseWriter.buildAsyncResponseEntityFromWire(
+                heapWire("{\"status\":200,\"headers\":{}}", ""), "HEAD", null);
         assertEquals(-1, entity.getHeaders().getContentLength());
     }
 
@@ -643,7 +656,7 @@ class ProxyControllerBodyHeaderTest {
                         + "\"x-internal-hop\":\"secret\",\"x-visible\":\"ok\"}}",
                 "hello");
 
-        ResponseEntity<?> entity = WireResponseWriter.buildResponseEntityFromWire(wire, "GET");
+        ResponseEntity<?> entity = WireResponseWriter.buildAsyncResponseEntityFromWire(wire, "GET", null);
 
         assertNull(entity.getHeaders().getFirst("connection"));
         assertNull(entity.getHeaders().getFirst("x-internal-hop"));

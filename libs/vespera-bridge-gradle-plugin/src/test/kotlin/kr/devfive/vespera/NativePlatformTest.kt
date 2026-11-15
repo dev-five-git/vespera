@@ -342,5 +342,18 @@ class NativePlatformTest {
     fun fallsBackToTheCrateNameWithoutMetadata() {
         assertEquals("rust_jni_demo", NativePlatform.resolvePackageName("rust_jni_demo", null))
         assertEquals("rust_jni_demo", NativePlatform.resolvePackageName("rust_jni_demo", ""))
+        assertEquals("rust_jni_demo", NativePlatform.resolvePackageName("rust_jni_demo", "not json"))
+        assertEquals("rust_jni_demo", NativePlatform.resolvePackageName("rust_jni_demo", "[]"))
+    }
+
+    @Test
+    fun onlyPackageNamesCountNotTargetOrDependencyNames() {
+        // Package `my_api` with `[[bin]] name = "my-api"` and a dependency
+        // `my-api` elsewhere: neither is a package, so `my_api` stays.
+        val json = """
+            {"packages":[{"name":"my_api","dependencies":[{"name":"my-api"}],
+            "targets":[{"kind":["cdylib"],"name":"my_api"},{"kind":["bin"],"name":"my-api"}]}]}
+        """.trimIndent()
+        assertEquals("my_api", NativePlatform.resolvePackageName("my_api", json))
     }
 }

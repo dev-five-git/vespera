@@ -89,7 +89,7 @@ class VesperaWireTest {
         // — there is no separate `query` field — so the Rust dispatch side
         // borrows it for `Uri` parsing instead of re-joining `path+'?'+query`.
         assertEquals("/users?page=1", h.path("path").asText());
-        assertEquals("", h.path("query").asText());
+        assertTrue(h.path("query").isMissingNode());
         assertEquals("application/json", h.path("headers").path("content-type").asText());
         assertEquals("abc-123", h.path("headers").path("x-trace-id").asText());
 
@@ -541,7 +541,7 @@ class VesperaWireTest {
         // into the single `path` request target — no separate `query` field.
         // Independently re-parsed by Jackson, so a mis-escape here fails loudly.
         assertEquals("/p\"a\\th/한글?q=\"x\"&한=글", h.path("path").asText());
-        assertEquals("", h.path("query").asText());
+        assertTrue(h.path("query").isMissingNode());
         assertEquals("a\"b\\c\td\ne", h.path("headers").path("x-quote").asText());
         assertEquals("한글-😀", h.path("headers").path("x-unicode").asText());
     }

@@ -16,7 +16,8 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
  * DIRECT-gate sweep — measures {@code DIRECT} vs {@code SYNC} vs
  * {@code BIDIRECTIONAL_STREAMING} dispatch latency across request/response
  * body sizes that straddle the {@link
- * com.devfive.vespera.bridge.SmartDispatchModeResolver} 256&nbsp;KiB gate, to
+ * com.devfive.vespera.bridge.SmartDispatchModeResolver} 256&nbsp;KiB SYNC gate
+ * ({@code DEFAULT_MAX_SYNC_BYTES}; the DIRECT gate is 1&nbsp;MiB), to
  * find where DIRECT stops being the cheapest path.
  *
  * <p>{@code POST /echo} returns the request body verbatim, so each size is both

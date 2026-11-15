@@ -59,7 +59,9 @@ class VesperaProxyControllerHeadHttpTest extends AbstractVesperaHttpIntegrationT
         assertTrue(head.statusLine.contains(" 200"), head.statusLine);
         assertEquals(String.valueOf(get.body.length), head.header("content-length"),
                 mode + ": HEAD must advertise the GET body length\n" + head.headers);
-        assertEquals(0, head.body.length, mode + ": HEAD must not carry body bytes");
+        // Wire sanity only: Tomcat discards a HEAD response body itself, so
+        // this cannot catch the proxy writing one (the unit tests cover that).
+        assertEquals(0, head.body.length, mode + ": no body bytes on the wire");
     }
 
     private RawResponse raw(String method, String path, DispatchMode mode) throws IOException {

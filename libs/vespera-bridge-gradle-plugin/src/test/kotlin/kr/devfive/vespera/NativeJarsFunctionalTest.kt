@@ -162,6 +162,15 @@ class NativeJarsFunctionalTest {
     }
 
     @Test
+    fun missingSourceDirectoryFailsWithTheFriendlyMessage() {
+        setUp("""    nativeJarPlatforms.add("linux-x86_64")""", plugins = "base")
+
+        val result = run("nativeJars").buildAndFail()
+
+        assertTrue(result.output.contains("vespera.nativeJarPlatforms needs vespera.nativeJarsDir"), result.output)
+    }
+
+    @Test
     fun invalidPlatformKeyIsRejected() {
         setUp("""    nativeJarPlatforms.add("solaris-sparc")""")
 

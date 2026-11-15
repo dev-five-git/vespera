@@ -189,7 +189,13 @@ class ReactiveProxyE2ETest {
 
         HttpResponse<String> admin = get("/dashboard", "X-Vespera-App", "admin");
         assertEquals(200, admin.statusCode(), admin.body());
-        assertEquals(404, get("/dashboard", "X-Vespera-App", "not-exposed").statusCode());
+        // Answered by the proxy's allowlist (exposed-apps: admin), not by
+        // Rust: Rust's own unknown-app 404 names the app ("no app registered
+        // with name '...'"); the proxy's never echoes it.
+        HttpResponse<String> unexposed = get("/dashboard", "X-Vespera-App", "not-exposed");
+        assertEquals(404, unexposed.statusCode());
+        assertFalse(unexposed.body().contains("no app"), unexposed.body());
+        assertFalse(unexposed.body().contains("not-exposed"), unexposed.body());
 
         String names = get("/headers", "X-Vespera-App", "_default", "X-Custom", "1").body();
         assertTrue(names.contains("x-custom"), names);
