@@ -11,9 +11,11 @@
 //!
 //! Same `jint` protocol as `dispatchDirect0` — `>= 0` complete,
 //! `Integer.MIN_VALUE` unrepresentable — except for an overflow: it returns
-//! `-(required)` (clamped to `i32::MAX`; exact only when flagged) and, when
-//! `out` holds at least [`STASH_HANDLE_LEN`] bytes, writes the stash handle
-//! into `out[0..9]`: an 8-byte big-endian token (never `0`) followed by a
+//! `-(required)` (clamped to `i32::MAX`; exact only when flagged) and writes
+//! the stash handle into `out[0..9]` (an `out` below [`STASH_HANDLE_LEN`]
+//! bytes is answered `-(MIN_DIRECT_OUT_BYTES)` without dispatching; a
+//! handler panic's `500` wire is stashed like any response, so the handler
+//! never re-runs): an 8-byte big-endian token (never `0`) followed by a
 //! flags byte ([`FLAG_EXACT`], [`FLAG_STREAM`]).  The token is redeemed with
 //! `fetch0` (copy into a larger buffer), `stream0` (header-first streaming)
 //! or released with `discard0`.  An unredeemed entry expires after
@@ -22,16 +24,19 @@
 //! stashed evicted).
 
 use std::collections::BTreeMap;
+use std::panic::AssertUnwindSafe;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use futures_util::FutureExt;
 use jni::EnvUnowned;
 use jni::objects::{JByteBuffer, JClass};
 use jni::sys::{jint, jlong};
 use vespera_inprocess::{PendingDirectResponse, ResumableDirectWrite};
 
 use super::{
-    DIRECT_UNREPRESENTABLE, block_on_shared_runtime, direct_complete_code, run_direct_symbol,
+    DIRECT_UNREPRESENTABLE, block_on_shared_runtime, direct_complete_code, direct_overflow_code,
+    run_direct_symbol,
 };
 use crate::jni_impl::{
     guard_env_void_symbol, guard_void_symbol, panic_wire, runtime_unavailable_wire,
@@ -187,7 +192,7 @@ pub fn stash_overflow(out: &mut [u8], pending: PendingDirectResponse) -> jint {
     let token = stash_put(None, pending);
     if vespera_inprocess::runtime::runtime_shut_down() {
         drop(stash_take(token));
-        return write_complete_wire(out, &runtime_unavailable_wire());
+        return write_error_wire(out, &runtime_unavailable_wire());
     }
     out[..8].copy_from_slice(&token.to_be_bytes());
     out[8] = flags;
@@ -208,19 +213,42 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_DirectStash_dispatchResum
     in_len: jint,
     out_buf: JByteBuffer<'local>,
 ) -> jint {
-    run_direct_symbol(unowned_env, &in_buf, in_len, &out_buf, |input, out| {
-        // No 1 KiB minimum here (unlike `dispatchDirect0`): even a tiny
-        // `out` gets a handle, so the handler never re-runs.  An error wire
-        // that overflows it zeroes the handle area instead
-        // (`write_error_to_out`), so no stale token is ever read back.
-        // Stashed inside the future: under the dispatch's runtime lease.
-        block_on_shared_runtime(async {
-            match vespera_inprocess::dispatch_into_async_borrowed_resumable(input, &mut *out).await
-            {
-                ResumableDirectWrite::Complete(n) => direct_complete_code(n),
-                ResumableDirectWrite::Overflow(pending) => stash_overflow(out, pending),
-            }
-        })
+    run_direct_symbol(unowned_env, &in_buf, in_len, &out_buf, dispatch_resumable)
+}
+
+/// The JVM-free body of `dispatchResumable0`: `None` when the runtime is
+/// unavailable (answered by `run_direct_symbol`).
+///
+/// No 1 KiB minimum here (unlike `dispatchDirect0`): any `out` that holds
+/// a handle ([`STASH_HANDLE_LEN`] bytes) dispatches, and every overflow of
+/// a response produced after the handler ran — its own response or the
+/// `500` panic wire of a panicking handler — is stashed, so the handler
+/// never re-runs.  A smaller `out` asks for
+/// [`vespera_inprocess::MIN_DIRECT_OUT_BYTES`] without dispatching.  An
+/// error wire that overflows without a handle zeroes the handle area
+/// (`write_error_to_out` / [`write_error_wire`]), so no stale token is ever
+/// read back; those are answered before any handler ran (or after a
+/// shutdown, when a retry runs no handler either).
+fn dispatch_resumable(input: &[u8], out: &mut [u8]) -> Option<jint> {
+    if out.len() < STASH_HANDLE_LEN {
+        return Some(direct_overflow_code(
+            vespera_inprocess::MIN_DIRECT_OUT_BYTES,
+        ));
+    }
+    // Stashed inside the future: under the dispatch's runtime lease.
+    block_on_shared_runtime(async {
+        let dispatched = AssertUnwindSafe(
+            vespera_inprocess::dispatch_into_async_borrowed_resumable(input, &mut *out),
+        )
+        .catch_unwind()
+        .await;
+        // A handler panic: the panic wire takes the overflow path too.
+        let written = dispatched
+            .unwrap_or_else(|_| vespera_inprocess::resumable_from_wire(out, panic_wire()));
+        match written {
+            ResumableDirectWrite::Complete(n) => direct_complete_code(n),
+            ResumableDirectWrite::Overflow(pending) => stash_overflow(out, pending),
+        }
     })
 }
 
@@ -325,6 +353,20 @@ fn write_complete_wire(out: &mut [u8], wire: &[u8]) -> jint {
         })
 }
 
+/// Copy a complete error wire into `out` (its length), or — when it does
+/// not fit — `-(len)` with the handle area zeroed: an overflow without a
+/// handle, which the caller retries with a larger buffer (not
+/// `Integer.MIN_VALUE`, which reads as "larger than 2 GiB").
+fn write_error_wire(out: &mut [u8], wire: &[u8]) -> jint {
+    if let Some(dst) = out.get_mut(..wire.len()) {
+        dst.copy_from_slice(wire);
+        return direct_complete_code(wire.len());
+    }
+    let handle = out.len().min(STASH_HANDLE_LEN);
+    out[..handle].fill(0);
+    direct_overflow_code(wire.len())
+}
+
 /// `com.devfive.vespera.bridge.DirectStash.discard0(long) -> void`
 ///
 /// Drop the stashed response `token` (no-op when unknown).
@@ -419,5 +461,79 @@ mod tests {
             "expired entry swept by a take"
         );
         clear_stash();
+
+        resumable_dispatch_never_reruns_a_handler();
+    }
+
+    fn wire_status(wire: &[u8]) -> String {
+        let len = usize::try_from(u32::from_be_bytes(wire[..4].try_into().unwrap())).unwrap();
+        String::from_utf8_lossy(&wire[4..4 + len]).into_owned()
+    }
+
+    /// Round 13 (part of the single stash test: the stash is global).
+    fn resumable_dispatch_never_reruns_a_handler() {
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        const APP: &str = "stash_resumable_test";
+        vespera_inprocess::register_app_named(APP, || {
+            vespera_inprocess::Router::new().route(
+                "/panic",
+                axum::routing::get(|| async {
+                    CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    panic!("handler panic under test");
+                }),
+            )
+        });
+        let header = format!(r#"{{"v":1,"method":"GET","path":"/panic","app":"{APP}"}}"#);
+        let mut request = u32::try_from(header.len()).unwrap().to_be_bytes().to_vec();
+        request.extend_from_slice(header.as_bytes());
+
+        // An `out` without room for a handle asks for the minimum before
+        // the handler runs.
+        let mut tiny = [0xAAu8; STASH_HANDLE_LEN - 1];
+        let code = dispatch_resumable(&request, &mut tiny).expect("runtime");
+        assert_eq!(
+            code,
+            direct_overflow_code(vespera_inprocess::MIN_DIRECT_OUT_BYTES)
+        );
+        assert_eq!(CALLS.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // A panicking handler's `500` wire overflowing a small `out` is
+        // stashed like any response: a handle, redeemable without a re-run.
+        let mut small = [0u8; 64];
+        let code = dispatch_resumable(&request, &mut small).expect("runtime");
+        assert_eq!(CALLS.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let required = usize::try_from(-code).expect("an overflow");
+        assert!(required > small.len(), "{code}");
+        let token = u64::from_be_bytes(small[..8].try_into().unwrap());
+        assert_ne!(token, 0, "the panic wire left a stash handle");
+        let mut big = vec![0u8; required];
+        let written = fetch_into(jlong::try_from(token).unwrap(), &mut big);
+        assert_eq!(usize::try_from(written).unwrap(), required);
+        let header = wire_status(&big);
+        assert!(header.contains(r#""status":500"#), "{header}");
+        assert!(header.contains(r#""panicked":"true""#), "{header}");
+        assert_eq!(
+            CALLS.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "never re-run"
+        );
+        clear_stash();
+
+        // An error wire that overflows `out` without a handle: `-(len)`
+        // and a zeroed handle area, never `Integer.MIN_VALUE`.
+        let wire = runtime_unavailable_wire();
+        let mut out = [0xAAu8; 16];
+        assert_eq!(
+            write_error_wire(&mut out, &wire),
+            direct_overflow_code(wire.len())
+        );
+        assert_eq!(out[..STASH_HANDLE_LEN], [0; STASH_HANDLE_LEN]);
+        assert_eq!(out[STASH_HANDLE_LEN..], [0xAA; 16 - STASH_HANDLE_LEN]);
+        let mut fits = vec![0u8; wire.len()];
+        assert_eq!(
+            write_error_wire(&mut fits, &wire),
+            direct_complete_code(wire.len())
+        );
+        assert_eq!(fits, wire);
     }
 }

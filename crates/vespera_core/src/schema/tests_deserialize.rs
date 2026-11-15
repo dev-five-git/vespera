@@ -182,3 +182,45 @@ fn type_array_null_kept_when_the_composition_admits_null(
         assert!(output.get("anyOf").is_none(), "{output}");
     }
 }
+
+/// Round 13: a `$ref` next to `type: [T, "null"]` (or an explicit 3.0
+/// `nullable` next to `$ref` plus `type` / `anyOf`) used to deserialize into
+/// a nullable `$ref` with a sibling `type` / `anyOf`, which serialization
+/// rejects — the loaded document could not be written back.  The type
+/// array's `null` is dropped (the `$ref` is ANDed with it, like `allOf`);
+/// the explicit `nullable` keeps widening through `anyOf [.., {type: null}]`.
+#[rstest]
+#[case::ref_with_type_array_null(
+    json!({"$ref": "#/components/schemas/User", "type": ["object", "null"]}),
+    json!({"$ref": "#/components/schemas/User", "type": "object"})
+)]
+#[case::type_array_null_before_ref(
+    json!({"type": ["object", "null"], "$ref": "#/components/schemas/User"}),
+    json!({"$ref": "#/components/schemas/User", "type": "object"})
+)]
+#[case::explicit_nullable_with_type(
+    json!({"$ref": "#/components/schemas/User", "nullable": true, "type": "object"}),
+    json!({"anyOf": [{"$ref": "#/components/schemas/User", "type": "object"}, {"type": "null"}]})
+)]
+#[case::explicit_nullable_with_any_of(
+    json!({"$ref": "#/components/schemas/User", "nullable": true, "anyOf": [{"type": "object"}, {"type": "null"}]}),
+    json!({"anyOf": [
+        {"$ref": "#/components/schemas/User", "anyOf": [{"type": "object"}, {"type": "null"}]},
+        {"type": "null"}
+    ]})
+)]
+#[case::explicit_nullable_ref_only(
+    json!({"$ref": "#/components/schemas/User", "nullable": true}),
+    json!({"anyOf": [{"$ref": "#/components/schemas/User"}, {"type": "null"}]})
+)]
+fn ref_with_sibling_type_or_any_of_round_trips(
+    #[case] input: serde_json::Value,
+    #[case] expected: serde_json::Value,
+) {
+    let schema: Schema = serde_json::from_value(input).unwrap();
+    let output = serde_json::to_value(&schema).unwrap();
+    assert_eq!(output, expected);
+    // The output is a fixed point: it reads back into the same document.
+    let again: Schema = serde_json::from_value(output.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&again).unwrap(), output);
+}

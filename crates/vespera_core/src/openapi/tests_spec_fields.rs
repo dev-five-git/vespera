@@ -56,8 +56,8 @@ fn full_document() -> serde_json::Value {
         },
         "components": {
             "links": {"next": {"$ref": "#/components/links/other"}},
-            "callbacks": {"hook": {"{$request.body#/url}": {"post": {"responses": {}}}}},
-            "pathItems": {"shared": {"get": {"responses": {}}}},
+            "callbacks": {"hook": {"{$request.body#/url}": {"post": {"responses": {"200": {"description": "ok"}}}}}},
+            "pathItems": {"shared": {"get": {"responses": {"200": {"description": "ok"}}}}},
         },
     })
 }
@@ -118,7 +118,9 @@ fn merge_unions_top_level_extensions_self_wins() {
 
 /// Round 11: `paths` (document) and `responses` (operation) are optional in
 /// OpenAPI 3.1 — a webhooks-only document and a webhook operation without
-/// `responses` deserialize; serialization still always writes both keys.
+/// `responses` deserialize. Serialization always writes `paths`, but omits an
+/// empty `responses` (round 13: a Responses Object needs at least one
+/// response, so `{}` was an invalid document).
 #[test]
 fn paths_and_operation_responses_are_optional_on_deserialize() {
     let doc: OpenApi = serde_json::from_value(json!({
@@ -132,6 +134,6 @@ fn paths_and_operation_responses_are_optional_on_deserialize() {
     assert_eq!(value["paths"], json!({}));
     assert_eq!(
         value["webhooks"]["newPet"]["post"],
-        json!({"summary": "pet created", "responses": {}})
+        json!({"summary": "pet created"})
     );
 }
