@@ -6,12 +6,13 @@
 //! Split out of `streaming.rs` to keep that file within the 1000-line cap.
 
 use std::future::Future;
-use std::pin::Pin;
+use std::pin::{Pin, pin};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
 
 use bytes::Bytes;
@@ -302,6 +303,7 @@ impl ChannelBody {
             tx,
             Arc::clone(&self.clean_end),
             permit,
+            Arc::clone(&self.inline),
         ));
         true
     }
@@ -365,11 +367,58 @@ impl HttpBody for ChannelBody {
     }
 }
 
+/// Wakes the producer thread parked in [`send_frame`].
+struct ThreadWaker(std::thread::Thread);
+
+impl std::task::Wake for ThreadWaker {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+/// Queue `frame` for the request body, waiting while the channel is full —
+/// but only until the dispatch finished ([`InlineState::finish`]).  `false`
+/// = stop producing: the receiver is gone, or the dispatch finished while
+/// the channel was full.  The second case is a body that outlived the
+/// dispatch (moved into a detached task) and is no longer polled: a plain
+/// `blocking_send` would park this thread forever, holding the blocking
+/// thread, the producer slot and the host pull closure, and make every such
+/// dispatch wait out [`REQUEST_PRODUCER_JOIN_GRACE`].
+pub(super) fn send_frame(
+    tx: &tokio::sync::mpsc::Sender<RequestFrame>,
+    frame: RequestFrame,
+    inline: &InlineState,
+) -> bool {
+    let frame = match tx.try_send(frame) {
+        Ok(()) => return true,
+        Err(TrySendError::Closed(_)) => return false,
+        Err(TrySendError::Full(frame)) => frame,
+    };
+    let mut finished = pin!(inline.finished_notified());
+    finished.as_mut().enable();
+    if inline.finished() {
+        return false;
+    }
+    let mut reserve = pin!(tx.reserve());
+    let waker = Waker::from(Arc::new(ThreadWaker(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    loop {
+        if let Poll::Ready(reserved) = reserve.as_mut().poll(&mut cx) {
+            return reserved.map(|slot| slot.send(frame)).is_ok();
+        }
+        if finished.as_mut().poll(&mut cx).is_ready() {
+            return false;
+        }
+        std::thread::park();
+    }
+}
+
 fn spawn_request_producer(
     mut pull: PullChunk,
     tx: tokio::sync::mpsc::Sender<RequestFrame>,
     clean_end: Arc<AtomicBool>,
     permit: Option<OwnedSemaphorePermit>,
+    inline: Arc<InlineState>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
         // Producer slot: released when this blocking task ends — or when the
@@ -377,7 +426,7 @@ fn spawn_request_producer(
         let _permit = permit;
         // Fallback sender for the OUTER panic guard: if any panic escapes
         // the producer loop below (not just `pull()`, but `Bytes::from`, the
-        // chunk-splitter `while`, or `tx.blocking_send`), the catch below
+        // chunk-splitter `while`, or `send_frame`), the catch below
         // surfaces it as `StreamAbort` so axum sees an errored body — the
         // same "no silent truncation" discipline the prior per-pull catch
         // enforced, now extended to the whole loop body.  `mpsc::Sender`'s
@@ -385,6 +434,9 @@ fn spawn_request_producer(
         // per chunk); the outer `tx` still moves into the closure below so
         // the happy path uses exactly one sender.
         let tx_fallback = tx.clone();
+        // Borrowed by the loop (`&InlineState` is `Copy`): every send gives
+        // up once the dispatch finished, see `send_frame`.
+        let finished_state: &InlineState = &inline;
         // ONE outer `catch_unwind` replaces the previous per-pull catch.
         // Two independent wins over the old per-pull shape:
         //   1. Cost — installing a landing-pad frame ONCE per producer spawn
@@ -394,7 +446,7 @@ fn spawn_request_producer(
         //      identically to `RequestChunk::Error`, so an outer catch
         //      preserves the observable outcome for a panicking `pull()`.
         //   2. Semantics — a panic ANYWHERE ELSE in the loop body (`Bytes::
-        //      from(chunk)`, the chunk-splitter `while`, `tx.blocking_send`,
+        //      from(chunk)`, the chunk-splitter `while`, `send_frame`,
         //      `consecutive_empty.saturating_add`) used to unwind past the
         //      per-pull catch, abort the `spawn_blocking` task, and surface
         //      as a `JoinError` that `await_request_producer` silently
@@ -407,9 +459,10 @@ fn spawn_request_producer(
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             // `End` ends the stream; an empty `Data(_)` is skipped (it's not
             // EOF); `Error` forwards a `StreamAbort` so the body errors out
-            // instead of ending cleanly.  A failed `blocking_send` means the
+            // instead of ending cleanly.  A failed `send_frame` means the
             // receiver — axum's request body — was dropped because the
-            // handler aborted mid-stream, so we stop pulling.
+            // handler aborted mid-stream, or the dispatch finished while the
+            // channel was full and nobody polls the body: stop pulling.
             let mut consecutive_empty: u32 = 0;
             // Read once: the configured max bytes per queued frame. A host
             // `pull()` may return an arbitrarily large `Vec`; splitting it into
@@ -426,6 +479,11 @@ fn spawn_request_producer(
             // straight to the outer `catch_unwind`'s `Err` arm above, which
             // sends the same `StreamAbort` on `tx_fallback`.
             'producer: loop {
+                // A body that outlived the dispatch never reads the host
+                // source again (its caller frame may be gone).
+                if finished_state.finished() {
+                    break 'producer;
+                }
                 let next = pull();
                 match next {
                     RequestChunk::Data(chunk) => {
@@ -450,7 +508,7 @@ fn spawn_request_producer(
                             // EMPTY_READS = 1024 already prevents in practice.
                             consecutive_empty = consecutive_empty.saturating_add(1);
                             if consecutive_empty >= MAX_CONSECUTIVE_EMPTY_READS {
-                                let _ = tx.blocking_send(Err(StreamAbort));
+                                let _ = send_frame(&tx, Err(StreamAbort), finished_state);
                                 break 'producer;
                             }
                             std::thread::yield_now();
@@ -477,7 +535,7 @@ fn spawn_request_producer(
                             // dispatch finished or the handler abandoned the
                             // request).  Stop the whole producer, identical
                             // outcome to the prior `receiver_gone` flag.
-                            if tx.blocking_send(Ok(piece)).is_err() {
+                            if !send_frame(&tx, Ok(piece), finished_state) {
                                 break 'producer;
                             }
                         }
@@ -491,7 +549,7 @@ fn spawn_request_producer(
                     RequestChunk::Error => {
                         // Best-effort: if the receiver is already gone there
                         // is nothing to abort.
-                        let _ = tx.blocking_send(Err(StreamAbort));
+                        let _ = send_frame(&tx, Err(StreamAbort), finished_state);
                         break 'producer;
                     }
                 }
@@ -501,7 +559,7 @@ fn spawn_request_producer(
         // `StreamAbort` on the pre-cloned fallback sender — best-effort,
         // a no-op if the receiver is already gone.
         if outcome.is_err() {
-            let _ = tx_fallback.blocking_send(Err(StreamAbort));
+            let _ = send_frame(&tx_fallback, Err(StreamAbort), &inline);
         }
         // tx / tx_fallback dropped at end of scope → axum sees end-of-stream
         // (or the forwarded error above).

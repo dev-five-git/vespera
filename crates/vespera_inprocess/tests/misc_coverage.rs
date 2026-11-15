@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 use std::ops::ControlFlow;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Once};
 
 use axum::Router;
@@ -24,7 +25,7 @@ use serde_json::Value;
 use tokio::runtime::Builder;
 use vespera_inprocess::{
     RequestEnvelope, dispatch, dispatch_from_bytes, dispatch_streaming_async, error_envelope,
-    register_app_named,
+    register_app_named, try_register_app_named,
 };
 
 // ── Test app installed under a unique name ──────────────────────────
@@ -184,19 +185,23 @@ fn error_envelope_carries_500_status_and_message() {
 
 // ── register_app_named with invalid names is silently discarded ──────
 
+/// An empty / whitespace-only name is rejected before the factory runs, by
+/// `try_register_app_named` (`Err`) and by `register_app_named` (no-op).
+/// Absence cannot be probed by dispatch: an empty `app` field selects the
+/// default app.
 #[test]
-fn register_app_named_with_empty_name_is_no_op() {
-    register_app_named("", || Router::new().route("/x", get(|| async { "x" })));
-    // We can't directly probe absence of "" via dispatch_from_bytes
-    // because an empty app field falls back to the default app — but
-    // calling the function with empty must be safe (no panic, no
-    // state mutation).  The follow-on test confirms the writer path
-    // accepted the no-op.
-}
-
-#[test]
-fn register_app_named_with_whitespace_only_name_is_no_op() {
-    register_app_named("   ", || Router::new().route("/x", get(|| async { "x" })));
+fn register_app_named_with_blank_name_is_rejected_without_running_the_factory() {
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    let factory = || {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+        Router::new().route("/x", get(|| async { "x" }))
+    };
+    for name in ["", "   "] {
+        let err = try_register_app_named(name, factory).expect_err("blank name is rejected");
+        assert_eq!(err, "app name must not be empty", "{name:?}");
+        register_app_named(name, factory);
+    }
+    assert_eq!(CALLS.load(Ordering::SeqCst), 0, "the factory never ran");
 }
 
 #[test]

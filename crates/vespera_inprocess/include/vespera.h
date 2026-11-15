@@ -169,6 +169,11 @@ void vespera_free(uint8_t *ptr, size_t len);
  * never runs and its `user_data` is never released.  Returns VESPERA_OK,
  * or VESPERA_ERR_RUNTIME when it was already shut down.  Irreversible for
  * the process.
+ * Called on a runtime worker thread (e.g. from inside a vespera_callback),
+ * it does NOT wait: new dispatches are refused at once, but the drain and
+ * the runtime stop continue on a background "vespera-shutdown" thread after
+ * VESPERA_OK is returned (waiting there would block the worker the drain
+ * needs).  Call it from a host thread before unloading the library.
  */
 int vespera_shutdown(uint64_t timeout_ms);
 

@@ -50,6 +50,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use bytes::Bytes;
 use http_body::Frame;
+use tokio::sync::Notify;
+use tokio::sync::futures::Notified;
 
 use super::producer::ChannelBody;
 use super::{RequestChunk, StreamAbort};
@@ -129,6 +131,10 @@ pub(super) struct InlineState {
     /// The dispatch finished (set by the request-source closer under the
     /// producer-handle lock): a body that outlived it never reads again.
     finished: AtomicBool,
+    /// Woken by [`InlineState::finish`]: a started producer waiting for
+    /// channel space gives up instead of blocking forever on a body that
+    /// outlived the dispatch and is no longer polled.
+    finished_notify: Notify,
 }
 
 impl InlineState {
@@ -137,6 +143,7 @@ impl InlineState {
             open: AtomicBool::new(open),
             touched: AtomicBool::new(false),
             finished: AtomicBool::new(false),
+            finished_notify: Notify::new(),
         })
     }
 
@@ -145,6 +152,14 @@ impl InlineState {
     pub(super) fn finish(&self) {
         self.open.store(false, Ordering::Release);
         self.finished.store(true, Ordering::Release);
+        self.finished_notify.notify_waiters();
+    }
+
+    /// Resolves once [`InlineState::finish`] notifies.  Callers `enable` it
+    /// and only then re-check [`InlineState::finished`], so a finish racing
+    /// the check is never missed.
+    pub(super) fn finished_notified(&self) -> Notified<'_> {
+        self.finished_notify.notified()
     }
 
     /// Whether [`InlineState::finish`] ran.

@@ -22,8 +22,12 @@ use super::*;
 /// - `bidirectional`: request body fed through `pull_chunk` in
 ///   [`vespera_inprocess::DEFAULT_STREAMING_CHUNK_BYTES`] pieces
 ///   (mirrors the JNI `InputStream` reader), response drained through
-///   `on_chunk` — exercises the bounded mpsc channel and the
-///   `spawn_blocking` producer.
+///   `on_chunk`.  Driven by `Runtime::block_on` with no dispatch timeout,
+///   so the first two pulls run inline (`streaming/inline_pull.rs`): the
+///   `64` KiB case (one chunk + `End`) never starts the producer — it
+///   measures the inline fast path — and only the `1024` KiB case (four
+///   chunks) reaches the bounded mpsc channel and the `spawn_blocking`
+///   producer.
 pub fn bench_streaming_path(c: &mut Criterion) {
     install_bench_app();
 
@@ -280,9 +284,13 @@ pub fn bench_async_completion_isolation_ab(c: &mut Criterion) {
 /// Fixed startup cost of a bidirectional dispatch with a **small** request
 /// body (`0` B and `64` B, pulled in one chunk + `End`) against
 /// `/echo/bytes`.  The payload is too small for throughput to matter, so
-/// this group isolates the per-request setup of the request-body path
-/// (producer start, channel, producer slot, thread handoff) — the floor
-/// that dominates small `dispatchFullStreaming` calls from the JNI bridge.
+/// this group isolates the fixed per-request cost of a small
+/// `dispatchFullStreaming` call from the JNI bridge.  Like that call it is
+/// driven by `Runtime::block_on` with no dispatch timeout, so both cases
+/// take the inline fast path (`streaming/inline_pull.rs`: the chunk and
+/// `End` are pulled on the calling thread) and measure that floor — NOT
+/// the producer start, channel, producer slot and thread handoff it avoids
+/// (the `1024` KiB `streaming_path/bidirectional` case still pays those).
 pub fn bench_bidirectional_small(c: &mut Criterion) {
     install_bench_app();
 
