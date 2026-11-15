@@ -2,7 +2,7 @@ use jni::sys::jint;
 
 use super::{
     DIRECT_UNREPRESENTABLE, direct_complete_code, direct_overflow_code, undersized_out_code,
-    write_response_to_out,
+    write_error_to_out, write_response_to_out,
 };
 
 // SAFETY (all tests below): each `out` is a live, writable `Vec<u8>`; the
@@ -89,4 +89,22 @@ fn sizes_above_jint_max_collapse_to_the_sentinel() {
     };
     assert_eq!(direct_complete_code(too_big), DIRECT_UNREPRESENTABLE);
     assert_eq!(direct_overflow_code(too_big), DIRECT_UNREPRESENTABLE);
+}
+
+#[test]
+fn an_overflowing_error_wire_clears_the_stash_handle_area() {
+    // A stale handle (a previous overflow's token) must not survive an
+    // error wire that does not fit: the resumable caller would redeem it.
+    let mut out = vec![0xAAu8; 12];
+    let n = unsafe { write_error_to_out(out.as_mut_ptr(), out.len(), &[1u8; 64]) };
+    assert_eq!(n, -64);
+    assert_eq!(out[..9], [0; 9]);
+    assert_eq!(out[9..], [0xAA; 3]);
+    let mut tiny = vec![0xAAu8; 3];
+    assert!(unsafe { write_error_to_out(tiny.as_mut_ptr(), tiny.len(), &[1u8; 64]) } < 0);
+    assert_eq!(tiny, [0; 3]);
+    // A fitting error wire is written as is.
+    let n = unsafe { write_error_to_out(out.as_mut_ptr(), out.len(), b"err") };
+    assert_eq!(n, 3);
+    assert_eq!(&out[..3], b"err");
 }

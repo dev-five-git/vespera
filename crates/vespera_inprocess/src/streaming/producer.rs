@@ -196,8 +196,10 @@ pub struct ChannelBody {
     /// producer exited any other way) is an aborted upload, never a clean
     /// EOF — see the `Poll::Ready(None)` arm of `poll_frame`.
     pub(super) clean_end: Arc<AtomicBool>,
-    /// Producer slots this body draws from (the process-wide cap).
-    pub(super) slots: Arc<Semaphore>,
+    /// Producer slots this body draws from: `None` = the process-wide cap,
+    /// resolved only when the producer is about to start — a body the inline
+    /// fast path drains never touches that shared `Arc`'s refcount.
+    pub(super) slots: Option<Arc<Semaphore>>,
     /// In-progress wait for a producer slot while the cap is saturated.
     pub(super) permit_wait: Option<PermitFuture>,
     /// Inline pulls left before the producer takes over (see
@@ -228,7 +230,7 @@ impl ChannelBody {
             received: 0,
             limit_exceeded,
             clean_end: Arc::new(AtomicBool::new(false)),
-            slots: Arc::clone(producer_slots()),
+            slots: None,
             permit_wait: None,
             inline_budget: super::inline_pull::INLINE_PULL_BUDGET,
             inline,
@@ -263,12 +265,14 @@ impl ChannelBody {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<OwnedSemaphorePermit>> {
+        let slots = self
+            .slots
+            .get_or_insert_with(|| Arc::clone(producer_slots()));
         if self.permit_wait.is_none()
-            && let Ok(permit) = Arc::clone(&self.slots).try_acquire_owned()
+            && let Ok(permit) = Arc::clone(slots).try_acquire_owned()
         {
             return Poll::Ready(Some(permit));
         }
-        let slots = &self.slots;
         let wait = self
             .permit_wait
             .get_or_insert_with(|| Box::pin(Arc::clone(slots).acquire_owned()));

@@ -8,7 +8,7 @@ use axum::body::Body;
 #[cfg(feature = "connect-info")]
 use axum::extract::ConnectInfo;
 use bytes::Bytes;
-use http::{HeaderName, Method, Request, Uri, header::CONTENT_TYPE, uri::Scheme};
+use http::{Method, Request, Uri, header::CONTENT_TYPE, uri::Scheme};
 use tower::ServiceExt;
 
 use crate::Router;
@@ -357,7 +357,8 @@ fn build_uri(path: &str, query: &str) -> Result<Uri, (u16, String)> {
 /// triggers an incremental grow; a bodyless, headerless request without a
 /// default reserves `0` and never allocates a bucket (preserving the
 /// DIRECT-`GET` zero-allocation sweet spot).  Header names/values are parsed
-/// with `HeaderName::from_bytes` / `header_value_from_owner` (the same parsers
+/// with `header_names::parse_header_name` (`HeaderName::from_bytes`, minus
+/// the allocation for common non-standard names) / `header_value_from_owner` (the same parsers
 /// each call site used) and are `append`ed (not `insert`ed), preserving
 /// duplicate-name multi-value semantics byte-for-byte.  Case-insensitive
 /// `Content-Type` detection (RFC 7230 §3.2) is tracked inside the single
@@ -392,7 +393,8 @@ fn build_axum_request_inner<'h>(
 
     let mut has_content_type = false;
     for (name, value) in headers {
-        let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(invalid_request_err)?;
+        let header_name =
+            crate::header_names::parse_header_name(name).map_err(invalid_request_err)?;
         let header_value =
             header_value_from_owner(value, header_bytes_owner).map_err(invalid_request_err)?;
         has_content_type = has_content_type || header_name == CONTENT_TYPE;

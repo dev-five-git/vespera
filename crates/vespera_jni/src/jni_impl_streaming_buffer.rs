@@ -12,7 +12,10 @@
 
 use std::{
     cell::RefCell,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use jni::objects::{Global, JByteArray};
@@ -52,12 +55,19 @@ impl Drop for ThreadSlot {
 /// is emptied by every subsequent checkout.
 static GRAVEYARD: Mutex<Vec<StreamingChunkBuffer>> = Mutex::new(Vec::new());
 
+/// Set (under the [`GRAVEYARD`] lock) after a burial, cleared by the drain
+/// that takes it: the per-checkout [`drain_graveyard`] then costs one shared
+/// atomic load instead of a global lock round-trip while nothing is buried —
+/// i.e. always, except right after a streaming thread exits.
+static GRAVEYARD_PENDING: AtomicBool = AtomicBool::new(false);
+
 fn bury(array: StreamingChunkBuffer) {
     let mut pending = Some(array);
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut graveyard = GRAVEYARD.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(array) = pending.take() {
             graveyard.push(array);
+            GRAVEYARD_PENDING.store(true, Ordering::Release);
         }
     }));
     // Push failed (poisoned allocator / unwinding): leak rather than run
@@ -72,6 +82,13 @@ fn bury(array: StreamingChunkBuffer) {
 /// JNI call, so `Global::drop` resolves the env via `GetEnv` without a fresh
 /// attach.  The vec is taken under the lock and dropped outside it.
 fn drain_graveyard() {
+    // A burial racing this check is drained by the next checkout: its flag
+    // is set after the push, so it is never lost.
+    if !GRAVEYARD_PENDING.load(Ordering::Relaxed)
+        || !GRAVEYARD_PENDING.swap(false, Ordering::Acquire)
+    {
+        return;
+    }
     let buried = std::mem::take(&mut *GRAVEYARD.lock().unwrap_or_else(PoisonError::into_inner));
     drop(buried);
 }

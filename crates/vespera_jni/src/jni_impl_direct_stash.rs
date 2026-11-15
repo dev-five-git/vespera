@@ -147,6 +147,12 @@ pub fn clear_stash() {
     drop(drained);
 }
 
+/// Number of live stash entries (tests).
+#[cfg(test)]
+pub fn stashed_count() -> usize {
+    lock_stash().entries.len()
+}
+
 /// `-(required)`, clamped so it is never the `MIN` sentinel.
 fn pending_code(pending: &PendingDirectResponse) -> jint {
     -jint::try_from(pending.required_bytes()).unwrap_or(jint::MAX)
@@ -164,16 +170,27 @@ fn pending_flags(pending: &PendingDirectResponse) -> u8 {
 }
 
 /// Stash an overflowing response and write its handle into `out`.
-fn stash_overflow(out: &mut [u8], pending: PendingDirectResponse) -> jint {
+///
+/// Called while the dispatch still holds its runtime lease (inside the
+/// `block_on` future), so a shutdown drains it before its `clear_stash`
+/// runs; a shutdown already past that drain (its timeout expired) is caught
+/// by the re-check below — the entry is taken back and the retryable `503`
+/// every other request gets is answered instead of a handle to a response
+/// nothing would ever release.
+pub fn stash_overflow(out: &mut [u8], pending: PendingDirectResponse) -> jint {
     let code = pending_code(&pending);
     let flags = pending_flags(&pending);
-    let Some(handle) = out.get_mut(..STASH_HANDLE_LEN) else {
+    if out.len() < STASH_HANDLE_LEN {
         // No room for a handle: the response cannot be redeemed, drop it.
         return code;
-    };
+    }
     let token = stash_put(None, pending);
-    handle[..8].copy_from_slice(&token.to_be_bytes());
-    handle[8] = flags;
+    if vespera_inprocess::runtime::runtime_shut_down() {
+        drop(stash_take(token));
+        return write_complete_wire(out, &runtime_unavailable_wire());
+    }
+    out[..8].copy_from_slice(&token.to_be_bytes());
+    out[8] = flags;
     code
 }
 
@@ -192,12 +209,17 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_DirectStash_dispatchResum
     out_buf: JByteBuffer<'local>,
 ) -> jint {
     run_direct_symbol(unowned_env, &in_buf, in_len, &out_buf, |input, out| {
-        block_on_shared_runtime(vespera_inprocess::dispatch_into_async_borrowed_resumable(
-            input, &mut *out,
-        ))
-        .map(|written| match written {
-            ResumableDirectWrite::Complete(n) => direct_complete_code(n),
-            ResumableDirectWrite::Overflow(pending) => stash_overflow(out, pending),
+        // No 1 KiB minimum here (unlike `dispatchDirect0`): even a tiny
+        // `out` gets a handle, so the handler never re-runs.  An error wire
+        // that overflows it zeroes the handle area instead
+        // (`write_error_to_out`), so no stale token is ever read back.
+        // Stashed inside the future: under the dispatch's runtime lease.
+        block_on_shared_runtime(async {
+            match vespera_inprocess::dispatch_into_async_borrowed_resumable(input, &mut *out).await
+            {
+                ResumableDirectWrite::Complete(n) => direct_complete_code(n),
+                ResumableDirectWrite::Overflow(pending) => stash_overflow(out, pending),
+            }
         })
     })
 }
@@ -268,18 +290,29 @@ fn fetch_into(token: jlong, out: &mut [u8]) -> jint {
         }
         return DIRECT_UNREPRESENTABLE;
     };
-    match block_on_shared_runtime(pending.write_into(&mut *out)) {
-        Some(ResumableDirectWrite::Complete(n)) => direct_complete_code(n),
-        Some(ResumableDirectWrite::Overflow(pending)) => {
-            let code = pending_code(&pending);
-            let key = u64::try_from(token).unwrap_or_default();
-            stash_put(Some(key), pending);
-            code
+    // Re-stashed inside the future, under the fetch's runtime lease (see
+    // `stash_overflow`), with the same post-insert shutdown re-check.
+    let fetched = block_on_shared_runtime(async {
+        match pending.write_into(&mut *out).await {
+            ResumableDirectWrite::Complete(n) => Some(direct_complete_code(n)),
+            ResumableDirectWrite::Overflow(pending) => {
+                let code = pending_code(&pending);
+                let key = u64::try_from(token).unwrap_or_default();
+                stash_put(Some(key), pending);
+                if vespera_inprocess::runtime::runtime_shut_down() {
+                    drop(stash_take(key));
+                    return None;
+                }
+                Some(code)
+            }
         }
-        // No runtime (shut down): the stashed response is dropped;
-        // answer with the runtime-unavailable wire when it fits.
-        None => write_complete_wire(out, &runtime_unavailable_wire()),
-    }
+    });
+    // No runtime (shut down, before or during the fetch): the stashed
+    // response is dropped; answer with the runtime-unavailable wire when it
+    // fits.
+    fetched
+        .flatten()
+        .unwrap_or_else(|| write_complete_wire(out, &runtime_unavailable_wire()))
 }
 
 /// Copy a complete wire response into `out`: its length, or

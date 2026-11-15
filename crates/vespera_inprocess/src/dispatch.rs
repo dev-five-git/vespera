@@ -181,18 +181,16 @@ pub fn slice_from_owner(owner: &Bytes, s: &str) -> Option<Bytes> {
 /// Any non-empty query or any escaped/owned path returns `None` and the
 /// caller falls back to the copying `build_uri` path.
 ///
-/// Sole call site: [`dispatch_owned_to_parts`], the shared prelude that
-/// both public owned-wire entry points — [`dispatch_from_bytes_async`]
-/// and [`dispatch_into_async`] — reach on every dispatch (they diverge
-/// only in tail-delivery shape: buffered `Vec` vs direct-write
-/// `&mut [u8]`).  Centralising the URI fast-path here means the two
-/// public dispatchers keep an identical owned-wire URI policy without a
-/// second copy of the logic to drift.  The borrowed entry point
-/// ([`dispatch_into_async_borrowed`]) is deliberately *not* a caller: it
-/// has no owning `Bytes` to share and so unconditionally passes `None`.
-/// `#[inline]` keeps codegen identical to the prior copy-pasted shape.
+/// Called by [`dispatch_owned_to_parts`] (the shared prelude of the two
+/// owned-wire entry points [`dispatch_from_bytes_async`] and
+/// [`dispatch_into_async`]) and by the three streaming entry points, which
+/// own their header `Bytes` too — so every owned path keeps one URI policy.
+/// The borrowed entry point ([`dispatch_into_async_borrowed`]) is
+/// deliberately *not* a caller: it has no owning `Bytes` to share, and
+/// promoting its input to one measured SLOWER (one copy + a refcount per
+/// value outweigh mimalloc's small per-value copies).
 #[inline]
-fn path_bytes_for_owned(header_bytes: &Bytes, header: &WireRequestHeader<'_>) -> Option<Bytes> {
+pub fn path_bytes_for_owned(header_bytes: &Bytes, header: &WireRequestHeader<'_>) -> Option<Bytes> {
     if header.query.is_empty() {
         slice_from_owner(header_bytes, &header.path)
     } else {

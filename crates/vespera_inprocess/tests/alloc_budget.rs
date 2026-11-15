@@ -230,7 +230,7 @@ fn allocation_budgets() {
     // any future header-path allocation regression.  The request-header pair
     // `Vec` is now pre-reserved at `TYPICAL_HEADER_CAP` (16), so a 16-header
     // request fills WITHOUT the realloc the previous capacity-8 reserve paid
-    // (40 alloc + 0 realloc; was 40 alloc + 1 realloc).
+    // (37 alloc + 0 realloc; was 40 alloc + 1 realloc).
     let wire_hdrs = encode("POST", "/echo", HEADERS_16, br#"{"k":1}"#);
     assert_eq!(borrowed_status(&rt, &wire_hdrs, &mut out), 200);
     let headers_post = measure(200, 2000, || {
@@ -344,7 +344,10 @@ fn allocation_budgets() {
 // regression (a re-introduced realloc, or extra allocs) trips this budget.
 const BUDGET_BODYLESS_BORROWED: usize = 14 + DEBUG_BLOCK_ON_BOX; // borrowed: no clone / no output Vec / no body copy
 const BUDGET_SMALL_POST: usize = 22 + DEBUG_BLOCK_ON_BOX; // borrowed: +1 body copy over bodyless
-const BUDGET_HEADERS_POST: usize = 40 + DEBUG_BLOCK_ON_BOX; // borrowed: 40 alloc + 0 realloc (header Vec pre-reserved at 16)
+// BUDGET_HEADERS_POST dropped from 40 to 37: the common non-standard names
+// of the set (`x-request-id`, `x-forwarded-for`, `x-forwarded-proto`) are
+// interned (`header_names.rs`) instead of copied into a fresh `HeaderName`.
+const BUDGET_HEADERS_POST: usize = 37 + DEBUG_BLOCK_ON_BOX; // borrowed: 37 alloc + 0 realloc (header Vec pre-reserved at 16)
 // MATERIALISE / DISPATCH_INTO dropped by 2 each (was 18 / 17) when the OWNED
 // wire path stopped copying the request path into a fresh `Bytes`: a bodyless
 // GET's borrowed path now SHARES the request's owning header `Bytes` to build
