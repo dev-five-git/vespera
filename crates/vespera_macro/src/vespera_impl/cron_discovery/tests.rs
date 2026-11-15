@@ -424,6 +424,7 @@ fn crate_without_a_root_file_contributes_nothing() {
 #[case::foreign_rename("use other::schedule as cron;", &[("", "spelled", "2 * * * * *")])]
 #[case::vespera_import("use vespera::cron;", &[("", "bare", "1 * * * * *"), ("", "spelled", "2 * * * * *")])]
 #[case::vespera_group("use ::vespera::{cron, axum};", &[("", "bare", "1 * * * * *"), ("", "spelled", "2 * * * * *")])]
+#[case::glob_import("use other::*;", &[("", "bare", "1 * * * * *"), ("", "spelled", "2 * * * * *")])]
 #[case::other_cron_name("use other::cron as tick;", &[("", "bare", "1 * * * * *"), ("", "spelled", "2 * * * * *")])]
 fn foreign_cron_attributes_are_not_claimed(
     #[case] import: &str,

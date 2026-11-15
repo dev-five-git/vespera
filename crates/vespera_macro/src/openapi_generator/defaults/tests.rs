@@ -43,6 +43,7 @@ fn parse_type(src: &str) -> syn::Type {
 #[case::to_owned(r#""x".to_owned()"#, Some(json!("x")))]
 #[case::into(r#""x".into()"#, Some(json!("x")))]
 #[case::into_non_literal("x.into()", None)]
+#[case::conversion_with_arguments(r#""x".into(1)"#, None)]
 #[case::string_new("String::new()", Some(json!("")))]
 #[case::vec_new("Vec::new()", Some(json!([])))]
 #[case::other_new("HashMap::new()", None)]

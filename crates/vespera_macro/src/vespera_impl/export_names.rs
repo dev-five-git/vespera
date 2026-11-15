@@ -27,13 +27,19 @@ static EXPORT_SITES: LazyLock<Mutex<Sites>> = LazyLock::new(|| Mutex::new(HashMa
 /// The current expansion's site: the call-site file and the name's position
 /// (`None` outside the compiler, where spans carry no file).
 pub(super) fn current_site(name: &syn::Ident) -> Option<ExportSite> {
-    let file = proc_macro2::Span::call_site().local_file()?;
+    proc_macro2::Span::call_site()
+        .local_file()
+        .map(|file| site_in(&file, name))
+}
+
+/// `name`'s position in `file`.
+fn site_in(file: &Path, name: &syn::Ident) -> ExportSite {
     let start = name.span().start();
-    Some(ExportSite {
+    ExportSite {
         file: file.display().to_string(),
         line: start.line,
         column: start.column,
-    })
+    }
 }
 
 /// Claims `app` for the crate build `krate` at `site`.  Re-expanding the
@@ -77,6 +83,15 @@ fn still_mentions(site: &ExportSite, app: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Outside the compiler the call site has no file: no site.
+    #[test]
+    fn sites_come_from_the_call_site_file() {
+        let name = syn::Ident::new("App", proc_macro2::Span::call_site());
+        assert_eq!(current_site(&name), None);
+        let site = site_in(Path::new("src/lib.rs"), &name);
+        assert_eq!(site.file, "src/lib.rs");
+    }
 
     fn site(file: &Path, line: usize) -> ExportSite {
         let file = file.display().to_string();
