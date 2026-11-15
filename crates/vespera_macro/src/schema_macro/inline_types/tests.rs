@@ -482,6 +482,7 @@ fn raw_paths_reroot_and_cfg() {
         #[schema(default = "none")]
         #[sea_orm(column_type = "Text")]
         #[cfg(feature = "x")]
+        #[cfg_attr(feature = "y", serde(rename = "tag", default = "fallback"), schema(min_length = 1))]
         pub label: String,
         pub memo: BelongsTo<super::memo::Entity>,
     }
@@ -505,7 +506,10 @@ fn raw_paths_reroot_and_cfg() {
     let rendered = quote!(#(#label)*).to_string();
     assert_eq!(
         rendered,
-        "# [serde (default = \"crate::models::r#type::fallback\")] # [schema (default = \"none\")] # [cfg (feature = \"x\")]"
+        "# [serde (default = \"crate::models::r#type::fallback\")] # [schema (default = \"none\")] # [cfg (feature = \"x\")] \
+         # [cfg_attr (feature = \"y\" , serde (rename = \"tag\" , default = \"crate::models::r#type::fallback\"))] \
+         # [cfg_attr (feature = \"y\" , schema (min_length = 1))]",
+        "the `cfg_attr` serde / schema items (L5) used to be dropped"
     );
 }
 

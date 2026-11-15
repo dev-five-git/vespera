@@ -37,7 +37,7 @@ fn explicit_schema_default_after_other_key_satisfies_validation() {
             id: Opaque,
         }
     };
-    assert!(validate_serde_default_values(&input, &BTreeMap::new()).is_ok());
+    assert!(validate_serde_default_values(&input, &BTreeMap::new(), true).is_ok());
 }
 
 /// A raw-identifier field (`r#type`) is keyed by its wire name `type`, which
@@ -63,7 +63,7 @@ fn raw_identifier_field_default_is_keyed_without_prefix() {
         defaults.get("type"),
         Some(&serde_json::Value::String("plain".to_string()))
     );
-    assert!(validate_serde_default_values(&input, &defaults).is_ok());
+    assert!(validate_serde_default_values(&input, &defaults, true).is_ok());
 }
 
 /// A file with a top-level `role` default and inline modules holding their
@@ -118,9 +118,11 @@ fn nested_struct(chain: &[&str], name: &str) -> syn::DeriveInput {
 
 /// A default function is looked up from the module declaring the struct:
 /// two same-named structs in different inline modules each find their own,
-/// `self::` / `super::` / `child::f` walk the inline modules, and paths that
-/// leave the file (`super` above the top level, a leading `::`) or do not
-/// parse resolve to nothing.
+/// `self::` / `super::` / `child::f` walk the inline modules, and a leading
+/// `::` or an unparseable path resolves to nothing. `super` above the top
+/// level goes through the module tree (`super_past_file` below); this file
+/// lies outside the crate's module directory, so it maps to the crate root
+/// and there is no parent module to resolve it in.
 #[rstest]
 #[case::inline_module(&["admin"], "Account", Some("admin"))]
 #[case::other_inline_module(&["guest"], "Account", Some("guest"))]
@@ -128,7 +130,7 @@ fn nested_struct(chain: &[&str], name: &str) -> syn::DeriveInput {
 #[case::child_module_path(&["admin"], "Preset", Some("preset"))]
 #[case::self_path(&["admin"], "SelfRole", Some("admin"))]
 #[case::top_level(&[], "Top", Some("top"))]
-#[case::super_above_file(&[], "Escapes", None)]
+#[case::super_above_file_outside_crate(&[], "Escapes", None)]
 #[case::leading_colon(&[], "Absolute", None)]
 #[case::unparseable(&[], "Garbage", None)]
 fn default_fn_is_resolved_from_the_struct_module(
@@ -191,7 +193,7 @@ fn crate_path_default_fn_is_resolved_through_the_module_tree(
             .as_ref()
     );
     assert_eq!(
-        validate_serde_default_values(&input, &defaults).is_ok(),
+        validate_serde_default_values(&input, &defaults, true).is_ok(),
         expected.is_some()
     );
 }
@@ -260,6 +262,60 @@ fn default_fn_is_resolved_through_the_module_tree(
     );
 }
 
+/// L12 (round 12): without the call-site file (`Span::local_file` is `None`)
+/// no default function can be looked up, so a `default = "fn"` field is not
+/// rejected as unresolvable; a bare default is still checked.
+#[rstest]
+#[case::function(quote::quote!(#[serde(default = "make")]), false, true)]
+#[case::function_file_known(quote::quote!(#[serde(default = "make")]), true, false)]
+#[case::bare_opaque(quote::quote!(#[serde(default)]), false, false)]
+fn function_default_without_call_site_file_is_not_checked(
+    #[case] attrs: proc_macro2::TokenStream,
+    #[case] file_known: bool,
+    #[case] ok: bool,
+) {
+    let input: syn::DeriveInput =
+        syn::parse2(quote::quote!(struct S { #attrs client: Client })).unwrap();
+    assert_eq!(
+        validate_serde_default_values(&input, &BTreeMap::new(), file_known).is_ok(),
+        ok
+    );
+    if !file_known {
+        // `process_derive_schema` runs without a call-site file in unit tests.
+        assert_eq!(process_derive_schema(&input).0.is_some(), ok);
+    }
+}
+
+/// L11 (round 12): the Multipart derive fills a `#[form_data(default)]`
+/// field with `Default::default()`, so that (not the serde function's
+/// value) is the documented default; a type without a static default
+/// needs an explicit `#[schema(default)]`.
+#[test]
+fn form_data_default_decides_the_documented_default() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("upload.rs");
+    std::fs::write(&file_path, "fn seven() -> i32 { 7 }").unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    let input: syn::DeriveInput = syn::parse_quote! {
+        struct Upload {
+            #[serde(default = "seven")]
+            #[form_data(default)]
+            n: i32,
+            #[serde(default = "seven")]
+            m: i32,
+            #[serde(default = "seven")]
+            #[form_data(default)]
+            o: Opaque,
+        }
+    };
+    let defaults = extract_field_defaults_from_path(&input, &file_path);
+    assert_eq!(defaults.get("n"), Some(&serde_json::json!(0)));
+    assert_eq!(defaults.get("m"), Some(&serde_json::json!(7)));
+    assert_eq!(defaults.get("o"), None);
+    let err = validate_serde_default_values(&input, &defaults, true).unwrap_err();
+    assert!(err.to_string().contains("field `o`"), "{err}");
+}
+
 /// A field serde never reads (`skip` / `skip_deserializing`) has no request
 /// property, so an unresolvable `default = "fn"` on it is not an error.
 #[rstest]
@@ -273,7 +329,7 @@ fn skipped_field_default_is_not_validated(
     let input: syn::DeriveInput =
         syn::parse2(quote::quote!(struct S { #attrs client: Client })).unwrap();
     assert_eq!(
-        validate_serde_default_values(&input, &BTreeMap::new()).is_ok(),
+        validate_serde_default_values(&input, &BTreeMap::new(), true).is_ok(),
         ok
     );
 }

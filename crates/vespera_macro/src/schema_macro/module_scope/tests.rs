@@ -391,6 +391,33 @@ fn local_value_type_is_not_serde_json() {
     );
 }
 
+/// L1 (round 12): a name a crate-internal glob brings in wins over the
+/// alias table (`Value` used to become `serde_json::Value`); a SeaORM name
+/// the glob module imports is still converted.
+#[rstest]
+#[case::glob_defined_value("Value", "crate :: types :: Value")]
+#[case::glob_defined_json("Json", "crate :: types :: Json")]
+#[case::glob_imported_sea_orm_alias(
+    "DateTimeUtc",
+    "vespera :: chrono :: DateTime < vespera :: chrono :: Utc >"
+)]
+#[case::glob_imported_sea_orm_plain("Uuid", "sea_orm :: prelude :: Uuid")]
+#[case::not_in_glob("JsonValue", "vespera :: serde_json :: Value")]
+fn crate_glob_names_win_over_aliases(#[case] input: &str, #[case] expected: &str) {
+    let (_dir, _guard) = temp_crate(&[
+        ("globbed.rs", "use crate::types::*;"),
+        (
+            "types.rs",
+            "pub struct Value; pub struct Json; pub use sea_orm::prelude::DateTimeUtc; pub use sea_orm::prelude::Uuid;",
+        ),
+    ]);
+    let ty: syn::Type = syn::parse_str(input).unwrap();
+    assert_eq!(
+        resolve_type_to_absolute_path(&ty, &segs("crate::globbed")).to_string(),
+        expected
+    );
+}
+
 #[test]
 fn imported_sea_orm_alias_is_converted() {
     let (_dir, _guard) = temp_crate(&[(

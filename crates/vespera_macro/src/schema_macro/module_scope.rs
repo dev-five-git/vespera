@@ -127,6 +127,38 @@ fn crate_relative(module_path: &[String]) -> Option<&[String]> {
     .then_some(rest)
 }
 
+/// Whether `src/a/b.rs` (below `src`) can stand for the module
+/// `crate::a::b` (`segments`): no parent module file on disk (the crate
+/// roots `roots` for `a`, `src/a.rs` / `src/a/mod.rs` for `b`) declares a
+/// segment with a `#[path]` redirect (or one `#[cfg]` twin of it) or as an
+/// inline `mod b { .. }` — the module then lives elsewhere and only the
+/// declaration-aware tree walk finds it. A parent that is not on disk
+/// keeps the fast path (trees without a crate root).
+pub fn fast_path_is_plain<S: AsRef<str>>(src: &Path, roots: &[PathBuf], segments: &[S]) -> bool {
+    let redirected = |file: &Path, segment: &str| {
+        file_cache::get_parsed_file(file).is_some_and(|file| {
+            file.items.iter().any(|item| {
+                matches!(item, syn::Item::Mod(module) if ident_name(&module.ident) == segment
+                    && (module.content.is_some() || path_attr(&module.attrs).is_some()))
+            })
+        })
+    };
+    segments.iter().enumerate().all(|(level, segment)| {
+        let segment = segment.as_ref();
+        let parents: Vec<PathBuf> = if level == 0 {
+            roots.to_vec()
+        } else {
+            let joined: Vec<&str> = segments[..level].iter().map(AsRef::as_ref).collect();
+            let joined = joined.join("/");
+            vec![
+                src.join(format!("{joined}.rs")),
+                src.join(joined).join("mod.rs"),
+            ]
+        };
+        !parents.iter().any(|parent| redirected(parent, segment))
+    })
+}
+
 /// The items of the module at `module_path` (`crate::a::b` or `a::b`).
 pub fn module_items(module_path: &[String]) -> Option<Vec<syn::Item>> {
     let segments = crate_relative(module_path)?;
@@ -134,8 +166,12 @@ pub fn module_items(module_path: &[String]) -> Option<Vec<syn::Item>> {
     let src = &layout.module_dir;
     // Fast path: the longest prefix that is a module file of its own, then
     // inline / nested modules below it. Works for trees without a crate root
-    // and costs no root walk for the common `src/a/b.rs` layout.
+    // and costs no root walk for the common `src/a/b.rs` layout. A prefix a
+    // parent declares with `#[path]` / inline is no file of its own.
     for split in (1..=segments.len()).rev() {
+        if !fast_path_is_plain(src, &layout.roots, &segments[..split]) {
+            continue;
+        }
         let joined = segments[..split].join("/");
         let file = open_file(&src.join(format!("{joined}.rs")), false)
             .or_else(|| open_file(&src.join(&joined).join("mod.rs"), true));

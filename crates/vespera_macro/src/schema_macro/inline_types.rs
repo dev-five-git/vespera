@@ -7,6 +7,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::{
+    field_attrs::carried_field_attrs,
     file_cache::{get_circular_analysis, get_module_path_from_schema_path},
     file_lookup::find_model_from_schema_path,
     seaorm::{RelationFieldInfo, convert_type_with_chrono},
@@ -217,8 +218,10 @@ fn generate_inline_type_core(
             // type is emitted at the call site), schema (the inline type
             // derives `Schema`: an explicit `#[schema(default)]` documents a
             // `#[serde(default = "fn")]` whose value is not a literal), doc
-            // and cfg attributes (the construction repeats the cfg).
-            let kept_attrs: Vec<syn::Attribute> =
+            // and cfg attributes (the construction repeats the cfg), plus the
+            // `serde` / `schema` items of a `cfg_attr` (its `rename` keeps
+            // the wire name the target's own Schema has).
+            let mut kept_attrs: Vec<syn::Attribute> =
                 reroot_serde_paths(&field.attrs, effective_module_path)
                     .into_iter()
                     .filter(|attr| {
@@ -228,6 +231,13 @@ fn generate_inline_type_core(
                             .any(|key| path.is_ident(key))
                     })
                     .collect();
+            let carried = carried_field_attrs(&field.attrs, true, effective_module_path, false);
+            let cfg_attrs = carried.cfg_serde_attrs().into_iter();
+            kept_attrs.extend(
+                cfg_attrs
+                    .chain(carried.cfg_schema_attrs())
+                    .map(|tokens| syn::parse_quote!(#tokens)),
+            );
 
             // Convert SeaORM datetime types to chrono equivalents
             // Use the target model's module path to correctly resolve enum types

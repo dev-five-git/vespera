@@ -375,6 +375,17 @@ impl TypeResolver<'_> {
                 return self.module_qualified(ident, &args);
             }
         }
+        // A crate-internal glob naming it (`use crate::types::*;` defining
+        // `Value`) wins over the alias, like an explicit import does.
+        if let Resolved::Path(path) = resolve_name(std::slice::from_ref(&name), self.module) {
+            if first_named(&path) == Some("sea_orm")
+                && let Some(converted) = self.alias(&name, &segment.arguments, true)
+            {
+                return converted;
+            }
+            let path = path_tokens(&path);
+            return quote! { #path #args };
+        }
         let sea_orm_scope = self.scope.is_some_and(ModuleScope::has_sea_orm_glob);
         if let Some(converted) = self.alias(&name, &segment.arguments, sea_orm_scope) {
             return converted;
@@ -393,10 +404,6 @@ impl TypeResolver<'_> {
         }
         if is_primitive_or_known_type(&name) {
             return quote! { #ident #args };
-        }
-        if let Resolved::Path(path) = resolve_name(std::slice::from_ref(&name), self.module) {
-            let path = path_tokens(&path);
-            return quote! { #path #args };
         }
         // Any other name the module neither defines nor imports comes from
         // its SeaORM prelude glob (`TimeDateTime`, `BigDecimal`, `IpNetwork`,
