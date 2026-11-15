@@ -76,5 +76,19 @@ fn schema_macro_filters_flattened_structs() {
     assert_eq!(keys, ["kind", "text"]);
 
     let omitted = schema!(Note, omit = ["text"]);
-    assert_eq!(omitted.all_of.expect("still flattened").len(), 2);
+    let members = omitted.all_of.expect("still flattened");
+    assert_eq!(members.len(), 2);
+    // The omission reaches the struct's own (inline) member: a no-op omit
+    // through `#[serde(flatten)]` would still list `text`.
+    let own: Vec<Vec<String>> = members
+        .iter()
+        .filter_map(|member| match member {
+            SchemaRef::Inline(schema) => schema
+                .properties
+                .as_ref()
+                .map(|properties| properties.keys().cloned().collect()),
+            SchemaRef::Ref(_) => None,
+        })
+        .collect();
+    assert_eq!(own, [["id", "kind"]], "{members:?}");
 }

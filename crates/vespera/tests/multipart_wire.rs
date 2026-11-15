@@ -568,7 +568,7 @@ fn typed_multipart_aggregate_field_count_cap_rejected_413() {
 
 #[test]
 fn typed_multipart_unknown_fields_count_toward_max_fields() {
-    // Regression: in non-strict mode an UNKNOWN part (the generated `_ => {}`
+    // Regression: in non-strict mode an UNKNOWN part (the generated wildcard
     // dispatch arm) must still count against `max_fields`.  Before the fix,
     // counting happened only inside the per-known-field parsers, so a flood of
     // unknown parts bypassed the cap entirely (a DoS-adjacent gap) and this
