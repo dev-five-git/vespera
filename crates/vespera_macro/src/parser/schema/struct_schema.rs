@@ -219,7 +219,7 @@ pub(super) fn tuple_fields_schema(
 /// `allow_transparent`): the ONLY field that is not `PhantomData` and is not
 /// skipped on that side (`skip` / `skip_serializing` when writing;
 /// `skip` / `skip_deserializing` / a field `default` when reading).
-fn single_emitted_field<'a>(
+pub fn single_emitted_field<'a>(
     fields: impl Iterator<Item = &'a syn::Field>,
     side: SerdeSide,
 ) -> Option<&'a syn::Field> {

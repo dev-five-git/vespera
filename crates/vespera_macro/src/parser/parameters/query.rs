@@ -9,6 +9,7 @@ use vespera_core::{
 use super::shared::{
     convert_to_inline_schema, deserialized_instead, deserialized_source, input_rename_all,
     is_defined_struct, is_known_type, is_primitive_or_like, named_struct_fields, serde_field_name,
+    struct_definition,
 };
 use crate::{
     parser::schema::{
@@ -163,7 +164,7 @@ fn collect_query_struct_parameters(
     visiting: &mut Vec<String>,
     parameters: &mut Vec<Parameter>,
 ) {
-    let Some(struct_item) = named_struct_fields(ty, struct_definitions) else {
+    let Some(struct_item) = struct_definition(ty, struct_definitions) else {
         return;
     };
     // A (boxed) struct that flattens itself would recurse forever.
@@ -173,17 +174,21 @@ fn collect_query_struct_parameters(
     }
     visiting.push(struct_name);
     // Container `#[serde(from = "X")]` / `try_from` (or `#[schema(value_type =
-    // X)]`), or `#[serde(transparent)]`: serde reads `X` / the single field's
-    // type from the query string, never this struct's own fields.
-    if let Some(source) = deserialized_instead(&struct_item) {
+    // X)]`), or `#[serde(transparent)]` (named or tuple struct): serde reads
+    // `X` / the transparent field's type from the query string, never this
+    // struct's own fields. Any other tuple / unit struct has no named keys.
+    let source = deserialized_instead(&struct_item);
+    if let Some(source) = &source {
         collect_query_struct_parameters(
-            &source,
+            source,
             force_optional,
             known_schemas,
             struct_definitions,
             visiting,
             parameters,
         );
+    }
+    if source.is_some() || !matches!(struct_item.fields, syn::Fields::Named(_)) {
         visiting.pop();
         return;
     }

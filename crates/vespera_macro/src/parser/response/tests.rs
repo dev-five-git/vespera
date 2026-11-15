@@ -397,9 +397,8 @@ fn test_extract_result_types_with_reference() {
 fn test_unwrap_json_non_json() {
     // Test unwrap_json with non-Json type returns original
     let ty: syn::Type = syn::parse_str("String").unwrap();
-    let unwrapped = unwrap_json(&ty);
-    // Should return the same type
-    assert!(matches!(unwrapped, syn::Type::Path(_)));
+    // The very same type, not a rebuilt one.
+    assert!(std::ptr::eq(unwrap_json(&ty), &raw const ty));
 }
 
 #[test]
@@ -440,12 +439,13 @@ fn test_extract_ok_payload_and_headers_tuple_without_headermap() {
     let payload = payload.expect("body payload");
 
     // Payload should be String (last element unwrapped)
-    if let syn::Type::Path(type_path) = &payload {
-        assert_eq!(
-            type_path.path.segments.last().unwrap().ident.to_string(),
-            "String"
-        );
-    }
+    let syn::Type::Path(type_path) = &payload else {
+        panic!("expected path payload")
+    };
+    assert_eq!(
+        type_path.path.segments.last().unwrap().ident.to_string(),
+        "String"
+    );
     // Headers should be None (no HeaderMap in tuple) - this is line 95
     assert!(headers.is_none());
 }
@@ -460,10 +460,16 @@ fn test_parse_return_type_result_with_ok_tuple_no_headermap() {
     let responses = parse_return_type(&return_type, &known_schemas, &struct_definitions);
 
     // Should have 200 and 400 responses
-    assert!(responses.contains_key("200"));
+    assert_eq!(responses.keys().collect::<Vec<_>>(), ["200", "400"]);
     let ok_response = responses.get("200").unwrap();
     // Headers should be None
     assert!(ok_response.headers.is_none());
+    // The body is the tuple's `Json<String>` element.
+    let media = &ok_response.content.as_ref().unwrap()["application/json"];
+    let Some(SchemaRef::Inline(schema)) = &media.schema else {
+        panic!("expected inline schema")
+    };
+    assert_eq!(schema.schema_type, Some(SchemaType::String));
 }
 
 // ======== CookieJar tuple extraction tests ========
@@ -592,15 +598,7 @@ fn test_unwrap_json_qualified_path() {
 fn test_unwrap_json_non_generic_path() {
     // Type with segments but no angle brackets → returns original
     let ty: syn::Type = syn::parse_str("std::string::String").unwrap();
-    let unwrapped = unwrap_json(&ty);
-    if let syn::Type::Path(type_path) = unwrapped {
-        assert_eq!(
-            type_path.path.segments.last().unwrap().ident.to_string(),
-            "String"
-        );
-    } else {
-        panic!("Expected Path type");
-    }
+    assert!(std::ptr::eq(unwrap_json(&ty), &raw const ty));
 }
 
 #[test]
@@ -727,7 +725,7 @@ fn media_shape(
 #[case::unknown_named_type("-> CustomResponse", "200", None)]
 #[case::result_lifetime_arg("-> Result<'static, Json<i32>>", "200", Some(("application/json", SchemaType::Integer, Some("int32"))))]
 #[case::header_array_in_tuple("-> (StatusCode, [(HeaderName, &'static str); 1])", "200", None)]
-#[case::reference_to_non_path("-> &'static [i32]", "200", Some(("application/json", SchemaType::Array, None)))]
+#[case::reference_to_non_path("-> &'static (i32, i32)", "200", Some(("application/json", SchemaType::Array, None)))]
 fn opaque_and_raw_bodies(
     #[case] return_type: &str,
     #[case] status: &str,

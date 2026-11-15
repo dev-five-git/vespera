@@ -8,7 +8,7 @@ expression: "serde_json::to_string_pretty(&summary).unwrap()"
   "parameters": [
     {
       "in": "query",
-      "name": "kind",
+      "name": "filter",
       "required": false,
       "schema": {
         "$ref": "#/components/schemas/Kind"

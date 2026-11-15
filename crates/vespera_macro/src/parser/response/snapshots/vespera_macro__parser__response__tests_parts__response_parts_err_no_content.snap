@@ -14,6 +14,6 @@ expression: responses_json(return_type)
     }
   },
   "204": {
-    "description": "Error response"
+    "description": "Successful response"
   }
 }

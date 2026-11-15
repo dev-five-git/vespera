@@ -65,8 +65,8 @@ fn test_parse_struct_to_schema_rename_all_and_field_rename() {
 }
 
 /// Tuple structs follow serde's wire shape: newtype → inner schema,
-/// multi-field → fixed-length `prefixItems` array; unit structs stay an
-/// empty object.
+/// multi-field → fixed-length `prefixItems` array; unit structs are `null`
+/// (serde writes a unit struct as `null`).
 #[rstest]
 #[case::newtype_int("newtype_int", "struct Wrapper(i32);")]
 #[case::newtype_doc("newtype_doc", "/// An id\nstruct UserId(u64);")]
@@ -317,13 +317,14 @@ fn test_parse_struct_to_schema_with_description() {
         Some("User struct description".to_string())
     );
     // Check field descriptions
-    let props = schema.properties.unwrap();
-    if let SchemaRef::Inline(id_schema) = props.get("id").unwrap() {
-        assert_eq!(id_schema.description, Some("User ID".to_string()));
-    }
-    if let SchemaRef::Inline(name_schema) = props.get("name").unwrap() {
-        assert_eq!(name_schema.description, Some("User name".to_string()));
-    }
+    assert_eq!(
+        field_schema(&schema, "id").description.as_deref(),
+        Some("User ID")
+    );
+    assert_eq!(
+        field_schema(&schema, "name").description.as_deref(),
+        Some("User name")
+    );
 }
 
 #[test]
@@ -340,15 +341,16 @@ fn test_parse_struct_to_schema_field_with_ref_and_description() {
     let mut known = HashSet::new();
     known.insert("User".to_string());
     let schema = parse_struct_to_schema(&struct_item, &known, &struct_defs);
-    let props = schema.properties.unwrap();
     // Field with $ref and description should use allOf
-    if let SchemaRef::Inline(user_schema) = props.get("user").unwrap() {
-        assert_eq!(
-            user_schema.description,
-            Some("The user reference".to_string())
-        );
-        assert!(user_schema.all_of.is_some());
-    }
+    let user_schema = field_schema(&schema, "user");
+    assert_eq!(
+        user_schema.description.as_deref(),
+        Some("The user reference")
+    );
+    assert_eq!(
+        serde_json::to_value(&user_schema.all_of).unwrap(),
+        serde_json::json!([{"$ref": "#/components/schemas/User"}])
+    );
 }
 
 #[test]
@@ -371,10 +373,10 @@ fn test_parse_struct_to_schema_description_strips_slash_prefix() {
         &HashMap::<String, String>::new(),
     );
     assert_eq!(schema.description, Some("Struct description".to_string()));
-    let props = schema.properties.unwrap();
-    if let SchemaRef::Inline(id_schema) = props.get("id").unwrap() {
-        assert_eq!(id_schema.description, Some("Field description".to_string()));
-    }
+    assert_eq!(
+        field_schema(&schema, "id").description.as_deref(),
+        Some("Field description")
+    );
 }
 
 #[test]
@@ -532,8 +534,10 @@ fn test_parse_struct_to_schema_transparent_tuple_wrapper_uses_ref_schema() {
     }
 }
 
+/// `transparent` with two emitted fields (which serde rejects) falls back to
+/// the plain tuple shape, a fixed-length array.
 #[test]
-fn test_parse_struct_to_schema_multi_field_tuple_is_fixed_array() {
+fn transparent_with_two_fields_falls_back_to_tuple_array() {
     let struct_item: syn::ItemStruct = syn::parse_str(
         r"
             #[serde(transparent)]
@@ -739,10 +743,18 @@ fn schema_constraints_coexist_with_doc_comment_on_ref_field() {
     .unwrap();
     let schema = parse_struct_to_schema(&s, &known, &HashMap::<String, String>::new());
     let field = field_schema(&schema, "shipping");
-    assert!(field.description.is_some(), "doc comment lost");
+    assert_eq!(
+        field.description.as_deref(),
+        Some("Shipping address — must be present."),
+        "doc comment lost"
+    );
     assert_eq!(field.read_only, Some(true));
     assert_eq!(field.write_only, Some(false));
-    assert!(field.all_of.is_some(), "allOf wrap lost");
+    assert_eq!(
+        serde_json::to_value(&field.all_of).unwrap(),
+        serde_json::json!([{"$ref": "#/components/schemas/Address"}]),
+        "allOf wrap lost"
+    );
 }
 
 #[test]
@@ -763,8 +775,11 @@ fn schema_constraints_unknown_keys_on_field_are_silently_ignored() {
         &HashSet::<String>::new(),
         &HashMap::<String, String>::new(),
     );
-    let field = field_schema(&schema, "pin");
-    assert_eq!(field.min_length, Some(4));
+    // Exactly the string schema plus `minLength`: `name` added nothing.
+    assert_eq!(
+        serde_json::to_value(field_schema(&schema, "pin")).unwrap(),
+        serde_json::json!({"type": "string", "minLength": 4})
+    );
 }
 
 #[test]

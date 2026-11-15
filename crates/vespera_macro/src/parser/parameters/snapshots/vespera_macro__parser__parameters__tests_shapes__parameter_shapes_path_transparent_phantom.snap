@@ -1,0 +1,26 @@
+---
+source: crates/vespera_macro/src/parser/parameters/tests_shapes.rs
+expression: "render(func_src, path_params)"
+---
+fn f(p: Path<PhantomPath<u8>>) {}
+[
+  {
+    "name": "a",
+    "in": "path",
+    "required": true,
+    "schema": {
+      "type": "integer",
+      "format": "int64"
+    }
+  },
+  {
+    "name": "b",
+    "in": "path",
+    "required": true,
+    "schema": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    }
+  }
+]
