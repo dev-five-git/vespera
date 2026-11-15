@@ -345,6 +345,71 @@ class VesperaStreamingExecutorTest {
     }
 
     /**
+     * A task queued behind a thread start that then fails had no thread
+     * left (round-14 L-1): it waited, holding its slot, until some later
+     * stream happened to start a thread. Every queued task no idle or
+     * starting thread can take is now rejected and frees its slot.
+     */
+    @Test
+    void aFailedThreadStartRejectsEveryTaskQueuedBehindIt() throws Exception {
+        CountDownLatch secondQueued = new CountDownLatch(1);
+        AtomicInteger created = new AtomicInteger();
+        java.util.concurrent.ThreadFactory factory = runnable -> {
+            if (created.incrementAndGet() > 1) {
+                return new Thread(runnable);
+            }
+            return new Thread(runnable) {
+                @Override
+                public synchronized void start() {
+                    try {
+                        assertTrue(secondQueued.await(5, TimeUnit.SECONDS));
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    throw new OutOfMemoryError("unable to create native thread");
+                }
+            };
+        };
+        try (VesperaStreamingExecutor executor = new VesperaStreamingExecutor(
+                1, 1, TimeUnit.SECONDS.toNanos(60), factory)) {
+            AtomicInteger ran = new AtomicInteger();
+            VesperaStreamingExecutor.Reservation first = executor.tryReserve();
+            Thread submitter = new Thread(() -> first.executor().execute(ran::incrementAndGet));
+            submitter.start();
+            awaitCondition(() -> executor.queuedTaskCount() == 1, "the first task queued");
+            VesperaStreamingExecutor.Reservation second = executor.tryReserve();
+            second.executor().execute(ran::incrementAndGet);
+            assertEquals(2, executor.queuedTaskCount(), "queued behind the in-flight start");
+            secondQueued.countDown();
+            submitter.join(5000);
+            assertFalse(submitter.isAlive());
+
+            RejectedExecutionException firstFailure =
+                    first.rejection().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            RejectedExecutionException secondFailure =
+                    second.rejection().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertNotNull(firstFailure);
+            assertNotNull(secondFailure, "the second task is rejected, not stranded");
+            assertTrue(secondFailure.getCause() instanceof OutOfMemoryError);
+            assertTrue(first.wasRejected() && second.wasRejected());
+            assertEquals(0, executor.inUse(), "both slots are free");
+            assertEquals(0, executor.queuedTaskCount());
+            assertEquals(0, executor.threadCount());
+            second.cancel(); // no-op after the rejection
+            assertEquals(0, executor.inUse());
+
+            // The pool recovers: the next stream starts a thread and runs.
+            VesperaStreamingExecutor.Reservation third = executor.tryReserve();
+            third.executor().execute(ran::incrementAndGet);
+            awaitCondition(() -> ran.get() == 1, "a later stream runs");
+            assertNull(third.rejection().toCompletableFuture().get(5, TimeUnit.SECONDS));
+            assertFalse(third.wasRejected());
+            assertEquals(1, ran.get(), "the rejected tasks never ran");
+            awaitIdle(executor);
+        }
+    }
+
+    /**
      * An ignored second task of a reservation must not replace the queued
      * one: {@code cancel()} then removed the never-submitted second task and
      * left the real one in the queue.
@@ -408,6 +473,9 @@ class VesperaStreamingExecutorTest {
         assertTrue(executor.isClosed());
         assertNull(executor.tryReserve());
         assertThrows(RejectedExecutionException.class, () -> reserved.executor().execute(() -> { }));
+        assertTrue(reserved.wasRejected());
+        assertNull(reserved.rejection().toCompletableFuture().getNow(new RejectedExecutionException()),
+                "a synchronous refusal reports through the thrown exception only");
         awaitIdle(executor);
     }
 }

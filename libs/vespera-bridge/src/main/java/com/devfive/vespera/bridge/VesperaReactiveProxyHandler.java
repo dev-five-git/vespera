@@ -28,6 +28,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Consumer;
 
 /**
@@ -471,7 +472,8 @@ public class VesperaReactiveProxyHandler implements WebHandler {
      * response with backpressure (a write blocks until the client demands
      * more). The Rust header arrives before the first body byte, while the
      * response is still uncommitted. A saturated executor answers {@code 503}
-     * without dispatching.
+     * without dispatching, as does one that drops the queued task unrun
+     * because no streaming thread could start.
      *
      * <p>{@code implicit} (a bodyless GET that did not ask for a stream): a
      * saturated executor falls back to the buffered {@link #buffered} path
@@ -486,12 +488,7 @@ public class VesperaReactiveProxyHandler implements WebHandler {
             boolean implicit) {
         VesperaStreamingExecutor.Reservation slot = streamingExecutor.tryReserve();
         if (slot == null) {
-            if (implicit) {
-                px.mode = DispatchMode.ASYNC;
-                return buffered(wire, out, px, method);
-            }
-            px.reachedRust = false;
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, ProxyErrors.STREAMING_SATURATED);
+            return saturated(wire, out, px, method, implicit);
         }
         ServerHttpResponse response = out.response;
         Executor executor = slot.executor();
@@ -510,12 +507,31 @@ public class VesperaReactiveProxyHandler implements WebHandler {
                 throw new StreamAbort(failure);
             }
         }, response.bufferFactory(), executor, STREAM_CHUNK_BYTES);
-        return response.writeAndFlushWith(Flux.from(body).map(Mono::just))
+        // The pool dropped the queued task unrun (no thread could start):
+        // fail the body instead of waiting for a thread that may never come.
+        Mono<DataBuffer> dropped = Mono.fromCompletionStage(slot.rejection()).flatMap(Mono::error);
+        return response.writeAndFlushWith(Flux.from(body).mergeWith(dropped).map(Mono::just))
                 .doOnSuccess(ignored -> px.complete(out.status(), out.panicked()))
                 // Cancelled / failed before the pool ran the task (never
                 // submitted, or still queued): free the slot and drop the
                 // task, so a disconnected client never reaches Rust.
-                .doFinally(signal -> slot.cancel());
+                .doFinally(signal -> slot.cancel())
+                // Refused by the pool before Rust ran (closed, or no thread
+                // could start; the slot is already free): saturation handling.
+                .onErrorResume(failure -> failure instanceof RejectedExecutionException && slot.wasRejected(),
+                        failure -> saturated(wire, out, px, method, implicit));
+    }
+
+    /** No streaming thread for this request: implicit streams buffer, explicit ones answer {@code 503}. */
+    private Mono<Void> saturated(byte[] wire, ReactiveProxyResponse out, ProxyExchange px, String method,
+            boolean implicit) {
+        if (implicit) {
+            px.mode = DispatchMode.ASYNC;
+            return buffered(wire, out, px, method);
+        }
+        px.reachedRust = false;
+        return Mono.error(new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                ProxyErrors.STREAMING_SATURATED));
     }
 
     /**
