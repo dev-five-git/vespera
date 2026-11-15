@@ -181,10 +181,11 @@ jobs:
           cargo hack check -p vespera_inprocess --each-feature --no-dev-deps
       - name: vespera without default features (incl. multipart_needs_feature UI case)
         run: cargo test -p vespera --no-default-features
-      - name: vespera cron without cron-tz (cron_tz_needs_feature, time_zone_without_feature)
+      - name: vespera cron without cron-tz (cron_tz_needs_feature, time_zone_without_feature, macro tz check)
         run: |
           cargo test -p vespera --features cron --test trybuild_diagnostics
           cargo test -p vespera --no-default-features --features cron --lib cron
+          cargo test -p vespera_macro --features cron --lib cron_impl
       - name: vespera cron-tz UI cases
         run: cargo test -p vespera --features cron-tz --test trybuild_diagnostics
       # tarpaulin skips benches and bench.yml only runs vespera_inprocess's
