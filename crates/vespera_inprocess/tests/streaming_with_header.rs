@@ -691,8 +691,12 @@ async fn bidirectional_with_header_slow_producer_yields_poll_pending() {
     assert_eq!(body_buf.lock().unwrap().as_slice(), b"chunkchunkchunk");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn bidirectional_with_header_empty_pull_chunks_are_skipped() {
+/// Pull sequence `Data(empty)`, `Data("X")`, `End`: the empty read must be
+/// skipped, not treated as EOF or as an abort.  `spawned = false` dispatches
+/// on the test's `block_on` thread, where the inline fast path serves the
+/// first two pulls; `spawned = true` runs inside `tokio::spawn`, so every
+/// pull is the producer's (its `consecutive_empty` skip).
+async fn run_empty_pull_chunk_skip(spawned: bool) {
     install_router();
     let wire = encode_wire(
         "POST",
@@ -701,8 +705,6 @@ async fn bidirectional_with_header_empty_pull_chunks_are_skipped() {
         &[],
     );
 
-    // First call returns Some(empty) — must be skipped, not treated as EOF.
-    // Second call returns the real body, third returns None (EOF).
     let counter = Arc::new(Mutex::new(0u32));
     let counter_clone = Arc::clone(&counter);
     let pull = move || -> RequestChunk {
@@ -720,7 +722,7 @@ async fn bidirectional_with_header_empty_pull_chunks_are_skipped() {
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    let _ = dispatch_bidirectional_streaming_with_header(
+    let dispatch = dispatch_bidirectional_streaming_with_header(
         wire,
         pull,
         move |chunk| {
@@ -728,12 +730,31 @@ async fn bidirectional_with_header_empty_pull_chunks_are_skipped() {
             ControlFlow::Continue(())
         },
         move |hdr| h.lock().unwrap().extend_from_slice(hdr),
-    )
-    .await;
+    );
+    let outcome = if spawned {
+        tokio::spawn(dispatch).await.unwrap()
+    } else {
+        dispatch.await
+    };
+    assert_eq!(outcome, StreamOutcome::Complete);
 
     let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
     assert_eq!(header_json["status"].as_u64(), Some(200));
     assert_eq!(body_buf.lock().unwrap().as_slice(), b"X");
+    assert!(
+        *counter.lock().unwrap() >= 3,
+        "the source must be read to EOF"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bidirectional_with_header_empty_pull_chunks_are_skipped_inline() {
+    run_empty_pull_chunk_skip(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bidirectional_with_header_empty_pull_chunks_are_skipped_by_producer() {
+    run_empty_pull_chunk_skip(true).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

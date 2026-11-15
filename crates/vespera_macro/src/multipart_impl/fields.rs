@@ -62,7 +62,8 @@ pub(super) fn process_fields<'a>(
     // Wire name -> the field that claimed it first: two fields resolving to
     // one multipart name would make the second `match` arm unreachable and
     // leave that field permanently missing / defaulted.
-    let mut wire_names: std::collections::HashMap<String, &syn::Ident> =
+    // The flag records whether that claim is a `#[serde(alias)]`.
+    let mut wire_names: std::collections::HashMap<String, (&syn::Ident, bool)> =
         std::collections::HashMap::new();
 
     for field in fields {
@@ -116,15 +117,23 @@ pub(super) fn process_fields<'a>(
             .into_iter()
             .filter(|alias| seen.insert(alias.clone()))
             .collect();
-        for wire in std::iter::once(&field_name).chain(&aliases) {
+        let wires = std::iter::once((&field_name, false)).chain(aliases.iter().map(|a| (a, true)));
+        for (wire, is_alias) in wires {
             let ident = field_ident;
-            if let Some(first) = wire_names.insert(wire.clone(), ident) {
+            if let Some((first, first_alias)) = wire_names.insert(wire.clone(), (ident, is_alias)) {
+                // Changing an alias resolves only a collision an alias is
+                // part of; two primary names need one of them renamed.
+                let fixes = if is_alias || first_alias {
+                    "`#[form_data(field_name = \"...\")]`, `#[serde(rename = \"...\")]` or \
+                     `#[serde(alias = \"...\")]`"
+                } else {
+                    "`#[form_data(field_name = \"...\")]` or `#[serde(rename = \"...\")]`"
+                };
                 cg.errors.push(syn::Error::new(
                     ident.span(),
                     format!(
                         "Multipart: fields `{first}` and `{ident}` both read the multipart field \
-                         \"{wire}\" — give one a distinct `#[form_data(field_name = \"...\")]`, \
-                         `#[serde(rename = \"...\")]` or `#[serde(alias = \"...\")]`"
+                         \"{wire}\" — give one a distinct {fixes}"
                     ),
                 ));
             }

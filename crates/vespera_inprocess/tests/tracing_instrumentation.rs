@@ -567,8 +567,12 @@ fn error_wire_events_by_status_outside_a_dispatch() {
     assert!(!state.spans[0].fields.contains_key("status"));
 }
 
+/// Smoke test only: with no subscriber a dispatch still succeeds.  Which
+/// router is handed out without a recording dispatch span is asserted by the
+/// `obs` unit test `router_without_a_dispatch_span_is_the_uninstrumented_one`
+/// (a disabled span cannot be observed from here).
 #[test]
-fn no_subscriber_dispatches_uninstrumented() {
+fn no_subscriber_dispatch_smoke() {
     setup();
     assert_eq!(
         status_of(&dispatch_from_bytes(get_wire("/ok"), &runtime())),

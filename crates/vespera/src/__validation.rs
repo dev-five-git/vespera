@@ -77,15 +77,18 @@ pub trait RangeBound: Sized {
 /// Generic over `garde`'s range `Bounds` like the `range` rule itself, so the
 /// field may be an `Option` (any depth, also behind an alias such as
 /// `type MaybeCount = Option<u32>`): the bound type is its `Bounds::Size`.
-pub fn range_unsatisfiable<T>(
-    _value: &T,
-    min: Option<f64>,
-    max: Option<f64>,
-) -> Option<garde::Error>
+/// Like that rule, an absent value (`None` at any layer) passes: an omitted
+/// optional property is valid whatever its bounds.
+pub fn range_unsatisfiable<T>(value: &T, min: Option<f64>, max: Option<f64>) -> Option<garde::Error>
 where
     T: garde::rules::range::Bounds,
     T::Size: RangeBound,
 {
+    // The inverted bounds `[MAX, MIN]` reject every present value and pass
+    // only `None`, so this is "is a value present" for any `Option` depth.
+    if value.validate_bounds(T::MAX, T::MIN).is_ok() {
+        return None;
+    }
     if let Some(min) = min.filter(|&min| !<T::Size as RangeBound>::admits_min(min)) {
         return Some(garde::Error::new(format!("lower than {min}")));
     }
@@ -201,6 +204,10 @@ mod tests {
         // `Option` layers range as their innermost type, like `garde`'s rule.
         assert!(super::range_unsatisfiable(&Some(Some(0u8)), Some(300.5), None).is_some());
         assert!(super::range_unsatisfiable(&None::<u8>, None, Some(2.5)).is_none());
+        // An absent value passes an unsatisfiable bound, like `garde`'s rule.
+        assert!(super::range_unsatisfiable(&None::<u8>, Some(300.5), None).is_none());
+        assert!(super::range_unsatisfiable(&Some(None::<u32>), None, Some(-0.5)).is_none());
+        assert!(super::range_unsatisfiable(&Some(u8::MAX), Some(300.5), None).is_some());
         assert_eq!(
             super::range_unsatisfiable(&0u8, Some(300.5), None).map(|e| e.to_string()),
             Some("lower than 300.5".to_owned())

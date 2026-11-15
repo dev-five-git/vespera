@@ -4,9 +4,11 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bidirectional_closing_invokes_close_after_full_read() {
-    // M3 regression: when the handler reads the request body (which
-    // lazily starts the producer), the `request_close` hook fires
-    // exactly once after the response is drained. This is what lets the
+    // M3 regression: when the handler reads the request body (the inline
+    // fast path serves the first two pulls, `foo` and `bar`, on this
+    // `block_on` thread; the third pull, EOF, lazily starts the producer),
+    // the `request_close` hook fires exactly once after the response is
+    // drained. This is what lets the
     // JNI layer close a Java `InputStream` so a producer parked in a
     // blocking read can't hang the dispatch on a stuck upload.
     install_router();
@@ -57,6 +59,9 @@ async fn bidirectional_closing_invokes_close_after_full_read() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bidirectional_with_header_closing_invokes_close_after_full_read() {
+    // Two pulls (`payload`, EOF), both served by the inline fast path on
+    // this `block_on` thread: the producer never starts, and the close hook
+    // still fires exactly once (from the `RequestSourceCloser`).
     install_router();
     let wire = encode_wire(
         "POST",

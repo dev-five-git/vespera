@@ -117,7 +117,9 @@ impl MethodCache {
     }
 }
 
-/// Process-global cache of the five `java.*` callback method IDs.
+/// Process-global cache of the six `java.*` callback method IDs
+/// (`InputStream.read` / `close`, `OutputStream.write` / `flush`,
+/// `Consumer.accept`, `CompletableFuture.complete`).
 ///
 /// **Single-JVM-per-process invariant (deliberate).** The cached `JMethodID`s
 /// and their pinning `Global<JClass>` are JVM-local, and this `OnceLock` is
@@ -188,9 +190,9 @@ fn method_cache(env: &mut jni::Env<'_>) -> Option<&'static MethodCache> {
 }
 
 /// One-line receiver-null predicate on the streaming hot path, called
-/// once per cached-`JMethodID` wrapper (five sites: `InputStream.read`,
-/// `OutputStream.write`, `OutputStream.flush`, `Consumer.accept`,
-/// `CompletableFuture.complete`).
+/// once per cached-`JMethodID` wrapper (six methods: `InputStream.read`,
+/// `InputStream.close`, `OutputStream.write`, `OutputStream.flush`,
+/// `Consumer.accept`, `CompletableFuture.complete`).
 /// `#[inline]` matches the file's discipline for one-line predicates
 /// ([`take_pending_exception`], `header_value_from_owner` /
 /// `parse_method_or_405` / `invalid_request_err` / `header_value_to_owned`
@@ -413,11 +415,12 @@ fn call_future_complete(
 ///
 /// The Java-side chunk buffer (`buf`) is allocated **once** by the
 /// caller and promoted to a global ref — reused across every
-/// chunk instead of `new_byte_array` per chunk.  Bytes are copied
-/// out via `get_byte_array_region`, which copies **only the `n`
-/// bytes actually read** (the previous `convert_byte_array`
-/// approach copied the full 16 KiB buffer regardless and then
-/// truncated).
+/// chunk instead of `new_byte_array` per chunk; it holds
+/// [`streaming_chunk_size`] bytes (256 KiB by default).  Bytes are
+/// copied out via [`crate::jni_buf::read_byte_array_region`] straight
+/// into a `Vec`'s uninitialised spare capacity (no zero fill), and
+/// **only the `n` bytes actually read** are copied, never the whole
+/// buffer.
 pub fn make_pull_closure(
     jvm: jni::JavaVM,
     stream: Arc<Global<JObject<'static>>>,
