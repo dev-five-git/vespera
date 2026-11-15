@@ -153,9 +153,8 @@ async fn malformed_json_propagates_400_not_422() {
     let req = post_json_request("/posts", "not json");
 
     let res = app.oneshot(req).await.unwrap();
-    // Axum's Json extractor returns 400 (or 415 depending on cause) —
-    // anything that is NOT our 422 envelope is acceptable here.
-    assert_ne!(res.status(), 422);
+    // A JSON syntax error is axum's `JsonSyntaxError` → 400, forwarded as is.
+    assert_eq!(res.status(), 400);
 }
 
 #[tokio::test]

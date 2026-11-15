@@ -263,7 +263,7 @@ fn nested_validation_vec_iterates_with_indexed_path() {
 }
 
 #[test]
-fn nested_validation_vec_min_items_and_dive_both_enforced() {
+fn nested_validation_vec_min_items_enforced_alongside_dive() {
     let mut o = good_order();
     o.line_items.clear(); // violates min_items = 1
     let report = o.validate().expect_err("empty line_items must fail");
