@@ -31,10 +31,18 @@ fn release(slot: usize) -> &'static Notify {
     NOTIFY[slot].get_or_init(Notify::new)
 }
 
+/// Notified by the `/park1` source when its second pull starts: the
+/// handler waits for it, so the dispatch cannot finish before the producer
+/// is parked inside that pull (it would then stop before pulling at all).
+fn second_pull_started() -> &'static Notify {
+    static NOTIFY: OnceLock<Notify> = OnceLock::new();
+    NOTIFY.get_or_init(Notify::new)
+}
+
 /// Reads one frame in a detached task (starting the producer), then keeps
 /// the body unpolled until `release(slot)`; responds once that first frame
-/// arrived.
-async fn park_until(body: Body, slot: usize) -> &'static str {
+/// arrived (and, when `wait_second_pull`, once the second pull started).
+async fn park_until(body: Body, slot: usize, wait_second_pull: bool) -> &'static str {
     let (first_tx, first_rx) = oneshot::channel();
     tokio::spawn(async move {
         let mut body = body;
@@ -43,13 +51,16 @@ async fn park_until(body: Body, slot: usize) -> &'static str {
         drop(body);
     });
     assert!(first_rx.await.unwrap(), "the first frame arrives");
+    if wait_second_pull {
+        second_pull_started().notified().await;
+    }
     "parked"
 }
 
 fn app() -> Router {
     Router::new()
-        .route("/park0", post(|body: Body| park_until(body, 0)))
-        .route("/park1", post(|body: Body| park_until(body, 1)))
+        .route("/park0", post(|body: Body| park_until(body, 0, false)))
+        .route("/park1", post(|body: Body| park_until(body, 1, true)))
 }
 
 fn encode(path: &str) -> Vec<u8> {
@@ -134,6 +145,7 @@ async fn a_producer_unblocked_after_the_dispatch_finished_never_pulls_again() {
         move || {
             let _keep = &flag;
             if pulls_in_source.fetch_add(1, Ordering::SeqCst) == 1 {
+                second_pull_started().notify_one();
                 // Parked until the request source is closed.
                 let _ = closed_rx.recv_timeout(Duration::from_secs(5));
             }
