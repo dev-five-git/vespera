@@ -179,6 +179,18 @@ where
     }
 }
 
+#[cfg(feature = "multipart")]
+impl<U, C, const MAX_TOTAL_BYTES: usize, const MAX_FIELDS: usize> ValidatePayloadWith<C>
+    for crate::multipart::TypedMultipartWithLimits<U, MAX_TOTAL_BYTES, MAX_FIELDS>
+where
+    U: Validate<Context = C>,
+{
+    type Inner = U;
+    fn payload(&self) -> &U {
+        &self.0
+    }
+}
+
 /// Context-aware validation extractor.
 ///
 /// `Validated<T>` remains the zero-context fast path. Use

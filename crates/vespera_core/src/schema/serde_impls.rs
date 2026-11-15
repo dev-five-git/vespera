@@ -435,16 +435,64 @@ impl Schema {
     /// Whether a composition keyword (`oneOf` / `allOf` / `not`, or an
     /// `anyOf` without a `{type: null}` branch) makes this schema reject
     /// `null` even when it is flagged `nullable`.
+    ///
+    /// Serialization only (deciding the `anyOf [.., {type: null}]` wrapper,
+    /// which is always correct for a nullable schema): deserialization asks
+    /// the finer [`Schema::composition_admits_null`].
     pub(super) fn composition_rejects_null(&self) -> bool {
         self.one_of.is_some()
             || self.all_of.is_some()
             || self.not.is_some()
-            || self.any_of.as_ref().is_some_and(|members| {
-                !members.iter().any(|member| {
-                    matches!(member, SchemaRef::Inline(schema) if schema.schema_type == Some(SchemaType::Null))
-                })
-            })
+            || self
+                .any_of
+                .as_deref()
+                .is_some_and(|members| !has_null_branch(members))
     }
+
+    /// Whether every composition keyword admits `null` — deciding whether a
+    /// deserialized `type: [T, "null"]` keeps its `null`: an `anyOf` /
+    /// `oneOf` with a `{type: null}` branch (the other branches are taken to
+    /// reject `null`, the shape a nullable composition is written in), an
+    /// `allOf` whose every member is `{type: null}`, and a `not` whose
+    /// subschema provably rejects `null` (see [`rejects_null`]).  A schema
+    /// without composition keywords trivially admits it.
+    pub(super) fn composition_admits_null(&self) -> bool {
+        self.any_of.as_deref().is_none_or(has_null_branch)
+            && self.one_of.as_deref().is_none_or(has_null_branch)
+            && self
+                .all_of
+                .as_deref()
+                .is_none_or(|members| members.iter().all(is_null_schema))
+            && self.not.as_ref().is_none_or(rejects_null)
+    }
+}
+
+/// `{type: null}` (inline).
+fn is_null_schema(member: &SchemaRef) -> bool {
+    matches!(member, SchemaRef::Inline(schema) if schema.schema_type == Some(SchemaType::Null))
+}
+
+/// Whether one of `members` is `{type: null}`.
+fn has_null_branch(members: &[SchemaRef]) -> bool {
+    members.iter().any(is_null_schema)
+}
+
+/// Whether `schema` provably rejects `null`: an inline, non-nullable schema
+/// with a non-`null` `type` or an `enum` without `null`.  A `$ref` (not
+/// resolvable here) and anything else is not provable.
+fn rejects_null(schema: &SchemaRef) -> bool {
+    let SchemaRef::Inline(schema) = schema else {
+        return false;
+    };
+    schema.nullable != Some(true)
+        && (schema
+            .schema_type
+            .as_ref()
+            .is_some_and(|ty| *ty != SchemaType::Null)
+            || schema
+                .r#enum
+                .as_ref()
+                .is_some_and(|values| !values.contains(&serde_json::Value::Null)))
 }
 
 impl Serialize for Schema {

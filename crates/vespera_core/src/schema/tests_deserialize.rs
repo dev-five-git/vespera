@@ -136,3 +136,49 @@ fn type_array_null_never_widens_a_schema_that_rejects_null(
     let schema: Schema = serde_json::from_value(input).unwrap();
     assert_eq!(serde_json::to_value(&schema).unwrap(), expected);
 }
+
+/// Round 12: a `"null"` in the `type` array next to a `oneOf` / `not` /
+/// `allOf` that admits `null` is kept (as `nullable`, re-serialized through
+/// the `anyOf [.., {type: null}]` wrapper, the same accepted set); it used
+/// to be dropped for every `oneOf` / `allOf` / `not`, narrowing the schema.
+#[rstest]
+#[case::one_of_with_null_branch(
+    json!({"type": ["object", "null"], "oneOf": [{"$ref": "#/components/schemas/A"}, {"type": "null"}]}),
+    Some(true)
+)]
+#[case::one_of_without_null_branch(
+    json!({"type": ["object", "null"], "oneOf": [{"$ref": "#/components/schemas/A"}]}),
+    None
+)]
+#[case::not_of_non_null_type(json!({"type": ["string", "null"], "not": {"type": "integer"}}), Some(true))]
+#[case::not_of_enum_without_null(json!({"type": ["string", "null"], "not": {"enum": ["x"]}}), Some(true))]
+#[case::not_of_enum_with_null(json!({"type": ["string", "null"], "not": {"enum": ["x", null]}}), None)]
+#[case::not_of_nullable_type(
+    json!({"type": ["string", "null"], "not": {"type": ["integer", "null"]}}),
+    None
+)]
+#[case::not_of_null_type(json!({"type": ["string", "null"], "not": {"type": "null"}}), None)]
+#[case::not_of_ref(
+    json!({"type": ["string", "null"], "not": {"$ref": "#/components/schemas/B"}}),
+    None
+)]
+#[case::not_of_empty(json!({"type": ["string", "null"], "not": {}}), None)]
+#[case::all_of_only_null(json!({"type": ["object", "null"], "allOf": [{"type": "null"}]}), Some(true))]
+#[case::all_of_mixed(
+    json!({"type": ["object", "null"], "allOf": [{"type": "null"}, {"$ref": "#/components/schemas/A"}]}),
+    None
+)]
+fn type_array_null_kept_when_the_composition_admits_null(
+    #[case] input: serde_json::Value,
+    #[case] nullable: Option<bool>,
+) {
+    let schema: Schema = serde_json::from_value(input.clone()).unwrap();
+    assert_eq!(schema.nullable, nullable, "{input}");
+    let output = serde_json::to_value(&schema).unwrap();
+    if nullable == Some(true) {
+        // The wrapper's `{type: null}` branch keeps `null` accepted.
+        assert_eq!(output["anyOf"][1], json!({"type": "null"}), "{output}");
+    } else {
+        assert!(output.get("anyOf").is_none(), "{output}");
+    }
+}

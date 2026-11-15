@@ -2,6 +2,7 @@
 //! `Schema`-backed types.
 //!
 //! `Query<T>` / `OptionalQuery<T>`, `Json<T>`, `Form<T>`, `TypedMultipart<T>`
+//! (also `TypedMultipartWithLimits<T, ..>`)
 //! and `Path<T>` only appear in the generated OpenAPI when `T` is known to
 //! Vespera (i.e. it derives `Schema`).
 //! When `T` is a struct declared in the same route file that does **not** derive
@@ -25,12 +26,13 @@ use crate::metadata::CollectedMetadata;
 use crate::schema_macro::type_utils::option_inner;
 
 /// Request/query extractors whose generic argument must be a documented type.
-const REQUEST_EXTRACTORS: [&str; 6] = [
+const REQUEST_EXTRACTORS: [&str; 7] = [
     "Query",
     "OptionalQuery",
     "Json",
     "Form",
     "TypedMultipart",
+    "TypedMultipartWithLimits",
     "Path",
 ];
 
@@ -506,6 +508,7 @@ mod tests {
             "b: std::result::Result<Query<Local>, QueryRejection>",
             "b: Option<Form<Local>>",
             "b: Cached<Validated<Json<Local>>>",
+            "b: TypedMultipartWithLimits<Local, 1024, 8>",
         ] {
             let src = format!(
                 "pub struct Local {{ pub a: i32 }} pub fn handler({arg}) -> String {{ String::new() }}"

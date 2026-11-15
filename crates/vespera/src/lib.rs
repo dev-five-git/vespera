@@ -361,12 +361,14 @@ macro_rules! jni_app {
 
 /// Generate the `JNI_OnLoad` export that registers **multiple named
 /// apps** for multi-app routing.  See [`vespera_jni::jni_apps!`] for
-/// details.
+/// details.  Header-less requests go to the `"_default"` entry (without
+/// one they answer `404`).
 ///
 /// ```ignore
 /// vespera::jni_apps! {
-///     "admin"  => admin_app,
-///     "public" => public_app,
+///     "_default" => create_app,
+///     "admin"    => admin_app,
+///     "public"   => public_app,
 /// }
 /// ```
 #[cfg(feature = "jni")]
