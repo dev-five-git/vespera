@@ -821,7 +821,11 @@ class VesperaWireTest {
                 .getDeclaredMethod("canonicalCandidates", int.class);
         candidates.setAccessible(true);
         assertEquals(null, candidates.invoke(null, -1));
-        assertEquals(null, candidates.invoke(null, 28));
+        // One past the longest canonical name (access-control-allow-credentials, 32 bytes).
+        assertEquals(null, candidates.invoke(null, 33));
+        assertEquals(null, candidates.invoke(null, 31));
+        assertTrue(java.util.Arrays.asList((String[]) candidates.invoke(null, 32))
+                .contains("access-control-allow-credentials"));
         String[] fourByte = (String[]) candidates.invoke(null, 4);
         assertTrue(java.util.Arrays.asList(fourByte).contains("etag"));
     }

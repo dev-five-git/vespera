@@ -5,6 +5,7 @@ import static com.devfive.vespera.bridge.ReactiveTestSupport.responseWire;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.devfive.vespera.bridge.ReactiveTestSupport.FakeTransport;
@@ -611,6 +612,58 @@ class VesperaReactiveProxyHandlerTest {
         held.finish();
         assertEquals("hey", whole.toString());
         assertEquals(3, small.getResponse().getHeaders().getContentLength());
+    }
+
+    /** Records the arrays handed to {@code write}, to prove a write was not copied. */
+    private static final class RecordingSink extends java.io.OutputStream {
+        final List<byte[]> arrays = new ArrayList<>();
+        final java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+
+        @Override
+        public void write(int b) {
+            bytes.write(b);
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) {
+            arrays.add(b);
+            bytes.write(b, off, len);
+        }
+    }
+
+    /**
+     * A write past the hold limit goes straight to the delegate (the same
+     * array, no copy through the hold buffer), and a {@code SpillingGate}'s
+     * {@code pending()} reports its real state (it used to report the unused
+     * inherited buffer: always {@code true}).
+     */
+    @Test
+    void gatesPassALargeWriteThroughUncopiedAndReportTheirRealState() throws Exception {
+        MockServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.get("/x"));
+        ReactiveProxyResponse out = new ReactiveProxyResponse(exchange.getResponse(), null, null, null);
+        byte[] header = responseWire(200, "{\"content-type\":\"text/plain\"}", "");
+        int headerLen = java.nio.ByteBuffer.wrap(header).getInt();
+
+        RecordingSink spilled = new RecordingSink();
+        VesperaReactiveProxyHandler.SpillingGate gate =
+                new VesperaReactiveProxyHandler.SpillingGate(spilled, out, "GET", 4);
+        gate.onHeader(out.applyWireHeader(header, 4, headerLen, true), "GET");
+        assertTrue(gate.pending());
+        gate.write("ab".getBytes(), 0, 2);
+        byte[] large = "cdefgh".getBytes();
+        gate.write(large, 1, 5);
+        assertEquals("abdefgh", spilled.bytes.toString());
+        assertSame(large, spilled.arrays.get(spilled.arrays.size() - 1), "passed through uncopied");
+        assertFalse(gate.holding());
+        assertFalse(gate.pending(), "pending() mirrors the spilling gate's state");
+
+        RecordingSink released = new RecordingSink();
+        VesperaReactiveProxyHandler.BodyGate body = new VesperaReactiveProxyHandler.BodyGate(released);
+        byte[] chunk = new byte[VesperaReactiveProxyHandler.STREAM_CHUNK_BYTES + 1];
+        body.write(chunk, 0, chunk.length);
+        assertSame(chunk, released.arrays.get(0), "passed through uncopied");
+        assertFalse(body.pending());
+        assertEquals(chunk.length, released.bytes.size());
     }
 
     @Test

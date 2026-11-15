@@ -1,13 +1,14 @@
 package com.devfive.vespera.bridge;
 
+import java.util.ArrayDeque;
 import java.util.concurrent.Executor;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Dedicated, bounded thread pool for the WebFlux proxy's blocking
@@ -27,7 +28,9 @@ import java.util.concurrent.atomic.AtomicLong;
  *       committed.</li>
  * </ul>
  *
- * <p>Idle threads time out after {@value #KEEP_ALIVE_SECONDS} s; all are
+ * <p>A stream is handed to an idle thread whenever one is waiting; a new
+ * thread starts only when none is (up to {@code maxThreads}). Idle threads
+ * time out after {@value #KEEP_ALIVE_SECONDS} s; all are
  * daemon threads named {@code vespera-streaming-N}. {@link #close()} (called
  * by Spring when the context closes) stops accepting streams and lets the
  * running ones finish.
@@ -41,7 +44,7 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
 
     private final int maxThreads;
     private final int maxQueued;
-    private final ThreadPoolExecutor pool;
+    private final Workers pool;
     /** One permit per admitted stream (running or queued). */
     private final Semaphore permits;
     /** {@link #tryReserve()} calls, admitted or not (test probe; streams only). */
@@ -52,19 +55,17 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
      * @param maxQueued  streams waiting for a thread; negative = {@code 0}
      */
     public VesperaStreamingExecutor(int maxThreads, int maxQueued) {
+        this(maxThreads, maxQueued, TimeUnit.SECONDS.toNanos(KEEP_ALIVE_SECONDS));
+    }
+
+    /** As {@link #VesperaStreamingExecutor(int, int)} with an explicit idle-thread keep-alive (tests). */
+    VesperaStreamingExecutor(int maxThreads, int maxQueued, long keepAliveNanos) {
         this.maxThreads = maxThreads > 0 ? maxThreads : defaultMaxThreads();
         this.maxQueued = Math.max(0, maxQueued);
-        AtomicInteger seq = new AtomicInteger(1);
         // Unbounded queue: admission is enforced by the permits, so a thread
         // still finishing a task can never make execute() reject a stream
         // that was already admitted.
-        this.pool = new ThreadPoolExecutor(this.maxThreads, this.maxThreads,
-                KEEP_ALIVE_SECONDS, TimeUnit.SECONDS, new LinkedBlockingQueue<>(), task -> {
-                    Thread thread = new Thread(task, "vespera-streaming-" + seq.getAndIncrement());
-                    thread.setDaemon(true);
-                    return thread;
-                });
-        this.pool.allowCoreThreadTimeOut(true);
+        this.pool = new Workers(this.maxThreads, keepAliveNanos);
         // long math: maxThreads + maxQueued may exceed Integer.MAX_VALUE (saturate).
         this.permits = new Semaphore(capacity(this.maxThreads, this.maxQueued));
     }
@@ -95,6 +96,21 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
     /** How many times {@link #tryReserve()} was called (admitted or refused). */
     long reserveAttempts() {
         return reserveAttempts.get();
+    }
+
+    /** Live pool threads (test probe). */
+    int threadCount() {
+        return pool.threadCount();
+    }
+
+    /** Pool threads waiting for a task (test probe). */
+    int idleThreadCount() {
+        return pool.idleCount();
+    }
+
+    /** Tasks waiting in the pool queue (test probe). */
+    int queuedTaskCount() {
+        return pool.queuedCount();
     }
 
     /** Whether {@link #close()} was called. */
@@ -142,6 +158,13 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
         /** Runs the (single) task of this stream on the pool; later tasks are ignored. */
         Executor executor() {
             return task -> {
+                // Claim the reservation BEFORE publishing the pooled task: an
+                // ignored later task of the same reservation must not
+                // overwrite `queued`, or cancel() would remove the wrong
+                // task and leave the real one in the queue.
+                if (!state.compareAndSet(RESERVED, QUEUED)) {
+                    return;
+                }
                 Runnable pooled = () -> {
                     // Cancelled while it waited in the queue: never run it
                     // (the permit was already released by cancel()).
@@ -155,14 +178,18 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
                     }
                 };
                 queued = pooled;
-                if (!state.compareAndSet(RESERVED, QUEUED)) {
-                    return;
-                }
                 try {
                     pool.execute(pooled);
                 } catch (RejectedExecutionException closed) {
                     release();
                     throw closed;
+                }
+                // cancel() may have run between the claim and the submit (it
+                // found nothing to remove yet): drop the queued task now. A
+                // worker that already took it skips it (QUEUED -> RUNNING
+                // fails), so the native dispatch still never runs.
+                if (state.get() == RELEASED) {
+                    pool.remove(pooled);
                 }
             };
         }
@@ -191,6 +218,173 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
         private void release() {
             if (state.getAndSet(RELEASED) != RELEASED) {
                 permits.release();
+            }
+        }
+    }
+
+    /**
+     * Minimal thread pool capped at {@code maxThreads}. A
+     * {@code ThreadPoolExecutor} with {@code core == max} starts a new thread
+     * for every task while below the core size, even when idle threads
+     * wait, so work rotates through all of them and each one keeps timing
+     * out and being recreated. Here a task goes to a waiting idle thread
+     * first, and a thread starts only when no idle one can take it. All
+     * bookkeeping runs under one lock, so a thread timing out can never
+     * strand a queued task.
+     */
+    static final class Workers {
+        private final int maxThreads;
+        private final long keepAliveNanos;
+        private final AtomicInteger seq = new AtomicInteger(1);
+        private final ReentrantLock lock = new ReentrantLock();
+        private final Condition available = lock.newCondition();
+        private final ArrayDeque<Runnable> queue = new ArrayDeque<>();
+        private int threads;
+        private int idle;
+        private boolean shutdown;
+
+        Workers(int maxThreads, long keepAliveNanos) {
+            this.maxThreads = maxThreads;
+            this.keepAliveNanos = keepAliveNanos;
+        }
+
+        void execute(Runnable task) {
+            boolean spawn;
+            lock.lock();
+            try {
+                if (shutdown) {
+                    throw new RejectedExecutionException("vespera streaming executor is closed");
+                }
+                queue.addLast(task);
+                // An idle thread not yet claimed by an earlier queued task takes it.
+                spawn = queue.size() > idle && threads < maxThreads;
+                if (spawn) {
+                    threads++;
+                } else {
+                    available.signal();
+                }
+            } finally {
+                lock.unlock();
+            }
+            if (spawn) {
+                startThread(task);
+            }
+        }
+
+        private void startThread(Runnable task) {
+            Thread thread = new Thread(this::work, "vespera-streaming-" + seq.getAndIncrement());
+            thread.setDaemon(true);
+            try {
+                thread.start();
+            } catch (OutOfMemoryError | RuntimeException failed) {
+                lock.lock();
+                try {
+                    threads--;
+                    queue.remove(task);
+                } finally {
+                    lock.unlock();
+                }
+                throw new RejectedExecutionException("cannot start a streaming thread", failed);
+            }
+        }
+
+        void remove(Runnable task) {
+            lock.lock();
+            try {
+                queue.remove(task);
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        /** Stop accepting tasks; queued ones still run, then the threads exit. */
+        void shutdown() {
+            lock.lock();
+            try {
+                shutdown = true;
+                available.signalAll();
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        boolean isShutdown() {
+            lock.lock();
+            try {
+                return shutdown;
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        int threadCount() {
+            lock.lock();
+            try {
+                return threads;
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        int idleCount() {
+            lock.lock();
+            try {
+                return idle;
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        int queuedCount() {
+            lock.lock();
+            try {
+                return queue.size();
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        private void work() {
+            Runnable task;
+            while ((task = next()) != null) {
+                try {
+                    task.run();
+                } catch (RuntimeException | Error failed) {
+                    // Same as a ThreadPoolExecutor worker, but the thread
+                    // survives: report it and take the next task.
+                    Thread current = Thread.currentThread();
+                    current.getUncaughtExceptionHandler().uncaughtException(current, failed);
+                }
+            }
+        }
+
+        /** The next queued task, or {@code null} when this thread should exit. */
+        private Runnable next() {
+            lock.lock();
+            try {
+                long remaining = keepAliveNanos;
+                while (true) {
+                    Runnable task = queue.pollFirst();
+                    if (task != null) {
+                        return task;
+                    }
+                    if (shutdown || remaining <= 0) {
+                        threads--;
+                        return null;
+                    }
+                    idle++;
+                    try {
+                        remaining = available.awaitNanos(remaining);
+                    } catch (InterruptedException interrupted) {
+                        // vespera never interrupts its pool threads: treat
+                        // it as the keep-alive expiring.
+                        remaining = 0;
+                    } finally {
+                        idle--;
+                    }
+                }
+            } finally {
+                lock.unlock();
             }
         }
     }

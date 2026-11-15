@@ -37,6 +37,8 @@ public final class ProxyPathPatterns {
     private final List<String> exclude;
     private final List<PathPattern> includePatterns;
     private final List<PathPattern> excludePatterns;
+    /** {@link #isDefault()}, computed once: it is checked on every match. */
+    private final boolean catchAll;
 
     /**
      * @param include include patterns; {@code null} or empty means {@link #DEFAULT_INCLUDE}
@@ -49,6 +51,7 @@ public final class ProxyPathPatterns {
         this.exclude = normalize(exclude);
         this.includePatterns = parse(this.include, "vespera.bridge.include-patterns");
         this.excludePatterns = parse(this.exclude, "vespera.bridge.exclude-patterns");
+        this.catchAll = this.exclude.isEmpty() && this.include.equals(DEFAULT_INCLUDE);
     }
 
     /** {@code /**} with no exclusions — the historical catch-all. */
@@ -66,7 +69,7 @@ public final class ProxyPathPatterns {
 
     /** Whether this is the catch-all {@code /**} with no exclusions. */
     public boolean isDefault() {
-        return exclude.isEmpty() && include.equals(DEFAULT_INCLUDE);
+        return catchAll;
     }
 
     /** Whether the proxy owns {@code request}'s path. */

@@ -39,19 +39,33 @@ final class WireHeaderStringSupport {
      * iteration order cannot change the result. Rows store the interned literals themselves,
      * so a match hands back the identical {@code String} instance on every call.
      */
-    private static final String[][] CANONICAL_BY_LEN = new String[28][];
+    private static final String[][] CANONICAL_BY_LEN = new String[33][];
 
     static {
         CANONICAL_BY_LEN[4] = new String[] {"etag", "date", "vary", "path", "code"};
-        CANONICAL_BY_LEN[7] = new String[] {"version", "message"};
-        CANONICAL_BY_LEN[8] = new String[] {"location"};
-        CANONICAL_BY_LEN[10] = new String[] {"set-cookie"};
-        CANONICAL_BY_LEN[12] = new String[] {"content-type"};
-        CANONICAL_BY_LEN[13] = new String[] {"cache-control"};
+        CANONICAL_BY_LEN[5] = new String[] {"allow"};
+        CANONICAL_BY_LEN[6] = new String[] {"server"};
+        CANONICAL_BY_LEN[7] = new String[] {"version", "message", "expires"};
+        CANONICAL_BY_LEN[8] = new String[] {"location", "panicked"};
+        CANONICAL_BY_LEN[10] = new String[] {"set-cookie", "connection"};
+        CANONICAL_BY_LEN[11] = new String[] {"retry-after"};
+        CANONICAL_BY_LEN[12] = new String[] {"content-type", "x-request-id"};
+        CANONICAL_BY_LEN[13] = new String[] {"cache-control", "last-modified", "accept-ranges"};
         CANONICAL_BY_LEN[14] = new String[] {"content-length"};
-        CANONICAL_BY_LEN[16] = new String[] {"content-encoding"};
+        CANONICAL_BY_LEN[15] = new String[] {"x-frame-options", "referrer-policy"};
+        CANONICAL_BY_LEN[16] = new String[] {"content-encoding", "content-language", "www-authenticate"};
         CANONICAL_BY_LEN[19] = new String[] {"content-disposition"};
+        CANONICAL_BY_LEN[22] = new String[] {"x-content-type-options", "access-control-max-age"};
+        CANONICAL_BY_LEN[25] = new String[] {"strict-transport-security"};
         CANONICAL_BY_LEN[27] = new String[] {"access-control-allow-origin"};
+        CANONICAL_BY_LEN[28] = new String[] {"access-control-allow-methods", "access-control-allow-headers"};
+        CANONICAL_BY_LEN[29] = new String[] {"access-control-expose-headers"};
+        CANONICAL_BY_LEN[32] = new String[] {"access-control-allow-credentials"};
+    }
+
+    /** Every canonical name, for tests (row {@code n} must hold only {@code n}-byte names). */
+    static String[][] canonicalNamesByLength() {
+        return CANONICAL_BY_LEN;
     }
 
     private WireHeaderStringSupport() {}

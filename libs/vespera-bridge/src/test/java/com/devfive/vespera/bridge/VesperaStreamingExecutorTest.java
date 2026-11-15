@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -146,6 +147,167 @@ class VesperaStreamingExecutorTest {
             assertFalse(ran.await(300, TimeUnit.MILLISECONDS), "a cancelled reservation ran its task");
             assertEquals(0, executor.inUse());
         }
+    }
+
+    private static void awaitCondition(java.util.function.BooleanSupplier condition, String what)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
+            Thread.sleep(2);
+        }
+        assertTrue(condition.getAsBoolean(), what);
+    }
+
+    /**
+     * Sequential streams reuse the one idle thread. A {@code ThreadPoolExecutor}
+     * with {@code core == max} started a new thread per task until the core
+     * size was reached (and then rotated work through all of them, so every
+     * thread kept timing out and being recreated).
+     */
+    @Test
+    void sequentialStreamsReuseTheIdleThread() throws Exception {
+        try (VesperaStreamingExecutor executor = new VesperaStreamingExecutor(4, 0)) {
+            java.util.Set<Thread> used = java.util.concurrent.ConcurrentHashMap.newKeySet();
+            for (int i = 0; i < 8; i++) {
+                CountDownLatch ran = new CountDownLatch(1);
+                VesperaStreamingExecutor.Reservation slot = executor.tryReserve();
+                assertNotNull(slot);
+                slot.executor().execute(() -> {
+                    used.add(Thread.currentThread());
+                    ran.countDown();
+                });
+                assertTrue(ran.await(5, TimeUnit.SECONDS));
+                awaitCondition(() -> executor.idleThreadCount() == 1, "the thread went idle");
+            }
+            assertEquals(1, used.size(), "every stream ran on the same idle thread");
+            assertEquals(1, executor.threadCount());
+        }
+    }
+
+    /** Concurrent streams start new threads up to {@code maxThreads}, then queue. */
+    @Test
+    void concurrentStreamsStartThreadsUpToTheCapThenQueue() throws Exception {
+        try (VesperaStreamingExecutor executor = new VesperaStreamingExecutor(2, 2)) {
+            CountDownLatch release = new CountDownLatch(1);
+            CountDownLatch started = new CountDownLatch(2);
+            AtomicInteger runs = new AtomicInteger();
+            Runnable blocking = () -> {
+                started.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                runs.incrementAndGet();
+            };
+            executor.tryReserve().executor().execute(blocking);
+            executor.tryReserve().executor().execute(blocking);
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+            executor.tryReserve().executor().execute(runs::incrementAndGet);
+            executor.tryReserve().executor().execute(runs::incrementAndGet);
+            assertEquals(2, executor.threadCount(), "capped at maxThreads");
+            assertEquals(2, executor.queuedTaskCount());
+            release.countDown();
+            awaitIdle(executor);
+            assertEquals(4, runs.get());
+        }
+    }
+
+    /** An idle thread past its keep-alive exits; the next stream starts a new one. */
+    @Test
+    void idleThreadsTimeOutAndAreRecreatedOnDemand() throws Exception {
+        try (VesperaStreamingExecutor executor =
+                     new VesperaStreamingExecutor(2, 0, TimeUnit.MILLISECONDS.toNanos(20))) {
+            CountDownLatch first = new CountDownLatch(1);
+            executor.tryReserve().executor().execute(first::countDown);
+            assertTrue(first.await(5, TimeUnit.SECONDS));
+            awaitCondition(() -> executor.threadCount() == 0, "the idle thread timed out");
+            CountDownLatch second = new CountDownLatch(1);
+            executor.tryReserve().executor().execute(second::countDown);
+            assertTrue(second.await(5, TimeUnit.SECONDS));
+            awaitIdle(executor);
+        }
+    }
+
+    /** A throwing stream task frees its slot and its thread keeps serving. */
+    @Test
+    void aThrowingTaskFreesItsSlotAndKeepsTheThread() throws Exception {
+        try (VesperaStreamingExecutor executor = new VesperaStreamingExecutor(1, 0)) {
+            AtomicReference<Thread> failedOn = new AtomicReference<>();
+            CountDownLatch reported = new CountDownLatch(1);
+            CountDownLatch thrown = new CountDownLatch(1);
+            executor.tryReserve().executor().execute(() -> {
+                Thread.currentThread().setUncaughtExceptionHandler((t, e) -> reported.countDown());
+                failedOn.set(Thread.currentThread());
+                thrown.countDown();
+                throw new IllegalStateException("boom");
+            });
+            assertTrue(thrown.await(5, TimeUnit.SECONDS));
+            assertTrue(reported.await(5, TimeUnit.SECONDS), "reported to the uncaught handler");
+            awaitIdle(executor);
+            AtomicReference<Thread> nextOn = new AtomicReference<>();
+            CountDownLatch ran = new CountDownLatch(1);
+            executor.tryReserve().executor().execute(() -> {
+                nextOn.set(Thread.currentThread());
+                ran.countDown();
+            });
+            assertTrue(ran.await(5, TimeUnit.SECONDS));
+            assertEquals(failedOn.get(), nextOn.get());
+        }
+    }
+
+    /**
+     * An ignored second task of a reservation must not replace the queued
+     * one: {@code cancel()} then removed the never-submitted second task and
+     * left the real one in the queue.
+     */
+    @Test
+    void cancelRemovesTheQueuedTaskEvenAfterAnIgnoredSecondTask() throws Exception {
+        try (VesperaStreamingExecutor executor = new VesperaStreamingExecutor(1, 1)) {
+            CountDownLatch release = new CountDownLatch(1);
+            CountDownLatch started = new CountDownLatch(1);
+            executor.tryReserve().executor().execute(() -> {
+                started.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+            VesperaStreamingExecutor.Reservation queued = executor.tryReserve();
+            Executor queuedExecutor = queued.executor();
+            queuedExecutor.execute(() -> { });
+            queuedExecutor.execute(() -> { });
+            assertEquals(1, executor.queuedTaskCount());
+            queued.cancel();
+            assertEquals(0, executor.queuedTaskCount(), "the cancelled task left the queue");
+            release.countDown();
+            awaitIdle(executor);
+        }
+    }
+
+    /** {@link VesperaStreamingExecutor#close()} lets queued streams still run. */
+    @Test
+    void closeLetsQueuedStreamsFinish() throws Exception {
+        VesperaStreamingExecutor executor = new VesperaStreamingExecutor(1, 1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch queuedRan = new CountDownLatch(1);
+        executor.tryReserve().executor().execute(() -> {
+            started.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        assertTrue(started.await(5, TimeUnit.SECONDS));
+        executor.tryReserve().executor().execute(queuedRan::countDown);
+        executor.close();
+        release.countDown();
+        assertTrue(queuedRan.await(5, TimeUnit.SECONDS));
+        awaitCondition(() -> executor.threadCount() == 0, "threads exit after close");
     }
 
     @Test

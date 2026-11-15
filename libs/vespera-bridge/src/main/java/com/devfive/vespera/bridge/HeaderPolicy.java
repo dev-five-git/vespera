@@ -214,14 +214,13 @@ final class HeaderPolicy {
             return;
         }
         Set<String> connectionTokens = requestConnectionTokens(request);
-        if (hasMergeRequiredHeaderName(request, names, connectionTokens)) {
-            forEachMergedRequestHeader(request, sink, connectionTokens);
-            return;
-        }
-        names = request.getHeaderNames();
-        if (names == null) {
-            return;
-        }
+        // One enumeration of getHeaderNames() (Tomcat dedups names
+        // case-insensitively on every enumeration, O(n^2)): the forwarded
+        // (raw, lower-cased) name pairs are recorded while duplicate
+        // lower-cased names are detected, then emitted from the array.
+        String[] pairs = new String[32];
+        int count = 0;
+        Set<String> overflowSeen = null;
         while (names.hasMoreElements()) {
             String name = names.nextElement();
             String lowerName = canonicalLowerHeaderName(name);
@@ -229,12 +228,43 @@ final class HeaderPolicy {
             // so the request filter reuses the response predicate directly. The
             // response-only content-length rule is a separate check applied at
             // addServletResponseHeader, not part of this predicate.
-            if (!isHopByHopResponseHeader(lowerName)
-                    && !isConnectionNominatedHeader(lowerName, connectionTokens)) {
-                sink.put(lowerName, joinHeaderValues(name, request));
+            if (isHopByHopResponseHeader(lowerName)
+                    || isConnectionNominatedHeader(lowerName, connectionTokens)) {
+                continue;
             }
+            if (count < DUPLICATE_SCAN_LIMIT) {
+                for (int i = 1; i < 2 * count; i += 2) {
+                    if (lowerName.equals(pairs[i])) {
+                        forEachMergedRequestHeader(request, sink, connectionTokens);
+                        return;
+                    }
+                }
+            } else {
+                if (overflowSeen == null) {
+                    overflowSeen = new HashSet<>(2 * count);
+                    for (int i = 1; i < 2 * count; i += 2) {
+                        overflowSeen.add(pairs[i]);
+                    }
+                }
+                if (!overflowSeen.add(lowerName)) {
+                    forEachMergedRequestHeader(request, sink, connectionTokens);
+                    return;
+                }
+            }
+            if (2 * count + 2 > pairs.length) {
+                pairs = java.util.Arrays.copyOf(pairs, pairs.length * 2);
+            }
+            pairs[2 * count] = name;
+            pairs[2 * count + 1] = lowerName;
+            count++;
+        }
+        for (int i = 0; i < count; i++) {
+            sink.put(pairs[2 * i + 1], joinHeaderValues(pairs[2 * i], request));
         }
     }
+
+    /** Up to this many forwarded names, duplicates are found by a linear scan (no set). */
+    private static final int DUPLICATE_SCAN_LIMIT = 16;
 
     private static void forEachMergedRequestHeader(
             HttpServletRequest request, VesperaBridge.HeaderSink sink, Set<String> connectionTokens) {
@@ -266,45 +296,6 @@ final class HeaderPolicy {
             }
         }
         merged.forEach(sink::put);
-    }
-
-    private static boolean hasMergeRequiredHeaderName(
-            HttpServletRequest request, Enumeration<String> names, Set<String> connectionTokens) {
-        String seen0 = null, seen1 = null, seen2 = null, seen3 = null;
-        String seen4 = null, seen5 = null, seen6 = null, seen7 = null;
-        Set<String> overflowSeen = null;
-        int count = 0;
-        while (names.hasMoreElements()) {
-            String lowerName = canonicalLowerHeaderName(names.nextElement());
-            if (isHopByHopResponseHeader(lowerName)
-                    || isConnectionNominatedHeader(lowerName, connectionTokens)) {
-                continue;
-            }
-            if (lowerName.equals(seen0) || lowerName.equals(seen1)
-                    || lowerName.equals(seen2) || lowerName.equals(seen3)
-                    || lowerName.equals(seen4) || lowerName.equals(seen5)
-                    || lowerName.equals(seen6) || lowerName.equals(seen7)
-                    || (overflowSeen != null && !overflowSeen.add(lowerName))) {
-                return true;
-            }
-            switch (count++) {
-                case 0 -> seen0 = lowerName;
-                case 1 -> seen1 = lowerName;
-                case 2 -> seen2 = lowerName;
-                case 3 -> seen3 = lowerName;
-                case 4 -> seen4 = lowerName;
-                case 5 -> seen5 = lowerName;
-                case 6 -> seen6 = lowerName;
-                case 7 -> seen7 = lowerName;
-                default -> {
-                    if (overflowSeen == null) {
-                        overflowSeen = new HashSet<>(8);
-                    }
-                    overflowSeen.add(lowerName);
-                }
-            }
-        }
-        return false;
     }
 
     private static Set<String> requestConnectionTokens(HttpServletRequest request) {
@@ -360,6 +351,25 @@ final class HeaderPolicy {
      * when they contain uppercase bytes.
      */
     private static String canonicalLowerHeaderName(String name) {
+        String known = knownLowerHeaderName(name);
+        if (known != null) {
+            return known;
+        }
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (c >= 'A' && c <= 'Z') {
+                return toLowerCaseAscii(name, 0, name.length());
+            }
+        }
+        return name;
+    }
+
+    /**
+     * The lower-case literal of a common HTTP/1.1 canonical header name
+     * ({@code "Content-Type"} -> {@code "content-type"}), or {@code null} for
+     * any other spelling. Shared by the servlet and the WebFlux header source.
+     */
+    static String knownLowerHeaderName(String name) {
         switch (name) {
             case "Host": return "host";
             case "Content-Type": return "content-type";
@@ -380,20 +390,28 @@ final class HeaderPolicy {
             case "X-Forwarded-Host": return "x-forwarded-host";
             case "X-Forwarded-Proto": return "x-forwarded-proto";
             case "X-Request-Id": return "x-request-id";
+            case "X-Forwarded-Port": return "x-forwarded-port";
+            case "Sec-Fetch-Site": return "sec-fetch-site";
+            case "Sec-Fetch-Mode": return "sec-fetch-mode";
+            case "Sec-Fetch-Dest": return "sec-fetch-dest";
+            case "Sec-Fetch-User": return "sec-fetch-user";
+            case "Sec-Ch-Ua": return "sec-ch-ua";
+            case "Sec-Ch-Ua-Mobile": return "sec-ch-ua-mobile";
+            case "Sec-Ch-Ua-Platform": return "sec-ch-ua-platform";
+            case "Upgrade-Insecure-Requests": return "upgrade-insecure-requests";
+            case "Pragma": return "pragma";
+            case "Priority": return "priority";
+            case "Traceparent": return "traceparent";
+            case "Tracestate": return "tracestate";
+            case "If-Match": return "if-match";
+            case "Range": return "range";
             // X-Vespera-App is the multi-app routing header sent on EVERY
             // request in multi-app deployments (the HeaderAppNameResolver
             // default); keep it on the allocation-free switch path instead of
             // falling through to a per-request char[]+String lowercase copy.
             case "X-Vespera-App": return "x-vespera-app";
-            default: break;
+            default: return null;
         }
-        for (int i = 0; i < name.length(); i++) {
-            char c = name.charAt(i);
-            if (c >= 'A' && c <= 'Z') {
-                return toLowerCaseAscii(name, 0, name.length());
-            }
-        }
-        return name;
     }
 
     /**

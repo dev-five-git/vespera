@@ -8,6 +8,7 @@ name: JNI Bench Gate
 #   streaming_get             dispatchStreaming, GET /health
 #   full_streaming_post_64k   dispatchFullStreaming, 64 KiB POST /echo
 #   async_get                 dispatchAsync + blocking wait
+#   client_echo_text_16k      VesperaClient POST /echo 16 KiB text + bodyString()
 # (harness: libs/vespera-bridge/bench/JniDispatchBench.java).
 #
 # Method (scripts/jni-bench-interleaved.sh): build the PR merge base and the PR

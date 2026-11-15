@@ -94,6 +94,7 @@ class DirectStashTest {
                         overflowing(new AtomicInteger(), 100, DirectStash.FLAG_STREAM), ops, true));
         assertTrue(kept.eventStream());
         assertEquals(100, kept.requiredSize());
+        assertEquals(0, kept.getStackTrace().length, "control flow: no stack trace captured");
         assertTrue(ops.calls.isEmpty(), "nothing fetched for an event stream");
         List<byte[]> headers = new ArrayList<>();
         kept.streamTo(headers::add, new ByteArrayOutputStream());
