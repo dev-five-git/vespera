@@ -365,7 +365,7 @@ where
         if let Some(json) = any.downcast_ref::<JsonRejection>() {
             return match json {
                 JsonRejection::JsonDataError(error) => {
-                    Some(serde_error_entry(error, || error.body_text()))
+                    Some(serde_error_entry(error, error.body_text()))
                 }
                 _ => None,
             };
@@ -373,10 +373,10 @@ where
         if let Some(form) = any.downcast_ref::<FormRejection>() {
             return match form {
                 FormRejection::FailedToDeserializeForm(error) => {
-                    Some(serde_error_entry(error, || error.body_text()))
+                    Some(serde_error_entry(error, error.body_text()))
                 }
                 FormRejection::FailedToDeserializeFormBody(error) => {
-                    Some(serde_error_entry(error, || error.body_text()))
+                    Some(serde_error_entry(error, error.body_text()))
                 }
                 _ => None,
             };
@@ -384,7 +384,7 @@ where
         if let Some(QueryRejection::FailedToDeserializeQueryString(error)) =
             any.downcast_ref::<QueryRejection>()
         {
-            return Some(serde_error_entry(error, || error.body_text()));
+            return Some(serde_error_entry(error, error.body_text()));
         }
         let Some(PathRejection::FailedToDeserializePathParams(error)) =
             any.downcast_ref::<PathRejection>()
@@ -434,12 +434,7 @@ impl Serialize for EnvelopeEntry {
 
 /// Recover `(path, message)` from axum's `serde_path_to_error`-backed
 /// deserialization rejections; falls back to the rejection text at the root.
-/// `fallback` is rendered only on that (practically unreachable) path, not
-/// formatted and discarded on every deserialize-`422`.
-fn serde_error_entry(
-    error: &dyn std::error::Error,
-    fallback: impl FnOnce() -> String,
-) -> EnvelopeEntry {
+fn serde_error_entry(error: &dyn std::error::Error, fallback: String) -> EnvelopeEntry {
     type JsonPathError = ::serde_path_to_error::Error<::serde_json::Error>;
     type UrlencodedPathError = ::serde_path_to_error::Error<::serde::de::value::Error>;
 
@@ -474,7 +469,7 @@ fn serde_error_entry(
         source = current.source();
     }
     EnvelopeEntry {
-        message: fallback(),
+        message: fallback,
         path: String::new(),
     }
 }
@@ -623,7 +618,7 @@ mod tests {
     #[test]
     fn serde_error_without_path_source_falls_back_to_root_entry() {
         let error = std::io::Error::other("opaque rejection");
-        let entry = serde_error_entry(&error, || "fallback text".to_owned());
+        let entry = serde_error_entry(&error, "fallback text".to_owned());
         assert_eq!(entry.message, "fallback text");
         assert_eq!(entry.path, "");
     }
