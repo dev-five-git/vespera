@@ -587,14 +587,17 @@ fn run_parallel<T: Sync, R: Send>(
     // Workers do not inherit the caller's thread-locals.
     let input_names = request_view::snapshot();
     let test_env = crate::env_access::test_env::snapshot();
+    let stored_defaults = super::snapshot_stored_defaults();
     std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(workers);
         for chunk in jobs.chunks(chunk_size) {
             let input_names = std::sync::Arc::clone(&input_names);
             let test_env = std::sync::Arc::clone(&test_env);
+            let stored_defaults = std::sync::Arc::clone(&stored_defaults);
             handles.push(scope.spawn(move || {
                 request_view::install(input_names);
                 crate::env_access::test_env::install(test_env);
+                super::install_stored_defaults(stored_defaults);
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let results: syn::Result<Vec<R>> =
                         chunk.iter().filter_map(|job| f(job).transpose()).collect();

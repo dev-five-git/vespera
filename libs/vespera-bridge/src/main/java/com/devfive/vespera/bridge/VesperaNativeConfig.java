@@ -42,6 +42,12 @@ final class VesperaNativeConfig {
         boolean configure(long value);
     }
 
+    /** Reads a knob's system property as a {@code long} ({@code fallback} when unset / malformed). */
+    @FunctionalInterface
+    interface PropertyReader {
+        long read(String name, long fallback);
+    }
+
     /**
      * One single-valued knob: its system property, the value meaning
      * "not configured" ({@code unset} — the Rust side leaves the setting
@@ -52,21 +58,27 @@ final class VesperaNativeConfig {
         final String property;
         final long unset;
         private final LongConfigurator hook;
+        private final PropertyReader reader;
         private volatile Long pending;
         /** Last value the native side confirmed applying, or {@link Long#MIN_VALUE}. */
         private volatile long applied = Long.MIN_VALUE;
 
         Knob(String label, String property, long unset, LongConfigurator hook) {
+            this(label, property, unset, hook, VesperaNativeConfig::longProperty);
+        }
+
+        Knob(String label, String property, long unset, LongConfigurator hook, PropertyReader reader) {
             this.label = label;
             this.property = property;
             this.unset = unset;
             this.hook = hook;
+            this.reader = reader;
         }
 
         /** Pending programmatic value, else the system property, else {@code unset}. */
         long resolve() {
             Long value = pending;
-            return value != null ? value : longProperty(property, unset);
+            return value != null ? value : reader.read(property, unset);
         }
 
         /**
@@ -174,6 +186,22 @@ final class VesperaNativeConfig {
 
     static native boolean configureMaxRequestProducers0(long maxProducers);
 
+    // Whether a non-empty request body without a Content-Type is given
+    // `application/json` (Rust default: yes).  1 = yes, 0 = no, -1 = untouched
+    // (env VESPERA_DEFAULT_JSON_CONTENT_TYPE / default applies); the system
+    // property is a boolean (`true` / `false`).  The hook takes a boolean, so
+    // the unset value never crosses JNI (it would fix the setting).
+    static final Knob DEFAULT_JSON_CONTENT_TYPE = new Knob(
+            "request.defaultJsonContentType", "vespera.request.defaultJsonContentType", -1,
+            VesperaNativeConfig::applyDefaultJsonContentType,
+            VesperaNativeConfig::booleanProperty);
+
+    static boolean applyDefaultJsonContentType(long value) {
+        return value < 0 || configureDefaultJsonContentType0(value != 0);
+    }
+
+    static native boolean configureDefaultJsonContentType0(boolean enabled);
+
     /**
      * Build the shared runtime now when native work waits for it (cron jobs
      * registered from {@code JNI_OnLoad}); a no-op otherwise.
@@ -189,6 +217,7 @@ final class VesperaNativeConfig {
         DISPATCH_TIMEOUT_MILLIS,
         ASYNC_MAX_IN_FLIGHT,
         MAX_REQUEST_PRODUCERS,
+        DEFAULT_JSON_CONTENT_TYPE,
     };
 
     private static volatile Integer pendingChunkBytes = null;
@@ -284,6 +313,34 @@ final class VesperaNativeConfig {
                     + "': not an integer; falling back to the default");
             return fallback;
         }
+    }
+
+    /**
+     * The boolean system property {@code name} as {@code 1} ({@code true}) /
+     * {@code 0} ({@code false}), case-insensitive, else {@code fallback}.  A
+     * malformed value ({@code yes please}) logs a WARNING naming the property,
+     * then falls back.
+     */
+    static long booleanProperty(String name, long fallback) {
+        String raw;
+        try {
+            raw = System.getProperty(name);
+        } catch (SecurityException denied) {
+            return fallback;
+        }
+        if (raw == null) {
+            return fallback;
+        }
+        String value = raw.trim();
+        if (value.equalsIgnoreCase("true")) {
+            return 1;
+        }
+        if (value.equalsIgnoreCase("false")) {
+            return 0;
+        }
+        LOG.log(Level.WARNING, "vespera: ignoring system property " + name + "='" + raw
+                + "': not true or false; falling back to the default");
+        return fallback;
     }
 
     static int toInt(long value) {

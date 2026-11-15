@@ -169,27 +169,20 @@ pub(super) fn parse_externally_tagged_enum(
 
 /// The map form of an externally tagged `#[serde(other)]` variant: one
 /// entry with a `null` value whose key names none of the `known` variants
-/// (`{"Hexagon": null}`).
+/// (`{"Hexagon": null}`): `propertyNames: {not: {enum: [known...]}}`.
 fn other_map_schema(known: &[serde_json::Value]) -> Schema {
-    let names_known = known
-        .iter()
-        .filter_map(serde_json::Value::as_str)
-        .map(|key| {
-            SchemaRef::Inline(Box::new(Schema {
-                required: Some(vec![key.to_owned()]),
-                ..Schema::default()
-            }))
-        })
-        .collect::<Vec<_>>();
     Schema {
         additional_properties: Some(AdditionalProperties::Schema(SchemaRef::Inline(Box::new(
             Schema::new(SchemaType::Null),
         )))),
         min_properties: Some(1),
         max_properties: Some(1),
-        not: non_empty(names_known).map(|any_of| {
+        property_names: (!known.is_empty()).then(|| {
             SchemaRef::Inline(Box::new(Schema {
-                any_of: Some(any_of),
+                not: Some(SchemaRef::Inline(Box::new(Schema {
+                    r#enum: Some(known.to_vec()),
+                    ..Schema::default()
+                }))),
                 ..Schema::default()
             }))
         }),

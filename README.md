@@ -393,6 +393,14 @@ field (e.g. `"age"`, `"tags[1]"`). Malformed JSON syntax (`400`), a missing
 or unsupported `Content-Type` (`415`) and body-limit errors keep axum's
 default rejection.
 
+**Non-finite floats:** `Query` / `Form` / `Path` (and multipart text fields)
+parse `f32` / `f64` with `str::parse`, which accepts `NaN`, `inf` and
+`-infinity` (JSON bodies cannot carry them). Only a float field with a
+`#[schema(minimum = ..)]` / `#[schema(maximum = ..)]` bound rejects a
+non-finite value (`"not a finite number"`, `422`); an unbounded float field
+hands `NaN` / `±inf` to the handler. Give the field a bound, or reject it with
+`#[garde(custom(..))]` (an error unless `value.is_finite()`).
+
 #### Context-aware validation (`ValidatedWith<C, T>`)
 
 `ValidatedWith<C, T>` works like `Validated<T>`, but validates with a context
@@ -1437,7 +1445,7 @@ int main(void) {
 | `vespera_dispatch_into(req, len, buf, cap, &written)` | wire out written into your buffer; `VESPERA_OVERFLOW` sets `written` to the size that run needed (a retry runs the handler again: send non-idempotent requests through `vespera_dispatch`); a `cap` below `VESPERA_MIN_OUT_BYTES` (1024) answers `VESPERA_OVERFLOW` with `written = 1024` without running the handler |
 | `vespera_dispatch_async(req, len, callback, user_data)` | returns without waiting for the handler; `callback(user_data, resp, resp_len)` runs once, possibly on another thread and possibly before the call returns (never hold a lock across the call that the callback takes), and owns `resp`; early rejections arrive inline on the calling thread: over the in-flight cap (default 4096) `503`, NULL request `400`, too large `413`, shut down `503` |
 | `vespera_shutdown(timeout_ms)` | drain in-flight work, stop the runtime for good (later dispatches answer `503`); pending async callbacks get a `503` on a runtime worker, possibly after it returns |
-| `vespera_configure_*(value)` | set runtime / limit knobs before `vespera_init`: `worker_threads`, `max_blocking_threads`, `max_request_bytes`, `max_buffered_response_bytes`, `dispatch_timeout_ms`, `async_max_in_flight`; `VESPERA_ERR_TOO_LATE` once already fixed |
+| `vespera_configure_*(value)` | set runtime / limit knobs before `vespera_init`: `worker_threads`, `max_blocking_threads`, `max_request_bytes`, `max_buffered_response_bytes`, `dispatch_timeout_ms`, `async_max_in_flight`, `default_json_content_type` (`0` = an untyped request body is not given `application/json`, recommended for browser-facing apps; default on); `VESPERA_ERR_TOO_LATE` once already fixed |
 
 Request and response use the [binary wire format](./AGENTS.md#binary-wire-format); every HTTP-expressible
 failure (malformed wire `400`, unknown app `404`, too large `413`, handler panic `500`, shut down `503`)

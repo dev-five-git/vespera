@@ -219,6 +219,13 @@ int vespera_configure_dispatch_timeout_ms(uint64_t timeout_ms);
  * default 4096. */
 int vespera_configure_async_max_in_flight(size_t max_in_flight);
 
+/* Whether a non-empty request body without a Content-Type is given
+ * "content-type: application/json" (VESPERA_DEFAULT_JSON_CONTENT_TYPE);
+ * 0 = no, non-zero = yes (the default).  Pass 0 for browser-facing apps: a
+ * browser can send an untyped body cross-site without a CORS preflight, and
+ * the default makes axum's Json<T> accept it. */
+int vespera_configure_default_json_content_type(int enabled);
+
 #ifdef __cplusplus
 }
 #endif

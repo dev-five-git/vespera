@@ -47,7 +47,7 @@ The hand-written header ships with the `vespera_inprocess` crate as `include/ves
 | `void vespera_free(ptr, len)` | Releases a response; `NULL` is a no-op |
 | `int vespera_shutdown(uint64_t timeout_ms)` | Stops the runtime for good: new dispatches answer `503`, in-flight ones get up to the timeout |
 | `uint32_t vespera_abi_version(void)` | The `VESPERA_ABI_VERSION` the library was built with (bumped only on incompatible changes) |
-| `int vespera_configure_*(...)` | `worker_threads`, `max_blocking_threads`, `max_request_bytes`, `max_buffered_response_bytes`, `dispatch_timeout_ms`, `async_max_in_flight` — call before `vespera_init`; `VESPERA_ERR_TOO_LATE` once the value is fixed |
+| `int vespera_configure_*(...)` | `worker_threads`, `max_blocking_threads`, `max_request_bytes`, `max_buffered_response_bytes`, `dispatch_timeout_ms`, `async_max_in_flight`, `default_json_content_type` (`0` = untyped bodies are not given `application/json`, recommended for browser-facing apps) — call before `vespera_init`; `VESPERA_ERR_TOO_LATE` once the value is fixed |
 
 Every failure that can be expressed as HTTP — malformed wire `400`, unknown app `404`, body too large `413`, handler panic `500` (metadata `"panicked":"true"`), runtime shut down `503`, deadline `504` — comes back as a normal wire response with `VESPERA_OK`. Negative return codes are reserved for API misuse. Panics never unwind across the ABI.
 

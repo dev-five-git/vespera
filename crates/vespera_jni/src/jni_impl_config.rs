@@ -175,6 +175,22 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaNativeConfig_confi
     })
 }
 
+/// `com.devfive.vespera.bridge.VesperaNativeConfig.configureDefaultJsonContentType0(boolean) -> boolean`
+///
+/// Whether a non-empty request body without a `Content-Type` is given
+/// `application/json` ([`vespera_inprocess::set_default_json_content_type`]).
+/// The Java side never calls it for an unset value.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaNativeConfig_configureDefaultJsonContentType0<
+    'local,
+>(
+    _unowned_env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    enabled: jboolean,
+) -> jboolean {
+    guarded_configure(|| vespera_inprocess::set_default_json_content_type(enabled != JNI_FALSE))
+}
+
 /// `com.devfive.vespera.bridge.VesperaNativeConfig.startRuntime0() -> boolean`
 ///
 /// Called by `VesperaBridge.init()` right after the runtime knobs were

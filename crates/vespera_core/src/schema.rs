@@ -123,6 +123,11 @@ pub struct Schema {
     pub min_properties: Option<usize>,
     /// Maximum number of properties
     pub max_properties: Option<usize>,
+    /// `propertyNames`: a schema every property name (a string) must match.
+    ///
+    /// No outer `Box` — [`SchemaRef::Inline`] already boxes the nested
+    /// schema (CORE-02).
+    pub property_names: Option<SchemaRef>,
 
     // General constraints
     /// Enum values
