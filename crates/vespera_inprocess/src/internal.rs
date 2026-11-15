@@ -366,6 +366,16 @@ fn build_uri(path: &str, query: &str) -> Result<Uri, (u16, String)> {
 /// name, so the `== CONTENT_TYPE` standard-header comparison is the same
 /// cheap discriminant compare each site already used.  `default_json_when_absent`
 /// requests the `application/json` default when no `Content-Type` was seen.
+///
+/// **Security (CSRF):** the default makes axum's `Json<T>` accept a body that
+/// arrived with no `Content-Type` at all.  A browser can send such a body
+/// cross-origin as a CORS "simple" request (e.g. `fetch` with an untyped
+/// `Blob`), without a preflight and with the victim's cookies, so `Json<T>`'s
+/// content-type check is no CSRF defence behind the in-process bridge.  Rely
+/// on the host's CSRF protection (Spring Security `CsrfFilter` /
+/// `CsrfWebFilter`), `SameSite` session cookies, or an `Origin` /
+/// `Sec-Fetch-Site` / custom-header check.  A handler-side `Content-Type`
+/// check does not help: the handler sees the defaulted value.
 /// Returns `Err((400, _))` for a malformed header, upholding the "every
 /// failure returns a wire response" contract.  `#[inline]` so both call sites
 /// keep the same inlined codegen as the prior copy-pasted shape.
@@ -407,6 +417,25 @@ fn build_axum_request_inner<'h>(
         );
     }
     Ok(request)
+}
+
+/// Whether `headers` declare an EMPTY request body: at least one
+/// `Content-Length` and every one of them `0`.  The bidirectional path
+/// cannot see its streamed body up front; it skips the `application/json`
+/// default when this holds, matching the buffered paths (which never default
+/// an empty body).  A body without `Content-Length` (chunked) still defaults.
+pub fn declares_empty_body<'h>(headers: impl Iterator<Item = (&'h str, &'h str)>) -> bool {
+    let mut seen = false;
+    for (name, value) in headers {
+        if name.eq_ignore_ascii_case("content-length") {
+            let value = value.trim_matches([' ', '\t']);
+            if value.is_empty() || value.bytes().any(|b| b != b'0') {
+                return false;
+            }
+            seen = true;
+        }
+    }
+    seen
 }
 
 /// Build the axum request shared by the buffered ([`dispatch_parts`]) and
@@ -662,8 +691,8 @@ pub fn to_response_envelope_text(parts: ResponseParts) -> ResponseEnvelope {
 /// only when the flag is set AND none was present — folding in the
 /// content-type detection each caller used to run as a separate pre-scan.
 /// Callers that know the body is non-empty pass `!body.is_empty()`;
-/// streaming callers whose body emptiness is unknowable up front pass
-/// `true` (default whenever absent).
+/// the bidirectional caller, whose body emptiness is unknowable up front,
+/// passes `!declares_empty_body(headers)`.
 // 10 params: the request line (method / path / query / path_bytes /
 // header_bytes_owner), the borrowed header iterator, the body, the
 // content-type-default flag and the connection facts are each distinct
@@ -863,6 +892,24 @@ mod tests {
             info.remote_addr
         );
         assert_eq!(extensions.get::<Scheme>(), info.scheme.as_ref());
+    }
+
+    #[rstest::rstest]
+    #[case::no_content_length(&[("content-type", "text/plain")], false)]
+    #[case::zero(&[("content-length", "0")], true)]
+    #[case::zero_padded_mixed_case(&[("Content-Length", " 00\t")], true)]
+    #[case::non_zero(&[("content-length", "10")], false)]
+    #[case::blank(&[("content-length", " ")], false)]
+    #[case::duplicate_zeros(&[("content-length", "0"), ("content-length", "0")], true)]
+    #[case::zero_then_non_zero(&[("content-length", "0"), ("content-length", "1")], false)]
+    fn declares_empty_body_needs_every_content_length_zero(
+        #[case] headers: &[(&str, &str)],
+        #[case] expected: bool,
+    ) {
+        assert_eq!(
+            declares_empty_body(headers.iter().map(|&(n, v)| (n, v))),
+            expected
+        );
     }
 
     #[test]

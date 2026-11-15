@@ -14,7 +14,8 @@
 //! cargo bench -p vespera_inprocess --bench extreme -- headers       # filter
 //! ```
 //!
-//! Groups: `route_table`, `request_headers`, `request_header_value`,
+//! Groups: `thread_scaling` (a printed report, selected by `--bench` with no
+//! filter or a `thread_scaling` substring filter), `route_table`, `request_headers`, `request_header_value`,
 //! `response_headers`, `errors_422`, `path_query`, `body_echo`,
 //! `stream_response`, `stream_upload`, `concurrent`, `registry`.
 
@@ -294,6 +295,9 @@ fn get_wire(path: &str) -> Vec<u8> {
 /// Huge route tables: Router build, and lookup of the first / last route.
 /// Per-route lookup cost must be flat (matchit radix tree), build ~linear.
 fn bench_route_table(c: &mut Criterion) {
+    // The request-size limit is process-fixed at the first dispatch: never
+    // rely on an earlier group having installed it.
+    install_default();
     let runtime = Runtime::new().expect("runtime");
     let mut group = c.benchmark_group("route_table");
     heavy(&mut group);
@@ -636,6 +640,9 @@ fn bench_registry(c: &mut Criterion) {
 /// isolate the dispatch path's own scaling from runtime contention.
 fn bench_thread_scaling(_c: &mut Criterion) {
     const WINDOW_MS: u64 = 1_500;
+    if !thread_scaling_selected() {
+        return;
+    }
     install_default();
     let wire = get_wire("/ok");
     let window = Duration::from_millis(WINDOW_MS);
@@ -674,6 +681,51 @@ fn bench_thread_scaling(_c: &mut Criterion) {
             100 * per_sec / ideal.max(1)
         );
     }
+}
+
+/// Criterion flags that take a value (so that value is not a filter).
+const VALUE_FLAGS: &[&str] = &[
+    "--save-baseline",
+    "--baseline",
+    "--baseline-lenient",
+    "--load-baseline",
+    "--measurement-time",
+    "--warm-up-time",
+    "--sample-size",
+    "--noise-threshold",
+    "--confidence-level",
+    "--significance-level",
+    "--nresamples",
+    "--output-format",
+    "--color",
+    "--plotting-backend",
+    "--format",
+    "--profile-time",
+];
+
+/// Whether this run selects the thread-scaling report.  It is not a
+/// Criterion benchmark (it prints its own figures), so Criterion's filter
+/// never sees it: run it only in bench mode (`--bench`, not `--list` / test
+/// mode) with no filter, or with a filter that `thread_scaling` contains
+/// (plain substring, not Criterion's regex).
+fn thread_scaling_selected() -> bool {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if !args.iter().any(|a| a == "--bench") || args.iter().any(|a| a == "--list") {
+        return false;
+    }
+    let mut filters = Vec::new();
+    let mut skip_value = false;
+    for arg in &args {
+        if std::mem::take(&mut skip_value) {
+            continue;
+        }
+        if arg.starts_with('-') {
+            skip_value = !arg.contains('=') && VALUE_FLAGS.contains(&arg.as_str());
+        } else {
+            filters.push(arg.as_str());
+        }
+    }
+    filters.iter().all(|f| "thread_scaling".contains(f))
 }
 
 criterion_group!(

@@ -856,13 +856,12 @@ where
     );
 
     // Content-Type parity with the buffered / direct / response-streaming
-    // paths: a request with no explicit Content-Type defaults to
-    // `application/json`.  The streamed body's emptiness is unknowable up
-    // front (unlike the buffered paths, which gate on a non-empty body), so
-    // default whenever the header is absent — matching sibling behaviour for
-    // the bodyful bidirectional requests that are this path's reason to
-    // exist, instead of leaving extractor behaviour mode-dependent.
-    let default_json_when_absent = true;
+    // paths: a request body with no explicit Content-Type defaults to
+    // `application/json` (see `build_axum_request_inner` for the CSRF
+    // implication).  The streamed body's emptiness is unknowable up front,
+    // so default unless the headers declare it empty (`Content-Length: 0`),
+    // like the buffered paths never default an empty body.
+    let default_json_when_absent = !crate::internal::declares_empty_body(header.iter_str_pairs());
     // Owned wire path: zero-copy URI + header values, as in the
     // response-streaming sibling.
     let dispatched = deadline

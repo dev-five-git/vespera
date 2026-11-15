@@ -212,24 +212,71 @@ async fn small_bodies_are_pulled_inline_on_the_block_on_thread(
     assert_eq!(probe.closes.load(Ordering::SeqCst), usize::from(pulls > 0));
 }
 
+thread_local! {
+    /// Set while the spawned task below is being polled on this thread.
+    static IN_SPAWNED_POLL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Marks every poll of the wrapped future in [`IN_SPAWNED_POLL`], so a pull
+/// run synchronously inside that poll (inline) is told apart from one on the
+/// producer's blocking-pool thread.
+struct MarkPolls<F>(std::pin::Pin<Box<F>>);
+
+impl<F: std::future::Future> std::future::Future for MarkPolls<F> {
+    type Output = F::Output;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<F::Output> {
+        IN_SPAWNED_POLL.with(|flag| flag.set(true));
+        let poll = self.0.as_mut().poll(cx);
+        IN_SPAWNED_POLL.with(|flag| flag.set(false));
+        poll
+    }
+}
+
 /// A dispatch running inside a spawned task must never pull inline (that
-/// would block a runtime worker): the producer takes every pull.
-#[tokio::test(flavor = "current_thread")]
+/// would block a runtime worker): the producer takes every pull.  Runs on a
+/// MULTI-thread runtime, where only the `try_id` rule (not the
+/// current-thread guard) keeps the pull off the worker (round 14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spawned_dispatch_never_pulls_inline() {
     ensure();
-    let probe = Probe::default();
-    let task_probe = probe.clone();
-    let (got_status, body) =
-        tokio::spawn(async move { run("/echo", &[Pull::Data(64), Pull::End], &task_probe).await })
-            .await
-            .unwrap();
+    let in_poll = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&in_poll);
+    let mut script = vec![Pull::Data(64), Pull::End].into_iter();
+    let pull = move || {
+        seen.lock()
+            .unwrap()
+            .push(IN_SPAWNED_POLL.with(std::cell::Cell::get));
+        match script.next() {
+            Some(Pull::Data(n)) => RequestChunk::Data(vec![b'x'; n]),
+            _ => RequestChunk::End,
+        }
+    };
+    let (got_status, body) = tokio::spawn(MarkPolls(Box::pin(async move {
+        let mut body = Vec::new();
+        let header = dispatch_bidirectional_streaming_closing(
+            encode("/echo"),
+            pull,
+            |chunk: &[u8]| {
+                body.extend_from_slice(chunk);
+                ControlFlow::Continue(())
+            },
+            || {},
+        )
+        .await;
+        (status(&header), body)
+    })))
+    .await
+    .unwrap();
     assert_eq!(got_status, 200);
     assert_eq!(body.len(), 64);
-    assert_eq!(probe.pulls(), 2);
     assert_eq!(
-        probe.pulls_on(std::thread::current().id()),
-        0,
-        "current-thread runtime: the spawned task runs here, pulls must not"
+        *in_poll.lock().unwrap(),
+        [false, false],
+        "every pull runs on the producer, none inside the spawned task's poll"
     );
 }
 

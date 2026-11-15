@@ -45,6 +45,20 @@
 //!    All failure modes return a valid wire-format response so the
 //!    caller's decoder never has to special-case errors.
 //!
+//! # Security: default `Content-Type`
+//!
+//! On every API layer a request body that carries no `Content-Type`
+//! reaches the router with `content-type: application/json` (when the
+//! body is non-empty; bidirectional streaming, whose body is not visible
+//! up front, unless the headers declare `content-length: 0`).  axum's
+//! `Json<T>` therefore accepts it, so its content-type check is **no
+//! CSRF defence** behind a host that forwards browser requests: a
+//! cross-site "simple" request (e.g. `fetch` of an untyped `Blob`) sends
+//! no `Content-Type` and no preflight.  Rely on the host's CSRF
+//! protection, `SameSite` session cookies or an `Origin` /
+//! `Sec-Fetch-Site` / custom-header check; a handler-side `Content-Type`
+//! check sees the defaulted value.
+//!
 //! # Example (direct)
 //!
 //! ```ignore
