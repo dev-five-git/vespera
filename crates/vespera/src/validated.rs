@@ -523,6 +523,22 @@ const FALLBACK_VALIDATION_ENVELOPE: &[u8] =
 /// The envelope shape is a public contract locked by snapshot tests and
 /// the JNI wire header hoisting logic in `vespera_inprocess`.
 fn build_validation_response(report: &::garde::Report) -> Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        [(CONTENT_TYPE, HeaderValue::from_static("application/json"))],
+        validation_error_body(report),
+    )
+        .into_response()
+}
+
+/// The `422` envelope body [`build_validation_response`] sends for `report`.
+///
+/// Public + `#[doc(hidden)]` (re-exported as
+/// `vespera::__validation::validation_error_body`, not API) so
+/// `benches/validation.rs` times this very serializer, not a mirror of it.
+#[doc(hidden)]
+#[must_use]
+pub fn validation_error_body(report: &::garde::Report) -> Vec<u8> {
     struct DisplayValue<T>(T);
 
     impl<T> Serialize for DisplayValue<T>
@@ -597,15 +613,8 @@ fn build_validation_response(report: &::garde::Report) -> Response {
     // to axum as raw bytes (content-type is overridden to
     // application/json below regardless).  Byte-identical to the previous
     // `to_string` body.
-    let body = ::serde_json::to_vec(&ValidationEnvelope { report })
-        .unwrap_or_else(|_| FALLBACK_VALIDATION_ENVELOPE.to_vec());
-
-    (
-        StatusCode::UNPROCESSABLE_ENTITY,
-        [(CONTENT_TYPE, HeaderValue::from_static("application/json"))],
-        body,
-    )
-        .into_response()
+    ::serde_json::to_vec(&ValidationEnvelope { report })
+        .unwrap_or_else(|_| FALLBACK_VALIDATION_ENVELOPE.to_vec())
 }
 
 #[cfg(test)]

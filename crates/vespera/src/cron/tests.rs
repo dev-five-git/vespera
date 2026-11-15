@@ -14,6 +14,7 @@ static ONCE_SECOND_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SKIP_STARTS: AtomicUsize = AtomicUsize::new(0);
 static ALLOW_STARTS: AtomicUsize = AtomicUsize::new(0);
 static PANIC_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+static EAGER_PANIC_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 static DRAIN_STARTED: AtomicUsize = AtomicUsize::new(0);
 static DRAIN_FINISHED: AtomicUsize = AtomicUsize::new(0);
 static HANG_STARTED: AtomicUsize = AtomicUsize::new(0);
@@ -92,6 +93,12 @@ fn panicking() -> JobFuture {
         PANIC_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
         panic!("boom");
     })
+}
+
+/// Panics before it returns its future (a hand-built `CronJob`'s fn may).
+fn panicking_eagerly() -> JobFuture {
+    EAGER_PANIC_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+    panic!("eager boom");
 }
 
 fn draining() -> JobFuture {
@@ -311,14 +318,20 @@ async fn overlap_policy_controls_concurrent_runs(
 }
 
 /// A panicking run is logged by its supervisor and the job keeps its
-/// schedule.
+/// schedule, also when the job's fn panics before returning its future.
+#[rstest]
+#[case::in_future(panicking as fn() -> JobFuture, &PANIC_ATTEMPTS)]
+#[case::before_future(panicking_eagerly, &EAGER_PANIC_ATTEMPTS)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn panicking_job_is_reported_and_keeps_its_schedule() {
+async fn panicking_job_is_reported_and_keeps_its_schedule(
+    #[case] run: fn() -> JobFuture,
+    #[case] attempts: &'static AtomicUsize,
+) {
     let controller = controller();
-    let job = CronJob::new("* * * * * *", panicking).with_name("tests::panicking");
+    let job = CronJob::new("* * * * * *", run).with_name("tests::panicking");
     let scheduler = tokio::spawn(run_job(job, controller));
     assert!(
-        wait_for_async(&PANIC_ATTEMPTS, 2).await,
+        wait_for_async(attempts, 2).await,
         "schedule stopped after a panic"
     );
     controller.shutdown();
