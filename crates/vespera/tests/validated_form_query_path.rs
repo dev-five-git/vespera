@@ -263,8 +263,11 @@ async fn validated_form_inner_extractor_rejection_is_forwarded() {
         .body(Body::from("username=alice&password=correcthorse"))
         .unwrap();
     let res = form_router().oneshot(req).await.unwrap();
-    assert_ne!(res.status(), 422, "must not synthesize a 422 envelope");
-    assert_ne!(res.status(), 200, "must not pass through to handler");
+    assert_eq!(
+        res.status(),
+        415,
+        "axum's 415 must pass through: no 422 envelope, no handler call"
+    );
 }
 
 #[derive(Clone)]

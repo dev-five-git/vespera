@@ -10,16 +10,18 @@
 //! - `after`: the shipped implementation — a borrowing `Serialize` chain that
 //!   streams the error's own `Display` straight into `serde_json` via
 //!   `collect_str` (zero per-error `String` allocation), mirroring the
-//!   `Validated<T>` 422 serializer in `multipart.rs`.
+//!   shipped serializer in `src/multipart/error.rs`.
 //!
 //! The delta is the per-error `String` allocation the change removes. Both
-//! arms assert byte-identical output so the bench can never silently drift
-//! from the real envelope contract.
+//! arms assert byte-identical output to each other AND to the body the real
+//! `IntoResponse` impl sends, so the bench can never silently drift from the
+//! envelope contract.
 
 use std::borrow::Cow;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use serde::{Serialize, Serializer, ser::SerializeStruct};
+use vespera::axum::{body::to_bytes, response::IntoResponse};
 use vespera::multipart::TypedMultipartError;
 
 /// A realistic client-caused multipart error (the common 422 case): a scalar
@@ -36,7 +38,7 @@ fn fixture() -> TypedMultipartError {
 /// The offending field name doubles as the envelope `path`.
 const PATH: &str = "age";
 
-// ── AFTER: shipped borrowing Serialize chain (mirror of multipart.rs) ─
+// ── AFTER: shipped borrowing Serialize chain (mirror of multipart/error.rs) ─
 
 fn serialize_after(err: &TypedMultipartError) -> Vec<u8> {
     struct Message<'a>(&'a TypedMultipartError);
@@ -109,6 +111,17 @@ fn bench_multipart_error_envelope(c: &mut Criterion) {
         serialize_before(&err),
         serialize_after(&err),
         "before/after multipart error-envelope bytes diverged"
+    );
+    // ...and both must be the body the shipped `IntoResponse` actually sends.
+    let shipped = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("current-thread runtime")
+        .block_on(to_bytes(fixture().into_response().into_body(), usize::MAX))
+        .expect("in-memory body");
+    assert_eq!(
+        serialize_after(&err),
+        shipped.as_ref(),
+        "bench envelope diverged from the shipped multipart error body"
     );
 
     let mut group = c.benchmark_group("multipart_error_envelope");

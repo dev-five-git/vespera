@@ -240,16 +240,23 @@ fn invalid_enum_value_constructor_stores_bounded_value() {
     }
 }
 
+/// `truncate_reflected_value` (used by the bool parser's
+/// `invalid boolean value` message) keeps exactly the first
+/// `MAX_REFLECTED_VALUE_CHARS` chars, cuts on a `char` boundary, and borrows
+/// a value at or under the cap unchanged.
 #[test]
-fn invalid_bool_message_reflects_bounded_value() {
-    let oversized = "x".repeat(MAX_REFLECTED_VALUE_CHARS + 10);
-    let message = format!(
-        "invalid boolean value: `{}`",
-        truncate_reflected_value(&oversized)
+fn truncate_reflected_value_keeps_exactly_the_cap() {
+    let oversized = format!("{}{}", "가".repeat(MAX_REFLECTED_VALUE_CHARS), "xyz");
+    assert_eq!(
+        truncate_reflected_value(&oversized),
+        format!("{}... (truncated)", "가".repeat(MAX_REFLECTED_VALUE_CHARS))
     );
 
-    assert!(message.contains("... (truncated)"));
-    assert!(!message.contains(&oversized));
+    let at_cap = "x".repeat(MAX_REFLECTED_VALUE_CHARS);
+    assert!(matches!(
+        truncate_reflected_value(&at_cap),
+        Cow::Borrowed(value) if value == at_cap
+    ));
 }
 
 #[test]
