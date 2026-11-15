@@ -59,26 +59,42 @@ pub(super) fn resolve_source<'a>(
             // (`None`: the path as written).
             Ok((Cow::Borrowed(found), storage_module.or(requested)))
         }
-        _ => match local.map_or_else(
-            || find_struct_from_path_detailed(&input.source_type, schema_name_hint),
-            Ok,
-        ) {
-            Ok((found, module_path)) => Ok((Cow::Owned(found), Some(module_path))),
+        _ => {
             // A same-named schema of ANOTHER module is never a fallback
             // (it used to be used silently).
-            Err(err) => {
-                let mut error = err.to_syn_error(&input.source_type);
-                if let Some(module) = &storage_module {
-                    error.combine(syn::Error::new_spanned(
+            let (found, module_path) = local
+                .map_or_else(
+                    || find_struct_from_path_detailed(&input.source_type, schema_name_hint),
+                    Ok,
+                )
+                .map_err(|err| {
+                    with_module_note(
+                        err.to_syn_error(&input.source_type),
                         &input.source_type,
-                        format!(
-                            "note: `{source_type_name}` exists in `{}`, which is not the requested module",
-                            module.join("::")
-                        ),
-                    ));
-                }
-                Err(error)
-            }
-        },
+                        source_type_name,
+                        storage_module.as_deref(),
+                    )
+                })?;
+            Ok((Cow::Owned(found), Some(module_path)))
+        }
     }
+}
+
+/// `error`, plus a note naming the module a same-named schema lives in.
+fn with_module_note(
+    mut error: syn::Error,
+    source_type: &syn::Type,
+    source_type_name: &str,
+    storage_module: Option<&[String]>,
+) -> syn::Error {
+    if let Some(module) = storage_module {
+        error.combine(syn::Error::new_spanned(
+            source_type,
+            format!(
+                "note: `{source_type_name}` exists in `{}`, which is not the requested module",
+                module.join("::")
+            ),
+        ));
+    }
+    error
 }
