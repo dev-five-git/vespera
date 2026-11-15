@@ -1,6 +1,6 @@
 //! Hand-rolled serializer for the **fixed-schema response wire header**
 //! — the byte-for-byte replacement for the `serde_json::to_writer` path
-//! that used to render [`super::WireResponseHeader`].
+//! that used to render `bench_serde::WireResponseHeader`.
 //!
 //! Output is **byte-identical** to `serde_json`'s compact serialization
 //! (locked by `tests/wire_contract.rs` and the in-crate round-trip
@@ -67,7 +67,7 @@ impl JsonSink for SliceSink<'_> {
 }
 
 /// `io::Write` adapter so the bench-only `serde_json::to_writer` arm in
-/// [`super::write_wire_header_into_slice_serde`] can drive the same
+/// `bench_serde::write_wire_header_into_slice_serde` can drive the same
 /// overflow-counting sink the production hand-rolled path uses — locking
 /// `SliceSink` as the single source of truth and removing the structurally
 /// identical `SliceWriter` duplicate that used to live in `wire.rs`.
@@ -292,7 +292,7 @@ fn write_status_code<S: JsonSink>(sink: &mut S, status: u16) {
 }
 
 /// Serialize an [`http::HeaderMap`] as the wire's sorted name -> value
-/// JSON map — byte-compatible with [`super::WireHeaders`]:
+/// JSON map — byte-compatible with `bench_serde::WireHeaders`:
 /// - names sort in byte order (`HeaderName`s are lowercase ASCII, so
 ///   `sort_unstable` equals the prior `BTreeMap` ordering);
 /// - single-valued headers render as a JSON string, repeated names as a
