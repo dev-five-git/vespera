@@ -705,6 +705,7 @@ fn parse_type_impl(
                                         );
                                         // The generic component's field defaults.
                                         crate::openapi_generator::instance_defaults(
+                                            &base,
                                             item,
                                             &mut schema,
                                         );

@@ -6,7 +6,11 @@
 //! 3. `#[serde(default)]` / `#[serde(default = "fn_name")]` attributes
 //!    (the function variant needs a parsed file AST)
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::Arc,
+};
 
 use crate::{
     parser::{
@@ -80,17 +84,55 @@ pub(super) fn process_default_functions(
     );
 }
 
+/// Component name → the `#[serde(default = "fn")]` values `#[derive(Schema)]`
+/// resolved for it ([`crate::metadata::StructMetadata::field_defaults`]),
+/// for every component that has any.
+pub type StoredDefaults = Arc<HashMap<String, BTreeMap<String, serde_json::Value>>>;
+
+thread_local! {
+    static STORED_DEFAULTS: RefCell<StoredDefaults> = RefCell::new(Arc::default());
+}
+
+/// The stored defaults of every `metadata` struct that has any.
+pub fn stored_defaults_of(metadata: &crate::metadata::CollectedMetadata) -> StoredDefaults {
+    Arc::new(
+        metadata
+            .structs
+            .iter()
+            .filter(|meta| !meta.field_defaults.is_empty())
+            .map(|meta| (meta.name.clone(), meta.field_defaults.clone()))
+            .collect(),
+    )
+}
+
+/// The installed stored-default map (for handing to worker threads).
+pub fn snapshot_stored_defaults() -> StoredDefaults {
+    STORED_DEFAULTS.with(|slot| Arc::clone(&slot.borrow()))
+}
+
+/// Install `defaults` on this thread; returns the previous map.
+pub fn install_stored_defaults(defaults: StoredDefaults) -> StoredDefaults {
+    STORED_DEFAULTS.with(|slot| slot.replace(defaults))
+}
+
 /// The field defaults of a generic instantiation (`Tree<i32>`, its
-/// substituted definition `item`) in the view being built: the same
-/// `#[schema(default)]` / `#[serde(default)]` type defaults the generic
-/// component gets. There is no stored-default map or file AST for an
-/// instance, so a `#[serde(default = "fn")]` value stays undocumented.
-pub fn instance_defaults(item: &syn::ItemStruct, schema: &mut vespera_core::schema::Schema) {
+/// substituted definition `item`) of the component `generic` in the view
+/// being built: the same `#[schema(default)]` / `#[serde(default)]` defaults
+/// the generic component gets, `#[serde(default = "fn")]` values included —
+/// read from the generic component's stored defaults (installed for the
+/// generation, see [`install_stored_defaults`]).
+pub fn instance_defaults(
+    generic: &str,
+    item: &syn::ItemStruct,
+    schema: &mut vespera_core::schema::Schema,
+) {
+    let stored = snapshot_stored_defaults();
+    let empty = BTreeMap::new();
     process_default_functions_for(
         item,
         None,
         schema,
-        &BTreeMap::new(),
+        stored.get(generic).unwrap_or(&empty),
         crate::parser::schema::request_view::current_side(),
     );
 }

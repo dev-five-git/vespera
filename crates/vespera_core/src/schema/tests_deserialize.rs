@@ -249,3 +249,26 @@ fn ref_with_sibling_type_or_any_of_round_trips(
     let again: Schema = serde_json::from_value(output.clone()).unwrap();
     assert_eq!(serde_json::to_value(&again).unwrap(), output);
 }
+
+/// `propertyNames` reads into [`Schema::property_names`] and writes back in
+/// place (after `maxProperties`); a schema without it never emits the key.
+#[test]
+fn property_names_round_trips() {
+    let input = json!({
+        "type": "object",
+        "additionalProperties": {"type": "null"},
+        "maxProperties": 1,
+        "propertyNames": {"not": {"enum": ["A", "B"]}}
+    });
+    let schema: Schema = serde_json::from_value(input.clone()).unwrap();
+    let Some(SchemaRef::Inline(names)) = &schema.property_names else {
+        panic!("propertyNames must deserialize inline: {schema:?}");
+    };
+    assert!(names.not.is_some());
+    assert_eq!(serde_json::to_value(&schema).unwrap(), input);
+    assert!(
+        !serde_json::to_string(&Schema::object())
+            .unwrap()
+            .contains("propertyNames")
+    );
+}

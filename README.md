@@ -393,6 +393,14 @@ field (e.g. `"age"`, `"tags[1]"`). Malformed JSON syntax (`400`), a missing
 or unsupported `Content-Type` (`415`) and body-limit errors keep axum's
 default rejection.
 
+**Non-finite floats:** `Query` / `Form` / `Path` (and multipart text fields)
+parse `f32` / `f64` with `str::parse`, which accepts `NaN`, `inf` and
+`-infinity` (JSON bodies cannot carry them). Only a float field with a
+`#[schema(minimum = ..)]` / `#[schema(maximum = ..)]` bound rejects a
+non-finite value (`"not a finite number"`, `422`); an unbounded float field
+hands `NaN` / `±inf` to the handler. Give the field a bound, or reject it with
+`#[garde(custom(..))]` (an error unless `value.is_finite()`).
+
 #### Context-aware validation (`ValidatedWith<C, T>`)
 
 `ValidatedWith<C, T>` works like `Validated<T>`, but validates with a context
