@@ -86,7 +86,7 @@ not from their defining submodule.
 | `f32`, `f64` | `{ type: "number" }` |
 | `bool` | `{ type: "boolean" }` |
 | `Vec<T>` | `{ type: "array", items: T }` |
-| `Option<T>` | T schema (nullable in parent) |
+| `Option<T>` | T schema made nullable: `type: [T, "null"]`; a `$ref` (or a composition) becomes `anyOf: [<schema>, { type: "null" }]` |
 | `HashMap<K,V>` | `{ type: "object", additionalProperties: V }` |
 | Custom struct | `{ $ref: "#/components/schemas/Name" }` |
 

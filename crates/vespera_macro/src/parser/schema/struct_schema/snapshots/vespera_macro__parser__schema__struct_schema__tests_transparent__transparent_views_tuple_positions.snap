@@ -1,0 +1,42 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_transparent.rs
+assertion_line: 54
+expression: both_views(src)
+---
+struct Pair(#[schema(min_length = 1)] String, #[doc = " The count."] #[garde(range(max = 9))] u8);
+response: {
+  "type": "array",
+  "prefixItems": [
+    {
+      "type": "string",
+      "minLength": 1
+    },
+    {
+      "type": "integer",
+      "format": "uint8",
+      "description": "The count.",
+      "minimum": 0,
+      "maximum": 9
+    }
+  ],
+  "minItems": 2,
+  "maxItems": 2
+}
+request: {
+  "type": "array",
+  "prefixItems": [
+    {
+      "type": "string",
+      "minLength": 1
+    },
+    {
+      "type": "integer",
+      "format": "uint8",
+      "description": "The count.",
+      "minimum": 0,
+      "maximum": 9
+    }
+  ],
+  "minItems": 2,
+  "maxItems": 2
+}

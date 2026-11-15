@@ -7,7 +7,9 @@
 //! find:
 //!
 //! 1. a `type` item in the handler's own module (unless that module imports
-//!    the name from another crate: `use axum::response::Result;`), then
+//!    the name from another crate: `use axum::response::Result;`, or declares
+//!    a struct / enum / union of that name, or imports one from the module
+//!    that declares it: then the name is that type, not an alias), then
 //! 2. a single, unambiguous `type` item anywhere in the handler's file or
 //!    under the crate's `src/` (two different definitions with the same name
 //!    are left unexpanded).
@@ -214,10 +216,23 @@ fn find_alias<'a>(
         if let Some(alias) = items.iter().find_map(|item| alias_item(item, name)) {
             return Some((alias, scope.clone()));
         }
-        // `use axum::response::Result;` — the name is another crate's item,
-        // so a same-named alias elsewhere in this crate is unrelated.
-        if import_kind(items, name) == Some(Import::External) {
+        // A struct / enum of that name in the handler's module (or imported
+        // from the module that declares one) is the return type itself.
+        if declares_nominal(items, name) {
             return None;
+        }
+        match import_kind(items, name) {
+            // `use axum::response::Result;` — the name is another crate's
+            // item, so a same-named alias elsewhere in this crate is
+            // unrelated.
+            Some(Import::External) => return None,
+            Some(Import::Local)
+                if import_parent(items, name)
+                    .is_some_and(|module| nominal_in_module(name, &module, scope, src_dir)) =>
+            {
+                return None;
+            }
+            _ => {}
         }
     }
     let mut definitions: Vec<Definition<'a>> = Vec::new();
@@ -329,6 +344,77 @@ fn collect_aliases<'a>(
             innermost,
         )
     }));
+}
+
+/// Whether `items` declare a non-test struct / enum / union `name`.
+fn declares_nominal(items: &[syn::Item], name: &str) -> bool {
+    items.iter().any(|item| match item {
+        syn::Item::Struct(item) => item.ident == name && !attrs_test_only(&item.attrs),
+        syn::Item::Enum(item) => item.ident == name && !attrs_test_only(&item.attrs),
+        syn::Item::Union(item) => item.ident == name && !attrs_test_only(&item.attrs),
+        _ => false,
+    })
+}
+
+/// The module a plain `use` among `items` imports `name` from (`models` for
+/// `use crate::models::ApiResponse;`). `None` without such an import, for a
+/// rename / glob, and when the parent is `crate` / `self` / `super`.
+fn import_parent(items: &[syn::Item], name: &str) -> Option<String> {
+    /// `Some(parent)` once the import of `name` is found (stops the walk).
+    #[allow(clippy::option_option)]
+    fn walk(
+        tree: &syn::UseTree,
+        parent: Option<&syn::Ident>,
+        name: &str,
+    ) -> Option<Option<String>> {
+        match tree {
+            syn::UseTree::Path(path) => walk(&path.tree, Some(&path.ident), name),
+            syn::UseTree::Name(used) => (used.ident == name).then(|| {
+                parent
+                    .filter(|parent| !is_local_root(parent))
+                    .map(|parent| syn::ext::IdentExt::unraw(parent).to_string())
+            }),
+            syn::UseTree::Group(group) => {
+                group.items.iter().find_map(|tree| walk(tree, parent, name))
+            }
+            syn::UseTree::Rename(_) | syn::UseTree::Glob(_) => None,
+        }
+    }
+    items
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Use(item_use) => walk(&item_use.tree, None, name),
+            _ => None,
+        })
+        .flatten()
+}
+
+/// Whether a module named `module` (an inline `mod` of the handler's file,
+/// or a file / inline module under `src_dir`) declares a struct / enum /
+/// union `name`.
+fn nominal_in_module(name: &str, module: &str, scope: &Scope<'_>, src_dir: Option<&Path>) -> bool {
+    fn walk(items: &[syn::Item], own: Option<&str>, name: &str, module: &str) -> bool {
+        (own == Some(module) && declares_nominal(items, name))
+            || items.iter().any(|item| match item {
+                syn::Item::Mod(syn::ItemMod {
+                    attrs,
+                    ident,
+                    content: Some((_, inner)),
+                    ..
+                }) if !attrs_test_only(attrs) => {
+                    walk(inner, Some(&ident.to_string()), name, module)
+                }
+                _ => false,
+            })
+    }
+    walk(&scope.file.items, None, name, module)
+        || src_dir.is_some_and(|src_dir| {
+            file_cache::list_rs_files(src_dir).iter().any(|path| {
+                parsed_with(path, name).is_some_and(|file| {
+                    walk(&file.items, file_module(path).as_deref(), name, module)
+                })
+            })
+        })
 }
 
 /// `crate` / `self` / `super`: a path root inside the current crate.
@@ -715,6 +801,47 @@ mod tests {
             Some(src)
         ));
     }
+
+    /// A struct named like a crate-wide alias — declared in the handler's
+    /// module, or imported from the module (file or inline) that declares
+    /// it — is the return type itself; an import from a module without such
+    /// a struct still finds the alias.
+    #[rstest]
+    #[case::declared_here("pub struct ApiResponse<T>(T);", false)]
+    #[case::declared_enum_here("pub enum ApiResponse<T> { A(T) }", false)]
+    #[case::declared_union_here("pub union ApiResponse<T> { a: T }", false)]
+    #[case::test_only_struct("#[cfg(test)] pub struct ApiResponse<T>(T);", true)]
+    #[case::imported_from_file("use crate::models::ApiResponse;", false)]
+    #[case::imported_from_self("use self::ApiResponse;", true)]
+    #[case::imported_from_inline_module(
+        "mod inner { pub struct ApiResponse<T>(T); } use inner::ApiResponse;",
+        false
+    )]
+    #[case::imported_from_alias_module("use crate::legacy::ApiResponse;", true)]
+    #[case::imported_through_group("use crate::{models::{ApiResponse}};", false)]
+    #[case::renamed_import("use crate::models::Other as ApiResponse;", true)]
+    fn same_named_struct_stops_crate_wide_lookup(#[case] handler: &str, #[case] expands: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path();
+        std::fs::write(
+            src.join("legacy.rs"),
+            "pub type ApiResponse<T> = Result<Json<T>, LegacyError>;",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("models.rs"),
+            "pub struct ApiResponse<T> { data: T } mod nested { struct Unrelated; }",
+        )
+        .unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let file: syn::File = syn::parse_str(handler).unwrap();
+        let mut sig: syn::Signature = syn::parse_str("fn h() -> ApiResponse<u8>").unwrap();
+        assert_eq!(
+            expand_return_type_alias(&mut sig, Some(&file), Some(src)),
+            expands
+        );
+    }
+
     /// An alias of an alias is resolved where the outer alias is defined
     /// (the handler's `use axum::response::Result` does not apply inside
     /// `error.rs`); `use error::Result` next to `mod error;` is this crate's

@@ -82,10 +82,13 @@ pub(super) enum FlatPart {
     Opaque(SchemaRef),
 }
 
-/// Classify a `#[serde(flatten)]` field on `side`.
+/// Classify a `#[serde(flatten)]` field on `side`; an `omittable` member
+/// (`skip_serializing(_if)` in the response view) is optional like a
+/// flattened `Option`.
 pub(super) fn flatten_part(
     field: &syn::Field,
     side: SerdeSide,
+    omittable: bool,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> FlatPart {
@@ -94,7 +97,8 @@ pub(super) fn flatten_part(
         .value_type
         .as_ref()
         .map_or(&field.ty, |ty| &ty.0);
-    let (ty, optional) = option_inner(declared).map_or((declared, false), |inner| (inner, true));
+    let (ty, optional) =
+        option_inner(declared).map_or((declared, omittable), |inner| (inner, true));
     let custom = constraints.is_any() || extract_field_codec(&field.attrs).custom_for(side);
     let schema = if custom {
         SchemaRef::Inline(Box::default())
@@ -551,6 +555,44 @@ mod tests {
         insta::assert_snapshot!(
             "flatten_unit_struct",
             serde_json::to_string(&schema).unwrap()
+        );
+    }
+
+    /// A flattened member serde may leave out of the output
+    /// (`skip_serializing` / `skip_serializing_if`) requires none of its keys
+    /// in the response view (an opaque member becomes lenient); the request
+    /// view still requires them.
+    #[rstest]
+    #[case::skip_serializing_if("if", r#"skip_serializing_if = "Meta::is_empty""#, "Meta")]
+    #[case::skip_serializing("always", "skip_serializing", "Meta")]
+    #[case::opaque_member("opaque", r#"skip_serializing_if = "Kind::is_none""#, "Kind")]
+    fn omittable_flattened_member_requires_nothing_on_output(
+        #[case] name: &str,
+        #[case] skip: &str,
+        #[case] member: &str,
+    ) {
+        let known = HashSet::from(["Meta".to_string(), "Kind".to_string()]);
+        let definitions = HashMap::from([
+            ("Meta".to_string(), "struct Meta { by: String }".to_string()),
+            (
+                "Kind".to_string(),
+                "#[serde(untagged)] enum Kind { A { a: u8 } }".to_string(),
+            ),
+        ]);
+        let item: syn::ItemStruct = syn::parse_str(&format!(
+            "struct Resp {{ id: u32, #[serde(flatten, {skip})] meta: {member} }}"
+        ))
+        .unwrap();
+        let schema = parse_struct_to_schema(&item, &known, &definitions);
+        let request =
+            request_view::with_request_view(|| parse_struct_to_schema(&item, &known, &definitions));
+        insta::assert_snapshot!(
+            format!("flatten_omittable_{name}"),
+            format!(
+                "response: {}\nrequest: {}",
+                serde_json::to_string(&schema).unwrap(),
+                serde_json::to_string(&request).unwrap()
+            )
         );
     }
 

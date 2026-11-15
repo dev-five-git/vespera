@@ -131,6 +131,12 @@ fn field_json(field_src: &str) -> String {
     "explicit_items_wins",
     "#[schema(min_items = 2)] #[garde(length(min = 1, max = 5))] value: Vec<i32>"
 )]
+#[case::explicit_wins_inner_option(
+    "explicit_wins_inner_option",
+    r#"#[schema(pattern = "^[a-z]+$", format = "hostname")]
+       #[garde(inner(prefix("ab"), ip))]
+       value: Option<String>"#
+)]
 #[case::any_skips_garde(
     "any_skips_garde",
     "#[schema(any)] #[garde(length(min = 1))] value: HashMap<String, i32>"

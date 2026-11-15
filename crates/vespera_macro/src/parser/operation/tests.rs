@@ -656,8 +656,9 @@ fn duplicate_header_parameters_are_deduplicated_case_insensitively() {
         .filter(|parameter| parameter.r#in == ParameterLocation::Header)
         .collect();
     assert_eq!(headers.len(), 1);
-    // Custom header type → named after the binding (first occurrence wins over
-    // the route-site dup, compared case-insensitively).
+    // Custom header type → named after its kebab-cased type (`XTraceId`), not
+    // the binding (first occurrence wins over the route-site dup, compared
+    // case-insensitively).
     assert_eq!(headers[0].name, "x-trace-id");
     assert_eq!(headers[0].description, None);
 }

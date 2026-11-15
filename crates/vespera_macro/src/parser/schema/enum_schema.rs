@@ -64,6 +64,16 @@ fn parse_enum_body(
     if let Some(schema) = unit::parse_serde_repr_enum(enum_item, enum_description.clone()) {
         return schema;
     }
+    // No variant takes part on this side (`enum Never {}`, every variant
+    // `skip`ped): serde accepts / writes no value at all — `{not: {}}`, never
+    // a permissive `{type: string}` or a `discriminator` without `oneOf`.
+    if enum_item.variants.iter().all(variant::is_variant_omitted) {
+        return Schema {
+            description: enum_description,
+            not: Some(SchemaRef::Inline(Box::default())),
+            ..Schema::default()
+        };
+    }
     // Names follow the serde direction of the view being built: the request
     // (`{Name}Input`) view uses the deserialize-side renames.
     let side = super::request_view::current_side();
@@ -750,8 +760,10 @@ mod tests {
             &HashSet::<String>::new(),
             &HashMap::<String, String>::new(),
         );
-        // Empty enum should have no enum values
-        assert!(schema.r#enum.is_none() || schema.r#enum.as_ref().unwrap().is_empty());
+        // An uninhabited enum accepts no value at all (not any string).
+        assert!(schema.r#enum.is_none());
+        assert_eq!(schema.schema_type, None);
+        assert!(schema.not.is_some());
     }
 
     // Test enum with all struct variants having empty properties
