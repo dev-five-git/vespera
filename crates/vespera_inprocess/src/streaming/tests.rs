@@ -517,11 +517,63 @@ async fn batch_is_capped_at_the_chunk_size(
     #[case] expected_outcome: StreamOutcome,
     #[case] expected_calls: usize,
 ) {
-    static BIG: [u8; crate::DEFAULT_STREAMING_CHUNK_BYTES] =
-        [b'x'; crate::DEFAULT_STREAMING_CHUNK_BYTES];
-    let half = &BIG[..=(crate::streaming_chunk_bytes() / 2)];
+    // Sized from the RESOLVED chunk size (`VESPERA_STREAMING_CHUNK_BYTES`
+    // may move it anywhere in 4 KiB..=8 MiB), never a fixed array.
+    static HALF: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    let half: &'static [u8] =
+        HALF.get_or_init(|| vec![b'x'; crate::streaming_chunk_bytes() / 2 + 1]);
     let (outcome, calls) = scripted(vec![Step::Data(half), Step::Data(half)], true, break_at).await;
     assert_eq!(outcome, expected_outcome);
     assert_eq!(calls.len(), expected_calls);
     assert!(calls.iter().all(|c| c.len() == half.len()));
+}
+
+/// `send_frame` on a full channel: waits for space (`true` once the
+/// receiver makes room), gives up once the dispatch finished (`false`, the
+/// frame is dropped), and reports a dropped receiver as `false`.
+#[rstest::rstest]
+#[case::space_frees(false, true)]
+#[case::dispatch_finishes(true, false)]
+fn send_frame_waits_for_space_until_the_dispatch_finished(
+    #[case] finish: bool,
+    #[case] expected: bool,
+) {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let inline = InlineState::new(false);
+    assert!(super::producer::send_frame(
+        &tx,
+        Ok(Bytes::from_static(b"a")),
+        &inline
+    ));
+    let sender = {
+        let inline = Arc::clone(&inline);
+        std::thread::spawn(move || super::producer::send_frame(&tx, Ok(Bytes::new()), &inline))
+    };
+    // Let the sender park on the full channel first (either order is
+    // correct: `send_frame` re-checks after arming its wake-ups).
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    if finish {
+        inline.finish();
+    } else {
+        assert!(rx.try_recv().is_ok());
+    }
+    assert_eq!(sender.join().unwrap(), expected);
+    let (closed_tx, closed_rx) = tokio::sync::mpsc::channel(1);
+    drop(closed_rx);
+    assert!(!super::producer::send_frame(
+        &closed_tx,
+        Ok(Bytes::new()),
+        &inline
+    ));
+}
+
+/// A channel already full when the dispatch has finished is given up on
+/// without parking.
+#[test]
+fn send_frame_on_a_full_channel_after_finish_gives_up_at_once() {
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    let inline = InlineState::new(false);
+    assert!(super::producer::send_frame(&tx, Ok(Bytes::new()), &inline));
+    inline.finish();
+    assert!(!super::producer::send_frame(&tx, Ok(Bytes::new()), &inline));
 }

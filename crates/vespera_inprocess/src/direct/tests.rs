@@ -356,6 +356,8 @@ async fn legacy_overflow_of_a_materialised_response_reports_its_size() {
 /// `out` buffers never makes a caller retry (re-run) a failing handler.
 #[test]
 fn synthesized_post_handler_wires_fit_the_minimum_direct_out() {
+    // Without `runtime` nothing is pushed below.
+    #[cfg_attr(not(feature = "runtime"), allow(unused_mut, clippy::useless_vec))]
     let mut wires = vec![
         crate::wire::panic_error_wire("panic in Rust engine"),
         timeout_wire(),

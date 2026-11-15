@@ -38,17 +38,38 @@ fn declarations(src: &str) -> Vec<String> {
         .collect()
 }
 
-/// `#define VESPERA_* <int>` values.
+/// `#define VESPERA_* <int>` values.  Panics on any other `#define` — a
+/// value that is not a (parenthesised) decimal integer, or a valueless one
+/// besides the `VESPERA_H` include guard — so a new define can never be
+/// skipped silently by the comparisons below.
 fn defines(src: &str) -> BTreeMap<String, i64> {
     strip_comments(src)
         .lines()
         .filter_map(|l| l.trim().strip_prefix("#define "))
         .filter_map(|l| {
-            let (name, value) = l.split_once(' ')?;
+            let Some((name, value)) = l.trim().split_once(' ') else {
+                assert_eq!(l.trim(), "VESPERA_H", "valueless #define");
+                return None;
+            };
             let value = value.trim().trim_start_matches('(').trim_end_matches(')');
-            Some((name.to_owned(), value.parse().ok()?))
+            let parsed = value
+                .parse()
+                .unwrap_or_else(|_| panic!("#define {name} {value}: not a decimal integer"));
+            Some((name.to_owned(), parsed))
         })
         .collect()
+}
+
+#[test]
+#[should_panic(expected = "not a decimal integer")]
+fn a_non_decimal_define_is_not_skipped() {
+    let _ = defines("#define VESPERA_H\n#define VESPERA_FLAG 0x10\n");
+}
+
+#[test]
+#[should_panic(expected = "valueless #define")]
+fn a_valueless_define_other_than_the_guard_is_not_skipped() {
+    let _ = defines("#define VESPERA_SOMETHING\n");
 }
 
 #[test]

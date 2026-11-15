@@ -349,7 +349,8 @@ fn bench_request_headers(c: &mut Criterion) {
 }
 
 /// One header with a very large value (the wire header is capped at 1 MiB): plain ASCII, Unicode-heavy (2/3/4-byte
-/// UTF-8, escaped surrogate pairs) and escape-heavy (quote, backslash, control).
+/// UTF-8, which `serde_json` writes raw: no `\uXXXX` escapes, so no escaped surrogate pairs either) and escape-heavy
+/// (quote, backslash, control).
 fn bench_request_header_value(c: &mut Criterion) {
     install_default();
     let runtime = Runtime::new().expect("runtime");

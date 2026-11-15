@@ -370,9 +370,18 @@ fn header_field_len_sum(header: &WireRequestHeader<'_>) -> usize {
         + header.path.len()
         + header.query.len()
         + header.app.as_deref().map_or(0, str::len)
+        + header.remote_addr.as_deref().map_or(0, str::len)
+        + header.scheme.as_deref().map_or(0, str::len)
         + usize::from(header.v);
     for (name, value) in &header.headers {
         acc += name.len() + value.len();
+    }
+    if let Some(principal) = &header.principal {
+        acc += principal.name.len();
+        acc += principal.authorities.iter().map(|a| a.len()).sum::<usize>();
+        for (key, value) in &principal.attributes {
+            acc += key.len() + value.len();
+        }
     }
     acc
 }
@@ -399,4 +408,22 @@ pub fn bench_write_serde(
     metadata: &ResponseMetadata,
 ) -> usize {
     write_wire_header_into_slice_serde(out, status, headers, metadata)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bench_parse_hand, bench_parse_serde};
+
+    /// Both A/B arms materialise EVERY field — the optional connection and
+    /// principal fields included — and agree; a parse error is `usize::MAX`.
+    #[test]
+    fn parse_arms_sum_every_field() {
+        let header = br#"{"v":1,"method":"GET","path":"/p","query":"q","app":"ab","headers":{"k":"vv"},"remote_addr":"1.2.3.4:5","scheme":"https","principal":{"name":"nm","authorities":["r1","r22"],"attributes":{"t":"xyz"}}}"#;
+        // v 1 + GET 3 + /p 2 + q 1 + ab 2 + k/vv 3 + addr 9 + https 5
+        // + nm 2 + r1/r22 5 + t/xyz 4
+        assert_eq!(bench_parse_hand(header), 37);
+        assert_eq!(bench_parse_serde(header), 37);
+        assert_eq!(bench_parse_hand(b"{"), usize::MAX);
+        assert_eq!(bench_parse_serde(b"{"), usize::MAX);
+    }
 }

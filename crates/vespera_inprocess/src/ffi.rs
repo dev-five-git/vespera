@@ -273,8 +273,15 @@ fn dispatch_direct(input: RequestInput<'_>, out: &mut [u8]) -> DirectWriteResult
 /// The host's completion target for one async dispatch.  Delivered exactly
 /// once: explicitly, or — when the task is dropped first (runtime
 /// shutdown) — with a `503` from `Drop`.
+///
+/// It also owns the dispatch's in-flight slot and releases it right before
+/// the callback on BOTH paths (as in JNI `dispatchAsync`): a callback that
+/// dispatches again must not find its own finished request still counted —
+/// not even when a shutdown drops the task mid-await, where the order the
+/// task's locals drop in would otherwise run the callback first.
 struct Completion {
     target: Option<(VesperaCallback, *mut c_void)>,
+    permit: Option<AsyncPermit>,
 }
 
 // SAFETY: the C contract requires `user_data` to be usable from any thread
@@ -284,6 +291,7 @@ unsafe impl Send for Completion {}
 
 impl Completion {
     fn deliver(&mut self, wire: Vec<u8>) {
+        drop(self.permit.take());
         if let Some((callback, user_data)) = self.target.take() {
             let (ptr, len) = into_raw_wire(wire);
             // SAFETY: a host-supplied callback honouring the header's
@@ -319,23 +327,17 @@ fn prepare_async(input: RequestInput<'_>) -> Result<AsyncClaim, Vec<u8>> {
 }
 
 /// The spawned async dispatch: poll it under `catch_unwind` (a handler
-/// panic answers a `500` panic wire), release the in-flight slot, deliver,
-/// then release the lease so a shutdown drain waits for the callback too.
-/// The slot goes first (as in JNI `dispatchAsync`): a callback that
-/// dispatches again must not find its own finished request still counted.
-async fn run_async(
-    input: Vec<u8>,
-    permit: AsyncPermit,
-    lease: RuntimeLease,
-    mut completion: Completion,
-) {
+/// panic answers a `500` panic wire), deliver (which releases the in-flight
+/// slot first, see [`Completion`]), then release the lease so a shutdown
+/// drain waits for the callback too.  Dropped mid-await by a shutdown,
+/// `completion` (the last parameter) drops before `lease`: same order.
+async fn run_async(input: Vec<u8>, lease: RuntimeLease, mut completion: Completion) {
     let mut dispatch = Box::pin(crate::dispatch_from_bytes_async(input));
     let wire = std::future::poll_fn(|cx| {
         catch_unwind(AssertUnwindSafe(|| dispatch.as_mut().poll(cx)))
             .unwrap_or_else(|_| Poll::Ready(panic_wire()))
     })
     .await;
-    drop(permit);
     completion.deliver(wire);
     drop(lease);
 }
@@ -368,16 +370,16 @@ pub unsafe extern "C" fn vespera_dispatch_async(
     };
     let mut completion = Completion {
         target: Some((callback, user_data)),
+        permit: None,
     };
     // SAFETY: the caller's contract on `request`.
     let input = unsafe { request_slice(request, request_len) };
     match catch_unwind(|| prepare_async(input)).unwrap_or_else(|_| Err(panic_wire())) {
         Err(wire) => completion.deliver(wire),
-        Ok((input, permit, lease)) => drop(
-            lease
-                .handle()
-                .spawn(run_async(input, permit, lease, completion)),
-        ),
+        Ok((input, permit, lease)) => {
+            completion.permit = Some(permit);
+            drop(lease.handle().spawn(run_async(input, lease, completion)));
+        }
     }
     VESPERA_OK
 }

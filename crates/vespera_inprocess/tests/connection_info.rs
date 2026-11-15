@@ -61,9 +61,14 @@ const EXPECTED: &str = "[2001:db8::1]:51000|https";
 #[case::with_fields(WITH_CONN, 200, Some(EXPECTED))]
 #[case::address_only(r#","remote_addr":"203.0.113.9:80""#, 200, Some("203.0.113.9:80|-"))]
 #[case::unparseable_address_is_ignored(
-    r#","remote_addr":"not-an-addr","scheme":"gopher""#,
+    r#","remote_addr":"not-an-addr","scheme":"https""#,
     500,
     None
+)]
+#[case::unsupported_scheme_is_ignored(
+    r#","remote_addr":"203.0.113.9:80","scheme":"gopher""#,
+    200,
+    Some("203.0.113.9:80|-")
 )]
 #[case::absent(r"", 500, None)]
 #[tokio::test]
