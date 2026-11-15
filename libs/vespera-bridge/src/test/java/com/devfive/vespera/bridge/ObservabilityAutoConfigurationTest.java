@@ -11,7 +11,6 @@ import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Field;
 import java.time.Duration;
-import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -50,16 +49,14 @@ class ObservabilityAutoConfigurationTest {
 
     @Test
     void controllerReportsToTheMicrometerTimerAndEchoesTheRequestId() {
-        runner.withUserConfiguration(RegistryConfig.class).run(ctx -> {
+        // The autoconfigured controller itself: its observers come from the
+        // context (observers.orderedStream()), not a hand-built list.
+        runner.withUserConfiguration(RegistryConfig.class)
+                .withPropertyValues("vespera.bridge.exposed-apps=public").run(ctx -> {
             VesperaProxyController controller = ctx.getBean(VesperaProxyController.class);
             MockHttpServletRequest request = new MockHttpServletRequest("GET", "/x");
-            // An unknown app is answered by the proxy itself (no native call).
+            // An app outside exposed-apps is answered by the proxy itself (no native call).
             request.addHeader("X-Vespera-App", "nope");
-            controller = new VesperaProxyController(
-                    new HeaderAppNameResolver("X-Vespera-App", List.of("public")),
-                    ctx.getBean(DispatchModeResolver.class), Runnable::run, true, 0, 0,
-                    ctx.getBean(VesperaBridgeProperties.class).getRequestId().effectiveHeader(),
-                    List.of(ctx.getBean(MicrometerDispatchObserver.class)));
             MockHttpServletResponse response = new MockHttpServletResponse();
             controller.proxy(request, response);
 
@@ -141,14 +138,21 @@ class ObservabilityAutoConfigurationTest {
         assertFalse(VesperaBridgeAutoConfiguration.autoInit("  "));
         Field loaded = VesperaBridge.class.getDeclaredField("loaded");
         loaded.setAccessible(true);
+        Field nativeLoaded = VesperaBridge.class.getDeclaredField("nativeLoaded");
+        nativeLoaded.setAccessible(true);
         boolean previous = loaded.getBoolean(null);
+        boolean previousNative = nativeLoaded.getBoolean(null);
         try {
             loaded.setBoolean(null, true);
             assertTrue(VesperaBridge.isInitialized());
             assertFalse(VesperaBridgeAutoConfiguration.autoInit("demo"));
-            // No cdylib in the unit suite: shutdown0 is unlinked and reported as false.
+            // No cdylib in the unit suite: with the library marked loaded,
+            // shutdown0 is unlinked and reported as false.
+            nativeLoaded.setBoolean(null, true);
             assertFalse(VesperaBridge.shutdown(Duration.ofSeconds(-1)));
+            assertFalse(VesperaBridge.isShutdown());
         } finally {
+            nativeLoaded.setBoolean(null, previousNative);
             loaded.setBoolean(null, previous);
         }
         assertFalse(VesperaBridge.shutdown(Duration.ofSeconds(1)), "not loaded: no-op");

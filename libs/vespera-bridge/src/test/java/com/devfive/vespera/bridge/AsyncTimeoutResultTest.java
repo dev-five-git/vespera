@@ -46,7 +46,7 @@ class AsyncTimeoutResultTest {
     void timeoutAnswersAPlainText503WithTheRequestId() throws Exception {
         ProxyServletResponse proxied = new ProxyServletResponse(
                 new MockHttpServletResponse(), "X-Request-Id", "rid-42");
-        DeferredResult<ResponseEntity<?>> result = VesperaProxyController.newAsyncResult(proxied);
+        DeferredResult<ResponseEntity<?>> result = AsyncProxyResponses.newAsyncResult(proxied);
         AtomicBoolean timeoutCallback = new AtomicBoolean();
         result.onTimeout(() -> timeoutCallback.set(true));
 
@@ -64,7 +64,7 @@ class AsyncTimeoutResultTest {
     void timeoutWithoutARequestIdHeaderOmitsIt() throws Exception {
         ProxyServletResponse proxied = new ProxyServletResponse(new MockHttpServletResponse(), null, null);
         ResponseEntity<?> entity = assertInstanceOf(ResponseEntity.class,
-                timeOut(VesperaProxyController.newAsyncResult(proxied)));
+                timeOut(AsyncProxyResponses.newAsyncResult(proxied)));
         assertEquals(503, entity.getStatusCode().value());
         assertNull(entity.getHeaders().getFirst("X-Request-Id"));
     }

@@ -353,14 +353,25 @@ public class VesperaBridgeAutoConfiguration {
      * {@code vespera} health indicator with Spring Boot Actuator).
      */
     @Bean
-    public org.springframework.boot.CommandLineRunner vesperaBridgeStartupCheck() {
+    public org.springframework.boot.CommandLineRunner vesperaBridgeStartupCheck(
+            org.springframework.beans.factory.ObjectProvider<VesperaProxyController> proxies) {
         return args -> {
             if (!VesperaBridge.isInitialized()) {
                 org.slf4j.LoggerFactory.getLogger(VesperaBridgeAutoConfiguration.class).warn(
-                        "vespera native library is not initialized: the proxy answers 503 until "
-                                + "VesperaBridge.init(...) runs. Call it before SpringApplication.run "
-                                + "or set vespera.bridge.library-name.");
+                        startupWarning(proxies.getIfAvailable() != null));
             }
         };
+    }
+
+    /**
+     * The not-initialized startup WARN: names the proxy only when one exists
+     * ({@code vespera.bridge.controller-enabled=false} leaves only
+     * {@link VesperaClient}).
+     */
+    static String startupWarning(boolean proxy) {
+        return "vespera native library is not initialized: "
+                + (proxy ? "the proxy answers 503" : "VesperaClient requests fail")
+                + " until VesperaBridge.init(...) runs. Call it before SpringApplication.run "
+                + "or set vespera.bridge.library-name.";
     }
 }

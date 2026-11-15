@@ -15,8 +15,11 @@ final class HttpMethods {
     }
 
     /**
-     * Whether {@code method} is idempotent per RFC 9110
-     * (GET / HEAD / PUT / DELETE / OPTIONS). Idempotent requests are not
+     * Whether {@code method} is one of the idempotent methods of RFC 9110
+     * §9.2.2 this proxy treats as such: GET / HEAD / PUT / DELETE / OPTIONS.
+     * TRACE (idempotent and safe in the RFC) is deliberately excluded here and
+     * in {@link #isSafe}: the proxy never gives it a fast path, so it takes
+     * the conservative {@code SYNC} route. Idempotent requests are not
      * necessarily replay-identical, so this is NOT the DIRECT overflow-retry
      * gate. {@code null} is treated as non-idempotent.
      */
@@ -32,8 +35,10 @@ final class HttpMethods {
     }
 
     /**
-     * Whether {@code method} is "safe" per RFC 9110 §9.2.1
-     * (GET / HEAD / OPTIONS) — not intended to mutate server state. Re-running
+     * Whether {@code method} is one of the "safe" methods of RFC 9110 §9.2.1
+     * this proxy treats as such: GET / HEAD / OPTIONS (TRACE deliberately
+     * excluded, see {@link #isIdempotent}) — not intended to mutate server
+     * state. Re-running
      * it can still yield a different response (timestamps, random IDs).
      *
      * <p>This is the correct gate for the DIRECT overflow retry, which

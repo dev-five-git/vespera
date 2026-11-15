@@ -256,6 +256,49 @@ class VesperaNativeLoaderTest {
     }
 
     @Test
+    void invalidNativeDirBecomesAnUnsatisfiedLinkErrorNamingTheSetting() {
+        Map<String, String> props = new HashMap<>();
+        props.put(VesperaNativeLoader.NATIVE_DIR_PROPERTY, "bad\u0000dir");
+        UnsatisfiedLinkError invalid = assertThrows(UnsatisfiedLinkError.class,
+                () -> VesperaNativeLoader.resolveExtractionBaseDir(props::get, key -> null));
+        assertTrue(invalid.getMessage().contains(VesperaNativeLoader.NATIVE_DIR_PROPERTY), invalid.getMessage());
+        assertTrue(invalid.getMessage().contains(VesperaNativeLoader.NATIVE_DIR_ENV), invalid.getMessage());
+        assertTrue(invalid.getCause() instanceof java.nio.file.InvalidPathException);
+        props.put(VesperaNativeLoader.NATIVE_DIR_PROPERTY, "fine");
+        assertEquals(Path.of("fine"), VesperaNativeLoader.resolveExtractionBaseDir(props::get, key -> null));
+    }
+
+    @Test
+    void groupWritableAncestorOfThePrivateBaseFallsBack() throws Exception {
+        assumeTrue(posix(), "POSIX file permissions required");
+        Path root = Files.createTempDirectory("vespera-native-ancestor-");
+        Path extracted = null;
+        try {
+            // /shared/apps (group-writable, not sticky) / native (private).
+            Path shared = root.resolve("apps");
+            Files.createDirectory(shared);
+            Files.setPosixFilePermissions(shared, PosixFilePermissions.fromString("rwxrwxr-x"));
+            Path base = shared.resolve("native");
+            assertThrows(VesperaNativeLoader.UnsafeDirectoryException.class, () -> {
+                Files.createDirectory(base, PosixFilePermissions.asFileAttribute(
+                        PosixFilePermissions.fromString("rwx------")));
+                VesperaNativeLoader.requireSafeAncestors(base);
+            });
+            extracted = extractLib(base);
+            assertFalse(extracted.startsWith(base), "a base whose ancestor others can rename into is never used");
+
+            Files.setPosixFilePermissions(shared, PosixFilePermissions.fromString("rwxr-xr-x"));
+            VesperaNativeLoader.requireSafeAncestors(base);
+            assertFalse(VesperaNativeLoader.sticky(shared));
+        } finally {
+            if (extracted != null) {
+                deleteTree(extracted.getParent());
+            }
+            deleteTree(root);
+        }
+    }
+
+    @Test
     void userNameSanitizationNeverYieldsAnEmptyOrDotComponent() {
         assertEquals("user", VesperaNativeLoader.sanitizeUserName(null));
         assertEquals("user", VesperaNativeLoader.sanitizeUserName("  "));

@@ -134,7 +134,7 @@ class NativePlatformTest {
         "linux-x86_64, x86_64-unknown-linux-gnu, linux-x86_64",
         "linux-x86_64, x86_64-unknown-linux-musl, linux-x86_64-musl",
         "linux-aarch64, aarch64-unknown-linux-musl, linux-aarch64-musl",
-        "linux-armv7, armv7-unknown-linux-musleabihf, linux-armv7-musl",
+        "linux-arm, armv7-unknown-linux-musleabihf, linux-arm-musl",
         "linux-aarch64-musl, aarch64-unknown-linux-musl, linux-aarch64-musl",
         // An explicit -musl key with a custom target spec is kept as is.
         "linux-x86_64-musl, my-custom-target, linux-x86_64-musl",
@@ -195,6 +195,25 @@ class NativePlatformTest {
             ),
             glibc,
         )
+    }
+
+    @ParameterizedTest
+    @CsvSource(
+        "macos-arm64, macos-aarch64",
+        "linux-amd64, linux-x86_64",
+        "linux-armv7, linux-arm",
+        "linux-armhf-musl, linux-arm-musl",
+        "windows-arm64, windows-aarch64",
+    )
+    fun rejectsArchAliasesTheLoaderNeverLooksUp(key: String, suggested: String) {
+        val alias = assertThrows<IllegalArgumentException> { NativePlatform.osOfPlatformKey(key) }
+        assertTrue(alias.message!!.contains("use '$suggested'"), alias.message)
+    }
+
+    @ParameterizedTest
+    @CsvSource("linux-arm, linux", "linux-riscv64, linux", "linux-x86-musl, linux", "macos-x86_64, macos")
+    fun acceptsTheArchNamesTheLoaderLooksUp(key: String, os: String) {
+        assertEquals(os, NativePlatform.osOfPlatformKey(key))
     }
 
     @Test

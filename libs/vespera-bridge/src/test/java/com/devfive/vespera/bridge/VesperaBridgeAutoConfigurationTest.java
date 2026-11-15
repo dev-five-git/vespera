@@ -72,6 +72,31 @@ class VesperaBridgeAutoConfigurationTest {
     }
 
     @Test
+    void startupWarningNamesTheProxyOnlyWhenOneExists() {
+        org.junit.jupiter.api.Assumptions.assumeFalse(VesperaBridge.isInitialized(),
+                "the warning is only logged while the library is not loaded");
+        ch.qos.logback.classic.Logger logger = (ch.qos.logback.classic.Logger)
+                org.slf4j.LoggerFactory.getLogger(VesperaBridgeAutoConfiguration.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> warnings =
+                new ch.qos.logback.core.read.ListAppender<>();
+        warnings.start();
+        logger.addAppender(warnings);
+        try {
+            runner.withPropertyValues("vespera.bridge.controller-enabled=false").run(ctx -> ctx
+                    .getBean("vesperaBridgeStartupCheck", org.springframework.boot.CommandLineRunner.class).run());
+            runner.run(ctx -> ctx
+                    .getBean("vesperaBridgeStartupCheck", org.springframework.boot.CommandLineRunner.class).run());
+            assertEquals(2, warnings.list.size());
+            assertEquals(VesperaBridgeAutoConfiguration.startupWarning(false),
+                    warnings.list.get(0).getFormattedMessage());
+            assertFalse(warnings.list.get(0).getFormattedMessage().contains("proxy"));
+            assertTrue(warnings.list.get(1).getFormattedMessage().contains("the proxy answers 503"));
+        } finally {
+            logger.detachAppender(warnings);
+        }
+    }
+
+    @Test
     void defaultResolverIsSmart() {
         runner.run(
                 ctx ->
@@ -447,6 +472,12 @@ class VesperaBridgeAutoConfigurationTest {
                         assertEquals(128L, pendingValue(VesperaNativeConfig.ASYNC_MAX_IN_FLIGHT));
                         assertEquals(32L, pendingValue(VesperaNativeConfig.MAX_REQUEST_PRODUCERS));
                         assertTrue(ctx.containsBean("vesperaBridgeNativeSettings"));
+                        // "Before the controller": the controller is created
+                        // with the settings bean as a dependency.
+                        assertTrue(java.util.Arrays.asList(ctx.getBeanFactory()
+                                        .getDependenciesForBean("vesperaProxyController"))
+                                        .contains("vesperaBridgeNativeSettings"),
+                                "the proxy controller depends on the forwarded native settings");
                         VesperaBridgeProperties.Native n =
                                 ctx.getBean(VesperaBridgeProperties.class).getNative();
                         assertEquals(3, n.getWorkerThreads());

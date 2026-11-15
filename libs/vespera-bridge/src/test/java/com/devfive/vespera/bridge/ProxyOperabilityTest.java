@@ -405,6 +405,26 @@ class ProxyOperabilityTest {
     }
 
     @Test
+    void proxyRestoresTheCallersMdcRequestId() throws Exception {
+        AtomicReference<String> mdcSeen = new AtomicReference<>();
+        VesperaProxyController controller = controller(request -> {
+            mdcSeen.set(MDC.get(VesperaProxyController.MDC_REQUEST_ID));
+            throw new IllegalStateException("resolver exploded");
+        }, new RecordingObserver());
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/x");
+        request.addHeader("X-Request-Id", "req-inner");
+        MDC.put(VesperaProxyController.MDC_REQUEST_ID, "filter-id");
+        try {
+            controller.proxy(request, new MockHttpServletResponse());
+            assertEquals("req-inner", mdcSeen.get());
+            assertEquals("filter-id", MDC.get(VesperaProxyController.MDC_REQUEST_ID),
+                    "a filter's own id survives the proxy call");
+        } finally {
+            MDC.remove(VesperaProxyController.MDC_REQUEST_ID);
+        }
+    }
+
+    @Test
     void unexpectedFailuresBecomeA500AndCommittedOnesAreRethrown() throws Exception {
         AtomicReference<String> mdcSeen = new AtomicReference<>();
         RecordingObserver observer = new RecordingObserver();
@@ -420,6 +440,7 @@ class ProxyOperabilityTest {
         assertEquals("vespera dispatch failed", response.getContentAsString(),
                 "the exception message stays in the log");
         String generated = response.getHeader("X-Request-Id");
+        org.junit.jupiter.api.Assertions.assertNotNull(generated, "a request id is generated and echoed");
         assertEquals(generated, mdcSeen.get(), "the id is in the MDC while dispatching");
         assertEquals(500, observer.events.get(0).status());
 

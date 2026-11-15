@@ -16,8 +16,8 @@ import org.junit.jupiter.api.Test;
 /**
  * The manual JSON encoder (exercised through {@link VesperaBridge#encodeRequest}
  * and {@link VesperaWireCodec#writePrincipal}) must encode <em>unpaired</em>
- * UTF-16 surrogates as U+FFFD (the replacement character, like
- * {@code String.getBytes(UTF_8)}): neither an invalid 3-byte UTF-8 sequence
+ * UTF-16 surrogates as U+FFFD (the replacement character; note that
+ * {@code String.getBytes(UTF_8)} would emit {@code '?'} instead): neither an invalid 3-byte UTF-8 sequence
  * (not valid UTF-8) nor a {@code \\uD800} escape (valid JSON, but it names no
  * Unicode scalar value, so the Rust wire parser answers {@code 400}).
  */

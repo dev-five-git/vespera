@@ -118,28 +118,29 @@ class VesperaBridgePlugin : Plugin<Project> {
                 override fun execute(t: Task) {
                     t.group = "vespera"
                     t.description = "Fail when a cdylib bundleNativeLib should bundle was not built."
-                    // Resolved during task configuration so the action below
-                    // captures only plain values (no extension / project
-                    // reference at execution time — configuration-cache safe).
-                    // Never `get()` here: a native-jar consumer (`crateName` +
-                    // `bundleNative = false`, no cargoRoot / targetDir) still
-                    // realises this task on `tasks --all` / IDE sync, so a
-                    // missing location only fails when the task runs.
-                    val base = targetBase.orNull
-                    val crate = ext.crateName.orNull
-                    val profile = ext.cargoProfile.get()
-                    // Prebuilt-only jar: extraNativeLibs without cargoRoot /
-                    // targetDir bundles just those libraries, no local build.
-                    val prebuiltDir = if (base == null) ext.extraNativeLibs.orNull?.asFile else null
-                    val expected = if (base == null) {
-                        emptyList()
-                    } else {
-                        plannedBuilds.orNull.orEmpty().map { build ->
-                            ExpectedLibrary(File(base, build.relativePath), build.triple)
-                        }
-                    }
+                    // The action captures providers only (no extension /
+                    // project reference — configuration-cache safe), read when
+                    // the task runs: a build script that realises this task
+                    // before its `vespera {}` block (an eager
+                    // `tasks.withType<...> {}`) still sees the final values. A
+                    // native-jar consumer (`crateName` + `bundleNative = false`,
+                    // no cargoRoot / targetDir) realises it on `tasks --all` /
+                    // IDE sync too, so a missing location only fails when the
+                    // task runs.
+                    val baseP = targetBase
+                    val crateP = ext.crateName
+                    val profileP = ext.cargoProfile
+                    val extraP = ext.extraNativeLibs
+                    val expectedP = expectedLibraries(targetBase, plannedBuilds)
                     t.doLast(object : org.gradle.api.Action<Task> {
                         override fun execute(@Suppress("UNUSED_PARAMETER") task: Task) {
+                            val base = baseP.orNull
+                            val crate = crateP.orNull
+                            val profile = profileP.get()
+                            // Prebuilt-only jar: extraNativeLibs without cargoRoot /
+                            // targetDir bundles just those libraries, no local build.
+                            val prebuiltDir = if (base == null) extraP.orNull?.asFile else null
+                            val expected = expectedP.get()
                             if (prebuiltDir != null) {
                                 requirePrebuilt(prebuiltDir)
                                 return
@@ -170,18 +171,24 @@ class VesperaBridgePlugin : Plugin<Project> {
                     t.into(generatedResourcesDir)
                     // Locally built libraries win over extraNativeLibs.
                     t.duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-                    // `orNull` for the same reason as verifyNativeLibs: without a
-                    // location there is nothing to copy, and verifyNativeLibs
-                    // (a dependency) fails with the reason before this runs.
-                    val base = targetBase.orNull
-                    if (base != null) {
-                        plannedBuilds.orNull.orEmpty().forEach { build ->
-                            t.from(File(base, build.relativePath)) { into("native/${build.platform}") }
-                        }
+                    // Lazy sources, resolved when the task runs (an eager
+                    // `tasks.withType<Sync> {}` above the `vespera {}` block
+                    // realises this task before cargoRoot / crateName are
+                    // set). Without a location there is nothing to copy, and
+                    // verifyNativeLibs (a dependency) fails with the reason
+                    // before this runs.
+                    val planned = targetBase.zip(plannedBuilds) { base, builds ->
+                        builds.associate { build -> pathKey(File(base, build.relativePath)) to build.platform }
+                    }.orElse(emptyMap())
+                    t.from(planned.map { files -> files.keys.map(::File) }) {
+                        eachFile(object : org.gradle.api.Action<org.gradle.api.file.FileCopyDetails> {
+                            override fun execute(details: org.gradle.api.file.FileCopyDetails) {
+                                val platform = planned.get().getValue(pathKey(details.file))
+                                details.path = "native/$platform/${details.name}"
+                            }
+                        })
                     }
-                    if (ext.extraNativeLibs.isPresent) {
-                        t.from(ext.extraNativeLibs) { include("native/**") }
-                    }
+                    t.from(ext.extraNativeLibs.map { listOf(it) }.orElse(emptyList())) { include("native/**") }
                 }
             }
         )
@@ -245,6 +252,18 @@ class VesperaBridgePlugin : Plugin<Project> {
     internal companion object {
         /** Classpath resource (next to this class) holding the bridge version this plugin was built with. */
         const val VERSION_RESOURCE = "vespera-bridge-plugin.properties"
+
+        /** Normalised absolute path: matches a planned library to the file Gradle copies. */
+        fun pathKey(file: File): String = file.absoluteFile.normalize().path
+
+        /** Every library `bundleNativeLib` expects (empty without a location), evaluated lazily. */
+        private fun expectedLibraries(
+            targetBase: org.gradle.api.provider.Provider<File>,
+            plannedBuilds: org.gradle.api.provider.Provider<List<NativePlatform.NativeBuild>>,
+        ): org.gradle.api.provider.Provider<List<ExpectedLibrary>> =
+            targetBase.zip(plannedBuilds) { base, builds ->
+                builds.map { build -> ExpectedLibrary(File(base, build.relativePath), build.triple) }
+            }.orElse(emptyList())
 
         /**
          * Fail `verifyNativeLibs` when the cdylib cannot be located at all.

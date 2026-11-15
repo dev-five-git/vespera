@@ -5,6 +5,7 @@ import java.io.InputStream;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
@@ -51,8 +52,11 @@ import java.util.regex.Pattern;
  * <p><strong>Private directories (POSIX).</strong> Both the base and the
  * hash directory are created {@code 0700} and then verified — not a
  * symbolic link, owned by the current user, not group/other-writable —
- * before a cached copy is trusted, so another local user can neither plant
- * nor swap the library between the digest check and {@code System.load}.
+ * before a cached copy is trusted, and every ancestor of the base must be
+ * owned by this user or {@code root} and not group/other-writable unless
+ * sticky (see {@link #requireSafeAncestors}), so another local user can
+ * neither plant nor swap the library between the digest check and
+ * {@code System.load}.
  * "The current user" never comes from the directory being verified while
  * a trusted source answers ({@link CurrentUser}).
  * The extracted file is made owner read/execute only ({@code 0500}).  When
@@ -171,22 +175,48 @@ final class VesperaNativeLoader {
             }
             return in;
         };
-        Path baseDir = resolveBaseDir(System::getProperty, System::getenv);
         Path library;
         try {
-            library = extract(resourcePath, filename, baseDir, opener);
-        } catch (IOException e) {
-            UnsatisfiedLinkError ule = new UnsatisfiedLinkError("Extract failed: " + e.getMessage()
-                    + " (extraction dir " + baseDir + "; override with -D" + NATIVE_DIR_PROPERTY
-                    + " or " + NATIVE_DIR_ENV + ")");
-            ule.initCause(e);
-            throw ule;
+            // Inside the try: an invalid directory must still close the
+            // bundled resource stream opened above.
+            Path baseDir = resolveExtractionBaseDir(System::getProperty, System::getenv);
+            try {
+                library = extract(resourcePath, filename, baseDir, opener);
+            } catch (IOException e) {
+                UnsatisfiedLinkError ule = new UnsatisfiedLinkError("Extract failed: " + e.getMessage()
+                        + " (extraction dir " + baseDir + "; override with -D" + NATIVE_DIR_PROPERTY
+                        + " or " + NATIVE_DIR_ENV + ")");
+                ule.initCause(e);
+                throw ule;
+            }
         } finally {
             closeQuietly(first[0]);
         }
         loadExtracted(library, System::load, Files::deleteIfExists);
-        cleanupLegacyExtractions(
-                Paths.get(System.getProperty("java.io.tmpdir")), System.currentTimeMillis());
+        try {
+            cleanupLegacyExtractions(
+                    Paths.get(System.getProperty("java.io.tmpdir")), System.currentTimeMillis());
+        } catch (InvalidPathException ignored) {
+            // Best-effort cleanup; the library is already loaded.
+        }
+    }
+
+    /**
+     * {@link #resolveBaseDir}, with a path the file system rejects (literal
+     * quotes from a Windows shell: {@code -Dvespera.native.dir="C:\native"})
+     * turned into the usual {@link UnsatisfiedLinkError} naming the settings
+     * to fix instead of a raw {@link InvalidPathException}.
+     */
+    static Path resolveExtractionBaseDir(UnaryOperator<String> properties, UnaryOperator<String> env) {
+        try {
+            return resolveBaseDir(properties, env);
+        } catch (InvalidPathException invalid) {
+            UnsatisfiedLinkError ule = new UnsatisfiedLinkError("Invalid native extraction directory: "
+                    + invalid.getMessage() + " (set -D" + NATIVE_DIR_PROPERTY + " or " + NATIVE_DIR_ENV
+                    + " to a valid directory path, or fix java.io.tmpdir)");
+            ule.initCause(invalid);
+            throw ule;
+        }
     }
 
     /**
@@ -361,6 +391,7 @@ final class VesperaNativeLoader {
         try {
             createPrivateDirectories(baseDir);
             requirePrivateDirectory(baseDir);
+            requireSafeAncestors(baseDir);
             Path dir = baseDir.resolve(hashDirName);
             try {
                 Files.createDirectory(dir, PosixFilePermissions.asFileAttribute(OWNER_ONLY_DIR));
@@ -539,6 +570,46 @@ final class VesperaNativeLoader {
         if (!attrs.owner().equals(me)) {
             throw new UnsafeDirectoryException(
                     dir + " is owned by " + attrs.owner().getName() + ", not " + me.getName());
+        }
+    }
+
+    /**
+     * POSIX: no other user can swap a component of the path to
+     * {@code baseDir} (a private directory inside a group-writable
+     * {@code /shared/apps} could be renamed away and replaced, and
+     * {@code System.load} resolves the path by name). Every ancestor of its
+     * real path is owned by this user or {@code root} and is not
+     * group/other-writable unless it has the sticky bit ({@code /tmp}, where
+     * only an entry's owner may rename it — the next component is checked
+     * for its owner in turn).
+     */
+    static void requireSafeAncestors(Path baseDir) throws IOException {
+        UserPrincipal me = currentUser(baseDir);
+        for (Path dir = baseDir.toRealPath().getParent(); dir != null; dir = dir.getParent()) {
+            PosixFileAttributes attrs =
+                    Files.readAttributes(dir, PosixFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            String owner = attrs.owner().getName();
+            if (!attrs.owner().equals(me) && !"root".equals(owner)) {
+                throw new UnsafeDirectoryException(
+                        dir + " (an ancestor of " + baseDir + ") is owned by " + owner);
+            }
+            Set<PosixFilePermission> perms = attrs.permissions();
+            if ((perms.contains(PosixFilePermission.GROUP_WRITE)
+                    || perms.contains(PosixFilePermission.OTHERS_WRITE)) && !sticky(dir)) {
+                throw new UnsafeDirectoryException(dir + " (an ancestor of " + baseDir
+                        + ") is group/other-writable without the sticky bit ("
+                        + PosixFilePermissions.toString(perms) + ")");
+            }
+        }
+    }
+
+    /** Whether {@code dir} has the sticky bit ({@code false} when the file system cannot tell). */
+    static boolean sticky(Path dir) {
+        try {
+            return Files.getAttribute(dir, "unix:mode", LinkOption.NOFOLLOW_LINKS) instanceof Integer mode
+                    && (mode & 01000) != 0;
+        } catch (IOException | UnsupportedOperationException | IllegalArgumentException unknown) {
+            return false;
         }
     }
 

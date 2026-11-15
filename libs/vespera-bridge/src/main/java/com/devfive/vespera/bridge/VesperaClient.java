@@ -198,6 +198,39 @@ public final class VesperaClient {
         return percentEncode(Objects.requireNonNull(segment, "segment"));
     }
 
+    /** U+FFFD as UTF-8: the replacement for an unpaired surrogate. */
+    private static final byte[] UTF8_REPLACEMENT = {(byte) 0xEF, (byte) 0xBF, (byte) 0xBD};
+
+    /**
+     * UTF-8 bytes of {@code s}, an unpaired UTF-16 surrogate encoded as U+FFFD
+     * like the wire codec's JSON encoder does for the path and headers.
+     * ({@code String.getBytes(UTF_8)} would send {@code '?'} instead, so the
+     * same character arrived differently in the path and in the query / body.)
+     */
+    static byte[] utf8(String s) {
+        int n = s.length();
+        int i = 0;
+        while (i < n && !Character.isSurrogate(s.charAt(i))) {
+            i++;
+        }
+        if (i == n) {
+            return s.getBytes(StandardCharsets.UTF_8);
+        }
+        try {
+            java.nio.ByteBuffer out = StandardCharsets.UTF_8.newEncoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPLACE)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPLACE)
+                    .replaceWith(UTF8_REPLACEMENT)
+                    .encode(java.nio.CharBuffer.wrap(s));
+            byte[] bytes = new byte[out.remaining()];
+            out.get(bytes);
+            return bytes;
+        } catch (java.nio.charset.CharacterCodingException impossible) {
+            // REPLACE never reports.
+            throw new IllegalStateException(impossible);
+        }
+    }
+
     /** RFC 3986 percent-encoding of UTF-8 bytes; unreserved characters stay literal. */
     static String percentEncode(String s) {
         int n = s.length();
@@ -209,7 +242,7 @@ public final class VesperaClient {
             return s;
         }
         StringBuilder sb = new StringBuilder(n + 16).append(s, 0, i);
-        byte[] bytes = s.substring(i).getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = utf8(s.substring(i));
         for (byte b : bytes) {
             int c = b & 0xFF;
             if (c < 0x80 && isUnreserved((char) c)) {

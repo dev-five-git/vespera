@@ -1,8 +1,13 @@
 package com.devfive.vespera.bridge;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.InvalidMediaTypeException;
 import org.springframework.http.MediaType;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
@@ -11,6 +16,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * The WebFlux counterpart of {@link FormBodySupport}: recovers an
@@ -70,6 +76,60 @@ final class ReactiveFormBodySupport {
                 .defaultIfEmpty(body)
                 // Nothing to recover (e.g. the body was never read as a form).
                 .onErrorReturn(body);
+    }
+
+    /** Body of the proxy's {@code 500} for a consumed multipart body (WebFlux). */
+    static final String MULTIPART_CONSUMED_MSG = "vespera: the multipart request body was consumed before the "
+            + "proxy could forward it (exchange.getMultipartData() in a WebFilter)";
+
+    private static final Logger log = LoggerFactory.getLogger(ReactiveFormBodySupport.class);
+
+    private static final AtomicBoolean MULTIPART_WARNED = new AtomicBoolean();
+
+    /**
+     * {@code body}, unless the request declares a {@code multipart/*} body
+     * that came back short (empty, or shorter than the declared
+     * {@code contentLength}; {@code 0} = declared empty): a {@code WebFilter}
+     * consumed it through {@code exchange.getMultipartData()} (Spring
+     * Security's {@code ServerCsrfTokenRequestAttributeHandler} with
+     * {@code setTokenFromMultipartDataEnabled(true)}). Unlike a form, the raw
+     * multipart body cannot be rebuilt faithfully, so — like the servlet
+     * proxy ({@link MultipartBodySupport}) — this throws a {@code 500} with a
+     * one-time WARN instead of forwarding an empty body to Rust.
+     */
+    static byte[] rejectConsumedMultipart(ServerWebExchange exchange, byte[] body, long contentLength) {
+        boolean shortRead = contentLength != 0
+                && (body.length == 0 || (contentLength > 0 && body.length < contentLength));
+        if (!shortRead || !isMultipart(exchange)) {
+            return body;
+        }
+        String hint = "{} {}: multipart body was already consumed (exchange.getMultipartData()) before the "
+                + "vespera proxy ran, so it cannot be forwarded to Rust; answering 500. Check for a WebFilter "
+                + "reading multipart data (e.g. a CSRF token handler with setTokenFromMultipartDataEnabled(true)) "
+                + "and exclude the proxied paths from it.";
+        String method = exchange.getRequest().getMethod().name();
+        String path = exchange.getRequest().getPath().value();
+        if (MULTIPART_WARNED.compareAndSet(false, true)) {
+            log.warn(hint, method, path);
+        } else if (log.isDebugEnabled()) {
+            log.debug(hint, method, path);
+        }
+        throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, MULTIPART_CONSUMED_MSG);
+    }
+
+    /**
+     * reactor-netty refuses a second read of a body a filter already drained
+     * ({@code IllegalStateException: Rejecting additional inbound receiver}):
+     * for a multipart request that is the consumed body
+     * {@link #rejectConsumedMultipart} answers; any other failure propagates.
+     */
+    static Mono<byte[]> secondMultipartRead(ServerWebExchange exchange, IllegalStateException failure) {
+        return isMultipart(exchange) ? Mono.just(VesperaWireCodec.EMPTY_BODY) : Mono.error(failure);
+    }
+
+    private static boolean isMultipart(ServerWebExchange exchange) {
+        String contentType = exchange.getRequest().getHeaders().getFirst(HttpHeaders.CONTENT_TYPE);
+        return contentType != null && contentType.strip().regionMatches(true, 0, "multipart/", 0, 10);
     }
 
     /** Re-encode {@code form} as an {@code application/x-www-form-urlencoded} body. */

@@ -106,9 +106,17 @@ public final class VesperaRequest {
         return this;
     }
 
-    /** Append an already-encoded query fragment verbatim (e.g. {@code "a=1&b=2"}). */
+    /**
+     * Append an already-encoded query fragment verbatim (e.g. {@code "a=1&b=2"}).
+     *
+     * @throws IllegalArgumentException when it contains {@code '#'} (send it as {@code %23})
+     */
     public VesperaRequest rawQuery(String encodedQuery) {
         Objects.requireNonNull(encodedQuery, "encodedQuery");
+        if (encodedQuery.indexOf('#') >= 0) {
+            // The URI parser would cut the query at '#' (a fragment) and drop the rest.
+            throw new IllegalArgumentException("query must not contain a fragment ('#'): " + encodedQuery);
+        }
         if (!encodedQuery.isEmpty()) {
             appendQuerySeparator();
             query.append(encodedQuery);
@@ -185,7 +193,7 @@ public final class VesperaRequest {
 
     /** Raw JSON text (sent as UTF-8, not parsed) with {@code content-type: application/json}. */
     public VesperaRequest json(String json) {
-        return body(Objects.requireNonNull(json, "json").getBytes(StandardCharsets.UTF_8),
+        return body(VesperaClient.utf8(Objects.requireNonNull(json, "json")),
                 "application/json");
     }
 
@@ -226,7 +234,13 @@ public final class VesperaRequest {
      */
     public VesperaRequest body(String text, @Nullable String contentType) {
         Objects.requireNonNull(text, "text");
-        return body(text.getBytes(VesperaResponse.charsetOf(contentType)), contentType);
+        java.nio.charset.Charset charset = VesperaResponse.charsetOf(contentType);
+        if (!charset.canEncode()) {
+            throw new IllegalArgumentException("the charset " + charset.name() + " of content type '"
+                    + contentType + "' can only decode; send the body as bytes or use another charset");
+        }
+        return body(charset.equals(StandardCharsets.UTF_8) ? VesperaClient.utf8(text) : text.getBytes(charset),
+                contentType);
     }
 
     /**

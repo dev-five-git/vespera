@@ -567,12 +567,14 @@ fn stream_stashed_body(env: &mut jni::Env<'_>, args: &StashStreamArgs<'_, '_>) {
         return;
     }
     let Some(pending) = crate::jni_impl::direct_stash::take_stashed(args.token) else {
-        notify_local_header(
-            env,
-            args.header_consumer,
-            &vespera_inprocess::error_wire(500, STASH_EXPIRED_MSG),
-            args.flags,
-        );
+        // A shutdown cleared the stash after the overflow was stashed: the
+        // retryable `503` of every other request, not "expired".
+        let wire = if vespera_inprocess::runtime::runtime_shut_down() {
+            runtime_unavailable_wire()
+        } else {
+            vespera_inprocess::error_wire(500, STASH_EXPIRED_MSG)
+        };
+        notify_local_header(env, args.header_consumer, &wire, args.flags);
         return;
     };
     let Ok((header_global, stream_global, jvm, push_buf, push_buf_lease)) =

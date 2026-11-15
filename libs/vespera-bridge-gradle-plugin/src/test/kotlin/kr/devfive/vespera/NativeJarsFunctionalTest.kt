@@ -146,6 +146,38 @@ class NativeJarsFunctionalTest {
     }
 
     @Test
+    fun eagerlyRealisedNativeJarSeesValuesSetAfterIt() {
+        // `tasks.withType<Jar> {}` realises each native jar task the moment
+        // its platform is added, before nativeJarsDir / libName are set.
+        write("prebuilt/native/macos-aarch64/libcustom.dylib", "custom")
+        write("settings.gradle.kts", "rootProject.name = \"myapp-native\"\n")
+        write(
+            "build.gradle.kts",
+            """
+            plugins {
+                base
+                id("kr.devfive.vespera-bridge")
+            }
+            version = "0.1.0"
+            tasks.withType<Jar> { }
+            vespera {
+                crateName.set("demo")
+                bridgeVersion.set("0.0.0-test")
+                nativeJarPlatforms.add("macos-aarch64")
+                nativeJarsDir.set(layout.projectDirectory.dir("prebuilt"))
+                libName.set("custom")
+            }
+            """.trimIndent(),
+        )
+
+        val result = run("nativeJars").build()
+
+        assertEquals(TaskOutcome.SUCCESS, result.task(":nativeJarMacosAarch64")?.outcome)
+        val jar = File(dir, "build/libs/myapp-native-0.1.0-macos-aarch64.jar")
+        assertEquals(listOf("META-INF/MANIFEST.MF", "native/macos-aarch64/libcustom.dylib"), fileEntries(jar))
+    }
+
+    @Test
     fun missingPlatformLibraryFailsWithItsPath() {
         prebuilt(mapOf("linux-x86_64" to "libdemo.so"))
         setUp(

@@ -260,6 +260,12 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_DirectStash_fetch0<'local
 /// its panic guard).
 fn fetch_into(token: jlong, out: &mut [u8]) -> jint {
     let Some(pending) = take_stashed(token) else {
+        // `shutdown_runtime` clears the stash once it has drained the
+        // leases — possibly between `dispatchResumable0` and this fetch:
+        // answer the retryable `503` every other request gets, not "expired".
+        if vespera_inprocess::runtime::runtime_shut_down() {
+            return write_complete_wire(out, &runtime_unavailable_wire());
+        }
         return DIRECT_UNREPRESENTABLE;
     };
     match block_on_shared_runtime(pending.write_into(&mut *out)) {

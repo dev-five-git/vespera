@@ -110,11 +110,16 @@ final class ProxyExchange {
         try {
             return body.get();
         } finally {
-            if (previous == null) {
-                MDC.remove(VesperaProxyController.MDC_REQUEST_ID);
-            } else {
-                MDC.put(VesperaProxyController.MDC_REQUEST_ID, previous);
-            }
+            restoreMdc(previous);
+        }
+    }
+
+    /** Put back the request-id MDC value that was there before ({@code null}: none). */
+    static void restoreMdc(String previous) {
+        if (previous == null) {
+            MDC.remove(VesperaProxyController.MDC_REQUEST_ID);
+        } else {
+            MDC.put(VesperaProxyController.MDC_REQUEST_ID, previous);
         }
     }
 }

@@ -152,6 +152,14 @@ class WireHeaderReaderFuzzTest {
                 () -> decoded(WireHeaderReader.decode(direct, 3, input.length)));
         assertEquals(decodedArray, decodedDirect,
                 () -> "array vs direct decode diverged on " + hex(input));
+        // Heap ByteBuffers: the hasArray() branch, with a zero and a non-zero arrayOffset().
+        Outcome decodedHeap = applyOutcome(iteration, input,
+                () -> decoded(WireHeaderReader.decode(ByteBuffer.wrap(padded), 3, input.length)));
+        ByteBuffer sliced = ByteBuffer.wrap(padded).position(1).slice();
+        Outcome decodedSliced = applyOutcome(iteration, input,
+                () -> decoded(WireHeaderReader.decode(sliced, 2, input.length)));
+        assertEquals(decodedArray, decodedHeap, () -> "array vs heap decode diverged on " + hex(input));
+        assertEquals(decodedArray, decodedSliced, () -> "array vs sliced heap decode diverged on " + hex(input));
     }
 
     private static Ok applyArray(byte[] buf, int off, int len) {

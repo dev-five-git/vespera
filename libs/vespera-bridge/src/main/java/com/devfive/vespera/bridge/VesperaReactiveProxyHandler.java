@@ -259,6 +259,7 @@ public class VesperaReactiveProxyHandler implements WebHandler {
         px.path = pathWithinApplication(request);
         out.applyDefaultRequestId();
         Mono<Void> flow;
+        String previousMdcId = requestId == null ? null : MDC.get(VesperaProxyController.MDC_REQUEST_ID);
         if (requestId != null) {
             MDC.put(VesperaProxyController.MDC_REQUEST_ID, requestId);
         }
@@ -268,7 +269,7 @@ public class VesperaReactiveProxyHandler implements WebHandler {
             flow = Mono.error(failure);
         } finally {
             if (requestId != null) {
-                MDC.remove(VesperaProxyController.MDC_REQUEST_ID);
+                ProxyExchange.restoreMdc(previousMdcId);
             }
         }
         return flow
@@ -320,9 +321,13 @@ public class VesperaReactiveProxyHandler implements WebHandler {
             return resolved == null ? Mono.empty() : resolved;
         }).map(Optional::of).defaultIfEmpty(Optional.empty());
         // A WebFilter (Spring Security's CsrfWebFilter) may have consumed a
-        // form body through exchange.getFormData(): rebuild it from that.
+        // form body through exchange.getFormData(): rebuild it from that. A
+        // consumed multipart body cannot be rebuilt: 500, never forwarded empty.
         Mono<byte[]> body = readBody(request, declared, cap)
-                .flatMap(read -> ReactiveFormBodySupport.recoverConsumedBody(exchange, read, declared));
+                .onErrorResume(IllegalStateException.class,
+                        failure -> ReactiveFormBodySupport.secondMultipartRead(exchange, failure))
+                .flatMap(read -> ReactiveFormBodySupport.recoverConsumedBody(exchange, read, declared))
+                .map(read -> ReactiveFormBodySupport.rejectConsumedMultipart(exchange, read, declared));
         return Mono.zip(body, principal).flatMap(parts -> {
             byte[] bodyBytes = parts.getT1();
             // A rebuilt form body can differ in length from the declared one.
@@ -581,10 +586,22 @@ public class VesperaReactiveProxyHandler implements WebHandler {
         return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, ProxyErrors.NOT_INITIALIZED);
     }
 
-    /** Drops body writes once the Rust header forbids a body ({@code 204}, {@code 304}, ...). */
+    /**
+     * The explicit-stream body: drops body writes once the Rust header forbids
+     * a body ({@code 204}, {@code 304}, ...) and holds the first body bytes
+     * back until the native flush hint (the Rust body would wait), more than
+     * {@value #STREAM_CHUNK_BYTES} bytes, or the end of the body. Without the
+     * hold, a body that fails before its first flush hint would still reach
+     * the client: {@code outputStreamPublisher} flushes its own buffer when
+     * the failed handler leaves it, which commits Rust's status and headers
+     * before {@link #fail} can answer the proxy {@code 500}. Used by one
+     * streaming thread at a time.
+     */
     static class BodyGate extends OutputStream {
         final OutputStream delegate;
         volatile boolean permitsBody = true;
+        /** Held body bytes; {@code null} once released (pass-through from then on). */
+        private java.io.ByteArrayOutputStream pending = new java.io.ByteArrayOutputStream();
 
         BodyGate(OutputStream delegate) {
             this.delegate = delegate;
@@ -599,27 +616,47 @@ public class VesperaReactiveProxyHandler implements WebHandler {
             permit(WireResponseWriter.responsePermitsBody(acc.status, method));
         }
 
+        /** Whether body bytes are still held back (test hook). */
+        boolean pending() {
+            return pending != null;
+        }
+
+        private void release() throws IOException {
+            java.io.ByteArrayOutputStream bytes = pending;
+            pending = null;
+            if (bytes != null && bytes.size() > 0) {
+                delegate.write(bytes.toByteArray());
+            }
+        }
+
         /** The native dispatch returned normally: the body is complete. */
         void finish() throws IOException {
-            // Pass-through: nothing held back.
+            release();
         }
 
         @Override
         public void write(int b) throws IOException {
-            if (permitsBody) {
-                delegate.write(b);
-            }
+            write(new byte[] {(byte) b}, 0, 1);
         }
 
         @Override
         public void write(byte[] b, int off, int len) throws IOException {
-            if (permitsBody && len > 0) {
+            if (!permitsBody || len <= 0) {
+                return;
+            }
+            if (pending == null) {
                 delegate.write(b, off, len);
+                return;
+            }
+            pending.write(b, off, len);
+            if (pending.size() > STREAM_CHUNK_BYTES) {
+                release();
             }
         }
 
         @Override
         public void flush() throws IOException {
+            release();
             delegate.flush();
         }
 
