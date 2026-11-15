@@ -511,4 +511,33 @@ mod tests {
             "#[form_data(=)] pub x: i32"
         )));
     }
+
+    /// L4 (round 18): `#[try_from_multipart(strict)]` rejects unknown parts,
+    /// so the schema closes the object as under `deny_unknown_fields` (it
+    /// stayed open); `strict = false` and a broken attribute keep it open.
+    #[rstest::rstest]
+    #[case::strict("#[try_from_multipart(strict)]", true)]
+    #[case::strict_false("#[try_from_multipart(strict = false)]", false)]
+    #[case::broken("#[try_from_multipart(strict = 1)]", false)]
+    #[case::lenient("#[try_from_multipart(rename_all = \"camelCase\")]", false)]
+    fn strict_multipart_closes_the_schema(#[case] attr: &str, #[case] closed: bool) {
+        use std::collections::{HashMap, HashSet};
+        let item: syn::ItemStruct =
+            syn::parse_str(&format!("{attr} struct Up {{ pub name: String }}")).unwrap();
+        assert_eq!(
+            crate::multipart_impl::rejects_unknown_parts(&item.attrs),
+            closed
+        );
+        let schema = crate::parser::parse_struct_to_schema(
+            &item,
+            &HashSet::<String>::new(),
+            &HashMap::<String, String>::new(),
+        );
+        assert_eq!(
+            schema.additional_properties.is_some(),
+            closed,
+            "{:?}",
+            schema.additional_properties
+        );
+    }
 }

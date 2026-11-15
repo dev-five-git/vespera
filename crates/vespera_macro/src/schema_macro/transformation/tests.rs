@@ -281,6 +281,20 @@ fn container_serde_attrs_cases(#[case] name: &str, #[case] struct_attrs: &str) {
     insta::assert_snapshot!(name, render(&container_serde_attrs(&item.attrs, "S")));
 }
 
+/// L6 (round 18): a source `#[serde(remote = "..")]` is not copied (the
+/// DTO got inherent `serialize` / `deserialize` fns for the remote type
+/// instead of `Serialize` / `Deserialize` impls); its other keys are.
+#[test]
+fn container_remote_is_stripped() {
+    let item: syn::ItemStruct =
+        syn::parse_str(r#"#[serde(remote = "chrono::Duration", deny_unknown_fields)] struct S {}"#)
+            .unwrap();
+    assert_eq!(
+        render(&container_serde_attrs(&item.attrs, "S")),
+        "# [serde (deny_unknown_fields)]"
+    );
+}
+
 #[rstest]
 #[case::rename_all_applied(r"", "user_name", "camelCase", r#"# [serde (rename = "userName")]"#)]
 #[case::explicit_rename_wins(

@@ -76,9 +76,18 @@ pub fn build_rename_map(rename: Option<&Vec<(String, String)>>) -> HashMap<Strin
 /// `rename_all` is re-emitted from the effective strategy, `from` /
 /// `try_from` / `into` / `default` require impls (`From`, `TryFrom`, `Into`,
 /// `Default`) the generated type does not have, and `bound` names type
-/// parameters it does not have (a generic source is instantiated).
-const CONTAINER_STRIPPED_KEYS: &[&str] =
-    &["rename_all", "from", "try_from", "into", "default", "bound"];
+/// parameters it does not have (a generic source is instantiated); `remote`
+/// turns the derives into inherent fns for another type (L6, round 18: the
+/// DTO lost its `Serialize` / `Deserialize` impls).
+const CONTAINER_STRIPPED_KEYS: &[&str] = &[
+    "rename_all",
+    "from",
+    "try_from",
+    "into",
+    "default",
+    "bound",
+    "remote",
+];
 
 /// Name of a serde list item (`rename`, `default`, `with`, ...).
 pub(super) fn serde_key(meta: &syn::Meta) -> String {

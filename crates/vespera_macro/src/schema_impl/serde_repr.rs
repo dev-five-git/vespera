@@ -173,23 +173,51 @@ fn declarations(file: &Path) -> Option<std::rc::Rc<Vec<Declaration>>> {
     cached.0.clone()
 }
 
-/// Whether a `#[derive(..)]` among `attrs` names `name` (by any path).
+/// Whether a `#[derive(..)]` among `attrs` names `name` (by any path), also
+/// inside a `#[cfg_attr(pred, derive(..))]` whose predicate is not known to
+/// be false (M2, round 18: such a derive used to be missed).
 fn derives(attrs: &[syn::Attribute], name: &str) -> bool {
-    attrs
-        .iter()
-        .filter(|attr| attr.path().is_ident("derive"))
-        .any(|attr| {
-            let mut found = false;
-            let _ = attr.parse_nested_meta(|meta| {
-                found |= meta
-                    .path
-                    .segments
-                    .last()
-                    .is_some_and(|seg| seg.ident == name);
-                Ok(())
+    attrs.iter().any(|attr| meta_derives(&attr.meta, name))
+}
+
+/// [`derives`] for one attribute body (`derive(..)` / `cfg_attr(..)`).
+fn meta_derives(meta: &syn::Meta, name: &str) -> bool {
+    let Ok(list) = meta.require_list() else {
+        return false;
+    };
+    if list.path.is_ident("cfg_attr") {
+        return list
+            .parse_args_with(parse_cfg_attr)
+            .is_ok_and(|(predicate, metas)| {
+                !crate::schema_macro::cfg_eval::statically_false(&predicate)
+                    && metas.iter().any(|meta| meta_derives(meta, name))
             });
-            found
-        })
+    }
+    let mut found = false;
+    if list.path.is_ident("derive") {
+        let _ = list.parse_nested_meta(|meta| {
+            found |= meta
+                .path
+                .segments
+                .last()
+                .is_some_and(|seg| seg.ident == name);
+            Ok(())
+        });
+    }
+    found
+}
+
+/// The `pred, a, b` of a `cfg_attr(..)`.
+fn parse_cfg_attr(
+    input: syn::parse::ParseStream<'_>,
+) -> syn::Result<(
+    crate::schema_macro::cfg_eval::Predicate,
+    syn::punctuated::Punctuated<syn::Meta, syn::Token![,]>,
+)> {
+    let predicate = input.parse()?;
+    input.parse::<syn::Token![,]>()?;
+    let metas = syn::punctuated::Punctuated::parse_terminated(input)?;
+    Ok((predicate, metas))
 }
 
 #[cfg(test)]
@@ -213,6 +241,20 @@ mod tests {
     )]
     #[case::plain_serde(
         "#[derive(Serialize, Schema)] #[repr(u8)] enum E { A }",
+        &[]
+    )]
+    // M2 (round 18): a `cfg_attr` derive list is read unless its predicate
+    // is known to be false; nested `cfg_attr`s too.
+    #[case::cfg_attr_derive(
+        "#[derive(Schema)] #[non_exhaustive] #[cfg_attr(feature = \"serde\", derive(Serialize_repr, Deserialize_repr))] #[repr(u8)] enum E { A }",
+        &["Serialize_repr", "Deserialize_repr"]
+    )]
+    #[case::nested_cfg_attr_derive(
+        "#[derive(Schema)] #[cfg_attr(unix, cfg_attr(all(), derive(Deserialize_repr)))] #[repr(u8)] enum E { A }",
+        &["Deserialize_repr"]
+    )]
+    #[case::false_cfg_attr_derive(
+        "#[derive(Schema)] #[cfg_attr(any(), derive(Serialize_repr))] #[cfg_attr(broken_repr)] #[cfg_attr(unix, serde(rename_all = \"x\"))] #[repr(u8)] enum E { A }",
         &[]
     )]
     fn copies_serde_repr_derives_from_source(#[case] source: &str, #[case] expected: &[&str]) {
@@ -334,6 +376,10 @@ mod tests {
         Some(vec!["files"])
     )]
     #[case::qualified_derive("#[derive(vespera::Multipart)] struct U { files: Vec<u8> }", Some(vec!["files"]))]
+    #[case::cfg_attr_derive(
+        "#[derive(Schema)] #[cfg_attr(feature = \"mp\", derive(Multipart))] struct U { files: Vec<u8> }",
+        Some(vec!["files"])
+    )]
     #[case::no_vec_field("#[derive(Multipart)] struct U { name: String }", None)]
     #[case::not_multipart(
         "#[derive(Schema)] struct U { files: Vec<u8> } struct Multipart;",

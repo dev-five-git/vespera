@@ -293,6 +293,23 @@ impl CarriedAttrs {
         self
     }
 
+    /// The `#[garde(..)]` rules (`cfg_attr` ones too) with the sibling
+    /// fields they name renamed per `rename_map`
+    /// ([`super::garde_peers::rename_garde_peers`]); returns every name as
+    /// `(peer, matches)`.
+    pub fn rename_garde_peers(
+        &mut self,
+        rename_map: &std::collections::HashMap<String, String>,
+    ) -> Vec<(String, bool)> {
+        let refs = std::cell::RefCell::new(Vec::new());
+        for attr in &mut self.other {
+            *attr = map_garde_metas(attr, &|meta| {
+                super::garde_peers::rename_garde_peers(meta, rename_map, &mut refs.borrow_mut())
+            });
+        }
+        refs.into_inner()
+    }
+
     /// The predicates of the carried `#[cfg_attr(pred, serde(default ..))]`.
     pub fn cfg_serde_default_predicates(&self) -> Vec<Predicate> {
         self.cfg_serde

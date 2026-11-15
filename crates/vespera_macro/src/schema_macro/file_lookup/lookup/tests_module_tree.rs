@@ -631,7 +631,7 @@ fn call_site_definition_prefers_the_local_struct() {
         "{}::RootModel@1:1",
         dir.path().join("src/other.rs").display()
     );
-    let (found, module) = call_site_definition_in(&stored(Some(other.clone())), &ty, &lib)
+    let (found, module) = call_site_definition_in(&stored(Some(other.clone())), &ty, &lib, 0)
         .expect("the call-site file defines RootModel");
     assert!(
         found.definition.contains("RootModel"),
@@ -640,12 +640,40 @@ fn call_site_definition_prefers_the_local_struct() {
     );
     assert_eq!(module, ["crate"]);
     let own = format!("{}::RootModel@2:1", lib.display());
-    assert!(call_site_definition_in(&stored(Some(own)), &ty, &lib).is_none());
-    assert!(call_site_definition_in(&stored(None), &ty, &lib).is_none());
-    assert!(call_site_definition_in(&stored(Some("no-position".into())), &ty, &lib).is_none());
-    assert!(call_site_definition_in(&stored(Some("file@1:1".into())), &ty, &lib).is_none());
+    assert!(call_site_definition_in(&stored(Some(own)), &ty, &lib, 0).is_none());
+    assert!(call_site_definition_in(&stored(None), &ty, &lib, 0).is_none());
+    assert!(call_site_definition_in(&stored(Some("no-position".into())), &ty, &lib, 0).is_none());
+    assert!(call_site_definition_in(&stored(Some("file@1:1".into())), &ty, &lib, 0).is_none());
     let missing: syn::Type = syn::parse_str("Missing").unwrap();
-    assert!(call_site_definition_in(&stored(Some(other)), &missing, &lib).is_none());
+    assert!(call_site_definition_in(&stored(Some(other)), &missing, &lib, 0).is_none());
+}
+
+/// M1 (round 18): an entry of the call-site file itself is trusted only when
+/// the bare name resolves to its module there; in a sibling inline `mod`
+/// the name is that module's own same-named struct (it used to take the
+/// other module's `#[derive(Schema)]` silently).
+#[test]
+fn call_site_definition_checks_the_inline_module_of_an_own_entry() {
+    let (dir, _guard) = temp_crate("lib.rs");
+    let models = dir.path().join("src/models.rs");
+    std::fs::write(
+        &models,
+        "pub mod a {\n    pub struct User { pub x: i32 }\n}\npub mod b {\n    pub struct User { pub y: String }\n    // schema_type!(UserDto from User);\n}\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("src/lib.rs"), "pub mod models;\n").unwrap();
+    bump_epoch();
+    let stored = StructMetadata {
+        source_identity: Some(format!("{}::User@2:16", models.display())),
+        ..StructMetadata::new("User".to_string(), String::new())
+    };
+    let ty: syn::Type = syn::parse_str("User").unwrap();
+    let (found, module) =
+        call_site_definition_in(&stored, &ty, &models, 6).expect("`User` in `mod b` is `b::User`");
+    assert!(found.definition.contains('y'), "{}", found.definition);
+    assert_eq!(module.join("::"), "crate::models::b");
+    // Called inside `mod a`, the name is the stored entry itself.
+    assert!(call_site_definition_in(&stored, &ty, &models, 2).is_none());
 }
 
 /// L6 (round 14): a bare source name follows a `use` import at a file's top

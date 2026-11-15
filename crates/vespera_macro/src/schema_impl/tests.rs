@@ -107,6 +107,16 @@ fn moved_item_replacement(#[case] source: &str, #[case] replaced: bool) {
 #[case::fn_body("fn f() { struct X; } struct X;", 2)]
 #[case::impl_and_const("impl T { fn g() { enum X {} } } const C: () = { struct X; };", 2)]
 #[case::static_and_nested_block("static S: u8 = { if true { struct X; } 0 };", 1)]
+// L5 (round 18): a twin (or module) `#[cfg]` rules out is not counted;
+// an unknown predicate still is.
+#[case::inactive_twin(
+    "#[cfg(any())] struct X; #[cfg(not(any()))] struct X; #[cfg(unix)] enum X {}",
+    2
+)]
+#[case::inactive_module(
+    "#[cfg(any())] mod a { struct X; } #[cfg(all())] mod b { struct X; }",
+    1
+)]
 fn count_items_named_descends_into_nested_items(#[case] source: &str, #[case] expected: usize) {
     let parsed: syn::File = syn::parse_str(source).unwrap();
     assert_eq!(count_items_named(&parsed.items, "X"), expected);

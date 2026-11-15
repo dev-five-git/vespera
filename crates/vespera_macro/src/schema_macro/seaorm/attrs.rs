@@ -144,9 +144,12 @@ pub fn extract_relation_enum(attrs: &[syn::Attribute]) -> Option<String> {
     extract_sea_orm_attr_value(attrs, "relation_enum")
 }
 
-/// Extract the `via_rel` value from a `sea_orm` attribute.
+/// Extract the `via_rel` value from a `sea_orm` attribute, else SeaORM 2's
+/// `relation_reverse` (a `self_ref` relation's `via_rel`; M3, round 18: it
+/// was ignored, so the relation's own field was searched for the key).
 pub fn extract_via_rel(attrs: &[syn::Attribute]) -> Option<String> {
     extract_sea_orm_attr_value(attrs, "via_rel")
+        .or_else(|| extract_sea_orm_attr_value(attrs, "relation_reverse"))
 }
 
 /// Extract `default_value` from a `sea_orm` attribute: a string literal's
@@ -158,6 +161,14 @@ pub fn extract_sea_orm_default_value(attrs: &[syn::Attribute]) -> Option<String>
         let tokens = quote::ToTokens::to_token_stream(expr).to_string();
         Some(tokens.replace(' ', ""))
     })
+}
+
+/// Whether the column has a database default `omit_default` drops it for:
+/// `default_value`, or SeaORM 2's `default_expr = ".."` (an expression, never
+/// fed to the serde / schema default code; L7, round 18: it was ignored).
+pub fn has_sea_orm_database_default(attrs: &[syn::Attribute]) -> bool {
+    extract_sea_orm_default_value(attrs).is_some()
+        || entry(&sea_orm_entries(attrs), "default_expr").is_some_and(|entry| entry.value.is_some())
 }
 
 /// Check if a `sea_orm(default_value)` is a SQL function call: a (possibly
@@ -361,6 +372,22 @@ mod tests {
             syn::parse_quote!(#[sea_orm(via_rel = "Comments")]),
         ];
         assert_eq!(extract_via_rel(&attrs), Some("Comments".to_string()));
+    }
+
+    #[rstest::rstest]
+    #[case::default_value(quote::quote!(#[sea_orm(default_value = 1)]), true)]
+    #[case::default_expr(
+        quote::quote!(#[sea_orm(default_expr = "Expr::current_timestamp()")]),
+        true
+    )]
+    #[case::bare_default_expr(quote::quote!(#[sea_orm(default_expr)]), false)]
+    #[case::none(quote::quote!(#[sea_orm(indexed)]), false)]
+    fn test_has_sea_orm_database_default(
+        #[case] attr: proc_macro2::TokenStream,
+        #[case] expected: bool,
+    ) {
+        let attr: syn::Attribute = syn::parse_quote!(#attr);
+        assert_eq!(has_sea_orm_database_default(&[attr]), expected);
     }
 
     #[test]

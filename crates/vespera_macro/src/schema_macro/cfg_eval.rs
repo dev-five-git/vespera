@@ -63,6 +63,12 @@ pub fn statically_active(predicate: &Predicate) -> bool {
     eval(predicate, memoized_features().as_ref().as_deref()) == Some(true)
 }
 
+/// Whether `predicate` is known to be false (`any()`, `false`, a disabled
+/// `feature = ".."` inside rustc); unknown counts as not false.
+pub fn statically_false(predicate: &Predicate) -> bool {
+    eval(predicate, memoized_features().as_ref().as_deref()) == Some(false)
+}
+
 /// [`enabled_features`], computed once per process (the compiler's command
 /// line cannot change); a per-thread test override of the arguments is read
 /// afresh.

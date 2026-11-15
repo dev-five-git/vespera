@@ -150,18 +150,41 @@ fn module_path_lookup_returns_cached_value() {
 /// L4 (round 13): a probed but MISSING file outside the module directory
 /// (a `#[path = "../generated/models.rs"]` not generated yet) is part of
 /// the fingerprint, so creating it invalidates a cached miss; only the files
-/// actually read used to be covered.
+/// actually read used to be covered.  (L8, round 18: the test only checked
+/// the probe was recorded; it now creates the file and re-resolves.)
 #[test]
 fn missing_out_of_tree_probe_is_fingerprinted() {
     let temp = TempDir::new().unwrap();
     let src = temp.path().join("src");
     std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("lib.rs"),
+        "#[path = \"../generated/models.rs\"]\npub mod models;",
+    )
+    .unwrap();
     let missing = temp.path().join("generated").join("models.rs");
+    let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
     bump_epoch();
-    assert!(crate::schema_macro::file_cache::get_file_content(&missing).is_none());
+    assert!(get_struct_from_schema_path("crate::models::Model").is_none());
     FILE_CACHE.with(|cache| {
-        assert!(out_of_tree_files(&cache.borrow(), &src).contains(&missing));
+        let probes = out_of_tree_files(&cache.borrow(), &src);
+        assert!(
+            probes
+                .iter()
+                .any(|probe| probe.ends_with("generated/models.rs")),
+            "{probes:?}"
+        );
     });
+    std::fs::create_dir_all(missing.parent().unwrap()).unwrap();
+    std::fs::write(&missing, "pub struct Model { pub generated: i32 }").unwrap();
+    bump_epoch();
+    let found = get_struct_from_schema_path("crate::models::Model")
+        .expect("creating the probed file invalidates the cached miss");
+    assert!(
+        found.definition.contains("generated"),
+        "{}",
+        found.definition
+    );
 }
 
 /// L5 (round 13): circular analyses are readable only in their epoch, so

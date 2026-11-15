@@ -15,6 +15,7 @@ use super::file_cache;
 use super::file_lookup::call_site_module;
 use super::from_model::{FieldMapping, generate_from_model_with_relations};
 use super::garde_paths::reroot_garde_attr;
+use super::garde_peers::{PeerContext, PeerRef, check_garde_peers};
 use super::inline_types::{
     generate_inline_relation_type, generate_inline_relation_type_no_relations,
     generate_inline_type_definition,
@@ -25,7 +26,7 @@ use super::module_scope::segment_ident as field_ident;
 use super::same_file_override::maybe_generate_same_file_relation_override;
 use super::seaorm::{
     RelationFieldInfo, convert_relation_type_to_schema_with_info, convert_type_with_chrono,
-    extract_sea_orm_default_value, has_sea_orm_primary_key, primary_key_count,
+    has_sea_orm_database_default, has_sea_orm_primary_key, primary_key_count,
 };
 use super::transformation::{
     OptionWrap, RenameAll, build_omit_set, build_partial_config, build_pick_set, build_rename_map,
@@ -254,6 +255,9 @@ pub fn generate_schema_type_code(
     // error, not a silent no-op).
     let mut dropped: HashMap<String, &'static str> = HashMap::new();
     let mut relation_names: HashSet<String> = HashSet::new();
+    // The sibling fields the carried garde rules name (checked once every
+    // emitted field is known).
+    let mut garde_peer_refs: Vec<PeerRef> = Vec::new();
     // `#[cfg]` twins (one name, several fields): their generated helpers
     // are named by field index, the names would collide otherwise.
     let twin_names: HashSet<String> = {
@@ -306,9 +310,9 @@ pub fn generate_schema_type_code(
                 continue;
             }
 
-            // Apply omit_default: skip fields with sea_orm(default_value) or sea_orm(primary_key)
+            // Apply omit_default: skip fields with sea_orm(default_value / default_expr) or sea_orm(primary_key)
             if input.omit_default
-                && (extract_sea_orm_default_value(&field.attrs).is_some()
+                && (has_sea_orm_database_default(&field.attrs)
                     || has_sea_orm_primary_key(&field.attrs, &field.ty, pk_count))
             {
                 dropped.insert(
@@ -528,6 +532,15 @@ pub fn generate_schema_type_code(
             if should_wrap_option {
                 carried = carried.for_option_wrap(&|name| wrapped_fields.contains(name));
             }
+            if carried.garde {
+                let peers = carried.rename_garde_peers(&rename_map).into_iter();
+                garde_peer_refs.extend(peers.map(|(peer, matches)| PeerRef {
+                    field: rust_field_name.clone(),
+                    field_wrapped: should_wrap_option,
+                    peer,
+                    matches,
+                }));
+            }
             any_deprecated |= carried.deprecated;
             let cfg_serde = carried.cfg_serde_attrs();
             let carried_schema = &carried.schema;
@@ -691,12 +704,28 @@ pub fn generate_schema_type_code(
         &at,
         &source_type_name,
     )?;
+    let emitted: HashSet<String> = (field_mappings.iter())
+        .map(|mapping| strip_raw_prefix_owned(mapping.source_ident.to_string()))
+        .collect();
+    let peer_context = PeerContext {
+        source_fields: &source_field_names,
+        emitted: &emitted,
+        omit: &omit_set,
+        pick: &pick_set,
+        dropped: &dropped,
+        wrapped: &wrapped_fields,
+    };
+    check_garde_peers(&garde_peer_refs, &peer_context, &at)?;
     // Add new fields from `add` parameter
     let add_garde_skip = any_garde.then(|| quote! { #[garde(skip)] });
     for (field_name, field_ty) in input.add.iter().flatten() {
         let field_ident = field_ident(field_name);
+        // A bare `Vec` part reads "no parts" as `[]` (as a source one does).
+        let vec_default = (input.multipart && crate::multipart_impl::is_vec_type(field_ty))
+            .then(|| quote! { #[form_data(default)] });
         let field = quote! {
             #add_garde_skip
+            #vec_default
             pub #field_ident: #field_ty
         };
         field_tokens.push(field.clone());
@@ -932,3 +961,5 @@ mod tests_field_attrs;
 mod tests_refs;
 #[cfg(test)]
 mod tests_round13;
+#[cfg(test)]
+mod tests_round18;

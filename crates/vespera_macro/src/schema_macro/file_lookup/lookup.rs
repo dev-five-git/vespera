@@ -698,7 +698,8 @@ pub fn set_test_call_site_module(module: &str) -> impl Drop {
 /// storage entry `stored` was derived in another file: the struct in scope at
 /// a bare `schema_type!(Dto from User)` is the local one, not a same-named
 /// `#[derive(Schema)]` of another module.  `None` without a call-site file
-/// (unit tests), for an entry of this file, or without a local definition.
+/// (unit tests), for an entry of this file whose module the bare name
+/// resolves to, or without a local definition.
 pub fn call_site_definition(
     stored: &StructMetadata,
     source: &Type,
@@ -706,22 +707,27 @@ pub fn call_site_definition(
 ) -> Option<(StructMetadata, Vec<String>)> {
     proc_macro2::Span::call_site()
         .local_file()
-        .and_then(|call_site| call_site_definition_in(stored, source, &call_site))
+        .and_then(|call_site| call_site_definition_in(stored, source, &call_site, call_site_line()))
 }
 
-/// [`call_site_definition`] with the call-site file passed explicitly.
+/// [`call_site_definition`] with the call-site file and line passed explicitly.
 fn call_site_definition_in(
     stored: &StructMetadata,
     source: &Type,
     call_site: &Path,
+    line: usize,
 ) -> Option<(StructMetadata, Vec<String>)> {
     let identity = stored.source_identity.as_deref()?;
     let (located, _) = identity.rsplit_once('@')?;
     let (file, _) = located.rsplit_once("::")?;
-    if Path::new(file) == call_site {
+    let found = find_struct_with_call_site(source, Some(call_site), line).ok()?;
+    // An entry of this file is the local definition only when the bare name
+    // resolves to its module: in `mod b { schema_type!(Dto from User); }` the
+    // name is `b::User`, not a same-named `#[derive(Schema)]` of `mod a`.
+    if Path::new(file) == call_site && storage_module_path(stored).as_ref() == Some(&found.1) {
         return None;
     }
-    find_struct_with_call_site(source, Some(call_site), call_site_line()).ok()
+    Some(found)
 }
 
 #[cfg(test)]
