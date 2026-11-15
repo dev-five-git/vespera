@@ -187,6 +187,12 @@ jobs:
           cargo test -p vespera --no-default-features --features cron --lib cron
       - name: vespera cron-tz UI cases
         run: cargo test -p vespera --features cron-tz --test trybuild_diagnostics
+      # tarpaulin skips benches and bench.yml only runs vespera_inprocess's
+      # `dispatch`: criterion's test mode runs each vespera bench once, so
+      # their byte-identity guards against the shipped 422 / multipart
+      # envelopes actually execute in CI (a few seconds).
+      - name: vespera bench guards (criterion test mode)
+        run: cargo test -p vespera --benches
       - name: vespera_inprocess without default features / with ffi alone
         run: |
           cargo test -p vespera_inprocess --no-default-features

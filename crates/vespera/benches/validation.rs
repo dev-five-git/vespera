@@ -7,20 +7,20 @@
 //! - `before`: the original implementation — collect every error into an
 //!   owned `Vec<ValidationErrorOut>` (two `String` allocations per error)
 //!   and then `serde_json::to_vec`.
-//! - `after`: the shipped implementation — a fully-borrowing custom
-//!   `Serialize` chain over `&garde::Report` (zero per-error `String`
-//!   allocation, `collect_str` straight into the serializer).
+//! - `after`: the shipped implementation itself
+//!   (`vespera::__validation::validation_error_body`, the body
+//!   `Validated`'s rejection sends) — a fully-borrowing custom `Serialize`
+//!   chain over `&garde::Report` (zero per-error `String` allocation,
+//!   `collect_str` straight into the serializer).
 //!
 //! The delta is the per-error allocation cost VESPERA-04 removes.  Both
 //! arms assert byte-identical output, and the `after` arm is asserted equal
 //! to the body the shipped `Validated<Json<_>>` rejection sends, so the
 //! bench can never silently drift from the real envelope contract.
 
-use std::fmt::Display;
-
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use garde::Validate;
-use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
+use serde::{Deserialize, Serialize};
 use vespera::Validated;
 use vespera::axum::{
     Json,
@@ -85,42 +85,11 @@ fn shipped_rejection_body() -> Vec<u8> {
         })
 }
 
-// ── AFTER: shipped borrowing Serialize chain (mirror of validated.rs) ─
+// ── AFTER: the shipped borrowing Serialize chain ──────────────────────
 
+/// The serializer `Validated`'s rejection sends (not a copy of it).
 fn serialize_after(report: &garde::Report) -> Vec<u8> {
-    struct DisplayValue<T>(T);
-    impl<T: Display> Serialize for DisplayValue<T> {
-        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-            s.collect_str(&self.0)
-        }
-    }
-    struct Envelope<'a>(&'a garde::Report);
-    impl Serialize for Envelope<'_> {
-        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-            let mut env = s.serialize_struct("ValidationEnvelope", 1)?;
-            env.serialize_field("errors", &Errors(self.0))?;
-            env.end()
-        }
-    }
-    struct Errors<'a>(&'a garde::Report);
-    impl Serialize for Errors<'_> {
-        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-            s.collect_seq(self.0.iter().map(|(path, err)| OneError { path, err }))
-        }
-    }
-    struct OneError<'a> {
-        path: &'a garde::Path,
-        err: &'a garde::Error,
-    }
-    impl Serialize for OneError<'_> {
-        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-            let mut e = s.serialize_struct("ValidationError", 2)?;
-            e.serialize_field("message", &DisplayValue(self.err.message()))?;
-            e.serialize_field("path", &DisplayValue(self.path))?;
-            e.end()
-        }
-    }
-    serde_json::to_vec(&Envelope(report)).expect("infallible")
+    vespera::__validation::validation_error_body(report)
 }
 
 // ── BEFORE: original owned-Vec<String> implementation ────────────────

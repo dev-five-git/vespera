@@ -355,7 +355,11 @@ impl Controller {
             // Dropping the guard wakes `idle` waiters when this was the last.
             return None;
         }
-        let run = tokio::spawn((job.run)());
+        // `run` is called inside the spawned task: a hand-built `CronJob`'s
+        // fn may panic before it returns its future, and that panic must
+        // reach the supervisor too instead of ending this job's scheduler.
+        let run_fn = job.run;
+        let run = tokio::spawn(async move { run_fn().await });
         let supervisor = tokio::spawn(async move {
             let _in_flight = in_flight;
             if let Err(error) = run.await

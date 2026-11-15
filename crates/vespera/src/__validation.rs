@@ -23,6 +23,8 @@
 
 pub use ::garde;
 
+pub use crate::validated::validation_error_body;
+
 /// Compile-time check emitted by `#[route]` for the payload `U` of every
 /// `Validated<E<U>>` / `ValidatedWith<C, E<U>>` argument.
 ///
@@ -94,6 +96,23 @@ where
     }
     max.filter(|&max| !<T::Size as RangeBound>::admits_max(max))
         .map(|max| garde::Error::new(format!("greater than {max}")))
+}
+
+/// The error for a non-finite value of a float field with a
+/// `#[schema(minimum / maximum)]` bound, checked before `garde`'s `range`
+/// rule: every comparison with `NaN` is false, so that rule admits `NaN`
+/// whatever the bounds (`str::parse::<f64>` behind `Query` / `Form` / `Path`
+/// accepts `NaN` and `inf`), while the document's `type: number` excludes it.
+///
+/// Generic over `garde`'s range `Bounds` like [`range_unsatisfiable`]: an
+/// absent value (`None` at any layer) passes, an integer value never fails.
+pub fn non_finite<T: garde::rules::range::Bounds>(value: &T) -> Option<garde::Error> {
+    // `NaN` is unordered even against itself (`Option`'s order compares the
+    // inner value); an infinity lies outside the type's finite `[MIN, MAX]`.
+    #[allow(clippy::eq_op)]
+    let nan = value.partial_cmp(value).is_none();
+    (nan || value.validate_bounds(T::MIN, T::MAX).is_err())
+        .then(|| garde::Error::new("not a finite number"))
 }
 
 macro_rules! integer_range_bound {
@@ -216,6 +235,10 @@ mod tests {
             super::range_unsatisfiable(&0u32, None, Some(-0.5)).map(|e| e.to_string()),
             Some("greater than -0.5".to_owned())
         );
+        assert!(super::non_finite(&f64::NAN).is_some());
+        assert!(super::non_finite(&Some(Some(f32::NEG_INFINITY))).is_some());
+        assert!(super::non_finite(&None::<f64>).is_none());
+        assert!(super::non_finite(&f64::MAX).is_none() && super::non_finite(&u8::MAX).is_none());
         assert!((<f64 as RangeBound>::exact(-3) + 3.0).abs() < f64::EPSILON);
         assert!((<f32 as RangeBound>::exact(100) - 100.0).abs() < f32::EPSILON);
     }

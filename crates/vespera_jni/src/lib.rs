@@ -86,9 +86,13 @@ macro_rules! jni_app {
 /// `_` `-`), and names must be unique (compared after trimming).  Both
 /// rules are checked **at compile time**: an invalid or duplicated name is
 /// a build error instead of an app that is silently never registered.  A
-/// registration that still fails at load time (e.g. a factory re-entering
-/// the registry) is reported on stderr and fails `System.loadLibrary` with
-/// `JNI_ERR`.  Each `factory` is an expression evaluating to a
+/// factory that panics is reported on stderr and fails
+/// `System.loadLibrary` with `JNI_ERR`.  A factory that itself calls
+/// `register_app*` is **not** a load failure: only that inner, re-entrant
+/// call is rejected (`register_app` / `register_app_named` discard the
+/// error), the outer entry still registers and the library loads, so the
+/// inner app is simply missing (`404`) — list every app in this macro
+/// instead.  Each `factory` is an expression evaluating to a
 /// `Fn() -> Router + Send + Sync + 'static` (typically a `pub fn`
 /// path).
 ///
