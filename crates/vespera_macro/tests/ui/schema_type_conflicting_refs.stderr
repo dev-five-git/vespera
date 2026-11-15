@@ -17,10 +17,10 @@ error: relation adapter field `owner` does not exist in type `User`. Available f
    |                                                              ^^^^^^^
 
 error: `relation_adapters` lists field `id` more than once
-  --> tests/ui/schema_type_conflicting_refs.rs:22:84
+  --> tests/ui/schema_type_conflicting_refs.rs:22:60
    |
 22 | schema_type!(AdapterTwice from User, relation_adapters = [("id", UserCard), ("id", UserCard)]);
-   |                                                                                    ^^^^^^^^
+   |                                                            ^^^^
 
 error: `relation_adapters` names field `name`, which this type does not include: `omit` drops it
   --> tests/ui/schema_type_conflicting_refs.rs:24:79

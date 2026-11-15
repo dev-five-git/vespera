@@ -81,7 +81,8 @@ class VesperaProxyControllerCoverageTest {
                         maxBufferedBody, maxBufferedBody));
 
         assertEquals(413, exception.getStatusCode().value());
-        assertTrue(exception.getReason().contains(Long.toString(maxBufferedBody)));
+        assertEquals("buffered request body exceeds vespera.bridge.max-buffered-request-bytes="
+                + maxBufferedBody + " (at least " + maxBufferedBody + " bytes)", exception.getReason());
         VesperaProxyController.rejectAtBufferedBodyLimit(maxBufferedBody - 1, maxBufferedBody);
         VesperaProxyController.rejectAtBufferedBodyLimit(maxBufferedBody, maxBufferedBody - 1);
     }
@@ -96,8 +97,8 @@ class VesperaProxyControllerCoverageTest {
 
         assertEquals(413, exception.getStatusCode().value());
         assertEquals("buffered request body of unknown length exceeds the built-in "
-                + defaultLimit + "-byte bound (vespera.bridge.max-buffered-request-bytes=0; actual "
-                + (defaultLimit + 1) + " bytes)", exception.getReason());
+                + defaultLimit + "-byte bound (vespera.bridge.max-buffered-request-bytes=0; more than "
+                + defaultLimit + " bytes, length not declared)", exception.getReason());
         VesperaProxyController.rejectAboveDefaultBufferedLimit(defaultLimit);
     }
 
@@ -363,6 +364,10 @@ class VesperaProxyControllerCoverageTest {
                 () -> VesperaProxyController.readBufferedBody(
                         new java.io.ByteArrayInputStream(new byte[20]), 0, 10));
         assertEquals(413, tooLarge.getStatusCode().value());
+        // The read stops at cap + 1: the 20-byte body's real size is unknown,
+        // so the reason must not report the 11-byte read limit as its size.
+        assertEquals("buffered request body exceeds vespera.bridge.max-buffered-request-bytes=10"
+                + " (more than 10 bytes, length not declared)", tooLarge.getReason());
         assertEquals(5, VesperaProxyController.readBufferedBody(
                 new java.io.ByteArrayInputStream(new byte[5]), 0, 10).length);
         assertEquals(20, VesperaProxyController.readBufferedBody(

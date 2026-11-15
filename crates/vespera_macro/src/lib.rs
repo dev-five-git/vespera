@@ -108,10 +108,7 @@ pub fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[cfg(not(tarpaulin_include))]
 #[proc_macro_attribute]
 pub fn cron(attr: TokenStream, item: TokenStream) -> TokenStream {
-    match cron_impl::process_cron_attribute(attr.into(), item.into()) {
-        Ok(tokens) => tokens.into(),
-        Err(e) => e.to_compile_error().into(),
-    }
+    cron_impl::cron_attribute(attr.into(), item.into()).into()
 }
 
 /// Stand-in for `#[vespera::cron]` re-exported by `vespera` when its `cron`

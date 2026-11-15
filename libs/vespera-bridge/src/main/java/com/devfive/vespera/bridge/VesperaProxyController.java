@@ -592,7 +592,10 @@ public class VesperaProxyController {
             int readLimit = (int) effectiveLimit;
             byte[] body = in.readNBytes(readLimit);
             if ((long) body.length > cap) {
-                throw payloadTooLarge(body.length, cap);
+                // The read stopped one byte past the cap: the real size of an
+                // undeclared body is unknown, so never report the read limit
+                // as the client's size.
+                throw undeclaredPayloadTooLarge(cap);
             }
             rejectAtBufferedBodyLimit(body.length, cap);
             return body;
@@ -634,7 +637,12 @@ public class VesperaProxyController {
 
     static void rejectAtBufferedBodyLimit(long bodyLength, long cap) {
         if (bodyLength == MAX_BUFFERED_BODY && cap >= MAX_BUFFERED_BODY) {
-            throw payloadTooLarge(bodyLength, MAX_BUFFERED_BODY);
+            // The read stopped at the single-array ceiling: the body is at
+            // least that large, its real size is not known.
+            throw new ResponseStatusException(
+                    CONTENT_TOO_LARGE,
+                    "buffered request body exceeds vespera.bridge.max-buffered-request-bytes="
+                            + MAX_BUFFERED_BODY + " (at least " + bodyLength + " bytes)");
         }
     }
 
@@ -643,9 +651,16 @@ public class VesperaProxyController {
             throw new ResponseStatusException(
                     CONTENT_TOO_LARGE,
                     "buffered request body of unknown length exceeds the built-in " + MAX_FIXED_BODY
-                            + "-byte bound (vespera.bridge.max-buffered-request-bytes=0; actual "
-                            + bodyLength + " bytes)");
+                            + "-byte bound (vespera.bridge.max-buffered-request-bytes=0; more than "
+                            + MAX_FIXED_BODY + " bytes, length not declared)");
         }
+    }
+
+    static ResponseStatusException undeclaredPayloadTooLarge(long capBytes) {
+        return new ResponseStatusException(
+                CONTENT_TOO_LARGE,
+                "buffered request body exceeds vespera.bridge.max-buffered-request-bytes="
+                        + capBytes + " (more than " + capBytes + " bytes, length not declared)");
     }
 
     private static ResponseStatusException payloadTooLarge(long actualBytes, long capBytes) {

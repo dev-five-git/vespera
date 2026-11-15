@@ -375,7 +375,7 @@ fn test_collect_metadata_ignores_non_rs_files() {
 }
 
 #[test]
-fn test_collect_metadata_ignores_invalid_syntax() {
+fn test_collect_metadata_rejects_invalid_syntax() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let folder_name = "routes";
 

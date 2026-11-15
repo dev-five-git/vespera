@@ -32,11 +32,6 @@ use crate::{
 type FnIndex<'a> = HashMap<String, HashMap<String, &'a syn::ItemFn>>;
 type StorageFnSigs<'a> = HashMap<(Option<String>, &'a str), Option<&'a str>>;
 
-/// Build path items and collect tags from route metadata.
-///
-/// Uses `route_storage` (from `#[route]` macro) as the primary source for function
-/// signatures. Falls back to pre-built `file_cache` when ROUTE_STORAGE doesn't
-/// have an entry (e.g., during tests or for routes added without the attribute).
 /// An AST-backed route job: route index, metadata, signature, and the AST of
 /// the file that declares it (for same-file alias lookup).
 type AstJob<'a> = (
@@ -60,6 +55,11 @@ fn expanded_signature<'a>(
     }
 }
 
+/// Build path items and collect tags from route metadata.
+///
+/// Uses `route_storage` (from `#[route]` macro) as the primary source for function
+/// signatures. Falls back to pre-built `file_cache` when ROUTE_STORAGE doesn't
+/// have an entry (e.g., during tests or for routes added without the attribute).
 pub(super) fn build_path_items(
     metadata: &CollectedMetadata,
     known_schema_names: &HashSet<&str>,

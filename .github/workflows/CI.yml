@@ -814,8 +814,9 @@ jobs:
   #     arm64), and macos-15-intel: macOS x86_64.
   #
   # Runs unconditionally on every push/PR (matching the existing CI job's
-  # style — no per-job paths-filter). The whole workflow already inherits
-  # the workflow-level `paths-ignore` for docs-only changes.
+  # style — no per-job paths-filter). The workflow-level `paths-ignore` for
+  # docs-only changes applies to pushes to main only; `pull_request` has no
+  # filter, so a docs-only PR still runs this matrix.
   jni-e2e:
     name: JNI E2E (${{ matrix.os }}, JDK ${{ matrix.java }})
     runs-on: ${{ matrix.os }}

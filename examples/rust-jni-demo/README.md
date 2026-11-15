@@ -24,6 +24,7 @@ cargo run -p rust-jni-demo
 ```
 Server running on http://localhost:3000
   GET  /health
+  POST /echo
   POST /documents/validate
 ```
 
@@ -87,12 +88,13 @@ The native library is **bundled inside the JAR** — single-file deployment.
 cd examples/rust-jni-demo/java
 ./gradlew :demo-app:bootJar
 
-# Single file, no -Djava.library.path needed:
+# Single file, no -Djava.library.path needed (any OS, PowerShell included):
 java -jar demo-app/build/libs/demo-app-0.1.0.jar
-
-# Windows PowerShell
-java "-Djava.library.path=..\..\..\target\release" -jar demo-app\build\libs\demo-app-0.1.0.jar
 ```
+
+`-Djava.library.path=<dir>` is only a fallback for a JAR built without the
+bundled library: `VesperaBridge.init()` then loads it from that directory
+(for example `..\..\..\target\release` on Windows).
 
 Spring starts on `http://localhost:8080` and proxies every request to Rust:
 
@@ -124,7 +126,7 @@ examples/rust-jni-demo/
 ├── src/
 │   ├── lib.rs              # create_app() + admin_app(), registered by
 │   │                       # vespera::jni_apps! { .. } and vespera::ffi_apps! { .. }
-│   ├── main.rs             # Mode A: vespera::axum::serve on :3000
+│   ├── main.rs             # Mode A: create_app().serve(..) (vespera::Serve) on :3000
 │   ├── routes/             # default app: documents, health, echo, form,
 │   │                       # headers, stream, upload, diag
 │   └── admin_routes/       # "admin" app (X-Vespera-App: admin)
