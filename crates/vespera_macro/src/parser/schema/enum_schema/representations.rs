@@ -255,56 +255,74 @@ pub(in crate::parser::schema) fn without_other_map(schema: &Schema) -> Option<Sc
 /// string form of the catch-all.
 fn tagged_enum_payload(payload: &Schema, tag: &str, tag_schema: &SchemaRef) -> Option<Schema> {
     let open = without_single_key_bounds(payload);
-    let mut schema = flattened_unit_variants(open.as_ref().unwrap_or(payload)).or(open)?;
+    let mut schema = single_entry_enum(open.as_ref().unwrap_or(payload)).or(open)?;
     let branches = schema.one_of.as_mut()?;
-    let mut other_names = None;
-    let mut has_other_map = false;
     for branch in branches.iter_mut() {
         // Every branch of an externally tagged enum is inline.
         if let SchemaRef::Inline(inline) = branch {
             if is_other_map(inline) {
-                has_other_map = true;
                 **inline = Schema {
                     max_properties: Some(2),
-                    ..with_tag_property((**inline).clone(), tag, tag_schema, None)
+                    ..with_tag_property((**inline).clone(), tag, tag_schema)
                 };
             } else if inline.schema_type == Some(SchemaType::Object) {
                 inline.max_properties = Some(2);
-            } else if let Some(SchemaRef::Inline(not)) = &inline.not {
-                other_names.clone_from(&not.r#enum);
             }
         }
-    }
-    if !has_other_map && let Some(known) = other_names {
-        branches.push(SchemaRef::Inline(Box::new(Schema {
-            max_properties: Some(2),
-            ..with_tag_property(other_map_schema(&known), tag, tag_schema, None)
-        })));
     }
     Some(schema)
 }
 
-/// The object schema of an internally tagged newtype payload that constrains
-/// unlisted properties — closed (`#[serde(deny_unknown_fields)]`,
+/// An externally tagged enum `schema` as serde reads it from a map holding
+/// just its one entry (`ContentDeserializer::deserialize_enum`: an
+/// internally tagged payload once the tag is taken out, or an enum nested
+/// inside one): every unit variant is its key (`{"A": null}`, bounded to
+/// that one key, see [`flattened_unit_variants`]), and a `#[serde(other)]`
+/// catch-all — whose all-unit request view only has the string form — is
+/// also read from its map form. `None` when nothing changes.
+pub(in crate::parser::schema) fn single_entry_enum(schema: &Schema) -> Option<Schema> {
+    let mut schema = flattened_unit_variants(schema)?;
+    let branches = schema.one_of.as_mut()?;
+    let known = branches
+        .iter()
+        .filter_map(inline_branch)
+        .find_map(|branch| match &branch.not {
+            Some(SchemaRef::Inline(not)) if branch.schema_type == Some(SchemaType::String) => {
+                not.r#enum.clone()
+            }
+            _ => None,
+        });
+    if let Some(known) = known
+        && !branches.iter().filter_map(inline_branch).any(is_other_map)
+    {
+        branches.push(SchemaRef::Inline(Box::new(other_map_schema(&known))));
+    }
+    Some(schema)
+}
+
+/// The schema of an inline branch.
+fn inline_branch(branch: &SchemaRef) -> Option<&Schema> {
+    if let SchemaRef::Inline(inline) = branch {
+        Some(inline)
+    } else {
+        None
+    }
+}
+
+/// Whether an internally tagged newtype payload object constrains unlisted
+/// properties — closed (`#[serde(deny_unknown_fields)]`,
 /// `additionalProperties: false`) or a map (`additionalProperties: <value>`)
-/// — which would reject the tag inside an `allOf`. `None` for an open
-/// payload.
-fn closed_payload_object(payload: Schema) -> Option<Schema> {
+/// — which would reject the tag inside an `allOf`, so the tag is merged into
+/// it instead.
+fn is_closed_payload(payload: &Schema) -> bool {
     matches!(
         payload.additional_properties,
         Some(AdditionalProperties::Bool(false) | AdditionalProperties::Schema(_))
     )
-    .then_some(payload)
 }
 
-/// `object` with the required `tag` property (first in `required`); the
-/// variant doc comment, when present, replaces the payload's description.
-fn with_tag_property(
-    mut object: Schema,
-    tag: &str,
-    tag_schema: &SchemaRef,
-    description: Option<String>,
-) -> Schema {
+/// `object` with the required `tag` property (first in `required`).
+fn with_tag_property(mut object: Schema, tag: &str, tag_schema: &SchemaRef) -> Schema {
     object
         .properties
         .get_or_insert_with(BTreeMap::new)
@@ -313,9 +331,6 @@ fn with_tag_property(
         .required
         .get_or_insert_with(Vec::new)
         .insert(0, tag.to_string());
-    if description.is_some() {
-        object.description = description;
-    }
     // The tag is one more property of the object (a map payload's
     // `length` bounds count its entries only).
     object.min_properties = object.min_properties.map(|min| min + 1);
@@ -439,28 +454,25 @@ pub(super) fn parse_internally_tagged_enum(
                         None | Some(SchemaType::Object) => {
                             let reopen = |object: &Schema| {
                                 constrains_unlisted(object).then(|| {
-                                    with_tag_property(
-                                        object.clone(),
-                                        &tag_string,
-                                        &tag_schema,
-                                        None,
-                                    )
+                                    with_tag_property(object.clone(), &tag_string, &tag_schema)
                                 })
                             };
                             let opened = payload.as_ref().and_then(|payload| {
                                 open_embedded(payload, &reopen, known_schemas, struct_definitions)
                             });
-                            match (payload.and_then(closed_payload_object), opened) {
-                                (Some(object), _) => with_tag_property(
-                                    object,
-                                    &tag_string,
-                                    &tag_schema,
-                                    variant_description,
-                                ),
-                                (None, Some(open)) => {
+                            let closed = payload.as_ref().is_some_and(is_closed_payload);
+                            match opened {
+                                // A closed payload lists the tag itself:
+                                // `opened` is that copy, with its nested
+                                // branches reopened as well.
+                                Some(open) if closed => Schema {
+                                    description: variant_description.or(open.description),
+                                    ..open
+                                },
+                                Some(open) => {
                                     tag_and(SchemaRef::Inline(Box::new(open)), variant_description)
                                 }
-                                (None, None) => tag_and(inner, variant_description),
+                                None => tag_and(inner, variant_description),
                             }
                         }
                         // A non-object payload (a `$ref` to a non-object

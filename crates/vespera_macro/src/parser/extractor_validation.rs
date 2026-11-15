@@ -7,7 +7,8 @@
 //! Vespera (i.e. it derives `Schema`).
 //! When `T` is a struct or enum that does **not** derive `Schema`, Vespera
 //! silently drops it — `Query<T>` yields no parameters and `Json<T>` falls back
-//! to a generic object — so the spec lies about the route.
+//! to an unconstrained `{}` (any value) schema — so the spec lies about the
+//! route.
 //!
 //! This pass turns that silent footgun into a hard compile error, scoped to the
 //! cases the macro can prove: a struct or enum **declared in the handler's own

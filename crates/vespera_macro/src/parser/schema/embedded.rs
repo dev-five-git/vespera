@@ -24,7 +24,7 @@ use std::{
 
 use vespera_core::schema::{AdditionalProperties, Reference, Schema, SchemaRef};
 
-use super::struct_schema::{flattened_unit_variants, resolve_reference};
+use super::{enum_schema::single_entry_enum, struct_schema::resolve_reference};
 
 /// Whether `schema` constrains the keys it does not list itself.
 pub(super) fn constrains_unlisted(schema: &Schema) -> bool {
@@ -159,8 +159,9 @@ fn open_reference(
     let resolved = resolve_reference(reference, known_schemas, struct_definitions)?;
     opening.push(reference.ref_path.clone());
     // The embedded value is a map, so a nested externally tagged enum's unit
-    // variant is its key (`{"A": null}`), never the string `"A"`.
-    let keyed = flattened_unit_variants(&resolved);
+    // variant is its key (`{"A": null}`, that one key), never the string
+    // `"A"`, and its `#[serde(other)]` catch-all also has the map form.
+    let keyed = single_entry_enum(&resolved);
     let opened = open(
         keyed.as_ref().unwrap_or(&resolved),
         reopen,

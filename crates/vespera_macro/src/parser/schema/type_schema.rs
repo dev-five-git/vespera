@@ -916,18 +916,21 @@ mod tests {
     // ========== Coverage: recursion depth limit ==========
 
     #[test]
-    fn test_recursion_depth_limit_returns_object() {
+    fn test_recursion_depth_limit_returns_any_value() {
         SCHEMA_RECURSION_DEPTH.with(|depth| {
             let previous = depth.get();
             depth.set(MAX_SCHEMA_RECURSION_DEPTH);
             let ty: Type = syn::parse_str("String").unwrap();
             let schema_ref =
                 parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
-            // Should return object fallback, NOT string
+            // Any value (`{}` plus the description), never `{type: object}`:
+            // the leaf may be a string or a number.
             if let SchemaRef::Inline(schema) = &schema_ref {
-                assert_eq!(schema.schema_type, Some(SchemaType::Object));
+                let value = serde_json::to_value(&**schema).unwrap();
+                assert_eq!(value.as_object().unwrap().len(), 1, "{value}");
+                assert!(value["description"].is_string(), "{value}");
             } else {
-                panic!("Expected inline object schema at max recursion depth");
+                panic!("Expected inline schema at max recursion depth");
             }
             // Restore
             depth.set(previous);

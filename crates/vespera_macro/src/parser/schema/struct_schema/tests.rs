@@ -700,6 +700,37 @@ fn schema_constraints_exclusive_bounds_and_multiple_of() {
     assert_eq!(field.multiple_of, Some(0.01));
 }
 
+/// L4: a bare `exclusive_minimum` / `exclusive_maximum` makes the bound a
+/// garde `range` or the type itself documents exclusive.
+#[test]
+fn schema_exclusive_flags_use_garde_and_type_bounds() {
+    let s: syn::ItemStruct = syn::parse_str(
+        r"
+            struct Price {
+                #[garde(range(min = 0.5, max = 9.5))]
+                #[schema(exclusive_minimum, exclusive_maximum)]
+                amount: f64,
+                #[schema(exclusive_minimum)]
+                count: u32,
+                #[schema(exclusive_maximum)]
+                open: f64,
+            }
+            ",
+    )
+    .unwrap();
+    let schema = parse_struct_to_schema(
+        &s,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
+    let amount = field_schema(&schema, "amount");
+    assert_eq!(amount.exclusive_minimum, Some(0.5));
+    assert_eq!(amount.exclusive_maximum, Some(9.5));
+    let count = field_schema(&schema, "count");
+    assert_eq!(count.exclusive_minimum, Some(0.0));
+    assert_eq!(field_schema(&schema, "open").exclusive_maximum, None);
+}
+
 #[test]
 fn schema_constraints_on_ref_field_promote_to_allof_wrapper() {
     // A field referencing a known component schema must keep its

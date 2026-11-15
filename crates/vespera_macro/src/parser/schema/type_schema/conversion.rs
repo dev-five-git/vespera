@@ -206,12 +206,13 @@ pub fn parse_type_to_schema_ref(
     SCHEMA_RECURSION_DEPTH.with(|depth| {
         let current = depth.get();
         if current >= MAX_SCHEMA_RECURSION_DEPTH {
+            // Any value (`{}`): the type may be a string or a number.
             return SchemaRef::Inline(Box::new(Schema {
                 description: Some(format!(
                     "Schema generation stopped after reaching recursion depth limit ({MAX_SCHEMA_RECURSION_DEPTH}) for `{}`",
                     quote::quote!(#ty)
                 )),
-                ..Schema::new(SchemaType::Object)
+                ..Schema::default()
             }));
         }
         depth.set(current + 1);

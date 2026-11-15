@@ -15,6 +15,10 @@
 //! - a flattened `Option<T>` is `None` whenever `T` fails, so it never makes
 //!   a key required, and in the request view its keys reject nothing;
 //! - a flattened unit struct reads nothing;
+//! - a flattened externally tagged enum takes the FIRST buffered key naming
+//!   a variant (`FlatMapDeserializer::deserialize_enum`) and leaves any
+//!   other variant key to the outer struct, so its request-view branches are
+//!   an `anyOf` (several may match), never a `oneOf`;
 //! - the OUTER `deny_unknown_fields` rejects any key no member consumed
 //!   (a map borrows, never consumes, so with it the map stays empty).
 //!
@@ -46,7 +50,7 @@ use super::{
         embedded::{open_embedded, unwrap_wrappers, without_unlisted_bounds},
         enum_schema::{parse_enum_to_schema, without_other_map, without_single_key_bounds},
         request_view,
-        schema_attrs::extract_schema_constraints,
+        schema_attrs::{SchemaConstraints, extract_schema_constraints},
         serde_attrs::{SerdeSide, extract_field_codec},
         type_schema::{generic_instances, parse_type_to_schema_ref},
     },
@@ -99,13 +103,9 @@ pub(super) fn flatten_part(
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> FlatPart {
     let constraints = extract_schema_constraints(&field.attrs);
-    let declared = constraints
-        .value_type
-        .as_ref()
-        .map_or(&field.ty, |ty| &ty.0);
     // serde sees through `Box` / `Arc` / ... to a flattened `Option` too.
-    let (ty, optional) =
-        option_inner(peel(declared)).map_or((declared, omittable), |inner| (inner, true));
+    let (ty, optional) = flattened_member(field, &constraints);
+    let optional = optional || omittable;
     // `#[schema(value_type = T)]` documents a custom codec's wire shape,
     // exactly as on a field that is not flattened.
     let custom = constraints.is_any()
@@ -143,7 +143,7 @@ pub(super) fn flatten_part(
     }
     // A newtype / transparent wrapper around an enum is flattened like that
     // enum. An externally tagged enum's variant key sits among the other
-    // keys and its unit variants are keys when flattened.
+    // keys and its unit variants are keys when flattened (`keyed`).
     let schema = resolved
         .map(|resolved| unwrap_wrappers(resolved, known_schemas, struct_definitions))
         .and_then(|resolved| {
@@ -154,7 +154,18 @@ pub(super) fn flatten_part(
             let open = step(None, without_single_key_bounds);
             let flattened = step(open, flattened_unit_variants);
             // serde never hands an unknown key to a flattened `other`.
-            let flattened = step(flattened, without_other_map);
+            let keyed = flattened.is_some();
+            let mut flattened = step(flattened, without_other_map);
+            // serde reads the FIRST buffered key naming a variant and leaves
+            // any other one to the outer struct, so on input several keyed
+            // branches may match at once (`{"A": 1, "B": 2}`): `anyOf`.
+            if keyed
+                && side == SerdeSide::Deserialize
+                && let Some(schema) = flattened.as_mut()
+                && schema.any_of.is_none()
+            {
+                schema.any_of = schema.one_of.take();
+            }
             // A member that cannot be merged only sees the keys the outer
             // struct does not know: no object inside it (a closed struct, a
             // map, a nested enum's single-key branch) may reject them.
@@ -208,6 +219,9 @@ pub(in crate::parser::schema) fn flattened_unit_variants(schema: &Schema) -> Opt
                                 SchemaRef::Inline(Box::new(Schema::new(SchemaType::Null))),
                             )])),
                             required: Some(vec![key.to_string()]),
+                            // That one key, like the request view's map form
+                            // (an embedding context lifts or drops the bound).
+                            max_properties: Some(1),
                             ..Schema::object()
                         }))
                     })
@@ -312,8 +326,24 @@ fn resolve_name(
     schema
 }
 
+/// The type a `#[serde(flatten)]` `field` is documented through — its
+/// `#[schema(value_type)]` (from `constraints`), else its declared type —
+/// and whether it is an `Option` (seen through `&` / `Box` / `Arc` / `Rc` /
+/// `Cow`, then its inner type is returned). Shared with `request_view`, so
+/// the schema and the "needs a request view" check see the same member.
+pub(in crate::parser::schema) fn flattened_member<'a>(
+    field: &'a syn::Field,
+    constraints: &'a SchemaConstraints,
+) -> (&'a syn::Type, bool) {
+    let declared = constraints
+        .value_type
+        .as_ref()
+        .map_or(&field.ty, |ty| &ty.0);
+    option_inner(peel(declared)).map_or((declared, false), |inner| (inner, true))
+}
+
 /// `ty` without the smart pointers / references serde sees through.
-fn peel(ty: &syn::Type) -> &syn::Type {
+pub(in crate::parser::schema) fn peel(ty: &syn::Type) -> &syn::Type {
     match ty {
         syn::Type::Reference(syn::TypeReference { elem, .. })
         | syn::Type::Paren(syn::TypeParen { elem, .. })
@@ -754,7 +784,12 @@ mod tests {
             serde_json::to_value(&flattened).unwrap()["oneOf"],
             serde_json::json!([
                 {"$ref": "#/components/schemas/Payload"},
-                {"type": "object", "properties": {"A": {"type": "null"}}, "required": ["A"]}
+                {
+                    "type": "object",
+                    "properties": {"A": {"type": "null"}},
+                    "required": ["A"],
+                    "maxProperties": 1
+                }
             ])
         );
     }

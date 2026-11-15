@@ -223,15 +223,15 @@ pub fn try_extract_schema_constraints(attrs: &[Attribute]) -> syn::Result<Schema
             }
             // ── numeric range ────────────────────────────────────────
             else if meta.path.is_ident("minimum") {
-                out.minimum = Some(parse_f64(&meta)?);
+                out.minimum = Some(parse_f64(&meta, "minimum")?);
             } else if meta.path.is_ident("maximum") {
-                out.maximum = Some(parse_f64(&meta)?);
+                out.maximum = Some(parse_f64(&meta, "maximum")?);
             } else if meta.path.is_ident("exclusive_minimum") {
                 out.exclusive_minimum = Some(parse_bool_or_default_true(&meta)?);
             } else if meta.path.is_ident("exclusive_maximum") {
                 out.exclusive_maximum = Some(parse_bool_or_default_true(&meta)?);
             } else if meta.path.is_ident("multiple_of") {
-                out.multiple_of = Some(parse_f64(&meta)?);
+                out.multiple_of = Some(parse_multiple_of(&meta)?);
             }
             // ── array constraints ────────────────────────────────────
             else if meta.path.is_ident("min_items") {
@@ -296,10 +296,39 @@ fn parse_usize(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<usize> {
     lit.base10_parse::<usize>()
 }
 
-fn parse_f64(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<f64> {
-    let value = meta.value()?;
-    let expr: Expr = value.parse()?;
-    expr_to_f64(expr)
+/// A finite numeric literal for `key`: `1e999` parses to infinity, which
+/// JSON cannot hold (it would be documented as `null`).
+fn parse_f64(meta: &syn::meta::ParseNestedMeta<'_>, key: &str) -> syn::Result<f64> {
+    parse_checked_f64(meta, key, f64::is_finite, "a finite number")
+}
+
+/// `multiple_of`: JSON Schema requires a number strictly greater than 0.
+fn parse_multiple_of(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<f64> {
+    parse_checked_f64(
+        meta,
+        "multiple_of",
+        |value| value.is_finite() && value > 0.0,
+        "a finite number greater than 0",
+    )
+}
+
+/// A numeric literal for `key` that satisfies `valid` (else a spanned error
+/// saying it must be `expected`).
+fn parse_checked_f64(
+    meta: &syn::meta::ParseNestedMeta<'_>,
+    key: &str,
+    valid: fn(f64) -> bool,
+    expected: &str,
+) -> syn::Result<f64> {
+    let expr: Expr = meta.value()?.parse()?;
+    let value = expr_to_f64(expr.clone())?;
+    if valid(value) {
+        return Ok(value);
+    }
+    Err(syn::Error::new_spanned(
+        expr,
+        format!("`{key}` must be {expected} (got {value})"),
+    ))
 }
 
 /// A numeric literal expression (`5`, `0.5`, `-10`, `-0.5`) as `f64`.
@@ -651,6 +680,22 @@ mod tests {
     fn example_null_literal_yields_json_null() {
         let c = parse(&[parse_quote!(#[schema(example = null)])]);
         assert_eq!(c.example, Some(serde_json::Value::Null));
+    }
+
+    /// L5: JSON cannot hold a non-finite number (`1e999` parses to infinity,
+    /// documented as `null`), and JSON Schema's `multipleOf` must be > 0.
+    #[rstest::rstest]
+    #[case::minimum_infinite(parse_quote!(#[schema(minimum = 1e999)]), "`minimum` must be a finite number")]
+    #[case::maximum_infinite(parse_quote!(#[schema(maximum = -1e999)]), "`maximum` must be a finite number")]
+    #[case::multiple_of_infinite(parse_quote!(#[schema(multiple_of = 1e999)]), "`multiple_of` must be a finite number greater than 0")]
+    #[case::multiple_of_zero(parse_quote!(#[schema(multiple_of = 0)]), "`multiple_of` must be a finite number greater than 0 (got 0)")]
+    #[case::multiple_of_negative(parse_quote!(#[schema(multiple_of = -1)]), "`multiple_of` must be a finite number greater than 0 (got -1)")]
+    fn non_finite_and_non_positive_numbers_are_rejected(
+        #[case] attr: Attribute,
+        #[case] message: &str,
+    ) {
+        let err = parse_err(&[attr]);
+        assert!(err.to_string().contains(message), "{err}");
     }
 
     #[test]

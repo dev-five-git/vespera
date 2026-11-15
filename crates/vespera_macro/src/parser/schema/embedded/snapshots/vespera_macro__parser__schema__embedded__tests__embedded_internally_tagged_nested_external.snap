@@ -1,0 +1,336 @@
+---
+source: crates/vespera_macro/src/parser/schema/embedded/tests.rs
+expression: both_views(src)
+---
+#[serde(tag = "t")] enum O { Z(UE), K(UK) }
+response: {
+  "oneOf": [
+    {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "t": {
+              "type": "string",
+              "enum": [
+                "Z"
+              ]
+            }
+          },
+          "required": [
+            "t"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "Square": {
+                      "type": "integer",
+                      "format": "uint8",
+                      "minimum": 0,
+                      "maximum": 255
+                    },
+                    "t": {
+                      "type": "string",
+                      "enum": [
+                        "Z"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "t",
+                    "Square"
+                  ],
+                  "maxProperties": 2
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "Point": {
+                      "type": "null"
+                    },
+                    "t": {
+                      "type": "string",
+                      "enum": [
+                        "Z"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "t",
+                    "Point"
+                  ],
+                  "maxProperties": 2
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "t": {
+              "type": "string",
+              "enum": [
+                "K"
+              ]
+            }
+          },
+          "required": [
+            "t"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "A": {
+                      "type": "null"
+                    },
+                    "t": {
+                      "type": "string",
+                      "enum": [
+                        "K"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "t",
+                    "A"
+                  ],
+                  "maxProperties": 2
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "B": {
+                      "type": "null"
+                    },
+                    "t": {
+                      "type": "string",
+                      "enum": [
+                        "K"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "t",
+                    "B"
+                  ],
+                  "maxProperties": 2
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "Other": {
+                      "type": "null"
+                    },
+                    "t": {
+                      "type": "string",
+                      "enum": [
+                        "K"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "t",
+                    "Other"
+                  ],
+                  "maxProperties": 2
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "discriminator": {
+    "propertyName": "t"
+  }
+}
+request: {
+  "oneOf": [
+    {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "t": {
+              "type": "string",
+              "enum": [
+                "Z"
+              ]
+            }
+          },
+          "required": [
+            "t"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "Square": {
+                      "type": "integer",
+                      "format": "uint8",
+                      "minimum": 0,
+                      "maximum": 255
+                    },
+                    "t": {
+                      "type": "string",
+                      "enum": [
+                        "Z"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "t",
+                    "Square"
+                  ],
+                  "maxProperties": 2
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "Point": {
+                      "type": "null"
+                    },
+                    "t": {
+                      "type": "string",
+                      "enum": [
+                        "Z"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "t",
+                    "Point"
+                  ],
+                  "maxProperties": 2
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "t": {
+              "type": "string",
+              "enum": [
+                "K"
+              ]
+            }
+          },
+          "required": [
+            "t"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "A": {
+                      "type": "null"
+                    },
+                    "t": {
+                      "type": "string",
+                      "enum": [
+                        "K"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "t",
+                    "A"
+                  ],
+                  "maxProperties": 2
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "B": {
+                      "type": "null"
+                    },
+                    "t": {
+                      "type": "string",
+                      "enum": [
+                        "K"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "t",
+                    "B"
+                  ],
+                  "maxProperties": 2
+                },
+                {
+                  "type": "string",
+                  "not": {
+                    "enum": [
+                      "A",
+                      "B"
+                    ]
+                  }
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "t": {
+                      "type": "string",
+                      "enum": [
+                        "K"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "t"
+                  ],
+                  "additionalProperties": {
+                    "type": "null"
+                  },
+                  "minProperties": 2,
+                  "maxProperties": 2,
+                  "propertyNames": {
+                    "not": {
+                      "enum": [
+                        "A",
+                        "B"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "discriminator": {
+    "propertyName": "t"
+  }
+}

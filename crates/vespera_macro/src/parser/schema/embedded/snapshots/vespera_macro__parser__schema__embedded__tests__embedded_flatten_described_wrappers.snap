@@ -65,7 +65,7 @@ request: {
     },
     {
       "description": "Shape wrapper",
-      "oneOf": [
+      "anyOf": [
         {
           "type": "object",
           "properties": {

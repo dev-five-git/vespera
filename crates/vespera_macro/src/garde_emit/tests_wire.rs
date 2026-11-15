@@ -115,12 +115,14 @@ fn range_bounds_follow_the_document(#[case] field: &str, #[case] expected: &str)
 }
 
 /// A bound `f64` cannot hold (`1e400` parses to infinity) is a spanned
-/// compile error, not a `quote!` panic.
+/// error of the `#[schema]` parser, so no validator is ever emitted for it.
 #[rstest]
 #[case::float_field("#[schema(maximum = 1e400)] f: f64")]
 #[case::unknown_type("#[schema(minimum = -1e400)] f: Count")]
 fn non_finite_bound_is_a_compile_error(#[case] field: &str) {
-    let out = emit(&format!("struct S {{ {field} }}"));
-    assert!(out.contains("compile_error"), "{out}");
-    assert!(out.contains("must be a finite number"), "{out}");
+    let item: syn::ItemStruct = syn::parse_str(&format!("struct S {{ {field} }}")).unwrap();
+    let attrs = &item.fields.iter().next().unwrap().attrs;
+    let err = crate::parser::schema::schema_attrs::try_extract_schema_constraints(attrs)
+        .expect_err("non-finite bound");
+    assert!(err.to_string().contains("must be a finite number"), "{err}");
 }

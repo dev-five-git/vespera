@@ -705,9 +705,7 @@ fn numeric_some(
         Bound::Min => "minimum",
         Bound::Max => "maximum",
     };
-    if !v.is_finite() {
-        return Err(format!("`{key}` must be a finite number (got {v})"));
-    }
+    // `v` is finite: `schema_attrs` rejects a non-finite bound at parse time.
     let Some(kind) = numeric_kind else {
         // Unknown numeric kind (a type alias, a newtype): every bound goes
         // through `RangeBound`, typed by the field. An integer literal is

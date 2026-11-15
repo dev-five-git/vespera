@@ -79,6 +79,31 @@ fn scoped_names(
     true
 )]
 #[case::enum_variant_flatten_struct("enum E { V { #[serde(flatten)] p: Page } }", false)]
+// M2: members are seen through `Box` / `Arc` / `&` / `value_type`, like the
+// schema builder (`struct_schema::flatten::flattened_member`) sees them.
+#[case::flatten_boxed_option("struct A { id: i32, #[serde(flatten)] p: Box<Option<Page>> }", true)]
+#[case::flatten_arc_option("struct A { #[serde(flatten)] p: Arc<Option<Page>> }", true)]
+#[case::flatten_value_type_option(
+    "struct A { #[serde(flatten)] #[schema(value_type = Option<Page>)] p: Custom }",
+    true
+)]
+#[case::flatten_value_type_plain(
+    "struct A { #[serde(flatten)] #[schema(value_type = Page)] p: Option<Custom> }",
+    false
+)]
+#[case::flatten_boxed_map_then_struct(
+    "struct A { #[serde(flatten)] m: Box<HashMap<String, u8>>, #[serde(flatten)] p: Page }",
+    true
+)]
+#[case::deny_flatten_value_type_map(
+    "#[serde(deny_unknown_fields)] struct A { #[serde(flatten)] #[schema(value_type = HashMap<String, u8>)] m: Custom }",
+    true
+)]
+// A flattened type parameter may be instantiated with an `Option` / a map.
+#[case::flatten_type_param("struct W<T> { id: i32, #[serde(flatten)] x: T }", true)]
+#[case::flatten_boxed_type_param("struct W<T> { #[serde(flatten)] x: Box<T> }", true)]
+#[case::enum_flatten_type_param("enum E<T> { V { #[serde(flatten)] x: T } }", true)]
+#[case::flatten_non_param_generic("struct W<T> { #[serde(flatten)] x: Page, t: T }", false)]
 #[case::field_default("struct A { #[serde(default)] x: i32 }", true)]
 #[case::container_default("#[serde(default)] struct A { x: i32 }", true)]
 #[case::skip_deserializing("struct A { #[serde(skip_deserializing)] id: i32 }", true)]
@@ -229,6 +254,7 @@ fn map_bearing_structs_are_transitive() {
     let items: Vec<syn::Item> = [
         "struct Outer { #[serde(flatten)] h: Option<HasMap> }",
         "struct HasMap { #[serde(flatten)] m: HashMap<String, u8> }",
+        "struct Boxed { #[serde(flatten)] m: Box<Option<BTreeMap<String, u8>>> }",
         "struct Plain { #[serde(flatten)] p: Page, m: HashMap<String, u8> }",
         "struct Tuple(HashMap<String, u8>);",
         "enum E { V { #[serde(flatten)] m: HashMap<String, u8> } }",
@@ -239,7 +265,11 @@ fn map_bearing_structs_are_transitive() {
     let items: Vec<&syn::Item> = items.iter().collect();
     assert_eq!(
         map_bearing_structs(&items),
-        BTreeSet::from(["HasMap".to_string(), "Outer".to_string()])
+        BTreeSet::from([
+            "Boxed".to_string(),
+            "HasMap".to_string(),
+            "Outer".to_string()
+        ])
     );
 }
 
@@ -432,4 +462,25 @@ fn non_type_items_reference_nothing() {
     let item: syn::Item = syn::parse_str("fn f() {}").unwrap();
     assert!(referenced_idents(&item).is_empty());
     assert!(!directly_differs(&item, &BTreeSet::new()));
+}
+
+/// M2: serde reads a flattened `Box<Option<T>>` like a flattened `Option<T>`
+/// (a failing `T` becomes `None`), so its keys accept any value on input.
+#[test]
+fn serde_reads_a_flattened_boxed_option_leniently() {
+    #[derive(serde::Deserialize)]
+    struct Page {
+        page: u32,
+    }
+    #[derive(serde::Deserialize)]
+    struct Req {
+        id: i32,
+        #[serde(flatten)]
+        page: Box<Option<Page>>,
+    }
+    let req: Req = serde_json::from_str(r#"{"id":1,"page":"x"}"#).unwrap();
+    assert_eq!(req.id, 1);
+    assert!(req.page.is_none());
+    let req: Req = serde_json::from_str(r#"{"id":1,"page":2}"#).unwrap();
+    assert_eq!(req.page.map(|page| page.page), Some(2));
 }
