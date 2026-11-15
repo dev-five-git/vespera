@@ -103,7 +103,40 @@ pub fn retain_declared<T: Clone + SourceIdentified>(items: &[T]) -> std::borrow:
     static IN_IDE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let in_ide =
         *IN_IDE.get_or_init(|| is_rust_analyzer(std::env::current_exe().ok().as_deref()));
-    retain_declared_if(items, in_ide)
+    retain_declared_if(items, in_ide || test_ide::forced())
+}
+
+/// Test-only switch emulating the IDE for [`retain_declared`].
+#[cfg(test)]
+pub(crate) mod test_ide {
+    use std::cell::Cell;
+
+    thread_local! {
+        static FORCED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(crate) fn forced() -> bool {
+        FORCED.with(Cell::get)
+    }
+
+    /// Emulates rust-analyzer on this thread until the guard drops.
+    pub(crate) fn force() -> impl Drop {
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                FORCED.with(|forced| forced.set(false));
+            }
+        }
+        FORCED.with(|forced| forced.set(true));
+        Restore
+    }
+}
+
+#[cfg(not(test))]
+mod test_ide {
+    pub(super) const fn forced() -> bool {
+        false
+    }
 }
 
 /// Whether `exe` is rust-analyzer's (long-lived) proc-macro server.

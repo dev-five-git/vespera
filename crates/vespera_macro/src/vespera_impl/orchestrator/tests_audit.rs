@@ -90,6 +90,7 @@ fn doc_route_shadowing_an_app_route_is_rejected() {
 /// router must mount only functions the file still declares.
 #[test]
 fn stale_storage_entries_of_renamed_handlers_are_ignored() {
+    let _ide = crate::macro_storage::test_ide::force();
     let temp_dir = TempDir::new().unwrap();
     let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
     let routes = temp_dir.path().join("src").join("routes");
