@@ -701,8 +701,8 @@ fn mentions_ident_ignores_unparsable_source() {
     assert!(!mentions_ident("fn f(x: Foobar)", "Foo"));
 }
 
-/// Set / `Duration` fields, `#[form_data(default)]` and one-sided
-/// `serde_repr` derives make the request view differ without any `serde`
+/// Set / `Duration` / `Decimal` fields, enums mixing unit and data
+/// variants, `#[form_data(default)]` and one-sided `serde_repr` derives make the request view differ without any `serde`
 /// attribute in the whole app.
 #[rstest]
 #[case::form_data_default("struct Tags { #[form_data(default)] tag: String }", true)]
@@ -713,6 +713,9 @@ fn mentions_ident_ignores_unparsable_source() {
 #[case::hash_set("struct Tags { tags: std::collections::HashSet<String> }", true)]
 #[case::btree_set("struct Tags { tags: BTreeSet<String> }", true)]
 #[case::duration("struct Tags { ttl: std::time::Duration }", true)]
+#[case::decimal("struct Tags { total: rust_decimal::Decimal }", true)]
+#[case::mixed_enum("enum Tags { Empty, Circle { r: f64 } }", true)]
+#[case::unit_enum("enum Tags { A, B }", false)]
 #[case::plain("struct Tags { tags: Vec<String> }", false)]
 fn input_views_without_serde_attributes(#[case] definition: &str, #[case] differs: bool) {
     let mut metadata = CollectedMetadata::new();

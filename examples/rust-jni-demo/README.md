@@ -210,7 +210,7 @@ Header JSON (request and response):
   "query": "user=alice", "headers": {"content-type": "..."} }
 
 // response
-{ "v": 1, "status": 200, "headers": {...}, "metadata": {"version": "0.1.51"} }
+{ "v": 1, "status": 200, "headers": {...}, "metadata": {"version": "<vespera version>"} }
 ```
 
 All failure paths (malformed wire, Rust panic, no app registered) return a length-prefixed wire response with `status: 4xx/5xx` and a plain-text body, so the Java decoder never has to special-case errors.

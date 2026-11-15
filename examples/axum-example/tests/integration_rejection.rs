@@ -62,10 +62,11 @@ async fn result_extractors_are_documented() {
     assert_eq!(params, [("q", "query", true), ("limit", "query", false)]);
 }
 
-/// `POST /form/upload` answers a malformed multipart body with `400` instead
-/// of panicking the handler (which dropped the connection with no response).
+/// `POST /form/upload` answers a malformed multipart body with `400` (an
+/// oversized one with `413`) instead of panicking the handler (which dropped
+/// the connection with no response).
 #[tokio::test]
-async fn raw_multipart_upload_rejects_a_malformed_body_with_400() {
+async fn raw_multipart_upload_rejects_bad_bodies_with_their_status() {
     let server = TestServer::new(create_app().await);
 
     let ok = server
@@ -81,4 +82,29 @@ async fn raw_multipart_upload_rejects_a_malformed_body_with_400() {
         .bytes("garbage".into())
         .await;
     malformed.assert_status(StatusCode::BAD_REQUEST);
+
+    // Over axum's default 2 MiB body limit: `413`, as `MultipartError`
+    // reports it (not a blanket `400`).
+    let oversized = server
+        .post("/form/upload")
+        .multipart(testkit::MultipartForm::new().add_text("note", "x".repeat(3 << 20)))
+        .await;
+    oversized.assert_status(StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+/// `POST /error/cookie-jar-logout` clears the `session` cookie with an
+/// expiring `Set-Cookie`, as its summary says.
+#[tokio::test]
+async fn cookie_jar_logout_expires_the_session_cookie() {
+    let server = TestServer::new(create_app().await);
+    let response = server
+        .post("/error/cookie-jar-logout")
+        .add_header(vespera::axum::http::header::COOKIE, "session=abc")
+        .await;
+    response.assert_status_ok();
+    let set_cookie = response.headers()[vespera::axum::http::header::SET_COOKIE]
+        .to_str()
+        .unwrap();
+    assert!(set_cookie.starts_with("session=;"), "{set_cookie}");
+    assert!(set_cookie.contains("Max-Age=0"), "{set_cookie}");
 }

@@ -40,6 +40,14 @@ warmup=${WARMUP_SECS:-1}
 measure=${MEASURE_SECS:-2}
 limit_mean=${REGRESS_MEAN:-0.30}
 limit_lower=${REGRESS_LOWER:-0.20}
+# awk reads `30%` as 30 (= +3000%) and `abc` as 0: reject anything that is
+# not a plain non-negative fraction instead of gating on a nonsense limit.
+for limit in "$limit_mean" "$limit_lower"; do
+  if ! [[ $limit =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    echo "::error::REGRESS_MEAN / REGRESS_LOWER must be non-negative numbers (fractions, e.g. 0.30), got '$limit'" >&2
+    exit 2
+  fi
+done
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 # A work dir this script created (no WORK_DIR) is removed on exit: it holds

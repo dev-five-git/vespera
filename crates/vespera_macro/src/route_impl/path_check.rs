@@ -12,8 +12,8 @@
 //! - `Path<(A, B, ..)>` with FEWER elements than the route's own parameters;
 //! - `Path<scalar>` (a primitive such as `u32` / `String`) on a route with
 //!   two or more own parameters;
-//! - `Path<Struct>` (a named-field struct declared in the route's own file)
-//!   with `#[serde(deny_unknown_fields)]` when one of the route's own
+//! - `Path<Struct>` (a named-field struct declared once in the handler's own
+//!   module of the route file) with `#[serde(deny_unknown_fields)]` when one of the route's own
 //!   parameters matches no field (by serde name or `alias`). Structs with a
 //!   `#[serde(flatten)]` field or generics are not checked.
 //!
@@ -36,18 +36,45 @@ use crate::parser::{extract_path_parameters, request_extractor};
 
 /// Check every `Path<T>` / `Validated<Path<T>>` argument of `sig` against
 /// the `{params}` of the `#[route(path)]` (none without a `path`). Structs
-/// are looked up among the top-level items of `source_file`.
+/// are looked up among the items of the handler's own (inline) module of
+/// `source_file` (`inline_module`, `""` = the file's top level; `None` =
+/// unknown, no struct is checked). A name declared more than once there
+/// (cfg twins) is ambiguous and not checked either.
 pub fn check_path_extractors(
     sig: &syn::Signature,
     route_path: Option<&str>,
     source_file: Option<&FsPath>,
+    inline_module: Option<&str>,
 ) -> syn::Result<()> {
     let lookup = |name: &str| {
-        let file = source_file?;
-        let definition = crate::schema_macro::file_cache::get_struct_definition(file, name)?;
-        syn::parse_str::<syn::ItemStruct>(&definition).ok()
+        let file = crate::schema_macro::file_cache::get_shallow_parsed_file(source_file?)?;
+        struct_in_module(file.items, inline_module?, name)
     };
     check_with_lookup(sig, route_path, lookup)
+}
+
+/// The only struct named `name` among the items of the inline module
+/// `scope` (`a::b`, `""` = `items` themselves).
+fn struct_in_module(items: Vec<syn::Item>, scope: &str, name: &str) -> Option<syn::ItemStruct> {
+    let mut items = items;
+    for segment in scope.split("::").filter(|segment| !segment.is_empty()) {
+        let mut modules = items.into_iter().filter_map(|item| match item {
+            syn::Item::Mod(module) if syn::ext::IdentExt::unraw(&module.ident) == segment => {
+                module.content.map(|(_, items)| items)
+            }
+            _ => None,
+        });
+        items = modules.next()?;
+        if modules.next().is_some() {
+            return None;
+        }
+    }
+    let mut structs = items.into_iter().filter_map(|item| match item {
+        syn::Item::Struct(item) if item.ident == name => Some(item),
+        _ => None,
+    });
+    let found = structs.next()?;
+    structs.next().is_none().then_some(found)
 }
 
 pub(super) fn check_with_lookup(
@@ -369,14 +396,71 @@ mod tests {
         )
         .unwrap();
         let sig: syn::Signature = syn::parse_str("async fn h(p: Path<Strict>)").unwrap();
-        let err = check_path_extractors(&sig, Some("/{id}/{x}"), Some(&file))
+        let err = check_path_extractors(&sig, Some("/{id}/{x}"), Some(&file), Some(""))
             .unwrap_err()
             .to_string();
         assert!(err.contains("has the path parameter `{x}`"), "{err}");
-        assert!(check_path_extractors(&sig, Some("/{id}"), Some(&file)).is_ok());
-        // Unknown in the file / no source file: not checked.
+        assert!(check_path_extractors(&sig, Some("/{id}"), Some(&file), Some("")).is_ok());
+        // Unknown in the file / no source file / unknown module: not checked.
         let other: syn::Signature = syn::parse_str("async fn h(p: Path<Other>)").unwrap();
-        assert!(check_path_extractors(&other, Some("/{id}/{x}"), Some(&file)).is_ok());
-        assert!(check_path_extractors(&sig, Some("/{id}/{x}"), None).is_ok());
+        assert!(check_path_extractors(&other, Some("/{id}/{x}"), Some(&file), Some("")).is_ok());
+        assert!(check_path_extractors(&sig, Some("/{id}/{x}"), None, Some("")).is_ok());
+        assert!(check_path_extractors(&sig, Some("/{id}/{x}"), Some(&file), None).is_ok());
+    }
+
+    const SCOPED: &str = r"
+        #[serde(deny_unknown_fields)] struct Params { id: u32 }
+        #[cfg(unix)] #[serde(deny_unknown_fields)] struct Twin { id: u32 }
+        #[cfg(not(unix))] #[serde(deny_unknown_fields)] struct Twin { id: u32, slug: String }
+        mod v2 {
+            #[serde(deny_unknown_fields)] struct Params { id: u32, slug: String }
+            mod r#inner { #[serde(deny_unknown_fields)] struct Params { id: u32 } }
+        }
+        #[cfg(unix)] mod dup { struct Params { id: u32 } }
+        #[cfg(not(unix))] mod dup { struct Params { id: u32 } }
+        mod outline;
+    ";
+
+    /// The struct is resolved in the handler's own inline module; a name
+    /// declared twice (cfg twins) or a module that is not inline is not
+    /// checked.
+    #[rstest]
+    #[case::top_level("", "Params", Some("Params { id : u32 }"))]
+    #[case::inline_module("v2", "Params", Some("Params { id : u32 , slug"))]
+    #[case::nested_raw_module("v2::inner", "Params", Some("Params { id : u32 }"))]
+    #[case::not_in_module("v2", "Twin", None)]
+    #[case::cfg_twins("", "Twin", None)]
+    #[case::duplicate_module("dup", "Params", None)]
+    #[case::outline_module("outline", "Params", None)]
+    #[case::missing_module("nope", "Params", None)]
+    fn structs_resolve_in_the_handler_module(
+        #[case] scope: &str,
+        #[case] name: &str,
+        #[case] expected: Option<&str>,
+    ) {
+        let file: syn::File = syn::parse_str(SCOPED).unwrap();
+        let found =
+            struct_in_module(file.items, scope, name).map(|item| quote::quote!(#item).to_string());
+        match expected {
+            Some(fields) => assert!(
+                found.as_deref().is_some_and(|s| s.contains(fields)),
+                "{found:?}"
+            ),
+            None => assert_eq!(found, None),
+        }
+    }
+
+    /// A handler in `mod v2` extracting `v2::Params` is not checked against
+    /// the top-level `Params` (false compile error).
+    #[test]
+    fn inline_module_struct_shadows_the_top_level_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("route.rs");
+        std::fs::write(&file, SCOPED).unwrap();
+        let sig: syn::Signature = syn::parse_str("async fn get(p: Path<Params>)").unwrap();
+        assert!(check_path_extractors(&sig, Some("/{id}/{slug}"), Some(&file), Some("v2")).is_ok());
+        assert!(check_path_extractors(&sig, Some("/{id}/{slug}"), Some(&file), Some("")).is_err());
+        let twin: syn::Signature = syn::parse_str("async fn get(p: Path<Twin>)").unwrap();
+        assert!(check_path_extractors(&twin, Some("/{id}/{slug}"), Some(&file), Some("")).is_ok());
     }
 }

@@ -137,7 +137,9 @@ pub(super) fn inline_mod_route_error(file: &Path, (module, handler): &(String, S
 /// not be located fall back to the source scan.  Inside rust-analyzer every
 /// handler takes the source scan: the storage still holds the entry of a
 /// handler since moved out of its inline module (a different scope, so it
-/// was never replaced), which would keep the error alive.
+/// was never replaced), which would keep the error alive.  The module
+/// reported is the innermost one (`inner` of a stored `v2::inner`), as the
+/// source scan reports it.
 pub(super) fn stored_routes_inline_module(
     file: &Path,
     stored_routes: &[&crate::route_impl::StoredRouteInfo],
@@ -149,7 +151,10 @@ pub(super) fn stored_routes_inline_module(
                 .inline_module
                 .as_ref()
                 .filter(|module| !module.is_empty())
-                .map(|module| (module.clone(), stored.fn_name.clone()))
+                .map(|module| {
+                    let innermost = module.rsplit("::").next().unwrap_or(module);
+                    (innermost.to_string(), stored.fn_name.clone())
+                })
         })
     {
         return Some(found);
@@ -361,7 +366,20 @@ mod tests {
             inline_module: Some(String::new()),
             ..stale.clone()
         };
-        assert!(stored_routes_inline_module(&moved, &[&stale, &current]).is_some());
+        assert_eq!(
+            stored_routes_inline_module(&moved, &[&stale, &current]),
+            Some(("old".to_string(), "moved".to_string()))
+        );
+        // A nested stored scope reports its innermost module, like the
+        // source scan (never the `v2::inner` path as a file name).
+        let nested = crate::route_impl::StoredRouteInfo {
+            inline_module: Some("v2::inner".to_string()),
+            ..stale.clone()
+        };
+        assert_eq!(
+            stored_routes_inline_module(&moved, &[&nested]),
+            Some(("inner".to_string(), "moved".to_string()))
+        );
         {
             let _ide = crate::macro_storage::test_ide::force();
             assert_eq!(

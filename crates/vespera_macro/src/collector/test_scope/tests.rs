@@ -69,6 +69,57 @@ fn files_behind_test_only_module_declarations() {
     assert!(!TestScope::new(None).file_test_only(&src.join("routes/fixtures.rs")));
 }
 
+/// `.` / `..` fold without touching the filesystem; relative paths are
+/// absolutized; climbing above the root is no path.
+#[test]
+fn lexical_paths_fold_dots() {
+    let dir = TempDir::new().unwrap();
+    assert_eq!(
+        lexical(&dir.path().join("a/./b/../c.rs")),
+        Some(dir.path().join("a").join("c.rs"))
+    );
+    let cwd = std::env::current_dir().unwrap();
+    assert_eq!(lexical(Path::new("x/../y")), Some(cwd.join("y")));
+    let root = cwd.ancestors().last().unwrap();
+    assert_eq!(lexical(&root.join("..")), None);
+}
+
+/// The module chain follows the logical path: a test-gated `mod fixtures;`
+/// whose directory is a symlink out of `src/` (or onto a sibling module)
+/// still gates the file. A spelling of the crate that is not lexically under
+/// `src/` (a symlinked alias of the crate directory) falls back to the
+/// canonical path.
+#[cfg(unix)]
+#[test]
+fn symlinked_module_directories_follow_the_logical_chain() {
+    let krate = crate_with(&[
+        ("lib.rs", "mod routes;"),
+        (
+            "routes/mod.rs",
+            "#[cfg(test)] mod fixtures; #[cfg(test)] mod v2; mod v1; #[cfg(test)] mod gated;",
+        ),
+        ("routes/gated.rs", ""),
+        ("routes/v1/mod.rs", "mod users;"),
+        ("routes/v1/users.rs", ""),
+    ]);
+    let outside = krate.path().join("test_fixtures");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("mod.rs"), "").unwrap();
+    let src = krate.path().join("src");
+    std::os::unix::fs::symlink(&outside, src.join("routes/fixtures")).unwrap();
+    std::os::unix::fs::symlink(src.join("routes/v1"), src.join("routes/v2")).unwrap();
+    let mut scope = TestScope::new(Some(&src));
+    assert!(scope.file_test_only(&src.join("routes/fixtures/mod.rs")));
+    assert!(scope.file_test_only(&src.join("routes/v2/users.rs")));
+    assert!(!scope.file_test_only(&src.join("routes/v1/users.rs")));
+
+    let alias = TempDir::new().unwrap();
+    let alias_crate = alias.path().join("krate");
+    std::os::unix::fs::symlink(krate.path(), &alias_crate).unwrap();
+    assert!(scope.file_test_only(&alias_crate.join("src/routes/gated.rs")));
+    assert!(!scope.file_test_only(&alias_crate.join("src/routes/v1/users.rs")));
+}
+
 #[test]
 fn functions_behind_test_only_cfg() {
     let krate = crate_with(&[

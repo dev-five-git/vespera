@@ -842,7 +842,10 @@ fn stored_inline_module_scope_is_authoritative(
     let result = collect_metadata(temp_dir.path(), "routes", &storage);
     if rejected {
         let error = result.unwrap_err().to_string();
-        assert!(error.contains("`mod v2::inner { .. }`"), "{error}");
+        // The innermost module, as the source scan reports it: never the
+        // `v2::inner` path as a file name (`:` is illegal on Windows).
+        assert!(error.contains("`mod inner { .. }`"), "{error}");
+        assert!(error.contains("`inner.rs`"), "{error}");
     } else {
         assert_eq!(result.unwrap().0.routes.len(), 1);
     }

@@ -9,7 +9,7 @@ use vespera::{
     Serve,
     axum::http::{
         HeaderName, StatusCode,
-        header::{AUTHORIZATION, CONTENT_TYPE},
+        header::{AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE},
     },
 };
 
@@ -34,17 +34,25 @@ async fn bearer_route_checks_the_token(#[case] authorization: &str, #[case] stat
     response.assert_status(status);
     if status == StatusCode::OK {
         assert_eq!(response.json::<Value>(), json!({"id": 1, "name": "demo"}));
+    } else {
+        // RFC 9110 15.5.2: a 401 MUST carry a challenge.
+        assert_eq!(response.headers()[WWW_AUTHENTICATE], "Bearer");
     }
 }
 
 #[rstest]
-#[case::scoped(Some("Bearer read-users-token"), StatusCode::OK)]
-#[case::missing_scope(Some("Bearer demo-token"), StatusCode::FORBIDDEN)]
-#[case::anonymous(None, StatusCode::UNAUTHORIZED)]
+#[case::scoped(Some("Bearer read-users-token"), StatusCode::OK, None)]
+#[case::missing_scope(
+    Some("Bearer demo-token"),
+    StatusCode::FORBIDDEN,
+    Some(r#"Bearer error="insufficient_scope", scope="read:users""#)
+)]
+#[case::anonymous(None, StatusCode::UNAUTHORIZED, Some("Bearer"))]
 #[tokio::test]
 async fn scoped_route_checks_the_scope(
     #[case] authorization: Option<&str>,
     #[case] status: StatusCode,
+    #[case] challenge: Option<&str>,
 ) {
     let server = TestServer::new(create_app().await);
     let mut request = server.get("/secured/directory");
@@ -53,6 +61,13 @@ async fn scoped_route_checks_the_scope(
     }
     let response = request.await;
     response.assert_status(status);
+    assert_eq!(
+        response
+            .headers()
+            .get(WWW_AUTHENTICATE)
+            .map(|value| value.to_str().unwrap()),
+        challenge
+    );
     if status == StatusCode::OK {
         assert_eq!(response.json::<Value>(), json!(["alice", "bob"]));
     }
@@ -61,10 +76,9 @@ async fn scoped_route_checks_the_scope(
 #[tokio::test]
 async fn api_key_route_checks_the_header() {
     let server = TestServer::new(create_app().await);
-    server
-        .get("/secured/reports")
-        .await
-        .assert_status(StatusCode::UNAUTHORIZED);
+    let anonymous = server.get("/secured/reports").await;
+    anonymous.assert_status(StatusCode::UNAUTHORIZED);
+    assert_eq!(anonymous.headers()[WWW_AUTHENTICATE], "ApiKey");
     let response = server
         .get("/secured/reports")
         .add_header(HeaderName::from_static("x-api-key"), "demo-key")

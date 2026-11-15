@@ -69,8 +69,12 @@ fn may_gate_tests(content: &str) -> bool {
 /// Test-only classification for one crate, memoizing each declaring file's
 /// test-gated `mod` names.
 pub struct TestScope {
-    /// Canonical `<manifest>/src`, when known.
+    /// `<manifest>/src` folded lexically (the logical path rustc and the
+    /// route walker see), when known.
     src_dir: Option<PathBuf>,
+    /// Canonical `<manifest>/src`, the fallback for a file whose logical
+    /// path does not lie under `src_dir` (a different spelling of it).
+    canonical_src_dir: Option<PathBuf>,
     /// Declaring file → names of the `mod name;` declarations it gates.
     gated_mods: HashMap<PathBuf, HashSet<String>>,
 }
@@ -79,7 +83,8 @@ impl TestScope {
     /// The scope of the crate whose sources live in `src_dir`.
     pub fn new(src_dir: Option<&Path>) -> Self {
         Self {
-            src_dir: src_dir.and_then(file_cache::canonicalize_cached),
+            src_dir: src_dir.and_then(lexical),
+            canonical_src_dir: src_dir.and_then(file_cache::canonicalize_cached),
             gated_mods: HashMap::new(),
         }
     }
@@ -95,13 +100,23 @@ impl TestScope {
     /// Whether `file` joins the crate only through a test-gated `mod`
     /// declaration (any link of the chain from `src/lib.rs` / `src/main.rs`).
     /// A file outside `src/` is never classified.
+    ///
+    /// The chain follows the file's logical path (`.` / `..` folded without
+    /// resolving symlinks), as rustc's module tree does: a
+    /// `#[cfg(test)] mod fixtures;` whose directory is a symlink leading out
+    /// of `src/` still gates it. Only a path that is not lexically under
+    /// `src/` falls back to the canonical one.
     pub fn file_test_only(&mut self, file: &Path) -> bool {
-        let Some(src_dir) = self.src_dir.clone() else {
-            return false;
-        };
-        let Some(segments) =
-            file_cache::canonicalize_cached(file).and_then(|file| module_segments(&src_dir, &file))
-        else {
+        let lexical_chain = self.src_dir.clone().and_then(|src_dir| {
+            let segments = module_segments(&src_dir, &lexical(file)?)?;
+            Some((src_dir, segments))
+        });
+        let Some((src_dir, segments)) = lexical_chain.or_else(|| {
+            let src_dir = self.canonical_src_dir.clone()?;
+            let file = file_cache::canonicalize_cached(file)?;
+            let segments = module_segments(&src_dir, &file)?;
+            Some((src_dir, segments))
+        }) else {
             return false;
         };
         let mut parent = src_dir.clone();
@@ -156,6 +171,30 @@ fn gating_names(content: &str, pick: impl Fn(&Item) -> Option<&syn::Ident>) -> H
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// `path` made absolute (against the current directory) with `.` / `..`
+/// folded lexically — symlinks are not resolved. `None` when there is no
+/// current directory or a `..` climbs above the root.
+fn lexical(path: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let mut folded = PathBuf::new();
+    // `components()` already drops every `.` of an absolute path.
+    for component in absolute.components() {
+        if component == Component::ParentDir {
+            if !folded.pop() {
+                return None;
+            }
+        } else {
+            folded.push(component);
+        }
+    }
+    Some(folded)
 }
 
 /// `src/a/b.rs` / `src/a/b/mod.rs` → `["a", "b"]`; a crate root → `[]`.
