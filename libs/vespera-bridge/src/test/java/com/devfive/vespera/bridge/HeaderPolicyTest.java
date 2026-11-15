@@ -212,6 +212,60 @@ class HeaderPolicyTest {
         }
     }
 
+    /**
+     * Past the linear-scan window duplicates are found through a set, both
+     * against the scanned names and among later ones; a request without a
+     * duplicate enumerates getHeaderNames() once and keeps its order.
+     */
+    @Test
+    void manyHeadersAreEnumeratedOnceAndDuplicatesStillMerge() {
+        List<String> names = new ArrayList<>();
+        for (int i = 0; i < 40; i++) {
+            names.add("X-H" + i);
+        }
+        ScriptedRequest plain = new ScriptedRequest(names);
+        for (String name : names) {
+            plain.values(name, name);
+        }
+        Map<String, String> headers = HeaderPolicy.collectHeaders(plain);
+        assertEquals(1, plain.nameCall, "one getHeaderNames() enumeration");
+        assertEquals(40, headers.size());
+        List<String> keys = new ArrayList<>(headers.keySet());
+        for (int i = 0; i < 40; i++) {
+            assertEquals("x-h" + i, keys.get(i));
+            assertEquals("X-H" + i, headers.get("x-h" + i));
+        }
+
+        for (int duplicateOf : new int[] {3, 25}) {
+            List<String> withDup = new ArrayList<>(names);
+            withDup.add("x-h" + duplicateOf);
+            ScriptedRequest request = new ScriptedRequest(withDup);
+            for (String name : withDup) {
+                request.values(name, name);
+            }
+            assertEquals("X-H" + duplicateOf + ", x-h" + duplicateOf,
+                    HeaderPolicy.collectHeaders(request).get("x-h" + duplicateOf));
+        }
+    }
+
+    /** The canonical-name fast path lower-cases exactly like the ASCII fallback. */
+    @Test
+    void commonBrowserHeaderNamesAreLowerCased() {
+        List<String> names = List.of("X-Forwarded-Port", "Sec-Fetch-Site", "Sec-Fetch-Mode",
+                "Sec-Fetch-Dest", "Sec-Fetch-User", "Sec-Ch-Ua", "Sec-Ch-Ua-Mobile",
+                "Sec-Ch-Ua-Platform", "Upgrade-Insecure-Requests", "Pragma", "Priority",
+                "Traceparent", "Tracestate", "If-Match", "Range");
+        ScriptedRequest request = new ScriptedRequest(names);
+        for (String name : names) {
+            request.values(name, name);
+        }
+        Map<String, String> headers = HeaderPolicy.collectHeaders(request);
+        for (String name : names) {
+            assertEquals(name, headers.get(name.toLowerCase(java.util.Locale.ROOT)), name);
+        }
+        assertEquals(names.size(), headers.size());
+    }
+
     @Test
     void mergedPathStillFiltersStaticAndConnectionNominatedHeaders() {
         ScriptedRequest request = new ScriptedRequest(List.of(
@@ -241,10 +295,13 @@ class HeaderPolicyTest {
         ScriptedRequest noNames = new ScriptedRequest((List<String>) null);
         assertTrue(HeaderPolicy.collectHeaders(noNames).isEmpty());
 
+        // Without a duplicate name getHeaderNames() is enumerated once: a
+        // second call (null here) is never made.
         ScriptedRequest namesDisappear =
                 new ScriptedRequest(List.of("X-One"), null).nullConnectionHeaders();
         namesDisappear.values("X-One", "one");
-        assertTrue(HeaderPolicy.collectHeaders(namesDisappear).isEmpty());
+        assertEquals(Map.of("x-one", "one"), HeaderPolicy.collectHeaders(namesDisappear));
+        assertEquals(1, namesDisappear.nameCall);
 
         ScriptedRequest mergedNamesDisappear =
                 new ScriptedRequest(List.of("X-One", "x-one"), null);

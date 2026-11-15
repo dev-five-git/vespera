@@ -115,8 +115,10 @@ public final class VesperaResponse {
     /** The body decoded with {@code charset}. */
     public String bodyString(Charset charset) {
         Objects.requireNonNull(charset, "charset");
-        ByteBuffer view = decoded.body();
-        return charset.decode(view).toString();
+        // new String(byte[]) decodes in bulk; Charset.decode on the read-only
+        // body view (hasArray() == false) went byte by byte into a CharBuffer
+        // and then copied it again. Malformed input is replaced the same way.
+        return new String(decoded.bodyBytes(), charset);
     }
 
     /**
