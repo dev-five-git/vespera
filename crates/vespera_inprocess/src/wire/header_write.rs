@@ -12,7 +12,7 @@
 //! ```
 //!
 //! The string escaper reproduces exactly the set `serde_json` (and the
-//! Java `VesperaBridge.writeJsonString`) emit: only `"`, `\`, and the
+//! Java `VesperaWireCodec.writeJsonString`) emit: only `"`, `\`, and the
 //! C0 controls (`\b \t \n \f \r`, else `\u00XX` in lowercase hex) are
 //! escaped; `/` and 0x7F pass through, and every byte `>= 0x80` of a UTF-8
 //! string is copied through verbatim (raw UTF-8).  Header **values** are the

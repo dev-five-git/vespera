@@ -19,7 +19,7 @@ use std::{
     ops::Deref,
     sync::{
         Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, Ordering, fence},
     },
     time::{Duration, Instant},
 };
@@ -216,7 +216,20 @@ pub fn runtime() -> Option<RuntimeLease> {
         return None;
     }
     let claim = Claim;
-    let handle = &RUNTIME.get_or_init(build_shared_runtime).as_ref()?.handle;
+    let mut built = false;
+    let shared = RUNTIME.get_or_init(|| {
+        built = true;
+        build_shared_runtime()
+    });
+    if built {
+        // Store-buffer pairing with `on_shared_runtime` (store flag; fence;
+        // read RUNTIME): without SeqCst fences on BOTH sides the builder can
+        // read a stale `false` while the registrar reads RUNTIME as unbuilt,
+        // and neither flushes the hook.  Only the building thread needs it:
+        // a registrar that read RUNTIME as unbuilt is ordered before it.
+        fence(Ordering::SeqCst);
+    }
+    let handle = &shared.as_ref()?.handle;
     if HOOKS_PENDING.load(Ordering::Relaxed) {
         flush_hooks(handle);
     }
@@ -362,6 +375,8 @@ pub fn on_shared_runtime(hook: RuntimeHook) {
         hooks.push(hook);
     }
     HOOKS_PENDING.store(true, Ordering::SeqCst);
+    // Pairs with the builder's fence in `runtime()` (store-buffer pattern).
+    fence(Ordering::SeqCst);
     if let Some(Some(shared)) = RUNTIME.get() {
         flush_hooks(&shared.handle);
     }

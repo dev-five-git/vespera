@@ -1,5 +1,5 @@
-//! 422 validation-error hoisting, split out to keep `wire.rs` under the
-//! 1000-line cap.  Pure code move: no logic or byte-behaviour change.
+//! 422 validation-error hoisting, split out of `wire.rs` (1000-line cap):
+//! the strict typed fast path plus the lenient `serde_json::Value` fallback.
 
 use std::borrow::Cow;
 
@@ -60,20 +60,105 @@ fn body_is_json(headers: &http::HeaderMap) -> bool {
 /// this strict parse and is retried via the inline `serde_json::Value`
 /// fallback walk in [`try_hoist_validation_errors`], so the hoist stays
 /// genuinely best-effort without taxing the common case.
-#[derive(Deserialize)]
+///
+/// Both `Deserialize` impls are hand-written **map-only** visitors: a derive
+/// would also accept a JSON array through `visit_seq` (positional
+/// `[path, code, message]` / `[errors]`), hoisting fields the lenient `Value`
+/// walk never sees.  An array now fails the strict parse and falls through to
+/// [`hoist_from_value`], which skips it — the two paths stay accept-identical.
 struct HoistEnvelope<'a> {
-    #[serde(borrow)]
     errors: Vec<HoistErrorIn<'a>>,
 }
 
-#[derive(Deserialize)]
 struct HoistErrorIn<'a> {
-    #[serde(default)]
     path: Option<&'a str>,
-    #[serde(default)]
     code: Option<&'a str>,
-    #[serde(default)]
     message: Option<&'a str>,
+}
+
+/// One error field as read from the map: outer `None` = key absent, inner
+/// `None` = explicit `null` (both hoist as an absent field).
+type Opt<'a> = Option<Option<&'a str>>;
+
+/// Store `slot`'s value, rejecting a repeated key like the derive did (the
+/// body then retries through the `Value` walk, where the last key wins).
+fn set_once<'de, A: serde::de::MapAccess<'de>, T: Deserialize<'de>>(
+    access: &mut A,
+    slot: &mut Option<T>,
+    name: &'static str,
+) -> Result<(), A::Error> {
+    if slot.is_some() {
+        return Err(serde::de::Error::duplicate_field(name));
+    }
+    *slot = Some(access.next_value()?);
+    Ok(())
+}
+
+impl<'de> Deserialize<'de> for HoistEnvelope<'de> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = HoistEnvelope<'de>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a validation envelope object")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut access: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut errors = None;
+                while let Some(key) = access.next_key::<&'de str>()? {
+                    if key == "errors" {
+                        set_once(&mut access, &mut errors, "errors")?;
+                    } else {
+                        access.next_value::<serde::de::IgnoredAny>()?;
+                    }
+                }
+                let errors = errors.ok_or_else(|| serde::de::Error::missing_field("errors"))?;
+                Ok(HoistEnvelope { errors })
+            }
+        }
+        deserializer.deserialize_map(V)
+    }
+}
+
+impl<'de> Deserialize<'de> for HoistErrorIn<'de> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = HoistErrorIn<'de>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a validation error object")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut access: A,
+            ) -> Result<Self::Value, A::Error> {
+                let (mut path, mut code, mut message): (Opt<'de>, Opt<'de>, Opt<'de>) =
+                    (None, None, None);
+                while let Some(key) = access.next_key::<&'de str>()? {
+                    match key {
+                        "path" => set_once(&mut access, &mut path, "path")?,
+                        "code" => set_once(&mut access, &mut code, "code")?,
+                        "message" => set_once(&mut access, &mut message, "message")?,
+                        _ => {
+                            access.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(HoistErrorIn {
+                    path: path.flatten(),
+                    code: code.flatten(),
+                    message: message.flatten(),
+                })
+            }
+        }
+        deserializer.deserialize_map(V)
+    }
 }
 
 /// Collect hoistable `(path, code, message)` triples into wire items,
@@ -321,6 +406,46 @@ mod tests {
         let body = Bytes::from_static(br#"{"errors":[{"path":"name"}]}"#);
 
         assert!(try_hoist_validation_errors(&headers, &body).is_none());
+    }
+
+    /// Regression (round 11): the strict fast path must accept ONLY JSON
+    /// objects.  A derived `Deserialize` also takes a JSON array through
+    /// `visit_seq` (positional `[path, code, message]` / `[errors]`), so an
+    /// array element or a top-level array used to hoist fields the lenient
+    /// `Value` walk (and the bench twin) skip.  Both paths must now agree.
+    #[rstest::rstest]
+    #[case::array_element(br#"{"errors":[["email","is invalid"]]}"#.as_slice())]
+    #[case::top_level_array(br#"[[{"path":"x"}]]"#.as_slice())]
+    #[case::array_element_full(br#"{"errors":[["p","c","m"]]}"#.as_slice())]
+    #[case::no_errors_key(br#"{"other":[{"path":"x"}]}"#.as_slice())]
+    fn hoisting_never_reads_arrays_as_objects(#[case] body: &'static [u8]) {
+        let body = Bytes::from_static(body);
+        assert!(
+            try_hoist_validation_errors(&json_headers(), &body).is_none(),
+            "an array is not a validation envelope / error object"
+        );
+        assert_eq!(bench_hoist_old(&json_headers(), &body), 0);
+    }
+
+    /// The map-only visitors keep the derive's duplicate-key rejection (the
+    /// body then retries through the `Value` walk, last key wins) and skip
+    /// unknown keys; an array element next to a valid object is skipped.
+    #[rstest::rstest]
+    #[case::dup_errors(br#"{"errors":[{"path":"a"}],"errors":[{"path":"b"}]}"#.as_slice())]
+    #[case::dup_path(br#"{"errors":[{"path":"a","path":"b"}]}"#.as_slice())]
+    #[case::dup_code(br#"{"errors":[{"path":"b","code":"x","code":"y"}]}"#.as_slice())]
+    #[case::dup_message(br#"{"errors":[{"path":"b","message":"x","message":"y"}]}"#.as_slice())]
+    #[case::unknown_keys(br#"{"v":1,"errors":[{"extra":[1],"path":"b"}]}"#.as_slice())]
+    #[case::array_next_to_object(br#"{"errors":[["a"],{"path":"b"}]}"#.as_slice())]
+    fn hoisting_map_visitors_match_the_value_walk(#[case] body: &'static [u8]) {
+        let body = Bytes::from_static(body);
+        let items = try_hoist_validation_errors(&json_headers(), &body).expect("must hoist");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].path, "b");
+        assert_eq!(
+            bench_hoist_new(&json_headers(), &body),
+            bench_hoist_old(&json_headers(), &body)
+        );
     }
 
     #[test]

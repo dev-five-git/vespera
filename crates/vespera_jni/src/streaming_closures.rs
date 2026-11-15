@@ -110,7 +110,7 @@ impl MethodCache {
     }
 }
 
-/// Process-global cache of the four `java.*` callback method IDs.
+/// Process-global cache of the five `java.*` callback method IDs.
 ///
 /// **Single-JVM-per-process invariant (deliberate).** The cached `JMethodID`s
 /// and their pinning `Global<JClass>` are JVM-local, and this `OnceLock` is
@@ -122,9 +122,10 @@ impl MethodCache {
 /// * Every cached class (`InputStream`, `OutputStream`, `Consumer`,
 ///   `CompletableFuture`) is a bootstrap `java.*` class that never unloads,
 ///   so the cached IDs stay valid for the process lifetime.
-/// * [`crate::daemon_env`] separately stores and compares the raw `JavaVM`
-///   pointer on every cached-env reuse, so a thread attached to a *different*
-///   VM cannot even obtain a live `Env` to reach this cache.
+/// * [`crate::daemon_env`] never reuses a cached `Env`: every call resolves
+///   the current thread's env through `GetEnv` on the requested `JavaVM`, and
+///   compares the raw `JavaVM` pointer of its own recorded attachment only on
+///   the attach path (a record for a different VM is detached first).
 ///
 /// A per-call `JavaVM` check is intentionally NOT added: it would require a
 /// `GetJavaVM` JNI call on every streaming chunk — the exact per-chunk JNI
@@ -180,8 +181,9 @@ fn method_cache(env: &mut jni::Env<'_>) -> Option<&'static MethodCache> {
 }
 
 /// One-line receiver-null predicate on the streaming hot path, called
-/// once per cached-`JMethodID` wrapper (four sites: `InputStream.read`,
-/// `OutputStream.write`, `Consumer.accept`, `CompletableFuture.complete`).
+/// once per cached-`JMethodID` wrapper (five sites: `InputStream.read`,
+/// `OutputStream.write`, `OutputStream.flush`, `Consumer.accept`,
+/// `CompletableFuture.complete`).
 /// `#[inline]` matches the file's discipline for one-line predicates
 /// ([`take_pending_exception`], `header_value_from_owner` /
 /// `parse_method_or_405` / `invalid_request_err` / `header_value_to_owned`

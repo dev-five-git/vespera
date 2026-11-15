@@ -75,9 +75,10 @@ pub fn shutdown_runtime(timeout: std::time::Duration) -> bool {
 /// The `bool` exists because every cached-`JMethodID` call site
 /// (`call_input_stream_read`, `call_output_stream_write`,
 /// `call_consumer_accept`) uses `call_method_unchecked` on the fast
-/// path, which returns `Ok` while leaving a thrown Java exception
-/// PENDING on the thread instead of surfacing it as `Err` (only the
-/// checked fallback surfaces it).  The three streaming closures
+/// path, which (jni 0.22) post-checks and reports a thrown Java exception
+/// as `Err(JavaException)` but leaves it PENDING on the thread — as does
+/// the checked fallback — so the caller must still clear it before its
+/// next JNI call.  The three streaming closures
 /// (`make_pull_closure`, `make_push_closure`, `call_header_consumer`)
 /// convert that pending exception into an abort with per-caller-specific
 /// return values (`RequestChunk::Error` for pull; `JavaException` `Err`

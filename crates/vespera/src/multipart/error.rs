@@ -361,12 +361,16 @@ impl IntoResponse for TypedMultipartError {
             Self::MissingField { .. }
             | Self::DuplicateField { .. }
             | Self::UnknownField { .. }
-            | Self::InvalidEnumValue { .. }
             | Self::NamelessField => StatusCode::BAD_REQUEST,
-            // Scalar conversion failures are malformed field values, not an
-            // unsupported multipart media type. Keep this aligned with
-            // `Validated<T>`'s validation-failure status.
-            Self::WrongFieldType { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            // Scalar conversion failures and unknown enum variants are
+            // malformed field values, not an unsupported multipart media type
+            // or a malformed form. Keep this aligned with `Validated<T>`'s
+            // validation-failure status (an unknown variant in a
+            // `Validated<Json<_>>` body is a `422` too), so under JNI both
+            // hoist into `validation_errors` the same way.
+            Self::WrongFieldType { .. } | Self::InvalidEnumValue { .. } => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
             Self::FieldTooLarge { .. }
             | Self::RequestTooLarge { .. }
             | Self::TooManyFields { .. } => StatusCode::PAYLOAD_TOO_LARGE,

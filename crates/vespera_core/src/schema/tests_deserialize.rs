@@ -107,3 +107,32 @@ fn exclusive_bound_rejects_a_non_number_non_boolean() {
         "unexpected error: {error}"
     );
 }
+
+/// Round 11: a `"null"` in the `type` array must not widen a schema whose
+/// `enum` / composition rejects `null` — re-serializing it used to append
+/// `null` to the enum or wrap it in `anyOf [.., {type: null}]`.
+#[rstest]
+#[case::enum_without_null(
+    json!({"type": ["string", "null"], "enum": ["a", "b"]}),
+    json!({"type": "string", "enum": ["a", "b"]})
+)]
+#[case::all_of(
+    json!({"type": ["object", "null"], "allOf": [{"$ref": "#/components/schemas/A"}]}),
+    json!({"type": "object", "allOf": [{"$ref": "#/components/schemas/A"}]})
+)]
+#[case::enum_with_null(
+    json!({"type": ["string", "null"], "enum": ["a", null]}),
+    json!({"type": ["string", "null"], "enum": ["a", null]})
+)]
+#[case::any_of_with_null_branch(
+    json!({"type": ["object", "null"], "anyOf": [{"type": "object"}, {"type": "null"}]}),
+    json!({"type": ["object", "null"], "anyOf": [{"type": "object"}, {"type": "null"}]})
+)]
+#[case::plain(json!({"type": ["integer", "null"]}), json!({"type": ["integer", "null"]}))]
+fn type_array_null_never_widens_a_schema_that_rejects_null(
+    #[case] input: serde_json::Value,
+    #[case] expected: serde_json::Value,
+) {
+    let schema: Schema = serde_json::from_value(input).unwrap();
+    assert_eq!(serde_json::to_value(&schema).unwrap(), expected);
+}

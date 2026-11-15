@@ -300,7 +300,8 @@ fn test_into_response_invalid_enum_value() {
         value: "bad".to_string(),
     };
     let resp = err.into_response();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    // A malformed field value, like `WrongFieldType`: `422` (= `Validated<T>`).
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[test]

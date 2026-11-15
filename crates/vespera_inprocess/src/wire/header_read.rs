@@ -4,7 +4,7 @@
 //!
 //! Behaviour matches `serde_json` + the serde derive on
 //! [`super::WireRequestHeader`] (locked by the in-crate round-trip
-//! property test in `wire.rs` and the fuzz harness in
+//! property test in `wire/tests.rs` and the fuzz harness in
 //! `tests/wire_robustness.rs`):
 //!
 //! * accepts the object in **any key order** and **ignores unknown
@@ -354,13 +354,13 @@ impl<'a> Parser<'a> {
         let mut buf: Vec<u8> = Vec::with_capacity(prefix.saturating_mul(2).saturating_add(16));
         // Copy the `&'a [u8]` reference out of `self` so the inner run-scan
         // and bulk-copy borrow `input` without re-borrowing `self.input` on
-        // every iteration (mirrors the plain `read_string` at line 230).
+        // every iteration (mirrors the plain `read_string` above).
         let input = self.input;
         buf.extend_from_slice(&input[start..self.pos]);
         loop {
             // Bulk-copy the verbatim run up to the next terminator / escape
             // / control char.  Hand-written scalar scan (NOT memchr/SIMD):
-            // the same in-file note at lines 232-237 records that a
+            // the note in the plain `read_string` above records that a
             // `memchr2(b'"', b'\\')` variant regressed `request_parse_hand`
             // ~13% and `request_headers_path` ~3-4% on the plain path —
             // header values are short enough that the branchy scalar loop

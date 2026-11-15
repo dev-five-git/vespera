@@ -361,12 +361,36 @@ fn unknown_app_is_a_rejected_request() {
     });
     assert_eq!(status_of(&resp), 404);
     let span = capture.dispatch_span();
-    assert_eq!(field(&span, "app"), "nope");
+    // The raw client value of an app that did not resolve is never recorded.
+    assert_eq!(field(&span, "app"), "<unset>");
     assert_eq!(field(&span, "status"), "404");
     assert_eq!(
         capture.events()[0].1,
         "vespera dispatch: request rejected".to_owned()
     );
+}
+
+/// Round 11: `app` is recorded from the RESOLVED name only — trimmed like the
+/// registry looks it up, and never for an invalid (`400`) name, whose raw
+/// client text would otherwise reach every subscriber's span.
+#[test]
+fn app_field_is_the_resolved_name_never_the_raw_client_value() {
+    setup();
+    // Past the 64-byte name limit, under the suite's 4 KiB request cap.
+    let long = "x".repeat(2 * 1024);
+    for (app, status, recorded) in [
+        (" admin ", 200, "admin"),
+        ("bad name!", 400, "<unset>"),
+        (long.as_str(), 400, "<unset>"),
+    ] {
+        let capture = Capture::default();
+        let header = format!(r#"{{"v":1,"method":"GET","path":"/ok","app":"{app}"}}"#);
+        let resp = capture.run(|| dispatch_from_bytes(wire(&header, b""), &runtime()));
+        assert_eq!(status_of(&resp), status);
+        let span = capture.dispatch_span();
+        assert_eq!(field(&span, "app"), recorded);
+        assert!(!format!("{span:?}").contains("xxxxxxxx"), "{span:?}");
+    }
 }
 
 #[test]

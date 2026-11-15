@@ -134,14 +134,26 @@ fn current_dispatch_span() -> Option<Span> {
         .then_some(span)
 }
 
-/// Record the parsed request line (method + app, never the concrete path)
-/// onto the current dispatch span.
-pub fn record_request(method: &str, app: Option<&str>) {
+/// Record the parsed request method (never the concrete path) onto the
+/// current dispatch span.
+pub fn record_request(method: &str) {
+    if let Some(span) = current_dispatch_span() {
+        span.record("method", method);
+    }
+}
+
+/// Record the app a request **resolved** to (called only after
+/// `resolve_app_router` hit), as the registry looked it up: trimmed, empty →
+/// `_default`.  An invalid or unregistered name is never recorded — the
+/// client-controlled raw value would otherwise put arbitrary text and
+/// unbounded cardinality into every subscriber's span (the reason `route`
+/// is the matched template, not the path).
+pub fn record_app(app: Option<&str>) {
     if let Some(span) = current_dispatch_span() {
         let app = app
+            .map(str::trim_ascii)
             .filter(|app| !app.is_empty())
             .unwrap_or(crate::DEFAULT_APP_NAME);
-        span.record("method", method);
         span.record("app", app);
     }
 }

@@ -1,5 +1,6 @@
-//! OpenAPI 3.1 fields and `x-*` extensions survive a deserialize →
-//! serialize round trip instead of being silently dropped.
+//! The OpenAPI 3.1 fields `OpenApi` models and `x-*` extensions survive a
+//! deserialize → serialize round trip instead of being silently dropped;
+//! keys it does not model (e.g. `jsonSchemaDialect`) are ignored.
 
 use super::*;
 use crate::Extensions;
@@ -112,5 +113,25 @@ fn merge_unions_top_level_extensions_self_wins() {
             ("x-new".to_owned(), json!("other")),
             ("x-shared".to_owned(), json!("base")),
         ])
+    );
+}
+
+/// Round 11: `paths` (document) and `responses` (operation) are optional in
+/// OpenAPI 3.1 — a webhooks-only document and a webhook operation without
+/// `responses` deserialize; serialization still always writes both keys.
+#[test]
+fn paths_and_operation_responses_are_optional_on_deserialize() {
+    let doc: OpenApi = serde_json::from_value(json!({
+        "openapi": "3.1.0",
+        "info": {"title": "API", "version": "1"},
+        "webhooks": {"newPet": {"post": {"summary": "pet created"}}},
+    }))
+    .unwrap();
+    assert!(doc.paths.is_empty());
+    let value = serde_json::to_value(&doc).unwrap();
+    assert_eq!(value["paths"], json!({}));
+    assert_eq!(
+        value["webhooks"]["newPet"]["post"],
+        json!({"summary": "pet created", "responses": {}})
     );
 }

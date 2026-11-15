@@ -1,9 +1,12 @@
 package kr.go.demo;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.devfive.vespera.bridge.VesperaBridge;
+import com.devfive.vespera.bridge.VesperaStreamAbortedException;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -66,6 +69,30 @@ class RobustnessE2ETest {
         assertEquals(3, headers.size(), "the header consumer runs exactly once per call");
         for (byte[] wire : headers) {
             assertEquals(400, VesperaBridge.decodeResponse(wire).status());
+        }
+    }
+
+    /**
+     * A header consumer that throws on a pre-dispatch error header (here the
+     * null-stream {@code 400}) aborts the call exactly like the main path —
+     * the native call used to swallow the exception and return normally.
+     */
+    @Test
+    void throwingConsumerOnLocalErrorHeaderAbortsTheCall() {
+        byte[] request = VesperaBridge.encodeRequest("GET", "/health", null, Map.of(), null);
+        byte[] header = VesperaBridge.encodeRequestHeader("GET", "/health", null, Map.of());
+        java.util.function.Consumer<byte[]> throwing = wire -> {
+            throw new IllegalStateException("response already committed");
+        };
+        List<Throwable> thrown = List.of(
+                assertThrows(Throwable.class,
+                        () -> VesperaBridge.dispatchStreamingWithHeader(request, throwing, null)),
+                assertThrows(Throwable.class,
+                        () -> VesperaBridge.dispatchFullStreamingWithHeader(
+                                header, throwing, null, new ByteArrayOutputStream())));
+        for (Throwable t : thrown) {
+            assertInstanceOf(VesperaStreamAbortedException.class, t);
+            assertTrue(t.getMessage().contains("header callback failed"), t.getMessage());
         }
     }
 

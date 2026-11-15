@@ -109,7 +109,7 @@ pub fn parse_validate_resolve(
     let header = parse_wire_header(header_bytes)
         .map_err(|msg| error_wire(parse_error_status(&msg), &msg))?;
     #[cfg(feature = "tracing")]
-    crate::obs::record_request(&header.method, header.app.as_deref());
+    crate::obs::record_request(&header.method);
     if header.v != WIRE_VERSION {
         return Err(error_wire(
             400,
@@ -120,6 +120,8 @@ pub fn parse_validate_resolve(
         ));
     }
     let router = resolve_app_router(&header)?;
+    #[cfg(feature = "tracing")]
+    crate::obs::record_app(header.app.as_deref());
     Ok((header, router))
 }
 

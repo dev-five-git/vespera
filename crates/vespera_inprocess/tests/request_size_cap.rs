@@ -1,8 +1,8 @@
 //! Ingress request-size cap ([`vespera_inprocess::max_request_bytes`]).
 //!
 //! Runs in its own test binary so the process-global `OnceLock` cap is
-//! isolated from the other integration tests (which assume the default
-//! unlimited behaviour).  Both tests pin the same cap so they are
+//! isolated from the other integration tests (which rely on the default
+//! 64 MiB cap, far above anything they send).  Both tests pin the same cap so they are
 //! order-independent under the parallel test runner.
 
 use std::cell::{Cell, RefCell};

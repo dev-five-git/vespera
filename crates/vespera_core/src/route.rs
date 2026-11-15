@@ -306,6 +306,9 @@ pub struct Operation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_body: Option<RequestBody>,
     /// Response definitions (status code -> Response)
+    /// (optional in 3.1 — e.g. a webhook or callback operation may omit it;
+    /// always serialized, as `{}` when empty)
+    #[serde(default)]
     pub responses: BTreeMap<String, Response>,
     /// Security requirements
     #[serde(skip_serializing_if = "Option::is_none")]
