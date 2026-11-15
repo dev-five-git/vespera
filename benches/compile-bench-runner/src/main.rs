@@ -194,6 +194,17 @@ fn measure_once(target: &str, pass: &str, vespera_dir: Option<&Path>) -> Option<
         .output()
         .ok()?;
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // A failed build still prints the passes it reached (macro expansion
+    // included): its timing must never become a sample or a baseline.
+    if !out.status.success() {
+        let tail: Vec<&str> = stderr.lines().rev().take(20).collect();
+        let tail: Vec<&str> = tail.into_iter().rev().collect();
+        fatal(&format!(
+            "`cargo rustc -p {target}` failed ({}):\n{}",
+            out.status,
+            tail.join("\n")
+        ));
+    }
     extract_pass_time(&stderr, pass)
 }
 

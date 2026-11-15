@@ -584,7 +584,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               }
             }
           },
-          "400": {
+          "500": {
             "description": "Error response",
             "content": {
               "application/json": {
@@ -693,7 +693,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               }
             }
           },
-          "400": {
+          "500": {
             "description": "Error response",
             "content": {
               "application/json": {
@@ -721,7 +721,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               }
             }
           },
-          "400": {
+          "500": {
             "description": "Error response",
             "content": {
               "application/json": {
@@ -1813,7 +1813,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
     "/rejection": {
       "get": {
         "operationId": "search_lenient",
-        "summary": "Echo the query, or name the rejection when it does not parse.",
+        "summary": "Echo the query, or answer `invalid query` when it does not parse.",
         "parameters": [
           {
             "name": "q",

@@ -176,6 +176,10 @@ pub struct CfgRoute {
     pub function_name: String,
     /// File path (diagnostics)
     pub file_path: String,
+    /// Whether the handler carries Rust's `#[deprecated]` (its reference
+    /// in the router allows the lint)
+    #[serde(default)]
+    pub deprecated: bool,
 }
 
 /// Cron job metadata

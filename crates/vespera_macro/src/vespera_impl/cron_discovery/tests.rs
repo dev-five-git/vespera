@@ -190,6 +190,71 @@ api
     assert!(compiler_root_tree(&["--test".to_owned()], &canonical_display(&root)).is_none());
 }
 
+/// A module shared by the library and the binary (`mod app;` in both
+/// roots) is in both trees: the binary build (compiler args name
+/// `src/main.rs`) scans the binary's tree, never the library's `mod jobs;`.
+#[test]
+fn shared_module_scans_the_tree_rustc_compiles() {
+    let krate = crate_with(&[
+        ("lib.rs", "mod app; mod jobs;"),
+        ("main.rs", "mod app; fn main() {}"),
+        ("app.rs", "pub fn create_app() {}"),
+        (
+            "jobs.rs",
+            r#"#[cron("1 * * * * *")] pub async fn tick() {}"#,
+        ),
+    ]);
+    crate::schema_macro::file_cache::bump_epoch();
+    let src = krate.path().join("src");
+    let app = src.join("app.rs");
+    {
+        let main = src.join("main.rs").display().to_string();
+        let _args =
+            crate::env_access::test_env::set_var(crate::env_access::COMPILER_ARGS_KEY, main);
+        assert!(discover(&[], Some(&src), Some(&app)).is_empty());
+    }
+    let lib = src.join("lib.rs").display().to_string();
+    let _args = crate::env_access::test_env::set_var(crate::env_access::COMPILER_ARGS_KEY, lib);
+    assert_eq!(
+        summary(&discover(&[], Some(&src), Some(&app))),
+        rows(&[("jobs", "tick", "1 * * * * *")])
+    );
+}
+
+/// `#[path = "dir"] mod m { mod jobs; }` resolves `jobs` under `dir`, as
+/// rustc does (from a mod-rs root and from a non-mod-rs file alike).
+#[test]
+fn inline_path_module_resolves_its_children_under_the_path() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            r#"mod nested; #[path = "dir"] mod m { mod jobs; }"#,
+        ),
+        (
+            "dir/jobs.rs",
+            r#"#[cron("1 * * * * *")] pub async fn tick() {}"#,
+        ),
+        (
+            "m/jobs.rs",
+            r#"#[cron("9 * * * * *")] pub async fn wrong() {}"#,
+        ),
+        ("nested.rs", r#"#[path = "inner"] mod n { mod deep; }"#),
+        (
+            "nested/inner/deep.rs",
+            r#"#[cron("2 * * * * *")] pub async fn deep() {}"#,
+        ),
+    ]);
+    crate::schema_macro::file_cache::bump_epoch();
+    let src = krate.path().join("src");
+    assert_eq!(
+        summary(&discover(&[], Some(&src), Some(&src.join("lib.rs")))),
+        rows(&[
+            ("m::jobs", "tick", "1 * * * * *"),
+            ("nested::n::deep", "deep", "2 * * * * *"),
+        ])
+    );
+}
+
 /// Write `files` (relative to `src/`) into a fresh temp crate and return it.
 fn crate_with(files: &[(&str, &str)]) -> TempDir {
     let dir = TempDir::new().expect("temp dir");

@@ -149,6 +149,7 @@ pub fn try_generate_openapi_doc_with_metadata(
     let input_names = crate::parser::schema::request_view::snapshot();
     crate::parser::schema::request_view::install(std::sync::Arc::default());
     component_schemas::prune_unreferenced_inputs(&mut schemas, &paths, &input_names);
+    component_schemas::reject_internally_tagged_in_document(&schemas, &paths)?;
     let security_config = security_config.unwrap_or_default();
     let tags = build_tags(all_tags, security_config.tag_descriptions.as_ref());
 

@@ -666,6 +666,8 @@ mod tests {
 
         assert!(type_contains_generic(&parse_ty("&T"), &generics));
         assert!(type_contains_generic(&parse_ty("(T, String)"), &generics));
+        assert!(!type_contains_generic(&parse_ty("&MyType"), &generics));
+        assert!(!type_contains_generic(&parse_ty("(u8, String)"), &generics));
     }
 
     // ── emit_marker_impl preserves generics ─────────────────────────

@@ -13,8 +13,16 @@ use super::docs::{DocsPage, generate_docs_route_tokens, generate_spec_route_toke
 /// `name` as a path segment: a plain identifier, or the raw `r#name` form
 /// for a keyword (`type.rs` is `mod r#type;`, `fn r#match` is recorded as
 /// `r#match`). `None` when it is neither (`my-file`, `2fa`, `self`).
+///
+/// A word that `syn` accepts but a newer edition reserves (`gen`, reserved
+/// in 2024) is always raw: the path carries the user's call-site edition,
+/// and `r#gen` names the same item in every edition.
 fn segment_ident(name: &str) -> Option<syn::Ident> {
+    const EDITION_RESERVED: &[&str] = &["gen"];
     let name = name.strip_prefix("r#").unwrap_or(name);
+    if EDITION_RESERVED.contains(&name) {
+        return Some(syn::Ident::new_raw(name, Span::call_site()));
+    }
     let mut ident = syn::parse_str::<syn::Ident>(name)
         .or_else(|_| syn::parse_str::<syn::Ident>(&format!("r#{name}")))
         .ok()?;
@@ -75,12 +83,18 @@ fn crate_path_to(
 
 /// The `.route(..)` arguments `"/path", get(crate::module::handler)`, or the
 /// `compile_error!` for an unsupported method / unaddressable handler.
+///
+/// A `deprecated` handler (Rust's `#[deprecated]`, or the route's
+/// `deprecated` flag) is referenced through an `#[allow(deprecated)]`
+/// binding: documenting an operation as deprecated must not make the app's
+/// own `vespera!` warn (and fail `-D warnings`).
 fn route_args(
     method: &str,
     path: &str,
     module_path: &str,
     function_name: &str,
     file_path: &str,
+    deprecated: bool,
 ) -> Result<proc_macro2::TokenStream, proc_macro2::TokenStream> {
     let Ok(http_method) = HttpMethod::try_from(method) else {
         let message = crate::method::unsupported_method_message(path, method);
@@ -88,6 +102,11 @@ fn route_args(
     };
     let method_path = http_method_to_token_stream(http_method);
     let call_path = crate_path_to(module_path, function_name, file_path)?;
+    if deprecated {
+        return Ok(
+            quote!(#path, #method_path({ #[allow(deprecated)] let __vespera_handler = #call_path; __vespera_handler })),
+        );
+    }
     Ok(quote!(#path, #method_path(#call_path)))
 }
 
@@ -128,6 +147,7 @@ fn gated_route_statements(
                 &route.module_path,
                 &route.function_name,
                 &route.file_path,
+                route.deprecated,
             ) {
                 Ok(args) => quote! {
                     #[cfg(all(#(#predicates),*))]
@@ -250,6 +270,7 @@ pub fn generate_router_code(
             &route.module_path,
             &route.function_name,
             &route.file_path,
+            route.deprecated,
         ) {
             Ok(args) => router_nests.push(quote!(.route(#args))),
             Err(error) => route_errors.push(error),

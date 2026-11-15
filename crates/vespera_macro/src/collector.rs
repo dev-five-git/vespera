@@ -182,6 +182,7 @@ fn push_parsed_routes(
                 module_path: module_path.clone(),
                 function_name: fn_item.sig.ident.to_string(),
                 file_path: file_path.clone(),
+                deprecated: has_deprecated_attr(&fn_item.attrs),
             });
         }
     }

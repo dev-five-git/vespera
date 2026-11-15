@@ -184,3 +184,74 @@ fn documented_view_leaves_out_test_only_items() {
 fn source_identities_parse(#[case] identity: &str, #[case] expected: Option<(&str, &str, usize)>) {
     assert_eq!(parse_identity(identity), expected);
 }
+
+/// Schemas nested in a test-only fn / impl / trait / const / static body or
+/// emitted by a test-only item or statement macro are test-only, wherever
+/// the gate sits; the same shapes without a gate are not.
+#[test]
+fn gated_scopes_nest_test_only_schemas() {
+    let source = [
+        "#[cfg(test)]",
+        "mod tests {",
+        "    #[test] fn t() { struct InFn {} }",
+        "    schema_type!(InMod from crate::Model, pick = [\"a\"]);",
+        "}",
+        "#[cfg(test)] schema_type!(TopMacro from crate::Model);",
+        "fn open() {",
+        "    #[cfg(test)] schema_type!(StmtMacro from crate::M);",
+        "    #[cfg(test)] let _x = { struct InLocal {} 1 };",
+        "    let _y = { struct OpenLocal {} 1 };",
+        "    struct OpenFn {}",
+        "    1;",
+        "}",
+        "#[cfg(test)] fn gated() { struct GatedFn {} }",
+        "#[cfg(test)] impl S { fn f() { struct InImpl {} } }",
+        "impl S {",
+        "    #[cfg(test)] fn f() { struct InImplFn {} }",
+        "    #[cfg(test)] const C: () = { struct InImplConst {} };",
+        "    type T = u8;",
+        "    fn g() { struct OpenImplFn {} }",
+        "}",
+        "trait Tr {",
+        "    #[cfg(test)] fn f() { struct InTraitFn {} }",
+        "    const C: u8;",
+        "}",
+        "#[cfg(test)] trait Gt { fn f() { struct InTrait {} } }",
+        "#[cfg(test)] const K: () = { struct InConst {} };",
+        "#[cfg(test)] static S: () = { struct InStatic {} };",
+        "use std::fmt;",
+        "#[cfg(test)] use std::io;",
+        "pub struct After {}",
+    ]
+    .join("\n");
+    let krate = crate_with(&[("lib.rs", &source)]);
+    let gated = gated_items(&krate.path().join("src/lib.rs"));
+    for (ident, line) in [
+        ("InFn", 3),
+        ("InMod", 4),
+        ("TopMacro", 6),
+        ("StmtMacro", 8),
+        ("InLocal", 9),
+        ("GatedFn", 14),
+        ("InImpl", 15),
+        ("InImplFn", 17),
+        ("InImplConst", 18),
+        ("InTraitFn", 23),
+        ("InTrait", 26),
+        ("InConst", 27),
+        ("InStatic", 28),
+    ] {
+        assert!(gated.contains(ident, line), "{ident}@{line} is test-only");
+    }
+    for (ident, line) in [
+        ("OpenLocal", 10),
+        ("OpenFn", 11),
+        ("OpenImplFn", 20),
+        ("After", 31),
+    ] {
+        assert!(
+            !gated.contains(ident, line),
+            "{ident}@{line} is not test-only"
+        );
+    }
+}

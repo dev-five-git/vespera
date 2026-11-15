@@ -391,6 +391,30 @@ fn schema_field_defaults_contribute_to_schema_hash() {
     assert_ne!(compute_schema_hash(&base), compute_schema_hash(&changed));
 }
 
+/// The fields `rust_scope` resolves module-qualified refs through are part
+/// of the schema hash: same name and body, different declaring item.
+#[test]
+fn schema_scope_fields_contribute_to_schema_hash() {
+    let base = StructMetadata::new("V1User".to_string(), "pub struct User {}".to_string());
+    let hash = |meta: &StructMetadata| {
+        compute_schema_hash(&HashMap::from([("V1User".to_string(), meta.clone())]))
+    };
+    let mut explicit = base.clone();
+    explicit.explicit_schema_name = true;
+    let mut ident = base.clone();
+    ident.rust_ident = Some("User".to_string());
+    let v1 = base
+        .clone()
+        .with_source_identity("src/v1.rs::User@1:11".to_string());
+    let v2 = base
+        .clone()
+        .with_source_identity("src/v2.rs::User@1:11".to_string());
+    for changed in [&explicit, &ident, &v1] {
+        assert_ne!(hash(&base), hash(changed));
+    }
+    assert_ne!(hash(&v1), hash(&v2));
+}
+
 #[test]
 fn security_requirement_names_and_tag_descriptions_affect_config_hash() {
     let secured = ProcessedVesperaInput {

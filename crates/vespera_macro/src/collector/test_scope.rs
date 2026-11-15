@@ -12,7 +12,8 @@
 //!
 //! An item is test-only when a `#[cfg(..)]` predicate that can only hold
 //! under `cfg(test)` (`test`, `all(.., test, ..)`, `any` of such) gates it,
-//! an enclosing inline module, or a `mod` declaration on the module chain
+//! an enclosing scope (inline module, fn / impl / trait / const / static
+//! body, item or statement macro), or a `mod` declaration on the module chain
 //! from the crate root (`src/lib.rs` / `src/main.rs`) to its file.
 //! Predicates over features etc. are not interpreted: every build of one
 //! cargo invocation agrees on them.
@@ -187,9 +188,30 @@ pub fn test_only_fns(file: &Path) -> HashSet<String> {
         .unwrap_or_default()
 }
 
-/// `(name, line)` of every struct / enum in `file` gated by a test-only
-/// `#[cfg(..)]` on itself or an enclosing inline module.
-fn gated_items(file: &Path) -> HashSet<(String, usize)> {
+/// The test-only items of one file: the `(name, line)` of every struct /
+/// enum gated by a test-only `#[cfg(..)]` on itself or an enclosing scope,
+/// and the line range of every other gated item or statement (an inline
+/// module, a fn / impl / trait / const / static, an item or statement macro
+/// such as `#[cfg(test)] schema_type!(..)`) — whatever it nests is
+/// test-only too (a `#[derive(Schema)]` inside a `#[test] fn`, a
+/// `schema_type!` inside `mod tests`).
+#[derive(Default)]
+struct GatedItems {
+    items: HashSet<(String, usize)>,
+    ranges: Vec<(usize, usize)>,
+}
+
+impl GatedItems {
+    fn contains(&self, ident: &str, line: usize) -> bool {
+        self.items.contains(&(ident.to_owned(), line))
+            || self
+                .ranges
+                .iter()
+                .any(|&(start, end)| (start..=end).contains(&line))
+    }
+}
+
+fn gated_items(file: &Path) -> GatedItems {
     /// Restores proc-macro2's normal mode even if parsing panics.
     struct Unforce;
     impl Drop for Unforce {
@@ -197,7 +219,7 @@ fn gated_items(file: &Path) -> HashSet<(String, usize)> {
             proc_macro2::fallback::unforce();
         }
     }
-    let mut gated = HashSet::new();
+    let mut gated = GatedItems::default();
     let Some(content) = file_cache::get_file_content(file) else {
         return gated;
     };
@@ -209,27 +231,97 @@ fn gated_items(file: &Path) -> HashSet<(String, usize)> {
     proc_macro2::fallback::force();
     let _unforce = Unforce;
     if let Ok(ast) = syn::parse_file(&content) {
-        collect_gated(&ast.items, false, &mut gated);
+        let mut collector = GatedCollector {
+            gated: false,
+            out: &mut gated,
+        };
+        syn::visit::Visit::visit_file(&mut collector, &ast);
     }
     gated
 }
 
-fn collect_gated(items: &[Item], gated: bool, out: &mut HashSet<(String, usize)>) {
-    for item in items {
-        let (attrs, name) = match item {
-            Item::Struct(item) => (&item.attrs, &item.ident),
-            Item::Enum(item) => (&item.attrs, &item.ident),
-            Item::Mod(module) => {
-                if let Some((_, inner)) = &module.content {
-                    collect_gated(inner, gated || attrs_test_only(&module.attrs), out);
-                }
-                continue;
-            }
-            _ => continue,
-        };
-        if gated || attrs_test_only(attrs) {
-            out.insert((name.to_string(), name.span().start().line));
+/// Walks a file carrying "inside a test-only scope" through every nested
+/// item, impl / trait item and statement.
+struct GatedCollector<'a> {
+    gated: bool,
+    out: &'a mut GatedItems,
+}
+
+impl GatedCollector<'_> {
+    /// Visit `node` gated when its `attrs` or an ancestor gate it; the
+    /// outermost gated node records its line range.
+    fn scoped<T: syn::spanned::Spanned>(
+        &mut self,
+        attrs: &[syn::Attribute],
+        node: &T,
+        visit: impl FnOnce(&mut Self),
+    ) {
+        let outer = self.gated;
+        if !outer && attrs_test_only(attrs) {
+            let span = node.span();
+            self.out.ranges.push((span.start().line, span.end().line));
+            self.gated = true;
         }
+        visit(self);
+        self.gated = outer;
+    }
+}
+
+/// The attributes of the items that can nest a schema.
+fn item_attrs(item: &Item) -> &[syn::Attribute] {
+    match item {
+        Item::Const(item) => &item.attrs,
+        Item::Fn(item) => &item.attrs,
+        Item::Impl(item) => &item.attrs,
+        Item::Macro(item) => &item.attrs,
+        Item::Mod(item) => &item.attrs,
+        Item::Static(item) => &item.attrs,
+        Item::Trait(item) => &item.attrs,
+        _ => &[],
+    }
+}
+
+impl<'ast> syn::visit::Visit<'ast> for GatedCollector<'_> {
+    fn visit_item(&mut self, item: &'ast Item) {
+        if let Item::Struct(syn::ItemStruct { attrs, ident, .. })
+        | Item::Enum(syn::ItemEnum { attrs, ident, .. }) = item
+        {
+            if self.gated || attrs_test_only(attrs) {
+                self.out
+                    .items
+                    .insert((ident.to_string(), ident.span().start().line));
+            }
+            return;
+        }
+        self.scoped(item_attrs(item), item, |this| {
+            syn::visit::visit_item(this, item);
+        });
+    }
+
+    fn visit_impl_item(&mut self, item: &'ast syn::ImplItem) {
+        let attrs: &[syn::Attribute] = match item {
+            syn::ImplItem::Fn(item) => &item.attrs,
+            syn::ImplItem::Const(item) => &item.attrs,
+            _ => &[],
+        };
+        self.scoped(attrs, item, |this| syn::visit::visit_impl_item(this, item));
+    }
+
+    fn visit_trait_item(&mut self, item: &'ast syn::TraitItem) {
+        let attrs: &[syn::Attribute] = match item {
+            syn::TraitItem::Fn(item) => &item.attrs,
+            _ => &[],
+        };
+        self.scoped(attrs, item, |this| syn::visit::visit_trait_item(this, item));
+    }
+
+    fn visit_stmt(&mut self, stmt: &'ast syn::Stmt) {
+        let attrs: &[syn::Attribute] = match stmt {
+            syn::Stmt::Macro(stmt) => &stmt.attrs,
+            syn::Stmt::Local(stmt) => &stmt.attrs,
+            _ => &[],
+        };
+        self.scoped(attrs, stmt, |this| syn::visit::visit_stmt(this, stmt));
     }
 }
 
@@ -248,7 +340,7 @@ impl TestScope {
     fn schema_test_only(
         &mut self,
         identity: &str,
-        items: &mut HashMap<String, HashSet<(String, usize)>>,
+        items: &mut HashMap<String, GatedItems>,
     ) -> bool {
         let Some((file, ident, line)) = parse_identity(identity) else {
             return false;
@@ -257,7 +349,7 @@ impl TestScope {
             || items
                 .entry(file.to_owned())
                 .or_insert_with(|| gated_items(Path::new(file)))
-                .contains(&(ident.to_owned(), line))
+                .contains(ident, line)
     }
 }
 

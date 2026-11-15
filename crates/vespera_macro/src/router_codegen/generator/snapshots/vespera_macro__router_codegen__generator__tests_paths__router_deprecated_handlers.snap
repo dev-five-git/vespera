@@ -1,0 +1,29 @@
+---
+source: crates/vespera_macro/src/router_codegen/generator/tests_paths.rs
+expression: pretty(&metadata)
+---
+fn create_app() {
+    {
+        let __vespera_router = vespera::axum::Router::new()
+            .route(
+                "/x",
+                vespera::axum::routing::get({
+                    #[allow(deprecated)]
+                    let __vespera_handler = crate::routes::legacy::old;
+                    __vespera_handler
+                }),
+            )
+            .route("/y", vespera::axum::routing::post(crate::routes::legacy::current));
+        #[cfg(all(test))]
+        let __vespera_router = __vespera_router
+            .route(
+                "/gated",
+                vespera::axum::routing::get({
+                    #[allow(deprecated)]
+                    let __vespera_handler = crate::routes::gated::old;
+                    __vespera_handler
+                }),
+            );
+        __vespera_router
+    }
+}

@@ -15,9 +15,11 @@ use crate::{
 };
 
 /// The `{Name}Input` request-view names for the documented types (see
-/// [`request_view`]). A view can only differ through a `serde` attribute or
-/// a `HashSet` / `BTreeSet` / `Duration` type (`request_view::type_view_differs`),
-/// so definitions mentioning none of them are not even parsed.
+/// [`request_view`]). A view can only differ through a `serde` attribute,
+/// a `#[form_data(default)]`, a one-sided `Serialize_repr` /
+/// `Deserialize_repr` derive or a `HashSet` / `BTreeSet` / `Duration` type
+/// (`request_view::type_view_differs`), so definitions mentioning none of
+/// them are not even parsed.
 pub(super) fn input_names(
     metadata: &CollectedMetadata,
     known_schema_names: &HashSet<&str>,
@@ -29,7 +31,7 @@ pub(super) fn input_names(
         .filter(|s| s.include_in_openapi)
         .collect();
     if !documented.iter().any(|s| {
-        ["serde", "Set", "Duration"]
+        ["serde", "form_data", "_repr", "Set", "Duration"]
             .iter()
             .any(|needle| s.definition.contains(needle))
     }) {
@@ -518,8 +520,37 @@ pub(super) fn parse_component_schemas(
         }
     }
 
-    reject_internally_tagged_non_object_refs(&schemas)?;
     Ok(schemas)
+}
+
+/// [`reject_internally_tagged_non_object_refs`] over the finished document:
+/// every component — generic instances (`Event_String`) are only
+/// materialized while the paths are built — and every inline request /
+/// response schema of `paths`.
+pub(super) fn reject_internally_tagged_in_document(
+    schemas: &BTreeMap<String, vespera_core::schema::Schema>,
+    paths: &BTreeMap<String, vespera_core::route::PathItem>,
+) -> syn::Result<()> {
+    reject_internally_tagged_non_object_refs(schemas)?;
+    for (path, item) in paths {
+        for (method, operation) in item.operations() {
+            let request = operation
+                .request_body
+                .iter()
+                .flat_map(|body| body.content.values());
+            let responses = operation
+                .responses
+                .values()
+                .filter_map(|response| response.content.as_ref())
+                .flat_map(BTreeMap::values);
+            for media in request.chain(responses) {
+                if let Some(vespera_core::schema::SchemaRef::Inline(schema)) = &media.schema {
+                    check_internally_tagged(&format!("{method} {path}"), schema, schemas)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Reject an internally tagged enum newtype variant that wraps a `$ref` to a
@@ -533,65 +564,72 @@ pub(super) fn parse_component_schemas(
 fn reject_internally_tagged_non_object_refs(
     schemas: &BTreeMap<String, vespera_core::schema::Schema>,
 ) -> syn::Result<()> {
-    use vespera_core::schema::{SchemaRef, SchemaType};
     for (enum_name, schema) in schemas {
-        let Some(discriminator) = &schema.discriminator else {
+        check_internally_tagged(enum_name, schema, schemas)?;
+    }
+    Ok(())
+}
+
+/// The internally tagged non-object check of one schema named `enum_name`.
+fn check_internally_tagged(
+    enum_name: &str,
+    schema: &vespera_core::schema::Schema,
+    schemas: &BTreeMap<String, vespera_core::schema::Schema>,
+) -> syn::Result<()> {
+    use vespera_core::schema::{SchemaRef, SchemaType};
+    let Some(discriminator) = &schema.discriminator else {
+        return Ok(());
+    };
+    let tag = &discriminator.property_name;
+    for branch in schema.one_of.iter().flatten() {
+        let SchemaRef::Inline(branch) = branch else {
             continue;
         };
-        let tag = &discriminator.property_name;
-        for branch in schema.one_of.iter().flatten() {
-            let SchemaRef::Inline(branch) = branch else {
-                continue;
-            };
-            let Some([SchemaRef::Inline(tag_object), payload]) = branch.all_of.as_deref() else {
-                continue;
-            };
-            let non_object = |schema: &vespera_core::schema::Schema| {
-                schema
-                    .schema_type
-                    .is_some_and(|ty| !matches!(ty, SchemaType::Object | SchemaType::Null))
-            };
-            // An inline payload (`Uuid`, `NaiveDate`, ...) is named by its
-            // wire type.
-            let target = match payload {
-                SchemaRef::Ref(reference) => {
-                    let Some(target) = reference.ref_path.strip_prefix("#/components/schemas/")
-                    else {
-                        continue;
-                    };
-                    if !schemas.get(target).is_some_and(non_object) {
-                        continue;
-                    }
-                    target.to_string()
+        let Some([SchemaRef::Inline(tag_object), payload]) = branch.all_of.as_deref() else {
+            continue;
+        };
+        let non_object = |schema: &vespera_core::schema::Schema| {
+            schema
+                .schema_type
+                .is_some_and(|ty| !matches!(ty, SchemaType::Object | SchemaType::Null))
+        };
+        // An inline payload (`Uuid`, `NaiveDate`, ...) is named by its
+        // wire type.
+        let target = match payload {
+            SchemaRef::Ref(reference) => {
+                let Some(target) = reference.ref_path.strip_prefix("#/components/schemas/") else {
+                    continue;
+                };
+                if !schemas.get(target).is_some_and(non_object) {
+                    continue;
                 }
-                SchemaRef::Inline(inline) if non_object(inline) => {
-                    let ty = format!("{:?}", inline.schema_type.unwrap_or(SchemaType::Null));
-                    inline.format.as_ref().map_or_else(
-                        || ty.to_lowercase(),
-                        |format| format!("{} ({format})", ty.to_lowercase()),
-                    )
-                }
-                SchemaRef::Inline(_) => continue,
-            };
-            let variant = tag_object
-                .properties
-                .as_ref()
-                .and_then(|properties| properties.get(tag))
-                .and_then(|tag_schema| match tag_schema {
-                    SchemaRef::Inline(tag_schema) => tag_schema.r#enum.as_ref()?.first()?.as_str(),
-                    SchemaRef::Ref(_) => None,
-                })
-                .unwrap_or("?");
-            return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                format!(
-                    "`{enum_name}`: {}",
-                    crate::parser::schema::internally_tagged_non_object_message(
-                        tag, variant, &target
-                    )
-                ),
-            ));
-        }
+                target.to_string()
+            }
+            SchemaRef::Inline(inline) if non_object(inline) => {
+                let ty = format!("{:?}", inline.schema_type.unwrap_or(SchemaType::Null));
+                inline.format.as_ref().map_or_else(
+                    || ty.to_lowercase(),
+                    |format| format!("{} ({format})", ty.to_lowercase()),
+                )
+            }
+            SchemaRef::Inline(_) => continue,
+        };
+        let variant = tag_object
+            .properties
+            .as_ref()
+            .and_then(|properties| properties.get(tag))
+            .and_then(|tag_schema| match tag_schema {
+                SchemaRef::Inline(tag_schema) => tag_schema.r#enum.as_ref()?.first()?.as_str(),
+                SchemaRef::Ref(_) => None,
+            })
+            .unwrap_or("?");
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!(
+                "`{enum_name}`: {}",
+                crate::parser::schema::internally_tagged_non_object_message(tag, variant, &target)
+            ),
+        ));
     }
     Ok(())
 }

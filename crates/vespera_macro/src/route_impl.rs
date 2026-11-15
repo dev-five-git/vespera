@@ -825,9 +825,13 @@ mod tests {
         assert_ne!(crate::schema_macro::file_cache::current_epoch(), before);
     }
 
-    /// `#[route]` records the handler's inline-module path from the source.
+    /// `inline_module_of` — what `#[route]` stores as the handler's
+    /// inline-module path — finds a route handler's enclosing inline module
+    /// (and the file root) in its source.  `#[route]` itself has no
+    /// call-site file under unit tests (`inline_module` is `None` there),
+    /// so this exercises the lookup, not the attribute.
     #[test]
-    fn test_route_attribute_records_inline_module() {
+    fn test_inline_module_of_locates_route_handlers() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("scoped_users.rs");
         std::fs::write(

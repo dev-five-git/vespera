@@ -4,16 +4,20 @@
 #
 #   scripts/native-image-smoke.sh <demo-app native executable> [port]
 #
-# Starts the executable twice -- platform threads, then
-# spring.threads.virtual.enabled=true (SYNC dispatches then park on
-# dispatchAsync, i.e. the CompletableFuture.complete JNI callback) -- and
-# drives every dispatch path whose JNI lookups the metadata must cover:
+# Starts the executable three times -- platform threads;
+# spring.threads.virtual.enabled=true (SYNC dispatches poll first on the
+# caller, AsyncDispatch.dispatchPollFirst0, and these requests all complete
+# inline there); then virtual threads with
+# -Dvespera.virtualThread.pollFirst=false (SYNC dispatches park on
+# dispatchAsync, i.e. the CompletableFuture.complete JNI callback from a
+# Tokio worker) -- and drives every dispatch path whose JNI lookups the
+# metadata must cover:
 #   DIRECT        GET  /health                    (dispatchDirect0)
 #   overflow      GET  /stream/big                (DirectStash fetch/stream)
 #   SYNC / ASYNC  POST /echo                      (dispatchBytes / dispatchAsync)
 #   STREAMING     GET  /stream/events (SSE)       (Consumer.accept, OutputStream.write/flush)
 #   BIDI          POST /echo/stream  (1 MiB, x3)  (InputStream.read/close)
-#   422 hoisting  POST /documents/register {}
+#   422 hoisting  POST /documents/register {"title":"","pageCount":0} (garde rules)
 #   panic         POST /echo/panic                (500, panicked metadata)
 # Exit 1 on the first failed check. Needs: bash, curl, head, cmp.
 # Env: KEEP_LOG=<file> keeps the last application log (for crash reports).
@@ -56,7 +60,8 @@ run_round() { # <label> [extra app args...]
   local label=$1
   shift
   echo "== $label"
-  "$BIN" --server.port="$PORT" --logging.level.root=WARN "$@" >"$WORK/app.log" 2>&1 &
+  # Extra args first: -D system properties lead a native image's arguments.
+  "$BIN" "$@" --server.port="$PORT" --logging.level.root=WARN >"$WORK/app.log" 2>&1 &
   PID=$!
   for _ in $(seq 1 120); do
     if curl -fsS --max-time 2 "$BASE/health" >/dev/null 2>&1; then break; fi
@@ -87,9 +92,11 @@ run_round() { # <label> [extra app args...]
   done
   echo "ok   POST /echo/stream (bidirectional, 1 MiB, x3)"
 
+  # camelCase wire names: the 422 must come from the garde rules (empty
+  # title), not from a missing-field deserialization error.
   expect "POST /documents/register (422)" 422 -H 'Content-Type: application/json' \
-    --data-binary '{"title":"","page_count":0}' "$BASE/documents/register"
-  body_contains "POST /documents/register" "\"errors\""
+    --data-binary '{"title":"","pageCount":0}' "$BASE/documents/register"
+  body_contains "POST /documents/register" '"path":"title"'
 
   # Empty body (Content-Length: 0) so the smart resolver buffers it (SYNC).
   expect "POST /echo/panic (500)" 500 --data-binary '' "$BASE/echo/panic"
@@ -101,5 +108,7 @@ run_round() { # <label> [extra app args...]
 }
 
 run_round "platform threads"
-run_round "virtual threads" --spring.threads.virtual.enabled=true
+run_round "virtual threads (poll-first)" --spring.threads.virtual.enabled=true
+run_round "virtual threads (parked dispatchAsync)" -Dvespera.virtualThread.pollFirst=false \
+  --spring.threads.virtual.enabled=true
 echo "native-image smoke: all checks passed"
