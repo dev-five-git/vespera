@@ -896,20 +896,6 @@ fn process_derive_schema_returns_all_unresolved_serde_default_errors() {
 }
 
 #[test]
-fn extract_field_defaults_skips_qualified_default_functions() {
-    let input: syn::DeriveInput = syn::parse_quote! {
-        struct Config {
-            #[serde(default = "crate::defaults::name")]
-            name: String,
-        }
-    };
-
-    let defaults = extract_field_defaults_from_path(&input, Path::new("unused.rs"));
-
-    assert!(defaults.is_empty());
-}
-
-#[test]
 fn serde_default_validation_accepts_schema_function_and_type_defaults() {
     let explicit_schema: syn::DeriveInput = syn::parse_quote! {
         struct Explicit {

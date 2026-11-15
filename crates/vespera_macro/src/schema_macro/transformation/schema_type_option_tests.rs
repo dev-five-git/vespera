@@ -15,6 +15,36 @@ fn to_storage(items: Vec<StructMetadata>) -> HashMap<String, StructMetadata> {
     items.into_iter().map(|s| (s.name.clone(), s)).collect()
 }
 
+/// The derive names (last path segment) on the generated struct `name`.
+fn derives_of(tokens: &proc_macro2::TokenStream, name: &str) -> Vec<String> {
+    let file: syn::File = syn::parse2(tokens.clone()).unwrap();
+    let item = file
+        .items
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Struct(item) if item.ident == name => Some(item),
+            _ => None,
+        })
+        .unwrap();
+    let mut derives = Vec::new();
+    for attr in item.attrs.iter().filter(|attr| attr.path().is_ident("derive")) {
+        attr.parse_nested_meta(|meta| {
+            derives.push(meta.path.segments.last().unwrap().ident.to_string());
+            Ok(())
+        })
+        .unwrap();
+    }
+    derives
+}
+
+/// Whether the generated items hold an `impl From<..> for ..`.
+fn has_from_impl(tokens: &proc_macro2::TokenStream) -> bool {
+    let file: syn::File = syn::parse2(tokens.clone()).unwrap();
+    file.items.iter().any(|item| {
+        matches!(item, syn::Item::Impl(item) if item.trait_.as_ref().is_some_and(|(path, _)| path.segments.last().unwrap().ident == "From"))
+    })
+}
+
 // Tests for field rename processing
 
 #[test]
@@ -33,7 +63,8 @@ fn test_generate_schema_type_code_with_rename() {
     let output = tokens.to_string();
     assert!(output.contains("user_id"));
     // The From impl should map user_id from source.id
-    assert!(output.contains("From"));
+    assert!(has_from_impl(&tokens));
+    assert!(derives_of(&tokens, "UserDTO").iter().any(|d| d == "Clone"));
 }
 
 #[test]
@@ -176,9 +207,9 @@ fn test_generate_schema_type_code_with_clone_false() {
 
     assert!(result.is_ok());
     let (tokens, _metadata) = result.unwrap();
-    let output = tokens.to_string();
-    // Should NOT contain Clone derive
-    assert!(!output.contains("Clone ,"));
+    let derives = derives_of(&tokens, "UserNonClone");
+    assert!(!derives.iter().any(|d| d == "Clone"), "{derives:?}");
+    assert!(derives.iter().any(|d| d == "Serialize"), "{derives:?}");
 }
 
 // Test for SeaORM model detection
@@ -468,8 +499,8 @@ fn test_generate_schema_type_code_seaorm_model_with_relation_generates_from_mode
     let output = tokens.to_string();
     // Should have relation field
     assert!(output.contains("user"));
-    // Should NOT have regular From impl (because of relation)
-    // The From impl is only generated when there are no relation fields
+    // No regular From impl: relation fields need the async from_model.
+    assert!(!has_from_impl(&tokens), "{output}");
 }
 
 // Test for from_model generation with relations
@@ -497,7 +528,6 @@ fn test_generate_schema_type_code_from_model_generation() {
     let output = tokens.to_string();
     // Has relation field
     assert!(output.contains("user"));
-    // Regular impl From should NOT be present (because has relations)
-    // Check that we don't have "impl From < Model > for MemoSchema"
-    // (Relations disable the automatic From impl)
+    // Relations disable the automatic From impl.
+    assert!(!has_from_impl(&tokens), "{output}");
 }
