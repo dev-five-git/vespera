@@ -259,6 +259,7 @@ enum SchemaField {
     AdditionalProperties,
     MinProperties,
     MaxProperties,
+    PropertyNames,
     Enum,
     AllOf,
     AnyOf,
@@ -325,6 +326,7 @@ impl serde::de::Visitor<'_> for SchemaFieldVisitor {
             "additionalProperties" => SchemaField::AdditionalProperties,
             "minProperties" => SchemaField::MinProperties,
             "maxProperties" => SchemaField::MaxProperties,
+            "propertyNames" => SchemaField::PropertyNames,
             "enum" => SchemaField::Enum,
             "allOf" => SchemaField::AllOf,
             "anyOf" => SchemaField::AnyOf,
@@ -388,6 +390,7 @@ where
         }
         SchemaField::MinProperties => schema.min_properties = Some(access.next_value()?),
         SchemaField::MaxProperties => schema.max_properties = Some(access.next_value()?),
+        SchemaField::PropertyNames => schema.property_names = Some(access.next_value()?),
         SchemaField::Enum => schema.r#enum = Some(access.next_value()?),
         SchemaField::AllOf => schema.all_of = Some(access.next_value()?),
         SchemaField::AnyOf => schema.any_of = Some(access.next_value()?),

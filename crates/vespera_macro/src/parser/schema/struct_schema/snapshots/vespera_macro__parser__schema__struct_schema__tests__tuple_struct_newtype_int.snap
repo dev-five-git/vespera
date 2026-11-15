@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/parser/schema/struct_schema/tests.rs
-assertion_line: 89
 expression: schema
 ---
 Schema {
@@ -34,6 +33,7 @@ Schema {
     additional_properties: None,
     min_properties: None,
     max_properties: None,
+    property_names: None,
     enum: None,
     all_of: None,
     any_of: None,

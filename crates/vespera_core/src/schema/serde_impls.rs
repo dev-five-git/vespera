@@ -298,7 +298,7 @@ impl Schema {
         Ok(())
     }
 
-    /// `properties` … `maxProperties`.
+    /// `properties` … `propertyNames`.
     fn serialize_object_constraints<S>(&self, out: &mut S) -> Result<(), S::Error>
     where
         S: SerializeStruct,
@@ -317,6 +317,9 @@ impl Schema {
         }
         if let Some(value) = self.max_properties {
             out.serialize_field("maxProperties", &value)?;
+        }
+        if let Some(value) = &self.property_names {
+            out.serialize_field("propertyNames", value)?;
         }
         Ok(())
     }

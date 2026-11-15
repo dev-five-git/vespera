@@ -178,3 +178,49 @@ fn generic_instance_name_colliding_with_a_user_schema_is_an_error() {
     let components = doc.components.and_then(|c| c.schemas).unwrap_or_default();
     assert!(components.contains_key("Tree_i32"));
 }
+
+/// A generic instance documents the `#[serde(default = "fn")]` value
+/// `#[derive(Schema)]` resolved for the generic definition, like the generic
+/// component itself: the recursive `Tree_i32` / `Tree_i32.Input` components
+/// and the inlined `Page<i32>` of a response.
+#[test]
+fn generic_instances_document_default_fn_values() {
+    let mut metadata = CollectedMetadata::new();
+    metadata.structs.push(crate::metadata::StructMetadata {
+        field_defaults: [("limit".to_string(), serde_json::json!(20))].into(),
+        ..schema(
+            "Tree",
+            r#"pub struct Tree<T> { pub value: T, #[serde(default = "limit")] pub limit: u32, pub children: Vec<Tree<T>> }"#,
+        )
+    });
+    metadata.structs.push(crate::metadata::StructMetadata {
+        field_defaults: [("size".to_string(), serde_json::json!(50))].into(),
+        ..schema(
+            "Page",
+            r#"pub struct Page<T> { pub items: Vec<T>, #[serde(default = "size")] pub size: u32 }"#,
+        )
+    });
+    metadata
+        .routes
+        .push(super::tests_accuracy::post("/tree", "tree"));
+    metadata.routes.push(route("/page", "page"));
+    let storage = [
+        super::tests_accuracy::stored_post(
+            "tree",
+            "async fn tree(Json(t): Json<Tree<i32>>) -> Json<Tree<i32>>",
+        ),
+        stored("page", "async fn page() -> Json<Page<i32>>"),
+    ];
+    let doc = generate(&metadata, &storage);
+    let json = serde_json::to_value(&doc).unwrap();
+    let schemas = &json["components"]["schemas"];
+    for name in ["Tree", "Tree_i32", "Tree_i32.Input"] {
+        assert_eq!(
+            schemas[name]["properties"]["limit"]["default"], 20,
+            "{name}: {schemas}"
+        );
+    }
+    let page =
+        &json["paths"]["/page"]["get"]["responses"]["200"]["content"]["application/json"]["schema"];
+    assert_eq!(page["properties"]["size"]["default"], 50, "{page}");
+}

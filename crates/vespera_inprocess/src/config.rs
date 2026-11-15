@@ -3,6 +3,10 @@
 
 use std::sync::OnceLock;
 
+mod content_type;
+pub use content_type::{
+    DEFAULT_DEFAULT_JSON_CONTENT_TYPE, default_json_content_type, set_default_json_content_type,
+};
 mod limits;
 pub use limits::{
     DEFAULT_MAX_BUFFERED_RESPONSE_BYTES, DEFAULT_MAX_STREAMING_REQUEST_PRODUCERS, dispatch_timeout,

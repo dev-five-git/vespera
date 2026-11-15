@@ -7,7 +7,8 @@
 //! keys it does not list — `deny_unknown_fields` (`additionalProperties:
 //! false`), a map (`additionalProperties: <value>`), `minProperties` /
 //! `maxProperties` (a map's `length`, an externally tagged variant's single
-//! key) — would reject the keys serde keeps from it. [`open_embedded`]
+//! key), `propertyNames` (the `#[serde(other)]` map form's unknown key) —
+//! would reject the keys serde keeps from it. [`open_embedded`]
 //! reopens those objects wherever they sit: on the schema itself, in every
 //! `oneOf` / `anyOf` / `allOf` branch, and through the `$ref`s of nested
 //! components, newtype / transparent wrappers and recursive generic
@@ -32,6 +33,7 @@ pub(super) fn constrains_unlisted(schema: &Schema) -> bool {
         Some(AdditionalProperties::Bool(false) | AdditionalProperties::Schema(_))
     ) || schema.min_properties.is_some()
         || schema.max_properties.is_some()
+        || schema.property_names.is_some()
 }
 
 /// `schema` without its constraints on unlisted keys (see
@@ -41,6 +43,7 @@ pub(super) fn without_unlisted_bounds(schema: &Schema) -> Option<Schema> {
         additional_properties: None,
         min_properties: None,
         max_properties: None,
+        property_names: None,
         ..schema.clone()
     })
 }

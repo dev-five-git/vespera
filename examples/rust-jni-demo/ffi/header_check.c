@@ -30,6 +30,7 @@ int main(void) {
         vespera_configure_async_max_in_flight,
     };
     int (*timeout)(uint64_t) = vespera_configure_dispatch_timeout_ms;
+    int (*json_default)(int) = vespera_configure_default_json_content_type;
     vespera_callback callback = on_response;
     int codes[] = {
         VESPERA_OK,           VESPERA_OVERFLOW,         VESPERA_ERR_INVALID_ARGUMENT,
@@ -46,6 +47,7 @@ int main(void) {
     (void)shutdown;
     (void)sized;
     (void)timeout;
+    (void)json_default;
     (void)callback;
     (void)codes;
     (void)min_out;

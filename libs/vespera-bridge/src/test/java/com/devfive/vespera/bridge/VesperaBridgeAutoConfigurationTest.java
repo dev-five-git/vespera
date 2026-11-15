@@ -462,7 +462,8 @@ class VesperaBridgeAutoConfigurationTest {
                             "vespera.bridge.native.max-buffered-response-bytes=2097152",
                             "vespera.bridge.native.dispatch-timeout=30s",
                             "vespera.bridge.native.async-max-in-flight=128",
-                            "vespera.bridge.native.max-request-producers=32")
+                            "vespera.bridge.native.max-request-producers=32",
+                            "vespera.bridge.native.default-json-content-type=false")
                     .run(ctx -> {
                         // Every knob is forwarded (pending until the library loads).
                         assertEquals(3L, pendingValue(VesperaNativeConfig.RUNTIME_WORKER_THREADS));
@@ -473,6 +474,7 @@ class VesperaBridgeAutoConfigurationTest {
                         assertEquals(30_000L, pendingValue(VesperaNativeConfig.DISPATCH_TIMEOUT_MILLIS));
                         assertEquals(128L, pendingValue(VesperaNativeConfig.ASYNC_MAX_IN_FLIGHT));
                         assertEquals(32L, pendingValue(VesperaNativeConfig.MAX_REQUEST_PRODUCERS));
+                        assertEquals(0L, pendingValue(VesperaNativeConfig.DEFAULT_JSON_CONTENT_TYPE));
                         assertTrue(ctx.containsBean("vesperaBridgeNativeSettings"));
                         // "Before the controller": the controller is created
                         // with the settings bean as a dependency.
@@ -490,9 +492,11 @@ class VesperaBridgeAutoConfigurationTest {
                         assertEquals(30_000L, n.getDispatchTimeout().toMillis());
                         assertEquals(128, n.getAsyncMaxInFlight());
                         assertEquals(32, n.getMaxRequestProducers());
+                        assertEquals(Boolean.FALSE, n.getDefaultJsonContentType());
                     });
         } finally {
             VesperaNativeConfig.MAX_REQUEST_PRODUCERS.clearPendingForTest();
+            VesperaNativeConfig.DEFAULT_JSON_CONTENT_TYPE.clearPendingForTest();
             VesperaNativeConfig.RUNTIME_WORKER_THREADS.clearPendingForTest();
             VesperaNativeConfig.RUNTIME_MAX_BLOCKING_THREADS.clearPendingForTest();
             VesperaNativeConfig.MAX_REQUEST_BYTES.clearPendingForTest();
@@ -516,6 +520,7 @@ class VesperaBridgeAutoConfigurationTest {
                     ctx.getBean(VesperaBridgeProperties.class).getNative();
             assertEquals(null, n.getMaxRequestBytes());
             assertEquals(null, n.getDispatchTimeout());
+            assertEquals(null, n.getDefaultJsonContentType());
         });
     }
 

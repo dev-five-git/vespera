@@ -29,6 +29,7 @@ Schema {
     additional_properties: None,
     min_properties: None,
     max_properties: None,
+    property_names: None,
     enum: None,
     all_of: None,
     any_of: None,
@@ -91,6 +92,7 @@ Schema {
                                     additional_properties: None,
                                     min_properties: None,
                                     max_properties: None,
+                                    property_names: None,
                                     enum: None,
                                     all_of: None,
                                     any_of: None,
@@ -137,6 +139,7 @@ Schema {
                                     additional_properties: None,
                                     min_properties: None,
                                     max_properties: None,
+                                    property_names: None,
                                     enum: Some(
                                         [
                                             String("Text"),
@@ -168,6 +171,7 @@ Schema {
                     additional_properties: None,
                     min_properties: None,
                     max_properties: None,
+                    property_names: None,
                     enum: None,
                     all_of: None,
                     any_of: None,
@@ -212,6 +216,7 @@ Schema {
                     additional_properties: None,
                     min_properties: None,
                     max_properties: None,
+                    property_names: None,
                     enum: None,
                     all_of: Some(
                         [
@@ -272,6 +277,7 @@ Schema {
                                                     additional_properties: None,
                                                     min_properties: None,
                                                     max_properties: None,
+                                                    property_names: None,
                                                     enum: Some(
                                                         [
                                                             String("Detail"),
@@ -302,6 +308,7 @@ Schema {
                                     additional_properties: None,
                                     min_properties: None,
                                     max_properties: None,
+                                    property_names: None,
                                     enum: None,
                                     all_of: None,
                                     any_of: None,
@@ -396,6 +403,7 @@ Schema {
                                     additional_properties: None,
                                     min_properties: None,
                                     max_properties: None,
+                                    property_names: None,
                                     enum: Some(
                                         [
                                             String("Meta"),
@@ -457,6 +465,7 @@ Schema {
                                     additional_properties: None,
                                     min_properties: None,
                                     max_properties: None,
+                                    property_names: None,
                                     enum: None,
                                     all_of: None,
                                     any_of: None,
@@ -477,6 +486,7 @@ Schema {
                     ),
                     min_properties: None,
                     max_properties: None,
+                    property_names: None,
                     enum: None,
                     all_of: None,
                     any_of: None,
@@ -550,6 +560,7 @@ Schema {
                                     additional_properties: None,
                                     min_properties: None,
                                     max_properties: None,
+                                    property_names: None,
                                     enum: Some(
                                         [
                                             String("Empty"),
@@ -580,6 +591,7 @@ Schema {
                     additional_properties: None,
                     min_properties: None,
                     max_properties: None,
+                    property_names: None,
                     enum: None,
                     all_of: None,
                     any_of: None,

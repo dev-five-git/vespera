@@ -50,6 +50,46 @@ class NativeConfigLifecycleTest {
     }
 
     @Test
+    void defaultJsonContentTypeKnobReadsABooleanPropertyAndIsPendingBeforeInit() {
+        org.junit.jupiter.api.Assumptions.assumeFalse(VesperaBridge.isInitialized(),
+                "pending values exist only before the library loads");
+        VesperaNativeConfig.Knob knob = VesperaNativeConfig.DEFAULT_JSON_CONTENT_TYPE;
+        assertEquals("vespera.request.defaultJsonContentType", knob.property);
+        assertTrue(knob.isUnset(-1));
+        assertFalse(knob.isUnset(0), "0 = false is a real value");
+        String previous = System.getProperty(knob.property);
+        try {
+            System.clearProperty(knob.property);
+            assertEquals(-1, knob.resolve(), "unset: the Rust env var / default applies");
+            System.setProperty(knob.property, " FALSE ");
+            assertEquals(0, knob.resolve());
+            System.setProperty(knob.property, "true");
+            assertEquals(1, knob.resolve());
+            System.setProperty(knob.property, "nope");
+            assertEquals(-1, knob.resolve(), "malformed: warned, falls back to unset");
+
+            // Programmatic value before init: pending, beats the property.
+            assertTrue(VesperaBridge.configureDefaultJsonContentType(false));
+            assertEquals(0, knob.resolve());
+            assertTrue(VesperaBridge.configureDefaultJsonContentType(true));
+            assertEquals(1, knob.resolve());
+            assertTrue(knob.explicitlyConfigured());
+
+            // The unset value never crosses JNI (it would fix the setting).
+            assertTrue(VesperaNativeConfig.applyDefaultJsonContentType(-1));
+            // Missing native hook: reported as not applied, never thrown.
+            assertFalse(knob.apply(0, VesperaNativeConfig::applyDefaultJsonContentType));
+        } finally {
+            knob.clearPendingForTest();
+            if (previous == null) {
+                System.clearProperty(knob.property);
+            } else {
+                System.setProperty(knob.property, previous);
+            }
+        }
+    }
+
+    @Test
     void requestProducerKnobUsesTheStreamingProperty() {
         VesperaNativeConfig.Knob knob = VesperaNativeConfig.MAX_REQUEST_PRODUCERS;
         assertEquals("vespera.streaming.maxRequestProducers", knob.property);

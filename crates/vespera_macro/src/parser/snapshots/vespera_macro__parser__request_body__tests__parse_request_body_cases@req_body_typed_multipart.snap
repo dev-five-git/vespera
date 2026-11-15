@@ -39,6 +39,7 @@ Some(
                             additional_properties: None,
                             min_properties: None,
                             max_properties: None,
+                            property_names: None,
                             enum: None,
                             all_of: None,
                             any_of: None,
