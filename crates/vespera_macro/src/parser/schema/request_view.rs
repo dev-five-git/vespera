@@ -52,10 +52,12 @@ use std::{
 };
 
 use quote::ToTokens;
+use syn::ext::IdentExt;
 
 use super::{
     enum_schema::derives_serde_repr,
     schema_attrs::extract_schema_constraints,
+    scoped_ident::scoped_key,
     serde_attrs::{
         SerdeSide, extract_aliases, extract_default, extract_deny_unknown_fields,
         extract_field_codec, extract_field_rename_for, extract_flatten,
@@ -119,7 +121,7 @@ pub fn component_of_input(input: &str) -> Option<String> {
         names
             .borrow()
             .iter()
-            .find(|(_, name)| *name == input)
+            .find(|(component, name)| *name == input && !component.contains("::"))
             .map(|(component, _)| component.clone())
     })
 }
@@ -132,7 +134,12 @@ pub fn mentions_input<'a>(types: impl IntoIterator<Item = &'a syn::Type>) -> boo
     }
     INPUT_NAMES.with(|names| {
         let names = names.borrow();
-        idents.iter().any(|ident| names.contains_key(ident))
+        idents.iter().any(|ident| {
+            names.contains_key(ident)
+                || ident
+                    .rsplit_once("::")
+                    .is_some_and(|(_, bare)| names.contains_key(bare))
+        })
     })
 }
 
@@ -152,6 +159,9 @@ pub struct ViewSource<'a> {
     pub name: &'a str,
     /// Rust ident when it differs from `name` (`#[schema(name = ..)]`).
     pub rust_ident: Option<&'a str>,
+    /// `module::Ident` key of a renamed type whose declaring module is known
+    /// (see `parser::schema::definition_key`).
+    pub scoped_key: Option<&'a str>,
     /// The parsed definition.
     pub item: &'a syn::Item,
 }
@@ -164,10 +174,19 @@ pub fn compute_input_names(sources: &[ViewSource<'_>], taken: &BTreeSet<String>)
     let mut component_of: BTreeMap<&str, &str> = BTreeMap::new();
     for source in sources {
         component_of.insert(source.name, source.name);
-        if let Some(ident) = source.rust_ident {
+        for ident in [source.rust_ident, source.scoped_key].into_iter().flatten() {
             component_of.entry(ident).or_insert(source.name);
         }
     }
+    // `b::Foo` resolves through its scoped key when one is registered, else
+    // through the bare ident (as `definition_key` does).
+    let owner = |ident: &str| {
+        component_of.get(ident).or_else(|| {
+            ident
+                .rsplit_once("::")
+                .and_then(|(_, bare)| component_of.get(bare))
+        })
+    };
     let items: Vec<&syn::Item> = sources.iter().map(|source| source.item).collect();
     let map_bearing = map_bearing_structs(&items);
     let mut differs: BTreeSet<&str> = sources
@@ -184,7 +203,7 @@ pub fn compute_input_names(sources: &[ViewSource<'_>], taken: &BTreeSet<String>)
         for (name, idents) in &referenced {
             if idents
                 .iter()
-                .filter_map(|ident| component_of.get(ident.as_str()))
+                .filter_map(|ident| owner(ident))
                 .any(|component| differs.contains(component))
             {
                 differs.insert(name);
@@ -203,13 +222,14 @@ pub fn compute_input_names(sources: &[ViewSource<'_>], taken: &BTreeSet<String>)
         names.insert(name.to_string(), input);
     }
     for source in sources {
-        if let Some(ident) = source.rust_ident
-            && component_of
+        for ident in [source.rust_ident, source.scoped_key].into_iter().flatten() {
+            if component_of
                 .get(ident)
                 .is_none_or(|owner| *owner == source.name)
-            && let Some(input) = names.get(source.name).cloned()
-        {
-            names.entry(ident.to_string()).or_insert(input);
+                && let Some(input) = names.get(source.name).cloned()
+            {
+                names.entry(ident.to_string()).or_insert(input);
+            }
         }
     }
     Arc::new(names)
@@ -494,9 +514,26 @@ fn referenced_idents(item: &syn::Item) -> BTreeSet<String> {
 fn collect_idents(ty: &syn::Type, idents: &mut BTreeSet<String>) {
     struct Visitor<'a>(&'a mut BTreeSet<String>);
     impl<'ast> syn::visit::Visit<'ast> for Visitor<'_> {
-        fn visit_path_segment(&mut self, segment: &'ast syn::PathSegment) {
-            self.0.insert(segment.ident.to_string());
-            syn::visit::visit_path_segment(self, segment);
+        /// Every segment ident; a module-qualified type (`b::Foo`) as its
+        /// scoped key instead of the bare ident, so it resolves to the
+        /// rename its module declares.
+        fn visit_path(&mut self, path: &'ast syn::Path) {
+            let mut segments = path.segments.iter().rev();
+            if let Some(last) = segments.next() {
+                self.0.insert(segments.next().map_or_else(
+                    || last.ident.to_string(),
+                    |module| {
+                        scoped_key(
+                            &module.ident.unraw().to_string(),
+                            &last.ident.unraw().to_string(),
+                        )
+                    },
+                ));
+            }
+            for segment in path.segments.iter().rev().skip(1) {
+                self.0.insert(segment.ident.to_string());
+            }
+            syn::visit::visit_path(self, path);
         }
     }
     syn::visit::Visit::visit_type(&mut Visitor(idents), ty);
@@ -509,21 +546,34 @@ mod tests {
     use super::*;
 
     fn names(sources: &[(&str, Option<&str>, &str)], taken: &[&str]) -> Vec<(String, String)> {
+        let sources: Vec<_> = sources
+            .iter()
+            .map(|&(name, ident, src)| (name, ident, None, src))
+            .collect();
+        scoped_names(&sources, taken)
+    }
+
+    /// `names` with a `module::Ident` key per source.
+    fn scoped_names(
+        sources: &[(&str, Option<&str>, Option<&str>, &str)],
+        taken: &[&str],
+    ) -> Vec<(String, String)> {
         let items: Vec<syn::Item> = sources
             .iter()
-            .map(|(_, _, src)| syn::parse_str(src).unwrap())
+            .map(|(_, _, _, src)| syn::parse_str(src).unwrap())
             .collect();
         let views: Vec<ViewSource<'_>> = sources
             .iter()
             .zip(&items)
-            .map(|((name, ident, _), item)| ViewSource {
+            .map(|((name, ident, scoped_key, _), item)| ViewSource {
                 name,
                 rust_ident: *ident,
+                scoped_key: *scoped_key,
                 item,
             })
             .collect();
         let mut taken: BTreeSet<String> = taken.iter().map(ToString::to_string).collect();
-        taken.extend(sources.iter().map(|(name, _, _)| name.to_string()));
+        taken.extend(sources.iter().map(|(name, _, _, _)| name.to_string()));
         compute_input_names(&views, &taken)
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
@@ -732,6 +782,61 @@ mod tests {
             &[],
         );
         assert_eq!(result, [("UserDto".into(), "UserDtoInput".into())]);
+    }
+
+    /// Two renames share the ident `Foo`; the bare `Foo` aliases `A`. A
+    /// module-qualified field propagates the input view of the type its
+    /// module declares, in both directions.
+    #[rstest]
+    #[case::qualified_differs(
+        "struct Foo { #[serde(skip_deserializing)] b: u8 }",
+        "struct Foo { a: u8 }",
+        "b::Foo",
+        true
+    )]
+    #[case::bare_alias_differs(
+        "struct Foo { b: u8 }",
+        "struct Foo { #[serde(skip_deserializing)] a: u8 }",
+        "b::Foo",
+        false
+    )]
+    #[case::unregistered_module(
+        "struct Foo { b: u8 }",
+        "struct Foo { #[serde(skip_deserializing)] a: u8 }",
+        "c::Foo",
+        true
+    )]
+    fn qualified_references_resolve_their_module(
+        #[case] b_src: &str,
+        #[case] a_src: &str,
+        #[case] field_ty: &str,
+        #[case] outer_differs: bool,
+    ) {
+        let outer = format!("struct Outer {{ f: {field_ty} }}");
+        let result = scoped_names(
+            &[
+                ("A", Some("Foo"), Some("a::Foo"), a_src),
+                ("B", Some("Foo"), Some("b::Foo"), b_src),
+                ("Outer", None, None, &outer),
+            ],
+            &[],
+        );
+        assert_eq!(
+            result.iter().any(|(component, _)| component == "Outer"),
+            outer_differs,
+            "{result:?}"
+        );
+        if outer_differs && field_ty == "b::Foo" {
+            assert!(
+                result.contains(&("b::Foo".into(), "BInput".into())),
+                "{result:?}"
+            );
+            install(Arc::new(result.into_iter().collect()));
+            let types: [syn::Type; 1] = [syn::parse_quote!(Vec<b::Foo>)];
+            assert!(mentions_input(&types));
+            assert_eq!(component_of_input("BInput").as_deref(), Some("B"));
+            install(Arc::default());
+        }
     }
 
     #[test]

@@ -267,9 +267,21 @@ pub fn build_operation_from_function(
     }
 
     if has_validated_extractor {
-        responses
-            .entry("422".to_string())
-            .or_insert_with(validation_error_response);
+        // The `Validated` rejection always answers `422` with its envelope:
+        // a `422` the handler's error also documents (`error_status = [422]`)
+        // carries both bodies. Only `responses = [(422, T)]` overrides it.
+        let typed_422 = config
+            .typed_responses
+            .is_some_and(|typed| typed.iter().any(|(code, _)| *code == 422));
+        match responses.entry("422".to_string()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(validation_error_response());
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) if !typed_422 => {
+                merge_validation_envelope(entry.get_mut());
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {}
+        }
     }
 
     if let Some(example) = config.response_example
@@ -416,6 +428,30 @@ fn typed_response(
         headers: None,
         content: Some(content),
         ..Default::default()
+    }
+}
+
+/// Add the `Validated` envelope to a `422` the handler's error documents: a
+/// new media type, or `anyOf` both schemas when they share one.
+fn merge_validation_envelope(response: &mut Response) {
+    let envelope = validation_error_response().content.unwrap_or_default();
+    let content = response.content.get_or_insert_with(BTreeMap::new);
+    for (content_type, media) in envelope {
+        let Some(existing) = content.get_mut(&content_type) else {
+            content.insert(content_type, media);
+            continue;
+        };
+        existing.schema = match (existing.schema.take(), media.schema) {
+            (Some(current), Some(envelope))
+                if serde_json::to_value(&current).ok() != serde_json::to_value(&envelope).ok() =>
+            {
+                Some(SchemaRef::Inline(Box::new(Schema {
+                    any_of: Some(vec![current, envelope]),
+                    ..Schema::default()
+                })))
+            }
+            (current, envelope) => envelope.or(current),
+        };
     }
 }
 

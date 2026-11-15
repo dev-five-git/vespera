@@ -131,28 +131,27 @@ mod tests {
         }
     }
 
-    /// Test extract_rename_all fallback by creating an attribute where
-    /// parse_nested_meta succeeds but doesn't find rename_all in the expected format
+    /// `rename_all` through the structured walk.
     #[test]
-    fn test_extract_rename_all_fallback_path() {
+    fn test_extract_rename_all_structured_path() {
         // Standard path - parse_nested_meta should work
         let attrs = get_struct_attrs(r#"rename_all = "camelCase""#);
         let result = extract_rename_all(&attrs);
         assert_eq!(result.as_deref(), Some("camelCase"));
     }
 
-    /// Test extract_field_rename fallback
+    /// `rename` through the structured walk.
     #[test]
-    fn test_extract_field_rename_fallback_path() {
+    fn test_extract_field_rename_structured_path() {
         // Standard path
         let attrs = get_field_attrs(r#"rename = "myField""#);
         let result = extract_field_rename(&attrs);
         assert_eq!(result.as_deref(), Some("myField"));
     }
 
-    /// Test extract_default standalone fallback
+    /// Bare `default` through the structured walk.
     #[test]
-    fn test_extract_default_standalone_fallback_path() {
+    fn test_extract_default_standalone_structured_path() {
         // Simple default without function
         let attrs = get_field_attrs(r"default");
         let result = extract_default(&attrs);
@@ -471,19 +470,19 @@ mod tests {
         assert_eq!(default_result, Some(None));
     }
 
-    /// Test extract_rename_all fallback parsing
+    /// Raw-token fallback (the leading `@broken` fails the structured walk).
     #[test]
     fn test_extract_rename_all_fallback_manual_parsing() {
-        let tokens = quote!(rename_all = "kebab-case");
+        let tokens = quote!(@broken, rename_all = "kebab-case");
         let attr = create_attr_with_raw_tokens(tokens);
         let result = extract_rename_all(&[attr]);
         assert_eq!(result.as_deref(), Some("kebab-case"));
     }
 
-    /// Test extract_rename_all with complex attribute that forces fallback
+    /// Raw-token fallback among other keys.
     #[test]
     fn test_extract_rename_all_complex_attribute_fallback() {
-        let tokens = quote!(default, rename_all = "SCREAMING_SNAKE_CASE", skip);
+        let tokens = quote!(@broken, default, rename_all = "SCREAMING_SNAKE_CASE", skip);
         let attr = create_attr_with_raw_tokens(tokens);
         let result = extract_rename_all(&[attr]);
         assert_eq!(result.as_deref(), Some("SCREAMING_SNAKE_CASE"));
@@ -498,10 +497,12 @@ mod tests {
         assert!(result.is_none());
     }
 
-    /// Test extract_rename_all with unclosed quote
+    /// Raw-token fallback reading a closed literal (an unclosed one cannot
+    /// be lexed into a token stream; `quoted_value_after_key` rejects it, see
+    /// `quoted_value_after_key_rejects_malformed_candidates`).
     #[test]
-    fn test_extract_rename_all_unclosed_quote() {
-        let tokens = quote!(rename_all = "camelCase");
+    fn test_extract_rename_all_fallback_string_literal() {
+        let tokens = quote!(@broken, rename_all = "camelCase");
         let attr = create_attr_with_raw_tokens(tokens);
         let result = extract_rename_all(&[attr]);
         assert_eq!(result.as_deref(), Some("camelCase"));
@@ -516,10 +517,13 @@ mod tests {
         assert_eq!(result.as_deref(), Some(""));
     }
 
-    /// Test extract_rename_all with QUALIFIED PATH to force fallback
+    // Qualified keys in the raw-token fallback: every token stream below
+    // starts with `@broken`, which fails the structured walk.
+
+    /// Qualified `rename_all` key in the fallback.
     #[test]
     fn test_extract_rename_all_qualified_path_forces_fallback() {
-        let tokens = quote!(serde_with::rename_all = "camelCase");
+        let tokens = quote!(@broken, serde_with::rename_all = "camelCase");
         let attr = create_attr_with_raw_tokens(tokens);
         let result = extract_rename_all(&[attr]);
         assert_eq!(result.as_deref(), Some("camelCase"));
@@ -528,7 +532,7 @@ mod tests {
     /// Test extract_rename_all with another qualified path variation
     #[test]
     fn test_extract_rename_all_module_qualified_forces_fallback() {
-        let tokens = quote!(my_module::rename_all = "snake_case");
+        let tokens = quote!(@broken, my_module::rename_all = "snake_case");
         let attr = create_attr_with_raw_tokens(tokens);
         let result = extract_rename_all(&[attr]);
         assert_eq!(result.as_deref(), Some("snake_case"));
@@ -537,16 +541,16 @@ mod tests {
     /// Test extract_rename_all with deeply qualified path
     #[test]
     fn test_extract_rename_all_deeply_qualified_forces_fallback() {
-        let tokens = quote!(a::b::rename_all = "PascalCase");
+        let tokens = quote!(@broken, a::b::rename_all = "PascalCase");
         let attr = create_attr_with_raw_tokens(tokens);
         let result = extract_rename_all(&[attr]);
         assert_eq!(result.as_deref(), Some("PascalCase"));
     }
 
-    /// CRITICAL TEST: This test MUST hit fallback path
+    /// A key embedded in a longer identifier is skipped by the fallback.
     #[test]
     fn test_extract_rename_all_raw_tokens_force_fallback() {
-        let tokens: TokenStream = "__rename_all_prefix::rename_all = \"lowercase\""
+        let tokens: TokenStream = "@broken, __rename_all_prefix::rename_all = \"lowercase\""
             .parse()
             .unwrap();
         let attr = create_attr_with_raw_tokens(tokens);
@@ -570,7 +574,9 @@ mod tests {
     /// Another critical test with different qualified path format
     #[test]
     fn test_extract_rename_all_crate_qualified_forces_fallback() {
-        let tokens: TokenStream = "crate::rename_all = \"UPPERCASE\"".parse().unwrap();
+        let tokens: TokenStream = "@broken, crate::rename_all = \"UPPERCASE\""
+            .parse()
+            .unwrap();
         let attr = create_attr_with_raw_tokens(tokens);
         let result = extract_rename_all(&[attr]);
         assert_eq!(result.as_deref(), Some("UPPERCASE"));
@@ -579,35 +585,30 @@ mod tests {
     /// Test with self:: prefix
     #[test]
     fn test_extract_rename_all_self_qualified_forces_fallback() {
-        let tokens: TokenStream = "self::rename_all = \"kebab-case\"".parse().unwrap();
+        let tokens: TokenStream = "@broken, self::rename_all = \"kebab-case\""
+            .parse()
+            .unwrap();
         let attr = create_attr_with_raw_tokens(tokens);
         let result = extract_rename_all(&[attr]);
         assert_eq!(result.as_deref(), Some("kebab-case"));
     }
 
-    // =================================================================
-    // FALLBACK PATH TESTS (Lines 173, 258-265, 573, 583-590, 626)
-    // =================================================================
+    // `rename` / `flatten` in the raw-token fallback (again behind a
+    // leading `@broken`).
 
-    /// Test extract_field_rename fallback path - Line 173
-    /// Tests the word boundary check when "rename" appears with other attributes
-    /// This triggers the manual token parsing fallback when parse_nested_meta
-    /// doesn't extract the value in expected format
+    /// Qualified `rename` key in the fallback.
     #[test]
     fn test_extract_field_rename_fallback_word_boundary() {
-        // Create attribute with qualified path to force fallback
-        let tokens: TokenStream = "my_module::rename = \"value\"".parse().unwrap();
+        let tokens: TokenStream = "@broken, my_module::rename = \"value\"".parse().unwrap();
         let attr = create_attr_with_raw_tokens(tokens);
         let result = extract_field_rename(&[attr]);
         assert_eq!(result.as_deref(), Some("value"));
     }
 
-    /// Test extract_field_rename fallback - complex combined attributes
-    /// Line 173: Tests the edge case of word boundary checking
+    /// Qualified `rename` key among other keys in the fallback.
     #[test]
     fn test_extract_field_rename_fallback_complex_attr() {
-        // Qualified path forces parse_nested_meta to not find "rename"
-        let tokens: TokenStream = "crate::other::rename = \"custom_field\", default"
+        let tokens: TokenStream = "@broken, crate::other::rename = \"custom_field\", default"
             .parse()
             .unwrap();
         let attr = create_attr_with_raw_tokens(tokens);
@@ -619,38 +620,37 @@ mod tests {
     /// Test the word boundary logic
     #[test]
     fn test_extract_field_rename_fallback_avoids_rename_all() {
-        let tokens: TokenStream = "some::rename_all = \"camelCase\"".parse().unwrap();
+        let tokens: TokenStream = "@broken, some::rename_all = \"camelCase\"".parse().unwrap();
         let attr = create_attr_with_raw_tokens(tokens);
         let result = extract_field_rename(&[attr]);
         // Should NOT match rename_all as rename
         assert_eq!(result, None);
     }
 
-    /// Test extract_flatten fallback path - Lines 258-265
-    /// Forces manual token parsing by using qualified path
+    /// Qualified `flatten` key in the fallback.
     #[test]
     fn test_extract_flatten_fallback_path() {
-        let tokens: TokenStream = "my_module::flatten".parse().unwrap();
+        let tokens: TokenStream = "@broken, my_module::flatten".parse().unwrap();
         let attr = create_attr_with_raw_tokens(tokens);
         let result = extract_flatten(&[attr]);
         assert!(result, "Fallback should find 'flatten' in token string");
     }
 
-    /// Test extract_flatten fallback with complex attributes
-    /// Lines 258-263: Tests word boundary checking in fallback
+    /// Qualified `flatten` key before other keys in the fallback.
     #[test]
     fn test_extract_flatten_fallback_complex() {
-        let tokens: TokenStream = "crate::flatten, default = \"my_fn\"".parse().unwrap();
+        let tokens: TokenStream = "@broken, crate::flatten, default = \"my_fn\""
+            .parse()
+            .unwrap();
         let attr = create_attr_with_raw_tokens(tokens);
         let result = extract_flatten(&[attr]);
         assert!(result, "Fallback should detect flatten with other attrs");
     }
 
-    /// Test extract_flatten fallback with flatten at different positions
-    /// Line 265: Tests the return true path in fallback
+    /// Qualified `flatten` key after other keys in the fallback.
     #[test]
     fn test_extract_flatten_fallback_at_end() {
-        let tokens: TokenStream = "default, some::flatten".parse().unwrap();
+        let tokens: TokenStream = "@broken, default, some::flatten".parse().unwrap();
         let attr = create_attr_with_raw_tokens(tokens);
         let result = extract_flatten(&[attr]);
         assert!(result);
@@ -660,7 +660,7 @@ mod tests {
     #[test]
     fn test_extract_flatten_fallback_no_partial_match() {
         // "flattened" should not match "flatten"
-        let tokens: TokenStream = "flattened".parse().unwrap();
+        let tokens: TokenStream = "@broken, flattened".parse().unwrap();
         let attr = create_attr_with_raw_tokens(tokens);
         let result = extract_flatten(&[attr]);
         assert!(!result, "Should not match 'flattened' as 'flatten'");
