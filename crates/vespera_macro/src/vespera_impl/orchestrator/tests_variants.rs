@@ -145,3 +145,61 @@ fn openapi_json_does_not_depend_on_cfg_test_items() {
     assert!(harness.contains("users :: debug"), "{harness}");
     assert!(!library.contains("Fixture") && !library_doc.contains("Fixture"));
 }
+
+/// A `mod` declaration in `src/lib.rs` gating a schema's file or the route
+/// folder on `cfg(test)` invalidates the cached document even though no
+/// route file and no stored item changed (the crate root is not
+/// fingerprinted; the test-only verdicts are part of the cache key).
+#[test]
+fn gating_a_module_in_the_crate_root_invalidates_the_cache() {
+    let temp_dir = crate_with_routes("#[vespera::route(get)] pub async fn list() {}\n");
+    let src = temp_dir.path().join("src");
+    let _manifest = test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
+    let _args = test_env::set_var(COMPILER_ARGS_KEY, "rustc\n--test");
+    fs::write(src.join("routes/debug.rs"), "").unwrap();
+    fs::write(
+        src.join("fixtures.rs"),
+        "pub struct Fixture { pub id: i32 }\n",
+    )
+    .unwrap();
+    let fixture = StructMetadata::new(
+        "Fixture".to_string(),
+        "pub struct Fixture { pub id: i32 }".to_string(),
+    )
+    .with_source_identity(format!(
+        "{}::Fixture@1:11",
+        src.join("fixtures.rs").display()
+    ));
+    let schema_storage = HashMap::from([("Fixture".to_string(), fixture)]);
+    let route_storage = [crate::route_impl::StoredRouteInfo {
+        fn_name: "probe".to_string(),
+        method: Some("get".to_string()),
+        file_path: Some(src.join("routes/debug.rs").display().to_string()),
+        fn_sig_str: "async fn probe()".to_string(),
+        inline_module: Some(String::new()),
+        ..Default::default()
+    }];
+    let document = |lib: &str| {
+        fs::write(src.join("lib.rs"), lib).unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        process_vespera_macro(
+            &served("routes"),
+            &schema_storage,
+            &route_storage,
+            Span::call_site(),
+        )
+        .unwrap();
+        fs::read_to_string(temp_dir.path().join("openapi.json")).unwrap()
+    };
+
+    let open = document("mod routes; mod fixtures;");
+    assert!(
+        open.contains("Fixture") && open.contains("/debug"),
+        "{open}"
+    );
+    let gated = document("#[cfg(test)] mod routes; #[cfg(test)] mod fixtures;");
+    assert!(
+        !gated.contains("Fixture") && !gated.contains("/debug"),
+        "{gated}"
+    );
+}

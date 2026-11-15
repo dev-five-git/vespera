@@ -27,18 +27,25 @@
 //!
 //! - `args` - Parse `#[route(...)]` attribute arguments
 //! - `collector` - Filesystem scanning and route discovery
+//! - `cron_impl` - `#[cron(...)]` attribute macro implementation
+//! - `env_access` - The only environment reads (thread-local overrides in tests)
 //! - `error` - Unified error handling
+//! - `file_utils` - Path normalization and file fingerprints
+//! - `garde_emit` - `garde::Validate` impls from `#[schema(...)]` rules
 //! - `http` - HTTP method constants and validation
 //! - `macro_storage` - Shared per-crate storage for `#[route]` / `#[cron]` metadata
 //! - `metadata` - Type definitions for collected metadata
 //! - `method` - HTTP method token stream generation
+//! - `multipart_impl` - `#[derive(Multipart)]` implementation
 //! - `openapi_generator` - OpenAPI spec assembly
 //! - `parser` - Type extraction and schema generation
 //! - `route` - Route information structures
 //! - `route_impl` - Route attribute macro implementation
 //! - `router_codegen` - Router and macro input parsing
+//! - `schema_assertions` - Compile-time `Schema` assertions from `#[derive(Schema)]`
 //! - `schema_impl` - Schema derive macro implementation
-//! - `schema_macro` - `schema_type!` macro implementation
+//! - `schema_macro` - `schema!` / `schema_type!` macro implementation
+//! - `security` - Route security requirements vs declared schemes and scopes
 //! - `vespera_impl` - Main macro orchestration
 
 mod args;
@@ -76,10 +83,7 @@ use crate::{
 #[cfg(not(tarpaulin_include))]
 #[proc_macro_attribute]
 pub fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
-    match route_impl::process_route_attribute(attr.into(), item.into()) {
-        Ok(tokens) => tokens.into(),
-        Err(e) => e.to_compile_error().into(),
-    }
+    route_impl::route_attribute(attr.into(), item.into()).into()
 }
 
 /// cron attribute macro

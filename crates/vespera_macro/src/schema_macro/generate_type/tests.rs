@@ -305,6 +305,11 @@ fn raw_type_name_in_generated_fn_names() {
     "Dto from Model, partial = [\"broken\"]",
     "`partial` names field `broken`, which this type does not include: its SeaORM relation type could not be converted"
 )]
+// An included relation is never wrapped: naming it is an error, not a no-op.
+#[case::partial_included_relation(
+    "Dto from Model, partial = [\"owner\"]",
+    "`partial` names the SeaORM relation `owner`, which `partial` never makes optional: omit it (`omit = [\"owner\"]`) or declare the patch field with `add`"
+)]
 fn naming_a_dropped_field_is_an_error(#[case] input: &str, #[case] expected: &str) {
     let storage = to_storage(vec![create_test_struct_metadata(
         "Model",

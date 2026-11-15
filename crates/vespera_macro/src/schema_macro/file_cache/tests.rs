@@ -2,11 +2,16 @@ use tempfile::TempDir;
 
 use super::*;
 
+/// The second identical lookup is served from the cache (the hit counter
+/// grows), returning the first result.
 #[test]
 fn test_get_fk_column_cache_hit() {
+    let hits = || FILE_CACHE.with(|cache| cache.borrow().fk_column_cache_hits);
     let result1 = get_fk_column("nonexistent::path::Schema", "SomeRelation");
+    let before = hits();
     let result2 = get_fk_column("nonexistent::path::Schema", "SomeRelation");
     assert_eq!(result1, result2);
+    assert_eq!(hits(), before + 1, "the second lookup must hit the cache");
 }
 
 /// Path-keyed lookup caches survive epoch bumps so repeated `schema_type!`

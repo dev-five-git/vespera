@@ -319,6 +319,7 @@ pub fn generate_schema_type_code(
     // with the reason (`rename` / `partial` / `pick` naming one is an
     // error, not a silent no-op).
     let mut dropped: HashMap<String, &'static str> = HashMap::new();
+    let mut relation_names: HashSet<String> = HashSet::new();
 
     if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
         for (field_index, field) in fields_named.named.iter().enumerate() {
@@ -353,6 +354,9 @@ pub fn generate_schema_type_code(
                 continue;
             }
 
+            if is_relation {
+                relation_names.insert(rust_field_name.clone());
+            }
             // Get field components, applying partial wrapping if needed
             let original_ty = &field.ty;
             let should_wrap_option = should_wrap_in_option(
@@ -735,6 +739,15 @@ pub fn generate_schema_type_code(
     ] {
         validate_emitted(param, names, &dropped, &at)?;
     }
+    // `partial` never wraps an (included) relation, whose shape comes from the
+    // relation conversion; naming one used to be silently ignored.
+    if let Some(field) = partial_fields_to_validate
+        .into_iter()
+        .flatten()
+        .find(|field| relation_names.contains(*field))
+    {
+        return Err(at.error_at("partial", field, format!("`partial` names the SeaORM relation `{field}`, which `partial` never makes optional: omit it (`omit = [\"{field}\"]`) or declare the patch field with `add`")));
+    }
     // An adapter only replaces an included HasOne / BelongsTo relation: one
     // for a plain field, a HasMany, or in `multipart` mode used to be
     // silently ignored.
@@ -948,7 +961,7 @@ pub fn generate_schema_type_code(
                 #(#metadata_field_tokens),*
             }
         };
-        StructMetadata::new(custom_name.clone(), struct_def.to_string())
+        crate::schema_impl::named_type_metadata(custom_name, new_type_name, struct_def.to_string())
     });
 
     Ok((generated_tokens, metadata))

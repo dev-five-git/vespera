@@ -45,8 +45,15 @@ function Invoke-Measured([string]$manifest, [string[]]$rustcArgs) {
     if ($one -and $one / 1MB -gt $peak) { $peak = $one / 1MB }
     Start-Sleep -Milliseconds 25
   }
+  $p.WaitForExit()
   $sw.Stop()
-  [pscustomobject]@{ Wall = $sw.Elapsed.TotalSeconds; PeakMB = $peak; Err = $errTask.Result + $outTask.Result }
+  $text = $errTask.Result + $outTask.Result
+  # A failed build (the generated crate expands but does not type-check)
+  # still prints its passes: never let its timings into the table / slope.
+  if ($p.ExitCode -ne 0) {
+    throw "cargo rustc failed for $manifest (exit $($p.ExitCode)):`n$text"
+  }
+  [pscustomobject]@{ Wall = $sw.Elapsed.TotalSeconds; PeakMB = $peak; Err = $text }
 }
 
 function Get-Pass([string]$text, [string]$pass) {

@@ -737,13 +737,13 @@ with `/` and they must not share a path (both are compile errors).
 
 | Parameter | Description |
 |-----------|-------------|
-| HTTP method | `get`, `post`, `put`, `patch`, `delete`, `head`, or `options` (default: `get`) |
+| HTTP method | `get`, `post`, `put`, `patch`, `delete`, `head`, `options`, or `trace` (default: `get`) |
 | `path` | Route suffix appended to the file-based path |
 | `tags` | OpenAPI operation tags, e.g. `tags = ["users"]` |
 | `operation_id` | OpenAPI operationId override, e.g. `operation_id = "getUser"`; defaults to the Rust function name |
 | `summary` | OpenAPI operation summary, e.g. `summary = "Get a user"`; otherwise the first paragraph of the doc comment |
 | `description` | OpenAPI operation description; otherwise the doc comment after its first paragraph (the whole doc comment when `summary` is given) |
-| `status` | Success-response status override (must be `2xx`), e.g. `status = 204`; re-keys the inferred `200` response (no body for `204`/`304`) |
+| `status` | Success-response status override (must be `2xx`), e.g. `status = 204`; re-keys the inferred `200` response (no body for `204`/`205`) |
 | `error_status` | Extra error status codes to include in OpenAPI responses; declaring any makes the explicit error set authoritative (see below) |
 | `responses` | Typed error responses, e.g. `responses = [(404, NotFoundError), (400, crate::errors::BadRequestError)]`; declaring any makes the explicit error set authoritative (see below) |
 | `security` | Per-operation security requirements, e.g. `security = ["bearerAuth"]` or with OAuth2 scopes `security = [("oauth2", ["read:users"])]` (an inner `[...]` is an AND group); `security = []` emits explicit no auth |
@@ -860,6 +860,11 @@ schema_type!(UserPatch from User, partial);
 // Only specific fields become Option<T>
 schema_type!(UserPatch from User, partial = ["name", "email"]);
 ```
+
+SeaORM relation fields (`HasOne` / `HasMany` / `BelongsTo`) keep their
+converted shape: `partial` (all fields) leaves them as they are, and naming
+one in `partial = [..]` is a compile error — `omit` it or `add` the patch
+field instead.
 
 ### Serde Rename All
 

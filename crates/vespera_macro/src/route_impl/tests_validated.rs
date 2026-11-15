@@ -78,3 +78,17 @@ fn receiver_argument_emits_nothing() {
     let sig: syn::Signature = syn::parse_quote!(fn method(&self) -> String);
     assert!(validated_payload_assertions(&sig).is_empty());
 }
+
+/// A rejected `#[route]` keeps the handler next to its error, so the
+/// `vespera!` that mounts it reports nothing else.
+#[test]
+fn rejected_route_keeps_the_item() {
+    let item = quote!(
+        async fn private_handler() -> String {
+            String::new()
+        }
+    );
+    let output = route_attribute(quote!(get), item).to_string();
+    assert!(output.starts_with(":: core :: compile_error !"), "{output}");
+    assert!(output.contains("async fn private_handler ()"), "{output}");
+}

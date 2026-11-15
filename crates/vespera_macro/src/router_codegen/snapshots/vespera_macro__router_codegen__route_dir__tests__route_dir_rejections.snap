@@ -1,6 +1,6 @@
 ---
 source: crates/vespera_macro/src/router_codegen/route_dir.rs
-assertion_line: 69
+assertion_line: 75
 expression: "report.join(\"\\n\")"
 ---
 export_app! macro: invalid route folder `dir = ""`. It must be a folder under `src/` named by module identifiers separated by `/`, e.g. `"routes"` or `"api/v1"` (no absolute paths, `..`, `\`, or empty segments).
@@ -11,3 +11,5 @@ export_app! macro: invalid route folder `dir = "routes/"`. It must be a folder u
 export_app! macro: invalid route folder `dir = "mod"`. It must be a folder under `src/` named by module identifiers separated by `/`, e.g. `"routes"` or `"api/v1"` (no absolute paths, `..`, `\`, or empty segments).
 export_app! macro: invalid route folder `dir = "my-routes"`. It must be a folder under `src/` named by module identifiers separated by `/`, e.g. `"routes"` or `"api/v1"` (no absolute paths, `..`, `\`, or empty segments).
 export_app! macro: invalid route folder `dir = "r#type"`. It must be a folder under `src/` named by module identifiers separated by `/`, e.g. `"routes"` or `"api/v1"` (no absolute paths, `..`, `\`, or empty segments).
+export_app! macro: invalid route folder `dir = " routes"`. It must be a folder under `src/` named by module identifiers separated by `/`, e.g. `"routes"` or `"api/v1"` (no absolute paths, `..`, `\`, or empty segments).
+export_app! macro: invalid route folder `dir = "api/ v1"`. It must be a folder under `src/` named by module identifiers separated by `/`, e.g. `"routes"` or `"api/v1"` (no absolute paths, `..`, `\`, or empty segments).

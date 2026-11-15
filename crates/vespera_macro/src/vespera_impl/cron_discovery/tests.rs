@@ -72,6 +72,37 @@ fn call_site_outside_src_is_the_crate_root() {
     );
 }
 
+/// A job in a module of a call site outside `src/` is found even when it
+/// expands after `vespera!` (no stored job) and neither the call-site file
+/// nor `src/` mentions `cron(`.
+#[test]
+fn unexpanded_job_in_a_module_of_a_call_site_outside_src() {
+    let krate = crate_with(&[("lib.rs", "")]);
+    let demo = krate.path().join("examples").join("demo");
+    fs::create_dir_all(&demo).unwrap();
+    let root = demo.join("main.rs");
+    fs::write(&root, "mod jobs; fn main() {}").unwrap();
+    fs::write(
+        demo.join("jobs.rs"),
+        r#"#[vespera::cron("2 * * * * *")] pub async fn tick() {}"#,
+    )
+    .unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    let jobs = discover(&[], Some(&krate.path().join("src")), Some(&root));
+    assert_eq!(summary(&jobs), rows(&[("jobs", "tick", "2 * * * * *")]));
+}
+
+/// A `#[path]` module cycle ends the walk instead of overflowing the stack.
+#[test]
+fn module_cycle_is_walked_once() {
+    let krate = crate_with(&[(
+        "lib.rs",
+        r#"#[path = "lib.rs"] mod again; #[cron("1 * * * * *")] pub async fn tick() {}"#,
+    )]);
+    let jobs = discover(&[], Some(&krate.path().join("src")), None);
+    assert_eq!(summary(&jobs), rows(&[("", "tick", "1 * * * * *")]));
+}
+
 /// A stored job whose file is neither under `src/` nor next to the call
 /// site has no module path: a compile error, not an absolute-path module.
 #[test]

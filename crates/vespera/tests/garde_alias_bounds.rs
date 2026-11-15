@@ -101,3 +101,41 @@ fn unreachable_fractional_bounds_on_integer_aliases_reject_every_value() {
         ["above: lower than 300.5", "below: greater than -0.5"]
     );
 }
+
+type MaybeCount = Option<u32>;
+
+macro_rules! grouped {
+    ($t:ty) => {
+        #[derive(Schema, serde::Deserialize)]
+        #[allow(dead_code)]
+        struct Grouped {
+            #[schema(value_type = u32, minimum = 0.5)]
+            count: $t,
+        }
+    };
+}
+grouped!(Option<u32>);
+
+/// The guard ranges over the innermost type of every `Option` layer the
+/// macro cannot unwrap (a second layer, an alias of an `Option`, a
+/// `macro_rules!` `$t:ty` group) — it used to be a `RangeBound` E0277.
+#[derive(Schema, serde::Deserialize)]
+#[allow(dead_code, clippy::option_option)]
+struct Layered {
+    #[schema(value_type = u32, minimum = 0.5)]
+    nested: Option<Option<Count>>,
+    #[schema(value_type = u32, maximum = 2.5)]
+    aliased: MaybeCount,
+}
+
+#[test]
+fn fractional_bounds_range_through_option_layers() {
+    let valid = |nested, aliased| Layered { nested, aliased }.validate().is_ok();
+    assert!(valid(Some(Some(1)), Some(2)));
+    assert!(valid(None, None));
+    assert!(valid(Some(None), None));
+    assert!(!valid(Some(Some(0)), None), "0 < minimum 0.5");
+    assert!(!valid(None, Some(3)), "3 > maximum 2.5");
+    assert!(Grouped { count: Some(1) }.validate().is_ok());
+    assert!(Grouped { count: Some(0) }.validate().is_err());
+}

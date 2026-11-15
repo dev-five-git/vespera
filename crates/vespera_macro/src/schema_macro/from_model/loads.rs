@@ -156,16 +156,17 @@ fn column_path(entity_path: &TokenStream) -> TokenStream {
     quote! { #path }
 }
 
-/// Parses a `#[sea_orm(key = "value")]` string as an identifier (keywords
-/// accepted, like the `syn::Ident::new` it replaces), or a `syn::Error`
-/// spanned on the `schema_type!` source type naming the relation field.
+/// Parses a `#[sea_orm(key = "value")]` string as an identifier, or a
+/// `syn::Error` spanned on the `schema_type!` source type naming the relation
+/// field. A keyword column (`from = "ref"`) is the raw field `r#ref`: a plain
+/// `ref` ident made `__vespera_model.ref`, which does not parse.
 pub(super) fn sea_orm_value_ident(
     source_type: &Type,
     field_name: &syn::Ident,
     key: &str,
     value: &str,
 ) -> syn::Result<syn::Ident> {
-    syn::parse::Parser::parse_str(syn::ext::IdentExt::parse_any, value).map_err(|_| {
+    syn::parse::Parser::parse_str(syn::ext::IdentExt::parse_any, value).map(raw_if_keyword).map_err(|_| {
         syn::Error::new_spanned(
             source_type,
             format!(
@@ -173,4 +174,35 @@ pub(super) fn sea_orm_value_ident(
             ),
         )
     })
+}
+
+/// `ident` as a raw identifier when it is a keyword that can be one
+/// (`ref` → `r#ref`; `self` / `Self` / `super` / `crate` cannot).
+fn raw_if_keyword(ident: syn::Ident) -> syn::Ident {
+    let name = ident.to_string();
+    if syn::parse_str::<syn::Ident>(&name).is_ok()
+        || matches!(name.as_str(), "self" | "Self" | "super" | "crate")
+    {
+        ident
+    } else {
+        syn::Ident::new_raw(&name, ident.span())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[rstest::rstest]
+    #[case::plain("user_id", "user_id")]
+    #[case::keyword("ref", "r#ref")]
+    #[case::already_raw("r#type", "r#type")]
+    #[case::pascal("Ref", "Ref")]
+    #[case::not_rawable("Self", "Self")]
+    fn keyword_columns_become_raw_fields(#[case] value: &str, #[case] expected: &str) {
+        let source: Type = syn::parse_quote!(Model);
+        let field = syn::Ident::new("parent", proc_macro2::Span::call_site());
+        let ident = sea_orm_value_ident(&source, &field, "from", value).unwrap();
+        assert_eq!(ident.to_string(), expected);
+    }
 }

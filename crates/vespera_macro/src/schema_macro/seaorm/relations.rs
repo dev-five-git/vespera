@@ -31,12 +31,14 @@ pub struct RelationFieldInfo {
     pub adapter: bool,
 }
 
-/// Check if a field in the struct is optional (`Option<T>`).
+/// Check if a field in the struct is optional (`Option<T>`). A raw field
+/// (`r#ref`) is named by its column (`ref`).
 pub fn is_field_optional_in_struct(struct_item: &syn::ItemStruct, field_name: &str) -> bool {
+    let field_name = field_name.strip_prefix("r#").unwrap_or(field_name);
     if let syn::Fields::Named(fields_named) = &struct_item.fields {
         for field in &fields_named.named {
             if let Some(ident) = &field.ident
-                && ident == field_name
+                && syn::ext::IdentExt::unraw(ident) == field_name
             {
                 return is_option_type(&field.ty);
             }
@@ -254,6 +256,14 @@ mod tests {
     fn test_is_field_optional_in_struct_required() {
         let struct_item = make_test_struct("struct Model { id: i32, user_id: i32 }");
         assert!(!is_field_optional_in_struct(&struct_item, "user_id"));
+    }
+
+    /// A keyword column is the raw field of that name.
+    #[test]
+    fn test_is_field_optional_in_struct_raw_identifier() {
+        let struct_item = make_test_struct("struct Model { id: i32, r#ref: Option<i32> }");
+        assert!(is_field_optional_in_struct(&struct_item, "ref"));
+        assert!(is_field_optional_in_struct(&struct_item, "r#ref"));
     }
 
     #[test]

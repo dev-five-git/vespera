@@ -1,8 +1,9 @@
 //! Echo routes — used by the manual QA / curl smoke tests for the
 //! streaming JNI surfaces.  The `/echo` handler returns the request
-//! body verbatim with the same `Content-Type`; pair it with
-//! `dispatchFullStreamingWithHeader` from the Java side to verify
-//! byte-for-byte 1 GiB ↔ 1 GiB round-trips.
+//! body verbatim with the same `Content-Type` (buffered, so capped by
+//! axum's 2 MiB `DefaultBodyLimit`); for byte-for-byte 1 GiB ↔ 1 GiB
+//! round-trips pair `/echo/stream` with `dispatchFullStreamingWithHeader`
+//! from the Java side.
 
 use vespera::axum::body::Bytes;
 use vespera::axum::http::HeaderMap;

@@ -207,17 +207,32 @@ fn push_leaf_assertions(
 /// the assertion should fire on.  Maps return the VALUE type (the key
 /// is the JSON object key, a string by convention).
 ///
-/// Returns an empty `Vec` for type shapes the macro cannot assert on
-/// (references, slices, tuples, function pointers, …): those already
-/// fall through to `Object` in the generator and there's no scalar
-/// "leaf" identifier to bind a bound to.
-/// Each leaf is paired with its final path ident.  Both early returns below
+/// References, slices, arrays, tuples, parentheses and `macro_rules!`
+/// `$t:ty` groups are walked into like the generator does (a tuple is a
+/// fixed-length array of its elements, `[T; N]` / `&[T]` an array of `T`,
+/// `&T` is `T`), so an underived custom type there is still a compile error
+/// instead of a silent `{}`.  Shapes with no JSON form of their own
+/// (function pointers, `impl Trait`, `dyn Trait`, `!`) yield nothing.
+/// Each leaf is paired with its final path ident.  The early returns below
 /// reject the only shapes that lack one, so the caller never has to handle a
 /// missing ident - the invariant lives here instead of as an unreachable
 /// `else` branch at the call site.
 fn collect_leaf_custom_types(ty: &Type) -> Vec<(Type, String)> {
-    let Type::Path(type_path) = ty else {
-        return Vec::new();
+    let type_path = match ty {
+        Type::Path(type_path) => type_path,
+        Type::Reference(inner) => return collect_leaf_custom_types(&inner.elem),
+        Type::Slice(inner) => return collect_leaf_custom_types(&inner.elem),
+        Type::Array(inner) => return collect_leaf_custom_types(&inner.elem),
+        Type::Paren(inner) => return collect_leaf_custom_types(&inner.elem),
+        Type::Group(inner) => return collect_leaf_custom_types(&inner.elem),
+        Type::Tuple(tuple) => {
+            return tuple
+                .elems
+                .iter()
+                .flat_map(collect_leaf_custom_types)
+                .collect();
+        }
+        _ => return Vec::new(),
     };
     let Some(segment) = type_path.path.segments.last() else {
         return Vec::new();
@@ -478,17 +493,33 @@ mod tests {
         );
     }
 
+    /// References, slices, arrays, tuples, parentheses and `$t:ty` groups
+    /// are documented through their elements, so their custom leaves are
+    /// asserted too.
+    #[rstest::rstest]
+    #[case::tuple("(MyType, u32)", &["MyType", "u32"])]
+    #[case::reference("&'a MyType", &["MyType"])]
+    #[case::slice("&[MyType]", &["MyType"])]
+    #[case::array("[Vec<MyType>; 2]", &["MyType"])]
+    #[case::paren("(MyType)", &["MyType"])]
+    #[case::unit("()", &[])]
+    #[case::fn_pointer("fn(MyType)", &[])]
+    fn leaf_of_structural_types(#[case] src: &str, #[case] expected: &[&str]) {
+        assert_eq!(leaves_of(src), expected);
+    }
+
     #[test]
-    fn leaf_of_non_path_type_is_empty() {
-        // References, slices, tuples produce no leaf to assert on.
-        assert_eq!(
-            collect_leaf_custom_types(&parse_ty("(i32, String)")),
-            Vec::<(Type, String)>::new()
-        );
-        assert_eq!(
-            collect_leaf_custom_types(&parse_ty("&MyType")),
-            Vec::<(Type, String)>::new()
-        );
+    fn leaf_of_macro_type_group() {
+        let group = Type::Group(syn::TypeGroup {
+            attrs: Vec::new(),
+            group_token: syn::token::Group::default(),
+            elem: Box::new(parse_ty("Option<MyType>")),
+        });
+        let leaves: Vec<String> = collect_leaf_custom_types(&group)
+            .into_iter()
+            .map(|(_, ident)| ident)
+            .collect();
+        assert_eq!(leaves, ["MyType"]);
     }
 
     #[test]

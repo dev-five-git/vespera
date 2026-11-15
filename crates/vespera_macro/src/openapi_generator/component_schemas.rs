@@ -15,8 +15,9 @@ use crate::{
 };
 
 /// The `{Name}Input` request-view names for the documented types (see
-/// [`request_view`]). Without any `serde` attribute no view can differ, so
-/// the definitions are not even parsed.
+/// [`request_view`]). A view can only differ through a `serde` attribute or
+/// a `HashSet` / `BTreeSet` / `Duration` type (`request_view::type_view_differs`),
+/// so definitions mentioning none of them are not even parsed.
 pub(super) fn input_names(
     metadata: &CollectedMetadata,
     known_schema_names: &HashSet<&str>,
@@ -27,7 +28,11 @@ pub(super) fn input_names(
         .iter()
         .filter(|s| s.include_in_openapi)
         .collect();
-    if !documented.iter().any(|s| s.definition.contains("serde")) {
+    if !documented.iter().any(|s| {
+        ["serde", "Set", "Duration"]
+            .iter()
+            .any(|needle| s.definition.contains(needle))
+    }) {
         return std::sync::Arc::default();
     }
     let items: Vec<Option<syn::Item>> = documented
@@ -81,14 +86,18 @@ pub(super) fn without_identical_inputs(
 }
 
 /// Drop the `{Name}Input` components no request body reaches: a type that
-/// only ever appears in responses keeps a single component.
+/// only ever appears in responses keeps a single component.  The request-view
+/// generic instances materialised while building them (`Tree_i32.Input`,
+/// never in `input_names`; no other component name holds a `.`) are pruned
+/// the same way.
 pub(super) fn prune_unreferenced_inputs(
     schemas: &mut BTreeMap<String, vespera_core::schema::Schema>,
     paths: &BTreeMap<String, vespera_core::route::PathItem>,
     input_names: &request_view::InputNames,
 ) {
     let inputs: BTreeSet<&str> = input_names.values().map(String::as_str).collect();
-    if inputs.is_empty() {
+    let prunable = |name: &str| inputs.contains(name) || name.ends_with(".Input");
+    if !schemas.keys().any(|name| prunable(name)) {
         return;
     }
     // Every component reachable from a request body.
@@ -107,7 +116,7 @@ pub(super) fn prune_unreferenced_inputs(
             collect_request_body_refs(&value, true, &mut pending);
         }
     }
-    schemas.retain(|name, _| !inputs.contains(name.as_str()) || reached.contains(name));
+    schemas.retain(|name, _| !prunable(name) || reached.contains(name));
 }
 
 /// Component names of the `$ref`s inside `value`, counting only those under

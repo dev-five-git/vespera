@@ -22,8 +22,8 @@ use crate::router_codegen::ProcessedVesperaInput;
 use super::{cache::hash_invocation_settings, path_utils::current_crate_tag};
 
 /// File-name tag (`<crate>-<16 hex>`) for one `vespera!` invocation's
-/// route cache (`routes-<tag>.cache`) and spec sidecars
-/// (`vespera_spec-<tag>.json`, `openapi_pretty-<tag>.json`).
+/// route cache (`routes-<tag>.cache`) and spec sidecars (content-addressed
+/// `vespera_spec-<tag>-<16 hex>.json`, `openapi_pretty-<tag>-<16 hex>.json`).
 ///
 /// Depends only on the macro arguments as written
 /// ([`ProcessedVesperaInput::literal_hash`]) — never on disk contents (merged

@@ -73,14 +73,14 @@ fn build_filtered_schema(
     pick_set: &HashSet<String>,
     schema_storage: &HashMap<String, StructMetadata>,
 ) -> Schema {
-    // Same resolution context the OpenAPI component path builds: every
-    // known schema name (for `$ref` resolution) and its source definition
-    // (for generic expansion).
-    let known_schemas: HashSet<&str> = schema_storage.keys().map(String::as_str).collect();
-    let struct_definitions: HashMap<&str, &str> = schema_storage
-        .values()
-        .map(|s| (s.name.as_str(), s.definition.as_str()))
-        .collect();
+    // The resolution context the OpenAPI component path builds, from the
+    // same helper: every known schema name (for `$ref` resolution), its
+    // source definition (for generic expansion) AND the aliases of renamed
+    // types (`#[schema(name = "UserDto")] struct User` is named `User` in
+    // Rust). Sorted, so the lookups never depend on storage order.
+    let mut metadata = crate::metadata::CollectedMetadata::new();
+    metadata.structs = schema_storage.values().cloned().collect();
+    metadata.structs.sort_by(|a, b| a.name.cmp(&b.name));
 
     // Single source of truth — identical logic to OpenAPI generation
     // (required-by-nullability, doc descriptions, flatten/transparent,
@@ -88,11 +88,13 @@ fn build_filtered_schema(
     // `schema!` filters the fields first (omitted / unpicked ones matched
     // against BOTH the Rust identifier and the serde-renamed JSON name).
     let filtered = filter_struct_fields(struct_item, omit_set, pick_set);
-    parse_struct_to_schema(
-        filtered.as_ref().unwrap_or(struct_item),
-        &known_schemas,
-        &struct_definitions,
-    )
+    crate::openapi_generator::with_schema_lookups(&metadata, |known_schemas, struct_definitions| {
+        parse_struct_to_schema(
+            filtered.as_ref().unwrap_or(struct_item),
+            known_schemas,
+            struct_definitions,
+        )
+    })
 }
 
 /// One field the schema carries (not `#[serde(skip)]`ped).
@@ -237,6 +239,25 @@ mod tests {
         let required = schema.required.expect("required present");
         assert_eq!(required, ["id"], "{attr}");
         assert!(schema.properties.expect("props").contains_key("field"));
+    }
+
+    /// A field naming a renamed type by its Rust ident resolves to the
+    /// renamed component, as in the OpenAPI document (it used to be `{}`).
+    #[test]
+    fn renamed_field_type_resolves_through_its_rust_ident() {
+        let mut user = StructMetadata::new(
+            "UserDto".to_string(),
+            r#"#[schema(name = "UserDto")] pub struct User { pub id: i32 }"#.to_string(),
+        );
+        user.rust_ident = Some("User".to_string());
+        let storage = HashMap::from([("UserDto".to_string(), user)]);
+        let item = parse("pub struct Post { pub author: User }");
+        let schema = build_filtered_schema(&item, &HashSet::new(), &HashSet::new(), &storage);
+        let json = serde_json::to_value(&schema).unwrap();
+        assert_eq!(
+            json["properties"]["author"]["$ref"], "#/components/schemas/UserDto",
+            "{json}"
+        );
     }
 
     #[test]

@@ -324,6 +324,7 @@ fn test_route_args_header_errors_are_spanned(
 #[case("responses = [(404, ErrorBody::<Detail>)]", false, vec![])] // generic args dropped
 #[case("responses = [(404, errors::<T>::ErrorBody)]", false, vec![])] // generic args mid-path
 #[case("responses = []", true, vec![])] // empty is valid (no entries)
+#[case("responses = [(404, NotFound), (404, Gone)]", false, vec![])] // repeated status
 fn test_route_args_parse_responses(
     #[case] input: &str,
     #[case] should_parse: bool,
