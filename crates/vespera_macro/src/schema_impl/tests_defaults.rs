@@ -161,6 +161,8 @@ fn default_fn_is_resolved_from_the_struct_module(
 #[case::found("crate::models::user::default_role", Some("member"))]
 #[case::missing_function("crate::models::user::missing", None)]
 #[case::missing_module("crate::models::nope::default_role", None)]
+#[case::reexported("crate::models::reexported_role", Some("inner"))]
+#[case::reexport_missing("crate::models::absent_role", None)]
 fn crate_path_default_fn_is_resolved_through_the_module_tree(
     #[case] fn_path: &str,
     #[case] expected: Option<&str>,
@@ -169,10 +171,21 @@ fn crate_path_default_fn_is_resolved_through_the_module_tree(
     let models = temp_dir.path().join("src").join("models");
     std::fs::create_dir_all(&models).unwrap();
     std::fs::write(temp_dir.path().join("src").join("lib.rs"), "mod models;").unwrap();
-    std::fs::write(models.join("mod.rs"), "pub mod user;").unwrap();
+    std::fs::write(
+        models.join("mod.rs"),
+        "pub mod user;
+mod inner;
+pub use inner::role as reexported_role;",
+    )
+    .unwrap();
     std::fs::write(
         models.join("user.rs"),
         "pub fn default_role() -> String { \"member\".to_string() }",
+    )
+    .unwrap();
+    std::fs::write(
+        models.join("inner.rs"),
+        "pub fn role() -> String { \"inner\".to_string() }",
     )
     .unwrap();
     let call_site = temp_dir.path().join("src").join("dto.rs");
@@ -343,4 +356,79 @@ fn default_function_cache_keys_are_unrawed() {
     assert_eq!(values.get("type"), Some(&serde_json::json!(5)));
     assert_eq!(values.get("plain"), Some(&serde_json::json!(6)));
     assert!(!values.contains_key("r#type"));
+}
+
+/// M1 (round 14): a std default function (`Vec::new`, `String::new`,
+/// `Default::default`, `<T>::default`, ..) is the field type's default
+/// instead of a "cannot statically determine" compile error.
+#[rstest]
+#[case::vec_new("Vec::new", quote::quote!(Vec<String>), Some(serde_json::json!([])))]
+#[case::vec_turbofish("Vec::<String>::new", quote::quote!(Vec<String>), Some(serde_json::json!([])))]
+#[case::string_new("String::new", quote::quote!(String), Some(serde_json::json!("")))]
+#[case::std_path_map("std::collections::HashMap::new", quote::quote!(HashMap<String, i32>), Some(serde_json::json!({})))]
+#[case::default_trait("Default::default", quote::quote!(bool), Some(serde_json::json!(false)))]
+#[case::std_default_trait("std::default::Default::default", quote::quote!(i32), Some(serde_json::json!(0)))]
+#[case::core_default_trait("core::default::Default::default", quote::quote!(i32), Some(serde_json::json!(0)))]
+#[case::type_default("i64::default", quote::quote!(i64), Some(serde_json::json!(0)))]
+#[case::qself_default("<Vec<i32>>::default", quote::quote!(Vec<i32>), Some(serde_json::json!([])))]
+#[case::qself_as_default("<Vec<i32> as Default>::default", quote::quote!(Vec<i32>), Some(serde_json::json!([])))]
+#[case::qself_other_fn("<Vec<i32>>::new", quote::quote!(Vec<i32>), None)]
+#[case::qself_other_trait("<Vec<i32> as Other>::default", quote::quote!(Vec<i32>), None)]
+#[case::other_type_new("Vec::new", quote::quote!(String), None)]
+#[case::non_container_new("Uuid::new", quote::quote!(Uuid), None)]
+#[case::other_fn("Vec::with_capacity", quote::quote!(Vec<i32>), None)]
+#[case::not_a_path_type("Vec::new", quote::quote!([u8; 4]), None)]
+#[case::opaque_default("Default::default", quote::quote!(Opaque), None)]
+#[case::user_fn("make_tags", quote::quote!(Vec<String>), None)]
+#[case::unparsable("not a path", quote::quote!(Vec<String>), None)]
+fn std_default_fn_is_the_type_default(
+    #[case] fn_path: &str,
+    #[case] ty: proc_macro2::TokenStream,
+    #[case] expected: Option<serde_json::Value>,
+) {
+    let ty: syn::Type = syn::parse2(ty).unwrap();
+    assert_eq!(default_fns::std_type_default(fn_path, &ty), expected);
+}
+
+/// M1 (round 14): `#[derive(Schema)] struct S { #[serde(default = "Vec::new")] .. }`
+/// compiles (its default is `[]`), and `Self::f` / `Type::f` resolve an
+/// inherent `impl` function of the struct's module.
+#[test]
+fn std_and_associated_default_fns_pass_validation() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("tags.rs");
+    let source = "pub struct S {
+        #[serde(default = \"Vec::new\")] tags: Vec<String>,
+        #[serde(default = \"Self::role\")] role: Opaque,
+        #[serde(default = \"S::level\")] level: Opaque,
+        #[serde(default = \"Other::level\")] other: Opaque,
+        #[serde(default = \"Self::missing\")] missing: Opaque,
+        }
+        impl S { fn role() -> String { \"self\".to_string() } fn level() -> i32 { 3 } }
+        impl Default for S { fn default() -> Self { todo!() } }
+        impl Trait for Other { fn level() -> i32 { 9 } }
+        impl Other { fn level() -> i32 { 4 } }
+        impl<T> Other<T> { fn unused() -> i32 { 5 } }
+        impl <T as Tr>::X { fn level() -> i32 { 6 } }
+";
+    std::fs::write(&file_path, source).unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    let input = syn::parse_file(source)
+        .unwrap()
+        .items
+        .into_iter()
+        .find_map(|item| match item {
+            syn::Item::Struct(item) => Some(syn::DeriveInput::from(item)),
+            _ => None,
+        })
+        .unwrap();
+    let defaults = extract_field_defaults_from_path(&input, &file_path);
+    assert_eq!(defaults.get("tags"), Some(&serde_json::json!([])));
+    assert_eq!(defaults.get("role"), Some(&serde_json::json!("self")));
+    assert_eq!(defaults.get("level"), Some(&serde_json::json!(3)));
+    assert_eq!(defaults.get("other"), Some(&serde_json::json!(4)));
+    assert_eq!(defaults.get("missing"), None);
+    let err = validate_serde_default_values(&input, &defaults, true).unwrap_err();
+    assert!(err.to_string().contains("field `missing`"), "{err}");
+    assert!(!err.to_string().contains("field `tags`"), "{err}");
 }

@@ -35,14 +35,123 @@ pub(super) fn resolve_default_fn(
     let segments: Vec<String> = path.segments.iter().map(|s| ident_name(&s.ident)).collect();
     let (fn_name, module) = segments.split_last()?;
     if module.first().is_some_and(|first| first == "crate") {
-        return default_fn_value(&module_scope::module_items(module)?, fn_name);
+        return crate_fn_value(module, fn_name);
     }
     // The struct's inline chain comes from the file's cached line index: the
     // file is parsed (per field) only when the function lives in an inline
     // module, not for the common top-level case.
     let chain = module_scope::item_module_chain_cached(file_path, struct_name, line)?;
+    if let [owner] = module {
+        // `Self::f` / `Type::f`: an associated function of an inherent
+        // `impl` in the struct's module.
+        let owner = if owner == "Self" { struct_name } else { owner };
+        if let Some(value) = inherent_fn_value(&chain, owner, fn_name, file_path) {
+            return Some(value);
+        }
+    }
     in_file(chain.clone(), module, fn_name, file_path)
         .or_else(|| in_module_tree(&segments, &chain, file_path))
+}
+
+/// The function `fn_name` of the crate module `module`, following `pub use`
+/// re-exports (`pub use inner::role;`) when the module does not define it.
+fn crate_fn_value(module: &[String], fn_name: &str) -> Option<serde_json::Value> {
+    if let Some(value) =
+        module_scope::module_items(module).and_then(|items| default_fn_value(&items, fn_name))
+    {
+        return Some(value);
+    }
+    let (target, name) = crate::schema_macro::reexported_item(module, fn_name)?;
+    default_fn_value(&module_scope::module_items(&target)?, &name)
+}
+
+/// The associated function `fn_name` of an inherent `impl owner` among the
+/// items of the struct's module (the file's top level plus `chain`).
+fn inherent_fn_value(
+    chain: &[String],
+    owner: &str,
+    fn_name: &str,
+    file_path: &Path,
+) -> Option<serde_json::Value> {
+    let items = inline_module_items(file_cache::get_parsed_file(file_path)?.items, chain)?;
+    items.iter().find_map(|item| match item {
+        syn::Item::Impl(block)
+            if block.trait_.is_none() && impl_owner_is(&block.self_ty, owner) =>
+        {
+            block.items.iter().find_map(|item| match item {
+                syn::ImplItem::Fn(func) if ident_name(&func.sig.ident) == fn_name => {
+                    let func: syn::ItemFn =
+                        syn::parse2(quote::ToTokens::to_token_stream(func)).ok()?;
+                    crate::openapi_generator::extract_default_value_from_function(&func)
+                }
+                _ => None,
+            })
+        }
+        _ => None,
+    })
+}
+
+/// `self_ty` is the type `owner` (`impl Owner` / `impl<T> Owner<T>`).
+fn impl_owner_is(self_ty: &syn::Type, owner: &str) -> bool {
+    matches!(self_ty, syn::Type::Path(path) if path.qself.is_none()
+        && path.path.segments.last().is_some_and(|s| ident_name(&s.ident) == owner))
+}
+
+/// The value a std default function returns for a field of type `ty`:
+/// `Default::default` (`std::default::Default::default`, `<T>::default`,
+/// `<T as Default>::default`), `T::default` and a std container's / `String`'s
+/// `T::new`, where `T` is the field's type. `None` for any other path.
+pub(super) fn std_type_default(fn_path: &str, ty: &syn::Type) -> Option<serde_json::Value> {
+    let expr: syn::ExprPath = syn::parse_str(fn_path).ok()?;
+    let segments: Vec<String> = expr
+        .path
+        .segments
+        .iter()
+        .map(|s| ident_name(&s.ident))
+        .collect();
+    let (function, owner) = segments.split_last()?;
+    let is_default_trait = |path: &[String]| {
+        matches!(path, [only] if only == "Default")
+            || matches!(path, [root, module, name] if (root == "std" || root == "core")
+                && module == "default" && name == "Default")
+    };
+    let applies = match &expr.qself {
+        // `<T>::default` / `<T as Default>::default`.
+        Some(qself) => {
+            function == "default"
+                && (owner.is_empty() && qself.position == 0
+                    || is_default_trait(owner) && qself.position == owner.len())
+        }
+        None if function == "default" && is_default_trait(owner) => true,
+        None => {
+            let field_ty = match ty {
+                syn::Type::Path(path) => path.path.segments.last().map(|s| ident_name(&s.ident)),
+                _ => None,
+            };
+            let constructor = match function.as_str() {
+                "default" => true,
+                "new" => field_ty.as_deref().is_some_and(|name| {
+                    matches!(
+                        name,
+                        "String"
+                            | "Vec"
+                            | "VecDeque"
+                            | "HashSet"
+                            | "BTreeSet"
+                            | "HashMap"
+                            | "BTreeMap"
+                    )
+                }),
+                _ => false,
+            };
+            constructor && owner.last().is_some() && owner.last() == field_ty.as_ref()
+        }
+    };
+    if applies {
+        crate::schema_macro::type_utils::get_type_default(ty)
+    } else {
+        None
+    }
 }
 
 /// `fn_name` through `module` (`self` / `super` / child segments) from the
@@ -90,7 +199,7 @@ fn in_module_tree(
     if target.first().is_none_or(|root| root != "crate") {
         return None;
     }
-    default_fn_value(&module_scope::module_items(&target)?, &fn_name)
+    crate_fn_value(&target, &fn_name)
 }
 
 /// The literal value of the function `fn_name` among `items`.

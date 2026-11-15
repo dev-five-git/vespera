@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/multipart_impl/mod.rs
-assertion_line: 575
 expression: derive_pretty(src)
 ---
 impl<
@@ -10,8 +9,8 @@ impl<
         __multipart__: &mut vespera::axum::extract::Multipart,
         __state__: &__VesperaS__,
     ) -> std::result::Result<Self, vespera::multipart::TypedMultipartError> {
-        let mut tags: Vec<String> = std::vec::Vec::new();
-        let mut note: Option<String> = std::option::Option::None;
+        let mut __vespera_local_tags: Vec<String> = std::vec::Vec::new();
+        let mut __vespera_local_note: Option<String> = std::option::Option::None;
         let mut plain: Option<String> = std::option::Option::None;
         while let std::option::Option::Some(__field__) = __multipart__
             .next_field()
@@ -29,19 +28,20 @@ impl<
             };
             match __field_name__ {
                 "tags" => {
-                    tags.push(
-                        <String as vespera::multipart::TryFromFieldWithState<
-                            __VesperaS__,
-                        >>::try_from_field_with_state(
-                                __field__,
-                                std::option::Option::None,
-                                __state__,
-                            )
-                            .await?,
-                    );
+                    __vespera_local_tags
+                        .push(
+                            <String as vespera::multipart::TryFromFieldWithState<
+                                __VesperaS__,
+                            >>::try_from_field_with_state(
+                                    __field__,
+                                    std::option::Option::None,
+                                    __state__,
+                                )
+                                .await?,
+                        );
                 }
                 "note" => {
-                    note = std::option::Option::Some(
+                    __vespera_local_note = std::option::Option::Some(
                         <String as vespera::multipart::TryFromFieldWithState<
                             __VesperaS__,
                         >>::try_from_field_with_state(
@@ -69,11 +69,19 @@ impl<
                 }
             }
         }
-        let tags: Vec<String> = if tags.is_empty() { (self::tags)() } else { tags };
-        let note: Option<String> = match note {
-            std::option::Option::None => (self::note)(),
+        let __vespera_local_tags: Vec<String> = if __vespera_local_tags.is_empty() {
+            (tags)()
+        } else {
+            __vespera_local_tags
+        };
+        let __vespera_local_note: Option<String> = match __vespera_local_note {
+            std::option::Option::None => (note)(),
             __vespera_some__ => __vespera_some__,
         };
-        std::result::Result::Ok(Self { tags, note, plain })
+        std::result::Result::Ok(Self {
+            tags: __vespera_local_tags,
+            note: __vespera_local_note,
+            plain,
+        })
     }
 }

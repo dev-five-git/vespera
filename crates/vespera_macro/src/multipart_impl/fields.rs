@@ -11,11 +11,13 @@ use super::types::{extract_inner_generic, is_option_type, is_vec_type};
 use crate::parser::schema::{extract_aliases, extract_serde_skip_flags};
 
 /// Collected codegen fragments for each struct field.
-pub(super) struct FieldCodegen<'a> {
+pub(super) struct FieldCodegen {
     pub(super) declarations: Vec<TokenStream>,
     pub(super) assignments: Vec<TokenStream>,
     pub(super) post_loop: Vec<TokenStream>,
-    pub(super) idents: Vec<&'a syn::Ident>,
+    /// The struct-literal field initialisers (`name`, or `name: local` for
+    /// a renamed local).
+    pub(super) idents: Vec<TokenStream>,
     /// The type each parsed (non-skipped) field is read as — the
     /// `TryFromFieldWithState` bound a generic struct's impl needs.
     pub(super) parsed_types: Vec<Type>,
@@ -46,8 +48,8 @@ pub(super) fn process_fields<'a>(
     rename_all: Option<&str>,
     strict: bool,
     struct_default: bool,
-    locals: &HashSet<String>,
-) -> FieldCodegen<'a> {
+    shadowed: &HashSet<String>,
+) -> FieldCodegen {
     let mut cg = FieldCodegen {
         declarations: Vec::new(),
         assignments: Vec::new(),
@@ -64,7 +66,14 @@ pub(super) fn process_fields<'a>(
         std::collections::HashMap::new();
 
     for field in fields {
-        let ident = field.ident.as_ref().unwrap();
+        let field_ident = field.ident.as_ref().unwrap();
+        // The derived fn's local for this field (see [`local_ident`]).
+        let ident = &local_ident(field_ident, shadowed);
+        let init = if ident == field_ident {
+            quote! { #field_ident }
+        } else {
+            quote! { #field_ident: #ident }
+        };
         let ty = &field.ty;
         let is_vec = is_vec_type(ty);
         let is_option = is_option_type(ty);
@@ -79,25 +88,36 @@ pub(super) fn process_fields<'a>(
         // default (`default = "fn"` if given) instead of being required.
         let skip = extract_serde_skip_flags(&field.attrs);
         if skip.skip || skip.skip_deserializing {
-            let init = match &default_kind {
-                DefaultKind::Function(fn_path) => default_fn_call(ident, fn_path, locals),
-                DefaultKind::Container => quote! { __vespera_default__.#ident },
+            let value = match &default_kind {
+                DefaultKind::Function(fn_path) => default_fn_call(field_ident, fn_path),
+                DefaultKind::Container => quote! { __vespera_default__.#field_ident },
                 DefaultKind::Trait | DefaultKind::None => {
                     cg.default_types.push(ty.clone());
                     quote! { ::core::default::Default::default() }
                 }
             };
-            cg.post_loop.push(quote! { let #ident: #ty = #init; });
-            cg.idents.push(ident);
+            cg.post_loop.push(quote! { let #ident: #ty = #value; });
+            cg.idents.push(init);
             continue;
         }
 
-        let field_name =
-            resolve_field_name(ident, &field.attrs, form.field_name.as_deref(), rename_all);
+        let field_name = resolve_field_name(
+            field_ident,
+            &field.attrs,
+            form.field_name.as_deref(),
+            rename_all,
+        );
         // `#[serde(alias = "..")]`: the request schema lists every alias as
-        // an accepted part name, so the parser matches each of them too.
-        let aliases = extract_aliases(&field.attrs);
+        // an accepted part name, so the parser matches each of them too. An
+        // alias repeating the field's own name (or another alias) is no
+        // collision: serde accepts it, so it is matched once.
+        let mut seen = HashSet::from([field_name.clone()]);
+        let aliases: Vec<String> = extract_aliases(&field.attrs)
+            .into_iter()
+            .filter(|alias| seen.insert(alias.clone()))
+            .collect();
         for wire in std::iter::once(&field_name).chain(&aliases) {
+            let ident = field_ident;
             if let Some(first) = wire_names.insert(wire.clone(), ident) {
                 cg.errors.push(syn::Error::new(
                     ident.span(),
@@ -134,18 +154,17 @@ pub(super) fn process_fields<'a>(
             ty,
             &field_name,
             &default_kind,
-            (is_option, is_vec),
-            locals,
+            (field_ident, is_option, is_vec),
         );
-        cg.idents.push(ident);
+        cg.idents.push(init);
     }
 
     cg
 }
 
-fn push_declaration<'a>(
-    cg: &mut FieldCodegen<'a>,
-    ident: &'a syn::Ident,
+fn push_declaration(
+    cg: &mut FieldCodegen,
+    ident: &syn::Ident,
     ty: &Type,
     is_vec: bool,
     is_option: bool,
@@ -162,9 +181,9 @@ fn push_declaration<'a>(
     }
 }
 
-fn push_assignment<'a>(
-    cg: &mut FieldCodegen<'a>,
-    ident: &'a syn::Ident,
+fn push_assignment(
+    cg: &mut FieldCodegen,
+    ident: &syn::Ident,
     parse_ty: &Type,
     (field_name, aliases): (&str, &[String]),
     limit_tokens: &TokenStream,
@@ -190,22 +209,21 @@ fn push_assignment<'a>(
         .push(quote! { #field_name #(| #aliases)* => { #assignment } });
 }
 
-fn push_post_loop<'a>(
-    cg: &mut FieldCodegen<'a>,
-    ident: &'a syn::Ident,
+fn push_post_loop(
+    cg: &mut FieldCodegen,
+    ident: &syn::Ident,
     ty: &Type,
     field_name: &str,
     default_kind: &DefaultKind,
-    (is_option, is_vec): (bool, bool),
-    locals: &HashSet<String>,
+    (field_ident, is_option, is_vec): (&syn::Ident, bool, bool),
 ) {
     if is_option || is_vec {
         // A missing part leaves `None` / `[]` — serde's value for an absent
         // `Option` and the multipart reading of "no parts" — unless the
         // field (or container) names another default.
         let fallback = match default_kind {
-            DefaultKind::Function(fn_path) => default_fn_call(ident, fn_path, locals),
-            DefaultKind::Container => quote! { __vespera_default__.#ident },
+            DefaultKind::Function(fn_path) => default_fn_call(field_ident, fn_path),
+            DefaultKind::Container => quote! { __vespera_default__.#field_ident },
             DefaultKind::Trait | DefaultKind::None => return,
         };
         // One-line `quote!` bodies: llvm coverage never marks the inner lines
@@ -223,29 +241,30 @@ fn push_post_loop<'a>(
         cg.default_types.push(ty.clone());
     }
     cg.post_loop.push(post_loop_binding(
-        ident,
+        (ident, field_ident),
         ty,
         field_name,
         default_kind,
-        locals,
     ));
 }
 
 /// The post-loop `let` that resolves a missing non-`Option`/`Vec` field.
 fn post_loop_binding(
-    ident: &syn::Ident,
+    (ident, field_ident): (&syn::Ident, &syn::Ident),
     ty: &Type,
     field_name: &str,
     default_kind: &DefaultKind,
-    locals: &HashSet<String>,
 ) -> TokenStream {
     match default_kind {
         DefaultKind::Trait => quote! { let #ident: #ty = #ident.unwrap_or_default(); },
-        DefaultKind::Function(fn_path) => default_fn_post_loop(ident, ty, fn_path, locals),
+        DefaultKind::Function(fn_path) => {
+            let default_fn = default_fn_expr(field_ident, fn_path);
+            quote! { let #ident: #ty = #ident.unwrap_or_else(#default_fn); }
+        }
         DefaultKind::Container => quote! {
             let #ident: #ty = match #ident {
                 std::option::Option::Some(__vespera_value__) => __vespera_value__,
-                std::option::Option::None => __vespera_default__.#ident,
+                std::option::Option::None => __vespera_default__.#field_ident,
             };
         },
         DefaultKind::None => quote! {
@@ -258,48 +277,55 @@ fn post_loop_binding(
     }
 }
 
-/// Post-loop binding for `default = "path::to::fn"`.
-fn default_fn_post_loop(
-    ident: &syn::Ident,
-    ty: &Type,
-    fn_path: &str,
-    locals: &HashSet<String>,
-) -> TokenStream {
-    let default_fn = default_fn_expr(ident, fn_path, locals);
-    quote! { let #ident: #ty = #ident.unwrap_or_else(#default_fn); }
-}
-
 /// Initialiser calling `default = "path::to::fn"` (for a skipped field).
-pub(super) fn default_fn_call(
-    ident: &syn::Ident,
-    fn_path: &str,
-    locals: &HashSet<String>,
-) -> TokenStream {
-    let default_fn = default_fn_expr(ident, fn_path, locals);
+pub(super) fn default_fn_call(ident: &syn::Ident, fn_path: &str) -> TokenStream {
+    let default_fn = default_fn_expr(ident, fn_path);
     quote! { (#default_fn)() }
 }
 
-/// The `default = "path::to::fn"` function as an expression.
-///
-/// The derived fn binds one local per field (`locals`), so a one-segment
-/// path naming a field (`#[serde(default = "tags")] tags: Vec<String>`)
-/// would call the LOCAL; it is spelled `self::tags` (the module item serde
-/// means) instead.
-fn default_fn_expr(ident: &syn::Ident, fn_path: &str, locals: &HashSet<String>) -> TokenStream {
+/// The names of the fields whose derived-fn local would shadow a one-segment
+/// default function of the same name (`#[serde(default = "tags")] tags:
+/// Vec<String>`): `fields`' bare `default = ".."` names plus the container's
+/// `container_fn`. Their locals are renamed ([`local_ident`]) so the
+/// function path is emitted as written (`self::tags` did not resolve for a
+/// struct declared inside a function body).
+pub(super) fn shadowed_locals<'a>(
+    fields: impl Iterator<Item = &'a syn::Field> + Clone,
+    container_fn: Option<&str>,
+) -> HashSet<String> {
+    let bare: HashSet<String> = fields
+        .clone()
+        .filter_map(|field| crate::parser::extract_default(&field.attrs).flatten())
+        .chain(container_fn.map(ToString::to_string))
+        .filter_map(|path| syn::parse_str::<syn::Ident>(&path).ok())
+        .map(|ident| ident.to_string())
+        .collect();
+    fields
+        .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
+        .filter(|name| bare.contains(name))
+        .collect()
+}
+
+/// The derived fn's local holding the field `ident`: the field's own name,
+/// unless it is `shadowed` (then `__vespera_local_<name>`).
+fn local_ident(ident: &syn::Ident, shadowed: &HashSet<String>) -> syn::Ident {
+    if shadowed.contains(&ident.to_string()) {
+        quote::format_ident!(
+            "__vespera_local_{}",
+            crate::parser::strip_raw_prefix_owned(ident.to_string())
+        )
+    } else {
+        ident.clone()
+    }
+}
+
+/// The `default = "path::to::fn"` function as an expression, as written.
+fn default_fn_expr(ident: &syn::Ident, fn_path: &str) -> TokenStream {
     // A malformed user-supplied `default = "..."` path must surface as a
     // clean, span-attached compile error at the field — not an internal
     // macro panic (`.expect`) that prints no source location and aborts
     // expansion of the whole derive.
     match syn::parse_str::<syn::ExprPath>(fn_path) {
-        Ok(path)
-            if path.qself.is_none()
-                && path
-                    .path
-                    .get_ident()
-                    .is_some_and(|name| locals.contains(&name.to_string())) =>
-        {
-            quote! { self::#path }
-        }
         Ok(path) => quote! { #path },
         Err(err) => {
             let compile_err = syn::Error::new_spanned(
@@ -483,5 +509,64 @@ mod tests {
         );
         assert_eq!(cg.errors.len(), 1);
         assert!(cg.errors[0].to_string().contains("\"upload\""));
+    }
+
+    /// L8 (round 14): an alias equal to the field's own wire name (or a
+    /// repeated alias) is no collision with itself: serde accepts it, and the
+    /// match arm lists each name once.
+    #[test]
+    fn test_process_fields_alias_repeating_own_name_is_not_a_collision() {
+        let input = parse_fields_from(
+            r#"struct T { #[serde(rename = "file", alias = "file", alias = "doc", alias = "doc")] pub file: String }"#,
+        );
+        let cg = process_fields(
+            get_named_fields(&input).iter(),
+            None,
+            false,
+            false,
+            &HashSet::new(),
+        );
+        assert!(cg.errors.is_empty());
+        assert!(
+            cg.assignments[0]
+                .to_string()
+                .starts_with("\"file\" | \"doc\" =>"),
+            "{}",
+            cg.assignments[0]
+        );
+    }
+
+    /// L9 (round 14): a bare default function named like a field is called
+    /// as written (`self::tags` did not resolve for a struct declared in a
+    /// fn body); the field's local is renamed instead, so it cannot shadow
+    /// the function.
+    #[test]
+    fn shadowing_locals_are_renamed() {
+        let input = parse_fields_from(
+            r#"struct T {
+                #[serde(default = "tags")] pub tags: Vec<String>,
+                #[serde(default = "make")] pub r#type: String,
+                #[serde(default = "crate::x::other")] pub other: String,
+                #[serde(default)] pub plain: String,
+                pub make: String,
+                pub seed: String,
+            }"#,
+        );
+        let fields = get_named_fields(&input);
+        let shadowed = shadowed_locals(fields.iter(), Some("seed"));
+        let mut names: Vec<&String> = shadowed.iter().collect();
+        names.sort();
+        assert_eq!(names, ["make", "seed", "tags"]);
+        let cg = process_fields(fields.iter(), None, false, false, &shadowed);
+        let (post_loop, idents) = (&cg.post_loop, &cg.idents);
+        let code = quote::quote!(#(#post_loop)* Self { #(#idents),* }).to_string();
+        assert!(
+            code.contains("let __vespera_local_tags : Vec < String > = if __vespera_local_tags . is_empty () { (tags) () }"),
+            "{code}"
+        );
+        assert!(code.contains("make : __vespera_local_make"), "{code}");
+        assert!(code.contains("seed : __vespera_local_seed"), "{code}");
+        assert!(code.contains("unwrap_or_else (make)"), "{code}");
+        assert!(!code.contains("self ::"), "{code}");
     }
 }

@@ -609,8 +609,14 @@ fn no_relations_uses_source_module_when_schema_path_has_no_module() {
 }
 
 #[rstest]
-#[case::dashes_and_dots(Some("memo-detail.v2"), "items", "memo_detail_v2_Items")]
-#[case::leading_digit(Some("2024 Memo"), "items", "_2024_Memo_Items")]
+#[case::dashes_and_dots(Some("memo-detail.v2"), "items", "memo_u2d_detail_u2e_v2_Items")]
+#[case::dots_and_dashes(Some("memo.detail-v2"), "items", "memo_u2e_detail_u2d_v2_Items")]
+#[case::leading_digit(Some("2024 Memo"), "items", "_2024_u20_Memo_Items")]
+// L4 (round 14): non-ASCII identifier characters are kept (every Hangul
+// name used to become `__`, so two such names collided: E0428).
+#[case::hangul(Some("메모"), "items", "메모_Items")]
+#[case::hangul_other(Some("회원"), "items", "회원_Items")]
+#[case::non_ident_symbol(Some("a€"), "items", "a_u20ac__Items")]
 #[case::raw_field(None, "r#type", "Parent_Type")]
 fn inline_type_name_is_a_valid_ident(
     #[case] schema_name: Option<&str>,

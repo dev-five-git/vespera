@@ -277,7 +277,7 @@ impl TypeResolver<'_> {
             }
             Type::Array(array) => {
                 let elem = self.ty(&array.elem);
-                let len = &array.len;
+                let len = self.array_len(&array.len);
                 quote! { [#elem; #len] }
             }
             Type::Tuple(tuple) => {
@@ -294,6 +294,32 @@ impl TypeResolver<'_> {
             }
             _ => quote! { #ty },
         }
+    }
+
+    /// An array length: a constant the source module defines or imports
+    /// (`[u8; HASH_LEN]`) is re-rooted like a type (it was copied as written:
+    /// E0425 at the call site); a const generic parameter, a literal or an
+    /// unknown name stays as written.
+    fn array_len(&self, len: &syn::Expr) -> TokenStream {
+        if let syn::Expr::Path(path) = len
+            && path.qself.is_none()
+            && path.path.leading_colon.is_none()
+            && !path
+                .path
+                .get_ident()
+                .is_some_and(|ident| self.generic_params.contains(&strip_raw(ident)))
+        {
+            let segments: Vec<String> = path
+                .path
+                .segments
+                .iter()
+                .map(|segment| strip_raw(&segment.ident))
+                .collect();
+            if let Resolved::Path(resolved) = resolve_name(&segments, self.module) {
+                return path_tokens(&resolved);
+            }
+        }
+        quote! { #len }
     }
 
     fn args(&self, args: &PathArguments) -> TokenStream {

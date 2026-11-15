@@ -3,7 +3,8 @@
 //! module: the derive picks its module by the struct's line, which needs the
 //! file re-parsed with real span positions (inside the compiler every
 //! re-parsed token points at the call site, so no candidate matched and the
-//! default was "not statically determinable" — a compile error).
+//! default was "not statically determinable" — a compile error). `schema!`
+//! of either path reads its own module's item whatever the expansion order.
 #![deny(warnings)]
 
 mod first {
@@ -21,10 +22,8 @@ mod first {
     }
 }
 
-/// `first::Page`'s schema, read BEFORE `second::Page` is derived: schema
-/// storage is keyed by the Rust name, so a later `schema!(first::Page)`
-/// would read `second::Page` (the last `Page` derived).
-fn first_page_schema() -> vespera::schema::Schema {
+/// `first::Page`'s schema, read BEFORE `second::Page` is derived.
+fn first_page_schema_before_second() -> vespera::schema::Schema {
     vespera::schema!(first::Page)
 }
 
@@ -52,7 +51,17 @@ fn each_page_resolves_its_own_default_fn() {
     // OpenAPI `default` is what this file is about.  Each struct must carry
     // its OWN module's default: a derive that resolved one module's `limit`
     // for both structs (either direction) fails one of these.
-    assert_eq!(limit_default(&first_page_schema()), json!(10));
+    assert_eq!(limit_default(&first_page_schema_before_second()), json!(10));
+    assert_eq!(limit_default(&vespera::schema!(second::Page)), json!(20));
+}
+
+/// R14-X1: schema storage is keyed by the schema name and keeps the LAST
+/// `Page` derived, so `schema!(first::Page)` expanded AFTER `second::Page`
+/// used to read `second::Page` (default 20). Each path now reads the item of
+/// the module it names, in either order.
+#[test]
+fn first_page_read_after_second_is_derived_keeps_its_own_default() {
+    assert_eq!(limit_default(&vespera::schema!(first::Page)), json!(10));
     assert_eq!(limit_default(&vespera::schema!(second::Page)), json!(20));
 }
 

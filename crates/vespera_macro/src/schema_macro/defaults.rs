@@ -92,7 +92,10 @@ pub(super) fn generate_sea_orm_default_attrs(
             // literal keeps the byte-identical prior `.parse().unwrap()` body, so
             // no currently-valid default changes behaviour.
             let fn_body = match validate_literal_default(value, original_ty) {
-                Ok(()) => quote! { #value.parse().unwrap() },
+                Ok(()) => {
+                    let guard = pointer_width_guard(value, original_ty);
+                    quote! { #guard #value.parse().unwrap() }
+                }
                 Err(msg) => syn::Error::new_spanned(original_ty, msg).to_compile_error(),
             };
 
@@ -321,6 +324,49 @@ fn validate_literal_default(value: &str, ty: &syn::Type) -> Result<(), String> {
         // Everything else is gated out by `is_parseable_type` before this call.
         _ => Ok(()),
     }
+}
+
+/// `isize` / `usize` literals are checked at the proc-macro HOST's pointer
+/// width; one outside the 16-bit range (the narrowest Rust target) also gets
+/// a `const` assertion evaluated at the TARGET's width, so a `wasm32` build
+/// of `"5000000000"` on a `usize` fails to compile instead of panicking in
+/// the generated `.parse().unwrap()`. Empty for every other literal / type.
+fn pointer_width_guard(value: &str, ty: &syn::Type) -> TokenStream {
+    let syn::Type::Path(type_path) = ty else {
+        return TokenStream::new();
+    };
+    let name = type_path.path.segments.last().map(|s| s.ident.to_string());
+    let check = match name.as_deref() {
+        Some("usize") => value
+            .parse::<u128>()
+            .ok()
+            .filter(|n| u16::try_from(*n).is_err())
+            .map(|n| {
+                let lit = proc_macro2::Literal::u128_suffixed(n);
+                quote! { #lit <= ::core::primitive::usize::MAX as u128 }
+            }),
+        Some("isize") => value
+            .parse::<i128>()
+            .ok()
+            .filter(|n| i16::try_from(*n).is_err())
+            .map(|n| {
+                let lit = proc_macro2::Literal::i128_suffixed(n.abs());
+                let lit = if n < 0 { quote!(-#lit) } else { quote!(#lit) };
+                let (min, max) = (
+                    quote!(::core::primitive::isize::MIN),
+                    quote!(::core::primitive::isize::MAX),
+                );
+                quote! { #lit >= #min as i128 && #lit <= #max as i128 }
+            }),
+        _ => None,
+    };
+    check.map_or_else(TokenStream::new, |check| {
+        let message = format!(
+            "invalid default_value {value:?}: out of range for the target's `{}`",
+            name.unwrap_or_default()
+        );
+        quote! { const _: () = ::core::assert!(#check, #message); }
+    })
 }
 
 #[cfg(test)]

@@ -903,3 +903,51 @@ fn cfg_serde_default_without_schema_derive_gates_serde_only() {
     );
     assert_eq!(schema.to_string(), "# [schema (default = \"5\")]");
 }
+
+/// L1 (round 14): a `usize` / `isize` literal outside the 16-bit range gets
+/// a `const` assertion at the TARGET's pointer width (the host check passes
+/// `"5000000000"` on a 64-bit host, which a `wasm32` build would then panic
+/// on); in-range literals and other types are emitted unchanged.
+#[rstest::rstest]
+#[case::usize_large(
+    "usize",
+    "5000000000",
+    Some("5000000000u128 <= :: core :: primitive :: usize :: MAX as u128")
+)]
+#[case::isize_large(
+    "isize",
+    "3000000000",
+    Some(
+        "3000000000i128 >= :: core :: primitive :: isize :: MIN as i128 && 3000000000i128 <= :: core :: primitive :: isize :: MAX as i128"
+    )
+)]
+#[case::isize_negative(
+    "isize",
+    "-40000",
+    Some(
+        "- 40000i128 >= :: core :: primitive :: isize :: MIN as i128 && - 40000i128 <= :: core :: primitive :: isize :: MAX as i128"
+    )
+)]
+#[case::usize_small("usize", "65535", None)]
+#[case::isize_small("isize", "-32768", None)]
+#[case::u64_large("u64", "5000000000", None)]
+#[case::not_a_path("[usize; 1]", "5000000000", None)]
+fn pointer_sized_defaults_are_checked_at_the_target_width(
+    #[case] type_name: &str,
+    #[case] value: &str,
+    #[case] check: Option<&str>,
+) {
+    let ty: syn::Type = syn::parse_str(type_name).unwrap();
+    let guard = pointer_width_guard(value, &ty).to_string();
+    match check {
+        Some(check) => {
+            assert!(
+                guard.starts_with("const _ : () = :: core :: assert !"),
+                "{guard}"
+            );
+            assert!(guard.contains(check), "{guard}");
+            assert!(guard.contains("out of range for the target's"), "{guard}");
+        }
+        None => assert!(guard.is_empty(), "{guard}"),
+    }
+}

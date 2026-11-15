@@ -614,3 +614,43 @@ fn chrono_names_resolve_bare_only(#[case] src: &str, #[case] expected: &str) {
         expected
     );
 }
+
+/// L5 (round 14): an array length naming a constant of the source module is
+/// re-rooted like the element type (`[u8; HASH_LEN]` was copied as written:
+/// E0425 at the call site); literals, const generic parameters, unknown and
+/// `::`-rooted names stay as written.
+#[rstest]
+#[case::local_const("[u8; HASH_LEN]", &[], "[u8 ; crate :: models :: file :: HASH_LEN]")]
+#[case::imported_const("[u8; SHARED_LEN]", &[], "[u8 ; crate :: consts :: SHARED_LEN]")]
+#[case::relative_path("[u8; super::file::HASH_LEN]", &[], "[u8 ; crate :: models :: file :: HASH_LEN]")]
+#[case::literal("[u8; 32]", &[], "[u8 ; 32]")]
+#[case::expression("[u8; HASH_LEN * 2]", &[], "[u8 ; HASH_LEN * 2]")]
+#[case::const_generic("[u8; HASH_LEN]", &["HASH_LEN"], "[u8 ; HASH_LEN]")]
+#[case::unknown("[u8; OTHER]", &[], "[u8 ; OTHER]")]
+#[case::leading_colon("[u8; ::lib::LEN]", &[], "[u8 ; :: lib :: LEN]")]
+fn array_length_constant_is_rerooted(
+    #[case] ty: &str,
+    #[case] generic_params: &[&str],
+    #[case] expected: &str,
+) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(src.join("models")).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod models; pub mod consts;").unwrap();
+    std::fs::write(src.join("consts.rs"), "pub const SHARED_LEN: usize = 4;").unwrap();
+    std::fs::write(src.join("models.rs"), "pub mod file;").unwrap();
+    std::fs::write(
+        src.join("models").join("file.rs"),
+        "use crate::consts::SHARED_LEN; pub const HASH_LEN: usize = 32;",
+    )
+    .unwrap();
+    let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    crate::schema_macro::file_cache::bump_epoch();
+    let ty: syn::Type = syn::parse_str(ty).unwrap();
+    let module = ["crate", "models", "file"].map(String::from);
+    let params: Vec<String> = generic_params.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        resolve_type_with_params(&ty, &module, &params).to_string(),
+        expected
+    );
+}

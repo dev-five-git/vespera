@@ -1,26 +1,61 @@
 //! `#[garde(..)]` rules re-rooted at the source module: `schema_type!`
-//! emits the DTO at its call site, where a `custom(check_name)` validator
-//! or a container `context(Ctx)` type of the source module does not
-//! resolve (E0425 / E0412). Paths the source module neither defines nor
+//! emits the DTO at its call site, where a `custom(check_name)` validator,
+//! a container `context(Ctx)` type or a constant / static an expression
+//! argument names (`length(max = MAX_NAME)`, `pattern(EMAIL_RE)`,
+//! `if(cond = ..)`) of the source module does not resolve (E0425 / E0412). Paths the source module neither defines nor
 //! imports are kept as written, like the re-rooted serde paths.
 
-use quote::quote;
+use proc_macro2::TokenStream;
+use quote::{ToTokens, quote};
+use syn::ext::IdentExt;
 use syn::punctuated::Punctuated;
 
 use super::transformation::reroot_path;
 
-type Metas = Punctuated<syn::Meta, syn::Token![,]>;
+/// One garde rule: `name`, `name(..)` or `name = expr` (`if` is a keyword,
+/// so the list is not parsed as `syn::Meta`).
+enum Rule {
+    Bare(syn::Ident),
+    List(syn::Ident, TokenStream),
+    Value(syn::Ident, syn::Expr),
+}
 
-/// A `garde(..)` meta (the attribute's, or one inside a `cfg_attr`) with its
-/// `custom(..)` / `context(..)` paths re-rooted at `module_path`.
+impl syn::parse::Parse for Rule {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let name = syn::Ident::parse_any(input)?;
+        if input.peek(syn::token::Paren) {
+            let content;
+            syn::parenthesized!(content in input);
+            return Ok(Self::List(name, content.parse()?));
+        }
+        if input.parse::<Option<syn::Token![=]>>()?.is_some() {
+            return Ok(Self::Value(name, input.parse()?));
+        }
+        Ok(Self::Bare(name))
+    }
+}
+
+impl ToTokens for Rule {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        tokens.extend(match self {
+            Self::Bare(name) => quote!(#name),
+            Self::List(name, args) => quote!(#name(#args)),
+            Self::Value(name, value) => quote!(#name = #value),
+        });
+    }
+}
+
+type Rules = Punctuated<Rule, syn::Token![,]>;
+
+/// A `garde(..)` meta (the attribute's, or one inside a `cfg_attr`) with the
+/// source module's paths re-rooted at `module_path`.
 pub fn reroot_garde_meta(meta: &syn::Meta, module_path: &[String]) -> syn::Meta {
     match meta {
-        syn::Meta::List(list) => list.parse_args_with(Metas::parse_terminated).map_or_else(
-            |_| meta.clone(),
+        syn::Meta::List(list) => reroot_rules(list.tokens.clone(), module_path).map_or_else(
+            || meta.clone(),
             |rules| {
                 let path = &list.path;
-                let rules = rules.iter().map(|rule| reroot_rule(rule, module_path));
-                syn::parse_quote!(#path(#(#rules),*))
+                syn::parse_quote!(#path(#rules))
             },
         ),
         _ => meta.clone(),
@@ -33,38 +68,50 @@ pub fn reroot_garde_attr(attr: &syn::Attribute, module_path: &[String]) -> syn::
     syn::parse_quote!(#[#meta])
 }
 
-/// One rule: `custom(f)` / `custom(f(args))` re-roots `f`, `context(Ctx)` /
-/// `context(Ctx as ctx)` re-roots `Ctx`, any other list (`inner(..)`) is
-/// walked; a list that holds no metas (`pattern(r"..")`) stays as written.
-fn reroot_rule(rule: &syn::Meta, module_path: &[String]) -> syn::Meta {
-    let syn::Meta::List(list) = rule else {
-        return rule.clone();
-    };
-    let path = &list.path;
-    if path.is_ident("custom") {
-        return list.parse_args::<syn::Expr>().map_or_else(
-            |_| rule.clone(),
-            |mut expr| {
-                reroot_callee(&mut expr, module_path);
-                syn::parse_quote!(#path(#expr))
-            },
-        );
-    }
-    if path.is_ident("context") {
-        return list.parse_args_with(parse_context).map_or_else(
-            |_| rule.clone(),
-            |(mut ty, binding)| {
-                if let syn::Type::Path(type_path) = &mut ty
-                    && type_path.qself.is_none()
-                {
-                    reroot_syn_path(&mut type_path.path, module_path);
+/// A rule list re-rooted (`None` when it is not one).
+fn reroot_rules(tokens: TokenStream, module_path: &[String]) -> Option<TokenStream> {
+    let rules = syn::parse::Parser::parse2(Rules::parse_terminated, tokens).ok()?;
+    let rules = rules.into_iter().map(|rule| reroot_rule(rule, module_path));
+    Some(quote!(#(#rules),*))
+}
+
+/// One rule: `custom(..)` / `pattern(..)` / `contains(..)` / `prefix(..)` /
+/// `suffix(..)` re-root the paths of their expression, `context(Ctx)` /
+/// `context(Ctx as ctx)` re-roots `Ctx`, a `key = expr` argument (`min =
+/// MAX`, `cond = ..`) its expression, and any other list (`length(..)`,
+/// `range(..)`, `inner(..)`, `if(..)`) is walked; a list that is none of
+/// these stays as written.
+fn reroot_rule(rule: Rule, module_path: &[String]) -> Rule {
+    match rule {
+        Rule::Value(name, mut value) => {
+            reroot_expr(&mut value, module_path);
+            Rule::Value(name, value)
+        }
+        Rule::List(name, args) => {
+            let rerooted = match name.to_string().as_str() {
+                "custom" | "pattern" | "contains" | "prefix" | "suffix" => {
+                    syn::parse2::<syn::Expr>(args.clone()).ok().map(|mut expr| {
+                        reroot_expr(&mut expr, module_path);
+                        expr.into_token_stream()
+                    })
                 }
-                let binding = binding.map(|name| quote!(as #name));
-                syn::parse_quote!(#path(#ty #binding))
-            },
-        );
+                "context" => syn::parse::Parser::parse2(parse_context, args.clone())
+                    .ok()
+                    .map(|(mut ty, binding)| {
+                        if let syn::Type::Path(type_path) = &mut ty
+                            && type_path.qself.is_none()
+                        {
+                            reroot_syn_path(&mut type_path.path, module_path);
+                        }
+                        let binding = binding.map(|name| quote!(as #name));
+                        quote!(#ty #binding)
+                    }),
+                _ => reroot_rules(args.clone(), module_path),
+            };
+            Rule::List(name, rerooted.unwrap_or(args))
+        }
+        Rule::Bare(name) => Rule::Bare(name),
     }
-    reroot_garde_meta(rule, module_path)
 }
 
 /// `Ctx` or `Ctx as name`.
@@ -80,16 +127,43 @@ fn parse_context(
     Ok((ty, binding))
 }
 
-/// The function a `custom(..)` expression names (`f`, or the callee of
-/// `f(args)` building the validator).
-fn reroot_callee(expr: &mut syn::Expr, module_path: &[String]) {
+/// The paths of `expr` resolved in `module_path` (`f` / `f(args)` of a
+/// `custom(..)`, a `MAX` / `EMAIL_RE` constant), through calls, references
+/// and operators; `self` / `Self::..` and closures stay as written.
+fn reroot_expr(expr: &mut syn::Expr, module_path: &[String]) {
     match expr {
-        syn::Expr::Path(path) if path.qself.is_none() => {
+        syn::Expr::Path(path) if path.qself.is_none() && !names_self(&path.path) => {
             reroot_syn_path(&mut path.path, module_path);
         }
-        syn::Expr::Call(call) => reroot_callee(&mut call.func, module_path),
+        syn::Expr::Call(call) => {
+            reroot_expr(&mut call.func, module_path);
+            call.args
+                .iter_mut()
+                .for_each(|arg| reroot_expr(arg, module_path));
+        }
+        syn::Expr::MethodCall(call) => {
+            reroot_expr(&mut call.receiver, module_path);
+            call.args
+                .iter_mut()
+                .for_each(|arg| reroot_expr(arg, module_path));
+        }
+        syn::Expr::Binary(binary) => {
+            reroot_expr(&mut binary.left, module_path);
+            reroot_expr(&mut binary.right, module_path);
+        }
+        syn::Expr::Reference(syn::ExprReference { expr, .. })
+        | syn::Expr::Unary(syn::ExprUnary { expr, .. })
+        | syn::Expr::Paren(syn::ExprParen { expr, .. }) => reroot_expr(expr, module_path),
+        syn::Expr::Field(field) => reroot_expr(&mut field.base, module_path),
         _ => {}
     }
+}
+
+/// `self` (the validated value) or a `Self::..` path.
+fn names_self(path: &syn::Path) -> bool {
+    path.segments.first().is_some_and(|first| {
+        first.ident == "Self" || (path.segments.len() == 1 && first.ident == "self")
+    })
 }
 
 /// `path` resolved in `module_path`, when it has no generic arguments and
@@ -127,7 +201,8 @@ mod tests {
         std::fs::write(src.join("util.rs"), "pub fn make_check() {}").unwrap();
         std::fs::write(
             src.join("models").join("user.rs"),
-            "use crate::util::make_check; fn check_name() {} pub struct Ctx;",
+            "use crate::util::make_check; fn check_name() {} pub struct Ctx; \
+             pub const MAX_NAME: usize = 50; static EMAIL_RE: u8 = 0;",
         )
         .unwrap();
         let guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
@@ -170,6 +245,40 @@ mod tests {
     #[case::bad_custom_kept("#[garde(custom(,))]", "# [garde (custom (,))]")]
     #[case::bad_context_kept("#[garde(context(Ctx as))]", "# [garde (context (Ctx as))]")]
     #[case::path_attr_kept("#[garde]", "# [garde]")]
+    #[case::length_const(
+        "#[garde(length(min = 1, max = MAX_NAME))]",
+        "# [garde (length (min = 1 , max = crate :: models :: user :: MAX_NAME))]"
+    )]
+    #[case::range_expr(
+        "#[garde(range(max = MAX_NAME * 2 + (-MAX_NAME)))]",
+        "# [garde (range (max = crate :: models :: user :: MAX_NAME * 2 + (- crate :: models :: user :: MAX_NAME)))]"
+    )]
+    #[case::pattern_static(
+        "#[garde(pattern(EMAIL_RE))]",
+        "# [garde (pattern (crate :: models :: user :: EMAIL_RE))]"
+    )]
+    #[case::pattern_deref(
+        "#[garde(pattern(&*EMAIL_RE))]",
+        "# [garde (pattern (& * crate :: models :: user :: EMAIL_RE))]"
+    )]
+    #[case::contains_method(
+        "#[garde(contains(EMAIL_RE.to_string()), prefix(\"a\"), suffix(Ctx::x()))]",
+        "# [garde (contains (crate :: models :: user :: EMAIL_RE . to_string ()) , prefix (\"a\") , suffix (crate :: models :: user :: Ctx :: x ()))]"
+    )]
+    #[case::if_cond(
+        "#[garde(if(cond = self.n > MAX_NAME, length(max = MAX_NAME)))]",
+        "# [garde (if (cond = self . n > crate :: models :: user :: MAX_NAME , length (max = crate :: models :: user :: MAX_NAME)))]"
+    )]
+    #[case::custom_const_arg(
+        "#[garde(custom(make_check(MAX_NAME, Self::X, self)))]",
+        "# [garde (custom (crate :: util :: make_check (crate :: models :: user :: MAX_NAME , Self :: X , self)))]"
+    )]
+    #[case::bad_pattern_kept("#[garde(pattern(,))]", "# [garde (pattern (,))]")]
+    #[case::bad_list_kept("#[garde(length(min 1))]", "# [garde (length (min 1))]")]
+    #[case::literal_kept(
+        "#[garde(length(max = 5), dive, matches(other))]",
+        "# [garde (length (max = 5) , dive , matches (other))]"
+    )]
     fn reroots_custom_and_context(#[case] attr: &str, #[case] expected: &str) {
         let (_dir, _guard) = garde_crate();
         let attr = syn::parse_str::<syn::DeriveInput>(&format!("{attr} struct S;"))

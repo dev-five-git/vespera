@@ -99,14 +99,21 @@ fn with_current_crate_bucket<R>(f: impl FnOnce(&mut HashMap<String, StructMetada
 pub fn register_schema(name: String, metadata: StructMetadata) -> Result<(), ()> {
     with_current_crate_bucket(|bucket| {
         if let Some(existing) = bucket.get(&name) {
-            if existing.definition == metadata.definition
-                || (existing.source_identity.is_some()
-                    && existing.source_identity == metadata.source_identity)
-                || is_same_item_moved(
+            let same_identity = existing.source_identity.is_some()
+                && existing.source_identity == metadata.source_identity;
+            let same_definition = existing.definition == metadata.definition;
+            let moved = !same_identity
+                && is_same_item_moved(
                     existing.source_identity.as_deref(),
                     metadata.source_identity.as_deref(),
-                )
-            {
+                );
+            if same_definition || same_identity || moved {
+                // Two items of different modules with one definition: the
+                // storage keeps the last, `schema!` reads each by module.
+                if !same_identity && !moved && existing.source_identity.is_some() {
+                    variants::record(&name, existing);
+                    variants::record(&name, &metadata);
+                }
                 bucket.insert(name, metadata);
                 return Ok(());
             }
@@ -474,6 +481,7 @@ pub fn extract_field_defaults_from_path(
         if let Some(Some(fn_path)) = crate::parser::extract_default(&field.attrs)
             && let Some(value) =
                 default_fns::resolve_default_fn(&fn_path, &struct_name, line, file_path)
+                    .or_else(|| default_fns::std_type_default(&fn_path, &field.ty))
         {
             defaults.insert(strip_raw_prefix_owned(ident.to_string()), value);
         }
@@ -611,6 +619,7 @@ fn extract_default_functions_from_file(
 
 mod default_fns;
 mod serde_repr;
+pub mod variants;
 
 #[cfg(test)]
 #[path = "schema_impl/tests.rs"]
