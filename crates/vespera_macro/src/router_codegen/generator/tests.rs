@@ -202,8 +202,10 @@ fn test_generate_router_code_single_route(
     );
 
     // Check route method
+    // The routing function itself: a bare `contains(method)` also matched
+    // the handler names (`get_users`).
     assert!(
-        code.contains(expected_method),
+        code.contains(&format!("routing :: {expected_method} (")),
         "Code should contain method: {expected_method}, got: {code}"
     );
 
@@ -288,9 +290,9 @@ pub fn update_user() -> String {
     assert!(code.contains("update_user"));
 
     // Check methods
-    assert!(code.contains("get"));
-    assert!(code.contains("post"));
-    assert!(code.contains("put"));
+    assert!(code.contains("routing :: get ("));
+    assert!(code.contains("routing :: post ("));
+    assert!(code.contains("routing :: put ("));
 
     // Count route calls (quote! generates ". route (" with spaces)
     // Count occurrences of ". route (" pattern
@@ -346,8 +348,8 @@ pub fn create_users() -> String {
     assert!(code.contains("create_users"));
 
     // Check methods
-    assert!(code.contains("get"));
-    assert!(code.contains("post"));
+    assert!(code.contains("routing :: get ("));
+    assert!(code.contains("routing :: post ("));
 
     // Should have 2 routes (quote! generates ". route (" with spaces)
     let route_count = code.matches(". route (").count();
@@ -484,7 +486,8 @@ fn test_generate_router_code_with_redoc() {
     let code = result.to_string();
 
     assert!(code.contains("/redoc"));
-    assert!(code.contains("redoc"));
+    // The ReDoc page renderer, not just the `/redoc` URL.
+    assert!(code.contains("docs :: redoc_html"), "{code}");
     assert!(code.contains("__VESPERA_SPEC"));
     assert!(code.contains("OnceLock"));
 }
@@ -697,7 +700,14 @@ fn test_generate_router_code_with_redoc_and_merge() {
         code.contains("OnceLock"),
         "Should use OnceLock for merged redoc"
     );
-    assert!(code.contains("redoc"), "Should contain redoc");
+    assert!(code.contains("docs :: redoc_html"), "{code}");
+    // The ReDoc handler serves the merged spec.
+    assert_eq!(
+        code.matches("__vespera_merged_spec ()").count()
+            - code.matches("fn __vespera_merged_spec ()").count(),
+        1,
+        "{code}"
+    );
 }
 
 #[test]
@@ -717,13 +727,16 @@ fn test_generate_router_code_with_both_docs_and_merge() {
     );
     let code = result.to_string();
 
-    // Both docs should have merge code
-    // Count MERGED_SPEC occurrences - should appear in docs and redoc handlers
-    let merged_spec_count = code.matches("MERGED_SPEC").count();
-    assert!(
-        merged_spec_count >= 2,
-        "Should have at least 2 MERGED_SPEC for docs and redoc, got: {merged_spec_count}"
+    // Both the docs and the redoc handler serve the merged spec: two calls
+    // besides the helper's own definition (`MERGED_SPEC` appears only inside
+    // the helper, so counting it proved nothing about the handlers).
+    let merged_calls = code.matches("__vespera_merged_spec ()").count()
+        - code.matches("fn __vespera_merged_spec ()").count();
+    assert_eq!(
+        merged_calls, 2,
+        "docs and redoc must call the merged spec: {code}"
     );
+    assert!(code.contains("docs :: swagger_ui_html") && code.contains("docs :: redoc_html"));
     // __VESPERA_SPEC should appear exactly once (the const declaration)
     let vespera_spec_count = code.matches("const __VESPERA_SPEC").count();
     assert_eq!(

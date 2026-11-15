@@ -441,7 +441,7 @@ fn parse_header_values(input: syn::parse::ParseStream) -> syn::Result<Vec<Header
 
 fn parse_header_struct(input: syn::parse::ParseStream) -> syn::Result<HeaderParam> {
     let content;
-    syn::braced!(content in input);
+    let brace = syn::braced!(content in input);
 
     let mut name: Option<String> = None;
     let mut required = false;
@@ -465,7 +465,17 @@ fn parse_header_struct(input: syn::parse::ParseStream) -> syn::Result<HeaderPara
                         "duplicate header field `name`",
                     ));
                 }
-                name = Some(content.parse::<LitStr>()?.value());
+                let lit = content.parse::<LitStr>()?;
+                if !is_header_token(&lit.value()) {
+                    return Err(syn::Error::new(
+                        lit.span(),
+                        format!(
+                            "invalid header name {:?}: a header name is a non-empty HTTP token (letters, digits and !#$%&'*+-.^_`|~)",
+                            lit.value()
+                        ),
+                    ));
+                }
+                name = Some(lit.value());
             }
             "required" => {
                 if required_seen {
@@ -505,7 +515,7 @@ fn parse_header_struct(input: syn::parse::ParseStream) -> syn::Result<HeaderPara
 
     let name = name.ok_or_else(|| {
         syn::Error::new(
-            proc_macro2::Span::call_site(),
+            brace.span.join(),
             "#[route] headers entry missing required `name` field.",
         )
     })?;
@@ -515,6 +525,14 @@ fn parse_header_struct(input: syn::parse::ParseStream) -> syn::Result<HeaderPara
         required,
         description,
     })
+}
+
+/// Whether `name` is an RFC 9110 `token` (what a header field name is).
+fn is_header_token(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
 }
 
 #[cfg(test)]

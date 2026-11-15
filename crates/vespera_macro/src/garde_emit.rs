@@ -126,6 +126,10 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
     // the same resolution the request-view schema documents.
     let rename_all =
         crate::parser::extract_rename_all_for(&input.attrs, crate::parser::SerdeSide::Deserialize);
+    // A `#[serde(transparent)]` struct IS its one field on the wire: like a
+    // flattened field, its errors keep the parent's path (`""`, or
+    // `contact` — not `contact.value`).
+    let transparent = crate::parser::schema::extract_transparent(&input.attrs);
     let field_blocks: Vec<TokenStream> = per_field
         .iter()
         .filter_map(|(field, constraints)| {
@@ -148,7 +152,7 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
             });
             // A flattened field's keys sit at the parent's level on the
             // wire, so its errors keep the parent's path.
-            let flatten = crate::parser::schema::extract_flatten(&field.attrs);
+            let flatten = transparent || crate::parser::schema::extract_flatten(&field.attrs);
             emit_field_block(ident, (&wire_name, flatten), field, constraints)
         })
         .collect();
@@ -655,7 +659,9 @@ const fn integer_range(kind: &str) -> Option<(i128, u128)> {
 ///
 /// Integer fields get a range-checked, suffixed integer literal (a bound the
 /// type cannot hold is a compile error rather than a wrapping `as` cast);
-/// float fields keep the declared value; unknown types fall back to `as _`.
+/// float fields keep the declared value; unknown types (an alias) convert a
+/// fractional bound through `vespera::__validation::RangeBound`, which rounds
+/// inward for an integer target and keeps the value for a float one.
 #[cfg(feature = "validation")]
 fn numeric_some(
     value: Option<f64>,
@@ -675,9 +681,10 @@ fn numeric_some(
     }
     let Some(kind) = numeric_kind else {
         // Unknown numeric kind (a type alias, a newtype): an integer literal
-        // stays unsuffixed so the compiler types and range-checks it;
-        // otherwise last-resort `as _` and let the user see a compiler
-        // error pointing at their field type.
+        // stays unsuffixed so the compiler types and range-checks it; a
+        // fractional one goes through `RangeBound`, typed by the field (an
+        // `as _` cast truncated `minimum = 0.5` on `type Count = u32` to 0).
+        // A non-numeric field type is a compiler error at the field.
         if let Some(exact) = exact {
             let literal: TokenStream = exact
                 .to_string()
@@ -685,7 +692,13 @@ fn numeric_some(
                 .expect("an integer literal is a valid token stream");
             return Ok(quote! { ::std::option::Option::Some(#literal) });
         }
-        return Ok(quote! { ::std::option::Option::Some(#v as _) });
+        let convert = match bound {
+            Bound::Min => quote!(min),
+            Bound::Max => quote!(max),
+        };
+        return Ok(
+            quote! { ::std::option::Option::Some(<_ as ::vespera::__validation::RangeBound>::#convert(#v)) },
+        );
     };
     let ty_ident = syn::Ident::new(kind, Span::call_site());
     let Some((type_min, type_max)) = integer_range(kind) else {

@@ -43,6 +43,7 @@ fn test_generate_and_write_openapi_no_output() {
         tag_descriptions: None,
         merge: vec![],
         info: InfoArgs::default(),
+        literal_hash: None,
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -75,6 +76,7 @@ fn test_generate_and_write_openapi_docs_only() {
         tag_descriptions: None,
         merge: vec![],
         info: InfoArgs::default(),
+        literal_hash: None,
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -110,6 +112,7 @@ fn test_generate_and_write_openapi_redoc_only() {
         tag_descriptions: None,
         merge: vec![],
         info: InfoArgs::default(),
+        literal_hash: None,
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -142,6 +145,7 @@ fn test_generate_and_write_openapi_both_docs() {
         tag_descriptions: None,
         merge: vec![],
         info: InfoArgs::default(),
+        literal_hash: None,
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -198,6 +202,7 @@ fn processed_with_spec_url() -> ProcessedVesperaInput {
         tag_descriptions: None,
         merge: vec![],
         info: InfoArgs::default(),
+        literal_hash: None,
     }
 }
 
@@ -221,6 +226,7 @@ fn test_generate_and_write_openapi_file_output() {
         tag_descriptions: None,
         merge: vec![],
         info: InfoArgs::default(),
+        literal_hash: None,
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -260,6 +266,7 @@ fn test_generate_and_write_openapi_creates_directories() {
         tag_descriptions: None,
         merge: vec![],
         info: InfoArgs::default(),
+        literal_hash: None,
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -294,6 +301,7 @@ fn test_generate_and_write_openapi_with_merge_no_manifest_dir() {
         tag_descriptions: None,
         merge: vec![syn::parse_quote!(app::TestApp)], // Has merge but no valid manifest dir
         info: InfoArgs::default(),
+        literal_hash: None,
     };
     let metadata = CollectedMetadata::new();
     // This should still work - merge logic is skipped when CARGO_MANIFEST_DIR lookup fails
@@ -341,6 +349,7 @@ fn test_generate_and_write_openapi_with_merge_and_valid_spec() {
         tag_descriptions: None,
         merge: vec![syn::parse_quote!(child::ChildApp)],
         info: InfoArgs::default(),
+        literal_hash: None,
     };
     let metadata = CollectedMetadata::new();
 
@@ -476,6 +485,7 @@ fn test_generate_and_write_openapi_file_write_error() {
         tag_descriptions: None,
         merge: vec![],
         info: InfoArgs::default(),
+        literal_hash: None,
     };
     let metadata = CollectedMetadata::new();
 
@@ -591,6 +601,7 @@ fn merge_input(path: syn::Path) -> ProcessedVesperaInput {
         tag_descriptions: None,
         merge: vec![path],
         info: InfoArgs::default(),
+        literal_hash: None,
     }
 }
 

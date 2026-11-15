@@ -35,6 +35,21 @@ fn no_runtime_tick() -> JobFuture {
     })
 }
 
+static CRATE_FIRST_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CRATE_SECOND_TICKS: AtomicUsize = AtomicUsize::new(0);
+
+fn crate_first_tick() -> JobFuture {
+    Box::pin(async {
+        CRATE_FIRST_TICKS.fetch_add(1, Ordering::SeqCst);
+    })
+}
+
+fn crate_second_tick() -> JobFuture {
+    Box::pin(async {
+        CRATE_SECOND_TICKS.fetch_add(1, Ordering::SeqCst);
+    })
+}
+
 fn once_first_tick() -> JobFuture {
     Box::pin(async {
         ONCE_FIRST_TICKS.fetch_add(1, Ordering::SeqCst);
@@ -409,6 +424,38 @@ fn start_once_schedules_a_guard_only_once() {
     assert!(wait_for(&ONCE_FIRST_TICKS, 1), "first job never fired");
     std::thread::sleep(Duration::from_millis(1200));
     assert_eq!(ONCE_SECOND_TICKS.load(Ordering::SeqCst), 0);
+}
+
+/// Two `vespera!` invocations of one crate (two guards) hand over the same
+/// crate-wide job: it is scheduled by the first only.
+#[test]
+fn start_once_for_crate_starts_each_job_of_a_crate_once() {
+    static FIRST: Once = Once::new();
+    static SECOND: Once = Once::new();
+    let job = |run| CronJob::new("* * * * * *", run).with_name("jobs::__dedup_probe");
+    start_once_for_crate(&FIRST, "dedup_crate::app", [job(crate_first_tick)]);
+    start_once_for_crate(&SECOND, "dedup_crate", [job(crate_second_tick)]);
+    assert!(wait_for(&CRATE_FIRST_TICKS, 1), "first job never fired");
+    std::thread::sleep(Duration::from_millis(1200));
+    assert_eq!(CRATE_SECOND_TICKS.load(Ordering::SeqCst), 0);
+}
+
+/// Jobs are claimed per (crate, name): another crate's same-named job and a
+/// differently named job of the same crate are both new.
+#[test]
+fn claim_jobs_dedups_per_crate_and_name() {
+    let started = Mutex::new(BTreeSet::new());
+    let job = |name| CronJob::new("* * * * * *", tick).with_name(name);
+    let names = |jobs: Vec<CronJob>| jobs.iter().map(|job| job.name).collect::<Vec<_>>();
+    assert_eq!(
+        names(claim_jobs(&started, "a", vec![job("x"), job("x")])),
+        ["x"]
+    );
+    assert_eq!(
+        names(claim_jobs(&started, "a", vec![job("x"), job("y")])),
+        ["y"]
+    );
+    assert_eq!(names(claim_jobs(&started, "b", vec![job("x")])), ["x"]);
 }
 
 /// The wall clock is re-checked after every sleep: a backwards step

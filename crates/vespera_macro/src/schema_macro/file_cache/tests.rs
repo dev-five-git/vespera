@@ -154,8 +154,8 @@ fn test_missing_file_content_is_negative_cached_within_epoch() {
 ///
 /// In a long-lived rust-analyzer proc-macro server the same thread handles
 /// multiple successive macro invocations.  Each entry point (`derive_schema`,
-/// `schema_type!`, `schema!`, `export_app!`, `vespera!`) calls `bump_epoch()`
-/// as its first statement.  This test simulates two successive invocations
+/// `schema_type!`, `schema!`, `export_app!`, `vespera!`, `#[route]`,
+/// `#[cron]`) calls `bump_epoch()` before its first file-cache read.  This test simulates two successive invocations
 /// from *different* entry points and confirms that:
 ///
 /// 1. Within invocation A (epoch N): path checked once, second access free.
@@ -173,6 +173,9 @@ fn test_missing_file_content_is_negative_cached_within_epoch() {
 ///   - `schema_type!`   → reaches file_cache via generate_schema_type_code
 ///   - `export_app!`    → reaches file_cache via collect_metadata
 ///   - `vespera!`       → reaches file_cache via collect_metadata
+///   - `#[route]`       → reaches file_cache via the Path-extractor check,
+///     the return-alias expansion and inline_module_of (route_impl.rs)
+///   - `#[cron]`        → reaches file_cache via inline_module_of (cron_impl.rs)
 #[test]
 fn test_epoch_cross_entry_invalidation() {
     let temp_dir = TempDir::new().unwrap();

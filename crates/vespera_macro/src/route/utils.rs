@@ -188,6 +188,18 @@ fn extract_typed_responses(array: &syn::ExprArray) -> Option<Vec<(u16, String)>>
     (!responses.is_empty()).then_some(responses)
 }
 
+/// The `responses = [(404, errors::NotFound)]` type as written, without
+/// generic arguments (`errors::NotFound`): the module qualifier lets the
+/// OpenAPI generator tell same-named renamed types apart.
+pub fn response_type_path(path: &syn::Path) -> Option<String> {
+    let segments: Vec<String> = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    (!segments.is_empty()).then(|| segments.join("::"))
+}
+
 fn extract_typed_response(elem: &syn::Expr) -> Option<(u16, String)> {
     let syn::Expr::Tuple(tuple) = elem else {
         return None;
@@ -205,7 +217,7 @@ fn extract_typed_response(elem: &syn::Expr) -> Option<(u16, String)> {
     })?;
     let schema_name = tuple.elems.get(1).and_then(|schema| {
         if let syn::Expr::Path(path) = schema {
-            path.path.segments.last().map(|seg| seg.ident.to_string())
+            crate::route::response_type_path(&path.path)
         } else {
             None
         }
@@ -678,7 +690,7 @@ mod tests {
     #[case::non_path_schema(quote::quote!((404, "ErrorBody")), None)]
     #[case::qualified_schema(
         quote::quote!((404, crate::errors::NotFound)),
-        Some((404, "NotFound".to_string()))
+        Some((404, "crate::errors::NotFound".to_string()))
     )]
     fn typed_response_extracts_only_valid_status_and_schema_pairs(
         #[case] source: proc_macro2::TokenStream,
@@ -701,7 +713,7 @@ mod tests {
 
         assert_eq!(
             extract_typed_responses(&mixed),
-            Some(vec![(422, "ValidationError".to_string())])
+            Some(vec![(422, "crate::errors::ValidationError".to_string())])
         );
         assert_eq!(extract_typed_responses(&invalid), None);
     }

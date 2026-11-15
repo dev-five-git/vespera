@@ -497,11 +497,11 @@ fn only_maximum_set_emits_none_for_min_bound() {
 // ── numeric_some with unknown numeric_kind (non-primitive field) ─
 
 #[test]
-fn minimum_on_non_primitive_field_falls_back_to_as_wildcard() {
+fn minimum_on_non_primitive_field_falls_back_to_range_bound() {
     // Field type is a user-defined `Money` newtype — peel_option
-    // returns None and rust_numeric_kind returns None, forcing
-    // numeric_some down the `as _` fallback branch (an integer literal
-    // stays an unsuffixed literal the compiler types and range-checks).
+    // returns None and rust_numeric_kind returns None.  A fractional
+    // bound goes through `RangeBound`, which rounds it toward the valid
+    // range for an integer alias instead of truncating it with `as _`.
     let s: DeriveInput = parse_quote! {
         struct Order {
             #[schema(minimum = 0.5)]
@@ -511,8 +511,8 @@ fn minimum_on_non_primitive_field_falls_back_to_as_wildcard() {
     let out = emit_to_string(s);
     assert!(out.contains("range :: apply"));
     assert!(
-        out.contains("as _"),
-        "non-primitive field should emit `as _` fallback, got: {out}"
+        out.contains("RangeBound > :: min (0.5f64)") && !out.contains("as _"),
+        "non-primitive field should emit the `RangeBound` fallback, got: {out}"
     );
 }
 

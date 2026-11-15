@@ -26,8 +26,10 @@
 //!   up to [`DEFAULT_SHUTDOWN_GRACE`] once the server has drained.
 //!
 //! The `vespera!`-generated router factory starts its jobs through
-//! [`start_once`], so calling the factory repeatedly (tests, `jni_app!`,
-//! several `serve` calls) never stacks duplicate schedulers.  Scheduling
+//! [`start_once_for_crate`], so calling the factory repeatedly (tests,
+//! `jni_app!`, several `serve` calls) never stacks duplicate schedulers, and
+//! neither do several `vespera!` invocations of one crate (every invocation
+//! hands over all of the crate's jobs; each job starts once per process).  Scheduling
 //! works with or without an ambient Tokio runtime: inside one the jobs are
 //! spawned onto it.  In a JNI library (the factory runs inside `JNI_OnLoad`,
 //! with no runtime — likewise `vespera_init` from `ffi_app!`) they are handed
@@ -40,10 +42,11 @@
 
 use std::{
     any::Any,
+    collections::BTreeSet,
     future::{Future, poll_fn},
     pin::{Pin, pin},
     sync::{
-        Once,
+        Mutex, Once, PoisonError,
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::RecvTimeoutError,
     },
@@ -149,6 +152,42 @@ impl CronJob {
 /// which uses a dedicated `vespera-cron` thread).
 pub fn start_once(guard: &'static Once, jobs: impl IntoIterator<Item = CronJob>) {
     guard.call_once(|| start(jobs));
+}
+
+/// [`start_once`] for the jobs of one crate, each job at most once per
+/// process.
+///
+/// Every `vespera!` invocation passes all of its crate's `#[cron]` jobs, so a
+/// crate building two routers (`create_app` + `admin_app`) would otherwise
+/// schedule every job twice.  A job is identified by its crate (the first
+/// segment of `module_path`, the `module_path!()` of the `vespera!` call
+/// site) plus its [`CronJob::with_name`] name (`module::function`); a job
+/// already started by another invocation of the same crate is skipped.
+#[doc(hidden)]
+pub fn start_once_for_crate(
+    guard: &'static Once,
+    module_path: &'static str,
+    jobs: impl IntoIterator<Item = CronJob>,
+) {
+    guard.call_once(|| {
+        let krate = module_path.split("::").next().unwrap_or(module_path);
+        start_jobs(claim_jobs(&STARTED_JOBS, krate, jobs.into_iter().collect()));
+    });
+}
+
+/// `(crate, job name)` of every job [`start_once_for_crate`] started.
+static STARTED_JOBS: Mutex<BTreeSet<(&'static str, &'static str)>> = Mutex::new(BTreeSet::new());
+
+/// The `jobs` of `krate` not yet recorded in `started`, recording them.
+fn claim_jobs(
+    started: &Mutex<BTreeSet<(&'static str, &'static str)>>,
+    krate: &'static str,
+    jobs: Vec<CronJob>,
+) -> Vec<CronJob> {
+    let mut started = started.lock().unwrap_or_else(PoisonError::into_inner);
+    jobs.into_iter()
+        .filter(|job| started.insert((krate, job.name)))
+        .collect()
 }
 
 /// Spawn one scheduling task per job.

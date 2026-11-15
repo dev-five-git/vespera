@@ -44,11 +44,28 @@ fn skipped_fields_are_not_validated_and_flatten_keeps_the_path() {
     );
 }
 
+/// A `#[serde(transparent)]` struct's field is the struct itself on the
+/// wire: its rules keep the parent's path.
+#[test]
+fn transparent_struct_field_keeps_the_parent_path() {
+    let out =
+        emit("#[serde(transparent)] struct Email { #[schema(format = \"email\")] value: String }");
+    assert_eq!(out.matches("nested_path").count(), 0, "{out}");
+    assert!(!out.contains("\"value\""), "{out}");
+}
+
 /// The rendered `(min, max)` range bounds of one field.
 #[rstest]
 #[case::nested_option("#[schema(minimum = 0.5)] f: Option<Option<i32>>", "Some (1i32)")]
 #[case::alias_exact("#[schema(maximum = 3)] f: Count", "Some (3)")]
-#[case::alias_fraction("#[schema(maximum = 2.5)] f: Count", "Some (2.5f64 as _)")]
+#[case::alias_fraction(
+    "#[schema(maximum = 2.5)] f: Count",
+    "Some (< _ as :: vespera :: __validation :: RangeBound > :: max (2.5f64))"
+)]
+#[case::alias_fraction_min(
+    "#[schema(minimum = 0.5)] f: Count",
+    "Some (< _ as :: vespera :: __validation :: RangeBound > :: min (0.5f64))"
+)]
 #[case::past_2_pow_53(
     "#[schema(minimum = 9007199254740993)] f: i64",
     "Some (9007199254740992i64)"

@@ -13,7 +13,7 @@ use super::defaults::generate_sea_orm_default_attrs;
 use super::field_attrs::carried_field_attrs;
 use super::file_cache;
 use super::file_lookup::{
-    find_struct_from_path_detailed, requested_module_path, storage_module_path,
+    find_struct_from_path_detailed, reexported_module, requested_module_path, storage_module_path,
 };
 use super::from_model::generate_from_model_with_relations;
 use super::inline_types::{
@@ -87,17 +87,21 @@ pub fn generate_schema_type_code(
     // fallback when the file lookup cannot find the struct either.
     let storage_hit = super::storage_entry(schema_storage, &source_type_name);
     let storage_module = storage_hit.and_then(storage_module_path);
-    let storage_trusted = match (requested_module_path(&input.source_type), &storage_module) {
-        (Some(requested), Some(defined_in)) => &requested == defined_in,
+    // A re-export (`pub use user::User;` in `models`) names the same item.
+    let requested = requested_module_path(&input.source_type);
+    let storage_trusted = match (&requested, &storage_module) {
+        (Some(requested), Some(defined_in)) => {
+            requested == defined_in
+                || reexported_module(requested, &source_type_name).as_ref() == Some(defined_in)
+        }
         _ => true,
     };
     let struct_def = match storage_hit {
         Some(found) if storage_trusted => {
-            // A bare storage hit carries no module path of its own: take the
-            // defining file's so `super::`-relative relation paths resolve.
-            if source_module_path.is_empty()
-                && let Some(module) = storage_module
-            {
+            // The defining file's module (else the absolute requested one),
+            // never the path as written: `models::user::User` / `super::User`
+            // would re-root every field type and serde path against it.
+            if let Some(module) = storage_module.or(requested) {
                 source_module_path = module;
             }
             found

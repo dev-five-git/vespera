@@ -137,16 +137,18 @@ pub(super) fn build_path_items(
             route_meta.function_name.as_str(),
         );
         let legacy_storage_key = (None, route_meta.function_name.as_str());
-        if let Some(fn_sig_str) = storage_fn_sigs
-            .get(&storage_key)
-            .copied()
-            .flatten()
-            .or_else(|| storage_fn_sigs.get(&legacy_storage_key).copied().flatten())
-        {
+        // The route's own file (stored, then parsed) wins over a stored
+        // entry without a file path: that `(None, name)` entry may be a
+        // same-named handler of another file (`users::list` vs `posts::list`).
+        let own_ast = storage_key
+            .0
+            .as_ref()
+            .and_then(|norm_key| fn_index.get(norm_key))
+            .and_then(|fns| fns.get(&route_meta.function_name));
+        if let Some(fn_sig_str) = storage_fn_sigs.get(&storage_key).copied().flatten() {
             parallel_jobs.push((idx, route_meta, fn_sig_str));
-        } else if let Some(norm_key) = storage_key.0
-            && let Some(fns) = fn_index.get(&norm_key)
-            && let Some(fn_item) = fns.get(&route_meta.function_name)
+        } else if let Some(fn_item) = own_ast
+            && let Some(norm_key) = storage_key.0
         {
             ast_jobs.push((
                 idx,
@@ -154,6 +156,9 @@ pub(super) fn build_path_items(
                 &fn_item.sig,
                 file_by_key.get(&norm_key).copied(),
             ));
+        } else if let Some(fn_sig_str) = storage_fn_sigs.get(&legacy_storage_key).copied().flatten()
+        {
+            parallel_jobs.push((idx, route_meta, fn_sig_str));
         }
     }
 

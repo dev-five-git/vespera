@@ -25,14 +25,20 @@ use super::{cache::hash_invocation_settings, path_utils::current_crate_tag};
 /// route cache (`routes-<tag>.cache`) and spec sidecars
 /// (`vespera_spec-<tag>.json`, `openapi_pretty-<tag>.json`).
 ///
-/// Depends only on the macro input — never on disk contents (merged child
-/// specs) or the environment (`CARGO_PKG_DESCRIPTION`), which the cache key
-/// already covers — so a file keeps its name across builds as long as the
-/// invocation itself is unchanged.
+/// Depends only on the macro arguments as written
+/// ([`ProcessedVesperaInput::literal_hash`]) — never on disk contents (merged
+/// child specs) or the environment (`CARGO_PKG_VERSION`, `VESPERA_*`,
+/// `CARGO_PKG_DESCRIPTION`), which the cache key already covers — so a file
+/// keeps its name across builds (and crate version bumps, whose superseded
+/// files were never pruned) as long as the invocation itself is unchanged.
+/// An input built in code (no literal hash) hashes its settings instead.
 pub(super) fn invocation_tag(processed: &ProcessedVesperaInput) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     "vespera:invocation:v1".hash(&mut hasher);
-    hash_invocation_settings(processed, &mut hasher);
+    match processed.literal_hash {
+        Some(literal) => literal.hash(&mut hasher),
+        None => hash_invocation_settings(processed, &mut hasher),
+    }
     format!("{}-{:016x}", current_crate_tag(), hasher.finish())
 }
 
@@ -48,6 +54,26 @@ mod tests {
             folder_name: "routes".to_string(),
             ..ProcessedVesperaInput::default()
         }
+    }
+
+    /// The tag follows the arguments as written: a version / title filled
+    /// in from the environment (`CARGO_PKG_VERSION` bumps) keeps the tag.
+    #[test]
+    fn tag_ignores_environment_fallbacks() {
+        let tag = |tokens: proc_macro2::TokenStream| {
+            let input: crate::router_codegen::AutoRouterInput = syn::parse2(tokens).unwrap();
+            invocation_tag(&crate::router_codegen::process_vespera_input(input))
+        };
+        let v1 = {
+            let _guard = test_env::set_var("CARGO_PKG_VERSION", "1.0.0");
+            tag(quote::quote!(dir = "routes"))
+        };
+        let v2 = {
+            let _guard = test_env::set_var("CARGO_PKG_VERSION", "2.0.0");
+            tag(quote::quote!(dir = "routes"))
+        };
+        assert_eq!(v1, v2);
+        assert_ne!(v1, tag(quote::quote!(dir = "admin")));
     }
 
     #[test]

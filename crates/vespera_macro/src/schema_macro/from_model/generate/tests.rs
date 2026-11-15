@@ -211,7 +211,7 @@ const NOTIFICATION_BAD_FROM: &str = "pub struct Model {\n    pub id: i32,\n    #
 #[case::to_column_with_space(
     "author", &[],
     with_to(rel("author", "BelongsTo", quote! { crate::models::user::Schema }, false), "author_id", "author code"),
-    "schema_type!: relation field `author` has `#[sea_orm(to = \"Author code\")]`, but `Author code` is not a valid Rust identifier"
+    "schema_type!: relation field `author` has `#[sea_orm(to = \"author code\")]`, but `author code` is not a valid Rust identifier"
 )]
 fn malformed_sea_orm_ident_is_an_error(
     #[case] field: &'static str,
@@ -462,4 +462,52 @@ fn generate_from_model_scenario_snapshot(
         snapshot_name,
         run_scenario(models, new_type, source_type, rows, &relations, module)
     );
+}
+
+/// LOW-4: the call into a target `Schema` follows the `schema_type!` that
+/// generates it, not the target `Model`'s relations: an `omit`ted FK
+/// relation leaves only `From`, a `pick`ed HasMany only `from_model`, and
+/// `add` neither (a targeted error instead of E0599 / E0277).
+#[rstest]
+#[case::fk_relation_omitted(
+    "pub struct Model {\n    pub id: i32,\n    pub profile: HasOne<super::profile::Entity>,\n}\nvespera::schema_type!(Schema from Model, omit = [\"profile\"]);",
+    "< crate :: models :: user :: Schema as From < _ >> :: from (r)"
+)]
+#[case::has_many_picked(
+    "pub struct Model {\n    pub id: i32,\n    pub memos: HasMany<super::memo::Entity>,\n}\nvespera::schema_type!(Schema from Model, pick = [\"id\", \"memos\"]);",
+    "crate :: models :: user :: Schema :: from_model ("
+)]
+#[case::other_schema_name_falls_back(
+    "pub struct Model {\n    pub id: i32,\n    pub memos: HasMany<super::memo::Entity>,\n}\nvespera::schema_type!(Other from Model, pick = [\"id\", \"memos\"]);",
+    "< crate :: models :: user :: Schema as From < _ >> :: from (r)"
+)]
+#[case::added_field(
+    "pub struct Model {\n    pub id: i32,\n}\nschema_type!(Schema from Model, add = [(\"extra\": i32)]);",
+    "compile_error ! (\"schema_type!: relation field `author` converts its row into `crate::models::user::Schema`, but the `schema_type!` generating it uses `add` or `multipart`"
+)]
+fn target_schema_call_follows_its_schema_type(#[case] user: &str, #[case] expected: &str) {
+    let tokens = try_scenario(
+        &[("user.rs", user)],
+        "MemoSchema",
+        "crate::models::memo::Model",
+        &[
+            ("id", "id", false, false),
+            ("author", "author", false, true),
+        ],
+        &[with_enum(
+            rel(
+                "author",
+                "BelongsTo",
+                quote! { crate::models::user::Schema },
+                true,
+            ),
+            None,
+            Some("author_id"),
+            None,
+        )],
+        &["crate", "models", "memo"],
+    )
+    .unwrap();
+    let rendered = tokens.to_string();
+    assert!(rendered.contains(expected), "{rendered}");
 }

@@ -25,7 +25,7 @@ pub(super) fn current_crate_tag() -> String {
 /// Suffix that keeps the build files of one crate's concurrently compiled
 /// variants apart: `.bin` for a binary (cargo sets `CARGO_BIN_NAME` — a
 /// binary named like its package has the library's crate name), then
-/// [`build_variant`].
+/// [`variant_of`] and [`build_discriminator`].
 ///
 /// The library, its `cargo test` harness build and rust-analyzer all expand
 /// the same `vespera!` with possibly different `#[cfg(test)]` items; sharing
@@ -37,13 +37,53 @@ pub(super) fn target_variant() -> String {
     } else {
         ""
     };
+    let args = crate::env_access::compiler_args();
     format!(
-        "{bin}{}",
-        variant_of(
-            &crate::env_access::compiler_args(),
-            std::env::current_exe().ok().as_deref()
-        )
+        "{bin}{}{}",
+        variant_of(&args, std::env::current_exe().ok().as_deref()),
+        build_discriminator(&args)
     )
+}
+
+/// `.<profile>` for a non-`debug` build profile (read off rustc's
+/// `--out-dir <target>/[<triple>/]<profile>/{deps,examples}`), then
+/// `.<8 hex>` of the enabled `--cfg feature="…"` set: alternating
+/// `cargo build` / `cargo build --release` (or feature sets) otherwise shared
+/// one route cache (never hitting) and one sidecar prune stem (each build
+/// pruning the other's `include_str!` target).  `""` outside cargo.
+fn build_discriminator(args: &[String]) -> String {
+    use std::hash::{Hash, Hasher};
+    let profile = out_dir_arg(args)
+        .map(Path::new)
+        .filter(|out_dir| {
+            out_dir
+                .file_name()
+                .is_some_and(|kind| kind == "deps" || kind == "examples")
+        })
+        .and_then(|out_dir| out_dir.parent()?.file_name())
+        .map(|profile| profile.to_string_lossy().into_owned())
+        .filter(|profile| profile != "debug")
+        .map_or_else(String::new, |profile| format!(".{profile}"));
+    let mut features: Vec<&str> = args
+        .windows(2)
+        .filter(|pair| pair[0] == "--cfg" && pair[1].starts_with("feature="))
+        .map(|pair| pair[1].as_str())
+        .collect();
+    if features.is_empty() {
+        return profile;
+    }
+    features.sort_unstable();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    features.hash(&mut hasher);
+    format!("{profile}.{:08x}", hasher.finish() & 0xffff_ffff)
+}
+
+/// The value of rustc's `--out-dir <dir>` / `--out-dir=<dir>` (or
+/// rustdoc's `-o <dir>`).
+fn out_dir_arg(args: &[String]) -> Option<&str> {
+    args.windows(2)
+        .find_map(|pair| matches!(pair[0].as_str(), "--out-dir" | "-o").then(|| pair[1].as_str()))
+        .or_else(|| args.iter().find_map(|arg| arg.strip_prefix("--out-dir=")))
 }
 
 /// `.ide` inside rust-analyzer's proc-macro server (`exe`), `.test` for a
@@ -145,20 +185,20 @@ pub fn find_target_dir(manifest_path: &Path) -> PathBuf {
 
 /// `<target>` from an absolute rustc `--out-dir <target>/[<triple>/]<profile>/{deps,examples}`
 /// (with a `--target` triple: `<target>/<triple>`, consistently for every
-/// crate of that build).  `None` for any other output directory.
+/// crate of that build), or rustdoc's `-o` / `--out-dir <target>/[<triple>/]doc`
+/// (`cargo doc`: the dependencies it documents against are built into the
+/// same `<target>`).  `None` for any other output directory.
 fn compiler_target_dir(args: &[String]) -> Option<PathBuf> {
-    let out_dir = args
-        .windows(2)
-        .find_map(|pair| (pair[0] == "--out-dir").then(|| pair[1].as_str()))
-        .or_else(|| args.iter().find_map(|arg| arg.strip_prefix("--out-dir=")))?;
-    let out_dir = Path::new(out_dir);
+    let out_dir = Path::new(out_dir_arg(args)?);
     let kind = out_dir.file_name()?;
-    if kind != "deps" && kind != "examples" {
-        return None;
-    }
-    out_dir
-        .parent()
-        .and_then(Path::parent)
+    let target = if kind == "doc" {
+        out_dir.parent()
+    } else if kind == "deps" || kind == "examples" {
+        out_dir.parent().and_then(Path::parent)
+    } else {
+        None
+    };
+    target
         .filter(|target| target.is_absolute())
         .map(Path::to_path_buf)
 }
@@ -505,6 +545,47 @@ mod tests {
         assert_eq!(current_crate_tag(), expected);
     }
 
+    /// Release builds and feature sets get their own build files; a debug
+    /// build without features keeps the plain tag.
+    #[rstest::rstest]
+    #[case::outside_cargo(&[], "")]
+    #[case::debug(&["--out-dir", "/t/debug/deps"], "")]
+    #[case::release(&["--out-dir=/t/release/deps"], ".release")]
+    #[case::cross_release(&["--out-dir", "/t/x86_64-unknown-linux-gnu/release/examples"], ".release")]
+    #[case::rustdoc(&["-o", "/t/doc"], "")]
+    #[case::shallow(&["--out-dir", "deps"], "")]
+    fn build_discriminator_separates_profiles(#[case] args: &[&str], #[case] expected: &str) {
+        let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+        assert_eq!(build_discriminator(&args), expected);
+    }
+
+    #[test]
+    fn build_discriminator_hashes_the_feature_set() {
+        let args =
+            |list: &[&str]| -> Vec<String> { list.iter().map(|arg| (*arg).to_owned()).collect() };
+        let ab = build_discriminator(&args(&["--cfg", "feature=\"a\"", "--cfg", "feature=\"b\""]));
+        let ba = build_discriminator(&args(&[
+            "--cfg",
+            "feature=\"b\"",
+            "--cfg",
+            "feature=\"a\"",
+            "--cfg",
+            "unix",
+        ]));
+        let a = build_discriminator(&args(&[
+            "--out-dir",
+            "/t/release/deps",
+            "--cfg",
+            "feature=\"a\"",
+        ]));
+        assert_eq!(ab, ba, "order and non-feature cfgs do not matter");
+        assert_eq!(ab.len(), 9, "{ab}");
+        assert!(
+            a.starts_with(".release.") && a != format!(".release{ab}"),
+            "{a}"
+        );
+    }
+
     #[rstest::rstest]
     #[case::plain_rustc(&["rustc"], Some("rustc"), "")]
     #[case::test_harness(&["rustc", "--test"], Some("rustc"), ".test")]
@@ -529,7 +610,10 @@ mod tests {
     #[case::deps(&["--out-dir", "{t}/debug/deps"], Some("{t}"))]
     #[case::cross_target(&["--out-dir", "{t}/x86_64-unknown-linux-gnu/release/deps"], Some("{t}/x86_64-unknown-linux-gnu"))]
     #[case::examples(&["--out-dir={t}/debug/examples"], Some("{t}"))]
-    #[case::doc_output(&["--out-dir", "{t}/doc"], None)]
+    #[case::rustdoc_output(&["-o", "{t}/doc"], Some("{t}"))]
+    #[case::rustdoc_cross_target(&["--out-dir", "{t}/x86_64-unknown-linux-gnu/doc"], Some("{t}/x86_64-unknown-linux-gnu"))]
+    #[case::rustc_output_file(&["-o", "{t}/debug/deps/app"], None)]
+    #[case::relative_doc(&["-o", "target/doc"], None)]
     #[case::relative(&["--out-dir", "target/debug/deps"], None)]
     #[case::shallow(&["--out-dir", "/deps"], None)]
     #[case::missing_value(&["--out-dir"], None)]

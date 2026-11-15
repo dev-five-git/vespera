@@ -232,7 +232,7 @@ fn extract_typed_responses(arr: &syn::ExprArray) -> Option<Vec<(u16, String)>> {
             })?;
             let schema_name = tuple.elems.get(1).and_then(|schema| {
                 if let syn::Expr::Path(path) = schema {
-                    path.path.segments.last().map(|seg| seg.ident.to_string())
+                    crate::route::response_type_path(&path.path)
                 } else {
                     None
                 }
@@ -257,7 +257,6 @@ fn stored_signature(sig: &syn::Signature, source_file: Option<&std::path::Path>)
     let mut sig = sig.clone();
     if let Some(file) = source_file.filter(|_| crate::parser::needs_alias_expansion(&sig)) {
         use crate::schema_macro::file_cache;
-        file_cache::bump_epoch();
         let same_file = file_cache::get_parsed_file(file);
         let src_dir =
             file_cache::get_manifest_dir().map(|dir| std::path::PathBuf::from(dir).join("src"));
@@ -316,6 +315,10 @@ pub fn process_route_attribute(
     item: proc_macro2::TokenStream,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let route_args = syn::parse2::<args::RouteArgs>(attr)?;
+    // The Path-extractor check, the alias expansion and `inline_module_of`
+    // read source files through the file cache: a fresh epoch re-checks
+    // their mtimes (rust-analyzer's long-lived proc-macro server).
+    crate::schema_macro::file_cache::bump_epoch();
     let item_fn: RouteFnHead = syn::parse2(item.clone()).map_err(|e| syn::Error::new(e.span(), "#[route] attribute: can only be applied to functions, not other items. Move or remove the attribute."))?;
     validate_route_fn(&item_fn)?;
     let source_file = proc_macro2::Span::call_site().local_file();
@@ -793,6 +796,21 @@ mod tests {
         assert_eq!(scopes, [Some(String::new()), Some("v2".to_string())]);
     }
 
+    /// `#[route]` reads files through the file cache (Path-extractor check,
+    /// `inline_module_of`), so every invocation starts a fresh epoch.
+    #[test]
+    fn test_route_attribute_bumps_the_file_cache_epoch() {
+        let before = crate::schema_macro::file_cache::current_epoch();
+        process_route_attribute(
+            quote!(get),
+            quote!(
+                pub async fn epoch_probe() {}
+            ),
+        )
+        .unwrap();
+        assert_ne!(crate::schema_macro::file_cache::current_epoch(), before);
+    }
+
     /// `#[route]` records the handler's inline-module path from the source.
     #[test]
     fn test_route_attribute_records_inline_module() {
@@ -891,7 +909,7 @@ mod tests {
     #[case::non_path_schema(quote!([(404, "ErrorBody")]), None)]
     #[case::qualified_schema(
         quote!([(404, crate::errors::NotFound)]),
-        Some(vec![(404, "NotFound".to_string())])
+        Some(vec![(404, "crate::errors::NotFound".to_string())])
     )]
     fn typed_response_extractor_accepts_only_status_path_tuples(
         #[case] source: proc_macro2::TokenStream,

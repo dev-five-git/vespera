@@ -148,7 +148,7 @@ impl RouteConflict {
 }
 
 /// Every path one router serves, keyed both exactly and by shape.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct RouteClaims {
     /// `(METHOD, OpenAPI path template)` → owner.
     exact: HashMap<(String, String), String>,

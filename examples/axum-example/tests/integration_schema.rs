@@ -346,8 +346,10 @@ async fn test_memo_create_with_picked_fields() {
         result.get("id").is_none(),
         "id should not be in CreateMemoRequest"
     );
+    // The DTO serializes camelCase (`schema_type!`'s default), so an
+    // un-omitted field would appear as `createdAt`.
     assert!(
-        result.get("created_at").is_none(),
+        result.get("createdAt").is_none() && result.get("created_at").is_none(),
         "created_at should not be in CreateMemoRequest"
     );
 }

@@ -102,6 +102,60 @@ fn keyword_and_gated_routes() {
     insta::assert_snapshot!("router_keyword_and_gated_routes", pretty(&metadata));
 }
 
+/// A gated route on an ungated handler's or a documentation route's path is
+/// a `compile_error!` under its own `#[cfg]` (axum panics on the overlap
+/// whenever it is compiled in); a non-overlapping gated route is mounted.
+#[rstest]
+#[case::handler(
+    "/x",
+    "/x",
+    None,
+    "duplicate route: `GET /x` is defined by both `routes::users::list` and `routes::gated::x`"
+)]
+#[case::docs_url(
+    "/x",
+    "/docs",
+    Some("/docs"),
+    "duplicate route: `GET /docs` is defined by both `docs_url` and `routes::gated::x`"
+)]
+#[case::param_names(
+    "/x/{id}",
+    "/x/{key}",
+    None,
+    "conflicting route parameters: `/x/{key}`"
+)]
+#[case::no_overlap("/x", "/y", Some("/docs"), "")]
+fn gated_route_overlaps_are_gated_compile_errors(
+    #[case] ungated_path: &str,
+    #[case] gated_path: &str,
+    #[case] docs_url: Option<&str>,
+    #[case] message: &str,
+) {
+    let mut metadata = CollectedMetadata::new();
+    let mut ungated = route("get", "routes::users", "list");
+    ungated.path = ungated_path.to_string();
+    metadata.routes.push(ungated);
+    metadata.cfg_routes.push(cfg_route(
+        &["unix"],
+        "get",
+        gated_path,
+        "routes::gated",
+        "x",
+    ));
+    let body = generate_router_code(&metadata, docs_url, None, None, None, &[], &[]);
+    syn::parse2::<syn::File>(quote!(fn create_app() { #body })).expect("valid fn");
+    let code = body.to_string();
+    if message.is_empty() {
+        assert!(!code.contains("compile_error"), "{code}");
+    } else {
+        assert!(
+            code.contains("# [cfg (all (unix))] :: core :: compile_error !"),
+            "{code}"
+        );
+        assert!(code.contains(message), "{code}");
+    }
+}
+
 #[test]
 fn ungated_router_stays_a_method_chain() {
     let mut metadata = CollectedMetadata::new();

@@ -12,7 +12,7 @@ error: vespera! macro: security scheme `key` of type `apiKey` is missing require
    |
    = note: this error originates in the macro `vespera` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error: invalid server URL: `localhost:3000`. URL must start with `http://` or `https://`
+error: invalid server URL: `localhost:3000`. URL must start with `http://`, `https://` or `/` (a URL relative to the document's host)
   --> tests/ui/vespera_security_servers_invalid.rs:14:41
    |
 14 |     let _ = vespera!(servers = [{ url = "localhost:3000" }]);

@@ -6,6 +6,7 @@ use proc_macro2::{TokenStream, TokenTree};
 
 mod generate;
 mod loads;
+mod target_shape;
 
 pub use generate::generate_from_model_with_relations;
 

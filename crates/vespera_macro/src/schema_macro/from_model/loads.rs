@@ -58,7 +58,9 @@ pub(super) fn relation_load(
         let select = match rel.fk_to.as_deref() {
             Some(to) if !is_target_primary_key(&schema_path_str, to) => {
                 let column = column_path(&entity_path);
-                let to_ident = ident("to", &snake_to_pascal_case(to))?;
+                // The raw value first: the diagnostic quotes what was written.
+                let to_ident =
+                    ident("to", to).and_then(|_| ident("to", &snake_to_pascal_case(to)))?;
                 quote! {
                     sea_orm::QueryFilter::filter(
                         #entity::find(),

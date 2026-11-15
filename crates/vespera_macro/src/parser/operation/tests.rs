@@ -677,6 +677,48 @@ fn typed_response_descriptions_match_status_class() {
     );
 }
 
+/// A module-qualified `responses` type resolves like any type reference: of
+/// two same-named renamed types, `b::Foo` is `B`; an unknown qualified type
+/// still references its bare name.
+#[test]
+fn typed_response_resolves_module_qualified_paths() {
+    let known: HashSet<&str> = ["Foo", "a::Foo", "b::Foo"].into_iter().collect();
+    let definitions: HashMap<&str, &str> = [
+        ("Foo", r#"#[schema(name = "A")] struct Foo { a: i32 }"#),
+        ("a::Foo", r#"#[schema(name = "A")] struct Foo { a: i32 }"#),
+        ("b::Foo", r#"#[schema(name = "B")] struct Foo { b: i32 }"#),
+    ]
+    .into_iter()
+    .collect();
+    let typed = vec![
+        (404, "b::Foo".to_string()),
+        (409, "errors::Gone".to_string()),
+        // Not a path (never produced by `#[route]`): referenced as written.
+        (410, "[i32]".to_string()),
+    ];
+    let sig: syn::Signature = syn::parse_str("fn get() -> String").unwrap();
+    let op = build_operation_from_function(
+        &sig,
+        "/items",
+        &known,
+        &definitions,
+        OperationRouteConfig {
+            typed_responses: Some(&typed),
+            ..OperationRouteConfig::default()
+        },
+    );
+    let schema_ref = |status: &str| {
+        let content = op.responses[status].content.as_ref().unwrap();
+        match content["application/json"].schema.as_ref().unwrap() {
+            SchemaRef::Ref(reference) => reference.ref_path.clone(),
+            SchemaRef::Inline(schema) => panic!("{status}: inline {schema:?}"),
+        }
+    };
+    assert_eq!(schema_ref("404"), "#/components/schemas/B");
+    assert_eq!(schema_ref("409"), "#/components/schemas/Gone");
+    assert_eq!(schema_ref("410"), "#/components/schemas/[i32]");
+}
+
 // ======== Tests for uncovered lines ========
 
 #[test]

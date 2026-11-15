@@ -22,6 +22,13 @@ fn isolated_manifest_dir(dir: &TempDir) -> crate::env_access::test_env::EnvGuard
     crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path())
 }
 
+/// The `vespera/` build directory the orchestrator uses for `manifest`
+/// (honours `CARGO_TARGET_DIR` / `VESPERA_TARGET_DIR`, unlike a hard-coded
+/// `<manifest>/target/vespera`).
+fn vespera_dir_of(manifest: &std::path::Path) -> std::path::PathBuf {
+    crate::vespera_impl::path_utils::find_target_dir(manifest).join("vespera")
+}
+
 // ========== Tests for finalize_metadata ==========
 
 #[test]
@@ -84,6 +91,7 @@ fn test_process_vespera_macro_folder_not_found() {
         tag_descriptions: None,
         merge: vec![],
         info: InfoArgs::default(),
+        literal_hash: None,
     };
     let result = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
     assert!(result.is_err());
@@ -113,6 +121,7 @@ fn test_process_vespera_macro_collect_metadata_error() {
         tag_descriptions: None,
         merge: vec![],
         info: InfoArgs::default(),
+        literal_hash: None,
     };
 
     // This exercises the collect_metadata path (which handles parse errors gracefully)
@@ -154,6 +163,7 @@ fn test_process_vespera_macro_with_schema_storage() {
         tag_descriptions: None,
         merge: vec![],
         info: InfoArgs::default(),
+        literal_hash: None,
     };
 
     // This exercises the schema_storage extend path
@@ -214,6 +224,7 @@ fn test_process_vespera_macro_with_cron_storage() {
         tag_descriptions: None,
         merge: vec![],
         info: InfoArgs::default(),
+        literal_hash: None,
     };
 
     // This exercises the CRON_STORAGE → CronMetadata derivation path
@@ -352,9 +363,9 @@ fn test_process_export_app_create_dir_error() {
     create_temp_file(&temp_dir, "empty.rs", "// empty file\n");
 
     // Create target directory but make 'vespera' a file instead of directory
-    let target_dir = temp_dir.path().join("target");
-    fs::create_dir(&target_dir).expect("Failed to create target dir");
-    fs::write(target_dir.join("vespera"), "blocking file").expect("Failed to write file");
+    let vespera_dir = vespera_dir_of(temp_dir.path());
+    fs::create_dir_all(vespera_dir.parent().unwrap()).expect("Failed to create target dir");
+    fs::write(&vespera_dir, "blocking file").expect("Failed to write file");
 
     let name: syn::Ident = syn::parse_quote!(TestApp);
     let folder_path = temp_dir.path().to_string_lossy().to_string();
@@ -384,7 +395,7 @@ fn test_process_export_app_write_spec_error() {
     create_temp_file(&temp_dir, "empty.rs", "// empty file\n");
 
     // Create target/vespera directory and make spec file name a directory
-    let vespera_dir = temp_dir.path().join("target").join("vespera");
+    let vespera_dir = vespera_dir_of(temp_dir.path());
     fs::create_dir_all(&vespera_dir).expect("Failed to create vespera dir");
     // Create a directory where the spec file should be written
     fs::create_dir(crate::vespera_impl::merge_lookup::child_spec_path(
@@ -431,6 +442,7 @@ fn test_process_vespera_macro_no_openapi_output() {
         tag_descriptions: None,
         merge: vec![],
         info: InfoArgs::default(),
+        literal_hash: None,
     };
 
     let result = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
@@ -462,6 +474,7 @@ fn test_process_vespera_macro_with_profiling() {
         tag_descriptions: None,
         merge: vec![],
         info: InfoArgs::default(),
+        literal_hash: None,
     };
 
     let result = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
@@ -509,7 +522,7 @@ fn test_process_vespera_macro_cache_hit() {
     let folder_path = temp_dir.path().to_string_lossy().to_string();
     let openapi_path = temp_dir.path().join("openapi.json");
 
-    // Set CARGO_MANIFEST_DIR so cache path resolves to temp_dir/target/vespera/
+    // Set CARGO_MANIFEST_DIR so the cache lands in this crate's target dir.
     let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
 
     let processed = ProcessedVesperaInput {
@@ -526,6 +539,7 @@ fn test_process_vespera_macro_cache_hit() {
         tag_descriptions: None,
         merge: vec![],
         info: InfoArgs::default(),
+        literal_hash: None,
     };
 
     // First call: cache MISS — scans files, generates spec, writes cache
@@ -540,12 +554,28 @@ fn test_process_vespera_macro_cache_hit() {
         "openapi.json should be written on first call"
     );
 
-    // Second call: cache HIT — exercises lines 320-324, 327, 329
+    // Mark the cache file: a MISS rewrites it (dropping the marker), a HIT
+    // leaves it untouched.
+    let cache = fs::read_dir(vespera_dir_of(temp_dir.path()))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "cache"))
+        .expect("the first call writes a route cache");
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&cache).unwrap()).unwrap();
+    json["hit_probe"] = serde_json::Value::Bool(true);
+    fs::write(&cache, json.to_string()).unwrap();
+
+    // Second call: cache HIT
     let result2 = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
     assert!(
         result2.is_ok(),
         "Second call (cache hit) should succeed: {:?}",
         result2.err()
+    );
+    assert!(
+        fs::read_to_string(&cache).unwrap().contains("hit_probe"),
+        "the second call must hit the cache, not rewrite it"
     );
 }
 
@@ -623,7 +653,7 @@ fn distinct_invocations_in_one_crate_keep_separate_caches_and_specs() {
 
     // Mark every cache file: a cache MISS rewrites the file (dropping the
     // marker), a HIT leaves it untouched.
-    let vespera_dir = temp_dir.path().join("target").join("vespera");
+    let vespera_dir = vespera_dir_of(temp_dir.path());
     let caches: Vec<_> = fs::read_dir(&vespera_dir)
         .unwrap()
         .map(|entry| entry.unwrap().path())

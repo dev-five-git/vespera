@@ -5,6 +5,7 @@ use vespera_core::route::HttpMethod;
 use crate::{
     metadata::{CfgRoute, CollectedMetadata, CronMetadata},
     method::http_method_to_token_stream,
+    openapi_generator::RouteClaims,
 };
 
 use super::docs::{DocsPage, generate_docs_route_tokens, generate_spec_route_tokens};
@@ -92,15 +93,35 @@ fn route_args(
 
 /// `#[cfg(all(..))] let __vespera_router = __vespera_router.route(..);` per
 /// [`CfgRoute`]: the compiler keeps the routes whose module was compiled in.
-fn gated_route_statements(cfg_routes: &[CfgRoute]) -> Vec<proc_macro2::TokenStream> {
+///
+/// A gated route overlapping an ungated or documentation route (`ungated`)
+/// is instead a `compile_error!` under the same `#[cfg]`: axum would panic
+/// on the overlap whenever the route is compiled in.  Gated routes are not
+/// checked against each other — their predicates may be exclusive.
+fn gated_route_statements(
+    cfg_routes: &[CfgRoute],
+    ungated: &RouteClaims,
+) -> Vec<proc_macro2::TokenStream> {
     cfg_routes
         .iter()
         .map(|route| {
-            let predicates = route.cfg.iter().map(|predicate| {
-                predicate
-                    .parse::<proc_macro2::TokenStream>()
-                    .unwrap_or_default()
-            });
+            let predicates: Vec<proc_macro2::TokenStream> = route
+                .cfg
+                .iter()
+                .map(|predicate| {
+                    predicate
+                        .parse::<proc_macro2::TokenStream>()
+                        .unwrap_or_default()
+                })
+                .collect();
+            let handler = handler_display(&route.module_path, &route.function_name);
+            if let Err(conflict) = ungated.clone().claim(&route.method, &route.path, &handler) {
+                let message = format!(
+                    "vespera! macro: {} (`#[cfg]`-gated route)",
+                    conflict.message(&route.path, &handler)
+                );
+                return quote!(#[cfg(all(#(#predicates),*))] ::core::compile_error!(#message););
+            }
             match route_args(
                 &route.method,
                 &route.path,
@@ -116,6 +137,38 @@ fn gated_route_statements(cfg_routes: &[CfgRoute]) -> Vec<proc_macro2::TokenStre
             }
         })
         .collect()
+}
+
+/// `module::function` (just `function` at the crate root), as diagnostics
+/// name a handler.
+fn handler_display(module_path: &str, function_name: &str) -> String {
+    if module_path.is_empty() {
+        function_name.to_owned()
+    } else {
+        format!("{module_path}::{function_name}")
+    }
+}
+
+/// Routes the ungated router serves: its handlers and documentation routes.
+fn ungated_claims(
+    metadata: &CollectedMetadata,
+    doc_routes: &[(&str, Option<&str>)],
+) -> RouteClaims {
+    let mut claims = RouteClaims::default();
+    for route in &metadata.routes {
+        // Already checked against each other (`check_duplicate_routes`).
+        let _ = claims.claim(
+            &route.method,
+            &route.path,
+            &handler_display(&route.module_path, &route.function_name),
+        );
+    }
+    for (key, url) in doc_routes {
+        if let Some(url) = url {
+            let _ = claims.claim("get", url, key);
+        }
+    }
+    claims
 }
 
 /// Generate the once-per-process cron scheduler start from collected cron metadata.
@@ -158,11 +211,15 @@ fn generate_cron_scheduler_code(cron_jobs: &[CronMetadata]) -> proc_macro2::Toke
 
     // One guard per `vespera!` invocation: re-building the router (tests,
     // `jni_app!`, repeated `create_app()` calls) never stacks a second set of
-    // schedulers, and `start_once` copes with "no Tokio runtime yet".
+    // schedulers, and `start_once_for_crate` copes with "no Tokio runtime
+    // yet".  The job list is crate-wide, so a second invocation (another app
+    // of the same crate) would schedule every job again: the crate name
+    // (`module_path!()`'s first segment) lets the runtime start each job of
+    // the crate once per process.
     quote! {
         {
             static __VESPERA_CRON_ONCE: ::std::sync::Once = ::std::sync::Once::new();
-            vespera::cron::start_once(&__VESPERA_CRON_ONCE, [#(#jobs),*]);
+            vespera::cron::start_once_for_crate(&__VESPERA_CRON_ONCE, ::core::module_path!(), [#(#jobs),*]);
         }
     }
 }
@@ -242,7 +299,16 @@ pub fn generate_router_code(
 
     // `#[cfg]`-gated routes need statements: an attribute cannot gate one
     // `.route(..)` call of a method chain.
-    let gated = gated_route_statements(&metadata.cfg_routes);
+    let gated = if metadata.cfg_routes.is_empty() {
+        Vec::new()
+    } else {
+        let doc_routes = [
+            ("docs_url", docs_url),
+            ("redoc_url", redoc_url),
+            ("spec_url", spec_url),
+        ];
+        gated_route_statements(&metadata.cfg_routes, &ungated_claims(metadata, &doc_routes))
+    };
     let router_expr = if gated.is_empty() && route_errors.is_empty() {
         quote!(vespera::axum::Router::new() #( #router_nests )*)
     } else {

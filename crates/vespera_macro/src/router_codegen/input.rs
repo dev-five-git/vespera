@@ -50,11 +50,20 @@ pub struct AutoRouterInput {
     pub merge: Option<Vec<syn::Path>>,
     /// `info` object fields (`description`, `summary`, `license`, ...).
     pub info: InfoArgs,
+    /// Hash of the macro arguments as written, before any environment
+    /// fallback (see `vespera_impl::invocation::invocation_tag`).
+    pub literal_hash: u64,
 }
 
 impl Parse for AutoRouterInput {
     #[allow(clippy::too_many_lines)]
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        let literal_hash = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            input.cursor().token_stream().to_string().hash(&mut hasher);
+            hasher.finish()
+        };
         let mut dir = None;
         let mut openapi = None;
         let mut title = None;
@@ -191,6 +200,7 @@ impl Parse for AutoRouterInput {
         }
 
         Ok(Self {
+            literal_hash,
             dir,
             openapi: openapi.or_else(|| {
                 crate::env_access::var("VESPERA_OPENAPI")
@@ -219,7 +229,7 @@ impl Parse for AutoRouterInput {
             servers: servers.or_else(|| {
                 crate::env_access::var("VESPERA_SERVER_URL")
                     .ok()
-                    .filter(|url| url.starts_with("http://") || url.starts_with("https://"))
+                    .filter(|url| is_server_url(url))
                     .map(|url| {
                         vec![ServerConfig {
                             url,
@@ -244,8 +254,10 @@ fn env_lit(name: &str) -> Option<LitStr> {
 }
 
 /// Reject `docs_url` / `redoc_url` / `spec_url` values axum would panic on at
-/// router build time: a path not starting with `/`, or two of them on the
-/// same path.
+/// router build time: a path not starting with `/`, a segment starting with
+/// axum 0.7 parameter syntax (`:` / `*`), or two of them on the same path.
+/// `{` / `}` (axum 0.8 parameters) are rejected too: a documentation route is
+/// a static path.
 fn validate_doc_urls(urls: &[(&str, Option<&LitStr>)]) -> syn::Result<()> {
     let mut seen: Vec<(&str, String)> = Vec::new();
     for (key, lit) in urls {
@@ -255,6 +267,18 @@ fn validate_doc_urls(urls: &[(&str, Option<&LitStr>)]) -> syn::Result<()> {
             return Err(syn::Error::new(
                 lit.span(),
                 format!("vespera! macro: `{key}` must start with `/`, got \"{value}\""),
+            ));
+        }
+        if value.contains(['{', '}'])
+            || value
+                .split('/')
+                .any(|segment| segment.starts_with([':', '*']))
+        {
+            return Err(syn::Error::new(
+                lit.span(),
+                format!(
+                    "vespera! macro: `{key}` must be a static path, got \"{value}\": `:`, `*`, `{{` and `}}` are axum route-parameter syntax"
+                ),
             ));
         }
         if let Some((other, _)) = seen.iter().find(|(_, v)| *v == value) {
@@ -632,14 +656,22 @@ fn parse_openapi_values(input: ParseStream) -> syn::Result<Vec<LitStr>> {
     }
 }
 
-/// Validate that a URL starts with http:// or https://
+/// Whether `url` is a server URL `vespera!` accepts: absolute `http(s)://`
+/// or a relative reference to the document's host (`/api/v1`, which OpenAPI
+/// 3.1 resolves against the URL serving the document).  `{var}` templates
+/// are not accepted: `vespera!` cannot declare the `variables` they need.
+fn is_server_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://") || url.starts_with('/')
+}
+
+/// Validate a server URL (see [`is_server_url`]).
 fn validate_server_url(url: &LitStr) -> syn::Result<String> {
     let url_value = url.value();
-    if !url_value.starts_with("http://") && !url_value.starts_with("https://") {
+    if !is_server_url(&url_value) {
         return Err(syn::Error::new(
             url.span(),
             format!(
-                "invalid server URL: `{url_value}`. URL must start with `http://` or `https://`"
+                "invalid server URL: `{url_value}`. URL must start with `http://`, `https://` or `/` (a URL relative to the document's host)"
             ),
         ));
     }
@@ -790,6 +822,8 @@ pub struct ProcessedVesperaInput {
     pub merge: Vec<syn::Path>,
     /// `info` object fields beyond `title` / `version`.
     pub info: InfoArgs,
+    /// [`AutoRouterInput::literal_hash`] (`None` for an input built in code).
+    pub literal_hash: Option<u64>,
 }
 
 /// Process `AutoRouterInput` into extracted values
@@ -837,6 +871,7 @@ pub fn process_vespera_input(input: AutoRouterInput) -> ProcessedVesperaInput {
         }),
         merge: input.merge.unwrap_or_default(),
         info: input.info,
+        literal_hash: Some(input.literal_hash),
     }
 }
 

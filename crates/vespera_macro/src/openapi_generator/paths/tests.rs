@@ -509,6 +509,63 @@ fn route_storage_fast_path_disambiguates_same_fn_name_by_file_path() {
     );
 }
 
+/// A stored route without a file path never lends its signature to a
+/// same-named handler parsed from another file: `posts::list` keeps its own
+/// `-> i32` while `users::list` (stored, no file) uses its stored `-> String`.
+#[test]
+fn route_storage_legacy_none_file_path_never_shadows_a_parsed_handler() {
+    let users_path = "/virtual/users_none.rs".to_string();
+    let posts_path = "/virtual/posts_parsed.rs".to_string();
+    let mut metadata = CollectedMetadata::new();
+    metadata
+        .routes
+        .push(route_meta("GET", "/users", "list", &users_path));
+    metadata
+        .routes
+        .push(route_meta("GET", "/posts", "list", &posts_path));
+    metadata.routes[1].operation_id = Some("list_posts".to_string());
+    let mut file_cache = HashMap::new();
+    file_cache.insert(
+        posts_path,
+        syn::parse_str("pub fn list() -> i32 { 1 }").unwrap(),
+    );
+    let route_storage = vec![StoredRouteInfo {
+        fn_name: "list".to_string(),
+        method: Some("get".to_string()),
+        fn_sig_str: "fn list() -> String".to_string(),
+        file_path: None,
+        ..StoredRouteInfo::default()
+    }];
+    let doc = generate_openapi_doc_with_metadata(
+        None,
+        None,
+        None,
+        None,
+        &metadata,
+        Some(file_cache),
+        &route_storage,
+    );
+    let schema_type = |path: &str| {
+        let schema = doc.paths[path].get.as_ref().unwrap().responses["200"]
+            .content
+            .as_ref()
+            .and_then(|content| content.values().next())
+            .and_then(|media| media.schema.clone());
+        match schema {
+            Some(vespera_core::schema::SchemaRef::Inline(schema)) => schema.schema_type,
+            other => panic!("{path}: {other:?}"),
+        }
+    };
+    assert_eq!(
+        schema_type("/users"),
+        Some(vespera_core::schema::SchemaType::String)
+    );
+    assert_eq!(
+        schema_type("/posts"),
+        Some(vespera_core::schema::SchemaType::Integer)
+    );
+}
+
 #[test]
 fn route_storage_legacy_none_file_path_is_skipped_when_ambiguous() {
     let users_path = "/virtual/users.rs".to_string();
