@@ -202,14 +202,25 @@ vespera:
 methods during context startup, before the proxy serves a request. Unset keys
 keep the native default (or the `vespera.limits.*` / `vespera.dispatch.*` /
 `vespera.async.*` / `vespera.runtime.*` system properties and their `VESPERA_*`
-environment variables). A value that arrives after the first native dispatch is
-logged and ignored.
+environment variables). A value that arrives after the setting was fixed is
+logged and ignored — after the first native dispatch, and also when a system
+property already fixed it at `init` (see below).
 
 Precedence for every native knob (first hit wins, then process-fixed):
 **programmatic `VesperaBridge.configure*` / `vespera.bridge.native.*`** &gt;
 **system property** &gt; **`VESPERA_*` environment variable** &gt; built-in
-default. Spring values only take effect when they are applied before the first
-dispatch (the autoconfiguration does this during context startup). A
+default — as long as the programmatic / Spring value is set **before the
+library loads**. `VesperaBridge.init(...)` hands every knob to Rust right after
+loading the library: the pending programmatic value, else the system property.
+A knob whose system property is set is therefore fixed at `init`, and a later
+`configure*` call or `vespera.bridge.native.*` value for it is logged and
+ignored even though nothing has been dispatched yet. With the two-line
+integration (`init` in `main`, then `SpringApplication.run`) a
+`-Dvespera.limits.maxRequestBytes=...` thus beats
+`vespera.bridge.native.max-request-bytes`; let Spring load the library
+(`vespera.bridge.library-name`) or call `configure*` before `init` for the
+documented order. Knobs without a system property stay open until the first
+dispatch (the autoconfiguration applies its values during context startup). A
 programmatic value equal to a knob's "unset" sentinel — `<= 0` for
 `worker-threads` / `max-blocking-threads`, `< 0` for the limits, timeout and
 async cap — is ignored and never shadows the system property or environment
@@ -520,6 +531,8 @@ Spring MVC answers every CORS **preflight** (`OPTIONS` with `Origin` and `Access
 **Java endpoints keep their own CORS.** With `rust`, a preflight is routed to Rust only when Rust would also serve the actual request. The bridge asks the application's other handler mappings which handler `Access-Control-Request-Method` + the same path would reach. When that handler is a Java one (a `@RestController` with `@CrossOrigin` at `/java/x`, a router function, an actuator endpoint), or a Java mapping rejects the request (for example `405`), Spring answers the preflight with that handler's CORS configuration. Rust paths are unchanged. The same rule applies to the servlet `VesperaPreflightHandlerMapping` and the WebFlux `VesperaReactivePreflightFilter`. It holds only when they are context beans (the autoconfigured ones are). Built by hand outside a context, they route every owned preflight to Rust.
 
 With `rust`, do not also configure Spring CORS for proxied paths, and do not enable Spring Security's `http.cors()` (its `CorsFilter` answers preflights before they reach Spring MVC). Without a CORS layer in Rust, a preflight gets whatever the router answers for `OPTIONS` (axum: `405` for a route without an `OPTIONS` handler).
+
+**Preflights of named apps reach the default app.** A browser preflight never carries the value of the app-selection header (`X-Vespera-App`): `Access-Control-Request-Headers` lists only its name. The default `AppNameResolver` / `ReactiveAppNameResolver` therefore send every preflight to `_default`, and a named app's own `CorsLayer` never answers it. With multi-app routing and `cors=rust`, put a `CorsLayer` that covers the named apps' origins on the default app's router, select the app by path in a custom resolver, or use `cors=spring`.
 
 ## Spring Security
 

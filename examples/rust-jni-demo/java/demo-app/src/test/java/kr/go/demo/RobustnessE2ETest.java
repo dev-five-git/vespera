@@ -6,8 +6,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.devfive.vespera.bridge.VesperaBridge;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -78,13 +79,27 @@ class RobustnessE2ETest {
             command.add("-Dvespera.native.dir=" + nativeDir);
         }
         command.add(ShutdownProbe.class.getName());
-        Process child = new ProcessBuilder(command).redirectErrorStream(true).start();
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        try (InputStream in = child.getInputStream()) {
-            in.transferTo(output);
+        // Output goes to a file, not a pipe: reading a pipe to EOF would block
+        // until the child exits, so the 60 s bound below would never apply.
+        Path log = Files.createTempFile("vespera-shutdown-probe", ".log");
+        try {
+            Process child = new ProcessBuilder(command)
+                    .redirectErrorStream(true)
+                    .redirectOutput(log.toFile())
+                    .start();
+            boolean exited = child.waitFor(60, TimeUnit.SECONDS);
+            if (!exited) {
+                child.destroyForcibly().waitFor(10, TimeUnit.SECONDS);
+            }
+            String text = new String(Files.readAllBytes(log), StandardCharsets.UTF_8);
+            assertTrue(exited, "probe JVM did not exit within 60 s:\n" + text);
+            assertProbeResult(text);
+        } finally {
+            Files.deleteIfExists(log);
         }
-        assertTrue(child.waitFor(60, TimeUnit.SECONDS), "probe JVM did not exit");
-        String text = output.toString(StandardCharsets.UTF_8);
+    }
+
+    private static void assertProbeResult(String text) {
         // In-flight slow dispatch drained (200), the stuck one completed with
         // 503 when the runtime dropped it, later sync and async dispatches
         // answer 503 (async used to answer 500).

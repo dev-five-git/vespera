@@ -42,6 +42,9 @@ class StreamingRobustnessHttpTest extends AbstractVesperaHttpIntegrationTest {
     @LocalServerPort
     private int port;
 
+    /** {@code X-Request-Id} of the last {@link #eventArrivals} response. */
+    private String lastEventsRequestId;
+
     /** Arrival time (ms since the request was sent) of each {@code data:} line. */
     private List<Long> eventArrivals(String accept) throws Exception {
         HttpRequest.Builder request = HttpRequest.newBuilder(
@@ -69,6 +72,7 @@ class StreamingRobustnessHttpTest extends AbstractVesperaHttpIntegrationTest {
             }
         }
         assertEquals(List.of("data: event-0", "data: event-1", "data: event-2"), events);
+        lastEventsRequestId = response.headers().firstValue("X-Request-Id").orElse(null);
         return arrivals;
     }
 
@@ -89,6 +93,8 @@ class StreamingRobustnessHttpTest extends AbstractVesperaHttpIntegrationTest {
         // No streaming Accept: smart routes the bodyless GET to DIRECT; the
         // native side sees text/event-stream and hands it over for streaming.
         assertIncremental(eventArrivals(null));
+        assertEquals(DispatchMode.DIRECT, recorder.eventFor(lastEventsRequestId).mode(),
+                "served by DIRECT, then handed over");
     }
 
     private int[] runs() {

@@ -191,7 +191,13 @@ class VesperaBridgePlugin : Plugin<Project> {
         // afterEvaluate so configuration-cache snapshots do not depend on a
         // late mutable project callback.
         project.pluginManager.withPlugin("java") {
-            project.tasks.withType(ProcessResources::class.java).configureEach {
+            // Only the main source set's resources: test (and other source
+            // sets') resources would copy every cdylib again and depend on
+            // cargoBuild for nothing.
+            project.tasks.named(
+                org.gradle.api.plugins.JavaPlugin.PROCESS_RESOURCES_TASK_NAME,
+                ProcessResources::class.java,
+            ).configure {
                 // `bundleNative = false` (the app loads its library from
                 // per-platform native jars) leaves bundleNativeLib unrealised.
                 dependsOn(ext.bundleNative.map { if (it) listOf(bundleTask) else emptyList<Any>() })

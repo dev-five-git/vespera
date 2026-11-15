@@ -343,6 +343,35 @@ class VesperaBridgePluginFunctionalTest {
     }
 
     @Test
+    fun testResourcesNeitherBundleTheLibraryNorBuildIt() {
+        val hostLib = NativePlatform.mapLibraryName(hostOs, "demo")
+        write("rust/target/release/$hostLib", "host")
+        setUp("")
+
+        val result = run("processTestResources").build()
+
+        assertNull(result.task(":bundleNativeLib"), result.output)
+        assertNull(result.task(":verifyNativeLibs"), result.output)
+        assertFalse(File(dir, "build/resources/test/native").exists())
+    }
+
+    @Test
+    fun autoBuildCargoWithoutCargoRootFailsWithAClearMessage() {
+        setUp(
+            """
+                cargoRoot.set(null as org.gradle.api.file.Directory?)
+                targetDir.set(layout.projectDirectory.dir("target"))
+                autoBuildCargo.set(true)
+                packageName.set("demo")
+            """,
+        )
+
+        val result = run("cargoBuild").buildAndFail()
+
+        assertTrue(result.output.contains("vespera.autoBuildCargo needs vespera.cargoRoot"), result.output)
+    }
+
+    @Test
     fun bridgeVersionDefaultsToTheEmbeddedBridgeRelease() {
         val embedded = VesperaBridgePlugin.embeddedBridgeVersion()
         assertNotNull(embedded, "plugin build must embed the bridge version")

@@ -34,6 +34,22 @@ import org.junit.jupiter.api.Test;
  */
 class NonHeaderStreamingE2ETest {
 
+    /**
+     * 1 KiB response chunks the {@code /diag/panic-mid-body} handler must emit
+     * before panicking so that at least one batch reaches the sink first: two
+     * streaming chunks' worth (the Rust side batches ready frames up to
+     * {@code vespera.streaming.chunkBytes}, which the build forwards into this
+     * JVM; 4 KiB to 8 MiB, default 256 KiB), at least 512.
+     */
+    static int panicChunksPastOneStreamingChunk() {
+        long chunkBytes = Math.max(4 * 1024, Math.min(8L * 1024 * 1024,
+                Long.getLong("vespera.streaming.chunkBytes", 256 * 1024)));
+        return (int) Math.max(512, 2 * chunkBytes / 1024);
+    }
+
+    static final String PANIC_PAST_ONE_CHUNK =
+            "/diag/panic-mid-body/" + panicChunksPastOneStreamingChunk();
+
     @BeforeAll
     static void loadNative() {
         VesperaBridge.init("rust_jni_demo");
@@ -66,7 +82,7 @@ class NonHeaderStreamingE2ETest {
     @Test
     void responseStreamingPanicAfterBodyBytesThrowsAPanickedAbort() {
         byte[] request = VesperaBridge.encodeRequest(
-                "POST", "/diag/panic-mid-body/512", null, Map.of(), new byte[0]);
+                "POST", PANIC_PAST_ONE_CHUNK, null, Map.of(), new byte[0]);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         VesperaStreamAbortedException aborted = assertThrows(VesperaStreamAbortedException.class,
                 () -> VesperaBridge.dispatchStreaming(request, out));
@@ -77,7 +93,7 @@ class NonHeaderStreamingE2ETest {
     @Test
     void fullStreamingPanicAfterBodyBytesThrowsAPanickedAbort() {
         byte[] header = VesperaBridge.encodeRequestHeader(
-                "POST", "/diag/panic-mid-body/512", null, Map.of());
+                "POST", PANIC_PAST_ONE_CHUNK, null, Map.of());
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         VesperaStreamAbortedException aborted = assertThrows(VesperaStreamAbortedException.class,
                 () -> VesperaBridge.dispatchFullStreaming(

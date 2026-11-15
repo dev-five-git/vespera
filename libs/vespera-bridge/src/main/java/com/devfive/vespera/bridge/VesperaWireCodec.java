@@ -48,14 +48,25 @@ final class VesperaWireCodec {
     private static final int HEADER_RETAIN_CAPACITY = 32 * 1024;
     /**
      * Hard ceiling on the per-thread header encode buffer (64 MiB). The wire
-     * request header only ever carries method/path/query/headers/app — never
-     * the body, which is appended separately in {@link #assembleWire} /
-     * {@link #assembleInto} — and servlet containers already cap inbound header
-     * sizes orders of magnitude below this. It is pure defense-in-depth: a
-     * pathological header that tried to grow the buffer past the ceiling fails
-     * fast with an exception instead of doubling toward an OutOfMemoryError.
+     * request header only ever carries method/path/query/headers/app and the
+     * principal — never the body, which is appended separately in
+     * {@link #assembleWire} / {@link #assembleInto}. Servlet containers cap
+     * inbound header sizes orders of magnitude below this, and
+     * {@link #writePrincipal} keeps the principal within
+     * {@link #MAX_WIRE_HEADER_BYTES}. A header above that Rust limit still
+     * encodes (Rust answers it with a {@code 400} wire); this ceiling is pure
+     * defense-in-depth: a pathological header that tried to grow the buffer
+     * past it fails fast with an exception instead of doubling toward an
+     * OutOfMemoryError.
      */
     private static final int MAX_HEADER_BUFFER_BYTES = 64 * 1024 * 1024;
+    /**
+     * Largest wire request header the Rust side parses (mirrors
+     * {@code vespera_inprocess::wire::MAX_WIRE_HEADER_BYTES}, 1 MiB); a longer
+     * one is answered {@code 400}. {@link #writePrincipal} drops principal
+     * entries that would push the header past it.
+     */
+    static final int MAX_WIRE_HEADER_BYTES = 1024 * 1024;
 
     /**
      * Per-thread reusable byte buffer for {@link #fillHeaderJson}.
@@ -96,8 +107,21 @@ final class VesperaWireCodec {
      * before the next {@link #fillHeaderJson} on that thread.
      */
     static final class ExposedByteArrayOutputStream extends ByteArrayOutputStream {
+        /**
+         * Set while {@link #fillHeaderJson} writes into this (per-thread)
+         * buffer: a user callback ({@link HeaderSource}, {@link Map}) that
+         * encodes another request on the same thread then gets a fresh buffer
+         * from {@link #reusableHeaderBuffer()} instead of resetting this one.
+         */
+        boolean filling;
+
         ExposedByteArrayOutputStream(int size) {
             super(size);
+        }
+
+        /** Drop every byte at or past {@code size} (rolls back a partial write). */
+        void truncate(int size) {
+            count = size;
         }
 
         /** Backing buffer; valid content is {@code [0, size())} only. */
@@ -453,6 +477,7 @@ final class VesperaWireCodec {
             String path, String query, Map<String, String> headers) {
         String normalizedAppName = normalizedAppName(appName);
         ExposedByteArrayOutputStream buf = reusableHeaderBuffer();
+        buf.filling = true;
         try {
             beginHeaderJson(buf, method, path, query);
             if (headers != null && !headers.isEmpty()) {
@@ -474,6 +499,8 @@ final class VesperaWireCodec {
         } catch (RuntimeException | Error failure) {
             shrinkHeaderBufferIfOversized(buf);
             throw failure;
+        } finally {
+            buf.filling = false;
         }
     }
 
@@ -486,6 +513,7 @@ final class VesperaWireCodec {
             String path, String query, HeaderSource headers) {
         String normalizedAppName = normalizedAppName(appName);
         ExposedByteArrayOutputStream buf = reusableHeaderBuffer();
+        buf.filling = true;
         try {
             beginHeaderJson(buf, method, path, query);
             if (headers != null) {
@@ -496,13 +524,15 @@ final class VesperaWireCodec {
                 }
                 writeOptionalField(buf, ",\"remote_addr\":", headers.remoteAddr());
                 writeOptionalField(buf, ",\"scheme\":", headers.scheme());
-                writePrincipal(buf, headers.principal());
+                writePrincipal(buf, headers.principal(), principalLimit(normalizedAppName));
             }
             finishHeaderJson(buf, normalizedAppName);
             return buf;
         } catch (RuntimeException | Error failure) {
             shrinkHeaderBufferIfOversized(buf);
             throw failure;
+        } finally {
+            buf.filling = false;
         }
     }
 
@@ -511,52 +541,90 @@ final class VesperaWireCodec {
     static final AtomicBoolean PRINCIPAL_TRUNCATION_WARNED = new AtomicBoolean();
 
     /**
+     * Bytes {@link #writePrincipal} may fill the header up to: the Rust limit
+     * minus the worst case of what follows the last principal entry (the
+     * closing brackets, then the escaped {@code ,"app":"..."} field and the
+     * final brace).
+     */
+    static int principalLimit(String normalizedAppName) {
+        long app = normalizedAppName == null ? 0 : 10 + 6L * normalizedAppName.length();
+        return (int) Math.max(0, MAX_WIRE_HEADER_BYTES - 16 - app);
+    }
+
+    /**
      * Emit the trusted {@code ,"principal":{"name":...,"authorities":[...],"attributes":{...}}}
      * field (empty {@code authorities} / {@code attributes} omitted), unless
      * {@code principal} is {@code null}. At most {@link VesperaPrincipal#MAX_ENTRIES}
      * authorities and attributes are written (the Rust parser rejects longer
-     * lists with {@code 400}); the rest are dropped with a one-time warning.
+     * lists with {@code 400}), and the first entry that would grow the buffer
+     * past {@code limit} bytes ({@link #principalLimit}: the Rust side answers a
+     * header over {@link #MAX_WIRE_HEADER_BYTES} with {@code 400}) ends the
+     * principal — authorities are written first, so they take the budget
+     * before the attributes. Dropped entries are logged once per process.
      */
-    static void writePrincipal(ExposedByteArrayOutputStream buf, VesperaPrincipal principal) {
+    static void writePrincipal(ExposedByteArrayOutputStream buf, VesperaPrincipal principal, int limit) {
         if (principal == null) {
             return;
         }
         buf.putAscii(",\"principal\":{\"name\":");
         writeJsonString(buf, principal.name());
+        boolean full = false;
         if (!principal.authorities().isEmpty()) {
+            int open = buf.size();
             buf.putAscii(",\"authorities\":[");
             int written = 0;
             for (String authority : principal.authorities()) {
                 if (written == VesperaPrincipal.MAX_ENTRIES) {
                     break;
                 }
+                int before = buf.size();
                 if (written != 0) {
                     buf.put(',');
                 }
-                written++;
                 writeJsonString(buf, authority);
+                if (full = buf.size() > limit) {
+                    buf.truncate(before);
+                    break;
+                }
+                written++;
             }
-            buf.put(']');
+            closeOrDrop(buf, written, open, ']');
         }
-        if (!principal.attributes().isEmpty()) {
+        boolean attributesDropped = full && !principal.attributes().isEmpty();
+        if (!full && !principal.attributes().isEmpty()) {
+            int open = buf.size();
             buf.putAscii(",\"attributes\":{");
             int written = 0;
             for (Map.Entry<String, String> e : principal.attributes().entrySet()) {
                 if (written == VesperaPrincipal.MAX_ENTRIES) {
                     break;
                 }
+                int before = buf.size();
                 if (written != 0) {
                     buf.put(',');
                 }
-                written++;
                 writeJsonString(buf, e.getKey());
                 buf.put(':');
                 writeJsonString(buf, e.getValue());
+                if (full = buf.size() > limit) {
+                    buf.truncate(before);
+                    break;
+                }
+                written++;
             }
-            buf.put('}');
+            closeOrDrop(buf, written, open, '}');
         }
         buf.put('}');
-        warnIfPrincipalTruncated(principal);
+        warnIfPrincipalTruncated(principal, full || attributesDropped);
+    }
+
+    /** Close a principal list, or drop its opening when no entry fit. */
+    private static void closeOrDrop(ExposedByteArrayOutputStream buf, int written, int open, char close) {
+        if (written == 0) {
+            buf.truncate(open);
+        } else {
+            buf.put(close);
+        }
     }
 
     /**
@@ -564,13 +632,24 @@ final class VesperaWireCodec {
      * {@link VesperaPrincipal#MAX_ENTRIES}; returns whether this call logged.
      */
     static boolean warnIfPrincipalTruncated(VesperaPrincipal principal) {
+        return warnIfPrincipalTruncated(principal, false);
+    }
+
+    /**
+     * Log once per process when a principal exceeded
+     * {@link VesperaPrincipal#MAX_ENTRIES} or ({@code bytesDropped}) lost
+     * entries to the header byte budget; returns whether this call logged.
+     */
+    static boolean warnIfPrincipalTruncated(VesperaPrincipal principal, boolean bytesDropped) {
         int authorities = principal.authorities().size();
         int attributes = principal.attributes().size();
-        if ((authorities > VesperaPrincipal.MAX_ENTRIES || attributes > VesperaPrincipal.MAX_ENTRIES)
+        if ((bytesDropped || authorities > VesperaPrincipal.MAX_ENTRIES
+                        || attributes > VesperaPrincipal.MAX_ENTRIES)
                 && PRINCIPAL_TRUNCATION_WARNED.compareAndSet(false, true)) {
             LOG.log(System.Logger.Level.WARNING, "vespera: a principal has " + authorities + " authorities and " + attributes
                     + " attributes; only the first " + VesperaPrincipal.MAX_ENTRIES
-                    + " of each are forwarded (Rust MAX_PRINCIPAL_ENTRIES). Logged once.");
+                    + " of each (Rust MAX_PRINCIPAL_ENTRIES) that keep the wire header within "
+                    + MAX_WIRE_HEADER_BYTES + " bytes are forwarded. Logged once.");
             return true;
         }
         return false;
@@ -603,8 +682,13 @@ final class VesperaWireCodec {
         return start == 0 && end == appName.length() ? appName : appName.substring(start, end);
     }
 
-    private static ExposedByteArrayOutputStream reusableHeaderBuffer() {
+    static ExposedByteArrayOutputStream reusableHeaderBuffer() {
         ExposedByteArrayOutputStream buf = HEADER_BUF.get();
+        if (buf.filling) {
+            // Re-entered from a callback of the encode in progress on this
+            // thread: leave that buffer alone (this one is not pooled).
+            return new ExposedByteArrayOutputStream(HEADER_INITIAL_CAPACITY);
+        }
         if (buf.capacity() > HEADER_RETAIN_CAPACITY) {
             buf = new ExposedByteArrayOutputStream(HEADER_INITIAL_CAPACITY);
             HEADER_BUF.set(buf);

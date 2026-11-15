@@ -555,7 +555,13 @@ public class VesperaBridgeProperties {
         /** Streamed request-body cap in bytes ({@code 0} = unlimited, the native default). */
         private Long maxStreamingRequestBytes;
 
-        /** Buffered response-body cap in bytes ({@code 0} = unlimited, native default 256 MiB). */
+        /**
+         * Buffered response-body cap in bytes ({@code 0} = unlimited). When it,
+         * {@code -Dvespera.limits.maxBufferedResponseBytes} and
+         * {@code VESPERA_MAX_BUFFERED_RESPONSE_BYTES} are all unset, Spring
+         * forwards {@code vespera.bridge.max-buffered-response-bytes} (64 MiB)
+         * instead, so the native 256 MiB default applies only outside Spring.
+         */
         private Long maxBufferedResponseBytes;
 
         /** Per-dispatch deadline ({@code 0} = disabled, the native default). */

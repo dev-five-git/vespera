@@ -177,21 +177,22 @@ class BidirectionalPanicStatusHttpTest {
     }
 
     /**
-     * A body panic after bytes reached the client (512 KiB, well past the
-     * servlet buffer) cannot change the committed {@code 200}: the connection
-     * must be aborted so the client sees an incomplete response, never a
-     * cleanly terminated short body.
+     * A body panic after bytes reached the client (at least 512 KiB and two
+     * streaming chunks, well past the servlet buffer) cannot change the
+     * committed {@code 200}: the connection must be aborted so the client sees
+     * an incomplete response, never a cleanly terminated short body.
      */
     @ParameterizedTest
     @EnumSource(Upload.class)
     void panicAfterTheBodyWasCommittedAbortsTheResponse(Upload upload) throws Exception {
+        int chunks = NonHeaderStreamingE2ETest.panicChunksPastOneStreamingChunk();
         HttpResponse<InputStream> response;
         try {
-            response = post("/diag/panic-mid-body/512", upload);
+            response = post("/diag/panic-mid-body/" + chunks, upload);
         } catch (IOException aborted) {
             return; // aborted before the status line arrived: also incomplete
         }
-        assertEquals(200, response.statusCode(), "512 KiB exceed the servlet buffer");
+        assertEquals(200, response.statusCode(), chunks + " KiB exceed the servlet buffer");
         int received = 0;
         try (InputStream body = response.body()) {
             byte[] buffer = new byte[64 * 1024];
@@ -199,7 +200,7 @@ class BidirectionalPanicStatusHttpTest {
                 received += n;
             }
         } catch (IOException aborted) {
-            assertTrue(received < 512 * 1024, "received " + received);
+            assertTrue(received < chunks * 1024, "received " + received);
             DispatchEvent event = eventFor(response.headers().firstValue("X-Request-Id").orElse(null));
             assertTrue(event.panicked(), event.toString());
             return;

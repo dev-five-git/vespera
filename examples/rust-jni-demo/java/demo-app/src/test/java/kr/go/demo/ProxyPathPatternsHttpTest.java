@@ -86,6 +86,7 @@ class ProxyPathPatternsHttpTest extends AbstractVesperaHttpIntegrationTest {
         headers.setAccessControlRequestMethod(HttpMethod.GET);
         ResponseEntity<byte[]> response =
                 exchangeWithHeaders(HttpMethod.OPTIONS, "/assets/hello.txt", headers, null);
+        assertEquals(200, response.getStatusCode().value(), "Spring answered the preflight");
         assertNull(response.getHeaders().getFirst("X-Request-Id"), "Spring handled the preflight");
     }
 }

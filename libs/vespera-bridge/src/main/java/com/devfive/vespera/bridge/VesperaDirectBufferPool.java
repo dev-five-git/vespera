@@ -144,6 +144,11 @@ final class VesperaDirectBufferPool {
         PooledFallbackRejectedException(int requestSize, String message) {
             super(requestSize, message);
         }
+
+        @Override
+        public boolean dispatched() {
+            return false;
+        }
     }
 
     /**

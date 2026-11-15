@@ -60,9 +60,10 @@ class ResponseBodyBuildTest {
         DecodedResponse decoded = VesperaBridge.decodeResponse(w);
         assertArrayEquals(body, decoded.bodyBytes(), "fixture");
 
-        ResponseEntity<byte[]> entity = WireResponseWriter.buildResponseEntityFromWire(w, "GET");
+        // The capped builder the controller's ASYNC flow calls (cap 0 = unlimited).
+        ResponseEntity<?> entity = VesperaProxyController.buildCappedAsyncResponseEntity(w, "GET", 0, null);
         assertEquals(decoded.status(), entity.getStatusCode().value());
-        assertArrayEquals(body, entity.getBody());
+        assertArrayEquals(body, asyncBody(entity));
         assertEquals(contentType, entity.getHeaders().getFirst(HttpHeaders.CONTENT_TYPE));
         assertEquals(body.length, entity.getHeaders().getContentLength());
 
@@ -117,7 +118,7 @@ class ResponseBodyBuildTest {
         assertEquals(List.of("a=1", "b=2"), decoded.headers().get("set-cookie"));
 
         for (ResponseEntity<?> entity : List.of(
-                WireResponseWriter.buildResponseEntityFromWire(w, "POST"),
+                VesperaProxyController.buildCappedAsyncResponseEntity(w, "POST", 1024, null),
                 WireResponseWriter.buildAsyncResponseEntityFromWire(w, "POST", null))) {
             assertEquals(201, entity.getStatusCode().value());
             // getValuesAsList: HttpHeaders.get(String) is Spring-7-only (a Map in 6).

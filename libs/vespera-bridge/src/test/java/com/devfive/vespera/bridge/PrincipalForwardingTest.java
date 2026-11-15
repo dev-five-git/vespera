@@ -172,6 +172,86 @@ class PrincipalForwardingTest {
     }
 
     @Test
+    void codecKeepsTheWireHeaderWithinTheRustByteLimit() throws Exception {
+        // 1024 authorities of ~1 KiB each: within MAX_ENTRIES, but ~1 MiB of
+        // JSON on their own; the header must stay <= the Rust 1 MiB limit.
+        String filler = "x".repeat(1024);
+        List<String> authorities = new ArrayList<>();
+        for (int i = 0; i < VesperaPrincipal.MAX_ENTRIES; i++) {
+            authorities.add("CN=" + i + "," + filler);
+        }
+        VesperaWireCodec.PRINCIPAL_TRUNCATION_WARNED.set(false);
+        String json = headerJson(new VesperaPrincipal("big", authorities, Map.of("tenant", "t1")));
+        int bytes = json.getBytes(StandardCharsets.UTF_8).length;
+        assertTrue(bytes <= VesperaWireCodec.MAX_WIRE_HEADER_BYTES, "header bytes " + bytes);
+        JsonNode principal = new ObjectMapper().readTree(json).path("principal");
+        int kept = principal.path("authorities").size();
+        assertTrue(kept > 900 && kept < VesperaPrincipal.MAX_ENTRIES, "kept " + kept);
+        assertEquals("CN=" + (kept - 1) + "," + filler, principal.path("authorities").path(kept - 1).asText());
+        // The budget is spent: the attributes are dropped and it is logged.
+        assertTrue(principal.path("attributes").isMissingNode());
+        assertTrue(VesperaWireCodec.PRINCIPAL_TRUNCATION_WARNED.get());
+    }
+
+    @Test
+    void codecDropsAListWhoseFirstEntryDoesNotFit() throws Exception {
+        VesperaWireCodec.PRINCIPAL_TRUNCATION_WARNED.set(false);
+        VesperaPrincipal principal = new VesperaPrincipal("n", List.of("ROLE_A"), Map.of("tenant", "t1"));
+        // 48 bytes up to and including "ROLE_A"; the attribute would end at 77.
+        assertEquals(",\"principal\":{\"name\":\"n\",\"authorities\":[\"ROLE_A\"]}",
+                writePrincipal(principal, 60));
+        assertTrue(VesperaWireCodec.PRINCIPAL_TRUNCATION_WARNED.get());
+        // Not even the first authority fits: both lists are omitted.
+        assertEquals(",\"principal\":{\"name\":\"n\"}", writePrincipal(principal, 40));
+        // Only attributes: dropped by the budget, still valid.
+        assertEquals(",\"principal\":{\"name\":\"n\"}",
+                writePrincipal(new VesperaPrincipal("n", null, Map.of("tenant", "t1")), 40));
+        assertEquals(",\"principal\":{\"name\":\"n\",\"authorities\":[\"ROLE_A\"],\"attributes\":{\"tenant\":\"t1\"}}",
+                writePrincipal(principal, 77));
+        assertTrue(VesperaWireCodec.principalLimit("admin") < VesperaWireCodec.principalLimit(null));
+    }
+
+    private static String writePrincipal(VesperaPrincipal principal, int limit) {
+        VesperaWireCodec.ExposedByteArrayOutputStream buf =
+                new VesperaWireCodec.ExposedByteArrayOutputStream(64);
+        VesperaWireCodec.writePrincipal(buf, principal, limit);
+        return new String(buf.backingArray(), 0, buf.size(), StandardCharsets.UTF_8);
+    }
+
+    @Test
+    void aHeaderSourceCallbackThatEncodesAnotherRequestKeepsTheOuterHeaderIntact() throws Exception {
+        VesperaBridge.HeaderSource outer = new VesperaBridge.HeaderSource() {
+            @Override
+            public void writeTo(VesperaBridge.HeaderSink sink) {
+                sink.put("accept", "*/*");
+                VesperaBridge.encodeRequest(null, "GET", "/inner-from-headers", null, Map.of("x", "y"), null);
+            }
+
+            @Override
+            public VesperaPrincipal principal() {
+                VesperaBridge.encodeRequest(null, "POST", "/inner-from-principal", null,
+                        new VesperaBridge.HeaderSource() {
+                            @Override
+                            public void writeTo(VesperaBridge.HeaderSink sink) {
+                                sink.put("inner", "1");
+                            }
+                        }, null);
+                return VesperaPrincipal.of("alice");
+            }
+        };
+        byte[] wire = VesperaBridge.encodeRequest(null, "GET", "/outer", null, outer, null);
+        int len = VesperaWireCodec.readHeaderLength(wire);
+        assertEquals(wire.length - 4, len);
+        JsonNode header = new ObjectMapper().readTree(new String(wire, 4, len, StandardCharsets.UTF_8));
+        assertEquals("/outer", header.path("path").asText());
+        assertEquals("*/*", header.path("headers").path("accept").asText());
+        assertEquals("alice", header.path("principal").path("name").asText());
+        // The per-thread buffer is pooled again afterwards.
+        VesperaWireCodec.ExposedByteArrayOutputStream pooled = VesperaWireCodec.reusableHeaderBuffer();
+        assertSame(pooled, VesperaWireCodec.reusableHeaderBuffer());
+    }
+
+    @Test
     void codecWarnsOnlyForOversizedPrincipals() {
         List<String> exact = new ArrayList<>();
         Map<String, String> exactAttributes = new LinkedHashMap<>();

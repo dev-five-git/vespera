@@ -95,7 +95,9 @@ class VesperaProxyControllerCoverageTest {
                 () -> VesperaProxyController.rejectAboveDefaultBufferedLimit(defaultLimit + 1));
 
         assertEquals(413, exception.getStatusCode().value());
-        assertTrue(exception.getReason().contains(Long.toString(defaultLimit)));
+        assertEquals("buffered request body of unknown length exceeds the built-in "
+                + defaultLimit + "-byte bound (vespera.bridge.max-buffered-request-bytes=0; actual "
+                + (defaultLimit + 1) + " bytes)", exception.getReason());
         VesperaProxyController.rejectAboveDefaultBufferedLimit(defaultLimit);
     }
 
@@ -372,18 +374,21 @@ class VesperaProxyControllerCoverageTest {
     }
 
     @Test
-    void convenienceAsyncBuilderExposesAByteArrayBody() {
-        ResponseEntity<byte[]> response =
-                WireResponseWriter.buildResponseEntityFromWire(heapWire(200, "resource"));
+    void asyncBuilderExposesTheBodyAndDropsItForNoContent() throws Exception {
+        ResponseEntity<?> response =
+                WireResponseWriter.buildAsyncResponseEntityFromWire(heapWire(200, "resource"), null, null);
 
         assertEquals(200, response.getStatusCode().value());
         assertEquals(8, response.getHeaders().getContentLength());
-        assertArrayEquals("resource".getBytes(StandardCharsets.UTF_8), response.getBody());
+        try (java.io.InputStream in = ((org.springframework.core.io.Resource) response.getBody())
+                .getInputStream()) {
+            assertArrayEquals("resource".getBytes(StandardCharsets.UTF_8), in.readAllBytes());
+        }
 
-        ResponseEntity<byte[]> noContent =
-                WireResponseWriter.buildResponseEntityFromWire(heapWire(204, "ignored"));
+        ResponseEntity<?> noContent =
+                WireResponseWriter.buildAsyncResponseEntityFromWire(heapWire(204, "ignored"), null, null);
         assertEquals(-1, noContent.getHeaders().getContentLength());
-        assertEquals(0, noContent.getBody().length);
+        assertNull(noContent.getBody());
     }
 
     private static MockHttpServletRequest requestReportingLength(long length, byte[] body) {

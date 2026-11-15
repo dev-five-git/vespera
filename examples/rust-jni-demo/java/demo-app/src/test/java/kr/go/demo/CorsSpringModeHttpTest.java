@@ -1,5 +1,6 @@
 package kr.go.demo;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.net.URI;
@@ -38,6 +39,7 @@ class CorsSpringModeHttpTest extends AbstractVesperaHttpIntegrationTest {
         HttpResponse<String> response =
                 HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
 
+        assertEquals(200, response.statusCode(), "Spring answered the preflight");
         assertTrue(response.headers().firstValue("Access-Control-Allow-Origin").isEmpty(), "no CORS config in Spring");
         assertTrue(response.headers().firstValue("X-Request-Id").isEmpty(), "the proxy never ran");
     }

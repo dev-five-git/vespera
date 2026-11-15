@@ -13,7 +13,10 @@ import java.lang.System.Logger.Level;
  * before {@link VesperaBridge#init(String)} is stored and applied right after
  * the native library loads (before any dispatch); a value set afterwards is
  * applied immediately.  Precedence: programmatic &gt; system property &gt;
- * Rust-side environment variable &gt; built-in default.
+ * Rust-side environment variable &gt; built-in default — for a programmatic
+ * value set before {@code init}: {@link #applyAfterLoad} hands the system
+ * property to the first-wins Rust setter at {@code init}, so a later
+ * programmatic value for a knob whose property is set is refused.
  *
  * <p>Every hook returns whether the Rust side applied the value.  A
  * {@code false} (the setting was already fixed — e.g. the runtime already

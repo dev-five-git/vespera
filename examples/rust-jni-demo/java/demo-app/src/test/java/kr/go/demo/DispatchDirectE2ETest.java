@@ -97,6 +97,9 @@ class DispatchDirectE2ETest {
         // and prove the out buffer really grew: the view shares its capacity.
         VesperaBridge.clearCurrentThreadBuffers();
         ByteBuffer view = VesperaBridge.dispatchDirectPooled(echoWire(randomBody(100 * 1024, 2)), true);
+        // Direct: the heap fallback (ByteBuffer.wrap of a dispatchBytes copy)
+        // would also have a capacity above 64 KiB.
+        assertTrue(view.isDirect(), "served from the pooled direct out buffer");
         assertTrue(view.capacity() > 64 * 1024,
                 "out buffer grew past the 64 KiB initial capacity: " + view.capacity());
         assertDirectMatchesBytes(100 * 1024, 2);

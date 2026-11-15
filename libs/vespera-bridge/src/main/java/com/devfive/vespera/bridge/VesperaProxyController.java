@@ -481,12 +481,16 @@ public class VesperaProxyController {
     }
 
     /**
-     * Largest body for which {@link #readBody} trusts {@code
-     * Content-Length} enough to pre-allocate the exact array.  Beyond
-     * this (or for unknown length) it falls back to {@code readAllBytes},
-     * which grows with the bytes actually present — so a lying / huge
-     * {@code Content-Length} header cannot force a giant up-front
-     * allocation.
+     * Built-in bound (64 MiB) of {@link #readBufferedBody} when
+     * {@code vespera.bridge.max-buffered-request-bytes} is {@code 0}
+     * (unlimited).  Up to it, a known {@code Content-Length} is trusted for
+     * one exact allocation; an unknown length is read with a bounded
+     * {@code readNBytes(MAX_FIXED_BODY + 1)} and answered {@code 413} above
+     * it (the message then names this bound, as the effective cap); a known
+     * length above it is read up to the single-array ceiling
+     * ({@link #MAX_BUFFERED_BODY}), stopping at the actual
+     * {@code Content-Length}.  With a positive cap every read is bounded by
+     * that cap instead.
      */
     private static final int MAX_FIXED_BODY = 64 * 1024 * 1024;
 
@@ -621,7 +625,11 @@ public class VesperaProxyController {
 
     static void rejectAboveDefaultBufferedLimit(long bodyLength) {
         if (bodyLength > MAX_FIXED_BODY) {
-            throw payloadTooLarge(bodyLength, MAX_FIXED_BODY);
+            throw new ResponseStatusException(
+                    CONTENT_TOO_LARGE,
+                    "buffered request body of unknown length exceeds the built-in " + MAX_FIXED_BODY
+                            + "-byte bound (vespera.bridge.max-buffered-request-bytes=0; actual "
+                            + bodyLength + " bytes)");
         }
     }
 
@@ -971,20 +979,9 @@ public class VesperaProxyController {
      * (NOT the Tokio completion thread), so the cap check stays off the native
      * worker. Package-private + static so the cap wiring is unit-testable
      * without a live JNI dispatch.
+     * The body is a zero-copy view
+     * ({@link WireResponseWriter#buildAsyncResponseEntityFromWire}).
      */
-    static ResponseEntity<?> buildCappedResponseEntityFromWire(
-            byte[] wire, String method, long maxBufferedResponseBytes) {
-        return buildCappedResponseEntityFromWire(wire, method, maxBufferedResponseBytes, null);
-    }
-
-    static ResponseEntity<?> buildCappedResponseEntityFromWire(
-            byte[] wire, String method, long maxBufferedResponseBytes,
-            ProxyServletResponse response) {
-        rejectOversizedBufferedResponse(wire, maxBufferedResponseBytes);
-        return WireResponseWriter.buildResponseEntityFromWire(wire, method, response);
-    }
-
-    /** As {@link #buildCappedResponseEntityFromWire}, with a zero-copy body view. */
     static ResponseEntity<?> buildCappedAsyncResponseEntity(
             byte[] wire, String method, long maxBufferedResponseBytes,
             ProxyServletResponse response) {

@@ -26,6 +26,13 @@ import com.devfive.vespera.bridge.VesperaBridge.DecodedResponse;
  * like the proxy. Query parameters are percent-encoded (UTF-8, RFC 3986;
  * a space becomes {@code %20}).
  *
+ * <p>Header values use the wire's Latin-1 mapping, like a servlet container:
+ * a value whose characters are all {@code <= U+00FF} travels as one byte per
+ * character, so {@code "café"} reaches Rust as the single byte
+ * {@code 0xE9} (not UTF-8; {@code HeaderValue::to_str()} rejects it), while a
+ * value with any wider character is sent as UTF-8. Percent- or RFC 8187-encode
+ * non-ASCII text for a portable result.
+ *
  * <p>The body is raw bytes: {@link #json(String)} sends the string as-is
  * with {@code content-type: application/json} — the bridge never serialises
  * or parses domain JSON. A builder is not thread-safe; a buffered request
@@ -117,13 +124,19 @@ public final class VesperaRequest {
 
     // ── Headers ──────────────────────────────────────────────────────
 
-    /** Set header {@code name} (case-insensitive) to {@code value}, replacing any previous value. */
+    /**
+     * Set header {@code name} (case-insensitive) to {@code value}, replacing any
+     * previous value. Non-ASCII values follow the Latin-1 mapping (class docs).
+     */
     public VesperaRequest header(String name, String value) {
         headers.put(headerName(name), checkHeaderValue(value));
         return this;
     }
 
-    /** Add a value to header {@code name}, joining with {@code ", "} ({@code "; "} for cookie). */
+    /**
+     * Add a value to header {@code name}, joining with {@code ", "} ({@code "; "}
+     * for cookie). Non-ASCII values follow the Latin-1 mapping (class docs).
+     */
     public VesperaRequest addHeader(String name, String value) {
         String key = headerName(name);
         String v = checkHeaderValue(value);

@@ -167,7 +167,7 @@ public class DemoApplication {
 
 1. `vespera::jni_app!` generates `JNI_OnLoad` → calls `vespera::inprocess::register_app(create_app)`
 2. Java calls `VesperaBridge.init("rust_jni_demo")` → loads cdylib → triggers `JNI_OnLoad`
-3. `VesperaProxyController` catches all HTTP requests → encodes them into the **binary wire format** → the autoconfigured `SmartDispatchModeResolver` (default since vespera-bridge 0.2) picks a dispatch mode per request: `DIRECT` (direct `ByteBuffer`s, `VesperaBridge.dispatchDirect`) for small / bodyless idempotent requests, `SYNC` (`VesperaBridge.dispatchBytes(byte[])`) for small non-idempotent ones, and the streaming modes for SSE / NDJSON `Accept` or large / unknown-length bodies
+3. `VesperaProxyController` catches all HTTP requests → encodes them into the **binary wire format** → the autoconfigured `SmartDispatchModeResolver` (default since vespera-bridge 0.2) picks a dispatch mode per request: `DIRECT` (direct `ByteBuffer`s, `VesperaBridge.dispatchDirect`) for small / bodyless safe requests (GET / HEAD / OPTIONS), `SYNC` (`VesperaBridge.dispatchBytes(byte[])`) for small unsafe ones (POST / PUT / PATCH / DELETE), and the streaming modes for SSE / NDJSON `Accept` or large / unknown-length bodies
 4. The JNI symbol delegates to `vespera_inprocess` (e.g. `dispatch_from_bytes()` for `SYNC`)
 5. The dispatcher parses the wire header, looks up the cached `Router`, and runs `router.oneshot(request)` with the raw body bytes
 6. Response wire bytes flow back the same way; the controller parses status + headers straight from the wire via `WireHeaderReader` and writes the body to the servlet response for every content type (the wire header carries the exact `Content-Type`, written verbatim — no UTF-8 round-trip)

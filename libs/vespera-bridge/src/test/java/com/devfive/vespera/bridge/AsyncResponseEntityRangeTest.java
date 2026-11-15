@@ -16,11 +16,11 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * The buffered response entities — the ASYNC one (a zero-copy
- * {@code InputStreamResource}, {@code /streamed}) and the {@code byte[]} one
- * ({@code /file}) — must be served exactly like SYNC / DIRECT: no {@code 206}
- * for a {@code Range} request, no {@code Accept-Ranges}, and the Rust
- * {@code Content-Type} untouched.
+ * The ASYNC response entity (a zero-copy {@code InputStreamResource}) —
+ * built directly ({@code /streamed}) and through the capped builder the
+ * controller's ASYNC flow calls ({@code /file}) — must be served exactly like
+ * SYNC / DIRECT: no {@code 206} for a {@code Range} request, no
+ * {@code Accept-Ranges}, and the Rust {@code Content-Type} untouched.
  */
 class AsyncResponseEntityRangeTest {
 
@@ -33,10 +33,10 @@ class AsyncResponseEntityRangeTest {
     @RestController
     static class WireController {
         @GetMapping("/file")
-        ResponseEntity<byte[]> file() {
-            return WireResponseWriter.buildResponseEntityFromWire(wire(
+        ResponseEntity<?> file() {
+            return VesperaProxyController.buildCappedAsyncResponseEntity(wire(
                     "{\"status\":200,\"headers\":{\"content-type\":\"text/csv\"}}", "a,b,c\n1,2,3\n"),
-                    "GET");
+                    "GET", 0, null);
         }
 
         @GetMapping("/streamed")
