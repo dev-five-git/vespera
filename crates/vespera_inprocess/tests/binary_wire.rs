@@ -51,6 +51,27 @@ async fn echo_bytes(headers: HeaderMap, body: Bytes) -> Response {
     ([(header::CONTENT_TYPE, ct)], body).into_response()
 }
 
+/// Echo the body and report the request body's frame layout as it reached
+/// the handler: `x-frames` (data frames) and `x-max-frame` (largest one).
+async fn echo_frames(mut body: axum::body::Body) -> Response {
+    use http_body_util::BodyExt;
+    let (mut out, mut frames, mut max) = (Vec::new(), 0usize, 0usize);
+    while let Some(frame) = body.frame().await {
+        let data = frame.unwrap().into_data().unwrap();
+        frames += 1;
+        max = max.max(data.len());
+        out.extend_from_slice(&data);
+    }
+    (
+        [
+            ("x-frames", frames.to_string()),
+            ("x-max-frame", max.to_string()),
+        ],
+        out,
+    )
+        .into_response()
+}
+
 async fn query(Query(q): Query<PingQuery>) -> String {
     q.msg.unwrap_or_default()
 }
@@ -69,6 +90,7 @@ fn test_router() -> Router {
         .route("/ping", get(ping))
         .route("/echo/text", post(echo_text))
         .route("/echo/bytes", post(echo_bytes))
+        .route("/echo/frames", post(echo_frames))
         .route("/query", get(query))
         .route("/multi", get(multi_header))
 }
@@ -607,15 +629,16 @@ async fn dispatch_bidirectional_streaming_large_request_body() {
 /// (`streaming_chunk_bytes`, default 256 KiB) must be split into bounded
 /// pieces on the wire into the mpsc channel — otherwise one oversized chunk
 /// occupies a slot at its full size, defeating the `slots * chunk_bytes`
-/// memory bound. This pins that the split preserves the body **byte-for-byte
-/// and in order** (a broken split would corrupt or reorder the echo).
+/// memory bound. This pins that the handler sees no frame above the cap and
+/// that the split preserves the body **byte-for-byte and in order** (a
+/// broken split would corrupt or reorder the echo).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dispatch_bidirectional_streaming_oversized_chunk_splits_and_roundtrips() {
     install_router();
 
     let header_only_wire = encode_wire(
         "POST",
-        "/echo/bytes",
+        "/echo/frames",
         None,
         HashMap::from([("content-type", "application/octet-stream")]),
         &[],
@@ -624,7 +647,7 @@ async fn dispatch_bidirectional_streaming_oversized_chunk_splits_and_roundtrips(
     // ONE chunk of 1 MiB — 4x the 256 KiB default cap, so the producer must
     // emit it as several bounded pieces. A position-dependent pattern makes
     // any reorder/truncation in the split path fail the byte-for-byte assert.
-    let total_size = 1024 * 1024;
+    let total_size: usize = 1024 * 1024;
     let oversized: Vec<u8> = (0..total_size)
         .map(|i| u8::try_from(i % 256).expect("mod 256"))
         .collect();
@@ -657,6 +680,18 @@ async fn dispatch_bidirectional_streaming_oversized_chunk_splits_and_roundtrips(
 
     let (header, _) = decode_wire(&header_bytes);
     assert_eq!(header["status"].as_u64(), Some(200));
+
+    let cap = vespera_inprocess::streaming_chunk_bytes();
+    let frame_header =
+        |name: &str| -> usize { header["headers"][name].as_str().unwrap().parse().unwrap() };
+    assert!(
+        frame_header("x-max-frame") <= cap,
+        "a request frame exceeded the {cap}-byte cap: {header}"
+    );
+    assert!(
+        frame_header("x-frames") >= total_size.div_ceil(cap),
+        "the 1 MiB chunk was not split: {header}"
+    );
 
     let final_body = received.lock().unwrap().clone();
     assert_eq!(final_body.len(), expected.len(), "size match after split");

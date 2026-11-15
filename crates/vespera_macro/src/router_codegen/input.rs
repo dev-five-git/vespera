@@ -467,7 +467,10 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
         let value: LitStr = content.parse()?;
 
         match field_name.as_str() {
-            "name" => name = Some(value.value()),
+            "name" => {
+                super::security_dsl::require_component_key(&value)?;
+                name = Some(value.value());
+            }
             "type" => scheme_type = Some(parse_security_scheme_type(&value)?),
             "description" => description = Some(value.value()),
             "header_name" => header_name = Some(value.value()),

@@ -702,9 +702,11 @@ fn bench_request_headers_path(c: &mut Criterion) {
     let runtime = Runtime::new().expect("tokio runtime");
     let mut group = c.benchmark_group("request_headers_path");
 
-    // Realistic request headers (browser / proxy shape).  content-type is
-    // present (so a POST extractor is satisfied) but sorts into the middle
-    // of the JSON object, mirroring how a real header set is scanned.
+    // Realistic request headers (browser / proxy shape); each rung takes the
+    // first `n`.  content-type sits in the middle of the list, mirroring how
+    // a real header set is scanned, so the 8 / 16 rungs carry it explicitly
+    // while the 1 rung (`host` only) takes the injected
+    // `application/json` default path (`set_default_json_content_type`).
     let all_headers: &[(&str, &str)] = &[
         ("host", "api.example.com"),
         ("user-agent", "Mozilla/5.0 (bench) Gecko/20100101"),

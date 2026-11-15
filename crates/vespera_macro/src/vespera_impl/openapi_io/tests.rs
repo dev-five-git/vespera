@@ -10,9 +10,6 @@ use crate::env_access::test_env::{self, EnvGuard};
 use crate::router_codegen::InfoArgs;
 use crate::vespera_impl::cache::hash_str;
 
-/// A fresh tempdir posing as `CARGO_MANIFEST_DIR` for this test thread only,
-/// so the `target/vespera/` spec sidecars `generate_and_write_openapi` writes
-/// never collide with another concurrently running test's.
 /// The `vespera` sidecar directory the code under test resolves for the
 /// crate at `manifest` (`find_target_dir`, so `CARGO_TARGET_DIR` /
 /// `VESPERA_TARGET_DIR` are honoured like in the build).
@@ -20,6 +17,9 @@ fn vespera_dir_of(manifest: &std::path::Path) -> std::path::PathBuf {
     find_target_dir(manifest).join("vespera")
 }
 
+/// A fresh tempdir posing as `CARGO_MANIFEST_DIR` for this test thread only,
+/// so any `target/vespera/` file the code under test resolves never collides
+/// with another concurrently running test's.
 fn isolated_target() -> (TempDir, EnvGuard) {
     let dir = TempDir::new().expect("Failed to create temp dir");
     let guard = test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
