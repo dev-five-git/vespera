@@ -10,6 +10,16 @@ schema_type!(CreateUuidItemRequest from crate::models::uuid_item::Model, omit_de
 // A source path written through this module's import (`uuid_item::Model`)
 // resolves through it; it used to be read as `crate::uuid_item`.
 schema_type!(UuidItemName from uuid_item::Model, pick = ["id", "name"]);
+// A cross-file `DateTimeLocal` field with a `NOW()` default: the value
+// depends on the server's offset, so no OpenAPI default is advertised, yet
+// the DTO compiles and serde fills an omitted `created_at`.
+schema_type!(ClockDto from crate::models::clock::Model);
+
+/// Echo a clock, filling an omitted `createdAt` with the epoch
+#[vespera::route(post, path = "/clock", tags = ["uuid_items"])]
+pub async fn echo_clock(Json(clock): Json<ClockDto>) -> Json<ClockDto> {
+    Json(clock)
+}
 
 /// List all UUID items
 #[vespera::route(get, tags = ["uuid_items"])]

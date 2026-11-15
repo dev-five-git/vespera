@@ -2,6 +2,7 @@ pub mod api;
 pub mod bakery;
 pub mod cake;
 pub mod category;
+pub mod clock;
 pub mod config;
 pub mod cycle_a;
 pub mod cycle_b;

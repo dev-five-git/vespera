@@ -35,6 +35,21 @@ pub struct TestUserCamelCase {
     pub email_address: String,
 }
 
+/// `schema_type!` of a cross-file model whose `DateTimeLocal` field has a
+/// `NOW()` default compiles (no OpenAPI default is advertised for a
+/// machine-dependent value) and serde fills the omitted field with the epoch.
+#[tokio::test]
+async fn test_schema_type_local_now_default() {
+    let server = TestServer::new(create_app().await);
+    let response = server.post("/uuid-items/clock").json(&json!({ "id": 7 })).await;
+    response.assert_status_ok();
+    let clock: serde_json::Value = response.json();
+    assert_eq!(clock["id"], 7);
+    let created_at = clock["createdAt"].as_str().unwrap();
+    let parsed = vespera::chrono::DateTime::parse_from_rfc3339(created_at).unwrap();
+    assert_eq!(parsed.timestamp(), 0, "{created_at}");
+}
+
 #[test]
 fn test_schema_macro_full() {
     // Generate full schema for TestUser

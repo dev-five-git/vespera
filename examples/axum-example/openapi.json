@@ -2971,6 +2971,37 @@
         }
       }
     },
+    "/uuid-items/clock": {
+      "post": {
+        "operationId": "echo_clock",
+        "tags": [
+          "uuid_items"
+        ],
+        "summary": "Echo a clock, filling an omitted `createdAt` with the epoch",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClockDtoInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClockDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/validated/pages/{page}": {
       "get": {
         "operationId": "validated_page",
@@ -3896,6 +3927,44 @@
           "id",
           "name"
         ]
+      },
+      "ClockDto": {
+        "type": "object",
+        "description": "Clock model: a server-local `NOW()` timestamp (`DateTimeLocal`).",
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Created at (server-local time)"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Clock ID",
+            "default": 0
+          }
+        },
+        "required": [
+          "id",
+          "createdAt"
+        ]
+      },
+      "ClockDtoInput": {
+        "type": "object",
+        "description": "Clock model: a server-local `NOW()` timestamp (`DateTimeLocal`).",
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Created at (server-local time)"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Clock ID",
+            "default": 0
+          }
+        }
       },
       "ComplexStructBody": {
         "type": "object",
