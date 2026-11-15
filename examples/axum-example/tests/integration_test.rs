@@ -16,6 +16,18 @@ async fn test_health_endpoint() {
     response.assert_text("ok");
 }
 
+/// `/memos/{id}/rel` loads relations from the database; a failed query is
+/// answered `500` with the error text instead of panicking the handler.
+#[tokio::test]
+async fn test_memo_rel_query_failure_is_a_500() {
+    let server = TestServer::new(create_app().await);
+
+    let response = server.get("/memos/1/rel").await;
+
+    response.assert_status(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(!response.text().is_empty());
+}
+
 /// A `macro_rules!`-generated route is mounted (its file never spells the
 /// declaration out for the stale-entry filter to find).
 #[tokio::test]

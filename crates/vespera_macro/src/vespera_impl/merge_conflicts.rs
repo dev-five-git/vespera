@@ -39,14 +39,19 @@ pub(super) fn doc_routes(
 
 /// Return a compile error for the first route claimed twice across the app's
 /// handlers, its documentation routes and its merged children.
+///
+/// On success, the `#[cfg(..)] compile_error!` statements for `#[cfg]`-gated
+/// routes that overlap a merged child's route: axum panics on the merge
+/// whenever such a route is compiled in (an overlap with the app's own or
+/// documentation routes is reported by the router generator instead).
 pub(super) fn check_merge_route_conflicts(
     metadata: &CollectedMetadata,
     doc_routes: &[(&str, &str)],
     merge: &[syn::Path],
     merge_specs: &mut MergeSpecCache,
-) -> syn::Result<()> {
+) -> syn::Result<Vec<proc_macro2::TokenStream>> {
     if merge.is_empty() && doc_routes.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let mut claims = RouteClaims::default();
     for route in &metadata.routes {
@@ -66,6 +71,7 @@ pub(super) fn check_merge_route_conflicts(
             )
         })?;
     }
+    let own = claims.clone();
     for merge_path in merge {
         let Some((_, spec_file)) = merge_specs.spec_file_for(merge_path) else {
             continue;
@@ -95,7 +101,46 @@ pub(super) fn check_merge_route_conflicts(
             }
         }
     }
-    Ok(())
+    Ok(gated_child_conflicts(metadata, &own, &claims))
+}
+
+/// `#[cfg(all(..))] compile_error!(..);` for every gated route that `own`
+/// (the app's ungated and documentation routes) accepts but `all` (those plus
+/// the merged children's routes) rejects.
+fn gated_child_conflicts(
+    metadata: &CollectedMetadata,
+    own: &RouteClaims,
+    all: &RouteClaims,
+) -> Vec<proc_macro2::TokenStream> {
+    metadata
+        .cfg_routes
+        .iter()
+        .filter(|route| own.clone().claim(&route.method, &route.path, "").is_ok())
+        .filter_map(|route| {
+            let handler = if route.module_path.is_empty() {
+                route.function_name.clone()
+            } else {
+                format!("{}::{}", route.module_path, route.function_name)
+            };
+            let owner = format!("`{handler}` (`#[cfg]`-gated route)");
+            let conflict = all
+                .clone()
+                .claim(&route.method, &route.path, &owner)
+                .err()?;
+            let route_name = format!("{} {}", route.method.to_ascii_uppercase(), route.path);
+            let message = format!(
+                "vespera! macro: {} — axum panics when merging overlapping routes; remove one \
+                 or give the child app a distinct `export_app!(..., prefix = \"...\")`",
+                describe(&conflict, &route_name, &owner)
+            );
+            let predicates = route.cfg.iter().map(|predicate| {
+                predicate
+                    .parse::<proc_macro2::TokenStream>()
+                    .unwrap_or_default()
+            });
+            Some(quote::quote!(#[cfg(all(#(#predicates),*))] ::core::compile_error!(#message);))
+        })
+        .collect()
 }
 
 /// `route` (as `METHOD /path` or `/path`) claimed by `owner` against `conflict`.
@@ -179,6 +224,7 @@ mod tests {
         metadata.routes = parent.iter().map(|(m, p)| route(m, p)).collect();
         let mut merge_specs = MergeSpecCache::new();
         check_merge_route_conflicts(&metadata, docs, &merge, &mut merge_specs)
+            .map(drop)
             .map_err(|e| e.to_string())
     }
 
@@ -330,5 +376,56 @@ mod tests {
         let _manifest = crate::env_access::test_env::remove_var("CARGO_MANIFEST_DIR");
         check_merge_route_conflicts(&metadata, &[], &missing, &mut MergeSpecCache::new()).unwrap();
         check_merge_route_conflicts(&metadata, &[], &[], &mut MergeSpecCache::new()).unwrap();
+    }
+
+    /// A `#[cfg]`-gated route on a merged child's route is a
+    /// `compile_error!` under the route's own `#[cfg]`; one that overlaps the
+    /// app's own routes is left to the router generator, and a distinct one
+    /// passes.
+    #[test]
+    fn gated_routes_are_checked_against_merged_children() {
+        let temp_dir = TempDir::new().unwrap();
+        let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
+        let vespera_dir =
+            crate::vespera_impl::path_utils::find_target_dir(temp_dir.path()).join("vespera");
+        fs::create_dir_all(&vespera_dir).unwrap();
+        fs::write(
+            super::super::merge_lookup::child_spec_path(&vespera_dir, "child", "OpsApp"),
+            spec(&[("get", "/health")]),
+        )
+        .unwrap();
+        let merge = [syn::parse_str::<syn::Path>("child::OpsApp").unwrap()];
+        let gated = |path: &str, module_path: &str| crate::metadata::CfgRoute {
+            cfg: vec!["feature = \"ops\"".to_owned()],
+            method: "get".to_owned(),
+            path: path.to_owned(),
+            module_path: module_path.to_owned(),
+            function_name: "health".to_owned(),
+            file_path: "src/routes/ops.rs".to_owned(),
+        };
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(route("get", "/users"));
+        metadata.cfg_routes = vec![
+            gated("/health", "routes::ops"),
+            gated("/users", "routes::ops"),
+            gated("/other", ""),
+        ];
+        let errors =
+            check_merge_route_conflicts(&metadata, &[], &merge, &mut MergeSpecCache::new())
+                .unwrap();
+        let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].starts_with("# [cfg (all (feature = \"ops\"))] :: core :: compile_error !"),
+            "{}",
+            errors[0]
+        );
+        assert!(
+            errors[0].contains(
+                "route `GET /health` is served by both merged app `child::OpsApp` and `routes::ops::health` (`#[cfg]`-gated route)"
+            ),
+            "{}",
+            errors[0]
+        );
     }
 }

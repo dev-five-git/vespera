@@ -14,6 +14,7 @@ use vespera::{
     axum::{
         Json,
         extract::{Path, State},
+        http::StatusCode,
     },
     schema_type,
 };
@@ -142,11 +143,11 @@ pub async fn get_memo(Path(id): Path<i32>) -> Json<MemoResponse> {
     Json(model.into())
 }
 
-#[vespera::route(get, path = "/{id}/rel")]
+#[vespera::route(get, path = "/{id}/rel", error_status = [500])]
 pub async fn get_memo_rel(
     Path(id): Path<i32>,
     State(app_state): State<Arc<AppState>>,
-) -> Json<MemoResponseRel> {
+) -> Result<Json<MemoResponseRel>, (StatusCode, String)> {
     // In real app, this would be a DB query returning Model
     // schema_type! generates From<Model> for MemoResponse, so .into() works
     let now: vespera::chrono::DateTime<vespera::chrono::FixedOffset> =
@@ -160,11 +161,13 @@ pub async fn get_memo_rel(
         created_at: now,
         updated_at: now,
     };
-    Json(
-        MemoResponseRel::from_model(model, app_state.db.as_ref())
-            .await
-            .unwrap(),
-    )
+    // The relation loads query the database (the example's in-memory one has
+    // no `user` / `memo_comment` tables): a failed query is a `500`, never a
+    // handler panic.
+    MemoResponseRel::from_model(model, app_state.db.as_ref())
+        .await
+        .map(Json)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
 }
 
 #[vespera::route(get, path = "/{id}/detail")]

@@ -66,10 +66,19 @@ async fn container_conversions_round_trip(
     assert_eq!(response.json::<Value>(), expected);
 }
 
+/// Input outside the documented `"#rrggbb"` / lower-case hex shapes is
+/// rejected — a sign is no hex digit (`"#+f+f+f"` decoded as `#0f0f0f`).
+#[rstest]
+#[case::not_a_colour("/codecs/color", json!("red"))]
+#[case::signed_colour("/codecs/color", json!("#+f+f+f"))]
+#[case::signed_checksum(
+    "/codecs/times",
+    json!({"createdAt": 1_700_000_000, "expiresAt": null, "checksum": "+f+f"})
+)]
 #[tokio::test]
-async fn invalid_try_from_input_is_rejected() {
+async fn invalid_try_from_input_is_rejected(#[case] path: &str, #[case] body: Value) {
     let server = TestServer::new(create_app().await);
-    let response = server.post("/codecs/color").json(&json!("red")).await;
+    let response = server.post(path).json(&body).await;
     response.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
 }
 

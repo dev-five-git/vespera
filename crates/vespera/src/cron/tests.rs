@@ -18,6 +18,13 @@ static DRAIN_STARTED: AtomicUsize = AtomicUsize::new(0);
 static DRAIN_FINISHED: AtomicUsize = AtomicUsize::new(0);
 static HANG_STARTED: AtomicUsize = AtomicUsize::new(0);
 static STOPPED_TICKS: AtomicUsize = AtomicUsize::new(0);
+static NO_TIMER_TICKS: AtomicUsize = AtomicUsize::new(0);
+
+fn no_timer_tick() -> JobFuture {
+    Box::pin(async {
+        NO_TIMER_TICKS.fetch_add(1, Ordering::SeqCst);
+    })
+}
 
 fn tick() -> JobFuture {
     Box::pin(async {
@@ -402,6 +409,25 @@ fn start_without_runtime_uses_background_thread() {
     assert!(tokio::runtime::Handle::try_current().is_err());
     start([CronJob::new("* * * * * *", no_runtime_tick)]);
     assert!(wait_for(&NO_RUNTIME_TICKS, 1), "job never fired");
+}
+
+/// A current runtime without the time driver would kill every scheduler at
+/// its first `sleep`: the jobs move to the dedicated scheduler thread.
+#[test]
+fn start_on_a_runtime_without_timers_uses_background_thread() {
+    let no_timers = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    no_timers.block_on(async {
+        assert!(!timers_enabled());
+        start([CronJob::new("* * * * * *", no_timer_tick)]);
+    });
+    assert!(wait_for(&NO_TIMER_TICKS, 1), "job never fired");
+    let timers = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    assert!(timers.block_on(async { timers_enabled() }));
 }
 
 /// The scheduler thread drains its scheduler tasks and exits once every

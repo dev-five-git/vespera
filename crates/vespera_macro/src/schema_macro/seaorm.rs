@@ -137,7 +137,8 @@ pub struct Model {
         assert!(output.contains("UserSchema"));
         assert!(output.contains("profile"));
         // HasOne with required FK should have Box<...> (not Option<Box<...>>)
-        assert!(output.contains("Box <"));
+        assert!(output.contains("pub profile : Box <"), "{output}");
+        assert!(!output.contains("Option < Box"), "{output}");
     }
 
     #[test]

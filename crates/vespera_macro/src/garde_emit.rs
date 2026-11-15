@@ -329,7 +329,7 @@ fn emit_rule_blocks(
                 return quote! { #(#blocks)* };
             }
         };
-        blocks.push(quote! {
+        let range = quote! {
             if let ::std::result::Result::Err(__garde_error) =
                 (::vespera::__validation::garde::rules::range::apply)(
                     __garde_binding,
@@ -338,7 +338,27 @@ fn emit_rule_blocks(
             {
                 __garde_report.append(__garde_path(), __garde_error);
             }
-        });
+        };
+        // An aliased field's fractional bound saturates into its type's range
+        // (`minimum = 300.5` on `type Small = u8` would admit `255`); reject a
+        // bound no value of the type reaches before the range rule runs.
+        let fractional = |value: Option<f64>, exact: Option<ExactInt>| match value {
+            Some(v) if numeric_kind.is_none() && exact.is_none() => {
+                quote!(::std::option::Option::Some(#v))
+            }
+            _ => quote!(::std::option::Option::None),
+        };
+        let unreachable_min = fractional(c.minimum, exact.minimum);
+        let unreachable_max = fractional(c.maximum, exact.maximum);
+        let has_fractional = numeric_kind.is_none()
+            && (exact.minimum.is_none() && c.minimum.is_some()
+                || exact.maximum.is_none() && c.maximum.is_some());
+        let guard = if has_fractional {
+            quote! { if let ::std::option::Option::Some(__garde_error) = ::vespera::__validation::range_unsatisfiable(__garde_binding, #unreachable_min, #unreachable_max) { __garde_report.append(__garde_path(), __garde_error); } else }
+        } else {
+            TokenStream::new()
+        };
+        blocks.push(quote! { #guard #range });
     }
 
     // ── Pattern (pattern = "..." → static LazyLock<Regex>) ────────────
@@ -659,9 +679,10 @@ const fn integer_range(kind: &str) -> Option<(i128, u128)> {
 ///
 /// Integer fields get a range-checked, suffixed integer literal (a bound the
 /// type cannot hold is a compile error rather than a wrapping `as` cast);
-/// float fields keep the declared value; unknown types (an alias) convert a
-/// fractional bound through `vespera::__validation::RangeBound`, which rounds
-/// inward for an integer target and keeps the value for a float one.
+/// float fields keep the declared value; unknown types (an alias) convert
+/// every bound through `vespera::__validation::RangeBound`, which rounds a
+/// fractional bound inward for an integer target and keeps it for a float
+/// one, and takes an integer literal in the target's own type.
 #[cfg(feature = "validation")]
 fn numeric_some(
     value: Option<f64>,
@@ -680,17 +701,22 @@ fn numeric_some(
         return Err(format!("`{key}` must be a finite number (got {v})"));
     }
     let Some(kind) = numeric_kind else {
-        // Unknown numeric kind (a type alias, a newtype): an integer literal
-        // stays unsuffixed so the compiler types and range-checks it; a
-        // fractional one goes through `RangeBound`, typed by the field (an
-        // `as _` cast truncated `minimum = 0.5` on `type Count = u32` to 0).
-        // A non-numeric field type is a compiler error at the field.
+        // Unknown numeric kind (a type alias, a newtype): every bound goes
+        // through `RangeBound`, typed by the field. An integer literal is
+        // passed as `RangeBound::Literal` (the integer type itself, so the
+        // compiler still range-checks it; `i128` for a float, which a bare
+        // unsuffixed `0` never infers as); a fractional one is rounded inward
+        // for an integer target (an `as _` cast truncated `minimum = 0.5` on
+        // `type Count = u32` to 0). A non-numeric field type is a compiler
+        // error at the field.
         if let Some(exact) = exact {
             let literal: TokenStream = exact
                 .to_string()
                 .parse()
                 .expect("an integer literal is a valid token stream");
-            return Ok(quote! { ::std::option::Option::Some(#literal) });
+            return Ok(
+                quote! { ::std::option::Option::Some(<_ as ::vespera::__validation::RangeBound>::exact(#literal)) },
+            );
         }
         let convert = match bound {
             Bound::Min => quote!(min),

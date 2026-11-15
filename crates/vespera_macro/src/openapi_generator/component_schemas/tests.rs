@@ -562,6 +562,47 @@ fn ambiguous_alias_used_by_a_parsed_route_file() {
     assert!(check_ambiguous_aliases(&metadata, &file_cache, &[]).is_err());
 }
 
+/// A bare `responses = [(404, Foo)]` type is a use of the shared ident too;
+/// a module-qualified one picks its type and is not ambiguous.
+#[rstest::rstest]
+#[case::bare("Foo", true)]
+#[case::qualified("crate::b::Foo", false)]
+fn ambiguous_alias_used_by_a_typed_response(#[case] path: &str, #[case] ambiguous: bool) {
+    let mut metadata = CollectedMetadata::new();
+    metadata.structs = vec![
+        renamed("A", "Foo", "struct Foo { a: i32 }"),
+        renamed("B", "Foo", "struct Foo { b: i32 }"),
+    ];
+    let mut route = route_meta("/h", "h", "h.rs");
+    route.typed_responses = Some(vec![(404, path.to_string())]);
+    metadata.routes.push(route);
+    let result = check_ambiguous_aliases(&metadata, &HashMap::new(), &[]);
+    assert_eq!(result.is_err(), ambiguous, "{result:?}");
+}
+
+/// A module-qualified `responses` type that is no known schema keeps a
+/// dangling `$ref` to its last segment: `::` is not valid in a component key.
+#[test]
+fn unknown_qualified_typed_response_refs_its_last_segment() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let route_file = create_temp_file(
+        &temp_dir,
+        "h.rs",
+        "pub async fn h() -> String { String::new() }",
+    );
+    let mut metadata = CollectedMetadata::new();
+    let mut route = route_meta("/h", "h", &route_file.to_string_lossy());
+    route.typed_responses = Some(vec![(404, "crate::errors::NotFound".to_string())]);
+    metadata.routes.push(route);
+    let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
+    let json = serde_json::to_value(&doc.paths["/h"]).unwrap();
+    assert_eq!(
+        json["get"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/NotFound",
+        "{json}"
+    );
+}
+
 /// Two renamed types sharing a Rust ident each reference THEMSELVES through
 /// that ident (`TreeB.children` used to `$ref` the first-sorted `TreeA`).
 #[test]

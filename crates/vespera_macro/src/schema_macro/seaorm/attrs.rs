@@ -137,9 +137,22 @@ pub fn extract_sea_orm_default_value(attrs: &[syn::Attribute]) -> Option<String>
     })
 }
 
-/// Check if a `sea_orm(default_value)` is a SQL function.
+/// Check if a `sea_orm(default_value)` is a SQL function call: a (possibly
+/// schema-qualified) identifier followed by a parenthesised argument list —
+/// `now()`, `gen_random_uuid()`, `nextval('seq')`.  A text default that merely
+/// contains a parenthesis (`"N/A (unknown)"`, `":)"`) is a literal.
 pub fn is_sql_function_default(value: &str) -> bool {
-    value.contains('(')
+    let value = value.trim();
+    let Some((name, args)) = value.split_once('(') else {
+        return false;
+    };
+    let name = name.trim_end();
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        && args.ends_with(')')
 }
 
 /// Check if a field is a database-generated primary key:
@@ -378,6 +391,14 @@ mod tests {
     #[case("true", false)]
     #[case("draft", false)]
     #[case("active", false)]
+    #[case("now ()", true)]
+    #[case("nextval('seq')", true)]
+    #[case("pg_catalog.now()", true)]
+    #[case("N/A (unknown)", false)]
+    #[case("(none)", false)]
+    #[case(":)", false)]
+    #[case("now(", false)]
+    #[case("9lives()", false)]
     fn test_is_sql_function_default(#[case] value: &str, #[case] expected: bool) {
         assert_eq!(is_sql_function_default(value), expected);
     }

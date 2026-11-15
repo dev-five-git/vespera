@@ -154,8 +154,9 @@ pub struct RouteClaims {
     exact: HashMap<(String, String), String>,
     /// Path shape → (first spelling, its parameter names, owner).
     shapes: HashMap<String, (String, Vec<String>, String)>,
-    /// Shape prefix before a wildcard → (its kind, first path, owner).
-    wildcards: HashMap<String, (WildcardKind, String, String)>,
+    /// Shape prefix before a wildcard → (its kind, its parameter name, first
+    /// path, owner).
+    wildcards: HashMap<String, (WildcardKind, String, String, String)>,
 }
 
 impl RouteClaims {
@@ -196,12 +197,26 @@ impl RouteClaims {
                 previous: previous.clone(),
             });
         }
-        for (prefix, kind) in &positions {
-            if let Some((previous_kind, previous_path, previous)) = self.wildcards.get(prefix)
-                && ![*kind, *previous_kind].contains(&WildcardKind::Unknown)
-                && previous_kind != kind
-            {
+        for ((prefix, kind), name) in positions.iter().zip(&names) {
+            let Some((previous_kind, previous_name, previous_path, previous)) =
+                self.wildcards.get(prefix)
+            else {
+                continue;
+            };
+            let kinds = [*kind, *previous_kind];
+            if !kinds.contains(&WildcardKind::Unknown) && previous_kind != kind {
                 return Err(RouteConflict::WildcardKind {
+                    previous_path: previous_path.clone(),
+                    previous: previous.clone(),
+                });
+            }
+            // A template's final `{rest}` may be a catch-all `{*rest}`: then
+            // matchit refuses a differently named catch-all at that prefix.
+            if kinds.contains(&WildcardKind::Unknown)
+                && kinds.contains(&WildcardKind::CatchAll)
+                && previous_name != name
+            {
+                return Err(RouteConflict::ParamNames {
                     previous_path: previous_path.clone(),
                     previous: previous.clone(),
                 });
@@ -214,13 +229,11 @@ impl RouteClaims {
                 previous: previous.clone(),
             });
         }
-        for (prefix, kind) in positions {
-            let entry = self
-                .wildcards
-                .entry(prefix)
-                .or_insert_with(|| (kind, path.to_owned(), owner.to_owned()));
+        for ((prefix, kind), name) in positions.into_iter().zip(&names) {
+            let claim = || (kind, name.clone(), path.to_owned(), owner.to_owned());
+            let entry = self.wildcards.entry(prefix).or_insert_with(claim);
             if entry.0 == WildcardKind::Unknown {
-                *entry = (kind, path.to_owned(), owner.to_owned());
+                *entry = claim();
             }
         }
         self.shapes
@@ -344,6 +357,8 @@ mod template_tests {
     #[case::final_template_param_vs_param("/f/{id}", "/f/{id}", true)]
     #[case::template_first_then_catch_all("/f/{rest}", "/f/{*rest}", true)]
     #[case::non_final_template_param_vs_catch_all("/f/{*rest}", "/f/{id}/x", false)]
+    #[case::final_template_param_vs_other_catch_all("/f/{*path}", "/f/{rest}", false)]
+    #[case::template_first_then_other_catch_all("/f/{rest}", "/f/{*path}", false)]
     fn template_wildcards(#[case] first: &str, #[case] second: &str, #[case] compatible: bool) {
         let mut claims = RouteClaims::default();
         if first.contains('*') {
@@ -354,7 +369,7 @@ mod template_tests {
             claims.claim_template("get", first, "first").unwrap();
             assert_eq!(claims.claim("post", second, "second").is_ok(), compatible);
             // The real kind replaced the unknown one: a parameter now conflicts.
-            if second.contains('*') {
+            if compatible && second.contains('*') {
                 assert!(matches!(
                     claims.claim("put", "/f/{rest}", "third"),
                     Err(RouteConflict::WildcardKind { .. })

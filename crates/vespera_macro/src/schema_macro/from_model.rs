@@ -53,6 +53,19 @@ pub fn replace_last_ident(path: &TokenStream, from: Option<&str>, to: &str) -> T
     tokens.into_iter().collect()
 }
 
+/// The `Model` path behind a normalized relation `Schema` path: only the final
+/// segment is rewritten (`crate::SchemaDefs::user::Schema` →
+/// `crate::SchemaDefs::user::Model`) — a whole-string `replace` also renamed
+/// module segments starting with `Schema`, so the model lookup missed.
+pub(super) fn model_path_of(schema_path: &str) -> String {
+    match schema_path.rsplit_once("::") {
+        Some((module, last)) if last.starts_with("Schema") => {
+            format!("{module}::Model{}", &last["Schema".len()..])
+        }
+        _ => schema_path.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use quote::quote;
@@ -81,5 +94,14 @@ mod tests {
             snapshot_name,
             build_entity_path_from_schema_path(&schema_path, &[]).to_string()
         );
+    }
+
+    #[rstest]
+    #[case::plain("crate::models::user::Schema", "crate::models::user::Model")]
+    #[case::schema_module("crate::SchemaDefs::user::Schema", "crate::SchemaDefs::user::Model")]
+    #[case::custom_name("crate::user::UserSchema", "crate::user::UserSchema")]
+    #[case::bare("Schema", "Schema")]
+    fn model_path_of_rewrites_only_the_last_segment(#[case] schema: &str, #[case] model: &str) {
+        assert_eq!(model_path_of(schema), model);
     }
 }

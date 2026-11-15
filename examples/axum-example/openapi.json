@@ -1494,6 +1494,16 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "Error response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         }
       }

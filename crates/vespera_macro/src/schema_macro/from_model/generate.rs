@@ -144,7 +144,7 @@ fn relation_value(
     }
     if let Some((inline_type_name, included_fields)) = &rel.inline_type_info {
         // The related model (relations stripped) behind the inline type.
-        let model_path = normalize_token_str(schema_path).replace("::Schema", "::Model");
+        let model_path = super::model_path_of(&normalize_token_str(schema_path));
         let related = get_struct_from_schema_path(&model_path);
         let related_def = related.as_ref().map_or("", |s| s.definition.as_str());
         let construct =
@@ -168,7 +168,7 @@ fn relation_value(
     // `schema_type!` generating it decides (its `omit` / `pick` / `add`);
     // without one, a target `Model` with FK relations is taken to have them.
     let schema_str = normalize_token_str(schema_path);
-    let model_path = schema_str.replace("::Schema", "::Model");
+    let model_path = super::model_path_of(&schema_str);
     let related = get_struct_from_schema_path(&model_path);
     let related_def = related.as_ref().map_or("", |s| s.definition.as_str());
     let related_module = get_module_path_from_schema_path(schema_path);

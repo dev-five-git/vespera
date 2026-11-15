@@ -89,13 +89,19 @@ pub fn generate_schema_type_code(
     let storage_module = storage_hit.and_then(storage_module_path);
     // A re-export (`pub use user::User;` in `models`) names the same item.
     let requested = requested_module_path(&input.source_type);
-    let storage_trusted = match (&requested, &storage_module) {
-        (Some(requested), Some(defined_in)) => {
-            requested == defined_in
-                || reexported_module(requested, &source_type_name).as_ref() == Some(defined_in)
-        }
-        _ => true,
-    };
+    // A bare name resolves in the call-site file: a definition there wins
+    // over a same-named `#[derive(Schema)]` another file registered.
+    let local = storage_hit
+        .filter(|_| requested.is_none())
+        .and_then(|stored| call_site_definition(stored, &input.source_type, schema_name_hint));
+    let storage_trusted = local.is_none()
+        && match (&requested, &storage_module) {
+            (Some(requested), Some(defined_in)) => {
+                requested == defined_in
+                    || reexported_module(requested, &source_type_name).as_ref() == Some(defined_in)
+            }
+            _ => true,
+        };
     let struct_def = match storage_hit {
         Some(found) if storage_trusted => {
             // The defining file's module (else the absolute requested one),
@@ -106,7 +112,10 @@ pub fn generate_schema_type_code(
             }
             found
         }
-        _ => match find_struct_from_path_detailed(&input.source_type, schema_name_hint) {
+        _ => match local.map_or_else(
+            || find_struct_from_path_detailed(&input.source_type, schema_name_hint),
+            Ok,
+        ) {
             Ok((found, module_path)) => {
                 struct_def_owned = found;
                 source_module_path = module_path;
@@ -964,6 +973,26 @@ fn source_field_assignments(
 }
 
 mod multipart_carry;
+
+/// The call-site file's own definition of the bare source name, when the
+/// storage entry `stored` was derived in another file: the struct in scope at
+/// a bare `schema_type!(Dto from User)` is the local one, not a same-named
+/// `#[derive(Schema)]` of another module.  `None` without a call-site file
+/// (unit tests), for an entry of this file, or without a local definition.
+fn call_site_definition(
+    stored: &StructMetadata,
+    source: &syn::Type,
+    schema_name_hint: Option<&str>,
+) -> Option<(StructMetadata, Vec<String>)> {
+    let identity = stored.source_identity.as_deref()?;
+    let (located, _) = identity.rsplit_once('@')?;
+    let (file, _) = located.rsplit_once("::")?;
+    let call_site = proc_macro2::Span::call_site().local_file()?;
+    if std::path::Path::new(file) == call_site {
+        return None;
+    }
+    find_struct_from_path_detailed(source, schema_name_hint).ok()
+}
 
 #[cfg(test)]
 mod tests;

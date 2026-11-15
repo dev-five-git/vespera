@@ -156,14 +156,16 @@ pub fn process_vespera_macro(
     });
     stage("validate_sidecar_specs");
 
-    let (metadata, spec_tokens) = if let (Some(sidecars), Some(cache)) = (sidecars, cached) {
+    let (metadata, spec_tokens, gated_conflicts) = if let (Some(sidecars), Some(cache)) =
+        (sidecars, cached)
+    {
         let mut metadata = cache.metadata;
         finalize_metadata(&mut metadata, schema_storage, route_storage, "vespera!")?;
         stage("cache_branch_metadata_merge");
         // A cache hit only proves the parent's own sources are unchanged — a
         // child's routes can still collide with them.  Checked before any
         // file is written, so a failed build never replaces the spec.
-        check_merge_route_conflicts(
+        let gated_conflicts = check_merge_route_conflicts(
             &metadata,
             &doc_routes(processed),
             &processed.merge,
@@ -174,7 +176,7 @@ pub fn process_vespera_macro(
         ensure_openapi_files_from_cache(&processed.openapi_file_names, sidecars.pretty.as_deref())?;
         stage("ensure_openapi_files_from_cache");
 
-        (metadata, sidecars.spec_tokens)
+        (metadata, sidecars.spec_tokens, gated_conflicts)
     } else {
         // Borrow the pre-scanned `(path, mtime)` pairs as `&Path` — no
         // PathBuf clone of the whole file list per cache-miss expansion.
@@ -192,7 +194,7 @@ pub fn process_vespera_macro(
         // passed, so the check would be redundant.
         crate::parser::validate_schema_backed_extractors_with_cache(&metadata, &file_asts)?;
         stage("validate_schema_backed_extractors");
-        check_merge_route_conflicts(
+        let gated_conflicts = check_merge_route_conflicts(
             &metadata,
             &doc_routes(processed),
             &processed.merge,
@@ -236,27 +238,12 @@ pub fn process_vespera_macro(
         );
         stage("write_cache");
 
-        (metadata, spec_tokens)
+        (metadata, spec_tokens, gated_conflicts)
     };
-    let export_checks = merged_export_checks(&processed.merge, &merge_specs);
+    let mut export_checks = merged_export_checks(&processed.merge, &merge_specs);
+    export_checks.extend(gated_conflicts);
 
-    // --- Cron job discovery: CRON_STORAGE + module-tree scan fallback ---
-    // `#[cron]` attributes expanded before this macro registered themselves;
-    // jobs in modules rustc expands later are recovered by walking the crate's
-    // module tree (see `cron_discovery`). Per-crate snapshot, so a shared
-    // rust-analyzer proc-macro server never picks up another crate's jobs.
-    let cron_jobs = {
-        let storage = crate::cron_impl::current_crate_crons();
-        let storage = crate::macro_storage::retain_declared(&storage);
-        let src_dir = crate::env_access::var("CARGO_MANIFEST_DIR")
-            .ok()
-            // Without the `cron` feature no `#[cron]` is vespera's: never scan.
-            .filter(|_| cfg!(feature = "cron"))
-            .map(|dir| PathBuf::from(dir).join("src"));
-        let call_site = Span::call_site().local_file();
-        discover_cron_jobs(&storage, src_dir.as_deref(), call_site.as_deref())
-            .map_err(|message| syn::Error::new(Span::call_site(), message))?
-    };
+    let cron_jobs = current_crate_cron_jobs()?;
 
     let router = generate_router_code(
         &metadata,
@@ -283,6 +270,28 @@ pub fn process_vespera_macro(
     }
 
     result
+}
+
+/// The crate's `#[cron]` jobs: `CRON_STORAGE` + module-tree scan fallback.
+///
+/// `#[cron]` attributes expanded before this macro registered themselves;
+/// jobs in modules rustc expands later are recovered by walking the crate's
+/// module tree (see `cron_discovery`). Per-crate snapshot, so a shared
+/// rust-analyzer proc-macro server never picks up another crate's jobs.
+/// Both `vespera!` and `export_app!` schedule them (once per crate at
+/// runtime), so a crate that only exports an app still runs its jobs when a
+/// parent merges it.
+fn current_crate_cron_jobs() -> syn::Result<Vec<crate::metadata::CronMetadata>> {
+    let storage = crate::cron_impl::current_crate_crons();
+    let storage = crate::macro_storage::retain_declared(&storage);
+    let src_dir = crate::env_access::var("CARGO_MANIFEST_DIR")
+        .ok()
+        // Without the `cron` feature no `#[cron]` is vespera's: never scan.
+        .filter(|_| cfg!(feature = "cron"))
+        .map(|dir| PathBuf::from(dir).join("src"));
+    let call_site = Span::call_site().local_file();
+    discover_cron_jobs(&storage, src_dir.as_deref(), call_site.as_deref())
+        .map_err(|message| syn::Error::new(Span::call_site(), message))
 }
 
 fn namespace_and_serialize_export_openapi(
@@ -457,7 +466,8 @@ pub fn process_export_app(
         spec_hash,
     ));
 
-    let router_code = generate_router_code(&metadata, None, None, None, None, &[], &[]);
+    let cron_jobs = current_crate_cron_jobs()?;
+    let router_code = generate_router_code(&metadata, None, None, None, None, &[], &cron_jobs);
 
     let result = Ok(quote! {
         /// Auto-generated vespera app struct

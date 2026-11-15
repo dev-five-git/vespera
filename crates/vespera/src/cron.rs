@@ -192,7 +192,9 @@ fn claim_jobs(
 
 /// Spawn one scheduling task per job.
 ///
-/// Uses the current Tokio runtime when there is one; in a host-loaded (JNI / C ABI)
+/// Uses the current Tokio runtime when there is one (and it has the time
+/// driver — a runtime built without `enable_time` gets the dedicated thread
+/// below, with a warning); in a host-loaded (JNI / C ABI)
 /// library the jobs wait for the shared host runtime; otherwise starts a
 /// dedicated `vespera-cron` thread running a current-thread runtime, so this
 /// never panics outside a runtime.  Every call starts a new set of
@@ -206,6 +208,16 @@ pub fn start(jobs: impl IntoIterator<Item = CronJob>) {
 /// coverage counters) however many iterator types call it.
 fn start_jobs(jobs: Vec<CronJob>) {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        if !timers_enabled() {
+            // A scheduler task would die at its first `sleep` ("timers are
+            // disabled"), its panic lost with the dropped `JoinHandle`.
+            cron_diag!(
+                warn,
+                "the current Tokio runtime has no time driver (`enable_time`); cron jobs run on a dedicated `vespera-cron` thread instead"
+            );
+            spawn_scheduler_thread(jobs);
+            return;
+        }
         for job in jobs {
             handle.spawn(run_job(job, &CONTROLLER));
         }
@@ -221,6 +233,12 @@ fn start_jobs(jobs: Vec<CronJob>) {
         return;
     }
     spawn_scheduler_thread(jobs);
+}
+
+/// Whether the current Tokio runtime has its time driver: building a `Sleep`
+/// panics on a runtime built without `enable_time` / `enable_all`.
+fn timers_enabled() -> bool {
+    std::panic::catch_unwind(|| drop(tokio::time::sleep(Duration::ZERO))).is_ok()
 }
 
 /// Stop scheduling new cron runs, process-wide and for good.
