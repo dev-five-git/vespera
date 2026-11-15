@@ -5,6 +5,7 @@ import jakarta.servlet.http.HttpServletResponse;
 
 import java.util.ArrayList;
 import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -238,6 +239,14 @@ final class HeaderPolicy {
     private static void forEachMergedRequestHeader(
             HttpServletRequest request, VesperaBridge.HeaderSink sink, Set<String> connectionTokens) {
         Map<String, String> merged = new LinkedHashMap<>(32);
+        // What getHeaders returned for the first spelling of each lower-cased
+        // name, and every raw name already read. A spec-conforming container
+        // (getHeaders is case-insensitive) answers every spelling with ALL
+        // values, so a later spelling that repeats the first answer -- or a
+        // raw name a wrapper lists twice -- is not merged again; only a
+        // case-sensitive container's distinct per-spelling values are joined.
+        Map<String, String> firstAnswer = new HashMap<>(8);
+        Set<String> readRawNames = new HashSet<>(32);
         Enumeration<String> names = request.getHeaderNames();
         if (names == null) {
             return;
@@ -246,10 +255,14 @@ final class HeaderPolicy {
             String name = names.nextElement();
             String lowerName = canonicalLowerHeaderName(name);
             if (!isHopByHopResponseHeader(lowerName)
-                    && !isConnectionNominatedHeader(lowerName, connectionTokens)) {
+                    && !isConnectionNominatedHeader(lowerName, connectionTokens)
+                    && readRawNames.add(name)) {
                 String value = joinHeaderValues(name, request);
-                merged.merge(lowerName, value, (left, right) ->
-                        left + (lowerName.equals("cookie") ? "; " : ", ") + right);
+                String first = firstAnswer.putIfAbsent(lowerName, value);
+                if (first == null || !first.equals(value)) {
+                    merged.merge(lowerName, value, (left, right) ->
+                            left + (lowerName.equals("cookie") ? "; " : ", ") + right);
+                }
             }
         }
         merged.forEach(sink::put);

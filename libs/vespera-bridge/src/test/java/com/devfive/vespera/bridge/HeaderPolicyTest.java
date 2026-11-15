@@ -156,6 +156,33 @@ class HeaderPolicyTest {
         }
     }
 
+    /**
+     * A spec-conforming request ({@code getHeaders} is case-insensitive, as
+     * in {@link MockHttpServletRequest}) whose wrapper lists a header under
+     * a second spelling and another name twice: each value is forwarded once.
+     */
+    @Test
+    void caseInsensitiveGetHeadersIsNotMergedTwice() {
+        MockHttpServletRequest request = new MockHttpServletRequest() {
+            @Override
+            public Enumeration<String> getHeaderNames() {
+                return Collections.enumeration(List.of(
+                        "x-tenant", "X-Tenant", "X-Trace", "x-TRACE", "Accept", "Accept"));
+            }
+        };
+        request.addHeader("x-tenant", "client");
+        request.addHeader("x-tenant", "added");
+        request.addHeader("X-Trace", "a");
+        request.addHeader("X-Trace", "b");
+        request.addHeader("Accept", "text/html");
+
+        Map<String, String> headers = HeaderPolicy.collectHeaders(request);
+
+        assertEquals("client, added", headers.get("x-tenant"));
+        assertEquals("a, b", headers.get("x-trace"));
+        assertEquals("text/html", headers.get("accept"));
+    }
+
     @Test
     void duplicateWithinFirstEightNamesTakesMergedPath() {
         ScriptedRequest request = new ScriptedRequest(List.of("Accept", "accept"));

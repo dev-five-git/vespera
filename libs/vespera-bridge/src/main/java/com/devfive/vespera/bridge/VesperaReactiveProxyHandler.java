@@ -80,7 +80,8 @@ import java.util.function.Consumer;
  * complete (written with its {@code Content-Length}, like a buffered
  * response) or turns out to be a stream: an event / NDJSON
  * {@code Content-Type}, a Rust body that has to wait for its next frame, or
- * more than {@value #IMPLICIT_BUFFER_BYTES} bytes. When the streaming
+ * more than {@code min(max-buffered-response-bytes, }{@value #IMPLICIT_BUFFER_BYTES}{@code )}
+ * bytes ({@value #IMPLICIT_BUFFER_BYTES} when the cap is unlimited). When the streaming
  * executor is saturated such a request falls back to the buffered path
  * instead of {@code 503}. Like every streamed response (and the servlet
  * proxy's SYNC / DIRECT modes) it is not cancelled while the Rust handler is
@@ -396,9 +397,19 @@ public class VesperaReactiveProxyHandler implements WebHandler {
                 })
                 .defaultIfEmpty(VesperaWireCodec.EMPTY_BODY)
                 .onErrorMap(DataBufferLimitException.class, tooLarge -> new ResponseStatusException(
-                        HttpStatusCode.valueOf(413),
-                        "buffered request body exceeds vespera.bridge.max-buffered-request-bytes="
-                                + limit));
+                        HttpStatusCode.valueOf(413), bodyTooLargeMessage(cap, limit)));
+    }
+
+    /**
+     * The {@code 413} reason: the configured cap, or — with
+     * {@code max-buffered-request-bytes=0} (unlimited) — the built-in bound
+     * that applied instead (servlet parity), never a value the user did not set.
+     */
+    static String bodyTooLargeMessage(long cap, long limit) {
+        return cap > 0
+                ? "buffered request body exceeds vespera.bridge.max-buffered-request-bytes=" + limit
+                : "buffered request body exceeds the built-in " + limit
+                        + "-byte bound (vespera.bridge.max-buffered-request-bytes=0)";
     }
 
     private static ResponseStatusException payloadTooLarge(long actualBytes, long capBytes) {
@@ -463,7 +474,7 @@ public class VesperaReactiveProxyHandler implements WebHandler {
      * ({@link SpillingGate}) so an ordinary response keeps its
      * {@code Content-Length}; it starts streaming as soon as the Rust body
      * would wait (the native flush hint), grows past
-     * {@value #IMPLICIT_BUFFER_BYTES} bytes, or the Rust
+     * {@code min(maxBufferedResponseBytes, }{@value #IMPLICIT_BUFFER_BYTES}{@code )} bytes, or the Rust
      * {@code Content-Type} is an event / NDJSON stream.
      */
     private Mono<Void> stream(byte[] wire, ReactiveProxyResponse out, ProxyExchange px, String method,

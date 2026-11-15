@@ -31,4 +31,27 @@ class VesperaBridgeThreadLocalCleanupTest {
         assertFalse(VesperaDirectBufferPool.directPoolPresentForTest());
         context.close();
     }
+
+    @Test
+    void aClosingChildContextDoesNotDisablePooling() {
+        StaticApplicationContext parent = new StaticApplicationContext();
+        StaticApplicationContext child = new StaticApplicationContext(parent);
+        VesperaBridgeThreadLocalCleanup cleanup = new VesperaBridgeThreadLocalCleanup();
+        cleanup.setApplicationContext(parent);
+        ServletRequestEvent requestEvent = new ServletRequestEvent(
+                new MockServletContext(), new MockHttpServletRequest());
+
+        // A child's close event is also delivered to the parent's listeners.
+        cleanup.onApplicationEvent(new ContextClosedEvent(child));
+        VesperaDirectBufferPool.directPoolForTest();
+        cleanup.requestDestroyed(requestEvent);
+        assertTrue(VesperaDirectBufferPool.directPoolPresentForTest(), "pooling stays on");
+
+        cleanup.onApplicationEvent(new ContextClosedEvent(parent));
+        VesperaDirectBufferPool.directPoolForTest();
+        cleanup.requestDestroyed(requestEvent);
+        assertFalse(VesperaDirectBufferPool.directPoolPresentForTest());
+        child.close();
+        parent.close();
+    }
 }

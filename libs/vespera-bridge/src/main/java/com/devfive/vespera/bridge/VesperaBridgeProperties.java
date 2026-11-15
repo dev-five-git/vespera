@@ -629,8 +629,37 @@ public class VesperaBridgeProperties {
             return dispatchTimeout;
         }
 
+        /**
+         * @throws IllegalArgumentException for a negative duration (rejected
+         *         at startup instead of being silently ignored)
+         */
         public void setDispatchTimeout(Duration dispatchTimeout) {
+            if (dispatchTimeout != null && dispatchTimeout.isNegative()) {
+                throw new IllegalArgumentException("vespera.bridge.native.dispatch-timeout must not be"
+                        + " negative (0 = disabled): " + dispatchTimeout);
+            }
             this.dispatchTimeout = dispatchTimeout;
+        }
+
+        /**
+         * The native deadline in milliseconds: {@code 0} only for a zero
+         * duration (disabled); any positive duration rounds up to at least
+         * {@code 1} ms instead of truncating to "disabled".
+         */
+        static long dispatchTimeoutMillis(Duration timeout) {
+            if (timeout.isZero()) {
+                return 0;
+            }
+            long millis;
+            try {
+                millis = timeout.toMillis();
+            } catch (ArithmeticException huge) {
+                return Long.MAX_VALUE;
+            }
+            if (millis == Long.MAX_VALUE || Duration.ofMillis(millis).equals(timeout)) {
+                return millis;
+            }
+            return millis + 1;
         }
 
         public Integer getAsyncMaxInFlight() {
@@ -680,7 +709,7 @@ public class VesperaBridgeProperties {
                         maxBufferedResponseBytes == null ? -1 : maxBufferedResponseBytes);
             }
             if (dispatchTimeout != null) {
-                VesperaBridge.configureDispatchTimeout(dispatchTimeout.toMillis());
+                VesperaBridge.configureDispatchTimeout(dispatchTimeoutMillis(dispatchTimeout));
             }
             if (asyncMaxInFlight != null) {
                 VesperaBridge.configureAsyncMaxInFlight(asyncMaxInFlight);

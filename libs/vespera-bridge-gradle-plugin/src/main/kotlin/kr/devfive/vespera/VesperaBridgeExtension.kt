@@ -124,8 +124,9 @@ abstract class VesperaBridgeExtension @Inject constructor(objects: ObjectFactory
      * `native/<os>-<arch>/` with that platform's library file name. A
      * `*-linux-musl*` triple is bundled under `native/linux-<arch>-musl/`
      * (keys may also name `linux-<arch>-musl` directly), where the bridge
-     * looks first on a musl JVM. The host build is skipped when a key (or its
-     * bundle folder) names the host platform. The toolchain /
+     * looks first on a musl JVM. The host build is skipped when a target's
+     * bundle folder is the host platform's (the key alone does not count: a
+     * musl triple under the host key keeps the host build). The toolchain /
      * linker for each triple must already be installed.
      */
     abstract val targets: MapProperty<String, String>
