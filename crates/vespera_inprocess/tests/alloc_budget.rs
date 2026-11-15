@@ -12,8 +12,9 @@
 //! estimate regressed) at **zero noise**.  This is the Rust-side analogue
 //! of the Java `PerfAllocBench`'s `getThreadAllocatedBytes` approach.
 //!
-//! Budgets are **upper bounds**: a change that REMOVES allocations passes
-//! (and should then tighten the budget); a change that ADDS one fails.
+//! Budgets are the exact counts measured per feature set, asserted as
+//! **upper bounds**: a change that REMOVES allocations passes (and should
+//! then tighten the budget); a change that ADDS one fails.
 //!
 //! All measurements run inside ONE `#[test]` so they execute
 //! single-threaded — libtest runs test fns concurrently by default and the
@@ -230,7 +231,7 @@ fn allocation_budgets() {
     // any future header-path allocation regression.  The request-header pair
     // `Vec` is now pre-reserved at `TYPICAL_HEADER_CAP` (16), so a 16-header
     // request fills WITHOUT the realloc the previous capacity-8 reserve paid
-    // (37 alloc + 0 realloc; was 40 alloc + 1 realloc).
+    // (realloc-free; was 1 realloc).
     let wire_hdrs = encode("POST", "/echo", HEADERS_16, br#"{"k":1}"#);
     assert_eq!(borrowed_status(&rt, &wire_hdrs, &mut out), 200);
     let headers_post = measure(200, 2000, || {
@@ -330,44 +331,54 @@ fn allocation_budgets() {
     }
 }
 
-// Budgets — total per-op allocation OPS (`alloc` + `realloc` calls),
-// measured 2026-06 and verified identical across repeated runs (allocation
-// counts are deterministic). UPPER BOUNDS: a change that ADDS an allocation
-// trips the matching assert; one that REMOVES allocations passes and SHOULD
-// then tighten the constant. Most of each count is axum `router.oneshot` +
-// tokio `block_on` (framework), not vespera wire code — the gate guards
-// against ADDING to the per-dispatch floor.
+// Budgets — total per-op allocation OPS (`alloc` + `realloc` calls), set to
+// the EXACT count measured in a debug test build (the only profile CI runs
+// this binary in; a release build boxes fewer `block_on` futures and can only
+// count less).  Allocation counts are deterministic, so a change that ADDS
+// even one allocation trips the matching assert; one that REMOVES some passes
+// and SHOULD then tighten the constant.  Most of each count is axum
+// `router.oneshot` + tokio `block_on` (framework), not vespera wire code.
 //
-// BUDGET_HEADERS_POST is now realloc-free: the request-header `Vec` is
-// pre-reserved at `TYPICAL_HEADER_CAP` (16), so the 16-header set fills
-// without the capacity-8 growth realloc it previously paid.  An under-reserve
-// regression (a re-introduced realloc, or extra allocs) trips this budget.
-const BUDGET_BODYLESS_BORROWED: usize = 14 + DEBUG_BLOCK_ON_BOX; // borrowed: no clone / no output Vec / no body copy
-const BUDGET_SMALL_POST: usize = 22 + DEBUG_BLOCK_ON_BOX; // borrowed: +1 body copy over bodyless
-// BUDGET_HEADERS_POST dropped from 40 to 37: the common non-standard names
-// of the set (`x-request-id`, `x-forwarded-for`, `x-forwarded-proto`) are
-// interned (`header_names.rs`) instead of copied into a fresh `HeaderName`.
-const BUDGET_HEADERS_POST: usize = 37 + DEBUG_BLOCK_ON_BOX; // borrowed: 37 alloc + 0 realloc (header Vec pre-reserved at 16)
-// MATERIALISE / DISPATCH_INTO dropped by 2 each (was 18 / 17) when the OWNED
-// wire path stopped copying the request path into a fresh `Bytes`: a bodyless
-// GET's borrowed path now SHARES the request's owning header `Bytes` to build
-// the `Uri` (`Uri::from_maybe_shared` via `slice_from_owner`), removing the
-// `Uri::try_from(&str)` allocation+copy.  A regression that re-introduces the
-// path copy (or any other owned-path allocation) trips these tightened budgets.
+// Measured 2026-11 (round 14), no realloc in any case:
 //
-// DEBUG_BLOCK_ON_BOX: tokio's `block_on` heap-boxes futures larger than
-// `BOX_FUTURE_THRESHOLD` (2 KiB in debug builds, 16 KiB in release).  The
-// deadline / response-cap wrapper (and the `remote_addr` / `scheme` wire
-// fields) put the dispatch futures just over 2 KiB, so debug test builds pay
-// one extra (~2.3 KB) allocation that the shipped release artifact does not
-// (release budgets unchanged).
-const DEBUG_BLOCK_ON_BOX: usize = if cfg!(debug_assertions) { 1 } else { 0 };
-const BUDGET_MATERIALISE: usize = 16 + DEBUG_BLOCK_ON_BOX; // dispatch_from_bytes: +input clone +response Vec, URI shared
-const BUDGET_DISPATCH_INTO: usize = 15 + DEBUG_BLOCK_ON_BOX; // dispatch_into: +input clone, reused out, URI shared
-// 422 materialise path: the hoisted `validation_errors` JSON is now folded
-// into the response-`Vec` capacity estimate, so the wire header serialises
-// without the mid-write realloc a hoist-blind estimate paid (26 alloc + 0
-// realloc; was 26 alloc + 1 realloc). A re-introduced realloc trips this.
-// Hoisted error strings now borrow from the 422 body (owned only when the JSON
-// string held an escape): 19-21 measured, so the budget drops from 26 to 22.
-const BUDGET_VALIDATE_422: usize = 22; // realloc-free, borrowed-string 422 hoist
+// | case | `-p vespera_inprocess` | `-p ... --features tracing` | workspace |
+// |------|------------------------|-----------------------------|-----------|
+// | A    | 11                     | 13                          | 15        |
+// | B    | 19                     | 21                          | 23        |
+// | C    | 34                     | 36                          | 38        |
+// | D    | 14                     | 16                          | 17        |
+// | E    | 13                     | 15                          | 16        |
+// | F    | 19                     | 21                          | 22        |
+//
+// The package-only column is the same with `--no-default-features`,
+// `connect-info`, `runtime`, `ffi` or `bench-support` (local Windows; the
+// Linux "Feature isolation" job passes it).  The workspace column is
+// identical on Linux, Windows and macOS CI (`Test`, `Test (windows-latest)`,
+// `Test (macos-latest)`, branch coverage): there `tracing` is on (through
+// `examples/testkit`) and the examples unify more dependency features, which
+// add further framework allocations.  `tracing` is the cfg this binary can
+// see, so it selects the workspace budgets; a package-only `--features
+// tracing` run counts less and passes them.
+const fn budget(package: usize, workspace: usize) -> usize {
+    if cfg!(feature = "tracing") {
+        workspace
+    } else {
+        package
+    }
+}
+// The request-header `Vec` is pre-reserved at `TYPICAL_HEADER_CAP` (16) and
+// the common non-standard names of the set (`x-request-id`,
+// `x-forwarded-for`, `x-forwarded-proto`) are interned (`header_names.rs`):
+// a re-introduced realloc or name copy trips BUDGET_HEADERS_POST.
+const BUDGET_BODYLESS_BORROWED: usize = budget(11, 15); // borrowed: no clone / no output Vec / no body copy
+const BUDGET_SMALL_POST: usize = budget(19, 23); // borrowed: +1 body copy over bodyless
+const BUDGET_HEADERS_POST: usize = budget(34, 38); // borrowed: 16 headers, header Vec pre-reserved at 16
+// The OWNED wire path shares the request's owning header `Bytes` to build the
+// `Uri` (`Uri::from_maybe_shared` via `slice_from_owner`): a re-introduced
+// path copy trips MATERIALISE / DISPATCH_INTO.
+const BUDGET_MATERIALISE: usize = budget(14, 17); // dispatch_from_bytes: +input clone +response Vec, URI shared
+const BUDGET_DISPATCH_INTO: usize = budget(13, 16); // dispatch_into: +input clone, reused out, URI shared
+// 422 materialise path: the hoisted `validation_errors` JSON is folded into
+// the response-`Vec` capacity estimate (no mid-write realloc) and hoisted
+// error strings borrow from the 422 body.
+const BUDGET_VALIDATE_422: usize = budget(19, 22); // realloc-free, borrowed-string 422 hoist

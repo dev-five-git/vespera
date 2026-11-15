@@ -24,8 +24,8 @@ use axum::routing::{get, post};
 use serde_json::Value;
 use tokio::runtime::Builder;
 use vespera_inprocess::{
-    RequestEnvelope, dispatch, dispatch_from_bytes, dispatch_streaming_async, error_envelope,
-    register_app_named, try_register_app_named,
+    RequestChunk, RequestEnvelope, dispatch, dispatch_bidirectional_streaming, dispatch_from_bytes,
+    dispatch_streaming_async, error_envelope, register_app_named, try_register_app_named,
 };
 
 // ── Test app installed under a unique name ──────────────────────────
@@ -398,6 +398,51 @@ async fn streaming_async_post_body_without_content_type_defaults_to_json() {
         String::from_utf8(buf.lock().unwrap().clone()).unwrap(),
         "application/json"
     );
+}
+
+/// Bidirectional streaming cannot see its body up front: it defaults a
+/// missing Content-Type unless the headers declare the body empty
+/// (`Content-Length: 0`), like the buffered paths never default an empty
+/// body (round 14).  A chunked body (no `Content-Length`) still defaults.
+#[rstest::rstest]
+#[case::declared_empty(&[("content-length", "0")], &[], "MISSING")]
+#[case::declared_empty_padded(&[("content-length", " 0 ")], &[], "MISSING")]
+#[case::undeclared_length(&[], b"{}", "application/json")]
+#[case::non_empty_length(&[("content-length", "2")], b"{}", "application/json")]
+#[case::explicit_type(&[("content-length", "0"), ("content-type", "text/plain")], &[], "text/plain")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bidirectional_defaults_content_type_unless_declared_empty(
+    #[case] headers: &[(&str, &str)],
+    #[case] body: &'static [u8],
+    #[case] expected: &str,
+) {
+    install_router();
+    let wire = encode_wire(
+        1,
+        "POST",
+        "/echo_ct",
+        headers.iter().copied().collect(),
+        &[],
+        Some(APP),
+    );
+    let mut chunks = vec![RequestChunk::End];
+    if !body.is_empty() {
+        chunks.insert(0, RequestChunk::Data(body.to_vec()));
+    }
+    let mut chunks = chunks.into_iter();
+    let mut out = Vec::new();
+    let header_bytes = dispatch_bidirectional_streaming(
+        wire,
+        move || chunks.next().unwrap_or(RequestChunk::End),
+        |chunk: &[u8]| {
+            out.extend_from_slice(chunk);
+            ControlFlow::Continue(())
+        },
+    )
+    .await;
+    let (header_json, _) = decode_wire(&header_bytes);
+    assert_eq!(header_json["status"].as_u64(), Some(200));
+    assert_eq!(String::from_utf8_lossy(&out), expected);
 }
 
 #[test]

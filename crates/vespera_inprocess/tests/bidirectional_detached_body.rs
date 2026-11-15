@@ -83,9 +83,15 @@ async fn a_body_read_after_the_dispatch_returned_never_touches_the_source() {
     let mut response = Vec::new();
     let header = dispatch_bidirectional_streaming_closing(
         encode("/detach"),
+        // One late chunk, then End: a regression that reads the source ends
+        // the body (`Ok(4)`, failing the assertion) instead of growing it
+        // forever.
         move || {
-            pulls_in_source.fetch_add(1, Ordering::SeqCst);
-            RequestChunk::Data(b"late".to_vec())
+            if pulls_in_source.fetch_add(1, Ordering::SeqCst) == 0 {
+                RequestChunk::Data(b"late".to_vec())
+            } else {
+                RequestChunk::End
+            }
         },
         |chunk: &[u8]| {
             response.extend_from_slice(chunk);
@@ -100,7 +106,10 @@ async fn a_body_read_after_the_dispatch_returned_never_touches_the_source() {
     assert_eq!(response, b"detached");
 
     dispatch_returned().notify_one();
-    let read = rx.await.expect("the detached task reports its read");
+    let read = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
+        .await
+        .expect("the detached read finishes")
+        .expect("the detached task reports its read");
     assert!(read.is_err(), "a late read fails the body, got {read:?}");
     assert_eq!(
         pulls.load(Ordering::SeqCst),
