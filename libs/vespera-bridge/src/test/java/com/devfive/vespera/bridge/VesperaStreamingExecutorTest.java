@@ -257,6 +257,94 @@ class VesperaStreamingExecutorTest {
     }
 
     /**
+     * A stream task throws and so does the thread's uncaught-exception
+     * handler (an application default handler that rethrows): the worker
+     * used to die still counted in {@code threads}, so with
+     * {@code maxThreads = 1} no thread ever started again and the next
+     * admitted stream never ran.
+     */
+    @Test
+    void aThrowingUncaughtHandlerDoesNotStrandLaterStreams() throws Exception {
+        try (VesperaStreamingExecutor executor = new VesperaStreamingExecutor(1, 0)) {
+            CountDownLatch thrown = new CountDownLatch(1);
+            executor.tryReserve().executor().execute(() -> {
+                Thread.currentThread().setUncaughtExceptionHandler((t, e) -> {
+                    throw new IllegalStateException("the handler fails too");
+                });
+                thrown.countDown();
+                throw new IllegalStateException("boom");
+            });
+            assertTrue(thrown.await(5, TimeUnit.SECONDS));
+            awaitIdle(executor);
+            CountDownLatch ran = new CountDownLatch(1);
+            executor.tryReserve().executor().execute(ran::countDown);
+            assertTrue(ran.await(5, TimeUnit.SECONDS), "the next stream still runs");
+            awaitIdle(executor);
+            assertEquals(1, executor.threadCount());
+        }
+    }
+
+    /**
+     * {@code Thread.start()} fails for a new thread after a running worker
+     * already took the queued task (it finished its own stream first): the
+     * task is being served, so {@code execute} must neither reject it nor
+     * free its slot while it runs (that admitted one stream too many and
+     * answered the client a proxy error while Rust still streamed).
+     */
+    @Test
+    void aFailedThreadStartKeepsTheSlotOfATaskAnotherWorkerTook() throws Exception {
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch secondStarted = new CountDownLatch(1);
+        CountDownLatch releaseSecond = new CountDownLatch(1);
+        AtomicInteger created = new AtomicInteger();
+        java.util.concurrent.ThreadFactory factory = runnable -> {
+            if (created.incrementAndGet() == 1) {
+                return new Thread(runnable);
+            }
+            return new Thread(runnable) {
+                @Override
+                public synchronized void start() {
+                    // The running worker ends its stream and takes the queued one.
+                    releaseFirst.countDown();
+                    try {
+                        assertTrue(secondStarted.await(5, TimeUnit.SECONDS));
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    throw new OutOfMemoryError("unable to create native thread");
+                }
+            };
+        };
+        try (VesperaStreamingExecutor executor = new VesperaStreamingExecutor(
+                2, 1, TimeUnit.SECONDS.toNanos(60), factory)) {
+            CountDownLatch firstStarted = new CountDownLatch(1);
+            executor.tryReserve().executor().execute(() -> {
+                firstStarted.countDown();
+                try {
+                    releaseFirst.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(firstStarted.await(5, TimeUnit.SECONDS));
+            VesperaStreamingExecutor.Reservation second = executor.tryReserve();
+            second.executor().execute(() -> {
+                secondStarted.countDown();
+                try {
+                    releaseSecond.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            awaitCondition(() -> executor.inUse() == 1, "the first stream ended");
+            assertEquals(1, executor.inUse(), "the running second stream keeps its slot");
+            assertEquals(1, executor.threadCount());
+            releaseSecond.countDown();
+            awaitIdle(executor);
+        }
+    }
+
+    /**
      * An ignored second task of a reservation must not replace the queued
      * one: {@code cancel()} then removed the never-submitted second task and
      * left the real one in the queue.

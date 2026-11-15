@@ -39,12 +39,21 @@ class NonHeaderStreamingE2ETest {
      * before panicking so that at least one batch reaches the sink first: two
      * streaming chunks' worth (the Rust side batches ready frames up to
      * the effective streaming chunk size), at least 512. The chunk size is
-     * resolved like the bridge + Rust do it: the
-     * {@code vespera.streaming.chunkBytes} system property (which the build
-     * forwards into this JVM), else the {@code VESPERA_STREAMING_CHUNK_BYTES}
-     * environment variable the native side reads, else 256 KiB; clamped to
-     * 4 KiB to 8 MiB. (The handler caps the count at 10 000, still past one
-     * 8 MiB chunk.)
+     * resolved exactly like the bridge + Rust do it:
+     * <ol>
+     *   <li>the {@code vespera.streaming.chunkBytes} system property (which
+     *       the build forwards into this JVM), parsed like
+     *       {@code VesperaNativeConfig.longProperty} ({@code Long.decode}, so
+     *       {@code 0x100000} counts); a malformed value or one {@code <= 0}
+     *       is never forwarded ({@code configureStreaming0} leaves the
+     *       setting untouched), so it falls through to</li>
+     *   <li>the {@code VESPERA_STREAMING_CHUNK_BYTES} environment variable the
+     *       native side reads (a non-negative decimal integer; anything else
+     *       means the default), else</li>
+     *   <li>256 KiB;</li>
+     * </ol>
+     * clamped to 4 KiB to 8 MiB. (The handler caps the count at 10 000, still
+     * past one 8 MiB chunk.)
      */
     static int panicChunksPastOneStreamingChunk() {
         return panicChunksPastOneStreamingChunk(
@@ -53,17 +62,39 @@ class NonHeaderStreamingE2ETest {
     }
 
     static int panicChunksPastOneStreamingChunk(String property, String env) {
-        long chunkBytes = 256 * 1024;
-        String raw = property != null ? property : env;
-        if (raw != null) {
-            try {
-                chunkBytes = Long.parseLong(raw.trim());
-            } catch (NumberFormatException invalid) {
-                // Rust falls back to the default for an unparseable value too.
-            }
+        long chunkBytes = forwardedChunkBytes(property);
+        if (chunkBytes <= 0) {
+            chunkBytes = envChunkBytes(env);
         }
         chunkBytes = Math.max(4 * 1024, Math.min(8L * 1024 * 1024, chunkBytes));
         return (int) Math.max(512, 2 * chunkBytes / 1024);
+    }
+
+    /** What the bridge forwards to {@code configureStreaming0} ({@code <= 0} = nothing). */
+    private static long forwardedChunkBytes(String property) {
+        if (property == null) {
+            return 0;
+        }
+        try {
+            // Saturated to an int like VesperaNativeConfig.toInt.
+            return Math.min(Integer.MAX_VALUE, Long.decode(property.trim()));
+        } catch (NumberFormatException malformed) {
+            return 0;
+        }
+    }
+
+    /** {@code VESPERA_STREAMING_CHUNK_BYTES} as Rust reads it ({@code usize} parse, else the default). */
+    private static long envChunkBytes(String env) {
+        long fallback = 256 * 1024;
+        if (env == null) {
+            return fallback;
+        }
+        try {
+            long value = Long.parseLong(env.trim());
+            return value >= 0 ? value : fallback;
+        } catch (NumberFormatException malformed) {
+            return fallback;
+        }
     }
 
     @Test
@@ -73,6 +104,15 @@ class NonHeaderStreamingE2ETest {
         assertEquals(1024, panicChunksPastOneStreamingChunk("524288", "8388608"));
         assertEquals(16384, panicChunksPastOneStreamingChunk(null, " 99999999 "));
         assertEquals(512, panicChunksPastOneStreamingChunk(null, "big"));
+        // The bridge reads the property with Long.decode: hex counts.
+        assertEquals(2048, panicChunksPastOneStreamingChunk("0x100000", null));
+        // A property that is never forwarded (<= 0 or malformed) leaves the env var in charge.
+        assertEquals(16384, panicChunksPastOneStreamingChunk("0", "8388608"));
+        assertEquals(16384, panicChunksPastOneStreamingChunk("-1", "8388608"));
+        assertEquals(16384, panicChunksPastOneStreamingChunk("64MiB", "8388608"));
+        // Rust: a negative env value is invalid (the default), 0 clamps to 4 KiB.
+        assertEquals(512, panicChunksPastOneStreamingChunk(null, "-5"));
+        assertEquals(512, panicChunksPastOneStreamingChunk(null, "0"));
     }
 
     static final String PANIC_PAST_ONE_CHUNK =

@@ -285,7 +285,7 @@ class VesperaNativeLoaderTest {
                 VesperaNativeLoader.requireSafeAncestors(base);
             });
             extracted = extractLib(base);
-            assertFalse(extracted.startsWith(base), "a base whose ancestor others can rename into is never used");
+            assertFalse(inside(extracted, base), "a base whose ancestor others can rename into is never used");
 
             Files.setPosixFilePermissions(shared, PosixFilePermissions.fromString("rwxr-xr-x"));
             VesperaNativeLoader.requireSafeAncestors(base);
@@ -320,8 +320,45 @@ class VesperaNativeLoaderTest {
         return FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
     }
 
+    /**
+     * {@code path} lies in {@code dir}, as written or resolved (the loader
+     * extracts through the real path of the base: {@code /var} vs
+     * {@code /private/var} on macOS, 8.3 short names on Windows).
+     */
+    private static boolean inside(Path path, Path dir) throws IOException {
+        return path.startsWith(dir) || (Files.exists(dir) && path.startsWith(dir.toRealPath()));
+    }
+
+    /**
+     * A symbolic link in the MIDDLE of the configured base (its last
+     * component is a real private directory): the ancestors are checked on
+     * the resolved chain, so the library must also be extracted and loaded
+     * through that chain, never by name through the link (which a user able
+     * to write the link's directory could swap after the digest check).
+     */
+    @Test
+    void aSymlinkInsideTheBasePathIsLoadedThroughItsResolvedTarget() throws Exception {
+        assumeTrue(posix(), "POSIX file permissions required");
+        Path root = Files.createTempDirectory("vespera-native-midlink-");
+        try {
+            Path real = Files.createDirectory(root.resolve("real"),
+                    PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+            Path link = Files.createSymbolicLink(root.resolve("app"), real);
+            Path base = link.resolve("native");
+            VesperaNativeLoader.ExtractionDir prepared = VesperaNativeLoader.prepareDir(base, "vespera-native-abc");
+            assertTrue(prepared.reusable(), "the resolved chain is private");
+            Path expected = real.toRealPath().resolve("native").resolve("vespera-native-abc");
+            assertEquals(expected, prepared.dir(), "no symbolic link left in the extraction path");
+            Path lib = extractLib(base);
+            assertTrue(lib.startsWith(real.toRealPath()), lib.toString());
+            assertFalse(lib.startsWith(link), "never loaded by name through the link");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
     private static void deleteFallback(Path extracted, Path base) throws IOException {
-        if (!extracted.startsWith(base)) {
+        if (!inside(extracted, base)) {
             deleteTree(extracted.getParent());
         }
     }
@@ -333,7 +370,7 @@ class VesperaNativeLoaderTest {
         try {
             Path base = root.resolve("nested").resolve("base");
             Path lib = extractLib(base);
-            assertTrue(lib.startsWith(base), "a private base dir is used directly");
+            assertTrue(inside(lib, base), "a private base dir is used directly");
             assertEquals("rwx------", PosixFilePermissions.toString(
                     Files.getPosixFilePermissions(base)));
             assertEquals("rwx------", PosixFilePermissions.toString(
@@ -361,7 +398,7 @@ class VesperaNativeLoaderTest {
                     () -> VesperaNativeLoader.requirePrivateDirectory(base));
             first = extractLib(base);
             second = extractLib(base);
-            assertFalse(first.startsWith(base), "a shared base dir is never used");
+            assertFalse(inside(first, base), "a shared base dir is never used");
             assertNotEquals(first.getParent(), second.getParent(), "no reuse across calls");
             assertArrayEquals(LIB, Files.readAllBytes(first));
             assertEquals("rwx------", PosixFilePermissions.toString(
@@ -388,7 +425,7 @@ class VesperaNativeLoaderTest {
             Files.setPosixFilePermissions(planted, PosixFilePermissions.fromString("rwxrwxrwx"));
             Files.write(planted.resolve("libdemo.so"), LIB);
             lib = extractLib(base);
-            assertFalse(lib.startsWith(base), "a loose hash dir is not trusted even if bytes match");
+            assertFalse(inside(lib, base), "a loose hash dir is not trusted even if bytes match");
             assertArrayEquals(LIB, Files.readAllBytes(lib));
         } finally {
             if (lib != null) {
@@ -410,8 +447,8 @@ class VesperaNativeLoaderTest {
             assertThrows(VesperaNativeLoader.UnsafeDirectoryException.class,
                     () -> VesperaNativeLoader.requirePrivateDirectory(link));
             lib = extractLib(link);
-            assertFalse(lib.startsWith(link));
-            assertFalse(lib.startsWith(real));
+            assertFalse(inside(lib, link));
+            assertFalse(inside(lib, real));
             try (var left = Files.list(real)) {
                 assertEquals(0, left.count(), "nothing is written through the symlink");
             }
@@ -437,7 +474,7 @@ class VesperaNativeLoaderTest {
             Path first = VesperaNativeLoader.extract("native/x/demo.dll", "demo.dll", base, opener);
             String hex = HexFormat.of().formatHex(
                     MessageDigest.getInstance("SHA-256").digest(content));
-            assertEquals(base.resolve("vespera-native-" + hex.substring(0, 16)).resolve("demo.dll"),
+            assertEquals(base.toRealPath().resolve("vespera-native-" + hex.substring(0, 16)).resolve("demo.dll"),
                     first);
             assertArrayEquals(content, Files.readAllBytes(first));
             assertEquals(2, opens.get(), "fresh extraction hashes, then copies");
@@ -519,7 +556,7 @@ class VesperaNativeLoaderTest {
             // dir (here: not a directory at all) degrades to a fresh temp dir.
             Path lib = VesperaNativeLoader.extract("native/x/demo.dll", "demo.dll", file,
                     () -> new ByteArrayInputStream(new byte[] {1}));
-            assertFalse(lib.startsWith(base));
+            assertFalse(inside(lib, base));
             deleteFallback(lib, base);
         } finally {
             deleteTree(base);
@@ -578,7 +615,7 @@ class VesperaNativeLoaderTest {
         try {
             VesperaNativeLoader.ExtractionDir owned = VesperaNativeLoader.prepareDir(base, "vespera-native-abc");
             assertTrue(owned.reusable(), "a fresh per-user temp dir is private");
-            assertEquals(base.resolve("vespera-native-abc"), owned.dir());
+            assertEquals(base.toRealPath().resolve("vespera-native-abc"), owned.dir());
 
             // Plant: grant Everyone write on the predictable hash directory.
             var view = Files.getFileAttributeView(owned.dir(),
@@ -600,7 +637,7 @@ class VesperaNativeLoaderTest {
             VesperaNativeLoader.ExtractionDir fallback =
                     VesperaNativeLoader.prepareDir(base, "vespera-native-abc");
             assertFalse(fallback.reusable());
-            assertFalse(fallback.dir().startsWith(base), "a fresh, randomly named directory");
+            assertFalse(inside(fallback.dir(), base), "a fresh, randomly named directory");
             Files.deleteIfExists(fallback.dir());
         } finally {
             deleteTree(base);

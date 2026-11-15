@@ -65,7 +65,7 @@ internal object NativeJars {
 
         ext.nativeJarPlatforms.all(Action<String> {
             val platform = this
-            val os = NativePlatform.osOfPlatformKey(platform)
+            val os = NativePlatform.osOfPlatformKey(platform, "vespera.nativeJarPlatforms entry")
             val jar: TaskProvider<Jar> = project.tasks.register(taskName(platform), Jar::class.java, Action<Jar> {
                 group = "vespera"
                 description = "Package native/$platform/ as the '$platform' native jar."

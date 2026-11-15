@@ -184,7 +184,7 @@ class HeaderPolicyTest {
     }
 
     @Test
-    void duplicateWithinFirstEightNamesTakesMergedPath() {
+    void duplicateWithinTheLinearScanWindowTakesMergedPath() {
         ScriptedRequest request = new ScriptedRequest(List.of("Accept", "accept"));
         request.values("Accept", "text/html");
         request.values("accept", "application/json");
@@ -193,22 +193,33 @@ class HeaderPolicyTest {
                 HeaderPolicy.collectHeaders(request).get("accept"));
     }
 
+    /**
+     * A duplicate of every recorded slot is found: with
+     * {@code DUPLICATE_SCAN_LIMIT - 1} names before it the duplicate is the
+     * last one the linear scan checks (every scanned slot), with
+     * {@code DUPLICATE_SCAN_LIMIT} names it is the first one checked against
+     * the set seeded from all of them.
+     */
     @Test
-    void duplicateDetectionRecognizesEveryInlineSeenSlot() {
-        for (int duplicateIndex = 0; duplicateIndex < 8; duplicateIndex++) {
-            List<String> names = new ArrayList<>();
-            for (int i = 0; i < 8; i++) {
-                names.add("X-H" + i);
-            }
-            names.add("x-h" + duplicateIndex);
-            ScriptedRequest request = new ScriptedRequest(names);
-            for (String name : names) {
-                request.values(name, name);
-            }
+    void duplicateDetectionRecognizesEveryRecordedSlot() {
+        for (int recorded : new int[] {HeaderPolicy.DUPLICATE_SCAN_LIMIT - 1, HeaderPolicy.DUPLICATE_SCAN_LIMIT}) {
+            for (int duplicateIndex = 0; duplicateIndex < recorded; duplicateIndex++) {
+                List<String> names = new ArrayList<>();
+                for (int i = 0; i < recorded; i++) {
+                    names.add("X-H" + i);
+                }
+                names.add("x-h" + duplicateIndex);
+                ScriptedRequest request = new ScriptedRequest(names);
+                for (String name : names) {
+                    request.values(name, name);
+                }
 
-            Map<String, String> headers = HeaderPolicy.collectHeaders(request);
-            assertEquals("X-H" + duplicateIndex + ", x-h" + duplicateIndex,
-                    headers.get("x-h" + duplicateIndex));
+                Map<String, String> headers = HeaderPolicy.collectHeaders(request);
+                assertEquals("X-H" + duplicateIndex + ", x-h" + duplicateIndex,
+                        headers.get("x-h" + duplicateIndex),
+                        recorded + " names, duplicate of slot " + duplicateIndex);
+                assertEquals(recorded, headers.size());
+            }
         }
     }
 
