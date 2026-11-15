@@ -262,8 +262,15 @@ pub(super) fn extract_schema_default_attr(attrs: &[syn::Attribute]) -> Option<St
 
 // Parse a default value string into the appropriate `serde_json::Value`.
 ///
-/// Tries to infer the JSON type: integer → number → bool → string (fallback).
+/// Tries to infer the JSON type: array / object → integer → number → bool →
+/// string (fallback).
 pub(super) fn parse_default_string_to_json_value(value: &str) -> serde_json::Value {
+    // A JSON array / object (`"[]"`, `"{"a": 1}"`) for a non-string field.
+    if let Ok(json @ (serde_json::Value::Array(_) | serde_json::Value::Object(_))) =
+        serde_json::from_str::<serde_json::Value>(value)
+    {
+        return json;
+    }
     // Try integer first
     if let Ok(n) = value.parse::<i64>() {
         return serde_json::Value::Number(n.into());
@@ -359,6 +366,29 @@ pub(super) fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Va
             Lit::Bool(b) => Some(serde_json::Value::Bool(b.value)),
             _ => None,
         },
+        // `-1` / `-0.5`: a negated numeric literal.
+        Expr::Unary(syn::ExprUnary {
+            op: syn::UnOp::Neg(_),
+            expr,
+            ..
+        }) => match extract_value_from_expr(expr)? {
+            serde_json::Value::Number(n) => n
+                .as_i64()
+                .and_then(|v| v.checked_neg())
+                .map(serde_json::Value::from)
+                .or_else(|| n.as_f64().and_then(|v| serde_json::Number::from_f64(-v)).map(serde_json::Value::Number)),
+            _ => None,
+        },
+        // `"value".to_owned()` / `"value".into()`
+        Expr::MethodCall(method_call)
+            if (method_call.method == "to_owned" || method_call.method == "into")
+                && method_call.args.is_empty() =>
+        {
+            match method_call.receiver.as_ref() {
+                Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) => Some(serde_json::Value::String(s.value())),
+                _ => None,
+            }
+        }
         // Method calls like "value".to_string()
         Expr::MethodCall(method_call) => {
             if method_call.method == "to_string" {
@@ -370,9 +400,12 @@ pub(super) fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Va
                 {
                     return Some(serde_json::Value::String(s.value()));
                 }
-                // Try to extract from nested expressions (e.g., if the receiver is wrapped)
+                // `42.to_string()` / `true.to_string()` is the STRING `"42"`.
                 if let Some(value) = extract_value_from_expr(method_call.receiver.as_ref()) {
-                    return Some(value);
+                    return Some(match value {
+                        serde_json::Value::Number(_) | serde_json::Value::Bool(_) => serde_json::Value::String(value.to_string()),
+                        other => other,
+                    });
                 }
             }
             None
@@ -385,6 +418,14 @@ pub(super) fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Va
             let mut segments = path.path.segments.iter().rev();
             let last = segments.next()?;
             let prev = segments.next()?;
+            // `String::new()` / `Vec::new()`: the empty value.
+            if last.ident == "new" && call.args.is_empty() {
+                return match prev.ident.to_string().as_str() {
+                    "String" => Some(serde_json::Value::String(String::new())),
+                    "Vec" => Some(serde_json::Value::Array(Vec::new())),
+                    _ => None,
+                };
+            }
             if last.ident == "from"
                 && prev.ident == "String"
                 && call.args.len() == 1
