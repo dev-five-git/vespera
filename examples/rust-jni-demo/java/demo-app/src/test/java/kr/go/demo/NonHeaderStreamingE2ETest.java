@@ -62,12 +62,26 @@ class NonHeaderStreamingE2ETest {
     }
 
     static int panicChunksPastOneStreamingChunk(String property, String env) {
+        return (int) Math.max(512, 2L * effectiveStreamingChunkBytes(property, env) / 1024);
+    }
+
+    /**
+     * The streaming chunk size the native side uses in this JVM, resolved
+     * like {@link #panicChunksPastOneStreamingChunk()} documents (also used by
+     * {@code StreamingClosureStressTest} to size its payload).
+     */
+    static int effectiveStreamingChunkBytes() {
+        return effectiveStreamingChunkBytes(
+                System.getProperty("vespera.streaming.chunkBytes"),
+                System.getenv("VESPERA_STREAMING_CHUNK_BYTES"));
+    }
+
+    static int effectiveStreamingChunkBytes(String property, String env) {
         long chunkBytes = forwardedChunkBytes(property);
         if (chunkBytes <= 0) {
             chunkBytes = envChunkBytes(env);
         }
-        chunkBytes = Math.max(4 * 1024, Math.min(8L * 1024 * 1024, chunkBytes));
-        return (int) Math.max(512, 2 * chunkBytes / 1024);
+        return (int) Math.max(4 * 1024, Math.min(8L * 1024 * 1024, chunkBytes));
     }
 
     /** What the bridge forwards to {@code configureStreaming0} ({@code <= 0} = nothing). */
@@ -113,6 +127,10 @@ class NonHeaderStreamingE2ETest {
         // Rust: a negative env value is invalid (the default), 0 clamps to 4 KiB.
         assertEquals(512, panicChunksPastOneStreamingChunk(null, "-5"));
         assertEquals(512, panicChunksPastOneStreamingChunk(null, "0"));
+        assertEquals(256 * 1024, effectiveStreamingChunkBytes(null, null));
+        assertEquals(4 * 1024, effectiveStreamingChunkBytes("1", null));
+        assertEquals(8 * 1024 * 1024, effectiveStreamingChunkBytes(null, "99999999"));
+        assertEquals(1024 * 1024, effectiveStreamingChunkBytes("1048576", null));
     }
 
     static final String PANIC_PAST_ONE_CHUNK =
