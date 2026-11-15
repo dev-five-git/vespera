@@ -100,10 +100,15 @@ pub fn current_crate_items<T>(storage: &CrateStorage<T>) -> Arc<Vec<T>> {
 /// `macro_rules!` macro generates (`h!(list)`) has no literal `fn list` in
 /// its file and must not be dropped.  Borrows when nothing is stale.
 pub fn retain_declared<T: Clone + SourceIdentified>(items: &[T]) -> std::borrow::Cow<'_, [T]> {
+    retain_declared_if(items, in_long_lived_server())
+}
+
+/// Whether this process is rust-analyzer's long-lived proc-macro server,
+/// whose storage keeps entries of edited-away items.
+pub(crate) fn in_long_lived_server() -> bool {
     static IN_IDE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let in_ide =
-        *IN_IDE.get_or_init(|| is_rust_analyzer(std::env::current_exe().ok().as_deref()));
-    retain_declared_if(items, in_ide || test_ide::forced())
+    *IN_IDE.get_or_init(|| is_rust_analyzer(std::env::current_exe().ok().as_deref()))
+        || test_ide::forced()
 }
 
 /// Test-only switch emulating the IDE for [`retain_declared`].

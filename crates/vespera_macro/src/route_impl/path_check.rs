@@ -111,9 +111,9 @@ fn mismatch(
         )
     };
     match inner {
-        Type::Tuple(tuple) => {
-            (tuple.elems.len() < params.len()).then(|| extracts(tuple.elems.len()))
-        }
+        // `Path<()>` deserializes as a unit (axum ignores the parameters).
+        Type::Tuple(tuple) => (!tuple.elems.is_empty() && tuple.elems.len() < params.len())
+            .then(|| extracts(tuple.elems.len())),
         Type::Paren(paren) => mismatch(&paren.elem, params, route_path, lookup),
         _ if is_primitive_type(inner) => (params.len() >= 2).then(|| extracts(1)),
         Type::Path(type_path)
@@ -261,6 +261,8 @@ mod tests {
     #[case::qualified(Some("/{id}"), "p: axum::extract::Path<String>")]
     #[case::tuple_exact(Some("/{a}/{b}"), "Path((a, b)): Path<(String, u32)>")]
     #[case::one_tuple(Some("/{a}"), "p: Path<(u32,)>")]
+    // `Path<()>` deserializes as a unit whatever the parameters.
+    #[case::unit(Some("/{id}"), "_p: Path<()>")]
     #[case::validated_tuple(Some("/{a}/{b}"), "p: Validated<Path<(String, u32)>>")]
     #[case::axum_07(Some("/:a/{*b}"), "p: Path<(String, String)>")]
     #[case::map(Some("/{a}/{b}"), "p: Path<HashMap<String, String>>")]
