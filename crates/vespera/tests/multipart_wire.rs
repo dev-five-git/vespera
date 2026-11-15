@@ -11,7 +11,8 @@
 //! default 2 MiB request-body cap rejects the upload (`413 Payload Too
 //! Large`), so the round-trip test fails.
 
-#![cfg(feature = "multipart")]
+// `Validated` (the validated-multipart routes) needs `validation` too.
+#![cfg(all(feature = "multipart", feature = "validation"))]
 
 use ::axum::{
     Router,

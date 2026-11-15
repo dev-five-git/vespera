@@ -180,7 +180,7 @@ vespera_inprocess (transport layer — no JNI deps)
   ├── bytes (Bytes for zero-copy body handling)
   ├── http, http-body-util, tower
   ├── serde, serde_json
-  └── tokio (rt only — for dispatch_from_bytes Runtime param;
+  └── tokio (rt + sync + time — Runtime param of dispatch_from_bytes, channels, `Deadline` / timeouts;
              + rt-multi-thread with feature `runtime` / `ffi`)
 
 vespera_jni (JNI glue — thin layer)
@@ -220,7 +220,7 @@ Feature flags:
 | `inprocess` | `vespera::inprocess` (= `vespera_inprocess`) | dispatch, register_app, envelopes; enables `vespera_inprocess/connect-info` (`remote_addr` wire field → `ConnectInfo<SocketAddr>`, which needs `axum/tokio`) |
 | `jni` | `vespera::jni` (= `vespera_jni`) + implies `inprocess` | RUNTIME, jni_app!, JNI symbol |
 | `ffi` | `vespera::ffi_app!` / `ffi_apps!`, `vespera::inprocess::ffi` + implies `inprocess` (`vespera_inprocess/ffi` → `runtime`) | stable C ABI exported from the cdylib (`vespera_dispatch` & co.); shares the host runtime with `jni`, so one cdylib can serve both (`rust-jni-demo` does) |
-| `mimalloc` (default) | (with `jni`) mimalloc as the cdylib's `#[global_allocator]` | measured -15~19% on sync/direct dispatch vs Windows HeapAlloc; weak no-op without `jni` — an `ffi`-only cdylib keeps the system allocator |
+| `mimalloc` (default) | (with `jni`) mimalloc as the cdylib's `#[global_allocator]` | measured -15~19% on sync/direct dispatch vs Windows HeapAlloc (`libs/vespera-bridge/docs/jni-before-after-2026-06-11.md`); weak no-op without `jni` — an `ffi`-only cdylib keeps the system allocator |
 | `multipart` (default) | `vespera::multipart` (`TypedMultipart`, `FieldData`), `vespera::tempfile` | `#[derive(Multipart)]` / `schema_type!(..., multipart)` runtime + deps (tempfile, axum/axum-extra multer multipart, tokio fs/io-util); without it `vespera::Multipart` is a stand-in derive (`vespera_macro::MultipartFeatureDisabled`) whose `compile_error!` names the feature (trybuild `tests/ui/multipart_needs_feature.rs`, run under `--no-default-features`) |
 | `validation` (default) | `vespera::Validated` | `#[derive(Schema)]` also emits `garde::Validate`; `Validated<T>` extractor + 422 envelope |
 | `cron` | `vespera::cron` | `#[vespera::cron("...")]` jobs (UTC), started once per process by `vespera!`; without it `#[vespera::cron]` is a stand-in attribute (`vespera_macro::cron_feature_disabled`) whose `compile_error!` names the feature (trybuild `tests/ui/cron_needs_feature.rs`, run when `cron` is off); croner -> derive_builder -> darling builds `syn` 2 next to the macros' `syn` 3 (slower clean builds) |

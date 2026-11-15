@@ -65,9 +65,7 @@ fn handle_header_dispatch_panic(
     let failed = flags.failed.load(Ordering::Acquire);
     match panic_post_header_action(flags.sent.load(Ordering::Relaxed), failed) {
         PanicHeaderAction::FireFallbackHeader => {
-            let err = panic_wire();
-            let _ = call_header_consumer_local(env, header_consumer, &err);
-            flags.notified.store(true, Ordering::Release);
+            notify_local_header(env, header_consumer, &panic_wire(), flags);
         }
         PanicHeaderAction::ThrowAbort => {
             throw_streaming_abort(env, AbortReason::from_flags(failed, true));
@@ -191,14 +189,24 @@ fn reject_null_streams(
     true
 }
 
+/// Deliver a locally built header (pre-dispatch error paths, panic fallback)
+/// and latch the outcome like the hot-path callback does.  A consumer that
+/// threw must not let the native call return normally — Java would finish
+/// as if the header had been applied — so the same
+/// `VesperaStreamAbortedException` (`HeaderCallbackFailed`) as the main path
+/// is thrown (the consumer's own exception was scrubbed by the cold-path
+/// helper so the abort can be raised).
 fn notify_local_header(
     env: &mut jni::Env<'_>,
     header_consumer: &JObject<'_>,
     header_bytes: &[u8],
     flags: &StreamingFlags,
 ) {
-    let _ = call_header_consumer_local(env, header_consumer, header_bytes);
-    flags.notified.store(true, Ordering::Release);
+    let delivered = call_header_consumer_local(env, header_consumer, header_bytes).is_ok();
+    flags.record_header_callback_result(delivered);
+    if !delivered {
+        throw_streaming_abort(env, AbortReason::HeaderCallbackFailed);
+    }
 }
 
 /// JNI setup (global refs, the chunk `byte[]`) failed before the dispatch:

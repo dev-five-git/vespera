@@ -582,7 +582,10 @@ fn merge_same_path_adopts_empty_slots_and_preserves_occupied_slots_for_every_fie
     };
 
     let incoming = path_item("incoming");
-    let incoming_json = serde_json::to_value(&incoming).unwrap();
+    let mut incoming_json = serde_json::to_value(&incoming).unwrap();
+    // Every slot is adopted except `$ref`: a reference is never placed next
+    // to operations (OpenAPI 3.1 leaves that combination undefined).
+    incoming_json.as_object_mut().unwrap().remove("$ref");
     let mut adopting = create_base_openapi();
     adopting
         .paths

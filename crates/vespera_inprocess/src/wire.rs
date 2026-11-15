@@ -33,7 +33,10 @@ mod bench_serde;
 /// `crate::bench_support` in [`crate::lib`] finds these under
 /// `crate::wire::bench_*` (unchanged public path).
 #[cfg(any(test, feature = "bench-support"))]
-pub use bench_serde::{bench_parse_hand, bench_parse_serde, bench_write_hand, bench_write_serde};
+pub use bench_serde::{
+    bench_parse_hand, bench_parse_hand_repr, bench_parse_serde, bench_parse_serde_repr,
+    bench_write_hand, bench_write_serde,
+};
 /// Serde-driven deserializer helpers used by the `#[cfg_attr(...,
 /// derive(serde::Deserialize))]` on [`WireRequestHeader`] — they live in
 /// [`bench_serde`] alongside the rest of the bench-only serde twin.

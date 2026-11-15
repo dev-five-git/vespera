@@ -149,6 +149,9 @@ pub struct OpenApi {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub servers: Option<Vec<Server>>,
     /// Path definitions
+    /// (optional in 3.1: a webhooks- or components-only document omits it;
+    /// always serialized, as `{}` when empty)
+    #[serde(default)]
     pub paths: BTreeMap<String, PathItem>,
     /// Webhooks (OpenAPI 3.1): incoming requests the API *sends* to
     /// consumers, keyed by a unique webhook name.
@@ -296,8 +299,18 @@ fn push_path_level_down(item: &mut PathItem) {
 /// values are dropped (they governed nothing that survives).  Destructuring
 /// `other` keeps this exhaustive — adding a `PathItem` field forces this to
 /// be updated.
+///
+/// A `$ref` never ends up next to operations (OpenAPI 3.1 leaves a
+/// reference with conflicting siblings undefined): `merge` inlines resolvable
+/// `#/components/pathItems/*` references of both sides first, an `into` that
+/// is still a reference keeps itself over `other`'s operations (self-wins —
+/// its operations live behind the reference), and `other`'s reference is
+/// adopted only by an `into` that has no operations.
 fn merge_path_item(into: &mut PathItem, mut other: PathItem) {
-    let into_has_ops = operation_slots_mut(into).iter().any(|op| op.is_some());
+    if into.ref_path.is_some() && has_operations(&mut other) {
+        return;
+    }
+    let into_has_ops = has_operations(into);
     let into_has_path_level = into.parameters.is_some() || into.servers.is_some();
     let other_contributes = operation_slots_mut(into)
         .into_iter()
@@ -346,12 +359,16 @@ fn merge_path_item(into: &mut PathItem, mut other: PathItem) {
     if into.description.is_none() {
         into.description = description;
     }
-    if into.ref_path.is_none() {
+    if into.ref_path.is_none() && !has_operations(into) {
         into.ref_path = ref_path;
     }
     if into.servers.is_none() {
         into.servers = servers;
     }
+}
+
+fn has_operations(item: &mut PathItem) -> bool {
+    operation_slots_mut(item).iter().any(|op| op.is_some())
 }
 
 /// Replace a path item that only points at `#/components/pathItems/<name>`
@@ -479,13 +496,27 @@ impl OpenApi {
         // `POST /users`) must keep BOTH operations in the generated
         // document — otherwise the spec under-documents what the merged
         // router actually serves at runtime.
-        for (path, item) in other.paths {
+        //
+        // On a conflict, both sides' `#/components/pathItems/*` references
+        // are inlined first (whatever the push-down above decided), so a
+        // `$ref` never lands next to the other side's operations.
+        let self_path_items = self.components.as_ref().and_then(|c| c.path_items.as_ref());
+        for (path, mut item) in other.paths {
             use std::collections::btree_map::Entry;
             match self.paths.entry(path) {
                 Entry::Vacant(slot) => {
                     slot.insert(item);
                 }
-                Entry::Occupied(mut slot) => merge_path_item(slot.get_mut(), item),
+                Entry::Occupied(mut slot) => {
+                    let into = slot.get_mut();
+                    if let Some(path_items) = path_items {
+                        inline_path_item_ref(&mut item, path_items);
+                    }
+                    if let Some(path_items) = self_path_items {
+                        inline_path_item_ref(into, path_items);
+                    }
+                    merge_path_item(into, item);
+                }
             }
         }
 

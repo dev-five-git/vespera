@@ -349,3 +349,57 @@ fn ref_path_items_without_components_are_left_alone() {
         Some("#/components/pathItems/A")
     );
 }
+
+/// Round 11: on a colliding path, a `#/components/pathItems/*` reference of
+/// either side is inlined even when nothing is pushed down, so the merged
+/// item never carries a `$ref` next to operations.
+#[test]
+fn colliding_ref_path_items_are_inlined_on_both_sides() {
+    let mut parent =
+        doc(json!({"paths": {"/users": {"get": {"summary": "parent", "responses": {}}}}}));
+    parent.merge(doc(path_item_refs(
+        json!({"/users": {"$ref": "#/components/pathItems/U"}}),
+        json!({"U": {"get": {"summary": "child", "responses": {}}, "post": {"responses": {}}}}),
+    )));
+    let item = &parent.paths["/users"];
+    assert_eq!(item.ref_path, None);
+    assert_eq!(
+        op(&parent, "/users", "get").summary.as_deref(),
+        Some("parent")
+    );
+    assert!(item.post.is_some());
+
+    let mut parent = doc(path_item_refs(
+        json!({"/users": {"$ref": "#/components/pathItems/U"}}),
+        json!({"U": {"get": {"summary": "parent", "responses": {}}}}),
+    ));
+    parent.merge(doc(json!({"paths": {"/users": {"get": {"summary": "child", "responses": {}}, "post": {"responses": {}}}}})));
+    let item = &parent.paths["/users"];
+    assert_eq!(item.ref_path, None);
+    assert_eq!(
+        op(&parent, "/users", "get").summary.as_deref(),
+        Some("parent")
+    );
+    assert!(item.post.is_some());
+}
+
+/// An unresolvable reference is never combined with operations: the
+/// receiver keeps its operations over an incoming reference, and a receiver
+/// that is still a reference keeps itself over incoming operations.
+#[test]
+fn unresolvable_ref_is_never_merged_next_to_operations() {
+    let mut parent = doc(json!({"paths": {"/a": {"get": {"responses": {}}}}}));
+    parent.merge(doc(
+        json!({"paths": {"/a": {"$ref": "other.yaml#/a", "summary": "s"}}}),
+    ));
+    let item = &parent.paths["/a"];
+    assert_eq!(item.ref_path, None);
+    assert!(item.get.is_some());
+    assert_eq!(item.summary.as_deref(), Some("s"));
+
+    let mut parent = doc(json!({"paths": {"/a": {"$ref": "other.yaml#/a"}}}));
+    parent.merge(doc(json!({"paths": {"/a": {"post": {"responses": {}}}}})));
+    let item = &parent.paths["/a"];
+    assert_eq!(item.ref_path.as_deref(), Some("other.yaml#/a"));
+    assert!(item.post.is_none());
+}

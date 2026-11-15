@@ -435,7 +435,7 @@ impl Schema {
     /// Whether a composition keyword (`oneOf` / `allOf` / `not`, or an
     /// `anyOf` without a `{type: null}` branch) makes this schema reject
     /// `null` even when it is flagged `nullable`.
-    fn composition_rejects_null(&self) -> bool {
+    pub(super) fn composition_rejects_null(&self) -> bool {
         self.one_of.is_some()
             || self.all_of.is_some()
             || self.not.is_some()
