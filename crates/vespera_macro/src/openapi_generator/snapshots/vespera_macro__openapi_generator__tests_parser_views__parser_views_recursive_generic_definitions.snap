@@ -100,13 +100,13 @@ expression: "serde_json::to_string_pretty(&components).unwrap()"
       "children"
     ]
   },
-  "Tree_i32Input": {
+  "Tree_i32.Input": {
     "type": "object",
     "properties": {
       "children": {
         "type": "array",
         "items": {
-          "$ref": "#/components/schemas/Tree_i32Input"
+          "$ref": "#/components/schemas/Tree_i32.Input"
         }
       },
       "value": {

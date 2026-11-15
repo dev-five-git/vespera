@@ -21,6 +21,30 @@ const DEFINITIONS: &[(&str, &str)] = &[
     ),
     ("RepoKey", "pub struct RepoKey { pub repo: i32 }"),
     ("Keyed", "pub struct Keyed<K> { pub key: K }"),
+    // `#[serde(transparent)]` reads its ONE field that is neither
+    // `PhantomData` nor skipped / defaulted on the deserialize side.
+    (
+        "PhantomQ",
+        "#[serde(transparent)] pub struct PhantomQ<T> { pub _p: PhantomData<T>, pub inner: Filter }",
+    ),
+    (
+        "DefaultQ",
+        "#[serde(transparent)] pub struct DefaultQ { #[serde(default)] pub page: u32, pub inner: Filter }",
+    ),
+    ("WrapQ", "#[serde(transparent)] pub struct WrapQ(Filter);"),
+    (
+        "FromTuple",
+        r#"#[serde(from = "Filter")] pub struct FromTuple(String);"#,
+    ),
+    ("TwoIds", "pub struct TwoIds { pub a: i64, pub b: u64 }"),
+    (
+        "PhantomPath",
+        "#[serde(transparent)] pub struct PhantomPath<T> { pub _p: std::marker::PhantomData<T>, pub ids: TwoIds }",
+    ),
+    (
+        "WrapPath",
+        "#[serde(transparent)] pub struct WrapPath(TwoIds);",
+    ),
     // Two `#[schema(name)]` renames sharing the ident `Foo` (`a::Foo` = `A`,
     // `b::Foo` = `B`); the bare ident aliases the first.
     (
@@ -95,6 +119,22 @@ fn render(func_src: &str, path_params: &[&str]) -> String {
 // module declares.
 #[case::query_scoped_rename("query_scoped_rename", "fn f(q: Query<crate::b::Foo>) {}", &[])]
 #[case::path_scoped_rename("path_scoped_rename", "fn f(p: Path<b::Foo>) {}", &["b_field"])]
+// Round 7: a transparent struct reads its single deserialized field (never
+// a `PhantomData` / `#[serde(default)]` one); tuple structs are followed too.
+#[case::query_transparent_phantom(
+    "query_transparent_phantom",
+    "fn f(q: Query<PhantomQ<i32>>) {}",
+    &[]
+)]
+#[case::query_transparent_default("query_transparent_default", "fn f(q: Query<DefaultQ>) {}", &[])]
+#[case::query_transparent_tuple("query_transparent_tuple", "fn f(q: Query<WrapQ>) {}", &[])]
+#[case::query_from_tuple("query_from_tuple", "fn f(q: Query<FromTuple>) {}", &[])]
+#[case::path_transparent_phantom(
+    "path_transparent_phantom",
+    "fn f(p: Path<PhantomPath<u8>>) {}",
+    &["a", "b"]
+)]
+#[case::path_transparent_tuple("path_transparent_tuple", "fn f(p: Path<WrapPath>) {}", &["a", "b"])]
 #[case::raw_identifier_bare("raw_identifier_bare", "fn f(r#type: i32) {}", &["type"])]
 fn parameter_shapes(#[case] name: &str, #[case] func_src: &str, #[case] path_params: &[&str]) {
     insta::assert_snapshot!(

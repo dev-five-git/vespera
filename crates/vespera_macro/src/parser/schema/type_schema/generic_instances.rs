@@ -130,7 +130,7 @@ fn push_array_len(name: &mut String, len: &syn::Expr) {
 // Inline the generic instantiation `name`, built by `build`, unless that
 /// would recurse forever — then a `$ref` to the materialised component.
 pub fn inline_or_reference(name: &str, build: impl FnOnce() -> Schema) -> SchemaRef {
-    // In the request view the instantiation carries an `Input` suffix when
+    // In the request view the instantiation carries a `.Input` suffix when
     // the definition has an input view; it then refers to that input.
     let request = super::super::request_view::in_request_view();
     let definition = DEFINITIONS.with(|stack| {
@@ -140,7 +140,7 @@ pub fn inline_or_reference(name: &str, build: impl FnOnce() -> Schema) -> Schema
             .rev()
             .find(|(instance, _)| {
                 instance == name
-                    || (request && name.strip_suffix("Input") == Some(instance.as_str()))
+                    || (request && name.strip_suffix(".Input") == Some(instance.as_str()))
             })
             .map(|(_, component)| component.clone())
     });

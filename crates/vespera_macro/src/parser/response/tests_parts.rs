@@ -57,7 +57,8 @@ fn responses_json(return_type: &str) -> String {
 #[case::err_status_unresolved("err_status_unresolved", "-> Result<User, (StatusCode, AppError)>")]
 #[case::err_json_unknown("err_json_unknown", "-> Result<User, Json<AppError>>")]
 // 13: the error side is keyed like the success one (`Redirect` → `3XX`,
-// `NoContent` → `204`); an `Infallible` / `!` error never happens.
+// `NoContent` → `204`, labelled by that status: "Redirect" / "Successful
+// response"); an `Infallible` / `!` error never happens.
 #[case::err_redirect("err_redirect", "-> Result<Html<String>, Redirect>")]
 #[case::err_no_content("err_no_content", "-> Result<Json<User>, (HeaderMap, NoContent)>")]
 #[case::redirect_both("redirect_both", "-> Result<Redirect, Redirect>")]
