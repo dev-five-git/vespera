@@ -100,6 +100,10 @@ fn scoped_names(
     "struct A { #[serde(flatten)] l: LeavingEnum, #[serde(flatten)] m: HashMap<String, u8> }",
     false
 )]
+#[case::deny_flatten_tuple(
+    "#[serde(deny_unknown_fields)] struct A { id: u8, #[serde(flatten)] t: (Page, u8) }",
+    false
+)]
 // Round 18 M-B: a newtype around a map reads every buffered key.
 #[case::deny_flatten_newtype_map(
     "#[serde(deny_unknown_fields)] struct A { id: u8, #[serde(flatten)] attrs: Attrs }",

@@ -872,6 +872,31 @@ mod tests {
         );
     }
 
+    /// Only a path naming a known definition that serde reads without
+    /// taking its keys leaves them behind.
+    #[rstest]
+    #[case::tuple("(Meta, u8)", false)]
+    #[case::unknown("Ghost", false)]
+    #[case::alias("Alias", false)]
+    #[case::leaving("Meta", true)]
+    #[case::newtype("Wrapped", true)]
+    fn leaves_keys_needs_a_known_leaving_definition(#[case] ty: &str, #[case] leaves: bool) {
+        let definitions = HashMap::from([
+            (
+                "Audit".to_string(),
+                "struct Audit { by: String }".to_string(),
+            ),
+            (
+                "Meta".to_string(),
+                "struct Meta { #[serde(flatten)] audit: Audit }".to_string(),
+            ),
+            ("Wrapped".to_string(), "struct Wrapped(Meta);".to_string()),
+            ("Alias".to_string(), "type Alias = Meta;".to_string()),
+        ]);
+        let ty: syn::Type = syn::parse_str(ty).unwrap();
+        assert_eq!(leaves_keys(&ty, &definitions, WRAPPER_DEPTH), leaves);
+    }
+
     /// A macro-expanded `$ty` arrives as an invisible group.
     #[test]
     fn resolve_type_peels_invisible_groups() {
