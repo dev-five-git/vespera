@@ -512,7 +512,9 @@ mod tests {
     ///
     /// 1. `max == 0` is the **unlimited** sentinel — no `len`, not even
     ///    `usize::MAX`, exceeds it.  Flipping this would turn the documented
-    ///    "unlimited by default" into "reject everything".
+    ///    `0 = unlimited` setting (the default of the streaming-request cap;
+    ///    the buffered request cap defaults to 64 MiB) into "reject
+    ///    everything".
     /// 2. The comparison is strictly `>`, so a request of exactly `max` bytes
     ///    is **accepted**.  Loosening it to `>=` would silently `413` the
     ///    exact size an operator configured as allowed (an off-by-one the

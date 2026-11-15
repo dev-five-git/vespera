@@ -161,6 +161,83 @@ class ReactiveStreamAbortTest {
         assertEquals(500, awaitEvent().status());
     }
 
+    /**
+     * The same failure on the implicit path (a bodyless GET with a wildcard
+     * or no {@code Accept}, what {@code curl} / {@code fetch()} send): a Rust
+     * event-stream {@code Content-Type} must keep the hold, so the error
+     * shape does not depend on the client's {@code Accept}.
+     */
+    @Test
+    void implicitStreamThatFailsBeforeItsFirstFlushHintIsReplacedByA500() throws Exception {
+        transport.streamHeader = RUST_HEADER;
+        transport.streamChunks = List.of("data: 1\n\n");
+        transport.streamFlush = false;
+        transport.streamFailure = new VesperaStreamAbortedException(VesperaStreamAbortedException.PANIC_MESSAGE);
+        transport.streamImplicitRequests = true;
+        WebTestClient client = WebTestClient.bindToApplicationContext(context()).build();
+
+        Result wildcard = call(client.get().uri("/events").header(HttpHeaders.ACCEPT, "*/*"));
+        assertEquals(500, wildcard.status());
+        assertEquals(ProxyErrors.RUST_PANIC, wildcard.body());
+        assertNull(wildcard.header(HttpHeaders.SET_COOKIE), "Rust's Set-Cookie is dropped");
+        assertNull(wildcard.header(HttpHeaders.CACHE_CONTROL), "Rust's Cache-Control is dropped");
+        DispatchEvent event = awaitEvent();
+        assertEquals(500, event.status());
+        assertTrue(event.panicked());
+        assertEquals(DispatchMode.STREAMING, event.mode());
+
+        events.clear();
+        Result noAccept = call(client.get().uri("/events"));
+        assertEquals(500, noAccept.status());
+        assertEquals(ProxyErrors.RUST_PANIC, noAccept.body());
+        assertEquals(500, awaitEvent().status());
+    }
+
+    /**
+     * An implicit stream's gate with a stream {@code Content-Type} holds like
+     * the explicit {@link VesperaReactiveProxyHandler.BodyGate}: until the
+     * flush hint, past {@value VesperaReactiveProxyHandler#STREAM_CHUNK_BYTES}
+     * bytes (even with a larger implicit limit) or the end of the body, which
+     * writes no {@code Content-Length}.
+     */
+    @Test
+    void spillingGateWithAStreamContentTypeHoldsLikeTheBodyGate() throws IOException {
+        int chunk = VesperaReactiveProxyHandler.STREAM_CHUNK_BYTES;
+        MockServerHttpResponse response = new MockServerHttpResponse();
+        ReactiveProxyResponse out = new ReactiveProxyResponse(response, null, null, null);
+        java.io.ByteArrayOutputStream sink = new java.io.ByteArrayOutputStream();
+        VesperaReactiveProxyHandler.SpillingGate gate =
+                new VesperaReactiveProxyHandler.SpillingGate(sink, out, "GET", 4 * chunk);
+        gate.onHeader(out.applyWireHeader(RUST_HEADER, 4, RUST_HEADER.length - 4, true), "GET");
+        gate.write("data: 1\n\n".getBytes(), 0, 9);
+        assertTrue(gate.holding(), "held until the flush hint");
+        assertEquals(0, sink.size());
+        gate.flush();
+        assertFalse(gate.holding());
+        assertEquals("data: 1\n\n", sink.toString());
+
+        java.io.ByteArrayOutputStream big = new java.io.ByteArrayOutputStream();
+        VesperaReactiveProxyHandler.SpillingGate limited =
+                new VesperaReactiveProxyHandler.SpillingGate(big, out, "GET", 4 * chunk);
+        limited.onHeader(out.applyWireHeader(RUST_HEADER, 4, RUST_HEADER.length - 4, true), "GET");
+        limited.write(new byte[chunk], 0, chunk);
+        assertEquals(0, big.size());
+        limited.write('x');
+        assertEquals(chunk + 1, big.size(), "released past the explicit chunk limit");
+
+        MockServerHttpResponse endedResponse = new MockServerHttpResponse();
+        ReactiveProxyResponse endedOut = new ReactiveProxyResponse(endedResponse, null, null, null);
+        java.io.ByteArrayOutputStream ended = new java.io.ByteArrayOutputStream();
+        VesperaReactiveProxyHandler.SpillingGate finished =
+                new VesperaReactiveProxyHandler.SpillingGate(ended, endedOut, "GET", 4 * chunk);
+        finished.onHeader(endedOut.applyWireHeader(RUST_HEADER, 4, RUST_HEADER.length - 4, true), "GET");
+        finished.write('z');
+        finished.finish();
+        assertEquals("z", ended.toString(), "released at the end of the body");
+        assertNull(endedResponse.getHeaders().getFirst(HttpHeaders.CONTENT_LENGTH),
+                "a stream never gets a Content-Length");
+    }
+
     @Test
     void bodyGateHoldsUntilTheFlushHintTheChunkLimitOrTheEnd() throws IOException {
         java.io.ByteArrayOutputStream sink = new java.io.ByteArrayOutputStream();

@@ -312,3 +312,69 @@ pub fn stream_outcome(outcome: crate::StreamOutcome) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Debug;
+    use std::sync::{Arc, Mutex};
+
+    use tower::ServiceExt;
+    use tracing::field::{Field, Visit};
+    use tracing::span::{Id, Record};
+    use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+
+    use super::*;
+
+    /// Collects every `route` value recorded onto any span.
+    #[derive(Clone, Default)]
+    struct Routes(Arc<Mutex<Vec<String>>>);
+
+    struct RouteVisitor<'a>(&'a mut Vec<String>);
+
+    impl Visit for RouteVisitor<'_> {
+        fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
+            if field.name() == "route" {
+                self.0.push(format!("{value:?}"));
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> Layer<S> for Routes {
+        fn on_record(&self, _: &Id, values: &Record<'_>, _: Context<'_, S>) {
+            values.record(&mut RouteVisitor(&mut self.0.lock().unwrap()));
+        }
+    }
+
+    /// Dispatch `GET /x` through `router` inside a recording
+    /// `vespera.dispatch` span; the routes it recorded.
+    fn routes_recorded_by(router: crate::Router) -> Vec<String> {
+        let captured = Routes::default();
+        let subscriber = tracing_subscriber::registry().with(captured.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("vespera.dispatch", route = Empty);
+            let _entered = span.enter();
+            let request = axum::extract::Request::get("/x")
+                .body(axum::body::Body::empty())
+                .expect("request");
+            let response = runtime
+                .block_on(router.oneshot(request))
+                .expect("infallible");
+            assert_eq!(response.status(), 200);
+        });
+        captured.0.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn router_without_a_dispatch_span_is_the_uninstrumented_one() {
+        let app =
+            TracedApp::new(crate::Router::new().route("/x", axum::routing::get(|| async { "x" })));
+        // Picked with no subscriber (so no recording dispatch span): the
+        // plain router, which has no route-recording layer.
+        assert_eq!(routes_recorded_by(app.router()), Vec::<String>::new());
+        // Control: the twin records the matched route template.
+        assert_eq!(routes_recorded_by(app.traced.clone()), ["\"/x\""]);
+    }
+}

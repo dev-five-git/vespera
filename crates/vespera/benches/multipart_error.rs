@@ -7,10 +7,11 @@
 //! - `before`: the original implementation — materialize the public message
 //!   with `error.to_string()` (one heap `String` per error) and serialize an
 //!   owned-`&str` envelope.
-//! - `after`: the shipped implementation — a borrowing `Serialize` chain that
-//!   streams the error's own `Display` straight into `serde_json` via
-//!   `collect_str` (zero per-error `String` allocation), mirroring the
-//!   shipped serializer in `src/multipart/error.rs`.
+//! - `after`: the shipped serializer itself (`TypedMultipartError::error_body`,
+//!   `#[doc(hidden)]`) — a borrowing `Serialize` chain that streams the
+//!   error's own `Display` straight into `serde_json` via `collect_str` (zero
+//!   per-error `String` allocation), with the `path` going through the same
+//!   bounded, control-char-escaping `Reflected` writer real responses use.
 //!
 //! The delta is the per-error `String` allocation the change removes. Both
 //! arms assert byte-identical output to each other AND to the body the real
@@ -20,7 +21,7 @@
 use std::borrow::Cow;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use serde::{Serialize, Serializer, ser::SerializeStruct};
+use serde::Serialize;
 use vespera::axum::{body::to_bytes, response::IntoResponse};
 use vespera::multipart::TypedMultipartError;
 
@@ -37,48 +38,6 @@ fn fixture() -> TypedMultipartError {
 
 /// The offending field name doubles as the envelope `path`.
 const PATH: &str = "age";
-
-// ── AFTER: shipped borrowing Serialize chain (mirror of multipart/error.rs) ─
-
-fn serialize_after(err: &TypedMultipartError) -> Vec<u8> {
-    struct Message<'a>(&'a TypedMultipartError);
-    impl Serialize for Message<'_> {
-        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-            // Client-caused variant → stream its `Display` with no `String`.
-            s.collect_str(self.0)
-        }
-    }
-    struct OneError<'a> {
-        err: &'a TypedMultipartError,
-        path: &'a str,
-    }
-    impl Serialize for OneError<'_> {
-        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-            let mut st = s.serialize_struct("MultipartOneError", 2)?;
-            st.serialize_field("message", &Message(self.err))?;
-            st.serialize_field("path", self.path)?;
-            st.end()
-        }
-    }
-    struct Envelope<'a> {
-        err: &'a TypedMultipartError,
-        path: &'a str,
-    }
-    impl Serialize for Envelope<'_> {
-        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-            let mut st = s.serialize_struct("MultipartErrorEnvelope", 1)?;
-            st.serialize_field(
-                "errors",
-                &[OneError {
-                    err: self.err,
-                    path: self.path,
-                }],
-            )?;
-            st.end()
-        }
-    }
-    serde_json::to_vec(&Envelope { err, path: PATH }).expect("infallible")
-}
 
 // ── BEFORE: original owned-`String` message implementation ───────────
 
@@ -109,7 +68,7 @@ fn bench_multipart_error_envelope(c: &mut Criterion) {
     // A/B compares the same observable work — never a shortcut.
     assert_eq!(
         serialize_before(&err),
-        serialize_after(&err),
+        err.error_body(),
         "before/after multipart error-envelope bytes diverged"
     );
     // ...and both must be the body the shipped `IntoResponse` actually sends.
@@ -119,7 +78,7 @@ fn bench_multipart_error_envelope(c: &mut Criterion) {
         .block_on(to_bytes(fixture().into_response().into_body(), usize::MAX))
         .expect("in-memory body");
     assert_eq!(
-        serialize_after(&err),
+        err.error_body(),
         shipped.as_ref(),
         "bench envelope diverged from the shipped multipart error body"
     );
@@ -133,7 +92,7 @@ fn bench_multipart_error_envelope(c: &mut Criterion) {
     group.bench_with_input(
         BenchmarkId::new("borrowing_serialize_after", "WrongFieldType"),
         &err,
-        |b, e| b.iter(|| serialize_after(std::hint::black_box(e))),
+        |b, e| b.iter(|| std::hint::black_box(e).error_body()),
     );
     group.finish();
 }
