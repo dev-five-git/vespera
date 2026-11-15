@@ -238,6 +238,21 @@ fn field_serde_attrs_cases(
     "container_tag_source_rename",
     r#"#[serde(tag = "t")] #[serde(rename = "wire")]"#
 )]
+// L6 (round 16): a one-sided `rename` gets the other side's source name
+// (the DTO read `"t":"S"` as `"t":"<Dto>"` on input).
+#[case::tag_with_serialize_rename(
+    "container_tag_serialize_rename",
+    r#"#[serde(tag = "t", rename(serialize = "wire"))]"#
+)]
+#[case::tag_with_deserialize_rename(
+    "container_tag_deserialize_rename",
+    r#"#[serde(tag = "t")] #[serde(rename(deserialize = "wire"))]"#
+)]
+#[case::tag_with_both_side_renames(
+    "container_tag_both_side_renames",
+    r#"#[serde(tag = "t", rename(serialize = "a", deserialize = "b"))]"#
+)]
+#[case::tag_with_odd_rename("container_tag_odd_rename", r#"#[serde(tag = "t", rename("x"))]"#)]
 #[case::conversions(
     "container_conversions",
     r#"#[serde(from = "W", into = "W")] #[serde(try_from = "W")] #[doc = "d"] #[serde(bound = "")]"#
@@ -506,6 +521,12 @@ fn renamed_field_follows_each_rename_all_side() {
     r#"#[serde(default = "::other::f")]"#
 )]
 #[case::not_a_path_kept(r#"#[serde(default = "1 + 2")]"#, r#"#[serde(default = "1 + 2")]"#)]
+// L8 (round 16): the generic arguments stay on their segment (they were
+// dropped: `crate::models::user::codecs::de`).
+#[case::generic_arguments_kept(
+    r#"#[serde(default = "codecs::de::<u8>", with = "ser::<&'static str>")]"#,
+    r#"#[serde(default = "crate::models::user::codecs::de::< u8 >", with = "crate::util::ser::< & 'static str >")]"#
+)]
 #[case::flag_kept("#[serde(default)]", "#[serde(default)]")]
 #[case::non_string_kept("#[serde(default = 1)]", "#[serde(default = 1)]")]
 #[case::unparseable_kept("#[serde(default = )]", "#[serde(default = )]")]
@@ -582,10 +603,28 @@ fn serde_path_crate() -> (tempfile::TempDir, crate::env_access::test_env::EnvGua
 )]
 #[case::doc_kept(r#"#[doc = "Self::limit"]"#, r#"#[doc = "Self::limit"]"#)]
 #[case::flag_list_kept("#[serde(default)]", "#[serde(default)]")]
+// M1 (round 16): the garde rules are emitted on the DTO too.
+#[case::garde_custom(
+    "#[garde(custom(Self::check_name), length(max = Self::MAX))]",
+    "#[garde(custom(Query::check_name), length(max = Query::MAX))]"
+)]
+#[case::garde_cfg_attr(
+    "#[cfg_attr(a, garde(custom(Self::check)), serde(default = \"Self::limit\"))]",
+    "#[cfg_attr(a, garde(custom(Query::check)), serde(default = \"Query::limit\"))]"
+)]
+#[case::garde_self_value_kept(
+    "#[garde(custom(<Self as T>::f), matches(self), custom(f(Self)))]",
+    "#[garde(custom(<Self as T>::f), matches(self), custom(f(Self)))]"
+)]
+#[case::garde_outside_kept(
+    "#[cfg_attr(Self::a, doc = \"x\")] #[schema(x = Self::y)]",
+    "#[cfg_attr(Self::a, doc = \"x\")] #[schema(x = Self::y)]"
+)]
 fn self_in_serde_paths_names_the_source(#[case] attr: &str, #[case] expected: &str) {
     let mut item: syn::ItemStruct =
         syn::parse_str(&format!("struct Query {{ {attr} limit: u32 }}")).unwrap();
-    name_self_in_serde_paths(&mut item);
+    let self_path = item.ident.clone().into();
+    name_self_in_paths(&mut item, &self_path);
     let expected: syn::ItemStruct =
         syn::parse_str(&format!("struct Query {{ {expected} limit: u32 }}")).unwrap();
     assert_eq!(quote!(#item).to_string(), quote!(#expected).to_string());
@@ -603,11 +642,45 @@ fn self_in_serde_paths_is_rerooted() {
     )
     .unwrap();
     super::super::file_cache::bump_epoch();
-    name_self_in_serde_paths(&mut item);
+    let self_path = item.ident.clone().into();
+    name_self_in_paths(&mut item, &self_path);
     let module = ["crate", "models", "user"].map(String::from);
     let attrs = reroot_serde_paths(&item.fields.iter().next().unwrap().attrs, &module);
     assert_eq!(
         quote!(#(#attrs)*).to_string(),
         quote!(#[serde(default = "crate::models::user::User::make")]).to_string()
+    );
+}
+
+/// L5 (round 16): `Self` of an instantiated generic source carries the type
+/// arguments (`Page::default_size` alone fails to infer `T`, E0282), and
+/// the container's garde rules are renamed too; re-rooting keeps them.
+#[test]
+fn self_of_a_generic_source_keeps_its_arguments() {
+    let (dir, _guard) = serde_path_crate();
+    std::fs::write(
+        dir.path().join("src").join("models").join("user.rs"),
+        "pub struct Page<T>(T);",
+    )
+    .unwrap();
+    super::super::file_cache::bump_epoch();
+    let mut item: syn::ItemStruct = syn::parse_str(
+        r#"#[garde(context(Self::Ctx))] struct Page { #[serde(default = "Self::size")] #[garde(custom(Self::check))] a: u32 }"#,
+    )
+    .unwrap();
+    name_self_in_paths(&mut item, &syn::parse_quote!(Page::<User>));
+    let module = ["crate", "models", "user"].map(String::from);
+    let field = item.fields.iter().next().unwrap();
+    let serde = reroot_serde_paths(&field.attrs[..1], &module);
+    let garde = super::super::garde_paths::reroot_garde_attr(&field.attrs[1], &module);
+    let container = &item.attrs[0];
+    assert_eq!(
+        quote!(#(#serde)* #garde #container).to_string(),
+        quote!(
+            #[serde(default = "crate::models::user::Page::< User >::size")]
+            #[garde(custom(crate::models::user::Page::<User>::check))]
+            #[garde(context(Page::<User>::Ctx))]
+        )
+        .to_string()
     );
 }

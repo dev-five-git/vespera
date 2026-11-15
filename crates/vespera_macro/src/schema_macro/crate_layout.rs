@@ -32,14 +32,23 @@ impl CrateLayout {
     }
 
     /// The absolute module path (`["crate", ..]`) of the source `file`:
-    /// a crate root is `crate`, any other file is named by its path below
-    /// [`Self::module_dir`] (`a/b.rs` / `a/b/mod.rs` -> `crate::a::b`). A file
-    /// outside the module directory maps to `crate`.
+    /// a crate root is `crate`; a file the module tree loads through a
+    /// `#[path = ".."]` declaration is the module declaring it
+    /// ([`super::module_scope::declared_module_of`]); any other file is
+    /// named by its path below [`Self::module_dir`] (`a/b.rs` / `a/b/mod.rs`
+    /// -> `crate::a::b`). A file outside the module directory the tree does
+    /// not load maps to `crate`.
     pub fn module_path_of(&self, file: &Path) -> Vec<String> {
-        let mut segments = vec!["crate".to_string()];
         if self.roots.iter().any(|root| same_path(root, file)) {
-            return segments;
+            return vec!["crate".to_string()];
         }
+        let disk = self.disk_module_path_of(file);
+        super::module_scope::declared_module_of(self, file, &disk).unwrap_or(disk)
+    }
+
+    /// [`Self::module_path_of`] from the file's place on disk alone.
+    fn disk_module_path_of(&self, file: &Path) -> Vec<String> {
+        let mut segments = vec!["crate".to_string()];
         let Some(relative) = relative_to(file, &self.module_dir) else {
             return segments;
         };
@@ -194,7 +203,7 @@ fn same_path(left: &Path, right: &Path) -> bool {
     path_key(left) == path_key(right)
 }
 
-fn path_key(path: &Path) -> String {
+pub(super) fn path_key(path: &Path) -> String {
     let cwd = std::env::current_dir().unwrap_or_default();
     crate::file_utils::normalize_path_key(&path.to_string_lossy(), &cwd)
 }
@@ -358,6 +367,47 @@ mod tests {
             layout.module_path_of(Path::new("src/x/../b.rs")),
             ["crate", "b"]
         );
+    }
+
+    /// M3 (round 16): a file loaded through `#[path]` is the module that
+    /// declares it, as the forward lookup reads it (its place on disk gave
+    /// `crate::generated::models`, and `crate` outside `src`).
+    #[rstest]
+    #[case::path_attr("src/generated/models.rs", "crate::models")]
+    #[case::outside_src("gen/other.rs", "crate::other")]
+    #[case::inline_parent("src/inner/deep.rs", "crate::inner::deep")]
+    #[case::plain("src/plain.rs", "crate::plain")]
+    #[case::below_path_module("src/generated/child.rs", "crate::models::child")]
+    #[case::undeclared("src/stray.rs", "crate::stray")]
+    #[case::missing("src/gone.rs", "crate::gone")]
+    fn path_attr_modules(#[case] file: &str, #[case] module: &str) {
+        let dir = TempDir::new().unwrap();
+        let files = [
+            (
+                "src/lib.rs",
+                "#[path = \"generated/models.rs\"] pub mod models; \
+                 #[path = \"../gen/other.rs\"] pub mod other; pub mod plain; \
+                 mod inner { #[path = \"deep.rs\"] pub mod deep; } mod absent;",
+            ),
+            ("src/generated/models.rs", "pub mod child;"),
+            ("src/generated/child.rs", ""),
+            ("gen/other.rs", ""),
+            ("src/inner/deep.rs", ""),
+            // A `#[path]` cycle back to itself ends.
+            ("src/plain.rs", "#[path = \"plain.rs\"] mod again;"),
+            ("src/stray.rs", ""),
+        ];
+        for (path, content) in files {
+            let path = dir.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+        super::file_cache::bump_epoch();
+        let layout = layout_for(dir.path(), None);
+        let path = dir.path().join(file);
+        assert_eq!(layout.module_path_of(&path).join("::"), module);
+        // Memoised within the epoch.
+        assert_eq!(layout.module_path_of(&path).join("::"), module);
     }
 
     /// L3 (round 13): module segments keep the file's spelling; the

@@ -1,7 +1,8 @@
 //! `schema_type!` field references that conflict with the rest of the
 //! invocation point at the offending name: `rename` / `partial` /
 //! `relation_adapters` of a field the type does not include, and adapter
-//! entries that name no field, repeat one, or name a non-relation field.
+//! entries that name no field, repeat one, or name a non-relation field; a
+//! repeated entry is pointed at where it repeats.
 use vespera_macro::schema_type;
 
 pub struct User {
@@ -26,5 +27,7 @@ schema_type!(AdapterOmitted from User, omit = ["name"], relation_adapters = [("n
 schema_type!(AdapterPlain from User, relation_adapters = [("name", UserCard)]);
 
 schema_type!(AddInvalid from User, add = [("type": i32)]);
+
+schema_type!(AddTwice from User, add = [("extra": i32), ("extra": u8)]);
 
 fn main() {}

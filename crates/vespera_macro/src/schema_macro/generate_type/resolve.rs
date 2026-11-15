@@ -39,6 +39,19 @@ pub(super) fn resolve_source<'a>(
     // name, a same-named local `#[derive(Schema)]` used to be taken.
     let requested = requested_module_path(&input.source_type)
         .map_err(|err| err.to_syn_error(&input.source_type))?;
+    // Same-named items of several modules (one stored definition): a bare
+    // name is the variant of the module it resolves to at the call site (a
+    // `use crate::first::Page;` read the last-derived `second::Page`).
+    let variant = storage_hit
+        .filter(|_| requested.is_none())
+        .and_then(|stored| {
+            let module = super::super::bare_name_module(&input.source_type)?;
+            crate::schema_impl::variants::in_module(&stored.name, &module)
+                .map(|found| (found, module))
+        });
+    if let Some((found, module)) = variant {
+        return Ok((Cow::Owned(found), Some(module)));
+    }
     // A bare name resolves in the call-site file: a definition there wins
     // over a same-named `#[derive(Schema)]` another file registered.
     let local = storage_hit

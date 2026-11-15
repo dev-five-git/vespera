@@ -38,12 +38,24 @@ use super::input::ParamSpans;
 /// Where a diagnostic about a field name given to a parameter points.
 pub trait ErrorAt {
     /// The error for `field` as given to `param`.
-    fn error_at(&self, param: &str, field: &str, message: String) -> syn::Error;
+    fn error_at(&self, param: &str, field: &str, message: String) -> syn::Error {
+        self.error_at_occurrence(param, field, 0, message)
+    }
+
+    /// The error for the `nth` (0-based) time `field` is given to `param`
+    /// (a repeated entry: the repetition).
+    fn error_at_occurrence(
+        &self,
+        param: &str,
+        field: &str,
+        nth: usize,
+        message: String,
+    ) -> syn::Error;
 }
 
 /// Without recorded spans: the source type.
 impl ErrorAt for syn::Type {
-    fn error_at(&self, _param: &str, _field: &str, message: String) -> syn::Error {
+    fn error_at_occurrence(&self, _: &str, _: &str, _: usize, message: String) -> syn::Error {
         syn::Error::new_spanned(self, message)
     }
 }
@@ -55,8 +67,14 @@ pub struct SpannedSource<'a> {
 }
 
 impl ErrorAt for SpannedSource<'_> {
-    fn error_at(&self, param: &str, field: &str, message: String) -> syn::Error {
-        match self.spans.field(param, field) {
+    fn error_at_occurrence(
+        &self,
+        param: &str,
+        field: &str,
+        nth: usize,
+        message: String,
+    ) -> syn::Error {
+        match self.spans.occurrence(param, field, nth) {
             Some(span) => syn::Error::new(span, message),
             None => syn::Error::new_spanned(self.source_type, message),
         }
@@ -176,9 +194,10 @@ pub fn validate_rename_fields(
     for (from_field, to_field) in rename_pairs.into_iter().flatten() {
         // A second rename of one field used to win silently.
         if !seen.insert(from_field.as_str()) {
-            return Err(at.error_at(
+            return Err(at.error_at_occurrence(
                 "rename",
                 from_field,
+                1,
                 format!("`rename` lists source field `{from_field}` more than once"),
             ));
         }
@@ -254,12 +273,17 @@ pub fn validate_unique_field_names(
         }
     }
     let mut seen: HashSet<String> = sources.into_keys().collect();
+    let mut written_before: Vec<&String> = Vec::new();
     for (written, _) in add.into_iter().flatten() {
         let name = unraw(written);
+        // The repeated `add` entry, not the first one (L9, round 16).
+        let nth = written_before.iter().filter(|w| **w == written).count();
+        written_before.push(written);
         if !seen.insert(name.clone()) {
-            return Err(at.error_at(
+            return Err(at.error_at_occurrence(
                 "add",
                 written,
+                nth,
                 format!("`add` field `{name}` is already a field of the generated type: omit or rename the source field, or pick another name"),
             ));
         }
@@ -304,10 +328,11 @@ pub fn validate_relation_adapters(
     for (field, _) in adapters {
         if !seen.insert(field.as_str()) {
             // Spanned at the repeated field name (like `rename`), not the
-            // adapter type.
-            return Err(at.error_at(
+            // adapter type (nor the first entry).
+            return Err(at.error_at_occurrence(
                 "relation_adapters",
                 field,
+                1,
                 format!("`relation_adapters` lists field `{field}` more than once"),
             ));
         }

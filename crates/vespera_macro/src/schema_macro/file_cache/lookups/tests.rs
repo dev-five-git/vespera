@@ -104,6 +104,37 @@ fn out_of_tree_path_module_edit_invalidates_the_lookup() {
     );
 }
 
+/// L10 (round 16): a `#[path]` module inside the module directory without
+/// the `.rs` extension (missing from the `.rs` listing) is fingerprinted
+/// too: editing it re-resolves the cached lookup (it stayed stale).
+#[test]
+fn non_rs_path_module_edit_invalidates_the_lookup() {
+    let temp = TempDir::new().unwrap();
+    let src = temp.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("lib.rs"),
+        "#[path = \"models.in\"]\npub mod models;",
+    )
+    .unwrap();
+    let models = src.join("models.in");
+    std::fs::write(&models, "pub struct Model { pub a: i32 }").unwrap();
+    let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
+
+    bump_epoch();
+    let first = get_struct_from_schema_path("crate::models::Model").expect("resolves");
+    assert!(first.definition.contains("pub a"));
+
+    std::fs::write(&models, "pub struct Model { pub renamed_field: i64 }").unwrap();
+    bump_epoch();
+    let second = get_struct_from_schema_path("crate::models::Model").expect("resolves");
+    assert!(
+        second.definition.contains("renamed_field"),
+        "{}",
+        second.definition
+    );
+}
+
 /// The second lookup of one schema path is a cache hit.
 #[test]
 fn module_path_lookup_returns_cached_value() {

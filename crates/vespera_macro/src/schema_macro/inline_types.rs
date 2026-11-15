@@ -152,7 +152,8 @@ fn generate_inline_type_core(
     // Parse the model struct
     let mut parsed_model: syn::ItemStruct =
         super::file_cache::parse_struct_cached(model_def).ok()?;
-    super::transformation::name_self_in_serde_paths(&mut parsed_model);
+    let self_path = parsed_model.ident.clone().into();
+    super::transformation::name_self_in_paths(&mut parsed_model, &self_path);
     super::field_attrs::hoist_cfg_attr_cfgs(&mut parsed_model);
 
     // IMPORTANT: Use the TARGET model's module path for type resolution, not the parent's.

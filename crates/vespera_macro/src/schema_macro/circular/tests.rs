@@ -246,6 +246,13 @@ fn test_generate_inline_type_construction_tuple_struct() {
     r#"pub struct Model { pub id: i32, #[cfg(feature = "x")] #[doc = "d"] pub extra: i32, }"#,
     "UserInline { id : r . id , # [cfg (feature = \"x\")] extra : r . extra }"
 )]
+// M2 (round 16): the inline type hoists a `cfg_attr(p, cfg(q))`, so the
+// assignment is gated alike (it was emitted unconditionally: E0560).
+#[case::hoists_cfg_attr_cfg(
+    &["id", "note"],
+    r#"pub struct Model { pub id: i32, #[cfg_attr(feature = "a", cfg(feature = "b"), doc = "d")] pub note: String, }"#,
+    "UserInline { id : r . id , # [cfg (any (not (feature = \"a\") , feature = \"b\"))] note : r . note }"
+)]
 fn inline_type_construction(
     #[case] included: &[&str],
     #[case] definition: &str,

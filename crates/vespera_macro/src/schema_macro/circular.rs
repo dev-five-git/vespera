@@ -219,10 +219,8 @@ pub fn generate_inline_type_construction(
             // Only include fields that are in the inline type's field list
             // (the others were excluded: circular reference or otherwise).
             included_fields.contains(&field_name).then(|| {
-                let cfgs = field
-                    .attrs
-                    .iter()
-                    .filter(|attr| attr.path().is_ident("cfg"));
+                // The inline type hoists a `cfg_attr(p, cfg(q))` too.
+                let cfgs = super::field_attrs::field_cfgs(&field.attrs);
                 quote! { #(#cfgs)* #field_ident: #var_ident.#field_ident }
             })
         })

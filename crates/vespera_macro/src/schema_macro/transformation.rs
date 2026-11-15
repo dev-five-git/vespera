@@ -34,7 +34,7 @@
 use std::collections::{HashMap, HashSet};
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{ToTokens, quote};
 use syn::punctuated::Punctuated;
 
 use super::input::PartialMode;
@@ -123,20 +123,45 @@ pub fn rebuild_serde_attrs<'a>(
 /// A struct `#[serde(tag = "...")]` writes the container's serde name as the
 /// tag value, which defaults to the Rust ident. When the source has a `tag`
 /// but no container `rename`, the DTO gets `#[serde(rename = "<Source>")]`
-/// so the tag value stays the source's (a source `rename` is copied as is).
+/// so the tag value stays the source's (a source `rename` is copied as is;
+/// a one-sided `rename(serialize = "..")` gets the other side,
+/// `rename(deserialize = "<Source>")`, and vice versa).
 pub fn container_serde_attrs(attrs: &[syn::Attribute], source_ident: &str) -> Vec<TokenStream> {
     let mut has_tag = false;
-    let mut has_rename = false;
+    let (mut ser_renamed, mut de_renamed) = (false, false);
     let mut out = rebuild_serde_attrs(attrs, |meta| {
         let key = serde_key(meta);
         has_tag |= key == "tag";
-        has_rename |= key == "rename";
+        if key == "rename" {
+            let (ser, de) = rename_sides(meta);
+            ser_renamed |= ser;
+            de_renamed |= de;
+        }
         !CONTAINER_STRIPPED_KEYS.contains(&key.as_str())
     });
-    if has_tag && !has_rename {
-        out.push(quote! { #[serde(rename = #source_ident)] });
+    if has_tag {
+        match (ser_renamed, de_renamed) {
+            (false, false) => out.push(quote! { #[serde(rename = #source_ident)] }),
+            (true, false) => out.push(quote! { #[serde(rename(deserialize = #source_ident))] }),
+            (false, true) => out.push(quote! { #[serde(rename(serialize = #source_ident))] }),
+            (true, true) => {}
+        }
     }
     out
+}
+
+/// Which sides a container `rename` names: `rename = ".."` both,
+/// `rename(serialize = "..")` / `rename(deserialize = "..")` one.
+fn rename_sides(meta: &syn::Meta) -> (bool, bool) {
+    let syn::Meta::List(list) = meta else {
+        return (true, true);
+    };
+    let Ok(items) = list.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+    else {
+        return (true, true);
+    };
+    let names = |side: &str| items.iter().any(|item| item.path().is_ident(side));
+    (names("serialize"), names("deserialize"))
 }
 
 /// A field `partial` wrapped into `Option<T>`: the context needed to keep a
@@ -321,61 +346,134 @@ fn serde_key_of(path: &syn::Path) -> String {
 /// known there).
 pub(super) fn reroot_path(path: &str, module_path: &[String]) -> Option<String> {
     let path: syn::Path = syn::parse_str(path).ok()?;
+    Some(path_text(&reroot_syn_path(&path, module_path)?))
+}
+
+/// `path` as a serde path string: `a::b::f`, the spaces generic arguments
+/// need (`&'a str`, `dyn Trait`) kept.
+fn path_text(path: &syn::Path) -> String {
+    let text = path.to_token_stream().to_string();
+    if path.segments.iter().all(|seg| seg.arguments.is_none()) {
+        text.replace(' ', "")
+    } else {
+        text.replace(" :: ", "::")
+    }
+}
+
+/// `path` resolved in `module_path` (`None` when it has a leading `::` or
+/// the module does not know it). Generic arguments (`Limit::<u8>::get`, or
+/// `Page::<User>::size` from a `Self::` of an instantiated source) stay on
+/// their segment as written: the resolution replaces the leading
+/// segment(s) only, so the written segments keep their place at the end.
+pub(super) fn reroot_syn_path(path: &syn::Path, module_path: &[String]) -> Option<syn::Path> {
+    if path.leading_colon.is_some() {
+        return None;
+    }
     let segments: Vec<String> = path
         .segments
         .iter()
         // Unraw, like every scope key: `r#type::de` names the `type` module.
         .map(|segment| crate::parser::strip_raw_prefix_owned(segment.ident.to_string()))
         .collect();
-    match resolve_name(&segments, module_path) {
-        // Keyword segments (`r#type`) are raw again on output.
-        Resolved::Path(resolved) if path.leading_colon.is_none() => {
-            Some(path_tokens(&resolved).to_string().replace(' ', ""))
+    let Resolved::Path(resolved) = resolve_name(&segments, module_path) else {
+        return None;
+    };
+    // Keyword segments (`r#type`) are raw again on output.
+    let mut rerooted: syn::Path = syn::parse2(path_tokens(&resolved)).ok()?;
+    // Counted from the end: `self::` / `super::` (never generic) collapse,
+    // an import expands the first segment into several.
+    let (written, total) = (path.segments.len(), rerooted.segments.len());
+    for (index, segment) in path.segments.iter().enumerate() {
+        if !segment.arguments.is_none() {
+            let target = (total + index).checked_sub(written)?;
+            rerooted.segments[target].arguments = segment.arguments.clone();
         }
-        _ => None,
     }
+    Some(rerooted)
 }
 
-/// `Self::f` in the serde function paths of `item`'s fields (also inside a
-/// `cfg_attr`) spelled `Name::f` with the source struct's name: the
-/// attributes are emitted on the DTO, where `Self` is the DTO (E0599: no
-/// `f` there); [`reroot_path`] then roots `Name` at the source module.
-pub fn name_self_in_serde_paths(item: &mut syn::ItemStruct) {
-    let name = item.ident.to_string();
-    for attr in item.fields.iter_mut().flat_map(|field| &mut field.attrs) {
-        let serde = attr.path().is_ident("serde");
-        if (serde || attr.path().is_ident("cfg_attr"))
+/// `Self` in the serde function paths (`"Self::f"`) and the `#[garde(..)]`
+/// rules (`custom(Self::check)`) of `item` (its fields' and its own
+/// attributes, also inside a `cfg_attr`) spelled `self_path`: the source
+/// struct's name, with the instantiated type arguments of a generic source
+/// (`Page::<User>`, E0282 without them). The attributes are emitted on the
+/// DTO, where `Self` is the DTO (E0599: no `f` there); [`reroot_path`] /
+/// [`reroot_syn_path`] then root the name at the source module.
+pub fn name_self_in_paths(item: &mut syn::ItemStruct, self_path: &syn::Path) {
+    let name = SelfName {
+        tokens: quote!(#self_path),
+        text: path_text(self_path),
+    };
+    let field_attrs = item.fields.iter_mut().flat_map(|field| &mut field.attrs);
+    for attr in item.attrs.iter_mut().chain(field_attrs) {
+        let mode = SelfMode::of(attr.path().get_ident());
+        if (mode != SelfMode::Other || attr.path().is_ident("cfg_attr"))
             && let syn::Meta::List(list) = &mut attr.meta
         {
-            list.tokens = name_self(std::mem::take(&mut list.tokens), &name, serde);
+            list.tokens = name_self(std::mem::take(&mut list.tokens), &name, mode);
         }
     }
 }
 
-/// [`name_self_in_serde_paths`] over one token list; `in_serde`: the
-/// tokens are `serde(..)` items.
-fn name_self(tokens: TokenStream, name: &str, in_serde: bool) -> TokenStream {
+/// What `Self` becomes in [`name_self_in_paths`].
+struct SelfName {
+    tokens: TokenStream,
+    text: String,
+}
+
+/// The attribute list a token list belongs to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SelfMode {
+    Serde,
+    Garde,
+    /// Neither (a `cfg_attr` list, a predicate).
+    Other,
+}
+
+impl SelfMode {
+    fn of(ident: Option<&proc_macro2::Ident>) -> Self {
+        match ident {
+            Some(ident) if ident == "serde" => Self::Serde,
+            Some(ident) if ident == "garde" => Self::Garde,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// [`name_self_in_paths`] over one token list of `mode`.
+fn name_self(tokens: TokenStream, name: &SelfName, mode: SelfMode) -> TokenStream {
     use proc_macro2::TokenTree;
     let mut out: Vec<TokenTree> = Vec::new();
     for tree in tokens {
-        let tree = match tree {
+        match tree {
             TokenTree::Group(group) => {
-                // A `serde(..)` list nested in a `cfg_attr(..)`.
-                let serde = in_serde
-                    || matches!(out.last(), Some(TokenTree::Ident(ident)) if ident == "serde");
-                let mut renamed = proc_macro2::Group::new(
-                    group.delimiter(),
-                    name_self(group.stream(), name, serde),
-                );
+                // A `serde(..)` / `garde(..)` list nested in a `cfg_attr(..)`.
+                let mode = match out.last() {
+                    Some(TokenTree::Ident(ident)) if mode == SelfMode::Other => {
+                        SelfMode::of(Some(ident))
+                    }
+                    _ => mode,
+                };
+                let stream = name_self(group.stream(), name, mode);
+                let mut renamed = proc_macro2::Group::new(group.delimiter(), stream);
                 renamed.set_span(group.span());
-                TokenTree::Group(renamed)
+                out.push(TokenTree::Group(renamed));
             }
-            TokenTree::Literal(lit) if in_serde && follows_path_key(&out) => {
-                self_named_literal(&lit, name).unwrap_or(TokenTree::Literal(lit))
+            TokenTree::Literal(lit) if mode == SelfMode::Serde && follows_path_key(&out) => {
+                out.push(self_named_literal(&lit, &name.text).unwrap_or(TokenTree::Literal(lit)));
             }
-            other => other,
-        };
-        out.push(tree);
+            // The `Self` of a garde rule's `Self::..` path.
+            TokenTree::Punct(colon)
+                if mode == SelfMode::Garde
+                    && colon.as_char() == ':'
+                    && matches!(out.last(), Some(TokenTree::Ident(ident)) if ident == "Self") =>
+            {
+                out.pop();
+                out.extend(name.tokens.clone());
+                out.push(TokenTree::Punct(colon));
+            }
+            other => out.push(other),
+        }
     }
     out.into_iter().collect()
 }

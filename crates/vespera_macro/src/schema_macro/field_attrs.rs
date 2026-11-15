@@ -372,6 +372,26 @@ pub fn hoist_cfg_attr_cfgs(item: &mut syn::ItemStruct) {
     }
 }
 
+/// Every condition the compiler keeps a field under: its `#[cfg(..)]`s
+/// plus the `cfg(q)`s of its `#[cfg_attr(p, ..)]`s as
+/// `#[cfg(any(not(p), q))]` (what [`hoist_cfg_attr_cfgs`] moves to the
+/// top). The one helper every construction / proxy over a re-parsed
+/// definition gates its per-field code with, so a `cfg_attr`-wrapped `cfg`
+/// is never read as an unconditional field (E0560 / E0609).
+pub fn field_cfgs(attrs: &[syn::Attribute]) -> Vec<syn::Attribute> {
+    let mut cfgs = Vec::new();
+    for attr in attrs {
+        if attr.path().is_ident("cfg") {
+            cfgs.push(attr.clone());
+        } else if attr.path().is_ident("cfg_attr")
+            && let Ok((predicate, metas)) = attr.parse_args_with(parse_cfg_attr)
+        {
+            split_cfgs(&predicate, metas, &mut cfgs);
+        }
+    }
+    cfgs
+}
+
 /// The items of `cfg_attr(predicate, ..)` without their `cfg(q)`s, which
 /// go to `hoisted` as `#[cfg(any(not(predicate), q))]` (a nested
 /// `cfg_attr(inner, ..)` under `all(predicate, inner)`).

@@ -119,6 +119,11 @@ pub fn register_schema(name: String, metadata: StructMetadata) -> Result<(), ()>
                 bucket.insert(name, metadata);
                 return Ok(());
             }
+            // Same-named variants edited alike, the stored one first.
+            if variants::converge(&name, &metadata) {
+                bucket.insert(name, metadata);
+                return Ok(());
+            }
             return Err(());
         }
         bucket.insert(name, metadata);

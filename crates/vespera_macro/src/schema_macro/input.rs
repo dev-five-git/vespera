@@ -188,9 +188,17 @@ impl ParamSpans {
 
     /// The span of `name` as written in `param` (`None` when it was not).
     pub fn field(&self, param: &str, name: &str) -> Option<proc_macro2::Span> {
+        self.occurrence(param, name, 0)
+    }
+
+    /// The span of the `nth` (0-based) time `name` is written in `param`:
+    /// a repeated entry's diagnostic points at the repetition, not at the
+    /// first one.
+    pub fn occurrence(&self, param: &str, name: &str, nth: usize) -> Option<proc_macro2::Span> {
         self.fields
             .iter()
-            .find(|(p, n, _)| *p == param && n == name)
+            .filter(|(p, n, _)| *p == param && n == name)
+            .nth(nth)
             .map(|(_, _, span)| *span)
     }
 }

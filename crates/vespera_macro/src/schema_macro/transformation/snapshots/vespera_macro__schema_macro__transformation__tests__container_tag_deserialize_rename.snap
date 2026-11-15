@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/schema_macro/transformation/tests.rs
+assertion_line: 265
+expression: "render(&container_serde_attrs(&item.attrs, \"S\"))"
+---
+# [serde (tag = "t")]
+# [serde (rename (deserialize = "wire"))]
+# [serde (rename (serialize = "S"))]

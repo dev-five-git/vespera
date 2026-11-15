@@ -5,7 +5,7 @@ error: `rename` names field `id`, which this type does not include: `omit_defaul
    |                                                                       ^^^^
 
 error: `rename` lists source field `name` more than once
-  --> tests/ui/schema_type_dropped_field.rs:21:59
+  --> tests/ui/schema_type_dropped_field.rs:21:74
    |
 21 | schema_type!(TwiceRenamed from Seeded, ignore, rename = [("name", "a"), ("name", "b")]);
-   |                                                           ^^^^^^
+   |                                                                          ^^^^^^

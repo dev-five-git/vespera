@@ -54,10 +54,12 @@ fn insert_fingerprint(
     }
 }
 
-/// Every file this thread has probed outside `src_dir` (`#[path =
-/// "../generated/models.rs"]` modules the resolution opened, or looked for:
-/// a missing one is probed too, and creating it later must invalidate the
-/// cached miss — only the files READ used to be covered), sorted.
+/// Every file this thread has probed that the `src_dir` `.rs` listing does
+/// not cover: outside `src_dir` (`#[path = "../generated/models.rs"]`
+/// modules the resolution opened, or looked for: a missing one is probed
+/// too, and creating it later must invalidate the cached miss — only the
+/// files READ used to be covered), or inside it without the `.rs` extension
+/// (`#[path = "models.in"]`, L10 round 16), sorted.
 fn out_of_tree_files(cache: &FileCache, src_dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = cache
         .mtime_epoch_cache
@@ -65,6 +67,7 @@ fn out_of_tree_files(cache: &FileCache, src_dir: &Path) -> Vec<PathBuf> {
         // `src/../generated/x.rs` (how a `#[path]` is joined) is outside too.
         .filter(|path| {
             !path.starts_with(src_dir)
+                || path.extension().is_none_or(|ext| ext != "rs")
                 || path
                     .components()
                     .any(|part| part == std::path::Component::ParentDir)
