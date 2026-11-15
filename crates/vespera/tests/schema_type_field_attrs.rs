@@ -56,21 +56,17 @@ use legacy::{Legacy, LegacyDto};
 schema_type!(GardeDto from GardeSource, ignore, add = [("extra": u8)]);
 schema_type!(GardePartial from GardeSource, ignore, partial, omit = ["untouched"]);
 
-#[cfg(any())]
-mod never_compiled {
-    pub struct Seeded {
-        #[sea_orm(primary_key)]
-        pub id: i32,
-        #[sea_orm(default_value = "5")]
-        pub count: i32,
-    }
-}
-
+// `Seeded` (SeaORM `#[sea_orm(..)]` attributes, which no dev-dependency
+// derive accepts) lives in `schema_type_fixtures/seeded.rs`: a file the
+// macro reads by module path but cargo never compiles (not a `tests/*.rs`
+// target, no `mod` declares it). `add` disables the generated `From`, so
+// nothing references the uncompiled type.
+//
 // `ignore` (no `Schema` derive) used to keep the SeaORM-derived
 // `#[schema(default = ..)]`, an unknown attribute without the derive.
-schema_type!(SeededDto from Seeded, ignore, add = [("note": String)]);
+schema_type!(SeededDto from crate::schema_type_fixtures::seeded::Seeded, ignore, add = [("note": String)]);
 // A raw type name went verbatim into the default fn name (`Ident::new` panic).
-schema_type!(r#RawSeeded from Seeded, ignore, add = [("note": String)]);
+schema_type!(r#RawSeeded from crate::schema_type_fixtures::seeded::Seeded, ignore, add = [("note": String)]);
 
 #[test]
 #[allow(deprecated)]

@@ -288,25 +288,27 @@ fn push_path_level_down(item: &mut PathItem) {
 ///
 /// Path-level `parameters` / `servers` apply to every operation of their
 /// item, so they must not cross over to the other side's operations: when
-/// both sides end up with operations in the merged item, each side's
-/// path-level values are first pushed down onto its own operations; when
-/// only `into` keeps operations, `other`'s path-level values are dropped
-/// (they governed nothing that survives).  Destructuring `other` keeps this
-/// exhaustive — adding a `PathItem` field forces this to be updated.
+/// `other` contributes operations and `into` has operations or path-level
+/// values of its own, each side's path-level values are first pushed down
+/// onto its own operations (an operation-less `into`'s values govern
+/// nothing, so they are dropped rather than adopted by `other`'s
+/// operations); when only `into` keeps operations, `other`'s path-level
+/// values are dropped (they governed nothing that survives).  Destructuring
+/// `other` keeps this exhaustive — adding a `PathItem` field forces this to
+/// be updated.
 fn merge_path_item(into: &mut PathItem, mut other: PathItem) {
     let into_has_ops = operation_slots_mut(into).iter().any(|op| op.is_some());
+    let into_has_path_level = into.parameters.is_some() || into.servers.is_some();
     let other_contributes = operation_slots_mut(into)
         .into_iter()
         .zip(operation_slots_mut(&mut other))
         .any(|(own, incoming)| own.is_none() && incoming.is_some());
-    if into_has_ops {
-        if other_contributes {
-            push_path_level_down(into);
-            push_path_level_down(&mut other);
-        } else {
-            other.parameters = None;
-            other.servers = None;
-        }
+    if other_contributes && (into_has_ops || into_has_path_level) {
+        push_path_level_down(into);
+        push_path_level_down(&mut other);
+    } else if into_has_ops {
+        other.parameters = None;
+        other.servers = None;
     }
     let PathItem {
         get,
