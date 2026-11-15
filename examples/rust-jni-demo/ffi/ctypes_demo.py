@@ -58,6 +58,7 @@ SIGNATURES = {
     "vespera_configure_max_buffered_response_bytes": (ctypes.c_int, [ctypes.c_size_t]),
     "vespera_configure_dispatch_timeout_ms": (ctypes.c_int, [ctypes.c_uint64]),
     "vespera_configure_async_max_in_flight": (ctypes.c_int, [ctypes.c_size_t]),
+    "vespera_configure_default_json_content_type": (ctypes.c_int, [ctypes.c_int]),
 }
 
 
@@ -141,6 +142,9 @@ check(lib.vespera_configure_max_request_bytes(1 << 21) == VESPERA_ERR_TOO_LATE, 
 check(lib.vespera_configure_max_buffered_response_bytes(64 << 20) == VESPERA_OK, "configure buffered response cap")
 check(lib.vespera_configure_dispatch_timeout_ms(30_000) == VESPERA_OK, "configure dispatch timeout")
 check(lib.vespera_configure_async_max_in_flight(64) == VESPERA_OK, "configure async in-flight cap")
+# Keep the default (1 = on); browser-facing apps would pass 0.
+check(lib.vespera_configure_default_json_content_type(1) == VESPERA_OK, "configure json content-type default")
+check(lib.vespera_configure_default_json_content_type(0) == VESPERA_ERR_TOO_LATE, "json default is first-wins")
 check(lib.vespera_init() == VESPERA_OK, "vespera_init")
 check(lib.vespera_init() == VESPERA_OK, "vespera_init is idempotent")
 check(lib.vespera_configure_worker_threads(4) == VESPERA_ERR_TOO_LATE, "runtime knobs are fixed by vespera_init")
