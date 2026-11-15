@@ -74,6 +74,41 @@ fn serialize_number_constraint_preserves_value_and_uses_safe_integer_form(
     assert_eq!(result.is_i64(), should_be_integer);
 }
 
+#[rstest]
+#[case::nan(f64::NAN)]
+#[case::pos_inf(f64::INFINITY)]
+#[case::neg_inf(f64::NEG_INFINITY)]
+fn non_finite_number_constraint_is_a_serialize_error(#[case] number: f64) {
+    for schema in [
+        Schema {
+            minimum: Some(number),
+            ..Schema::number()
+        },
+        Schema {
+            maximum: Some(number),
+            ..Schema::number()
+        },
+        Schema {
+            exclusive_minimum: Some(number),
+            ..Schema::number()
+        },
+        Schema {
+            exclusive_maximum: Some(number),
+            ..Schema::number()
+        },
+        Schema {
+            multiple_of: Some(number),
+            ..Schema::number()
+        },
+    ] {
+        let err = serde_json::to_string(&schema).unwrap_err().to_string();
+        assert!(err.contains("numeric constraint must be finite"), "{err}");
+    }
+    assert!(
+        super::serialize_number_constraint(&Some(number), serde_json::value::Serializer).is_err()
+    );
+}
+
 #[test]
 fn serialize_minimum_whole_number_as_integer() {
     let schema = Schema {

@@ -56,10 +56,11 @@ fn without_extensions<V: DeserializeOwned, E: Error>(
 ) -> Result<BTreeMap<String, V>, E> {
     raw.into_iter()
         .filter(|(key, _)| !is_extension(key))
-        .map(|(key, value)| {
-            V::deserialize(value)
-                .map(|value| (key, value))
-                .map_err(E::custom)
+        .map(|(key, value)| match V::deserialize(value) {
+            Ok(value) => Ok((key, value)),
+            // The map was buffered, so the error carries no position: name
+            // the entry (nested maps prefix theirs, e.g. `/users: 200: ...`).
+            Err(err) => Err(E::custom(format_args!("{key}: {err}"))),
         })
         .collect()
 }

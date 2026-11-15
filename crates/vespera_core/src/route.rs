@@ -7,7 +7,10 @@
 //! [`Header`] and [`Example`] are always inline: vespera never emits a
 //! reference there, and a document that does (e.g. an external spec with
 //! `"200": {"$ref": "#/components/responses/Ok"}`) fails to deserialize
-//! (`missing field ...`). Inline those references before loading such a
+//! (`missing field ...` for the types with a required field; [`Header`] and
+//! [`Example`], whose fields are all optional, reject the `$ref` key itself
+//! instead of reading the reference as an empty object). Inline those
+//! references before loading such a
 //! document into [`crate::openapi::OpenApi`]. Accepting them would need a
 //! `RefOr<T>` in every such field, a breaking change of these public types.
 //! ([`Link`] is raw JSON, so a referenced link round-trips.)
@@ -220,7 +223,7 @@ pub struct Encoding {
 
 /// Example definition (inline only, see [Reference Objects](self#reference-objects))
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", remote = "Self")]
 pub struct Example {
     /// Example summary
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -235,6 +238,39 @@ pub struct Example {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_value: Option<String>,
 }
+
+/// `Serialize` / `Deserialize` for an inline-only type whose fields are all
+/// optional (`remote = "Self"` derives the inherent twins used here): a
+/// Reference Object would otherwise deserialize as an empty object, losing
+/// the reference silently, so its `$ref` key is rejected.
+macro_rules! inline_only_serde {
+    ($ty:ident) => {
+        impl Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                $ty::serialize(self, serializer)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                use serde::de::Error as _;
+                let value = serde_json::Value::deserialize(deserializer)?;
+                if value.get("$ref").is_some() {
+                    return Err(D::Error::custom(concat!(
+                        "a Reference Object (`$ref`) is not supported as a ",
+                        stringify!($ty),
+                        " Object; inline the referenced ",
+                        stringify!($ty)
+                    )));
+                }
+                $ty::deserialize(value).map_err(D::Error::custom)
+            }
+        }
+    };
+}
+
+inline_only_serde!(Example);
+inline_only_serde!(Header);
 
 /// A Link Object (or a Reference Object to one), kept as raw JSON:
 /// vespera never generates links, it only preserves them on round trip.
@@ -259,7 +295,7 @@ pub struct Response {
 
 /// Header definition (inline only, see [Reference Objects](self#reference-objects))
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", remote = "Self")]
 pub struct Header {
     /// Header description
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -837,5 +873,41 @@ mod tests {
             error.to_string().contains("missing field `description`"),
             "{error}"
         );
+    }
+
+    /// `Header` / `Example` have no required field, so without the `$ref`
+    /// guard a reference would silently become `{}`.
+    #[rstest]
+    #[case::header(serde_json::json!({"headers": {"X-Rate": {"$ref": "#/components/headers/Rate"}}}), "Header")]
+    #[case::example(serde_json::json!({"content": {"application/json": {"examples": {"ok": {"$ref": "#/components/examples/Ok"}}}}}), "Example")]
+    #[case::header_example(serde_json::json!({"headers": {"X-Rate": {"examples": {"ok": {"$ref": "#/components/examples/Ok"}}}}}), "Example")]
+    fn reference_object_in_an_all_optional_position_is_rejected(
+        #[case] mut response: serde_json::Value,
+        #[case] what: &str,
+    ) {
+        response["description"] = "ok".into();
+        let error = serde_json::from_value::<Response>(response)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(&format!(
+                "a Reference Object (`$ref`) is not supported as a {what} Object"
+            )),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn inline_header_and_example_round_trip() {
+        let json = serde_json::json!({
+            "description": "ok",
+            "headers": {"X-Rate": {"description": "limit", "schema": {"type": "integer"}, "examples": {"one": {"summary": "s", "value": 1}}}},
+            "content": {"application/json": {"examples": {"ok": {"externalValue": "https://e.example/ok.json"}}}}
+        });
+        let response: Response = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&response).unwrap(), json);
+        let error =
+            serde_json::from_value::<Header>(serde_json::json!({"required": "yes"})).unwrap_err();
+        assert!(error.to_string().contains("invalid type"), "{error}");
     }
 }
