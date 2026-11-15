@@ -240,9 +240,13 @@ Single-thread latency unchanged. Oracle-reviewed: TLS runtime drops at thread ex
 
 ## PR regression gate (added 2026-11-12)
 
-The numbers above are hand-run snapshots. PRs touching `crates/vespera_inprocess`,
-`crates/vespera_jni` or `libs/vespera-bridge` are now gated automatically by
-`.github/workflows/jni-bench-gate.yml`, which works like the criterion gate in `bench.yml`:
+The numbers above are hand-run snapshots. PRs that change the measured code are now gated
+automatically by `.github/workflows/jni-bench-gate.yml` (its `paths:` filter is the
+authoritative list): `crates/vespera`, `vespera_core`, `vespera_macro`, `vespera_inprocess`
+and `vespera_jni`, `libs/vespera-bridge`, the `rust-jni-demo` cdylib's Rust side
+(`src/**`, `Cargo.toml`), the root `Cargo.toml` / `Cargo.lock`, the toolchain files
+(`rust-toolchain{,.toml}`, `.cargo/**`) and the gate's own workflow and scripts. It works like
+the criterion gate in `bench.yml`:
 
 - `scripts/jni-bench-interleaved.sh <base-rev>` builds the merge base and the PR head
   separately. Each side gets the `rust-jni-demo` cdylib, built `--release` (fat LTO) with

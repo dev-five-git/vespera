@@ -180,5 +180,12 @@ class EncodeRequestIntoTest {
                         null, "GET", "/readonly", null, Map.of(), null, target));
 
         assertEquals("encode target buffer is read-only", error.getMessage());
+
+        // Capacity first: a read-only buffer that is also too small reports
+        // the required size (the caller's grow-and-retry signal), not the
+        // read-only error.
+        ByteBuffer small = ByteBuffer.allocate(expected.length - 1).asReadOnlyBuffer();
+        assertEquals(-expected.length, VesperaBridge.encodeRequestInto(
+                null, "GET", "/readonly", null, Map.of(), null, small));
     }
 }

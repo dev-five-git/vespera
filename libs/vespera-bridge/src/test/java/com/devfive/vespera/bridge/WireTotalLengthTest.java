@@ -33,19 +33,29 @@ class WireTotalLengthTest {
     }
 
     @Test
-    void exactlyAtIntMaxIsAccepted() {
-        // 4 + 0 + (Integer.MAX_VALUE - 4) == Integer.MAX_VALUE exactly — the
-        // largest representable wire request, must NOT throw.
+    void exactlyAtArrayCeilingIsAccepted() {
+        // 4 + 0 + (Integer.MAX_VALUE - 12) == Integer.MAX_VALUE - 8 — the
+        // largest wire request a byte[] can hold, must NOT throw.
         assertEquals(
-                Integer.MAX_VALUE,
-                VesperaWireCodec.wireTotalLength(0, Integer.MAX_VALUE - 4));
+                Integer.MAX_VALUE - 8,
+                VesperaWireCodec.wireTotalLength(0, Integer.MAX_VALUE - 12));
     }
 
     @Test
-    void oneOverIntMaxThrows() {
-        // 4 + 1 + (Integer.MAX_VALUE - 4) == Integer.MAX_VALUE + 1 → reject.
+    void oneOverArrayCeilingThrows() {
+        // Integer.MAX_VALUE - 7: representable as an int, but HotSpot cannot
+        // allocate the array (OutOfMemoryError) — reject it up front.
         assertThrows(
                 IllegalArgumentException.class,
-                () -> VesperaWireCodec.wireTotalLength(1, Integer.MAX_VALUE - 4));
+                () -> VesperaWireCodec.wireTotalLength(1, Integer.MAX_VALUE - 12));
+    }
+
+    @Test
+    void exactlyAtIntMaxThrows() {
+        // 4 + 0 + (Integer.MAX_VALUE - 4) == Integer.MAX_VALUE: past the
+        // array ceiling, so an IllegalArgumentException, not an OOM later.
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> VesperaWireCodec.wireTotalLength(0, Integer.MAX_VALUE - 4));
     }
 }

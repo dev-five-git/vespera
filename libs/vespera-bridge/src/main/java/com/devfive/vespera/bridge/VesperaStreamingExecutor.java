@@ -7,6 +7,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Dedicated, bounded thread pool for the WebFlux proxy's blocking
@@ -43,6 +44,8 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
     private final ThreadPoolExecutor pool;
     /** One permit per admitted stream (running or queued). */
     private final Semaphore permits;
+    /** {@link #tryReserve()} calls, admitted or not (test probe; streams only). */
+    private final AtomicLong reserveAttempts = new AtomicLong();
 
     /**
      * @param maxThreads concurrent streams; {@code <= 0} = {@link #defaultMaxThreads()}
@@ -89,6 +92,11 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
         return capacity(maxThreads, maxQueued) - permits.availablePermits();
     }
 
+    /** How many times {@link #tryReserve()} was called (admitted or refused). */
+    long reserveAttempts() {
+        return reserveAttempts.get();
+    }
+
     /** Whether {@link #close()} was called. */
     public boolean isClosed() {
         return pool.isShutdown();
@@ -99,6 +107,7 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
      * streams are already admitted (or the pool is closed).
      */
     Reservation tryReserve() {
+        reserveAttempts.incrementAndGet();
         if (pool.isShutdown() || !permits.tryAcquire()) {
             return null;
         }
