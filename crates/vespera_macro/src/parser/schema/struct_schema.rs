@@ -415,9 +415,12 @@ pub(super) fn collect_named_fields(
         // response view, by whether the field can be omitted from serialized
         // output (`skip_serializing`, `skip_serializing_if`); in the request
         // view by `#[serde(default)]` (field or container), since serde fills
-        // a missing defaulted field in.
+        // a missing defaulted field in (the Multipart derive's
+        // `#[form_data(default)]` likewise).
         let optional = if request {
-            container_default || extract_default(&field.attrs).is_some()
+            container_default
+                || extract_default(&field.attrs).is_some()
+                || crate::multipart_impl::has_form_data_default(&field.attrs)
         } else {
             skip_flags.maybe_omitted_on_output()
         };

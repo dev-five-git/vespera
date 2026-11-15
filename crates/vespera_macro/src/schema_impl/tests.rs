@@ -261,54 +261,56 @@ fn test_extract_schema_name_attr_non_name_meta_key() {
     assert_eq!(result, None);
 }
 
+/// The field defaults `#[derive(Schema)]` resolves from the deriving file
+/// (the production path: `resolve_default_fn` -> the per-file default
+/// function cache): `defaults` is the file text, `fields` the struct body.
+fn defaults_from(defaults: &str, fields: &str) -> BTreeMap<String, serde_json::Value> {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("defaults.rs");
+    std::fs::write(&file_path, format!("{defaults}\nstruct S {{ {fields} }}")).unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    let input: syn::DeriveInput = syn::parse_str(&format!("struct S {{ {fields} }}")).unwrap();
+    extract_field_defaults_from_path(&input, &file_path)
+}
+
 #[test]
-fn test_extract_defaults_from_file_finds_functions() {
-    // Directly tests the extracted function (covers lines 123-131)
-    let file_ast: syn::File = syn::parse_quote! {
-        fn default_count() -> i32 { 42 }
-        fn default_name() -> String { "hello".to_string() }
-    };
-    let fn_defaults = vec![
-        ("count".to_string(), "default_count".to_string()),
-        ("name".to_string(), "default_name".to_string()),
-    ];
-    let result = extract_defaults_from_file(&fn_defaults, &file_ast);
+fn field_defaults_resolve_functions_of_the_file() {
+    let result = defaults_from(
+        "fn default_count() -> i32 { 42 }\nfn default_name() -> String { \"hello\".to_string() }",
+        "#[serde(default = \"default_count\")] count: i32, #[serde(default = \"default_name\")] name: String",
+    );
     assert_eq!(result.get("count"), Some(&serde_json::json!(42)));
     assert_eq!(result.get("name"), Some(&serde_json::json!("hello")));
 }
 
 #[test]
-fn test_extract_defaults_from_file_missing_function() {
-    // Function not found in AST -> skipped
-    let file_ast: syn::File = syn::parse_quote! {
-        fn other_function() -> i32 { 0 }
-    };
-    let fn_defaults = vec![("count".to_string(), "nonexistent_fn".to_string())];
-    let result = extract_defaults_from_file(&fn_defaults, &file_ast);
+fn field_defaults_skip_a_missing_function() {
+    let result = defaults_from(
+        "fn other_function() -> i32 { 0 }",
+        "#[serde(default = \"nonexistent_fn\")] count: i32",
+    );
+    assert!(result.is_empty());
+}
+
+/// A function whose body is not a single literal expression yields no value.
+#[test]
+fn field_defaults_skip_a_non_extractable_value() {
+    let result = defaults_from(
+        "fn default_value() -> String { let x = String::new(); x }",
+        "#[serde(default = \"default_value\")] value: String",
+    );
     assert!(result.is_empty());
 }
 
 #[test]
-fn test_extract_defaults_from_file_non_extractable_value() {
-    // Function exists but returns an assignment statement or block (not directly extractable)
-    let file_ast: syn::File = syn::parse_quote! {
-        fn default_value() -> String {
-            let x = String::new();
-            x  // Assignment before return - block statement
-        }
-    };
-    let fn_defaults = vec![("value".to_string(), "default_value".to_string())];
-    let result = extract_defaults_from_file(&fn_defaults, &file_ast);
-    // Block statements with multiple statements are not extractable
-    assert!(result.is_empty());
-}
-
-#[test]
-fn test_extract_defaults_from_file_empty_input() {
-    let file_ast: syn::File = syn::parse_quote! {};
-    let fn_defaults: Vec<(String, String)> = vec![];
-    let result = extract_defaults_from_file(&fn_defaults, &file_ast);
-    assert!(result.is_empty());
+fn field_defaults_without_default_attributes_are_empty() {
+    assert!(
+        defaults_from(
+            "fn f() -> i32 { 1 }",
+            "count: i32, #[serde(default)] n: i32"
+        )
+        .is_empty()
+    );
 }
 
 #[test]
@@ -659,8 +661,8 @@ fn test_schema_storage_crate_scoping_isolation() {
 
 #[test]
 fn test_extract_field_defaults_from_path_with_default_fn() {
-    // Exercises lines 125-133 (was 118-119, 123-124 before refactor):
-    // get_parsed_file succeeds and extract_defaults_from_file runs.
+    // The default function is found in the deriving file and its literal
+    // return value extracted.
     let temp_dir = tempfile::TempDir::new().unwrap();
     let file_path = temp_dir.path().join("defaults.rs");
     std::fs::write(

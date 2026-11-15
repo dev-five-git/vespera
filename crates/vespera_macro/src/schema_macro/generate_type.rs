@@ -43,6 +43,7 @@ use super::validation::{
     ErrorAt, SpannedSource, extract_source_field_names, validate_add_field_idents,
     validate_emitted, validate_included, validate_omit_fields, validate_partial_fields,
     validate_pick_fields, validate_relation_adapters, validate_rename_fields,
+    validate_unique_field_names,
 };
 use crate::metadata::StructMetadata;
 use crate::parser::strip_raw_prefix_owned;
@@ -440,6 +441,7 @@ pub fn generate_schema_type_code(
                                         adapter_name,
                                         &rel_info,
                                         schema_storage,
+                                        input.derive_clone,
                                     )?;
                                 relation_override_helpers.push(helper_tokens);
                                 rel_info.adapter = true;
@@ -548,7 +550,9 @@ pub fn generate_schema_type_code(
             } else {
                 (TokenStream::new(), quote! { #(#carried_schema)* })
             };
-            let carried_attrs = quote! { #emitted_schema #(#carried_other)* #garde_skip };
+            let cfg_schema = carried.cfg_schema_attrs();
+            let carried_attrs =
+                quote! { #emitted_schema #(#cfg_schema)* #(#carried_other)* #garde_skip };
 
             if input.multipart {
                 // Multipart mode: emit form_data attrs, suppress serde attrs
@@ -766,6 +770,12 @@ pub fn generate_schema_type_code(
         ));
     }
 
+    validate_unique_field_names(
+        field_mappings.iter().map(|(ident, ..)| ident.to_string()),
+        input.rename.as_ref(),
+        input.add.as_ref(),
+        &at,
+    )?;
     // Add new fields from `add` parameter
     let add_garde_skip = any_garde.then(|| quote! { #[garde(skip)] });
     for (field_name, field_ty) in input.add.iter().flatten() {
@@ -830,7 +840,8 @@ pub fn generate_schema_type_code(
         // 1. `add` is not used (can't auto-populate added fields)
         // 2. There are no relation fields (relation fields don't exist on source Model)
         let from_impl = if input.add.is_none() && !has_relation_fields {
-            let field_assignments = source_field_assignments(&field_mappings, &field_cfgs);
+            let field_assignments =
+                assignments::source_field_assignments(&field_mappings, &field_cfgs, false);
 
             quote! {
                 #[allow(deprecated)]
@@ -875,7 +886,7 @@ pub fn generate_schema_type_code(
     // extract_rename_all() fallback for OpenAPI field naming.
     let (container_attrs, container_default_fn) = if input.multipart {
         let assignments = (input.add.is_none() && !has_relation_fields)
-            .then(|| source_field_assignments(&field_mappings, &field_cfgs));
+            .then(|| assignments::source_field_assignments(&field_mappings, &field_cfgs, true));
         let carry = multipart_carry::container(
             &parsed_struct.attrs,
             &source_module_path,
@@ -967,25 +978,7 @@ pub fn generate_schema_type_code(
     Ok((generated_tokens, metadata))
 }
 
-/// The `new_field: source.field` initialisers building the DTO from a
-/// `source` value (`Some(..)` around `partial`-wrapped fields).
-fn source_field_assignments(
-    field_mappings: &[(syn::Ident, syn::Ident, bool, bool)],
-    field_cfgs: &HashMap<String, TokenStream>,
-) -> Vec<TokenStream> {
-    field_mappings
-        .iter()
-        .map(|(new_ident, source_ident, wrapped, _is_relation)| {
-            let cfg = field_cfgs.get(&strip_raw_prefix_owned(source_ident.to_string()));
-            if *wrapped {
-                quote! { #cfg #new_ident: Some(source.#source_ident) }
-            } else {
-                quote! { #cfg #new_ident: source.#source_ident }
-            }
-        })
-        .collect()
-}
-
+mod assignments;
 mod multipart_carry;
 
 #[cfg(test)]

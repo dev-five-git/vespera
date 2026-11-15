@@ -74,10 +74,16 @@ fn ident_name(ident: &syn::Ident) -> String {
     crate::parser::strip_raw_prefix_owned(ident.to_string())
 }
 
-/// Step from `cursor` into its child module `segment`.
+/// Step from `cursor` into its child module `segment` (a cfg twin the
+/// compiler drops is skipped: `#[cfg(feature = "pg")] #[path = ..] mod m;`).
 fn descend(cursor: Cursor, segment: &str) -> Option<Cursor> {
     let module = cursor.items.iter().find_map(|item| match item {
-        syn::Item::Mod(module) if ident_name(&module.ident) == segment => Some(module),
+        syn::Item::Mod(module)
+            if ident_name(&module.ident) == segment
+                && !super::cfg_eval::statically_inactive(&module.attrs) =>
+        {
+            Some(module)
+        }
         _ => None,
     })?;
     let custom_path = path_attr(&module.attrs);
@@ -147,6 +153,12 @@ pub fn module_items(module_path: &[String]) -> Option<Vec<syn::Item>> {
         .map(|cursor| cursor.items)
 }
 
+/// The absolute module (`crate::..`) of `file` in the crate being compiled
+/// (`None` without a crate layout).
+pub fn file_module(file: &Path) -> Option<Vec<String>> {
+    Some(super::crate_layout::crate_layout()?.module_path_of(file))
+}
+
 fn descend_all(mut cursor: Cursor, segments: &[String]) -> Option<Cursor> {
     for segment in segments {
         cursor = descend(cursor, segment)?;
@@ -186,6 +198,18 @@ pub fn item_module_chain_in_file(
     name: &str,
     line: usize,
 ) -> Vec<String> {
+    let found = chain_candidates(items, name);
+    if found.len() <= 1 {
+        return pick_chain(found, line);
+    }
+    with_line_spans(file, |parsed| item_module_chain(&parsed.items, name, line)).unwrap_or_default()
+}
+
+/// Run `read` over `file` re-parsed with proc-macro2's fallback forced, so
+/// spans carry real line numbers (inside the compiler every token of
+/// re-parsed text carries the call site's span).  Only `read`'s result
+/// leaves: no fallback token is mixed with compiler tokens.
+fn with_line_spans<R>(file: &Path, read: impl FnOnce(&syn::File) -> R) -> Option<R> {
     /// Restores proc-macro2's normal mode even if parsing panics.
     struct Unforce;
     impl Drop for Unforce {
@@ -193,18 +217,42 @@ pub fn item_module_chain_in_file(
             proc_macro2::fallback::unforce();
         }
     }
-    let found = chain_candidates(items, name);
-    if found.len() <= 1 {
-        return pick_chain(found, line);
-    }
-    let Some(content) = file_cache::get_file_content(file) else {
-        return Vec::new();
-    };
+    let content = file_cache::get_file_content(file)?;
     proc_macro2::fallback::force();
     let _unforce = Unforce;
-    syn::parse_file(&content)
-        .map(|parsed| item_module_chain(&parsed.items, name, line))
-        .unwrap_or_default()
+    syn::parse_file(&content).ok().map(|parsed| read(&parsed))
+}
+
+/// The inline `mod` chain whose braces enclose `line` of `file` — where a
+/// macro invoked on that line resolves its names (empty at the file's top
+/// level, for line `0` or an unreadable file).
+pub fn inline_chain_at(file: &Path, line: usize) -> Vec<String> {
+    fn enclosing(items: &[syn::Item], line: usize, chain: &mut Vec<String>) {
+        for item in items {
+            if let syn::Item::Mod(syn::ItemMod {
+                ident,
+                content: Some((brace, inner)),
+                ..
+            }) = item
+                && (brace.span.open().start().line..=brace.span.close().end().line).contains(&line)
+            {
+                chain.push(ident_name(ident));
+                enclosing(inner, line, chain);
+                return;
+            }
+        }
+    }
+    if line == 0
+        || !file_cache::get_file_content(file).is_some_and(|content| content.contains("mod"))
+    {
+        return Vec::new();
+    }
+    with_line_spans(file, |parsed| {
+        let mut chain = Vec::new();
+        enclosing(&parsed.items, line, &mut chain);
+        chain
+    })
+    .unwrap_or_default()
 }
 
 /// The only candidate's chain, or (several) the one whose ident is at `line`.
@@ -294,41 +342,112 @@ pub struct ModuleScope {
     pub locals: HashSet<String>,
     /// Normalized bases of `use base::*` imports.
     pub globs: Vec<Vec<String>>,
+    /// Imports / items declared without `pub`: a glob import only brings
+    /// them into the module's own descendants.
+    pub private: HashSet<String>,
+}
+
+/// The ident an item defines in its module's type / value namespace.
+fn item_ident(item: &syn::Item) -> Option<(&syn::Ident, &syn::Visibility)> {
+    Some(match item {
+        syn::Item::Struct(i) => (&i.ident, &i.vis),
+        syn::Item::Enum(i) => (&i.ident, &i.vis),
+        syn::Item::Union(i) => (&i.ident, &i.vis),
+        syn::Item::Type(i) => (&i.ident, &i.vis),
+        syn::Item::Trait(i) => (&i.ident, &i.vis),
+        syn::Item::Fn(i) => (&i.sig.ident, &i.vis),
+        syn::Item::Const(i) => (&i.ident, &i.vis),
+        syn::Item::Static(i) => (&i.ident, &i.vis),
+        syn::Item::Mod(i) => (&i.ident, &i.vis),
+        _ => return None,
+    })
+}
+
+/// The attributes of an item (empty for the kinds scopes ignore).
+fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
+    match item {
+        syn::Item::Struct(i) => &i.attrs,
+        syn::Item::Enum(i) => &i.attrs,
+        syn::Item::Union(i) => &i.attrs,
+        syn::Item::Type(i) => &i.attrs,
+        syn::Item::Trait(i) => &i.attrs,
+        syn::Item::Fn(i) => &i.attrs,
+        syn::Item::Const(i) => &i.attrs,
+        syn::Item::Static(i) => &i.attrs,
+        syn::Item::Mod(i) => &i.attrs,
+        syn::Item::Use(i) => &i.attrs,
+        _ => &[],
+    }
 }
 
 impl ModuleScope {
     fn build(items: &[syn::Item], module_path: &[String]) -> Self {
         let mut scope = Self::default();
-        for item in items {
-            let ident = match item {
-                syn::Item::Struct(i) => Some(&i.ident),
-                syn::Item::Enum(i) => Some(&i.ident),
-                syn::Item::Union(i) => Some(&i.ident),
-                syn::Item::Type(i) => Some(&i.ident),
-                syn::Item::Trait(i) => Some(&i.ident),
-                syn::Item::Fn(i) => Some(&i.sig.ident),
-                syn::Item::Const(i) => Some(&i.ident),
-                syn::Item::Static(i) => Some(&i.ident),
-                syn::Item::Mod(i) => Some(&i.ident),
-                _ => None,
-            };
-            scope.locals.extend(ident.map(ident_name));
-        }
-        let uses: Vec<&syn::ItemUse> = items
+        // Items and imports the compiler drops by `#[cfg]` name nothing.
+        let items: Vec<&syn::Item> = items
             .iter()
-            .filter_map(|item| match item {
-                syn::Item::Use(item_use) => Some(item_use),
-                _ => None,
-            })
+            .filter(|item| !super::cfg_eval::statically_inactive(item_attrs(item)))
             .collect();
-        for item_use in uses {
+        for (ident, vis) in items.iter().filter_map(|item| item_ident(item)) {
+            let name = ident_name(ident);
+            if matches!(vis, syn::Visibility::Inherited) {
+                scope.private.insert(name.clone());
+            }
+            scope.locals.insert(name);
+        }
+        for item in &items {
+            let syn::Item::Use(item_use) = item else {
+                continue;
+            };
             let mut prefix = Vec::new();
             if item_use.leading_colon.is_some() {
                 prefix.push(String::new());
             }
+            let before: HashSet<String> = scope.imports.keys().cloned().collect();
             scope.collect_use(&item_use.tree, &mut prefix, module_path);
+            if matches!(item_use.vis, syn::Visibility::Inherited) {
+                let added: Vec<String> = scope
+                    .imports
+                    .keys()
+                    .filter(|key| !before.contains(*key))
+                    .cloned()
+                    .collect();
+                scope.private.extend(added);
+            }
         }
+        scope.reroot_chained_imports();
         scope
+    }
+
+    /// `use super::enums; use enums::Status;`: an import whose first segment
+    /// names another import of this module goes through that import's path
+    /// (repeated for chains; a self-referencing or cyclic chain stops).
+    fn reroot_chained_imports(&mut self) {
+        for _ in 0..=self.imports.len() {
+            let mut changed = false;
+            let keys: Vec<String> = self.imports.keys().cloned().collect();
+            for key in keys {
+                let path = &self.imports[&key];
+                let Some(first) = path.first() else {
+                    continue;
+                };
+                if *first == key || is_path_root(first) {
+                    continue;
+                }
+                let Some(base) = self.imports.get(first) else {
+                    continue;
+                };
+                if base.first() == Some(first) {
+                    continue;
+                }
+                let rerooted: Vec<String> = base.iter().chain(&path[1..]).cloned().collect();
+                self.imports.insert(key, rerooted);
+                changed = true;
+            }
+            if !changed {
+                break;
+            }
+        }
     }
 
     fn collect_use(&mut self, tree: &syn::UseTree, prefix: &mut Vec<String>, module: &[String]) {
@@ -494,23 +613,46 @@ pub fn resolve_name(segments: &[String], module_path: &[String]) -> Resolved {
     let Some(scope) = module_scope(module_path) else {
         return Resolved::Unknown;
     };
-    if let Some(path) = scope.lookup(first, module_path) {
-        return Resolved::Path(
-            path.into_iter()
-                .chain(segments[1..].iter().cloned())
-                .collect(),
-        );
+    let rest = segments[1..].iter().cloned();
+    if let Some(mut path) = scope.lookup(first, module_path) {
+        // `use enums::Status;` where `enums` came in through a glob.
+        if let Some(head) = path.first().filter(|head| !is_path_root(head))
+            && !scope.imports.contains_key(head)
+            && !scope.locals.contains(head)
+            && let Some(base) = glob_lookup(&scope, head, module_path)
+        {
+            path = base.into_iter().chain(path.into_iter().skip(1)).collect();
+        }
+        return Resolved::Path(path.into_iter().chain(rest).collect());
     }
-    if segments.len() > 1 {
-        return Resolved::Unknown;
-    }
-    // Crate-internal glob imports: the first glob module naming `first`.
+    // Crate-internal glob imports: the first glob module naming `first`
+    // (`kinds::Kind` through `use super::*;` too).
+    glob_lookup(&scope, first, module_path).map_or(Resolved::Unknown, |path| {
+        Resolved::Path(path.into_iter().chain(rest).collect())
+    })
+}
+
+/// A path root that never names an import.
+fn is_path_root(segment: &str) -> bool {
+    matches!(segment, "crate" | "" | "self" | "super")
+}
+
+/// `name` through the crate-internal glob imports of `scope` (the module at
+/// `module_path`): the first glob module that imports or defines it, skipping
+/// a private name unless `module_path` lies inside that glob module (a glob
+/// import only brings in the names visible to the importer).
+fn glob_lookup(scope: &ModuleScope, name: &str, module_path: &[String]) -> Option<Vec<String>> {
     scope
         .globs
         .iter()
         .filter(|glob| glob.first().is_some_and(|s| s == "crate"))
-        .find_map(|glob| module_scope(glob)?.lookup(first, glob))
-        .map_or(Resolved::Unknown, Resolved::Path)
+        .find_map(|glob| {
+            let target = module_scope(glob)?;
+            if target.private.contains(name) && !module_path.starts_with(glob) {
+                return None;
+            }
+            target.lookup(name, glob)
+        })
 }
 
 /// `[crate, a, B]` -> `crate::a::B` (`""` first = leading `::`).

@@ -88,6 +88,14 @@ pub(super) fn parse_form_data(attrs: &[syn::Attribute]) -> syn::Result<FormDataA
     Ok(out)
 }
 
+/// A field's bare `#[form_data(default)]`: the Multipart derive fills a
+/// missing part with `Default::default()`, so the request schema must not
+/// list the field as `required` (malformed attributes read as `false`; the
+/// derive reports them).
+pub fn has_form_data_default(attrs: &[syn::Attribute]) -> bool {
+    parse_form_data(attrs).is_ok_and(|form| form.default)
+}
+
 /// Resolve the multipart field name using serde + form_data attributes.
 ///
 /// Priority:
@@ -438,5 +446,41 @@ mod tests {
                 .to_string()
                 .contains("compile_error")
         );
+    }
+
+    /// A `#[form_data(default)]` field gets a request view in which it is not
+    /// `required` (the derive fills a missing part with `Default`).
+    #[test]
+    fn form_data_default_field_is_optional_in_the_request_view() {
+        use crate::parser::schema::request_view;
+        use std::collections::{BTreeSet, HashMap, HashSet};
+
+        let item: syn::Item =
+            syn::parse_str("struct Up { #[form_data(default)] pub count: i32, pub name: String }")
+                .unwrap();
+        let names = request_view::compute_input_names(
+            &[request_view::ViewSource {
+                name: "Up",
+                rust_ident: None,
+                scoped_key: None,
+                item: &item,
+            }],
+            &BTreeSet::new(),
+        );
+        assert!(names.contains_key("Up"));
+        let syn::Item::Struct(item) = &item else {
+            unreachable!()
+        };
+        let schema = request_view::with_request_view(|| {
+            crate::parser::parse_struct_to_schema(
+                item,
+                &HashSet::<String>::new(),
+                &HashMap::<String, String>::new(),
+            )
+        });
+        assert_eq!(schema.required, Some(vec!["name".to_string()]));
+        assert!(!has_form_data_default(&parse_attrs(
+            "#[form_data(=)] pub x: i32"
+        )));
     }
 }

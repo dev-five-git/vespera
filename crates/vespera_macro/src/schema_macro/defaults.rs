@@ -32,7 +32,9 @@ use crate::parser::extract_default;
 ///
 /// Skips serde default generation when:
 /// - The field is wrapped in `Option` (partial mode or already optional)
-/// - The field already has `#[serde(default)]`
+/// - The field already has `#[serde(default)]` (then only the bare
+///   `#[schema(default)]` marker is emitted: serde applies the field's own
+///   default, not the SeaORM one)
 /// - For literal defaults: the field type doesn't implement `FromStr`
 pub(super) fn generate_sea_orm_default_attrs(
     original_attrs: &[syn::Attribute],
@@ -57,16 +59,18 @@ pub(super) fn generate_sea_orm_default_attrs(
         return (quote! {}, quote! {});
     }
 
-    let has_existing_serde_default = extract_default(original_attrs).is_some();
+    // The field's own `#[serde(default)]` / `default = "fn"` is what serde
+    // applies, so the SeaORM value must not be advertised: the bare
+    // `#[schema(default)]` marker lets the DTO's `#[derive(Schema)]` document
+    // the serde default instead (or none, when it cannot be resolved).
+    if extract_default(original_attrs).is_some() {
+        return (quote! {}, quote! { #[schema(default)] });
+    }
 
     match &default_value {
         // Literal default (e.g., "42", "draft", "0.7")
         Some(value) if !is_sql_function_default(value) => {
             let schema_default_attr = quote! { #[schema(default = #value)] };
-
-            if has_existing_serde_default {
-                return (quote! {}, schema_default_attr);
-            }
 
             if !is_parseable_type(original_ty) {
                 return (quote! {}, schema_default_attr);
@@ -113,10 +117,6 @@ pub(super) fn generate_sea_orm_default_attrs(
                 || quote! { #[schema(default)] },
                 |value| quote! { #[schema(default = #value)] },
             );
-
-            if has_existing_serde_default {
-                return (quote! {}, schema_default_attr);
-            }
 
             let fn_name = format!("default_{}_{field_name}", unraw(struct_name));
             let fn_ident = syn::Ident::new(&fn_name, proc_macro2::Span::call_site());

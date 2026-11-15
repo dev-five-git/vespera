@@ -67,6 +67,10 @@ schema_type!(GardePartial from GardeSource, ignore, partial, omit = ["untouched"
 schema_type!(SeededDto from crate::schema_type_fixtures::seeded::Seeded, ignore, add = [("note": String)]);
 // A raw type name went verbatim into the default fn name (`Ident::new` panic).
 schema_type!(r#RawSeeded from crate::schema_type_fixtures::seeded::Seeded, ignore, add = [("note": String)]);
+// With the `Schema` derive: the field carrying its own `#[serde(default)]`
+// gets the bare `#[schema(default)]` marker (the derive documents serde's
+// default), not the SeaORM literal serde never applies.
+schema_type!(SeededSchema from crate::schema_type_fixtures::seeded::Seeded, add = [("note": String)]);
 
 #[test]
 #[allow(deprecated)]
@@ -143,6 +147,9 @@ fn ignored_schema_keeps_serde_defaults_only() {
     assert_eq!((dto.id, dto.count, dto.note.as_str()), (0, 5, "n"));
     let raw: RawSeeded = serde_json::from_str(r#"{"note":""}"#).unwrap();
     assert_eq!((raw.id, raw.count), (0, 5));
+    assert_eq!(dto.bonus, 0, "serde's default, not the SeaORM `42`");
+    let schema: SeededSchema = serde_json::from_str(r#"{"note":""}"#).unwrap();
+    assert_eq!((schema.count, schema.bonus), (5, 0));
 }
 
 #[derive(Serialize, Deserialize, Clone, Schema)]

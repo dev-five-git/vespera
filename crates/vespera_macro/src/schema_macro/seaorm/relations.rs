@@ -144,8 +144,9 @@ fn schema_path_tokens(path: &syn::Path, source_module_path: &[String]) -> TokenS
 /// The absolute schema path of a relation's entity path written in the
 /// source module: `Entity` / `self::..` name the source module itself (a
 /// self-referential relation), `super::..` / `crate::..` are taken
-/// literally, a path through an import (`use super::user;` + `user::Entity`)
-/// or a child module follows the module scope, and anything else keeps the
+/// literally, a path through an import (`use super::user;` + `user::Entity`,
+/// or an alias `use super::user::Entity as UserEntity;` + `UserEntity`) or a
+/// child module follows the module scope, and anything else keeps the
 /// historical sibling-module reading (`user::Entity` → `<parent>::user`).
 fn absolute_schema_segments(segments: &[String], source_module_path: &[String]) -> Vec<String> {
     let first = segments.first().map(String::as_str);
@@ -161,6 +162,13 @@ fn absolute_schema_segments(segments: &[String], source_module_path: &[String]) 
         }
         Some("crate") => segments.to_vec(),
         Some("self") => in_module(source_module_path, &segments[1..]),
+        // `use super::user::Entity as UserEntity;` + `BelongsTo<UserEntity>`.
+        Some(name) if segments.len() == 1 && name != "Entity" => {
+            match resolve_name(segments, source_module_path) {
+                Resolved::Path(path) if path.first().is_some_and(|root| root == "crate") => path,
+                _ => in_module(source_module_path, segments),
+            }
+        }
         _ if segments.len() == 1 => in_module(source_module_path, segments),
         _ => match resolve_name(segments, source_module_path) {
             Resolved::Path(path) => path,
@@ -597,11 +605,17 @@ mod tests {
     #[case::imported_module("user::Entity", "crate::models::user::Schema")]
     #[case::child_module("nested::Entity", "crate::models::category::nested::Schema")]
     #[case::unknown_sibling("tag::Entity", "crate::models::tag::Schema")]
+    #[case::imported_entity_alias("UserEntity", "crate::models::user::Schema")]
+    #[case::unimported_single("Other", "crate::models::category::Other")]
     fn relation_paths_resolve_in_source_module(#[case] path: &str, #[case] expected: &str) {
         let dir = tempfile::TempDir::new().unwrap();
         let file = dir.path().join("src/models/category.rs");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(&file, "use super::user;\npub mod nested {}\n").unwrap();
+        std::fs::write(
+            &file,
+            "use super::user;\nuse super::user::Entity as UserEntity;\npub mod nested {}\n",
+        )
+        .unwrap();
         let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
         crate::schema_macro::file_cache::bump_epoch();
         let module = segs("crate::models::category");

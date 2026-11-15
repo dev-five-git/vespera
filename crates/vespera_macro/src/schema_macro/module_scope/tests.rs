@@ -241,6 +241,13 @@ use crate::missing::*;
 use crate::shared::*;
 use sea_orm::entity::prelude::*;
 use other_crate::Json;
+use enums::Other as Chained;
+use sub::Sub as ViaGlob;
+use crate::shared::Shared as Twin;
+#[cfg(any())]
+use crate::deep::Deep as Twin;
+#[cfg(false)]
+pub struct Local;
 pub struct Local;
 pub mod kinds { pub enum Kind { A } }
 ",
@@ -251,7 +258,7 @@ pub mod kinds { pub enum Kind { A } }
     ),
     (
         "shared.rs",
-        "pub struct Shared; pub use crate::deep::Deep; use crate::deep::Hidden;",
+        "pub struct Shared; pub use crate::deep::Deep; use crate::deep::Hidden; pub mod sub { pub struct Sub; }",
     ),
     ("deep.rs", "pub struct Deep; pub struct Hidden;"),
     (
@@ -279,7 +286,23 @@ pub mod kinds { pub enum Kind { A } }
     "Option<Vec<Status>>",
     "Option < Vec < crate :: models :: enums :: Status > >"
 )]
-#[case::unknown_falls_back_to_module("Mystery", "crate :: models :: memo :: Mystery")]
+// Anything else unresolved comes from the SeaORM prelude glob (through
+// the module it would be a private glob import).
+#[case::unknown_in_sea_orm_module("Mystery", "sea_orm :: entity :: prelude :: Mystery")]
+#[case::sea_orm_time_crate_alias("TimeDateTime", "sea_orm :: entity :: prelude :: TimeDateTime")]
+#[case::sea_orm_chrono_alias(
+    "ChronoDateTimeUtc",
+    "vespera :: chrono :: DateTime < vespera :: chrono :: Utc >"
+)]
+// A glob brings in only the glob module's PUBLIC names.
+#[case::crate_glob_private_import_hidden("Hidden", "sea_orm :: entity :: prelude :: Hidden")]
+// `use enums::Other` where `enums` is itself an import.
+#[case::chained_import("Chained", "crate :: models :: enums :: Other")]
+// `use sub::Sub` where `sub` came in through a glob.
+#[case::import_through_glob("ViaGlob", "crate :: shared :: sub :: Sub")]
+#[case::multi_segment_through_glob("sub::Sub", "crate :: shared :: sub :: Sub")]
+// `#[cfg]`-dropped imports / items name nothing.
+#[case::cfg_twin_import("Twin", "crate :: shared :: Shared")]
 #[case::external_multi_segment("chrono::NaiveDate", "chrono :: NaiveDate")]
 fn resolve_through_module_scope(#[case] input: &str, #[case] expected: &str) {
     let (_dir, _guard) = temp_crate(RESOLVE_TREE);
@@ -289,6 +312,55 @@ fn resolve_through_module_scope(#[case] input: &str, #[case] expected: &str) {
         resolve_type_to_absolute_path(&ty, &module).to_string(),
         expected
     );
+}
+
+#[test]
+fn unknown_name_without_sea_orm_glob_falls_back_to_module() {
+    let (_dir, _guard) = temp_crate(RESOLVE_TREE);
+    let ty: syn::Type = syn::parse_str("Mystery").unwrap();
+    assert_eq!(
+        resolve_type_to_absolute_path(&ty, &segs("crate::plain")).to_string(),
+        "crate :: plain :: Mystery"
+    );
+}
+
+/// Inside the glob module's own subtree, its private names are visible.
+#[test]
+fn glob_private_names_are_visible_to_descendants() {
+    let (_dir, _guard) = temp_crate(&[
+        ("a.rs", "use crate::deep::Thing; pub mod b;"),
+        ("a/b.rs", "use super::*;"),
+        ("deep.rs", "pub struct Thing;"),
+    ]);
+    assert_eq!(
+        resolve_name(&["Thing".to_string()], &segs("crate::a::b")),
+        Resolved::Path(segs("crate::deep::Thing"))
+    );
+}
+
+/// A self-referencing / cyclic import chain stops instead of looping.
+#[test]
+fn cyclic_import_chain_terminates() {
+    let (_dir, _guard) = temp_crate(&[("c.rs", "use foo::foo; use x::y as z; use z::w as x;")]);
+    let scope = module_scope(&segs("crate::c")).unwrap();
+    assert_eq!(scope.imports["foo"].join("::"), "foo::foo");
+    assert!(scope.imports["x"].len() <= 8);
+}
+
+/// A `#[cfg]`-dropped `#[path]` module twin is not descended into.
+#[test]
+fn cfg_dropped_module_twin_is_skipped() {
+    let (_dir, _guard) = temp_crate(&[
+        (
+            "lib.rs",
+            "#[cfg(any())]\n#[path = \"pg/models.rs\"]\npub mod models;\n#[path = \"lite/models.rs\"]\npub mod models;",
+        ),
+        ("pg/models.rs", "pub struct Pg;"),
+        ("lite/models.rs", "pub struct Lite;"),
+    ]);
+    let items = module_items(&segs("crate::models")).unwrap();
+    assert!(struct_in_items(&items, "Lite").is_some());
+    assert!(struct_in_items(&items, "Pg").is_none());
 }
 
 #[test]

@@ -7,15 +7,14 @@
 //! resolution: struct / FK / module-path / circular lookups) from the raw
 //! file/dir/content caching that remains in `file_cache.rs`, and operate on a
 //! disjoint set of [`super::FileCache`] fields (`circular_analysis`,
-//! `struct_lookup`, `fk_column_lookup`, `module_path_cache`). They share the
+//! `struct_lookup`, `fk_column_lookup`, `module_path_cache`; `file_contents`
+//! is only read, to fingerprint out-of-tree files). They share the
 //! parent's `FILE_CACHE` thread-local plus the `ensure_file_list` /
 //! `get_fingerprint_cached` helpers via `super::`.
-//!
-//! Pure code move out of `file_cache.rs` — no logic or behaviour change.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::metadata::StructMetadata;
@@ -32,10 +31,46 @@ use super::{FILE_CACHE, FileCache, PathLookupEntry, ensure_file_list, get_finger
 /// `path_lookup_fingerprint` already computed during the probe, so the insert
 /// path can reuse it instead of recomputing the (potentially `src`-tree-walking)
 /// fingerprint a second time — the redundant double-fingerprint the previous
-/// read-then-insert pair paid on every cache miss.
+/// read-then-insert pair paid on every cache miss — plus the number of files
+/// read so far: a resolution that reads a NEW file (a `#[path]` module
+/// outside the module directory) recomputes it, so that file is covered.
 enum Probe<T> {
     Hit(T),
-    Miss(u64),
+    Miss(u64, usize),
+}
+
+/// The fingerprint a miss stores: the probe's, unless the resolution read a
+/// file not read before (then that file may be one outside the module
+/// directory the probe's fingerprint did not cover).
+fn insert_fingerprint(
+    cache: &mut FileCache,
+    path_str: &str,
+    (fingerprint, files_read): (u64, usize),
+) -> u64 {
+    if cache.file_contents.len() == files_read {
+        fingerprint
+    } else {
+        path_lookup_fingerprint(cache, path_str)
+    }
+}
+
+/// Every file this thread has read outside `src_dir` (`#[path =
+/// "../generated/models.rs"]` modules the resolution opened), sorted.
+fn out_of_tree_files(cache: &FileCache, src_dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = cache
+        .file_contents
+        .keys()
+        // `src/../generated/x.rs` (how a `#[path]` is joined) is outside too.
+        .filter(|path| {
+            !path.starts_with(src_dir)
+                || path
+                    .components()
+                    .any(|part| part == std::path::Component::ParentDir)
+        })
+        .cloned()
+        .collect();
+    files.sort();
+    files
 }
 
 /// Get or compute circular reference analysis, with caching.
@@ -89,7 +124,8 @@ pub fn get_circular_analysis(
 /// The digest folds in the path string, the crate's module directory, and
 /// the mtime+len [`super::FileFingerprint`] of every file the resolution could
 /// read: every `.rs` file of the crate (the module's own file and the
-/// module tree from the crate root) plus the crate root files. Comparing
+/// module tree from the crate root), the crate root files, and every file
+/// read outside the module directory (`#[path]` modules). Comparing
 /// it against the stored `PathLookupEntry::fingerprint` is what makes a
 /// surviving entry safe — an entry whose inputs changed on disk fails the
 /// comparison and is re-resolved.
@@ -120,7 +156,8 @@ fn path_lookup_fingerprint(cache: &mut FileCache, path_str: &str) -> u64 {
     // edit to any of those files can change the answer (the module's two
     // candidate files alone left a long-lived rust-analyzer stale).
     let files = ensure_file_list(cache, src_dir);
-    for path in files.iter().chain(&layout.roots) {
+    let outside = out_of_tree_files(cache, src_dir);
+    for path in files.iter().chain(&layout.roots).chain(&outside) {
         fingerprint_path(cache, path, &mut hasher);
     }
     hasher.finish()
@@ -184,14 +221,14 @@ pub fn get_struct_from_schema_path(path_str: &str) -> Option<Arc<StructMetadata>
             entry.last_epoch_validated = epoch;
             return Probe::Hit(entry.value.clone());
         }
-        Probe::Miss(fingerprint)
+        Probe::Miss(fingerprint, cache.file_contents.len())
     });
     let fingerprint = match probe {
         Probe::Hit(value) => {
             FILE_CACHE.with(|cache| cache.borrow_mut().struct_lookup_cache_hits += 1);
             return value;
         }
-        Probe::Miss(fingerprint) => fingerprint,
+        Probe::Miss(fingerprint, files_read) => (fingerprint, files_read),
     };
 
     let result = find_struct_from_schema_path(path_str).map(Arc::new);
@@ -199,6 +236,7 @@ pub fn get_struct_from_schema_path(path_str: &str) -> Option<Arc<StructMetadata>
     FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let epoch = cache.epoch;
+        let fingerprint = insert_fingerprint(&mut cache, path_str, fingerprint);
         cache.struct_lookup.insert(
             path_str.to_string(),
             PathLookupEntry {
@@ -240,14 +278,14 @@ pub fn get_fk_column(schema_path: &str, via_rel: &str) -> Option<(String, Option
             entry.last_epoch_validated = epoch;
             return Probe::Hit(entry.value.clone());
         }
-        Probe::Miss(fingerprint)
+        Probe::Miss(fingerprint, cache.file_contents.len())
     });
     let fingerprint = match probe {
         Probe::Hit(value) => {
             FILE_CACHE.with(|cache| cache.borrow_mut().fk_column_cache_hits += 1);
             return value;
         }
-        Probe::Miss(fingerprint) => fingerprint,
+        Probe::Miss(fingerprint, files_read) => (fingerprint, files_read),
     };
 
     let result = find_fk_column_from_target_entity(schema_path, via_rel);
@@ -255,6 +293,7 @@ pub fn get_fk_column(schema_path: &str, via_rel: &str) -> Option<(String, Option
     FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let epoch = cache.epoch;
+        let fingerprint = insert_fingerprint(&mut cache, schema_path, fingerprint);
         cache.fk_column_lookup.insert(
             key,
             PathLookupEntry {

@@ -197,8 +197,14 @@ fn explicit_adapter_struct(
         ));
     };
 
-    let dto_struct = file_cache::parse_struct_cached(&dto_meta.definition)
-        .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e.to_string()))?;
+    let dto_struct = file_cache::parse_struct_cached(&dto_meta.definition).map_err(|e| {
+        syn::Error::new_spanned(
+            adapter_name,
+            format!(
+                "schema_type!: relation field `{field_name}` adapter `{dto_name}`: its stored definition does not parse: {e}"
+            ),
+        )
+    })?;
     Ok((dto_name, dto_struct))
 }
 
@@ -284,6 +290,7 @@ pub(super) fn maybe_generate_same_file_relation_override(
     adapter_name: &syn::Ident,
     rel_info: &RelationFieldInfo,
     schema_storage: &HashMap<String, StructMetadata>,
+    derive_clone: bool,
 ) -> syn::Result<(TokenStream, TokenStream)> {
     let (dto_name, dto_struct) = explicit_adapter_struct(field_name, adapter_name, schema_storage)?;
     let dto_ident = adapter_name;
@@ -309,6 +316,19 @@ pub(super) fn maybe_generate_same_file_relation_override(
 
     let fields = named_fields(&dto_struct)?;
     let clone_assignments = field_assignments(&fields, &quote! { dto }, true);
+    // The DTO derives `Clone` only with `clone = true` (the default): a
+    // wrapper `Clone` would need every adapter field to be `Clone` (E0277).
+    let clone_impl = derive_clone.then(|| {
+        quote! {
+            impl Clone for #wrapper_ident {
+                fn clone(&self) -> Self {
+                    Self(self.0.as_ref().map(|dto| #dto_ident {
+                        #(#clone_assignments),*
+                    }))
+                }
+            }
+        }
+    });
     let model_ty = explicit_adapter_model_type(field_name, adapter_name, &dto_name, rel_info)?;
     let from_model_assignments = field_assignments(&fields, &quote! { source }, true);
     let (deserialize_body, proxy_items) =
@@ -327,13 +347,7 @@ pub(super) fn maybe_generate_same_file_relation_override(
         #[schema(ref = #schema_ref_name, nullable)]
         struct #wrapper_ident(pub Option<#dto_ident>);
 
-        impl Clone for #wrapper_ident {
-            fn clone(&self) -> Self {
-                Self(self.0.as_ref().map(|dto| #dto_ident {
-                    #(#clone_assignments),*
-                }))
-            }
-        }
+        #clone_impl
 
         impl Default for #wrapper_ident {
             fn default() -> Self {
@@ -458,6 +472,7 @@ mod tests {
             &syn::Ident::new("UserInArticle", proc_macro2::Span::call_site()),
             &user_relation(),
             &storage,
+            true,
         )
         .unwrap();
         let file: syn::File = syn::parse2(helpers).unwrap();
@@ -476,9 +491,42 @@ mod tests {
             &syn::Ident::new("UserInArticle", proc_macro2::Span::call_site()),
             &user_relation(),
             &storage,
+            true,
         )
         .unwrap_err();
         assert!(error.to_string().contains("named-field struct"));
+    }
+
+    /// `clone = false`: no wrapper `Clone` (a non-`Clone` adapter field would
+    /// fail it); an unparseable stored definition names the adapter.
+    #[test]
+    fn adapter_clone_follows_derive_clone_and_parse_errors_name_the_adapter() {
+        let generate = |definition: &str, derive_clone: bool| {
+            let storage = to_storage(vec![create_test_struct_metadata(
+                "UserInArticle",
+                definition,
+            )]);
+            maybe_generate_same_file_relation_override(
+                &syn::Ident::new("ArticleResponse", proc_macro2::Span::call_site()),
+                "user",
+                &syn::Ident::new("UserInArticle", proc_macro2::Span::call_site()),
+                &user_relation(),
+                &storage,
+                derive_clone,
+            )
+        };
+        let definition = "struct UserInArticle { id: i32 }";
+        let (_, with) = generate(definition, true).unwrap();
+        let (_, without) = generate(definition, false).unwrap();
+        assert!(with.to_string().contains("impl Clone for"));
+        assert!(!without.to_string().contains("impl Clone for"));
+        let error = generate("struct UserInArticle {", true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("`user`") && error.contains("`UserInArticle`"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -507,6 +555,7 @@ mod tests {
             &adapter_name,
             &rel_info,
             &storage,
+            true,
         )
         .unwrap_err();
         assert!(error.to_string().contains("MissingUserAdapter"));
@@ -542,6 +591,7 @@ mod tests {
             &adapter_name,
             &rel_info,
             &storage,
+            true,
         )
         .unwrap_err();
         assert!(error.to_string().contains("UserInArticle"));
@@ -633,6 +683,7 @@ mod tests {
             &adapter_name,
             &rel_info,
             &storage,
+            true,
         )
         .expect("override generation should succeed");
 

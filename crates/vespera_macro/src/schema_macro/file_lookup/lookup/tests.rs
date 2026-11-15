@@ -16,7 +16,7 @@ fn bare_struct_file_lookup_returns_metadata_and_module_path() {
     std::fs::write(&file_path, "pub struct User { pub id: i32 }").unwrap();
 
     let (metadata, module_path) =
-        find_bare_struct_in_file(&file_path, "User", &layout_for(temp.path(), None)).unwrap();
+        find_bare_struct_in_file(&file_path, "User", &layout_for(temp.path(), None), 0).unwrap();
 
     assert_eq!(metadata.name, "User");
     assert!(metadata.definition.contains("pub struct User"));
@@ -31,7 +31,7 @@ fn bare_struct_file_lookup_reports_missing_struct() {
     let file_path = src_dir.join("models.rs");
     std::fs::write(&file_path, "pub struct Other;").unwrap();
 
-    let result = find_bare_struct_in_file(&file_path, "Missing", &layout_for(temp.path(), None));
+    let result = find_bare_struct_in_file(&file_path, "Missing", &layout_for(temp.path(), None), 0);
 
     assert!(matches!(
         result,
@@ -242,28 +242,30 @@ fn detailed_lookup_rejects_empty_type_path() {
 }
 
 #[test]
-fn bare_lookup_uses_injected_call_site_definition_when_local_file_is_available() {
-    let Some(call_site_file) = proc_macro2::Span::call_site().local_file() else {
-        return;
-    };
+fn bare_lookup_uses_injected_call_site_definition() {
+    // A call-site file that does not itself define the struct: only the
+    // injected cache entry can answer (proc-macro2's fallback has no
+    // `local_file()`, so the real call site is unusable in unit tests).
+    let temp = TempDir::new().unwrap();
+    let file_path = temp.path().join("src").join("models").join("user.rs");
+    std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+    std::fs::write(&file_path, "pub struct Other;").unwrap();
     inject_struct_definition_for_test(
-        &call_site_file,
+        &file_path,
         "InjectedCallSiteModel",
         "pub struct InjectedCallSiteModel { pub id: i32 }",
     );
-    let src_dir = call_site_file
-        .ancestors()
-        .find(|path| path.file_name().is_some_and(|name| name == "src"))
-        .expect("this test module lives below src");
 
     let (metadata, module_path) = find_bare_struct_in_file(
-        &call_site_file,
+        &file_path,
         "InjectedCallSiteModel",
-        &layout_for(src_dir.parent().unwrap(), None),
+        &layout_for(temp.path(), None),
+        0,
     )
     .expect("injected call-site definition resolves");
     assert_eq!(metadata.name, "InjectedCallSiteModel");
-    assert!(module_path.starts_with(&["crate".to_string()]));
+    assert!(metadata.definition.contains("pub id"));
+    assert_eq!(module_path, ["crate", "models", "user"]);
 }
 
 /// L17: a `src` component of a path outside the crate's `src` used to root the

@@ -104,7 +104,7 @@ pub(super) fn container(
                 quote! { #[serde(default = #helper_path)] },
                 quote! {
                     #[doc(hidden)]
-                    #[allow(non_snake_case, deprecated)]
+                    #[allow(non_snake_case, deprecated, unused_variables)]
                     fn #helper_name() -> #dto {
                         let source: #source_type = #source_default;
                         #dto { #(#assignments),* }

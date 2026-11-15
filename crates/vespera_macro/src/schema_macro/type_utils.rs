@@ -319,6 +319,7 @@ impl TypeResolver<'_> {
         }
         let name = strip_raw(&last.ident);
         if SEA_ORM_PATH_ALIASES.contains(&name.as_str())
+            && self.names_alias_crate(path)
             && let Some(converted) = self.alias(&name, &last.arguments, true)
         {
             return Some(converted);
@@ -361,7 +362,11 @@ impl TypeResolver<'_> {
                 {
                     return converted;
                 }
-                let path = path_tokens(import);
+                // Through a glob-imported first segment too (`resolve_name`).
+                let path = match resolve_name(std::slice::from_ref(&name), self.module) {
+                    Resolved::Path(path) => path_tokens(&path),
+                    Resolved::Unknown => path_tokens(import),
+                };
                 return quote! { #path #args };
             }
             if scope.locals.contains(&name) {
@@ -372,13 +377,14 @@ impl TypeResolver<'_> {
         if let Some(converted) = self.alias(&name, &segment.arguments, sea_orm_scope) {
             return converted;
         }
+        let sea_orm_glob = self.scope.and_then(|scope| {
+            scope
+                .globs
+                .iter()
+                .find(|glob| first_named(glob) == Some("sea_orm"))
+        });
         if matches!(name.as_str(), "Uuid" | "Decimal")
-            && let Some(glob) = self.scope.and_then(|scope| {
-                scope
-                    .globs
-                    .iter()
-                    .find(|glob| first_named(glob) == Some("sea_orm"))
-            })
+            && let Some(glob) = sea_orm_glob
         {
             let base = path_tokens(glob);
             return quote! { #base :: #ident };
@@ -390,10 +396,37 @@ impl TypeResolver<'_> {
             let path = path_tokens(&path);
             return quote! { #path #args };
         }
+        // Any other name the module neither defines nor imports comes from
+        // its SeaORM prelude glob (`TimeDateTime`, `BigDecimal`, `IpNetwork`,
+        // ...): through the module it would be a private glob import.
+        if let Some(glob) = sea_orm_glob {
+            let base = path_tokens(glob);
+            return quote! { #base :: #ident #args };
+        }
         if self.module.is_empty() {
             return quote! { #ident #args };
         }
         self.module_qualified(ident, &args)
+    }
+
+    /// Whether a multi-segment `path` starts in a crate defining one of the
+    /// [`SEA_ORM_PATH_ALIASES`] (written, or through an import of the
+    /// module): a user's own `crate::upload::FieldData` stays as written.
+    fn names_alias_crate(&self, path: &syn::Path) -> bool {
+        let Some(first) = path
+            .segments
+            .first()
+            .map(|segment| strip_raw(&segment.ident))
+        else {
+            return false;
+        };
+        let root = match resolve_name(std::slice::from_ref(&first), self.module) {
+            Resolved::Path(resolved) if path.leading_colon.is_none() => {
+                first_named(&resolved).map(str::to_owned)
+            }
+            _ => Some(first),
+        };
+        root.is_some_and(|root| ALIAS_CRATES.contains(&root.as_str()))
     }
 
     fn module_qualified(&self, ident: &syn::Ident, args: &TokenStream) -> TokenStream {
@@ -417,12 +450,24 @@ impl TypeResolver<'_> {
             // chrono's `DateTime` always takes a time zone: the bare name is
             // SeaORM's alias of `NaiveDateTime`.
             "DateTime" if bare => quote! { vespera::chrono::NaiveDateTime },
+            // SeaORM's `Chrono*` prelude aliases (sea-orm 2).
+            "ChronoDateTimeWithTimeZone" if bare && sea_orm_scope => {
+                quote! { vespera::chrono::DateTime<vespera::chrono::FixedOffset> }
+            }
+            "ChronoDateTimeUtc" if bare && sea_orm_scope => {
+                quote! { vespera::chrono::DateTime<vespera::chrono::Utc> }
+            }
+            "ChronoDateTimeLocal" if bare && sea_orm_scope => {
+                quote! { vespera::chrono::DateTime<vespera::chrono::Local> }
+            }
+            "ChronoDateTime" if bare && sea_orm_scope => quote! { vespera::chrono::NaiveDateTime },
+            "ChronoUtc" if bare && sea_orm_scope => quote! { vespera::chrono::Utc },
             "DateTime" => {
                 let args = self.args(args);
                 quote! { vespera::chrono::DateTime #args }
             }
-            "Date" if bare && sea_orm_scope => quote! { vespera::chrono::NaiveDate },
-            "Time" if bare && sea_orm_scope => quote! { vespera::chrono::NaiveTime },
+            "Date" | "ChronoDate" if bare && sea_orm_scope => quote! { vespera::chrono::NaiveDate },
+            "Time" | "ChronoTime" if bare && sea_orm_scope => quote! { vespera::chrono::NaiveTime },
             "NaiveDateTime" | "NaiveDate" | "NaiveTime" | "Utc" | "Local" | "FixedOffset"
                 if bare =>
             {
@@ -448,6 +493,9 @@ const SEA_ORM_PATH_ALIASES: &[&str] = &[
     "FieldData",
     "NamedTempFile",
 ];
+
+/// The crates whose paths may spell one of [`SEA_ORM_PATH_ALIASES`].
+const ALIAS_CRATES: &[&str] = &["sea_orm", "vespera", "axum_typed_multipart", "tempfile"];
 
 fn first_named(path: &[String]) -> Option<&str> {
     path.iter().find(|s| !s.is_empty()).map(String::as_str)

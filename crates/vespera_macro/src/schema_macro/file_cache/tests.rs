@@ -348,7 +348,10 @@ fn raw_cache_helpers_reuse_directory_struct_and_content_entries() {
         let second_files = ensure_file_list(&mut cache, &src_dir);
         assert!(Arc::ptr_eq(&first_files, &second_files));
 
-        assert!(ensure_struct_definitions(&mut cache, &file));
+        assert_eq!(
+            ensure_struct_definitions(&mut cache, &file),
+            Some(StructDefs::Cached)
+        );
         let first_content = get_file_content_inner(&mut cache, &file).expect("content exists");
         let second_content =
             get_file_content_inner(&mut cache, &file).expect("cached content exists");
@@ -357,6 +360,42 @@ fn raw_cache_helpers_reuse_directory_struct_and_content_entries() {
         assert_eq!(
             cache.file_contents[&file].1.as_str(),
             "pub struct Model { pub id: i32 }"
+        );
+    });
+}
+
+/// A file without a fingerprint (metadata unavailable) still answers from
+/// its freshly parsed definitions, and a stale cache entry is evicted.
+#[test]
+fn struct_definitions_without_fingerprint_are_returned_uncached() {
+    let temp_dir = TempDir::new().unwrap();
+    let file = temp_dir.path().join("model.rs");
+    std::fs::write(&file, "pub struct Model { pub id: i32 }").unwrap();
+
+    FILE_CACHE.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        cache.epoch = cache.epoch.wrapping_add(1);
+        let epoch = cache.epoch;
+        // A stale entry from an earlier read, then "no fingerprint" this epoch.
+        cache.struct_definitions.insert(
+            file.clone(),
+            (
+                FileFingerprint {
+                    mtime: std::time::SystemTime::UNIX_EPOCH,
+                    len: 1,
+                },
+                HashMap::from([("Stale".to_string(), "struct Stale;".to_string())]),
+            ),
+        );
+        cache.mtime_epoch_cache.insert(file.clone(), (epoch, None));
+        let Some(StructDefs::Uncached(defs)) = ensure_struct_definitions(&mut cache, &file) else {
+            panic!("expected uncached definitions");
+        };
+        assert!(defs["Model"].contains("pub id"));
+        assert!(!cache.struct_definitions.contains_key(&file));
+        assert_eq!(
+            ensure_struct_definitions(&mut cache, &temp_dir.path().join("missing.rs")),
+            None
         );
     });
 }

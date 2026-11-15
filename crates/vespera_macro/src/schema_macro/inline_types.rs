@@ -34,8 +34,12 @@ pub struct InlineField {
 
 /// Generate inline relation type definition for circular references.
 ///
-/// When `MemoSchema.user` would reference `UserSchema` which has `memos: Vec<MemoSchema>`,
-/// we instead generate an inline type `MemoSchema_User` that excludes the `memos` field.
+/// When `MemoSchema.user` (a `BelongsTo<user::Entity>`) would embed the user
+/// model whose own `memo: HasOne<memo::Entity>` / `BelongsTo` field points
+/// back at the memo (a `HasMany` back-reference is never circular: it is not
+/// loaded recursively), we instead generate an inline type `MemoSchema_User`
+/// holding the user's plain columns: the circular field AND every other
+/// relation field are left out. `None` when no field is circular.
 ///
 /// The `schema_name_override` parameter allows using a custom schema name (e.g., "`MemoSchema`")
 /// instead of the Rust struct name (e.g., "Schema") for the inline type name.
@@ -243,7 +247,6 @@ fn generate_inline_type_core(
     })
 }
 
-/// Generate the struct definition `TokenStream` for an inline relation type
 /// `name` as a valid Rust identifier: a `name = "..."` schema override may
 /// contain characters (`-`, `.`, spaces) or start with a digit, which used
 /// to panic `syn::Ident::new` for the inline relation type.
@@ -264,6 +267,7 @@ fn ident_safe(name: &str) -> String {
     ident
 }
 
+/// Generate the struct definition `TokenStream` for an inline relation type.
 pub fn generate_inline_type_definition(inline_type: &InlineRelationType) -> TokenStream {
     let type_name = &inline_type.type_name;
     let rename_all = &inline_type.rename_all;

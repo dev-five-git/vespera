@@ -486,6 +486,12 @@ fn validate_serde_default_values(
         let Some(default_kind) = extract_default(&field.attrs) else {
             continue;
         };
+        // Never read from the wire (`skip` / `skip_deserializing`): there is
+        // no request property whose default could be documented.
+        let skip = crate::parser::schema::extract_serde_skip_flags(&field.attrs);
+        if skip.skip || skip.skip_deserializing {
+            continue;
+        }
         if has_schema_default(&field.attrs)
             || serde_default_is_resolvable(field, default_kind.as_ref(), field_defaults)
         {
@@ -576,25 +582,6 @@ fn extract_default_functions_from_file(
                 .map(|value| (func.sig.ident.to_string(), value))
         })
         .collect()
-}
-
-/// Extract default values by finding functions in the given file AST.
-/// Separated from `extract_field_defaults` for testability (proc_macro2::Span
-/// is not available in unit tests).
-#[cfg(test)]
-pub fn extract_defaults_from_file(
-    fn_defaults: &[(String, String)],
-    file_ast: &syn::File,
-) -> BTreeMap<String, serde_json::Value> {
-    let mut defaults = BTreeMap::new();
-    for (field_name, fn_name) in fn_defaults {
-        if let Some(func) = crate::openapi_generator::find_function_in_file(file_ast, fn_name)
-            && let Some(value) = crate::openapi_generator::extract_default_value_from_function(func)
-        {
-            defaults.insert(field_name.clone(), value);
-        }
-    }
-    defaults
 }
 
 mod default_fns;

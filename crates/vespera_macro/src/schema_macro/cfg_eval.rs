@@ -9,7 +9,37 @@
 //! rustc, everything else (`unix`, `test`, custom cfgs) is unknown and keeps
 //! the item.
 
+use proc_macro2::TokenStream;
+use quote::ToTokens;
+use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
+
+/// One cfg predicate: a `true` / `false` literal (stable since Rust 1.88,
+/// which syn cannot parse as a `Meta`) or a `Meta` (`feature = ".."`,
+/// `all(..)`, `unix`, ...).
+#[derive(Clone)]
+pub enum Predicate {
+    Bool(syn::LitBool),
+    Meta(Box<syn::Meta>),
+}
+
+impl Parse for Predicate {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        if input.peek(syn::LitBool) {
+            return input.parse().map(Self::Bool);
+        }
+        input.parse().map(|meta| Self::Meta(Box::new(meta)))
+    }
+}
+
+impl ToTokens for Predicate {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        match self {
+            Self::Bool(value) => value.to_tokens(tokens),
+            Self::Meta(meta) => meta.to_tokens(tokens),
+        }
+    }
+}
 
 /// Whether one of `attrs`' `#[cfg(..)]` predicates is known to be false.
 pub fn statically_inactive(attrs: &[syn::Attribute]) -> bool {
@@ -17,7 +47,7 @@ pub fn statically_inactive(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         attr.path().is_ident("cfg")
             && attr
-                .parse_args::<syn::Meta>()
+                .parse_args::<Predicate>()
                 .is_ok_and(|predicate| eval(&predicate, features.as_deref()) == Some(false))
     })
 }
@@ -35,11 +65,15 @@ fn enabled_features() -> Option<Vec<String>> {
     })
 }
 
-fn eval(predicate: &syn::Meta, features: Option<&[String]>) -> Option<bool> {
+fn eval(predicate: &Predicate, features: Option<&[String]>) -> Option<bool> {
+    let predicate = match predicate {
+        Predicate::Bool(value) => return Some(value.value),
+        Predicate::Meta(meta) => &**meta,
+    };
     match predicate {
         syn::Meta::List(list) => {
             let operands = list
-                .parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+                .parse_args_with(Punctuated::<Predicate, syn::Token![,]>::parse_terminated)
                 .ok()?;
             let mut values = operands.iter().map(|operand| eval(operand, features));
             if list.path.is_ident("all") {
@@ -99,14 +133,29 @@ mod tests {
     #[case::missing_feature("feature = \"mysql\"", Some(false))]
     #[case::non_string_feature("feature = 1", None)]
     #[case::other_pair("target_os = \"linux\"", None)]
+    #[case::literal_true("true", Some(true))]
+    #[case::literal_false("false", Some(false))]
+    #[case::not_literal_false("not(false)", Some(true))]
+    #[case::any_literal_true("any(unix, true)", Some(true))]
     fn evaluates_known_predicates(#[case] predicate: &str, #[case] expected: Option<bool>) {
-        let predicate: syn::Meta = syn::parse_str(predicate).unwrap();
-        assert_eq!(eval(&predicate, Some(&["pg".to_string()])), expected);
+        let parsed: Predicate = syn::parse_str(predicate).unwrap();
+        // The predicate prints back as written (it is re-emitted in `cfg_attr`).
+        assert_eq!(
+            quote::quote!(#parsed).to_string().replace(' ', ""),
+            predicate.replace(' ', "")
+        );
+        assert_eq!(eval(&parsed, Some(&["pg".to_string()])), expected);
+    }
+
+    #[test]
+    fn literal_cfg_is_evaluated() {
+        assert!(statically_inactive(&[syn::parse_quote!(#[cfg(false)])]));
+        assert!(!statically_inactive(&[syn::parse_quote!(#[cfg(true)])]));
     }
 
     #[test]
     fn unparseable_list_is_unknown() {
-        let predicate: syn::Meta = syn::parse_str("any(= 1)").unwrap();
+        let predicate: Predicate = syn::parse_str("any(= 1)").unwrap();
         assert_eq!(eval(&predicate, None), None);
     }
 

@@ -146,11 +146,15 @@ mod tests {
 
         let tokens = quote!(User, omit = ["password"]);
         let input: SchemaInput = syn::parse2(tokens).unwrap();
-        let result = generate_schema_code(&input, &storage);
+        let output = generate_schema_code(&input, &storage).unwrap().to_string();
 
-        assert!(result.is_ok());
-        let output = result.unwrap().to_string();
         assert!(output.contains("properties"));
+        // The schema JSON is a string literal: its quotes are escaped.
+        assert!(
+            output.contains(r#"\"id\""#) && output.contains(r#"\"name\""#),
+            "{output}"
+        );
+        assert!(!output.contains("password"), "omitted field kept: {output}");
     }
 
     #[test]
@@ -162,11 +166,14 @@ mod tests {
 
         let tokens = quote!(User, pick = ["id", "name"]);
         let input: SchemaInput = syn::parse2(tokens).unwrap();
-        let result = generate_schema_code(&input, &storage);
+        let output = generate_schema_code(&input, &storage).unwrap().to_string();
 
-        assert!(result.is_ok());
-        let output = result.unwrap().to_string();
         assert!(output.contains("properties"));
+        assert!(
+            output.contains(r#"\"id\""#) && output.contains(r#"\"name\""#),
+            "{output}"
+        );
+        assert!(!output.contains("email"), "unpicked field kept: {output}");
     }
 
     fn renamed(schema_name: &str, ident: &str) -> StructMetadata {
@@ -467,6 +474,7 @@ mod tests {
             &adapter_name,
             &rel_info,
             &storage,
+            true,
         )
         .expect("override generation should succeed");
 

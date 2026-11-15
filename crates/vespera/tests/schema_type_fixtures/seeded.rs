@@ -8,4 +8,8 @@ pub struct Seeded {
     pub id: i32,
     #[sea_orm(default_value = "5")]
     pub count: i32,
+    /// serde's own default (`0`) wins over the SeaORM literal.
+    #[sea_orm(default_value = "42")]
+    #[serde(default)]
+    pub bonus: i32,
 }

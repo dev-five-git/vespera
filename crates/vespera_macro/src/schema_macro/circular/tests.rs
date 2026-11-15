@@ -277,17 +277,18 @@ fn schema_reference_patterns_are_circular(#[case] definition: &str) {
     );
 }
 
+/// A struct without any relation / schema-typed field: nothing is circular
+/// and there is no FK relation. (A named struct's fields always have an
+/// ident, so no "field without ident" case exists to test.)
 #[test]
-fn test_circular_fields_field_without_ident() {
-    assert_eq!(
-        analyze_circular_refs(
-            &path(&["crate", "test"]),
-            &[],
-            r"pub struct Schema { pub id: i32, }"
-        )
-        .circular_fields,
-        Vec::<String>::new()
+fn test_circular_fields_plain_struct_is_not_circular() {
+    let analysis = analyze_circular_refs(
+        &path(&["crate", "test"]),
+        &[],
+        r"pub struct Schema { pub id: i32, pub name: String, }",
     );
+    assert_eq!(analysis.circular_fields, Vec::<String>::new());
+    assert!(!analysis.has_fk_relations);
 }
 
 #[rstest]
