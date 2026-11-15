@@ -1,10 +1,8 @@
 error: vespera! macro: security scheme `oauth2` of type `oauth2` is missing required field `flows` (e.g. `flows = { client_credentials = { token_url = "...", scopes = { ... } } }`)
- --> tests/ui/vespera_oauth2_security_invalid.rs:7:13
+ --> tests/ui/vespera_oauth2_security_invalid.rs:7:42
   |
 7 |     let _ = vespera!(security_schemes = [{ name = "oauth2", type = "oauth2" }]);
-  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  |
-  = note: this error originates in the macro `vespera` (in Nightly builds, run with -Z macro-backtrace for more info)
+  |                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error: OAuth2 `authorization_code` flow is missing required field `token_url`
   --> tests/ui/vespera_oauth2_security_invalid.rs:14:19

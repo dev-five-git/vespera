@@ -9,6 +9,12 @@
 //! reads. Mutating the process environment from a test (`std::env::set_var`,
 //! even under `#[serial]`) raced every *non*-serial reader — the cause of the
 //! intermittent `process_export_app` / `openapi_io` sidecar failures.
+//!
+//! Unit tests are also hermetic for the variables that redirect where the
+//! macro writes or what it documents (`CARGO_TARGET_DIR`, `VESPERA_*`): a
+//! developer's real values never reach a test that does not override them,
+//! so a shared absolute target directory cannot route a tempdir crate's
+//! sidecars into the real `<target>/vespera`.
 
 use std::borrow::Cow;
 use std::env::VarError;
@@ -19,7 +25,18 @@ pub fn var_os(key: &str) -> Option<OsString> {
     if let Some(value) = test_env::lookup(key) {
         return value.into_os_string();
     }
+    if hidden_from_tests(key) {
+        return None;
+    }
     std::env::var_os(key)
+}
+
+/// Whether the real value of `key` is hidden from unit tests (always `false`
+/// outside `cfg(test)`): `CARGO_TARGET_DIR` and every `VESPERA_*` variable,
+/// which a developer may export for real builds. A test that needs one sets
+/// it with [`test_env::set_var`].
+fn hidden_from_tests(key: &str) -> bool {
+    cfg!(test) && (key == "CARGO_TARGET_DIR" || key.starts_with("VESPERA_"))
 }
 
 /// [`std::env::var`], honouring the per-thread test overrides.
@@ -264,6 +281,46 @@ mod tests {
         }
         let _args = remove_var(COMPILER_ARGS_KEY);
         assert!(compiler_args().is_empty());
+    }
+
+    /// A developer's exported `CARGO_TARGET_DIR` / `VESPERA_*` never reach a
+    /// unit test: re-runs this test in a child process with both set (the
+    /// parent's environment cannot be mutated safely under parallel tests).
+    #[test]
+    fn real_target_dir_and_vespera_variables_are_hidden_from_tests() {
+        const CHILD: &str = "__VESPERA_HERMETIC_ENV_CHILD__";
+        if std::env::var_os(CHILD).is_some() {
+            assert_eq!(var_os("CARGO_TARGET_DIR"), None);
+            assert_eq!(var_os("VESPERA_TARGET_DIR"), None);
+            assert_eq!(var_os("VESPERA_TITLE"), None);
+            assert!(var_os(CHILD).is_some());
+            let temp = tempfile::TempDir::new().unwrap();
+            let target = crate::vespera_impl::find_target_dir(temp.path());
+            assert!(target.starts_with(temp.path()), "{}", target.display());
+            let _title = set_var("VESPERA_TITLE", "set by the test");
+            assert_eq!(var("VESPERA_TITLE").as_deref(), Ok("set by the test"));
+            return;
+        }
+        let real_target = std::env::temp_dir().join("vespera-shared-target");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "env_access::tests::real_target_dir_and_vespera_variables_are_hidden_from_tests",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .env("CARGO_TARGET_DIR", &real_target)
+            .env("VESPERA_TARGET_DIR", &real_target)
+            .env("VESPERA_TITLE", "exported by the developer")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(stdout.contains("1 passed"), "{stdout}");
     }
 
     #[cfg(unix)]

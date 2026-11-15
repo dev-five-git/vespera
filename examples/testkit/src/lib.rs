@@ -85,8 +85,13 @@ impl TestRequest {
     }
 
     #[must_use]
-    pub fn content_type(self, content_type: &str) -> Self {
-        self.add_header(CONTENT_TYPE, content_type)
+    pub fn content_type(mut self, content_type: &str) -> Self {
+        // Single-valued: a later body (`json` / `multipart`) replaces it.
+        self.headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_str(content_type).expect("valid header value"),
+        );
+        self
     }
 
     #[must_use]
@@ -95,9 +100,11 @@ impl TestRequest {
         self
     }
 
+    /// Add a header value; a repeated name sends every value (`Accept`,
+    /// `Cookie`, ...), it never replaces the earlier one.
     #[must_use]
     pub fn add_header(mut self, name: HeaderName, value: &str) -> Self {
-        self.headers.insert(
+        self.headers.append(
             name,
             HeaderValue::from_str(value).expect("valid header value"),
         );
@@ -236,5 +243,24 @@ impl Part {
     pub fn file_name(mut self, file_name: &str) -> Self {
         self.file_name = Some(file_name.to_owned());
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_header_keeps_every_value_and_content_type_replaces() {
+        let request = TestServer::new(Router::new())
+            .get("/")
+            .add_header(vespera::axum::http::header::ACCEPT, "text/html")
+            .add_header(vespera::axum::http::header::ACCEPT, "application/json")
+            .content_type("text/plain")
+            .json(&1);
+        let accept: Vec<_> = request.headers.get_all("accept").iter().collect();
+        assert_eq!(accept, ["text/html", "application/json"]);
+        let content_type: Vec<_> = request.headers.get_all(CONTENT_TYPE).iter().collect();
+        assert_eq!(content_type, ["application/json"]);
     }
 }

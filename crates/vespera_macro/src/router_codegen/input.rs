@@ -226,17 +226,10 @@ impl Parse for AutoRouterInput {
             docs_url,
             redoc_url,
             spec_url,
-            servers: servers.or_else(|| {
-                crate::env_access::var("VESPERA_SERVER_URL")
-                    .ok()
-                    .filter(|url| is_server_url(url))
-                    .map(|url| {
-                        vec![ServerConfig {
-                            url,
-                            description: crate::env_access::var("VESPERA_SERVER_DESCRIPTION").ok(),
-                        }]
-                    })
-            }),
+            servers: match servers {
+                Some(servers) => Some(servers),
+                None => env_server()?,
+            },
             security_schemes,
             security,
             tags,
@@ -244,6 +237,23 @@ impl Parse for AutoRouterInput {
             info,
         })
     }
+}
+
+/// The `VESPERA_SERVER_URL` (+ `VESPERA_SERVER_DESCRIPTION`) fallback
+/// server, validated like a `servers = ...` argument: an invalid value is a
+/// compile error naming the variable, never silently dropped.
+fn env_server() -> syn::Result<Option<Vec<ServerConfig>>> {
+    let Ok(url) = crate::env_access::var("VESPERA_SERVER_URL") else {
+        return Ok(None);
+    };
+    let url = validate_server_url(&LitStr::new(&url, Span::call_site())).map_err(|err| {
+        syn::Error::new(
+            err.span(),
+            format!("{err} (from the `VESPERA_SERVER_URL` environment variable)"),
+        )
+    })?;
+    let description = crate::env_access::var("VESPERA_SERVER_DESCRIPTION").ok();
+    Ok(Some(vec![ServerConfig { url, description }]))
 }
 
 /// A documentation URL argument, else its env-var fallback, with the label
@@ -422,7 +432,9 @@ fn parse_security_scheme_values(input: ParseStream) -> syn::Result<Vec<SecurityS
 
 fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchemeConfig> {
     let content;
-    syn::braced!(content in input);
+    let brace = syn::braced!(content in input);
+    // Errors about the scheme as a whole point at its `{ ... }`.
+    let span = brace.span.join();
 
     let mut name: Option<String> = None;
     let mut scheme_type: Option<SecuritySchemeType> = None;
@@ -485,13 +497,13 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
 
     let name = name.ok_or_else(|| {
         syn::Error::new(
-            proc_macro2::Span::call_site(),
+            span,
             "vespera! macro: security scheme missing required `name` field.",
         )
     })?;
     let scheme_type = scheme_type.ok_or_else(|| {
         syn::Error::new(
-            proc_macro2::Span::call_site(),
+            span,
             "vespera! macro: security scheme missing required `type` field.",
         )
     })?;
@@ -508,7 +520,7 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
     // Type-specific OpenAPI validity: reject an under-specified scheme, or a
     // field its type does not take, at compile time instead of silently
     // emitting a spec that violates the OpenAPI Security Scheme Object.
-    validate_security_scheme_fields(&name, &scheme)?;
+    validate_security_scheme_fields(&name, &scheme, span)?;
     Ok(SecuritySchemeConfig { name, scheme })
 }
 
@@ -523,8 +535,11 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
 /// - `oauth2` → `flows` (at least one flow — checked by [`parse_flows`])
 /// - `mutualTLS` → no extra required fields
 /// - any of those fields on another type → rejected
-fn validate_security_scheme_fields(name: &str, scheme: &SecurityScheme) -> syn::Result<()> {
-    let span = proc_macro2::Span::call_site();
+fn validate_security_scheme_fields(
+    name: &str,
+    scheme: &SecurityScheme,
+    span: proc_macro2::Span,
+) -> syn::Result<()> {
     let label = scheme_type_label(scheme.r#type);
     let missing = |field: &str, hint: &str| {
         syn::Error::new(

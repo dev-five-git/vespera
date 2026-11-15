@@ -100,7 +100,8 @@ pub async fn list_users(Json(req): Json<UserListRequest>) -> Json<UserListRespon
         data: users,
         meta: ResponseMeta {
             total: 100,
-            has_more: req.pagination.page * req.pagination.per_page < 100,
+            // Widened: two client-supplied `i32`s may overflow their product.
+            has_more: i64::from(req.pagination.page) * i64::from(req.pagination.per_page) < 100,
         },
     })
 }

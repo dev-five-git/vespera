@@ -18,3 +18,6 @@ mod schema_merge;
 mod sidecar_write;
 
 pub use orchestrator::{process_export_app, process_vespera_macro};
+/// For the hermetic-environment test in `env_access`.
+#[cfg(test)]
+pub use path_utils::find_target_dir;

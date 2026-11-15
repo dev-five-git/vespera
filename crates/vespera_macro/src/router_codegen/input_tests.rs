@@ -513,18 +513,27 @@ fn test_auto_router_input_server_env_var_fallback() {
     assert_eq!(servers[0].description.as_deref(), Some(test_desc));
 }
 
-#[test]
-fn test_auto_router_input_server_env_var_invalid_url_filtered() {
-    // Non-http(s) URLs are dropped by the `.filter()` call.
-    let _url =
-        crate::env_access::test_env::set_var("VESPERA_SERVER_URL", "ftp://invalid-url-test.com");
-
-    let input: AutoRouterInput = syn::parse2(quote::quote!()).unwrap();
-
-    assert!(
-        input.servers.is_none(),
-        "invalid ftp:// URL must be filtered"
-    );
+/// An invalid `VESPERA_SERVER_URL` is a compile error naming the variable,
+/// like the same value as a `servers = ...` argument — never dropped.
+#[rstest]
+#[case::no_scheme(
+    "api.example.com",
+    "invalid server URL: `api.example.com`. URL must start with `http://`, `https://` or `/` (a URL relative to the document's host) (from the `VESPERA_SERVER_URL` environment variable)"
+)]
+#[case::template(
+    "https://{env}.x",
+    "invalid server URL: `https://{env}.x`. `{var}` templates are not supported: `vespera!` cannot declare the server `variables` they need (from the `VESPERA_SERVER_URL` environment variable)"
+)]
+fn invalid_server_url_env_fallback_is_rejected(#[case] url: &str, #[case] expected: &str) {
+    let _url = crate::env_access::test_env::set_var("VESPERA_SERVER_URL", url);
+    let error = syn::parse2::<AutoRouterInput>(quote::quote!())
+        .err()
+        .expect("invalid env server URL must be rejected");
+    assert_eq!(error.to_string(), expected);
+    // An explicit `servers` argument wins: the variable is not read.
+    let input: AutoRouterInput =
+        syn::parse2(quote::quote!(servers = "http://localhost:3000")).unwrap();
+    assert_eq!(input.servers.unwrap()[0].url, "http://localhost:3000");
 }
 
 #[test]

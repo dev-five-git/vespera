@@ -46,7 +46,11 @@ fn parse_type(src: &str) -> syn::Type {
 #[case::negative_float("-0.5", Some(json!(-0.5)))]
 #[case::negative_non_number("-true", None)]
 #[case::negative_unresolvable("-x", None)]
-#[case::negative_i64_min("-9223372036854775808", None)]
+#[case::negative_i64_min("-9223372036854775808", Some(json!(i64::MIN)))]
+#[case::negative_below_i64_min("-9223372036854775809", None)]
+#[case::negative_u64_overflow("-99999999999999999999999", None)]
+#[case::double_negation("-(-1)", None)]
+#[case::negated_negation("- -1", Some(json!(1)))]
 #[case::to_owned(r#""x".to_owned()"#, Some(json!("x")))]
 #[case::into(r#""x".into()"#, Some(json!("x")))]
 #[case::into_non_literal("x.into()", None)]
@@ -78,8 +82,9 @@ fn extract_value_from_expr_float_in_range() {
 
 #[test]
 fn extract_value_from_expr_float_parse_failure_does_not_panic() {
-    // 1e999999 may parse to infinity or fail — either way the call must not panic.
-    let _ = extract_value_from_expr(&parse_expr("1e999999"));
+    // 1e999999 parses to infinity, which JSON cannot hold: no default.
+    assert_eq!(extract_value_from_expr(&parse_expr("1e999999")), None);
+    assert_eq!(extract_value_from_expr(&parse_expr("-1e999999")), None);
 }
 
 // ---------- get_type_default (re-exported helper) ----------
@@ -258,7 +263,7 @@ fn extract_schema_default_attr_cases(
 #[case::string_fallback("hello world", json!("hello world"))]
 #[case::empty_array("[]", json!([]))]
 #[case::object(r#"{"a": 1}"#, json!({"a": 1}))]
-#[case::json_scalar_keeps_old_rules("null", json!("null"))]
+#[case::null("null", Value::Null)]
 fn parse_default_string_to_json_value_cases(#[case] input: &str, #[case] expected: Value) {
     assert_eq!(parse_default_string_to_json_value(input), expected);
 }
