@@ -372,11 +372,11 @@ impl ModuleTree {
                 inline: "",
                 gated,
             };
-            self.visit(&summary.items, &scope, summary.collect_jobs);
+            self.visit(&summary.items, &scope);
         }
     }
 
-    fn visit(&mut self, items: &[ItemSummary], scope: &Scope<'_>, collect_jobs: bool) {
+    fn visit(&mut self, items: &[ItemSummary], scope: &Scope<'_>) {
         for item in items {
             match item {
                 ItemSummary::Mod {
@@ -399,7 +399,7 @@ impl ModuleTree {
                             inline: &inline,
                             gated,
                         };
-                        self.visit(inner, &child, collect_jobs);
+                        self.visit(inner, &child);
                     } else if let Some(path) = path {
                         // rustc: relative to the declaring file's directory at
                         // file level, to the inline modules' directory inside
@@ -427,10 +427,9 @@ impl ModuleTree {
                         }
                     }
                 }
-                ItemSummary::Cron { name, job } if collect_jobs => {
+                ItemSummary::Cron { name, job } => {
                     self.add_cron_fn(name, job.as_ref(), scope);
                 }
-                ItemSummary::Cron { .. } => {}
             }
         }
     }
@@ -482,12 +481,12 @@ impl ModuleTree {
 /// A schedulable job's expression and options (see [`cron_args`]).
 type CronJob = (String, crate::metadata::CronOptions);
 
-/// What the module-tree walk reads off one file: whether it can hold jobs
-/// (`cron(` occurs in it) and its items.  Plain data derived from one
-/// parse, kept while the file is unchanged (`file_cache::derived`): every
-/// `vespera!` walks the whole crate, route-cache hits included.
+/// What the module-tree walk reads off one file: its items (cron functions
+/// only when the file can hold jobs: `cron(` occurs in it).  Plain data
+/// derived from one parse, kept while the file is unchanged
+/// (`file_cache::derived`): every `vespera!` walks the whole crate,
+/// route-cache hits included.
 struct FileSummary {
-    collect_jobs: bool,
     items: Vec<ItemSummary>,
 }
 
@@ -525,8 +524,7 @@ fn file_summary(file: &Path) -> Option<std::rc::Rc<FileSummary>> {
                 .flatten()
                 .map(|ast| {
                     std::rc::Rc::new(FileSummary {
-                        collect_jobs,
-                        items: summarize(&ast.items),
+                        items: summarize(&ast.items, collect_jobs),
                     })
                 }),
         )
@@ -535,7 +533,7 @@ fn file_summary(file: &Path) -> Option<std::rc::Rc<FileSummary>> {
     .clone()
 }
 
-fn summarize(items: &[syn::Item]) -> Vec<ItemSummary> {
+fn summarize(items: &[syn::Item], collect_jobs: bool) -> Vec<ItemSummary> {
     let foreign_cron = imports_foreign_cron(items);
     items
         .iter()
@@ -544,9 +542,14 @@ fn summarize(items: &[syn::Item]) -> Vec<ItemSummary> {
                 name: module.ident.unraw().to_string(),
                 cfg_gated: is_cfg_gated(&module.attrs),
                 path: path_attr(&module.attrs),
-                inline: module.content.as_ref().map(|(_, inner)| summarize(inner)),
+                inline: module
+                    .content
+                    .as_ref()
+                    .map(|(_, inner)| summarize(inner, collect_jobs)),
             }),
-            syn::Item::Fn(function) if function.attrs.iter().any(|a| is_cron_path(a.path())) => {
+            syn::Item::Fn(function)
+                if collect_jobs && function.attrs.iter().any(|a| is_cron_path(a.path())) =>
+            {
                 Some(ItemSummary::Cron {
                     name: function.sig.ident.unraw().to_string(),
                     job: cron_args(function, foreign_cron)

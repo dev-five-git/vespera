@@ -75,15 +75,18 @@ pub(super) fn record_dir(path: &Path, fingerprint: u64) {
     record(Dep::Dir(path.to_path_buf(), fingerprint));
 }
 
+/// Pops a [`tracked`] computation's frame even if it panics (declared
+/// outside the generic function: one non-generic `Drop` impl).
+struct Frame;
+
+impl Drop for Frame {
+    fn drop(&mut self) {
+        FRAMES.with(|frames| frames.borrow_mut().pop());
+    }
+}
+
 /// Run `compute`, returning its result with every file-cache input it read.
 pub fn tracked<T>(compute: impl FnOnce() -> T) -> (T, Deps) {
-    /// Pops this computation's frame even if `compute` panics.
-    struct Frame;
-    impl Drop for Frame {
-        fn drop(&mut self) {
-            FRAMES.with(|frames| frames.borrow_mut().pop());
-        }
-    }
     FRAMES.with(|frames| frames.borrow_mut().push(Vec::new()));
     let frame = Frame;
     let value = compute();

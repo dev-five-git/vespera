@@ -201,16 +201,20 @@ struct CachedRoutes(Option<std::rc::Rc<FileRoutes>>);
 
 fn file_routes(file: &Path) -> Option<std::rc::Rc<FileRoutes>> {
     fn inline(items: &[Item], out: &mut Vec<(String, String)>) {
-        for item in items {
-            let Item::Mod(module) = item else { continue };
-            let Some((_, content)) = &module.content else {
-                continue;
-            };
+        let inline_mods = items.iter().filter_map(|item| match item {
+            Item::Mod(syn::ItemMod {
+                ident,
+                content: Some((_, content)),
+                ..
+            }) => Some((ident, content)),
+            _ => None,
+        });
+        for (ident, content) in inline_mods {
             for inner in content {
                 if let Item::Fn(handler) = inner
                     && extract_route_info(&handler.attrs).is_some()
                 {
-                    out.push((module.ident.to_string(), handler.sig.ident.to_string()));
+                    out.push((ident.to_string(), handler.sig.ident.to_string()));
                 }
             }
             inline(content, out);

@@ -97,19 +97,23 @@ pub fn canonicalize_cached(path: &Path) -> Option<PathBuf> {
     canonical
 }
 
+/// Restores proc-macro2's normal mode even if parsing panics (declared
+/// outside the generic [`with_fallback_parse`]: one non-generic `Drop`
+/// impl).
+struct Unforce;
+
+impl Drop for Unforce {
+    fn drop(&mut self) {
+        proc_macro2::fallback::unforce();
+    }
+}
+
 /// Parse `content` with proc-macro2's fallback implementation forced, so
 /// every span carries its real line / column (tokens parsed from a string
 /// through the compiler bridge all carry the call-site span), and hand the
 /// file to `read`.  Nothing parsed here may leave `read`: only plain data
 /// does, so no fallback token is ever mixed with compiler tokens.
 pub fn with_fallback_parse<T>(content: &str, read: impl FnOnce(&syn::File) -> T) -> Option<T> {
-    /// Restores proc-macro2's normal mode even if parsing panics.
-    struct Unforce;
-    impl Drop for Unforce {
-        fn drop(&mut self) {
-            proc_macro2::fallback::unforce();
-        }
-    }
     proc_macro2::fallback::force();
     let _unforce = Unforce;
     syn::parse_file(content).ok().map(|file| read(&file))

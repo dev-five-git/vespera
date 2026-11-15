@@ -135,31 +135,6 @@ fn crate_relative(module_path: &[String]) -> Option<&[String]> {
 /// declaration-aware tree walk finds it. A parent that is not on disk
 /// keeps the fast path (trees without a crate root).
 pub fn fast_path_is_plain<S: AsRef<str>>(src: &Path, roots: &[PathBuf], segments: &[S]) -> bool {
-    /// Names of a file's top-level `mod`s declared inline or with `#[path]`
-    /// (empty for a file that does not parse), kept while it is unchanged.
-    struct Redirected(HashSet<String>);
-    let redirected = |file: &Path, segment: &str| {
-        file_cache::derived(file, |content| {
-            Redirected(
-                file_cache::with_fallback_parse(content, |file| {
-                    file.items
-                        .iter()
-                        .filter_map(|item| match item {
-                            syn::Item::Mod(module)
-                                if module.content.is_some()
-                                    || path_attr(&module.attrs).is_some() =>
-                            {
-                                Some(ident_name(&module.ident))
-                            }
-                            _ => None,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            )
-        })
-        .is_some_and(|names| names.0.contains(segment))
-    };
     segments.iter().enumerate().all(|(level, segment)| {
         let segment = segment.as_ref();
         let parents: Vec<PathBuf> = if level == 0 {
@@ -174,6 +149,33 @@ pub fn fast_path_is_plain<S: AsRef<str>>(src: &Path, roots: &[PathBuf], segments
         };
         !parents.iter().any(|parent| redirected(parent, segment))
     })
+}
+
+/// Names of a file's top-level `mod`s declared inline or with `#[path]`
+/// (empty for a file that does not parse), kept while it is unchanged.
+struct Redirected(HashSet<String>);
+
+/// Whether `file` declares `segment` inline or with `#[path]`.
+fn redirected(file: &Path, segment: &str) -> bool {
+    file_cache::derived(file, redirected_mods).is_some_and(|names| names.0.contains(segment))
+}
+
+fn redirected_mods(content: &str) -> Redirected {
+    let names = file_cache::with_fallback_parse(content, |file| {
+        file.items.iter().filter_map(redirected_name).collect()
+    });
+    Redirected(names.unwrap_or_default())
+}
+
+fn redirected_name(item: &syn::Item) -> Option<String> {
+    match item {
+        syn::Item::Mod(module)
+            if module.content.is_some() || path_attr(&module.attrs).is_some() =>
+        {
+            Some(ident_name(&module.ident))
+        }
+        _ => None,
+    }
 }
 
 /// The items of the module at `module_path` (`crate::a::b` or `a::b`).
