@@ -112,7 +112,12 @@ pub struct Money {
 impl From<Money> for MoneyWire {
     fn from(money: Money) -> Self {
         Self {
-            amount: format!("{}.{:02}", money.cents / 100, money.cents % 100),
+            amount: format!(
+                "{}{}.{:02}",
+                if money.cents < 0 { "-" } else { "" },
+                money.cents.unsigned_abs() / 100,
+                money.cents.unsigned_abs() % 100
+            ),
             currency: money.currency,
         }
     }
