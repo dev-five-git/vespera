@@ -461,8 +461,6 @@ mod tests {
             "expired entry swept by a take"
         );
         clear_stash();
-
-        resumable_dispatch_never_reruns_a_handler();
     }
 
     fn wire_status(wire: &[u8]) -> String {
@@ -470,10 +468,35 @@ mod tests {
         String::from_utf8_lossy(&wire[4..4 + len]).into_owned()
     }
 
-    /// Round 13 (part of the single stash test: the stash is global).
+    /// Round 13.  Runs in a CHILD process: it builds the process-global
+    /// shared runtime (which fixes the runtime config other tests set) and
+    /// uses the global stash.
+    #[test]
     fn resumable_dispatch_never_reruns_a_handler() {
-        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        const CHILD_ENV: &str = "VESPERA_JNI_STASH_RESUMABLE_CHILD";
         const APP: &str = "stash_resumable_test";
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("current unit-test executable"),
+            )
+            .args([
+                "--exact",
+                "jni_impl::direct::stash::tests::resumable_dispatch_never_reruns_a_handler",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("run isolated resumable child test");
+            assert!(
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated resumable test failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
         vespera_inprocess::register_app_named(APP, || {
             vespera_inprocess::Router::new().route(
                 "/panic",
