@@ -101,7 +101,10 @@ pub async fn status_code_endpoint(
 pub async fn cookie_jar_endpoint(
     jar: CookieJar,
 ) -> Result<(CookieJar, Json<()>), (StatusCode, String)> {
-    Ok((jar.remove(Cookie::from("session")), Json(())))
+    // `Path=/` like the session cookie: a browser only replaces a cookie
+    // whose path matches, and a removal without one is scoped to `/error`,
+    // leaving a `Path=/` session cookie alive.
+    Ok((jar.remove(Cookie::build("session").path("/")), Json(())))
 }
 
 /// Returns its error through the crate-wide `ApiResult` alias, which

@@ -13,7 +13,8 @@
 //! An item is test-only when a `#[cfg(..)]` predicate that can only hold
 //! under `cfg(test)` (`test`, `all(.., test, ..)`, `any` of such) gates it,
 //! an enclosing scope (inline module, fn / impl / trait / const / static
-//! body, item or statement macro), or a `mod` declaration on the module chain
+//! body, item or statement macro, or a `#[test]` / `#[tokio::test]` fn, which
+//! only `rustc --test` compiles), or a `mod` declaration on the module chain
 //! from the crate root (`src/lib.rs` / `src/main.rs`) to its file.
 //! Predicates over features etc. are not interpreted: every build of one
 //! cargo invocation agrees on them.
@@ -58,6 +59,18 @@ pub fn attrs_test_only(attrs: &[syn::Attribute]) -> bool {
         .filter(|attr| attr.path().is_ident("cfg"))
         .filter_map(|attr| attr.meta.require_list().ok())
         .any(|list| is_test_only_predicate(&list.tokens.to_string()))
+}
+
+/// Whether `attrs` mark a test harness fn (`#[test]`, `#[tokio::test]`, any
+/// `<path>::test`): rustc compiles one only under `--test`, so its body is as
+/// test-only as a `#[cfg(test)]` one.
+fn attrs_test_harness(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path()
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "test")
+    })
 }
 
 /// Whether `content` could hold a test-only `#[cfg(..)]` — a cheap text
@@ -287,7 +300,9 @@ impl GatedItems {
 fn gated_items(file: &Path) -> std::rc::Rc<GatedItems> {
     file_cache::derived(file, |content| {
         let mut gated = GatedItems::default();
-        if may_gate_tests(content) {
+        // `contains("test")`, not `may_gate_tests`: a `#[test]` fn gates its
+        // body without any `cfg`.
+        if content.contains("test") {
             // Only fallback spans carry real line numbers (see `cron_impl`);
             // nothing parsed here leaves the closure.
             file_cache::with_fallback_parse(content, |ast| {
@@ -320,7 +335,7 @@ impl GatedCollector<'_> {
         visit: impl FnOnce(&mut Self),
     ) {
         let outer = self.gated;
-        if !outer && attrs_test_only(attrs) {
+        if !outer && (attrs_test_only(attrs) || attrs_test_harness(attrs)) {
             let span = node.span();
             self.out.ranges.push((span.start().line, span.end().line));
             self.gated = true;

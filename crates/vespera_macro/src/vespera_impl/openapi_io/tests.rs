@@ -323,9 +323,14 @@ fn test_generate_and_write_openapi_with_merge_and_valid_spec() {
     let target_dir = vespera_dir_of(temp_dir.path());
     fs::create_dir_all(&target_dir).expect("Failed to create target/vespera dir");
 
-    // Write a valid OpenAPI spec file
-    let spec_content =
-        r#"{"openapi":"3.1.0","info":{"title":"Child API","version":"1.0.0"},"paths":{}}"#;
+    // Write a valid OpenAPI spec file with a path and a schema to merge
+    let spec_content = serde_json::json!({
+        "openapi": "3.1.0",
+        "info": { "title": "Child API", "version": "1.0.0" },
+        "paths": { "/child-only": { "get": { "operationId": "childOnly", "responses": {} } } },
+        "components": { "schemas": { "ChildOnlySchema": { "type": "object" } } }
+    })
+    .to_string();
     fs::write(
         crate::vespera_impl::merge_lookup::child_spec_path(&target_dir, "child", "ChildApp"),
         spec_content,
@@ -359,9 +364,19 @@ fn test_generate_and_write_openapi_with_merge_and_valid_spec() {
         HashMap::new(),
         &[],
         &mut MergeSpecCache::new(),
-    );
+    )
+    .expect("a valid child spec merges");
 
-    assert!(result.is_ok());
+    // The merge really happened: the child's path and schema are in the
+    // parent document, whose own info is kept.
+    let spec: serde_json::Value =
+        serde_json::from_str(&result.spec_json.expect("docs_url embeds the spec")).unwrap();
+    assert!(spec["paths"]["/child-only"]["get"].is_object(), "{spec}");
+    assert!(
+        spec["components"]["schemas"]["ChildOnlySchema"].is_object(),
+        "{spec}"
+    );
+    assert_eq!(spec["info"]["title"], "Parent API");
 }
 
 #[test]

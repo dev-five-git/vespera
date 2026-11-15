@@ -265,7 +265,8 @@ fn source_identities_parse(#[case] identity: &str, #[case] expected: Option<(&st
     assert_eq!(parse_identity(identity), expected);
 }
 
-/// Schemas nested in a test-only fn / impl / trait / const / static body or
+/// Schemas nested in a test-only fn / impl / trait / const / static body, a
+/// `#[test]` / `#[tokio::test]` fn (outside any `cfg(test)` module too) or
 /// emitted by a test-only item or statement macro are test-only, wherever
 /// the gate sits; the same shapes without a gate are not.
 #[test]
@@ -302,6 +303,10 @@ fn gated_scopes_nest_test_only_schemas() {
         "use std::fmt;",
         "#[cfg(test)] use std::io;",
         "pub struct After {}",
+        "#[test] fn top() { struct InTestFn {} }",
+        "#[tokio::test] async fn top_async() { struct InTokioTest {} }",
+        "impl S { #[test] fn h() { struct InImplTest {} } }",
+        "#[inline] fn attested() { struct OpenAttr {} }",
     ]
     .join("\n");
     let krate = crate_with(&[("lib.rs", &source)]);
@@ -320,6 +325,9 @@ fn gated_scopes_nest_test_only_schemas() {
         ("InTrait", 26),
         ("InConst", 27),
         ("InStatic", 28),
+        ("InTestFn", 32),
+        ("InTokioTest", 33),
+        ("InImplTest", 34),
     ] {
         assert!(gated.contains(ident, line), "{ident}@{line} is test-only");
     }
@@ -328,10 +336,24 @@ fn gated_scopes_nest_test_only_schemas() {
         ("OpenFn", 11),
         ("OpenImplFn", 20),
         ("After", 31),
+        ("OpenAttr", 35),
     ] {
         assert!(
             !gated.contains(ident, line),
             "{ident}@{line} is not test-only"
         );
     }
+}
+
+/// A file whose only gate is a `#[test]` fn (no `cfg` anywhere) is still
+/// scanned: `cargo test` registers the schema, `cargo build` never does.
+#[test]
+fn bare_test_fn_without_cfg_gates_its_schemas() {
+    let krate = crate_with(&[(
+        "lib.rs",
+        "#[test]\nfn probe() { struct Probe {} }\npub struct Kept {}",
+    )]);
+    let gated = gated_items(&krate.path().join("src/lib.rs"));
+    assert!(gated.contains("Probe", 2));
+    assert!(!gated.contains("Kept", 3));
 }

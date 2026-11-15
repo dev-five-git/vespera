@@ -105,12 +105,10 @@ fn openapi_json_does_not_depend_on_cfg_test_items() {
     let users = temp_dir.path().join("src/routes/users.rs");
     let openapi = temp_dir.path().join("openapi.json");
 
-    let library = {
+    {
         let _args = test_env::set_var(COMPILER_ARGS_KEY, "rustc");
-        process_vespera_macro(&served("routes"), &HashMap::new(), &[], Span::call_site())
-            .unwrap()
-            .to_string()
-    };
+        process_vespera_macro(&served("routes"), &HashMap::new(), &[], Span::call_site()).unwrap();
+    }
     let library_doc = fs::read_to_string(&openapi).unwrap();
     assert!(!library_doc.contains("/users/debug"), "{library_doc}");
 
@@ -143,7 +141,26 @@ fn openapi_json_does_not_depend_on_cfg_test_items() {
     };
     assert_eq!(fs::read_to_string(&openapi).unwrap(), library_doc);
     assert!(harness.contains("users :: debug"), "{harness}");
-    assert!(!library.contains("Fixture") && !library_doc.contains("Fixture"));
+
+    // Control: the same stored schema outside the gated module (line 2) is
+    // documented, so the equality above really filtered `Fixture` out.
+    let open_fixture = StructMetadata::new(
+        "Fixture".to_string(),
+        "pub struct Fixture { pub id: i32 }".to_string(),
+    )
+    .with_source_identity(format!("{}::Fixture@2:0", users.display()));
+    {
+        let _args = test_env::set_var(COMPILER_ARGS_KEY, "rustc\n--test");
+        process_vespera_macro(
+            &served("routes"),
+            &HashMap::from([("Fixture".to_string(), open_fixture)]),
+            &route_storage,
+            Span::call_site(),
+        )
+        .unwrap();
+    }
+    let open_doc = fs::read_to_string(&openapi).unwrap();
+    assert!(open_doc.contains("\"Fixture\""), "{open_doc}");
 }
 
 /// A `mod` declaration in `src/lib.rs` gating a schema's file or the route

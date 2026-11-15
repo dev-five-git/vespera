@@ -559,9 +559,18 @@ pub(super) fn parallel_filter_map<T: Sync, R: Send>(
     jobs: &[T],
     f: &(dyn Fn(&T) -> syn::Result<Option<R>> + Sync),
 ) -> syn::Result<Vec<R>> {
-    let workers = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get)
-        .min(jobs.len().div_ceil(PARALLEL_THRESHOLD));
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    parallel_filter_map_on(jobs, f, cores)
+}
+
+/// [`parallel_filter_map`] on `cores` available threads (tests pass a fixed
+/// count, so a 1-vCPU runner still covers the parallel path).
+fn parallel_filter_map_on<T: Sync, R: Send>(
+    jobs: &[T],
+    f: &(dyn Fn(&T) -> syn::Result<Option<R>> + Sync),
+    cores: usize,
+) -> syn::Result<Vec<R>> {
+    let workers = cores.min(jobs.len().div_ceil(PARALLEL_THRESHOLD));
     if workers <= 1 || jobs.len() < PARALLEL_THRESHOLD {
         return jobs.iter().filter_map(|job| f(job).transpose()).collect();
     }

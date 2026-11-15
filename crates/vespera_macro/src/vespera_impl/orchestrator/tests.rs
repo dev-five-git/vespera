@@ -463,17 +463,31 @@ fn test_process_vespera_macro_no_openapi_output() {
         literal_hash: None,
     };
 
-    let result = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
-    assert!(
-        result.is_ok(),
-        "Should succeed with no openapi output configured"
-    );
+    let tokens = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site())
+        .expect("Should succeed with no openapi output configured")
+        .to_string();
+    // Nothing requested, nothing written or embedded.
+    assert!(!tokens.contains("include_str"), "{tokens}");
+    let mut dirs = vec![temp_dir.path().to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                let name = path.file_name().unwrap().to_string_lossy();
+                assert!(
+                    !name.ends_with("openapi.json"),
+                    "unrequested {}",
+                    path.display()
+                );
+            }
+        }
+    }
 }
 
 #[test]
 fn test_process_vespera_macro_with_profiling() {
-    let _env_guard = crate::env_access::test_env::set_var("VESPERA_PROFILE", "1");
-
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let _manifest = isolated_manifest_dir(&temp_dir);
     create_temp_file(&temp_dir, "empty.rs", "// empty\n");
@@ -495,9 +509,18 @@ fn test_process_vespera_macro_with_profiling() {
         literal_hash: None,
     };
 
-    let result = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
-
-    assert!(result.is_ok());
+    // Profiled first, so the profiled run is the full (cache-miss) expansion.
+    let profiled = {
+        let _env_guard = crate::env_access::test_env::set_var("VESPERA_PROFILE", "1");
+        process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site())
+            .expect("profiled expansion")
+            .to_string()
+    };
+    let plain = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site())
+        .expect("unprofiled expansion")
+        .to_string();
+    // Profiling only reports timings; the expansion is unchanged.
+    assert_eq!(profiled, plain);
 }
 
 #[test]

@@ -504,6 +504,8 @@ pub(super) fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Va
             expr,
             ..
         }) => negated_value(expr),
+        // `(5)` / `-(-1)`: parentheses do not change the value.
+        Expr::Paren(paren) => extract_value_from_expr(&paren.expr),
         // `"value".to_string()` / `.to_owned()` / `.into()`, `42.to_string()`
         Expr::MethodCall(method_call) => method_call_value(method_call),
         // Associated function calls like String::from("value")
