@@ -8,8 +8,8 @@
 //!   variants (version mismatch / unknown app / invalid HTTP method)
 //! - body-without-content-type defaulting to `application/json`
 //! - triple-occurrence headers exercising the `Multi → Multi` growth
-//!   branch inside `collect_response_parts` and
-//!   `dispatch_response_streaming`
+//!   branch inside `collect_response_parts` (text envelope)
+//! - a 422 with two `content-type` headers (the hoist reads the first)
 
 use std::collections::HashMap;
 use std::ops::ControlFlow;
@@ -54,9 +54,9 @@ async fn triple_header() -> Response {
     (headers, "trace").into_response()
 }
 
-/// 422 response that explicitly emits TWO `content-type` headers to
-/// exercise the `HeaderValue::Multi` branch inside
-/// `try_hoist_validation_errors`.
+/// 422 response that explicitly emits TWO `content-type` headers: the
+/// validation-error hoist (`body_is_json` in `src/wire/hoist.rs`) decides
+/// on the FIRST one only.
 async fn unprocessable_with_multi_content_type() -> Response {
     use axum::http::{HeaderName, HeaderValue, StatusCode};
     let mut headers = HeaderMap::new();
@@ -74,9 +74,9 @@ async fn unprocessable_with_multi_content_type() -> Response {
         .into_response()
 }
 
-/// Echoes back the raw query string the handler observes; used to
-/// confirm the `format!("{path}?{query}")` reassembly inside
-/// `dispatch_response_streaming`.
+/// Echoes back the raw query string the handler observes (the path +
+/// `query` join is `compose_path_query` in `src/internal.rs`, covered by
+/// `tests/query_join.rs`).
 async fn echo_query(uri: axum::http::Uri) -> String {
     uri.query().unwrap_or("").to_owned()
 }
@@ -447,9 +447,9 @@ async fn bidirectional_defaults_content_type_unless_declared_empty(
 
 #[test]
 fn hoist_validation_errors_handles_multi_content_type_422_response() {
-    // A 422 response with TWO content-type headers — exercises the
-    // `HeaderValue::Multi` arm of `try_hoist_validation_errors`'s
-    // mime detection.  The wire response must still hoist the
+    // A 422 response with TWO content-type headers: `body_is_json`
+    // reads only the first (`http::HeaderMap::get`), here
+    // `application/json`, so the wire response must still hoist the
     // `errors` array into the header.
     install_router();
     let runtime = rt();
@@ -457,8 +457,8 @@ fn hoist_validation_errors_handles_multi_content_type_422_response() {
     let resp = dispatch_from_bytes(wire, &runtime);
     let (header, body) = decode_wire(&resp);
     assert_eq!(header["status"].as_u64(), Some(422));
-    // Hoisted into the wire header — proves the Multi-content-type
-    // branch returned a non-empty mime and the body was parsed.
+    // Hoisted into the wire header — proves the first content-type
+    // was taken as JSON and the body was parsed.
     let errs = header["validation_errors"]
         .as_array()
         .unwrap_or_else(|| panic!("validation_errors missing from wire header: {header:#}"));

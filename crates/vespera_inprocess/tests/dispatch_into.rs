@@ -257,11 +257,16 @@ fn unknown_length_stream_overflow_reports_exact_retry_size() {
 fn body_without_content_type_matches_byte_path() {
     // Regression for the Content-Type defaulting drift: dispatch_parts
     // injects `content-type: application/json` for non-empty bodies
-    // without one; the direct-write path must do the same or JSON
-    // extractors behave differently across dispatch modes.
+    // without one (the default of `set_default_json_content_type`; the off
+    // state is `tests/default_json_content_type_off.rs`); the owned and
+    // borrowed direct-write paths must do the same or JSON extractors
+    // behave differently across dispatch modes.  `/headers` reflects the
+    // headers the handler saw, so the default itself is asserted, not just
+    // agreement between the paths.
     install();
+    assert!(vespera_inprocess::default_json_content_type());
     let rt = runtime();
-    let header = json!({"v": 1, "method": "POST", "path": "/echo"}); // no headers at all
+    let header = json!({"v": 1, "method": "POST", "path": "/headers"}); // no headers at all
     let header_bytes = serde_json::to_vec(&header).unwrap();
     let body = b"{\"k\":1}";
     let mut wire = u32::try_from(header_bytes.len())
@@ -272,13 +277,30 @@ fn body_without_content_type_matches_byte_path() {
     wire.extend_from_slice(body);
 
     let reference = dispatch_from_bytes(wire.clone(), &rt);
+    let (status, seen) = decode(&reference);
+    assert_eq!(status["status"], 200);
+    assert_eq!(
+        seen,
+        b"/headers
+content-type: application/json
+{\"k\":1}",
+        "the byte path defaults the content-type"
+    );
     let mut out = vec![0u8; reference.len() + 64];
-    let result = dispatch_into(wire, &mut out, &rt);
+    let result = dispatch_into(wire.clone(), &mut out, &rt);
     assert_eq!(result, DirectWriteResult::Complete(reference.len()));
     assert_eq!(
         &out[..reference.len()],
         &reference[..],
         "direct path must apply the same content-type defaulting as the byte path"
+    );
+    let mut out = vec![0u8; reference.len() + 64];
+    let result = rt.block_on(dispatch_into_async_borrowed(&wire, &mut out));
+    assert_eq!(result, DirectWriteResult::Complete(reference.len()));
+    assert_eq!(
+        &out[..reference.len()],
+        &reference[..],
+        "borrowed direct path must apply the same content-type defaulting as the byte path"
     );
 }
 

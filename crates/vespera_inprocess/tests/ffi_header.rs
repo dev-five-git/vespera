@@ -1,14 +1,26 @@
 //! `include/vespera.h` is hand-written (no `build.rs`, no cbindgen): this
-//! test keeps it in lock-step with the Rust symbols — every prototype and
-//! constant in the header is listed here, and each Rust symbol is coerced
-//! to the function-pointer type the prototype describes, so a signature
-//! change on either side fails the build or the test.
+//! test keeps it in lock-step with the Rust symbols.  The expected
+//! declarations are not listed by hand: every `#[unsafe(no_mangle)]`
+//! function in the crate's `src/` (the library's own exports plus the
+//! `vespera_init` that `ffi_apps!` emits) and the `VesperaCallback` alias
+//! are read from the Rust source and spelled as C, and that set must equal
+//! the header's declarations — so a changed Rust signature, a new export
+//! without a header prototype, or a stale prototype fails the test.  The
+//! function-pointer coercions below additionally pin the source text this
+//! test reads to the items the compiler builds.
 #![cfg(feature = "ffi")]
 
 use std::collections::BTreeMap;
 use std::ffi::{c_int, c_void};
 
 use vespera_inprocess::ffi::{self, HEADER, VesperaCallback};
+
+fn app() -> axum::Router {
+    axum::Router::new()
+}
+
+// Emits `vespera_init` here so its signature is coerced below too.
+vespera_inprocess::ffi_app!(app);
 
 /// Header text with comments removed.
 fn strip_comments(src: &str) -> String {
@@ -62,6 +74,266 @@ int dispatch_raw(void);
     );
 }
 
+/// The header's declarations keyed by the name they declare (the
+/// `(*name)` of a function-pointer typedef, else the identifier before the
+/// first `(`).  Panics on a declaration that is neither, or on a name
+/// declared twice.
+fn header_decls(header: &str) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for decl in declarations(header) {
+        let name = match decl.split_once("(*") {
+            Some((_, rest)) if decl.starts_with("typedef ") => rest.split(')').next().unwrap(),
+            _ => decl[..decl
+                .find('(')
+                .unwrap_or_else(|| panic!("not a prototype: {decl}"))]
+                .rsplit(' ')
+                .next()
+                .unwrap(),
+        }
+        .to_owned();
+        assert!(
+            out.insert(name.clone(), decl).is_none(),
+            "{name} declared twice"
+        );
+    }
+    out
+}
+
+#[test]
+#[should_panic(expected = "not a prototype")]
+fn a_declaration_that_is_not_a_prototype_is_not_skipped() {
+    let _ = header_decls("typedef struct Handle Handle;");
+}
+
+/// A Rust FFI type as `vespera.h` spells it (`*` attached on the right,
+/// `const` only on a pointee).  Panics on a type with no C spelling here,
+/// so a new parameter type can never be compared loosely.
+fn c_type(rust: &str) -> String {
+    let rust = rust.trim();
+    if let Some(inner) = rust.strip_prefix("*const ") {
+        let inner = c_type(inner);
+        assert!(!inner.ends_with('*'), "*const of a pointer: {rust}");
+        return format!("const {inner} *");
+    }
+    if let Some(inner) = rust.strip_prefix("*mut ") {
+        let inner = c_type(inner);
+        return if inner.ends_with('*') {
+            format!("{inner}*")
+        } else {
+            format!("{inner} *")
+        };
+    }
+    match rust
+        .trim_start_matches("::")
+        .trim_start_matches("std::ffi::")
+    {
+        "u8" => "uint8_t",
+        "u32" => "uint32_t",
+        "u64" => "uint64_t",
+        "usize" => "size_t",
+        "c_int" => "int",
+        "c_void" => "void",
+        "Option<VesperaCallback>" => "vespera_callback",
+        other => panic!("no C spelling for the Rust type {other:?}"),
+    }
+    .to_owned()
+}
+
+/// `(name: Type, ...) [-> Ret]` at the start of `sig` → (C parameter list,
+/// C return type).
+fn c_signature(sig: &str) -> (String, String) {
+    let sig = sig.trim_start().strip_prefix('(').expect("missing '('");
+    let close = sig.find(')').expect("missing ')'");
+    let params: Vec<String> = sig[..close]
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let (name, ty) = p.split_once(':').expect("parameter without a type");
+            let ty = c_type(ty);
+            let sep = if ty.ends_with('*') { "" } else { " " };
+            format!("{ty}{sep}{}", name.trim())
+        })
+        .collect();
+    let params = if params.is_empty() {
+        "void".to_owned()
+    } else {
+        params.join(", ")
+    };
+    let ret = sig[close + 1..]
+        .trim_start()
+        .strip_prefix("->")
+        .map_or_else(
+            || "void".to_owned(),
+            |r| c_type(&r[..r.find(['{', ';']).expect("unterminated signature")]),
+        );
+    (params, ret)
+}
+
+/// Every `#[unsafe(no_mangle)]` function in `src` spelled as its C
+/// prototype, plus the `VesperaCallback` alias as the `vespera_callback`
+/// typedef, keyed like [`header_decls`].  Panics on any other export form
+/// (`#[no_mangle]`, `export_name`, an item that is not a `pub extern "C"
+/// fn`) so the exported set is always complete.
+fn rust_exports(src: &str) -> BTreeMap<String, String> {
+    const ATTR: &str = "#[unsafe(no_mangle)]";
+    assert_eq!(
+        src.matches("no_mangle").count(),
+        src.matches(ATTR).count(),
+        "a no_mangle export in a form this test does not read"
+    );
+    assert!(!src.contains("export_name"), "an export_name export");
+    let mut out = BTreeMap::new();
+    for (at, _) in src.match_indices(ATTR) {
+        let item = src[at + ATTR.len()..].trim_start();
+        let item = item.strip_prefix("pub ").expect("non-pub export");
+        let item = item.strip_prefix("unsafe ").unwrap_or(item);
+        let item = item
+            .strip_prefix("extern \"C\" fn ")
+            .expect("export that is not an extern \"C\" fn");
+        let name_end = item.find('(').expect("missing '('");
+        let name = item[..name_end].trim();
+        let (params, ret) = c_signature(&item[name_end..]);
+        assert!(
+            out.insert(name.to_owned(), format!("{ret} {name}({params})"))
+                .is_none(),
+            "{name} exported twice"
+        );
+    }
+    let alias = src
+        .split_once("pub type VesperaCallback =")
+        .expect("VesperaCallback alias")
+        .1;
+    let alias = alias.trim_start().trim_start_matches("unsafe ");
+    let alias = alias
+        .strip_prefix("extern \"C\" fn")
+        .expect("VesperaCallback is not an extern \"C\" fn");
+    let (params, ret) = c_signature(alias);
+    out.insert(
+        "vespera_callback".to_owned(),
+        format!("typedef {ret} (*vespera_callback)({params})"),
+    );
+    out
+}
+
+/// Text of every `.rs` file under the crate's `src/`, so an export added in
+/// a new file is read too.
+fn crate_sources() -> String {
+    fn walk(dir: &std::path::Path, out: &mut String) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push_str(&std::fs::read_to_string(&path).unwrap());
+                out.push('\n');
+            }
+        }
+    }
+    let mut out = String::new();
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut out,
+    );
+    out
+}
+
+#[test]
+fn header_declarations_equal_the_exported_rust_symbols() {
+    let exports = rust_exports(&crate_sources());
+    // The `ffi_apps!` expansion is read like the library's own exports.
+    assert_eq!(exports["vespera_init"], "int vespera_init(void)");
+    assert!(exports.contains_key("vespera_configure_default_json_content_type"));
+    assert_eq!(header_decls(HEADER), exports);
+}
+
+#[test]
+fn a_changed_rust_signature_no_longer_matches_the_header() {
+    let src = crate_sources();
+    let changed = src.replace(
+        "vespera_free(ptr: *mut u8, len: usize)",
+        "vespera_free(ptr: *mut u8, len: u32)",
+    );
+    assert_ne!(changed, src, "vespera_free signature not found");
+    let exports = rust_exports(&changed);
+    assert_eq!(
+        exports["vespera_free"],
+        "void vespera_free(uint8_t *ptr, uint32_t len)"
+    );
+    assert_ne!(header_decls(HEADER), exports);
+}
+
+#[test]
+fn an_export_missing_from_the_header_no_longer_matches_it() {
+    let src = format!(
+        "{}\n#[unsafe(no_mangle)]\npub extern \"C\" fn vespera_configure_new_knob(value: usize) -> c_int {{}}\n",
+        crate_sources()
+    );
+    let exports = rust_exports(&src);
+    assert_eq!(
+        exports["vespera_configure_new_knob"],
+        "int vespera_configure_new_knob(size_t value)"
+    );
+    assert_ne!(header_decls(HEADER), exports);
+}
+
+#[rstest::rstest]
+#[case::legacy_attribute("#[no_mangle]\npub extern \"C\" fn x() {}", "does not read")]
+#[case::export_name(
+    "#[unsafe(export_name = \"x\")]\npub extern \"C\" fn x() {}",
+    "export_name export"
+)]
+#[case::unknown_type(
+    "#[unsafe(no_mangle)]\npub extern \"C\" fn x(a: i16) {}",
+    "no C spelling"
+)]
+#[case::not_a_fn("#[unsafe(no_mangle)]\npub static X: u8 = 0;", "not an extern")]
+#[case::const_pointer_to_pointer(
+    "#[unsafe(no_mangle)]\npub extern \"C\" fn x(a: *const *mut u8) {}",
+    "*const of a pointer"
+)]
+fn an_unreadable_export_is_not_skipped(#[case] src: &str, #[case] expected: &str) {
+    let src = format!("{src}\npub type VesperaCallback = unsafe extern \"C\" fn();");
+    let panic = std::panic::catch_unwind(|| rust_exports(&src)).expect_err("accepted");
+    let msg = panic
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .unwrap();
+    assert!(msg.contains(expected), "{msg}");
+}
+
+#[test]
+fn header_symbols_coerce_to_their_c_prototypes() {
+    // Compile-time: each symbol has exactly the shape the source text read
+    // above describes (and the alias the `vespera_callback` typedef).
+    let _: extern "C" fn() -> u32 = ffi::vespera_abi_version;
+    let _: extern "C" fn() -> c_int = vespera_init;
+    let _: unsafe extern "C" fn(*const u8, usize, *mut *mut u8, *mut usize) -> c_int =
+        ffi::vespera_dispatch;
+    let _: unsafe extern "C" fn(*const u8, usize, *mut u8, usize, *mut usize) -> c_int =
+        ffi::vespera_dispatch_into;
+    let _: unsafe extern "C" fn(*const u8, usize, Option<VesperaCallback>, *mut c_void) -> c_int =
+        ffi::vespera_dispatch_async;
+    let _: unsafe extern "C" fn(*mut u8, usize) = ffi::vespera_free;
+    let _: extern "C" fn(u64) -> c_int = ffi::vespera_shutdown;
+    let _: extern "C" fn(usize) -> c_int = ffi::vespera_configure_worker_threads;
+    let _: extern "C" fn(usize) -> c_int = ffi::vespera_configure_max_blocking_threads;
+    let _: extern "C" fn(usize) -> c_int = ffi::vespera_configure_max_request_bytes;
+    let _: extern "C" fn(usize) -> c_int = ffi::vespera_configure_max_buffered_response_bytes;
+    let _: extern "C" fn(u64) -> c_int = ffi::vespera_configure_dispatch_timeout_ms;
+    let _: extern "C" fn(usize) -> c_int = ffi::vespera_configure_async_max_in_flight;
+    let _: extern "C" fn(c_int) -> c_int = ffi::vespera_configure_default_json_content_type;
+    let callback: Option<VesperaCallback> = None;
+    let _: Option<unsafe extern "C" fn(*mut c_void, *mut u8, usize)> = callback;
+    // Every coerced symbol is one the source-derived comparison covers.
+    assert_eq!(rust_exports(&crate_sources()).len(), 15);
+}
+
 /// `#define VESPERA_* <int>` values.  Panics on any other `#define` — a
 /// value that is not a (parenthesised) decimal integer, or a valueless one
 /// besides the `VESPERA_H` include guard — so a new define can never be
@@ -97,50 +369,6 @@ fn a_valueless_define_other_than_the_guard_is_not_skipped() {
 }
 
 #[test]
-fn header_prototypes_match_the_exported_symbols() {
-    // Compile-time: each symbol has exactly the C prototype's shape.
-    let _: extern "C" fn() -> u32 = ffi::vespera_abi_version;
-    let _: unsafe extern "C" fn(*const u8, usize, *mut *mut u8, *mut usize) -> c_int =
-        ffi::vespera_dispatch;
-    let _: unsafe extern "C" fn(*const u8, usize, *mut u8, usize, *mut usize) -> c_int =
-        ffi::vespera_dispatch_into;
-    let _: unsafe extern "C" fn(*const u8, usize, Option<VesperaCallback>, *mut c_void) -> c_int =
-        ffi::vespera_dispatch_async;
-    let _: unsafe extern "C" fn(*mut u8, usize) = ffi::vespera_free;
-    let _: extern "C" fn(u64) -> c_int = ffi::vespera_shutdown;
-    let _: extern "C" fn(usize) -> c_int = ffi::vespera_configure_worker_threads;
-    let _: extern "C" fn(usize) -> c_int = ffi::vespera_configure_max_blocking_threads;
-    let _: extern "C" fn(usize) -> c_int = ffi::vespera_configure_max_request_bytes;
-    let _: extern "C" fn(usize) -> c_int = ffi::vespera_configure_max_buffered_response_bytes;
-    let _: extern "C" fn(u64) -> c_int = ffi::vespera_configure_dispatch_timeout_ms;
-    let _: extern "C" fn(usize) -> c_int = ffi::vespera_configure_async_max_in_flight;
-    let _: extern "C" fn(c_int) -> c_int = ffi::vespera_configure_default_json_content_type;
-    let callback: Option<VesperaCallback> = None;
-    let _: Option<unsafe extern "C" fn(*mut c_void, *mut u8, usize)> = callback;
-
-    assert_eq!(
-        declarations(HEADER),
-        [
-            "typedef void (*vespera_callback)(void *user_data, uint8_t *response, size_t response_len)",
-            "uint32_t vespera_abi_version(void)",
-            "int vespera_init(void)",
-            "int vespera_dispatch(const uint8_t *request, size_t request_len, uint8_t **response, size_t *response_len)",
-            "int vespera_dispatch_into(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *written)",
-            "int vespera_dispatch_async(const uint8_t *request, size_t request_len, vespera_callback callback, void *user_data)",
-            "void vespera_free(uint8_t *ptr, size_t len)",
-            "int vespera_shutdown(uint64_t timeout_ms)",
-            "int vespera_configure_worker_threads(size_t worker_threads)",
-            "int vespera_configure_max_blocking_threads(size_t max_blocking_threads)",
-            "int vespera_configure_max_request_bytes(size_t max_bytes)",
-            "int vespera_configure_max_buffered_response_bytes(size_t max_bytes)",
-            "int vespera_configure_dispatch_timeout_ms(uint64_t timeout_ms)",
-            "int vespera_configure_async_max_in_flight(size_t max_in_flight)",
-            "int vespera_configure_default_json_content_type(int enabled)",
-        ]
-    );
-}
-
-#[test]
 fn header_constants_match_the_rust_constants() {
     let expected: BTreeMap<String, i64> = [
         ("VESPERA_ABI_VERSION", i64::from(ffi::VESPERA_ABI_VERSION)),
@@ -168,28 +396,50 @@ fn header_constants_match_the_rust_constants() {
     assert_eq!(defines(HEADER), expected);
 }
 
-/// The header's prose documents every status the engine synthesises (the
-/// `error_wire` call sites) and the header-value Latin-1 mapping, so a C
-/// host can handle them without reading the Rust sources.
+/// The header comment's prose, `*` gutters removed and whitespace collapsed.
+fn header_prose() -> String {
+    HEADER
+        .lines()
+        .map(|l| l.trim().trim_start_matches("/*").trim_start_matches('*'))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The failure-list paragraph of the header documents every status the
+/// engine synthesises (the `error_wire` call sites), each with its cause,
+/// and the header-value paragraph the Latin-1 mapping, so a C host can
+/// handle them without reading the Rust sources.  The phrases are matched
+/// inside that paragraph only: the same numbers appear elsewhere.
 #[test]
 fn header_documents_every_synthesised_status_and_the_latin1_mapping() {
-    for documented in [
-        "400",
-        "404",
-        "405",
-        "413",
-        "431",
-        "\"panicked\":\"true\"",
-        "could not be built 500",
-        "503",
-        "504",
-        "Latin-1",
-    ] {
-        assert!(
-            HEADER.replace("\r\n", "\n").contains(documented),
-            "vespera.h does not document {documented:?}"
-        );
-    }
+    const START: &str = "Every failure that can be expressed as HTTP (";
+    const END: &str = ") is returned as a normal wire response with VESPERA_OK.";
+    let prose = header_prose();
+    let list = &prose[prose.find(START).expect("failure list") + START.len()..];
+    let list = &list[..list.find(END).expect("failure list end")];
+    let entries: Vec<&str> = list.split(", ").collect();
+    assert_eq!(
+        entries,
+        [
+            "malformed wire / request 400",
+            "unknown app 404",
+            "invalid HTTP method 405",
+            "body too large 413",
+            "more than 1024 request headers 431",
+            "handler panic 500 with metadata \"panicked\":\"true\"",
+            "shared runtime could not be built 500",
+            "runtime shut down 503",
+            "deadline 504",
+        ]
+    );
+    assert!(
+        prose.contains(
+            "HEADER VALUES use a Latin-1 mapping (one JSON char U+0000..U+00FF per byte)"
+        )
+    );
 }
 
 /// Sanity check of the shipped header's shape (include guard + C linkage

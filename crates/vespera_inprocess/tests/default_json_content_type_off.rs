@@ -16,8 +16,9 @@ use axum::routing::post;
 use serde_json::Value;
 use vespera_inprocess::{
     DirectWriteResult, RequestChunk, RequestEnvelope, default_json_content_type,
-    dispatch_bidirectional_streaming, dispatch_from_bytes, dispatch_into, dispatch_owned,
-    dispatch_streaming_async, register_app, set_default_json_content_type,
+    dispatch_bidirectional_streaming, dispatch_from_bytes, dispatch_into,
+    dispatch_into_async_borrowed, dispatch_owned, dispatch_streaming_async, register_app,
+    set_default_json_content_type,
 };
 
 async fn echo_ct(headers: HeaderMap) -> String {
@@ -102,6 +103,19 @@ fn direct_path_does_not_default() {
     let DirectWriteResult::Complete(n) =
         dispatch_into(wire("/echo_ct", &[], b"{}"), &mut out, &runtime)
     else {
+        panic!("4 KiB fits the response");
+    };
+    assert_eq!(decode(&out[..n]), (200, "MISSING".to_owned()));
+}
+
+#[test]
+fn borrowed_direct_path_does_not_default() {
+    setup();
+    let mut out = vec![0u8; 4096];
+    let DirectWriteResult::Complete(n) = rt().block_on(dispatch_into_async_borrowed(
+        &wire("/echo_ct", &[], b"{}"),
+        &mut out,
+    )) else {
         panic!("4 KiB fits the response");
     };
     assert_eq!(decode(&out[..n]), (200, "MISSING".to_owned()));

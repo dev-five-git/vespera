@@ -20,9 +20,10 @@ fn lifecycle_from_lazy_build_to_shutdown() {
     assert!(host_loaded());
 
     assert!(set_runtime_worker_threads(2));
-    assert!(set_runtime_max_blocking_threads(0));
+    assert!(!set_runtime_worker_threads(3), "first-wins");
     assert_eq!(runtime_worker_threads(), Some(2));
-    assert_eq!(runtime_max_blocking_threads(), 1);
+    // The blocking-pool cap is left unset here: building the runtime must
+    // fix it (asserted below), which a knob set beforehand could not show.
 
     // Hooks registered before the runtime exists wait for it ...
     assert!(!start_runtime_for_hooks());
@@ -37,11 +38,12 @@ fn lifecycle_from_lazy_build_to_shutdown() {
     on_shared_runtime(Box::new(move |_| tx.send("late").unwrap()));
     assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok("late"));
 
+    let built_with = runtime_max_blocking_threads();
     assert!(
-        !set_runtime_worker_threads(8),
-        "fixed once the runtime is built"
+        !set_runtime_max_blocking_threads(built_with % 8192 + 1),
+        "an unset knob is fixed once the runtime is built"
     );
-    assert!(!set_runtime_max_blocking_threads(8));
+    assert_eq!(runtime_max_blocking_threads(), built_with);
     assert_eq!(block_on_shared_runtime(async { 7 }), Some(7));
 
     // A lease held elsewhere keeps the shutdown drain waiting.

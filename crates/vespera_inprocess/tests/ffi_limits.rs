@@ -6,7 +6,6 @@
 
 use std::ffi::c_void;
 use std::sync::mpsc;
-use std::time::Duration;
 
 use vespera_inprocess::ffi::{
     VESPERA_OK, vespera_dispatch, vespera_dispatch_async, vespera_dispatch_into, vespera_free,
@@ -63,8 +62,10 @@ fn oversized_requests_answer_413_everywhere() {
         );
     }
     assert_eq!(status(&buf[..written]), 413);
+    // `try_recv`, not a wait: the early `413` is delivered inline, before
+    // `vespera_dispatch_async` returned.
     assert_eq!(
-        status(&rx.recv_timeout(Duration::from_secs(5)).unwrap()),
+        status(&rx.try_recv().expect("the 413 is delivered inline")),
         413
     );
 }
