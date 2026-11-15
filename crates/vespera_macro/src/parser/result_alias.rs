@@ -20,7 +20,9 @@
 //! it names: `v2::ApiResult` those `v2` declares, `crate::ApiResult` the
 //! crate root's (`lib.rs` / `main.rs`), `super::ApiResult` the parent's (an
 //! inline parent module in the handler's file, else any definition but the
-//! handler module's own). A path-less `use anyhow;` imports another crate.
+//! handler module's own). A plain `use crate::api::v2::ApiResult;` in the
+//! handler's module counts as that qualifier (`v2`). A path-less `use
+//! anyhow;` imports another crate.
 //!
 //! Test-only code (`#[cfg(test)]` modules, items and files) never defines a
 //! handler's alias. Generic parameters (including defaults such as `type R<T,
@@ -147,14 +149,13 @@ pub fn expand_return_type_alias(
         })
     });
     let mut expanded = false;
-    let mut seen: Vec<String> = Vec::new();
+    // Keyed by the resolved definition, not the ident: `type Result<T> =
+    // crate::error::Result<Json<T>>;` names another module's `Result`.
+    let mut seen: Vec<DefinitionKey> = Vec::new();
     while seen.len() < MAX_ALIAS_DEPTH {
         let Some(name) = alias_candidate(ty) else {
             break;
         };
-        if seen.contains(&name) {
-            break;
-        }
         // An alias found under `src/` names its file, parsed only now that
         // the alias body turned out to be another alias candidate.
         let here = scope.take().and_then(NextScope::materialize);
@@ -167,16 +168,33 @@ pub fn expand_return_type_alias(
         else {
             break;
         };
+        let key = definition_key(&alias, &alias_scope);
+        if seen.contains(&key) {
+            break;
+        }
         let Some(next) = apply_alias(&alias, ty) else {
             break;
         };
         **ty = next;
-        seen.push(name);
+        seen.push(key);
         expanded = true;
         // The alias body names types where the alias is defined.
         scope = Some(alias_scope);
     }
     expanded
+}
+
+/// Identifies one alias definition: its tokens, its file (`None` for the
+/// handler's own, already parsed file) and the inline module path inside it.
+type DefinitionKey = (String, Option<PathBuf>, Vec<String>);
+
+/// The [`DefinitionKey`] of `alias`, defined in `scope`.
+fn definition_key(alias: &syn::ItemType, scope: &NextScope<'_>) -> DefinitionKey {
+    let tokens = quote::quote!(#alias).to_string();
+    match scope {
+        NextScope::Ready(scope) => (tokens, None, scope.module.clone()),
+        NextScope::File(path, module) => (tokens, Some(PathBuf::clone(path)), module.clone()),
+    }
 }
 
 /// The ident of `ty` if it may name a user alias.
@@ -352,21 +370,13 @@ fn find_alias<'a>(
     src_dir: Option<&Path>,
 ) -> Option<(syn::ItemType, NextScope<'a>)> {
     if qualifier == Some(&Qualifier::Super)
-        && let Some(scope) = scope
-        && let Some((_, parent)) = scope.module.split_last()
+        && let Some(found) = scope.and_then(|scope| inline_parent_alias(scope, name))
     {
-        let parent_scope = Scope {
-            file: scope.file.clone(),
-            module: parent.to_vec(),
-        };
-        if let Some(alias) = parent_scope
-            .items()
-            .iter()
-            .find_map(|item| alias_item(item, name))
-        {
-            return Some((alias, NextScope::Ready(parent_scope)));
-        }
+        return Some(found);
     }
+    // `use crate::api::v2::ApiResult;` names the module it imports from,
+    // exactly like the qualified `v2::ApiResult`.
+    let mut imported = None;
     if let Some(scope) = scope.filter(|_| qualifier.is_none()) {
         let items = scope.items();
         if let Some(alias) = items.iter().find_map(|item| alias_item(item, name)) {
@@ -392,9 +402,16 @@ fn find_alias<'a>(
             // another item of this crate, so a same-named alias elsewhere is
             // unrelated.
             Some(Import::Local) if renames_to(items, name) => return None,
+            Some(Import::Local) => imported = import_parent(items, name),
             _ => {}
         }
+        if imported == Some(Qualifier::Super)
+            && let Some(found) = inline_parent_alias(scope, name)
+        {
+            return Some(found);
+        }
     }
+    let qualifier = qualifier.or(imported.as_ref());
     let mut definitions: Vec<Definition<'a>> = Vec::new();
     if let Some(scope) = scope {
         let mut found = Vec::new();
@@ -444,6 +461,24 @@ fn find_alias<'a>(
     definitions
         .all(|(other, ..)| same_definition(&alias, &other))
         .then_some((alias, alias_scope))
+}
+
+/// The `type <name>` alias of the inline parent of `scope`'s module, with
+/// the parent's scope.
+fn inline_parent_alias<'a>(
+    scope: &Scope<'a>,
+    name: &str,
+) -> Option<(syn::ItemType, NextScope<'a>)> {
+    let (_, parent) = scope.module.split_last()?;
+    let parent_scope = Scope {
+        file: scope.file.clone(),
+        module: parent.to_vec(),
+    };
+    let alias = parent_scope
+        .items()
+        .iter()
+        .find_map(|item| alias_item(item, name))?;
+    Some((alias, NextScope::Ready(parent_scope)))
 }
 
 /// The module a source file declares: its stem, the directory name for a

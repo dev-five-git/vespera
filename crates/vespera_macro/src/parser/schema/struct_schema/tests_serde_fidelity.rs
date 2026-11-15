@@ -124,6 +124,11 @@ fn both_views(src: &str) -> String {
     "flatten_value_type_map",
     "struct Req { id: i32, #[serde(flatten)] #[schema(value_type = HashMap<String, u8>)] extra: Custom }"
 )]
+// Round 14: `value_type` wins over a custom codec on a flattened field too.
+#[case::flatten_value_type_over_codec(
+    "flatten_value_type_over_codec",
+    "struct Req { id: i32, #[serde(flatten, with = \"m\")] #[schema(value_type = HashMap<String, u8>)] extra: Custom }"
+)]
 // H2: a flattened `deny_unknown_fields` struct never rejects the outer keys.
 #[case::flatten_closed_struct(
     "flatten_closed_struct",
