@@ -312,7 +312,9 @@ public class VesperaReactiveProxyHandler implements WebHandler {
         if (cap > 0 && declared > cap) {
             throw payloadTooLarge(declared, cap);
         }
-        if (declared > MAX_BUFFERED_BODY) {
+        // A body of exactly the ceiling is rejected too (servlet parity): its
+        // wire frame could not fit a byte[] either.
+        if (declared >= MAX_BUFFERED_BODY) {
             throw declaredAboveSingleArrayBound(declared, cap);
         }
         String rawQuery = request.getURI().getRawQuery();

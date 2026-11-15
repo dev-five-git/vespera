@@ -275,6 +275,21 @@ class VesperaReactiveProxyHandlerTest {
     }
 
     @Test
+    void declaredLengthExactlyAtTheSingleArrayBoundIsRejectedUpfront() {
+        // Servlet parity: a body of exactly the bound cannot fit a wire frame
+        // in a byte[] either, so it is a 413 before any aggregation.
+        long bound = Integer.MAX_VALUE - 8L;
+        Result result = call(client(handler(new ReactiveHeaderAppNameResolver("X-Vespera-App", List.of()),
+                null, 0, 1024, CorsHandling.RUST)).post().uri("/upload")
+                .header(HttpHeaders.CONTENT_LENGTH, Long.toString(bound)));
+        assertEquals(413, result.status());
+        assertEquals("buffered request body reaches the built-in " + bound
+                + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes=0; actual "
+                + bound + " bytes)", result.body());
+        assertTrue(transport.requests.isEmpty());
+    }
+
+    @Test
     void requestBodyOverTheCapIs413() throws Exception {
         WebTestClient client = client(handler());
         // Declared Content-Length over the cap: rejected before reading.

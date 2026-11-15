@@ -634,18 +634,25 @@ public class VesperaProxyController {
         // buffering for a SIZED body, so honour it up to the single-array
         // ceiling (the actual read stops at the known Content-Length).
         byte[] body = in.readNBytes((int) MAX_BUFFERED_BODY);
-        rejectAtBufferedBodyLimit(body.length, MAX_BUFFERED_BODY);
+        rejectAtBufferedBodyLimit(body.length, cap);
         return body;
     }
 
+    /**
+     * {@code 413} when a read bounded by the single-array ceiling stopped at
+     * it ({@code cap} unlimited ({@code <= 0}) or at least the ceiling). Names
+     * the built-in bound and the cap as configured, never the bound as if it
+     * were the property's value.
+     */
     static void rejectAtBufferedBodyLimit(long bodyLength, long cap) {
-        if (bodyLength == MAX_BUFFERED_BODY && cap >= MAX_BUFFERED_BODY) {
+        if (bodyLength == MAX_BUFFERED_BODY && (cap <= 0 || cap >= MAX_BUFFERED_BODY)) {
             // The read stopped at the single-array ceiling: the body is at
             // least that large, its real size is not known.
             throw new ResponseStatusException(
                     CONTENT_TOO_LARGE,
-                    "buffered request body exceeds vespera.bridge.max-buffered-request-bytes="
-                            + MAX_BUFFERED_BODY + " (at least " + bodyLength + " bytes)");
+                    "buffered request body exceeds the built-in " + MAX_BUFFERED_BODY
+                            + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes="
+                            + cap + "; at least " + bodyLength + " bytes)");
         }
     }
 

@@ -87,10 +87,31 @@ class VesperaProxyControllerCoverageTest {
                         maxBufferedBody, maxBufferedBody));
 
         assertEquals(413, exception.getStatusCode().value());
-        assertEquals("buffered request body exceeds vespera.bridge.max-buffered-request-bytes="
-                + maxBufferedBody + " (at least " + maxBufferedBody + " bytes)", exception.getReason());
+        assertEquals("buffered request body exceeds the built-in " + maxBufferedBody
+                + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes="
+                + maxBufferedBody + "; at least " + maxBufferedBody + " bytes)", exception.getReason());
         VesperaProxyController.rejectAtBufferedBodyLimit(maxBufferedBody - 1, maxBufferedBody);
         VesperaProxyController.rejectAtBufferedBodyLimit(maxBufferedBody, maxBufferedBody - 1);
+    }
+
+    @Test
+    void bufferedBodyLimitNamesTheConfiguredCapNotTheBound() {
+        long maxBufferedBody = Integer.MAX_VALUE - 8L;
+        long configured = 4_294_967_296L;
+
+        ResponseStatusException above = assertThrows(
+                ResponseStatusException.class,
+                () -> VesperaProxyController.rejectAtBufferedBodyLimit(maxBufferedBody, configured));
+        assertEquals("buffered request body exceeds the built-in " + maxBufferedBody
+                + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes="
+                + configured + "; at least " + maxBufferedBody + " bytes)", above.getReason());
+
+        ResponseStatusException unlimited = assertThrows(
+                ResponseStatusException.class,
+                () -> VesperaProxyController.rejectAtBufferedBodyLimit(maxBufferedBody, 0));
+        assertEquals("buffered request body exceeds the built-in " + maxBufferedBody
+                + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes=0; at least "
+                + maxBufferedBody + " bytes)", unlimited.getReason());
     }
 
     @Test
