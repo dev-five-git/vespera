@@ -168,6 +168,38 @@ async fn oversized_422_is_streamed_unhoisted_header_first() {
     assert_eq!(body.len(), BIG_422_LEN + 2, "prefix + rest delivered");
 }
 
+/// Header-LAST mode (`Prefetched422::Large`): the oversized 422 is streamed
+/// in full through `on_chunk` and the header returned afterwards carries
+/// no `validation_errors` (both entry points).
+#[tokio::test]
+async fn oversized_422_is_streamed_unhoisted_header_last() {
+    install();
+    let mut body = Vec::new();
+    let header = dispatch_streaming_async(encode("GET", "/big422"), |c: &[u8]| {
+        body.extend_from_slice(c);
+        ControlFlow::Continue(())
+    })
+    .await;
+    let (json, tail) = split(&header);
+    assert_eq!(json["status"], 422);
+    assert!(json.get("validation_errors").is_none(), "{json}");
+    assert!(tail.is_empty(), "header-only return");
+    assert_eq!(body.len(), BIG_422_LEN + 2, "prefix + rest delivered");
+
+    let mut streamed = 0;
+    let (header, outcome) =
+        dispatch_streaming_with_outcome_async(encode("GET", "/big422"), |c: &[u8]| {
+            streamed += c.len();
+            ControlFlow::Continue(())
+        })
+        .await;
+    assert_eq!(outcome, StreamOutcome::Complete);
+    let (json, _) = split(&header);
+    assert_eq!(json["status"], 422);
+    assert!(json.get("validation_errors").is_none(), "{json}");
+    assert_eq!(streamed, BIG_422_LEN + 2);
+}
+
 #[rstest]
 #[case::error_after_chunks("/fails_after_chunks", StreamOutcome::BodyError, true)]
 #[case::error_before_first_chunk("/fails_immediately", StreamOutcome::Complete, false)]

@@ -117,6 +117,11 @@ fn build_router(n_routes: usize) -> Router {
         .route("/echo", post(handler_echo))
         // No 2 MiB `DefaultBodyLimit` here: the 4 MiB `direct_write_path`
         // rung would otherwise time axum's `413` rejection, not an echo.
+        // Lifting it changed per-request work for every `/echo/bytes`
+        // bench, so their ids carry `_echo_` (`direct_write_path`) or
+        // `_nolimit` (`bytes_path`, `streaming_path/{response_streaming,
+        // bidirectional}`, `bidirectional_small`, `sync_runtime_ab`): the
+        // history before the change is not comparable.
         .route(
             "/echo/bytes",
             post(handler_echo_bytes).layer(axum::extract::DefaultBodyLimit::disable()),
@@ -298,11 +303,20 @@ fn bench_dispatch_path(c: &mut Criterion) {
             },
         );
 
+        // Same `iter_batched(LargeInput)` harness as the owned arm (empty
+        // setup), so both pay the same per-call clock overhead and both drop
+        // the returned `ResponseEnvelope` outside the timing.  The id gained
+        // `_batched`: the old `iter` arm timed that drop, so its history is
+        // not comparable.
         group.bench_with_input(
-            BenchmarkId::new("borrowed_pre_P2", body_kb),
+            BenchmarkId::new("borrowed_batched_pre_P2", body_kb),
             &body_kb,
             |b, _| {
-                b.iter(|| runtime.block_on(dispatch_typed(cached.clone(), &template)));
+                b.iter_batched(
+                    || (),
+                    |()| runtime.block_on(dispatch_typed(cached.clone(), &template)),
+                    BatchSize::LargeInput,
+                );
             },
         );
     }
@@ -358,7 +372,7 @@ fn bench_bytes_path(c: &mut Criterion) {
         group.throughput(Throughput::Bytes((body_kb * 1024) as u64));
 
         group.bench_with_input(
-            BenchmarkId::new("raw_bytes_dispatch_from_bytes", body_kb),
+            BenchmarkId::new("raw_bytes_nolimit_dispatch_from_bytes", body_kb),
             &body_kb,
             |b, _| {
                 b.iter(|| dispatch_from_bytes(wire.clone(), &runtime));

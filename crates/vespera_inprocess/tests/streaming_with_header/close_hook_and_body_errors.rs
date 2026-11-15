@@ -79,7 +79,7 @@ async fn bidirectional_with_header_closing_invokes_close_after_full_read() {
             .map_or(RequestChunk::End, RequestChunk::Data)
     };
 
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
@@ -93,14 +93,14 @@ async fn bidirectional_with_header_closing_invokes_close_after_full_read() {
             b.lock().unwrap().extend_from_slice(chunk);
             ControlFlow::Continue(())
         },
-        move |hdr| h.lock().unwrap().extend_from_slice(hdr),
+        move |hdr| h.lock().unwrap().push(hdr.to_vec()),
         move || {
             cc.fetch_add(1, Ordering::SeqCst);
         },
     )
     .await;
 
-    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(200));
     assert_eq!(body_buf.lock().unwrap().as_slice(), b"payload");
     assert_eq!(
@@ -120,7 +120,7 @@ async fn bidirectional_with_header_closing_skips_close_when_body_ignored() {
     let wire = encode_wire("GET", "/ping", HashMap::new(), &[]);
 
     let pull = || -> RequestChunk { RequestChunk::End };
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
@@ -134,14 +134,14 @@ async fn bidirectional_with_header_closing_skips_close_when_body_ignored() {
             b.lock().unwrap().extend_from_slice(chunk);
             ControlFlow::Continue(())
         },
-        move |hdr| h.lock().unwrap().extend_from_slice(hdr),
+        move |hdr| h.lock().unwrap().push(hdr.to_vec()),
         move || {
             cc.fetch_add(1, Ordering::SeqCst);
         },
     )
     .await;
 
-    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(200));
     assert_eq!(
         close_calls.load(Ordering::SeqCst),
@@ -243,12 +243,12 @@ async fn streaming_with_header_body_error_returns_body_error_outcome() {
     // truncated body. Regression guard for the silently-swallowed `Err(_)`.
     install_router();
     let wire = encode_wire("GET", "/err-body", HashMap::new(), &[]);
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
 
     let outcome = dispatch_streaming_with_header_async(
         wire,
-        move |header| h.lock().unwrap().extend_from_slice(header),
+        move |header| h.lock().unwrap().push(header.to_vec()),
         |_chunk| ControlFlow::Continue(()),
     )
     .await;
@@ -259,7 +259,7 @@ async fn streaming_with_header_body_error_returns_body_error_outcome() {
         "a response body that errors after the header is committed must report BodyError"
     );
     // The header committed as 200 — the error only surfaced afterwards.
-    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(200));
 }
 
@@ -383,19 +383,19 @@ async fn bidirectional_body_error_replaces_captured_success_header_with_500() {
 async fn bidirectional_rejects_body_bytes_embedded_after_header() {
     install_router();
     let wire = encode_wire("POST", "/echo", HashMap::new(), b"embedded");
-    let header_buf = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&header_buf);
 
     let outcome = dispatch_bidirectional_streaming_with_header(
         wire,
         || RequestChunk::End,
         |_chunk| ControlFlow::Continue(()),
-        move |header| captured.lock().unwrap().extend_from_slice(header),
+        move |header| captured.lock().unwrap().push(header.to_vec()),
     )
     .await;
 
     assert_eq!(outcome, StreamOutcome::Complete);
-    let (header_json, body) = decode_wire(&header_buf.lock().unwrap());
+    let (header_json, body) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(400));
     assert!(
         String::from_utf8_lossy(&body).contains("header-only"),

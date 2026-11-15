@@ -6,8 +6,10 @@
 //!
 //! These variants are what Spring `HttpServletResponse`-style hosts
 //! call: `on_header` fires before the response is committed, then
-//! `on_chunk` streams the body.  Both callbacks must be invoked
-//! exactly once on every code path (success or error).
+//! `on_chunk` streams the body.  `on_header` must be invoked exactly once
+//! on every code path that produces a header (success or error; checked
+//! by `single_header`), and `on_chunk` once per body chunk after it —
+//! never on an error path that answered through the header alone.
 
 use std::collections::HashMap;
 use std::ops::ControlFlow;
@@ -226,6 +228,17 @@ fn encode_unknown_app(method: &str, path: &str) -> Vec<u8> {
     wire
 }
 
+/// Every `on_header` call, one entry per call.
+type HeaderFrames = Arc<Mutex<Vec<Vec<u8>>>>;
+
+/// The single header frame `on_header` received; fails when it fired more
+/// than once (e.g. a `200` followed by an error header) or never.
+fn single_header(frames: &HeaderFrames) -> Vec<u8> {
+    let frames = frames.lock().unwrap();
+    assert_eq!(frames.len(), 1, "on_header must fire exactly once");
+    frames[0].clone()
+}
+
 fn decode_wire(resp: &[u8]) -> (Value, Vec<u8>) {
     let len_bytes: [u8; 4] = resp[..4].try_into().expect("4 bytes");
     let header_len = u32::from_be_bytes(len_bytes) as usize;
@@ -241,14 +254,14 @@ fn decode_wire(resp: &[u8]) -> (Value, Vec<u8>) {
 async fn streaming_with_header_emits_header_before_chunks() {
     install_router();
     let wire = encode_wire("GET", "/ping", HashMap::new(), &[]);
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let chunks: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
     let _ = dispatch_streaming_with_header_async(
         wire,
-        move |bytes| h.lock().unwrap().extend_from_slice(bytes),
+        move |bytes| h.lock().unwrap().push(bytes.to_vec()),
         move |chunk| {
             c.lock().unwrap().push(chunk.to_vec());
             ControlFlow::Continue(())
@@ -256,7 +269,7 @@ async fn streaming_with_header_emits_header_before_chunks() {
     )
     .await;
 
-    let header_bytes = header_buf.lock().unwrap().clone();
+    let header_bytes = single_header(&header_buf);
     let (header_json, body_in_header) = decode_wire(&header_bytes);
     assert_eq!(header_json["status"].as_u64(), Some(200));
     assert!(
@@ -270,14 +283,14 @@ async fn streaming_with_header_emits_header_before_chunks() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streaming_with_header_error_on_short_input_skips_chunk_callback() {
     let bad_wire: Vec<u8> = vec![0u8, 0]; // less than 4 bytes
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let chunks: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
     let _ = dispatch_streaming_with_header_async(
         bad_wire,
-        move |bytes| h.lock().unwrap().extend_from_slice(bytes),
+        move |bytes| h.lock().unwrap().push(bytes.to_vec()),
         move |chunk| {
             c.lock().unwrap().push(chunk.to_vec());
             ControlFlow::Continue(())
@@ -285,7 +298,7 @@ async fn streaming_with_header_error_on_short_input_skips_chunk_callback() {
     )
     .await;
 
-    let header_bytes = header_buf.lock().unwrap().clone();
+    let header_bytes = single_header(&header_buf);
     let (header_json, body) = decode_wire(&header_bytes);
     assert_eq!(header_json["status"].as_u64(), Some(400));
     assert!(!body.is_empty(), "error body must explain the failure");
@@ -299,14 +312,14 @@ async fn streaming_with_header_error_on_short_input_skips_chunk_callback() {
 async fn streaming_with_header_error_on_version_mismatch() {
     install_router();
     let bad = encode_bad_version("GET", "/ping");
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let chunks: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
     let _ = dispatch_streaming_with_header_async(
         bad,
-        move |bytes| h.lock().unwrap().extend_from_slice(bytes),
+        move |bytes| h.lock().unwrap().push(bytes.to_vec()),
         move |chunk| {
             c.lock().unwrap().push(chunk.to_vec());
             ControlFlow::Continue(())
@@ -314,7 +327,7 @@ async fn streaming_with_header_error_on_version_mismatch() {
     )
     .await;
 
-    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(400));
     assert!(chunks.lock().unwrap().is_empty());
 }
@@ -323,14 +336,14 @@ async fn streaming_with_header_error_on_version_mismatch() {
 async fn streaming_with_header_error_on_unknown_app() {
     install_router();
     let bad = encode_unknown_app("GET", "/ping");
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let chunks: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
     let _ = dispatch_streaming_with_header_async(
         bad,
-        move |bytes| h.lock().unwrap().extend_from_slice(bytes),
+        move |bytes| h.lock().unwrap().push(bytes.to_vec()),
         move |chunk| {
             c.lock().unwrap().push(chunk.to_vec());
             ControlFlow::Continue(())
@@ -338,7 +351,7 @@ async fn streaming_with_header_error_on_unknown_app() {
     )
     .await;
 
-    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(404));
     assert!(chunks.lock().unwrap().is_empty());
 }
@@ -347,14 +360,14 @@ async fn streaming_with_header_error_on_unknown_app() {
 async fn streaming_with_header_invalid_method_returns_405_via_header_callback() {
     install_router();
     let wire = encode_wire("BAD METHOD", "/ping", HashMap::new(), &[]);
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let chunks: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
     let _ = dispatch_streaming_with_header_async(
         wire,
-        move |bytes| h.lock().unwrap().extend_from_slice(bytes),
+        move |bytes| h.lock().unwrap().push(bytes.to_vec()),
         move |chunk| {
             c.lock().unwrap().push(chunk.to_vec());
             ControlFlow::Continue(())
@@ -362,7 +375,7 @@ async fn streaming_with_header_invalid_method_returns_405_via_header_callback() 
     )
     .await;
 
-    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(405));
     assert!(chunks.lock().unwrap().is_empty());
 }
@@ -384,14 +397,14 @@ async fn streaming_with_header_forwards_query_string_via_dispatch_and_split() {
     wire.extend_from_slice(&hlen.to_be_bytes());
     wire.extend_from_slice(&hb);
 
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let chunks: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
     let _ = dispatch_streaming_with_header_async(
         wire,
-        move |bytes| h.lock().unwrap().extend_from_slice(bytes),
+        move |bytes| h.lock().unwrap().push(bytes.to_vec()),
         move |chunk| {
             c.lock().unwrap().extend_from_slice(chunk);
             ControlFlow::Continue(())
@@ -399,7 +412,7 @@ async fn streaming_with_header_forwards_query_string_via_dispatch_and_split() {
     )
     .await;
 
-    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(200));
     assert_eq!(
         String::from_utf8(chunks.lock().unwrap().clone()).unwrap(),
@@ -411,14 +424,14 @@ async fn streaming_with_header_forwards_query_string_via_dispatch_and_split() {
 async fn streaming_with_header_triple_header_collapses_into_multi() {
     install_router();
     let wire = encode_wire("GET", "/triple", HashMap::new(), &[]);
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let chunks: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
     let _ = dispatch_streaming_with_header_async(
         wire,
-        move |bytes| h.lock().unwrap().extend_from_slice(bytes),
+        move |bytes| h.lock().unwrap().push(bytes.to_vec()),
         move |chunk| {
             c.lock().unwrap().push(chunk.to_vec());
             ControlFlow::Continue(())
@@ -426,7 +439,7 @@ async fn streaming_with_header_triple_header_collapses_into_multi() {
     )
     .await;
 
-    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(200));
     let trace = &header_json["headers"]["x-trace-id"];
     let arr = trace
@@ -462,7 +475,7 @@ async fn bidirectional_with_header_roundtrips_body() {
             .map_or(RequestChunk::End, RequestChunk::Data)
     };
 
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
@@ -474,11 +487,11 @@ async fn bidirectional_with_header_roundtrips_body() {
             b.lock().unwrap().extend_from_slice(chunk);
             ControlFlow::Continue(())
         },
-        move |hdr| h.lock().unwrap().extend_from_slice(hdr),
+        move |hdr| h.lock().unwrap().push(hdr.to_vec()),
     )
     .await;
 
-    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(200));
     assert_eq!(body_buf.lock().unwrap().as_slice(), b"foobar");
 }
@@ -487,7 +500,7 @@ async fn bidirectional_with_header_roundtrips_body() {
 async fn bidirectional_with_header_error_on_short_input() {
     let bad: Vec<u8> = vec![0u8, 0, 0]; // < 4 bytes
     let pull = || -> RequestChunk { RequestChunk::End };
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
@@ -499,11 +512,11 @@ async fn bidirectional_with_header_error_on_short_input() {
             b.lock().unwrap().extend_from_slice(chunk);
             ControlFlow::Continue(())
         },
-        move |hdr| h.lock().unwrap().extend_from_slice(hdr),
+        move |hdr| h.lock().unwrap().push(hdr.to_vec()),
     )
     .await;
 
-    let (header_json, body) = decode_wire(&header_buf.lock().unwrap());
+    let (header_json, body) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(400));
     assert_ne!(body, Vec::<u8>::new());
     assert!(body_buf.lock().unwrap().is_empty());
@@ -514,7 +527,7 @@ async fn bidirectional_with_header_error_on_version_mismatch() {
     install_router();
     let bad = encode_bad_version("POST", "/echo");
     let pull = || -> RequestChunk { RequestChunk::End };
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
@@ -526,11 +539,11 @@ async fn bidirectional_with_header_error_on_version_mismatch() {
             b.lock().unwrap().extend_from_slice(chunk);
             ControlFlow::Continue(())
         },
-        move |hdr| h.lock().unwrap().extend_from_slice(hdr),
+        move |hdr| h.lock().unwrap().push(hdr.to_vec()),
     )
     .await;
 
-    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(400));
     assert!(body_buf.lock().unwrap().is_empty());
 }
@@ -540,7 +553,7 @@ async fn bidirectional_with_header_error_on_unknown_app() {
     install_router();
     let bad = encode_unknown_app("POST", "/echo");
     let pull = || -> RequestChunk { RequestChunk::End };
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
@@ -552,11 +565,11 @@ async fn bidirectional_with_header_error_on_unknown_app() {
             b.lock().unwrap().extend_from_slice(chunk);
             ControlFlow::Continue(())
         },
-        move |hdr| h.lock().unwrap().extend_from_slice(hdr),
+        move |hdr| h.lock().unwrap().push(hdr.to_vec()),
     )
     .await;
 
-    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(404));
     assert!(body_buf.lock().unwrap().is_empty());
 }
@@ -566,7 +579,7 @@ async fn bidirectional_with_header_invalid_method_returns_405() {
     install_router();
     let wire = encode_wire("BAD METHOD", "/echo", HashMap::new(), &[]);
     let pull = || -> RequestChunk { RequestChunk::End };
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
@@ -578,11 +591,11 @@ async fn bidirectional_with_header_invalid_method_returns_405() {
             b.lock().unwrap().extend_from_slice(chunk);
             ControlFlow::Continue(())
         },
-        move |hdr| h.lock().unwrap().extend_from_slice(hdr),
+        move |hdr| h.lock().unwrap().push(hdr.to_vec()),
     )
     .await;
 
-    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(405));
     assert!(body_buf.lock().unwrap().is_empty());
 }
@@ -618,7 +631,7 @@ async fn bidirectional_with_header_break_when_receiver_dropped_mid_stream() {
         RequestChunk::Data(vec![0u8; 4096])
     };
 
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
@@ -630,13 +643,13 @@ async fn bidirectional_with_header_break_when_receiver_dropped_mid_stream() {
             b.lock().unwrap().extend_from_slice(chunk);
             ControlFlow::Continue(())
         },
-        move |hdr| h.lock().unwrap().extend_from_slice(hdr),
+        move |hdr| h.lock().unwrap().push(hdr.to_vec()),
     ))
     .await
     .unwrap();
     assert_eq!(outcome, StreamOutcome::Complete);
 
-    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(200));
     let pulled = *counter.lock().unwrap();
     assert!(
@@ -670,7 +683,7 @@ async fn bidirectional_with_header_slow_producer_yields_poll_pending() {
         RequestChunk::Data(b"chunk".to_vec())
     };
 
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
@@ -682,11 +695,11 @@ async fn bidirectional_with_header_slow_producer_yields_poll_pending() {
             b.lock().unwrap().extend_from_slice(chunk);
             ControlFlow::Continue(())
         },
-        move |hdr| h.lock().unwrap().extend_from_slice(hdr),
+        move |hdr| h.lock().unwrap().push(hdr.to_vec()),
     )
     .await;
 
-    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(200));
     assert_eq!(body_buf.lock().unwrap().as_slice(), b"chunkchunkchunk");
 }
@@ -717,7 +730,7 @@ async fn run_empty_pull_chunk_skip(spawned: bool) {
         }
     };
 
-    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
@@ -729,7 +742,7 @@ async fn run_empty_pull_chunk_skip(spawned: bool) {
             b.lock().unwrap().extend_from_slice(chunk);
             ControlFlow::Continue(())
         },
-        move |hdr| h.lock().unwrap().extend_from_slice(hdr),
+        move |hdr| h.lock().unwrap().push(hdr.to_vec()),
     );
     let outcome = if spawned {
         tokio::spawn(dispatch).await.unwrap()
@@ -738,7 +751,7 @@ async fn run_empty_pull_chunk_skip(spawned: bool) {
     };
     assert_eq!(outcome, StreamOutcome::Complete);
 
-    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(200));
     assert_eq!(body_buf.lock().unwrap().as_slice(), b"X");
     assert!(

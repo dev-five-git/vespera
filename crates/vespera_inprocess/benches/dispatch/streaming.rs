@@ -45,7 +45,7 @@ pub fn bench_streaming_path(c: &mut Criterion) {
             &payload,
         );
         group.bench_with_input(
-            BenchmarkId::new("response_streaming", body_kb),
+            BenchmarkId::new("response_streaming_nolimit", body_kb),
             &body_kb,
             |b, _| {
                 b.iter(|| {
@@ -67,7 +67,7 @@ pub fn bench_streaming_path(c: &mut Criterion) {
             .map(<[u8]>::to_vec)
             .collect();
         group.bench_with_input(
-            BenchmarkId::new("bidirectional", body_kb),
+            BenchmarkId::new("bidirectional_nolimit", body_kb),
             &body_kb,
             |b, _| {
                 b.iter(|| {
@@ -198,24 +198,34 @@ pub fn bench_close_hook_ab(c: &mut Criterion) {
     let mut group = c.benchmark_group("close_hook_ab");
 
     // `pre`: the previous direct `close()` call.  `post`: the hardened
-    // `catch_unwind(AssertUnwindSafe(close))`.  The closure does a tiny
-    // black-boxed op so it is neither optimised away nor large enough to
-    // dwarf the landing-pad cost being measured.
-    group.bench_function("direct_call_pre", |b| {
+    // `catch_unwind(AssertUnwindSafe(close))`.  The hook is an
+    // `#[inline(never)]` fn called through a black-boxed fn pointer, like
+    // the real (opaque, user-supplied) hook: the optimiser cannot prove it
+    // never unwinds, so `catch_unwind` keeps its landing pad (a visible,
+    // non-unwinding closure would compile both arms to identical code).
+    // Ids carry `_opaque`: the old ones measured that identical code.
+    group.bench_function("direct_call_opaque_pre", |b| {
         b.iter(|| {
-            let f = || std::hint::black_box(1u64).wrapping_mul(3);
-            std::hint::black_box(f())
+            let hook = std::hint::black_box(close_hook as fn() -> u64);
+            std::hint::black_box(hook())
         });
     });
 
-    group.bench_function("catch_unwind_post", |b| {
+    group.bench_function("catch_unwind_opaque_post", |b| {
         b.iter(|| {
-            let f = || std::hint::black_box(1u64).wrapping_mul(3);
-            std::hint::black_box(std::panic::catch_unwind(AssertUnwindSafe(f)).unwrap_or(0))
+            let hook = std::hint::black_box(close_hook as fn() -> u64);
+            std::hint::black_box(std::panic::catch_unwind(AssertUnwindSafe(hook)).unwrap_or(0))
         });
     });
 
     group.finish();
+}
+
+/// Stand-in close hook for [`bench_close_hook_ab`]: a tiny black-boxed op,
+/// neither optimised away nor large enough to dwarf the landing pad.
+#[inline(never)]
+fn close_hook() -> u64 {
+    std::hint::black_box(1u64).wrapping_mul(3)
 }
 
 /// Same-run A/B for the Oracle-flagged `dispatchAsync` completion-isolation
@@ -290,7 +300,7 @@ pub fn bench_async_completion_isolation_ab(c: &mut Criterion) {
 /// take the inline fast path (`streaming/inline_pull.rs`: the chunk and
 /// `End` are pulled on the calling thread) and measure that floor — NOT
 /// the producer start, channel, producer slot and thread handoff it avoids
-/// (the `1024` KiB `streaming_path/bidirectional` case still pays those).
+/// (the `1024` KiB `streaming_path/bidirectional_nolimit` case still pays those).
 pub fn bench_bidirectional_small(c: &mut Criterion) {
     install_bench_app();
 
@@ -300,7 +310,7 @@ pub fn bench_bidirectional_small(c: &mut Criterion) {
 
     for &body_len in &[0_usize, 64] {
         group.bench_with_input(
-            BenchmarkId::new("echo", body_len),
+            BenchmarkId::new("echo_nolimit", body_len),
             &body_len,
             |b, &body_len| {
                 b.iter(|| {

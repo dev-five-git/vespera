@@ -573,6 +573,8 @@ mod tests {
 
     use super::*;
 
+    // The assert is a `debug_assert!`: a `--release` test build never fires it.
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "HTTP status must be 100..=999")]
     fn status_writer_debug_asserts_invalid_status() {
