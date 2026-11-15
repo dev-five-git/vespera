@@ -28,9 +28,10 @@
 //! - **outside a spawned task**: a pull must never block a runtime worker;
 //! - **on a multi-thread runtime** only: a current-thread runtime's
 //!   `block_on` thread is its only worker, so a pull waiting on one of its
-//!   tasks would hang.  The pull runs under `tokio::task::block_in_place`,
-//!   outside the runtime context, so Tokio's blocking APIs behave as on the
-//!   `spawn_blocking` producer thread.
+//!   tasks would hang.  The pull runs under `tokio::task::block_in_place`
+//!   (the thread gives up its worker role but keeps the runtime context, so
+//!   `Handle::current()` still works), so Tokio's blocking APIs behave as on
+//!   the `spawn_blocking` producer thread.
 //!
 //! **Caveat — handler-side timeouts.** An inline pull blocks the polling
 //! thread *inside* `poll_frame`, so a timeout the handler itself puts around

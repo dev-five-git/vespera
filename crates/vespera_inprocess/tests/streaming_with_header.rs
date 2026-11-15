@@ -61,8 +61,8 @@ async fn triple_header() -> Response {
     (headers, "trace").into_response()
 }
 
-/// Echoes back the request query string, used to confirm that
-/// `dispatch_and_split` reassembles `path?query` correctly.
+/// Echoes back the request query string, used to confirm that the wire
+/// `query` field is joined to the path (`compose_path_query`) correctly.
 async fn echo_query(uri: axum::http::Uri) -> String {
     uri.query().unwrap_or("").to_owned()
 }
@@ -384,7 +384,7 @@ async fn streaming_with_header_invalid_method_returns_405_via_header_callback() 
 async fn streaming_with_header_forwards_query_string_via_dispatch_and_split() {
     install_router();
     // Hand-roll a wire that includes a `query` field to exercise the
-    // `format!("{path}?{query}")` reassembly inside dispatch_and_split.
+    // `compose_path_query` join of `path` + `query` (`internal.rs`).
     let mut header = serde_json::Map::new();
     header.insert("v".to_owned(), Value::from(1u8));
     header.insert("method".to_owned(), Value::String("GET".into()));

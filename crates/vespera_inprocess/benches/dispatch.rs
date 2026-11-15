@@ -737,8 +737,9 @@ fn bench_request_headers_path(c: &mut Criterion) {
             b.iter(|| dispatch_from_bytes(wire.clone(), &runtime));
         });
         // The borrowed DIRECT path (JNI `dispatchDirect0` / C
-        // `vespera_dispatch_into`), the default for small GETs: measures the
-        // per-header name / value cost on the path the Java proxy takes most
+        // `vespera_dispatch_into`; smart dispatch's default for small GETs,
+        // while this `POST /echo` fixture would go to SYNC): measures the
+        // per-header name / value cost on the DIRECT path the Java proxy takes
         // (interned common names; promoting the input to a shared `Bytes`
         // measured slower here, 1.74 -> 1.82-1.88 us at 16 headers).
         group.bench_with_input(BenchmarkId::new("borrowed_dispatch_into", n), &n, |b, _| {

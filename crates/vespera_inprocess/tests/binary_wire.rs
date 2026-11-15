@@ -85,6 +85,12 @@ async fn multi_header() -> Response {
     (headers, "ok").into_response()
 }
 
+/// Response headers inserted in REVERSE name order: `HeaderMap` iterates in
+/// insertion order, so only the wire writer's sort puts them in key order.
+async fn unsorted_headers() -> Response {
+    ([("x-zeta", "3"), ("x-mid", "2"), ("x-alpha", "1")], "ok").into_response()
+}
+
 fn test_router() -> Router {
     Router::new()
         .route("/ping", get(ping))
@@ -93,6 +99,7 @@ fn test_router() -> Router {
         .route("/echo/frames", post(echo_frames))
         .route("/query", get(query))
         .route("/multi", get(multi_header))
+        .route("/unsorted", get(unsorted_headers))
 }
 
 fn install_router() {
@@ -338,26 +345,28 @@ async fn dispatch_streaming_async_large_binary_body() {
 
 #[test]
 fn wire_response_bytes_are_deterministic_across_dispatches() {
-    // Response headers serialise from a BTreeMap — identical requests
-    // MUST produce byte-identical wire responses (golden-file /
-    // SHA-comparison safety).  This pins the V2-C determinism
-    // guarantee; with the previous HashMap the JSON key order varied
-    // per response.
+    // Identical requests MUST produce byte-identical wire responses
+    // (golden-file / SHA-comparison safety).  `http::HeaderMap` iterates in
+    // insertion order, so repeating a dispatch is deterministic even without
+    // the writer's key sort; the handler therefore inserts its headers in
+    // reverse name order and the raw header JSON must still list them sorted.
     install_router();
     let runtime = Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("tokio runtime");
-    // /echo/bytes responds with content-type + content-length —
-    // multiple headers, which is what exposed the ordering issue.
-    let wire = encode_wire(
-        "POST",
-        "/echo/bytes",
-        None,
-        HashMap::from([("content-type", "application/octet-stream")]),
-        b"determinism-probe",
-    );
+    let wire = encode_wire("GET", "/unsorted", None, HashMap::new(), b"");
     let first = dispatch_from_bytes(wire.clone(), &runtime);
+    let header_len = u32::from_be_bytes(first[..4].try_into().unwrap()) as usize;
+    let raw = std::str::from_utf8(&first[4..4 + header_len]).expect("UTF-8 header");
+    let at = |key: &str| {
+        raw.find(&format!("\"{key}\":"))
+            .unwrap_or_else(|| panic!("{key} missing from {raw}"))
+    };
+    assert!(
+        at("x-alpha") < at("x-mid") && at("x-mid") < at("x-zeta"),
+        "response header keys are not sorted: {raw}"
+    );
     for run in 0..4 {
         let again = dispatch_from_bytes(wire.clone(), &runtime);
         assert_eq!(

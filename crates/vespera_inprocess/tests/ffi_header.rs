@@ -334,17 +334,41 @@ fn header_symbols_coerce_to_their_c_prototypes() {
     assert_eq!(rust_exports(&crate_sources()).len(), 15);
 }
 
+/// A preprocessor line as `(directive, rest)`, whatever whitespace the
+/// spelling puts after the `#` and the directive name (`#define X 1`,
+/// `#<tab>define X 1`, `#  define<tab>X 1`); `None` for any other line.
+fn directive(line: &str) -> Option<(&str, &str)> {
+    let rest = line.trim().strip_prefix('#')?.trim_start();
+    let (name, rest) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+    Some((name, rest.trim()))
+}
+
 /// `#define VESPERA_* <int>` values.  Panics on any other `#define` — a
 /// value that is not a (parenthesised) decimal integer, or a valueless one
-/// besides the `VESPERA_H` include guard — so a new define can never be
-/// skipped silently by the comparisons below.
+/// besides the `VESPERA_H` include guard — and on any directive besides the
+/// known guard / include / `__cplusplus` lines, so a new define can never be
+/// skipped silently by the comparisons below (nor by [`declarations`],
+/// which drops every `#` line).
 fn defines(src: &str) -> BTreeMap<String, i64> {
     strip_comments(src)
         .lines()
-        .filter_map(|l| l.trim().strip_prefix("#define "))
-        .filter_map(|l| {
-            let Some((name, value)) = l.trim().split_once(' ') else {
-                assert_eq!(l.trim(), "VESPERA_H", "valueless #define");
+        .filter_map(directive)
+        .filter_map(|(kind, rest)| {
+            if kind != "define" {
+                assert!(
+                    matches!(
+                        (kind, rest),
+                        ("ifndef", "VESPERA_H")
+                            | ("include", "<stddef.h>" | "<stdint.h>")
+                            | ("ifdef", "__cplusplus")
+                            | ("endif", "")
+                    ),
+                    "unexpected directive #{kind} {rest}"
+                );
+                return None;
+            }
+            let Some((name, value)) = rest.split_once(char::is_whitespace) else {
+                assert_eq!(rest, "VESPERA_H", "valueless #define");
                 return None;
             };
             let value = value.trim().trim_start_matches('(').trim_end_matches(')');
@@ -354,6 +378,21 @@ fn defines(src: &str) -> BTreeMap<String, i64> {
             Some((name.to_owned(), parsed))
         })
         .collect()
+}
+
+#[rstest::rstest]
+#[case::plain("#define VESPERA_X 7")]
+#[case::tab_after_define("#define\tVESPERA_X 7")]
+#[case::space_after_hash("#  define VESPERA_X 7")]
+#[case::tab_after_hash("#\tdefine VESPERA_X\t(7)")]
+fn every_define_spelling_is_read(#[case] line: &str) {
+    assert_eq!(defines(line), BTreeMap::from([("VESPERA_X".to_owned(), 7)]));
+}
+
+#[test]
+#[should_panic(expected = "unexpected directive #undef VESPERA_OK")]
+fn an_unknown_directive_is_not_skipped() {
+    let _ = defines("#undef VESPERA_OK\n");
 }
 
 #[test]
@@ -408,11 +447,13 @@ fn header_prose() -> String {
         .join(" ")
 }
 
-/// The failure-list paragraph of the header documents every status the
-/// engine synthesises (the `error_wire` call sites), each with its cause,
-/// and the header-value paragraph the Latin-1 mapping, so a C host can
-/// handle them without reading the Rust sources.  The phrases are matched
-/// inside that paragraph only: the same numbers appear elsewhere.
+/// The failure-list paragraph of the header documents the statuses the
+/// engine synthesises, each with its cause, and the header-value paragraph
+/// the Latin-1 mapping, so a C host can handle them without reading the Rust
+/// sources.  The expected list is hand-maintained from the `error_wire` call
+/// sites: a new synthesised status or cause must be added to both.  The
+/// phrases are matched inside that paragraph only: the same numbers appear
+/// elsewhere.
 #[test]
 fn header_documents_every_synthesised_status_and_the_latin1_mapping() {
     const START: &str = "Every failure that can be expressed as HTTP (";
@@ -431,6 +472,9 @@ fn header_documents_every_synthesised_status_and_the_latin1_mapping() {
             "more than 1024 request headers 431",
             "handler panic 500 with metadata \"panicked\":\"true\"",
             "shared runtime could not be built 500",
+            "response over the buffered response cap or not allocatable 500",
+            "response body stream error 500",
+            "response header too large 500",
             "runtime shut down 503",
             "deadline 504",
         ]
