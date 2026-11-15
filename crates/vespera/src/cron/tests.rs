@@ -19,9 +19,11 @@ static DRAIN_FINISHED: AtomicUsize = AtomicUsize::new(0);
 static HANG_STARTED: AtomicUsize = AtomicUsize::new(0);
 static STOPPED_TICKS: AtomicUsize = AtomicUsize::new(0);
 static NO_TIMER_TICKS: AtomicUsize = AtomicUsize::new(0);
+static NO_TIMER_THREAD: Mutex<Option<std::thread::ThreadId>> = Mutex::new(None);
 
 fn no_timer_tick() -> JobFuture {
     Box::pin(async {
+        *NO_TIMER_THREAD.lock().unwrap() = Some(std::thread::current().id());
         NO_TIMER_TICKS.fetch_add(1, Ordering::SeqCst);
     })
 }
@@ -411,23 +413,29 @@ fn start_without_runtime_uses_background_thread() {
     assert!(wait_for(&NO_RUNTIME_TICKS, 1), "job never fired");
 }
 
-/// A current runtime without the time driver would kill every scheduler at
-/// its first `sleep`: the jobs move to the dedicated scheduler thread.
+/// A current runtime without the time driver schedules the jobs too, and
+/// nothing panics (no probe of Tokio's timer, which panics on such a
+/// runtime and aborts under `panic = "abort"`): the schedulers sleep on
+/// vespera's own timer thread.
 #[test]
-fn start_on_a_runtime_without_timers_uses_background_thread() {
+fn start_on_a_runtime_without_timers_runs_the_jobs_on_it() {
     let no_timers = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    no_timers.block_on(async {
-        assert!(!timers_enabled());
+    let fired = no_timers.block_on(async {
         start([CronJob::new("* * * * * *", no_timer_tick)]);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while NO_TIMER_TICKS.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            tokio::task::yield_now().await;
+        }
+        NO_TIMER_TICKS.load(Ordering::SeqCst) > 0
     });
-    assert!(wait_for(&NO_TIMER_TICKS, 1), "job never fired");
-    let timers = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    assert!(timers.block_on(async { timers_enabled() }));
+    assert!(fired, "job never fired");
+    // It ran on the caller's current-thread runtime, not a fallback thread.
+    assert_eq!(
+        *NO_TIMER_THREAD.lock().unwrap(),
+        Some(std::thread::current().id())
+    );
 }
 
 /// The scheduler thread drains its scheduler tasks and exits once every
@@ -532,7 +540,7 @@ async fn wall_clock_jump_ends_the_wait_after_one_slice() {
     let next = start + chrono::Duration::hours(1);
     let mut readings = [start, next].into_iter();
     let began = tokio::time::Instant::now();
-    sleep_until_wall_clock_with(next, move || readings.next().unwrap()).await;
+    sleep_until_wall_clock_with(next, move || readings.next().unwrap(), tokio::time::sleep).await;
     assert_eq!(began.elapsed(), MAX_SLEEP_SLICE);
 }
 

@@ -38,7 +38,7 @@ use vespera_core::schema::{AdditionalProperties, Schema, SchemaRef, SchemaType};
 
 use super::{
     super::{
-        enum_schema::parse_enum_to_schema,
+        enum_schema::{parse_enum_to_schema, without_single_key_bounds},
         request_view,
         schema_attrs::extract_schema_constraints,
         serde_attrs::{SerdeSide, extract_field_codec},
@@ -115,10 +115,14 @@ pub(super) fn flatten_part(
     let decomposed = resolved
         .as_ref()
         .and_then(|schema| decompose(schema, known_schemas, struct_definitions));
-    // An externally tagged enum's unit variants are keys when flattened.
+    // An externally tagged enum's variant key sits among the other keys and
+    // its unit variants are keys when flattened.
     let schema = resolved
         .as_ref()
-        .and_then(flattened_unit_variants)
+        .and_then(|resolved| {
+            let open = without_single_key_bounds(resolved);
+            flattened_unit_variants(open.as_ref().unwrap_or(resolved)).or(open)
+        })
         .map_or(schema, |flattened| SchemaRef::Inline(Box::new(flattened)));
     match decomposed {
         Some(parts) => FlatPart::Known {

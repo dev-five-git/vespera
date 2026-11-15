@@ -3587,6 +3587,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "type": "object",
             "description": "Empty response (unit variant)",
             "properties": {
+              "data": {
+                "type": "null"
+              },
               "type": {
                 "type": "string",
                 "enum": [
@@ -4723,7 +4726,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "A"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4747,7 +4751,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "B"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4759,7 +4764,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "C"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4770,7 +4776,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "D"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4784,7 +4791,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "E"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4806,7 +4814,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "F"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4820,7 +4829,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "G"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4834,7 +4844,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "H"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4845,7 +4856,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "I"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4859,7 +4871,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "J"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4880,7 +4893,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "K"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4894,7 +4908,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "L"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4911,7 +4926,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "M"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -4928,7 +4944,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "N"
-            ]
+            ],
+            "maxProperties": 1
           }
         ]
       },
@@ -5047,7 +5064,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "Created"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -5068,7 +5086,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "Updated"
-            ]
+            ],
+            "maxProperties": 1
           },
           {
             "type": "object",
@@ -5081,7 +5100,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "Deleted"
-            ]
+            ],
+            "maxProperties": 1
           }
         ]
       },

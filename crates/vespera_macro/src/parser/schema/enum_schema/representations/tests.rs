@@ -210,12 +210,16 @@ fn test_adjacently_tagged_enum_with_unit_variant() {
     let one_of = schema.one_of.expect("one_of missing");
     assert_eq!(one_of.len(), 2);
 
-    // Ping (unit variant) should only have "type", no "payload"
+    // Ping (unit variant) requires only "type"; serde reads a present
+    // "payload" (open container too) and accepts only `null` there.
     {
         let ping = inline(&one_of[0]);
         let props = ping.properties.as_ref().expect("properties missing");
         assert!(props.contains_key("type"));
-        assert!(!props.contains_key("payload")); // Unit variant has no content
+        assert_eq!(
+            inline(&props["payload"]).schema_type,
+            Some(vespera_core::schema::SchemaType::Null)
+        );
 
         let required = ping.required.as_ref().expect("required missing");
         assert_eq!(required.len(), 1); // Only "type" is required

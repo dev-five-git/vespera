@@ -29,7 +29,8 @@ use bytes::Bytes;
 use serde_json::json;
 use tokio::runtime::{Builder, Runtime};
 use vespera_inprocess::{
-    dispatch_from_bytes, dispatch_into, dispatch_into_async_borrowed, register_app,
+    DirectWriteResult, dispatch_from_bytes, dispatch_into, dispatch_into_async_borrowed,
+    register_app,
 };
 
 // ── Counting global allocator ────────────────────────────────────────
@@ -127,6 +128,22 @@ fn encode(method: &str, path: &str, headers: &[(&str, &str)], body: &[u8]) -> Ve
     wire
 }
 
+/// The `status` of a complete wire response.
+fn status_of(wire: &[u8]) -> u64 {
+    let len = u32::from_be_bytes(wire[..4].try_into().unwrap()) as usize;
+    let header: serde_json::Value = serde_json::from_slice(&wire[4..4 + len]).unwrap();
+    header["status"].as_u64().unwrap()
+}
+
+/// The status a borrowed direct write of `wire` answers (must fit `out`).
+fn borrowed_status(rt: &Runtime, wire: &[u8], out: &mut [u8]) -> u64 {
+    let DirectWriteResult::Complete(n) = rt.block_on(dispatch_into_async_borrowed(wire, out))
+    else {
+        panic!("the response fits the 64 KiB out buffer");
+    };
+    status_of(&out[..n])
+}
+
 /// One measured allocation sample: per-op `alloc` calls, `realloc` calls,
 /// and bytes requested, averaged over `iters` after `warmup` settling ops.
 struct Sample {
@@ -188,6 +205,9 @@ fn allocation_budgets() {
     // clone (borrows `wire`), no output `Vec` (writes into `out`), no body
     // copy — isolates the pure per-dispatch allocation floor.
     let wire_get = encode("GET", "/ping", &[], &[]);
+    // Every case is checked to answer its real status once, so a budget can
+    // never pass by measuring an error path (400 / 404) instead.
+    assert_eq!(borrowed_status(&rt, &wire_get, &mut out), 200);
     let bodyless = measure(200, 2000, || {
         let _ = rt.block_on(dispatch_into_async_borrowed(&wire_get, &mut out));
     });
@@ -200,6 +220,7 @@ fn allocation_budgets() {
         &[("content-type", "application/json")],
         br#"{"k":1}"#,
     );
+    assert_eq!(borrowed_status(&rt, &wire_post, &mut out), 200);
     let small_post = measure(200, 2000, || {
         let _ = rt.block_on(dispatch_into_async_borrowed(&wire_post, &mut out));
     });
@@ -211,6 +232,7 @@ fn allocation_budgets() {
     // request fills WITHOUT the realloc the previous capacity-8 reserve paid
     // (40 alloc + 0 realloc; was 40 alloc + 1 realloc).
     let wire_hdrs = encode("POST", "/echo", HEADERS_16, br#"{"k":1}"#);
+    assert_eq!(borrowed_status(&rt, &wire_hdrs, &mut out), 200);
     let headers_post = measure(200, 2000, || {
         let _ = rt.block_on(dispatch_into_async_borrowed(&wire_hdrs, &mut out));
     });
@@ -219,12 +241,17 @@ fn allocation_budgets() {
     // (`dispatch_from_bytes`). Includes the input `wire.clone()` and the
     // response `Vec` allocation the direct-write path avoids — guards the
     // primary FFI entry point.
+    assert_eq!(status_of(&dispatch_from_bytes(wire_get.clone(), &rt)), 200);
     let materialise = measure(200, 2000, || {
         let _ = dispatch_from_bytes(wire_get.clone(), &rt);
     });
 
     // ── Case E: bodyless GET via `dispatch_into` (owned input clone, reused
     // out buffer) — the JNI `dispatchDirect` sync path shape.
+    let DirectWriteResult::Complete(n) = dispatch_into(wire_get.clone(), &mut out, &rt) else {
+        panic!("the response fits the 64 KiB out buffer");
+    };
+    assert_eq!(status_of(&out[..n]), 200);
     let direct_into = measure(200, 2000, || {
         let _ = dispatch_into(wire_get.clone(), &mut out, &rt);
     });
@@ -239,6 +266,10 @@ fn allocation_budgets() {
         "/validate",
         &[("content-type", "application/json")],
         br#"{"x":1}"#,
+    );
+    assert_eq!(
+        status_of(&dispatch_from_bytes(wire_validate.clone(), &rt)),
+        422
     );
     let validate_422 = measure(200, 2000, || {
         let _ = dispatch_from_bytes(wire_validate.clone(), &rt);

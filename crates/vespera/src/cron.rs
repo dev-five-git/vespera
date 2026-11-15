@@ -192,9 +192,9 @@ fn claim_jobs(
 
 /// Spawn one scheduling task per job.
 ///
-/// Uses the current Tokio runtime when there is one (and it has the time
-/// driver — a runtime built without `enable_time` gets the dedicated thread
-/// below, with a warning); in a host-loaded (JNI / C ABI)
+/// Uses the current Tokio runtime when there is one (with or without its
+/// time driver: the schedulers sleep on vespera's own timer thread, see
+/// `timer`); in a host-loaded (JNI / C ABI)
 /// library the jobs wait for the shared host runtime; otherwise starts a
 /// dedicated `vespera-cron` thread running a current-thread runtime, so this
 /// never panics outside a runtime.  Every call starts a new set of
@@ -208,16 +208,6 @@ pub fn start(jobs: impl IntoIterator<Item = CronJob>) {
 /// coverage counters) however many iterator types call it.
 fn start_jobs(jobs: Vec<CronJob>) {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        if !timers_enabled() {
-            // A scheduler task would die at its first `sleep` ("timers are
-            // disabled"), its panic lost with the dropped `JoinHandle`.
-            cron_diag!(
-                warn,
-                "the current Tokio runtime has no time driver (`enable_time`); cron jobs run on a dedicated `vespera-cron` thread instead"
-            );
-            spawn_scheduler_thread(jobs);
-            return;
-        }
         for job in jobs {
             handle.spawn(run_job(job, &CONTROLLER));
         }
@@ -233,12 +223,6 @@ fn start_jobs(jobs: Vec<CronJob>) {
         return;
     }
     spawn_scheduler_thread(jobs);
-}
-
-/// Whether the current Tokio runtime has its time driver: building a `Sleep`
-/// panics on a runtime built without `enable_time` / `enable_all`.
-fn timers_enabled() -> bool {
-    std::panic::catch_unwind(|| drop(tokio::time::sleep(Duration::ZERO))).is_ok()
 }
 
 /// Stop scheduling new cron runs, process-wide and for good.
@@ -560,9 +544,9 @@ async fn run_job(job: CronJob, controller: &'static Controller) -> JobEnd {
     end
 }
 
-/// Longest single Tokio sleep while waiting for an occurrence.
+/// Longest single sleep while waiting for an occurrence.
 ///
-/// Tokio sleeps on the monotonic clock, which some OSes pause while the
+/// The timer sleeps on the monotonic clock, which some OSes pause while the
 /// machine is suspended and which ignores wall-clock steps.  Sleeping in
 /// slices of at most this long and re-reading the wall clock after each one
 /// keeps a run at most one slice late after a suspend or a forward step.
@@ -572,15 +556,23 @@ const MAX_SLEEP_SLICE: Duration = Duration::from_secs(60);
 /// [`MAX_SLEEP_SLICE`]: a backwards step (NTP correction, manual change)
 /// does not fire the job early, and a forward step or a suspend does not
 /// leave it waiting out the remaining monotonic time.
+///
+/// Sleeps on vespera's own timer thread ([`timer::sleep`]), never on Tokio's
+/// time driver: the runtime the scheduler runs on may have been built
+/// without `enable_time`, which Tokio cannot report without panicking.
 async fn sleep_until_wall_clock(next: DateTime<Utc>) {
-    sleep_until_wall_clock_with(next, Utc::now).await;
+    sleep_until_wall_clock_with(next, Utc::now, timer::sleep).await;
 }
 
-/// [`sleep_until_wall_clock`] reading the wall clock from `now` (the seam
-/// tests use to fake a clock jump).
-async fn sleep_until_wall_clock_with(next: DateTime<Utc>, mut now: impl FnMut() -> DateTime<Utc>) {
+/// [`sleep_until_wall_clock`] reading the wall clock from `now` and sleeping
+/// with `sleep` (the seams tests use to fake a clock jump in paused time).
+async fn sleep_until_wall_clock_with<S: Future<Output = ()>>(
+    next: DateTime<Utc>,
+    mut now: impl FnMut() -> DateTime<Utc>,
+    mut sleep: impl FnMut(Duration) -> S,
+) {
     while let Some(slice) = sleep_slice(next, now()) {
-        tokio::time::sleep(slice).await;
+        sleep(slice).await;
     }
 }
 
@@ -594,6 +586,8 @@ fn sleep_slice(next: DateTime<Utc>, now: DateTime<Utc>) -> Option<Duration> {
 fn remaining_until(next: DateTime<Utc>, now: DateTime<Utc>) -> Option<Duration> {
     (now < next).then(|| (next - now).to_std().unwrap_or_default())
 }
+
+mod timer;
 
 #[cfg(test)]
 mod tests;

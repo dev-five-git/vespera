@@ -254,15 +254,25 @@ async fn materialized_pending_streams_and_writes_without_a_body() {
         panic!("does not fit");
     };
     assert!(pending.is_exact());
+    let required = pending.required_bytes();
     let mut header = Vec::new();
+    let mut chunks = Vec::new();
     let outcome = pending
         .stream(
             |h: &[u8]| header.extend_from_slice(h),
-            |_c: &[u8]| ControlFlow::Continue(()),
+            |c: &[u8]| {
+                chunks.extend_from_slice(c);
+                ControlFlow::Continue(())
+            },
         )
         .await;
     assert_eq!(outcome, StreamOutcome::Complete);
     assert_eq!(status(&header), 422);
+    // `on_header` gets exactly `[u32 len | JSON]`, `on_chunk` the body.
+    let json_len = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+    assert_eq!(header.len(), 4 + json_len);
+    assert_eq!(chunks, br#"{"errors":[]}"#);
+    assert_eq!(header.len() + chunks.len(), required);
 
     let ResumableDirectWrite::Overflow(pending) =
         resumable_from_wire(&mut tiny, error_wire(500, "x"))

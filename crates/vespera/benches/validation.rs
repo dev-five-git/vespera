@@ -12,18 +12,26 @@
 //!   allocation, `collect_str` straight into the serializer).
 //!
 //! The delta is the per-error allocation cost VESPERA-04 removes.  Both
-//! arms assert byte-identical output so the bench can never silently
-//! drift from the real envelope contract.
+//! arms assert byte-identical output, and the `after` arm is asserted equal
+//! to the body the shipped `Validated<Json<_>>` rejection sends, so the
+//! bench can never silently drift from the real envelope contract.
 
 use std::fmt::Display;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use garde::Validate;
-use serde::{Serialize, Serializer, ser::SerializeStruct};
+use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
+use vespera::Validated;
+use vespera::axum::{
+    Json,
+    body::{Body, to_bytes},
+    extract::FromRequest,
+    http::Request,
+};
 
 // ── Fixture: a struct whose validation fails on every field ──────────
 
-#[derive(Validate)]
+#[derive(Validate, Deserialize)]
 struct Sample {
     #[garde(length(min = 3, max = 32))]
     username: String,
@@ -50,6 +58,31 @@ fn failing_report() -> garde::Report {
         homepage: "nope".to_owned(),      // invalid url
     };
     sample.validate().expect_err("sample must fail validation")
+}
+
+/// The `422` body `Validated<Json<Sample>>` answers for the
+/// [`failing_report`] values.
+fn shipped_rejection_body() -> Vec<u8> {
+    let request = Request::builder()
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"username":"x","email":"not-an-email","age":200,"bio":"short","homepage":"nope"}"#,
+        ))
+        .expect("request");
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("current-thread runtime")
+        .block_on(async {
+            let Err(rejection) = Validated::<Json<Sample>>::from_request(request, &()).await else {
+                panic!("the fixture payload must fail validation");
+            };
+            assert_eq!(rejection.status().as_u16(), 422);
+            to_bytes(rejection.into_body(), usize::MAX)
+                .await
+                .expect("in-memory body")
+                .to_vec()
+        })
 }
 
 // ── AFTER: shipped borrowing Serialize chain (mirror of validated.rs) ─
@@ -121,6 +154,13 @@ fn bench_validation_envelope(c: &mut Criterion) {
         serialize_before(&report),
         serialize_after(&report),
         "before/after 422 envelope bytes diverged"
+    );
+    // ...and both must be the body the shipped `Validated` rejection sends
+    // for the same (equally invalid) payload.
+    assert_eq!(
+        serialize_after(&report),
+        shipped_rejection_body(),
+        "bench envelope diverged from the shipped Validated 422 body"
     );
 
     let n_errors = report.iter().count();

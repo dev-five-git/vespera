@@ -52,6 +52,7 @@ const DEFINITIONS: &[(&str, &str)] = &[
         "struct Tagged { t: u8, #[serde(flatten)] kind: Kind }",
     ),
     ("Tree", "struct Tree<T> { v: T, kids: Vec<Tree<T>> }"),
+    ("Shape", "enum Shape { Square(u8), Point }"),
 ];
 
 fn known() -> HashSet<String> {
@@ -226,6 +227,22 @@ fn both_views(src: &str) -> String {
 // read from `[secs, nanos]`.
 #[case::sets("sets", "struct S { tags: HashSet<String>, ids: BTreeSet<u8> }")]
 #[case::std_duration("std_duration", "struct S { ttl: std::time::Duration }")]
+// Round 10: defaulted tuple positions (or a container `default`) may be
+// omitted on input.
+#[case::tuple_position_defaults(
+    "tuple_position_defaults",
+    "struct Range(u32, #[serde(default)] u32, #[serde(skip)] u8);"
+)]
+#[case::tuple_container_default(
+    "tuple_container_default",
+    "#[serde(default)] struct Range(u32, u32);"
+)]
+// Round 10: a flattened externally tagged enum's variant key sits among the
+// struct's keys (no `maxProperties: 1`).
+#[case::flatten_external_enum(
+    "flatten_external_enum",
+    "struct Req { id: i32, #[serde(flatten)] shape: Shape }"
+)]
 // M4: `transparent` after another key.
 #[case::transparent_after_crate(
     "transparent_after_crate",

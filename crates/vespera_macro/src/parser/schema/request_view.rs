@@ -23,14 +23,17 @@
 //! - a field has `#[serde(alias)]` names (accepted keys), or a non-`Option`
 //!   `skip_serializing_if` field without `default` (optional on output,
 //!   required on input),
-//! - a tuple position is skipped / custom-converted on one side only,
+//! - a tuple position is skipped / custom-converted on one side only, or a
+//!   tuple of two or more fields has a `#[serde(default)]` position (or
+//!   container `default`): trailing items may be omitted,
 //! - a field's type is a `HashSet` / `BTreeSet` (`uniqueItems` on output
 //!   only) or a `std::time::Duration` (also read from `[secs, nanos]`),
 //! - a `#[serde(flatten)]` field is an `Option` (its keys accept anything,
 //!   failing values make it `None`), or follows a flattened map (which also
 //!   reads its keys),
 //! - an enum variant is aliased, is the `#[serde(other)]` catch-all, or has
-//!   a one-sided variant-level `serialize_with` / `deserialize_with`,
+//!   a one-sided variant-level `serialize_with` / `deserialize_with`, or is
+//!   an adjacently tagged `Option` newtype (its content key may be omitted),
 //!
 //! or (transitively) when it names a type whose request view differs: a
 //! `CreateOrder { items: Vec<LineItem> }` references `LineItemInput` from
@@ -59,8 +62,8 @@ use super::{
     schema_attrs::extract_schema_constraints,
     scoped_ident::scoped_key,
     serde_attrs::{
-        SerdeSide, extract_aliases, extract_default, extract_deny_unknown_fields,
-        extract_field_codec, extract_field_rename_for, extract_flatten,
+        SerdeEnumRepr, SerdeSide, extract_aliases, extract_default, extract_deny_unknown_fields,
+        extract_enum_repr, extract_field_codec, extract_field_rename_for, extract_flatten,
         extract_rename_all_fields_for, extract_rename_all_for, extract_serde_skip_flags,
         extract_tag,
     },
@@ -319,7 +322,9 @@ fn reads_unlisted_keys(ty: &syn::Type, map_bearing: &BTreeSet<String>) -> bool {
 fn struct_differs(item: &syn::ItemStruct, map_bearing: &BTreeSet<String>) -> bool {
     let fields = match &item.fields {
         syn::Fields::Named(fields) => fields,
-        syn::Fields::Unnamed(fields) => return fields.unnamed.iter().any(positional_differs),
+        syn::Fields::Unnamed(fields) => {
+            return tuple_differs(fields, extract_default(&item.attrs).is_some());
+        }
         syn::Fields::Unit => return false,
     };
     // serde writes a struct `tag` but never reads it (see `struct_schema`);
@@ -404,6 +409,23 @@ fn positional_differs(field: &syn::Field) -> bool {
             || field_type_differs(field))
 }
 
+/// A tuple struct / tuple variant reads differently than it writes: a
+/// position differs, or — for a real tuple (two or more declared fields;
+/// serde reads one field as a newtype, never as an array) — a position (or
+/// the tuple struct, `container_default`) has a `#[serde(default)]`, which
+/// lets the trailing array items be omitted.
+fn tuple_differs(fields: &syn::FieldsUnnamed, container_default: bool) -> bool {
+    fields.unnamed.iter().any(positional_differs)
+        || (fields.unnamed.len() > 1
+            && (container_default
+                || fields.unnamed.iter().any(|field| {
+                    let skip = extract_serde_skip_flags(&field.attrs);
+                    !skip.skip
+                        && !skip.skip_deserializing
+                        && extract_default(&field.attrs).is_some()
+                })))
+}
+
 /// A one-sided `serialize_with` / `deserialize_with` (field or variant)
 /// without `#[schema(value_type)]`.
 fn one_sided_codec(attrs: &[syn::Attribute]) -> bool {
@@ -448,11 +470,17 @@ fn sided_differs<T: PartialEq>(extract: impl Fn(SerdeSide) -> T) -> bool {
 /// `rename_all_fields` / `serde_repr`, a variant that is only skipped in one
 /// direction, renamed per direction, aliased, a `#[serde(other)]` catch-all
 /// (any unknown name reads as it), converted by a one-sided custom serde
-/// function, or a variant field (or flattened member) that differs like a
-/// struct's does.
+/// function, a variant field (or flattened member) that differs like a
+/// struct's does, or an adjacently tagged `Option` newtype variant (its
+/// content key may be omitted on input, see
+/// `representations::parse_adjacently_tagged_enum`).
 fn enum_differs(item: &syn::ItemEnum, map_bearing: &BTreeSet<String>) -> bool {
     let attrs = &item.attrs;
     let deny_unknown_fields = extract_deny_unknown_fields(attrs);
+    let adjacently_tagged = matches!(
+        extract_enum_repr(attrs),
+        SerdeEnumRepr::AdjacentlyTagged { .. }
+    );
     if sided_differs(|side| extract_rename_all_for(attrs, side))
         || sided_differs(|side| extract_rename_all_fields_for(attrs, side))
         || sided_differs(|side| derives_serde_repr(attrs, side))
@@ -473,7 +501,13 @@ fn enum_differs(item: &syn::ItemEnum, map_bearing: &BTreeSet<String>) -> bool {
                         fields.named.iter().any(field_differs)
                             || flatten_differs(&fields.named, deny_unknown_fields, map_bearing)
                     }
-                    syn::Fields::Unnamed(fields) => fields.unnamed.iter().any(positional_differs),
+                    syn::Fields::Unnamed(fields) => {
+                        tuple_differs(fields, false)
+                            || (adjacently_tagged
+                                && fields.unnamed.len() == 1
+                                && is_option_type(&fields.unnamed[0].ty)
+                                && !extract_field_codec(&variant.attrs).deserialize)
+                    }
                     syn::Fields::Unit => false,
                 })
     })
@@ -653,6 +687,21 @@ mod tests {
     #[case::tuple_both_skips("struct A(u8, #[serde(skip)] u8);", false)]
     #[case::tuple_one_sided_codec(r#"struct A(#[serde(serialize_with = "f")] u8);"#, true)]
     #[case::tuple_set("struct A(HashSet<u8>);", true)]
+    #[case::tuple_position_default("struct A(u32, #[serde(default)] u32);", true)]
+    #[case::tuple_container_default("#[serde(default)] struct A(u32, u32);", true)]
+    #[case::newtype_container_default("#[serde(default)] struct A(u32);", false)]
+    #[case::tuple_skipped_default("struct A(u8, #[serde(skip, default)] u8);", false)]
+    #[case::enum_tuple_default("enum E { P(u8, #[serde(default)] u8) }", true)]
+    #[case::enum_adjacent_option(
+        r#"#[serde(tag = "k", content = "d")] enum E { A(Option<String>), B(String) }"#,
+        true
+    )]
+    #[case::enum_adjacent_option_deserialize_with(
+        r#"#[serde(tag = "k", content = "d")] enum E { #[serde(with = "m")] A(Option<u8>) }"#,
+        false
+    )]
+    #[case::enum_adjacent_plain(r#"#[serde(tag = "k", content = "d")] enum E { A(u8) }"#, false)]
+    #[case::enum_external_option("enum E { A(Option<String>) }", false)]
     #[case::unit_struct("struct A;", false)]
     #[case::enum_variant_alias(r#"enum E { #[serde(alias = "a")] A, B }"#, true)]
     #[case::enum_other(r"enum E { A, #[serde(other)] Unknown }", true)]
