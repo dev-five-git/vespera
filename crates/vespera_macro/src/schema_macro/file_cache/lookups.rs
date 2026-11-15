@@ -290,8 +290,10 @@ pub fn get_struct_from_schema_path(path_str: &str) -> Option<Arc<StructMetadata>
 
 /// Get or compute FK column lookup, with caching.
 ///
-/// Wraps `find_fk_column_from_target_entity` with a `HashMap<(String, String), Option<String>>`
-/// cache. Negative results (`None`) are cached to avoid repeated file lookups.
+/// Wraps `find_fk_column_from_target_entity` with a
+/// `HashMap<(String, String), PathLookupEntry<Option<FkColumns>>>` cache
+/// (`FkColumns` = `(from, Option<to>)`). Negative results (`None`) are
+/// cached to avoid repeated file lookups.
 pub fn get_fk_column(schema_path: &str, via_rel: &str) -> Option<(String, Option<String>)> {
     let key = (schema_path.to_string(), via_rel.to_string());
 

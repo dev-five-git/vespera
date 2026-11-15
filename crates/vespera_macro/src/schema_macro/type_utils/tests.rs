@@ -624,7 +624,11 @@ fn chrono_names_resolve_bare_only(#[case] src: &str, #[case] expected: &str) {
 #[case::imported_const("[u8; SHARED_LEN]", &[], "[u8 ; crate :: consts :: SHARED_LEN]")]
 #[case::relative_path("[u8; super::file::HASH_LEN]", &[], "[u8 ; crate :: models :: file :: HASH_LEN]")]
 #[case::literal("[u8; 32]", &[], "[u8 ; 32]")]
-#[case::expression("[u8; HASH_LEN * 2]", &[], "[u8 ; HASH_LEN * 2]")]
+#[case::expression("[u8; HASH_LEN * 2]", &[], "[u8 ; crate :: models :: file :: HASH_LEN * 2]")]
+#[case::expression_two_consts("[u8; HASH_LEN + SHARED_LEN]", &[], "[u8 ; crate :: models :: file :: HASH_LEN + crate :: consts :: SHARED_LEN]")]
+#[case::expression_block("[u8; { HASH_LEN + 1 }]", &[], "[u8 ; { crate :: models :: file :: HASH_LEN + 1 }]")]
+#[case::expression_const_generic("[u8; N * 2]", &["N"], "[u8 ; N * 2]")]
+#[case::expression_unknown_call("[u8; size_of::<u64>()]", &[], "[u8 ; size_of :: < u64 > ()]")]
 #[case::const_generic("[u8; HASH_LEN]", &["HASH_LEN"], "[u8 ; HASH_LEN]")]
 #[case::unknown("[u8; OTHER]", &[], "[u8 ; OTHER]")]
 #[case::leading_colon("[u8; ::lib::LEN]", &[], "[u8 ; :: lib :: LEN]")]
@@ -651,6 +655,39 @@ fn array_length_constant_is_rerooted(
     let params: Vec<String> = generic_params.iter().map(ToString::to_string).collect();
     assert_eq!(
         resolve_type_with_params(&ty, &module, &params).to_string(),
+        expected
+    );
+}
+
+/// H1 (round 15): a multi-segment type reached through a `::`-rooted import
+/// (`use ::std::collections;` + `collections::HashMap<..>`) is rendered with
+/// the leading `::` (the empty root segment panicked in `segment_ident`).
+#[rstest]
+#[case::rooted_module(
+    "collections::HashMap<String, i32>",
+    ":: std :: collections :: HashMap < String , i32 >"
+)]
+#[case::rooted_renamed(
+    "coll::BTreeMap<String, u8>",
+    ":: std :: collections :: BTreeMap < String , u8 >"
+)]
+#[case::rooted_single("Rc<u8>", ":: std :: rc :: Rc < u8 >")]
+fn rooted_import_prefix_keeps_leading_colon(#[case] ty: &str, #[case] expected: &str) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod m;").unwrap();
+    std::fs::write(
+        src.join("m.rs"),
+        "use ::std::collections; use ::std::collections as coll; use ::std::rc::Rc;",
+    )
+    .unwrap();
+    let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    crate::schema_macro::file_cache::bump_epoch();
+    let ty: syn::Type = syn::parse_str(ty).unwrap();
+    let module = ["crate", "m"].map(String::from);
+    assert_eq!(
+        resolve_type_with_params(&ty, &module, &[]).to_string(),
         expected
     );
 }

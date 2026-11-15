@@ -65,13 +65,30 @@ pub fn storage_entry<'a>(
 }
 
 /// The module a `schema!` type path names: its qualified module, else (a
-/// bare name) the call site's; `None` when unknown.
+/// bare name) the module defining the name in scope at the call site;
+/// `None` when unknown.
 fn requested_module(ty: &syn::Type) -> Option<Vec<String>> {
     match file_lookup::requested_module_path(ty) {
         Ok(Some(module)) => Some(module),
-        Ok(None) => file_lookup::call_site_module(),
+        Ok(None) => bare_name_module(ty),
         Err(_) => None,
     }
+}
+
+/// The module defining the bare type name `ty` at the call site: the one a
+/// call-site `use` imports it from (through `pub use` re-exports), else the
+/// call site's own (a `use crate::first::Page;` used to be ignored, and the
+/// last-derived `Page` of any module read).
+fn bare_name_module(ty: &syn::Type) -> Option<Vec<String>> {
+    let call_site = file_lookup::call_site_module()?;
+    let name = extract_type_name(ty).ok()?;
+    let module_scope::Resolved::Path(mut path) =
+        module_scope::resolve_name(std::slice::from_ref(&name), &call_site)
+    else {
+        return Some(call_site);
+    };
+    let defined = path.pop()?;
+    Some(reexported_item(&path, &defined).map_or(path, |(defined_in, _)| defined_in))
 }
 
 /// Generate schema code from a struct with optional field filtering

@@ -341,12 +341,12 @@ fn test_extract_schema_name_attr_schema_with_unknown_key_value() {
 
 #[test]
 fn test_extract_schema_name_attr_name_before_unknown() {
-    // name comes FIRST, so it's extracted before the unknown key causes a bail
+    // An unknown key after `name` is tolerated (its `= value` payload is
+    // consumed: field-level keys share the `schema` namespace).
     let attrs: Vec<syn::Attribute> = syn::parse_quote! {
         #[schema(name = "Found", other = "x")]
     };
     let result = extract_schema_name_attr(&attrs);
-    // name is parsed successfully; parse_nested_meta may error on `other` but name is already set
     assert_eq!(result, Some("Found".to_string()));
 }
 
@@ -714,7 +714,7 @@ fn test_extract_field_defaults_from_path_file_not_found() {
 
 #[test]
 fn test_extract_field_defaults_from_path_no_fn_defaults() {
-    // Exercises the early return: fn_defaults is empty
+    // No field names a serde default function: nothing to resolve.
     let temp_dir = tempfile::TempDir::new().unwrap();
     let file_path = temp_dir.path().join("simple.rs");
     std::fs::write(&file_path, "struct Foo { x: i32 }").unwrap();
@@ -731,7 +731,7 @@ fn test_extract_field_defaults_from_path_no_fn_defaults() {
 
 #[test]
 fn test_extract_field_defaults_from_path_tuple_struct() {
-    // Exercises line 101: Fields::Named else branch (tuple struct has unnamed fields)
+    // A tuple struct has no named fields: no defaults.
     let input: syn::DeriveInput = syn::parse_quote! {
         struct Pair(String, i32);
     };

@@ -39,6 +39,42 @@ pub(super) fn record(name: &str, metadata: &StructMetadata) {
     entries.push((module, metadata.clone()));
 }
 
+/// An already registered item of `name` re-expanded as itself (`previous`
+/// -> `metadata`: an IDE edit, or the item moved): when `name` has
+/// variants, the item's variant follows the edit (it kept the old metadata),
+/// and `Err` when another module's variant no longer has its definition
+/// (the duplicate-name error a clean build raises). Nothing changes on `Err`.
+pub(super) fn update(
+    name: &str,
+    previous: &StructMetadata,
+    metadata: &StructMetadata,
+) -> Result<(), ()> {
+    let Some(module) = storage_module_path(metadata) else {
+        return Ok(());
+    };
+    let previous_module = storage_module_path(previous);
+    let mut variants = VARIANTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(entries) = variants
+        .get_mut(&super::current_crate_key())
+        .and_then(|names| names.get_mut(name))
+    else {
+        return Ok(());
+    };
+    let is_this_item = |defined_in: &Vec<String>| {
+        *defined_in == module || previous_module.as_ref() == Some(defined_in)
+    };
+    if entries.iter().any(|(defined_in, other)| {
+        !is_this_item(defined_in) && other.definition != metadata.definition
+    }) {
+        return Err(());
+    }
+    entries.retain(|(defined_in, _)| !is_this_item(defined_in));
+    entries.push((module, metadata.clone()));
+    Ok(())
+}
+
 /// The variant of `name` defined in `module`, when same-named items of
 /// several modules were registered.
 pub fn in_module(name: &str, module: &[String]) -> Option<StructMetadata> {
@@ -62,7 +98,11 @@ mod tests {
 
     const LIB: &str = "mod first { pub struct Page { pub limit: u32 } }\n\
         mod second { pub struct Page { pub limit: u32 } }\n\
-        use other_crate::types;\n";
+        use other_crate::types;\n\
+        mod api { use crate::first::Page; }\n\
+        mod reexp { pub use crate::first::Page; }\n\
+        mod api2 { use crate::reexp::Page; }\n\
+        mod api3 { use other_crate::Page; }\n";
 
     fn page(lib: &std::path::Path, line: usize, default: u32) -> StructMetadata {
         StructMetadata {
@@ -118,9 +158,26 @@ mod tests {
         assert!(schema_of("second::Page").contains("20"));
         // Through another crate's import: no module, the storage's last.
         assert!(schema_of("types::Page").contains("20"));
+        // A bare name the call site does not know: the storage's last.
+        assert!(schema_of("Page").contains("20"));
         drop(call_site);
-        let _call_site = set_test_call_site_module("crate::first");
+        let call_site = set_test_call_site_module("crate::first");
         assert!(schema_of("Page").contains("10"));
+        drop(call_site);
+        // L2 (round 15): a bare name follows the call site's `use` (and a
+        // `pub use` re-export) to the defining module; it used to read the
+        // last-derived `second::Page`.
+        for module in ["crate::api", "crate::api2"] {
+            let _call_site = set_test_call_site_module(module);
+            let schema = schema_of("Page");
+            assert!(
+                schema.contains("10") && !schema.contains("20"),
+                "{module}: {schema}"
+            );
+        }
+        // Imported from another crate: no variant, the storage's last.
+        let _call_site = set_test_call_site_module("crate::api3");
+        assert!(schema_of("Page").contains("20"));
 
         // Re-registering a module replaces its variant; an item without a
         // known module is not kept.
@@ -135,6 +192,29 @@ mod tests {
         assert_eq!(
             in_module("Page", &first).unwrap().field_defaults["limit"],
             11
+        );
+
+        // L5 (round 15): the stored item re-expanded as itself (an IDE edit)
+        // updates its variant (it kept the old metadata) ...
+        assert!(super::super::register_schema("Page".to_string(), page(&lib, 2, 21)).is_ok());
+        assert_eq!(
+            in_module("Page", &second).unwrap().field_defaults["limit"],
+            21
+        );
+        // ... and a definition that no longer matches another module's
+        // variant is the duplicate-name error, changing nothing.
+        let mut edited = page(&lib, 2, 22);
+        edited.definition = "pub struct Page { pub limit: u64 }".to_string();
+        assert!(super::super::register_schema("Page".to_string(), edited).is_err());
+        assert_eq!(
+            in_module("Page", &second).unwrap().field_defaults["limit"],
+            21
+        );
+        // Without a module or without variants: nothing to update.
+        assert_eq!(update("Page", &unknown, &unknown), Ok(()));
+        assert_eq!(
+            update("Other", &page(&lib, 1, 1), &page(&lib, 1, 1)),
+            Ok(())
         );
     }
 }

@@ -65,6 +65,26 @@ fn first_page_read_after_second_is_derived_keeps_its_own_default() {
     assert_eq!(limit_default(&vespera::schema!(second::Page)), json!(20));
 }
 
+/// R15-L2: a bare `schema!(Page)` follows the call site's `use
+/// crate::first::Page;` (it read the last-derived `second::Page`).
+mod api {
+    use crate::first::Page;
+
+    pub fn page_schema() -> vespera::schema::Schema {
+        vespera::schema!(Page)
+    }
+
+    pub fn page() -> Page {
+        Page { limit: 1 }
+    }
+}
+
+#[test]
+fn bare_name_follows_the_call_site_import() {
+    assert_eq!(limit_default(&api::page_schema()), json!(10));
+    assert_eq!(api::page().limit, 1);
+}
+
 fn limit_default(schema: &vespera::schema::Schema) -> serde_json::Value {
     let properties = schema.properties.as_ref().expect("properties");
     serde_json::to_value(&properties["limit"]).unwrap()["default"].clone()

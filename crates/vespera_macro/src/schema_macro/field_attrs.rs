@@ -339,6 +339,70 @@ fn schema_has_default(attr: &syn::Attribute) -> bool {
     schema_items(attr).is_some_and(|items| items.iter().any(|item| item.key == "default"))
 }
 
+/// Every `cfg(q)` inside a field's `#[cfg_attr(p, ..)]` (nested ones
+/// included) hoisted to the equivalent top-level `#[cfg(any(not(p), q))]`:
+/// the DTO field, its `From` assignment and its helpers read top-level
+/// `#[cfg]`s only, so a source field the compiler drops by
+/// `#[cfg_attr(p, cfg(q))]` used to be emitted (and read) unconditionally.
+pub fn hoist_cfg_attr_cfgs(item: &mut syn::ItemStruct) {
+    for field in &mut item.fields {
+        let mut attrs = Vec::with_capacity(field.attrs.len());
+        for attr in std::mem::take(&mut field.attrs) {
+            let parsed = attr
+                .path()
+                .is_ident("cfg_attr")
+                .then(|| attr.parse_args_with(parse_cfg_attr).ok())
+                .flatten();
+            let Some((predicate, metas)) = parsed else {
+                attrs.push(attr);
+                continue;
+            };
+            let mut hoisted = Vec::new();
+            let kept = split_cfgs(&predicate, metas, &mut hoisted);
+            if hoisted.is_empty() {
+                attrs.push(attr);
+                continue;
+            }
+            attrs.extend(hoisted);
+            if !kept.is_empty() {
+                attrs.push(syn::parse_quote! { #[cfg_attr(#predicate, #(#kept),*)] });
+            }
+        }
+        field.attrs = attrs;
+    }
+}
+
+/// The items of `cfg_attr(predicate, ..)` without their `cfg(q)`s, which
+/// go to `hoisted` as `#[cfg(any(not(predicate), q))]` (a nested
+/// `cfg_attr(inner, ..)` under `all(predicate, inner)`).
+fn split_cfgs(
+    predicate: &Predicate,
+    metas: Punctuated<syn::Meta, syn::Token![,]>,
+    hoisted: &mut Vec<syn::Attribute>,
+) -> Vec<syn::Meta> {
+    let mut kept = Vec::new();
+    for meta in metas {
+        let list = meta.require_list().ok();
+        if meta.path().is_ident("cfg")
+            && let Some(condition) = list.and_then(|list| list.parse_args::<Predicate>().ok())
+        {
+            hoisted.push(syn::parse_quote! { #[cfg(any(not(#predicate), #condition))] });
+        } else if meta.path().is_ident("cfg_attr")
+            && let Some((inner, metas)) =
+                list.and_then(|list| list.parse_args_with(parse_cfg_attr).ok())
+        {
+            let combined: Predicate = syn::parse_quote!(all(#predicate, #inner));
+            let inner_kept = split_cfgs(&combined, metas, hoisted);
+            if !inner_kept.is_empty() {
+                kept.push(syn::parse_quote! { cfg_attr(#inner, #(#inner_kept),*) });
+            }
+        } else {
+            kept.push(meta);
+        }
+    }
+    kept
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
@@ -569,5 +633,48 @@ mod tests {
     fn collects_cfgs() {
         let carried = carried_field_attrs(&field(quote!(#[cfg(test)])), true, &[], false);
         assert_eq!(carried.cfgs.len(), 1);
+    }
+
+    /// L1 (round 15): a `cfg(q)` inside `cfg_attr(p, ..)` becomes the
+    /// top-level `cfg(any(not(p), q))` (it was dropped: the DTO always had
+    /// the field, its `From` read a field the source did not have).
+    #[rstest]
+    #[case::alone(
+        quote!(#[cfg_attr(feature = "x", cfg(test))]),
+        "# [cfg (any (not (feature = \"x\") , test))]"
+    )]
+    #[case::with_other_items(
+        quote!(#[cfg_attr(feature = "x", cfg(test), serde(default))]),
+        "# [cfg (any (not (feature = \"x\") , test))] # [cfg_attr (feature = \"x\" , serde (default))]"
+    )]
+    #[case::nested(
+        quote!(#[cfg_attr(a, cfg_attr(b, cfg(c), doc = "d"), deprecated)]),
+        "# [cfg (any (not (all (a , b)) , c))] # [cfg_attr (a , cfg_attr (b , doc = \"d\") , deprecated)]"
+    )]
+    #[case::nested_cfg_only(
+        quote!(#[cfg_attr(a, cfg_attr(b, cfg(c)))]),
+        "# [cfg (any (not (all (a , b)) , c))]"
+    )]
+    #[case::bool_predicate(
+        quote!(#[cfg_attr(true, cfg(false))]),
+        "# [cfg (any (not (true) , false))]"
+    )]
+    #[case::no_cfg_kept(
+        quote!(#[cfg_attr(a, cfg_attr(b, doc = "d"))] #[serde(default)]),
+        "# [cfg_attr (a , cfg_attr (b , doc = \"d\"))] # [serde (default)]"
+    )]
+    #[case::unparseable_cfg_kept(
+        quote!(#[cfg_attr(a, cfg = "x", cfg(1 + 2))] #[cfg_attr]),
+        "# [cfg_attr (a , cfg = \"x\" , cfg (1 + 2))] # [cfg_attr]"
+    )]
+    #[case::unparseable_nested_kept(
+        quote!(#[cfg_attr(a, cfg_attr(b), cfg(c))]),
+        "# [cfg (any (not (a) , c))] # [cfg_attr (a , cfg_attr (b))]"
+    )]
+    fn hoists_cfg_inside_cfg_attr(#[case] attrs: TokenStream, #[case] expected: &str) {
+        let mut item: syn::ItemStruct = syn::parse_quote! { struct S { #attrs pub value: i32 } };
+        hoist_cfg_attr_cfgs(&mut item);
+        let attrs = &item.fields.iter().next().unwrap().attrs;
+        assert_eq!(quote!(#(#attrs)*).to_string(), expected);
     }
 }

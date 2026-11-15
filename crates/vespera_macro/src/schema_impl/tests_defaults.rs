@@ -372,7 +372,12 @@ fn default_function_cache_keys_are_unrawed() {
 #[case::type_default("i64::default", quote::quote!(i64), Some(serde_json::json!(0)))]
 #[case::qself_default("<Vec<i32>>::default", quote::quote!(Vec<i32>), Some(serde_json::json!([])))]
 #[case::qself_as_default("<Vec<i32> as Default>::default", quote::quote!(Vec<i32>), Some(serde_json::json!([])))]
-#[case::qself_other_fn("<Vec<i32>>::new", quote::quote!(Vec<i32>), None)]
+#[case::qself_new("<Vec<i32>>::new", quote::quote!(Vec<i32>), Some(serde_json::json!([])))]
+#[case::qself_string_new("<String>::new", quote::quote!(String), Some(serde_json::json!("")))]
+#[case::qself_new_other_type("<Vec<i32>>::new", quote::quote!(String), None)]
+#[case::qself_new_non_container("<Uuid>::new", quote::quote!(Uuid), None)]
+#[case::qself_as_new("<Vec<i32> as Other>::new", quote::quote!(Vec<i32>), None)]
+#[case::qself_other_fn("<Vec<i32>>::with_capacity", quote::quote!(Vec<i32>), None)]
 #[case::qself_other_trait("<Vec<i32> as Other>::default", quote::quote!(Vec<i32>), None)]
 #[case::other_type_new("Vec::new", quote::quote!(String), None)]
 #[case::non_container_new("Uuid::new", quote::quote!(Uuid), None)]
@@ -431,4 +436,33 @@ fn std_and_associated_default_fns_pass_validation() {
     let err = validate_serde_default_values(&input, &defaults, true).unwrap_err();
     assert!(err.to_string().contains("field `missing`"), "{err}");
     assert!(!err.to_string().contains("field `tags`"), "{err}");
+}
+
+/// M1 (round 15): `schema_type!` spells a source field's `Self::f` as
+/// `crate::m::Type::f`; the DTO's derive finds the associated function in
+/// `m`'s inherent `impl Type` (it was a "cannot statically determine" error).
+#[test]
+fn crate_path_associated_default_fn_resolves() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod m; pub mod api;").unwrap();
+    std::fs::write(
+        src.join("m.rs"),
+        "pub struct Query; impl Query { pub fn default_limit() -> u32 { 20 } }",
+    )
+    .unwrap();
+    let source = "pub struct QueryDto {
+        #[serde(default = \"crate::m::Query::default_limit\")] limit: u32,
+        #[serde(default = \"crate::m::Query::missing\")] missing: u32,
+        #[serde(default = \"crate::nowhere::Query::default_limit\")] nowhere: u32,
+        }";
+    std::fs::write(src.join("api.rs"), source).unwrap();
+    let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    crate::schema_macro::file_cache::bump_epoch();
+    let item: syn::ItemStruct = syn::parse_str(source).unwrap();
+    let defaults = extract_field_defaults_from_path(&item.into(), &src.join("api.rs"));
+    assert_eq!(defaults.get("limit"), Some(&serde_json::json!(20)));
+    assert_eq!(defaults.get("missing"), None);
+    assert_eq!(defaults.get("nowhere"), None);
 }
