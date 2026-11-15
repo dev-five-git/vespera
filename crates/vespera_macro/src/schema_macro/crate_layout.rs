@@ -74,13 +74,7 @@ impl CrateLayout {
 /// computation reads the current directory and probes target roots): the
 /// memo is keyed by the epoch and by every input of [`layout_for`].
 pub fn crate_layout() -> Option<CrateLayout> {
-    type Key = (
-        u64,
-        String,
-        Option<PathBuf>,
-        Option<String>,
-        Option<String>,
-    );
+    type Key = (u64, String, Option<PathBuf>, Option<String>, Option<String>);
     thread_local! {
         static MEMO: std::cell::RefCell<Option<(Key, CrateLayout)>> =
             const { std::cell::RefCell::new(None) };

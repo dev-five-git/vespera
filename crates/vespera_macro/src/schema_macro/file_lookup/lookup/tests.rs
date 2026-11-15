@@ -311,3 +311,54 @@ fn test_file_path_to_module_path_folds_parent_components() {
     let file_path = Path::new("/project/src/../models/user.rs");
     assert_eq!(file_path_to_module_path(file_path, src_dir), vec!["crate"]);
 }
+
+/// Symlinked model directories and files are part of the crate (rustc
+/// follows them), so the lookup walk follows them too; a link back to an
+/// ancestor is walked once and a dangling link is skipped.
+#[test]
+fn collect_rs_files_recursive_follows_symlinks_without_cycling() {
+    #[cfg(unix)]
+    fn link(target: &Path, link: &Path, _dir: bool) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+    #[cfg(windows)]
+    fn link(target: &Path, link: &Path, dir: bool) -> std::io::Result<()> {
+        if dir {
+            std::os::windows::fs::symlink_dir(target, link)
+        } else {
+            std::os::windows::fs::symlink_file(target, link)
+        }
+    }
+
+    let temp = TempDir::new().unwrap();
+    let src = temp.path().join("src");
+    let shared = temp.path().join("shared");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::write(src.join("lib.rs"), "").unwrap();
+    std::fs::write(shared.join("user.rs"), "pub struct User;").unwrap();
+    std::fs::write(temp.path().join("extra.rs"), "").unwrap();
+    // Creating links needs privileges on Windows (Developer Mode); the walk
+    // itself is platform-neutral, so skip where it is refused.
+    if link(&shared, &src.join("models"), true).is_err() {
+        return;
+    }
+    link(&temp.path().join("extra.rs"), &src.join("extra.rs"), false).unwrap();
+    link(&src, &shared.join("back"), true).unwrap();
+    link(&temp.path().join("gone.rs"), &src.join("gone.rs"), false).unwrap();
+
+    let mut files = Vec::new();
+    collect_rs_files_recursive(&src, &mut files);
+    let mut names: Vec<String> = files
+        .iter()
+        .map(|file| {
+            file.strip_prefix(&src)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+    names.sort();
+
+    assert_eq!(names, ["extra.rs", "lib.rs", "models/user.rs"]);
+}

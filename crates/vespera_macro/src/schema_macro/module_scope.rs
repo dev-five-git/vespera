@@ -495,16 +495,18 @@ impl ModuleScope {
             if item_use.leading_colon.is_some() {
                 prefix.push(String::new());
             }
-            let before: HashSet<String> = scope.imports.keys().cloned().collect();
+            // Collect this `use` into an empty map (`collect_use` never reads
+            // the imports so far), then fold it in: the names it newly adds
+            // are known without cloning every earlier key per `use`.
+            let earlier = std::mem::take(&mut scope.imports);
             scope.collect_use(&item_use.tree, &mut prefix, module_path);
-            if matches!(item_use.vis, syn::Visibility::Inherited) {
-                let added: Vec<String> = scope
-                    .imports
-                    .keys()
-                    .filter(|key| !before.contains(*key))
-                    .cloned()
-                    .collect();
-                scope.private.extend(added);
+            let added = std::mem::replace(&mut scope.imports, earlier);
+            let private = matches!(item_use.vis, syn::Visibility::Inherited);
+            for (key, path) in added {
+                if private && !scope.imports.contains_key(&key) {
+                    scope.private.insert(key.clone());
+                }
+                scope.imports.insert(key, path);
             }
         }
         scope.reroot_chained_imports();
@@ -769,7 +771,78 @@ pub fn segment_ident(segment: &str) -> syn::Ident {
     if matches!(raw, "crate" | "self" | "super" | "Self") {
         return syn::Ident::new(raw, span);
     }
+    // A plain ASCII identifier (the common case, once per emitted segment) is
+    // built directly; anything else goes through syn's parser as before.
+    let plain = raw != "_"
+        && raw.bytes().next().is_some_and(|b| !b.is_ascii_digit())
+        && raw.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    if plain {
+        return if is_keyword(raw) {
+            syn::Ident::new_raw(raw, span)
+        } else {
+            syn::Ident::new(raw, span)
+        };
+    }
     syn::parse_str::<syn::Ident>(raw).unwrap_or_else(|_| syn::Ident::new_raw(raw, span))
+}
+
+/// The words `syn` refuses to parse as an identifier (its
+/// `accept_as_ident`), `_` excepted.
+fn is_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "abstract"
+            | "as"
+            | "async"
+            | "await"
+            | "become"
+            | "box"
+            | "break"
+            | "const"
+            | "continue"
+            | "crate"
+            | "do"
+            | "dyn"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "final"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "macro"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "override"
+            | "priv"
+            | "pub"
+            | "ref"
+            | "return"
+            | "Self"
+            | "self"
+            | "static"
+            | "struct"
+            | "super"
+            | "trait"
+            | "true"
+            | "try"
+            | "type"
+            | "typeof"
+            | "unsafe"
+            | "unsized"
+            | "use"
+            | "virtual"
+            | "where"
+            | "while"
+            | "yield"
+    )
 }
 
 #[cfg(test)]

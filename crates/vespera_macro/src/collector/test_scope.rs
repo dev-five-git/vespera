@@ -99,8 +99,8 @@ impl TestScope {
         let Some(src_dir) = self.src_dir.clone() else {
             return false;
         };
-        let Some(segments) = file_cache::canonicalize_cached(file)
-            .and_then(|file| module_segments(&src_dir, &file))
+        let Some(segments) =
+            file_cache::canonicalize_cached(file).and_then(|file| module_segments(&src_dir, &file))
         else {
             return false;
         };
@@ -143,10 +143,7 @@ impl TestScope {
 /// when its text could gate anything on `cfg(test)` (empty otherwise or
 /// when it does not parse).  Only `String`s leave, so the result can be
 /// cached across invocations (`file_cache::derived`).
-fn gating_names(
-    content: &str,
-    pick: impl Fn(&Item) -> Option<&syn::Ident>,
-) -> HashSet<String> {
+fn gating_names(content: &str, pick: impl Fn(&Item) -> Option<&syn::Ident>) -> HashSet<String> {
     if !may_gate_tests(content) {
         return HashSet::new();
     }

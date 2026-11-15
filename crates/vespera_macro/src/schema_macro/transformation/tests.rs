@@ -493,6 +493,10 @@ fn renamed_field_follows_each_rename_all_side() {
     r#"#[serde(rename = "x", skip_serializing_if = "is_blank", deserialize_with = "codecs::de")]"#,
     r#"#[serde(rename = "x", skip_serializing_if = "crate::models::user::is_blank", deserialize_with = "crate::models::user::codecs::de")]"#
 )]
+#[case::raw_module(
+    r#"#[serde(deserialize_with = "r#type::de")]"#,
+    r#"#[serde(deserialize_with = "crate::models::user::r#type::de")]"#
+)]
 #[case::std_kept(
     r#"#[serde(skip_serializing_if = "Option::is_none")]"#,
     r#"#[serde(skip_serializing_if = "Option::is_none")]"#
@@ -542,7 +546,7 @@ fn serde_path_crate() -> (tempfile::TempDir, crate::env_access::test_env::EnvGua
     std::fs::write(src.join("util.rs"), "pub fn ser() {}").unwrap();
     std::fs::write(
         src.join("models").join("user.rs"),
-        "use crate::util::ser; fn default_name() {} fn is_blank() {} mod codecs { pub mod as_string {} pub fn de() {} }",
+        "use crate::util::ser; fn default_name() {} fn is_blank() {} mod codecs { pub mod as_string {} pub fn de() {} } mod r#type { pub fn de() {} }",
     )
     .unwrap();
     let guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());

@@ -137,7 +137,13 @@ pub fn relation_target_module(ty: &Type, module_path: &[String]) -> Option<Vec<S
 }
 
 fn schema_path_tokens(path: &syn::Path, source_module_path: &[String]) -> TokenStream {
-    let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+    // Unraw, like every scope key: `r#type::Entity` names the `type` module
+    // (`path_tokens` re-raws keywords on output).
+    let segments: Vec<String> = path
+        .segments
+        .iter()
+        .map(|s| crate::parser::strip_raw_prefix_owned(s.ident.to_string()))
+        .collect();
     path_tokens(&absolute_schema_segments(&segments, source_module_path))
 }
 
@@ -626,6 +632,24 @@ mod tests {
         assert_eq!(
             absolute_schema_segments(&segs(path), &module).join("::"),
             expected
+        );
+    }
+
+    /// A raw-identifier first segment resolves like its unraw name (scope
+    /// keys are unraw): `r#type::Entity` is the child module `type`, not the
+    /// sibling-module guess.
+    #[test]
+    fn raw_identifier_relation_paths_resolve_in_source_module() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("src/models/category.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "pub mod r#type {}\n").unwrap();
+        let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        crate::schema_macro::file_cache::bump_epoch();
+        let path: syn::Path = syn::parse_str("r#type::Entity").unwrap();
+        assert_eq!(
+            schema_path_tokens(&path, &segs("crate::models::category")).to_string(),
+            "crate :: models :: category :: r#type :: Schema"
         );
     }
 

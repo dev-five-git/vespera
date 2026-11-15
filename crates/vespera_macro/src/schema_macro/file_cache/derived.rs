@@ -89,7 +89,11 @@ pub fn canonicalize_cached(path: &Path) -> Option<PathBuf> {
         return canonical;
     }
     let canonical = path.canonicalize().ok();
-    MEMO.with(|memo| memo.borrow_mut().1.insert(path.to_path_buf(), canonical.clone()));
+    MEMO.with(|memo| {
+        memo.borrow_mut()
+            .1
+            .insert(path.to_path_buf(), canonical.clone())
+    });
     canonical
 }
 

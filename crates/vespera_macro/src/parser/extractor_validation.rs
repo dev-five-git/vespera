@@ -79,7 +79,10 @@ impl AstLookup for HashMap<String, syn::File> {
 }
 
 /// The collector's ASTs, then the ones parsed here.
-struct Both<'a>(&'a HashMap<String, syn::File>, &'a HashMap<String, syn::File>);
+struct Both<'a>(
+    &'a HashMap<String, syn::File>,
+    &'a HashMap<String, syn::File>,
+);
 
 impl AstLookup for Both<'_> {
     fn ast(&self, path: &str) -> Option<&syn::File> {

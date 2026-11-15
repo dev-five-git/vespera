@@ -180,7 +180,8 @@ mod tests {
         assert!(!outer.still_valid());
 
         // Editing a read file invalidates.
-        let mut memo = Tracked::compute(|| super::super::get_file_content(&present).map(|c| c.len()));
+        let mut memo =
+            Tracked::compute(|| super::super::get_file_content(&present).map(|c| c.len()));
         std::fs::write(&present, "xyz").unwrap();
         super::super::bump_epoch();
         assert_eq!(memo.get(), None);

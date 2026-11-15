@@ -312,7 +312,10 @@ pub fn generate_schema_type_code(
     // field with a `cfg_attr`.
     let any_garde = parsed_struct.fields.iter().any(|field| {
         field.attrs.iter().any(|attr| attr.path().is_ident("garde"))
-            || (field.attrs.iter().any(|attr| attr.path().is_ident("cfg_attr"))
+            || (field
+                .attrs
+                .iter()
+                .any(|attr| attr.path().is_ident("cfg_attr"))
                 && carried_field_attrs(&field.attrs, schema_derived, &source_module_path, false)
                     .garde)
     });

@@ -428,7 +428,10 @@ fn test_stable_sources_skip_revalidation(#[case] args: &str, #[case] stats: usiz
     std::fs::write(temp.path().join("b.rs"), "y").unwrap();
     bump_epoch();
     let expected = if stats == 1 { 1 } else { 2 };
-    assert_eq!(FILE_CACHE.with(|cache| listed(&mut cache.borrow_mut())), expected);
+    assert_eq!(
+        FILE_CACHE.with(|cache| listed(&mut cache.borrow_mut())),
+        expected
+    );
     drop(_args);
     bump_epoch();
 }

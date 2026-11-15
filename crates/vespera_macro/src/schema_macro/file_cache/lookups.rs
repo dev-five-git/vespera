@@ -159,7 +159,11 @@ fn crate_fingerprint(
     cache: &mut FileCache,
     layout: crate::schema_macro::crate_layout::CrateLayout,
 ) -> u64 {
-    type Memo = Option<((u64, usize), crate::schema_macro::crate_layout::CrateLayout, u64)>;
+    type Memo = Option<(
+        (u64, usize),
+        crate::schema_macro::crate_layout::CrateLayout,
+        u64,
+    )>;
     thread_local! {
         static MEMO: std::cell::RefCell<Memo> = const { std::cell::RefCell::new(None) };
     }

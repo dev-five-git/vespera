@@ -62,14 +62,14 @@ use crate::metadata::StructMetadata;
 /// A relation's FK columns: `from` and, when given, `to`.
 type FkColumns = (String, Option<String>);
 
+/// Plain data derived from a file's content, reused while the content is.
+mod derived;
 /// Phase-4 path-string resolution caches (struct / FK / module-path / circular
 /// lookups), split into the `lookups` sidecar to keep this file within the
 /// source-size budget. They share the parent `FILE_CACHE` + the
 /// `ensure_file_list` / `get_fingerprint_cached` helpers via `super::` but
 /// operate on a disjoint set of `FileCache` fields.
 mod lookups;
-/// Plain data derived from a file's content, reused while the content is.
-mod derived;
 #[cfg(test)]
 pub use derived::derived_computes;
 pub use derived::{canonicalize_cached, derived, with_fallback_parse};
@@ -77,11 +77,11 @@ pub use derived::{canonicalize_cached, derived, with_fallback_parse};
 mod shallow;
 /// Results read off several files, reused while none of them changed.
 mod tracked;
-pub use tracked::Tracked;
 pub use lookups::{
     get_circular_analysis, get_fk_column, get_module_path_from_schema_path,
     get_struct_from_schema_path,
 };
+pub use tracked::Tracked;
 
 /// Combined per-file fingerprint: modification time **and** byte length,
 /// both read from a single `fs::metadata` call.
@@ -479,7 +479,10 @@ fn dir_fingerprint(dir: &Path) -> u64 {
     FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         ensure_file_list(&mut cache, dir);
-        cache.file_lists.get(dir).map_or(0, |entry| entry.fingerprint)
+        cache
+            .file_lists
+            .get(dir)
+            .map_or(0, |entry| entry.fingerprint)
     })
 }
 

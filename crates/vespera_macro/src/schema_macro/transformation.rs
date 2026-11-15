@@ -324,10 +324,11 @@ fn reroot_path(path: &str, module_path: &[String]) -> Option<String> {
     let segments: Vec<String> = path
         .segments
         .iter()
-        .map(|segment| segment.ident.to_string())
+        // Unraw, like every scope key: `r#type::de` names the `type` module.
+        .map(|segment| crate::parser::strip_raw_prefix_owned(segment.ident.to_string()))
         .collect();
     match resolve_name(&segments, module_path) {
-        // Keyword segments (`r#type`) stay raw.
+        // Keyword segments (`r#type`) are raw again on output.
         Resolved::Path(resolved) if path.leading_colon.is_none() => {
             Some(path_tokens(&resolved).to_string().replace(' ', ""))
         }

@@ -535,3 +535,19 @@ fn item_module_chain_cached_unparsable_file() {
     assert_eq!(item_module_chain_cached(&file, "Dup", 1), None);
     assert!(inline_chain_at(&file, 1).is_empty());
 }
+
+/// The direct construction of a plain segment matches what syn's parser
+/// (the previous path for every segment) builds: keywords raw, the rest
+/// plain; other text still goes through the parser.
+#[rstest]
+#[case::plain("user", "user")]
+#[case::raw_input("r#type", "r#type")]
+#[case::keyword("type", "r#type")]
+#[case::reserved("yield", "r#yield")]
+#[case::edition_word("gen", "gen")]
+#[case::root("self", "self")]
+#[case::underscored("_private", "_private")]
+#[case::non_ascii("caf\u{e9}", "caf\u{e9}")]
+fn segment_ident_builds_plain_and_raw_idents(#[case] segment: &str, #[case] expected: &str) {
+    assert_eq!(segment_ident(segment).to_string(), expected);
+}

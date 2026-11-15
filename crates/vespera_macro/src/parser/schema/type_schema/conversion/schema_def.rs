@@ -90,9 +90,8 @@ pub(super) fn ref_override_of(def: &str) -> Option<(String, bool)> {
         def,
         |facts| &mut facts.ref_override,
         |def| {
-            parse_schema_def(def).and_then(|parsed| {
-                super::extract_schema_ref_override(parsed.attrs())
-            })
+            parse_schema_def(def)
+                .and_then(|parsed| super::extract_schema_ref_override(parsed.attrs()))
         },
     )
 }
