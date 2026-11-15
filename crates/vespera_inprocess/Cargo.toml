@@ -43,7 +43,10 @@ connect-info = ["axum/tokio"]
 tracing = ["dep:tracing", "axum/matched-path"]
 # The shared multi-thread host runtime (`vespera_inprocess::runtime`): lazy
 # build, in-flight leases, deferred hooks, graceful irreversible shutdown.
-# Used by the JNI bridge (`vespera_jni`) and the C ABI (`ffi`).
+# Used by the JNI bridge (`vespera_jni`) and the C ABI (`ffi`).  The feature
+# only gates that module: tokio's `rt-multi-thread` is always on (see the
+# `tokio` dependency below); it is listed here too so the module keeps building
+# if the base feature set ever drops it.
 runtime = ["tokio/rt-multi-thread"]
 # Stable C ABI (`vespera_inprocess::ffi`, header `include/vespera.h`):
 # `vespera_dispatch` / `vespera_dispatch_into` / `vespera_dispatch_async` /
