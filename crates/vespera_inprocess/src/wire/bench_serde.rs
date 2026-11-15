@@ -361,6 +361,27 @@ pub fn bench_parse_serde(header_json: &[u8]) -> usize {
     parse_wire_header_serde(header_json).map_or(usize::MAX, |h| header_field_len_sum(&h))
 }
 
+/// Differential-fuzz view of the hand-rolled parse: the FULL decoded header
+/// as its `Debug` repr (`None` on reject).  `Cow`'s `Debug` prints the
+/// string either way, so borrowed vs owned never differs — field values,
+/// header order / duplicates and the principal all do.  Doc-hidden.
+#[doc(hidden)]
+#[must_use]
+pub fn bench_parse_hand_repr(header_json: &[u8]) -> Option<String> {
+    parse_wire_header(header_json)
+        .ok()
+        .map(|h| format!("{h:?}"))
+}
+
+/// [`bench_parse_hand_repr`] for the `serde_json` twin (same shape).
+#[doc(hidden)]
+#[must_use]
+pub fn bench_parse_serde_repr(header_json: &[u8]) -> Option<String> {
+    parse_wire_header_serde(header_json)
+        .ok()
+        .map(|h| format!("{h:?}"))
+}
+
 /// Sum of every decoded field's byte length — forces materialisation of
 /// each `Cow` (UTF-8 validation / escape decode) so neither A/B arm can
 /// be optimised down to a partial parse.  Takes the header by reference;
@@ -412,7 +433,9 @@ pub fn bench_write_serde(
 
 #[cfg(test)]
 mod tests {
-    use super::{bench_parse_hand, bench_parse_serde};
+    use super::{
+        bench_parse_hand, bench_parse_hand_repr, bench_parse_serde, bench_parse_serde_repr,
+    };
 
     /// Both A/B arms materialise EVERY field — the optional connection and
     /// principal fields included — and agree; a parse error is `usize::MAX`.
@@ -425,5 +448,27 @@ mod tests {
         assert_eq!(bench_parse_serde(header), 37);
         assert_eq!(bench_parse_hand(b"{"), usize::MAX);
         assert_eq!(bench_parse_serde(b"{"), usize::MAX);
+    }
+
+    /// The fuzz-facing reprs carry the full header and match across the two
+    /// parsers — escaped (owned) and plain (borrowed) strings alike — and
+    /// tell apart headers whose summed field lengths are equal.
+    #[test]
+    fn parse_reprs_match_and_carry_every_field() {
+        let header = br#"{"v":1,"method":"GET","path":"/p","headers":{"a":"b","a":"c"},"principal":{"name":"n","attributes":{"k":"v"}}}"#;
+        let hand = bench_parse_hand_repr(header).expect("hand accepts");
+        assert_eq!(Some(&hand), bench_parse_serde_repr(header).as_ref());
+        for needle in ["\"/p\"", "\"a\", \"c\"", "\"k\", \"v\""] {
+            assert!(hand.contains(needle), "{needle} missing in {hand}");
+        }
+        let swapped = br#"{"v":1,"method":"GET","path":"/q"}"#;
+        let original = br#"{"v":1,"method":"GET","path":"/p"}"#;
+        assert_eq!(bench_parse_hand(swapped), bench_parse_hand(original));
+        assert_ne!(
+            bench_parse_hand_repr(swapped),
+            bench_parse_hand_repr(original)
+        );
+        assert_eq!(bench_parse_hand_repr(b"{"), None);
+        assert_eq!(bench_parse_serde_repr(b"{"), None);
     }
 }
