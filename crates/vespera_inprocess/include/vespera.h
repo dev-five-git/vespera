@@ -15,6 +15,9 @@
  *                  response: {"v":1,"status","headers","metadata",
  *                             "validation_errors"?}
  *   bytes 4+N..  : raw body bytes
+ * REQUEST QUERY may travel inside "path" ("/items?page=2"), in "query"
+ * (no leading '?'), or both: "query" is then joined to the path's query
+ * with '&' ("/items?page=2" + "limit=10" -> "/items?page=2&limit=10").
  * HEADER VALUES use a Latin-1 mapping (one JSON char U+0000..U+00FF per
  * byte), the way servlet containers expose raw header bytes.  Request: a
  * value whose chars are all <= U+00FF becomes one byte per char; a value

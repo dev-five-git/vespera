@@ -354,6 +354,29 @@ fn merge_path_item(into: &mut PathItem, mut other: PathItem) {
     }
 }
 
+/// Replace a path item that only points at `#/components/pathItems/<name>`
+/// with an inline copy of that component, so the top-level push-down below
+/// reaches its operations.  Writing into the shared component instead would
+/// also change every other reference to it — including the receiver's own,
+/// which `merge` keeps on a component-name conflict.  A chain of references
+/// is followed (bounded by the number of components, so a cycle stops); a
+/// reference this document cannot resolve (missing name, external URI) is
+/// left as it is.
+fn inline_path_item_ref(item: &mut PathItem, path_items: &BTreeMap<String, PathItem>) {
+    for _ in 0..path_items.len() {
+        let Some(target) = item
+            .ref_path
+            .as_deref()
+            .and_then(|r| r.strip_prefix("#/components/pathItems/"))
+            .and_then(|name| path_items.get(name))
+        else {
+            return;
+        };
+        item.ref_path = None;
+        merge_path_item(item, target.clone());
+    }
+}
+
 /// Push `other`'s top-level `security` / `servers` down onto each of its own
 /// operations that has not set one, so they keep governing exactly the
 /// operations they governed in `other` once merged into a document whose
@@ -367,9 +390,12 @@ fn merge_path_item(into: &mut PathItem, mut other: PathItem) {
 /// Servers are not pushed onto the operations of a path item with its own
 /// `servers` (path-level servers already override the top-level list there);
 /// webhooks pass `servers: None` — their operations are requests the API
-/// *sends*, which the API's server list does not describe.
+/// *sends*, which the API's server list does not describe.  A path item that
+/// is a `$ref` to `other`'s `components.pathItems` is inlined first (see
+/// [`inline_path_item_ref`]) when there is anything to push down.
 fn push_down_top_level(
     paths: &mut BTreeMap<String, PathItem>,
+    path_items: Option<&BTreeMap<String, PathItem>>,
     security: Option<&Vec<crate::schema::SecurityRequirement>>,
     servers: Option<&Vec<Server>>,
     receiver_requires_security: bool,
@@ -379,7 +405,11 @@ fn push_down_top_level(
         None if receiver_requires_security => Some(Vec::new()),
         None => None,
     };
+    let path_items = path_items.filter(|_| security.is_some() || servers.is_some());
     for item in paths.values_mut() {
+        if let Some(path_items) = path_items {
+            inline_path_item_ref(item, path_items);
+        }
         let servers = if item.servers.is_some() {
             None
         } else {
@@ -408,7 +438,10 @@ impl OpenApi {
     /// that has not set its own (only `security` onto webhooks). When
     /// `other` has no top-level `security` but `self` requires some, those
     /// operations get an explicit empty `security` instead, so `self`'s
-    /// requirement does not start applying to them. On a shared path, each
+    /// requirement does not start applying to them. A path item or webhook
+    /// of `other` that is a `$ref` to `other`'s `components.pathItems` is
+    /// inlined for this push-down (a reference `other` cannot resolve is
+    /// kept, and its operations are not reached). On a shared path, each
     /// side's path-level `parameters` / `servers` stay with its own
     /// operations (see `merge_path_item`). Top-level `external_docs` is adopted only
     /// when `self` has none. On any key/field conflict, `self` takes
@@ -418,8 +451,13 @@ impl OpenApi {
             .security
             .as_ref()
             .is_some_and(|requirements| !requirements.is_empty());
+        let path_items = other
+            .components
+            .as_ref()
+            .and_then(|c| c.path_items.as_ref());
         push_down_top_level(
             &mut other.paths,
+            path_items,
             other.security.as_ref(),
             other.servers.as_ref(),
             receiver_requires_security,
@@ -427,6 +465,7 @@ impl OpenApi {
         if let Some(webhooks) = other.webhooks.as_mut() {
             push_down_top_level(
                 webhooks,
+                path_items,
                 other.security.as_ref(),
                 None,
                 receiver_requires_security,

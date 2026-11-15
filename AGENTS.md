@@ -260,6 +260,7 @@ bytes 4+N..   : raw body bytes (UTF-8 text or binary —
 ```
 
 - No base64 — multipart uploads / PDFs / images travel as raw bytes.
+- Request `query` (no leading `?`) is appended to `path`: with `?` when `path` has no query of its own, with `&` when it does (`/items?page=2` + `limit=10` → `/items?page=2&limit=10`), with nothing when `path` ends in `?` / `&`. The Java bridge embeds the query in `path`; both forms (and both at once) are valid (`crates/vespera_inprocess/tests/query_join.rs`).
 - `"v":1` is the protocol version; mismatched versions get a `400` wire response.
 - All failure modes (malformed wire, panic in Rust, no app registered) return a valid length-prefixed wire response, so the Java decoder never has to special-case errors.
 - `validation_errors` is an optional array hoisted from 422 JSON bodies (`{"errors":[...]}`) — original body preserved verbatim alongside.
