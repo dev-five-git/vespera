@@ -68,9 +68,13 @@ dependencies {
 }
 
 // Tests tagged `isolated-jvm` change process-wide native settings (e.g. the
-// buffered-response cap, fixed on the first dispatch), so they run in their
-// own JVM: excluded from `test`, run by `isolatedJvmTest`, which finalizes
-// `test` so `:demo-app:test` (CI's jni-e2e job) always runs both.
+// buffered-response cap, fixed on the first dispatch), so they run in a JVM
+// no other class touched: excluded from `test`, run by `isolatedJvmTest`,
+// which finalizes `test` so `:demo-app:test` (CI's jni-e2e job) always runs
+// both. They share ONE JVM (a fork per class costs minutes on slow runners), in
+// `@Order`: the library-name auto-init first (loads, never dispatches), then
+// the buffered-response cap (forwarded before the first dispatch). The shared
+// runtime has ONE worker here (AsyncDispatchExceptionHygieneTest needs it).
 val isolatedJvmTag = "isolated-jvm"
 val isolatedJvmTest = tasks.register<Test>("isolatedJvmTest") {
     description = "Runs the E2E tests that need a JVM of their own."
@@ -78,8 +82,8 @@ val isolatedJvmTest = tasks.register<Test>("isolatedJvmTest") {
     testClassesDirs = sourceSets.test.get().output.classesDirs
     classpath = sourceSets.test.get().runtimeClasspath
     useJUnitPlatform { includeTags(isolatedJvmTag) }
-    // One JVM per class: each one fixes a different process-wide setting.
-    forkEvery = 1
+    systemProperty("junit.jupiter.testclass.order.default", "org.junit.jupiter.api.ClassOrderer\$OrderAnnotation")
+    systemProperty("vespera.runtime.workerThreads", "1")
     testLogging.showStandardStreams = true
 }
 tasks.check { dependsOn(isolatedJvmTest) }

@@ -9,6 +9,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -24,11 +25,14 @@ import org.springframework.context.annotation.Bean;
  * response is answered {@code 500} by Rust before the body is buffered.
  *
  * <p>The native cap is fixed for the whole process on the first dispatch, so
- * this class is tagged {@value #TAG} and runs in its own JVM (the
- * {@code isolatedJvmTest} Gradle task, finalizing {@code test}); the main
- * suite excludes the tag and keeps the default cap.
+ * this class is tagged {@value #TAG} and runs in the {@code isolatedJvmTest}
+ * JVM (finalizing {@code test}) before anything there dispatched (the class
+ * ordered before it only loads the library, and its context already aligned
+ * the native cap with the same {@link #CAP}); the main suite excludes the tag
+ * and keeps the default cap.
  */
 @Tag(BufferedResponseCapIsolatedTest.TAG)
+@Order(2)
 @SpringBootTest(
         classes = {VesperaHttpTestApplication.class, BufferedResponseCapIsolatedTest.ModeConfiguration.class},
         webEnvironment = WebEnvironment.RANDOM_PORT,
