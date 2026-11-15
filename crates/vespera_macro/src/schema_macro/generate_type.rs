@@ -87,8 +87,10 @@ pub fn generate_schema_type_code(
         .iter()
         .map(|field| field.ty.clone())
         .collect();
-    let (parsed_struct, bindings) =
+    let (mut parsed_struct, bindings) =
         instantiate_with_bindings(&parsed_struct, &input.source_type, "schema_type!")?;
+    super::transformation::name_self_in_serde_paths(&mut parsed_struct);
+    super::field_attrs::hoist_cfg_attr_cfgs(&mut parsed_struct);
 
     // Extract all field names from source struct for validation
     // Include relation fields since they can be converted to Schema types

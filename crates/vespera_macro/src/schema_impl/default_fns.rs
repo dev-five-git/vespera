@@ -61,8 +61,15 @@ fn crate_fn_value(module: &[String], fn_name: &str) -> Option<serde_json::Value>
     {
         return Some(value);
     }
-    let (target, name) = crate::schema_macro::reexported_item(module, fn_name)?;
-    default_fn_value(&module_scope::module_items(&target)?, &name)
+    if let Some(value) = crate::schema_macro::reexported_item(module, fn_name)
+        .and_then(|(target, name)| default_fn_value(&module_scope::module_items(&target)?, &name))
+    {
+        return Some(value);
+    }
+    // `crate::m::Type::f` (what `schema_type!` makes of a source field's
+    // `Self::f`): an associated function of an inherent `impl Type` in `m`.
+    let (owner, parent) = module.split_last()?;
+    associated_fn_value(&module_scope::module_items(parent)?, owner, fn_name)
 }
 
 /// The associated function `fn_name` of an inherent `impl owner` among the
@@ -74,6 +81,15 @@ fn inherent_fn_value(
     file_path: &Path,
 ) -> Option<serde_json::Value> {
     let items = inline_module_items(file_cache::get_parsed_file(file_path)?.items, chain)?;
+    associated_fn_value(&items, owner, fn_name)
+}
+
+/// The associated function `fn_name` of an inherent `impl owner` among `items`.
+fn associated_fn_value(
+    items: &[syn::Item],
+    owner: &str,
+    fn_name: &str,
+) -> Option<serde_json::Value> {
     items.iter().find_map(|item| match item {
         syn::Item::Impl(block)
             if block.trait_.is_none() && impl_owner_is(&block.self_ty, owner) =>
@@ -115,33 +131,37 @@ pub(super) fn std_type_default(fn_path: &str, ty: &syn::Type) -> Option<serde_js
             || matches!(path, [root, module, name] if (root == "std" || root == "core")
                 && module == "default" && name == "Default")
     };
+    let last_name = |ty: &syn::Type| match ty {
+        syn::Type::Path(path) => path.path.segments.last().map(|s| ident_name(&s.ident)),
+        _ => None,
+    };
+    let field_ty = last_name(ty);
+    let std_new = || {
+        field_ty.as_deref().is_some_and(|name| {
+            matches!(
+                name,
+                "String" | "Vec" | "VecDeque" | "HashSet" | "BTreeSet" | "HashMap" | "BTreeMap"
+            )
+        })
+    };
     let applies = match &expr.qself {
-        // `<T>::default` / `<T as Default>::default`.
+        // `<T>::default` / `<T as Default>::default`, and `<T>::new` for a
+        // std container `T` (the field's type).
         Some(qself) => {
-            function == "default"
+            (function == "default"
                 && (owner.is_empty() && qself.position == 0
-                    || is_default_trait(owner) && qself.position == owner.len())
+                    || is_default_trait(owner) && qself.position == owner.len()))
+                || (function == "new"
+                    && owner.is_empty()
+                    && qself.position == 0
+                    && std_new()
+                    && last_name(&qself.ty) == field_ty)
         }
         None if function == "default" && is_default_trait(owner) => true,
         None => {
-            let field_ty = match ty {
-                syn::Type::Path(path) => path.path.segments.last().map(|s| ident_name(&s.ident)),
-                _ => None,
-            };
             let constructor = match function.as_str() {
                 "default" => true,
-                "new" => field_ty.as_deref().is_some_and(|name| {
-                    matches!(
-                        name,
-                        "String"
-                            | "Vec"
-                            | "VecDeque"
-                            | "HashSet"
-                            | "BTreeSet"
-                            | "HashMap"
-                            | "BTreeMap"
-                    )
-                }),
+                "new" => std_new(),
                 _ => false,
             };
             constructor && owner.last().is_some() && owner.last() == field_ty.as_ref()

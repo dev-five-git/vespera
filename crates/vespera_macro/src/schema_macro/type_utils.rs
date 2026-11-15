@@ -296,30 +296,39 @@ impl TypeResolver<'_> {
         }
     }
 
-    /// An array length: a constant the source module defines or imports
-    /// (`[u8; HASH_LEN]`) is re-rooted like a type (it was copied as written:
-    /// E0425 at the call site); a const generic parameter, a literal or an
-    /// unknown name stays as written.
+    /// An array length: every constant the source module defines or imports
+    /// (`[u8; HASH_LEN]`, `[u8; HASH_LEN * 2]`) is re-rooted like a type (it
+    /// was copied as written: E0425 at the call site); a const generic
+    /// parameter, a literal or an unknown name stays as written.
     fn array_len(&self, len: &syn::Expr) -> TokenStream {
-        if let syn::Expr::Path(path) = len
-            && path.qself.is_none()
+        let mut len = len.clone();
+        syn::visit_mut::VisitMut::visit_expr_mut(&mut LenPaths(self), &mut len);
+        quote! { #len }
+    }
+
+    /// One path of an array length, resolved in the source module.
+    fn len_path(&self, path: &syn::ExprPath) -> Option<TokenStream> {
+        let plain = path.qself.is_none()
             && path.path.leading_colon.is_none()
-            && !path
+            && path.path.segments.iter().all(|s| s.arguments.is_none());
+        if !plain
+            || path
                 .path
                 .get_ident()
                 .is_some_and(|ident| self.generic_params.contains(&strip_raw(ident)))
         {
-            let segments: Vec<String> = path
-                .path
-                .segments
-                .iter()
-                .map(|segment| strip_raw(&segment.ident))
-                .collect();
-            if let Resolved::Path(resolved) = resolve_name(&segments, self.module) {
-                return path_tokens(&resolved);
-            }
+            return None;
         }
-        quote! { #len }
+        let segments: Vec<String> = path
+            .path
+            .segments
+            .iter()
+            .map(|segment| strip_raw(&segment.ident))
+            .collect();
+        match resolve_name(&segments, self.module) {
+            Resolved::Path(resolved) => Some(path_tokens(&resolved)),
+            Resolved::Unknown => None,
+        }
     }
 
     fn args(&self, args: &PathArguments) -> TokenStream {
@@ -365,6 +374,15 @@ impl TypeResolver<'_> {
                 .into_iter()
                 .map(|s| (s, TokenStream::new()))
                 .collect();
+            // A `use ::a::b;` import resolves to `["", "a", "b"]`: its empty
+            // root becomes the `::` prefix of the next segment (an empty
+            // segment has no identifier).
+            if rooted.first().is_some_and(|(name, _)| name.is_empty()) {
+                rooted.remove(0);
+                if let Some(next) = rooted.first_mut() {
+                    next.0.insert_str(0, "::");
+                }
+            }
             if let Some(last) = rooted.last_mut() {
                 last.1 = first_args;
             }
@@ -529,6 +547,21 @@ const SEA_ORM_PATH_ALIASES: &[&str] = &[
 
 /// The crates whose paths may spell one of [`SEA_ORM_PATH_ALIASES`].
 const ALIAS_CRATES: &[&str] = &["sea_orm", "vespera", "axum_typed_multipart", "tempfile"];
+
+/// Re-roots every path of an array length expression ([`TypeResolver::len_path`]).
+struct LenPaths<'r, 'a>(&'r TypeResolver<'a>);
+
+impl syn::visit_mut::VisitMut for LenPaths<'_, '_> {
+    fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
+        if let syn::Expr::Path(path) = expr
+            && let Some(rerooted) = self.0.len_path(path)
+        {
+            *expr = syn::Expr::Verbatim(rerooted);
+            return;
+        }
+        syn::visit_mut::visit_expr_mut(self, expr);
+    }
+}
 
 fn first_named(path: &[String]) -> Option<&str> {
     path.iter().find(|s| !s.is_empty()).map(String::as_str)

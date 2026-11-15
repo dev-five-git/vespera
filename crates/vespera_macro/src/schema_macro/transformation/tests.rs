@@ -553,3 +553,61 @@ fn serde_path_crate() -> (tempfile::TempDir, crate::env_access::test_env::EnvGua
     super::super::file_cache::bump_epoch();
     (dir, guard)
 }
+
+/// M1 (round 15): `Self::f` in a source field's serde function paths names
+/// the source struct (the attributes land on the DTO, where `Self` is the
+/// DTO): it is spelled with the struct's name, then re-rooted.
+#[rstest]
+#[case::default(
+    r#"#[serde(default = "Self::limit")]"#,
+    r#"#[serde(default = "Query::limit")]"#
+)]
+#[case::skip_if(
+    r#"#[serde(rename = "Self::x", skip_serializing_if = "Self::is_empty")]"#,
+    r#"#[serde(rename = "Self::x", skip_serializing_if = "Query::is_empty")]"#
+)]
+#[case::cfg_attr(
+    r#"#[cfg_attr(feature = "Self::x", serde(default = "Self::limit"), doc = "Self::y")]"#,
+    r#"#[cfg_attr(feature = "Self::x", serde(default = "Query::limit"), doc = "Self::y")]"#
+)]
+#[case::nested_cfg_attr(
+    r#"#[cfg_attr(a, cfg_attr(b, serde(with = "Self::codec")))]"#,
+    r#"#[cfg_attr(a, cfg_attr(b, serde(with = "Query::codec")))]"#
+)]
+#[case::other_path_kept(r#"#[serde(default = "limit")]"#, r#"#[serde(default = "limit")]"#)]
+#[case::non_string_kept("#[serde(default = 1)]", "#[serde(default = 1)]")]
+#[case::schema_kept(
+    r#"#[schema(default = "Self::limit")]"#,
+    r#"#[schema(default = "Self::limit")]"#
+)]
+#[case::doc_kept(r#"#[doc = "Self::limit"]"#, r#"#[doc = "Self::limit"]"#)]
+#[case::flag_list_kept("#[serde(default)]", "#[serde(default)]")]
+fn self_in_serde_paths_names_the_source(#[case] attr: &str, #[case] expected: &str) {
+    let mut item: syn::ItemStruct =
+        syn::parse_str(&format!("struct Query {{ {attr} limit: u32 }}")).unwrap();
+    name_self_in_serde_paths(&mut item);
+    let expected: syn::ItemStruct =
+        syn::parse_str(&format!("struct Query {{ {expected} limit: u32 }}")).unwrap();
+    assert_eq!(quote!(#item).to_string(), quote!(#expected).to_string());
+}
+
+/// The renamed `Self::f` is re-rooted at the source module.
+#[test]
+fn self_in_serde_paths_is_rerooted() {
+    let (dir, _guard) = serde_path_crate();
+    let mut item: syn::ItemStruct =
+        syn::parse_str(r#"struct User { #[serde(default = "Self::make")] a: u32 }"#).unwrap();
+    std::fs::write(
+        dir.path().join("src").join("models").join("user.rs"),
+        "pub struct User;",
+    )
+    .unwrap();
+    super::super::file_cache::bump_epoch();
+    name_self_in_serde_paths(&mut item);
+    let module = ["crate", "models", "user"].map(String::from);
+    let attrs = reroot_serde_paths(&item.fields.iter().next().unwrap().attrs, &module);
+    assert_eq!(
+        quote!(#(#attrs)*).to_string(),
+        quote!(#[serde(default = "crate::models::user::User::make")]).to_string()
+    );
+}

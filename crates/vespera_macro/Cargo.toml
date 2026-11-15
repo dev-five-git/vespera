@@ -40,7 +40,7 @@ proc-macro = true
 
 [dependencies]
 quote = "1.0.37"
-syn = { version = "3", features = ["full", "visit"] }
+syn = { version = "3", features = ["full", "visit", "visit-mut"] }
 proc-macro2 = { version = "1.0.100", features = ["span-locations"] }
 vespera_core = { workspace = true }
 serde = { version = "1.0.221", features = ["derive"] }

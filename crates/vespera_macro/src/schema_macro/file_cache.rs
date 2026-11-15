@@ -4,7 +4,9 @@
 //! for structs in the same files. This module caches:
 //! - The list of `.rs` files per source directory
 //! - File contents with mtime-based invalidation
-//! - Struct name → candidate file paths (cheap text-based pre-filter)
+//! - Struct definitions per file (struct name → definition string), struct
+//!   / FK-column lookups by schema path, module paths and circular-reference
+//!   analyses
 //!
 //! Uses `thread_local!` because `syn::File` (and proc-macro types within it)
 //! are not `Send`/`Sync`, and proc-macros run single-threaded anyway.

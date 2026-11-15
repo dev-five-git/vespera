@@ -113,6 +113,8 @@ pub fn register_schema(name: String, metadata: StructMetadata) -> Result<(), ()>
                 if !same_identity && !moved && existing.source_identity.is_some() {
                     variants::record(&name, existing);
                     variants::record(&name, &metadata);
+                } else if same_identity || moved {
+                    variants::update(&name, existing, &metadata)?;
                 }
                 bucket.insert(name, metadata);
                 return Ok(());
@@ -447,7 +449,8 @@ pub fn process_derive_schema(
 /// Extract default values from `#[serde(default = "fn_name")]` attributes
 /// using the given source file path.
 ///
-/// Separated from [`extract_field_defaults`] for testability: `Span::call_site().local_file()`
+/// Separated from [`process_derive_schema`] (which passes the call-site
+/// file) for testability: `Span::call_site().local_file()`
 /// returns `None` in unit tests, so this function accepts the path directly.
 pub fn extract_field_defaults_from_path(
     input: &syn::DeriveInput,

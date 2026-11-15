@@ -150,7 +150,10 @@ fn generate_inline_type_core(
     check_circular: bool,
 ) -> Option<InlineRelationType> {
     // Parse the model struct
-    let parsed_model: syn::ItemStruct = super::file_cache::parse_struct_cached(model_def).ok()?;
+    let mut parsed_model: syn::ItemStruct =
+        super::file_cache::parse_struct_cached(model_def).ok()?;
+    super::transformation::name_self_in_serde_paths(&mut parsed_model);
+    super::field_attrs::hoist_cfg_attr_cfgs(&mut parsed_model);
 
     // IMPORTANT: Use the TARGET model's module path for type resolution, not the parent's.
     // This ensures enum types are resolved to the correct module path

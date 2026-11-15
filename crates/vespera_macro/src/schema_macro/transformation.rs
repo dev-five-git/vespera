@@ -336,6 +336,68 @@ pub(super) fn reroot_path(path: &str, module_path: &[String]) -> Option<String> 
     }
 }
 
+/// `Self::f` in the serde function paths of `item`'s fields (also inside a
+/// `cfg_attr`) spelled `Name::f` with the source struct's name: the
+/// attributes are emitted on the DTO, where `Self` is the DTO (E0599: no
+/// `f` there); [`reroot_path`] then roots `Name` at the source module.
+pub fn name_self_in_serde_paths(item: &mut syn::ItemStruct) {
+    let name = item.ident.to_string();
+    for attr in item.fields.iter_mut().flat_map(|field| &mut field.attrs) {
+        let serde = attr.path().is_ident("serde");
+        if (serde || attr.path().is_ident("cfg_attr"))
+            && let syn::Meta::List(list) = &mut attr.meta
+        {
+            list.tokens = name_self(std::mem::take(&mut list.tokens), &name, serde);
+        }
+    }
+}
+
+/// [`name_self_in_serde_paths`] over one token list; `in_serde`: the
+/// tokens are `serde(..)` items.
+fn name_self(tokens: TokenStream, name: &str, in_serde: bool) -> TokenStream {
+    use proc_macro2::TokenTree;
+    let mut out: Vec<TokenTree> = Vec::new();
+    for tree in tokens {
+        let tree = match tree {
+            TokenTree::Group(group) => {
+                // A `serde(..)` list nested in a `cfg_attr(..)`.
+                let serde = in_serde
+                    || matches!(out.last(), Some(TokenTree::Ident(ident)) if ident == "serde");
+                let mut renamed = proc_macro2::Group::new(
+                    group.delimiter(),
+                    name_self(group.stream(), name, serde),
+                );
+                renamed.set_span(group.span());
+                TokenTree::Group(renamed)
+            }
+            TokenTree::Literal(lit) if in_serde && follows_path_key(&out) => {
+                self_named_literal(&lit, name).unwrap_or(TokenTree::Literal(lit))
+            }
+            other => other,
+        };
+        out.push(tree);
+    }
+    out.into_iter().collect()
+}
+
+/// `out` ends with `<serde path key> =`.
+fn follows_path_key(out: &[proc_macro2::TokenTree]) -> bool {
+    use proc_macro2::TokenTree;
+    matches!(out, [.., TokenTree::Ident(key), TokenTree::Punct(eq)]
+        if eq.as_char() == '=' && SERDE_PATH_KEYS.contains(&key.to_string().as_str()))
+}
+
+/// The string literal `"Self::f"` as `"Name::f"` (`None` for any other
+/// literal).
+fn self_named_literal(lit: &proc_macro2::Literal, name: &str) -> Option<proc_macro2::TokenTree> {
+    let value = syn::parse2::<syn::LitStr>(proc_macro2::TokenTree::Literal(lit.clone()).into())
+        .ok()?
+        .value();
+    let rest = value.strip_prefix("Self::")?;
+    let renamed = syn::LitStr::new(&format!("{name}::{rest}"), lit.span());
+    Some(proc_macro2::TokenTree::Literal(renamed.token()))
+}
+
 /// The function / module path of a `with = "..."`-style key (`None` when it
 /// is not a string path; the key is then dropped).
 fn codec_path(meta: &syn::Meta) -> Option<syn::ExprPath> {
