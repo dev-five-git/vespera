@@ -454,13 +454,47 @@ impl Reference {
 /// `true`/`false` or the schema object / `$ref`) with no wrapper —
 /// byte-identical to the previous `serde_json::Value` representation
 /// for the values vespera actually emits.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Deserialization is hand-written (a boolean stays [`Self::Bool`], an
+/// object goes through the [`SchemaRef`] visitor) rather than untagged, so
+/// an invalid nested schema reports its own error instead of serde's
+/// generic "did not match any variant".
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum AdditionalProperties {
     /// `additionalProperties: true | false`.
     Bool(bool),
     /// `additionalProperties: <schema | $ref>`.
     Schema(SchemaRef),
+}
+
+impl<'de> Deserialize<'de> for AdditionalProperties {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(AdditionalPropertiesVisitor)
+    }
+}
+
+struct AdditionalPropertiesVisitor;
+
+impl<'de> serde::de::Visitor<'de> for AdditionalPropertiesVisitor {
+    type Value = AdditionalProperties;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a boolean or an OpenAPI schema reference or inline schema object")
+    }
+
+    fn visit_bool<E: DeError>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(AdditionalProperties::Bool(value))
+    }
+
+    fn visit_map<M: MapAccess<'de>>(self, access: M) -> Result<Self::Value, M::Error> {
+        SchemaRefVisitor
+            .visit_map(access)
+            .map(AdditionalProperties::Schema)
+    }
 }
 
 #[cfg(test)]
@@ -475,6 +509,45 @@ mod tests {
             error
                 .to_string()
                 .contains("an OpenAPI schema reference or inline schema object"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn additional_properties_keeps_booleans_and_nested_schema_errors() {
+        let parse = serde_json::from_str::<AdditionalProperties>;
+        assert!(matches!(
+            parse("true").unwrap(),
+            AdditionalProperties::Bool(true)
+        ));
+        assert!(matches!(
+            parse("false").unwrap(),
+            AdditionalProperties::Bool(false)
+        ));
+        assert!(matches!(
+            parse(r##"{"$ref":"#/components/schemas/A"}"##).unwrap(),
+            AdditionalProperties::Schema(SchemaRef::Ref(_))
+        ));
+        let error = parse(r#"{"type":["string","integer"]}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("not representable"),
+            "unexpected error: {error}"
+        );
+        let error = parse("[]").unwrap_err().to_string();
+        assert!(
+            error.contains("a boolean or an OpenAPI schema"),
+            "unexpected error: {error}"
+        );
+
+        let error = serde_json::from_str::<Schema>(
+            r#"{"type":"object","additionalProperties":{"type":["string","integer"]}}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("not representable"),
             "unexpected error: {error}"
         );
     }
