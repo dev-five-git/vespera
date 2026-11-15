@@ -9,7 +9,7 @@ use vespera_core::schema::{AdditionalProperties, Discriminator, Schema, SchemaRe
 use super::super::{
     request_view::in_request_view,
     schema_attrs::extract_schema_constraints,
-    serde_attrs::extract_doc_comment,
+    serde_attrs::{extract_doc_comment, extract_field_codec},
     struct_schema::{resolve_type, tuple_fields_schema, with_description},
 };
 use super::{
@@ -20,6 +20,7 @@ use super::{
         is_variant_omitted, newtype_field_schema, variant_codec_schema,
     },
 };
+use crate::schema_macro::type_utils::{is_option_type, option_inner};
 
 /// Variants that take part in the wire contract (not `skip` /
 /// `skip_serializing`).
@@ -226,7 +227,15 @@ pub(super) fn parse_internally_tagged_enum(
                 fields.into_object_schema(variant_description, renames.deny_unknown_fields)
             }
             (None, syn::Fields::Unnamed(fields_unnamed)) if fields_unnamed.unnamed.len() == 1 => {
-                let field = &fields_unnamed.unnamed[0];
+                // serde never writes an `Option` payload's `None` here
+                // (`TaggedSerializer::serialize_none` errors) and reads the
+                // tagged map as `Some`: the payload is the inner type's.
+                let declared = &fields_unnamed.unnamed[0];
+                let peeled = option_inner(&declared.ty).map(|inner| syn::Field {
+                    ty: inner.clone(),
+                    ..declared.clone()
+                });
+                let field = peeled.as_ref().unwrap_or(declared);
                 let inner = newtype_field_schema(field, known_schemas, struct_definitions);
                 // A `$ref` payload is resolved from its Rust type (a
                 // request-view `$ref` names the `Input` component, so the
@@ -241,8 +250,13 @@ pub(super) fn parse_internally_tagged_enum(
                     }
                 };
                 match payload.as_ref().and_then(|payload| payload.schema_type) {
-                    // Newtype of `()` / a unit struct serializes as just the tag.
-                    Some(SchemaType::Null) => tag_object(variant_description),
+                    // Newtype of `()` / a unit struct serializes as just the
+                    // tag, and serde reads the payload only from an EMPTY
+                    // remaining map (`ContentDeserializer::deserialize_unit`).
+                    Some(SchemaType::Null) => Schema {
+                        additional_properties: Some(AdditionalProperties::Bool(false)),
+                        ..tag_object(variant_description)
+                    },
                     // A map-like (or referenced struct) inner value carries the
                     // tag: a closed payload object as one of its own properties.
                     None | Some(SchemaType::Object) => {
@@ -311,7 +325,16 @@ pub(super) fn parse_adjacently_tagged_enum(
             build_variant_data_schema(variant, renames, known_schemas, struct_definitions)
         {
             properties.insert(content_string.clone(), data_schema);
-            required.push(content_string.clone());
+            // serde reads a missing content key of a newtype variant
+            // (without a variant `deserialize_with`) through
+            // `missing_field`, which an `Option` payload answers with `None`.
+            let absent_is_none = in_request_view()
+                && !extract_field_codec(&variant.attrs).deserialize
+                && matches!(&variant.fields, syn::Fields::Unnamed(fields)
+                    if fields.unnamed.len() == 1 && is_option_type(&fields.unnamed[0].ty));
+            if !absent_is_none {
+                required.push(content_string.clone());
+            }
         } else if renames.deny_unknown_fields && matches!(variant.fields, syn::Fields::Unit) {
             // serde reads a unit variant's content key when present (as
             // `null`), so the closed object must list it — optional.

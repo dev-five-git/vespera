@@ -36,6 +36,20 @@ fn both_views(src: &str) -> String {
     "default_not_read",
     "#[serde(transparent)] struct W { v: u32, #[serde(default, skip_serializing)] extra: String }"
 )]
+// Positional / single-field payloads keep their `#[schema]` and `#[garde]`
+// rules (the struct doc comment still describes the whole value).
+#[case::newtype_constraints(
+    "newtype_constraints",
+    "/// An age.\nstruct Age(#[schema(minimum = 0, maximum = 150)] u8);"
+)]
+#[case::transparent_rules(
+    "transparent_rules",
+    "#[serde(transparent)] struct Email { #[garde(email)] #[schema(max_length = 64)] v: String }"
+)]
+#[case::tuple_positions(
+    "tuple_positions",
+    r#"struct Pair(#[schema(min_length = 1)] String, #[doc = " The count."] #[garde(range(max = 9))] u8);"#
+)]
 fn transparent_views(#[case] name: &str, #[case] src: &str) {
     insta::assert_snapshot!(format!("transparent_views_{name}"), both_views(src));
 }

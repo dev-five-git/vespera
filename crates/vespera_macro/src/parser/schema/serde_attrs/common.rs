@@ -12,6 +12,11 @@ use super::extract::{walk_attr_keys, walk_serde_keys};
 /// is removed from every line when all non-blank lines start with one —
 /// deeper indentation (indented code blocks, nested Markdown lists) is kept.
 /// Trailing whitespace and leading / trailing blank lines are dropped.
+///
+/// Known limitation: a leading `" / "` / `"/ "` is treated as a leaked
+/// doc-comment marker (see below) and removed, so a doc line whose own text
+/// starts with `/ ` (`/// / index`) loses that slash — the two spellings
+/// reach this function as the same string and cannot be told apart.
 pub fn extract_doc_comment(attrs: &[syn::Attribute]) -> Option<String> {
     let mut doc_lines: Vec<String> = Vec::new();
 

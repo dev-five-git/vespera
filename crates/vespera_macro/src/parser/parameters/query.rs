@@ -670,9 +670,10 @@ mod tests {
     }
 
     /// `Query<Struct>` needs no binding name: destructured and `_` patterns
-    /// document the fields too. `Option<Query<T>>` (axum 0.8
-    /// `OptionalFromRequestParts`) makes every parameter optional. Field doc
-    /// comments become parameter descriptions.
+    /// document the fields too. `Option<Query<T>>` (not an axum 0.8 extractor:
+    /// `Query` has no `OptionalFromRequestParts` impl, but it is still read as
+    /// optional) makes every parameter optional. Field doc comments become
+    /// parameter descriptions.
     #[rstest::rstest]
     #[case::destructured(
         "fn h(Query(Pagination { page, per_page }): Query<Pagination>) {}",

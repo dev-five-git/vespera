@@ -106,13 +106,7 @@ fn parse_struct_body(
         _ => None,
     };
     if let Some(field) = inner_field {
-        let schema_ref = field_schema_ref(
-            field,
-            &extract_schema_constraints(&field.attrs),
-            side,
-            known_schemas,
-            struct_definitions,
-        );
+        let schema_ref = positional_field_schema(field, side, known_schemas, struct_definitions);
         return with_description(schema_ref, struct_description);
     }
 
@@ -197,13 +191,9 @@ pub(super) fn tuple_fields_schema(
                 })
         })
         .map(|field| {
-            field_schema_ref(
-                field,
-                &extract_schema_constraints(&field.attrs),
-                side,
-                known_schemas,
-                struct_definitions,
-            )
+            let schema_ref =
+                positional_field_schema(field, side, known_schemas, struct_definitions);
+            annotate_field(schema_ref, field, false, false)
         })
         .collect();
     let len = prefix_items.len();
@@ -362,8 +352,16 @@ pub(super) fn collect_named_fields(
         }
 
         if extract_flatten(&field.attrs) {
-            out.flattened
-                .push(flatten_part(field, side, known_schemas, struct_definitions));
+            // Response view: a `skip_serializing(_if)` member may be left
+            // out of the output entirely, so its keys are never required.
+            let omittable = !request && skip_flags.maybe_omitted_on_output();
+            out.flattened.push(flatten_part(
+                field,
+                side,
+                omittable,
+                known_schemas,
+                struct_definitions,
+            ));
             continue;
         }
 
@@ -385,30 +383,10 @@ pub(super) fn collect_named_fields(
         // (input only) → `writeOnly`. A `$ref` is wrapped in `allOf` so the
         // annotations can sit beside it; explicit `#[schema(read_only, ..)]`
         // constraints applied below still win.
-        let doc = extract_doc_comment(&field.attrs);
-        let deprecated = field
-            .attrs
-            .iter()
-            .any(|attr| attr.path().is_ident("deprecated"));
         // (Both are meaningless in a request-only view.)
         let read_only = !request && skip_flags.skip_deserializing;
         let write_only = !request && skip_flags.skip_serializing;
-        if doc.is_some() || deprecated || read_only || write_only {
-            let mut schema = match schema_ref {
-                SchemaRef::Inline(schema) => schema,
-                SchemaRef::Ref(reference) => Box::new(Schema {
-                    all_of: Some(vec![SchemaRef::Ref(reference)]),
-                    ..Default::default()
-                }),
-            };
-            if doc.is_some() {
-                schema.description = doc;
-            }
-            schema.deprecated = deprecated.then_some(true).or(schema.deprecated);
-            schema.read_only = read_only.then_some(true).or(schema.read_only);
-            schema.write_only = write_only.then_some(true).or(schema.write_only);
-            schema_ref = SchemaRef::Inline(schema);
-        }
+        schema_ref = annotate_field(schema_ref, field, read_only, write_only);
 
         apply_field_rules(&mut schema_ref, field, &constraints);
 
@@ -455,6 +433,74 @@ pub(super) fn collect_named_fields(
         out.properties.insert(field_name, schema_ref);
     }
     out
+}
+
+/// A field's doc comment → `description`, Rust `#[deprecated]` →
+/// `deprecated`, plus `readOnly` / `writeOnly` when set. A `$ref` is wrapped
+/// in `allOf` so the annotations can sit beside it.
+fn annotate_field(
+    schema_ref: SchemaRef,
+    field: &syn::Field,
+    read_only: bool,
+    write_only: bool,
+) -> SchemaRef {
+    let doc = extract_doc_comment(&field.attrs);
+    let deprecated = field
+        .attrs
+        .iter()
+        .any(|attr| attr.path().is_ident("deprecated"));
+    if !(doc.is_some() || deprecated || read_only || write_only) {
+        return schema_ref;
+    }
+    let mut schema = match schema_ref {
+        SchemaRef::Inline(schema) => schema,
+        SchemaRef::Ref(reference) => Box::new(Schema {
+            all_of: Some(vec![SchemaRef::Ref(reference)]),
+            ..Default::default()
+        }),
+    };
+    if doc.is_some() {
+        schema.description = doc;
+    }
+    schema.deprecated = deprecated.then_some(true).or(schema.deprecated);
+    schema.read_only = read_only.then_some(true).or(schema.read_only);
+    schema.write_only = write_only.then_some(true).or(schema.write_only);
+    SchemaRef::Inline(schema)
+}
+
+/// The schema of a positional field (a tuple-struct position, a newtype
+/// struct / variant payload, a transparent struct's field) on `side`: its
+/// wire type (see [`field_schema_ref`]) with its `#[garde(..)]` rules and
+/// `#[schema(..)]` constraints applied, like a named field's.
+pub(super) fn positional_field_schema(
+    field: &syn::Field,
+    side: SerdeSide,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
+) -> SchemaRef {
+    let constraints = extract_schema_constraints(&field.attrs);
+    let mut schema_ref =
+        field_schema_ref(field, &constraints, side, known_schemas, struct_definitions);
+    if !constraints.is_any() {
+        apply_garde_rules(
+            &mut schema_ref,
+            &field.ty,
+            &extract_garde_rules(&field.attrs),
+            &constraints,
+        );
+    }
+    // Only keywords land on the schema (`value_type` / `any` / `dive` are
+    // already reflected): a bare payload `$ref` stays a `$ref`.
+    let keywords = SchemaConstraints {
+        dive: None,
+        any: None,
+        value_type: None,
+        ..constraints
+    };
+    if !keywords.is_empty() {
+        apply_constraints_to_schema_ref(&mut schema_ref, &keywords);
+    }
+    schema_ref
 }
 
 /// Document a field's validation rules on its schema: the `#[garde(...)]`

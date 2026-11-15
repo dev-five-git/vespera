@@ -1,0 +1,16 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_transparent.rs
+assertion_line: 54
+expression: both_views(src)
+---
+#[serde(transparent)] struct Email { #[garde(email)] #[schema(max_length = 64)] v: String }
+response: {
+  "type": "string",
+  "format": "email",
+  "maxLength": 64
+}
+request: {
+  "type": "string",
+  "format": "email",
+  "maxLength": 64
+}

@@ -115,3 +115,19 @@ fn request_instance_name_never_collides_with_an_input_named_argument() {
         ["Tree_HashSet_Item.Input", "Tree_HashSet_ItemInput"]
     );
 }
+
+/// A lifetime-only generic (`Borrowed<'a>`) used as `Borrowed<'static>` is
+/// its own (renamed) component, never inlined.
+#[test]
+fn lifetime_only_definition_is_referenced() {
+    let known = HashSet::from(["Borrowed".to_string()]);
+    let defs = HashMap::from([(
+        "Borrowed".to_string(),
+        r#"#[schema(name = "BorrowedName")] struct Borrowed<'a> { name: &'a str }"#.to_string(),
+    )]);
+    let ty: Type = syn::parse_str("Borrowed<'static>").unwrap();
+    assert_eq!(
+        reference(parse_type_to_schema_ref(&ty, &known, &defs)),
+        "#/components/schemas/BorrowedName"
+    );
+}

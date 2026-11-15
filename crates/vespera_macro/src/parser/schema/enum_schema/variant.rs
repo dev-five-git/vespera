@@ -8,10 +8,11 @@ use vespera_core::schema::{Schema, SchemaRef};
 
 use super::super::{
     request_view::current_side,
-    schema_attrs::extract_schema_constraints,
     serde_attrs::{extract_field_codec, extract_rename_all_for, extract_serde_skip_flags},
-    struct_schema::{NamedFields, collect_named_fields, tuple_fields_schema},
-    wire_override::{CUSTOM_CODEC_DESCRIPTION, field_schema_ref},
+    struct_schema::{
+        NamedFields, collect_named_fields, positional_field_schema, tuple_fields_schema,
+    },
+    wire_override::CUSTOM_CODEC_DESCRIPTION,
 };
 
 /// Build the fields of a struct variant through the SAME field walker structs
@@ -69,19 +70,14 @@ pub(super) fn variant_codec_schema(variant: &syn::Variant) -> Option<SchemaRef> 
     })
 }
 
-/// Schema of the single field of a newtype variant on the current side.
+/// Schema of the single field of a newtype variant on the current side, its
+/// `#[garde(..)]` rules and `#[schema(..)]` constraints applied.
 pub(super) fn newtype_field_schema(
     field: &syn::Field,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> SchemaRef {
-    field_schema_ref(
-        field,
-        &extract_schema_constraints(&field.attrs),
-        current_side(),
-        known_schemas,
-        struct_definitions,
-    )
+    positional_field_schema(field, current_side(), known_schemas, struct_definitions)
 }
 
 /// Build a schema for a variant's data (tuple or struct fields)

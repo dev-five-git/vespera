@@ -63,11 +63,9 @@ pub(super) fn parse_unit_enum_to_schema(
     Schema {
         schema_type: Some(SchemaType::String),
         description,
-        r#enum: if enum_values.is_empty() {
-            None
-        } else {
-            Some(enum_values)
-        },
+        // Never empty: an enum without emitted variants is `{not: {}}`
+        // (see `parse_enum_to_schema`).
+        r#enum: Some(enum_values),
         ..Schema::string()
     }
 }

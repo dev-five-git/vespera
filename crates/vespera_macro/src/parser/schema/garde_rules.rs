@@ -290,8 +290,10 @@ fn apply_to_schema(
     if let Some(inner) = &rules.inner
         && let Some((elem_ty, on_items)) = inner_target(ty)
     {
+        // `Option<T>`: the rules constrain this same schema, so the field's
+        // explicit `#[schema(..)]` keywords still win; items have none.
         if !on_items {
-            apply_to_schema(schema, elem_ty, inner, &no_explicit);
+            apply_to_schema(schema, elem_ty, inner, explicit);
         } else if let Some(SchemaRef::Inline(items)) = schema.items.as_mut() {
             apply_to_schema(items, elem_ty, inner, &no_explicit);
         }
