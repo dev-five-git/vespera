@@ -168,6 +168,31 @@ fn type_array_null_never_widens_a_schema_that_rejects_null(
     json!({"type": ["object", "null"], "allOf": [{"type": "null"}, {"$ref": "#/components/schemas/A"}]}),
     None
 )]
+// Round 14: a member admits `null` when it is nullable or type-less, not only
+// when it is exactly `{type: null}`.
+#[case::all_of_nullable_member(
+    json!({"type": ["integer", "null"], "allOf": [{"type": ["integer", "null"]}]}),
+    Some(true)
+)]
+#[case::all_of_typeless_member(json!({"type": ["integer", "null"], "allOf": [{"description": "d"}]}), Some(true))]
+#[case::all_of_typeless_enum_without_null(json!({"type": ["string", "null"], "allOf": [{"enum": ["a"]}]}), None)]
+#[case::all_of_typeless_rejecting_composition(
+    json!({"type": ["string", "null"], "allOf": [{"allOf": [{"$ref": "#/components/schemas/A"}]}]}),
+    None
+)]
+#[case::any_of_nullable_member(
+    json!({"type": ["string", "null"], "anyOf": [{"type": ["string", "null"]}]}),
+    Some(true)
+)]
+#[case::any_of_empty_member(json!({"type": ["string", "null"], "anyOf": [{"type": "integer"}, {}]}), Some(true))]
+#[case::one_of_nullable_member(
+    json!({"type": ["string", "null"], "oneOf": [{"type": ["string", "null"]}, {"type": "integer"}]}),
+    Some(true)
+)]
+#[case::one_of_two_null_branches(
+    json!({"type": ["string", "null"], "oneOf": [{"type": "null"}, {"type": ["string", "null"]}]}),
+    None
+)]
 fn type_array_null_kept_when_the_composition_admits_null(
     #[case] input: serde_json::Value,
     #[case] nullable: Option<bool>,

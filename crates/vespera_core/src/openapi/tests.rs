@@ -828,8 +828,42 @@ fn merge_adopts_webhooks_when_self_has_none() {
     assert!(base.webhooks.unwrap().contains_key("hook"));
 }
 
+/// Round 14: a `3.0.x` document's body is read into 3.1 shapes, so its
+/// version is read as `3.1.0` too (a hand-built `3.0.x` still serializes).
 #[rstest]
+#[case(OpenApiVersion::V3_0_0, "3.0.0")]
+#[case(OpenApiVersion::V3_0_1, "3.0.1")]
+#[case(OpenApiVersion::V3_0_2, "3.0.2")]
+#[case(OpenApiVersion::V3_0_3, "3.0.3")]
 #[case(OpenApiVersion::V3_0_4, "3.0.4")]
+fn openapi_version_3_0_reads_as_3_1_0(#[case] version: OpenApiVersion, #[case] wire: &str) {
+    assert_eq!(serde_json::to_value(version).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_value::<OpenApiVersion>(serde_json::json!(wire)).unwrap(),
+        OpenApiVersion::V3_1_0
+    );
+}
+
+/// Round 14: a `3.0.3` document re-serializes as a consistent `3.1.0` one
+/// (its `nullable` became a `type` array).
+#[test]
+fn openapi_3_0_document_reserializes_as_3_1() {
+    let doc: OpenApi = serde_json::from_value(serde_json::json!({
+        "openapi": "3.0.3",
+        "info": {"title": "t", "version": "1"},
+        "components": {"schemas": {"S": {"type": "string", "nullable": true}}}
+    }))
+    .unwrap();
+    let out = serde_json::to_value(&doc).unwrap();
+    assert_eq!(out["openapi"], "3.1.0");
+    assert_eq!(
+        out["components"]["schemas"]["S"]["type"],
+        serde_json::json!(["string", "null"])
+    );
+    assert!(serde_json::from_value::<OpenApiVersion>(serde_json::json!("2.0")).is_err());
+}
+
+#[rstest]
 #[case(OpenApiVersion::V3_1_0, "3.1.0")]
 #[case(OpenApiVersion::V3_1_1, "3.1.1")]
 #[case(OpenApiVersion::V3_1_2, "3.1.2")]

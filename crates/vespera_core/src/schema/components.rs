@@ -31,7 +31,12 @@ pub struct Components {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub links: Option<BTreeMap<String, crate::route::Link>>,
     /// Callback definitions
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// (each Callback Object's `x-*` extension keys are skipped on deserialize)
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::extensions::skip_callback_extension_keys"
+    )]
     pub callbacks: Option<BTreeMap<String, crate::route::Callback>>,
     /// Reusable Path Item definitions (OpenAPI 3.1)
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -6,7 +6,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// `OpenAPI` document version
+///
+/// Deserializing maps every `3.0.x` to [`OpenApiVersion::V3_1_0`]: the
+/// document body is read into OpenAPI 3.1 shapes (`nullable` →
+/// `type: [T, "null"]`, `example` → `examples`, boolean
+/// `exclusiveMinimum` → a number), so a kept `3.0.x` would label 3.1-only
+/// output as 3.0.  The `3.0.x` variants still serialize as written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(from = "OpenApiVersionWire")]
 pub enum OpenApiVersion {
     #[serde(rename = "3.0.0")]
     V3_0_0,
@@ -25,6 +32,35 @@ pub enum OpenApiVersion {
     V3_1_1,
     #[serde(rename = "3.1.2")]
     V3_1_2,
+}
+
+/// The accepted `openapi` strings (deserialize only; see [`OpenApiVersion`]).
+#[derive(Deserialize)]
+enum OpenApiVersionWire {
+    #[serde(
+        rename = "3.0.0",
+        alias = "3.0.1",
+        alias = "3.0.2",
+        alias = "3.0.3",
+        alias = "3.0.4"
+    )]
+    V3_0,
+    #[serde(rename = "3.1.0")]
+    V3_1_0,
+    #[serde(rename = "3.1.1")]
+    V3_1_1,
+    #[serde(rename = "3.1.2")]
+    V3_1_2,
+}
+
+impl From<OpenApiVersionWire> for OpenApiVersion {
+    fn from(wire: OpenApiVersionWire) -> Self {
+        match wire {
+            OpenApiVersionWire::V3_0 | OpenApiVersionWire::V3_1_0 => Self::V3_1_0,
+            OpenApiVersionWire::V3_1_1 => Self::V3_1_1,
+            OpenApiVersionWire::V3_1_2 => Self::V3_1_2,
+        }
+    }
 }
 
 /// Contact information
@@ -150,8 +186,9 @@ pub struct OpenApi {
     pub servers: Option<Vec<Server>>,
     /// Path definitions
     /// (optional in 3.1: a webhooks- or components-only document omits it;
-    /// always serialized, as `{}` when empty)
-    #[serde(default)]
+    /// always serialized, as `{}` when empty; the Paths Object's `x-*`
+    /// extension keys are skipped on deserialize, never read as paths)
+    #[serde(default, deserialize_with = "crate::extensions::skip_extension_keys")]
     pub paths: BTreeMap<String, PathItem>,
     /// Webhooks (OpenAPI 3.1): incoming requests the API *sends* to
     /// consumers, keyed by a unique webhook name.
