@@ -7,8 +7,8 @@
 //! per chunk.  For a small body — one chunk followed by `End` — that fixed
 //! setup dominates the whole dispatch.
 //!
-//! When the dispatch future is driven **directly by `Runtime::block_on`**
-//! (no Tokio task id — the JNI symbols and other blocking FFI callers), the
+//! When the dispatch future is driven **directly by a multi-thread
+//! `Runtime::block_on`** (no Tokio task id — the JNI symbols and other blocking FFI callers), the
 //! calling thread is already a thread that may block, so the first
 //! [`INLINE_PULL_BUDGET`] pulls run right there inside `poll_frame`.  A
 //! body that ends within the budget never starts the producer at all; a
@@ -25,7 +25,12 @@
 //! - **without a [`crate::dispatch_timeout`]**: a blocking inline read
 //!   cannot be pre-empted by the deadline, whereas a parked producer is
 //!   unblocked by the request-source close that follows a `504`;
-//! - **outside a spawned task**: a pull must never block a runtime worker.
+//! - **outside a spawned task**: a pull must never block a runtime worker;
+//! - **on a multi-thread runtime** only: a current-thread runtime's
+//!   `block_on` thread is its only worker, so a pull waiting on one of its
+//!   tasks would hang.  The pull runs under `tokio::task::block_in_place`,
+//!   outside the runtime context, so Tokio's blocking APIs behave as on the
+//!   `spawn_blocking` producer thread.
 //!
 //! **Caveat — handler-side timeouts.** An inline pull blocks the polling
 //! thread *inside* `poll_frame`, so a timeout the handler itself puts around
@@ -72,6 +77,7 @@ impl ChannelBody {
             && self.pull_chunk.is_some()
             && self.inline.open.load(Ordering::Acquire)
             && tokio::task::try_id().is_none()
+            && on_multi_thread_runtime()
     }
 
     /// Pull the next frame inline when allowed (see the module docs).
@@ -85,8 +91,17 @@ impl ChannelBody {
             // Same discipline as the producer's outer `catch_unwind`: a
             // panicking pull aborts the body instead of unwinding into the
             // handler (or across the FFI boundary of the caller).
-            let chunk = std::panic::catch_unwind(std::panic::AssertUnwindSafe(pull))
-                .unwrap_or(RequestChunk::Error);
+            //
+            // `block_in_place` leaves the runtime context for the pull (on
+            // the non-worker `block_on` thread it moves no core, only resets
+            // the context): a pull may use Tokio's blocking APIs
+            // (`blocking_recv`, `blocking_lock`, `Handle::block_on`) exactly
+            // as on the `spawn_blocking` producer thread, where they are
+            // allowed, instead of panicking into a body error.
+            let chunk = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                tokio::task::block_in_place(pull)
+            }))
+            .unwrap_or(RequestChunk::Error);
             match chunk {
                 // "Nothing right now, keep open": spend budget, retry.
                 RequestChunk::Data(data) if data.is_empty() => {}
@@ -117,6 +132,17 @@ impl ChannelBody {
         }
         Ok(Frame::data(Bytes::from(data)))
     }
+}
+
+/// Whether the polling thread drives a **multi-thread** runtime's
+/// `block_on`.  On a current-thread runtime the `block_on` thread is the
+/// runtime's only worker: an inline read that waits on a task of that same
+/// runtime (a `std::sync::mpsc` sender fed by a spawned task) would never be
+/// woken, and `block_in_place` is unavailable there.  The producer thread
+/// takes every pull instead.
+fn on_multi_thread_runtime() -> bool {
+    tokio::runtime::Handle::try_current()
+        .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
 }
 
 /// Inline-pull state shared between a request [`ChannelBody`], the

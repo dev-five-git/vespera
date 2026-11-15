@@ -85,7 +85,9 @@ extern "C" {
  * shared runtime could not be built), otherwise on a runtime worker thread —
  * including when
  * vespera_shutdown drops a pending dispatch with a 503, which can happen
- * after vespera_shutdown has returned.  The callback OWNS `response` and
+ * after vespera_shutdown has returned (or inline on the calling thread, when
+ * the shutdown races this vespera_dispatch_async call and the runtime drops
+ * the task as it is spawned).  The callback OWNS `response` and
  * must release it with vespera_free(response, response_len).  It must not
  * unwind.
  */
@@ -166,7 +168,9 @@ void vespera_free(uint8_t *ptr, size_t len);
  * Shut the shared runtime down for good: new dispatches answer 503 at
  * once, in-flight ones get up to `timeout_ms` to finish, then the runtime
  * stops.  Pending async dispatches are dropped and their callbacks receive
- * a 503 on a runtime worker thread, possibly after this call returned.
+ * a 503 on a runtime worker thread, possibly after this call returned (a
+ * vespera_dispatch_async racing the shutdown may instead deliver it inline
+ * on its own calling thread).
  * EXCEPTION: a handler still blocking its worker thread (not yielding at an
  * .await) when the time is up is abandoned with the runtime: its callback
  * never runs and its `user_data` is never released.  Returns VESPERA_OK,

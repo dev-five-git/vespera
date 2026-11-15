@@ -181,8 +181,9 @@ fn panic_after_the_header_unwinds_instead_of_completing(#[case] chunks: usize) {
     assert_eq!(seen.headers.len(), 1, "the 200 header was delivered once");
     assert_eq!(status(&seen.headers[0]), 200);
     assert!(
-        seen.body.len() < 3 * 4,
-        "never more than the frames produced before the panic"
+        b"partpart".starts_with(&seen.body),
+        "only (a prefix of) the two frames produced before the panic: {:?}",
+        seen.body
     );
     assert_eq!(seen.closes, 1, "the request source is closed on the panic");
 }

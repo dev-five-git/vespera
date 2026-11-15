@@ -342,14 +342,16 @@ async fn bidirectional_request_body_cap(#[case] upload_len: usize, #[case] statu
     }
 }
 
+/// Round 12: the cap applies to DIRECT for every status, not only `422` —
+/// a body over it fits the 64 KiB `out` yet is the same `500` as buffered.
 #[rstest]
-#[case::over_cap("/big_422", 500)]
-#[case::under_cap("/small_422", 422)]
+#[case::over_cap_422("/big_422", 500)]
+#[case::under_cap_422("/small_422", 422)]
+#[case::over_cap_exact_200("/big_full", 500)]
+#[case::over_cap_stream_200("/big_stream", 500)]
+#[case::under_cap_200("/small", 200)]
 #[tokio::test]
-async fn buffered_and_direct_422_agree_on_the_response_cap(
-    #[case] path: &str,
-    #[case] status: u64,
-) {
+async fn buffered_and_direct_agree_on_the_response_cap(#[case] path: &str, #[case] status: u64) {
     ensure();
     let buffered = dispatch_from_bytes_async(encode("GET", path, b"")).await;
     let mut out = vec![0u8; 64 * 1024];
@@ -410,12 +412,18 @@ async fn streaming_422_prefetch_past_the_deadline_is_a_504_header() {
 
 /// The legacy direct-write overflow drains an unknown-length body only to
 /// COUNT it — now bounded by the buffered-response cap instead of forever.
+/// Round 12: an exact-length body past the cap is the same `500`, instead of
+/// an `Overflow` asking the caller to allocate (and re-run the handler for)
+/// a response the buffered path refuses.
+#[rstest]
+#[case::unknown_length("/big_stream")]
+#[case::exact_length("/big_full")]
 #[tokio::test]
-async fn direct_write_overflow_counting_is_capped() {
+async fn direct_write_overflow_counting_is_capped(#[case] path: &str) {
     ensure();
     let mut out = vec![0u8; 512];
     let DirectWriteResult::Complete(n) =
-        dispatch_into_async(encode("GET", "/big_stream", b""), &mut out).await
+        dispatch_into_async(encode("GET", path, b""), &mut out).await
     else {
         panic!("the 500 naming the cap fits");
     };
@@ -462,4 +470,33 @@ async fn resumable_direct_write_is_bounded_by_the_deadline() {
     };
     assert_quick(started);
     assert_eq!(split(&out[..n]).0["status"], 504);
+}
+
+/// Round 12: a pending (overflowed) response resumed into a larger buffer is
+/// held to the response cap like the first write — `/big_stream`'s first
+/// 2 KiB frame overflows a 2-byte body budget, the resume reaches the third
+/// frame (6 KiB in total) and answers the buffered path's `500`.
+#[tokio::test]
+async fn resumed_direct_write_is_held_to_the_response_cap() {
+    use vespera_inprocess::{ResumableDirectWrite, dispatch_into_async_borrowed_resumable};
+    ensure();
+    let mut out = vec![0u8; 64 * 1024];
+    let ResumableDirectWrite::Complete(header_len) =
+        dispatch_into_async_borrowed_resumable(&encode("GET", "/empty_stream", b""), &mut out)
+            .await
+    else {
+        panic!("header-only response fits");
+    };
+    let mut tiny = vec![0u8; header_len + 2];
+    let ResumableDirectWrite::Overflow(pending) =
+        dispatch_into_async_borrowed_resumable(&encode("GET", "/big_stream", b""), &mut tiny).await
+    else {
+        panic!("the 2 KiB first frame overflows a 2-byte body budget");
+    };
+    let ResumableDirectWrite::Complete(n) = pending.write_into(&mut out).await else {
+        panic!("the 500 naming the cap fits");
+    };
+    let buffered = dispatch_from_bytes_async(encode("GET", "/big_stream", b"")).await;
+    assert_eq!(split(&buffered).0["status"], 500);
+    assert_eq!(buffered, &out[..n]);
 }

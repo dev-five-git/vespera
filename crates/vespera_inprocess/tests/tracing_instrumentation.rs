@@ -393,6 +393,44 @@ fn app_field_is_the_resolved_name_never_the_raw_client_value() {
     }
 }
 
+/// Round 12: `method` is client text too — standard methods are recorded
+/// verbatim, every other (extension or invalid) one as the fixed `_OTHER`,
+/// and the `405` event's `detail` echoes at most a 64-byte prefix.
+#[test]
+fn method_field_is_bucketed_never_the_raw_client_value() {
+    setup();
+    let long = "x".repeat(2 * 1024);
+    let invalid = format!("BAD {long}");
+    for (method, status, recorded) in [
+        ("POST", 200, "POST"),
+        ("XCUSTOM", 405, "_OTHER"),
+        ("get", 405, "_OTHER"),
+        (invalid.as_str(), 405, "_OTHER"),
+    ] {
+        let capture = Capture::default();
+        let header = format!(r#"{{"v":1,"method":"{method}","path":"/ok"}}"#);
+        let resp = capture.run(|| dispatch_from_bytes(wire(&header, b""), &runtime()));
+        assert_eq!(status_of(&resp), status, "{method:.16}");
+        let span = capture.dispatch_span();
+        assert_eq!(field(&span, "method"), recorded);
+        let state = capture.0.lock().unwrap();
+        let logged = format!("{:?}{:?}", state.spans, state.events);
+        assert!(!logged.contains(&"x".repeat(65)), "{logged:.512}");
+    }
+    let capture = Capture::default();
+    let header = format!(r#"{{"v":1,"method":"{invalid}","path":"/ok"}}"#);
+    let resp = capture.run(|| dispatch_from_bytes(wire(&header, b""), &runtime()));
+    let len = u32::from_be_bytes(resp[..4].try_into().unwrap()) as usize;
+    let expected = format!(
+        "Method Not Allowed: 'BAD {}...' is not a valid HTTP method",
+        "x".repeat(60)
+    );
+    assert_eq!(String::from_utf8_lossy(&resp[4 + len..]), expected);
+    let state = capture.0.lock().unwrap();
+    assert_eq!(state.events.len(), 1);
+    assert_eq!(state.events[0].fields["detail"], expected);
+}
+
 #[test]
 fn direct_streaming_and_bidirectional_modes() {
     setup();

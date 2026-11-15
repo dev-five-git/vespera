@@ -91,7 +91,7 @@ pub struct WireRequestHeader<'a> {
     pub headers: CowPairs<'a>,
     /// Optional name of the target app for multi-app routing.  When
     /// omitted (or empty), the request is dispatched to the default
-    /// app registered via [`register_app`].  Use [`register_app_named`]
+    /// app registered via [`crate::register_app`].  Use [`crate::register_app_named`]
     /// to register additional named apps.
     #[cfg_attr(
         any(test, feature = "bench-support"),
@@ -196,7 +196,7 @@ type CowPairs<'a> = Vec<(Cow<'a, str>, Cow<'a, str>)>;
 pub const WIRE_HEADER_RESERVE: usize = 192;
 
 /// Header-name sort stack-buffer capacity — shared by the production
-/// [`header_write::write_headers`] serializer and the bench-only serde
+/// `header_write::write_headers` serializer and the bench-only serde
 /// twin `bench_serde::WireHeaders::serialize`.  Both arms of the same-run
 /// `wire_header_serde` criterion A/B must size their stack buffer
 /// identically (the bench's invariant is "same code, different
@@ -493,7 +493,7 @@ pub fn panic_error_wire(msg: &str) -> Vec<u8> {
 /// `[u32 BE header_len | JSON header | raw body]`.
 ///
 /// **Reached only for a small `422`** — from the 422 branch of
-/// [`crate::dispatch::finish_buffered_wire`] (buffered / direct-write) and of
+/// `crate::dispatch::finish_buffered_wire` (buffered / direct-write) and of
 /// [`crate::direct::finish_resumable`] (resumable DIRECT): such a response
 /// must materialise the whole wire tail into an intermediate
 /// `Vec` so its JSON body can be inspected and, on a best-effort basis,
@@ -640,7 +640,7 @@ fn check_header_len(header_len: usize) -> Result<(), String> {
 /// the two used to inline the same prefix/length/range validation;
 /// centralising it removes the duplicate logic and guarantees the two
 /// paths can never drift in their error messages (the existing
-/// [`crate::tests::wire_contract`] and [`crate::tests::wire_robustness`]
+/// `tests/wire_contract.rs` and `tests/wire_robustness.rs` integration
 /// behavioural goldens stay byte-identical because the validation bytes
 /// are the same).
 ///

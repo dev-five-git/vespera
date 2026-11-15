@@ -1,9 +1,9 @@
 //! Hand-rolled deserializer for the **fixed-schema request wire header**
 //! — the byte-for-byte replacement for the `serde_json::from_slice`
-//! path that used to drive [`super::WireRequestHeader`]'s derive.
+//! path that used to drive `WireRequestHeader`'s derive.
 //!
 //! Behaviour matches `serde_json` + the serde derive on
-//! [`super::WireRequestHeader`] (locked by the in-crate round-trip
+//! [`crate::wire::WireRequestHeader`] (locked by the in-crate round-trip
 //! property test in `wire/tests.rs` and the fuzz harness in
 //! `tests/wire_robustness.rs`):
 //!
@@ -14,7 +14,7 @@
 //!   an owned decode ([`Cow::Owned`]) for `\" \\ \/ \b \f \n \r \t
 //!   \uXXXX` — including UTF-16 surrogate pairs;
 //! * `v` defaults to `0`, `query` to empty, `headers` to empty, `principal`
-//!   (parsed by [`principal`]) / `app` /
+//!   (parsed by `principal`) / `app` /
 //!   `remote_addr` / `scheme` to `None`; `method`/`path` are required;
 //! * duplicate known keys, lone/invalid surrogates, bad escapes,
 //!   unescaped control characters, invalid UTF-8, and trailing content
