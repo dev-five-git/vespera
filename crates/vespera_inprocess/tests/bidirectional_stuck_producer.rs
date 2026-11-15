@@ -7,7 +7,7 @@
 //! blocking thread, a producer slot and the host pull closure forever.
 
 use std::ops::ControlFlow;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -103,6 +103,53 @@ async fn a_producer_blocked_on_an_unpolled_body_exits_once_the_dispatch_finished
     assert!(
         dropped.load(Ordering::SeqCst),
         "the producer exited and released the pull closure"
+    );
+    release().notify_one();
+}
+
+/// A producer parked INSIDE a source read when the dispatch finishes (the
+/// close hook unblocks it with one more chunk, which still fits the
+/// channel) never calls the source again: the loop stops before the next
+/// pull.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_producer_unblocked_after_the_dispatch_finished_never_pulls_again() {
+    register_app_named(APP, || Router::new().route("/park", post(park)));
+    let dropped = Arc::new(AtomicBool::new(false));
+    let flag = DropFlag(Arc::clone(&dropped));
+    let pulls = Arc::new(AtomicUsize::new(0));
+    let pulls_in_source = Arc::clone(&pulls);
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel::<()>();
+    let mut response = Vec::new();
+    let header = dispatch_bidirectional_streaming_closing(
+        encode("/park"),
+        move || {
+            let _keep = &flag;
+            if pulls_in_source.fetch_add(1, Ordering::SeqCst) == 1 {
+                // Parked until the request source is closed.
+                let _ = closed_rx.recv_timeout(Duration::from_secs(5));
+            }
+            RequestChunk::Data(b"x".to_vec())
+        },
+        |chunk: &[u8]| {
+            response.extend_from_slice(chunk);
+            ControlFlow::Continue(())
+        },
+        move || {
+            let _ = closed_tx.send(());
+        },
+    )
+    .await;
+    assert_eq!(status(&header), 200);
+    assert_eq!(response, b"parked");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !dropped.load(Ordering::SeqCst) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(dropped.load(Ordering::SeqCst), "the producer exited");
+    assert_eq!(
+        pulls.load(Ordering::SeqCst),
+        2,
+        "no pull after the dispatch finished"
     );
     release().notify_one();
 }
