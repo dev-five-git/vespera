@@ -229,6 +229,12 @@ class ConfigurationMetadataTest {
                 properties.get(PREFIX + ".reactive-streaming.max-queued").path("defaultValue").asInt());
         assertFalse(byName(root.path("groups")).get(PREFIX + ".reactive-streaming")
                 .path("description").asText().isBlank());
+        // Unset, the indicator follows management.health.defaults.enabled:
+        // a fixed defaultValue would tell the IDE it is always on.
+        JsonNode health = properties.get("management.health.vespera.enabled");
+        assertNotNull(health);
+        assertTrue(health.path("defaultValue").isMissingNode(), health.toString());
+        assertTrue(health.path("description").asText().contains("management.health.defaults.enabled"));
     }
 
     private static Set<String> hintValues(JsonNode hint) {
