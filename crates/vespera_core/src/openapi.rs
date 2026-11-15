@@ -1,6 +1,6 @@
 //! `OpenAPI` document structure definitions
 
-use crate::route::PathItem;
+use crate::route::{Operation, PathItem};
 use crate::schema::{Components, ExternalDocumentation};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -236,15 +236,78 @@ fn has_any_component_map(components: &Components) -> bool {
             .is_some_and(|entries| !entries.is_empty())
 }
 
+/// The eight per-method operation slots of `item`, in declaration order.
+fn operation_slots_mut(item: &mut PathItem) -> [&mut Option<Operation>; 8] {
+    [
+        &mut item.get,
+        &mut item.post,
+        &mut item.put,
+        &mut item.patch,
+        &mut item.delete,
+        &mut item.head,
+        &mut item.options,
+        &mut item.trace,
+    ]
+}
+
+/// Move `item`'s path-level `parameters` / `servers` onto its own
+/// operations, leaving both path-level fields `None`.
+///
+/// An operation-level parameter with the same `name` + `in` overrides the
+/// path-level one (OpenAPI 3.1, Path Item Object), so it is kept; an
+/// operation with its own `servers` keeps them (they override the path-level
+/// list).  The resulting item describes exactly the same requests.
+fn push_path_level_down(item: &mut PathItem) {
+    let parameters = item.parameters.take();
+    let servers = item.servers.take();
+    for op in operation_slots_mut(item).into_iter().flatten() {
+        if let Some(path_params) = parameters.as_ref().filter(|params| !params.is_empty()) {
+            let op_params = op.parameters.get_or_insert_with(Vec::new);
+            for param in path_params {
+                if !op_params
+                    .iter()
+                    .any(|own| own.name == param.name && own.r#in == param.r#in)
+                {
+                    op_params.push(param.clone());
+                }
+            }
+        }
+        if op.servers.is_none() {
+            op.servers.clone_from(&servers);
+        }
+    }
+}
+
 /// Merge `other`'s per-method operations into `into` with **self-wins**
 /// semantics: an operation (or path-level field) already present on `into`
 /// is kept; a slot empty on `into` is filled from `other`.
 ///
 /// Applied on a path-key conflict so two apps that define the same path
 /// under different methods both keep their operations, instead of the
-/// incoming [`PathItem`] being dropped whole.  Destructuring `other` keeps
-/// this exhaustive — adding a `PathItem` field forces this to be updated.
-fn merge_path_item(into: &mut PathItem, other: PathItem) {
+/// incoming [`PathItem`] being dropped whole.
+///
+/// Path-level `parameters` / `servers` apply to every operation of their
+/// item, so they must not cross over to the other side's operations: when
+/// both sides end up with operations in the merged item, each side's
+/// path-level values are first pushed down onto its own operations; when
+/// only `into` keeps operations, `other`'s path-level values are dropped
+/// (they governed nothing that survives).  Destructuring `other` keeps this
+/// exhaustive — adding a `PathItem` field forces this to be updated.
+fn merge_path_item(into: &mut PathItem, mut other: PathItem) {
+    let into_has_ops = operation_slots_mut(into).iter().any(|op| op.is_some());
+    let other_contributes = operation_slots_mut(into)
+        .into_iter()
+        .zip(operation_slots_mut(&mut other))
+        .any(|(own, incoming)| own.is_none() && incoming.is_some());
+    if into_has_ops {
+        if other_contributes {
+            push_path_level_down(into);
+            push_path_level_down(&mut other);
+        } else {
+            other.parameters = None;
+            other.servers = None;
+        }
+    }
     let PathItem {
         get,
         post,
@@ -264,29 +327,13 @@ fn merge_path_item(into: &mut PathItem, other: PathItem) {
     for (key, value) in extensions {
         into.extensions.entry(key).or_insert(value);
     }
-    if into.get.is_none() {
-        into.get = get;
-    }
-    if into.post.is_none() {
-        into.post = post;
-    }
-    if into.put.is_none() {
-        into.put = put;
-    }
-    if into.patch.is_none() {
-        into.patch = patch;
-    }
-    if into.delete.is_none() {
-        into.delete = delete;
-    }
-    if into.head.is_none() {
-        into.head = head;
-    }
-    if into.options.is_none() {
-        into.options = options;
-    }
-    if into.trace.is_none() {
-        into.trace = trace;
+    for (slot, incoming) in operation_slots_mut(into)
+        .into_iter()
+        .zip([get, post, put, patch, delete, head, options, trace])
+    {
+        if slot.is_none() {
+            *slot = incoming;
+        }
     }
     if into.parameters.is_none() {
         into.parameters = parameters;
@@ -310,34 +357,35 @@ fn merge_path_item(into: &mut PathItem, other: PathItem) {
 /// operations they governed in `other` once merged into a document whose
 /// top level they must not touch.
 ///
+/// When `other` has no top-level `security` but the receiver requires some
+/// (`receiver_requires_security`), an operation without its own `security`
+/// gets an explicit empty list: in `other` it was unauthenticated, and the
+/// receiver's requirement must not start applying to it.
+///
 /// Servers are not pushed onto the operations of a path item with its own
-/// `servers`: path-level servers already override the top-level list there.
+/// `servers` (path-level servers already override the top-level list there);
+/// webhooks pass `servers: None` — their operations are requests the API
+/// *sends*, which the API's server list does not describe.
 fn push_down_top_level(
     paths: &mut BTreeMap<String, PathItem>,
     security: Option<&Vec<crate::schema::SecurityRequirement>>,
     servers: Option<&Vec<Server>>,
+    receiver_requires_security: bool,
 ) {
+    let security = match security {
+        Some(own) => Some(own.clone()),
+        None if receiver_requires_security => Some(Vec::new()),
+        None => None,
+    };
     for item in paths.values_mut() {
         let servers = if item.servers.is_some() {
             None
         } else {
             servers
         };
-        for op in [
-            &mut item.get,
-            &mut item.post,
-            &mut item.put,
-            &mut item.patch,
-            &mut item.delete,
-            &mut item.head,
-            &mut item.options,
-            &mut item.trace,
-        ]
-        .into_iter()
-        .flatten()
-        {
+        for op in operation_slots_mut(item).into_iter().flatten() {
             if op.security.is_none() {
-                op.security = security.cloned();
+                op.security.clone_from(&security);
             }
             if op.servers.is_none() {
                 op.servers = servers.cloned();
@@ -355,17 +403,32 @@ impl OpenApi {
     /// `other` are added to `self`. `other`'s top-level `security` and
     /// `servers` are never adopted (they would then govern every operation
     /// of `self`): they are pushed down onto each of `other`'s operations
-    /// that has not set its own. Top-level `external_docs` is adopted only
+    /// that has not set its own (only `security` onto webhooks). When
+    /// `other` has no top-level `security` but `self` requires some, those
+    /// operations get an explicit empty `security` instead, so `self`'s
+    /// requirement does not start applying to them. On a shared path, each
+    /// side's path-level `parameters` / `servers` stay with its own
+    /// operations (see `merge_path_item`). Top-level `external_docs` is adopted only
     /// when `self` has none. On any key/field conflict, `self` takes
     /// precedence.
     pub fn merge(&mut self, mut other: Self) {
+        let receiver_requires_security = self
+            .security
+            .as_ref()
+            .is_some_and(|requirements| !requirements.is_empty());
         push_down_top_level(
             &mut other.paths,
             other.security.as_ref(),
             other.servers.as_ref(),
+            receiver_requires_security,
         );
         if let Some(webhooks) = other.webhooks.as_mut() {
-            push_down_top_level(webhooks, other.security.as_ref(), other.servers.as_ref());
+            push_down_top_level(
+                webhooks,
+                other.security.as_ref(),
+                None,
+                receiver_requires_security,
+            );
         }
 
         // Merge paths.  On a path-key conflict, merge per HTTP method
@@ -451,5 +514,7 @@ impl OpenApi {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_merge_scope;
 #[cfg(test)]
 mod tests_spec_fields;
