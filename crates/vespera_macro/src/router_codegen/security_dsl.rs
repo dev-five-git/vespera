@@ -216,6 +216,25 @@ pub(super) fn require_absolute_url(field: &str, url: &LitStr) -> syn::Result<()>
     ))
 }
 
+/// A security scheme name becomes a `components.securitySchemes` key, which
+/// OpenAPI 3.1 requires to match `^[a-zA-Z0-9\.\-_]+$`.
+pub(super) fn require_component_key(name: &LitStr) -> syn::Result<()> {
+    let value = name.value();
+    if !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    {
+        return Ok(());
+    }
+    Err(syn::Error::new(
+        name.span(),
+        format!(
+            "vespera! macro: security scheme name \"{value}\" must match `^[a-zA-Z0-9.\\-_]+$` (it is a `components.securitySchemes` key)"
+        ),
+    ))
+}
+
 /// Parse `{ "scope" = "description", ... }`.
 fn parse_scopes(input: ParseStream) -> syn::Result<BTreeMap<String, String>> {
     let content;

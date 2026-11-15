@@ -50,7 +50,9 @@ use super::*;
 #[case("get, invalid", false, None, None, None)]
 #[case("path =", false, None, None, None)]
 #[case("error_status =", false, None, None, None)]
-// Non-Ident tokens (should trigger line 40)
+// A repeated key is an error, not a silent last-wins
+#[case("path = \"/a\", path = \"/b\"", false, None, None, None)]
+// Non-Ident tokens where an argument name is expected
 #[case("123", false, None, None, None)]
 #[case("\"string\"", false, None, None, None)]
 #[case("=", false, None, None, None)]
@@ -393,7 +395,6 @@ fn test_route_args_parse_responses(
 #[case("post, path = \"/users\", deprecated", true)]
 #[case("deprecated = true", false)]
 #[case("deprecated, deprecated", false)]
-#[case("path = \"/a\", path = \"/b\"", false)]
 fn test_route_args_parse_deprecated(#[case] input: &str, #[case] should_parse: bool) {
     let result = syn::parse_str::<RouteArgs>(input);
 

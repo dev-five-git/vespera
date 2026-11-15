@@ -190,3 +190,33 @@ fn top_level_scopes_of_undeclared_schemes_wait_for_merged_children() {
         ["admin"]
     );
 }
+
+/// A scheme name is a `components.securitySchemes` key, so it must match
+/// OpenAPI's `^[a-zA-Z0-9\.\-_]+$` component-key pattern.
+#[rstest]
+#[case::plain("bearerAuth", true)]
+#[case::punctuation("api.key-v2_x", true)]
+#[case::empty("", false)]
+#[case::space("Bearer Auth", false)]
+#[case::slash("a/b", false)]
+#[case::non_ascii("caf\u{e9}", false)]
+fn scheme_names_must_be_component_keys(#[case] name: &str, #[case] valid: bool) {
+    let result = vespera(quote::quote!(
+        security_schemes = [{ name = #name, type = "http", scheme = "bearer" }]
+    ));
+    match result {
+        Ok(input) => {
+            assert!(valid, "`{name}` must be rejected");
+            assert_eq!(input.security_schemes.expect("parsed")[0].name, name);
+        }
+        Err(error) => {
+            assert!(!valid, "`{name}` must be accepted: {error}");
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "vespera! macro: security scheme name \"{name}\" must match `^[a-zA-Z0-9.\\-_]+$` (it is a `components.securitySchemes` key)"
+                )
+            );
+        }
+    }
+}

@@ -9,7 +9,8 @@ use crate::{
     route_impl::StoredRouteInfo,
 };
 
-/// A GET route at `path` whose handler signature is `sig`.
+/// A GET route at `path` handled by `fn_name` in `virtual/<fn_name>.rs` (its
+/// signature comes from the matching [`stored`] entry).
 pub(super) fn route(path: &str, fn_name: &str) -> RouteMetadata {
     RouteMetadata {
         method: "get".to_string(),
