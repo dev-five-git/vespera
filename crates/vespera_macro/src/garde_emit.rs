@@ -358,7 +358,15 @@ fn emit_rule_blocks(
         } else {
             TokenStream::new()
         };
-        blocks.push(quote! { #guard #range });
+        // `garde`'s range rule admits `NaN` (every comparison with it is
+        // false); a float field, or one whose type the macro cannot see
+        // through, rejects a non-finite value first.
+        let finite = if matches!(numeric_kind, None | Some("f32" | "f64")) {
+            quote! { if let ::std::option::Option::Some(__garde_error) = ::vespera::__validation::non_finite(__garde_binding) { __garde_report.append(__garde_path(), __garde_error); } else }
+        } else {
+            TokenStream::new()
+        };
+        blocks.push(quote! { #finite #guard #range });
     }
 
     // ── Pattern (pattern = "..." → static LazyLock<Regex>) ────────────
