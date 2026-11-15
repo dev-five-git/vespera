@@ -6,7 +6,7 @@ use std::sync::{
 use jni::EnvUnowned;
 use jni::objects::{Global, JByteArray, JClass, JObject};
 
-use crate::daemon_env::with_cached_daemon_env;
+use crate::daemon_env::with_cached_daemon_env_no_frame;
 use crate::jni_impl::{
     clear_pending_exception, guard_env_void_symbol, panic_wire, read_request_byte_array, runtime,
     runtime_unavailable_wire,
@@ -249,7 +249,9 @@ fn make_header_callback(
 ) -> impl FnMut(&[u8]) {
     move |header_bytes: &[u8]| {
         let delivered =
-            with_cached_daemon_env(&jvm, |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
+            // No outer frame: `call_header_consumer` opens its own (it frees
+            // the header `byte[]`), so a second one was a redundant push/pop.
+            with_cached_daemon_env_no_frame(&jvm, |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
                 call_header_consumer(env, &consumer, header_bytes)
             })
             .is_ok();
@@ -408,7 +410,7 @@ fn dispatch_full_streaming_with_header_body(env: &mut jni::Env<'_>, args: &FullH
                 },
                 make_header_callback(header_jvm, header_for_cb, flags_for_cb),
                 move || {
-                    let _ = with_cached_daemon_env(&close_jvm, |env| {
+                    let _ = with_cached_daemon_env_no_frame(&close_jvm, |env| {
                         close_input_stream(env, &input_for_close)
                     });
                 },

@@ -65,6 +65,7 @@ impl CachedMethod {
 
 struct MethodCache {
     input_stream_read: CachedMethod,
+    input_stream_close: CachedMethod,
     output_stream_write: CachedMethod,
     output_stream_flush: CachedMethod,
     consumer_accept: CachedMethod,
@@ -80,6 +81,12 @@ impl MethodCache {
                     jni_str!("java/io/InputStream"),
                     jni_str!("read"),
                     jni_sig!("([B)I"),
+                )?,
+                input_stream_close: CachedMethod::resolve(
+                    env,
+                    jni_str!("java/io/InputStream"),
+                    jni_str!("close"),
+                    jni_sig!("()V"),
                 )?,
                 output_stream_write: CachedMethod::resolve(
                     env,
@@ -711,11 +718,34 @@ pub fn complete_future_local(
 /// `read`, so the dispatch cannot hang on a stuck upload.  Any pending
 /// exception (e.g. an `IOException` from closing an already-broken
 /// stream) is cleared so the thread is left clean.
+///
+/// Runs once per bidirectional dispatch, so it takes the cached-`JMethodID`
+/// path like the per-chunk callbacks (no by-name method lookup) and creates
+/// no local reference there: callers run it under
+/// [`with_cached_daemon_env_no_frame`].  The checked fallback (null
+/// receiver / unresolvable cache) looks the method up by name, so it keeps
+/// its own local frame.
 pub fn close_input_stream(
     env: &mut jni::Env<'_>,
     stream: &Global<JObject<'static>>,
 ) -> jni::errors::Result<()> {
-    let result = env.call_method(stream, jni_str!("close"), jni_sig!("()V"), &[]);
+    let result = if can_call_unchecked(stream)
+        && let Some(cache) = method_cache(env)
+    {
+        call_cached_method(
+            env,
+            stream,
+            &cache.input_stream_close,
+            ReturnType::Primitive(Primitive::Void),
+            &[],
+        )
+        .map(|_| ())
+    } else {
+        env.with_local_frame::<_, _, jni::errors::Error>(4, |env| {
+            env.call_method(stream, jni_str!("close"), jni_sig!("()V"), &[])
+                .map(|_| ())
+        })
+    };
     // Scrub a pending exception (e.g. an `IOException` from closing an
     // already-broken stream) on BOTH success and failure — capturing the
     // result and clearing BEFORE `?` so a throwing `close()` still leaves the

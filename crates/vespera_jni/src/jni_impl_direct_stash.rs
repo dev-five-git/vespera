@@ -32,6 +32,7 @@ use vespera_inprocess::{PendingDirectResponse, ResumableDirectWrite};
 
 use super::{
     DIRECT_UNREPRESENTABLE, block_on_shared_runtime, direct_complete_code, run_direct_symbol,
+    undersized_out_code,
 };
 use crate::jni_impl::{
     guard_env_void_symbol, guard_void_symbol, panic_wire, runtime_unavailable_wire,
@@ -147,6 +148,12 @@ pub fn clear_stash() {
     drop(drained);
 }
 
+/// Number of live stash entries (tests).
+#[cfg(test)]
+pub fn stashed_count() -> usize {
+    lock_stash().entries.len()
+}
+
 /// `-(required)`, clamped so it is never the `MIN` sentinel.
 fn pending_code(pending: &PendingDirectResponse) -> jint {
     -jint::try_from(pending.required_bytes()).unwrap_or(jint::MAX)
@@ -164,17 +171,45 @@ fn pending_flags(pending: &PendingDirectResponse) -> u8 {
 }
 
 /// Stash an overflowing response and write its handle into `out`.
-fn stash_overflow(out: &mut [u8], pending: PendingDirectResponse) -> jint {
+///
+/// Called while the dispatch still holds its runtime lease (inside the
+/// `block_on` future), so a shutdown drains it before its `clear_stash`
+/// runs; a shutdown already past that drain (its timeout expired) is caught
+/// by the re-check below — the entry is taken back and the retryable `503`
+/// every other request gets is answered instead of a handle to a response
+/// nothing would ever release.
+pub fn stash_overflow(out: &mut [u8], pending: PendingDirectResponse) -> jint {
     let code = pending_code(&pending);
     let flags = pending_flags(&pending);
-    let Some(handle) = out.get_mut(..STASH_HANDLE_LEN) else {
+    if out.len() < STASH_HANDLE_LEN {
         // No room for a handle: the response cannot be redeemed, drop it.
         return code;
-    };
+    }
     let token = stash_put(None, pending);
-    handle[..8].copy_from_slice(&token.to_be_bytes());
-    handle[8] = flags;
+    if vespera_inprocess::runtime::runtime_shut_down() {
+        drop(stash_take(token));
+        return write_complete_wire(out, &runtime_unavailable_wire());
+    }
+    out[..8].copy_from_slice(&token.to_be_bytes());
+    out[8] = flags;
     code
+}
+
+/// `dispatchResumable0`'s answer for an `out` below
+/// [`vespera_inprocess::MIN_DIRECT_OUT_BYTES`]: `-(MIN_DIRECT_OUT_BYTES)`
+/// without dispatching (as `dispatchDirect0`), with the handle area zeroed —
+/// no stash token — so the caller never reads a stale handle (a previous
+/// overflow's) as this call's.
+fn undersized_resumable_code(out: &mut [u8]) -> Option<jint> {
+    let code = undersized_out_code(out.len())?;
+    clear_handle(out);
+    Some(code)
+}
+
+/// Zero the handle area of `out` (what fits of it): "no stash token".
+fn clear_handle(out: &mut [u8]) {
+    let len = out.len().min(STASH_HANDLE_LEN);
+    out[..len].fill(0);
 }
 
 /// `com.devfive.vespera.bridge.DirectStash.dispatchResumable0(ByteBuffer, int, ByteBuffer) -> int`
@@ -192,12 +227,20 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_DirectStash_dispatchResum
     out_buf: JByteBuffer<'local>,
 ) -> jint {
     run_direct_symbol(unowned_env, &in_buf, in_len, &out_buf, |input, out| {
-        block_on_shared_runtime(vespera_inprocess::dispatch_into_async_borrowed_resumable(
-            input, &mut *out,
-        ))
-        .map(|written| match written {
-            ResumableDirectWrite::Complete(n) => direct_complete_code(n),
-            ResumableDirectWrite::Overflow(pending) => stash_overflow(out, pending),
+        // A `1 KiB`+ `out` holds every wire synthesized after the handler ran
+        // (panic `500`, `504`, `503`), so a negative code below always comes
+        // with a handle; the pre-dispatch `400`s of `run_direct_symbol`
+        // (bad buffers) fit too.
+        if let Some(code) = undersized_resumable_code(out) {
+            return Some(code);
+        }
+        // Stashed inside the future: under the dispatch's runtime lease.
+        block_on_shared_runtime(async {
+            match vespera_inprocess::dispatch_into_async_borrowed_resumable(input, &mut *out).await
+            {
+                ResumableDirectWrite::Complete(n) => direct_complete_code(n),
+                ResumableDirectWrite::Overflow(pending) => stash_overflow(out, pending),
+            }
         })
     })
 }
@@ -268,18 +311,29 @@ fn fetch_into(token: jlong, out: &mut [u8]) -> jint {
         }
         return DIRECT_UNREPRESENTABLE;
     };
-    match block_on_shared_runtime(pending.write_into(&mut *out)) {
-        Some(ResumableDirectWrite::Complete(n)) => direct_complete_code(n),
-        Some(ResumableDirectWrite::Overflow(pending)) => {
-            let code = pending_code(&pending);
-            let key = u64::try_from(token).unwrap_or_default();
-            stash_put(Some(key), pending);
-            code
+    // Re-stashed inside the future, under the fetch's runtime lease (see
+    // `stash_overflow`), with the same post-insert shutdown re-check.
+    let fetched = block_on_shared_runtime(async {
+        match pending.write_into(&mut *out).await {
+            ResumableDirectWrite::Complete(n) => Some(direct_complete_code(n)),
+            ResumableDirectWrite::Overflow(pending) => {
+                let code = pending_code(&pending);
+                let key = u64::try_from(token).unwrap_or_default();
+                stash_put(Some(key), pending);
+                if vespera_inprocess::runtime::runtime_shut_down() {
+                    drop(stash_take(key));
+                    return None;
+                }
+                Some(code)
+            }
         }
-        // No runtime (shut down): the stashed response is dropped;
-        // answer with the runtime-unavailable wire when it fits.
-        None => write_complete_wire(out, &runtime_unavailable_wire()),
-    }
+    });
+    // No runtime (shut down, before or during the fetch): the stashed
+    // response is dropped; answer with the runtime-unavailable wire when it
+    // fits.
+    fetched
+        .flatten()
+        .unwrap_or_else(|| write_complete_wire(out, &runtime_unavailable_wire()))
 }
 
 /// Copy a complete wire response into `out`: its length, or
@@ -341,6 +395,21 @@ mod tests {
         assert!(take_stashed(token).is_some());
         assert!(take_stashed(token).is_none(), "redeemed once");
         assert!(take_stashed(-1).is_none());
+
+        // An undersized `out` asks for the minimum and clears the handle
+        // area, so a stale token from the overflow above is never re-read.
+        let min = vespera_inprocess::MIN_DIRECT_OUT_BYTES;
+        assert_eq!(
+            undersized_resumable_code(&mut out),
+            Some(-jint::try_from(min).unwrap())
+        );
+        assert_eq!(out[..STASH_HANDLE_LEN], [0; STASH_HANDLE_LEN]);
+        let mut short = vec![0xAAu8; 4];
+        assert!(undersized_resumable_code(&mut short).is_some());
+        assert_eq!(short, [0; 4]);
+        let mut roomy = vec![0xAAu8; min];
+        assert_eq!(undersized_resumable_code(&mut roomy), None);
+        assert_eq!(roomy[0], 0xAA, "a roomy out is left to the dispatch");
 
         // No room for a handle: nothing is written or kept.
         let mut tiny = vec![0xAAu8; 4];

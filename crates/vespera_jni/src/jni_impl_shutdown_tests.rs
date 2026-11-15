@@ -130,4 +130,32 @@ fn shutdown_makes_later_dispatches_answer_503() {
         !shutdown_runtime(Duration::ZERO),
         "second shutdown is a no-op"
     );
+
+    overflow_after_shutdown_is_not_stashed();
+}
+
+/// An overflow stashed once the shutdown has cleared the stash (its drain
+/// timed out on the dispatch) is not kept: nothing would release it.  The
+/// caller gets the retryable `503` instead of a handle.
+fn overflow_after_shutdown_is_not_stashed() {
+    let pending = match tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime")
+        .block_on(vespera_inprocess::dispatch_into_async_borrowed_resumable(
+            &[0, 0, 0, 1, b'{'],
+            &mut [],
+        )) {
+        vespera_inprocess::ResumableDirectWrite::Overflow(pending) => pending,
+        vespera_inprocess::ResumableDirectWrite::Complete(_) => panic!("an empty out overflows"),
+    };
+    let mut out = vec![0u8; 1024];
+    let code = super::direct::stash::stash_overflow(&mut out, pending);
+    assert_eq!(
+        super::direct::stash::stashed_count(),
+        0,
+        "not stashed after shutdown"
+    );
+    let len = usize::try_from(code).expect("a complete wire");
+    let (header, _) = status_and_body(&out[..len]);
+    assert!(header.contains(r#""status":503"#), "{header}");
 }

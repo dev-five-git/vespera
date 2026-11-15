@@ -103,6 +103,7 @@ mod envelope;
 #[allow(unsafe_code)]
 pub mod ffi;
 mod header_latin1;
+mod header_names;
 mod internal;
 #[cfg(feature = "tracing")]
 mod obs;

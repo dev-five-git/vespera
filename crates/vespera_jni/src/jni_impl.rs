@@ -5,7 +5,7 @@ use jni::errors::ThrowRuntimeExAndDefault;
 use jni::objects::{JByteArray, JClass, JObject};
 use jni::sys::jbyteArray;
 
-use crate::daemon_env::with_cached_daemon_env;
+use crate::daemon_env::{with_cached_daemon_env, with_cached_daemon_env_no_frame};
 use crate::streaming_closures::{close_input_stream, make_pull_closure, make_push_closure};
 
 // Per-thread reusable Java chunk buffers for the streaming paths live in
@@ -653,7 +653,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                         // unblocked and the dispatch cannot hang on a stuck
                         // upload that never reaches EOF.
                         move || {
-                            let _ = with_cached_daemon_env(&close_jvm, |env| {
+                            let _ = with_cached_daemon_env_no_frame(&close_jvm, |env| {
                                 close_input_stream(env, &input_for_close)
                             });
                         },

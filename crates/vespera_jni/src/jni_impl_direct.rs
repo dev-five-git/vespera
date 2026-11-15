@@ -104,6 +104,28 @@ unsafe fn write_response_to_out(out_addr: *mut u8, out_cap: usize, response: &[u
     }
 }
 
+/// [`write_response_to_out`] for a synthesized error wire of
+/// [`run_direct_symbol`]: on an overflow it also zeroes the first
+/// [`stash::STASH_HANDLE_LEN`] bytes of `out` (what fits), so the resumable
+/// `DirectStash.dispatchResumable0` caller — which reads an overflow handle
+/// from there — never takes stale bytes (a previous overflow's token) for
+/// this call's.  `dispatchDirect0` leaves `out` undefined on an overflow
+/// anyway.
+///
+/// # Safety
+///
+/// As [`write_response_to_out`].
+unsafe fn write_error_to_out(out_addr: *mut u8, out_cap: usize, response: &[u8]) -> jint {
+    // SAFETY: the caller's contract, forwarded.
+    let code = unsafe { write_response_to_out(out_addr, out_cap, response) };
+    if code < 0 {
+        // SAFETY: `min(out_cap, STASH_HANDLE_LEN)` bytes of the writable
+        // `out` region (caller contract).
+        unsafe { std::ptr::write_bytes(out_addr, 0, out_cap.min(stash::STASH_HANDLE_LEN)) };
+    }
+    code
+}
+
 /// `com.devfive.vespera.bridge.VesperaBridge.dispatchDirect0(ByteBuffer, int, ByteBuffer) -> int`
 /// (private native; the public Java wrapper `dispatchDirect` validates
 /// buffer directness and writability before crossing JNI)
@@ -260,7 +282,7 @@ fn run_direct_symbol<'local>(
                         );
                         // SAFETY: `out_addr`/`out_cap` came from the live direct
                         // output buffer above and `err` is a Rust-owned Vec.
-                        return Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) });
+                        return Ok(unsafe { write_error_to_out(out_addr, out_cap, &err) });
                     };
 
                     // Validate in_len against the buffer's real capacity —
@@ -275,7 +297,7 @@ fn run_direct_symbol<'local>(
                             );
                             // SAFETY: `out_addr`/`out_cap` came from the live direct
                             // output buffer above and `err` is a Rust-owned Vec.
-                            return Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) });
+                            return Ok(unsafe { write_error_to_out(out_addr, out_cap, &err) });
                         }
                     };
 
@@ -295,7 +317,7 @@ fn run_direct_symbol<'local>(
                         );
                         // SAFETY: `out_addr`/`out_cap` came from the live direct
                         // output buffer above and `err` is a Rust-owned Vec.
-                        return Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) });
+                        return Ok(unsafe { write_error_to_out(out_addr, out_cap, &err) });
                     }
 
                     let Some(code) = ({
@@ -318,7 +340,7 @@ fn run_direct_symbol<'local>(
                         // SAFETY: same direct-buffer invariants as above; this branch
                         // writes only a freshly allocated wire error into the caller's
                         // resolved output buffer.
-                        return Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) });
+                        return Ok(unsafe { write_error_to_out(out_addr, out_cap, &err) });
                     };
 
                     Ok(code)
@@ -335,7 +357,7 @@ fn run_direct_symbol<'local>(
                             // SAFETY: `out_addr`/`out_cap` were resolved from the live
                             // direct output buffer before the panic, and `err` is a
                             // Rust-owned Vec that cannot alias that Java buffer.
-                            Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) })
+                            Ok(unsafe { write_error_to_out(out_addr, out_cap, &err) })
                         },
                     )
                 })
