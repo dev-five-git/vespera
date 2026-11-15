@@ -8,7 +8,7 @@ use vespera_core::{
 
 use super::shared::{
     MAX_CONVERSION_DEPTH, deserialized_instead, input_rename_all, named_struct_fields,
-    serde_field_name,
+    serde_field_name, struct_definition,
 };
 use crate::{
     parser::schema::{
@@ -111,21 +111,25 @@ fn path_parameters_from(
             .collect();
     }
 
-    if let Some(struct_item) = named_struct_fields(inner_ty, struct_definitions) {
-        // Container `#[serde(from = "X")]` / `try_from` (or `#[schema(value_type
-        // = X)]`), or `#[serde(transparent)]`: the segments are deserialized
-        // as `X` / the single field's type, not as these fields.
-        if depth < MAX_CONVERSION_DEPTH
-            && let Some(source) = deserialized_instead(&struct_item)
-        {
-            return path_parameters_from(
-                &source,
-                path_params,
-                known_schemas,
-                struct_definitions,
-                depth + 1,
-            );
-        }
+    let struct_item = struct_definition(inner_ty, struct_definitions);
+    // Container `#[serde(from = "X")]` / `try_from` (or `#[schema(value_type
+    // = X)]`), or `#[serde(transparent)]` (named or tuple struct): the
+    // segments are deserialized as `X` / the transparent field's type, not
+    // as these fields.
+    if depth < MAX_CONVERSION_DEPTH
+        && let Some(source) = struct_item.as_ref().and_then(deserialized_instead)
+    {
+        return path_parameters_from(
+            &source,
+            path_params,
+            known_schemas,
+            struct_definitions,
+            depth + 1,
+        );
+    }
+    if let Some(struct_item) =
+        struct_item.filter(|struct_item| matches!(struct_item.fields, syn::Fields::Named(_)))
+    {
         return path_params
             .iter()
             .map(|name| {
@@ -260,12 +264,18 @@ pub(super) fn parse_bare_path_parameter(
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) -> Option<Vec<Parameter>> {
-    path_param_set.contains(param_name).then(|| {
-        vec![path_parameter(
-            param_name,
-            parse_type_to_schema_ref(ty, known_schemas, struct_definitions),
-        )]
-    })
+    if !path_param_set.contains(param_name) {
+        return None;
+    }
+    let schema = parse_type_to_schema_ref(ty, known_schemas, struct_definitions);
+    // A type with no known shape (a custom extractor such as `org: OrgCtx`)
+    // says nothing about the segment: keep its `{type: string}` placeholder
+    // rather than widening it to any value (`{}`).
+    if matches!(&schema, SchemaRef::Inline(inline) if serde_json::to_string(inline).is_ok_and(|json| json == "{}"))
+    {
+        return None;
+    }
+    Some(vec![path_parameter(param_name, schema)])
 }
 
 #[cfg(test)]

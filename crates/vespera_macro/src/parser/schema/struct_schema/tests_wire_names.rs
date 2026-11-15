@@ -62,7 +62,9 @@ fn struct_tag(#[case] name: &str, #[case] src: &str) {
 
 /// Multipart form field names: the request view uses the `Multipart`
 /// derive's order (`form_data(field_name)` > deserialize-side serde rename >
-/// deserialize-side `rename_all`); the response view keeps serde's names.
+/// deserialize-side `rename_all`); the response view keeps serde's
+/// serialize-side rename, falling back to `form_data(field_name)` before
+/// `rename_all` (`doc`, not `DOC_FILE`).
 #[rstest]
 #[case::form_data_over_serde_rename(
     "form_data_over_serde_rename",

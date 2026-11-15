@@ -662,7 +662,9 @@ fn parse_type_impl(
                                 &scoped,
                             );
                             // A request-view instantiation differs from the
-                            // response one when it names an input type.
+                            // response one when it names an input type: `.Input`
+                            // (no identifier holds a `.`, so `Tree<User>` never
+                            // shares a name with `Tree<UserInput>`).
                             if request_view::in_request_view()
                                 && (request_view::has_input(&base)
                                     || request_view::mentions_input(concrete_types.iter().copied())
@@ -670,7 +672,7 @@ fn parse_type_impl(
                                         .iter()
                                         .any(|ty| request_view::type_view_differs(ty)))
                             {
-                                name.push_str("Input");
+                                name.push_str(".Input");
                             }
                             return super::generic_instances::inline_or_reference(&name, || {
                                 match &parsed {
@@ -951,3 +953,5 @@ fn non_zero_unsigned(format: Option<&str>, maximum: Option<f64>) -> SchemaRef {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_instances;

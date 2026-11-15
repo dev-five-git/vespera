@@ -110,15 +110,35 @@ fn substitute_tokens(tokens: TokenStream, params: &[String], concrete: &[&Type])
         }
         out.extend(trees[index..=index].iter().cloned());
         index += 1;
-        let end = trees[index..]
-            .iter()
-            .position(|tree| matches!(tree, TokenTree::Punct(p) if p.as_char() == ','))
-            .map_or(trees.len(), |offset| index + offset);
+        let end = value_end(&trees, index);
         let value: TokenStream = trees[index..end].iter().cloned().collect();
         out.extend(substitute_value(&key, value, params, concrete));
         index = end;
     }
     out
+}
+
+/// The index of the `,` ending the value that starts at `start` (or
+/// `trees.len()`): the first comma outside every `<..>` pair, since `<` /
+/// `>` are plain puncts (`HashMap<String, T>` is one value). The `>` of a
+/// `->` closes nothing.
+fn value_end(trees: &[TokenTree], start: usize) -> usize {
+    let mut depth = 0usize;
+    let mut after_dash = false;
+    for (offset, tree) in trees[start..].iter().enumerate() {
+        let TokenTree::Punct(punct) = tree else {
+            after_dash = false;
+            continue;
+        };
+        match punct.as_char() {
+            ',' if depth == 0 => return start + offset,
+            '<' => depth += 1,
+            '>' if !after_dash => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        after_dash = punct.as_char() == '-';
+    }
+    trees.len()
 }
 
 /// The substituted `value` of `key` (unchanged for other keys or a value
@@ -166,6 +186,20 @@ mod tests {
     #[case::enum_variants(
         "#[serde(from = \"T\")] enum E<T> { #[serde(into = \"T\")] A(#[schema(value_type = T)] T), B { b: T } }",
         "# [serde (from = \"String\")] enum E < T > { # [serde (into = \"String\")] A (# [schema (value_type = String)] String) , B { b : String } }"
+    )]
+    // A comma inside `<..>` belongs to the value (`HashMap<String, T>`); a
+    // `->`'s `>` closes no bracket.
+    #[case::value_type_map(
+        "struct W<T> { #[schema(value_type = HashMap<String, T>, format = \"x\")] a: T }",
+        "struct W < T > { # [schema (value_type = HashMap < String , String > , format = \"x\")] a : String }"
+    )]
+    #[case::value_type_result(
+        "struct W<T> { #[schema(value_type = Result<T, Vec<T>>)] a: T }",
+        "struct W < T > { # [schema (value_type = Result < String , Vec < String > >)] a : String }"
+    )]
+    #[case::value_type_fn_arrow(
+        "struct W<T> { #[schema(value_type = Pair<fn() -> u8, T>, nullable)] a: T }",
+        "struct W < T > { # [schema (value_type = Pair < fn () -> u8 , String > , nullable)] a : String }"
     )]
     #[case::unparsable_values(
         "struct W<T> { #[schema(value_type = +, into = 1, flag)] #[serde(from = \"<\")] a: T }",

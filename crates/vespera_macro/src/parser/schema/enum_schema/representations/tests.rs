@@ -12,6 +12,23 @@ fn inline(schema_ref: &SchemaRef) -> &Schema {
     }
 }
 
+/// The required, single-value `enum` of `variant`'s `tag` property.
+fn tag_value(variant: &SchemaRef, tag: &str) -> String {
+    let variant = inline(variant);
+    assert!(
+        variant
+            .required
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|key| key == tag)
+    );
+    let tag_schema = inline(&variant.properties.as_ref().unwrap()[tag]);
+    let values = tag_schema.r#enum.as_ref().expect("tag enum missing");
+    assert_eq!(values.len(), 1);
+    values[0].as_str().unwrap().to_string()
+}
+
 // Internally tagged enum tests
 #[test]
 fn test_internally_tagged_enum_unit_variants() {
@@ -43,14 +60,9 @@ fn test_internally_tagged_enum_unit_variants() {
     let one_of = schema.one_of.expect("one_of missing");
     assert_eq!(one_of.len(), 2);
 
-    // Each variant should be an object with "type" property
-    {
-        let ping = inline(&one_of[0]);
-        let props = ping.properties.as_ref().expect("properties missing");
-        assert!(props.contains_key("type"));
-        let required = ping.required.as_ref().expect("required missing");
-        assert!(required.contains(&"type".to_string()));
-    }
+    // Each variant is an object whose required "type" names it
+    let tags: Vec<String> = one_of.iter().map(|v| tag_value(v, "type")).collect();
+    assert_eq!(tags, ["Ping", "Pong"]);
 }
 
 #[test]
@@ -82,14 +94,20 @@ fn test_internally_tagged_enum_struct_variants() {
     let one_of = schema.one_of.expect("one_of missing");
     assert_eq!(one_of.len(), 2);
 
-    // Created variant should have kind, id, and name
-    {
-        let created = inline(&one_of[0]);
-        let props = created.properties.as_ref().expect("properties missing");
-        assert!(props.contains_key("kind"));
-        assert!(props.contains_key("id"));
-        assert!(props.contains_key("name"));
-    }
+    // Each variant carries its tag next to its own fields
+    let tags: Vec<String> = one_of.iter().map(|v| tag_value(v, "kind")).collect();
+    assert_eq!(tags, ["Created", "Updated"]);
+    let keys = |variant: &SchemaRef| -> Vec<String> {
+        inline(variant)
+            .properties
+            .as_ref()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    };
+    assert_eq!(keys(&one_of[0]), ["id", "kind", "name"]);
+    assert_eq!(keys(&one_of[1]), ["id", "kind"]);
 }
 
 #[test]
@@ -153,16 +171,20 @@ fn test_adjacently_tagged_enum_basic() {
     let one_of = schema.one_of.expect("one_of missing");
     assert_eq!(one_of.len(), 2);
 
-    // Each variant should have "type" and "data" properties
-    {
-        let success = inline(&one_of[0]);
-        let props = success.properties.as_ref().expect("properties missing");
-        assert!(props.contains_key("type"));
-        assert!(props.contains_key("data"));
-
-        let required = success.required.as_ref().expect("required missing");
-        assert!(required.contains(&"type".to_string()));
-        assert!(required.contains(&"data".to_string()));
+    // Each variant has its required "type" tag and its required "data"
+    let tags: Vec<String> = one_of.iter().map(|v| tag_value(v, "type")).collect();
+    assert_eq!(tags, ["Success", "Error"]);
+    for variant in &one_of {
+        let variant = inline(variant);
+        assert!(variant.properties.as_ref().unwrap().contains_key("data"));
+        assert!(
+            variant
+                .required
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|key| key == "data")
+        );
     }
 }
 
@@ -541,13 +563,25 @@ fn internally_tagged_scalar_newtype_is_skipped_by_generator() {
         &HashMap::<String, String>::new(),
     );
     // `Unit(())` → tag only; `Empty` → tag only.
-    assert_eq!(schema.one_of.expect("one_of").len(), 2);
+    let one_of = schema.one_of.expect("one_of");
+    let tags: Vec<String> = one_of.iter().map(|v| tag_value(v, "type")).collect();
+    assert_eq!(tags, ["Unit", "Empty"]);
+    for variant in &one_of {
+        let keys: Vec<&String> = inline(variant)
+            .properties
+            .as_ref()
+            .unwrap()
+            .keys()
+            .collect();
+        assert_eq!(keys, ["type"]);
+    }
 }
 
 /// Struct-variant fields share the struct field walker: `skip`, `flatten`,
 /// `rename`, `skip_serializing_if`, doc comments and `#[schema]` constraints
 /// all apply. Variant-level `skip` / `skip_serializing` drop the variant;
-/// `#[serde(other)]` accepts any tag except the known ones.
+/// `#[serde(other)]` writes its own name (this is the response view; the
+/// request view, which accepts any unknown tag, is in `tests_fidelity.rs`).
 #[rstest::rstest]
 #[case::external_field_attrs(
     "external_field_attrs",
@@ -662,13 +696,15 @@ fn adjacently_tagged_empty_enum_has_no_one_of() {
 }
 
 #[test]
-fn untagged_empty_enum_has_no_one_of_or_discriminator() {
+fn untagged_empty_enum_has_no_union_or_discriminator() {
     let enum_item: syn::ItemEnum = syn::parse_str("#[serde(untagged)] enum Empty {}").unwrap();
     let schema = parse_enum_to_schema(
         &enum_item,
         &HashSet::<String>::new(),
         &HashMap::<String, String>::new(),
     );
+    // Untagged enums emit `anyOf`; an empty one emits no union at all.
+    assert!(schema.any_of.is_none());
     assert!(schema.one_of.is_none());
     assert!(schema.discriminator.is_none());
 }

@@ -414,11 +414,14 @@ pub fn parse_return_type(
         responses
             .entry(key.to_string())
             .or_insert_with(|| Response {
-                description: if key == "3XX" {
-                    "Redirect".to_string()
-                } else {
-                    "Error response".to_string()
-                },
+                // Labelled by the status it is keyed under: a `NoContent`
+                // error is still a 2xx.
+                description: match key {
+                    "3XX" => "Redirect",
+                    "204" => "Successful response",
+                    _ => "Error response",
+                }
+                .to_string(),
                 headers: None,
                 content: response_content(&err_ty, known_schemas, struct_definitions),
                 ..Default::default()

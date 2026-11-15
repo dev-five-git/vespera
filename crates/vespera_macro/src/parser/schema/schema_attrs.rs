@@ -85,7 +85,7 @@ pub struct SchemaConstraints {
 
     // ── schema-generation override ───────────────────────────────────
     /// When `Some(true)`, the field's OpenAPI schema is forced to the
-    /// generic `{type: "object"}` regardless of its Rust type, AND the
+    /// "any JSON value" schema `{}` regardless of its Rust type, AND the
     /// compile-time `#[derive(Schema)]` leaf-type assertion is skipped
     /// for this field.  Use this to opt a field out of strict
     /// "every-custom-type-must-derive-Schema" checking when the field
@@ -154,8 +154,8 @@ impl SchemaConstraints {
     }
 
     /// `true` when the field is marked `#[schema(any)]` (intentionally
-    /// opaque object — skips the derive-Schema leaf-type assertion AND
-    /// overrides the emitted schema to `{type: "object"}`).
+    /// opaque value — skips the derive-Schema leaf-type assertion AND
+    /// overrides the emitted schema to the any-value `{}`).
     #[must_use]
     pub fn is_any(&self) -> bool {
         self.any == Some(true)
@@ -260,7 +260,7 @@ pub fn try_extract_schema_constraints(attrs: &[Attribute]) -> syn::Result<Schema
             } else if meta.path.is_ident("any") {
                 // Bare `#[schema(any)]` (or explicit `any = true/false`)
                 // opts the field out of strict schema enforcement: the
-                // emitted schema is `{type: "object"}` (intentionally
+                // emitted schema is the any-value `{}` (intentionally
                 // opaque arbitrary JSON), and the derive-Schema
                 // compile-time leaf-type assertion is skipped for
                 // this field. Use for fields whose Rust type is some
