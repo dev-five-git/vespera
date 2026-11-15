@@ -107,4 +107,9 @@ async fn cookie_jar_logout_expires_the_session_cookie() {
         .unwrap();
     assert!(set_cookie.starts_with("session=;"), "{set_cookie}");
     assert!(set_cookie.contains("Max-Age=0"), "{set_cookie}");
+    // Same path as the `Path=/` session cookie, else the browser keeps it.
+    assert!(
+        set_cookie.split("; ").any(|attr| attr == "Path=/"),
+        "{set_cookie}"
+    );
 }

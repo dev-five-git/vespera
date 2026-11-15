@@ -884,34 +884,46 @@ fn stored_signature_parse_error_names_route() {
 #[test]
 fn parallel_filter_map_collects_values_and_propagates_errors() {
     let jobs: Vec<usize> = (0..(super::PARALLEL_THRESHOLD * 2)).collect();
+    // Two workers whatever the runner's core count.
+    let values =
+        super::parallel_filter_map_on(&jobs, &|value| Ok((value % 2 == 0).then_some(*value)), 2)
+            .expect("parallel values");
+    assert_eq!(values, jobs.iter().copied().step_by(2).collect::<Vec<_>>());
+    // The public entry agrees, sequential or parallel.
     let values = super::parallel_filter_map(&jobs, &|value| Ok((value % 2 == 0).then_some(*value)))
         .expect("parallel values");
-    assert_eq!(values, (0..32).step_by(2).collect::<Vec<_>>());
+    assert_eq!(values, jobs.iter().copied().step_by(2).collect::<Vec<_>>());
 
-    let error = super::parallel_filter_map(&jobs, &|value| {
-        if *value == 17 {
-            Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "worker error",
-            ))
-        } else {
-            Ok(Some(*value))
-        }
-    })
+    let error = super::parallel_filter_map_on(
+        &jobs,
+        &|value| {
+            if *value == super::PARALLEL_THRESHOLD + 1 {
+                Err(syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    "worker error",
+                ))
+            } else {
+                Ok(Some(*value))
+            }
+        },
+        2,
+    )
     .expect_err("worker error must propagate");
     assert_eq!(error.to_string(), "worker error");
 }
 
 #[test]
 fn parallel_filter_map_converts_worker_panic_to_syn_error() {
-    if std::thread::available_parallelism().map_or(1, std::num::NonZero::get) < 2 {
-        return;
-    }
+    // A fixed two workers: a 1-vCPU runner must not skip the parallel path.
     let jobs: Vec<usize> = (0..(super::PARALLEL_THRESHOLD * 2)).collect();
-    let error = super::parallel_filter_map(&jobs, &|value| {
-        assert_ne!(*value, 17, "worker panic");
-        Ok(Some(*value))
-    })
+    let error = super::parallel_filter_map_on(
+        &jobs,
+        &|value| {
+            assert_ne!(*value, super::PARALLEL_THRESHOLD + 1, "worker panic");
+            Ok(Some(*value))
+        },
+        2,
+    )
     .expect_err("worker panic must become syn error");
     // Built after the fallback guard dropped (`worker_panic_error` asserts it).
     assert!(

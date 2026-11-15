@@ -169,5 +169,8 @@ jobs:
               echo "::warning::no GitHub release found for $path@$version"
               continue
             fi
-            gh release upload "$tag" "$dir/$sbom" --clobber --repo "$GITHUB_REPOSITORY"
+            # Per-row best effort: under `bash -e` one failed upload would end
+            # the loop (and continue-on-error would hide it).
+            gh release upload "$tag" "$dir/$sbom" --clobber --repo "$GITHUB_REPOSITORY" \
+              || echo "::warning::could not attach $sbom to $tag"
           done <"$dir/manifest.tsv"
