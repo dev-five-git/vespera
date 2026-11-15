@@ -20,6 +20,7 @@ use crate::{
 pub(super) fn input_names(
     metadata: &CollectedMetadata,
     known_schema_names: &HashSet<&str>,
+    scoped: &[ScopedRustIdent<'_>],
 ) -> request_view::InputNames {
     let documented: Vec<&crate::metadata::StructMetadata> = metadata
         .structs
@@ -40,6 +41,10 @@ pub(super) fn input_names(
             Some(request_view::ViewSource {
                 name: &meta.name,
                 rust_ident: meta.rust_ident.as_deref(),
+                scoped_key: scoped
+                    .iter()
+                    .find(|entry| entry.name == meta.name)
+                    .map(|entry| entry.key.as_str()),
                 item: item.as_ref()?,
             })
         })

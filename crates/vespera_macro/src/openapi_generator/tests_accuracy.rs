@@ -253,7 +253,7 @@ fn input_names_skip_unparsable_definitions() {
         .structs
         .push(schema("A", "pub struct A { #[serde(default)] pub x: u8 }"));
     let known = std::collections::HashSet::from(["A", "Broken"]);
-    let names = super::component_schemas::input_names(&metadata, &known);
+    let names = super::component_schemas::input_names(&metadata, &known, &[]);
     assert_eq!(names.get("A").map(String::as_str), Some("AInput"));
     assert_eq!(names.len(), 1);
 }

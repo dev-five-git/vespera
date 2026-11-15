@@ -205,3 +205,33 @@ fn colliding_path_push_down_keeps_operations_without_path_level_fields_unchanged
     assert!(post.parameters.is_none());
     assert_eq!(post.servers.as_ref().unwrap()[0].url, "https://op.example");
 }
+
+/// An operation-less receiver's path-level values govern nothing: they must
+/// not start governing the incoming operations, and the incoming item's own
+/// path-level values must not be lost behind them.
+#[rstest::rstest]
+#[case::parameters(json!({"parameters": [{"name": "X-Org", "in": "header"}]}))]
+#[case::servers(json!({"servers": [{"url": "https://parent.example"}]}))]
+fn colliding_path_with_receiver_path_level_but_no_operations_keeps_the_incoming_scope(
+    #[case] receiver_item: serde_json::Value,
+) {
+    let mut parent = doc(json!({"paths": {"/u": receiver_item}}));
+    let child = doc(json!({"paths": {"/u": {
+        "parameters": [{"name": "X-Tenant", "in": "header"}],
+        "servers": [{"url": "https://child.example"}],
+        "post": {"responses": {}}
+    }}}));
+    parent.merge(child);
+    let item = &parent.paths["/u"];
+    assert!(item.parameters.is_none());
+    assert!(item.servers.is_none());
+    let post = op(&parent, "/u", "post");
+    assert_eq!(
+        param_names(post),
+        vec![("X-Tenant".to_owned(), ParameterLocation::Header)]
+    );
+    assert_eq!(
+        post.servers.as_ref().unwrap()[0].url,
+        "https://child.example"
+    );
+}

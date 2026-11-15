@@ -104,3 +104,50 @@ fn enum_deny_unknown_fields_closes_struct_variants(#[case] name: &str, #[case] s
         serde_json::to_string_pretty(&schema).unwrap()
     );
 }
+
+/// Two renames sharing the ident `Foo`: the bare `Foo` aliases `a::Foo`
+/// (open), while `b::Foo` names the closed `B`.
+fn shared_ident_lookups() -> (HashSet<String>, HashMap<String, String>) {
+    let open = "#[schema(name = \"A\")] pub struct Foo { pub a_field: u8 }";
+    let closed =
+        "#[serde(deny_unknown_fields)] #[schema(name = \"B\")] pub struct Foo { pub b_field: u8 }";
+    let definitions = HashMap::from([
+        ("A".to_string(), open.to_string()),
+        ("B".to_string(), closed.to_string()),
+        ("a::Foo".to_string(), open.to_string()),
+        ("b::Foo".to_string(), closed.to_string()),
+        ("Foo".to_string(), open.to_string()),
+    ]);
+    (definitions.keys().cloned().collect(), definitions)
+}
+
+/// A module-qualified payload is classified by the definition its module
+/// declares, not by the bare ident's alias: `b::Foo` is closed, so the tag
+/// joins its object instead of an `allOf` the closed `$ref` rejects.
+#[test]
+fn qualified_closed_payload_uses_its_module_definition() {
+    let (known, definitions) = shared_ident_lookups();
+    let enum_item: syn::ItemEnum =
+        syn::parse_str("#[serde(tag = \"t\")] enum E { V(b::Foo) }").unwrap();
+    let schema = parse_enum_to_schema(&enum_item, &known, &definitions);
+    let json = serde_json::to_string(&schema).unwrap();
+    assert!(json.contains("\"b_field\""), "{json}");
+    assert!(!json.contains("a_field"), "{json}");
+    assert!(!json.contains("allOf"), "{json}");
+}
+
+/// A flattened module-qualified field contributes the keys of the type its
+/// module declares.
+#[test]
+fn qualified_flatten_uses_its_module_definition() {
+    let (known, definitions) = shared_ident_lookups();
+    let item: syn::ItemStruct = syn::parse_str(
+        "#[serde(deny_unknown_fields)] struct Outer { x: u8, #[serde(flatten)] inner: b::Foo }",
+    )
+    .unwrap();
+    let schema =
+        crate::parser::schema::struct_schema::parse_struct_to_schema(&item, &known, &definitions);
+    let json = serde_json::to_string(&schema).unwrap();
+    assert!(json.contains("\"b_field\""), "{json}");
+    assert!(!json.contains("a_field"), "{json}");
+}

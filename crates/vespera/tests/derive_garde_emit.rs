@@ -139,7 +139,7 @@ fn multiple_field_violations_all_reported_in_one_report() {
     assert!(paths.iter().any(|p| p == "email"));
     assert!(paths.iter().any(|p| p == "age"));
     // At least 3 errors collected — exact count may vary because
-    // username triggers both pattern and (implicitly satisfied) length.
+    // `"X"` violates both username rules (pattern and `min_length = 3`).
     assert!(report.iter().count() >= 3, "got {paths:?}");
 }
 
