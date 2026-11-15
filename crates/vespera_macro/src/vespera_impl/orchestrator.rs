@@ -318,6 +318,11 @@ pub fn process_export_app(
         None
     };
 
+    // One sidecar / cache / key per `<crate>/<App>`: a second same-named
+    // export of this crate build is rejected (`export_names`).
+    let build = format!("{manifest_dir}/{}{}", current_export_crate(), super::path_utils::target_variant());
+    super::export_names::claim_export_name(&build, &name.to_string(), super::export_names::current_site(name)).map_err(|msg| syn::Error::new(name.span(), msg))?;
+
     let folder_path = find_folder_path(folder_name)?;
     if !folder_path.exists() {
         return Err(syn::Error::new(
