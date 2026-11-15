@@ -210,17 +210,19 @@ pub fn item_module_chain_in_file(
 /// re-parsed text carries the call site's span).  Only `read`'s result
 /// leaves: no fallback token is mixed with compiler tokens.
 fn with_line_spans<R>(file: &Path, read: impl FnOnce(&syn::File) -> R) -> Option<R> {
-    /// Restores proc-macro2's normal mode even if parsing panics.
-    struct Unforce;
-    impl Drop for Unforce {
-        fn drop(&mut self) {
-            proc_macro2::fallback::unforce();
-        }
-    }
     let content = file_cache::get_file_content(file)?;
     proc_macro2::fallback::force();
     let _unforce = Unforce;
     syn::parse_file(&content).ok().map(|parsed| read(&parsed))
+}
+
+/// Restores proc-macro2's normal mode even if parsing panics.
+struct Unforce;
+
+impl Drop for Unforce {
+    fn drop(&mut self) {
+        proc_macro2::fallback::unforce();
+    }
 }
 
 /// The inline `mod` chain whose braces enclose `line` of `file` — where a
@@ -428,18 +430,19 @@ impl ModuleScope {
             let keys: Vec<String> = self.imports.keys().cloned().collect();
             for key in keys {
                 let path = &self.imports[&key];
-                let Some(first) = path.first() else {
+                // A head that is itself an import (not the name, not a root,
+                // not an import of its own name) is replaced by its path.
+                let Some(base) = path
+                    .first()
+                    .filter(|first| **first != key && !is_path_root(first))
+                    .and_then(|first| {
+                        self.imports
+                            .get(first)
+                            .filter(|base| base.first() != Some(first))
+                    })
+                else {
                     continue;
                 };
-                if *first == key || is_path_root(first) {
-                    continue;
-                }
-                let Some(base) = self.imports.get(first) else {
-                    continue;
-                };
-                if base.first() == Some(first) {
-                    continue;
-                }
                 let rerooted: Vec<String> = base.iter().chain(&path[1..]).cloned().collect();
                 self.imports.insert(key, rerooted);
                 changed = true;

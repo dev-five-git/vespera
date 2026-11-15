@@ -363,10 +363,12 @@ impl TypeResolver<'_> {
                     return converted;
                 }
                 // Through a glob-imported first segment too (`resolve_name`).
-                let path = match resolve_name(std::slice::from_ref(&name), self.module) {
-                    Resolved::Path(path) => path_tokens(&path),
-                    Resolved::Unknown => path_tokens(import),
-                };
+                let resolved = resolve_name(std::slice::from_ref(&name), self.module);
+                let path = path_tokens(if let Resolved::Path(path) = &resolved {
+                    path
+                } else {
+                    import
+                });
                 return quote! { #path #args };
             }
             if scope.locals.contains(&name) {
@@ -413,13 +415,11 @@ impl TypeResolver<'_> {
     /// [`SEA_ORM_PATH_ALIASES`] (written, or through an import of the
     /// module): a user's own `crate::upload::FieldData` stays as written.
     fn names_alias_crate(&self, path: &syn::Path) -> bool {
-        let Some(first) = path
+        let first = path
             .segments
             .first()
             .map(|segment| strip_raw(&segment.ident))
-        else {
-            return false;
-        };
+            .unwrap_or_default();
         let root = match resolve_name(std::slice::from_ref(&first), self.module) {
             Resolved::Path(resolved) if path.leading_colon.is_none() => {
                 first_named(&resolved).map(str::to_owned)

@@ -241,6 +241,7 @@ use crate::missing::*;
 use crate::shared::*;
 use sea_orm::entity::prelude::*;
 use other_crate::Json;
+use sea_orm as orm;
 use enums::Other as Chained;
 use sub::Sub as ViaGlob;
 use crate::shared::Shared as Twin;
@@ -292,6 +293,23 @@ pub mod kinds { pub enum Kind { A } }
 #[case::sea_orm_time_crate_alias("TimeDateTime", "sea_orm :: entity :: prelude :: TimeDateTime")]
 #[case::sea_orm_chrono_alias(
     "ChronoDateTimeUtc",
+    "vespera :: chrono :: DateTime < vespera :: chrono :: Utc >"
+)]
+#[case::sea_orm_chrono_tz_alias(
+    "ChronoDateTimeWithTimeZone",
+    "vespera :: chrono :: DateTime < vespera :: chrono :: FixedOffset >"
+)]
+#[case::sea_orm_chrono_local_alias(
+    "ChronoDateTimeLocal",
+    "vespera :: chrono :: DateTime < vespera :: chrono :: Local >"
+)]
+#[case::sea_orm_chrono_naive_alias("ChronoDateTime", "vespera :: chrono :: NaiveDateTime")]
+#[case::sea_orm_chrono_date_alias("ChronoDate", "vespera :: chrono :: NaiveDate")]
+#[case::sea_orm_chrono_time_alias("ChronoTime", "vespera :: chrono :: NaiveTime")]
+#[case::sea_orm_chrono_utc_alias("ChronoUtc", "vespera :: chrono :: Utc")]
+// A qualified alias through an import of the SeaORM crate (`use sea_orm as orm`).
+#[case::imported_alias_crate(
+    "orm::prelude::DateTimeUtc",
     "vespera :: chrono :: DateTime < vespera :: chrono :: Utc >"
 )]
 // A glob brings in only the glob module's PUBLIC names.

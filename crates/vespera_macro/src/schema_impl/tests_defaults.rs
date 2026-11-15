@@ -198,12 +198,14 @@ fn crate_path_default_fn_is_resolved_through_the_module_tree(
 
 /// Paths the in-file walk cannot follow resolve through the module tree: an
 /// out-of-line child module, `super::` above the file's top level, and a
-/// `use`-imported name (they used to demand an explicit `#[schema(default)]`).
+/// `use`-imported name (they used to demand an explicit `#[schema(default)]`);
+/// a function another crate exports cannot be read.
 #[rstest]
 #[case::out_of_line_child("A", Some("child"))]
 #[case::super_past_file("B", Some("parent"))]
 #[case::imported_name("C", Some("imported"))]
 #[case::missing("D", None)]
+#[case::external_crate("E", None)]
 fn default_fn_is_resolved_through_the_module_tree(
     #[case] name: &str,
     #[case] expected: Option<&str>,
@@ -229,11 +231,12 @@ fn default_fn_is_resolved_through_the_module_tree(
         std::fs::create_dir_all(src.join(path).parent().unwrap()).unwrap();
         std::fs::write(src.join(path), content).unwrap();
     }
-    let user = "mod defaults;\nuse crate::shared::imported_role;\n\
+    let user = "mod defaults;\nuse crate::shared::imported_role;\nuse other_crate::role as foreign_role;\n\
         pub struct A { #[serde(default = \"defaults::role\")] role: String }\n\
         pub struct B { #[serde(default = \"super::parent_role\")] role: String }\n\
         pub struct C { #[serde(default = \"imported_role\")] role: String }\n\
-        pub struct D { #[serde(default = \"nowhere::role\")] role: String }\n";
+        pub struct D { #[serde(default = \"nowhere::role\")] role: String }\n\
+        pub struct E { #[serde(default = \"foreign_role\")] role: String }\n";
     let file_path = src.join("models/user.rs");
     std::fs::write(&file_path, user).unwrap();
     let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());

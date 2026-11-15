@@ -397,5 +397,9 @@ fn struct_definitions_without_fingerprint_are_returned_uncached() {
             ensure_struct_definitions(&mut cache, &temp_dir.path().join("missing.rs")),
             None
         );
+        cache.mtime_epoch_cache.insert(file.clone(), (epoch, None));
     });
+    // The public lookup reads the uncached definitions too.
+    assert!(get_struct_definition(&file, "Model").is_some_and(|def| def.contains("pub id")));
+    assert_eq!(get_struct_definition(&file, "Other"), None);
 }
