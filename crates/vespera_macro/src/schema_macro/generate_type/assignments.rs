@@ -55,14 +55,15 @@ pub(super) fn gate_items(cfg: &TokenStream, items: TokenStream) -> TokenStream {
     if cfg.is_empty() {
         return items;
     }
-    match syn::parse2::<syn::File>(items.clone()) {
-        Ok(file) => file
-            .items
-            .iter()
-            .map(|item| quote! { #cfg #item })
-            .collect(),
-        Err(_) => quote! { #cfg #items },
-    }
+    syn::parse2::<syn::File>(items.clone()).map_or_else(
+        |_| quote! { #cfg #items },
+        |file| {
+            file.items
+                .iter()
+                .map(|item| quote! { #cfg #item })
+                .collect()
+        },
+    )
 }
 
 /// Whether a field of visibility `vis` declared in `source_module` can be

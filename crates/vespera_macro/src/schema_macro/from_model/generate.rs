@@ -84,15 +84,13 @@ pub fn generate_from_model_with_relations(
                 relation,
                 cfg,
             } = mapping;
-            let value = if let Some(index) = relation {
-                relation_fields.get(*index).map_or_else(
+            let value = match relation {
+                Some(index) => relation_fields.get(*index).map_or_else(
                     || quote! { Default::default() },
                     |rel| relation_value(rel, source_ident, source_module_path),
-                )
-            } else if *wrapped {
-                quote! { Some(#MODEL.#source_ident) }
-            } else {
-                quote! { #MODEL.#source_ident }
+                ),
+                None if *wrapped => quote! { Some(#MODEL.#source_ident) },
+                None => quote! { #MODEL.#source_ident },
             };
             quote! { #cfg #new_ident: #value }
         })
