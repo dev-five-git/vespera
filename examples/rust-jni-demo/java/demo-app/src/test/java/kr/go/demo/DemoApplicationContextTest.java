@@ -58,5 +58,11 @@ class DemoApplicationContextTest extends AbstractVesperaHttpIntegrationTest {
                                 org.springframework.context.annotation.ComponentScan.class)
                         == null,
                 "re-adding @ComponentScan for the bridge package breaks startup");
+        // @SpringBootApplication's own scan attributes are the same trap.
+        org.springframework.boot.autoconfigure.SpringBootApplication app = DemoApplication.class.getAnnotation(
+                org.springframework.boot.autoconfigure.SpringBootApplication.class);
+        assertTrue(app != null, "DemoApplication is a @SpringBootApplication");
+        assertTrue(app.scanBasePackages().length == 0 && app.scanBasePackageClasses().length == 0,
+                "scanBasePackages / scanBasePackageClasses must stay unset");
     }
 }

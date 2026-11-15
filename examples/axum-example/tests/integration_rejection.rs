@@ -61,3 +61,24 @@ async fn result_extractors_are_documented() {
         .collect();
     assert_eq!(params, [("q", "query", true), ("limit", "query", false)]);
 }
+
+/// `POST /form/upload` answers a malformed multipart body with `400` instead
+/// of panicking the handler (which dropped the connection with no response).
+#[tokio::test]
+async fn raw_multipart_upload_rejects_a_malformed_body_with_400() {
+    let server = TestServer::new(create_app().await);
+
+    let ok = server
+        .post("/form/upload")
+        .multipart(testkit::MultipartForm::new().add_text("note", "hello"))
+        .await;
+    ok.assert_status_ok();
+    assert_eq!(ok.json::<serde_json::Value>()["ticketId"], "UPLOAD-001");
+
+    let malformed = server
+        .post("/form/upload")
+        .content_type("multipart/form-data; boundary=x")
+        .bytes("garbage".into())
+        .await;
+    malformed.assert_status(StatusCode::BAD_REQUEST);
+}

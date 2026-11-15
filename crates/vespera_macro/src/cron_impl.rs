@@ -387,6 +387,26 @@ pub fn feature_disabled_error(item: proc_macro2::TokenStream) -> proc_macro2::To
     out
 }
 
+/// The `#[cron]` attribute output: [`process_cron_attribute`]'s expansion, or
+/// on rejection its compile error **followed by the original item**.  The
+/// module-tree scan (`vespera_impl::cron_discovery`) re-parses the source and
+/// may still schedule a job whose attribute failed (an invalid expression or
+/// time zone); dropping the function would then add an unresolved-function
+/// error inside the `vespera!` expansion next to the real diagnostic.
+pub fn cron_attribute(
+    attr: proc_macro2::TokenStream,
+    item: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    match process_cron_attribute(attr, item.clone()) {
+        Ok(tokens) => tokens,
+        Err(e) => {
+            let mut out = e.to_compile_error();
+            out.extend(item);
+            out
+        }
+    }
+}
+
 /// Process cron attribute - extracted for testability
 pub fn process_cron_attribute(
     attr: proc_macro2::TokenStream,

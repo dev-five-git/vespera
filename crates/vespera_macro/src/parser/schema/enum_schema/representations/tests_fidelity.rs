@@ -17,6 +17,8 @@ fn both_views(src: &str) -> String {
         "Payload".to_string(),
         "Closed".to_string(),
         "Shape".to_string(),
+        "Kind".to_string(),
+        "Mode".to_string(),
     ]);
     let definitions = HashMap::from([
         ("Ping".to_string(), "struct Ping;".to_string()),
@@ -32,6 +34,11 @@ fn both_views(src: &str) -> String {
             "Shape".to_string(),
             "enum Shape { Square(u8), Circle { r: u8 } }".to_string(),
         ),
+        (
+            "Kind".to_string(),
+            "enum Kind { Point, #[serde(alias = \"pt\")] Dot, Square(u8) }".to_string(),
+        ),
+        ("Mode".to_string(), "enum Mode { On, Off }".to_string()),
     ]);
     let response = parse_enum_to_schema(&item, &known, &definitions);
     let request = with_request_view(|| parse_enum_to_schema(&item, &known, &definitions));
@@ -162,6 +169,30 @@ fn both_views(src: &str) -> String {
 #[case::internal_external_payload(
     "internal_external_payload",
     r#"#[serde(tag = "type")] enum E { A(Shape), B(Option<Shape>) }"#
+)]
+// Round 11: an internally tagged newtype over an externally tagged enum with
+// unit variants: serde writes a unit variant as a key next to the tag
+// (`{"type": "A", "Point": null}`), never as a string.
+#[case::internal_external_unit_payload(
+    "internal_external_unit_payload",
+    r#"#[serde(tag = "type")] enum E { A(Kind), B(Mode) }"#
+)]
+// Round 11: a map payload's `length` bounds count the tag too.
+#[case::internal_map_payload_bounds(
+    "internal_map_payload_bounds",
+    r#"#[serde(tag = "t")] enum E { M(#[garde(length(min = 1, max = 2))] std::collections::HashMap<String, u8>) }"#
+)]
+// Round 11: serde_json also reads a unit variant of a mixed externally
+// tagged enum from its map form `{"Point": null}`.
+#[case::external_unit_map_form(
+    "external_unit_map_form",
+    r#"enum Shape { #[serde(alias = "pt")] Point, Square(u8) }"#
+)]
+// Round 11: a tuple-variant position whose `skip_serializing_if` holds is
+// left out of the written array.
+#[case::tuple_variant_skip_serializing_if(
+    "tuple_variant_skip_serializing_if",
+    r#"enum E { V(u8, #[serde(skip_serializing_if = "Option::is_none")] Option<u8>) }"#
 )]
 fn enum_views(#[case] name: &str, #[case] src: &str) {
     insta::assert_snapshot!(format!("enum_views_{name}"), both_views(src));

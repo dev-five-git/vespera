@@ -96,7 +96,7 @@ vespera {
 ```
 
 - One `nativeJar<Platform>` task per entry (`nativeJarLinuxX86_64`, `nativeJarLinuxX86_64Musl`, …; lifecycle task `nativeJars`) writes `build/libs/myapp-native-0.1.0-<platform>.jar` containing exactly `native/<platform>/<lib>`; it fails with the missing path when that platform's library is absent. Platforms are bridge platform keys (`<os>-<arch>`, `linux-<arch>-musl`).
-- With `maven-publish` applied, the jars are the classifier artifacts of a `vesperaNative` publication (artifactId = project name, `pom` packaging, no main jar): `./gradlew publishVesperaNativePublicationTo<Repo>Repository`. Rename it with `publishing.publications.named<MavenPublication>("vesperaNative") { artifactId = "..." }`. With the vanniktech Maven Central plugin the publication is signed and uploaded with the others.
+- With `maven-publish` applied, the jars are the classifier artifacts of a `vesperaNative` publication (artifactId = project name, `pom` packaging, no main jar): `./gradlew publishVesperaNativePublicationTo<Repo>Repository`. Rename it with `publishing.publications.named<MavenPublication>("vesperaNative") { artifactId = "..." }`. **Use a dedicated project, or rename it:** in a project that also publishes its own component (`from(components["java"])`) both publications would share `group:project:version` and overwrite each other — the `pom`-packaging native POM can replace the real one. With the vanniktech Maven Central plugin the publication is signed and uploaded with the others.
 - **Consumers** keep the plugin (for the `vespera-bridge` dependency) with `bundleNative.set(false)` and add the platforms they deploy to — the bridge loads the host's from whichever jar carries it:
 
   ```kotlin

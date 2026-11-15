@@ -149,8 +149,16 @@ pub(super) fn flatten_part(
 /// variants: serde writes (and reads) a flattened unit variant as the key
 /// `{"A": null}`, never as the string `"A"`, so every `{type: string, enum:
 /// [..]}` branch (or the whole schema of a unit-only enum) becomes one
-/// `{A: null}` object per name. `None` when there is no such branch.
-fn flattened_unit_variants(schema: &Schema) -> Option<Schema> {
+/// `{A: null}` object per name (a name that already has such a branch — the
+/// request view's map form, see `parse_externally_tagged_enum` — is not
+/// listed twice). `None` when there is no such branch.
+pub(in crate::parser::schema) fn flattened_unit_variants(schema: &Schema) -> Option<Schema> {
+    let existing: Vec<&str> = schema
+        .one_of
+        .iter()
+        .flatten()
+        .filter_map(null_key_branch)
+        .collect();
     let unit_keys = |schema: &Schema| {
         (schema.schema_type == Some(SchemaType::String) && schema.not.is_none())
             .then_some(schema.r#enum.as_ref())
@@ -158,6 +166,7 @@ fn flattened_unit_variants(schema: &Schema) -> Option<Schema> {
             .map(|keys| {
                 keys.iter()
                     .filter_map(serde_json::Value::as_str)
+                    .filter(|key| !existing.contains(key))
                     .map(|key| {
                         SchemaRef::Inline(Box::new(Schema {
                             description: schema.description.clone(),
@@ -197,6 +206,22 @@ fn flattened_unit_variants(schema: &Schema) -> Option<Schema> {
         one_of: Some(one_of),
         ..schema.clone()
     })
+}
+
+/// The key of a `{key: null}` single-key object branch (a unit variant's
+/// map form).
+fn null_key_branch(branch: &SchemaRef) -> Option<&str> {
+    let SchemaRef::Inline(branch) = branch else {
+        return None;
+    };
+    let mut properties = branch.properties.as_ref()?.iter();
+    let (key, SchemaRef::Inline(value)) = properties.next()? else {
+        return None;
+    };
+    (properties.next().is_none()
+        && value.schema_type == Some(SchemaType::Null)
+        && branch.required.as_deref() == Some(std::slice::from_ref(key)))
+    .then_some(key.as_str())
 }
 
 /// The schema of the user type `ty` names (through `Box` / `Arc` / `Rc` /
@@ -624,6 +649,43 @@ mod tests {
             format!("flatten_unit_variants_{name}"),
             serde_json::to_string_pretty(&schema).unwrap()
         );
+    }
+
+    /// Only a `{key: null}` object with that one required key is a unit
+    /// variant's map form.
+    #[test]
+    fn null_key_branches_are_single_null_keys() {
+        let branch = |value: serde_json::Value| -> SchemaRef {
+            serde_json::from_value(value).expect("hand-built branch deserializes")
+        };
+        let keyed = |key: &str, value: serde_json::Value| {
+            branch(serde_json::json!({
+                "type": "object", "properties": {key: value}, "required": [key]
+            }))
+        };
+        assert_eq!(
+            null_key_branch(&keyed("A", serde_json::json!({"type": "null"}))),
+            Some("A")
+        );
+        let not_null_keys = [
+            branch(serde_json::json!({"$ref": "#/components/schemas/Payload"})),
+            branch(serde_json::json!({"type": "string", "enum": ["A"]})),
+            keyed(
+                "A",
+                serde_json::json!({"$ref": "#/components/schemas/Payload"}),
+            ),
+            keyed("A", serde_json::json!({"type": "integer"})),
+            branch(serde_json::json!({
+                "type": "object",
+                "properties": {"A": {"type": "null"}, "B": {"type": "null"}},
+                "required": ["A"]
+            })),
+            branch(serde_json::json!({"type": "object", "properties": {"A": {"type": "null"}}})),
+            branch(serde_json::json!({"type": "object", "properties": {}})),
+        ];
+        for branch in &not_null_keys {
+            assert_eq!(null_key_branch(branch), None, "{branch:?}");
+        }
     }
 
     /// A `$ref` branch (a newtype variant over a component) is kept as is

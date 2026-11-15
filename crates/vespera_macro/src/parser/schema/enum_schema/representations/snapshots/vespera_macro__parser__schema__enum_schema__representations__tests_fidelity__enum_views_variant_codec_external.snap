@@ -1,7 +1,8 @@
 ---
 source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
+assertion_line: 198
 expression: both_views(src)
 ---
 enum E { #[serde(with = "m")] Wrapped(Thing), #[serde(serialize_with = "s")] Named { a: u8 }, Plain }
 response: {"oneOf":[{"type":"object","properties":{"Wrapped":{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."}},"required":["Wrapped"],"maxProperties":1},{"type":"object","properties":{"Named":{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."}},"required":["Named"],"maxProperties":1},{"type":"string","enum":["Plain"]}]}
-request: {"oneOf":[{"type":"object","properties":{"Wrapped":{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."}},"required":["Wrapped"],"maxProperties":1},{"type":"object","properties":{"Named":{"type":"object","properties":{"a":{"type":"integer","format":"uint8","minimum":0,"maximum":255}},"required":["a"]}},"required":["Named"],"maxProperties":1},{"type":"string","enum":["Plain"]}]}
+request: {"oneOf":[{"type":"object","properties":{"Wrapped":{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."}},"required":["Wrapped"],"maxProperties":1},{"type":"object","properties":{"Named":{"type":"object","properties":{"a":{"type":"integer","format":"uint8","minimum":0,"maximum":255}},"required":["a"]}},"required":["Named"],"maxProperties":1},{"type":"string","enum":["Plain"]},{"type":"object","properties":{"Plain":{"type":"null"}},"required":["Plain"],"maxProperties":1}]}

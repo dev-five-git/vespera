@@ -298,10 +298,13 @@ pub fn validate_relation_adapters(
         source_type_name,
     )?;
     let mut seen = HashSet::new();
-    for (field, adapter) in adapters {
+    for (field, _) in adapters {
         if !seen.insert(field.as_str()) {
-            return Err(syn::Error::new(
-                adapter.span(),
+            // Spanned at the repeated field name (like `rename`), not the
+            // adapter type.
+            return Err(at.error_at(
+                "relation_adapters",
+                field,
                 format!("`relation_adapters` lists field `{field}` more than once"),
             ));
         }

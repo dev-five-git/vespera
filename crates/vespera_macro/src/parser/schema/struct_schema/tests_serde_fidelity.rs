@@ -223,6 +223,16 @@ fn both_views(src: &str) -> String {
     "tuple_one_sided_skips",
     "struct P(u8, #[serde(skip_serializing)] u16, #[serde(skip_deserializing)] u32);"
 )]
+// Round 11: serde leaves out a tuple position whose `skip_serializing_if`
+// holds, shifting later elements left (`P(1, None, 2)` → `[1, 2]`).
+#[case::tuple_skip_serializing_if(
+    "tuple_skip_serializing_if",
+    r#"struct P(u8, #[serde(skip_serializing_if = "Option::is_none")] Option<u16>, u32);"#
+)]
+#[case::tuple_trailing_skip_serializing_if(
+    "tuple_trailing_skip_serializing_if",
+    r#"struct P(u8, #[serde(skip_serializing_if = "Option::is_none")] Option<u16>);"#
+)]
 // L3 / L5: sets only promise unique items on output; std `Duration` is also
 // read from `[secs, nanos]`.
 #[case::sets("sets", "struct S { tags: HashSet<String>, ids: BTreeSet<u8> }")]

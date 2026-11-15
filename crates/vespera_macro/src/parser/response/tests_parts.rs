@@ -70,6 +70,20 @@ fn responses_json(return_type: &str) -> String {
     "result_nested_tuple",
     "-> Result<(StatusCode, (CookieJar, String)), (StatusCode, (HeaderMap,))>"
 )]
+// Round 11: a bare `Result` on the body path is axum's `IntoResponse for
+// Result` (the `Ok` body or the `Err` response), never serde's
+// `{"Ok": ..}` / `{"Err": ..}`; its error is one more error response.
+#[case::nested_result(
+    "nested_result",
+    "-> Result<Result<Json<User>, (StatusCode, Json<User>)>, StatusCode>"
+)]
+#[case::tuple_result("tuple_result", "-> (StatusCode, Result<Json<User>, String>)")]
+#[case::nested_result_no_content(
+    "nested_result_no_content",
+    "-> Result<Result<NoContent, String>, StatusCode>"
+)]
+#[case::result_ok_header_map("result_ok_header_map", "-> Result<(HeaderMap, Json<User>), String>")]
+#[case::result_parts_only("result_parts_only", "-> (StatusCode, Result<(StatusCode,), String>)")]
 fn response_parts_and_bodies(#[case] name: &str, #[case] return_type: &str) {
     insta::assert_snapshot!(
         format!("response_parts_{name}"),

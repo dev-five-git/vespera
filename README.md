@@ -649,7 +649,7 @@ so existing routes are unaffected.
 #### Non-`200` success status (`status = <u16>`)
 
 Use `status = <u16>` to override the inferred `200` success key with any `2xx`
-code (a non-`2xx` value is a compile error). No-body statuses (`204`, `304`)
+code (a non-`2xx` value is a compile error). No-body statuses (`204`, `205`)
 emit a success response with no `content`:
 
 ```rust

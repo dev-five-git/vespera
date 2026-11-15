@@ -118,6 +118,7 @@ class ObservabilityAutoConfigurationTest {
                             ctx.getBean(VesperaBridgeProperties.class).getShutdownTimeout());
                     // Not auto-initialised: destroy() must not touch the native side.
                     ((DisposableBean) ctx.getBean("vesperaBridgeShutdown")).destroy();
+                    assertFalse(VesperaBridge.isShutdown());
                 });
         VesperaBridgeProperties props = new VesperaBridgeProperties();
         props.setShutdownTimeout(null);
@@ -130,6 +131,16 @@ class ObservabilityAutoConfigurationTest {
         // An auto-initialised settings bean triggers the (not-loaded → no-op) shutdown.
         new VesperaBridgeCoreAutoConfiguration()
                 .vesperaBridgeShutdown(new VesperaBridgeNativeSettings(true), props).destroy();
+        // The guard itself: an application-initialised library is never shut
+        // down by the context, an auto-initialised one is, with the timeout.
+        props.setShutdownTimeout(Duration.ofSeconds(3));
+        java.util.List<Duration> shutdowns = new java.util.ArrayList<>();
+        VesperaBridgeCoreAutoConfiguration
+                .shutdownOnClose(new VesperaBridgeNativeSettings(false), props, shutdowns::add).destroy();
+        assertEquals(java.util.List.of(), shutdowns);
+        VesperaBridgeCoreAutoConfiguration
+                .shutdownOnClose(new VesperaBridgeNativeSettings(true), props, shutdowns::add).destroy();
+        assertEquals(java.util.List.of(Duration.ofSeconds(3)), shutdowns);
     }
 
     @Test

@@ -999,6 +999,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "form"
         ],
         "summary": "Upload a file via raw multipart form data",
+        "description": "A malformed multipart body (or one over the body limit) answers `400`\ninstead of panicking the handler.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1016,6 +1017,16 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ContactFormResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }

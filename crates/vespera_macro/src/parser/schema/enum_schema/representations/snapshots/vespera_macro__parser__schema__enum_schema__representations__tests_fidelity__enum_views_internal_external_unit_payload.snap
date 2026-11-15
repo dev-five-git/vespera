@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
+assertion_line: 198
+expression: both_views(src)
+---
+#[serde(tag = "type")] enum E { A(Kind), B(Mode) }
+response: {"oneOf":[{"allOf":[{"type":"object","properties":{"type":{"type":"string","enum":["A"]}},"required":["type"]},{"oneOf":[{"type":"object","properties":{"Point":{"type":"null"}},"required":["Point"]},{"type":"object","properties":{"Dot":{"type":"null"}},"required":["Dot"]},{"type":"object","properties":{"Square":{"type":"integer","format":"uint8","minimum":0,"maximum":255}},"required":["Square"]}]}]},{"allOf":[{"type":"object","properties":{"type":{"type":"string","enum":["B"]}},"required":["type"]},{"oneOf":[{"type":"object","properties":{"On":{"type":"null"}},"required":["On"]},{"type":"object","properties":{"Off":{"type":"null"}},"required":["Off"]}]}]}],"discriminator":{"propertyName":"type"}}
+request: {"oneOf":[{"allOf":[{"type":"object","properties":{"type":{"type":"string","enum":["A"]}},"required":["type"]},{"oneOf":[{"type":"object","properties":{"Point":{"type":"null"}},"required":["Point"]},{"type":"object","properties":{"Dot":{"type":"null"}},"required":["Dot"]},{"type":"object","properties":{"pt":{"type":"null"}},"required":["pt"]},{"type":"object","properties":{"Square":{"type":"integer","format":"uint8","minimum":0,"maximum":255}},"required":["Square"]}]}]},{"allOf":[{"type":"object","properties":{"type":{"type":"string","enum":["B"]}},"required":["type"]},{"oneOf":[{"type":"object","properties":{"On":{"type":"null"}},"required":["On"]},{"type":"object","properties":{"Off":{"type":"null"}},"required":["Off"]}]}]}],"discriminator":{"propertyName":"type"}}

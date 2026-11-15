@@ -1,5 +1,6 @@
 ---
 source: crates/vespera_macro/src/openapi_generator/tests_parser_views.rs
+assertion_line: 142
 expression: "serde_json::to_string_pretty(&components).unwrap()"
 ---
 {
@@ -40,6 +41,18 @@ expression: "serde_json::to_string_pretty(&components).unwrap()"
         "enum": [
           "Nil"
         ]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "Nil": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "Nil"
+        ],
+        "maxProperties": 1
       },
       {
         "type": "object",
