@@ -210,14 +210,18 @@ fn generate_inline_type_core(
             }
 
             // Keep serde (function paths re-rooted at the target module, the
-            // type is emitted at the call site), doc and cfg attributes (the
-            // construction repeats the cfg).
+            // type is emitted at the call site), schema (the inline type
+            // derives `Schema`: an explicit `#[schema(default)]` documents a
+            // `#[serde(default = "fn")]` whose value is not a literal), doc
+            // and cfg attributes (the construction repeats the cfg).
             let kept_attrs: Vec<syn::Attribute> =
                 reroot_serde_paths(&field.attrs, effective_module_path)
                     .into_iter()
                     .filter(|attr| {
                         let path = attr.path();
-                        path.is_ident("serde") || path.is_ident("doc") || path.is_ident("cfg")
+                        ["serde", "schema", "doc", "cfg"]
+                            .iter()
+                            .any(|key| path.is_ident(key))
                     })
                     .collect();
 

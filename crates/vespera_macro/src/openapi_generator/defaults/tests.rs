@@ -422,9 +422,9 @@ fn process_default_functions_demotes_unresolvable_fn_default_from_required() {
 }
 
 #[test]
-fn process_default_functions_demotes_simple_default_without_type_default() {
-    // `#[serde(default)]` on `Vec<T>`: `get_type_default` yields no value for
-    // Vec, so the field is demoted from `required`.
+fn process_default_functions_demotes_simple_default_of_a_collection() {
+    // `#[serde(default)]` on `Vec<T>`: the field is demoted from `required`
+    // and documents serde's empty-array default.
     let struct_item: syn::ItemStruct = syn::parse_str(
         r"
         pub struct Req {
@@ -455,6 +455,10 @@ fn process_default_functions_demotes_simple_default_without_type_default() {
         !required.contains(&"tags".to_string()),
         "Vec serde default demoted"
     );
+    let SchemaRef::Inline(tags) = schema.properties.as_ref().unwrap().get("tags").unwrap() else {
+        panic!("expected inline");
+    };
+    assert_eq!(tags.default, Some(serde_json::json!([])));
 }
 
 #[test]

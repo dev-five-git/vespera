@@ -753,19 +753,20 @@ fn sql_function_default_for_scalar_types(#[case] type_name: &str, #[case] expect
         expr.to_string(),
         quote::quote!(Default::default()).to_string()
     );
-    assert_eq!(default, expected);
+    assert_eq!(default.as_deref(), Some(expected));
 }
 
 /// `NOW()` defaults must produce a value of the generated field's type: the
 /// UTC / local aliases are not `DateTime<FixedOffset>`, SeaORM's bare
-/// `DateTime` / `Date` are the naive types.
+/// `DateTime` / `Date` are the naive types. A `Local` value carries the
+/// server's offset, so it documents no OpenAPI default (`schema` = `-`).
 #[rstest::rstest]
 #[case::with_time_zone("DateTimeWithTimeZone", "fixed_offset", "1970-01-01T00:00:00+00:00")]
 #[case::chrono_fixed("DateTime<FixedOffset>", "fixed_offset", "1970-01-01T00:00:00+00:00")]
 #[case::utc_alias("DateTimeUtc", "UNIX_EPOCH }", "1970-01-01T00:00:00Z")]
 #[case::chrono_utc("DateTime<Utc>", "UNIX_EPOCH }", "1970-01-01T00:00:00Z")]
-#[case::local_alias("DateTimeLocal", "with_timezone", "1970-01-01T00:00:00+00:00")]
-#[case::chrono_local("DateTime<Local>", "with_timezone", "1970-01-01T00:00:00+00:00")]
+#[case::local_alias("DateTimeLocal", "with_timezone", "-")]
+#[case::chrono_local("DateTime<Local>", "with_timezone", "-")]
 #[case::naive_alias("DateTime", "NaiveDateTime :: UNIX_EPOCH", "1970-01-01T00:00:00")]
 #[case::date_alias("Date", "NaiveDate :: default", "1970-01-01")]
 #[case::unknown_zone("DateTime<Tz>", "", "")]
@@ -780,10 +781,14 @@ fn now_default_matches_field_type(#[case] ty: &str, #[case] expr: &str, #[case] 
         assert!(fns.is_empty() && schema_attr.is_empty());
         return;
     }
-    assert!(
-        schema_attr.to_string().contains(&format!("\"{schema}\"")),
-        "{schema_attr}"
-    );
+    if schema == "-" {
+        assert!(schema_attr.is_empty(), "{schema_attr}");
+    } else {
+        assert!(
+            schema_attr.to_string().contains(&format!("\"{schema}\"")),
+            "{schema_attr}"
+        );
+    }
     let body = fns[0].to_string();
     assert!(body.contains(expr), "{body}");
 }

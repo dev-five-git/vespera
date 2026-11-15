@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Type;
@@ -29,6 +31,10 @@ pub(super) enum DefaultKind {
     Trait,
     /// Call a custom function — from `#[serde(default = "path::to::fn")]`.
     Function(String),
+    /// The field of the container's default value — from a struct-level
+    /// `#[serde(default)]` / `default = "fn"` (bound once as
+    /// `__vespera_default__`, see [`super::process_derive`]).
+    Container,
 }
 
 /// Process all named fields into codegen fragments.
@@ -37,6 +43,7 @@ pub(super) fn process_fields<'a>(
     rename_all: Option<&str>,
     strict: bool,
     struct_default: bool,
+    locals: &HashSet<String>,
 ) -> FieldCodegen<'a> {
     let mut cg = FieldCodegen {
         declarations: Vec::new(),
@@ -69,7 +76,8 @@ pub(super) fn process_fields<'a>(
         let skip = extract_serde_skip_flags(&field.attrs);
         if skip.skip || skip.skip_deserializing {
             let init = match &default_kind {
-                DefaultKind::Function(fn_path) => default_fn_call(ident, fn_path),
+                DefaultKind::Function(fn_path) => default_fn_call(ident, fn_path, locals),
+                DefaultKind::Container => quote! { __vespera_default__.#ident },
                 DefaultKind::Trait | DefaultKind::None => {
                     quote! { ::core::default::Default::default() }
                 }
@@ -116,8 +124,8 @@ pub(super) fn process_fields<'a>(
             ty,
             &field_name,
             &default_kind,
-            is_option,
-            is_vec,
+            (is_option, is_vec),
+            locals,
         );
         cg.idents.push(ident);
     }
@@ -178,15 +186,36 @@ fn push_post_loop<'a>(
     ty: &Type,
     field_name: &str,
     default_kind: &DefaultKind,
-    is_option: bool,
-    is_vec: bool,
+    (is_option, is_vec): (bool, bool),
+    locals: &HashSet<String>,
 ) {
     if is_option || is_vec {
+        // A missing part leaves `None` / `[]` — serde's value for an absent
+        // `Option` and the multipart reading of "no parts" — unless the
+        // field (or container) names another default.
+        let fallback = match default_kind {
+            DefaultKind::Function(fn_path) => default_fn_call(ident, fn_path, locals),
+            DefaultKind::Container => quote! { __vespera_default__.#ident },
+            DefaultKind::Trait | DefaultKind::None => return,
+        };
+        // One-line `quote!` bodies: llvm coverage never marks the inner lines
+        // of a multi-line `quote!` nested in this `if` as executed.
+        let binding = if is_vec {
+            quote! { let #ident: #ty = if #ident.is_empty() { #fallback } else { #ident }; }
+        } else {
+            quote! { let #ident: #ty = match #ident { std::option::Option::None => #fallback, __vespera_some__ => __vespera_some__ }; }
+        };
+        cg.post_loop.push(binding);
         return;
     }
 
-    cg.post_loop
-        .push(post_loop_binding(ident, ty, field_name, default_kind));
+    cg.post_loop.push(post_loop_binding(
+        ident,
+        ty,
+        field_name,
+        default_kind,
+        locals,
+    ));
 }
 
 /// The post-loop `let` that resolves a missing non-`Option`/`Vec` field.
@@ -195,10 +224,17 @@ fn post_loop_binding(
     ty: &Type,
     field_name: &str,
     default_kind: &DefaultKind,
+    locals: &HashSet<String>,
 ) -> TokenStream {
     match default_kind {
         DefaultKind::Trait => quote! { let #ident: #ty = #ident.unwrap_or_default(); },
-        DefaultKind::Function(fn_path) => default_fn_post_loop(ident, ty, fn_path),
+        DefaultKind::Function(fn_path) => default_fn_post_loop(ident, ty, fn_path, locals),
+        DefaultKind::Container => quote! {
+            let #ident: #ty = match #ident {
+                std::option::Option::Some(__vespera_value__) => __vespera_value__,
+                std::option::Option::None => __vespera_default__.#ident,
+            };
+        },
         DefaultKind::None => quote! {
             let #ident = #ident.ok_or(
                 vespera::multipart::TypedMultipartError::MissingField {
@@ -210,24 +246,47 @@ fn post_loop_binding(
 }
 
 /// Post-loop binding for `default = "path::to::fn"`.
-fn default_fn_post_loop(ident: &syn::Ident, ty: &Type, fn_path: &str) -> TokenStream {
-    let default_fn = default_fn_expr(ident, fn_path);
+fn default_fn_post_loop(
+    ident: &syn::Ident,
+    ty: &Type,
+    fn_path: &str,
+    locals: &HashSet<String>,
+) -> TokenStream {
+    let default_fn = default_fn_expr(ident, fn_path, locals);
     quote! { let #ident: #ty = #ident.unwrap_or_else(#default_fn); }
 }
 
 /// Initialiser calling `default = "path::to::fn"` (for a skipped field).
-fn default_fn_call(ident: &syn::Ident, fn_path: &str) -> TokenStream {
-    let default_fn = default_fn_expr(ident, fn_path);
+pub(super) fn default_fn_call(
+    ident: &syn::Ident,
+    fn_path: &str,
+    locals: &HashSet<String>,
+) -> TokenStream {
+    let default_fn = default_fn_expr(ident, fn_path, locals);
     quote! { (#default_fn)() }
 }
 
 /// The `default = "path::to::fn"` function as an expression.
-fn default_fn_expr(ident: &syn::Ident, fn_path: &str) -> TokenStream {
+///
+/// The derived fn binds one local per field (`locals`), so a one-segment
+/// path naming a field (`#[serde(default = "tags")] tags: Vec<String>`)
+/// would call the LOCAL; it is spelled `self::tags` (the module item serde
+/// means) instead.
+fn default_fn_expr(ident: &syn::Ident, fn_path: &str, locals: &HashSet<String>) -> TokenStream {
     // A malformed user-supplied `default = "..."` path must surface as a
     // clean, span-attached compile error at the field — not an internal
     // macro panic (`.expect`) that prints no source location and aborts
     // expansion of the whole derive.
     match syn::parse_str::<syn::ExprPath>(fn_path) {
+        Ok(path)
+            if path.qself.is_none()
+                && path
+                    .path
+                    .get_ident()
+                    .is_some_and(|name| locals.contains(&name.to_string())) =>
+        {
+            quote! { self::#path }
+        }
         Ok(path) => quote! { #path },
         Err(err) => {
             let compile_err = syn::Error::new_spanned(
@@ -268,7 +327,7 @@ mod tests {
     fn test_process_fields_required_field_generates_parse_value() {
         let input = parse_fields_from("struct T { pub name: String }");
         let fields = get_named_fields(&input);
-        let cg = process_fields(fields.iter(), None, false, false);
+        let cg = process_fields(fields.iter(), None, false, false, &HashSet::new());
 
         let assignment_code = cg
             .assignments
@@ -293,7 +352,7 @@ mod tests {
     fn test_process_fields_strict_required_field_generates_duplicate_check() {
         let input = parse_fields_from("struct T { pub name: String, pub age: i32 }");
         let fields = get_named_fields(&input);
-        let cg = process_fields(fields.iter(), None, true, false);
+        let cg = process_fields(fields.iter(), None, true, false, &HashSet::new());
 
         let assignment_code = cg
             .assignments
@@ -312,7 +371,7 @@ mod tests {
     fn test_process_fields_vec_field_generates_push() {
         let input = parse_fields_from("struct T { pub tags: Vec<String> }");
         let fields = get_named_fields(&input);
-        let cg = process_fields(fields.iter(), None, false, false);
+        let cg = process_fields(fields.iter(), None, false, false, &HashSet::new());
 
         let decl_code = cg
             .declarations
@@ -336,7 +395,7 @@ mod tests {
     fn test_process_fields_option_field_no_missing_check() {
         let input = parse_fields_from("struct T { pub bio: Option<String> }");
         let fields = get_named_fields(&input);
-        let cg = process_fields(fields.iter(), None, false, false);
+        let cg = process_fields(fields.iter(), None, false, false, &HashSet::new());
 
         let decl_code = cg
             .declarations
@@ -352,7 +411,7 @@ mod tests {
     fn test_process_fields_strict_vec_field_uses_push_not_duplicate() {
         let input = parse_fields_from("struct T { pub tags: Vec<String> }");
         let fields = get_named_fields(&input);
-        let cg = process_fields(fields.iter(), None, true, false);
+        let cg = process_fields(fields.iter(), None, true, false, &HashSet::new());
 
         let assignment_code = cg
             .assignments
@@ -370,7 +429,7 @@ mod tests {
             "struct T { pub name: String, pub tags: Vec<String>, pub bio: Option<String> }",
         );
         let fields = get_named_fields(&input);
-        let cg = process_fields(fields.iter(), None, false, false);
+        let cg = process_fields(fields.iter(), None, false, false, &HashSet::new());
 
         assert_eq!(cg.idents.len(), 3);
         assert_eq!(cg.declarations.len(), 3);

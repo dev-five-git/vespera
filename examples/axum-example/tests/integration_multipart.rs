@@ -186,8 +186,9 @@ async fn serde_attr_handler(
     }))
 }
 
-/// Test struct with struct-level `#[serde(default)]`.
-#[derive(Debug, Multipart)]
+/// Test struct with struct-level `#[serde(default)]`: like serde, a missing
+/// field comes from the struct's `Default` value.
+#[derive(Debug, Default, Multipart)]
 #[serde(default)]
 struct StructDefaultTestRequest {
     pub name: String,

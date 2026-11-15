@@ -1,0 +1,5 @@
+error: #[route] `responses` type must not have generic arguments: the response is documented by the type's name alone, so the arguments would be dropped. Declare a non-generic `#[derive(Schema)]` type for this response instead.
+ --> tests/ui/route_responses_generic.rs:5:42
+  |
+5 | #[vespera::route(get, responses = [(404, ErrorBody::<Detail>)])]
+  |                                          ^^^^^^^^^^^^^^^^^^^

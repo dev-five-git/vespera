@@ -16,7 +16,7 @@ mod generate_type;
 mod inline_types;
 mod input;
 mod instantiate;
-mod module_scope;
+pub mod module_scope;
 mod same_file_override;
 mod seaorm;
 mod transformation;
@@ -35,6 +35,30 @@ use type_utils::extract_type_name;
 
 use crate::metadata::StructMetadata;
 
+/// The `#[derive(Schema)]` entry of the Rust type named `ident`.
+///
+/// Storage is keyed by the SCHEMA name, which `#[schema(name = "..")]` makes
+/// differ from the Rust identifier: `#[schema(name = "UserDto")] struct User`
+/// is stored under `UserDto` with `rust_ident = Some("User")`. A type is
+/// named by its Rust identifier in `schema!` / `schema_type!`, so an entry
+/// stored under `ident` only counts when it is not a rename of ANOTHER type
+/// (`#[schema(name = "User")] struct UserRow` must not answer for `User`);
+/// otherwise the single entry renamed from `ident` is used (several are
+/// ambiguous: none).
+pub fn storage_entry<'a>(
+    storage: &'a HashMap<String, StructMetadata>,
+    ident: &str,
+) -> Option<&'a StructMetadata> {
+    if let Some(meta) = storage.get(ident).filter(|meta| meta.rust_ident.is_none()) {
+        return Some(meta);
+    }
+    let mut renamed = storage
+        .values()
+        .filter(|meta| meta.rust_ident.as_deref() == Some(ident));
+    let first = renamed.next()?;
+    renamed.next().is_none().then_some(first)
+}
+
 /// Generate schema code from a struct with optional field filtering
 pub fn generate_schema_code(
     input: &SchemaInput,
@@ -44,7 +68,7 @@ pub fn generate_schema_code(
     let type_name = extract_type_name(&input.ty)?;
 
     // Find struct definition in storage (O(1) HashMap lookup)
-    let struct_def = schema_storage.get(&type_name).ok_or_else(|| syn::Error::new_spanned(&input.ty, format!("type `{type_name}` not found. Make sure it has #[derive(Schema)] before this macro invocation")))?;
+    let struct_def = storage_entry(schema_storage, &type_name).ok_or_else(|| syn::Error::new_spanned(&input.ty, format!("type `{type_name}` not found. Make sure it has #[derive(Schema)] before this macro invocation")))?;
 
     // Parse the struct definition
     let parsed_struct: syn::ItemStruct = file_cache::parse_struct_cached(&struct_def.definition)
@@ -137,6 +161,41 @@ mod tests {
         assert!(result.is_ok());
         let output = result.unwrap().to_string();
         assert!(output.contains("properties"));
+    }
+
+    fn renamed(schema_name: &str, ident: &str) -> StructMetadata {
+        let mut meta = create_test_struct_metadata(
+            schema_name,
+            &format!(
+                "#[schema(name = \"{schema_name}\")] pub struct {ident} {{ pub {ident}_field: i32 }}"
+            ),
+        );
+        meta.rust_ident = Some(ident.to_string());
+        meta
+    }
+
+    /// A type is found by its Rust identifier, not by its schema name: a
+    /// renamed `User` (stored as `UserDto`) answers `User`, a `UserRow`
+    /// renamed to `User` does not, and two types renamed from `User` are
+    /// ambiguous.
+    #[rstest::rstest]
+    #[case::renamed_source(vec![renamed("UserDto", "User")], "User", Some("User_field"))]
+    #[case::hijacking_rename(vec![renamed("User", "UserRow")], "User", None)]
+    #[case::rename_target_is_not_an_ident(vec![renamed("UserDto", "User")], "UserDto", None)]
+    #[case::plain_wins(vec![create_test_struct_metadata("User", "pub struct User { pub plain: i32 }"), renamed("Other", "User")], "User", Some("plain"))]
+    #[case::ambiguous(vec![renamed("A", "User"), renamed("B", "User")], "User", None)]
+    fn storage_entry_matches_the_rust_ident(
+        #[case] items: Vec<StructMetadata>,
+        #[case] ident: &str,
+        #[case] field: Option<&str>,
+    ) {
+        let storage = to_storage(items);
+        let input: SchemaInput = syn::parse_str(ident).unwrap();
+        let result = generate_schema_code(&input, &storage);
+        match field {
+            Some(field) => assert!(result.unwrap().to_string().contains(field)),
+            None => assert!(result.unwrap_err().to_string().contains("not found")),
+        }
     }
 
     #[test]

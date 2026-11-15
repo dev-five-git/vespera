@@ -105,7 +105,9 @@ pub(super) fn generate_sea_orm_default_attrs(
                 return (quote! {}, quote! {});
             };
 
-            let schema_default_attr = quote! { #[schema(default = #schema_default_str)] };
+            let schema_default_attr = schema_default_str
+                .map(|value| quote! { #[schema(default = #value)] })
+                .unwrap_or_default();
 
             if has_existing_serde_default {
                 return (quote! {}, schema_default_attr);
@@ -136,8 +138,9 @@ fn unraw(ident: &syn::Ident) -> String {
 /// for fields with SQL function defaults or implicit auto-increment.
 ///
 /// The Rust expression is used in the generated `#[serde(default = "fn")]` function body.
-/// The OpenAPI string is used in `#[schema(default = "value")]`.
-fn sql_function_default_for_type(original_ty: &syn::Type) -> Option<(TokenStream, String)> {
+/// The OpenAPI string is used in `#[schema(default = "value")]`; `None` when the
+/// value depends on the machine (a `Local` epoch carries the server's offset).
+fn sql_function_default_for_type(original_ty: &syn::Type) -> Option<(TokenStream, Option<String>)> {
     let syn::Type::Path(type_path) = original_ty else {
         return None;
     };
@@ -157,38 +160,38 @@ fn sql_function_default_for_type(original_ty: &syn::Type) -> Option<(TokenStream
     match (type_name.as_str(), zone.as_deref()) {
         ("DateTimeWithTimeZone", _) | ("DateTime", Some("FixedOffset")) => Some((
             quote! { #epoch.fixed_offset() },
-            "1970-01-01T00:00:00+00:00".to_string(),
+            Some("1970-01-01T00:00:00+00:00".to_string()),
         )),
         ("DateTimeUtc", _) | ("DateTime", Some("Utc")) => {
-            Some((epoch, "1970-01-01T00:00:00Z".to_string()))
+            Some((epoch, Some("1970-01-01T00:00:00Z".to_string())))
         }
         ("DateTimeLocal", _) | ("DateTime", Some("Local")) => Some((
             quote! { #epoch.with_timezone(&vespera::chrono::Local) },
-            "1970-01-01T00:00:00+00:00".to_string(),
+            None,
         )),
         ("DateTime" | "NaiveDateTime", None) => Some((
             quote! { vespera::chrono::NaiveDateTime::UNIX_EPOCH },
-            "1970-01-01T00:00:00".to_string(),
+            Some("1970-01-01T00:00:00".to_string()),
         )),
         ("NaiveDate" | "Date", _) => Some((
             quote! { vespera::chrono::NaiveDate::default() },
-            "1970-01-01".to_string(),
+            Some("1970-01-01".to_string()),
         )),
         ("NaiveTime" | "Time", _) => Some((
             quote! { vespera::chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap() },
-            "00:00:00".to_string(),
+            Some("00:00:00".to_string()),
         )),
         ("Uuid", _) => Some((
             quote! { Default::default() },
-            "00000000-0000-0000-0000-000000000000".to_string(),
+            Some("00000000-0000-0000-0000-000000000000".to_string()),
         )),
         (
             "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
             | "usize" | "f32" | "f64" | "Decimal",
             _,
-        ) => Some((quote! { Default::default() }, "0".to_string())),
-        ("bool", _) => Some((quote! { Default::default() }, "false".to_string())),
-        ("String", _) => Some((quote! { Default::default() }, String::new())),
+        ) => Some((quote! { Default::default() }, Some("0".to_string()))),
+        ("bool", _) => Some((quote! { Default::default() }, Some("false".to_string()))),
+        ("String", _) => Some((quote! { Default::default() }, Some(String::new()))),
         _ => None,
     }
 }

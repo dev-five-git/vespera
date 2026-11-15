@@ -379,14 +379,33 @@ fn find_in_schema_module(segments: &[&str], struct_name: &str) -> Option<StructM
 }
 
 /// The crate module (`["crate", ..]`) that holds a `#[derive(Schema)]`
-/// storage entry, read from its source identity (`file::Ident@line:col`).
+/// storage entry, read from its source identity (`file::Ident@line:col`):
+/// the file's module plus the inline `mod`s the item sits in.
 /// `None` without an identity or outside the crate's `src/`.
 pub fn storage_module_path(metadata: &StructMetadata) -> Option<Vec<String>> {
     let identity = metadata.source_identity.as_deref()?;
-    let (file, _) = identity.rsplit_once('@')?.0.rsplit_once("::")?;
+    let (located, position) = identity.rsplit_once('@')?;
+    let (file, ident) = located.rsplit_once("::")?;
     let layout = crate::schema_macro::crate_layout::crate_layout()?;
     let file = Path::new(file);
-    layout.contains(file).then(|| layout.module_path_of(file))
+    if !layout.contains(file) {
+        return None;
+    }
+    let mut module = layout.module_path_of(file);
+    if let Some(parsed) = crate::schema_macro::file_cache::get_parsed_file(file) {
+        // Only disambiguates a repeated name: an unreadable line is no line.
+        let line = position
+            .split(':')
+            .next()
+            .and_then(|line| line.parse().ok())
+            .unwrap_or_default();
+        module.extend(crate::schema_macro::module_scope::item_module_chain(
+            &parsed.items,
+            ident.trim_start_matches("r#"),
+            line,
+        ));
+    }
+    Some(module)
 }
 
 /// The absolute module a qualified source path (`models::user::Model`,

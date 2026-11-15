@@ -117,8 +117,11 @@ fn test_process_vespera_macro_collect_metadata_error() {
 
     // This exercises the collect_metadata path (which handles parse errors gracefully)
     let result = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
-    // Result may succeed or fail depending on how collect_metadata handles invalid files
-    let _ = result;
+    // An unparseable route file is a scan error naming the folder.
+    let err = result
+        .expect_err("an unparseable route file must fail")
+        .to_string();
+    assert!(err.contains("failed to scan route folder"), "{err}");
 }
 
 #[test]
@@ -155,8 +158,13 @@ fn test_process_vespera_macro_with_schema_storage() {
 
     // This exercises the schema_storage extend path
     let result = process_vespera_macro(&processed, &schema_storage, &[], Span::call_site());
-    // We only care about exercising the code path
-    let _ = result;
+    // The docs routes are mounted and embed the spec.
+    let code = result
+        .expect("schema storage expansion succeeds")
+        .to_string();
+    assert!(code.contains("\"/docs\""), "{code}");
+    assert!(code.contains("\"/redoc\""), "{code}");
+    assert!(code.contains("__VESPERA_SPEC"), "{code}");
 }
 
 #[test]
@@ -267,8 +275,10 @@ fn test_process_export_app_with_empty_folder() {
         "",
         Span::call_site(),
     );
-    // We only care about exercising the code path
-    let _ = result;
+    // An empty folder exports an app with no routes.
+    let code = result.expect("an empty folder exports").to_string();
+    assert!(code.contains("TestApp"), "{code}");
+    assert!(code.contains("OPENAPI_SPEC"), "{code}");
 }
 
 #[test]
@@ -299,8 +309,10 @@ fn test_process_export_app_with_schema_storage() {
         "",
         Span::call_site(),
     );
-    // Exercises the schema_storage.extend path
-    let _ = result;
+    // Exercises the schema_storage.extend path.
+    let code = result.expect("schema storage export succeeds").to_string();
+    assert!(code.contains("MyExportedApp"), "{code}");
+    assert!(code.contains("OPENAPI_SPEC"), "{code}");
 }
 
 #[test]
@@ -478,8 +490,9 @@ fn test_process_export_app_with_profiling() {
         Span::call_site(),
     );
 
-    // Exercise the code path
-    let _ = result;
+    // Profiling only logs: the export is the same as without it.
+    let code = result.expect("profiled export succeeds").to_string();
+    assert!(code.contains("TestProfileApp"), "{code}");
 }
 
 #[test]

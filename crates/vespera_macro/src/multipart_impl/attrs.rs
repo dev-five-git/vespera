@@ -161,7 +161,9 @@ fn limit_tokens(lit: &syn::LitStr) -> syn::Result<TokenStream> {
 /// 1. `#[form_data(default)]` — explicit form_data override (bare default)
 /// 2. `#[serde(default)]` — bare default via `Default::default()`
 /// 3. `#[serde(default = "fn_path")]` — custom default function
-/// 4. Struct-level `#[serde(default)]` — all fields get `Default::default()`
+/// 4. Struct-level `#[serde(default)]` / `default = "fn"` — the field of the
+///    container's default value (serde's rule: `<Self as Default>::default()`
+///    / `fn()`, not the field type's `Default`)
 /// 5. No default — field is required
 pub(super) fn resolve_default_kind(
     attrs: &[syn::Attribute],
@@ -175,14 +177,19 @@ pub(super) fn resolve_default_kind(
         return serde_default.map_or(DefaultKind::Trait, DefaultKind::Function);
     }
     if struct_default {
-        return DefaultKind::Trait;
+        return DefaultKind::Container;
     }
     DefaultKind::None
 }
 
-/// Check if the struct has `#[serde(default)]` at the struct level.
-pub(super) fn extract_struct_default(attrs: &[syn::Attribute]) -> bool {
-    extract_default(attrs).is_some()
+/// The struct-level `#[serde(default)]` (`Trait`) / `#[serde(default =
+/// "fn")]` (`Function`), or `None`.
+pub(super) fn extract_struct_default(attrs: &[syn::Attribute]) -> DefaultKind {
+    match extract_default(attrs) {
+        Some(Some(path)) => DefaultKind::Function(path),
+        Some(None) => DefaultKind::Trait,
+        None => DefaultKind::None,
+    }
 }
 
 #[cfg(test)]
@@ -329,10 +336,20 @@ mod tests {
 
     #[test]
     fn test_extract_struct_default() {
-        assert!(extract_struct_default(&parse_struct_attrs(
-            "#[serde(default)] struct T { }"
-        )));
-        assert!(!extract_struct_default(&parse_struct_attrs("struct T { }")));
+        assert!(matches!(
+            extract_struct_default(&parse_struct_attrs("#[serde(default)] struct T { }")),
+            DefaultKind::Trait
+        ));
+        assert!(matches!(
+            extract_struct_default(&parse_struct_attrs(
+                r#"#[serde(default = "make_t")] struct T { }"#
+            )),
+            DefaultKind::Function(ref f) if f == "make_t"
+        ));
+        assert!(matches!(
+            extract_struct_default(&parse_struct_attrs("struct T { }")),
+            DefaultKind::None
+        ));
     }
 
     #[test]
@@ -354,7 +371,7 @@ mod tests {
             kind("#[form_data(default)] pub x: i32", false),
             DefaultKind::Trait
         ));
-        assert!(matches!(kind("pub x: i32", true), DefaultKind::Trait));
+        assert!(matches!(kind("pub x: i32", true), DefaultKind::Container));
         assert!(matches!(
             kind("#[form_data(default)] pub x: i32", true),
             DefaultKind::Trait

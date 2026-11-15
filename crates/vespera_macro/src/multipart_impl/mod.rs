@@ -27,7 +27,7 @@ use quote::quote;
 use syn::{DeriveInput, Fields};
 
 use self::attrs::{extract_strict, extract_struct_default};
-use self::fields::{FieldCodegen, process_fields};
+use self::fields::{DefaultKind, FieldCodegen, default_fn_call, process_fields};
 
 /// Message of the `compile_error!` emitted when `vespera`'s `multipart`
 /// feature is off (see [`feature_disabled_error`]).
@@ -43,6 +43,20 @@ pub fn feature_disabled_error(input: &DeriveInput) -> TokenStream {
     syn::Error::new(input.ident.span(), FEATURE_DISABLED_MSG).to_compile_error()
 }
 
+/// The named fields of a struct input; anything else is a compile error.
+fn named_fields(
+    input: &DeriveInput,
+) -> Result<&syn::punctuated::Punctuated<syn::Field, syn::Token![,]>, TokenStream> {
+    let message = match &input.data {
+        syn::Data::Struct(data) => match &data.fields {
+            Fields::Named(named) => return Ok(&named.named),
+            _ => "Multipart only supports structs with named fields",
+        },
+        _ => "Multipart can only be derived for structs",
+    };
+    Err(syn::Error::new_spanned(&input.ident, message).to_compile_error())
+}
+
 /// Process the `#[derive(TryFromMultipart)]` macro input.
 pub fn process_derive(input: &DeriveInput) -> TokenStream {
     let struct_name = &input.ident;
@@ -52,29 +66,35 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
         Ok(strict) => strict,
         Err(err) => return err.to_compile_error(),
     };
-    let struct_default = extract_struct_default(&input.attrs);
-
-    let fields = match &input.data {
-        syn::Data::Struct(data) => match &data.fields {
-            Fields::Named(named) => &named.named,
-            _ => {
-                return syn::Error::new_spanned(
-                    &input.ident,
-                    "Multipart only supports structs with named fields",
-                )
-                .to_compile_error();
-            }
-        },
-        _ => {
-            return syn::Error::new_spanned(
-                &input.ident,
-                "Multipart can only be derived for structs",
-            )
-            .to_compile_error();
-        }
+    let fields = match named_fields(input) {
+        Ok(fields) => fields,
+        Err(err) => return err,
     };
 
-    let cg = process_fields(fields.iter(), rename_all.as_deref(), strict, struct_default);
+    // One local per field is bound in the derived fn (see `default_fn_expr`).
+    let locals: std::collections::HashSet<String> = fields
+        .iter()
+        .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
+        .collect();
+    // serde's container default: bound once after the read loop (it is not
+    // held across an `.await`), every field without a default of its own
+    // takes its value from it.
+    let container_default = match extract_struct_default(&input.attrs) {
+        DefaultKind::Trait => Some(quote! { ::core::default::Default::default() }),
+        DefaultKind::Function(fn_path) => Some(default_fn_call(struct_name, &fn_path, &locals)),
+        DefaultKind::None | DefaultKind::Container => None,
+    };
+    let struct_default = container_default.is_some();
+    let container_default =
+        container_default.map(|init| quote! { let __vespera_default__: Self = #init; });
+
+    let cg = process_fields(
+        fields.iter(),
+        rename_all.as_deref(),
+        strict,
+        struct_default,
+        &locals,
+    );
     if let Some(err) = cg.errors.iter().cloned().reduce(|mut all, err| {
         all.combine(err);
         all
@@ -160,6 +180,7 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
                     }
                 }
 
+                #container_default
                 #(#post_loop)*
 
                 std::result::Result::Ok(Self { #(#idents),* })
@@ -290,11 +311,10 @@ mod tests {
     fn test_process_derive_with_serde_default() {
         let input: syn::DeriveInput =
             syn::parse_str("#[serde(default)] struct MyForm { pub count: i32 }").unwrap();
-        assert!(
-            process_derive(&input)
-                .to_string()
-                .contains("unwrap_or_default")
-        );
+        // serde's container default: the field of `<Self as Default>::default()`.
+        let code = process_derive(&input).to_string();
+        assert!(code.contains("let __vespera_default__ : Self"), "{code}");
+        assert!(code.contains("__vespera_default__ . count"), "{code}");
     }
 
     #[test]
@@ -509,6 +529,28 @@ mod tests {
             "{out}"
         );
         insta::assert_snapshot!(name, out);
+    }
+
+    /// Missing parts follow serde: a field's `default = "fn"` also applies to
+    /// `Option` / `Vec` fields (not just `None` / `[]`), and a container
+    /// `#[serde(default)]` / `default = "fn"` fills every field without a
+    /// default of its own from the CONTAINER's default value (not the field
+    /// type's `Default`).
+    #[rstest::rstest]
+    #[case::option_and_vec_default_fn(
+        "multipart_default_fn_option_vec",
+        r#"struct F { #[serde(default = "tags")] pub tags: Vec<String>, #[serde(default = "note")] pub note: Option<String>, #[serde(default)] pub plain: Option<String> }"#
+    )]
+    #[case::container_default(
+        "multipart_container_default",
+        r#"#[serde(default)] struct F { pub name: String, pub note: Option<String>, pub tags: Vec<String>, #[serde(skip)] pub cache: u8, #[serde(default = "seed")] pub n: u32 }"#
+    )]
+    #[case::container_default_fn(
+        "multipart_container_default_fn",
+        r#"#[serde(default = "make_f")] struct F { pub name: String, #[form_data(default)] pub kept: String }"#
+    )]
+    fn missing_parts_follow_serde_defaults(#[case] name: &str, #[case] src: &str) {
+        insta::assert_snapshot!(name, derive_pretty(src));
     }
 
     /// Generic structs keep their parameters (and get the parse bounds).

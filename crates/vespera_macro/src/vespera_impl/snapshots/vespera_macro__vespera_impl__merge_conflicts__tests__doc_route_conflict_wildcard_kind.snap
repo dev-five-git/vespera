@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/vespera_impl/merge_conflicts.rs
+expression: err
+---
+vespera! macro: route `GET /d/{id}/raw` of merged app `child::UsersApp` and `/d/{*rest}` of `docs_url` put a parameter and a catch-all at the same position — axum panics when merging overlapping routes; remove one or give the child app a distinct `export_app!(..., prefix = "...")`

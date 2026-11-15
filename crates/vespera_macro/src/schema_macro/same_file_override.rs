@@ -26,7 +26,7 @@ pub(super) fn find_same_file_struct_metadata<'a>(
     // definition string is not cloned per lookup.  The fallback path
     // produces an owned `StructMetadata` from disk, so the unified return
     // type is `Cow<'_, StructMetadata>`.
-    if let Some(metadata) = schema_storage.get(struct_name) {
+    if let Some(metadata) = super::storage_entry(schema_storage, struct_name) {
         return Some(Cow::Borrowed(metadata));
     }
 

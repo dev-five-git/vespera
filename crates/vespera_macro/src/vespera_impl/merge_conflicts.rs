@@ -80,7 +80,7 @@ pub(super) fn check_merge_route_conflicts(
         for (path, item) in &spec.paths {
             for (method, _) in item.operations() {
                 claims
-                    .claim(&method.to_string(), path, &origin)
+                    .claim_template(&method.to_string(), path, &origin)
                     .map_err(|conflict| {
                         syn::Error::new(
                             merge_path.span(),
@@ -111,6 +111,16 @@ fn describe(conflict: &RouteConflict, route: &str, owner: &str) -> String {
             "route `{route}` of {owner} and `{previous_path}` of {previous} are the same route \
              with different parameter names"
         ),
+        RouteConflict::WildcardKind {
+            previous_path,
+            previous,
+        } => format!(
+            "route `{route}` of {owner} and `{previous_path}` of {previous} put a parameter \
+             and a catch-all at the same position"
+        ),
+        RouteConflict::CatchAllNotLast => {
+            format!("route `{route}` of {owner} continues after a catch-all")
+        }
     }
 }
 
@@ -213,6 +223,18 @@ mod tests {
         &[("spec_url", "/api/{name}")],
         &[],
     )]
+    #[case::catch_all_vs_child_param(
+        "doc_route_conflict_wildcard_kind",
+        &[],
+        &[("docs_url", "/d/{*rest}")],
+        &[("get", "/d/{id}/raw")],
+    )]
+    #[case::text_after_catch_all(
+        "doc_route_conflict_catch_all_not_last",
+        &[],
+        &[("docs_url", "/d/{*rest}/raw")],
+        &[],
+    )]
     #[case::merged_child(
         "doc_route_conflict_child",
         &[],
@@ -258,6 +280,17 @@ mod tests {
         )
         .unwrap_err();
         insta::assert_snapshot!("merge_conflict_parent_child", err);
+    }
+
+    /// A child's spec template drops the `*` of a catch-all, so its path-final
+    /// `{rest}` next to the parent's `{*rest}` is not a wildcard-kind conflict.
+    #[test]
+    fn child_template_catch_all_matches_parent_catch_all() {
+        run(
+            &[("get", "/files/{*rest}")],
+            &[("FilesApp", spec(&[("post", "/files/{rest}")]))],
+        )
+        .unwrap();
     }
 
     #[test]

@@ -222,6 +222,26 @@ fn storage_module_path_reads_identity_file() {
     assert!(storage_module_path(&malformed).is_none());
 }
 
+/// A storage entry declared in an inline `mod` belongs to that module: the
+/// identity's ident (and its line, when the name repeats) finds the chain.
+#[rstest]
+#[case::inline_mod("models/user.rs", "Hidden@2:31", "crate::models::user::hidden")]
+#[case::file_top_level("models/user.rs", "User@1:11", "crate::models::user")]
+#[case::nested_inline("lib.rs", "DeepModel@9:19", "crate::inline::deeper")]
+#[case::unknown_ident("lib.rs", "Missing@1:1", "crate")]
+#[case::unparseable_line("lib.rs", "InlineModel@x:1", "crate::inline")]
+fn storage_module_path_follows_inline_modules(
+    #[case] file: &str,
+    #[case] at: &str,
+    #[case] expected: &str,
+) {
+    let (dir, _guard) = temp_crate("lib.rs");
+    let file = dir.path().join("src").join(file);
+    let stored = StructMetadata::new("X".to_string(), String::new())
+        .with_source_identity(format!("{}::{at}", file.display()));
+    assert_eq!(storage_module_path(&stored).unwrap().join("::"), expected);
+}
+
 #[rstest]
 #[case::bare("User", None)]
 #[case::qualified("models::user::User", Some("crate::models::user"))]

@@ -85,7 +85,7 @@ pub fn generate_schema_type_code(
     // requested module (`crate::a::User` must not pick `crate::b::User`'s
     // derive); otherwise the file lookup decides, the storage entry being the
     // fallback when the file lookup cannot find the struct either.
-    let storage_hit = schema_storage.get(&source_type_name);
+    let storage_hit = super::storage_entry(schema_storage, &source_type_name);
     let storage_module = storage_hit.and_then(storage_module_path);
     let storage_trusted = match (requested_module_path(&input.source_type), &storage_module) {
         (Some(requested), Some(defined_in)) => &requested == defined_in,
@@ -535,6 +535,12 @@ pub fn generate_schema_type_code(
             if input.multipart {
                 // Multipart mode: emit form_data attrs, suppress serde attrs
                 let form_data_attrs = extract_form_data_attrs(&field.attrs);
+                // The serde missing-field keys the `Multipart` derive honours.
+                let serde_carry = multipart_carry::field_attr(
+                    &field.attrs,
+                    &source_module_path,
+                    should_wrap_option,
+                );
 
                 // Check if field should be renamed (rename still applies to Rust field names)
                 if let Some(new_name) = rename_map.get(&rust_field_name) {
@@ -551,6 +557,7 @@ pub fn generate_schema_type_code(
                         #(#doc_attrs)*
                         #carried_attrs
                         #(#form_data_attrs)*
+                        #serde_carry
                         #form_name_attr
                         #vis #new_field_ident: #field_ty
                     });
@@ -575,6 +582,7 @@ pub fn generate_schema_type_code(
                         #(#doc_attrs)*
                         #carried_attrs
                         #(#form_data_attrs)*
+                        #serde_carry
                         #form_name_attr
                         #vis #field_ident: #field_ty
                     });
@@ -795,17 +803,7 @@ pub fn generate_schema_type_code(
         // 1. `add` is not used (can't auto-populate added fields)
         // 2. There are no relation fields (relation fields don't exist on source Model)
         let from_impl = if input.add.is_none() && !has_relation_fields {
-            let field_assignments: Vec<_> = field_mappings
-                .iter()
-                .map(|(new_ident, source_ident, wrapped, _is_relation)| {
-                    let cfg = field_cfgs.get(&strip_raw_prefix_owned(source_ident.to_string()));
-                    if *wrapped {
-                        quote! { #cfg #new_ident: Some(source.#source_ident) }
-                    } else {
-                        quote! { #cfg #new_ident: source.#source_ident }
-                    }
-                })
-                .collect();
+            let field_assignments = source_field_assignments(&field_mappings, &field_cfgs);
 
             quote! {
                 #[allow(deprecated)]
@@ -843,20 +841,53 @@ pub fn generate_schema_type_code(
 
     let allow_deprecated = any_deprecated.then(|| quote! { #[allow(deprecated)] });
 
+    // The container attributes the emitted struct carries for its serde /
+    // Multipart derive — also the ones the registered metadata repeats.
+    // Multipart mode emits `#[serde(rename_all = ...)]` so Multipart applies
+    // the rename at runtime AND the Schema derive reads it via the
+    // extract_rename_all() fallback for OpenAPI field naming.
+    let (container_attrs, container_default_fn) = if input.multipart {
+        let assignments = (input.add.is_none() && !has_relation_fields)
+            .then(|| source_field_assignments(&field_mappings, &field_cfgs));
+        let carry = multipart_carry::container(
+            &parsed_struct.attrs,
+            &source_module_path,
+            source_type,
+            new_type_name,
+            assignments.as_deref(),
+        );
+        let container_carry = carry.attrs;
+        (
+            quote! {
+                #[serde(rename_all = #effective_rename_all)]
+                #container_carry
+            },
+            carry.helper,
+        )
+    } else {
+        (
+            quote! {
+                #rename_all_attr
+                #(#serde_attrs_without_rename_all)*
+            },
+            quote! {},
+        )
+    };
+
     // Generate the new struct (with inline types for circular relations first)
     let generated_tokens: proc_macro2::TokenStream = if input.multipart {
         // Multipart mode: derive Multipart instead of serde
-        // Emit #[serde(rename_all = ...)] so Multipart applies the rename at runtime
-        // AND Schema derive reads it via extract_rename_all() fallback for OpenAPI field naming
         quote! {
             #(#inline_type_definitions)*
+
+            #container_default_fn
 
             #(#struct_doc_attrs)*
             #allow_deprecated
             #[derive(vespera::Multipart, #garde_derive #clone_derive #schema_derive)]
             #(#container_garde_attrs)*
             #schema_name_attr
-            #[serde(rename_all = #effective_rename_all)]
+            #container_attrs
             pub struct #new_type_name {
                 #(#field_tokens),*
             }
@@ -881,8 +912,7 @@ pub fn generate_schema_type_code(
             #[derive(serde::Serialize, serde::Deserialize, #garde_derive #clone_derive #schema_derive)]
             #(#container_garde_attrs)*
             #schema_name_attr
-            #rename_all_attr
-            #(#serde_attrs_without_rename_all)*
+            #container_attrs
             pub struct #new_type_name {
                 #(#field_tokens),*
             }
@@ -893,13 +923,13 @@ pub fn generate_schema_type_code(
     };
 
     // If custom name is provided, create metadata for direct registration
-    // This ensures the schema appears in OpenAPI even when `ignore` is set
+    // This ensures the schema appears in OpenAPI even when `ignore` is set.
+    // The definition is the emitted struct without its derives: the docs
+    // (schema description) and the same container attributes.
     let metadata = input.schema_name.as_ref().map(|custom_name| {
-        // Build struct definition string for metadata (without derives/attrs for parsing)
         let struct_def = quote! {
-            #rename_all_attr
-
-            #(#serde_attrs_without_rename_all)*
+            #(#struct_doc_attrs)*
+            #container_attrs
             pub struct #new_type_name {
                 #(#metadata_field_tokens),*
             }
@@ -909,6 +939,27 @@ pub fn generate_schema_type_code(
 
     Ok((generated_tokens, metadata))
 }
+
+/// The `new_field: source.field` initialisers building the DTO from a
+/// `source` value (`Some(..)` around `partial`-wrapped fields).
+fn source_field_assignments(
+    field_mappings: &[(syn::Ident, syn::Ident, bool, bool)],
+    field_cfgs: &HashMap<String, TokenStream>,
+) -> Vec<TokenStream> {
+    field_mappings
+        .iter()
+        .map(|(new_ident, source_ident, wrapped, _is_relation)| {
+            let cfg = field_cfgs.get(&strip_raw_prefix_owned(source_ident.to_string()));
+            if *wrapped {
+                quote! { #cfg #new_ident: Some(source.#source_ident) }
+            } else {
+                quote! { #cfg #new_ident: source.#source_ident }
+            }
+        })
+        .collect()
+}
+
+mod multipart_carry;
 
 #[cfg(test)]
 mod tests;

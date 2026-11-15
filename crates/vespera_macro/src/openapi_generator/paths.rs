@@ -163,10 +163,7 @@ pub(super) fn build_path_items(
         let Ok(method) = HttpMethod::try_from(route_meta.method.as_str()) else {
             return Err(syn::Error::new(
                 proc_macro2::Span::call_site(),
-                format!(
-                    "vespera: route '{}' has unsupported HTTP method '{}'. Supported methods are GET, POST, PUT, PATCH, DELETE, HEAD, and OPTIONS.",
-                    route_meta.path, route_meta.method
-                ),
+                crate::method::unsupported_method_message(&route_meta.path, &route_meta.method),
             ));
         };
         let mut operation = build_operation_from_function(

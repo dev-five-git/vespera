@@ -16,11 +16,40 @@ pub fn http_method_to_token_stream(method: HttpMethod) -> TokenStream {
     }
 }
 
+/// The diagnostic for a route whose method is not one of [`HttpMethod`]'s.
+/// The method list comes from [`HttpMethod::ALL`], so it never drifts.
+pub fn unsupported_method_message(path: &str, method: &str) -> String {
+    let (last, rest) = HttpMethod::ALL
+        .split_last()
+        .expect("HttpMethod::ALL is non-empty");
+    let rest: Vec<&str> = rest.iter().map(|method| method.as_str()).collect();
+    format!(
+        "vespera: route '{path}' has unsupported HTTP method '{method}'. Supported methods are \
+         {}, and {last}.",
+        rest.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
 
     use super::*;
+
+    /// The list names every method [`HttpMethod`] accepts.
+    #[test]
+    fn unsupported_method_message_lists_every_method() {
+        let message = unsupported_method_message("/t", "connect");
+        for method in HttpMethod::ALL {
+            let name = method.to_string();
+            assert!(message.contains(&name), "{name} missing from: {message}");
+        }
+        assert_eq!(
+            message,
+            "vespera: route '/t' has unsupported HTTP method 'connect'. Supported methods are \
+             GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, and TRACE."
+        );
+    }
 
     #[rstest]
     #[case(HttpMethod::Get, "get")]
