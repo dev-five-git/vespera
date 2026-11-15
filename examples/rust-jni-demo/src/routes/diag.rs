@@ -1,7 +1,7 @@
 //! Diagnostic routes for the JNI E2E suite: a response of a chosen size (the
 //! buffered-response cap), a deliberately slow handler (the Spring async
-//! timeout / async cancellation) and an endless trickling stream (streaming
-//! client disconnect). Each records under a caller-chosen key how often it
+//! timeout / async cancellation) and a long trickling stream (streaming
+//! client disconnect; bounded at [`MAX_DRIP_CHUNKS`] chunks). Each records under a caller-chosen key how often it
 //! finished — and, when dropped before finishing, `"<key>:dropped"` — so a
 //! test can prove the handler ran exactly once, or was cancelled. Sizes and
 //! delays are clamped so the routes stay harmless.

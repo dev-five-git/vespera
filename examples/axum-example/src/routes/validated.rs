@@ -13,10 +13,9 @@
 //! NOTE: the type is named `ValidatedUserRequest` — *not*
 //! `CreateUserRequest` — to avoid clashing with the existing
 //! `schema_type!(CreateUserRequest from User, ...)` in
-//! `routes/users.rs`.  Two derives with the same struct identifier
-//! both register into the global `SCHEMA_STORAGE` map and the later
-//! one silently overrides the earlier one in the emitted
-//! `openapi.json`.
+//! `routes/users.rs`.  Two different definitions registering under one
+//! OpenAPI schema name are a `duplicate vespera Schema name` compile
+//! error (rename one, or give it `#[schema(name = "..")]`).
 
 use serde::{Deserialize, Serialize};
 use vespera::axum::{

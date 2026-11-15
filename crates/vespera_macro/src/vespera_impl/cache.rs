@@ -233,6 +233,13 @@ pub(super) fn compute_schema_hash(schema_storage: &HashMap<String, StructMetadat
         meta.name.hash(&mut hasher);
         meta.definition.hash(&mut hasher);
         meta.include_in_openapi.hash(&mut hasher);
+        // Module-qualified refs to a `#[schema(name = ..)]` rename resolve
+        // through the declaring module (`rust_scope`), read from these: two
+        // identical-bodied `v1::User` / `v2::User` swapping their names
+        // must not hit a stale cache.
+        meta.explicit_schema_name.hash(&mut hasher);
+        meta.rust_ident.hash(&mut hasher);
+        meta.source_identity.hash(&mut hasher);
         // Field defaults (`#[serde(default = "fn")]`) feed the generated
         // OpenAPI `default` values but are NOT part of `definition`, so a
         // changed default would otherwise hit a STALE route cache and reuse

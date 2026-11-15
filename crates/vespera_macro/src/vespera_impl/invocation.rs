@@ -32,12 +32,31 @@ use super::{cache::hash_invocation_settings, path_utils::current_crate_tag};
 /// keeps its name across builds (and crate version bumps, whose superseded
 /// files were never pruned) as long as the invocation itself is unchanged.
 /// An input built in code (no literal hash) hashes its settings instead.
+///
+/// With `merge = [..]` the call-site file joins the tag: merge paths resolve
+/// through that file's `use` aliases (`cache::MergeSpecCache`), so the same
+/// literal in two files can merge different apps — sharing one tag, their
+/// caches ping-ponged and one invocation's sidecar write pruned the other's
+/// `include_str!` target.
 pub(super) fn invocation_tag(processed: &ProcessedVesperaInput) -> String {
+    invocation_tag_at(
+        processed,
+        proc_macro2::Span::call_site().local_file().as_deref(),
+    )
+}
+
+fn invocation_tag_at(
+    processed: &ProcessedVesperaInput,
+    call_site: Option<&std::path::Path>,
+) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     "vespera:invocation:v1".hash(&mut hasher);
     match processed.literal_hash {
         Some(literal) => literal.hash(&mut hasher),
         None => hash_invocation_settings(processed, &mut hasher),
+    }
+    if !processed.merge.is_empty() {
+        call_site.hash(&mut hasher);
     }
     format!("{}-{:016x}", current_crate_tag(), hasher.finish())
 }
@@ -104,6 +123,26 @@ mod tests {
     #[case::merge(ProcessedVesperaInput { merge: vec![syn::parse_quote!(child::ChildApp)], ..base() })]
     fn differing_settings_get_distinct_tags(#[case] other: ProcessedVesperaInput) {
         assert_ne!(invocation_tag(&base()), invocation_tag(&other));
+    }
+
+    /// The call-site file splits the tag of a merging invocation only.
+    #[test]
+    fn merging_tags_follow_the_call_site_file() {
+        let merging = ProcessedVesperaInput {
+            merge: vec![syn::parse_quote!(Admin)],
+            ..base()
+        };
+        let a = Some(std::path::Path::new("src/a.rs"));
+        let b = Some(std::path::Path::new("src/b.rs"));
+        assert_ne!(
+            invocation_tag_at(&merging, a),
+            invocation_tag_at(&merging, b)
+        );
+        assert_eq!(
+            invocation_tag_at(&merging, a),
+            invocation_tag_at(&merging, a)
+        );
+        assert_eq!(invocation_tag_at(&base(), a), invocation_tag_at(&base(), b));
     }
 
     /// The tag must not move with inputs the cache key tracks separately —

@@ -66,14 +66,14 @@ pub async fn error_endpoint_with_status_code2() -> Result<&'static str, (StatusC
     ))
 }
 
-#[vespera::route(path = "/header-map")]
+#[vespera::route(path = "/header-map", error_status = [500])]
 pub async fn header_map_endpoint() -> Result<(HeaderMap, &'static str), ErrorResponse2> {
     let headers = HeaderMap::new();
     println!("headers: {:?}", headers);
     Ok((headers, "ok"))
 }
 
-#[vespera::route(path = "/header-map2")]
+#[vespera::route(path = "/header-map2", error_status = [500])]
 pub async fn header_map_endpoint2() -> Result<(StatusCode, HeaderMap, &'static str), ErrorResponse2>
 {
     let headers = HeaderMap::new();
@@ -104,7 +104,7 @@ pub async fn cookie_jar_endpoint(
 
 /// Returns its error through the crate-wide `ApiResult` alias, which
 /// `vespera!` resolves from `models/api.rs`.
-#[vespera::route(path = "/error-alias")]
+#[vespera::route(path = "/error-alias", error_status = [500])]
 pub async fn error_endpoint_alias() -> crate::models::api::ApiResult<ErrorResponse> {
     Err(ErrorResponse2 {
         error: "Internal server error".to_string(),

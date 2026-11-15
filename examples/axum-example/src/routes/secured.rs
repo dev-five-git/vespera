@@ -65,6 +65,9 @@ pub async fn current_user(headers: HeaderMap) -> Result<Json<CurrentUser>, Statu
 /// Legacy report listing, guarded by an API key.
 ///
 /// Marked `deprecated` — Swagger UI renders it struck through.
+// It also carries Rust's `#[deprecated]`: `vespera!` mounting it must not
+// warn (the example builds under `-D warnings`).
+#[deprecated = "legacy listing, kept for old clients"]
 #[vespera::route(
     get,
     path = "/reports",

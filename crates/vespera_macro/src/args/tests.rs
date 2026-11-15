@@ -310,8 +310,10 @@ fn test_route_args_header_errors_are_spanned(
 
 #[rstest]
 #[case("responses = [(404, NotFoundError)]", true, vec![(404, "NotFoundError")])]
-#[case("responses = [(400, crate::errors::BadRequestError)]", true, vec![(400, "BadRequestError")])]
-#[case("get, responses = [(404, NotFoundError), (400, crate::errors::BadRequestError)]", true, vec![(404, "NotFoundError"), (400, "BadRequestError")])]
+// The stored schema name is the full path (`route::response_type_path`),
+// which `vespera!` resolves against the call site.
+#[case("responses = [(400, crate::errors::BadRequestError)]", true, vec![(400, "crate::errors::BadRequestError")])]
+#[case("get, responses = [(404, NotFoundError), (400, crate::errors::BadRequestError)]", true, vec![(404, "NotFoundError"), (400, "crate::errors::BadRequestError")])]
 #[case("responses", false, vec![])]
 // Malformed entries are now a span-attached compile error (previously parsed
 // "successfully" and silently emitted no response):
@@ -358,7 +360,7 @@ fn test_route_args_parse_responses(
                     })?;
                     let schema_name = tuple.elems.get(1).and_then(|schema| {
                         if let syn::Expr::Path(path) = schema {
-                            path.path.segments.last().map(|seg| seg.ident.to_string())
+                            crate::route::response_type_path(&path.path)
                         } else {
                             None
                         }
