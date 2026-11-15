@@ -102,10 +102,22 @@ impl std::fmt::Debug for PendingDirectResponse {
 
 impl PendingDirectResponse {
     /// An already fully materialised wire response (no body left to read).
-    fn materialized(wire: Vec<u8>) -> Self {
+    ///
+    /// The wire is split at its header boundary (`4 + u32 BE len`): the
+    /// header half is what [`Self::stream`] hands `on_header`, the body half
+    /// is the `prefix` it hands `on_chunk` (writes copy both halves).
+    fn materialized(mut wire: Vec<u8>) -> Self {
+        let header_end = wire
+            .first_chunk::<4>()
+            .map_or(0, |len| {
+                4usize
+                    .saturating_add(usize::try_from(u32::from_be_bytes(*len)).unwrap_or(usize::MAX))
+            })
+            .min(wire.len());
+        let prefix = wire.split_off(header_end);
         Self {
             header: wire,
-            prefix: Vec::new(),
+            prefix,
             body: None,
             exact_remaining: Some(0),
             prefers_streaming: false,

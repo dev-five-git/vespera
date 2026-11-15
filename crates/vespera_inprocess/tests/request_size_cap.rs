@@ -79,10 +79,10 @@ fn within_limit_request_is_not_capped() {
     let header = dispatch(wire);
     // No app is registered in this test binary, so a within-limit request
     // falls through to the normal 404 (unknown app) — crucially NOT 413.
-    assert_ne!(
+    assert_eq!(
         header["status"].as_u64(),
-        Some(413),
-        "a request within the cap must not be rejected as oversized"
+        Some(404),
+        "a request within the cap must reach app resolution (404), not 413"
     );
 }
 

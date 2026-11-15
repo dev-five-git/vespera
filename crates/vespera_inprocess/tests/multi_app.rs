@@ -5,7 +5,6 @@
 //! same process and dispatch correctly based on the wire header's
 //! `"app"` field.
 
-use std::collections::HashMap;
 use std::sync::Once;
 
 use axum::Router;
@@ -18,6 +17,18 @@ fn admin_router() -> Router {
     Router::new()
         .route("/dashboard", get(|| async { "admin-dashboard" }))
         .route("/users", get(|| async { "admin-users" }))
+        .route(
+            "/echo-custom",
+            get(|headers: axum::http::HeaderMap| async move {
+                format!(
+                    "admin:{}",
+                    headers
+                        .get("x-custom")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("missing")
+                )
+            }),
+        )
 }
 
 fn public_router() -> Router {
@@ -191,7 +202,7 @@ fn headers_forwarded_to_correct_app() {
     let mut header = serde_json::Map::new();
     header.insert("v".to_owned(), Value::from(1u8));
     header.insert("method".to_owned(), Value::String("GET".to_owned()));
-    header.insert("path".to_owned(), Value::String("/users".to_owned()));
+    header.insert("path".to_owned(), Value::String("/echo-custom".to_owned()));
     header.insert("app".to_owned(), Value::String("admin".to_owned()));
     let mut headers_obj = serde_json::Map::new();
     headers_obj.insert("x-custom".to_owned(), Value::String("hello".to_owned()));
@@ -204,9 +215,6 @@ fn headers_forwarded_to_correct_app() {
 
     let (header, body) = dispatch(wire);
     assert_eq!(header["status"].as_u64(), Some(200));
-    assert_eq!(body, b"admin-users");
-    // Just confirm dispatch succeeded; the test handler doesn't echo
-    // headers — the multi_app integration concern is only that the
-    // request reached the correct app router.
-    let _ = HashMap::<String, String>::new();
+    // The named app's handler saw the forwarded request header.
+    assert_eq!(body, b"admin:hello");
 }

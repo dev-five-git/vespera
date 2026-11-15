@@ -32,7 +32,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
@@ -273,8 +273,14 @@ fn bench_dispatch_path(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("owned_post_P2", body_kb),
             &body_kb,
+            // The envelope is cloned in the untimed setup: the timed region
+            // moves it, the borrowed arm below pays its internal clone.
             |b, _| {
-                b.iter(|| runtime.block_on(dispatch_owned(cached.clone(), template.clone())));
+                b.iter_batched(
+                    || template.clone(),
+                    |envelope| runtime.block_on(dispatch_owned(cached.clone(), envelope)),
+                    BatchSize::LargeInput,
+                );
             },
         );
 

@@ -48,12 +48,19 @@ fn lifecycle_from_lazy_build_to_shutdown() {
     let lease = runtime().expect("runtime is up");
     let task = lease.handle().spawn(async { 1 });
     assert_eq!(lease.block_on(task).unwrap(), 1);
+    let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let holder_released = std::sync::Arc::clone(&released);
     let holder = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(50));
+        holder_released.store(true, std::sync::atomic::Ordering::SeqCst);
         drop(lease);
     });
     assert!(!runtime_shut_down());
     assert!(shutdown_runtime(Duration::from_secs(10)));
+    assert!(
+        released.load(std::sync::atomic::Ordering::SeqCst),
+        "shutdown returned while the lease was still held"
+    );
     holder.join().unwrap();
 
     assert!(runtime_shut_down());

@@ -449,13 +449,22 @@ fn typed_multipart_non_utf8_bytes_preserved() {
 
 /// Encode a single named text field as a `multipart/form-data` wire request.
 fn encode_multipart_text(boundary: &str, path: &str, field: &str, value: &[u8]) -> Vec<u8> {
+    encode_multipart_texts(boundary, path, &[(field, value)])
+}
+
+/// Encode several named text fields, in order, as one `multipart/form-data`
+/// wire request.
+fn encode_multipart_texts(boundary: &str, path: &str, parts: &[(&str, &[u8])]) -> Vec<u8> {
     let mut body = Vec::new();
-    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
-    body.extend_from_slice(
-        format!("Content-Disposition: form-data; name=\"{field}\"\r\n\r\n").as_bytes(),
-    );
-    body.extend_from_slice(value);
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    for (field, value) in parts {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{field}\"\r\n\r\n").as_bytes(),
+        );
+        body.extend_from_slice(value);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
 
     let mut headers = HashMap::new();
     headers.insert(
@@ -795,16 +804,17 @@ async fn malformed_multipart_body_exposes_stream_source_error() {
 
 #[rstest::rstest]
 // Within `limit = "4B"` (read AFTER `field_name`) → parsed.
-#[case::within_limit("payload", b"abcd".as_slice(), 200)]
+#[case::within_limit(None, b"abcd".as_slice(), 200)]
 // Over the 4-byte limit → 413: the limit is no longer dropped.
-#[case::over_limit("payload", b"abcde".as_slice(), 413)]
-// `strict` (read AFTER `rename_all`) rejects an unknown part …
-#[case::strict_unknown("other", b"x".as_slice(), 400)]
-// … including the skipped field's own name (serde never reads it either).
-#[case::skipped_field_is_unknown("skippedCache", b"x".as_slice(), 400)]
+#[case::over_limit(None, b"abcde".as_slice(), 413)]
+// `strict` (read AFTER `rename_all`) rejects an unknown part next to a
+// valid `payload` (non-strict would answer 200) …
+#[case::strict_unknown(Some("other"), b"abcd".as_slice(), 400)]
+// … including the skipped field's camelCase name (serde never reads it).
+#[case::skipped_field_is_unknown(Some("skippedCache"), b"abcd".as_slice(), 400)]
 fn generic_multipart_honours_every_attribute_key(
-    #[case] field: &str,
-    #[case] value: &[u8],
+    #[case] unknown: Option<&str>,
+    #[case] payload: &[u8],
     #[case] status: u64,
 ) {
     install_router_once();
@@ -812,10 +822,18 @@ fn generic_multipart_honours_every_attribute_key(
         .enable_all()
         .build()
         .expect("tokio runtime");
-    let wire = encode_multipart_text("----GenericBoundary", "/generic", field, value);
+    let mut parts: Vec<(&str, &[u8])> = vec![("payload", payload)];
+    parts.extend(unknown.map(|field| (field, b"x".as_slice())));
+    let wire = encode_multipart_texts("----GenericBoundary", "/generic", &parts);
     let (header, body) = decode_wire(&dispatch_from_bytes(wire, &runtime));
     assert_eq!(header["status"].as_u64(), Some(status), "header={header:#}");
-    if status == 200 {
+    if let Some(field) = unknown {
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains(&format!("Unknown field: `{field}`")),
+            "body={text}"
+        );
+    } else if status == 200 {
         let json: Value = ::serde_json::from_slice(&body).expect("response is JSON");
         assert_eq!(json["text_len"].as_u64(), Some(4));
     }
