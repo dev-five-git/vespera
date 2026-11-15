@@ -243,7 +243,9 @@ mod tests {
         assert!(matches!(live, std::borrow::Cow::Borrowed(_)));
         // Outside the IDE (rustc, this test binary) nothing is filtered: a
         // `macro_rules!`-generated function has no literal `fn name`.
-        assert!(matches!(retain_declared(&items), std::borrow::Cow::Borrowed(all) if all.len() == 4));
+        assert!(
+            matches!(retain_declared(&items), std::borrow::Cow::Borrowed(all) if all.len() == 4)
+        );
     }
 
     #[rstest::rstest]

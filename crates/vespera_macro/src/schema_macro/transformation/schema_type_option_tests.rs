@@ -27,7 +27,11 @@ fn derives_of(tokens: &proc_macro2::TokenStream, name: &str) -> Vec<String> {
         })
         .unwrap();
     let mut derives = Vec::new();
-    for attr in item.attrs.iter().filter(|attr| attr.path().is_ident("derive")) {
+    for attr in item
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("derive"))
+    {
         attr.parse_nested_meta(|meta| {
             derives.push(meta.path.segments.last().unwrap().ident.to_string());
             Ok(())

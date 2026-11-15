@@ -103,7 +103,8 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
     }) {
         return err.to_compile_error();
     }
-    let (impl_generics, ty_generics, where_clause) = impl_generics(input, &cg, container_trait_default);
+    let (impl_generics, ty_generics, where_clause) =
+        impl_generics(input, &cg, container_trait_default);
 
     // Wildcard arm of the field-dispatch `match`: strict mode rejects an
     // unknown field name; non-strict ignores it.  Replaces the trailing
@@ -225,11 +226,15 @@ fn impl_generics(
     // container default of a generic struct.
     let mut seen = std::collections::HashSet::new();
     for ty in cg.default_types.iter().filter(|ty| generic(ty, &mut seen)) {
-        where_clause.predicates.push(syn::parse_quote!(#ty: ::core::default::Default));
+        where_clause
+            .predicates
+            .push(syn::parse_quote!(#ty: ::core::default::Default));
     }
     if container_trait_default && !type_params.is_empty() {
         let name = &input.ident;
-        where_clause.predicates.push(syn::parse_quote!(#name #ty_generics: ::core::default::Default));
+        where_clause
+            .predicates
+            .push(syn::parse_quote!(#name #ty_generics: ::core::default::Default));
     }
     let (impl_generics, _, where_clause) = generics.split_for_impl();
     (

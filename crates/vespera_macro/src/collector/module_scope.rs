@@ -127,12 +127,13 @@ pub(super) fn stored_routes_inline_module(
     let in_ide = crate::macro_storage::in_long_lived_server();
     if !in_ide
         && let Some(found) = stored_routes.iter().find_map(|stored| {
-        stored
-            .inline_module
-            .as_ref()
-            .filter(|module| !module.is_empty())
-            .map(|module| (module.clone(), stored.fn_name.clone()))
-    }) {
+            stored
+                .inline_module
+                .as_ref()
+                .filter(|module| !module.is_empty())
+                .map(|module| (module.clone(), stored.fn_name.clone()))
+        })
+    {
         return Some(found);
     }
     let stored_names: Vec<&str> = stored_routes
@@ -285,7 +286,10 @@ mod tests {
         assert!(stored_routes_inline_module(&moved, &[&stale, &current]).is_some());
         {
             let _ide = crate::macro_storage::test_ide::force();
-            assert_eq!(stored_routes_inline_module(&moved, &[&stale, &current]), None);
+            assert_eq!(
+                stored_routes_inline_module(&moved, &[&stale, &current]),
+                None
+            );
         }
         let message = inline_mod_route_error(&file, &("v2".to_string(), "list".to_string()));
         assert!(

@@ -354,8 +354,9 @@ pub(super) fn load_validated_sidecar_specs(
         Some(expected_hash) => {
             let path = pretty_sidecar_path(tag, expected_hash);
             let content = std::fs::read_to_string(&path).ok()?;
-            let fingerprint_matches = spec_pretty_fingerprint
-                .is_some_and(|fingerprint| super::cache::path_fingerprint(&path) == Some(fingerprint));
+            let fingerprint_matches = spec_pretty_fingerprint.is_some_and(|fingerprint| {
+                super::cache::path_fingerprint(&path) == Some(fingerprint)
+            });
             if !fingerprint_matches && super::cache::hash_str(&content) != expected_hash {
                 return None;
             }

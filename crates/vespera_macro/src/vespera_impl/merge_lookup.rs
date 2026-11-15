@@ -424,12 +424,19 @@ mod tests {
     fn self_imports_alias_the_module() {
         let temp = TempDir::new().unwrap();
         let file = temp.path().join("lib.rs");
-        std::fs::write(&file, "use child::{self, ChildApp}; use other::{self as o}; use {self};").unwrap();
+        std::fs::write(
+            &file,
+            "use child::{self, ChildApp}; use other::{self as o}; use {self};",
+        )
+        .unwrap();
         crate::schema_macro::file_cache::bump_epoch();
         let aliases = use_aliases(Some(&file));
         assert_eq!(aliases.get("child"), Some(&vec!["child".to_string()]));
         assert_eq!(aliases.get("o"), Some(&vec!["other".to_string()]));
-        assert_eq!(aliases.get("ChildApp"), Some(&vec!["child".to_string(), "ChildApp".to_string()]));
+        assert_eq!(
+            aliases.get("ChildApp"),
+            Some(&vec!["child".to_string(), "ChildApp".to_string()])
+        );
         assert!(!aliases.contains_key("self"));
     }
 

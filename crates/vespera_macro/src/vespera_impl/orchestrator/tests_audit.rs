@@ -200,10 +200,23 @@ fn merge_route_conflict_writes_no_spec() {
     let _crate = crate::env_access::test_env::set_var("CARGO_CRATE_NAME", "parent");
     let routes = temp_dir.path().join("src").join("routes");
     fs::create_dir_all(&routes).unwrap();
-    fs::write(routes.join("items.rs"), "#[vespera::route(get)] pub async fn list() {}
-").unwrap();
+    fs::write(
+        routes.join("items.rs"),
+        "#[vespera::route(get)] pub async fn list() {}
+",
+    )
+    .unwrap();
     crate::schema_macro::file_cache::bump_epoch();
-    process_export_app(&syn::parse_quote!(ClashApp), "routes", &HashMap::new(), &temp_dir.path().to_string_lossy(), &[], "", Span::call_site()).unwrap();
+    process_export_app(
+        &syn::parse_quote!(ClashApp),
+        "routes",
+        &HashMap::new(),
+        &temp_dir.path().to_string_lossy(),
+        &[],
+        "",
+        Span::call_site(),
+    )
+    .unwrap();
 
     let spec = temp_dir.path().join("openapi.json");
     let input = ProcessedVesperaInput {

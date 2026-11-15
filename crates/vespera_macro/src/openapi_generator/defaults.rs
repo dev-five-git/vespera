@@ -376,7 +376,11 @@ pub(super) fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Va
                 .as_i64()
                 .and_then(|v| v.checked_neg())
                 .map(serde_json::Value::from)
-                .or_else(|| n.as_f64().and_then(|v| serde_json::Number::from_f64(-v)).map(serde_json::Value::Number)),
+                .or_else(|| {
+                    n.as_f64()
+                        .and_then(|v| serde_json::Number::from_f64(-v))
+                        .map(serde_json::Value::Number)
+                }),
             _ => None,
         },
         // `"value".to_owned()` / `"value".into()`
@@ -385,7 +389,9 @@ pub(super) fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Va
                 && method_call.args.is_empty() =>
         {
             match method_call.receiver.as_ref() {
-                Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) => Some(serde_json::Value::String(s.value())),
+                Expr::Lit(ExprLit {
+                    lit: Lit::Str(s), ..
+                }) => Some(serde_json::Value::String(s.value())),
                 _ => None,
             }
         }
@@ -403,7 +409,9 @@ pub(super) fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Va
                 // `42.to_string()` / `true.to_string()` is the STRING `"42"`.
                 if let Some(value) = extract_value_from_expr(method_call.receiver.as_ref()) {
                     return Some(match value {
-                        serde_json::Value::Number(_) | serde_json::Value::Bool(_) => serde_json::Value::String(value.to_string()),
+                        serde_json::Value::Number(_) | serde_json::Value::Bool(_) => {
+                            serde_json::Value::String(value.to_string())
+                        }
                         other => other,
                     });
                 }

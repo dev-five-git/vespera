@@ -57,7 +57,10 @@ pub(super) fn claim_export_name(
     {
         return Err(format!(
             "export_app! macro: `{app}` is already exported by this crate ({}, line {}); every export_app! of a crate needs a distinct name (its OpenAPI sidecar, cache and export key are named `<crate>/{app}`)",
-            Path::new(&existing.file).file_name().map_or_else(|| existing.file.clone(), |name| name.to_string_lossy().into_owned()),
+            Path::new(&existing.file).file_name().map_or_else(
+                || existing.file.clone(),
+                |name| name.to_string_lossy().into_owned()
+            ),
             existing.line
         ));
     }
@@ -89,7 +92,11 @@ mod tests {
     fn duplicate_export_names_are_rejected() {
         let dir = tempfile::TempDir::new().unwrap();
         let file = dir.path().join("lib.rs");
-        std::fs::write(&file, "mod admin { export_app!(DupApp); }\nmod public { export_app!(DupApp); }").unwrap();
+        std::fs::write(
+            &file,
+            "mod admin { export_app!(DupApp); }\nmod public { export_app!(DupApp); }",
+        )
+        .unwrap();
         crate::schema_macro::file_cache::bump_epoch();
         let krate = format!("{}/dup", dir.path().display());
 
@@ -97,9 +104,15 @@ mod tests {
         assert_eq!(claim_export_name(&krate, "DupApp", site(&file, 1)), Ok(()));
         assert_eq!(claim_export_name(&krate, "DupApp", site(&file, 1)), Ok(()));
         let error = claim_export_name(&krate, "DupApp", site(&file, 2)).unwrap_err();
-        assert!(error.contains("`DupApp` is already exported by this crate (lib.rs, line 1)"), "{error}");
+        assert!(
+            error.contains("`DupApp` is already exported by this crate (lib.rs, line 1)"),
+            "{error}"
+        );
         assert!(error.ends_with("named `<crate>/DupApp`)"), "{error}");
-        assert_eq!(claim_export_name(&format!("{krate}.bin"), "DupApp", site(&file, 2)), Ok(()));
+        assert_eq!(
+            claim_export_name(&format!("{krate}.bin"), "DupApp", site(&file, 2)),
+            Ok(())
+        );
 
         // Renamed at line 1: the name is free for line 2.
         assert_eq!(claim_export_name(&krate, "Renamed", site(&file, 1)), Ok(()));

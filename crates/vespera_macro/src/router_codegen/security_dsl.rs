@@ -156,7 +156,10 @@ fn parse_flow(input: ParseStream, kind: &syn::Ident) -> syn::Result<OAuthFlow> {
             "authorization_url" | "token_url" if !required.contains(&field_str.as_str()) => {
                 return Err(syn::Error::new(
                     field.span(),
-                    format!("OAuth2 `{kind}` flow does not take `{field_str}`; it uses {}", quoted_list(required)),
+                    format!(
+                        "OAuth2 `{kind}` flow does not take `{field_str}`; it uses {}",
+                        quoted_list(required)
+                    ),
                 ));
             }
             "authorization_url" | "token_url" | "refresh_url" => {

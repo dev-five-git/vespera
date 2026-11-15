@@ -401,8 +401,16 @@ pub(super) fn parse_component_schemas(
         // resolves to (`mod a` / `mod b` both `Node`).
         let own_definitions: HashMap<&str, &str>;
         let struct_definitions = match struct_meta.rust_ident.as_deref() {
-            Some(ident) if struct_definitions.get(ident).is_some_and(|definition| *definition != struct_meta.definition) => {
-                own_definitions = struct_definitions.iter().map(|(key, definition)| (*key, *definition)).chain([(ident, struct_meta.definition.as_str())]).collect();
+            Some(ident)
+                if struct_definitions
+                    .get(ident)
+                    .is_some_and(|definition| *definition != struct_meta.definition) =>
+            {
+                own_definitions = struct_definitions
+                    .iter()
+                    .map(|(key, definition)| (*key, *definition))
+                    .chain([(ident, struct_meta.definition.as_str())])
+                    .collect();
                 &own_definitions
             }
             _ => struct_definitions,

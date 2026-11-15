@@ -576,9 +576,14 @@ fn renamed_self_reference_resolves_to_its_own_component() {
     let mut metadata = CollectedMetadata::new();
     metadata.structs = vec![tree("TreeA"), tree("TreeB")];
     let (known, definitions) = build_schema_lookups(&metadata, &[]);
-    let schemas =
-        parse_component_schemas(&metadata, &known, &definitions, &HashMap::new(), &HashMap::new())
-            .unwrap();
+    let schemas = parse_component_schemas(
+        &metadata,
+        &known,
+        &definitions,
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .unwrap();
     for name in ["TreeA", "TreeB"] {
         let json = serde_json::to_value(&schemas[name]).unwrap();
         assert_eq!(

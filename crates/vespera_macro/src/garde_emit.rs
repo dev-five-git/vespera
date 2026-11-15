@@ -573,11 +573,13 @@ impl ExactBounds {
     /// within the type's range: past 2^53 the OpenAPI document can only
     /// carry a rounded value, and a client sending that advertised bound
     /// must not be rejected.
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
-    )]
-    fn loosen(exact: ExactInt, v: f64, bound: Bound, (type_min, type_max): (i128, u128)) -> ExactInt {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn loosen(
+        exact: ExactInt,
+        v: f64,
+        bound: Bound,
+        (type_min, type_max): (i128, u128),
+    ) -> ExactInt {
         // `as` saturates: an out-of-range `f64` lands at the `u128` edge and
         // is clamped below.
         let doc = ExactInt {
@@ -677,7 +679,10 @@ fn numeric_some(
         // otherwise last-resort `as _` and let the user see a compiler
         // error pointing at their field type.
         if let Some(exact) = exact {
-            let literal: TokenStream = exact.to_string().parse().expect("an integer literal is a valid token stream");
+            let literal: TokenStream = exact
+                .to_string()
+                .parse()
+                .expect("an integer literal is a valid token stream");
             return Ok(quote! { ::std::option::Option::Some(#literal) });
         }
         return Ok(quote! { ::std::option::Option::Some(#v as _) });

@@ -307,6 +307,7 @@ impl ModuleTree {
     }
 
     fn visit(&mut self, items: &[syn::Item], scope: &Scope<'_>, collect_jobs: bool) {
+        let foreign_cron = imports_foreign_cron(items);
         for item in items {
             match item {
                 syn::Item::Mod(module) => {
@@ -338,7 +339,7 @@ impl ModuleTree {
                 syn::Item::Fn(function)
                     if collect_jobs && function.attrs.iter().any(|a| is_cron_path(a.path())) =>
                 {
-                    self.add_cron_fn(function, scope);
+                    self.add_cron_fn(function, scope, foreign_cron);
                 }
                 _ => {}
             }
@@ -364,7 +365,7 @@ impl ModuleTree {
 
     /// Index a function carrying a cron attribute and, when it is
     /// schedulable and not `#[cfg]`-gated, record it as a scanned job.
-    fn add_cron_fn(&mut self, function: &syn::ItemFn, scope: &Scope<'_>) {
+    fn add_cron_fn(&mut self, function: &syn::ItemFn, scope: &Scope<'_>, foreign_cron: bool) {
         let function_name = function.sig.ident.unraw().to_string();
         self.cron_fns
             .entry((scope.file.to_owned(), function_name.clone()))
@@ -377,7 +378,7 @@ impl ModuleTree {
             ))
             .or_insert_with(|| scope.module_path.to_owned());
         if !scope.gated
-            && let Some(args) = cron_args(function)
+            && let Some(args) = cron_args(function, foreign_cron)
         {
             self.jobs.push(CronMetadata {
                 expression: args.expression.value(),
@@ -392,15 +393,18 @@ impl ModuleTree {
 
 /// The arguments of a schedulable `#[cron("…", tz = "…", overlap = "…")]`
 /// function, or `None` when the function is not one (the attribute macro
-/// reports malformed ones itself).
-fn cron_args(function: &syn::ItemFn) -> Option<CronArgs> {
+/// reports malformed ones itself).  With `foreign_cron` (the module imports
+/// another crate's `cron`) a bare `#[cron]` is not vespera's.
+fn cron_args(function: &syn::ItemFn, foreign_cron: bool) -> Option<CronArgs> {
     if validate_cron_fn(function).is_err() || is_cfg_gated(&function.attrs) {
         return None;
     }
     function
         .attrs
         .iter()
-        .find(|attr| is_cron_path(attr.path()))
+        .find(|attr| {
+            is_cron_path(attr.path()) && !(foreign_cron && attr.path().segments.len() == 1)
+        })
         .and_then(|attr| attr.parse_args::<CronArgs>().ok())
 }
 
@@ -415,6 +419,33 @@ fn is_cron_path(path: &syn::Path) -> bool {
             .as_slice(),
         ["cron"] | ["vespera", "cron"]
     )
+}
+
+/// Whether `items` import a `cron` from another crate (`use other::cron;`,
+/// `use other::{cron};`, `use other::job as cron;`) — then a bare `#[cron]`
+/// there is that crate's attribute.  Imports rooted at `vespera`, `crate`,
+/// `self` or `super` and globs keep it vespera's.
+fn imports_foreign_cron(items: &[syn::Item]) -> bool {
+    fn imports(tree: &syn::UseTree, root: Option<&syn::Ident>) -> bool {
+        let foreign = || {
+            root.is_some_and(|root| {
+                !matches!(
+                    root.to_string().as_str(),
+                    "vespera" | "crate" | "self" | "super"
+                )
+            })
+        };
+        match tree {
+            syn::UseTree::Path(path) => imports(&path.tree, root.or(Some(&path.ident))),
+            syn::UseTree::Name(name) => name.ident == "cron" && foreign(),
+            syn::UseTree::Rename(rename) => rename.rename == "cron" && foreign(),
+            syn::UseTree::Group(group) => group.items.iter().any(|tree| imports(tree, root)),
+            syn::UseTree::Glob(_) => false,
+        }
+    }
+    items
+        .iter()
+        .any(|item| matches!(item, syn::Item::Use(item) if imports(&item.tree, None)))
 }
 
 fn is_cfg_gated(attrs: &[syn::Attribute]) -> bool {
@@ -472,510 +503,4 @@ fn cron_module_path(relative: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use rstest::rstest;
-    use tempfile::TempDir;
-
-    use crate::metadata::CronOptions;
-
-    use super::*;
-
-    fn discover(
-        storage: &[StoredCronInfo],
-        src_dir: Option<&Path>,
-        call_site: Option<&Path>,
-    ) -> Vec<CronMetadata> {
-        discover_cron_jobs(storage, src_dir, call_site).unwrap()
-    }
-
-    /// `vespera!` in an example / integration test (outside `src/`): the
-    /// call-site file is the crate root, its `mod`s resolve next to it, and
-    /// jobs there — stored or not — get real module paths.
-    #[test]
-    fn call_site_outside_src_is_the_crate_root() {
-        let krate = crate_with(&[("lib.rs", "")]);
-        let examples = krate.path().join("examples");
-        fs::create_dir_all(examples.join("demo")).unwrap();
-        let root = examples.join("demo").join("main.rs");
-        fs::write(
-            &root,
-            r#"mod jobs; #[cron("1 * * * * *")] pub async fn root_job() {}"#,
-        )
-        .unwrap();
-        let jobs_file = examples.join("demo").join("jobs.rs");
-        fs::write(
-            &jobs_file,
-            r#"#[cron("2 * * * * *")] pub async fn tick() {} #[cron("3 * * * * *")] pub async fn late() {}"#,
-        )
-        .unwrap();
-        crate::schema_macro::file_cache::bump_epoch();
-        let src = krate.path().join("src");
-        let storage = [stored("tick", Some(jobs_file.display().to_string()))];
-        let jobs = discover(&storage, Some(&src), Some(&root));
-        assert_eq!(
-            summary(&jobs),
-            rows(&[
-                ("", "root_job", "1 * * * * *"),
-                ("jobs", "late", "3 * * * * *"),
-                ("jobs", "tick", "0 0 0 * * *"),
-            ])
-        );
-        // Without a tree to consult the stored file is still placed relative
-        // to the call site (here: `examples/demo` is not under `src/`).
-        let placement = Placement {
-            src_dir: Some(&src),
-            tree: None,
-            call_site: Some(canonical_display(&root)),
-        };
-        let placed = stored_jobs(
-            &[
-                stored("tick", Some(jobs_file.display().to_string())),
-                stored("root_job", Some(root.display().to_string())),
-            ],
-            &placement,
-            &mut HashMap::new(),
-        )
-        .unwrap();
-        assert_eq!(
-            summary(&placed),
-            rows(&[
-                ("", "root_job", "0 0 0 * * *"),
-                ("jobs", "tick", "0 0 0 * * *")
-            ])
-        );
-    }
-
-    /// A stored job whose file is neither under `src/` nor next to the call
-    /// site has no module path: a compile error, not an absolute-path module.
-    #[test]
-    fn stored_job_outside_the_crate_is_an_error() {
-        let krate = crate_with(&[("lib.rs", "")]);
-        let elsewhere = TempDir::new().unwrap();
-        let stray = elsewhere.path().join("stray.rs");
-        fs::write(&stray, r#"#[cron("1 * * * * *")] pub async fn stray() {}"#).unwrap();
-        let src = krate.path().join("src");
-        let storage = [stored("stray", Some(stray.display().to_string()))];
-        for call_site in [Some(src.join("lib.rs")), None] {
-            let error = discover_cron_jobs(&storage, Some(&src), call_site.as_deref()).unwrap_err();
-            assert!(
-                error.contains("cannot place `#[cron]` job `stray`"),
-                "unexpected error: {error}"
-            );
-        }
-        // A sibling directory sharing the `src` prefix is not `src/`.
-        let src2 = krate.path().join("src2");
-        fs::create_dir_all(&src2).unwrap();
-        let sibling = src2.join("job.rs");
-        fs::write(&sibling, "").unwrap();
-        let placement = Placement {
-            src_dir: Some(&src),
-            tree: None,
-            call_site: Some(canonical_display(&src.join("lib.rs"))),
-        };
-        assert!(
-            stored_jobs(
-                &[stored("job", Some(sibling.display().to_string()))],
-                &placement,
-                &mut HashMap::new()
-            )
-            .is_err()
-        );
-    }
-
-    /// Write `files` (relative to `src/`) into a fresh temp crate and return it.
-    fn crate_with(files: &[(&str, &str)]) -> TempDir {
-        let dir = TempDir::new().expect("temp dir");
-        for (relative, content) in files {
-            let path = dir.path().join("src").join(relative);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, content).unwrap();
-        }
-        dir
-    }
-
-    fn stored(fn_name: &str, file_path: Option<String>) -> StoredCronInfo {
-        StoredCronInfo {
-            fn_name: fn_name.to_owned(),
-            expression: "0 0 0 * * *".to_owned(),
-            file_path,
-            inline_module: None,
-            options: CronOptions::default(),
-        }
-    }
-
-    fn stored_in(fn_name: &str, file_path: &Path, inline: &str, expr: &str) -> StoredCronInfo {
-        StoredCronInfo {
-            expression: expr.to_owned(),
-            inline_module: Some(inline.to_owned()),
-            ..stored(fn_name, Some(file_path.display().to_string()))
-        }
-    }
-
-    /// Same-named jobs in different inline modules of one file: each stored
-    /// entry is placed in its own module, and a sibling the storage does not
-    /// know yet is still scanned.  `#[path]` files keep the recorded inline
-    /// module on the derived path.
-    #[test]
-    fn same_named_jobs_in_inline_modules_do_not_clash() {
-        let krate = crate_with(&[
-            (
-                "lib.rs",
-                r#"
-                pub mod a { #[cron("1 * * * * *")] pub async fn tick() {} }
-                pub mod b { #[cron("2 * * * * *")] pub async fn tick() {} }
-                pub mod c { pub mod d { #[cron("3 * * * * *")] pub async fn tick() {} } }
-                #[path = "x.rs"] mod pathed;
-                "#,
-            ),
-            (
-                "x.rs",
-                r#"mod e { #[cron("4 * * * * *")] pub async fn tick() {} }"#,
-            ),
-        ]);
-        let src = krate.path().join("src");
-        let lib = src.join("lib.rs");
-        let storage = [
-            stored_in("tick", &lib, "a", "1 * * * * *"),
-            stored_in("tick", &lib, "b", "2 * * * * *"),
-            stored_in("tick", &src.join("x.rs"), "e", "4 * * * * *"),
-        ];
-        let jobs = discover(&storage, Some(&src), Some(&lib));
-        assert_eq!(
-            summary(&jobs),
-            rows(&[
-                ("a", "tick", "1 * * * * *"),
-                ("b", "tick", "2 * * * * *"),
-                ("c::d", "tick", "3 * * * * *"),
-                ("x::e", "tick", "4 * * * * *"),
-            ])
-        );
-    }
-
-    fn summary(jobs: &[CronMetadata]) -> Vec<(String, String, String)> {
-        let mut rows: Vec<_> = jobs
-            .iter()
-            .map(|job| {
-                (
-                    job.module_path.clone(),
-                    job.function_name.clone(),
-                    job.expression.clone(),
-                )
-            })
-            .collect();
-        rows.sort();
-        rows
-    }
-
-    #[rstest]
-    #[case::slashes_and_hyphens("admin-tools/daily-job.rs", "admin_tools::daily_job")]
-    #[case::module_file("admin-tools/mod.rs", "admin_tools")]
-    #[case::library_root("lib.rs", "")]
-    #[case::binary_root("main.rs", "")]
-    #[case::nested_lib_file("tools/lib.rs", "tools::lib")]
-    fn cron_module_path_normalizes_rust_module_syntax(#[case] input: &str, #[case] expected: &str) {
-        assert_eq!(cron_module_path(input), expected);
-    }
-
-    #[test]
-    fn storage_entries_without_src_dir_keep_their_derived_paths() {
-        let jobs = discover(
-            &[
-                stored("no_file", None),
-                stored("missing", Some("does/not/exist.rs".to_owned())),
-            ],
-            None,
-            None,
-        );
-        assert_eq!(
-            summary(&jobs),
-            vec![
-                (
-                    String::new(),
-                    "no_file".to_owned(),
-                    "0 0 0 * * *".to_owned()
-                ),
-                (
-                    "does::not::exist".to_owned(),
-                    "missing".to_owned(),
-                    "0 0 0 * * *".to_owned()
-                ),
-            ]
-        );
-    }
-
-    /// Jobs in modules rustc expands after `vespera!` are recovered from the
-    /// module tree; storage-known, gated, `#[path]`, private, non-literal and
-    /// unreachable ones are not.
-    #[test]
-    fn scan_recovers_unexpanded_jobs_from_the_module_tree() {
-        let krate = crate_with(&[
-            (
-                "lib.rs",
-                r#"
-                mod early;
-                pub fn create_app() {}
-                mod late;
-                mod plain;
-                mod leafy;
-                mod broken;
-                mod missing;
-                #[cfg(test)] mod gated;
-                #[path = "x.rs"] mod pathed;
-                pub mod inline {
-                    #[vespera::cron("0 0 * * * *")]
-                    pub async fn inline_job() {}
-                }
-                "#,
-            ),
-            (
-                "early.rs",
-                r#"#[cron("1 * * * * *")] pub async fn early_job() {}"#,
-            ),
-            (
-                "late/mod.rs",
-                r#"
-                mod deeper;
-                #[cron("2 * * * * *", overlap = "skip", tz = "Asia/Seoul")] pub async fn late_job() {}
-                #[cron("3 * * * * *", bogus = "x")] pub async fn bad_args() {}
-                #[cron("3 * * * * *")] fn private_job() {}
-                #[cfg(feature = "x")] #[cron("4 * * * * *")] pub async fn gated_job() {}
-                #[cron(EXPR)] pub async fn non_literal() {}
-                #[other] pub async fn not_cron() {}
-                #[a::cron("9 * * * * *")] pub async fn foreign_cron() {}
-                "#,
-            ),
-            (
-                "late/deeper.rs",
-                r#"#[vespera::cron("5 * * * * *")] pub async fn deep_job() {}"#,
-            ),
-            ("plain.rs", "pub mod inner { pub async fn helper() {} }"),
-            ("leafy.rs", "pub fn leaf() {}"),
-            ("broken.rs", "mod {{{ cron("),
-            (
-                "gated.rs",
-                r#"#[cron("6 * * * * *")] pub async fn gated() {}"#,
-            ),
-            ("x.rs", r#"#[cron("7 * * * * *")] pub async fn pathed() {}"#),
-            (
-                "stray.rs",
-                r#"#[cron("8 * * * * *")] pub async fn stray() {}"#,
-            ),
-        ]);
-        let src = krate.path().join("src");
-        let early = src.join("early.rs").display().to_string();
-        let jobs = discover(&[stored("early_job", Some(early))], Some(&src), None);
-        assert_eq!(
-            summary(&jobs),
-            vec![
-                (
-                    "early".to_owned(),
-                    "early_job".to_owned(),
-                    "0 0 0 * * *".to_owned()
-                ),
-                (
-                    "inline".to_owned(),
-                    "inline_job".to_owned(),
-                    "0 0 * * * *".to_owned()
-                ),
-                (
-                    "late".to_owned(),
-                    "late_job".to_owned(),
-                    "2 * * * * *".to_owned()
-                ),
-                (
-                    "late::deeper".to_owned(),
-                    "deep_job".to_owned(),
-                    "5 * * * * *".to_owned()
-                ),
-            ]
-        );
-        // Scanned jobs keep their `tz` / `overlap` arguments.
-        let late = jobs
-            .iter()
-            .find(|job| job.function_name == "late_job")
-            .unwrap();
-        assert_eq!(
-            late.options,
-            CronOptions {
-                timezone: Some("Asia/Seoul".to_owned()),
-                skip_overlap: true,
-            }
-        );
-    }
-
-    /// Without a `cron(` attribute outside the storage-covered files nothing
-    /// is parsed and nothing is added.
-    #[rstest]
-    #[case::no_cron_anywhere(&[("lib.rs", "mod a;"), ("a.rs", "pub fn a() {}")], false)]
-    #[case::all_in_storage(&[("lib.rs", "mod a;"), ("a.rs", r#"#[cron("1 * * * * *")] pub async fn a() {}"#)], true)]
-    fn scan_adds_nothing_without_unexpanded_candidates(
-        #[case] files: &[(&str, &str)],
-        #[case] store_a: bool,
-    ) {
-        let krate = crate_with(files);
-        let src = krate.path().join("src");
-        let storage: Vec<_> = store_a
-            .then(|| stored("a", Some(src.join("a.rs").display().to_string())))
-            .into_iter()
-            .collect();
-        let jobs = discover(&storage, Some(&src), None);
-        assert_eq!(jobs.len(), storage.len());
-    }
-
-    /// Only the module tree holding the `vespera!` call site contributes.
-    #[rstest]
-    #[case::library_call_site(Some("lib.rs"), vec!["lib_job"])]
-    #[case::binary_call_site(Some("main.rs"), vec!["bin_job"])]
-    #[case::outside_both_trees(Some("orphan.rs"), vec![])]
-    #[case::binary_target(Some("bin/server.rs"), vec!["server_tasks_job", "server_job"])]
-    #[case::binary_dir_target(Some("bin/worker/main.rs"), vec!["worker_job"])]
-    #[case::unknown_call_site_prefers_library(None, vec!["lib_job"])]
-    fn scan_uses_the_tree_containing_the_call_site(
-        #[case] call_site: Option<&str>,
-        #[case] expected: Vec<&str>,
-    ) {
-        let krate = crate_with(&[
-            (
-                "lib.rs",
-                r#"#[cron("1 * * * * *")] pub async fn lib_job() {}"#,
-            ),
-            (
-                "main.rs",
-                r#"#[cron("2 * * * * *")] pub async fn bin_job() {}"#,
-            ),
-            ("orphan.rs", ""),
-            (
-                "bin/server.rs",
-                r#"mod tasks; #[cron("3 * * * * *")] pub async fn server_job() {}"#,
-            ),
-            (
-                "bin/tasks.rs",
-                r#"#[cron("4 * * * * *")] pub async fn server_tasks_job() {}"#,
-            ),
-            (
-                "bin/worker/main.rs",
-                r#"#[cron("5 * * * * *")] pub async fn worker_job() {}"#,
-            ),
-            ("bin/README.md", "not a crate root"),
-        ]);
-        let src = krate.path().join("src");
-        let call_site = call_site.map(|file| src.join(file));
-        let jobs = discover(&[], Some(&src), call_site.as_deref());
-        let names: Vec<_> = jobs.iter().map(|job| job.function_name.as_str()).collect();
-        assert_eq!(names, expected);
-    }
-
-    /// A job stored from a binary's root file lives at that crate's root,
-    /// not at `crate::bin::server`.
-    #[test]
-    fn binary_root_jobs_are_placed_at_the_crate_root() {
-        let krate = crate_with(&[(
-            "bin/server.rs",
-            r#"#[cron("1 * * * * *")] pub async fn tick() {}"#,
-        )]);
-        let src = krate.path().join("src");
-        let server = src.join("bin").join("server.rs");
-        let storage = [stored("tick", Some(server.display().to_string()))];
-        let jobs = discover(&storage, Some(&src), Some(&server));
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].module_path, "");
-    }
-
-    #[test]
-    fn crate_without_a_root_file_contributes_nothing() {
-        let krate = crate_with(&[("jobs.rs", r#"#[cron("1 * * * * *")] pub async fn job() {}"#)]);
-        let src = krate.path().join("src");
-        assert!(discover(&[], Some(&src), None).is_empty());
-    }
-
-    fn rows(rows: &[(&str, &str, &str)]) -> Vec<(String, String, String)> {
-        let mut rows: Vec<_> = rows
-            .iter()
-            .map(|(module, name, expr)| {
-                ((*module).to_owned(), (*name).to_owned(), (*expr).to_owned())
-            })
-            .collect();
-        rows.sort();
-        rows
-    }
-
-    /// Stored jobs are placed by the module tree: the crate root is `crate`
-    /// (not `crate::lib`), inline modules keep their segments (also
-    /// `#[cfg]`-gated ones rustc expanded), and a job declared after
-    /// `vespera!` in a file with stored jobs is still scanned.
-    #[test]
-    fn stored_jobs_take_their_module_path_from_the_module_tree() {
-        let krate = crate_with(&[
-            (
-                "lib.rs",
-                r#"
-                #[vespera::cron("1 * * * * *")] pub async fn root_job() {}
-                pub mod jobs {
-                    #[cron("2 * * * * *")] pub async fn inline_job() {}
-                    pub mod deeper {
-                        #[cron("3 * * * * *")] pub async fn deep_job() {}
-                    }
-                }
-                #[path = "x.rs"] mod pathed;
-                pub fn create_app() {}
-                #[cron("4 * * * * *")] pub async fn after_job() {}
-                #[cfg(test)]
-                mod tests {
-                    #[cron("5 * * * * *")] pub async fn gated_job() {}
-                }
-                "#,
-            ),
-            (
-                "x.rs",
-                r#"#[cron("6 * * * * *")] pub async fn pathed_job() {}"#,
-            ),
-        ]);
-        let src = krate.path().join("src");
-        let lib = src.join("lib.rs").display().to_string();
-        let x = src.join("x.rs").display().to_string();
-        let storage = [
-            stored("root_job", Some(lib.clone())),
-            stored("inline_job", Some(lib.clone())),
-            stored("deep_job", Some(lib.clone())),
-            stored("gated_job", Some(lib)),
-            stored("pathed_job", Some(x)),
-        ];
-        let stored_expr = "0 0 0 * * *";
-        let jobs = discover(&storage, Some(&src), Some(&src.join("lib.rs")));
-        assert_eq!(
-            summary(&jobs),
-            rows(&[
-                ("", "root_job", stored_expr),
-                ("jobs", "inline_job", stored_expr),
-                ("jobs::deeper", "deep_job", stored_expr),
-                ("tests", "gated_job", stored_expr),
-                // `#[path]` modules are not followed: derived from the file.
-                ("x", "pathed_job", stored_expr),
-                ("", "after_job", "4 * * * * *"),
-            ])
-        );
-    }
-
-    /// Without a module tree to consult (call site outside both trees), a
-    /// stored crate-root job still resolves to `crate`.
-    #[test]
-    fn stored_root_job_without_a_tree_falls_back_to_the_crate_root() {
-        let krate = crate_with(&[
-            (
-                "main.rs",
-                r#"#[cron("1 * * * * *")] pub async fn bin_job() {}"#,
-            ),
-            ("orphan.rs", ""),
-        ]);
-        let src = krate.path().join("src");
-        let main = src.join("main.rs").display().to_string();
-        let jobs = discover(
-            &[stored("bin_job", Some(main))],
-            Some(&src),
-            Some(&src.join("orphan.rs")),
-        );
-        assert_eq!(summary(&jobs), rows(&[("", "bin_job", "0 0 0 * * *")]));
-    }
-}
+mod tests;
