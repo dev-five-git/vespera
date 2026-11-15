@@ -19,6 +19,7 @@ class NativeConfigResetTest {
         List<VesperaNativeConfig.Knob> knobs = NativeConfigReset.knobs();
         assertTrue(knobs.contains(VesperaNativeConfig.MAX_BUFFERED_RESPONSE_BYTES), knobs.toString());
         assertTrue(knobs.contains(VesperaNativeConfig.RUNTIME_WORKER_THREADS), knobs.toString());
+        assertTrue(knobs.contains(VesperaNativeConfig.DEFAULT_JSON_CONTENT_TYPE), knobs.toString());
         try {
             // What booting VesperaBridgeCoreAutoConfiguration leaves behind.
             for (VesperaNativeConfig.Knob knob : knobs) {
