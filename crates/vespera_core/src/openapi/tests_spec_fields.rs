@@ -137,3 +137,72 @@ fn paths_and_operation_responses_are_optional_on_deserialize() {
         json!({"summary": "pet created"})
     );
 }
+
+/// Round 14: the Paths, Responses and Callback objects allow `x-*`
+/// extensions; they are skipped instead of being read as a path / status /
+/// expression (a non-object value used to fail the whole document, an
+/// object came back as a bogus route).
+#[test]
+fn extension_keys_of_map_objects_are_skipped() {
+    let doc: OpenApi = serde_json::from_value(json!({
+        "openapi": "3.1.0",
+        "info": {"title": "t", "version": "1"},
+        "paths": {
+            "x-internal": true,
+            "x-meta": {},
+            "/users": {
+                "get": {
+                    "responses": {"x-note": 1, "200": {"description": "ok"}},
+                    "callbacks": {
+                        "onData": {"x-c": "v", "{$request.body#/url}": {}}
+                    }
+                }
+            }
+        },
+        "components": {
+            "callbacks": {"cb": {"x-c": [1], "{$request.body#/url}": {}}}
+        }
+    }))
+    .unwrap();
+    assert_eq!(doc.paths.keys().collect::<Vec<_>>(), ["/users"]);
+    let get = doc.paths["/users"].get.as_ref().unwrap();
+    assert_eq!(get.responses.keys().collect::<Vec<_>>(), ["200"]);
+    let callbacks = get.callbacks.as_ref().unwrap();
+    assert_eq!(
+        callbacks["onData"].keys().collect::<Vec<_>>(),
+        ["{$request.body#/url}"]
+    );
+    let components = doc.components.as_ref().unwrap();
+    assert_eq!(
+        components.callbacks.as_ref().unwrap()["cb"]
+            .keys()
+            .collect::<Vec<_>>(),
+        ["{$request.body#/url}"]
+    );
+    let out = serde_json::to_value(&doc).unwrap();
+    assert!(out["paths"].get("x-meta").is_none(), "{out}");
+}
+
+#[test]
+fn map_objects_still_reject_non_maps() {
+    let err = serde_json::from_value::<OpenApi>(json!({
+        "openapi": "3.1.0",
+        "info": {"title": "t", "version": "1"},
+        "paths": 5
+    }))
+    .unwrap_err();
+    assert!(err.to_string().contains("a map"), "{err}");
+    let operation: crate::route::Operation =
+        serde_json::from_value(json!({"callbacks": null})).unwrap();
+    assert!(operation.callbacks.is_none());
+    // A non-`x-` entry is still read as its value type.
+    assert!(
+        serde_json::from_value::<crate::route::Operation>(json!({"responses": {"200": 5}}))
+            .is_err()
+    );
+    assert!(
+        serde_json::from_value::<crate::route::Operation>(json!({"callbacks": {"cb": {"/a": 5}}}))
+            .is_err()
+    );
+    assert!(serde_json::from_value::<crate::route::Operation>(json!({"callbacks": 5})).is_err());
+}

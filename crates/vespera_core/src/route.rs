@@ -320,8 +320,13 @@ pub struct Operation {
     /// Response definitions (status code -> Response)
     /// (optional in 3.1 — e.g. a webhook or callback operation may omit it;
     /// omitted when empty: a Responses Object must hold at least one
-    /// response, so `{}` would be invalid)
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// response, so `{}` would be invalid; the Responses Object's `x-*`
+    /// extension keys are skipped on deserialize, never read as statuses)
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "crate::extensions::skip_extension_keys"
+    )]
     pub responses: BTreeMap<String, Response>,
     /// Security requirements
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -333,8 +338,13 @@ pub struct Operation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_docs: Option<ExternalDocumentation>,
     /// Callback definitions: callback name → [`Callback`] (runtime
-    /// expression → Path Item), per the OpenAPI 3.1 Callback Object.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// expression → Path Item), per the OpenAPI 3.1 Callback Object (whose
+    /// `x-*` extension keys are skipped on deserialize).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::extensions::skip_callback_extension_keys"
+    )]
     pub callbacks: Option<BTreeMap<String, Callback>>,
     /// Alternative servers for this operation.
     #[serde(skip_serializing_if = "Option::is_none")]

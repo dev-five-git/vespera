@@ -450,21 +450,48 @@ impl Schema {
     }
 
     /// Whether every composition keyword admits `null` — deciding whether a
-    /// deserialized `type: [T, "null"]` keeps its `null`: an `anyOf` /
-    /// `oneOf` with a `{type: null}` branch (the other branches are taken to
-    /// reject `null`, the shape a nullable composition is written in), an
-    /// `allOf` whose every member is `{type: null}`, and a `not` whose
-    /// subschema provably rejects `null` (see [`rejects_null`]).  A schema
-    /// without composition keywords trivially admits it.
+    /// deserialized `type: [T, "null"]` keeps its `null`: an `anyOf` with a
+    /// member that admits `null` (see [`admits_null`]), a `oneOf` with
+    /// exactly one such member (the other branches are taken to reject
+    /// `null`, the shape a nullable composition is written in; two admitting
+    /// branches make `oneOf` reject it), an `allOf` whose every member admits
+    /// `null`, and a `not` whose subschema provably rejects `null` (see
+    /// [`rejects_null`]).  A schema without composition keywords trivially
+    /// admits it.
     pub(super) fn composition_admits_null(&self) -> bool {
-        self.any_of.as_deref().is_none_or(has_null_branch)
-            && self.one_of.as_deref().is_none_or(has_null_branch)
+        self.any_of
+            .as_deref()
+            .is_none_or(|members| members.iter().any(admits_null))
+            && self
+                .one_of
+                .as_deref()
+                .is_none_or(|members| members.iter().filter(|m| admits_null(m)).count() == 1)
             && self
                 .all_of
                 .as_deref()
-                .is_none_or(|members| members.iter().all(is_null_schema))
+                .is_none_or(|members| members.iter().all(admits_null))
             && self.not.as_ref().is_none_or(rejects_null)
     }
+}
+
+/// Whether the composition member `member` admits `null`: an inline
+/// `{type: null}`, a nullable schema (`type: [T, "null"]`, a nullable
+/// `$ref`), or a type-less, `$ref`-less schema whose `enum` (if any) names
+/// `null` and whose own composition admits it (`{}` included).  A plain
+/// `$ref` is not resolvable here and counts as rejecting `null`.
+fn admits_null(member: &SchemaRef) -> bool {
+    let SchemaRef::Inline(schema) = member else {
+        return false;
+    };
+    schema.nullable == Some(true)
+        || schema.schema_type == Some(SchemaType::Null)
+        || (schema.schema_type.is_none()
+            && schema.ref_path.is_none()
+            && schema
+                .r#enum
+                .as_ref()
+                .is_none_or(|values| values.contains(&serde_json::Value::Null))
+            && schema.composition_admits_null())
 }
 
 /// `{type: null}` (inline).

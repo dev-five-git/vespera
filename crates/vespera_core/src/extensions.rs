@@ -5,7 +5,15 @@
 //! deserialize it keeps only the keys starting with `x-` (every other
 //! unknown key is ignored as before); on serialize it writes only those
 //! keys, so a hand-inserted non-`x-` key can never shadow a real field.
+//!
+//! The Paths, Responses and Callback objects are plain maps here (path /
+//! status code / runtime expression → value), so their `x-*` keys are
+//! skipped on deserialize instead ([`skip_extension_keys`]): an extension
+//! value is never mistaken for a Path Item / Response, and never comes back
+//! as a bogus route or status.
 
+use crate::route::{Callback, PathItem};
+use serde::de::{DeserializeOwned, Error};
 use serde::{Deserialize, Deserializer, Serializer};
 use std::collections::BTreeMap;
 
@@ -30,4 +38,48 @@ where
     let mut extensions = Extensions::deserialize(deserializer)?;
     extensions.retain(|key, _| is_extension(key));
     Ok(extensions)
+}
+
+/// `deserialize_with` for a Paths / Responses / Callback map: the `x-*`
+/// keys are dropped before the rest is read as `V` (an extension value is
+/// never parsed as a Path Item / Response).
+pub fn skip_extension_keys<'de, D, V>(deserializer: D) -> Result<BTreeMap<String, V>, D::Error>
+where
+    D: Deserializer<'de>,
+    V: DeserializeOwned,
+{
+    without_extensions(Extensions::deserialize(deserializer)?)
+}
+
+fn without_extensions<V: DeserializeOwned, E: Error>(
+    raw: Extensions,
+) -> Result<BTreeMap<String, V>, E> {
+    raw.into_iter()
+        .filter(|(key, _)| !is_extension(key))
+        .map(|(key, value)| {
+            V::deserialize(value)
+                .map(|value| (key, value))
+                .map_err(E::custom)
+        })
+        .collect()
+}
+
+/// `deserialize_with` for an optional `callbacks` map (callback name ->
+/// Callback Object): every Callback's `x-*` keys are skipped.
+pub fn skip_callback_extension_keys<'de, D>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<String, Callback>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(callbacks) = Option::<BTreeMap<String, Extensions>>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    callbacks
+        .into_iter()
+        .map(|(name, callback)| {
+            without_extensions::<PathItem, D::Error>(callback).map(|callback| (name, callback))
+        })
+        .collect::<Result<_, _>>()
+        .map(Some)
 }

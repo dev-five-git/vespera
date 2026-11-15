@@ -4,7 +4,9 @@
 //! Pins the contract that real-world `multipart/form-data` file uploads
 //! pass through the binary wire envelope **byte-for-byte intact** —
 //! `boundary`-delimited parts arrive at the `TypedMultipart<T>`
-//! extractor exactly as constructed.
+//! extractor exactly as constructed (the upload handler answers the
+//! received file's length and order-sensitive FNV-1a digest, compared with
+//! the non-periodic payload sent).
 //!
 //! Includes a 3 MiB payload to exercise the
 //! `axum::extract::DefaultBodyLimit::disable()` layer; without it axum's
@@ -125,40 +127,53 @@ struct LimitedReq {
 struct UploadResult {
     name: String,
     file_size: u64,
-    file_first_byte: u8,
-    file_last_byte: u8,
+    /// FNV-1a 64 of the received file bytes: order-sensitive, so a corrupted
+    /// or reordered interior byte changes it even when the length does not.
+    file_fnv1a: u64,
+}
+
+/// FNV-1a 64-bit digest (order-sensitive; no extra dev-dependency).
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// `len` non-periodic pseudo-random bytes (xorshift64), so swapping two
+/// equal-length chunks of the payload changes its digest.
+fn pseudo_random_bytes(len: usize) -> Vec<u8> {
+    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_be_bytes()[0]
+        })
+        .collect()
+}
+
+/// Read the uploaded temp file back (the multipart parser leaves its cursor
+/// at EOF after writing) and describe it.
+fn upload_result(name: String, file: &mut ::std::fs::File) -> UploadResult {
+    let mut buf = Vec::new();
+    file.seek(SeekFrom::Start(0)).expect("rewind temp file");
+    file.read_to_end(&mut buf).expect("read temp file");
+    UploadResult {
+        name,
+        file_size: u64::try_from(buf.len()).expect("file size fits in u64"),
+        file_fnv1a: fnv1a(&buf),
+    }
 }
 
 async fn upload_handler(TypedMultipart(mut req): TypedMultipart<UploadReq>) -> Json<UploadResult> {
-    let mut buf = Vec::new();
-    let f = req.file.contents.as_file_mut();
-    // multipart parser leaves the file cursor at EOF after writing
-    f.seek(SeekFrom::Start(0)).expect("rewind temp file");
-    f.read_to_end(&mut buf).expect("read temp file");
-    let len = u64::try_from(buf.len()).expect("file size fits in u64");
-    let first = *buf.first().unwrap_or(&0);
-    let last = *buf.last().unwrap_or(&0);
-    Json(UploadResult {
-        name: req.name,
-        file_size: len,
-        file_first_byte: first,
-        file_last_byte: last,
-    })
+    Json(upload_result(req.name, req.file.contents.as_file_mut()))
 }
 
 async fn capped_upload_handler(
     TypedMultipart(mut req): TypedMultipart<CappedUploadReq>,
 ) -> Json<UploadResult> {
-    let mut buf = Vec::new();
-    let f = req.file.contents.as_file_mut();
-    f.seek(SeekFrom::Start(0)).expect("rewind temp file");
-    f.read_to_end(&mut buf).expect("read temp file");
-    Json(UploadResult {
-        name: req.name,
-        file_size: u64::try_from(buf.len()).expect("file size fits in u64"),
-        file_first_byte: *buf.first().unwrap_or(&0),
-        file_last_byte: *buf.last().unwrap_or(&0),
-    })
+    Json(upload_result(req.name, req.file.contents.as_file_mut()))
 }
 
 async fn validated_multipart_handler(
@@ -374,9 +389,7 @@ fn typed_multipart_small_binary_roundtrip() {
         .build()
         .expect("tokio runtime");
 
-    let payload: Vec<u8> = (0u32..1024)
-        .map(|i| u8::try_from(i % 256).expect("mod 256"))
-        .collect();
+    let payload = pseudo_random_bytes(1024);
     let wire = encode_multipart_wire("----TestBoundary12345", "alice", "data.bin", &payload);
     let resp = dispatch_from_bytes(wire, &runtime);
     let (header, body) = decode_wire(&resp);
@@ -389,8 +402,7 @@ fn typed_multipart_small_binary_roundtrip() {
     let json: Value = ::serde_json::from_slice(&body).expect("response is JSON");
     assert_eq!(json["name"], "alice");
     assert_eq!(json["file_size"], 1024);
-    assert_eq!(json["file_first_byte"], 0);
-    assert_eq!(json["file_last_byte"], 255);
+    assert_eq!(json["file_fnv1a"].as_u64(), Some(fnv1a(&payload)));
 }
 
 #[test]
@@ -406,9 +418,7 @@ fn typed_multipart_large_binary_roundtrip() {
     // DefaultBodyLimit::disable() works: the body is above axum's
     // default 2 MiB cap, so without the layer this answers `413`.
     let size: u32 = 3 * 1024 * 1024;
-    let payload: Vec<u8> = (0..size)
-        .map(|i| u8::try_from(i % 256).expect("mod 256"))
-        .collect();
+    let payload = pseudo_random_bytes(size as usize);
     let wire = encode_multipart_wire("----LargeBoundary", "report", "big.bin", &payload);
     let resp = dispatch_from_bytes(wire, &runtime);
     let (header, body) = decode_wire(&resp);
@@ -420,6 +430,7 @@ fn typed_multipart_large_binary_roundtrip() {
     );
     let json: Value = ::serde_json::from_slice(&body).expect("response is JSON");
     assert_eq!(json["file_size"].as_u64(), Some(u64::from(size)));
+    assert_eq!(json["file_fnv1a"].as_u64(), Some(fnv1a(&payload)));
 }
 
 #[test]
@@ -444,8 +455,7 @@ fn typed_multipart_non_utf8_bytes_preserved() {
     );
     let json: Value = ::serde_json::from_slice(&body).expect("response is JSON");
     assert_eq!(json["file_size"], 8);
-    assert_eq!(json["file_first_byte"], 0);
-    assert_eq!(json["file_last_byte"], 0xEF);
+    assert_eq!(json["file_fnv1a"].as_u64(), Some(fnv1a(&payload)));
 }
 
 /// Encode a single named text field as a `multipart/form-data` wire request.
