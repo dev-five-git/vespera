@@ -496,3 +496,59 @@ fn unresolvable_receiver_ref_drops_incoming_path_level_fields() {
     assert!(item.servers.is_none());
     assert_eq!(item.summary.as_deref(), Some("child"));
 }
+
+#[test]
+fn adopted_incoming_ref_brings_its_path_level_fields() {
+    let mut parent = doc(json!({"paths": {"/a": {
+        "summary": "parent",
+        "parameters": [{"name": "X-Org", "in": "header", "required": true, "schema": {"type": "string"}}],
+        "servers": [{"url": "https://parent.example"}]
+    }}}));
+    parent.merge(doc(json!({"paths": {"/a": {
+        "$ref": "other.yaml#/a",
+        "parameters": [{"name": "X-Child", "in": "header", "required": true, "schema": {"type": "string"}}],
+        "servers": [{"url": "https://child.example"}]
+    }}})));
+    let item = &parent.paths["/a"];
+    assert_eq!(item.ref_path.as_deref(), Some("other.yaml#/a"));
+    let params = item.parameters.as_ref().expect("incoming parameters");
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0].name, "X-Child");
+    let servers = item.servers.as_ref().expect("incoming servers");
+    assert_eq!(servers.len(), 1);
+    assert_eq!(servers[0].url, "https://child.example");
+    assert_eq!(item.summary.as_deref(), Some("parent"));
+}
+
+#[test]
+fn adopted_bare_incoming_ref_drops_receiver_path_level_fields() {
+    let mut parent = doc(json!({"paths": {"/a": {
+        "parameters": [{"name": "X-Org", "in": "header", "required": true, "schema": {"type": "string"}}],
+        "servers": [{"url": "https://parent.example"}]
+    }}}));
+    parent.merge(doc(json!({"paths": {"/a": {"$ref": "other.yaml#/a"}}})));
+    let item = &parent.paths["/a"];
+    assert_eq!(item.ref_path.as_deref(), Some("other.yaml#/a"));
+    assert!(item.parameters.is_none());
+    assert!(item.servers.is_none());
+}
+
+/// A buffered Paths / Responses map reports no position, so a bad entry is
+/// named by its keys.
+#[test]
+fn bad_map_entry_error_names_its_keys() {
+    let error = serde_json::from_value::<OpenApi>(json!({
+        "openapi": "3.1.0",
+        "info": {"title": "t", "version": "1"},
+        "paths": {
+            "/ok": {"get": {"responses": {"200": {"description": "ok"}}}},
+            "/users": {"get": {"responses": {"200": {}}}}
+        }
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.starts_with("/users: 200: missing field `description`"),
+        "{error}"
+    );
+}

@@ -6,9 +6,10 @@
 //! direction (request pull / response push) keeps one cached
 //! `Global<JByteArray>` of the configured chunk size, leased for the
 //! duration of a dispatch and marked reusable only after the streaming
-//! future returns normally (a panic leaves the lease checked out so the
-//! next dispatch allocates a fresh buffer instead of aliasing the Java
-//! array that may still be in flight).
+//! future returns normally (on a panic the lease's `Drop` discards the
+//! cached slot, so the next dispatch installs a fresh pooled buffer instead
+//! of aliasing the Java array that may still be in flight — the in-flight
+//! closure holds its own global ref to that array).
 
 use std::{
     cell::RefCell,

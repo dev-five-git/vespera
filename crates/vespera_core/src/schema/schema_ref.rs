@@ -131,7 +131,13 @@ impl PendingFlags {
         // array's `null` is dropped there instead — the same accepted set.
         // A sibling `$ref` is ANDed with the `type` array in 3.1 (like an
         // `allOf` member), so its `null` is dropped there too.
-        // An explicit 3.0 `nullable` keeps its widening meaning.
+        // An explicit 3.0 `nullable` keeps its widening meaning on purpose:
+        // 3.0.3 narrowed it (no effect without an explicit `type`, and an
+        // `enum` without `null` still rejects `null`), but 3.0.0-3.0.2 and
+        // common generators read `{type, nullable: true, enum: [..]}` as a
+        // nullable enum, which is also what `Schema::nullable` means for
+        // vespera's own `Option<T>`.  Narrowing would make such documents
+        // reject `null` they were written to accept.
         let type_admits_null = self.type_nullable
             && schema.ref_path.is_none()
             && schema

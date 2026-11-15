@@ -19,10 +19,7 @@ where
     S: serde::Serializer,
 {
     match value {
-        Some(v) => match lossless_integer_form(*v) {
-            Some(int_val) => serializer.serialize_some(&int_val),
-            None => serializer.serialize_some(v),
-        },
+        Some(v) => serializer.serialize_some(&NumberConstraint(*v)),
         None => serializer.serialize_none(),
     }
 }
@@ -45,6 +42,9 @@ pub(super) fn lossless_integer_form(value: f64) -> Option<i64> {
     Some(value as i64)
 }
 
+/// A numeric constraint (`minimum`, `multipleOf`, ...): whole numbers take the
+/// integer form, and a non-finite value is an error — `serde_json` would write
+/// NaN / ±inf as `null`, which is not a valid JSON Schema number.
 struct NumberConstraint(f64);
 
 impl Serialize for NumberConstraint {
@@ -52,6 +52,12 @@ impl Serialize for NumberConstraint {
     where
         S: serde::Serializer,
     {
+        if !self.0.is_finite() {
+            return Err(serde::ser::Error::custom(format_args!(
+                "invalid Schema: numeric constraint must be finite, got {}",
+                self.0
+            )));
+        }
         match lossless_integer_form(self.0) {
             Some(int_val) => int_val.serialize(serializer),
             None => self.0.serialize(serializer),

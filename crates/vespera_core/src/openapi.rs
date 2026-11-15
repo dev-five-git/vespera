@@ -342,7 +342,8 @@ fn push_path_level_down(item: &mut PathItem) {
 /// `#/components/pathItems/*` references of both sides first, an `into` that
 /// is still a reference keeps itself over `other`'s operations (self-wins —
 /// its operations live behind the reference), and `other`'s reference is
-/// adopted only by an `into` that has no operations.
+/// adopted only by an `into` that has no operations — together with
+/// `other`'s path-level `parameters` / `servers`, replacing `into`'s.
 fn merge_path_item(into: &mut PathItem, mut other: PathItem) {
     if into.ref_path.is_some() {
         if has_operations(&mut other) {
@@ -365,6 +366,12 @@ fn merge_path_item(into: &mut PathItem, mut other: PathItem) {
     } else if into_has_ops {
         other.parameters = None;
         other.servers = None;
+    } else if into.ref_path.is_none() && other.ref_path.is_some() && !has_operations(&mut other) {
+        // `into` (no operations) adopts `other`'s reference below: its own
+        // path-level values governed nothing, while `other`'s sit next to the
+        // reference and govern the operations behind it.
+        into.parameters = None;
+        into.servers = None;
     }
     let PathItem {
         get,
