@@ -35,9 +35,12 @@
 //!   is also read from the map form `{"Name": null}`),
 //! - a `#[serde(flatten)]` field is an `Option` (its keys accept anything,
 //!   failing values make it `None`), follows a flattened map (which also
-//!   reads its keys), or is a type parameter (it may be either) — seen
-//!   through its `value_type` and `Box` / `Arc` / `Rc` / `Cow` / `&`, like
-//!   the schema builder sees it,
+//!   reads its keys), is a type parameter (it may be either), or leaves its
+//!   keys in serde's buffer ([`flat_read`]: a struct with a flatten field
+//!   of its own, an internally tagged / untagged enum) under
+//!   `deny_unknown_fields` (which then rejects them) or before a flattened
+//!   map (which then reads them) — seen through its `value_type` and
+//!   `Box` / `Arc` / `Rc` / `Cow` / `&`, like the schema builder sees it,
 //! - an enum variant is aliased, is the `#[serde(other)]` catch-all, or has
 //!   a one-sided variant-level `serialize_with` / `deserialize_with`, or is
 //!   an adjacently tagged `Option` newtype (its content key may be omitted),
@@ -72,7 +75,7 @@ use super::{
         SerdeEnumRepr, SerdeSide, extract_aliases, extract_default, extract_deny_unknown_fields,
         extract_enum_repr, extract_field_codec, extract_field_rename_for, extract_flatten,
         extract_rename_all_fields_for, extract_rename_all_for, extract_serde_skip_flags,
-        extract_tag, extract_untagged,
+        extract_tag, extract_transparent, extract_untagged,
     },
     struct_schema::{flattened_member, peel},
     wire_override::container_override_type,
@@ -199,10 +202,10 @@ pub fn compute_input_names(sources: &[ViewSource<'_>], taken: &BTreeSet<String>)
         })
     };
     let items: Vec<&syn::Item> = sources.iter().map(|source| source.item).collect();
-    let map_bearing = map_bearing_structs(&items);
+    let flat = FlatKinds::of(&items);
     let mut differs: BTreeSet<&str> = sources
         .iter()
-        .filter(|source| directly_differs(source.item, &map_bearing))
+        .filter(|source| directly_differs(source.item, &flat))
         .map(|source| source.name)
         .collect();
     let referenced: Vec<(&str, BTreeSet<String>)> = sources
@@ -276,60 +279,169 @@ fn field_codec_differs(field: &syn::Field) -> bool {
         || (extract_field_codec(&field.attrs).deserialize && is_option_type(&field.ty))
 }
 
-/// The type's own attributes make its request view differ. `map_bearing`
-/// holds the idents of structs whose flattened members include a map (see
-/// [`map_bearing_structs`]).
-fn directly_differs(item: &syn::Item, map_bearing: &BTreeSet<String>) -> bool {
+/// The type's own attributes make its request view differ. `flat` classifies
+/// the types a flattened member may name (see [`FlatKinds`]).
+fn directly_differs(item: &syn::Item, flat: &FlatKinds) -> bool {
     match item {
         syn::Item::Struct(item) => {
-            container_override_differs(&item.attrs) || struct_differs(item, map_bearing)
+            container_override_differs(&item.attrs) || struct_differs(item, flat)
         }
         syn::Item::Enum(item) => {
-            container_override_differs(&item.attrs) || enum_differs(item, map_bearing)
+            container_override_differs(&item.attrs) || enum_differs(item, flat)
         }
         _ => false,
     }
 }
 
-/// Idents of the named-field structs among `items` that read unlisted keys
-/// through a flattened map — directly or through a flattened struct that
-/// does (transitively).
-fn map_bearing_structs(items: &[&syn::Item]) -> BTreeSet<String> {
-    let mut bearing = BTreeSet::new();
-    loop {
-        let before = bearing.len();
-        for item in items {
-            if let syn::Item::Struct(item) = item
-                && let syn::Fields::Named(fields) = &item.fields
-                && fields
-                    .named
+/// How serde reads a type `#[serde(flatten)]`ed into another struct, from
+/// the outer struct's buffer of the keys it does not know (serde 1.0.229,
+/// `FlatMapDeserializer`).
+pub(in crate::parser::schema) enum FlatRead<'a> {
+    /// It TAKES the keys it reads (`deserialize_struct` → `FlatStructAccess`
+    /// for a struct without flatten fields or an adjacently tagged enum,
+    /// `deserialize_enum` for an externally tagged one), or reads nothing:
+    /// they are gone for the outer `deny_unknown_fields` check and for every
+    /// map flattened after it.
+    Takes,
+    /// It reads through `FlatMapAccess`, which only BORROWS the buffered
+    /// entries: a struct with a (deserialized) flatten field of its own
+    /// (`deserialize_map`), an internally tagged / untagged enum or one with
+    /// an untagged variant (`deserialize_any`). Its keys stay in the buffer,
+    /// so the outer `deny_unknown_fields` rejects them and every flattened
+    /// map reads them. `known_keys`: a struct (its keys can be listed).
+    Leaves { known_keys: bool },
+    /// A newtype (`deserialize_newtype_struct` hands it the buffer as is)
+    /// or `#[serde(transparent)]` wrapper: read like this type.
+    Through(&'a syn::Type),
+}
+
+/// How serde reads `item` when it is flattened (see [`FlatRead`]).
+pub(in crate::parser::schema) fn flat_read(item: &syn::Item) -> FlatRead<'_> {
+    let read = |field: &&syn::Field| {
+        let skip = extract_serde_skip_flags(&field.attrs);
+        !skip.skip && !skip.skip_deserializing
+    };
+    match item {
+        syn::Item::Struct(item) => {
+            let transparent = extract_transparent(&item.attrs);
+            match &item.fields {
+                syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                    FlatRead::Through(&fields.unnamed[0].ty)
+                }
+                fields if transparent => fields
                     .iter()
-                    .filter(|field| extract_flatten(&field.attrs))
-                    .any(|field| reads_unlisted_keys(field, &bearing))
-            {
-                bearing.insert(item.ident.to_string());
+                    .find(read)
+                    .map_or(FlatRead::Takes, |field| FlatRead::Through(&field.ty)),
+                syn::Fields::Named(fields)
+                    if fields
+                        .named
+                        .iter()
+                        .filter(read)
+                        .any(|field| extract_flatten(&field.attrs)) =>
+                {
+                    FlatRead::Leaves { known_keys: true }
+                }
+                _ => FlatRead::Takes,
             }
         }
-        if bearing.len() == before {
-            return bearing;
+        syn::Item::Enum(item)
+            if !matches!(
+                extract_enum_repr(&item.attrs),
+                SerdeEnumRepr::ExternallyTagged | SerdeEnumRepr::AdjacentlyTagged { .. }
+            ) || item
+                .variants
+                .iter()
+                .any(|variant| extract_untagged(&variant.attrs)) =>
+        {
+            FlatRead::Leaves { known_keys: false }
         }
+        _ => FlatRead::Takes,
     }
 }
 
-/// A flattened `field` (its `value_type`, seen through `Box` / `Arc` / ...
-/// and an `Option`, exactly as `struct_schema::flatten` sees it) reads every
-/// buffered key: a map, or a struct in `map_bearing`.
-fn reads_unlisted_keys(field: &syn::Field, map_bearing: &BTreeSet<String>) -> bool {
-    let constraints = extract_schema_constraints(&field.attrs);
-    let ty = peel(flattened_member(field, &constraints).0);
-    is_map_type(ty)
-        || matches!(ty, syn::Type::Path(path) if path.path.segments.last()
-            .is_some_and(|segment| map_bearing.contains(&segment.ident.to_string())))
+/// What a flattened member does with the keys serde buffered for it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FlatKind {
+    /// Reads EVERY buffered key: a map, or a struct flattening one.
+    Map,
+    /// Reads only its own keys but leaves them in the buffer (see
+    /// [`FlatRead::Leaves`]); `known_keys` as there.
+    Leaves { known_keys: bool },
+}
+
+/// The [`FlatKind`] of every type among the documented items whose
+/// flattened form reads every buffered key or leaves its keys behind —
+/// directly, through a flattened member (a struct flattening a map reads
+/// every key), or through a newtype / transparent wrapper (transitively).
+struct FlatKinds(BTreeMap<String, FlatKind>);
+
+impl FlatKinds {
+    fn of(items: &[&syn::Item]) -> Self {
+        let mut kinds = Self(BTreeMap::new());
+        loop {
+            let mut changed = false;
+            for item in items {
+                let ident = match item {
+                    syn::Item::Struct(item) => &item.ident,
+                    syn::Item::Enum(item) => &item.ident,
+                    _ => continue,
+                };
+                if let Some(kind) = kinds.item_kind(item)
+                    && kinds.0.insert(ident.to_string(), kind) != Some(kind)
+                {
+                    changed = true;
+                }
+            }
+            if !changed {
+                return kinds;
+            }
+        }
+    }
+
+    /// An item's kind: a struct is a map when any flattened member reads
+    /// every key.
+    fn item_kind(&self, item: &syn::Item) -> Option<FlatKind> {
+        if let syn::Item::Struct(item) = item
+            && let syn::Fields::Named(fields) = &item.fields
+            && fields
+                .named
+                .iter()
+                .filter(|field| extract_flatten(&field.attrs))
+                .any(|field| self.field_kind(field) == Some(FlatKind::Map))
+        {
+            return Some(FlatKind::Map);
+        }
+        match flat_read(item) {
+            FlatRead::Takes => None,
+            FlatRead::Leaves { known_keys } => Some(FlatKind::Leaves { known_keys }),
+            FlatRead::Through(ty) => self.type_kind(ty),
+        }
+    }
+
+    /// The kind of a flattened `field` (its `value_type`, seen through
+    /// `Box` / `Arc` / ... and an `Option`, exactly as
+    /// `struct_schema::flatten` sees it).
+    fn field_kind(&self, field: &syn::Field) -> Option<FlatKind> {
+        let constraints = extract_schema_constraints(&field.attrs);
+        self.type_kind(flattened_member(field, &constraints).0)
+    }
+
+    fn type_kind(&self, ty: &syn::Type) -> Option<FlatKind> {
+        let ty = peel(ty);
+        if is_map_type(ty) {
+            return Some(FlatKind::Map);
+        }
+        let syn::Type::Path(path) = ty else {
+            return None;
+        };
+        let ident = path.path.segments.last()?.ident.to_string();
+        self.0.get(&ident).copied()
+    }
 }
 
 /// A struct reads differently than it writes (container `default`, sided
 /// `rename_all`, or a field that differs).
-fn struct_differs(item: &syn::ItemStruct, map_bearing: &BTreeSet<String>) -> bool {
+fn struct_differs(item: &syn::ItemStruct, flat: &FlatKinds) -> bool {
     let fields = match &item.fields {
         syn::Fields::Named(fields) => fields,
         syn::Fields::Unnamed(fields) => {
@@ -358,7 +470,7 @@ fn struct_differs(item: &syn::ItemStruct, map_bearing: &BTreeSet<String>) -> boo
             &fields.named,
             &item.generics,
             extract_deny_unknown_fields(&item.attrs),
-            map_bearing,
+            flat,
         )
 }
 
@@ -366,30 +478,43 @@ fn struct_differs(item: &syn::ItemStruct, map_bearing: &BTreeSet<String>) -> boo
 /// (see `struct_schema::flatten`): a flattened `Option` accepts any value for
 /// its keys (it becomes `None`), a flattened map (or a struct flattening
 /// one) declared before another flattened member also reads that member's
-/// keys, and under `deny_unknown_fields` a flattened map is written but
-/// never read (the request view stays closed). A flattened type parameter
-/// may be any of these (`W<Option<Page>>`), so it differs too. Members are
-/// seen through `value_type` / `Box` / `Arc` / ... like the schema builder
-/// sees them ([`flattened_member`]).
+/// keys, a member that leaves its keys in the buffer ([`FlatRead::Leaves`])
+/// has them read by a map declared after it too, and under
+/// `deny_unknown_fields` a flattened map is written but never read (the
+/// request view stays closed) and a member leaving its keys has them
+/// rejected. A flattened type parameter may be any of these
+/// (`W<Option<Page>>`), so it differs too. Members are seen through
+/// `value_type` / `Box` / `Arc` / ... like the schema builder sees them
+/// ([`flattened_member`]).
 fn flatten_differs(
     fields: &syn::punctuated::Punctuated<syn::Field, syn::Token![,]>,
     generics: &syn::Generics,
     deny_unknown_fields: bool,
-    map_bearing: &BTreeSet<String>,
+    flat: &FlatKinds,
 ) -> bool {
-    let mut map_seen = false;
+    let mut kinds = Vec::new();
     for field in fields.iter().filter(|field| extract_flatten(&field.attrs)) {
         let constraints = extract_schema_constraints(&field.attrs);
         let (ty, optional) = flattened_member(field, &constraints);
-        if map_seen || optional || is_type_param(peel(ty), generics) {
+        if optional || is_type_param(peel(ty), generics) {
             return true;
         }
-        map_seen = reads_unlisted_keys(field, map_bearing);
-        if map_seen && deny_unknown_fields {
-            return true;
-        }
+        kinds.push(flat.field_kind(field));
     }
-    false
+    let maps = kinds
+        .iter()
+        .filter(|kind| **kind == Some(FlatKind::Map))
+        .count();
+    let mut maps_seen = 0;
+    kinds.iter().any(|kind| {
+        let follows_map = maps_seen > 0;
+        if *kind == Some(FlatKind::Map) {
+            maps_seen += 1;
+        }
+        follows_map
+            || (kind.is_some() && deny_unknown_fields)
+            || (*kind == Some(FlatKind::Leaves { known_keys: true }) && maps > maps_seen)
+    })
 }
 
 /// `ty` is one of `generics`' type parameters (`T`).
@@ -504,7 +629,7 @@ fn sided_differs<T: PartialEq>(extract: impl Fn(SerdeSide) -> T) -> bool {
 /// struct's does, or an adjacently tagged `Option` newtype variant (its
 /// content key may be omitted on input, see
 /// `representations::parse_adjacently_tagged_enum`).
-fn enum_differs(item: &syn::ItemEnum, map_bearing: &BTreeSet<String>) -> bool {
+fn enum_differs(item: &syn::ItemEnum, flat: &FlatKinds) -> bool {
     let attrs = &item.attrs;
     let deny_unknown_fields = extract_deny_unknown_fields(attrs);
     let adjacently_tagged = matches!(
@@ -538,7 +663,7 @@ fn enum_differs(item: &syn::ItemEnum, map_bearing: &BTreeSet<String>) -> bool {
                                 &fields.named,
                                 &item.generics,
                                 deny_unknown_fields,
-                                map_bearing,
+                                flat,
                             )
                     }
                     syn::Fields::Unnamed(fields) => {

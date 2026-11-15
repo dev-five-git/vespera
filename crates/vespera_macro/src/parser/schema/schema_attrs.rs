@@ -434,7 +434,7 @@ fn lit_to_json_value(lit: &Lit) -> syn::Result<serde_json::Value> {
         Lit::Str(s) => Ok(serde_json::Value::String(s.value())),
         Lit::Bool(b) => Ok(serde_json::Value::Bool(b.value)),
         Lit::Int(i) => int_to_json_value(i, false),
-        Lit::Float(f) => Ok(serde_json::json!(f.base10_parse::<f64>()?)),
+        Lit::Float(f) => finite_example(f.base10_parse::<f64>()?, f),
         other => Err(syn::Error::new_spanned(
             other,
             "unsupported literal type for `example`",
@@ -442,14 +442,26 @@ fn lit_to_json_value(lit: &Lit) -> syn::Result<serde_json::Value> {
     }
 }
 
+/// A float `example` as JSON: JSON cannot hold a non-finite number
+/// (`json!(f64::INFINITY)` is `null`), so `1e999` is a spanned error.
+fn finite_example(value: f64, span: &impl quote::ToTokens) -> syn::Result<serde_json::Value> {
+    if value.is_finite() {
+        return Ok(serde_json::json!(value));
+    }
+    Err(syn::Error::new_spanned(
+        span,
+        "`example` must be a finite number",
+    ))
+}
+
 /// An integer literal (negated when `negative`) as an exact JSON integer
 /// (`i64`, else `u64`); a value outside both ranges becomes the nearest
-/// float rather than a compile error.
+/// float rather than a compile error (an error when even that overflows).
 #[allow(clippy::cast_precision_loss)] // the nearest float is the intent
 fn int_to_json_value(int: &syn::LitInt, negative: bool) -> syn::Result<serde_json::Value> {
     let Ok(value) = int.base10_parse::<i128>() else {
         let float = int.base10_parse::<f64>()?;
-        return Ok(serde_json::json!(if negative { -float } else { float }));
+        return finite_example(if negative { -float } else { float }, int);
     };
     let value = if negative { -value } else { value };
     Ok(i64::try_from(value)
@@ -696,6 +708,37 @@ mod tests {
     ) {
         let err = parse_err(&[attr]);
         assert!(err.to_string().contains(message), "{err}");
+    }
+
+    /// Round 18 L-2: a non-finite `example` (a float overflowing to infinity,
+    /// or an integer literal too long even for `f64`) was documented as
+    /// `null`, and its negation failed with "expected a literal after `-`".
+    #[rstest::rstest]
+    #[case::float_infinite("1e999".to_owned())]
+    #[case::negative_float_infinite("-1e999".to_owned())]
+    #[case::integer_infinite("9".repeat(400))]
+    #[case::negative_integer_infinite(format!("-{}", "9".repeat(400)))]
+    fn non_finite_example_is_rejected(#[case] value: String) {
+        let input: syn::DeriveInput =
+            syn::parse_str(&format!("#[schema(example = {value})] struct S;")).unwrap();
+        let err = parse_err(&input.attrs);
+        assert!(
+            err.to_string()
+                .contains("`example` must be a finite number"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn large_finite_examples_stay_numbers() {
+        let c = parse(&[parse_quote!(#[schema(example = 1e300)])]);
+        assert_eq!(c.example, Some(serde_json::json!(1e300)));
+        let c =
+            parse(&[parse_quote!(#[schema(example = -340282366920938463463374607431768211456)])]);
+        assert_eq!(
+            c.example,
+            Some(serde_json::json!(-3.402_823_669_209_385e38))
+        );
     }
 
     #[test]

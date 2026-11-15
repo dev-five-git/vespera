@@ -409,7 +409,8 @@ fn slice_elem(ty: &Type) -> Option<(&Type, bool)> {
 /// any escaped punctuation — `\-` outside a class, `\#`, `\~`, ... — which
 /// `u` mode rejects, see [`ecma_escape`]), a `\p{..}` name ECMA-262 spells
 /// differently, a `]` or a `}` that closes nothing (a literal in Rust, a
-/// syntax error in ECMA-262's `u` mode), or inside a character class a nested class / POSIX class (`[a[b]]`,
+/// syntax error in ECMA-262's `u` mode), a `{..}` holding anything but
+/// `digits[,[digits]]` (Rust skips whitespace in `\d{3, 4}`), or inside a character class a nested class / POSIX class (`[a[b]]`,
 /// `[[:alpha:]]`), a set operation (`&&`, `--`, `~~`) or a leading `]`
 /// (literal in Rust, an empty class in ECMA-262) — makes it skipped rather
 /// than documented wrongly. Known limitations, where the documented pattern
@@ -425,7 +426,19 @@ fn is_ecma_compatible(pattern: &str) -> bool {
     let mut class_start = false;
     // Inside a `{..}` outside a class.
     let mut in_brace = false;
+    // Inside that `{..}`: a digit was read / the `,` was read.
+    let (mut brace_digit, mut brace_comma) = (false, false);
     while let Some(ch) = chars.next() {
+        // Rust's counted repetition skips whitespace (`\d{3, 4}`, `a{ 5 }`);
+        // ECMA-262 reads only `digits[,[digits]]` there.
+        if in_brace && ch != '}' {
+            if ch.is_ascii_digit() {
+                brace_digit = true;
+            } else if ch != ',' || !brace_digit || std::mem::replace(&mut brace_comma, true) {
+                return false;
+            }
+            continue;
+        }
         let next = chars.peek().copied();
         let first = std::mem::take(&mut class_start);
         let rust_only = match (ch, next) {
@@ -453,7 +466,7 @@ fn is_ecma_compatible(pattern: &str) -> bool {
             (']', _) => true,
             ('&' | '-' | '~', Some(op)) => in_class && op == ch,
             ('{', _) if !in_class => {
-                in_brace = true;
+                (in_brace, brace_digit, brace_comma) = (true, false, false);
                 false
             }
             ('}', _) if !in_class => !std::mem::take(&mut in_brace),
