@@ -1,10 +1,8 @@
 error: #[route] headers entry missing required `name` field.
- --> tests/ui/route_headers_invalid.rs:5:1
+ --> tests/ui/route_headers_invalid.rs:5:25
   |
 5 | #[route(get, headers = [{ required = true }])]
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  |
-  = note: this error originates in the attribute macro `route` (in Nightly builds, run with -Z macro-backtrace for more info)
+  |                         ^^^^^^^^^^^^^^^^^^^
 
 error: duplicate header field `name`
  --> tests/ui/route_headers_invalid.rs:8:41

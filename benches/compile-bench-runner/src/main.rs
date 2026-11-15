@@ -115,8 +115,17 @@ fn extract_pass_time(stderr: &str, pass: &str) -> Option<f64> {
 
 /// `<target-dir>/vespera`, where `vespera!` keeps its route cache
 /// (`routes-<tag>.cache`) and spec sidecars: `VESPERA_TARGET_DIR` when set,
-/// else cargo's `target_directory`.  `None` when neither is known.
+/// else cargo's `target_directory`.  `None` (with a warning) when neither
+/// is known.
 fn vespera_build_dir() -> Option<PathBuf> {
+    let dir = locate_vespera_build_dir();
+    if dir.is_none() {
+        eprintln!("[warn] target directory unknown: vespera's route cache is not cleared");
+    }
+    dir
+}
+
+fn locate_vespera_build_dir() -> Option<PathBuf> {
     if let Some(dir) = env::var_os("VESPERA_TARGET_DIR").filter(|dir| !dir.is_empty()) {
         return Some(PathBuf::from(dir).join("vespera"));
     }
@@ -211,9 +220,6 @@ fn main() {
     }
 
     let vespera_dir = vespera_build_dir();
-    if vespera_dir.is_none() {
-        eprintln!("[warn] target directory unknown: vespera's route cache is not cleared");
-    }
     eprintln!(
         "[measure] {} runs of `{}` on `{}`",
         args.runs, args.pass, args.target

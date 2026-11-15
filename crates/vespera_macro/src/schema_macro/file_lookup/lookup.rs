@@ -173,7 +173,10 @@ pub(super) fn find_struct_with_call_site(
     if let Some(defined_in) = reexported_module(&module_path, &struct_name) {
         let segments: Vec<&str> = defined_in[1..].iter().map(String::as_str).collect();
         if let Some(definition) = find_struct_in_module(src_dir, &segments, &struct_name) {
-            return Ok((StructMetadata::new_model(struct_name, definition), defined_in));
+            return Ok((
+                StructMetadata::new_model(struct_name, definition),
+                defined_in,
+            ));
         }
     }
 

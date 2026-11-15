@@ -544,8 +544,7 @@ fn test_collect_metadata_unreadable_route_file_is_an_error() {
     fs::write(routes.join("not_utf8.rs"), [0x23, 0xff, 0xfe, 0x0a]).unwrap();
 
     let error = collect_metadata(temp_dir.path(), folder_name, &[])
-        .err()
-        .expect("an unreadable route file must be rejected")
+        .expect_err("an unreadable route file must be rejected")
         .to_string();
     assert!(error.contains("cannot read or parse"), "{error}");
     assert!(error.contains("not_utf8.rs"), "{error}");

@@ -183,8 +183,7 @@ fn relation_value(
             return quote! { ::core::compile_error!(#message) };
         }
         None => {
-            get_circular_analysis(source_module_path, &related_module, related_def)
-                .has_fk_relations
+            get_circular_analysis(source_module_path, &related_module, related_def).has_fk_relations
         }
     };
     match (target_has_from_model, rel.is_optional) {

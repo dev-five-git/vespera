@@ -14,9 +14,11 @@ type Ratio = f64;
 #[derive(Schema, serde::Deserialize)]
 #[allow(dead_code)]
 struct Bounded {
-    #[schema(minimum = 0.5, maximum = 2.5)]
+    // `value_type` documents the alias (an alias is no `Schema` of its own);
+    // the bounds still range over the field type the macro cannot resolve.
+    #[schema(value_type = u32, minimum = 0.5, maximum = 2.5)]
     count: Count,
-    #[schema(minimum = 0.5, maximum = 2.5)]
+    #[schema(value_type = f64, minimum = 0.5, maximum = 2.5)]
     ratio: Ratio,
 }
 

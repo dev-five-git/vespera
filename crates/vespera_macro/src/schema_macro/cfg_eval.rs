@@ -43,17 +43,19 @@ fn eval(predicate: &syn::Meta, features: Option<&[String]>) -> Option<bool> {
                 .ok()?;
             let mut values = operands.iter().map(|operand| eval(operand, features));
             if list.path.is_ident("all") {
-                values.try_fold(Some(true), |all, value| match value {
-                    Some(false) => Err(()),
-                    value => Ok(all.and(value)),
-                })
-                .unwrap_or(Some(false))
+                values
+                    .try_fold(Some(true), |all, value| match value {
+                        Some(false) => Err(()),
+                        value => Ok(all.and(value)),
+                    })
+                    .unwrap_or(Some(false))
             } else if list.path.is_ident("any") {
-                values.try_fold(Some(false), |any, value| match value {
-                    Some(true) => Err(()),
-                    value => Ok(any.and(value)),
-                })
-                .unwrap_or(Some(true))
+                values
+                    .try_fold(Some(false), |any, value| match value {
+                        Some(true) => Err(()),
+                        value => Ok(any.and(value)),
+                    })
+                    .unwrap_or(Some(true))
             } else if list.path.is_ident("not") && operands.len() == 1 {
                 values.next().flatten().map(|value| !value)
             } else {
@@ -124,8 +126,10 @@ mod tests {
         assert_eq!(enabled_features(), Some(vec!["orm".to_string()]));
         assert!(statically_inactive(&attrs));
         // Not a `cfg`, or a predicate that does not parse: kept.
-        let kept: Vec<syn::Attribute> =
-            vec![syn::parse_quote!(#[doc = "x"]), syn::parse_quote!(#[cfg(= 1)])];
+        let kept: Vec<syn::Attribute> = vec![
+            syn::parse_quote!(#[doc = "x"]),
+            syn::parse_quote!(#[cfg(= 1)]),
+        ];
         assert!(!statically_inactive(&kept));
     }
 }

@@ -377,7 +377,11 @@ fn cfg_inactive_structs_are_skipped(#[case] cfg: &str, #[case] expected: &str) {
     );
     bump_epoch();
     let (metadata, _) = lookup("crate::models::user::User", None).unwrap();
-    assert!(metadata.definition.contains(expected), "{}", metadata.definition);
+    assert!(
+        metadata.definition.contains(expected),
+        "{}",
+        metadata.definition
+    );
     assert!(matches!(
         lookup("crate::models::user::Dead", None),
         Err(LookupError::NotFound { .. })
@@ -402,6 +406,9 @@ fn reexported_module_follows_crate_imports_only() {
         Some(module("crate::models::user"))
     );
     // Defined there (no re-export) and unknown names stay put.
-    assert_eq!(reexported_module(&module("crate::models::user"), "User"), None);
+    assert_eq!(
+        reexported_module(&module("crate::models::user"), "User"),
+        None
+    );
     assert_eq!(reexported_module(&module("crate::models"), "Missing"), None);
 }

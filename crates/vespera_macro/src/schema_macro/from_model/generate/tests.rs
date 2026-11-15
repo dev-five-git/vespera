@@ -490,9 +490,17 @@ fn target_schema_call_follows_its_schema_type(#[case] user: &str, #[case] expect
         &[("user.rs", user)],
         "MemoSchema",
         "crate::models::memo::Model",
-        &[("id", "id", false, false), ("author", "author", false, true)],
+        &[
+            ("id", "id", false, false),
+            ("author", "author", false, true),
+        ],
         &[with_enum(
-            rel("author", "BelongsTo", quote! { crate::models::user::Schema }, true),
+            rel(
+                "author",
+                "BelongsTo",
+                quote! { crate::models::user::Schema },
+                true,
+            ),
             None,
             Some("author_id"),
             None,
