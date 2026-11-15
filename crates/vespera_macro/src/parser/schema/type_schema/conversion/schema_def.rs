@@ -24,6 +24,79 @@ pub(super) fn parse_schema_def(def: &str) -> Option<SchemaDef> {
     }
 }
 
+/// Plain data read off a definition string's attributes, memoised per macro
+/// invocation: every `$ref` to a hub type (`User` referenced from N routes
+/// and M schemas, in both the response and the request-view pass) re-parsed
+/// the whole definition to read them.  Both are pure functions of the
+/// string, and only `String`s / `bool`s are kept (no AST — see
+/// [`parse_schema_def`]); the memo is dropped when the epoch changes so it
+/// stays bounded in a long-lived proc-macro server.
+#[derive(Default)]
+struct DefFacts {
+    /// `#[schema(name = "..")]` (see `component_name`).
+    name: Option<Option<String>>,
+    /// `#[schema(ref = ..)]` (see `extract_schema_ref_override`).
+    ref_override: Option<Option<(String, bool)>>,
+}
+
+thread_local! {
+    static DEF_FACTS: std::cell::RefCell<(u64, std::collections::HashMap<String, DefFacts>)> =
+        std::cell::RefCell::new((0, std::collections::HashMap::new()));
+}
+
+/// The memoised `read` of `def`'s [`DefFacts`] slot chosen by `slot`.
+fn def_fact<T: Clone>(
+    def: &str,
+    slot: fn(&mut DefFacts) -> &mut Option<T>,
+    compute: impl FnOnce(&str) -> T,
+) -> T {
+    let epoch = crate::schema_macro::file_cache::current_epoch();
+    let hit = DEF_FACTS.with(|facts| {
+        let mut facts = facts.borrow_mut();
+        if facts.0 != epoch {
+            *facts = (epoch, std::collections::HashMap::new());
+        }
+        facts.1.get_mut(def).and_then(|entry| slot(entry).clone())
+    });
+    if let Some(value) = hit {
+        return value;
+    }
+    // Computed with no borrow held, so a re-entrant lookup cannot panic.
+    let value = compute(def);
+    DEF_FACTS.with(|facts| {
+        let mut facts = facts.borrow_mut();
+        *slot(facts.1.entry(def.to_owned()).or_default()) = Some(value.clone());
+    });
+    value
+}
+
+/// `#[schema(name = "..")]` of the definition `def`, if any.
+pub(super) fn schema_name_of(def: &str) -> Option<String> {
+    def_fact(
+        def,
+        |facts| &mut facts.name,
+        |def| {
+            syn::parse_str::<syn::DeriveInput>(def)
+                .ok()
+                .and_then(|input| crate::schema_impl::extract_schema_name_attr(&input.attrs))
+        },
+    )
+}
+
+/// `#[schema(ref = ..)]` override (`(component, nullable)`) of the
+/// definition `def`, if any.
+pub(super) fn ref_override_of(def: &str) -> Option<(String, bool)> {
+    def_fact(
+        def,
+        |facts| &mut facts.ref_override,
+        |def| {
+            parse_schema_def(def).and_then(|parsed| {
+                super::extract_schema_ref_override(parsed.attrs())
+            })
+        },
+    )
+}
+
 /// A known schema's parsed definition.
 pub(super) enum SchemaDef {
     Struct(syn::ItemStruct),
@@ -171,6 +244,25 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+
+    /// The memoised facts match a fresh parse, on a miss and on a hit, and
+    /// survive no epoch change.
+    #[test]
+    fn definition_facts_are_memoised_per_epoch() {
+        let named = "#[schema(name = \"UserDto\")] struct User { id: i32 }";
+        let reffed = "#[schema(ref = \"Other\")] struct Wrapped { id: i32 }";
+        crate::schema_macro::file_cache::bump_epoch();
+        for _ in 0..2 {
+            assert_eq!(schema_name_of(named).as_deref(), Some("UserDto"));
+            assert_eq!(schema_name_of(reffed), None);
+            assert_eq!(ref_override_of(named), None);
+            assert_eq!(ref_override_of(reffed), Some(("Other".to_owned(), false)));
+            assert_eq!(ref_override_of("not rust"), None);
+        }
+        crate::schema_macro::file_cache::bump_epoch();
+        assert_eq!(schema_name_of(named).as_deref(), Some("UserDto"));
+        DEF_FACTS.with(|facts| assert_eq!(facts.borrow().1.len(), 1));
+    }
 
     /// Field types and the types attributes name are substituted; other
     /// keys (`rename = "T"`, `bound`) and other attributes are not.

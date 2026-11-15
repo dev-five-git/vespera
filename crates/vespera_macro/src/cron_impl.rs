@@ -25,7 +25,8 @@
 //! pub async fn morning_report() {}
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::macro_storage::{CrateStorage, SourceIdentified};
@@ -163,38 +164,66 @@ impl SourceIdentified for StoredCronInfo {
 /// The inline-module path (see [`StoredCronInfo::inline_module`]) enclosing
 /// the function `fn_name` whose name token starts on `line` of `file`.
 ///
-/// The file is re-parsed with proc-macro2's fallback implementation forced:
-/// tokens parsed from a string through the compiler bridge all carry the
-/// call-site span, so only the fallback reports real line numbers.  Only the
-/// returned `String` leaves this function, so no fallback token is ever mixed
-/// with compiler tokens.
+/// Served from the file's [`FnIndex`], built once per content version (one
+/// parse per file, not one per handler: `#[route]` asks this for every
+/// handler of a route file).
 pub fn inline_module_of(file: Option<&str>, fn_name: &str, line: usize) -> Option<String> {
     // Declarations compare unraw: `r#match` (a route's stored name) is the
     // `match` the AST walk sees.
     let fn_name = fn_name.strip_prefix("r#").unwrap_or(fn_name);
-    let content = crate::schema_macro::file_cache::get_file_content(std::path::Path::new(file?))?;
-    // No `mod` anywhere: every item is top-level — skip the re-parse that
-    // `#[route]` would otherwise pay once per handler.
+    let path = std::path::Path::new(file?);
+    let content = crate::schema_macro::file_cache::get_file_content(path)?;
+    // No `mod` anywhere: every item is top-level — skip the index.
     if !content.contains("mod") {
         return Some(String::new());
     }
-    let ast = parse_with_lines(&content)?;
-    find_fn_module(&ast.items, fn_name, line, "")
+    fn_index(path)?.module_of(fn_name, line)
 }
 
-/// Parse `content` with proc-macro2's fallback forced, so spans carry real
-/// line numbers (see [`inline_module_of`]).
-fn parse_with_lines(content: &str) -> Option<syn::File> {
-    /// Restores proc-macro2's normal mode even if parsing panics.
-    struct Unforce;
-    impl Drop for Unforce {
-        fn drop(&mut self) {
-            proc_macro2::fallback::unforce();
-        }
+/// Plain-data summary of one file's functions, derived from a parse with
+/// proc-macro2's fallback forced (only fallback spans carry real line
+/// numbers; tokens parsed from a string through the compiler bridge all
+/// carry the call-site span).  Only `String`s and lines are kept, so no
+/// fallback token is ever mixed with compiler tokens and the index is reused
+/// across invocations while the file is unchanged (`file_cache::derived`).
+#[derive(Debug, Default)]
+struct FnIndex {
+    /// Module-level functions (the file's items and its inline modules',
+    /// depth-first): unraw name, name line, inline-module path.
+    module_fns: Vec<(String, usize, String)>,
+    /// `(unraw name, line)` of every function declared anywhere other than at
+    /// module level (see [`nested_fns`]).
+    nested: HashSet<(String, usize)>,
+}
+
+impl FnIndex {
+    fn module_of(&self, fn_name: &str, line: usize) -> Option<String> {
+        self.module_fns
+            .iter()
+            .find(|(name, at, _)| name == fn_name && *at == line)
+            .map(|(_, _, module)| module.clone())
     }
-    proc_macro2::fallback::force();
-    let _unforce = Unforce;
-    syn::parse_file(content).ok()
+}
+
+/// The cached [`FnIndex`] of a file: `None` when it does not parse.
+struct CachedFnIndex(Option<Rc<FnIndex>>);
+
+/// `file`'s [`FnIndex`]; `None` when it cannot be read or parsed.
+fn fn_index(file: &std::path::Path) -> Option<Rc<FnIndex>> {
+    use crate::schema_macro::file_cache;
+    let cached = file_cache::derived(file, |content| {
+        CachedFnIndex(file_cache::with_fallback_parse(content, build_fn_index).map(Rc::new))
+    })?;
+    cached.0.clone()
+}
+
+fn build_fn_index(ast: &syn::File) -> FnIndex {
+    let mut module_fns = Vec::new();
+    collect_module_fns(&ast.items, "", &mut module_fns);
+    FnIndex {
+        module_fns,
+        nested: nested_fns(&mut ast.items.iter()),
+    }
 }
 
 /// Reject a cron function `vespera!` could not call as
@@ -209,11 +238,8 @@ pub fn check_free_function(
 ) -> syn::Result<()> {
     let fn_name = syn::ext::IdentExt::unraw(&item_fn.sig.ident).to_string();
     let nested = file
-        .and_then(|file| {
-            crate::schema_macro::file_cache::get_file_content(std::path::Path::new(file))
-        })
-        .and_then(|content| parse_with_lines(&content))
-        .is_some_and(|ast| items_nest_fn(&mut ast.items.iter(), &fn_name, line));
+        .and_then(|file| fn_index(std::path::Path::new(file)))
+        .is_some_and(|index| index.nested.contains(&(fn_name, line)));
     if nested {
         return Err(syn::Error::new_spanned(
             &item_fn.sig.ident,
@@ -223,25 +249,24 @@ pub fn check_free_function(
     Ok(())
 }
 
-/// Whether `items` declare the function `fn_name` on `line` anywhere other
-/// than at module level: in an `impl` / `trait` block, a function body (also
+/// `(unraw name, line)` of every function `items` declare anywhere other than
+/// at module level: in an `impl` / `trait` block, a function body (also
 /// inside nested blocks, closures and `async` blocks) or a `const` / `static`
 /// initialiser (`const _: () = { .. };`).
-fn items_nest_fn(items: &mut dyn Iterator<Item = &syn::Item>, fn_name: &str, line: usize) -> bool {
+fn nested_fns(items: &mut dyn Iterator<Item = &syn::Item>) -> HashSet<(String, usize)> {
     use syn::visit::Visit;
 
     /// Walks every item and expression; `depth` counts the enclosing scopes
     /// that are not modules.
-    struct Finder<'a> {
-        fn_name: &'a str,
-        line: usize,
+    #[derive(Default)]
+    struct Finder {
         depth: usize,
-        found: bool,
+        found: HashSet<(String, usize)>,
     }
-    impl Finder<'_> {
-        fn is_target(&self, sig: &syn::Signature) -> bool {
-            syn::ext::IdentExt::unraw(&sig.ident) == self.fn_name
-                && sig.ident.span().start().line == self.line
+    impl Finder {
+        fn record(&mut self, sig: &syn::Signature) {
+            let name = syn::ext::IdentExt::unraw(&sig.ident).to_string();
+            self.found.insert((name, sig.ident.span().start().line));
         }
         fn nested(&mut self, visit: impl FnOnce(&mut Self)) {
             self.depth += 1;
@@ -249,17 +274,19 @@ fn items_nest_fn(items: &mut dyn Iterator<Item = &syn::Item>, fn_name: &str, lin
             self.depth -= 1;
         }
     }
-    impl<'ast> Visit<'ast> for Finder<'_> {
+    impl<'ast> Visit<'ast> for Finder {
         fn visit_item_fn(&mut self, function: &'ast syn::ItemFn) {
-            self.found |= self.depth > 0 && self.is_target(&function.sig);
+            if self.depth > 0 {
+                self.record(&function.sig);
+            }
             self.nested(|this| syn::visit::visit_item_fn(this, function));
         }
         fn visit_impl_item_fn(&mut self, function: &'ast syn::ImplItemFn) {
-            self.found |= self.is_target(&function.sig);
+            self.record(&function.sig);
             self.nested(|this| syn::visit::visit_impl_item_fn(this, function));
         }
         fn visit_trait_item_fn(&mut self, function: &'ast syn::TraitItemFn) {
-            self.found |= self.is_target(&function.sig);
+            self.record(&function.sig);
             self.nested(|this| syn::visit::visit_trait_item_fn(this, function));
         }
         fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
@@ -270,43 +297,39 @@ fn items_nest_fn(items: &mut dyn Iterator<Item = &syn::Item>, fn_name: &str, lin
         }
     }
 
-    let mut finder = Finder {
-        fn_name,
-        line,
-        depth: 0,
-        found: false,
-    };
+    let mut finder = Finder::default();
     for item in items {
         finder.visit_item(item);
     }
     finder.found
 }
 
-/// Depth-first search of `items` (and the inline modules inside them) for the
-/// function `fn_name` declared on `line`; returns the inline path to it.
-fn find_fn_module(items: &[syn::Item], fn_name: &str, line: usize, prefix: &str) -> Option<String> {
-    items.iter().find_map(|item| match item {
-        syn::Item::Fn(function)
-            if syn::ext::IdentExt::unraw(&function.sig.ident) == fn_name
-                && function.sig.ident.span().start().line == line =>
-        {
-            Some(prefix.to_owned())
+/// Depth-first collection of the module-level functions of `items` and of
+/// the inline modules inside them, each with its inline path.
+fn collect_module_fns(items: &[syn::Item], prefix: &str, out: &mut Vec<(String, usize, String)>) {
+    for item in items {
+        match item {
+            syn::Item::Fn(function) => out.push((
+                syn::ext::IdentExt::unraw(&function.sig.ident).to_string(),
+                function.sig.ident.span().start().line,
+                prefix.to_owned(),
+            )),
+            syn::Item::Mod(syn::ItemMod {
+                ident,
+                content: Some((_, inner)),
+                ..
+            }) => {
+                let name = syn::ext::IdentExt::unraw(ident).to_string();
+                let child = if prefix.is_empty() {
+                    name
+                } else {
+                    format!("{prefix}::{name}")
+                };
+                collect_module_fns(inner, &child, out);
+            }
+            _ => {}
         }
-        syn::Item::Mod(syn::ItemMod {
-            ident,
-            content: Some((_, inner)),
-            ..
-        }) => {
-            let name = syn::ext::IdentExt::unraw(ident).to_string();
-            let child = if prefix.is_empty() {
-                name
-            } else {
-                format!("{prefix}::{name}")
-            };
-            find_fn_module(inner, fn_name, line, &child)
-        }
-        _ => None,
-    })
+    }
 }
 
 /// Replace-insert a `#[cron]` metadata entry in the current crate's bucket.

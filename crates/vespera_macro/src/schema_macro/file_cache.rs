@@ -68,6 +68,14 @@ type FkColumns = (String, Option<String>);
 /// `ensure_file_list` / `get_fingerprint_cached` helpers via `super::` but
 /// operate on a disjoint set of `FileCache` fields.
 mod lookups;
+/// Plain data derived from a file's content, reused while the content is.
+mod derived;
+#[cfg(test)]
+pub use derived::derived_computes;
+pub use derived::{derived, with_fallback_parse};
+/// Results read off several files, reused while none of them changed.
+mod tracked;
+pub use tracked::Tracked;
 pub use lookups::{
     get_circular_analysis, get_fk_column, get_module_path_from_schema_path,
     get_struct_from_schema_path,
@@ -263,6 +271,13 @@ pub fn current_epoch() -> u64 {
 /// no extra syscall over the previous mtime-only fetch. Returns `None` if the
 /// file does not exist or its mtime is unavailable.
 fn get_fingerprint_cached(cache: &mut FileCache, path: &Path) -> Option<FileFingerprint> {
+    let fingerprint = lookup_fingerprint(cache, path);
+    // Every file read goes through here: a tracked computation depends on it.
+    tracked::record_file(path, fingerprint);
+    fingerprint
+}
+
+fn lookup_fingerprint(cache: &mut FileCache, path: &Path) -> Option<FileFingerprint> {
     let current_epoch = cache.epoch;
     if let Some(&(entry_epoch, fingerprint)) = cache.mtime_epoch_cache.get(path)
         && entry_epoch == current_epoch
@@ -416,6 +431,23 @@ fn walk_and_fingerprint(cache: &mut FileCache, dir: &Path) -> (Vec<PathBuf>, u64
 ///   to suppress further work in the rest of the epoch.
 /// * New epoch, different fingerprint → install a fresh `DirEntry`.
 fn ensure_file_list(cache: &mut FileCache, src_dir: &Path) -> Arc<[PathBuf]> {
+    let files = ensure_file_list_untracked(cache, src_dir);
+    if let Some(entry) = cache.file_lists.get(src_dir) {
+        tracked::record_dir(src_dir, entry.fingerprint);
+    }
+    files
+}
+
+/// The current listing fingerprint of `dir` (see [`ensure_file_list`]).
+fn dir_fingerprint(dir: &Path) -> u64 {
+    FILE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        ensure_file_list(&mut cache, dir);
+        cache.file_lists.get(dir).map_or(0, |entry| entry.fingerprint)
+    })
+}
+
+fn ensure_file_list_untracked(cache: &mut FileCache, src_dir: &Path) -> Arc<[PathBuf]> {
     let current_epoch = cache.epoch;
 
     if let Some(entry) = cache.file_lists.get(src_dir)

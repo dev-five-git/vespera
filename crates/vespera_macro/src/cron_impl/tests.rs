@@ -380,6 +380,35 @@ fn test_inline_module_of_unparsable_file() {
     );
 }
 
+/// Every handler of one file shares ONE parse: `#[route]` asks for each
+/// handler's inline module, `#[cron]` additionally checks it is free — the
+/// file's function index is built once per content version, and an edit
+/// rebuilds it.
+#[test]
+fn test_fn_index_parses_each_file_version_once() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("routes.rs");
+    std::fs::write(&path, "mod a { pub async fn x() {} }\npub async fn y() {}\n").unwrap();
+    let file = path.display().to_string();
+    crate::schema_macro::file_cache::bump_epoch();
+    let before = crate::schema_macro::file_cache::derived_computes();
+    let item: syn::ItemFn = syn::parse_quote!(
+        pub async fn y() {}
+    );
+    for _ in 0..3 {
+        crate::schema_macro::file_cache::bump_epoch();
+        assert_eq!(inline_module_of(Some(&file), "x", 1).as_deref(), Some("a"));
+        assert_eq!(inline_module_of(Some(&file), "y", 2).as_deref(), Some(""));
+        assert!(check_free_function(Some(&file), &item, 2).is_ok());
+    }
+    assert_eq!(crate::schema_macro::file_cache::derived_computes() - before, 1);
+
+    std::fs::write(&path, "pub async fn y() {}\nmod bb { pub async fn x() {} }\n").unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    assert_eq!(inline_module_of(Some(&file), "x", 2).as_deref(), Some("bb"));
+    assert_eq!(crate::schema_macro::file_cache::derived_computes() - before, 2);
+}
+
 // ===== Compile-time cron-syntax validation (gated by the `cron` feature) =====
 
 #[cfg(feature = "cron")]

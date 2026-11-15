@@ -42,14 +42,30 @@ impl ToTokens for Predicate {
 }
 
 /// Whether one of `attrs`' `#[cfg(..)]` predicates is known to be false.
+///
+/// Called per item of every scanned module, so the (process-constant)
+/// feature set is read only when an attribute is a `cfg` at all, and then
+/// from a memo instead of re-scanning the compiler's argv.
 pub fn statically_inactive(attrs: &[syn::Attribute]) -> bool {
-    let features = enabled_features();
+    let mut features = None;
     attrs.iter().any(|attr| {
         attr.path().is_ident("cfg")
-            && attr
-                .parse_args::<Predicate>()
-                .is_ok_and(|predicate| eval(&predicate, features.as_deref()) == Some(false))
+            && attr.parse_args::<Predicate>().is_ok_and(|predicate| {
+                let features = features.get_or_insert_with(memoized_features);
+                eval(&predicate, features.as_ref().as_deref()) == Some(false)
+            })
     })
+}
+
+/// [`enabled_features`], computed once per process (the compiler's command
+/// line cannot change); a per-thread test override of the arguments is read
+/// afresh.
+fn memoized_features() -> std::borrow::Cow<'static, Option<Vec<String>>> {
+    static FEATURES: std::sync::OnceLock<Option<Vec<String>>> = std::sync::OnceLock::new();
+    if crate::env_access::compiler_args_overridden() {
+        return std::borrow::Cow::Owned(enabled_features());
+    }
+    std::borrow::Cow::Borrowed(FEATURES.get_or_init(enabled_features))
 }
 
 /// The `--cfg feature=".."` values of a rustc command line; `None` outside

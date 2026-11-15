@@ -30,7 +30,7 @@ use super::super::{
 };
 
 mod schema_def;
-use schema_def::{SchemaDef, parse_schema_def};
+use schema_def::{SchemaDef, parse_schema_def, ref_override_of, schema_name_of};
 
 /// Whether `ident` names a type that this crate already knows how to map to
 /// an OpenAPI schema — Rust primitives, `String`/`str`, the chrono/time
@@ -579,16 +579,21 @@ fn parse_type_impl(
                 let is_generic =
                     matches!(&segment.arguments, syn::PathArguments::AngleBracketed(_));
                 let maybe_has_schema_attr = def_str.is_some_and(|d| d.contains("[schema"));
-                let parsed_def = if is_generic || maybe_has_schema_attr {
+                let parsed_def = if is_generic {
                     def_str.and_then(parse_schema_def)
                 } else {
                     None
                 };
+                // The override of a non-generic reference comes from the
+                // per-definition memo (no parse per reference).
+                let ref_override = match &parsed_def {
+                    Some(parsed_item) => extract_schema_ref_override(parsed_item.attrs()),
+                    None => def_str
+                        .filter(|_| maybe_has_schema_attr && !is_generic)
+                        .and_then(ref_override_of),
+                };
 
-                if let Some(parsed_item) = &parsed_def
-                    && let Some((schema_name, nullable)) =
-                        extract_schema_ref_override(parsed_item.attrs())
-                {
+                if let Some((schema_name, nullable)) = ref_override {
                     return SchemaRef::Inline(Box::new(Schema {
                         ref_path: Some(format!("#/components/schemas/{schema_name}")),
                         schema_type: None,
@@ -769,8 +774,7 @@ fn parse_type_impl(
 fn component_name(ident: String, definition: Option<&str>) -> String {
     definition
         .filter(|def| def.contains("[schema") && def.contains("name"))
-        .and_then(|def| syn::parse_str::<syn::DeriveInput>(def).ok())
-        .and_then(|input| crate::schema_impl::extract_schema_name_attr(&input.attrs))
+        .and_then(schema_name_of)
         .unwrap_or(ident)
 }
 

@@ -10,6 +10,7 @@
 //! even under `#[serial]`) raced every *non*-serial reader — the cause of the
 //! intermittent `process_export_app` / `openapi_io` sidecar failures.
 
+use std::borrow::Cow;
 use std::env::VarError;
 use std::ffi::OsString;
 
@@ -42,23 +43,34 @@ pub const COMPILER_ARGS_KEY: &str = "\u{0}vespera:compiler-args";
 /// `--out-dir <target>/<profile>/deps` for the real target directory.  In a
 /// proc-macro server (rust-analyzer) it is the server's command line.
 /// Honours the per-thread test override [`COMPILER_ARGS_KEY`].
-pub fn compiler_args() -> Vec<String> {
+///
+/// Borrowed from a process-wide memo outside tests: the argv (hundreds of
+/// `--extern` / `-L` arguments) is read on hot paths such as every cfg
+/// evaluation of a source lookup, so it is never copied per call.
+pub fn compiler_args() -> Cow<'static, [String]> {
     static ARGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     if let Some(value) = test_env::lookup(COMPILER_ARGS_KEY) {
-        return value
-            .into_os_string()
-            .map(|args| {
-                args.to_string_lossy()
-                    .split('\n')
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default();
+        return Cow::Owned(
+            value
+                .into_os_string()
+                .map(|args| {
+                    args.to_string_lossy()
+                        .split('\n')
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        );
     }
-    ARGS.get_or_init(|| {
+    Cow::Borrowed(ARGS.get_or_init(|| {
         expand_argfiles(std::env::args_os().map(|arg| arg.to_string_lossy().into_owned()))
-    })
-    .clone()
+    }))
+}
+
+/// Whether [`compiler_args`] currently reads a per-thread test override (so
+/// a memo derived from it must not be used).
+pub fn compiler_args_overridden() -> bool {
+    test_env::lookup(COMPILER_ARGS_KEY).is_some()
 }
 
 /// Replace every readable `@path` argument by the lines of that file (the
@@ -248,10 +260,10 @@ mod tests {
         assert!(!compiler_args().iter().any(|arg| arg == "--test"));
         {
             let _args = set_var(COMPILER_ARGS_KEY, "rustc\n--test");
-            assert_eq!(compiler_args(), ["rustc", "--test"]);
+            assert_eq!(*compiler_args(), ["rustc", "--test"]);
         }
         let _args = remove_var(COMPILER_ARGS_KEY);
-        assert_eq!(compiler_args(), Vec::<String>::new());
+        assert!(compiler_args().is_empty());
     }
 
     #[cfg(unix)]
