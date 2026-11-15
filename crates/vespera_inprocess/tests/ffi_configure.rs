@@ -128,7 +128,10 @@ fn configure_applies_once_and_caps_async_dispatches() {
     // answered inline with a 503 and never reaches the handler.
     let pending = start_async(&request("GET", "/slow", b""));
     assert_eq!(async_in_flight(), 1);
-    let (status, body) = recv(&start_async(&request("GET", "/fast", b"")));
+    // `try_recv` right after the call returns: delivered on this thread
+    // before `vespera_dispatch_async` returned, not later on a worker.
+    let rejected = start_async(&request("GET", "/fast", b""));
+    let (status, body) = parse(&rejected.try_recv().expect("the 503 is delivered inline"));
     assert_eq!(
         (status, body.as_slice()),
         (503, ASYNC_OVERLOADED_MSG.as_bytes())

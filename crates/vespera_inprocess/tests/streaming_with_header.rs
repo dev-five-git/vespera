@@ -708,7 +708,9 @@ async fn bidirectional_with_header_slow_producer_yields_poll_pending() {
 /// skipped, not treated as EOF or as an abort.  `spawned = false` dispatches
 /// on the test's `block_on` thread, where the inline fast path serves the
 /// first two pulls; `spawned = true` runs inside `tokio::spawn`, so every
-/// pull is the producer's (its `consecutive_empty` skip).
+/// pull is the producer's (its `consecutive_empty` skip).  The pull records
+/// its thread, so the inline variant proves it ran inline (the first two
+/// pulls on the `block_on` thread) and the producer variant that it did not.
 async fn run_empty_pull_chunk_skip(spawned: bool) {
     install_router();
     let wire = encode_wire(
@@ -718,9 +720,16 @@ async fn run_empty_pull_chunk_skip(spawned: bool) {
         &[],
     );
 
+    let caller = std::thread::current().id();
     let counter = Arc::new(Mutex::new(0u32));
     let counter_clone = Arc::clone(&counter);
+    let threads = Arc::new(Mutex::new(Vec::new()));
+    let threads_clone = Arc::clone(&threads);
     let pull = move || -> RequestChunk {
+        threads_clone
+            .lock()
+            .unwrap()
+            .push(std::thread::current().id() == caller);
         let mut g = counter_clone.lock().unwrap();
         *g += 1;
         match *g {
@@ -758,6 +767,19 @@ async fn run_empty_pull_chunk_skip(spawned: bool) {
         *counter.lock().unwrap() >= 3,
         "the source must be read to EOF"
     );
+    let on_caller = threads.lock().unwrap().clone();
+    if spawned {
+        assert!(
+            on_caller.iter().all(|&inline| !inline),
+            "a spawned dispatch never pulls on the block_on thread: {on_caller:?}"
+        );
+    } else {
+        assert_eq!(
+            on_caller[..2],
+            [true, true],
+            "the first two pulls must run inline on the block_on thread"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

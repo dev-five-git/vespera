@@ -44,7 +44,14 @@ async fn count() -> &'static str {
     "counted"
 }
 
+/// Runs of each app factory: `vespera_init` registers first-wins, so each
+/// runs exactly once however often (and from however many tests) it is
+/// called.
+static APP_BUILDS: AtomicUsize = AtomicUsize::new(0);
+static ADMIN_BUILDS: AtomicUsize = AtomicUsize::new(0);
+
 fn app() -> Router {
+    APP_BUILDS.fetch_add(1, Ordering::SeqCst);
     Router::new()
         .route("/hello", get(hello))
         .route("/big", get(big))
@@ -53,6 +60,7 @@ fn app() -> Router {
 }
 
 fn admin_app() -> Router {
+    ADMIN_BUILDS.fetch_add(1, Ordering::SeqCst);
     Router::new().route("/who", get(admin))
 }
 
@@ -125,32 +133,61 @@ fn dispatch_into(req: &[u8], cap: usize) -> (i32, usize, Vec<u8>) {
     (code, written, buf)
 }
 
+/// Per-call `user_data` of `dispatch_async`: leaked (never reclaimed by the
+/// callback), so a second delivery is counted instead of double-freeing.
+struct Delivery {
+    deliveries: AtomicUsize,
+    tx: mpsc::Sender<Vec<u8>>,
+}
+
 unsafe extern "C" fn on_response(user_data: *mut c_void, response: *mut u8, len: usize) {
-    // SAFETY: `user_data` is the boxed sender leaked by `dispatch_async`;
-    // the response is owned by this callback and freed once.
+    // SAFETY: `user_data` is the leaked `&'static Delivery` of
+    // `dispatch_async`; the response is owned by this callback and freed
+    // once.
     unsafe {
-        let sender = Box::from_raw(user_data.cast::<mpsc::Sender<Vec<u8>>>());
-        let _ = sender.send(std::slice::from_raw_parts(response, len).to_vec());
+        let delivery = &*user_data.cast::<Delivery>();
+        delivery.deliveries.fetch_add(1, Ordering::SeqCst);
+        let _ = delivery
+            .tx
+            .send(std::slice::from_raw_parts(response, len).to_vec());
         vespera_free(response, len);
     }
 }
 
+/// `vespera_dispatch_async`, asserting the callback runs exactly once: a
+/// second delivery within a grace period after the first fails the test.
 fn dispatch_async(req: *const u8, len: usize) -> Vec<u8> {
     let (tx, rx) = mpsc::channel();
-    let user_data = Box::into_raw(Box::new(tx)).cast::<c_void>();
+    let delivery: &'static Delivery = Box::leak(Box::new(Delivery {
+        deliveries: AtomicUsize::new(0),
+        tx,
+    }));
+    let user_data = std::ptr::from_ref(delivery).cast_mut().cast::<c_void>();
     // SAFETY: `req` valid for `len` bytes (or NULL, tested explicitly);
-    // `user_data` is reclaimed by `on_response`.
+    // `user_data` stays valid for the rest of the process.
     let code = unsafe { vespera_dispatch_async(req, len, Some(on_response), user_data) };
     assert_eq!(code, VESPERA_OK);
-    rx.recv_timeout(Duration::from_secs(10))
-        .expect("callback must run exactly once")
+    let response = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("callback must run");
+    assert_eq!(
+        rx.recv_timeout(Duration::from_millis(200)),
+        Err(mpsc::RecvTimeoutError::Timeout),
+        "callback delivered twice"
+    );
+    assert_eq!(delivery.deliveries.load(Ordering::SeqCst), 1);
+    response
 }
 
 #[test]
 fn init_is_idempotent() {
     init();
     init();
+    init();
     assert!(vespera_inprocess::runtime::host_loaded());
+    // Later calls return VESPERA_OK without re-running the factories.
+    assert_eq!(APP_BUILDS.load(Ordering::SeqCst), 1);
+    assert_eq!(ADMIN_BUILDS.load(Ordering::SeqCst), 1);
 }
 
 #[test]

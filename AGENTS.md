@@ -329,7 +329,7 @@ Java: `VesperaBridge.configureLimits(...)`, `configureDispatchTimeout(ms)`, `con
 
 ### C ABI (`vespera_inprocess::ffi`, feature `ffi`)
 
-Header `crates/vespera_inprocess/include/vespera.h` (hand-written; `tests/ffi_header.rs` compares every prototype / `#define` with the Rust items and coerces each symbol to its C function-pointer type). `ffi_app!` / `ffi_apps!` (re-exported as `vespera::ffi_app!` / `ffi_apps!`, names checked at compile time like `jni_apps!`) emit `vespera_init` in the user's cdylib; the library exports the rest.
+Header `crates/vespera_inprocess/include/vespera.h` (hand-written; `tests/ffi_header.rs` spells every `#[unsafe(no_mangle)]` fn under `src/` (incl. the `vespera_init` of `ffi_apps!`) and the `VesperaCallback` alias as C and requires that set to equal the header declarations, compares every `#define` with the Rust constants, and coerces each symbol to its C function-pointer type). `ffi_app!` / `ffi_apps!` (re-exported as `vespera::ffi_app!` / `ffi_apps!`, names checked at compile time like `jni_apps!`) emit `vespera_init` in the user's cdylib; the library exports the rest.
 
 | Symbol | Contract |
 |---|---|

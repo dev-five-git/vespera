@@ -112,10 +112,11 @@ async fn bidirectional_with_header_closing_invokes_close_after_full_read() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bidirectional_with_header_closing_skips_close_when_body_ignored() {
-    // When the handler never reads the request body, the producer is
-    // never started, so there is nothing to close — `request_close` must
-    // NOT fire. A GET handler with no body extractor never polls the
-    // request body.
+    // The close hook fires only once the request source was pulled
+    // (inline on the `block_on` thread or by the producer —
+    // `RequestSourceCloser::close_if_started` in `src/streaming/producer.rs`).
+    // A GET handler with no body extractor never polls the request body, so
+    // the source is never pulled and `request_close` must NOT fire.
     install_router();
     let wire = encode_wire("GET", "/ping", HashMap::new(), &[]);
 
@@ -146,7 +147,7 @@ async fn bidirectional_with_header_closing_skips_close_when_body_ignored() {
     assert_eq!(
         close_calls.load(Ordering::SeqCst),
         0,
-        "request_close must NOT fire when the handler ignores the body (producer never started)"
+        "request_close must NOT fire when the handler ignores the body (source never pulled)"
     );
 }
 
@@ -210,7 +211,7 @@ async fn bidirectional_closing_invokes_close_on_handler_panic() {
 async fn response_streaming_body_error_yields_500_not_truncated_success() {
     // A handler whose response body errors mid-stream must surface a 500
     // through the returned wire header, not the original 200 with a silently
-    // truncated body (dispatch_response_streaming path).
+    // truncated body (the response-streaming `dispatch_streaming_async` path).
     install_router();
     let wire = encode_wire("GET", "/err-body", HashMap::new(), &[]);
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
