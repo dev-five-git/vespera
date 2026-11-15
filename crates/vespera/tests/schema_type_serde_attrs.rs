@@ -1,12 +1,16 @@
 //! `schema_type!` must re-emit the source struct's serde attributes so the
-//! generated DTO both COMPILES and keeps the source's wire names:
+//! generated DTO both COMPILES and keeps the source's per-field wire format
+//! (codecs, explicit `#[serde(rename)]` keys). Field names without an
+//! explicit rename follow the DTO's `rename_all`, which defaults to the
+//! source's `rename_all`, else `"camelCase"` — so a source without one
+//! (`Profile` below: `big_number`) yields a DTO keyed `bigNumber`:
 //!
 //! - `partial` wraps a field into `Option<T>`, so type-dependent field keys
 //!   (`default = "f"`, `skip_serializing_if = "<fn on T>"`) cannot be copied
 //!   verbatim, and `with` / `serialize_with` / `deserialize_with` go through
 //!   generated `Option<T>` adapters so the field keeps the source's format.
 //! - `rename = [("old", "new")]` renames the Rust field only; the JSON key
-//!   stays the source's (explicit `#[serde(rename)]`, else `rename_all`).
+//!   stays the old one (explicit `#[serde(rename)]`, else the DTO's `rename_all`).
 //! - Container keys that need impls on the DTO (`from` / `try_from` / `into`
 //!   / `default`) are dropped, the rest (`deny_unknown_fields`, `tag`, ...)
 //!   kept even when they share an attribute with `rename_all`; a `tag` keeps

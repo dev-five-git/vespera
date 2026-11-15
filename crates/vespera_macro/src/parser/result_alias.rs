@@ -131,7 +131,10 @@ pub fn expand_return_type_alias(
         {
             break;
         }
-        let Some((alias, alias_scope)) = find_alias(&name, scope.as_ref(), src_dir) else {
+        let qualifier = alias_qualifier(ty);
+        let Some((alias, alias_scope)) =
+            find_alias(&name, qualifier.as_deref(), scope.as_ref(), src_dir)
+        else {
             break;
         };
         let Some(next) = apply_alias(&alias, ty) else {
@@ -175,14 +178,38 @@ fn alias_candidate(ty: &Type) -> Option<String> {
     Some(ident)
 }
 
+/// The module a qualified return type names its alias in (`v2` for
+/// `v2::ApiResult<..>`, `crate::api::v2::ApiResult<..>`). `None` for a bare
+/// name and for a `crate` / `self` / `super` qualifier, which are resolved
+/// like a bare name.
+fn alias_qualifier(ty: &Type) -> Option<String> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+    let mut segments = type_path.path.segments.iter().rev().skip(1);
+    segments
+        .next()
+        .map(|module| &module.ident)
+        .filter(|module| !is_local_root(module))
+        .map(|module| syn::ext::IdentExt::unraw(module).to_string())
+}
+
+/// One `type <name>` definition: the alias, the scope it is defined in and
+/// the innermost module that declares it (inline `mod`, else the file's
+/// module; `None` when unknown).
+type Definition<'a> = (syn::ItemType, Scope<'a>, Option<String>);
+
 /// The `type <name>` definition visible from `scope`, if any, with the
-/// scope it is defined in.
+/// scope it is defined in. A `qualifier` (`v2::ApiResult`) prefers the
+/// definitions module `qualifier` declares and skips the handler's own
+/// module.
 fn find_alias<'a>(
     name: &str,
+    qualifier: Option<&str>,
     scope: Option<&Scope<'a>>,
     src_dir: Option<&Path>,
 ) -> Option<(syn::ItemType, Scope<'a>)> {
-    if let Some(scope) = scope {
+    if let Some(scope) = scope.filter(|_| qualifier.is_none()) {
         let items = scope.items();
         if let Some(alias) = items.iter().find_map(|item| alias_item(item, name)) {
             return Some((alias, scope.clone()));
@@ -193,9 +220,9 @@ fn find_alias<'a>(
             return None;
         }
     }
-    let mut definitions: Vec<(syn::ItemType, Scope<'a>)> = Vec::new();
+    let mut definitions: Vec<Definition<'a>> = Vec::new();
     if let Some(scope) = scope {
-        collect_aliases(&scope.file, name, &mut definitions);
+        collect_aliases(&scope.file, None, name, &mut definitions);
     }
     if let Some(src_dir) = src_dir {
         let needle = format!("type {name}");
@@ -204,18 +231,42 @@ fn find_alias<'a>(
             if let Some(file) = parsed_with(path, &needle)
                 && !test_scope.file_test_only(path)
             {
-                collect_aliases(&Cow::Owned(file), name, &mut definitions);
+                let module = file_module(path);
+                collect_aliases(&Cow::Owned(file), module.as_deref(), name, &mut definitions);
             }
         }
     }
+    if let Some(qualifier) = qualifier {
+        let named: Vec<Definition<'a>> = definitions
+            .iter()
+            .filter(|(.., module)| module.as_deref() == Some(qualifier))
+            .cloned()
+            .collect();
+        // Not declared in that module itself (a `pub use` re-export): any
+        // unique definition.
+        if !named.is_empty() {
+            definitions = named;
+        }
+    }
     let mut definitions = definitions.into_iter();
-    let first = definitions.next()?;
+    let (alias, alias_scope, _) = definitions.next()?;
     // The same alias seen twice (the handler's file is under `src/` too, a
     // re-declaration) is fine; two different definitions are ambiguous
     // without name resolution.
     definitions
-        .all(|(alias, _)| same_definition(&first.0, &alias))
-        .then_some(first)
+        .all(|(other, ..)| same_definition(&alias, &other))
+        .then_some((alias, alias_scope))
+}
+
+/// The module a source file declares: its stem, the directory name for a
+/// `mod.rs`, nothing for the crate root.
+fn file_module(file: &Path) -> Option<String> {
+    let stem = file.file_stem()?.to_str()?;
+    match stem {
+        "lib" | "main" => None,
+        "mod" => file.parent()?.file_name()?.to_str().map(str::to_owned),
+        _ => Some(stem.to_owned()),
+    }
 }
 
 /// `item` when it is a non-test `type <name>` alias.
@@ -229,13 +280,15 @@ fn alias_item(item: &syn::Item, name: &str) -> Option<syn::ItemType> {
 }
 
 /// Every non-test `type <name>` item of `file` (inline modules searched,
-/// test-only modules skipped), each with the module it is defined in.
+/// test-only modules skipped), each with the module it is defined in;
+/// `file_module` is the module the file itself declares.
 // The `Cow` itself is cloned into each scope (cheap when borrowed).
 #[allow(clippy::ptr_arg)]
 fn collect_aliases<'a>(
     file: &Cow<'a, syn::File>,
+    file_module: Option<&str>,
     name: &str,
-    out: &mut Vec<(syn::ItemType, Scope<'a>)>,
+    out: &mut Vec<Definition<'a>>,
 ) {
     fn walk(
         items: &[syn::Item],
@@ -263,12 +316,17 @@ fn collect_aliases<'a>(
     let mut found = Vec::new();
     walk(&file.items, name, &mut Vec::new(), &mut found);
     out.extend(found.into_iter().map(|(alias, module)| {
+        let innermost = module
+            .last()
+            .cloned()
+            .or_else(|| file_module.map(str::to_owned));
         (
             alias,
             Scope {
                 file: file.clone(),
                 module,
             },
+            innermost,
         )
     }));
 }
@@ -314,30 +372,41 @@ enum Import {
 
 /// The first `use` among the module's own `items` that brings `name` into
 /// scope (`use a::Result;`, `use a::{B as Result};`). A `use` inside another
-/// (inline) module does not reach this one.
+/// (inline) module does not reach this one. Without one, a glob of another
+/// crate (`use axum::response::*;`) is the only way the name can be in
+/// scope, unless a glob of this crate (`use crate::error::*;`) may bring it.
 fn import_kind(items: &[syn::Item], name: &str) -> Option<Import> {
-    items.iter().find_map(|item| match item {
-        syn::Item::Use(item_use) => {
+    let mut imports = Vec::new();
+    for item in items {
+        if let syn::Item::Use(item_use) = item {
             let root = item_use.leading_colon.is_some().then_some(None);
-            use_tree_import(&item_use.tree, root, name, &|ident| {
-                declares_module(items, ident)
-            })
+            let local_module = |ident: &syn::Ident| declares_module(items, ident);
+            use_tree_imports(&item_use.tree, root, &local_module, &mut imports);
         }
-        _ => None,
+    }
+    let named = imports
+        .iter()
+        .find(|(used, _)| used.as_deref() == Some(name));
+    named.map(|(_, kind)| *kind).or_else(|| {
+        let globs = || imports.iter().filter(|(used, _)| used.is_none());
+        (globs().any(|(_, kind)| *kind == Import::External)
+            && !globs().any(|(_, kind)| *kind == Import::Local))
+        .then_some(Import::External)
     })
 }
 
-/// `root` is `None` before the first path segment, `Some(None)` after a
-/// leading `::` (always another crate), `Some(Some(first))` otherwise.
-/// `local_module` tells whether a first segment names a module of this
-/// crate.
+/// Every name `tree` brings into scope (`None` for a glob) with where it
+/// comes from, in source order. `root` is `None` before the first path
+/// segment, `Some(None)` after a leading `::` (always another crate),
+/// `Some(Some(first))` otherwise. `local_module` tells whether a first
+/// segment names a module of this crate.
 #[allow(clippy::option_option)]
-fn use_tree_import(
+fn use_tree_imports(
     tree: &syn::UseTree,
     root: Option<Option<&syn::Ident>>,
-    name: &str,
     local_module: &dyn Fn(&syn::Ident) -> bool,
-) -> Option<Import> {
+    out: &mut Vec<(Option<String>, Import)>,
+) {
     let kind = || match root {
         Some(Some(first)) if is_local_root(first) || local_module(first) => Import::Local,
         // `use Name;` (root `None`) names an extern crate or a local item.
@@ -345,19 +414,20 @@ fn use_tree_import(
         Some(_) => Import::External,
     };
     match tree {
-        syn::UseTree::Path(path) => use_tree_import(
+        syn::UseTree::Path(path) => use_tree_imports(
             &path.tree,
             root.or(Some(Some(&path.ident))),
-            name,
             local_module,
+            out,
         ),
-        syn::UseTree::Name(used) => (used.ident == name).then(kind),
-        syn::UseTree::Rename(rename) => (rename.rename == name).then(kind),
-        syn::UseTree::Group(group) => group
-            .items
-            .iter()
-            .find_map(|tree| use_tree_import(tree, root, name, local_module)),
-        syn::UseTree::Glob(_) => None,
+        syn::UseTree::Name(used) => out.push((Some(used.ident.to_string()), kind())),
+        syn::UseTree::Rename(rename) => out.push((Some(rename.rename.to_string()), kind())),
+        syn::UseTree::Group(group) => {
+            for tree in &group.items {
+                use_tree_imports(tree, root, local_module, out);
+            }
+        }
+        syn::UseTree::Glob(_) => out.push((None, kind())),
     }
 }
 
@@ -516,8 +586,21 @@ mod tests {
         "-> Result < u8 , E >"
     )]
     #[case::locally_imported_module_path(
-        "use crate::errors; mod m { pub type ApiResult<T> = Result<T, E>; }",
+        "use crate::errors; mod m { pub mod errors { pub type ApiResult<T> = Result<T, E>; } }",
         "-> errors::ApiResult<u8>",
+        "-> Result < u8 , E >"
+    )]
+    // A qualified path names the alias of the module it names, never the
+    // handler's own same-named alias.
+    #[case::qualified_skips_handler_module(
+        "type ApiResult<T> = Result<Json<T>, LocalErr>; mod v2 { pub type ApiResult<T> = Result<Json<T>, V2Err>; }",
+        "-> v2::ApiResult<u8>",
+        "-> Result < Json < u8 > , V2Err >"
+    )]
+    // Not declared in the named module (a re-export): the unique definition.
+    #[case::qualified_reexport(
+        "mod v2 { pub use super::inner::*; } mod inner { pub type ApiResult<T> = Result<T, E>; }",
+        "-> v2::ApiResult<u8>",
         "-> Result < u8 , E >"
     )]
     // Test-only code never defines a handler's alias.
@@ -560,13 +643,32 @@ mod tests {
     }
 
     #[rstest]
+    #[case::bare("ApiResult<u8>", None)]
+    #[case::module("v2::ApiResult<u8>", Some("v2"))]
+    #[case::innermost("crate::api::r#v2::ApiResult<u8>", Some("v2"))]
+    #[case::local_root("crate::ApiResult<u8>", None)]
+    #[case::non_path("(u8, u8)", None)]
+    fn alias_qualifiers(#[case] ty: &str, #[case] expected: Option<&str>) {
+        let ty: Type = syn::parse_str(ty).unwrap();
+        assert_eq!(alias_qualifier(&ty).as_deref(), expected);
+    }
+
+    #[rstest]
     #[case::external("use axum::response::Result;", Some(Import::External))]
     #[case::local("use crate::error::Result;", Some(Import::Local))]
     #[case::self_root("use self::x::Result;", Some(Import::Local))]
     #[case::leading_colon("use ::std::result::Result;", Some(Import::External))]
     #[case::group_rename("use a::{b, c::D as Result};", Some(Import::External))]
     #[case::bare_name("use Result;", Some(Import::Local))]
-    #[case::glob("use a::*;", None)]
+    // Only another crate's glob can bring the name in.
+    #[case::glob("use a::*;", Some(Import::External))]
+    #[case::local_glob("use crate::error::*;", None)]
+    #[case::external_and_local_globs("use axum::response::*; use crate::error::*;", None)]
+    #[case::named_before_glob(
+        "use axum::response::*; use crate::error::Result;",
+        Some(Import::Local)
+    )]
+    #[case::other_name("use axum::response::Html;", None)]
     // A `use` inside another module does not reach this one.
     #[case::inline_module("mod m { use axum::Result; }", None)]
     #[case::declared_module("mod error; use error::Result;", Some(Import::Local))]
@@ -647,6 +749,65 @@ mod tests {
         );
         assert_eq!(
             expand_in("mod error; use error::Result;", "-> Result<u8>"),
+            "-> std :: result :: Result < u8 , AppError >"
+        );
+    }
+
+    /// `v2::ApiResult` is the alias `v2.rs` declares, not the handler
+    /// module's; an external glob (`use axum::response::*;`) makes an
+    /// unimported `Result` axum's, so the crate's `type Result<T>` does not
+    /// apply.
+    #[test]
+    fn qualified_and_glob_imported_names_resolve_their_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path();
+        std::fs::create_dir(src.join("api")).unwrap();
+        std::fs::write(
+            src.join("api").join("mod.rs"),
+            "pub type ApiResult<T> = Result<Json<T>, ApiErr>;",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("v2.rs"),
+            "pub type ApiResult<T> = Result<Json<T>, V2Err>;",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("error.rs"),
+            "pub type Result<T> = std::result::Result<T, AppError>;",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("lib.rs"),
+            "pub type ApiResult<T> = Result<Json<T>, RootErr>;",
+        )
+        .unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let expand_in = |file_src: &str, ret: &str| {
+            let file: syn::File = syn::parse_str(file_src).unwrap();
+            let mut sig: syn::Signature = syn::parse_str(&format!("fn h() {ret}")).unwrap();
+            expand_return_type_alias(&mut sig, Some(&file), Some(src));
+            let output = &sig.output;
+            quote::quote!(#output).to_string()
+        };
+        let handler = "mod v2; mod api; type ApiResult<T> = Result<Json<T>, LocalErr>;";
+        assert_eq!(
+            expand_in(handler, "-> v2::ApiResult<u8>"),
+            "-> Result < Json < u8 > , V2Err >"
+        );
+        assert_eq!(
+            expand_in(handler, "-> api::ApiResult<u8>"),
+            "-> Result < Json < u8 > , ApiErr >"
+        );
+        assert_eq!(
+            expand_in("use axum::response::*;", "-> Result<Json<u8>>"),
+            "-> Result < Json < u8 > >"
+        );
+        assert_eq!(
+            expand_in(
+                "use axum::response::*; use crate::error::*;",
+                "-> Result<u8>"
+            ),
             "-> std :: result :: Result < u8 , AppError >"
         );
     }

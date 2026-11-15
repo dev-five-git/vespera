@@ -204,15 +204,15 @@ pub(in crate::parser::schema) fn resolve_type(
     let syn::Type::Path(type_path) = peel(ty) else {
         return None;
     };
-    let segment = type_path.path.segments.last()?;
-    if !segment.arguments.is_none() {
+    if !type_path.path.segments.last()?.arguments.is_none() {
         return None;
     }
-    resolve_name(
-        &segment.ident.to_string(),
-        known_schemas,
-        struct_definitions,
-    )
+    // `b::Foo` names the `Foo` module `b` declares: two renames may share
+    // the ident, and the bare ident aliases only one of them (the same key
+    // the `$ref` itself resolves through).
+    let key =
+        super::super::definition_key(&type_path.path, |key| struct_definitions.contains_key(key))?;
+    resolve_name(&key, known_schemas, struct_definitions)
 }
 
 /// The schema of the definition stored under `name` in the current view. A

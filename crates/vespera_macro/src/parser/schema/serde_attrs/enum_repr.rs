@@ -264,24 +264,25 @@ mod tests {
         }
     }
 
-    /// Test extract_tag fallback path - Lines 573, 583-590
-    /// Forces manual token parsing by using qualified path
+    // `extract_tag` / `extract_content` have no raw-token fallback: the
+    // structured walk matches a qualified key by its last segment.
+
+    /// A qualified `tag` key is matched by its last segment.
     #[test]
-    fn test_extract_tag_fallback_path() {
+    fn test_extract_tag_qualified_key() {
         let tokens: TokenStream = "my_module::tag = \"type\"".parse().unwrap();
         let attr = create_enum_attr_with_raw_tokens(tokens);
         let result = extract_tag(&[attr]);
         assert_eq!(
             result.as_deref(),
             Some("type"),
-            "Fallback should extract tag value"
+            "qualified tag key must be matched"
         );
     }
 
-    /// Test extract_tag fallback with complex attributes
-    /// Lines 583-590: Tests the value extraction in fallback
+    /// A qualified `tag` key next to other keys.
     #[test]
-    fn test_extract_tag_fallback_complex() {
+    fn test_extract_tag_qualified_key_with_others() {
         let tokens: TokenStream = "crate::tag = \"kind\", rename_all = \"camelCase\""
             .parse()
             .unwrap();
@@ -290,10 +291,9 @@ mod tests {
         assert_eq!(result.as_deref(), Some("kind"));
     }
 
-    /// Test extract_tag fallback doesn't match "untagged"
-    /// Line 581: before_char != 'n' check
+    /// `untagged` is not a `tag` key.
     #[test]
-    fn test_extract_tag_fallback_avoids_untagged() {
+    fn test_extract_tag_ignores_untagged() {
         // "untagged" contains "tag" but should not be matched as tag = "..."
         let tokens: TokenStream = "untagged".parse().unwrap();
         let attr = create_enum_attr_with_raw_tokens(tokens);
@@ -301,33 +301,31 @@ mod tests {
         assert_eq!(result, None, "Should not extract tag from 'untagged'");
     }
 
-    /// Test extract_tag fallback with tag after other attributes
+    /// A qualified `tag` key after other keys.
     #[test]
-    fn test_extract_tag_fallback_at_end() {
+    fn test_extract_tag_qualified_key_at_end() {
         let tokens: TokenStream = "default, some_module::tag = \"variant\"".parse().unwrap();
         let attr = create_enum_attr_with_raw_tokens(tokens);
         let result = extract_tag(&[attr]);
         assert_eq!(result.as_deref(), Some("variant"));
     }
 
-    /// Test extract_content fallback path - Line 626
-    /// Forces manual token parsing by using qualified path
+    /// A qualified `content` key is matched by its last segment.
     #[test]
-    fn test_extract_content_fallback_path() {
+    fn test_extract_content_qualified_key() {
         let tokens: TokenStream = "my_module::content = \"data\"".parse().unwrap();
         let attr = create_enum_attr_with_raw_tokens(tokens);
         let result = extract_content(&[attr]);
         assert_eq!(
             result.as_deref(),
             Some("data"),
-            "Fallback should extract content value"
+            "qualified content key must be matched"
         );
     }
 
-    /// Test extract_content fallback with complex attributes
-    /// Line 626+: Tests the fallback token parsing branch
+    /// A qualified `content` key after a qualified `tag` key.
     #[test]
-    fn test_extract_content_fallback_complex() {
+    fn test_extract_content_qualified_key_with_others() {
         let tokens: TokenStream = "crate::tag = \"type\", other::content = \"payload\""
             .parse()
             .unwrap();
@@ -336,18 +334,18 @@ mod tests {
         assert_eq!(result.as_deref(), Some("payload"));
     }
 
-    /// Test extract_content fallback with content at different position
+    /// A qualified `content` key before other keys.
     #[test]
-    fn test_extract_content_fallback_at_start() {
+    fn test_extract_content_qualified_key_at_start() {
         let tokens: TokenStream = "some::content = \"body\", tag = \"kind\"".parse().unwrap();
         let attr = create_enum_attr_with_raw_tokens(tokens);
         let result = extract_content(&[attr]);
         assert_eq!(result.as_deref(), Some("body"));
     }
 
-    /// Test adjacently tagged using fallback paths for both tag and content
+    /// Adjacently tagged through qualified `tag` and `content` keys.
     #[test]
-    fn test_extract_enum_repr_adjacently_tagged_fallback() {
+    fn test_extract_enum_repr_adjacently_tagged_qualified_keys() {
         let tokens: TokenStream = "mod1::tag = \"type\", mod2::content = \"data\""
             .parse()
             .unwrap();
@@ -362,9 +360,9 @@ mod tests {
         );
     }
 
-    /// Test internally tagged using fallback path
+    /// Internally tagged through a qualified `tag` key.
     #[test]
-    fn test_extract_enum_repr_internally_tagged_fallback() {
+    fn test_extract_enum_repr_internally_tagged_qualified_key() {
         let tokens: TokenStream = "qualified::tag = \"discriminator\"".parse().unwrap();
         let attr = create_enum_attr_with_raw_tokens(tokens);
         let repr = extract_enum_repr(&[attr]);
