@@ -7,7 +7,7 @@
 
 use std::ffi::c_void;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::Router;
 use axum::routing::{get, post};
@@ -138,12 +138,9 @@ fn configure_applies_once_and_caps_async_dispatches() {
     );
     assert_eq!(recv(&pending), (200, b"slow".to_vec()));
 
-    // The slot is released once the completed task drops its permit.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while async_in_flight() != 0 {
-        assert!(Instant::now() < deadline, "permit never released");
-        std::thread::yield_now();
-    }
+    // The slot is released BEFORE the callback runs (`Completion::deliver`
+    // drops the permit first), so it is free once the response arrived.
+    assert_eq!(async_in_flight(), 0, "permit released after the callback");
     assert_eq!(
         recv(&start_async(&request("GET", "/fast", b""))),
         (200, b"fast".to_vec())

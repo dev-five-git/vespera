@@ -145,18 +145,35 @@ fn borrowed_status(rt: &Runtime, wire: &[u8], out: &mut [u8]) -> u64 {
     status_of(&out[..n])
 }
 
-/// One measured allocation sample: per-op `alloc` calls, `realloc` calls,
-/// and bytes requested, averaged over `iters` after `warmup` settling ops.
+/// One measured allocation sample: TOTAL `alloc` calls, `realloc` calls
+/// and bytes requested over `iters` ops (after `warmup` settling ops).
+/// Totals, not per-op quotients: an integer division would hide a
+/// regression that allocates on only some ops (one extra allocation every
+/// other dispatch is +0.5 per op, truncated to +0).
 struct Sample {
     allocs: usize,
     reallocs: usize,
     bytes: usize,
+    iters: usize,
+}
+
+impl Sample {
+    /// `alloc` + `realloc` calls over every measured op.
+    const fn ops(&self) -> usize {
+        self.allocs + self.reallocs
+    }
+
+    /// `total / iters` for display (fractional when not every op allocates
+    /// the same).
+    #[allow(clippy::cast_precision_loss)]
+    fn per_op(&self, total: usize) -> f64 {
+        total as f64 / self.iters as f64
+    }
 }
 
 /// Run `op` `warmup` times to settle one-time lazy initialisation
 /// (`OnceLock` routers / config), then measure `iters` ops against the
-/// global counters.  Allocation counts are deterministic, so integer
-/// division yields the exact per-op figure.
+/// global counters.
 fn measure(warmup: usize, iters: usize, mut op: impl FnMut()) -> Sample {
     for _ in 0..warmup {
         op();
@@ -168,9 +185,10 @@ fn measure(warmup: usize, iters: usize, mut op: impl FnMut()) -> Sample {
         op();
     }
     Sample {
-        allocs: (ALLOCS.load(Ordering::Relaxed) - a0) / iters,
-        reallocs: (REALLOCS.load(Ordering::Relaxed) - r0) / iters,
-        bytes: (BYTES.load(Ordering::Relaxed) - b0) / iters,
+        allocs: ALLOCS.load(Ordering::Relaxed) - a0,
+        reallocs: REALLOCS.load(Ordering::Relaxed) - r0,
+        bytes: BYTES.load(Ordering::Relaxed) - b0,
+        iters,
     }
 }
 
@@ -312,21 +330,24 @@ fn allocation_budgets() {
     // picture (the asserts below would otherwise stop at the first miss).
     for &(name, sample, budget) in &cases {
         eprintln!(
-            "VESPERA_ALLOC {name}: allocs/op={} reallocs/op={} bytes/op={} ops={} (budget {budget})",
-            sample.allocs,
-            sample.reallocs,
-            sample.bytes,
-            sample.allocs + sample.reallocs
+            "VESPERA_ALLOC {name}: allocs/op={} reallocs/op={} bytes/op={} ops/op={} (budget {budget})",
+            sample.per_op(sample.allocs),
+            sample.per_op(sample.reallocs),
+            sample.per_op(sample.bytes),
+            sample.per_op(sample.ops())
         );
     }
+    // The budget is per op; compare the raw total against `budget * iters`
+    // so a fractional per-op excess still fails.
     for &(name, sample, budget) in &cases {
-        let ops = sample.allocs + sample.reallocs;
         assert!(
-            ops <= budget,
-            "{name} allocation regressed: {ops} alloc-ops/op \
-             (allocs={}, reallocs={}) exceeds budget {budget}",
+            sample.ops() <= budget * sample.iters,
+            "{name} allocation regressed: {} alloc-ops/op \
+             (allocs={}, reallocs={} over {} ops) exceeds budget {budget}",
+            sample.per_op(sample.ops()),
             sample.allocs,
-            sample.reallocs
+            sample.reallocs,
+            sample.iters
         );
     }
 }

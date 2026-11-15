@@ -33,15 +33,14 @@ fn reentrant_registration_returns_err_not_deadlock() {
 /// permanent "re-entrant" state where every future registration falsely fails.
 #[test]
 fn factory_panic_clears_reentrancy_flag() {
-    // Silence the default panic hook for the intentional panic below.
-    let prev = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
+    // The default panic hook stays installed: swapping the process-global
+    // hook would swallow the panic message of the other test in this binary
+    // if it failed concurrently.  The intentional panic below only prints.
     let panicked = std::panic::catch_unwind(|| {
         let _ = try_register_app_named("panic_app", || -> Router {
             panic!("intentional factory panic");
         });
     });
-    std::panic::set_hook(prev);
     assert!(
         panicked.is_err(),
         "factory panic should propagate to the caller"

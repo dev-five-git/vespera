@@ -94,7 +94,9 @@ impl Principal {
 pub const SPRING_SCOPE_PREFIX: &str = "SCOPE_";
 
 /// Rejection of the [`Principal`] extractor: the request carries no
-/// principal.  Responds `401 Unauthorized` with a plain-text body.
+/// principal.  Responds `401 Unauthorized` with a plain-text body and the
+/// `WWW-Authenticate: Bearer` challenge RFC 9110 §15.5.2 requires on a
+/// `401`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MissingPrincipal;
 
@@ -103,7 +105,12 @@ pub const MISSING_PRINCIPAL_MSG: &str = "authentication required";
 
 impl IntoResponse for MissingPrincipal {
     fn into_response(self) -> Response {
-        (StatusCode::UNAUTHORIZED, MISSING_PRINCIPAL_MSG).into_response()
+        (
+            StatusCode::UNAUTHORIZED,
+            [(http::header::WWW_AUTHENTICATE, "Bearer")],
+            MISSING_PRINCIPAL_MSG,
+        )
+            .into_response()
     }
 }
 
@@ -218,6 +225,23 @@ mod tests {
         #[case] body: &str,
     ) {
         assert_eq!(call(principal, path).await, (status, body.to_owned()));
+    }
+
+    #[tokio::test]
+    async fn missing_principal_answers_401_with_a_bearer_challenge() {
+        let response = MissingPrincipal.into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response
+                .headers()
+                .get(http::header::WWW_AUTHENTICATE)
+                .unwrap(),
+            "Bearer"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body, MISSING_PRINCIPAL_MSG.as_bytes());
     }
 
     #[test]

@@ -343,8 +343,9 @@ fn current_thread_block_on_never_pulls_inline() {
     );
 }
 
-/// Round 12: an inline pull runs outside the runtime context, so Tokio's
-/// blocking APIs work in it exactly as on the `spawn_blocking` producer
+/// Round 12: an inline pull runs under `block_in_place` (still inside the
+/// runtime context: `Handle::current()` works), so Tokio's blocking APIs work
+/// in it exactly as on the `spawn_blocking` producer
 /// (before, `blocking_recv` panicked "Cannot block the current thread from
 /// within a runtime" and every upload failed with a body error `400`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
