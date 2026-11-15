@@ -562,6 +562,33 @@ fn ambiguous_alias_used_by_a_parsed_route_file() {
     assert!(check_ambiguous_aliases(&metadata, &file_cache, &[]).is_err());
 }
 
+/// Two renamed types sharing a Rust ident each reference THEMSELVES through
+/// that ident (`TreeB.children` used to `$ref` the first-sorted `TreeA`).
+#[test]
+fn renamed_self_reference_resolves_to_its_own_component() {
+    let tree = |name: &str| {
+        renamed(
+            name,
+            "Node",
+            &format!("#[schema(name = \"{name}\")] struct Node {{ children: Vec<Node> }}"),
+        )
+    };
+    let mut metadata = CollectedMetadata::new();
+    metadata.structs = vec![tree("TreeA"), tree("TreeB")];
+    let (known, definitions) = build_schema_lookups(&metadata, &[]);
+    let schemas =
+        parse_component_schemas(&metadata, &known, &definitions, &HashMap::new(), &HashMap::new())
+            .unwrap();
+    for name in ["TreeA", "TreeB"] {
+        let json = serde_json::to_value(&schemas[name]).unwrap();
+        assert_eq!(
+            json["properties"]["children"]["items"]["$ref"],
+            format!("#/components/schemas/{name}"),
+            "{json}"
+        );
+    }
+}
+
 #[test]
 fn struct_file_index_is_path_ordered() {
     let file_cache = HashMap::from([
