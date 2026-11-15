@@ -64,7 +64,7 @@ class NativeLoaderReadOnlyTmpdirTest {
             assertEquals(0, child.exitValue(), output);
             String line = output.lines().filter(l -> l.startsWith("EXTRACTED=")).findFirst().orElseThrow();
             Path extracted = Paths.get(line.substring("EXTRACTED=".length()));
-            assertTrue(extracted.startsWith(base.toAbsolutePath()),
+            assertTrue(extracted.startsWith(base.toRealPath()),
                     "extracted into the configured, reusable directory: " + output);
             assertTrue(Files.isRegularFile(extracted));
             assertTrue(Files.notExists(missingTmp), "java.io.tmpdir was never needed");

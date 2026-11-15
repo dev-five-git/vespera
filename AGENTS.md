@@ -629,7 +629,8 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 #                   RUSTFLAGS) + bridge JAR per side, one fresh JVM per side per
 #                   round running libs/vespera-bridge/bench/JniDispatchBench.java
 #                   (sync / direct / streaming GET, 64 KiB full-streaming POST,
-#                   async GET); logic in scripts/jni-bench-interleaved.sh +
+#                   async GET, VesperaClient 16 KiB text echo); logic in
+#                   scripts/jni-bench-interleaved.sh +
 #                   scripts/jni-bench-compare.ts (unit-tested by `bun test`).
 #                   Local: CARGO_JOBS=2 scripts/jni-bench-interleaved.sh origin/main
 #                   jni-bench.yml stays nightly + informational (*BenchTest suite).

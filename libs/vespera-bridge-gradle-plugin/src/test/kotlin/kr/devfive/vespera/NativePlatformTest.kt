@@ -208,6 +208,11 @@ class NativePlatformTest {
     fun rejectsArchAliasesTheLoaderNeverLooksUp(key: String, suggested: String) {
         val alias = assertThrows<IllegalArgumentException> { NativePlatform.osOfPlatformKey(key) }
         assertTrue(alias.message!!.contains("use '$suggested'"), alias.message)
+        assertTrue(alias.message!!.startsWith("vespera.targets key '$key'"), alias.message)
+        val named = assertThrows<IllegalArgumentException> {
+            NativePlatform.osOfPlatformKey(key, "vespera.nativeJarPlatforms entry")
+        }
+        assertTrue(named.message!!.startsWith("vespera.nativeJarPlatforms entry '$key'"), named.message)
     }
 
     @ParameterizedTest

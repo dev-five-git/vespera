@@ -218,11 +218,13 @@ class ProxyControllerBodyHeaderTest {
      * {@code MockHttpServletRequest} folds {@code Accept}/{@code accept} into one
      * name, so the test above never reaches the merge branch. A container that
      * reports each spelling separately does: the case variants must merge into
-     * one lower-cased entry, both before and after the eight-name inline window.
+     * one lower-cased entry, both inside and past the
+     * {@link HeaderPolicy#DUPLICATE_SCAN_LIMIT}-name linear-scan window (with
+     * that many fillers the first case variant is checked against the set).
      */
     @Test
     void caseVariantHeaderNamesAreMergedIntoOneEntry() {
-        for (int filler : new int[] {0, 12}) {
+        for (int filler : new int[] {0, HeaderPolicy.DUPLICATE_SCAN_LIMIT}) {
             CaseSensitiveHeadersRequest req = new CaseSensitiveHeadersRequest();
             req.add("Connection", "X-Hop");
             req.add("X-Hop", "drop-me");
