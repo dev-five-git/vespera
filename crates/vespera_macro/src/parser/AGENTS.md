@@ -48,6 +48,8 @@ parser/schema/
 ├── schema_attrs.rs                 # #[schema(...)] constraint extraction (incl. value_type)
 ├── scoped_ident.rs                 # Module-scoped keys for renames sharing an ident
 ├── wire_override.rs                # value_type / serde with / into / from schema overrides
+├── embedded.rs + embedded/         # Reopen embedded objects for flatten / tagged payloads
+│                                   #   (embedded/tests.rs)
 ├── request_view.rs + request_view/ # {Name}Input request views (request_view/tests.rs)
 └── snapshots/                      # insta test snapshots
 ```

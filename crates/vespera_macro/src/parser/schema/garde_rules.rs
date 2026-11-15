@@ -412,9 +412,12 @@ fn slice_elem(ty: &Type) -> Option<(&Type, bool)> {
 /// syntax error in ECMA-262's `u` mode), or inside a character class a nested class / POSIX class (`[a[b]]`,
 /// `[[:alpha:]]`), a set operation (`&&`, `--`, `~~`) or a leading `]`
 /// (literal in Rust, an empty class in ECMA-262) — makes it skipped rather
-/// than documented wrongly. Known limitation: `\d` / `\w` / `\s` / `\b` are
-/// Unicode-aware in Rust but ASCII in ECMA-262, so the documented pattern may
-/// be stricter.
+/// than documented wrongly. Known limitations, where the documented pattern
+/// may be stricter than garde: `\d` / `\w` / `\b` are Unicode-aware in Rust
+/// but ASCII in ECMA-262; `.` matches anything but `\n` in Rust, while
+/// ECMA-262 also excludes `\r`, U+2028 and U+2029 (`^.+$` rejects `"a\rb"`,
+/// which garde accepts). `\s` is Unicode whitespace in both, but the sets
+/// differ by U+0085 (Rust only) and U+FEFF (ECMA-262 only).
 fn is_ecma_compatible(pattern: &str) -> bool {
     let mut chars = pattern.chars().peekable();
     let mut in_class = false;

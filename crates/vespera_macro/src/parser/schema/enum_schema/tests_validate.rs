@@ -110,3 +110,47 @@ fn internally_tagged_multi_field_tuple_variant_is_left_to_serde() {
     };
     assert!(validate_enum_for_schema(&enum_item).is_ok());
 }
+
+/// M1: a container documented as another type on both sides (`value_type`,
+/// serde `into` + `from` / `try_from`) never uses the tagged layout, so its
+/// newtype payloads are not checked; one overridden side still is.
+#[rstest]
+#[case::value_type("#[schema(value_type = String)]", false)]
+#[case::into_try_from(r#"#[serde(into = "String", try_from = "String")]"#, false)]
+#[case::into_from(r#"#[serde(into = "String", from = "String")]"#, false)]
+#[case::into_only(r#"#[serde(into = "String")]"#, true)]
+#[case::from_only(r#"#[serde(from = "String")]"#, true)]
+fn container_override_skips_the_tagged_layout(#[case] attrs: &str, #[case] is_error: bool) {
+    let enum_item: syn::ItemEnum = syn::parse_str(&format!(
+        r#"{attrs} #[serde(tag = "t")] enum E {{ A(u8) }}"#
+    ))
+    .unwrap();
+    assert_eq!(
+        validate_enum_for_schema(&enum_item).is_err(),
+        is_error,
+        "{attrs}"
+    );
+}
+
+/// serde itself accepts the M1 enum: the tag never reaches the wire.
+#[test]
+fn serde_converts_an_overridden_internally_tagged_enum() {
+    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    #[serde(tag = "t", into = "String", try_from = "String")]
+    enum E {
+        A(u8),
+    }
+    impl From<E> for String {
+        fn from(E::A(n): E) -> Self {
+            n.to_string()
+        }
+    }
+    impl TryFrom<String> for E {
+        type Error = std::num::ParseIntError;
+        fn try_from(s: String) -> Result<Self, Self::Error> {
+            s.parse().map(Self::A)
+        }
+    }
+    assert_eq!(serde_json::to_string(&E::A(3)).unwrap(), r#""3""#);
+    assert!(matches!(serde_json::from_str::<E>(r#""4""#), Ok(E::A(4))));
+}

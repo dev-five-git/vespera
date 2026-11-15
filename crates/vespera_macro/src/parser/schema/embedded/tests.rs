@@ -48,6 +48,8 @@ const DEFINITIONS: &[(&str, &str)] = &[
         "#[serde(deny_unknown_fields)] struct Tree<T> { v: T, kids: Vec<Tree<T>> }",
     ),
     ("Loop", "struct Loop(Box<Loop>);"),
+    ("Kind", "enum Kind { A, B, #[serde(other)] Other }"),
+    ("UK", "#[serde(untagged)] enum UK { E(Kind) }"),
 ];
 
 fn lookups() -> (HashSet<String>, HashMap<String, String>) {
@@ -212,6 +214,61 @@ fn serde_hides_the_other_keys_from_embedded_values() {
     assert!(from_str::<E>(r#"{"t":"A","v":1,"kids":[]}"#).is_ok());
 }
 
+/// Round 17 M3 / L1: what serde reads from a flattened externally tagged
+/// enum (the first variant key, any other is left to the outer struct) and
+/// from one nested in an internally tagged payload (exactly one entry next
+/// to the tag; the `#[serde(other)]` catch-all from its map form too).
+#[test]
+#[allow(dead_code, clippy::items_after_statements)]
+fn serde_reads_keyed_enums_from_the_remaining_map() {
+    use serde::Deserialize;
+    use serde_json::from_str;
+
+    #[derive(Deserialize)]
+    enum Shape {
+        Square(u8),
+        Point,
+    }
+    #[derive(Deserialize)]
+    struct Flat {
+        id: i32,
+        #[serde(flatten)]
+        s: Shape,
+    }
+    assert!(from_str::<Flat>(r#"{"id":1,"Point":null,"Square":3}"#).is_ok());
+    assert!(from_str::<Flat>(r#"{"id":1,"Square":3,"Point":null}"#).is_ok());
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum UE {
+        E(Shape),
+    }
+    #[derive(Deserialize)]
+    enum Kind {
+        A,
+        B,
+        #[serde(other)]
+        Other,
+    }
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum UK {
+        E(Kind),
+    }
+    #[derive(Deserialize)]
+    #[serde(tag = "t")]
+    enum O {
+        Z(UE),
+        K(UK),
+    }
+    assert!(from_str::<O>(r#"{"t":"Z","Point":null}"#).is_ok());
+    assert!(from_str::<O>(r#"{"t":"Z","Point":null,"extra":1}"#).is_err());
+    assert!(from_str::<O>(r#"{"t":"Z","Square":3,"extra":1}"#).is_err());
+    assert!(from_str::<O>(r#"{"t":"K","A":null}"#).is_ok());
+    assert!(from_str::<O>(r#"{"t":"K","Foo":null}"#).is_ok());
+    assert!(from_str::<O>(r#"{"t":"K","A":null,"extra":1}"#).is_err());
+}
+
 #[rstest]
 // Round 16 S-M1: a closed `$ref` variant and a map variant of a flattened
 // untagged enum.
@@ -254,6 +311,15 @@ fn serde_hides_the_other_keys_from_embedded_values() {
 #[case::internally_tagged_recursive_generic(
     "internally_tagged_recursive_generic",
     r#"#[serde(tag = "t")] enum E { A(Tree<u8>) }"#
+)]
+// (Round 17 M3, the request-view `anyOf` of a flattened externally tagged
+// enum: `flatten_newtype_enum` above and `struct_views_flatten_external_enum`.)
+// Round 17 L1: a nested externally tagged enum in a tagged payload keeps a
+// single entry next to the tag (unit variants included) and reads its
+// `#[serde(other)]` catch-all from the map form too.
+#[case::internally_tagged_nested_external(
+    "internally_tagged_nested_external",
+    r#"#[serde(tag = "t")] enum O { Z(UE), K(UK) }"#
 )]
 fn embedded_schemas_accept_the_other_keys(#[case] name: &str, #[case] src: &str) {
     insta::assert_snapshot!(format!("embedded_{name}"), both_views(src));

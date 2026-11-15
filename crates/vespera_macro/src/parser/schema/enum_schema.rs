@@ -9,7 +9,7 @@ use std::{
 use vespera_core::schema::{Schema, SchemaRef};
 
 use super::serde_attrs::{
-    SerdeEnumRepr, extract_deny_unknown_fields, extract_doc_comment, extract_enum_repr,
+    SerdeEnumRepr, SerdeSide, extract_deny_unknown_fields, extract_doc_comment, extract_enum_repr,
     extract_rename_all_fields_for, extract_rename_all_for, extract_untagged,
 };
 
@@ -17,7 +17,7 @@ mod representations;
 mod unit;
 mod variant;
 
-pub(super) use representations::{without_other_map, without_single_key_bounds};
+pub(super) use representations::{single_entry_enum, without_other_map, without_single_key_bounds};
 pub(super) use unit::derives_serde_repr;
 
 /// The two serde renaming rules an enum container can carry.
@@ -219,6 +219,12 @@ pub fn validate_enum_for_schema(enum_item: &syn::ItemEnum) -> syn::Result<()> {
     let SerdeEnumRepr::InternallyTagged { tag } = extract_enum_repr(&enum_item.attrs) else {
         return Ok(());
     };
+    // A container documented as another type on BOTH sides (`value_type`, or
+    // serde `into` + `from` / `try_from`) never uses the tagged layout.
+    let overridden = |side| super::wire_override::container_override_type(&enum_item.attrs, side);
+    if overridden(SerdeSide::Serialize).is_some() && overridden(SerdeSide::Deserialize).is_some() {
+        return Ok(());
+    }
     for variant in &enum_item.variants {
         // An untagged variant carries no tag, so any payload is fine.
         if variant::is_variant_omitted(variant) || extract_untagged(&variant.attrs) {

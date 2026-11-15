@@ -34,8 +34,10 @@
 //! - an externally tagged enum mixes unit and data variants (a unit variant
 //!   is also read from the map form `{"Name": null}`),
 //! - a `#[serde(flatten)]` field is an `Option` (its keys accept anything,
-//!   failing values make it `None`), or follows a flattened map (which also
-//!   reads its keys),
+//!   failing values make it `None`), follows a flattened map (which also
+//!   reads its keys), or is a type parameter (it may be either) — seen
+//!   through its `value_type` and `Box` / `Arc` / `Rc` / `Cow` / `&`, like
+//!   the schema builder sees it,
 //! - an enum variant is aliased, is the `#[serde(other)]` catch-all, or has
 //!   a one-sided variant-level `serialize_with` / `deserialize_with`, or is
 //!   an adjacently tagged `Option` newtype (its content key may be omitted),
@@ -72,6 +74,7 @@ use super::{
         extract_rename_all_fields_for, extract_rename_all_for, extract_serde_skip_flags,
         extract_tag, extract_untagged,
     },
+    struct_schema::{flattened_member, peel},
     wire_override::container_override_type,
 };
 use crate::schema_macro::type_utils::is_option_type;
@@ -302,7 +305,7 @@ fn map_bearing_structs(items: &[&syn::Item]) -> BTreeSet<String> {
                     .named
                     .iter()
                     .filter(|field| extract_flatten(&field.attrs))
-                    .any(|field| reads_unlisted_keys(&field.ty, &bearing))
+                    .any(|field| reads_unlisted_keys(field, &bearing))
             {
                 bearing.insert(item.ident.to_string());
             }
@@ -313,10 +316,12 @@ fn map_bearing_structs(items: &[&syn::Item]) -> BTreeSet<String> {
     }
 }
 
-/// A flattened member of type `ty` (seen through an `Option`) reads every
+/// A flattened `field` (its `value_type`, seen through `Box` / `Arc` / ...
+/// and an `Option`, exactly as `struct_schema::flatten` sees it) reads every
 /// buffered key: a map, or a struct in `map_bearing`.
-fn reads_unlisted_keys(ty: &syn::Type, map_bearing: &BTreeSet<String>) -> bool {
-    let ty = crate::schema_macro::type_utils::option_inner(ty).unwrap_or(ty);
+fn reads_unlisted_keys(field: &syn::Field, map_bearing: &BTreeSet<String>) -> bool {
+    let constraints = extract_schema_constraints(&field.attrs);
+    let ty = peel(flattened_member(field, &constraints).0);
     is_map_type(ty)
         || matches!(ty, syn::Type::Path(path) if path.path.segments.last()
             .is_some_and(|segment| map_bearing.contains(&segment.ident.to_string())))
@@ -351,6 +356,7 @@ fn struct_differs(item: &syn::ItemStruct, map_bearing: &BTreeSet<String>) -> boo
     fields.named.iter().any(field_differs)
         || flatten_differs(
             &fields.named,
+            &item.generics,
             extract_deny_unknown_fields(&item.attrs),
             map_bearing,
         )
@@ -361,23 +367,37 @@ fn struct_differs(item: &syn::ItemStruct, map_bearing: &BTreeSet<String>) -> boo
 /// its keys (it becomes `None`), a flattened map (or a struct flattening
 /// one) declared before another flattened member also reads that member's
 /// keys, and under `deny_unknown_fields` a flattened map is written but
-/// never read (the request view stays closed).
+/// never read (the request view stays closed). A flattened type parameter
+/// may be any of these (`W<Option<Page>>`), so it differs too. Members are
+/// seen through `value_type` / `Box` / `Arc` / ... like the schema builder
+/// sees them ([`flattened_member`]).
 fn flatten_differs(
     fields: &syn::punctuated::Punctuated<syn::Field, syn::Token![,]>,
+    generics: &syn::Generics,
     deny_unknown_fields: bool,
     map_bearing: &BTreeSet<String>,
 ) -> bool {
     let mut map_seen = false;
     for field in fields.iter().filter(|field| extract_flatten(&field.attrs)) {
-        if map_seen || is_option_type(&field.ty) {
+        let constraints = extract_schema_constraints(&field.attrs);
+        let (ty, optional) = flattened_member(field, &constraints);
+        if map_seen || optional || is_type_param(peel(ty), generics) {
             return true;
         }
-        map_seen = reads_unlisted_keys(&field.ty, map_bearing);
+        map_seen = reads_unlisted_keys(field, map_bearing);
         if map_seen && deny_unknown_fields {
             return true;
         }
     }
     false
+}
+
+/// `ty` is one of `generics`' type parameters (`T`).
+fn is_type_param(ty: &syn::Type, generics: &syn::Generics) -> bool {
+    matches!(ty, syn::Type::Path(path) if path.qself.is_none()
+    && path.path.get_ident().is_some_and(|ident| {
+        generics.type_params().any(|param| param.ident == *ident)
+    }))
 }
 
 /// A map type serde reads through `deserialize_map` (by its last segment).
@@ -514,7 +534,12 @@ fn enum_differs(item: &syn::ItemEnum, map_bearing: &BTreeSet<String>) -> bool {
                 || match &variant.fields {
                     syn::Fields::Named(fields) => {
                         fields.named.iter().any(field_differs)
-                            || flatten_differs(&fields.named, deny_unknown_fields, map_bearing)
+                            || flatten_differs(
+                                &fields.named,
+                                &item.generics,
+                                deny_unknown_fields,
+                                map_bearing,
+                            )
                     }
                     syn::Fields::Unnamed(fields) => {
                         tuple_differs(fields, false)

@@ -30,7 +30,9 @@ use crate::schema_macro::type_utils::is_option_type;
 mod flatten;
 
 use flatten::{FlatPart, flatten_part};
-pub(super) use flatten::{flattened_unit_variants, resolve_reference, resolve_type};
+pub(super) use flatten::{
+    flattened_member, flattened_unit_variants, peel, resolve_reference, resolve_type,
+};
 
 /// Parses a Rust struct into an `OpenAPI` Schema.
 ///
@@ -655,11 +657,13 @@ fn apply_constraints(schema: &mut Schema, c: &SchemaConstraints) {
     if let Some(v) = c.maximum {
         schema.maximum = Some(v);
     }
+    // A bare flag makes the bound already documented (a garde `range`, the
+    // type's own `minimum: 0`) exclusive.
     if c.exclusive_minimum == Some(true) {
-        schema.exclusive_minimum = c.minimum;
+        schema.exclusive_minimum = schema.minimum;
     }
     if c.exclusive_maximum == Some(true) {
-        schema.exclusive_maximum = c.maximum;
+        schema.exclusive_maximum = schema.maximum;
     }
     if let Some(v) = c.multiple_of {
         schema.multiple_of = Some(v);
