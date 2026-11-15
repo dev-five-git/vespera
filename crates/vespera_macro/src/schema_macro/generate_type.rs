@@ -43,6 +43,7 @@ use super::validation::{
     validate_relation_adapters, validate_rename_fields,
 };
 use crate::metadata::StructMetadata;
+use crate::parser::schema::SerdeSide;
 use crate::parser::strip_raw_prefix_owned;
 
 /// Generate a new struct type from an existing type with field filtering
@@ -64,8 +65,8 @@ pub fn generate_schema_type_code(
     let source_module_path = defined_in.unwrap_or_else(|| extract_module_path(&input.source_type));
 
     // Parse the struct definition
-    let parsed_struct: syn::ItemStruct = file_cache::parse_struct_cached(&struct_def.definition)
-        .map_err(|e| {
+    let mut parsed_struct: syn::ItemStruct =
+        file_cache::parse_struct_cached(&struct_def.definition).map_err(|e| {
             syn::Error::new_spanned(
                 &input.source_type,
                 format!("failed to parse struct definition for `{source_type_name}`: {e}"),
@@ -81,6 +82,7 @@ pub fn generate_schema_type_code(
             ),
         ));
     }
+    super::instantiate::name_self_in_types(&mut parsed_struct);
     // A generic source takes the call's type arguments (`Page<User>`).
     let generic_fields: Vec<syn::Type> = parsed_struct
         .fields
@@ -186,8 +188,14 @@ pub fn generate_schema_type_code(
     let struct_doc_attrs = extract_doc_attrs(&parsed_struct.attrs);
 
     // Determine the effective rename_all strategy
+    // (`multipart`: the deserialize side, which the `Multipart` derive reads).
+    let rename_side = if input.multipart {
+        SerdeSide::Deserialize
+    } else {
+        SerdeSide::Serialize
+    };
     let effective_rename_all =
-        determine_rename_all(input.rename_all.as_ref(), &parsed_struct.attrs);
+        determine_rename_all(input.rename_all.as_ref(), &parsed_struct.attrs, rename_side);
     let rename_all = RenameAll::new(
         input.rename_all.as_ref(),
         &parsed_struct.attrs,
@@ -258,6 +266,20 @@ pub fn generate_schema_type_code(
             .filter(|name| !seen.insert(name.clone()))
             .collect()
     };
+    // The source fields `partial` wraps in `Option` (a wrapped field's garde
+    // `matches(other)` then compares two `Option`s).
+    let wrapped_fields: HashSet<String> = (parsed_struct.fields.iter())
+        .filter_map(|field| field.ident.as_ref().map(|ident| (field, ident)))
+        .map(|(field, ident)| (field, strip_raw_prefix_owned(ident.to_string())))
+        .filter(|(field, name)| {
+            let (option, relation) = (
+                is_option_type(&field.ty),
+                is_seaorm_relation_type(&field.ty),
+            );
+            should_wrap_in_option(name, partial_all, &partial_set, option, relation)
+        })
+        .map(|(_, name)| name)
+        .collect();
     // The module the DTO is emitted in (`None` unknown): a `From` reading a
     // field it cannot see is not emitted.
     let call_site = call_site_module();
@@ -504,7 +526,7 @@ pub fn generate_schema_type_code(
             let mut carried =
                 carried_field_attrs(&field.attrs, schema_derived, &source_module_path, renamed);
             if should_wrap_option {
-                carried = carried.for_option_wrap();
+                carried = carried.for_option_wrap(&|name| wrapped_fields.contains(name));
             }
             any_deprecated |= carried.deprecated;
             let cfg_serde = carried.cfg_serde_attrs();
@@ -539,6 +561,7 @@ pub fn generate_schema_type_code(
                     &source_module_path,
                     should_wrap_option,
                 );
+                let form_cfg_serde = carried.multipart_cfg_serde_attrs();
                 // A bare `Vec` reads "no parts" as `[]`: the request schema
                 // must not list it as required (a hand-written Multipart
                 // struct gets the same in its stored definition).
@@ -564,6 +587,7 @@ pub fn generate_schema_type_code(
                         #(#form_data_attrs)*
                         #vec_default
                         #serde_carry
+                        #(#form_cfg_serde)*
                         #form_name_attr
                         #vis #dto_field_ident: #field_ty
                     }

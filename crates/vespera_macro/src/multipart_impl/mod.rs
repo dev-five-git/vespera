@@ -114,7 +114,11 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
     // unknown field name; non-strict ignores it.  Replaces the trailing
     // `else { ... }` of the previous `if __field_name__ == "..." else if`
     // chain.  Cold path: the owned name is allocated only on rejection.
-    let unknown_field_arm = if strict {
+    // `#[serde(deny_unknown_fields)]` rejects unknown (and nameless) parts
+    // too: the schema closes the object (`additionalProperties: false`),
+    // while the runtime used to skip them.
+    let reject_unknown = strict || crate::parser::extract_deny_unknown_fields(&input.attrs);
+    let unknown_field_arm = if reject_unknown {
         quote! {
             _ => {
                 return std::result::Result::Err(
@@ -130,7 +134,7 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
         quote! { _ => { __field__.__skip().await?; } }
     };
 
-    let missing_name_fallback = if strict {
+    let missing_name_fallback = if reject_unknown {
         quote! {
             return std::result::Result::Err(
                 vespera::multipart::TypedMultipartError::NamelessField
@@ -319,6 +323,19 @@ mod tests {
                 .unwrap();
         let code = process_derive(&input).to_string();
         assert!(code.contains("DuplicateField"));
+        assert!(code.contains("UnknownField"));
+        assert!(code.contains("NamelessField"));
+    }
+
+    /// L2 (round 17): `deny_unknown_fields` rejects unknown / nameless
+    /// parts (the schema is closed) without strict's duplicate check.
+    #[test]
+    fn test_process_derive_deny_unknown_fields() {
+        let input: syn::DeriveInput =
+            syn::parse_str("#[serde(deny_unknown_fields)] struct MyForm { pub name: String }")
+                .unwrap();
+        let code = process_derive(&input).to_string();
+        assert!(!code.contains("DuplicateField"));
         assert!(code.contains("UnknownField"));
         assert!(code.contains("NamelessField"));
     }

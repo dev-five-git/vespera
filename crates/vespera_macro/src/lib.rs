@@ -185,6 +185,8 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
 /// - `#[serde(rename_all = "camelCase")]` — rename all fields (highest priority)
 /// - `#[try_from_multipart(rename_all = "camelCase")]` — fallback rename
 /// - `#[try_from_multipart(strict)]` — reject unknown/duplicate fields
+/// - `#[serde(deny_unknown_fields)]` — reject unknown (and nameless) parts
+///   (`400`), matching the closed request schema
 ///
 /// **Field-level:**
 /// - `#[form_data(field_name = "...")]` — explicit field name override

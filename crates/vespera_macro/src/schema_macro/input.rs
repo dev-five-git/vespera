@@ -428,11 +428,11 @@ impl Parse for SchemaTypeInput {
                     schema_name = Some(name_lit.value());
                 }
                 "rename_all" => {
-                    // rename_all = "camelCase" - serde rename_all strategy
-                    // Validation is delegated to serde at compile time
+                    // rename_all = "camelCase" - serde rename_all strategy,
+                    // checked against serde's rules (see `rename_rule`).
                     input.parse::<Token![=]>()?;
                     let rename_all_lit: LitStr = input.parse()?;
-                    rename_all = Some(rename_all_lit.value());
+                    rename_all = Some(super::transformation::rename_rule(&rename_all_lit)?);
                 }
                 "multipart" => {
                     // bare `multipart` - derive Multipart instead of serde
@@ -768,6 +768,18 @@ mod tests {
         let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
         assert_eq!(input.schema_name.as_deref(), Some("CustomName"));
         assert!(input.ignore_schema);
+    }
+
+    /// L4 (round 17): an unknown rule is an error (in `multipart` mode
+    /// nothing else rejected it).
+    #[test]
+    fn test_parse_schema_type_input_rejects_unknown_rename_all() {
+        let tokens = quote::quote!(NewType from User, multipart, rename_all = "camelcase");
+        let err = syn::parse2::<SchemaTypeInput>(tokens).err().unwrap();
+        assert_eq!(
+            err.to_string(),
+            "unknown rename rule `rename_all = \"camelcase\"`, expected one of \"lowercase\", \"UPPERCASE\", \"PascalCase\", \"camelCase\", \"snake_case\", \"SCREAMING_SNAKE_CASE\", \"kebab-case\", \"SCREAMING-KEBAB-CASE\""
+        );
     }
 
     #[test]

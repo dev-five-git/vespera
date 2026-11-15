@@ -347,8 +347,13 @@ pub(super) fn maybe_generate_same_file_relation_override(
     schema_storage: &HashMap<String, StructMetadata>,
     derive_clone: bool,
 ) -> syn::Result<(TokenStream, TokenStream)> {
-    let (dto_name, dto_struct) = explicit_adapter_struct(field_name, adapter_name, schema_storage)?;
+    let (dto_name, mut dto_struct) =
+        explicit_adapter_struct(field_name, adapter_name, schema_storage)?;
     let dto_ident = adapter_name;
+    // The proxy repeats the DTO's serde paths and field types, where `Self`
+    // is the proxy (`Self::default_name`: E0599): spelled with the DTO.
+    super::instantiate::name_self_in_types(&mut dto_struct);
+    super::transformation::name_self_in_paths(&mut dto_struct, &dto_ident.clone().into());
     let type_name = crate::parser::strip_raw_prefix_owned(new_type_name.to_string());
     let field_pascal = snake_to_pascal_case(field_name);
     let wrapper_ident = syn::Ident::new(
@@ -527,6 +532,12 @@ mod tests {
     #[case::cfg_attr_cfg(
         "adapter_cfg_attr_cfg",
         "struct UserInArticle { id: i32, #[cfg_attr(feature = \"a\", cfg(feature = \"b\"), serde(rename = \"n\"))] name: String }"
+    )]
+    // L3 (round 17): `Self` in the DTO's serde paths and field types names
+    // the DTO, not the proxy (`<Proxy>::default_name`: E0599).
+    #[case::self_paths(
+        "adapter_self_paths",
+        "#[serde(default = \"Self::make\")] struct UserInArticle { #[serde(default = \"Self::default_name\")] name: String, next: Option<Box<Self>> }"
     )]
     fn adapter_helpers_snapshot(#[case] name: &str, #[case] definition: &str) {
         let storage = to_storage(vec![create_test_struct_metadata(

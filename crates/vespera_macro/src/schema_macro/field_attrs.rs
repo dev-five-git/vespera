@@ -9,7 +9,9 @@ use quote::quote;
 use syn::punctuated::Punctuated;
 
 use super::cfg_eval::Predicate;
-use super::garde_paths::{reroot_garde_attr, reroot_garde_meta};
+use super::garde_paths::{
+    garde_meta_pins_rules, option_wrap_garde_meta, reroot_garde_attr, reroot_garde_meta,
+};
 use super::transformation::{reroot_serde_metas, serde_key};
 
 /// What a source field contributes to the generated field.
@@ -19,7 +21,7 @@ pub struct CarriedAttrs {
     pub schema: Vec<syn::Attribute>,
     /// `#[garde(..)]`, `#[deprecated]`, `#[cfg(..)]` and filtered
     /// `#[cfg_attr(..)]` attributes, emitted as written.
-    pub other: Vec<TokenStream>,
+    pub other: Vec<syn::Attribute>,
     /// `#[cfg_attr(pred, serde(..))]` items (paths re-rooted at the source
     /// module), emitted after `other`.
     pub cfg_serde: Vec<(Predicate, Vec<syn::Meta>)>,
@@ -65,14 +67,13 @@ pub fn carried_field_attrs(
             carried.schema.push(attr.clone());
         } else if path.is_ident("garde") {
             carried.garde = true;
-            let attr = reroot_garde_attr(attr, module_path);
-            carried.other.push(quote! { #attr });
+            carried.other.push(reroot_garde_attr(attr, module_path));
         } else if path.is_ident("deprecated") {
             carried.deprecated = true;
-            carried.other.push(quote! { #attr });
+            carried.other.push(attr.clone());
         } else if path.is_ident("cfg") {
             carried.cfgs.push(attr.clone());
-            carried.other.push(quote! { #attr });
+            carried.other.push(attr.clone());
         } else if path.is_ident("cfg_attr") {
             let context = (schema_derived, keep_rename, module_path);
             filtered_cfg_attr(attr, context, &mut carried);
@@ -161,7 +162,7 @@ fn filtered_cfg_items(
     if !kept.is_empty() {
         carried
             .other
-            .push(quote! { #[cfg_attr(#predicate, #(#kept),*)] });
+            .push(syn::parse_quote! { #[cfg_attr(#predicate, #(#kept),*)] });
     }
 }
 
@@ -246,8 +247,23 @@ impl CarriedAttrs {
     /// that does not parse is kept as written. A `cfg_attr` serde codec /
     /// default no longer fits the `Option` field and is dropped; its
     /// `skip_serializing_if` predicate becomes `Option::is_none` (the
-    /// source's predicate takes the unwrapped type).
-    pub fn for_option_wrap(mut self) -> Self {
+    /// source's predicate takes the unwrapped type). The `#[garde(..)]`
+    /// rules (`cfg_attr` ones too) move into `inner(..)`, which garde runs
+    /// on the `Some` value ([`option_wrap_garde_meta`]; `wrapped`: whether
+    /// the DTO wraps the named field too), unless one sets `skip` / `dive`.
+    pub fn for_option_wrap(mut self, wrapped: &dyn Fn(&str) -> bool) -> Self {
+        let pinned = std::cell::Cell::new(false);
+        for attr in &self.other {
+            map_garde_metas(attr, &|meta| {
+                pinned.set(pinned.get() || garde_meta_pins_rules(meta));
+                meta.clone()
+            });
+        }
+        if !pinned.get() {
+            for attr in &mut self.other {
+                *attr = map_garde_metas(attr, &|meta| option_wrap_garde_meta(meta, wrapped));
+            }
+        }
         self.schema = self
             .schema
             .into_iter()
@@ -315,6 +331,47 @@ impl CarriedAttrs {
             .map(|(predicate, items)| quote! { #[cfg_attr(#predicate, serde(#(#items),*))] })
             .collect()
     }
+
+    /// The `#[cfg_attr(pred, serde(..))]` attributes of a `multipart` DTO:
+    /// only the keys the `Multipart` derive reads (`rename`, `alias`,
+    /// `default`, `skip`, `skip_deserializing`). The source's derive sees
+    /// them (the compiler expands `cfg_attr` first); the DTO used to drop
+    /// them, so a cfg-gated rename / default no longer applied.
+    pub fn multipart_cfg_serde_attrs(&self) -> Vec<TokenStream> {
+        const KEYS: [&str; 5] = ["rename", "alias", "default", "skip", "skip_deserializing"];
+        self.cfg_serde
+            .iter()
+            .filter_map(|(predicate, items)| {
+                let items: Vec<&syn::Meta> = items
+                    .iter()
+                    .filter(|item| KEYS.contains(&serde_key(item).as_str()))
+                    .collect();
+                (!items.is_empty()).then(|| quote! { #[cfg_attr(#predicate, serde(#(#items),*))] })
+            })
+            .collect()
+    }
+}
+
+/// `attr` with `f` applied to its `garde(..)` metas: the attribute itself
+/// or the items of a (carried, so flattened) `cfg_attr`.
+fn map_garde_metas(attr: &syn::Attribute, f: &dyn Fn(&syn::Meta) -> syn::Meta) -> syn::Attribute {
+    if attr.path().is_ident("garde") {
+        let meta = f(&attr.meta);
+        return syn::parse_quote!(#[#meta]);
+    }
+    if attr.path().is_ident("cfg_attr")
+        && let Ok((predicate, metas)) = attr.parse_args_with(parse_cfg_attr)
+    {
+        let metas = metas.iter().map(|meta| {
+            if meta.path().is_ident("garde") {
+                f(meta)
+            } else {
+                meta.clone()
+            }
+        });
+        return syn::parse_quote!(#[cfg_attr(#predicate, #(#metas),*)]);
+    }
+    attr.clone()
 }
 
 /// A `#[schema(..)]` attribute of a field `partial` wraps in `Option` (see
@@ -575,7 +632,12 @@ mod tests {
             .collect();
         assert_eq!(schema, ["feature = \"x\""]);
         assert_eq!(serde, ["feature = \"y\""]);
-        assert!(carried.for_option_wrap().schema_default_cfgs.is_empty());
+        assert!(
+            carried
+                .for_option_wrap(&|_| false)
+                .schema_default_cfgs
+                .is_empty()
+        );
     }
 
     /// The `rename` parameter pins the wire name: a cfg-gated rename is
@@ -620,9 +682,77 @@ mod tests {
         "# [cfg_attr (feature = \"x\" , schema (value_type = :: std :: option :: Option < String >))]"
     )]
     fn option_wrap_attrs(#[case] attrs: TokenStream, #[case] expected: &str) {
-        let carried = carried_field_attrs(&field(attrs), true, &[], false).for_option_wrap();
+        let carried =
+            carried_field_attrs(&field(attrs), true, &[], false).for_option_wrap(&|_| false);
         assert!(!carried.schema_default);
         assert_eq!(render(&carried), expected);
+    }
+
+    /// M1 (round 17): a wrapped field's garde rules move into `inner(..)`
+    /// (garde runs it on the `Some` value); field-level settings and a
+    /// `matches` of another wrapped field (`peer`) stay outside; `skip` /
+    /// `dive` (which garde rejects next to `inner`) keep every rule as
+    /// written.
+    #[rstest]
+    #[case::rules(
+        quote!(#[garde(length(min = 1), custom(check))]),
+        "# [garde (inner (length (min = 1) , custom (check)))]"
+    )]
+    #[case::source_inner(
+        quote!(#[garde(inner(length(min = 1)))]),
+        "# [garde (inner (inner (length (min = 1))))]"
+    )]
+    #[case::field_level(
+        quote!(#[garde(adapt(a), rename = "n", code = "c", ascii)]),
+        "# [garde (adapt (a) , rename = \"n\" , code = \"c\" , inner (ascii))]"
+    )]
+    #[case::matches_peer(
+        quote!(#[garde(matches(peer), matches(r#peer))]),
+        "# [garde (matches (peer) , matches (r#peer))]"
+    )]
+    #[case::matches_unwrapped(
+        quote!(#[garde(matches(other), matches(a.b))]),
+        "# [garde (inner (matches (other) , matches (a . b)))]"
+    )]
+    #[case::cfg_attr(
+        quote!(#[cfg_attr(all(), garde(custom(check)), doc = "d")] #[deprecated] #[cfg(test)]),
+        "# [cfg_attr (all () , garde (inner (custom (check))) , doc = \"d\")] # [deprecated] # [cfg (test)]"
+    )]
+    #[case::dive_pins(
+        quote!(#[garde(dive)] #[cfg_attr(all(), garde(length(min = 1)))]),
+        "# [garde (dive)] # [cfg_attr (all () , garde (length (min = 1)))]"
+    )]
+    #[case::skip_pins(quote!(#[garde(skip)]), "# [garde (skip)]")]
+    #[case::not_a_list(quote!(#[garde] #[garde(= 1)]), "# [garde] # [garde (= 1)]")]
+    fn option_wrap_garde(#[case] attrs: TokenStream, #[case] expected: &str) {
+        let carried = carried_field_attrs(&field(attrs), true, &[], false)
+            .for_option_wrap(&|name| name == "peer");
+        assert_eq!(render(&carried), expected);
+    }
+
+    /// L1 (round 17): a `multipart` DTO keeps the `cfg_attr` serde keys
+    /// the `Multipart` derive reads.
+    #[test]
+    fn multipart_cfg_serde_keeps_form_keys() {
+        let attrs = field(quote!(
+            #[cfg_attr(all(), serde(rename = "f", alias = "g", skip_serializing_if = "x"))]
+            #[cfg_attr(feature = "x", serde(default, skip, skip_deserializing))]
+            #[cfg_attr(feature = "y", serde(with = "codec"))]
+        ));
+        let carried = carried_field_attrs(&attrs, true, &[], false);
+        let rendered = carried.multipart_cfg_serde_attrs();
+        assert_eq!(
+            quote!(#(#rendered)*).to_string(),
+            "# [cfg_attr (all () , serde (rename = \"f\" , alias = \"g\"))] # [cfg_attr (feature = \"x\" , serde (default , skip , skip_deserializing))]"
+        );
+    }
+
+    /// A `cfg_attr` the carry did not build (it always parses) is kept.
+    #[test]
+    fn map_garde_metas_keeps_unparseable_cfg_attr() {
+        let attr: syn::Attribute = syn::parse_quote!(#[cfg_attr(all())]);
+        let mapped = map_garde_metas(&attr, &|_| unreachable!());
+        assert_eq!(quote!(#mapped).to_string(), "# [cfg_attr (all ())]");
     }
 
     #[rstest]

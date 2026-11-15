@@ -93,7 +93,11 @@ fn test_extract_doc_attrs() {
 fn test_determine_rename_all_with_input() {
     let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[serde(rename_all = "snake_case")])];
 
-    let result = determine_rename_all(Some(&"PascalCase".to_string()), &attrs);
+    let result = determine_rename_all(
+        Some(&"PascalCase".to_string()),
+        &attrs,
+        SerdeSide::Serialize,
+    );
 
     assert_eq!(result, "PascalCase");
 }
@@ -102,16 +106,30 @@ fn test_determine_rename_all_with_input() {
 fn test_determine_rename_all_from_source() {
     let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[serde(rename_all = "snake_case")])];
 
-    let result = determine_rename_all(None, &attrs);
+    let result = determine_rename_all(None, &attrs, SerdeSide::Serialize);
 
     assert_eq!(result, "snake_case");
+}
+
+/// M2 (round 17): `multipart` mode reads the deserialize side.
+#[test]
+fn test_determine_rename_all_deserialize_side() {
+    let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
+        #[serde(rename_all(serialize = "SCREAMING_SNAKE_CASE", deserialize = "kebab-case"))]
+    )];
+    let result = determine_rename_all(None, &attrs, SerdeSide::Deserialize);
+    assert_eq!(result, "kebab-case");
+    let only_ser: Vec<syn::Attribute> =
+        vec![syn::parse_quote!(#[serde(rename_all(serialize = "PascalCase"))])];
+    let result = determine_rename_all(None, &only_ser, SerdeSide::Deserialize);
+    assert_eq!(result, "camelCase");
 }
 
 #[test]
 fn test_determine_rename_all_default() {
     let attrs: Vec<syn::Attribute> = vec![];
 
-    let result = determine_rename_all(None, &attrs);
+    let result = determine_rename_all(None, &attrs, SerdeSide::Serialize);
 
     assert_eq!(result, "camelCase");
 }
@@ -239,7 +257,8 @@ fn field_serde_attrs_cases(
     r#"#[serde(tag = "t")] #[serde(rename = "wire")]"#
 )]
 // L6 (round 16): a one-sided `rename` gets the other side's source name
-// (the DTO read `"t":"S"` as `"t":"<Dto>"` on input).
+// (the container name serde passes to `deserialize_struct`; serde never
+// reads a struct's internal tag, so the tag on input is unaffected).
 #[case::tag_with_serialize_rename(
     "container_tag_serialize_rename",
     r#"#[serde(tag = "t", rename(serialize = "wire"))]"#
@@ -471,7 +490,7 @@ fn rename_all_keeps_both_sides(
 ) {
     let attrs = parse_attrs(container);
     let input = input.map(ToString::to_string);
-    let effective = determine_rename_all(input.as_ref(), &attrs);
+    let effective = determine_rename_all(input.as_ref(), &attrs, SerdeSide::Serialize);
     let rename_all = RenameAll::new(input.as_ref(), &attrs, &effective);
     assert_eq!(rename_all.attr().to_string(), expected);
 }
