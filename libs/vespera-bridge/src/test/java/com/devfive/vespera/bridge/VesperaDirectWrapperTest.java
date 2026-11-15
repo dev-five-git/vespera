@@ -294,13 +294,21 @@ class VesperaDirectWrapperTest {
             assertTrue(invalid.getMessage().contains("heap-fallback"), invalid.getMessage());
 
             System.setProperty("vespera.direct.oversize-policy", "HeAp-FaLlBaCk");
-            assertThrows(UnsatisfiedLinkError.class,
-                    () -> VesperaDirectBufferPool.dispatchDirectPooled(new byte[1], false, true));
+            // On a virtual thread the heap fallback parks (ParkingDispatch)
+            // instead of pinning the carrier in dispatchBytes.
+            assertParked(assertThrows(UnsatisfiedLinkError.class,
+                    () -> VesperaDirectBufferPool.dispatchDirectPooled(new byte[1], false, true)));
 
             VesperaBridge.HeaderSource headers = sink -> sink.put("x-test", "yes");
-            assertThrows(UnsatisfiedLinkError.class,
+            assertParked(assertThrows(UnsatisfiedLinkError.class,
                     () -> VesperaDirectBufferPool.dispatchDirectPooled(
-                            null, "GET", "/", null, headers, null, false, true));
+                            null, "GET", "/", null, headers, null, false, true)));
+            // A platform thread keeps the direct dispatchBytes call.
+            UnsatisfiedLinkError pinned = assertThrows(UnsatisfiedLinkError.class,
+                    () -> VesperaDirectBufferPool.dispatchDirectPooled(
+                            null, "GET", "/", null, headers, new byte[5 * 1024 * 1024], false, false));
+            assertFalse(java.util.Arrays.stream(pinned.getStackTrace())
+                    .anyMatch(f -> f.getClassName().equals(ParkingDispatch.class.getName())));
         } finally {
             restoreProperty("vespera.direct.oversize-policy", previous);
         }
@@ -578,6 +586,13 @@ class VesperaDirectWrapperTest {
 
     private static boolean throwChecked(Thread ignored) throws java.io.IOException {
         throw new java.io.IOException("checked");
+    }
+
+    /** The unlinked native call was reached through {@link ParkingDispatch} (no cdylib here). */
+    private static void assertParked(UnsatisfiedLinkError unlinked) {
+        assertTrue(java.util.Arrays.stream(unlinked.getStackTrace())
+                        .anyMatch(f -> f.getClassName().equals(ParkingDispatch.class.getName())),
+                "heap fallback did not park: " + java.util.Arrays.toString(unlinked.getStackTrace()));
     }
 
     private static void restoreProperty(String name, String value) {

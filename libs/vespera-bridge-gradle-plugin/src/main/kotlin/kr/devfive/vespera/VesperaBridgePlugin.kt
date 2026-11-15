@@ -128,6 +128,9 @@ class VesperaBridgePlugin : Plugin<Project> {
                     val base = targetBase.orNull
                     val crate = ext.crateName.orNull
                     val profile = ext.cargoProfile.get()
+                    // Prebuilt-only jar: extraNativeLibs without cargoRoot /
+                    // targetDir bundles just those libraries, no local build.
+                    val prebuiltDir = if (base == null) ext.extraNativeLibs.orNull?.asFile else null
                     val expected = if (base == null) {
                         emptyList()
                     } else {
@@ -137,6 +140,10 @@ class VesperaBridgePlugin : Plugin<Project> {
                     }
                     t.doLast(object : org.gradle.api.Action<Task> {
                         override fun execute(@Suppress("UNUSED_PARAMETER") task: Task) {
+                            if (prebuiltDir != null) {
+                                requirePrebuilt(prebuiltDir)
+                                return
+                            }
                             requireLocation(crate, base)
                             expected.forEach { lib -> lib.requireExists(crate.orEmpty(), profile) }
                         }
@@ -247,6 +254,19 @@ class VesperaBridgePlugin : Plugin<Project> {
                 "Neither vespera.cargoRoot nor vespera.targetDir is set: bundleNativeLib cannot " +
                     "locate the '$crate' cdylib. Set one of them, or vespera.bundleNative = false " +
                     "when the library comes from per-platform native jars."
+            }
+        }
+
+        /**
+         * Prebuilt-only bundling (`extraNativeLibs` without `cargoRoot` /
+         * `targetDir`): fail when the directory holds no library at all,
+         * where the `Sync` would be NO-SOURCE and the jar ship none.
+         */
+        fun requirePrebuilt(dir: File) {
+            require(File(dir, "native").walk().any { it.isFile }) {
+                "vespera.extraNativeLibs ($dir) holds no native/<platform>/<lib> file and neither " +
+                    "vespera.cargoRoot nor vespera.targetDir is set: the jar would ship no native " +
+                    "library."
             }
         }
 

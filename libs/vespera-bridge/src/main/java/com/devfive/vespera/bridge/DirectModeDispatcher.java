@@ -7,20 +7,27 @@ import java.nio.ByteBuffer;
 
 /**
  * The proxy's {@link DispatchMode#DIRECT} path: a pooled direct-buffer
- * dispatch plus its two overflow fallbacks (a response stashed on the Rust
- * side, and a safe-method re-run through response streaming), and the
- * adaptive {@link DirectOverflowMemory} that streams known-large routes up
- * front.
+ * dispatch plus its overflow handling, and the adaptive
+ * {@link DirectOverflowMemory} that streams known-large routes up front.
+ *
+ * <p>An overflow normally runs the handler <em>once</em>: the finished
+ * response is kept on the Rust side (the overflow stash) and either fetched
+ * into a grown pooled buffer or, beyond the pool cap / for an event stream,
+ * streamed from the stash.  Only when the native side hands back no stash
+ * entry does the legacy fallback apply: a safe-method re-run through
+ * response streaming ({@code direct-retry-on-overflow}), which runs the
+ * handler a second time.
  *
  * <p>Only <em>safe</em> methods reach {@link #dispatch}: the controller
- * downgrades every other method to {@code SYNC} first, because an overflow
- * retry re-runs the Rust handler.
+ * downgrades every other method to {@code SYNC} first, because of that
+ * legacy re-run.  A request served through another path is recorded on the
+ * {@link ProxyExchange} ({@link DispatchEvent#mode()}).
  */
 final class DirectModeDispatcher {
 
     // Adaptive DIRECT-overflow avoidance: routes that overflowed the pooled
     // direct buffer once are streamed up front thereafter, removing the
-    // repeated DIRECT-overflow-then-stream double dispatch a known-large
+    // repeated overflow (whole response stashed, then streamed) a known-large
     // (download) route would otherwise pay on every request. Internal state,
     // so it is created directly rather than injected.
     private final DirectOverflowMemory overflowMemory = new DirectOverflowMemory();
@@ -63,7 +70,7 @@ final class DirectModeDispatcher {
             HttpServletResponse response,
             String appName, String method, String path, String query,
             VesperaBridge.HeaderSource headers, byte[] body,
-            Boolean currentThreadIsVirtual) throws IOException {
+            Boolean currentThreadIsVirtual, ProxyExchange exchange) throws IOException {
         boolean retry = shouldRetry(retryOnOverflow, method);
         ByteBuffer wireResp;
         try {
@@ -93,6 +100,7 @@ final class DirectModeDispatcher {
             // no handler ran and no response overflowed, so stream this one
             // request (any method — it runs once) without remembering the
             // route as an overflowing one.
+            ProxyExchange.servedAs(exchange, DispatchMode.STREAMING);
             streamResponse(response, appName, method, path, query, headers, body);
             return;
         } catch (VesperaBridge.BufferTooSmallException overflow) {
@@ -110,6 +118,7 @@ final class DirectModeDispatcher {
                 // Remember this route so the NEXT request to it streams up
                 // front — recorded only here, where we actually fall back.
                 overflowMemory.recordOverflow(appName, method, path, query);
+                ProxyExchange.servedAs(exchange, DispatchMode.STREAMING);
                 streamResponse(response, appName, method, path, query, headers, body);
                 return;
             }

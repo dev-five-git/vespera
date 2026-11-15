@@ -303,6 +303,14 @@ public class VesperaProxyController {
     private Object dispatch(HttpServletRequest request, ProxyServletResponse response,
             ProxyExchange exchange) throws IOException {
         final RequestShape shape = RequestShape.capture(request);
+        // Path RELATIVE to the servlet context: a Spring app deployed under
+        // a non-root context (e.g. server.servlet.context-path=/api) must
+        // still forward `/health` — not `/api/health` — so the Rust router
+        // sees exactly the URL published in the generated openapi.json.
+        // Recorded before the app is resolved: an unknown-app 404 still
+        // reports its path (DispatchEvent.path is never null).
+        final String path = pathWithinApplication(request);
+        exchange.path = path;
         final String appName = resolveAppName(request, exchange);
         final Boolean currentThreadIsVirtual;
         final DispatchMode mode;
@@ -319,18 +327,12 @@ public class VesperaProxyController {
             mode = modeResolver.resolveMode(request);
         }
         final String method = shape.method;
-        // Path RELATIVE to the servlet context: a Spring app deployed under
-        // a non-root context (e.g. server.servlet.context-path=/api) must
-        // still forward `/health` — not `/api/health` — so the Rust router
-        // sees exactly the URL published in the generated openapi.json.
-        final String path = pathWithinApplication(request);
         exchange.app = appName;
-        exchange.path = path;
         final String query = Objects.toString(request.getQueryString(), "");
         // Adaptive DIRECT-overflow avoidance: a route that overflowed the
-        // pooled direct buffer before is streamed up front, so it dispatches
-        // ONCE instead of paying the DIRECT-overflow-then-stream double
-        // dispatch again. `shouldAvoidDirect` is a single volatile read until
+        // pooled direct buffer before is streamed up front instead of paying
+        // the overflow (whole response stashed natively, then streamed)
+        // again. `shouldAvoidDirect` is a single volatile read until
         // the first overflow is recorded, so non-overflowing apps pay nothing.
         final DispatchMode effectiveMode = formSafeMode(effectiveMode(
                 mode,
@@ -389,7 +391,7 @@ public class VesperaProxyController {
             case DIRECT:
             default:
                 dispatchDirectMode(response, appName, method, path, query, headers, body,
-                        currentThreadIsVirtual);
+                        currentThreadIsVirtual, exchange);
                 return null;
         }
     }
@@ -911,23 +913,23 @@ public class VesperaProxyController {
         return true;
     }
 
-    /**
-     * {@link DispatchMode#DIRECT} boundary: a <em>safe</em> method goes to
-     * {@link DirectModeDispatcher}; every other method is served via
-     * {@code SYNC}, because a DIRECT overflow retry re-runs the handler
-     * (e.g. DELETE → 204 then 404), so the controller never double-executes
-     * a handler whose response could change.
-     */
     /** Whether a recorded DIRECT overflow makes this route stream up front (tests). */
     boolean avoidsDirect(String appName, String method, String path, String query) {
         return direct.shouldAvoidDirect(appName, method, path, query);
     }
 
+    /**
+     * {@link DispatchMode#DIRECT} boundary: a <em>safe</em> method goes to
+     * {@link DirectModeDispatcher}; every other method is served via
+     * {@code SYNC} (recorded on {@code exchange}, which may be {@code null}),
+     * because a DIRECT overflow that cannot use the stash re-runs the handler
+     * (e.g. DELETE → 204 then 404).
+     */
     void dispatchDirectMode(
             HttpServletResponse response,
             String appName, String method, String path, String query,
             VesperaBridge.HeaderSource headers, byte[] body,
-            Boolean currentThreadIsVirtual) throws IOException {
+            Boolean currentThreadIsVirtual, ProxyExchange exchange) throws IOException {
         if (!HttpMethods.isSafe(method)) {
             // DIRECT runs the Rust handler on the FIRST dispatch before any
             // overflow is known; for an UNSAFE method an overflow would 500
@@ -949,12 +951,13 @@ public class VesperaProxyController {
                 log.debug("DispatchModeResolver routed unsafe method {} to DIRECT; "
                         + "downgrading to SYNC.", method);
             }
+            ProxyExchange.servedAs(exchange, DispatchMode.SYNC);
             dispatchSync(response, appName, method, path, query, headers, body,
                     maxBufferedResponseBytes);
             return;
         }
         direct.dispatch(response, appName, method, path, query, headers, body,
-                currentThreadIsVirtual);
+                currentThreadIsVirtual, exchange);
     }
 
     /**

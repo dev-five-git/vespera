@@ -70,7 +70,14 @@ public class VesperaBridge {
         }
     }
 
+    /**
+     * Published ({@link #isInitialized()}) only after the pending
+     * configuration was applied: a dispatcher that sees it can no longer fix
+     * the engine defaults before a pending {@code configure*} value lands.
+     */
     private static volatile boolean loaded = false;
+    /** The cdylib is loaded (set before the pending configuration is applied); guarded by the class lock. */
+    private static boolean nativeLoaded = false;
     private static volatile boolean shutDown = false;
     /** Name passed to the first successful {@link #init(String)} — used to
      *  reject a later re-init with a <em>different</em> library name. */
@@ -162,7 +169,7 @@ public class VesperaBridge {
      */
     public static synchronized void init(String libraryName) {
         Objects.requireNonNull(libraryName, "libraryName");
-        if (loaded) {
+        if (nativeLoaded) {
             // Re-init with the SAME library is a no-op (friendly for test
             // harness resets / repeated Spring context starts). A DIFFERENT
             // name is a bug — a JVM process loads exactly one vespera cdylib
@@ -181,14 +188,27 @@ public class VesperaBridge {
         // Bridge JAR <-> native library release check (VesperaVersions); a
         // major.minor mismatch throws before the library is marked loaded.
         VesperaVersions.verify(VesperaBridge::nativeVersion0);
-        // Mark the native library as loaded once System.load succeeded and the
-        // versions match: the post-load configuration hooks below may still
-        // throw, but a later init() must not load the same cdylib again.
-        loaded = true;
+        completeLoad(libraryName, VesperaNativeConfig::applyAfterLoad);
+    }
+
+    /**
+     * Mark the native library as loaded once System.load succeeded and the
+     * versions match (a later init() must not load the same cdylib again,
+     * even when the post-load configuration hooks throw), apply the pending
+     * configuration (set via configure* before init; pending values beat
+     * system properties: Rust-side setter &gt; env &gt; default), and only
+     * then publish {@link #isInitialized()}. Publishing first would let a
+     * concurrent first dispatch fix the defaults before the pending values
+     * are applied.
+     */
+    static synchronized void completeLoad(String libraryName, Runnable applyPendingConfig) {
+        nativeLoaded = true;
         loadedLibraryName = libraryName;
-        // Apply pending config (set via configure* before init); pending
-        // values beat system properties (Rust-side setter > env > default).
-        VesperaNativeConfig.applyAfterLoad();
+        try {
+            applyPendingConfig.run();
+        } finally {
+            loaded = true;
+        }
     }
 
     /** Whether {@link #init(String)} has loaded the native library in this class loader. */
@@ -210,7 +230,7 @@ public class VesperaBridge {
      */
     public static synchronized boolean shutdown(Duration timeout) {
         Objects.requireNonNull(timeout, "timeout");
-        if (!loaded) {
+        if (!nativeLoaded) {
             return false;
         }
         long millis = shutdownTimeoutMillis(timeout);
@@ -271,7 +291,7 @@ public class VesperaBridge {
      */
     public static synchronized void configureStreaming(int chunkBytes, int channelCapacity) {
         BridgeInputChecks.requireStreamingConfig(chunkBytes, channelCapacity);
-        VesperaNativeConfig.setStreaming(chunkBytes, channelCapacity, loaded);
+        VesperaNativeConfig.setStreaming(chunkBytes, channelCapacity, nativeLoaded);
     }
 
     /**
@@ -286,9 +306,9 @@ public class VesperaBridge {
      * @return {@code false} when a value could not be applied (logged)
      */
     public static synchronized boolean configureRuntime(int workerThreads, int maxBlockingThreads) {
-        boolean workers = VesperaNativeConfig.RUNTIME_WORKER_THREADS.set(workerThreads, loaded);
+        boolean workers = VesperaNativeConfig.RUNTIME_WORKER_THREADS.set(workerThreads, nativeLoaded);
         boolean blocking =
-                VesperaNativeConfig.RUNTIME_MAX_BLOCKING_THREADS.set(maxBlockingThreads, loaded);
+                VesperaNativeConfig.RUNTIME_MAX_BLOCKING_THREADS.set(maxBlockingThreads, nativeLoaded);
         return workers && blocking;
     }
 
@@ -307,11 +327,11 @@ public class VesperaBridge {
      */
     public static synchronized boolean configureLimits(
             long maxRequestBytes, long maxStreamingRequestBytes, long maxBufferedResponseBytes) {
-        boolean request = VesperaNativeConfig.MAX_REQUEST_BYTES.set(maxRequestBytes, loaded);
+        boolean request = VesperaNativeConfig.MAX_REQUEST_BYTES.set(maxRequestBytes, nativeLoaded);
         boolean streaming = VesperaNativeConfig.MAX_STREAMING_REQUEST_BYTES
-                .set(maxStreamingRequestBytes, loaded);
+                .set(maxStreamingRequestBytes, nativeLoaded);
         boolean response = VesperaNativeConfig.MAX_BUFFERED_RESPONSE_BYTES
-                .set(maxBufferedResponseBytes, loaded);
+                .set(maxBufferedResponseBytes, nativeLoaded);
         return request && streaming && response;
     }
 
@@ -326,7 +346,7 @@ public class VesperaBridge {
      * @return {@code false} when the value could not be applied (logged)
      */
     public static synchronized boolean configureDispatchTimeout(long timeoutMillis) {
-        return VesperaNativeConfig.DISPATCH_TIMEOUT_MILLIS.set(timeoutMillis, loaded);
+        return VesperaNativeConfig.DISPATCH_TIMEOUT_MILLIS.set(timeoutMillis, nativeLoaded);
     }
 
     /**
@@ -337,7 +357,7 @@ public class VesperaBridge {
      * @return {@code false} when the value could not be applied (logged)
      */
     public static synchronized boolean configureAsyncMaxInFlight(int maxInFlight) {
-        return VesperaNativeConfig.ASYNC_MAX_IN_FLIGHT.set(maxInFlight, loaded);
+        return VesperaNativeConfig.ASYNC_MAX_IN_FLIGHT.set(maxInFlight, nativeLoaded);
     }
 
     /**
@@ -351,7 +371,7 @@ public class VesperaBridge {
      * @return {@code false} when the value could not be applied (logged)
      */
     public static synchronized boolean configureMaxRequestProducers(int maxProducers) {
-        return VesperaNativeConfig.MAX_REQUEST_PRODUCERS.set(maxProducers, loaded);
+        return VesperaNativeConfig.MAX_REQUEST_PRODUCERS.set(maxProducers, nativeLoaded);
     }
 
     /**

@@ -23,7 +23,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 /** {@link VesperaClient} / {@link VesperaRequest} / {@link VesperaResponse} over a fake transport. */
@@ -470,6 +472,80 @@ class VesperaClientTest {
                 .body(failingAgain, null).sendAsync(Runnable::run).get());
         assertInstanceOf(VesperaClientException.class, async.getCause());
         assertSame(broken, async.getCause().getCause());
+    }
+
+    @Test
+    void aParkedReadFailingBecauseTheNativeSideClosedTheSourceIsNotATransportFailure()
+            throws Exception {
+        CountDownLatch parked = new CountDownLatch(1);
+        CountDownLatch closed = new CountDownLatch(1);
+        // A socket-like source: once drained of its first byte, a read parks
+        // until the stream is closed, then fails with the close.
+        InputStream socketLike = new InputStream() {
+            private boolean first = true;
+
+            @Override
+            public int read() throws IOException {
+                byte[] one = new byte[1];
+                return read(one, 0, 1) < 0 ? -1 : one[0];
+            }
+
+            @Override
+            public int read(byte[] b, int off, int len) throws IOException {
+                if (first) {
+                    first = false;
+                    b[off] = 'x';
+                    return 1;
+                }
+                parked.countDown();
+                try {
+                    closed.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                throw new IOException("Socket closed");
+            }
+
+            @Override
+            public void close() {
+                closed.countDown();
+            }
+        };
+        VesperaClient closing = new VesperaClient(new FakeTransport() {
+            @Override
+            public byte[] dispatchStreaming(byte[] header, InputStream in, OutputStream out)
+                    throws IOException {
+                // The native producer: pulls on its own thread and parks in
+                // the second read.
+                Thread producer = new Thread(() -> {
+                    byte[] chunk = new byte[16];
+                    try {
+                        while (in.read(chunk, 0, chunk.length) >= 0) {
+                            // keep pulling
+                        }
+                    } catch (IOException expected) {
+                        // swallowed natively
+                    }
+                });
+                producer.start();
+                try {
+                    assertTrue(parked.await(10, TimeUnit.SECONDS));
+                    // The handler answered and the response drained: Rust
+                    // closes the request source to unblock the producer.
+                    in.close();
+                    producer.join(10_000);
+                } catch (InterruptedException e) {
+                    throw new AssertionError(e);
+                }
+                assertFalse(producer.isAlive());
+                return responseWire(200, "{}", null, "done");
+            }
+        }, null);
+
+        VesperaResponse response = closing.post("/s").body(socketLike, null).send();
+
+        assertEquals(200, response.status());
+        assertEquals("done", response.bodyString());
     }
 
     @Test

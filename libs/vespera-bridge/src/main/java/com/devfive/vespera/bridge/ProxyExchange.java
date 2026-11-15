@@ -49,6 +49,18 @@ final class ProxyExchange {
         this.requestId = requestId;
     }
 
+    /**
+     * Record that the request is actually served by {@code served} (a DIRECT
+     * request downgraded to SYNC or re-routed through STREAMING), so the
+     * reported {@link DispatchEvent#mode()} names the path that ran.
+     * {@code exchange} may be {@code null} (direct calls from tests).
+     */
+    static void servedAs(ProxyExchange exchange, DispatchMode served) {
+        if (exchange != null) {
+            exchange.mode = served;
+        }
+    }
+
     /** Whether {@link #complete} already ran. */
     boolean isCompleted() {
         return completed.get();

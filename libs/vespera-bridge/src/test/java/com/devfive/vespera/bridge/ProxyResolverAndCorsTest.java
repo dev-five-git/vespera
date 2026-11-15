@@ -92,7 +92,7 @@ class ProxyResolverAndCorsTest {
             // 500 or remembering the route as an overflowing one.
             assertThrows(UnsatisfiedLinkError.class, () -> controller.dispatchDirectMode(
                     response, null, "GET", "/health", "", sink -> { },
-                    VesperaWireCodec.EMPTY_BODY, Boolean.TRUE));
+                    VesperaWireCodec.EMPTY_BODY, Boolean.TRUE, null));
             assertEquals(0, response.getContentAsByteArray().length, "no proxy-written 500");
             assertFalse(controller.avoidsDirect(null, "GET", "/health", ""), "no overflow recorded");
         }

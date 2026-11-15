@@ -225,6 +225,10 @@ tasks.named<Test>("test") {
 // match because demo-app resolves this exact build's JAR from mavenLocal.
 val demoAppExecutionData = rootProject.layout.projectDirectory
     .file("../../examples/rust-jni-demo/java/demo-app/build/jacoco/test.exec")
+// demo-app's `isolated-jvm` tests (library-name auto-init, the buffered-response
+// cap, ...) run in its `isolatedJvmTest` task, which writes its own file.
+val demoAppIsolatedExecutionData = rootProject.layout.projectDirectory
+    .file("../../examples/rust-jni-demo/java/demo-app/build/jacoco/isolatedJvmTest.exec")
 // The WebFlux E2E app (demo-reactive-app) drives VesperaReactiveProxyHandler
 // through the same real cdylib.
 val demoReactiveAppExecutionData = rootProject.layout.projectDirectory
@@ -236,6 +240,7 @@ tasks.named<JacocoReport>("jacocoTestReport") {
         files(
             layout.buildDirectory.file("jacoco/test.exec"),
             demoAppExecutionData,
+            demoAppIsolatedExecutionData,
             demoReactiveAppExecutionData,
         ).filter { it.exists() },
     )

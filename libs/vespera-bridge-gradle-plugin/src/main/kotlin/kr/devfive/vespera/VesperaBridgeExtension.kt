@@ -107,7 +107,10 @@ abstract class VesperaBridgeExtension @Inject constructor(objects: ObjectFactory
      * `native/<os>-<arch>/<lib>` (for example CI artifacts from other
      * platforms). Everything under its `native/` folder is merged into the
      * jar next to the locally built libraries; a locally built library wins
-     * when both provide the same file.
+     * when both provide the same file. Without [cargoRoot] / [targetDir]
+     * only these prebuilt libraries are bundled (no local build is
+     * expected; the build fails when the folder holds none). With
+     * `bundleNative = false` they are not bundled either.
      */
     abstract val extraNativeLibs: DirectoryProperty
 

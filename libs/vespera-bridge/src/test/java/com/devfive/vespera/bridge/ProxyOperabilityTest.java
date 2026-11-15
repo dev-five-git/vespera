@@ -391,6 +391,7 @@ class ProxyOperabilityTest {
         DispatchEvent event = observer.events.get(0);
         assertEquals(AppTags.UNKNOWN, event.app(), "the rejected name is never reported");
         assertNull(event.mode());
+        assertEquals("/users", event.path(), "the path is known before the app is resolved");
         assertEquals("GET", event.method());
         assertEquals(404, event.status());
         assertFalse(event.panicked());

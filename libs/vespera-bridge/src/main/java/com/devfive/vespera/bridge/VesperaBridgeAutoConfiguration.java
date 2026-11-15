@@ -159,10 +159,12 @@ public class VesperaBridgeAutoConfiguration {
      *
      * <p>The two trade-offs callers accept on the new default:
      * <ul>
-     *   <li>DIRECT retries (re-runs the Rust handler) once when a
-     *       response exceeds {@code vespera.direct.maxBufferBytes}
-     *       (default 4 MiB). This is why DIRECT is restricted to safe
-     *       methods (GET/HEAD/OPTIONS).</li>
+     *   <li>A DIRECT response that overflows the pooled buffer is kept on
+     *       the Rust side and fetched into a grown buffer, or streamed
+     *       from there beyond {@code vespera.direct.maxBufferBytes}
+     *       (default 4 MiB): the handler runs once. Only the rare
+     *       stash-less fallback re-runs it, which is why DIRECT stays
+     *       restricted to safe methods (GET/HEAD/OPTIONS).</li>
      *   <li>SYNC buffers the full response on the JVM heap. The
      *       256 KiB request-size gate keeps the response size
      *       reasonable for JSON-RPC-shaped traffic.</li>

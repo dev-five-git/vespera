@@ -9,11 +9,14 @@ import java.util.concurrent.ConcurrentHashMap;
  * those targets directly on subsequent requests.
  *
  * <p>Without this, a known-large (e.g. download) route routed to
- * {@link DispatchMode#DIRECT} pays the DIRECT-overflow-then-stream
- * <strong>double dispatch</strong> on <em>every</em> request: the Rust handler
- * runs once into the pooled direct buffer (overflows), then again through
- * response streaming. After the first overflow this memory downgrades the route
- * to {@link DispatchMode#STREAMING} up front, so later requests dispatch once.
+ * {@link DispatchMode#DIRECT} pays the overflow on <em>every</em> request: the
+ * handler runs once, but its whole response is first held on the Rust side
+ * (the overflow stash) and only then streamed to the client &mdash; a full
+ * buffered copy plus an extra stash round-trip, instead of chunk-by-chunk
+ * streaming.  (With a native library that hands back no stash entry the
+ * fallback even re-runs the handler through response streaming.) After the
+ * first overflow this memory downgrades the route to
+ * {@link DispatchMode#STREAMING} up front.
  *
  * <p>Thread-safe and bounded. {@link #shouldAvoidDirect} is a single volatile
  * read until the first overflow is recorded, so apps that never overflow DIRECT

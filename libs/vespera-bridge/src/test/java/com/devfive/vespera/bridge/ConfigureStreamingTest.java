@@ -71,7 +71,7 @@ class ConfigureStreamingTest {
 
     @Test
     void postInitMissingOptionalNativeHookDoesNotThrowRawLinkageError() throws Exception {
-        Field loadedField = VesperaBridge.class.getDeclaredField("loaded");
+        Field loadedField = VesperaBridge.class.getDeclaredField("nativeLoaded");
         Field nameField = VesperaBridge.class.getDeclaredField("loadedLibraryName");
         loadedField.setAccessible(true);
         nameField.setAccessible(true);

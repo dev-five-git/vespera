@@ -234,8 +234,12 @@ public final class VesperaRequest {
      * Streamed request body: pulled chunk-by-chunk by Rust through the
      * bidirectional streaming path (no full copy in memory; capped by
      * {@code vespera.limits.maxStreamingRequestBytes}). The response is
-     * still collected in memory. The stream is read but not closed, and can
-     * be sent once; {@link #sendAsync()} needs an {@link Executor}
+     * still collected in memory. The native side closes the stream once the
+     * dispatch is done with it (after the response drained, when the handler
+     * read from it); a read still blocked in it then fails with that close,
+     * which does not fail the send. Callers should not rely on the stream
+     * staying open, and it can be sent once; {@link #sendAsync()} needs an
+     * {@link Executor}
      * ({@link #sendAsync(Executor)}) because the call blocks.
      *
      * @param contentType sent as {@code content-type}; {@code null} leaves the header alone
@@ -440,6 +444,14 @@ public final class VesperaRequest {
     static final class ReadTracking extends java.io.FilterInputStream {
         volatile boolean touched;
         volatile IOException readFailure;
+        /**
+         * Set by {@link #close()} BEFORE the delegate closes. The native side
+         * closes the source once the response drained (the handler will not
+         * read more); a read still parked on another thread then fails
+         * because of that close (e.g. {@code PipedInputStream}: "Pipe
+         * closed"), which is not a request-body failure.
+         */
+        volatile boolean closed;
 
         ReadTracking(InputStream in) {
             super(in);
@@ -468,7 +480,7 @@ public final class VesperaRequest {
         }
 
         private void recordFailure(IOException e) {
-            if (readFailure == null) {
+            if (readFailure == null && !closed) {
                 readFailure = e;
             }
         }
@@ -482,6 +494,7 @@ public final class VesperaRequest {
         @Override
         public void close() throws IOException {
             touched = true;
+            closed = true;
             super.close();
         }
     }
