@@ -45,17 +45,64 @@ impl<T: garde::Validate + ?Sized> AssertValidate for T {}
 ///
 /// An integer type rounds inward — `minimum = 0.5` on a `u32` is `1`, never a
 /// truncated `0` that would accept a value the document's `minimum: 0.5`
-/// excludes — saturating at the type's range; a float type keeps the value.
+/// excludes — saturating at the type's range (a bound no value reaches is
+/// caught first by [`range_unsatisfiable`]); a float type keeps the value.
+///
+/// [`RangeBound::exact`] carries an integer-literal bound: an integer target
+/// takes the literal in its own type (so an out-of-range literal is still the
+/// compiler's `overflowing_literals` error), a float target takes it as an
+/// `i128` (an unsuffixed `0` never infers as `f64`).
 pub trait RangeBound: Sized {
+    /// The type an integer-literal bound is written in for this target.
+    type Literal;
     /// The value of the lower bound `bound`.
     fn min(bound: f64) -> Self;
     /// The value of the upper bound `bound`.
     fn max(bound: f64) -> Self;
+    /// The value of the integer-literal bound `literal`.
+    fn exact(literal: Self::Literal) -> Self;
+    /// Whether some value of the type satisfies the lower bound `bound`
+    /// (an integer type cannot reach `minimum = 300.5` on a `u8`, which
+    /// [`RangeBound::min`] would saturate to an admitting `255`).
+    fn admits_min(bound: f64) -> bool;
+    /// Whether some value of the type satisfies the upper bound `bound`.
+    fn admits_max(bound: f64) -> bool;
+}
+
+/// The error for a fractional `minimum` / `maximum` no value of the field's
+/// (aliased) type can satisfy, checked before `garde`'s `range` rule so the
+/// saturated bound never admits a value the document excludes; `None` when
+/// both bounds are reachable.
+pub fn range_unsatisfiable<T: RangeBound>(
+    _value: &T,
+    min: Option<f64>,
+    max: Option<f64>,
+) -> Option<garde::Error> {
+    if let Some(min) = min.filter(|&min| !T::admits_min(min)) {
+        return Some(garde::Error::new(format!("lower than {min}")));
+    }
+    max.filter(|&max| !T::admits_max(max))
+        .map(|max| garde::Error::new(format!("greater than {max}")))
 }
 
 macro_rules! integer_range_bound {
     ($($ty:ty),*) => {$(
         impl RangeBound for $ty {
+            type Literal = Self;
+            fn exact(literal: Self) -> Self {
+                literal
+            }
+            // `MAX as f64 + 1.0` is exact up to 32 bits and rounds to the
+            // power of two `MAX + 1` beyond, so `<` is the exact test.
+            #[allow(clippy::cast_precision_loss, clippy::cast_lossless)]
+            fn admits_min(bound: f64) -> bool {
+                bound.ceil() < Self::MAX as f64 + 1.0
+            }
+            // `MIN` is zero or a power of two: exact as `f64`.
+            #[allow(clippy::cast_precision_loss, clippy::cast_lossless)]
+            fn admits_max(bound: f64) -> bool {
+                bound.floor() >= Self::MIN as f64
+            }
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             fn min(bound: f64) -> Self {
                 bound.ceil() as Self
@@ -73,6 +120,17 @@ integer_range_bound!(
 );
 
 impl RangeBound for f64 {
+    type Literal = i128;
+    fn admits_min(_bound: f64) -> bool {
+        true
+    }
+    fn admits_max(_bound: f64) -> bool {
+        true
+    }
+    #[allow(clippy::cast_precision_loss)]
+    fn exact(literal: i128) -> Self {
+        literal as Self
+    }
     fn min(bound: f64) -> Self {
         bound
     }
@@ -82,6 +140,17 @@ impl RangeBound for f64 {
 }
 
 impl RangeBound for f32 {
+    type Literal = i128;
+    fn admits_min(_bound: f64) -> bool {
+        true
+    }
+    fn admits_max(_bound: f64) -> bool {
+        true
+    }
+    #[allow(clippy::cast_precision_loss)]
+    fn exact(literal: i128) -> Self {
+        literal as Self
+    }
     #[allow(clippy::cast_possible_truncation)]
     fn min(bound: f64) -> Self {
         bound as Self
@@ -109,5 +178,27 @@ mod tests {
         assert!((<f64 as RangeBound>::max(2.5) - 2.5).abs() < f64::EPSILON);
         assert!((<f32 as RangeBound>::min(0.5) - 0.5).abs() < f32::EPSILON);
         assert!((<f32 as RangeBound>::max(2.5) - 2.5).abs() < f32::EPSILON);
+        assert_eq!(<u8 as RangeBound>::exact(7), 7);
+        assert!(<u8 as RangeBound>::admits_min(254.5));
+        assert!(!<u8 as RangeBound>::admits_min(255.5));
+        assert!(!<u32 as RangeBound>::admits_max(-0.5));
+        assert!(<i8 as RangeBound>::admits_max(-127.5));
+        assert!(!<i8 as RangeBound>::admits_max(-128.5));
+        assert!(!<u64 as RangeBound>::admits_min(
+            18_446_744_073_709_551_615.5
+        ));
+        assert!(<f64 as RangeBound>::admits_min(1e300) && <f64 as RangeBound>::admits_max(-1e300));
+        assert!(<f32 as RangeBound>::admits_min(1e300) && <f32 as RangeBound>::admits_max(-1e300));
+        assert!(super::range_unsatisfiable(&0u8, Some(1.5), Some(2.5)).is_none());
+        assert_eq!(
+            super::range_unsatisfiable(&0u8, Some(300.5), None).map(|e| e.to_string()),
+            Some("lower than 300.5".to_owned())
+        );
+        assert_eq!(
+            super::range_unsatisfiable(&0u32, None, Some(-0.5)).map(|e| e.to_string()),
+            Some("greater than -0.5".to_owned())
+        );
+        assert!((<f64 as RangeBound>::exact(-3) + 3.0).abs() < f64::EPSILON);
+        assert!((<f32 as RangeBound>::exact(100) - 100.0).abs() < f32::EPSILON);
     }
 }

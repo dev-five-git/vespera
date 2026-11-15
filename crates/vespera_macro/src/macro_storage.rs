@@ -176,7 +176,9 @@ fn retain_declared_if<T: Clone + SourceIdentified>(
 
 /// Whether `content` contains `fn <name>` (the name as a whole identifier,
 /// separated from `fn` by whitespace).  Textual on purpose — a cheap check
-/// that never parses; a mention in a comment only keeps an entry alive.
+/// that never parses; a mention in a comment only keeps an entry alive.  An
+/// unraw `name` (cron jobs store `r#match` as `match`) also matches its raw
+/// spelling `fn r#match`.
 fn declares_fn(content: &str, name: &str) -> bool {
     let is_ident = |c: char| c.is_alphanumeric() || c == '_';
     content.match_indices(name).any(|(at, _)| {
@@ -185,6 +187,7 @@ fn declares_fn(content: &str, name: &str) -> bool {
             .next()
             .is_none_or(|c| !is_ident(c));
         let before = &content[..at];
+        let before = before.strip_suffix("r#").unwrap_or(before);
         let keyword = before.trim_end();
         ends_ident
             && keyword.len() < before.len()
@@ -202,6 +205,8 @@ mod tests {
     #[case::plain("pub async fn get_user() {}", "get_user", true)]
     #[case::newline("fn\n  get_user()", "get_user", true)]
     #[case::raw("pub fn r#type() {}", "r#type", true)]
+    #[case::unraw_name_of_raw_fn("pub async fn r#match() {}", "match", true)]
+    #[case::raw_without_space("pub fnr#match() {}", "match", false)]
     #[case::at_start_of_file("fn a() {}", "a", true)]
     #[case::renamed("pub async fn get_user_v2() {}", "get_user", false)]
     #[case::prefix_ident("pub async fn my_get_user() {}", "get_user", false)]

@@ -13,7 +13,8 @@ use super::defaults::generate_sea_orm_default_attrs;
 use super::field_attrs::carried_field_attrs;
 use super::file_cache;
 use super::file_lookup::{
-    find_struct_from_path_detailed, reexported_module, requested_module_path, storage_module_path,
+    call_site_definition, find_struct_from_path_detailed, reexported_module, requested_module_path,
+    storage_module_path,
 };
 use super::from_model::generate_from_model_with_relations;
 use super::inline_types::{
@@ -89,13 +90,19 @@ pub fn generate_schema_type_code(
     let storage_module = storage_hit.and_then(storage_module_path);
     // A re-export (`pub use user::User;` in `models`) names the same item.
     let requested = requested_module_path(&input.source_type);
-    let storage_trusted = match (&requested, &storage_module) {
-        (Some(requested), Some(defined_in)) => {
-            requested == defined_in
-                || reexported_module(requested, &source_type_name).as_ref() == Some(defined_in)
-        }
-        _ => true,
-    };
+    // A bare name resolves in the call-site file: a definition there wins
+    // over a same-named `#[derive(Schema)]` another file registered.
+    let local = storage_hit
+        .filter(|_| requested.is_none())
+        .and_then(|stored| call_site_definition(stored, &input.source_type, schema_name_hint));
+    let storage_trusted = local.is_none()
+        && match (&requested, &storage_module) {
+            (Some(requested), Some(defined_in)) => {
+                requested == defined_in
+                    || reexported_module(requested, &source_type_name).as_ref() == Some(defined_in)
+            }
+            _ => true,
+        };
     let struct_def = match storage_hit {
         Some(found) if storage_trusted => {
             // The defining file's module (else the absolute requested one),
@@ -106,7 +113,10 @@ pub fn generate_schema_type_code(
             }
             found
         }
-        _ => match find_struct_from_path_detailed(&input.source_type, schema_name_hint) {
+        _ => match local.map_or_else(
+            || find_struct_from_path_detailed(&input.source_type, schema_name_hint),
+            Ok,
+        ) {
             Ok((found, module_path)) => {
                 struct_def_owned = found;
                 source_module_path = module_path;

@@ -375,7 +375,7 @@ pub fn process_route_attribute(
         fn_sig_str: quote::quote!(#fn_sig).to_string(),
         inline_module: crate::cron_impl::inline_module_of(
             source_file.as_deref().and_then(std::path::Path::to_str),
-            &item_fn.sig.ident.to_string(),
+            &syn::ext::IdentExt::unraw(&item_fn.sig.ident).to_string(),
             item_fn.sig.ident.span().start().line,
         ),
         file_path: source_file.map(|p| p.display().to_string()),

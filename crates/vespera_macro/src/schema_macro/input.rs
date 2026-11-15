@@ -85,6 +85,9 @@ impl Parse for SchemaInput {
                     let _ = bracketed!(content in input);
                     let fields: Punctuated<LitStr, Token![,]> = content
                         .parse_terminated(syn::parse::ParseBuffer::parse::<LitStr>, Token![,])?;
+                    if fields.is_empty() {
+                        return Err(empty_pick_error(ident.span()));
+                    }
                     for lit in &fields {
                         spans.record("pick", lit);
                     }
@@ -325,6 +328,9 @@ impl Parse for SchemaTypeInput {
                     let fields: Punctuated<LitStr, Token![,]> = content
                         .parse_terminated(syn::parse::ParseBuffer::parse::<LitStr>, Token![,])?;
                     let param = if ident_str == "omit" { "omit" } else { "pick" };
+                    if param == "pick" && fields.is_empty() {
+                        return Err(empty_pick_error(ident.span()));
+                    }
                     for lit in &fields {
                         spans.record(param, lit);
                     }
@@ -460,6 +466,15 @@ impl Parse for SchemaTypeInput {
     }
 }
 
+/// `pick = []`: an allowlist of no field. Every filter reads an empty pick
+/// set as "no pick given", so it would silently keep every field.
+fn empty_pick_error(span: proc_macro2::Span) -> syn::Error {
+    syn::Error::new(
+        span,
+        "`pick = []` selects no field: list at least one field name (an empty `pick` would otherwise keep every field)",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,6 +501,26 @@ mod tests {
         let input: SchemaInput = syn::parse2(tokens).unwrap();
         let pick = input.pick.unwrap();
         assert_eq!(pick, vec!["id", "name"]);
+    }
+
+    #[test]
+    fn test_parse_empty_pick_is_rejected() {
+        let err = syn::parse2::<SchemaInput>(quote::quote!(User, pick = []))
+            .err()
+            .expect("schema! pick = [] must be rejected");
+        assert!(
+            err.to_string().contains("`pick = []` selects no field"),
+            "{err}"
+        );
+        let err = syn::parse2::<SchemaTypeInput>(quote::quote!(Empty from User, pick = []))
+            .err()
+            .expect("schema_type! pick = [] must be rejected");
+        assert!(
+            err.to_string().contains("`pick = []` selects no field"),
+            "{err}"
+        );
+        // An empty `omit` keeps every field, as written.
+        assert!(syn::parse2::<SchemaTypeInput>(quote::quote!(All from User, omit = [])).is_ok());
     }
 
     #[test]

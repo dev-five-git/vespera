@@ -599,6 +599,13 @@ fn process_export_app_reuses_fresh_cache_and_sidecar() {
         Span::call_site(),
     )
     .expect("first expansion populates cache");
+    // Mark the cache file: a MISS rewrites it (dropping the marker), a HIT
+    // leaves it untouched — equal tokens alone hold on a miss as well.
+    let cache = get_export_cache_path("CachedApp", &folder, "");
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&cache).unwrap()).unwrap();
+    json["hit_probe"] = serde_json::Value::Bool(true);
+    fs::write(&cache, json.to_string()).unwrap();
     let second = process_export_app(
         &name,
         &folder,
@@ -611,6 +618,64 @@ fn process_export_app_reuses_fresh_cache_and_sidecar() {
     .expect("second expansion reuses cache");
 
     assert_eq!(first.to_string(), second.to_string());
+    assert!(
+        fs::read_to_string(&cache).unwrap().contains("hit_probe"),
+        "the second expansion must hit the cache, not rewrite it"
+    );
+}
+
+/// A crate that only uses `export_app!` still schedules its `#[cron]` jobs:
+/// the parent's `vespera!` discovers only its own crate's jobs, so the
+/// child's `router()` starts them (once per crate at runtime).
+#[test]
+fn process_export_app_schedules_the_crate_cron_jobs() {
+    let temp = TempDir::new().unwrap();
+    let routes = temp.path().join("src/routes");
+    fs::create_dir_all(&routes).unwrap();
+    fs::write(routes.join("mod.rs"), "// empty routes").unwrap();
+    fs::write(temp.path().join("src/lib.rs"), "pub mod jobs;\n").unwrap();
+    fs::write(
+        temp.path().join("src/jobs.rs"),
+        "#[vespera::cron(\"0 0 * * * *\")] pub async fn invoice_sweep() {}\n",
+    )
+    .unwrap();
+    let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
+    crate::cron_impl::register_cron(crate::cron_impl::StoredCronInfo {
+        fn_name: "invoice_sweep".to_string(),
+        expression: "0 0 * * * *".to_string(),
+        file_path: Some(temp.path().join("src/jobs.rs").display().to_string()),
+        inline_module: None,
+        options: crate::metadata::CronOptions::default(),
+    });
+    let name: syn::Ident = syn::parse_quote!(BillingApp);
+    let tokens = process_export_app(
+        &name,
+        &routes.to_string_lossy(),
+        &HashMap::new(),
+        &temp.path().to_string_lossy(),
+        &[],
+        "",
+        Span::call_site(),
+    );
+    {
+        let mut storage = crate::cron_impl::CRON_STORAGE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        storage.remove(&crate::schema_impl::current_crate_key());
+    }
+    let tokens = tokens.unwrap().to_string();
+    assert!(
+        tokens.contains("vespera :: cron :: start_once_for_crate"),
+        "{tokens}"
+    );
+    // With the `cron` feature the module tree places the job (without it no
+    // tree is scanned and the stored file path is used as is).
+    if cfg!(feature = "cron") {
+        assert!(
+            tokens.contains("crate :: jobs :: invoice_sweep ()"),
+            "{tokens}"
+        );
+    }
 }
 
 /// Two `vespera!` invocations in ONE crate with different settings (a

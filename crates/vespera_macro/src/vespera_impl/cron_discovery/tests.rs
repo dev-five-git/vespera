@@ -190,8 +190,8 @@ fn stored_in(fn_name: &str, file_path: &Path, inline: &str, expr: &str) -> Store
 
 /// Same-named jobs in different inline modules of one file: each stored
 /// entry is placed in its own module, and a sibling the storage does not
-/// know yet is still scanned.  `#[path]` files keep the recorded inline
-/// module on the derived path.
+/// know yet is still scanned.  A `#[path]` file's jobs take the declaring
+/// module's path plus the recorded inline module.
 #[test]
 fn same_named_jobs_in_inline_modules_do_not_clash() {
     let krate = crate_with(&[
@@ -223,7 +223,7 @@ fn same_named_jobs_in_inline_modules_do_not_clash() {
             ("a", "tick", "1 * * * * *"),
             ("b", "tick", "2 * * * * *"),
             ("c::d", "tick", "3 * * * * *"),
-            ("x::e", "tick", "4 * * * * *"),
+            ("pathed::e", "tick", "4 * * * * *"),
         ])
     );
 }
@@ -281,8 +281,8 @@ fn storage_entries_without_src_dir_keep_their_derived_paths() {
 }
 
 /// Jobs in modules rustc expands after `vespera!` are recovered from the
-/// module tree; storage-known, gated, `#[path]`, private, non-literal and
-/// unreachable ones are not.
+/// module tree (`#[path]` modules included); storage-known, gated, private,
+/// non-literal and unreachable ones are not.
 #[test]
 fn scan_recovers_unexpanded_jobs_from_the_module_tree() {
     let krate = crate_with(&[
@@ -363,6 +363,11 @@ fn scan_recovers_unexpanded_jobs_from_the_module_tree() {
                 "late::deeper".to_owned(),
                 "deep_job".to_owned(),
                 "5 * * * * *".to_owned()
+            ),
+            (
+                "pathed".to_owned(),
+                "pathed".to_owned(),
+                "7 * * * * *".to_owned()
             ),
         ]
     );
@@ -500,8 +505,9 @@ fn rows(rows: &[(&str, &str, &str)]) -> Vec<(String, String, String)> {
 
 /// Stored jobs are placed by the module tree: the crate root is `crate`
 /// (not `crate::lib`), inline modules keep their segments (also
-/// `#[cfg]`-gated ones rustc expanded), and a job declared after
-/// `vespera!` in a file with stored jobs is still scanned.
+/// `#[cfg]`-gated ones rustc expanded), `#[path]` modules are followed, and
+/// a job declared after `vespera!` in a file with stored jobs is still
+/// scanned.
 #[test]
 fn stored_jobs_take_their_module_path_from_the_module_tree() {
     let krate = crate_with(&[
@@ -514,8 +520,10 @@ fn stored_jobs_take_their_module_path_from_the_module_tree() {
                 pub mod deeper {
                     #[cron("3 * * * * *")] pub async fn deep_job() {}
                 }
+                #[path = "y.rs"] mod inner_pathed;
             }
             #[path = "x.rs"] mod pathed;
+            #[path = "missing.rs"] mod absent;
             pub fn create_app() {}
             #[cron("4 * * * * *")] pub async fn after_job() {}
             #[cfg(test)]
@@ -526,7 +534,15 @@ fn stored_jobs_take_their_module_path_from_the_module_tree() {
         ),
         (
             "x.rs",
-            r#"#[cron("6 * * * * *")] pub async fn pathed_job() {}"#,
+            r#"#[cron("6 * * * * *")] pub async fn pathed_job() {} mod child;"#,
+        ),
+        (
+            "child.rs",
+            r#"#[cron("8 * * * * *")] pub async fn child_job() {}"#,
+        ),
+        (
+            "jobs/y.rs",
+            r#"#[cron("7 * * * * *")] pub async fn late_pathed() {}"#,
         ),
     ]);
     let src = krate.path().join("src");
@@ -548,8 +564,12 @@ fn stored_jobs_take_their_module_path_from_the_module_tree() {
             ("jobs", "inline_job", stored_expr),
             ("jobs::deeper", "deep_job", stored_expr),
             ("tests", "gated_job", stored_expr),
-            // `#[path]` modules are not followed: derived from the file.
-            ("x", "pathed_job", stored_expr),
+            // `#[path]` modules are followed like rustc: file level relative
+            // to the declaring file, inside inline modules relative to their
+            // directory, the loaded file's children next to it.
+            ("pathed", "pathed_job", stored_expr),
+            ("jobs::inner_pathed", "late_pathed", "7 * * * * *"),
+            ("pathed::child", "child_job", "8 * * * * *"),
             ("", "after_job", "4 * * * * *"),
         ])
     );
@@ -574,4 +594,41 @@ fn stored_root_job_without_a_tree_falls_back_to_the_crate_root() {
         Some(&src.join("orphan.rs")),
     );
     assert_eq!(summary(&jobs), rows(&[("", "bin_job", "0 0 0 * * *")]));
+}
+
+/// Inside rust-analyzer the storage of one package is shared by its targets:
+/// a stored job of another target (here `examples/demo.rs`) is dropped from
+/// the library's expansion instead of failing it, while the library's own
+/// stored job stays.  Under rustc nothing is filtered.
+#[test]
+fn stored_jobs_of_another_target_are_dropped_in_the_ide() {
+    let krate = crate_with(&[
+        ("lib.rs", "pub mod jobs;"),
+        (
+            "jobs.rs",
+            r#"#[cron("1 * * * * *")] pub async fn tick() {}"#,
+        ),
+    ]);
+    fs::create_dir_all(krate.path().join("examples")).unwrap();
+    let demo = krate.path().join("examples/demo.rs");
+    fs::write(
+        &demo,
+        r#"#[cron("2 * * * * *")] pub async fn demo_job() {}"#,
+    )
+    .unwrap();
+    let src = krate.path().join("src");
+    let storage = [
+        stored("tick", Some(src.join("jobs.rs").display().to_string())),
+        stored("demo_job", Some(demo.display().to_string())),
+    ];
+    let jobs = {
+        let _ide = crate::macro_storage::test_ide::force();
+        discover(&storage, Some(&src), Some(&src.join("lib.rs")))
+    };
+    assert_eq!(summary(&jobs), rows(&[("jobs", "tick", "0 0 0 * * *")]));
+    let error = discover_cron_jobs(&storage, Some(&src), Some(&src.join("lib.rs"))).unwrap_err();
+    assert!(
+        error.contains("cannot place `#[cron]` job `demo_job`"),
+        "{error}"
+    );
 }

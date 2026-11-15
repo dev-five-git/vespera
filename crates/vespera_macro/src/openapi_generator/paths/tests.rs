@@ -566,8 +566,17 @@ fn route_storage_legacy_none_file_path_never_shadows_a_parsed_handler() {
     );
 }
 
-#[test]
-fn route_storage_legacy_none_file_path_is_skipped_when_ambiguous() {
+/// Neither route has an AST of its own, so the legacy `(None, "list")`
+/// storage slot is consulted: two stored `list` entries without a file path
+/// make it ambiguous (either may be the other file's handler) and neither is
+/// used; a single one is.
+#[rstest::rstest]
+#[case::ambiguous(2, None)]
+#[case::unambiguous(1, Some(vespera_core::schema::SchemaType::Boolean))]
+fn route_storage_legacy_none_file_path_is_skipped_when_ambiguous(
+    #[case] stored: usize,
+    #[case] expected: Option<vespera_core::schema::SchemaType>,
+) {
     let users_path = "/virtual/users.rs".to_string();
     let posts_path = "/virtual/posts.rs".to_string();
     let mut metadata = CollectedMetadata::new();
@@ -580,58 +589,15 @@ fn route_storage_legacy_none_file_path_is_skipped_when_ambiguous() {
     // Same fn name in two files: operationIds must still be unique.
     metadata.routes[1].operation_id = Some("list_posts".to_string());
 
-    let mut file_cache = HashMap::new();
-    file_cache.insert(
-        users_path.clone(),
-        syn::parse_str("pub fn list() -> String { String::new() }").unwrap(),
-    );
-    file_cache.insert(
-        posts_path.clone(),
-        syn::parse_str("pub fn list() -> i32 { 1 }").unwrap(),
-    );
-
-    let route_storage = vec![
-        StoredRouteInfo {
-            fn_name: "list".to_string(),
-            method: Some("get".to_string()),
-            custom_path: None,
-            error_status: None,
-            typed_responses: None,
-            tags: None,
-            security: None,
-            headers: Vec::new(),
-            success_status: None,
-            operation_id: None,
-            summary: None,
-            request_example: None,
-            response_example: None,
-            deprecated: false,
-            description: None,
-            fn_sig_str: "fn list() -> bool".to_string(),
-            inline_module: None,
-            file_path: None,
-        },
-        StoredRouteInfo {
-            fn_name: "list".to_string(),
-            method: Some("get".to_string()),
-            custom_path: None,
-            error_status: None,
-            typed_responses: None,
-            tags: None,
-            security: None,
-            headers: Vec::new(),
-            success_status: None,
-            operation_id: None,
-            summary: None,
-            request_example: None,
-            response_example: None,
-            deprecated: false,
-            description: None,
-            fn_sig_str: "fn list() -> bool".to_string(),
-            inline_module: None,
-            file_path: None,
-        },
-    ];
+    let entry = StoredRouteInfo {
+        fn_name: "list".to_string(),
+        method: Some("get".to_string()),
+        fn_sig_str: "fn list() -> bool".to_string(),
+        inline_module: None,
+        file_path: None,
+        ..Default::default()
+    };
+    let route_storage = vec![entry; stored];
 
     let doc = generate_openapi_doc_with_metadata(
         None,
@@ -639,7 +605,7 @@ fn route_storage_legacy_none_file_path_is_skipped_when_ambiguous() {
         None,
         None,
         &metadata,
-        Some(file_cache),
+        Some(HashMap::new()),
         &route_storage,
     );
 
@@ -651,8 +617,7 @@ fn route_storage_legacy_none_file_path_is_skipped_when_ambiguous() {
             .and_then(|op| op.responses.get("200"))
             .and_then(|response| response.content.as_ref())
             .and_then(|content| content.values().next())
-            .and_then(|media| media.schema.as_ref())
-            .expect("response schema");
+            .and_then(|media| media.schema.as_ref())?;
         match schema {
             vespera_core::schema::SchemaRef::Inline(schema) => schema.schema_type,
             vespera_core::schema::SchemaRef::Ref(reference) => {
@@ -661,14 +626,8 @@ fn route_storage_legacy_none_file_path_is_skipped_when_ambiguous() {
         }
     };
 
-    assert_eq!(
-        response_schema_type("/users"),
-        Some(vespera_core::schema::SchemaType::String)
-    );
-    assert_eq!(
-        response_schema_type("/posts"),
-        Some(vespera_core::schema::SchemaType::Integer)
-    );
+    assert_eq!(response_schema_type("/users"), expected);
+    assert_eq!(response_schema_type("/posts"), expected);
 }
 
 #[test]

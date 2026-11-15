@@ -653,7 +653,10 @@ fn test_generate_schema_type_code_preserves_struct_doc() {
     assert!(result.is_ok());
     let (tokens, _) = result.unwrap();
     let tokens_str = tokens.to_string();
-    assert!(tokens_str.contains("User struct documentation") || tokens_str.contains("doc"));
+    assert!(
+        tokens_str.contains("User struct documentation"),
+        "{tokens_str}"
+    );
 }
 
 // Tests for serde attribute filtering from source struct

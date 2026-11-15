@@ -415,7 +415,15 @@ fn typed_response(
         }
         _ => None,
     }
-    .unwrap_or_else(|| schema_name.to_owned());
+    // No known match: a dangling `$ref` to the last segment, never one with
+    // `::` in it (an invalid component key).
+    .unwrap_or_else(|| {
+        schema_name
+            .rsplit("::")
+            .next()
+            .unwrap_or(schema_name)
+            .to_owned()
+    });
     let schema = match ty {
         Some(ty) if known_schemas.contains(key.as_str()) => {
             super::schema::parse_type_to_schema_ref(&ty, known_schemas, struct_definitions)

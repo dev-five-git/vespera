@@ -50,11 +50,20 @@ mod hex_bytes {
             .step_by(2)
             .map(|i| {
                 hex.get(i..i + 2)
-                    .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+                    .and_then(super::hex_byte)
                     .ok_or_else(|| D::Error::custom("invalid hex"))
             })
             .collect()
     }
+}
+
+/// The byte of a two-digit hex `pair`; `None` for anything else
+/// (`u8::from_str_radix` alone also accepts a sign: `"+f"`).
+fn hex_byte(pair: &str) -> Option<u8> {
+    pair.bytes()
+        .all(|b| b.is_ascii_hexdigit())
+        .then(|| u8::from_str_radix(pair, 16).ok())
+        .flatten()
 }
 
 /// An RGB colour that travels as `"#rrggbb"` in both directions.
@@ -76,11 +85,7 @@ impl TryFrom<String> for Rgb {
     type Error = String;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        let channel = |i: usize| {
-            value
-                .get(i..i + 2)
-                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
-        };
+        let channel = |i: usize| value.get(i..i + 2).and_then(hex_byte);
         match (value.len(), value.starts_with('#')) {
             (7, true) => match (channel(1), channel(3), channel(5)) {
                 (Some(r), Some(g), Some(b)) => Ok(Self { r, g, b }),

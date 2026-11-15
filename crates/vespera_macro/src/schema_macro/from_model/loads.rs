@@ -129,7 +129,7 @@ pub(super) fn relation_load(
 /// `schema_path` (`find_by_id` selects by it). Without the model on disk,
 /// SeaORM's conventional `id` is assumed.
 fn is_target_primary_key(schema_path: &str, column: &str) -> bool {
-    let model_path = schema_path.replace("::Schema", "::Model");
+    let model_path = super::model_path_of(schema_path);
     // A stored definition always parses.
     let Some(parsed) = get_struct_from_schema_path(&model_path)
         .and_then(|model| super::super::file_cache::parse_struct_cached(&model.definition).ok())

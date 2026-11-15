@@ -58,6 +58,16 @@ function Get-Pass([string]$text, [string]$pass) {
   return @($null, $null)
 }
 
+# Where vespera! keeps its route cache for the stress crate: VESPERA_TARGET_DIR
+# when set (a relative value is resolved against the crate's workspace root,
+# the crate itself — it declares its own [workspace]), else $targetDir.
+function VesperaCacheDir($crateDir) {
+  $v = $env:VESPERA_TARGET_DIR
+  if ([string]::IsNullOrEmpty($v)) { return Join-Path $targetDir "vespera" }
+  if (-not [System.IO.Path]::IsPathRooted($v)) { $v = Join-Path $crateDir $v }
+  return Join-Path $v "vespera"
+}
+
 function Median($xs) { $s = @($xs | Sort-Object); $s[[int][Math]::Floor(($s.Count - 1) / 2)] }
 
 $rows = @()
@@ -70,8 +80,8 @@ foreach ($n in $Sizes) {
   $wall = @(); $exp = @(); $peak = @(); $rss = @()
   for ($r = 0; $r -lt $Runs; $r++) {
     # The route cache lives under the build's target dir (rustc's --out-dir),
-    # i.e. $targetDir\vespera, not under the stress crate's own directory.
-    Remove-Item (Join-Path $targetDir "vespera") -Recurse -Force -ErrorAction SilentlyContinue
+    # i.e. $targetDir\vespera, or under VESPERA_TARGET_DIR when that is set.
+    Remove-Item (VesperaCacheDir $dir) -Recurse -Force -ErrorAction SilentlyContinue
     & cargo clean --quiet -p stress-app --manifest-path $manifest --target-dir $targetDir 2>$null
     $m = Invoke-Measured $manifest @("-Z", "time-passes")
     $pass = Get-Pass $m.Err "macro_expand_crate"

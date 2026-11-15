@@ -1498,6 +1498,16 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
                 }
               }
             }
+          },
+          "500": {
+            "description": "Error response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         }
       }

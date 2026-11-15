@@ -231,7 +231,8 @@ fn rust_ident_aliases(metadata: &CollectedMetadata) -> BTreeMap<&str, BTreeMap<&
 
 /// Reject a Rust type name that two `#[schema(name = "..")]` renames share
 /// (`mod a { #[schema(name = "A")] struct Foo }` + `mod b { #[schema(name =
-/// "B")] struct Foo }`) when a handler signature or another schema uses it:
+/// "B")] struct Foo }`) when a handler signature, a `responses = [...]` entry
+/// or another schema uses it:
 /// the macro sees only the bare ident, so it cannot tell which `Foo` is meant.
 /// A schema actually NAMED like the ident wins, so it is never ambiguous.
 pub(super) fn check_ambiguous_aliases(
@@ -259,10 +260,19 @@ pub(super) fn check_ambiguous_aliases(
             })
         })
     });
+    // `responses = [(404, Foo)]`: a one-segment type is a bare use of `Foo`
+    // (a module-qualified one names its module and is resolved through it).
+    let typed_responses = metadata
+        .routes
+        .iter()
+        .flat_map(|route| route.typed_responses.iter().flatten())
+        .filter(|(_, path)| !path.contains("::"))
+        .map(|(_, path)| format!("fn __vespera_response() -> {path}"));
     let sources: Vec<String> = route_storage
         .iter()
         .map(|route| route.fn_sig_str.clone())
         .chain(route_fns)
+        .chain(typed_responses)
         .chain(metadata.structs.iter().map(|s| s.definition.clone()))
         .collect();
     for (ident, names) in ambiguous {

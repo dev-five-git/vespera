@@ -92,8 +92,10 @@ fn test_generate_schema_type_code_rename_preserves_serde_rename() {
     let output = tokens.to_string();
     // The Rust field is renamed to user_name
     assert!(output.contains("user_name"));
-    // The JSON name should be preserved as userName
-    assert!(output.contains("userName") || output.contains("rename"));
+    // The JSON name should be preserved as userName (never replaced by the
+    // rename-to-source-name attribute)
+    assert!(output.contains("rename = \"userName\""), "{output}");
+    assert!(!output.contains("rename = \"name\""), "{output}");
 }
 
 #[test]

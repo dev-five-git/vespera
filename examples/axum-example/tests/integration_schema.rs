@@ -279,15 +279,14 @@ async fn test_get_user_dto_with_renamed_fields() {
         "JSON should serialize 'display_name' as 'name'"
     );
 
-    // Verify renamed field names are NOT in JSON
-    assert!(
-        user.get("user_id").is_none(),
-        "'user_id' should not appear in JSON"
-    );
-    assert!(
-        user.get("display_name").is_none(),
-        "'display_name' should not appear in JSON"
-    );
+    // Verify the Rust field names appear in no spelling: `UserDTO` is
+    // camelCase, so a lost rename would surface as `userId` / `displayName`.
+    for key in ["user_id", "display_name", "userId", "displayName"] {
+        assert!(
+            user.get(key).is_none(),
+            "'{key}' should not appear in JSON: {user}"
+        );
+    }
 }
 
 // Tests for schema_type! with add option

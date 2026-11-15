@@ -57,7 +57,14 @@ fn transparent_struct_field_keeps_the_parent_path() {
 /// The rendered `(min, max)` range bounds of one field.
 #[rstest]
 #[case::nested_option("#[schema(minimum = 0.5)] f: Option<Option<i32>>", "Some (1i32)")]
-#[case::alias_exact("#[schema(maximum = 3)] f: Count", "Some (3)")]
+#[case::alias_exact(
+    "#[schema(maximum = 3)] f: Count",
+    "Some (< _ as :: vespera :: __validation :: RangeBound > :: exact (3))"
+)]
+#[case::alias_unreachable_guard(
+    "#[schema(minimum = 300.5, maximum = 3)] f: Small",
+    "range_unsatisfiable (__garde_binding , :: std :: option :: Option :: Some (300.5f64) , :: std :: option :: Option :: None)"
+)]
 #[case::alias_fraction(
     "#[schema(maximum = 2.5)] f: Count",
     "Some (< _ as :: vespera :: __validation :: RangeBound > :: max (2.5f64))"

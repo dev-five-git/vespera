@@ -618,9 +618,12 @@ pub async fn get_user(Path(id): Path<u32>) -> Result<Json<User>, (StatusCode, Js
 ```
 
 Use `responses = [(status, Type)]` to document typed error bodies. `Type` may be
-a bare type name or a path such as `crate::errors::NotFoundError`; Vespera uses
-the last path segment as the OpenAPI schema name and emits a JSON `$ref` under
-that status. `error_status = [400, 404]` remains available for schema-less extra
+a bare type name or a path such as `crate::errors::NotFoundError`; the path is
+resolved like any other type reference, so a `#[schema(name = "...")]` rename is
+honoured and a module qualifier picks between same-named types (a bare name two
+renamed types share is a compile error). A JSON `$ref` to that schema is emitted
+under that status; a type defined elsewhere (a merged child app) is referenced by
+its last path segment. `error_status = [400, 404]` remains available for schema-less extra
 error statuses; when both are present, a typed `responses` entry wins for the
 same status code.
 
@@ -1091,7 +1094,7 @@ first time; incremental builds are unaffected.
 
 ### Define Cron Jobs
 
-Place `#[vespera::cron("...")]` on any `pub async fn` with zero parameters. The function can live anywhere in your project — no special directory required.
+Place `#[vespera::cron("...")]` on a free `pub async fn` with zero parameters that returns `()` and whose future is `Send` (both are checked at the job). The function can live in any module of the crate — no special directory required; a crate that only uses `export_app!` starts its jobs when a parent merges its `router()`.
 
 ```rust
 // src/cron/cleanup.rs, src/tasks.rs, or even src/routes/users.rs — anywhere works

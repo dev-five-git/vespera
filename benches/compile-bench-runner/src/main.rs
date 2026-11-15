@@ -114,9 +114,10 @@ fn extract_pass_time(stderr: &str, pass: &str) -> Option<f64> {
 }
 
 /// `<target-dir>/vespera`, where `vespera!` keeps its route cache
-/// (`routes-<tag>.cache`) and spec sidecars: `VESPERA_TARGET_DIR` when set,
-/// else cargo's `target_directory`.  `None` (with a warning) when neither
-/// is known.
+/// (`routes-<tag>.cache`) and spec sidecars: `VESPERA_TARGET_DIR` when set
+/// (a relative value resolved against the workspace root, as the macro does),
+/// else cargo's `target_directory`.  `None` (with a warning) when neither is
+/// known.
 fn vespera_build_dir() -> Option<PathBuf> {
     let dir = locate_vespera_build_dir();
     if dir.is_none() {
@@ -126,20 +127,38 @@ fn vespera_build_dir() -> Option<PathBuf> {
 }
 
 fn locate_vespera_build_dir() -> Option<PathBuf> {
-    if let Some(dir) = env::var_os("VESPERA_TARGET_DIR").filter(|dir| !dir.is_empty()) {
-        return Some(PathBuf::from(dir).join("vespera"));
-    }
-    let out = cargo()
-        .args(["metadata", "--format-version", "1", "--no-deps"])
-        .output()
-        .ok()?;
-    target_directory(&String::from_utf8_lossy(&out.stdout)).map(|dir| dir.join("vespera"))
+    let metadata = || {
+        let out = cargo()
+            .args(["metadata", "--format-version", "1", "--no-deps"])
+            .output()
+            .ok()?;
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let override_dir = env::var_os("VESPERA_TARGET_DIR").filter(|dir| !dir.is_empty());
+    build_dir_from(override_dir.map(PathBuf::from), metadata)
 }
 
-/// The `"target_directory"` string of `cargo metadata` JSON (a path holds no
+/// [`locate_vespera_build_dir`] over an optional `VESPERA_TARGET_DIR` and a
+/// lazily read `cargo metadata` document.
+fn build_dir_from(
+    override_dir: Option<PathBuf>,
+    metadata: impl FnOnce() -> Option<String>,
+) -> Option<PathBuf> {
+    match override_dir {
+        Some(dir) if dir.is_absolute() => Some(dir.join("vespera")),
+        Some(dir) => Some(
+            metadata_path(&metadata()?, "workspace_root")?
+                .join(dir)
+                .join("vespera"),
+        ),
+        None => metadata_path(&metadata()?, "target_directory").map(|dir| dir.join("vespera")),
+    }
+}
+
+/// The `"<field>"` path string of `cargo metadata` JSON (a path holds no
 /// escapes other than `\\` and `\"`).
-fn target_directory(metadata: &str) -> Option<PathBuf> {
-    let rest = metadata.split("\"target_directory\":\"").nth(1)?;
+fn metadata_path(metadata: &str, field: &str) -> Option<PathBuf> {
+    let rest = metadata.split(&format!("\"{field}\":\"")).nth(1)?;
     let mut dir = String::new();
     let mut chars = rest.chars();
     while let Some(ch) = chars.next() {
@@ -325,16 +344,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn target_directory_reads_and_unescapes_the_metadata_field() {
+    fn metadata_path_reads_and_unescapes_the_metadata_field() {
         let json = r#"{"packages":[],"target_directory":"C:\\work\\tar\"get","version":1}"#;
         assert_eq!(
-            target_directory(json),
+            metadata_path(json, "target_directory"),
             Some(PathBuf::from(r#"C:\work\tar"get"#))
         );
         assert_eq!(
-            target_directory(r#"{"target_directory":"unterminated"#),
+            metadata_path(r#"{"target_directory":"unterminated"#, "target_directory"),
             None
         );
-        assert_eq!(target_directory("{}"), None);
+        assert_eq!(metadata_path("{}", "target_directory"), None);
+    }
+
+    /// A relative `VESPERA_TARGET_DIR` is resolved against the workspace
+    /// root (as the macro resolves it), never the runner's working directory.
+    #[test]
+    fn build_dir_resolves_the_override_like_the_macro() {
+        let json =
+            || Some(r#"{"target_directory":"/ws/target","workspace_root":"/ws"}"#.to_owned());
+        assert_eq!(
+            build_dir_from(Some(PathBuf::from("tgt")), json),
+            Some(PathBuf::from("/ws").join("tgt").join("vespera"))
+        );
+        let absolute = env::temp_dir().join("tgt");
+        assert_eq!(
+            build_dir_from(Some(absolute.clone()), || None),
+            Some(absolute.join("vespera"))
+        );
+        assert_eq!(
+            build_dir_from(None, json),
+            Some(PathBuf::from("/ws/target").join("vespera"))
+        );
+        assert_eq!(build_dir_from(None, || None), None);
     }
 }

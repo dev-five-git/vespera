@@ -19,7 +19,8 @@
 //! `crate::lib`) nor inline `mod name { … }` blocks.
 //!
 //! The scan only follows modules the compiler would also see: `#[cfg]`-gated
-//! modules / functions and `#[path]` modules are skipped, and only the module
+//! modules / functions are skipped, `#[path = "…"]` modules are followed the
+//! way rustc resolves them, and only the module
 //! tree that contains the `vespera!` call site is used, so stray files never
 //! produce a `crate::…` path that does not resolve.  A cheap text pre-filter
 //! (`cron(` anywhere under `src/`) keeps the common case — no cron jobs at
@@ -58,6 +59,13 @@ pub(super) fn discover_cron_jobs(
                     .is_some_and(|content| content.contains(CRON_ATTR_MARKER))
         })
         .and_then(|src_dir| crate_tree(src_dir, call_site));
+    let storage = same_target(
+        storage,
+        tree.as_ref(),
+        crate::macro_storage::in_long_lived_server(),
+        &mut canonical_paths,
+    );
+    let storage: &[StoredCronInfo] = &storage;
     let placement = Placement {
         src_dir,
         tree: tree.as_ref(),
@@ -92,6 +100,38 @@ pub(super) fn discover_cron_jobs(
     Ok(jobs)
 }
 
+/// The stored jobs of the target being expanded.
+///
+/// The storage is keyed by manifest directory, so inside rust-analyzer's
+/// long-lived proc-macro server the lib, binaries, examples and tests of one
+/// package share it: there (`filter`), an entry whose file is outside the
+/// call site's module tree belongs to another target and is dropped.  Under
+/// rustc the storage only holds the current compilation and nothing is
+/// filtered (a file the walk cannot reach — a macro-declared module — must
+/// keep its job).
+fn same_target<'a>(
+    storage: &'a [StoredCronInfo],
+    tree: Option<&ModuleTree>,
+    filter: bool,
+    canonical_paths: &mut HashMap<PathBuf, String>,
+) -> std::borrow::Cow<'a, [StoredCronInfo]> {
+    let Some(tree) = tree.filter(|_| filter) else {
+        return std::borrow::Cow::Borrowed(storage);
+    };
+    std::borrow::Cow::Owned(
+        storage
+            .iter()
+            .filter(|stored| {
+                stored.file_path.as_deref().is_none_or(|file| {
+                    tree.files
+                        .contains(&canonicalized_cron_path(file, canonical_paths))
+                })
+            })
+            .cloned()
+            .collect(),
+    )
+}
+
 /// Where the crate's sources are, for placing stored jobs.
 struct Placement<'a> {
     src_dir: Option<&'a Path>,
@@ -103,7 +143,7 @@ struct Placement<'a> {
 /// Convert `CRON_STORAGE` entries.  The module path is the one `tree`
 /// declares the function in (in the entry's inline module when it recorded
 /// one, else the file's first declaration of that name); without a match (no
-/// tree, `#[path]` module, macro-generated function) it is derived from the
+/// tree, macro-generated function) it is derived from the
 /// file path relative to `src/` plus the recorded inline module.  A file
 /// outside `src/` (an example, an integration test, a custom `[lib] path`) is
 /// placed relative to the call-site file, which is then the crate root; one
@@ -338,13 +378,26 @@ impl ModuleTree {
                             gated,
                         };
                         self.visit(inner, &child, collect_jobs);
-                    } else if !module.attrs.iter().any(|a| a.path().is_ident("path"))
-                        && let Some(child) = [
-                            scope.mod_dir.join(format!("{name}.rs")),
-                            child_dir.join("mod.rs"),
-                        ]
-                        .into_iter()
-                        .find(|candidate| candidate.is_file())
+                    } else if let Some(path) = path_attr(&module.attrs) {
+                        // rustc: relative to the declaring file's directory at
+                        // file level, to the inline modules' directory inside
+                        // them; the loaded file's children resolve next to it.
+                        let base = if scope.inline.is_empty() {
+                            Path::new(scope.file).parent().unwrap_or(scope.mod_dir)
+                        } else {
+                            scope.mod_dir
+                        };
+                        let child = base.join(path);
+                        if child.is_file() {
+                            let dir = child.parent().unwrap_or(base).to_path_buf();
+                            self.walk(&child, &dir, &child_path, gated);
+                        }
+                    } else if let Some(child) = [
+                        scope.mod_dir.join(format!("{name}.rs")),
+                        child_dir.join("mod.rs"),
+                    ]
+                    .into_iter()
+                    .find(|candidate| candidate.is_file())
                     {
                         self.walk(&child, &child_dir, &child_path, gated);
                     }
@@ -459,6 +512,22 @@ fn imports_foreign_cron(items: &[syn::Item]) -> bool {
     items
         .iter()
         .any(|item| matches!(item, syn::Item::Use(item) if imports(&item.tree, None)))
+}
+
+/// The value of a `#[path = "…"]` attribute.
+fn path_attr(attrs: &[syn::Attribute]) -> Option<String> {
+    attrs.iter().find_map(|attr| match &attr.meta {
+        syn::Meta::NameValue(syn::MetaNameValue {
+            path,
+            value:
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(value),
+                    ..
+                }),
+            ..
+        }) if path.is_ident("path") => Some(value.value()),
+        _ => None,
+    })
 }
 
 fn is_cfg_gated(attrs: &[syn::Attribute]) -> bool {
