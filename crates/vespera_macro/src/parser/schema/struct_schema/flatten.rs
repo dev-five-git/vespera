@@ -370,8 +370,12 @@ fn merge(target: &mut ObjectParts, parts: ObjectParts, optional: bool) -> bool {
         target.opaque.extend(parts.opaque);
     }
     target.closed |= parts.closed;
+    // Two flattened maps: serde READS every buffered entry into each map
+    // (the value must fit both), but WRITES each map's own entries (the
+    // value fits one of them).
     target.additional = match (target.additional.take(), parts.additional) {
-        (Some(first), Some(second)) => Some(both(first, second)),
+        (Some(first), Some(second)) if request_view::in_request_view() => Some(both(first, second)),
+        (Some(first), Some(second)) => Some(either(first, second)),
         (first, second) => first.or(second),
     };
     open
@@ -381,6 +385,14 @@ fn merge(target: &mut ObjectParts, parts: ObjectParts, optional: bool) -> bool {
 fn both(first: SchemaRef, second: SchemaRef) -> SchemaRef {
     SchemaRef::Inline(Box::new(Schema {
         all_of: Some(vec![first, second]),
+        ..Schema::default()
+    }))
+}
+
+/// `anyOf: [first, second]` — a value one of the schemas accepts.
+fn either(first: SchemaRef, second: SchemaRef) -> SchemaRef {
+    SchemaRef::Inline(Box::new(Schema {
+        any_of: Some(vec![first, second]),
         ..Schema::default()
     }))
 }

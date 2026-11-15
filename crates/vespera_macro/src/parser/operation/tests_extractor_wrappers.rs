@@ -1,6 +1,7 @@
 //! Request extractors behind `Result<E, Rejection>` (the handler takes the
-//! rejection itself) document exactly like the bare extractor — still
-//! required, unlike `Option<E>` — and `Path<(..)>` tuples longer than the
+//! rejection itself) document the same body / parameters as the bare
+//! extractor — still required, unlike `Option<E>`; no `422`, since the
+//! handler owns the rejection — and `Path<(..)>` tuples longer than the
 //! route's own parameters (a `Router::nest("/{tenant}", ..)` prefix fills
 //! the leading elements) type the route's segments from the END.
 

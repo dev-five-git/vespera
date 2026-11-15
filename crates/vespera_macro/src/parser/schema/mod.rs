@@ -52,7 +52,7 @@ pub use serde_attrs::{
     extract_rename_all, extract_rename_all_for, extract_schema_default, extract_serde_skip_flags,
     extract_skip, extract_transparent, rename_field, strip_raw_prefix_owned,
 };
-pub use struct_schema::{apply_field_rules, parse_struct_to_schema};
+pub use struct_schema::{apply_field_rules, parse_struct_to_schema, single_emitted_field};
 // Re-export for internal use within the parser module. `parse_type_to_schema_ref`
 // is reached directly via the `type_schema` submodule path where needed.
 pub use type_schema::generic_instances;

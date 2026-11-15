@@ -76,8 +76,9 @@ fn operation(sig: &str, path: &str) -> Operation {
     "async fn f(OptionalQuery(q): axum_extra::extract::OptionalQuery<Filter>)",
     "/x"
 )]
-#[case::optional_query_enum("optional_query_enum", "async fn f(kind: OptionalQuery<Kind>)", "/x")]
-// 2: `WithRejection<E, R>` / `Cached<E>` document `E`.
+#[case::optional_query_enum("optional_query_enum", "async fn f(filter: OptionalQuery<Kind>)", "/x")]
+// 2: `WithRejection<E, R>` / `Cached<E>` document `E`'s body / parameters
+// (`WithRejection` remaps the rejection, so a `Validated` `E` adds no 422).
 #[case::with_rejection_json(
     "with_rejection_json",
     "async fn f(WithRejection(Json(b), _): WithRejection<Json<CreateUser>, ApiError>)",
@@ -121,7 +122,9 @@ fn operation(sig: &str, path: &str) -> Operation {
 #[case::skipped_struct("skipped_struct", "async fn f(skipped: Query<Skipped>)", "/x")]
 #[case::flatten_map_only("flatten_map_only", "async fn f(rest: Query<CatchAll>)", "/x")]
 #[case::tuple_struct("tuple_struct", "async fn f(w: Query<Wrapper>)", "/x")]
-#[case::known_enum("known_enum", "async fn f(kind: Query<Kind>)", "/x")]
+// A known non-struct (an internally tagged enum) is one parameter named
+// after the binding (`filter`, not the enum's tag `kind`).
+#[case::known_enum("known_enum", "async fn f(filter: Query<Kind>)", "/x")]
 // 9: `Path<HashMap<..>>` / `Path<Vec<..>>` type each segment.
 #[case::path_map("path_map", "async fn f(p: Path<HashMap<String, u64>>)", "/x/{id}")]
 #[case::path_map_multi(

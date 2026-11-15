@@ -59,7 +59,9 @@ fn codec_and_value_type_payloads(#[case] variant: &str, #[case] is_error: bool) 
 #[case::option_array("Option<[u8; 2]>", false)]
 #[case::qualified_self("<T as Trait>::Output", false)]
 #[case::fn_pointer("fn() -> i32", false)]
-#[case::cow_lifetime_first("std::borrow::Cow<'static, str>", false)]
+// `Cow` is not a wrapper the classifier looks through (a `Cow<T>` may be an
+// object), so it is left to serde.
+#[case::cow_is_not_classified("std::borrow::Cow<'static, str>", false)]
 fn internally_tagged_newtype_payload_classification(#[case] inner: &str, #[case] is_error: bool) {
     let inner: syn::Type = syn::parse_str(inner).unwrap();
     let enum_item: syn::ItemEnum = syn::parse_quote! {

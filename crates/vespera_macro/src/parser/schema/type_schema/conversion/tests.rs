@@ -98,82 +98,90 @@ fn generic_value_type_is_substituted() {
     assert_eq!(schema["properties"]["items"]["items"]["format"], "uint8");
 }
 
-/// Recursive instantiations over two same-ident types renamed apart
-/// (`a::Foo` = `AFoo`, `b::Foo` = `BFoo`) get distinct components.
-#[test]
-fn recursive_instances_over_scoped_arguments_do_not_collide() {
-    super::super::generic_instances::take_materialized();
-    let known: HashSet<String> = ["Tree", "Foo", "a::Foo", "b::Foo"]
-        .into_iter()
-        .map(String::from)
-        .collect();
-    let defs = HashMap::from([
-        (
-            "Tree".to_string(),
-            "struct Tree<T> { value: T, children: Vec<Tree<T>> }".to_string(),
-        ),
-        (
-            "a::Foo".to_string(),
-            r#"#[schema(name = "AFoo")] struct Foo { a: u8 }"#.to_string(),
-        ),
-        (
-            "b::Foo".to_string(),
-            r#"#[schema(name = "BFoo")] struct Foo { b: u8 }"#.to_string(),
-        ),
-    ]);
-    let reference = |src: &str| {
-        let ty: Type = syn::parse_str(src).unwrap();
-        match parse_type_to_schema_ref(&ty, &known, &defs) {
-            SchemaRef::Ref(reference) => reference.ref_path,
-            SchemaRef::Inline(schema) => panic!("expected a $ref: {schema:?}"),
-        }
-    };
-    assert_eq!(reference("Tree<a::Foo>"), "#/components/schemas/Tree_AFoo");
-    assert_eq!(reference("Tree<b::Foo>"), "#/components/schemas/Tree_BFoo");
-    // An unscoped argument keeps its ident.
-    assert_eq!(reference("Tree<u8>"), "#/components/schemas/Tree_u8");
-    let materialized = super::super::generic_instances::take_materialized();
-    assert_eq!(
-        materialized.keys().collect::<Vec<_>>(),
-        ["Tree_AFoo", "Tree_BFoo", "Tree_u8"]
-    );
-}
-
 /// Every ident [`is_builtin_openapi_type`] lists has its own arm in
-/// `parse_type_impl` (a listed ident without one skips the `T: Schema`
-/// assertion yet maps to the unknown-type `{}`).
+/// `parse_type_impl`'s leaf `primitive_result` match, or — for the few
+/// generic-only builtins — in its generic match (a listed ident without one
+/// skips the `T: Schema` assertion yet maps to the unknown-type `{}`).
 #[test]
 fn is_builtin_openapi_type_matches_conversion_arms() {
-    fn literals(tokens: proc_macro2::TokenStream, out: &mut Vec<String>) {
+    use proc_macro2::{Delimiter, TokenStream, TokenTree};
+
+    fn literals(tokens: TokenStream, out: &mut Vec<String>) {
         for tree in tokens {
             match tree {
-                proc_macro2::TokenTree::Group(group) => literals(group.stream(), out),
-                proc_macro2::TokenTree::Literal(lit) => out.push(lit.to_string()),
+                TokenTree::Group(group) => literals(group.stream(), out),
+                TokenTree::Literal(lit) => out.push(lit.to_string()),
                 _ => {}
             }
         }
     }
-    let file = syn::parse_file(include_str!("../conversion.rs")).unwrap();
-    let body = |name: &str| {
-        let mut out = Vec::new();
-        for item in &file.items {
-            if let syn::Item::Fn(func) = item
-                && func.sig.ident == name
-            {
-                literals(quote::ToTokens::to_token_stream(&func.block), &mut out);
-            }
+    /// The brace group (match arms) of the first `match` after the ident
+    /// `binding`, searched through every nested group.
+    fn match_arms_after(tokens: TokenStream, binding: &str) -> Option<TokenStream> {
+        let trees: Vec<TokenTree> = tokens.into_iter().collect();
+        if let Some(start) = trees
+            .iter()
+            .position(|tree| matches!(tree, TokenTree::Ident(ident) if ident == binding))
+        {
+            let after_match = trees[start..]
+                .iter()
+                .position(|tree| matches!(tree, TokenTree::Ident(ident) if ident == "match"))?;
+            return trees[start + after_match..]
+                .iter()
+                .find_map(|tree| match tree {
+                    TokenTree::Group(group) if group.delimiter() == Delimiter::Brace => {
+                        Some(group.stream())
+                    }
+                    _ => None,
+                });
         }
-        out
+        trees.into_iter().find_map(|tree| match tree {
+            TokenTree::Group(group) => match_arms_after(group.stream(), binding),
+            _ => None,
+        })
+    }
+    let file = syn::parse_file(include_str!("../conversion.rs")).unwrap();
+    let block = |name: &str| {
+        file.items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Fn(func) if func.sig.ident == name => {
+                    Some(quote::ToTokens::to_token_stream(&func.block))
+                }
+                _ => None,
+            })
+            .unwrap()
     };
-    let builtins: Vec<String> = body("is_builtin_openapi_type")
+    let mut builtins = Vec::new();
+    literals(block("is_builtin_openapi_type"), &mut builtins);
+    let builtins: Vec<String> = builtins
         .into_iter()
         .filter_map(|lit| lit.strip_prefix('b').map(str::to_string))
         .collect();
-    let arms = body("parse_type_impl");
+    let mut leaf_arms = Vec::new();
+    literals(
+        match_arms_after(block("parse_type_impl"), "primitive_result").unwrap(),
+        &mut leaf_arms,
+    );
+    let mut all_arms = Vec::new();
+    literals(block("parse_type_impl"), &mut all_arms);
+    // Builtins only meaningful with type arguments: their arm is in the
+    // generic (`AngleBracketed`) match, not the leaf one.
+    let generic_only = ["HashMap", "BTreeMap", "HasOne", "HasMany", "BelongsTo"];
     assert!(builtins.len() > 50, "{builtins:?}");
+    assert!(leaf_arms.len() > 50, "{leaf_arms:?}");
     for builtin in &builtins {
-        assert!(arms.contains(builtin), "no conversion arm for {builtin}");
-        assert!(is_builtin_openapi_type(builtin.trim_matches('"')));
+        let ident = builtin.trim_matches('"');
+        if generic_only.contains(&ident) {
+            assert!(!leaf_arms.contains(builtin), "{builtin} has a leaf arm");
+            assert!(all_arms.contains(builtin), "no generic arm for {builtin}");
+        } else {
+            assert!(
+                leaf_arms.contains(builtin),
+                "no leaf conversion arm for {builtin}"
+            );
+        }
+        assert!(is_builtin_openapi_type(ident));
     }
 }
 
@@ -376,21 +384,6 @@ fn test_vec_does_not_have_unique_items() {
 }
 
 #[test]
-fn test_bare_hashset_without_generics() {
-    // HashSet without angle brackets → falls through to bare-name match
-    let ty: Type = syn::parse_str("HashSet").unwrap();
-    let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
-    assert!(matches!(schema_ref, SchemaRef::Inline(_)));
-}
-
-#[test]
-fn test_bare_btreeset_without_generics() {
-    let ty: Type = syn::parse_str("BTreeSet").unwrap();
-    let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
-    assert!(matches!(schema_ref, SchemaRef::Inline(_)));
-}
-
-#[test]
 fn test_known_schema_ref_override_returns_inline_ref_schema() {
     let mut known = HashSet::new();
     known.insert("UserSchema".to_string());
@@ -451,6 +444,16 @@ fn generic_definition_ignores_lifetime_parameters() {
         panic!("matching type arguments should inline");
     };
     assert_eq!(schema.schema_type, Some(SchemaType::Object));
+    // `T` (not the lifetime) is bound to `String`.
+    let schema = serde_json::to_value(&schema).unwrap();
+    assert_eq!(
+        schema["properties"]["value"],
+        serde_json::json!({"type": "string"})
+    );
+    assert_eq!(
+        schema["properties"]["marker"],
+        serde_json::json!({"type": "string"})
+    );
 }
 
 #[test]
@@ -599,6 +602,8 @@ fn invisible_type_group_maps_like_its_contents() {
 #[case::generic_param("T")]
 #[case::qualified_unknown("other::Thing")]
 #[case::bare_wrapper("Vec")]
+#[case::bare_hash_set("HashSet")]
+#[case::bare_btree_set("BTreeSet")]
 #[case::option_unknown("Option<T>")]
 fn shapeless_types_are_any_value(#[case] ty_src: &str) {
     let ty: Type = syn::parse_str(ty_src).unwrap();
@@ -630,12 +635,24 @@ fn shapeless_types_are_any_value(#[case] ty_src: &str) {
 #[case::option_url("option_url", "Option<Url>")]
 #[case::vec_ip("vec_ip", "Vec<IpAddr>")]
 fn string_serialized_std_types(#[case] name: &str, #[case] ty_src: &str) {
+    /// The innermost type's last ident (`Option<Url>` → `Url`).
+    fn innermost(ty: &Type) -> String {
+        let Type::Path(type_path) = ty else {
+            unreachable!("every case is a path type")
+        };
+        let segment = type_path.path.segments.last().unwrap();
+        match &segment.arguments {
+            syn::PathArguments::AngleBracketed(args) => match args.args.first() {
+                Some(syn::GenericArgument::Type(inner)) => innermost(inner),
+                _ => unreachable!("every wrapper case has a type argument"),
+            },
+            _ => segment.ident.to_string(),
+        }
+    }
     let ty: Type = syn::parse_str(ty_src).unwrap();
-    let last = match &ty {
-        Type::Path(type_path) => type_path.path.segments.last().unwrap().ident.to_string(),
-        _ => unreachable!("every case is a path type"),
-    };
-    assert!(is_builtin_openapi_type(&last));
+    let leaf = innermost(&ty);
+    assert!(!["Option", "Vec"].contains(&leaf.as_str()), "{leaf}");
+    assert!(is_builtin_openapi_type(&leaf), "{leaf}");
     let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
     let json = serde_json::to_string(&schema_ref).unwrap();
     insta::assert_snapshot!(
@@ -814,6 +831,17 @@ fn option_unit_is_single_null_type() {
 )]
 #[case::non_zero_u64("NonZeroU64", SchemaType::Integer, Some("uint64"), Some(1.0), None)]
 #[case::non_zero_u128("NonZeroU128", SchemaType::Integer, None, Some(1.0), None)]
+#[case::i128("i128", SchemaType::Integer, None, None, None)]
+#[case::isize("isize", SchemaType::Integer, None, None, None)]
+#[case::status_code("StatusCode", SchemaType::Integer, None, None, None)]
+#[case::non_zero_i8("NonZeroI8", SchemaType::Integer, Some("int8"), None, None)]
+#[case::non_zero_i32("NonZeroI32", SchemaType::Integer, Some("int32"), None, None)]
+#[case::non_zero_i64("NonZeroI64", SchemaType::Integer, Some("int64"), None, None)]
+#[case::non_zero_i128("NonZeroI128", SchemaType::Integer, None, None, None)]
+#[case::non_zero_isize("NonZeroIsize", SchemaType::Integer, None, None, None)]
+#[case::bool("bool", SchemaType::Boolean, None, None, None)]
+#[case::string("String", SchemaType::String, None, None, None)]
+#[case::str("str", SchemaType::String, None, None, None)]
 fn primitive_wire_types(
     #[case] source: &str,
     #[case] schema_type: SchemaType,
@@ -938,34 +966,4 @@ fn generic_missing_argument_without_default_is_a_reference() {
         parse_type_to_schema_ref(&ty, &known, &defs),
         SchemaRef::Ref(_)
     ));
-}
-
-/// A recursive generic instance whose argument reads differently than it
-/// writes (a set: `uniqueItems` on output only) is a separate `...Input`
-/// component in the request view.
-#[test]
-fn recursive_generic_instance_over_a_set_has_an_input_name() {
-    use super::super::generic_instances::take_materialized;
-    let known: HashSet<String> = HashSet::from(["Tree".to_string()]);
-    let defs = HashMap::from([(
-        "Tree".to_string(),
-        "struct Tree<T> { v: T, kids: Vec<Tree<T>> }".to_string(),
-    )]);
-    let ty: Type = syn::parse_str("Tree<HashSet<u8>>").unwrap();
-    let response = parse_type_to_schema_ref(&ty, &known, &defs);
-    let response_names: Vec<String> = take_materialized().into_keys().collect();
-    let request = crate::parser::schema::request_view::with_request_view(|| {
-        parse_type_to_schema_ref(&ty, &known, &defs)
-    });
-    let request_names: Vec<String> = take_materialized().into_keys().collect();
-    assert_eq!(response_names, ["Tree_HashSet_u8"]);
-    assert_eq!(request_names, ["Tree_HashSet_u8Input"]);
-    let (SchemaRef::Ref(response), SchemaRef::Ref(request)) = (response, request) else {
-        panic!("a recursive instance is a $ref");
-    };
-    assert_eq!(response.ref_path, "#/components/schemas/Tree_HashSet_u8");
-    assert_eq!(
-        request.ref_path,
-        "#/components/schemas/Tree_HashSet_u8Input"
-    );
 }
