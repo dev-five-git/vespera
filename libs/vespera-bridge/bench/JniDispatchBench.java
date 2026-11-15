@@ -1,4 +1,6 @@
 import com.devfive.vespera.bridge.VesperaBridge;
+import com.devfive.vespera.bridge.VesperaClient;
+import com.devfive.vespera.bridge.VesperaResponse;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -47,6 +49,19 @@ public final class JniDispatchBench {
             POST_BODY[i] = (byte) (i * 31 + 7);
         }
     }
+
+    /** 16 KiB of mixed ASCII / multi-byte UTF-8 text for the client {@code bodyString} leg. */
+    private static final String CLIENT_TEXT;
+
+    static {
+        StringBuilder text = new StringBuilder(16 * 1024);
+        while (text.length() < 16 * 1024) {
+            text.append("vespera in-process client body é世 ");
+        }
+        CLIENT_TEXT = text.toString();
+    }
+
+    private static VesperaClient client;
 
     private static final ByteBuffer DIRECT_IN = ByteBuffer.allocateDirect(4 * 1024);
     private static final ByteBuffer DIRECT_OUT = ByteBuffer.allocateDirect(64 * 1024);
@@ -122,6 +137,22 @@ public final class JniDispatchBench {
         return VesperaBridge.decodeResponse(future.get(30, TimeUnit.SECONDS)).status();
     }
 
+    /**
+     * Programmatic client: {@code VesperaClient} POST of 16 KiB text to
+     * {@code /echo}, decoded back with {@code bodyString()} (client request
+     * building + response charset decode).
+     */
+    private static int clientEchoText16k() {
+        VesperaResponse response = client.post("/echo")
+                .body(CLIENT_TEXT, "text/plain; charset=utf-8")
+                .send();
+        String echoed = response.bodyString();
+        if (echoed.length() != CLIENT_TEXT.length()) {
+            throw new IllegalStateException("client echo returned " + echoed.length() + " chars");
+        }
+        return response.status();
+    }
+
     // ── harness ──────────────────────────────────────────────────────────
 
     private static long longProp(String key, long def) {
@@ -135,9 +166,11 @@ public final class JniDispatchBench {
         int blocks = (int) longProp("bench.blocks", 40);
 
         VesperaBridge.init(System.getProperty("bench.library", "rust_jni_demo"));
+        client = VesperaClient.create();
 
         String[] names = {
             "sync_get", "direct_get", "streaming_get", "full_streaming_post_64k", "async_get",
+            "client_echo_text_16k",
         };
         Op[] ops = {
             JniDispatchBench::syncGet,
@@ -145,6 +178,7 @@ public final class JniDispatchBench {
             JniDispatchBench::streamingGet,
             JniDispatchBench::fullStreamingPost64k,
             JniDispatchBench::asyncGet,
+            JniDispatchBench::clientEchoText16k,
         };
 
         // Warm up each mode (JIT + native caches) and calibrate its block size.

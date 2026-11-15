@@ -29,6 +29,15 @@ final class StashedOverflowException extends VesperaBridge.BufferTooSmallExcepti
         this.ops = ops;
     }
 
+    /**
+     * Pure control flow (caught by {@link DirectModeDispatcher}, never
+     * logged): skip capturing a Spring-deep stack, several µs per throw.
+     */
+    @Override
+    public synchronized Throwable fillInStackTrace() {
+        return this;
+    }
+
     /** Whether the stashed response is {@code text/event-stream}. */
     boolean eventStream() {
         return eventStream;

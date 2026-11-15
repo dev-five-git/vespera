@@ -600,8 +600,10 @@ public class VesperaReactiveProxyHandler implements WebHandler {
     static class BodyGate extends OutputStream {
         final OutputStream delegate;
         volatile boolean permitsBody = true;
-        /** Held body bytes; {@code null} once released (pass-through from then on). */
-        private java.io.ByteArrayOutputStream pending = new java.io.ByteArrayOutputStream();
+        /** Whether body bytes are still held back ({@code false} = pass-through). */
+        private boolean holding = true;
+        /** Held body bytes, allocated on the first held write. */
+        private java.io.ByteArrayOutputStream pending;
 
         BodyGate(OutputStream delegate) {
             this.delegate = delegate;
@@ -618,15 +620,14 @@ public class VesperaReactiveProxyHandler implements WebHandler {
 
         /** Whether body bytes are still held back (test hook). */
         boolean pending() {
-            return pending != null;
+            return holding;
         }
 
         private void release() throws IOException {
             java.io.ByteArrayOutputStream bytes = pending;
             pending = null;
-            if (bytes != null && bytes.size() > 0) {
-                delegate.write(bytes.toByteArray());
-            }
+            holding = false;
+            writeHeld(bytes, delegate);
         }
 
         /** The native dispatch returned normally: the body is complete. */
@@ -644,13 +645,44 @@ public class VesperaReactiveProxyHandler implements WebHandler {
             if (!permitsBody || len <= 0) {
                 return;
             }
-            if (pending == null) {
+            if (!holding) {
                 delegate.write(b, off, len);
                 return;
             }
-            pending.write(b, off, len);
-            if (pending.size() > STREAM_CHUNK_BYTES) {
-                release();
+            pending = hold(pending, b, off, len, STREAM_CHUNK_BYTES);
+            if (pending == null) {
+                // Past the limit: release what was held, then this write.
+                holding = false;
+                delegate.write(b, off, len);
+            }
+        }
+
+        /**
+         * Append {@code b[off, off+len)} to {@code held} (allocated lazily,
+         * sized to the first write), or return {@code null} — after writing
+         * the earlier held bytes to {@link #delegate}, with this write NOT
+         * appended — when the held total would exceed {@code limit}: the
+         * caller then writes {@code b} straight through (no copy of a large
+         * first write into the hold buffer).
+         */
+        final java.io.ByteArrayOutputStream hold(java.io.ByteArrayOutputStream held,
+                byte[] b, int off, int len, int limit) throws IOException {
+            int size = held == null ? 0 : held.size();
+            if ((long) size + len > limit) {
+                writeHeld(held, delegate);
+                return null;
+            }
+            if (held == null) {
+                held = new java.io.ByteArrayOutputStream(Math.max(len, 256));
+            }
+            held.write(b, off, len);
+            return held;
+        }
+
+        /** Write held bytes without the {@code toByteArray()} copy. */
+        static void writeHeld(java.io.ByteArrayOutputStream held, OutputStream to) throws IOException {
+            if (held != null && held.size() > 0) {
+                held.writeTo(to);
             }
         }
 
@@ -680,8 +712,10 @@ public class VesperaReactiveProxyHandler implements WebHandler {
         private final String method;
         private final int limit;
         private HeaderPolicy.ResponseHeaderAccumulator acc;
-        /** Held body bytes; {@code null} once spilled. */
-        private java.io.ByteArrayOutputStream held = new java.io.ByteArrayOutputStream();
+        /** Whether the body is still held back ({@code false} once spilled). */
+        private boolean holding = true;
+        /** Held body bytes, allocated on the first held write. */
+        private java.io.ByteArrayOutputStream held;
 
         SpillingGate(OutputStream delegate, ReactiveProxyResponse out, String method, int limit) {
             super(delegate);
@@ -697,6 +731,8 @@ public class VesperaReactiveProxyHandler implements WebHandler {
             for (HeaderPolicy.HeaderPair header : acc.headers) {
                 if (header.name().equalsIgnoreCase(HttpHeaders.CONTENT_TYPE)
                         && SmartDispatchModeResolver.isStreamingMediaType(header.value())) {
+                    // Before any body byte: nothing is held yet.
+                    holding = false;
                     held = null;
                     return;
                 }
@@ -705,15 +741,20 @@ public class VesperaReactiveProxyHandler implements WebHandler {
 
         /** Whether the body is still held back (test hook). */
         boolean holding() {
-            return held != null;
+            return holding;
+        }
+
+        /** The base gate's hold is unused here: report this gate's own state. */
+        @Override
+        boolean pending() {
+            return holding;
         }
 
         private void spill() throws IOException {
             java.io.ByteArrayOutputStream bytes = held;
             held = null;
-            if (bytes != null && bytes.size() > 0) {
-                delegate.write(bytes.toByteArray());
-            }
+            holding = false;
+            writeHeld(bytes, delegate);
         }
 
         @Override
@@ -726,13 +767,15 @@ public class VesperaReactiveProxyHandler implements WebHandler {
             if (!permitsBody || len <= 0) {
                 return;
             }
-            if (held == null) {
+            if (!holding) {
                 delegate.write(b, off, len);
                 return;
             }
-            held.write(b, off, len);
-            if (held.size() > limit) {
-                spill();
+            held = hold(held, b, off, len, limit);
+            if (held == null) {
+                // Past the limit: spilled what was held, now this write.
+                holding = false;
+                delegate.write(b, off, len);
             }
         }
 
@@ -745,18 +788,18 @@ public class VesperaReactiveProxyHandler implements WebHandler {
 
         @Override
         void finish() throws IOException {
-            java.io.ByteArrayOutputStream bytes = held;
-            if (bytes == null) {
+            if (!holding) {
                 return;
             }
+            java.io.ByteArrayOutputStream bytes = held;
             held = null;
+            holding = false;
+            int size = bytes == null ? 0 : bytes.size();
             if (acc != null) {
                 out.setContentLength(WireResponseWriter.bufferedContentLength(
-                        acc.status, method, bytes.size(), acc.declaredContentLength()));
+                        acc.status, method, size, acc.declaredContentLength()));
             }
-            if (bytes.size() > 0) {
-                delegate.write(bytes.toByteArray());
-            }
+            writeHeld(bytes, delegate);
         }
     }
 }

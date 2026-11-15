@@ -611,4 +611,30 @@ class VesperaClientTest {
         assertEquals("v", client.get("/a").header("X-K", "v").headerValue("x-k"));
         assertNull(client.get("/a").appName());
     }
+
+    /** {@code bodyString} decodes exactly like {@code Charset.decode}, malformed input included. */
+    @Test
+    void bodyStringMatchesCharsetDecodeIncludingMalformedInput() {
+        byte[][] bodies = {
+                "plain ascii".getBytes(StandardCharsets.UTF_8),
+                "héllo 😀 世界".getBytes(StandardCharsets.UTF_8),
+                {(byte) 0xC3},
+                {'a', (byte) 0xE2, (byte) 0x82, 'b', (byte) 0xF0, (byte) 0x9F, (byte) 0x98},
+                {(byte) 0xED, (byte) 0xA0, (byte) 0x80, (byte) 0xC0, (byte) 0x80, (byte) 0xFF},
+                {(byte) 0xF4, (byte) 0x90, (byte) 0x80, (byte) 0x80, 'z'},
+                {},
+        };
+        java.nio.charset.Charset[] charsets = {
+                StandardCharsets.UTF_8, StandardCharsets.ISO_8859_1, StandardCharsets.UTF_16,
+                StandardCharsets.US_ASCII,
+        };
+        for (byte[] body : bodies) {
+            for (java.nio.charset.Charset charset : charsets) {
+                VesperaResponse response = new VesperaResponse(new VesperaBridge.DecodedResponse(
+                        200, Map.of(), Map.of(), ByteBuffer.wrap(body), null));
+                String expected = charset.decode(ByteBuffer.wrap(body).asReadOnlyBuffer()).toString();
+                assertEquals(expected, response.bodyString(charset), charset + " " + java.util.Arrays.toString(body));
+            }
+        }
+    }
 }

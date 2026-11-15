@@ -435,6 +435,34 @@ class WireHeaderReaderTest {
         assertEquals(-1, cur.invoke(reader));
     }
 
+    /** Each canonical name sits in its own length row and is handed back as the identical instance. */
+    @Test
+    void canonicalKeyTableRowsMatchTheirLengthAndReturnTheLiteral() {
+        String[][] rows = WireHeaderStringSupport.canonicalNamesByLength();
+        int names = 0;
+        for (int len = 0; len < rows.length; len++) {
+            if (rows[len] == null) {
+                continue;
+            }
+            for (String name : rows[len]) {
+                names++;
+                assertEquals(len, name.length(), name);
+                byte[] bytes = ("x" + name).getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+                org.junit.jupiter.api.Assertions.assertSame(name,
+                        WireHeaderStringSupport.canonicalKey(bytes, 1, len));
+                org.junit.jupiter.api.Assertions.assertSame(name,
+                        WireHeaderStringSupport.canonicalKey(java.nio.ByteBuffer.wrap(bytes), 1, len));
+            }
+        }
+        org.junit.jupiter.api.Assertions.assertTrue(names >= 30, "common response names are canonical");
+        WireHeaderReader.Decoded decoded = decode(
+                "{\"status\":200,\"headers\":{\"x-request-id\":\"r\",\"strict-transport-security\":\"s\"},"
+                        + "\"metadata\":{\"panicked\":\"true\"}}");
+        assertEquals("r", decoded.headers.get("x-request-id"));
+        assertEquals("s", decoded.headers.get("strict-transport-security"));
+        assertEquals("true", decoded.metadata.get("panicked"));
+    }
+
     @Test
     void canonicalKeyFallbackParsesEscapedAndUtf8Keys() {
         WireHeaderReader.Decoded decoded = decode(

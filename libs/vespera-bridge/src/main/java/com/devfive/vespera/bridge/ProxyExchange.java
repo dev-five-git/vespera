@@ -72,9 +72,15 @@ final class ProxyExchange {
             return;
         }
         long durationNanos = System.nanoTime() - startNanos;
+        // tag() may learn the app name: always called.
         String appName = appTags.tag(app, status, panicked, reachedRust);
+        boolean warn = panicked || status >= 500;
+        if (!warn && observers.isEmpty()) {
+            // Nothing to log or notify: skip the MDC swap and the lambda.
+            return;
+        }
         withMdc(requestId, () -> {
-            if (panicked || status >= 500) {
+            if (warn) {
                 log.warn("vespera {} {} {} app={} mode={} status={} latency={}ms requestId={}",
                         panicked ? "Rust panic on" : "server error on",
                         method, path, appName, mode, status,
@@ -106,6 +112,10 @@ final class ProxyExchange {
             return body.get();
         }
         String previous = MDC.get(VesperaProxyController.MDC_REQUEST_ID);
+        if (requestId.equals(previous)) {
+            // Already in place (the request thread): nothing to swap back.
+            return body.get();
+        }
         MDC.put(VesperaProxyController.MDC_REQUEST_ID, requestId);
         try {
             return body.get();

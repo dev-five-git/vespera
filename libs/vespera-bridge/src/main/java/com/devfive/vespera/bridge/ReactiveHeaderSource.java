@@ -62,7 +62,8 @@ final class ReactiveHeaderSource implements VesperaBridge.HeaderSource {
         Set<String> connectionTokens = connectionTokens(headers);
         Set<String> seen = new HashSet<>(32);
         headers.forEach((name, values) -> {
-            String lower = name.toLowerCase(Locale.ROOT);
+            String known = HeaderPolicy.knownLowerHeaderName(name);
+            String lower = known != null ? known : name.toLowerCase(Locale.ROOT);
             // A multi-map adapter (e.g. Netty's) may list one name in several
             // spellings, each mapping to ALL values: forward it once.
             if (!seen.add(lower)
