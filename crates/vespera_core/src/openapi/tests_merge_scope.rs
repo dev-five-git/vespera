@@ -235,3 +235,117 @@ fn colliding_path_with_receiver_path_level_but_no_operations_keeps_the_incoming_
         "https://child.example"
     );
 }
+
+fn path_item_refs(paths: serde_json::Value, path_items: serde_json::Value) -> serde_json::Value {
+    let mut out = json!({"components": {}});
+    out["paths"] = paths;
+    out["components"]["pathItems"] = path_items;
+    out
+}
+
+#[rstest::rstest]
+#[case::child_security_reaches_the_referenced_operation(
+    json!({"security": [{"bearerAuth": []}]}),
+    Some(bearer())
+)]
+#[case::unauthenticated_child_operation_stays_public(json!({}), Some(Vec::new()))]
+fn ref_path_item_is_inlined_for_the_security_push_down(
+    #[case] child_top_level: serde_json::Value,
+    #[case] expected: Option<Vec<SecurityRequirement>>,
+) {
+    let mut parent = doc(json!({"security": [{"apiKey": []}]}));
+    let mut child = path_item_refs(
+        json!({"/a": {"$ref": "#/components/pathItems/A"}}),
+        json!({"A": {"summary": "a", "get": {"responses": {}}}}),
+    );
+    child
+        .as_object_mut()
+        .unwrap()
+        .extend(child_top_level.as_object().unwrap().clone());
+    parent.merge(doc(child));
+    let item = &parent.paths["/a"];
+    assert_eq!(item.ref_path, None);
+    assert_eq!(item.summary.as_deref(), Some("a"));
+    assert_eq!(op(&parent, "/a", "get").security, expected);
+    // The shared component itself is copied over unchanged.
+    let component = &parent
+        .components
+        .as_ref()
+        .unwrap()
+        .path_items
+        .as_ref()
+        .unwrap()["A"];
+    assert_eq!(component.get.as_ref().unwrap().security, None);
+}
+
+#[test]
+fn ref_path_item_and_webhook_get_the_servers_and_follow_a_reference_chain() {
+    let mut parent = doc(json!({}));
+    let mut child = path_item_refs(
+        json!({"/a": {"$ref": "#/components/pathItems/A"}}),
+        json!({
+            "A": {"$ref": "#/components/pathItems/B"},
+            "B": {"get": {"responses": {}}},
+            "H": {"post": {"responses": {}}}
+        }),
+    );
+    let fields = child.as_object_mut().unwrap();
+    fields.insert(
+        "servers".to_owned(),
+        json!([{"url": "https://child.example"}]),
+    );
+    fields.insert("security".to_owned(), json!([{"bearerAuth": []}]));
+    fields.insert(
+        "webhooks".to_owned(),
+        json!({"hook": {"$ref": "#/components/pathItems/H"}}),
+    );
+    parent.merge(doc(child));
+    let get = op(&parent, "/a", "get");
+    assert_eq!(
+        get.servers.as_ref().unwrap()[0].url,
+        "https://child.example"
+    );
+    assert_eq!(get.security, Some(bearer()));
+    let hook = &parent.webhooks.as_ref().unwrap()["hook"];
+    assert_eq!(hook.ref_path, None);
+    let post = hook.post.as_ref().unwrap();
+    assert_eq!(post.security, Some(bearer()));
+    assert!(post.servers.is_none());
+}
+
+#[rstest::rstest]
+#[case::missing_component("#/components/pathItems/Missing")]
+#[case::external_reference("other.yaml#/paths/~1a")]
+#[case::reference_cycle("#/components/pathItems/A")]
+fn unresolvable_ref_path_item_is_left_as_a_reference(#[case] target: &str) {
+    let mut parent = doc(json!({"security": [{"apiKey": []}]}));
+    parent.merge(doc(path_item_refs(
+        json!({"/a": {"$ref": target}}),
+        json!({"A": {"$ref": "#/components/pathItems/B"}, "B": {"$ref": "#/components/pathItems/A"}}),
+    )));
+    assert_eq!(parent.paths["/a"].ref_path.as_deref(), Some(target));
+}
+
+#[test]
+fn ref_path_item_stays_a_reference_when_nothing_is_pushed_down() {
+    let mut parent = doc(json!({}));
+    parent.merge(doc(path_item_refs(
+        json!({"/a": {"$ref": "#/components/pathItems/A"}}),
+        json!({"A": {"get": {"responses": {}}}}),
+    )));
+    let item = &parent.paths["/a"];
+    assert_eq!(item.ref_path.as_deref(), Some("#/components/pathItems/A"));
+    assert!(item.get.is_none());
+}
+
+#[test]
+fn ref_path_items_without_components_are_left_alone() {
+    let mut parent = doc(json!({"security": [{"apiKey": []}]}));
+    parent.merge(doc(
+        json!({"paths": {"/a": {"$ref": "#/components/pathItems/A"}}}),
+    ));
+    assert_eq!(
+        parent.paths["/a"].ref_path.as_deref(),
+        Some("#/components/pathItems/A")
+    );
+}
