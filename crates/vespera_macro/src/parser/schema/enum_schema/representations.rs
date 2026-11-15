@@ -263,7 +263,7 @@ fn tagged_enum_payload(payload: &Schema, tag: &str, tag_schema: &SchemaRef) -> O
             if is_other_map(inline) {
                 **inline = Schema {
                     max_properties: Some(2),
-                    ..with_tag_property((**inline).clone(), tag, tag_schema, None)
+                    ..with_tag_property((**inline).clone(), tag, tag_schema)
                 };
             } else if inline.schema_type == Some(SchemaType::Object) {
                 inline.max_properties = Some(2);
@@ -321,14 +321,8 @@ fn is_closed_payload(payload: &Schema) -> bool {
     )
 }
 
-/// `object` with the required `tag` property (first in `required`); the
-/// variant doc comment, when present, replaces the payload's description.
-fn with_tag_property(
-    mut object: Schema,
-    tag: &str,
-    tag_schema: &SchemaRef,
-    description: Option<String>,
-) -> Schema {
+/// `object` with the required `tag` property (first in `required`).
+fn with_tag_property(mut object: Schema, tag: &str, tag_schema: &SchemaRef) -> Schema {
     object
         .properties
         .get_or_insert_with(BTreeMap::new)
@@ -337,9 +331,6 @@ fn with_tag_property(
         .required
         .get_or_insert_with(Vec::new)
         .insert(0, tag.to_string());
-    if description.is_some() {
-        object.description = description;
-    }
     // The tag is one more property of the object (a map payload's
     // `length` bounds count its entries only).
     object.min_properties = object.min_properties.map(|min| min + 1);
@@ -463,12 +454,7 @@ pub(super) fn parse_internally_tagged_enum(
                         None | Some(SchemaType::Object) => {
                             let reopen = |object: &Schema| {
                                 constrains_unlisted(object).then(|| {
-                                    with_tag_property(
-                                        object.clone(),
-                                        &tag_string,
-                                        &tag_schema,
-                                        None,
-                                    )
+                                    with_tag_property(object.clone(), &tag_string, &tag_schema)
                                 })
                             };
                             let opened = payload.as_ref().and_then(|payload| {
