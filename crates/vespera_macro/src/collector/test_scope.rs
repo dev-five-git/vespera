@@ -184,15 +184,14 @@ fn lexical(path: &Path) -> Option<PathBuf> {
         std::env::current_dir().ok()?.join(path)
     };
     let mut folded = PathBuf::new();
+    // `components()` already drops every `.` of an absolute path.
     for component in absolute.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !folded.pop() {
-                    return None;
-                }
+        if component == Component::ParentDir {
+            if !folded.pop() {
+                return None;
             }
-            other => folded.push(other),
+        } else {
+            folded.push(component);
         }
     }
     Some(folded)
