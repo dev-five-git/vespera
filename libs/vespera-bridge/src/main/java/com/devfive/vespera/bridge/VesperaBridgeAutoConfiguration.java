@@ -369,9 +369,6 @@ public class VesperaBridgeAutoConfiguration {
      * {@link VesperaClient}).
      */
     static String startupWarning(boolean proxy) {
-        return "vespera native library is not initialized: "
-                + (proxy ? "the proxy answers 503" : "VesperaClient requests fail")
-                + " until VesperaBridge.init(...) runs. Call it before SpringApplication.run "
-                + "or set vespera.bridge.library-name.";
+        return VesperaBridgeCoreAutoConfiguration.startupWarning(proxy);
     }
 }

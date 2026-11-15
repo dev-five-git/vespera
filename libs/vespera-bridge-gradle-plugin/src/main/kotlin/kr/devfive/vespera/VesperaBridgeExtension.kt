@@ -73,7 +73,8 @@ abstract class VesperaBridgeExtension @Inject constructor(objects: ObjectFactory
 
     /**
      * When `true`, registers a `cargoBuild` task that runs
-     * `cargo build --release -p <package>` and wires it as a
+     * `cargo build -p <package>` with the [cargoProfile] flag (default
+     * `release` → `--release`) and wires it as a
      * dependency of `bundleNativeLib`.  Defaults to `false` (opt-in)
      * — most CI pipelines build Rust separately and don't want the
      * Java build to invoke cargo implicitly.
@@ -151,7 +152,12 @@ abstract class VesperaBridgeExtension @Inject constructor(objects: ObjectFactory
      * jars are the classifier artifacts of a `vesperaNative` publication
      * (artifactId = project name, pom packaging), so a consumer adds
      * `runtimeOnly("<group>:<project>:<version>:<platform>")` for each
-     * platform it deploys to.
+     * platform it deploys to. Use a dedicated project for the native jars, or
+     * give the `vesperaNative` publication a distinct `artifactId`: a project
+     * that also publishes its own component (`from(components["java"])`)
+     * otherwise has two publications with the same coordinates, which
+     * overwrite each other (the `pom`-packaging native POM can replace the
+     * real one).
      *
      * ```kotlin
      * vespera {

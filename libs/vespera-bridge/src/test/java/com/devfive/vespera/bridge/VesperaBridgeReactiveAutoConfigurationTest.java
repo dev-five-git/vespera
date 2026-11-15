@@ -35,6 +35,32 @@ class VesperaBridgeReactiveAutoConfigurationTest {
                     VesperaBridgeAutoConfiguration.class, VesperaBridgeReactiveAutoConfiguration.class));
 
     @Test
+    void startupWarningNamesTheProxyOnlyWhenOneExists() {
+        org.junit.jupiter.api.Assumptions.assumeFalse(VesperaBridge.isInitialized(),
+                "the warning is only logged while the library is not loaded");
+        ch.qos.logback.classic.Logger logger = (ch.qos.logback.classic.Logger)
+                org.slf4j.LoggerFactory.getLogger(VesperaBridgeReactiveAutoConfiguration.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> warnings =
+                new ch.qos.logback.core.read.ListAppender<>();
+        warnings.start();
+        logger.addAppender(warnings);
+        try {
+            reactive.withPropertyValues("vespera.bridge.controller-enabled=false").run(ctx -> ctx
+                    .getBean("vesperaBridgeStartupCheck", org.springframework.boot.CommandLineRunner.class).run());
+            reactive.run(ctx -> ctx
+                    .getBean("vesperaBridgeStartupCheck", org.springframework.boot.CommandLineRunner.class).run());
+            assertEquals(2, warnings.list.size());
+            assertEquals(VesperaBridgeCoreAutoConfiguration.startupWarning(false),
+                    warnings.list.get(0).getFormattedMessage());
+            assertFalse(warnings.list.get(0).getFormattedMessage().contains("proxy"));
+            assertEquals(VesperaBridgeCoreAutoConfiguration.startupWarning(true),
+                    warnings.list.get(1).getFormattedMessage());
+        } finally {
+            logger.detachAppender(warnings);
+        }
+    }
+
+    @Test
     void reactiveApplicationGetsTheReactiveProxyOnly() {
         reactive.run(ctx -> {
             assertTrue(ctx.containsBean("vesperaReactiveProxyHandler"));

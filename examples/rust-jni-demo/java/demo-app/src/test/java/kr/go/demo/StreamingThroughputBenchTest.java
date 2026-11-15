@@ -15,9 +15,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * E2E streaming throughput benchmark through the REAL JNI boundary —
- * measures {@code dispatchFullStreamingWithHeader} (the autoconfigured
- * default dispatch mode) round-tripping a large body through the Rust
- * {@code /echo} route.
+ * measures {@code dispatchFullStreamingWithHeader} (the bidirectional
+ * streaming symbol the proxy uses for large bodies; the autoconfigured
+ * default is {@code SmartDispatchModeResolver}) round-tripping a large body
+ * through the Rust {@code /echo/stream} route.
  *
  * <p>The streaming chunk size is <strong>process-fixed</strong> after
  * the first dispatch, so each chunk size needs its own JVM. Run via:

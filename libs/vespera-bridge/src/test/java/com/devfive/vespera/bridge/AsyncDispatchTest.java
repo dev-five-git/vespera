@@ -62,13 +62,16 @@ class AsyncDispatchTest {
     }
 
     @Test
-    void zeroTokenOrDoneFutureLinksNothing() {
+    void zeroTokenLinksNothing() {
+        // Token 0 = nothing was spawned: no dependent stage, and a later
+        // cancel never reaches native. (A normally completed future is not
+        // tested here: it never cancels, with or without the isDone() fast
+        // path, so such a case could not fail; the exceptionally completed
+        // one is cancelBeforeLinkingStillReachesNative.)
         CompletableFuture<byte[]> notSpawned = new CompletableFuture<>();
         AsyncDispatch.linkCancellation(notSpawned, 0L, canceller);
+        assertEquals(0, notSpawned.getNumberOfDependents());
         notSpawned.cancel(true);
-
-        CompletableFuture<byte[]> done = CompletableFuture.completedFuture(new byte[0]);
-        AsyncDispatch.linkCancellation(done, TOKEN, canceller);
         assertTrue(cancelled.isEmpty(), cancelled.toString());
     }
 

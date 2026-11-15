@@ -37,7 +37,7 @@ vespera {
 }
 ```
 
-`./gradlew nativeJars` writes `build/libs/<project>-<version>-<platform>.jar` per platform (only `native/<platform>/`); `maven-publish` gets a `vesperaNative` publication with those classifier artifacts. Consumers add `runtimeOnly("com.acme:<project>:0.1.0:<platform>")` per deployment platform. A CI matrix template that builds the libraries and publishes the jars: [`.github/workflow-templates/vespera-native-jars.yml`](../../.github/workflow-templates/vespera-native-jars.yml). Details: [vespera-bridge README → Per-platform native jars](../vespera-bridge/README.md#per-platform-native-jars-publish-once-per-platform-consume-one).
+`./gradlew nativeJars` writes `build/libs/<project>-<version>-<platform>.jar` per platform (only `native/<platform>/`); `maven-publish` gets a `vesperaNative` publication with those classifier artifacts (artifactId = project name: use a dedicated project, or give the publication a distinct `artifactId` when the project also publishes its own component — two publications with the same coordinates overwrite each other). Consumers add `runtimeOnly("com.acme:<project>:0.1.0:<platform>")` per deployment platform. A CI matrix template that builds the libraries and publishes the jars: [`.github/workflow-templates/vespera-native-jars.yml`](../../.github/workflow-templates/vespera-native-jars.yml). Details: [vespera-bridge README → Per-platform native jars](../vespera-bridge/README.md#per-platform-native-jars-publish-once-per-platform-consume-one).
 
 ## Development
 
