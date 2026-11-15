@@ -258,6 +258,19 @@ fn escape_regex_escapes_every_syntax_character() {
 #[case::hex_plain(r"\x41", true)]
 #[case::one_letter_property(r"\pL", false)]
 #[case::posix_class(r"[[:alpha:]]", false)]
+// Round 14: more Rust-only escapes, and a `}` that closes no `{`.
+#[case::word_start(r"\<foo", false)]
+#[case::word_end(r"foo\>", false)]
+#[case::word_boundary_brace(r"\b{start}foo", false)]
+#[case::word_boundary_plain(r"\bfoo\b", true)]
+#[case::long_unicode_escape(r"\U0001F600", false)]
+#[case::unicode_brace(r"\u{1F600}", false)]
+#[case::unicode_plain(r"A", true)]
+#[case::bell(r"\a", false)]
+#[case::lone_close_brace(r"a}", false)]
+#[case::quantifier_braces(r"a{2,3}b{4}", true)]
+#[case::close_brace_in_class(r"[}]", true)]
+#[case::escaped_close_brace(r"a\}", true)]
 fn ecma_compatible_patterns(#[case] pattern: &str, #[case] expected: bool) {
     assert_eq!(is_ecma_compatible(pattern), expected, "{pattern}");
 }

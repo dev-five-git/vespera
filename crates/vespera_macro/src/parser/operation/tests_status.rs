@@ -110,6 +110,14 @@ fn render(
     &[][..],
     &[101, 204, 205, 304, 404][..]
 )]
+// Round 14: so is a typed `responses = [(204, T)]` entry.
+#[case::typed_no_body(
+    "typed_no_body",
+    "fn f() -> Json<Created>",
+    None,
+    &[(101, "User"), (204, "User"), (205, "User"), (304, "User"), (202, "User")][..],
+    &[][..]
+)]
 fn declared_statuses(
     #[case] name: &str,
     #[case] sig: &str,

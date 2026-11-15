@@ -1,0 +1,11 @@
+---
+source: crates/vespera_macro/src/parser/operation/tests_status.rs
+assertion_line: 128
+expression: "render(sig, success_status, typed, error_status)"
+---
+101: null
+200: {"application/json":{"schema":{"$ref":"#/components/schemas/Created"}}}
+202: {"application/json":{"schema":{"$ref":"#/components/schemas/User"}}}
+204: null
+205: null
+304: null

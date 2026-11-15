@@ -563,3 +563,68 @@ fn crate_wide_lookup_finds_unique_alias_and_rejects_ambiguity() {
     let mut sig: syn::Signature = syn::parse_str("fn h() -> Dup").unwrap();
     assert!(!expand_return_type_alias(&mut sig, None, Some(src)));
 }
+
+/// Round 14: a plain `use` names the module the alias comes from (like a
+/// qualified path), so a same-named alias elsewhere is not ambiguous; an
+/// alias of a same-named alias in another module is followed (the cycle
+/// guard keys on the definition, not the ident).
+#[test]
+fn imported_alias_resolves_its_module_and_same_named_chains_follow() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path();
+    std::fs::create_dir(src.join("v1")).unwrap();
+    std::fs::create_dir(src.join("v2")).unwrap();
+    std::fs::write(
+        src.join("v1").join("mod.rs"),
+        "pub type ApiResult<T> = Result<Json<T>, V1Error>;",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("v2").join("mod.rs"),
+        "pub type ApiResult<T> = Result<Json<T>, V2Error>;",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("error.rs"),
+        "pub type Result<T, E = AppError> = std::result::Result<T, E>;",
+    )
+    .unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    let expand_in = |file_src: &str, ret: &str| {
+        let file: syn::File = syn::parse_str(file_src).unwrap();
+        let mut sig: syn::Signature = syn::parse_str(&format!("fn h() {ret}")).unwrap();
+        expand_return_type_alias(&mut sig, Some(&file), Some(src));
+        let output = &sig.output;
+        quote::quote!(#output).to_string()
+    };
+    assert_eq!(
+        expand_in("use crate::api::v2::ApiResult;", "-> ApiResult<u8>"),
+        "-> Result < Json < u8 > , V2Error >"
+    );
+    assert_eq!(
+        expand_in("use crate::v1::{ApiResult, Other};", "-> ApiResult<u8>"),
+        "-> Result < Json < u8 > , V1Error >"
+    );
+    // Not declared in the imported module (a re-export): still ambiguous.
+    assert_eq!(
+        expand_in("use crate::prelude::ApiResult;", "-> ApiResult<u8>"),
+        "-> ApiResult < u8 >"
+    );
+    // `use super::ApiResult;` from an inline module: the inline parent's.
+    assert_eq!(
+        expand_in(
+            "type ApiResult<T> = Result<T, Parent>; mod m { use super::ApiResult; pub fn h() {} }",
+            "-> ApiResult<u8>"
+        ),
+        "-> Result < u8 , Parent >"
+    );
+    // `type Result<T> = crate::error::Result<Json<T>>;` in the handler's
+    // module is followed into `error.rs`'s own `Result`.
+    assert_eq!(
+        expand_in(
+            "pub type Result<T> = crate::error::Result<Json<T>>;",
+            "-> Result<u8>"
+        ),
+        "-> std :: result :: Result < Json < u8 > , AppError >"
+    );
+}

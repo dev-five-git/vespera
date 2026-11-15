@@ -99,7 +99,10 @@ pub(super) fn flatten_part(
         .map_or(&field.ty, |ty| &ty.0);
     let (ty, optional) =
         option_inner(declared).map_or((declared, omittable), |inner| (inner, true));
-    let custom = constraints.is_any() || extract_field_codec(&field.attrs).custom_for(side);
+    // `#[schema(value_type = T)]` documents a custom codec's wire shape,
+    // exactly as on a field that is not flattened.
+    let custom = constraints.is_any()
+        || (constraints.value_type.is_none() && extract_field_codec(&field.attrs).custom_for(side));
     let schema = if custom {
         SchemaRef::Inline(Box::default())
     } else {
