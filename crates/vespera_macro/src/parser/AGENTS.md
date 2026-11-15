@@ -24,7 +24,7 @@ parser/
 ├── extractors.rs                   # Validated<T> / Result / WithRejection / Cached unwrapping
 ├── extractor_validation.rs + extractor_validation/ # Compile-time Schema-backed extractor check
 │                                   #   (extractor_validation/tests_scope.rs)
-├── is_keyword_type.rs              # Axum extractor detection
+├── is_keyword_type.rs              # Response keyword types (HeaderMap / StatusCode / CookieJar / Result; used by response.rs)
 └── snapshots/                      # insta test snapshots
 ```
 
@@ -64,7 +64,7 @@ parser/schema/
 | Reject non-`Schema` extractor types | `extractor_validation.rs` | Compile-time diagnostic |
 | Modify operation generation | `operation.rs` | `build_operation_from_function()` |
 | Add response type | `response.rs` | `parse_return_type()` |
-| Detect Axum types | `is_keyword_type.rs` | Keyword matching |
+| Detect response keyword types (`HeaderMap` / `StatusCode` / `CookieJar` / `Result`) | `is_keyword_type.rs` | Last-segment match, used by `response.rs` (extractors: `extractors.rs` / `parameters.rs`) |
 
 ## KEY FUNCTIONS
 

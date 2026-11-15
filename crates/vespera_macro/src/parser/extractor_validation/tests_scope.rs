@@ -9,7 +9,22 @@ use super::*;
 use crate::metadata::{CollectedMetadata, RouteMetadata};
 
 fn run(src: &str) -> syn::Result<()> {
+    run_with_test_only(src, &[])
+}
+
+/// `run` with `test_only` `(file_path, function_name)` entries in
+/// `CollectedMetadata::test_only_routes`.
+fn run_with_test_only(src: &str, test_only: &[(&str, &str)]) -> syn::Result<()> {
     let mut metadata = CollectedMetadata::new();
+    metadata.test_only_routes = test_only
+        .iter()
+        .map(
+            |(file_path, function_name)| crate::metadata::TestOnlyRoute {
+                file_path: (*file_path).to_string(),
+                function_name: (*function_name).to_string(),
+            },
+        )
+        .collect();
     metadata.routes.push(RouteMetadata {
         method: "get".to_string(),
         path: "/x".to_string(),
@@ -133,4 +148,18 @@ fn fast_path_route_files_are_checked() {
     // Nothing to parse: the cached ASTs alone are checked.
     metadata.routes.truncate(1);
     assert!(validate_schema_backed_extractors_with_cache(&metadata, &file_cache).is_ok());
+}
+
+/// A `cfg(test)`-only route is mounted but never documented, so its
+/// non-`Schema` extractor type is no error (`cargo test` passes where
+/// `cargo build` does). A test-only entry for another file or function does
+/// not exempt the documented route.
+#[rstest]
+#[case::documented(&[], false)]
+#[case::test_only(&[("x.rs", "handler")], true)]
+#[case::other_file(&[("y.rs", "handler")], false)]
+#[case::other_fn(&[("x.rs", "other")], false)]
+fn test_only_routes_are_not_checked(#[case] test_only: &[(&str, &str)], #[case] ok: bool) {
+    let src = "pub struct Probe { pub a: i32 } pub fn handler(Json(p): Json<Probe>) {}";
+    assert_eq!(run_with_test_only(src, test_only).is_ok(), ok);
 }

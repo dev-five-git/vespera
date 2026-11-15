@@ -8,8 +8,10 @@
 //!
 //! 1. a `type` item in the handler's own module (unless that module imports
 //!    the name from another crate: `use axum::response::Result;`, or declares
-//!    a struct / enum / union of that name, or imports one from the module
-//!    that declares it: then the name is that type, not an alias), then
+//!    a struct / enum / union of that name, imports one from the module
+//!    that declares it, or renames another item of this crate to it: `use
+//!    crate::models::Envelope as ApiResponse;`: then the name is that item,
+//!    not an alias), then
 //! 2. a single, unambiguous `type` item anywhere in the handler's file or
 //!    under the crate's `src/` (two different definitions with the same name
 //!    are left unexpanded).
@@ -386,6 +388,10 @@ fn find_alias<'a>(
             {
                 return None;
             }
+            // `use crate::models::Envelope as ApiResponse;` — the name is
+            // another item of this crate, so a same-named alias elsewhere is
+            // unrelated.
+            Some(Import::Local) if renames_to(items, name) => return None,
             _ => {}
         }
     }
@@ -564,6 +570,24 @@ fn import_parent(items: &[syn::Item], name: &str) -> Option<Qualifier> {
             _ => None,
         })
         .flatten()
+}
+
+/// Whether a `use` among `items` brings another item into scope under
+/// `name` (`use crate::models::Envelope as ApiResponse;`); `X as X` is
+/// not a rename.
+fn renames_to(items: &[syn::Item], name: &str) -> bool {
+    fn walk(tree: &syn::UseTree, name: &str) -> bool {
+        match tree {
+            syn::UseTree::Path(path) => walk(&path.tree, name),
+            syn::UseTree::Rename(rename) => rename.rename == name && rename.ident != name,
+            syn::UseTree::Group(group) => group.items.iter().any(|tree| walk(tree, name)),
+            syn::UseTree::Name(_) | syn::UseTree::Glob(_) => false,
+        }
+    }
+    items.iter().any(|item| match item {
+        syn::Item::Use(item_use) => walk(&item_use.tree, name),
+        _ => false,
+    })
 }
 
 /// Whether the module a `use` imports `name` from ([`import_parent`])

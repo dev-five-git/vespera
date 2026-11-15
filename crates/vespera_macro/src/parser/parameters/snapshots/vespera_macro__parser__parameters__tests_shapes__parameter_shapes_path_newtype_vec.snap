@@ -1,0 +1,30 @@
+---
+source: crates/vespera_macro/src/parser/parameters/tests_shapes.rs
+assertion_line: 194
+expression: "render(func_src, path_params)"
+---
+fn f(p: Path<Segs>) {}
+[
+  {
+    "name": "a",
+    "in": "path",
+    "required": true,
+    "schema": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "maximum": 4294967295
+    }
+  },
+  {
+    "name": "b",
+    "in": "path",
+    "required": true,
+    "schema": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "maximum": 4294967295
+    }
+  }
+]
