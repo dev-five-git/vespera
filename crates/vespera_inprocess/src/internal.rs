@@ -283,7 +283,14 @@ fn request_builder(method: Method, path: &str, query: &str) -> http::request::Bu
     }
 }
 
-/// Join `path` + `?` + `query` into a single exact-capacity `String`.
+/// Join `path` + separator + `query` into a single exact-capacity `String`.
+///
+/// The separator is `?`, unless `path` already carries a query of its own
+/// (the Java bridge embeds it there, `/users?page=1`): then the two are joined
+/// with `&` (`/items?page=2` + `limit=10` -> `/items?page=2&limit=10`), or with
+/// nothing when `path` ends in `?` / `&`.  Always appending `?` produced
+/// `/items?page=2?limit=10`, which `http::Uri` accepts but `Query<..>` decodes
+/// as `page = "2?limit=10"` with no `limit` at all.
 /// Shared between the production [`build_uri`] parser and the bench-only
 /// [`request_builder`] twin so any future edit to the URI-composition
 /// invariant (e.g. percent-encoding a stray fragment) touches ONE spot —
@@ -295,7 +302,11 @@ fn request_builder(method: Method, path: &str, query: &str) -> http::request::Bu
 fn compose_path_query(path: &str, query: &str) -> String {
     let mut uri = String::with_capacity(path.len() + 1 + query.len());
     uri.push_str(path);
-    uri.push('?');
+    if !path.contains('?') {
+        uri.push('?');
+    } else if !path.ends_with(['?', '&']) {
+        uri.push('&');
+    }
     uri.push_str(query);
     uri
 }
