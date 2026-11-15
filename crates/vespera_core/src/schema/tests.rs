@@ -633,6 +633,9 @@ fn schema_ref_nullable_reference_roundtrips() {
     let original = Schema::nullable_reference("#/components/schemas/User".to_owned());
     let json = serde_json::to_string(&SchemaRef::Inline(Box::new(original))).unwrap();
     let back: SchemaRef = serde_json::from_str(&json).unwrap();
+    // The re-serialized form is the same `anyOf: [{$ref}, {type: null}]`
+    // (a bare branch count would also pass for two unrelated branches).
+    assert_eq!(serde_json::to_string(&back).unwrap(), json);
     match back {
         SchemaRef::Inline(s) => {
             assert!(s.ref_path.is_none());
@@ -702,6 +705,8 @@ fn schema_ref_inline_schema_preserves_every_supported_keyword() {
     assert_eq!(schema.nullable, Some(false));
 
     let output = serde_json::to_value(schema).unwrap();
+    assert_eq!(output["$ref"], "#/components/schemas/Base");
+    assert_eq!(output["type"], "object");
     assert_eq!(output["format"], "custom");
     assert_eq!(output["title"], "Complete schema");
     assert_eq!(output["description"], "Every supported keyword");
@@ -853,6 +858,39 @@ mod nullable_and_boolean_schemas {
             ..Schema::integer()
         },
         json!({"type": ["integer", "null"], "anyOf": [{"type": "integer"}, {"type": "null"}]})
+    )]
+    // A nullable `$ref` with a sibling composition keyword: `anyOf: [{$ref},
+    // {type: null}]` next to the keyword would still reject `null`, so the
+    // whole (non-nullable) schema is wrapped instead.
+    #[case::nullable_ref_all_of_wrapped(
+        Schema {
+            all_of: Some(vec![inline(Schema::object_empty())]),
+            ..Schema::nullable_reference("#/components/schemas/User".to_owned())
+        },
+        json!({"anyOf": [
+            {"$ref": "#/components/schemas/User", "allOf": [{"type": "object"}]},
+            {"type": "null"}
+        ]})
+    )]
+    #[case::nullable_ref_one_of_wrapped(
+        Schema {
+            one_of: Some(vec![inline(Schema::string())]),
+            ..Schema::nullable_reference("#/components/schemas/User".to_owned())
+        },
+        json!({"anyOf": [
+            {"$ref": "#/components/schemas/User", "oneOf": [{"type": "string"}]},
+            {"type": "null"}
+        ]})
+    )]
+    #[case::nullable_ref_not_wrapped(
+        Schema {
+            not: Some(inline(Schema::string())),
+            ..Schema::nullable_reference("#/components/schemas/User".to_owned())
+        },
+        json!({"anyOf": [
+            {"$ref": "#/components/schemas/User", "not": {"type": "string"}},
+            {"type": "null"}
+        ]})
     )]
     #[case::typeless_unconstrained_already_accepts_null(
         Schema { description: Some("anything".into()), nullable: Some(true), ..Schema::default() },

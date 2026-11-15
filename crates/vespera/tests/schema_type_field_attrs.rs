@@ -130,6 +130,15 @@ fn garde_rules_follow_the_field() {
         views: None,
     };
     assert!(partial.validate().is_ok());
+    // The carried `length(min = 2)` still runs on the `partial` (`Option`) twin.
+    assert!(
+        GardePartial {
+            title: Some("x".into()),
+            views: None,
+        }
+        .validate()
+        .is_err()
+    );
 }
 
 #[test]
