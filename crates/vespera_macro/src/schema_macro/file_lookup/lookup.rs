@@ -481,8 +481,9 @@ pub fn call_site_definition(
     source: &Type,
     _schema_name_hint: Option<&str>,
 ) -> Option<(StructMetadata, Vec<String>)> {
-    let call_site = proc_macro2::Span::call_site().local_file()?;
-    call_site_definition_in(stored, source, &call_site)
+    proc_macro2::Span::call_site()
+        .local_file()
+        .and_then(|call_site| call_site_definition_in(stored, source, &call_site))
 }
 
 /// [`call_site_definition`] with the call-site file passed explicitly.

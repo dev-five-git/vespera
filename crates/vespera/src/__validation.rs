@@ -187,7 +187,8 @@ mod tests {
         assert!(!<u64 as RangeBound>::admits_min(
             18_446_744_073_709_551_615.5
         ));
-        assert!(<f64 as RangeBound>::admits_min(1e300) && <f32 as RangeBound>::admits_max(-1e300));
+        assert!(<f64 as RangeBound>::admits_min(1e300) && <f64 as RangeBound>::admits_max(-1e300));
+        assert!(<f32 as RangeBound>::admits_min(1e300) && <f32 as RangeBound>::admits_max(-1e300));
         assert!(super::range_unsatisfiable(&0u8, Some(1.5), Some(2.5)).is_none());
         assert_eq!(
             super::range_unsatisfiable(&0u8, Some(300.5), None).map(|e| e.to_string()),
