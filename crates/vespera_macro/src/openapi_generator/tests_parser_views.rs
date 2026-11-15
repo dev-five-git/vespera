@@ -144,3 +144,37 @@ fn recursive_generic_definitions_refer_to_themselves() {
         serde_json::to_string_pretty(&components).unwrap()
     );
 }
+
+/// A user component named like a recursive generic instance
+/// (`#[schema(name = "Tree_i32")]` next to `Tree<i32>`) is a compile error:
+/// every `$ref` to `Tree_i32` would resolve to it and the instance would be
+/// dropped.
+#[test]
+fn generic_instance_name_colliding_with_a_user_schema_is_an_error() {
+    let mut metadata = CollectedMetadata::new();
+    metadata.structs.push(schema(
+        "Tree",
+        "pub struct Tree<T> { pub value: T, pub children: Vec<Tree<T>> }",
+    ));
+    metadata.structs.push(super::tests_accuracy::renamed(
+        "Tree_i32",
+        "X",
+        r#"#[schema(name = "Tree_i32")] pub struct X { pub other: bool }"#,
+    ));
+    metadata
+        .routes
+        .push(super::tests_accuracy::route("/tree", "tree"));
+    let storage = [stored("tree", "async fn tree() -> Json<Tree<i32>>")];
+    let error = super::try_generate_openapi_doc_with_metadata(
+        None, None, None, None, &metadata, None, &storage,
+    )
+    .expect_err("the instance `Tree_i32` collides with the user schema")
+    .to_string();
+    assert!(error.contains("`Tree_i32`"), "{error}");
+
+    // Without the colliding schema the instance is a component of its own.
+    metadata.structs.pop();
+    let doc = generate(&metadata, &storage);
+    let components = doc.components.and_then(|c| c.schemas).unwrap_or_default();
+    assert!(components.contains_key("Tree_i32"));
+}

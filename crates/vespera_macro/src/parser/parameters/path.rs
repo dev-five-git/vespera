@@ -12,8 +12,8 @@ use super::shared::{
 };
 use crate::{
     parser::schema::{
-        SerdeSide, apply_field_rules, extract_aliases, extract_doc_comment, extract_flatten,
-        extract_serde_skip_flags, parse_type_to_schema_ref,
+        SerdeSide, apply_field_rules, extract_aliases, extract_doc_comment, extract_field_codec,
+        extract_flatten, extract_serde_skip_flags, parse_type_to_schema_ref,
         schema_attrs::extract_schema_constraints, wire_override::field_schema_ref,
     },
     schema_macro::type_utils::{is_map_type as utils_is_map_type, last_path_segment, option_inner},
@@ -52,6 +52,7 @@ pub(in crate::parser) fn string_path_schema() -> SchemaRef {
 ///   respected); unmatched segments fall back to `string`.
 /// - `Path<HashMap<String, V>>` / `Path<Vec<T>>`: every segment is a `V` / `T`.
 /// - a struct with container `#[serde(from = "X")]` / `try_from`: typed from `X`.
+/// - a newtype struct `struct Ids(X);` with several segments: typed from `X`.
 /// - any other `Path<T>`: `T` types the segment when the route has exactly
 ///   one; with several segments a scalar cannot match them, so each is
 ///   documented as `string`.
@@ -115,9 +116,16 @@ fn path_parameters_from(
     // Container `#[serde(from = "X")]` / `try_from` (or `#[schema(value_type
     // = X)]`), or `#[serde(transparent)]` (named or tuple struct): the
     // segments are deserialized as `X` / the transparent field's type, not
-    // as these fields.
+    // as these fields. A plain newtype (`struct Ids(TwoIds);`,
+    // `struct Segs(Vec<u32>);`) is read as its field too: axum's
+    // `deserialize_newtype_struct` hands it the whole path, so several
+    // segments are typed by the field's type (one segment keeps the
+    // newtype's own schema below).
+    let multi = path_params.len() > 1;
     if depth < MAX_CONVERSION_DEPTH
-        && let Some(source) = struct_item.as_ref().and_then(deserialized_instead)
+        && let Some(source) = struct_item.as_ref().and_then(|item| {
+            deserialized_instead(item).or_else(|| multi.then(|| newtype_source(item)).flatten())
+        })
     {
         return path_parameters_from(
             &source,
@@ -206,6 +214,33 @@ fn path_parameters_from(
         .iter()
         .map(|name| path_parameter(name, string_path_schema()))
         .collect()
+}
+
+/// The type a syntactic newtype struct (`struct Ids(TwoIds);`) is read as:
+/// its field's type, or the field's `#[schema(value_type = T)]`. `None` for
+/// any other struct, a skipped field, and a field whose wire shape is not
+/// known (`#[schema(any)]`, a custom `deserialize_with`).
+fn newtype_source(struct_item: &syn::ItemStruct) -> Option<Type> {
+    let syn::Fields::Unnamed(fields) = &struct_item.fields else {
+        return None;
+    };
+    let [field] = fields.unnamed.iter().collect::<Vec<_>>()[..] else {
+        return None;
+    };
+    let flags = extract_serde_skip_flags(&field.attrs);
+    let constraints = extract_schema_constraints(&field.attrs);
+    if flags.skip
+        || flags.skip_deserializing
+        || constraints.is_any()
+        || extract_field_codec(&field.attrs).custom_for(SerdeSide::Deserialize)
+    {
+        return None;
+    }
+    Some(
+        constraints
+            .value_type
+            .map_or_else(|| field.ty.clone(), |value_type| value_type.0),
+    )
 }
 
 /// The schema of a path struct field as serde reads it, with the

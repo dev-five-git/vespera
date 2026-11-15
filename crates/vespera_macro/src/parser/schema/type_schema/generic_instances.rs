@@ -225,6 +225,25 @@ pub fn take_materialized() -> BTreeMap<String, Schema> {
     MATERIALIZED.with(|map| std::mem::take(&mut *map.borrow_mut()))
 }
 
+/// Move every component materialised on this thread into `schemas`. A name
+/// a user component already holds (`#[schema(name = "Tree_i32")]` next to a
+/// recursive `Tree<i32>`) is an error: every `$ref` to it would resolve to
+/// the user's schema and the instance would be silently dropped.
+pub fn drain_materialized_into(schemas: &mut BTreeMap<String, Schema>) -> syn::Result<()> {
+    for (name, schema) in take_materialized() {
+        if schemas.contains_key(&name) {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!(
+                    "vespera! macro: the component `{name}` of a recursive generic instantiation collides with a schema of the same name. Rename that schema (`#[schema(name = \"..\")]`)."
+                ),
+            ));
+        }
+        schemas.insert(name, schema);
+    }
+    Ok(())
+}
+
 /// Add components materialised on another thread to this thread's set.
 pub fn merge_materialized(components: BTreeMap<String, Schema>) {
     MATERIALIZED.with(|map| {

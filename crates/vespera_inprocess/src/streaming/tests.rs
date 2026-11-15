@@ -467,9 +467,11 @@ async fn scripted(
     vec![Step::Wait, Step::Data(b"a"), Step::Wait, Step::Data(b"c")], false, None,
     StreamOutcome::Complete, &["a", "c"][..]
 )]
-// A second wait with nothing new delivered does not flush again.
+// A second wait with nothing new delivered does not flush again: the empty
+// data frame between the waits leaves nothing unflushed, so the second
+// `Pending` reaches the `unflushed` guard (without it: `["", "", "a"]`).
 #[case::flush_only_when_unflushed(
-    vec![Step::Wait, Step::Wait, Step::Data(b"a")], true, None,
+    vec![Step::Wait, Step::Data(b""), Step::Wait, Step::Data(b"a")], true, None,
     StreamOutcome::Complete, &["", "a"][..]
 )]
 // A body error delivers what was produced, then reports the truncation.
