@@ -195,4 +195,14 @@ fn map_objects_still_reject_non_maps() {
     let operation: crate::route::Operation =
         serde_json::from_value(json!({"callbacks": null})).unwrap();
     assert!(operation.callbacks.is_none());
+    // A non-`x-` entry is still read as its value type.
+    assert!(
+        serde_json::from_value::<crate::route::Operation>(json!({"responses": {"200": 5}}))
+            .is_err()
+    );
+    assert!(
+        serde_json::from_value::<crate::route::Operation>(json!({"callbacks": {"cb": {"/a": 5}}}))
+            .is_err()
+    );
+    assert!(serde_json::from_value::<crate::route::Operation>(json!({"callbacks": 5})).is_err());
 }

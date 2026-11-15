@@ -13,11 +13,9 @@
 //! as a bogus route or status.
 
 use crate::route::{Callback, PathItem};
-use serde::de::{IgnoredAny, MapAccess, Visitor};
+use serde::de::{DeserializeOwned, Error};
 use serde::{Deserialize, Deserializer, Serializer};
 use std::collections::BTreeMap;
-use std::fmt;
-use std::marker::PhantomData;
 
 /// Specification extensions of one object: `x-*` key → any JSON value.
 pub type Extensions = BTreeMap<String, serde_json::Value>;
@@ -42,49 +40,31 @@ where
     Ok(extensions)
 }
 
-/// A map of an extensible OpenAPI object whose `x-*` keys are skipped (their
-/// values are not parsed as `V`); every other key is deserialized as `V`.
-pub struct WithoutExtensions<V>(pub BTreeMap<String, V>);
-
-impl<'de, V: Deserialize<'de>> Deserialize<'de> for WithoutExtensions<V> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct MapVisitor<V>(PhantomData<V>);
-
-        impl<'de, V: Deserialize<'de>> Visitor<'de> for MapVisitor<V> {
-            type Value = WithoutExtensions<V>;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a map")
-            }
-
-            fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
-                let mut map = BTreeMap::new();
-                while let Some(key) = access.next_key::<String>()? {
-                    if is_extension(&key) {
-                        access.next_value::<IgnoredAny>()?;
-                    } else {
-                        map.insert(key, access.next_value()?);
-                    }
-                }
-                Ok(WithoutExtensions(map))
-            }
-        }
-
-        deserializer.deserialize_map(MapVisitor(PhantomData))
-    }
-}
-
-/// `deserialize_with` for a Paths / Responses / Callback map: see
-/// [`WithoutExtensions`].
+/// `deserialize_with` for a Paths / Responses / Callback map: the `x-*`
+/// keys are dropped before the rest is read as `V` (an extension value is
+/// never parsed as a Path Item / Response).
 pub fn skip_extension_keys<'de, D, V>(deserializer: D) -> Result<BTreeMap<String, V>, D::Error>
 where
     D: Deserializer<'de>,
-    V: Deserialize<'de>,
+    V: DeserializeOwned,
 {
-    WithoutExtensions::deserialize(deserializer).map(|map| map.0)
+    without_extensions(Extensions::deserialize(deserializer)?)
 }
 
-/// `deserialize_with` for an optional `callbacks` map (callback name →
+fn without_extensions<V: DeserializeOwned, E: Error>(
+    raw: Extensions,
+) -> Result<BTreeMap<String, V>, E> {
+    raw.into_iter()
+        .filter(|(key, _)| !is_extension(key))
+        .map(|(key, value)| {
+            V::deserialize(value)
+                .map(|value| (key, value))
+                .map_err(E::custom)
+        })
+        .collect()
+}
+
+/// `deserialize_with` for an optional `callbacks` map (callback name ->
 /// Callback Object): every Callback's `x-*` keys are skipped.
 pub fn skip_callback_extension_keys<'de, D>(
     deserializer: D,
@@ -92,12 +72,14 @@ pub fn skip_callback_extension_keys<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    let callbacks =
-        Option::<BTreeMap<String, WithoutExtensions<PathItem>>>::deserialize(deserializer)?;
-    Ok(callbacks.map(|callbacks| {
-        callbacks
-            .into_iter()
-            .map(|(name, callback)| (name, callback.0))
-            .collect()
-    }))
+    let Some(callbacks) = Option::<BTreeMap<String, Extensions>>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    callbacks
+        .into_iter()
+        .map(|(name, callback)| {
+            without_extensions::<PathItem, D::Error>(callback).map(|callback| (name, callback))
+        })
+        .collect::<Result<_, _>>()
+        .map(Some)
 }
