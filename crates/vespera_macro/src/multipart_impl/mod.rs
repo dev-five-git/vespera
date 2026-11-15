@@ -541,6 +541,10 @@ mod tests {
         "multipart_duplicate_wire_name_serde_rename",
         r#"#[serde(rename_all = "camelCase")] struct F { pub user_id: String, #[serde(rename = "userId")] pub uid: String }"#
     )]
+    #[case::duplicate_wire_name_by_alias(
+        "multipart_duplicate_wire_name_alias",
+        r#"struct F { pub file: String, #[serde(alias = "file")] pub upload: String }"#
+    )]
     fn invalid_limit_is_a_compile_error(#[case] name: &str, #[case] src: &str) {
         let out = derive_pretty(src);
         assert!(out.contains("compile_error"), "{out}");

@@ -139,3 +139,35 @@ fn fractional_bounds_range_through_option_layers() {
     assert!(Grouped { count: Some(1) }.validate().is_ok());
     assert!(Grouped { count: Some(0) }.validate().is_err());
 }
+
+#[derive(Schema, serde::Deserialize)]
+#[allow(dead_code)]
+struct OptionalUnreachable {
+    #[schema(value_type = u8, minimum = 300.5)]
+    above: Option<Small>,
+    #[schema(value_type = u32, maximum = -0.5)]
+    below: MaybeCount,
+}
+
+/// An absent optional field passes an unreachable bound (garde's `range`
+/// passes `None`; the document makes the property optional); a present value
+/// is still rejected.
+#[test]
+fn unreachable_fractional_bounds_pass_absent_optional_fields() {
+    let absent: OptionalUnreachable = serde_json::from_str("{}").unwrap();
+    assert!(absent.validate().is_ok());
+    let present = OptionalUnreachable {
+        above: Some(u8::MAX),
+        below: Some(0),
+    };
+    let messages: Vec<String> = present
+        .validate()
+        .unwrap_err()
+        .iter()
+        .map(|(path, e)| format!("{path}: {e}"))
+        .collect();
+    assert_eq!(
+        messages,
+        ["above: lower than 300.5", "below: greater than -0.5"]
+    );
+}
