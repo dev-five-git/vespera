@@ -61,9 +61,13 @@ fn validation_follows_the_wire() {
     assert_eq!(paths(&flat), ["limit"]);
 
     // `minimum = 0.5` on `Option<Option<i32>>` admits 1, not 0.
-    let ratio = |r: i32| search(&format!(r#"{{"limit": 1, "ratio": {r}, "count": 0, "big": 9007199254740993}}"#));
+    let ratio = |r: i32| {
+        search(&format!(
+            r#"{{"limit": 1, "ratio": {r}, "count": 0, "big": 9007199254740993}}"#
+        ))
+    };
     assert_eq!(paths(&ratio(0)), ["ratio"]);
-    assert!(paths(&ratio(1)).is_empty());
+    assert_eq!(paths(&ratio(1)), Vec::<String>::new());
 
     // The alias keeps its exact integer bound.
     let count = search(r#"{"limit": 1, "count": 4, "big": 9007199254740993}"#);
@@ -71,6 +75,6 @@ fn validation_follows_the_wire() {
 
     // 2^53 + 1 is advertised as 2^53, which is accepted; below it is not.
     let big = |b: i64| search(&format!(r#"{{"limit": 1, "count": 0, "big": {b}}}"#));
-    assert!(paths(&big(9_007_199_254_740_992)).is_empty());
+    assert_eq!(paths(&big(9_007_199_254_740_992)), Vec::<String>::new());
     assert_eq!(paths(&big(9_007_199_254_740_991)), ["big"]);
 }

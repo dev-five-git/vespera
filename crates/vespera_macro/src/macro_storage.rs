@@ -105,7 +105,7 @@ pub fn retain_declared<T: Clone + SourceIdentified>(items: &[T]) -> std::borrow:
 
 /// Whether this process is rust-analyzer's long-lived proc-macro server,
 /// whose storage keeps entries of edited-away items.
-pub(crate) fn in_long_lived_server() -> bool {
+pub fn in_long_lived_server() -> bool {
     static IN_IDE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *IN_IDE.get_or_init(|| is_rust_analyzer(std::env::current_exe().ok().as_deref()))
         || test_ide::forced()
@@ -113,19 +113,19 @@ pub(crate) fn in_long_lived_server() -> bool {
 
 /// Test-only switch emulating the IDE for [`retain_declared`].
 #[cfg(test)]
-pub(crate) mod test_ide {
+pub mod test_ide {
     use std::cell::Cell;
 
     thread_local! {
         static FORCED: Cell<bool> = const { Cell::new(false) };
     }
 
-    pub(crate) fn forced() -> bool {
+    pub fn forced() -> bool {
         FORCED.with(Cell::get)
     }
 
     /// Emulates rust-analyzer on this thread until the guard drops.
-    pub(crate) fn force() -> impl Drop {
+    pub fn force() -> impl Drop {
         struct Restore;
         impl Drop for Restore {
             fn drop(&mut self) {
@@ -145,7 +145,7 @@ mod test_ide {
 }
 
 /// Whether `exe` is rust-analyzer's (long-lived) proc-macro server.
-pub(crate) fn is_rust_analyzer(exe: Option<&std::path::Path>) -> bool {
+pub fn is_rust_analyzer(exe: Option<&std::path::Path>) -> bool {
     exe.and_then(std::path::Path::file_name)
         .is_some_and(|name| name.to_string_lossy().contains("rust-analyzer"))
 }

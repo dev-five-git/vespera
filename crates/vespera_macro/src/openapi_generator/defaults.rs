@@ -82,7 +82,7 @@ pub(super) fn process_default_functions(
 
 /// [`process_default_functions`] for the `side` view of the struct: the
 /// request (`{Name}Input`) view keys its properties by the deserialize name.
-pub(crate) fn process_default_functions_for(
+pub fn process_default_functions_for(
     struct_item: &syn::ItemStruct,
     file_ast: Option<&syn::File>,
     schema: &mut vespera_core::schema::Schema,
@@ -346,6 +346,42 @@ pub fn extract_default_value_from_function(func: &syn::ItemFn) -> Option<serde_j
     None
 }
 
+/// The value of `-expr` for a numeric literal `expr`.
+fn negated_value(expr: &syn::Expr) -> Option<serde_json::Value> {
+    match extract_value_from_expr(expr)? {
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .and_then(i64::checked_neg)
+            .map(serde_json::Value::from)
+            .or_else(|| {
+                n.as_f64()
+                    .and_then(|v| serde_json::Number::from_f64(-v))
+                    .map(serde_json::Value::Number)
+            }),
+        _ => None,
+    }
+}
+
+/// The value of an argument-less conversion of a literal: `to_owned` /
+/// `into` keep a string, `to_string` also renders a number or bool as the
+/// STRING (`42.to_string()` is `"42"`).
+fn method_call_value(call: &syn::ExprMethodCall) -> Option<serde_json::Value> {
+    use serde_json::Value;
+    if !call.args.is_empty() {
+        return None;
+    }
+    match (
+        call.method.to_string().as_str(),
+        extract_value_from_expr(&call.receiver)?,
+    ) {
+        ("to_owned" | "into" | "to_string", value @ Value::String(_)) => Some(value),
+        ("to_string", value @ (Value::Number(_) | Value::Bool(_))) => {
+            Some(Value::String(value.to_string()))
+        }
+        _ => None,
+    }
+}
+
 /// Extract value from expression
 pub(super) fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Value> {
     use syn::{Expr, ExprLit, ExprMacro, Lit};
@@ -371,53 +407,9 @@ pub(super) fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Va
             op: syn::UnOp::Neg(_),
             expr,
             ..
-        }) => match extract_value_from_expr(expr)? {
-            serde_json::Value::Number(n) => n
-                .as_i64()
-                .and_then(|v| v.checked_neg())
-                .map(serde_json::Value::from)
-                .or_else(|| {
-                    n.as_f64()
-                        .and_then(|v| serde_json::Number::from_f64(-v))
-                        .map(serde_json::Value::Number)
-                }),
-            _ => None,
-        },
-        // `"value".to_owned()` / `"value".into()`
-        Expr::MethodCall(method_call)
-            if (method_call.method == "to_owned" || method_call.method == "into")
-                && method_call.args.is_empty() =>
-        {
-            match method_call.receiver.as_ref() {
-                Expr::Lit(ExprLit {
-                    lit: Lit::Str(s), ..
-                }) => Some(serde_json::Value::String(s.value())),
-                _ => None,
-            }
-        }
-        // Method calls like "value".to_string()
-        Expr::MethodCall(method_call) => {
-            if method_call.method == "to_string" {
-                // Get the receiver (the string literal)
-                // Try direct match first
-                if let Expr::Lit(ExprLit {
-                    lit: Lit::Str(s), ..
-                }) = method_call.receiver.as_ref()
-                {
-                    return Some(serde_json::Value::String(s.value()));
-                }
-                // `42.to_string()` / `true.to_string()` is the STRING `"42"`.
-                if let Some(value) = extract_value_from_expr(method_call.receiver.as_ref()) {
-                    return Some(match value {
-                        serde_json::Value::Number(_) | serde_json::Value::Bool(_) => {
-                            serde_json::Value::String(value.to_string())
-                        }
-                        other => other,
-                    });
-                }
-            }
-            None
-        }
+        }) => negated_value(expr),
+        // `"value".to_string()` / `.to_owned()` / `.into()`, `42.to_string()`
+        Expr::MethodCall(method_call) => method_call_value(method_call),
         // Associated function calls like String::from("value")
         Expr::Call(call) => {
             let Expr::Path(path) = call.func.as_ref() else {

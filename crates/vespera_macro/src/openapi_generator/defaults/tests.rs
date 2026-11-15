@@ -33,7 +33,8 @@ fn parse_type(src: &str) -> syn::Type {
 #[case::vec_macro_strings(r#"vec!["a", "b"]"#, Some(json!(["a", "b"])))]
 #[case::vec_macro_unresolvable("vec![some_var]", None)]
 #[case::int_to_string("42.to_string()", Some(json!("42")))]
-#[case::vec_of_strings_to_string(r#"vec!["a"].to_string()"#, Some(json!(["a"])))]
+// `Vec` has no `Display`: not a default the code could compile with.
+#[case::vec_of_strings_to_string(r#"vec!["a"].to_string()"#, None)]
 #[case::negative_int("-1", Some(json!(-1)))]
 #[case::negative_float("-0.5", Some(json!(-0.5)))]
 #[case::negative_non_number("-true", None)]

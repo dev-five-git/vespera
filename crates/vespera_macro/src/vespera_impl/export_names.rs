@@ -78,12 +78,10 @@ fn still_mentions(site: &ExportSite, app: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn site(file: &Path, line: usize) -> Option<ExportSite> {
-        Some(ExportSite {
-            file: file.display().to_string(),
-            line,
-            column: 4,
-        })
+    fn site(file: &Path, line: usize) -> ExportSite {
+        let file = file.display().to_string();
+        let column = 4;
+        ExportSite { file, line, column }
     }
 
     /// A second site of one name is rejected; the same site, another crate
@@ -101,26 +99,44 @@ mod tests {
         let krate = format!("{}/dup", dir.path().display());
 
         assert_eq!(claim_export_name(&krate, "DupApp", None), Ok(()));
-        assert_eq!(claim_export_name(&krate, "DupApp", site(&file, 1)), Ok(()));
-        assert_eq!(claim_export_name(&krate, "DupApp", site(&file, 1)), Ok(()));
-        let error = claim_export_name(&krate, "DupApp", site(&file, 2)).unwrap_err();
+        assert_eq!(
+            claim_export_name(&krate, "DupApp", Some(site(&file, 1))),
+            Ok(())
+        );
+        assert_eq!(
+            claim_export_name(&krate, "DupApp", Some(site(&file, 1))),
+            Ok(())
+        );
+        let error = claim_export_name(&krate, "DupApp", Some(site(&file, 2))).unwrap_err();
         assert!(
             error.contains("`DupApp` is already exported by this crate (lib.rs, line 1)"),
             "{error}"
         );
         assert!(error.ends_with("named `<crate>/DupApp`)"), "{error}");
         assert_eq!(
-            claim_export_name(&format!("{krate}.bin"), "DupApp", site(&file, 2)),
+            claim_export_name(&format!("{krate}.bin"), "DupApp", Some(site(&file, 2))),
             Ok(())
         );
 
         // Renamed at line 1: the name is free for line 2.
-        assert_eq!(claim_export_name(&krate, "Renamed", site(&file, 1)), Ok(()));
-        assert_eq!(claim_export_name(&krate, "DupApp", site(&file, 2)), Ok(()));
+        assert_eq!(
+            claim_export_name(&krate, "Renamed", Some(site(&file, 1))),
+            Ok(())
+        );
+        assert_eq!(
+            claim_export_name(&krate, "DupApp", Some(site(&file, 2))),
+            Ok(())
+        );
 
         // A site whose file no longer exports the name is stale.
         let gone = dir.path().join("gone.rs");
-        assert_eq!(claim_export_name(&krate, "Other", site(&gone, 1)), Ok(()));
-        assert_eq!(claim_export_name(&krate, "Other", site(&file, 3)), Ok(()));
+        assert_eq!(
+            claim_export_name(&krate, "Other", Some(site(&gone, 1))),
+            Ok(())
+        );
+        assert_eq!(
+            claim_export_name(&krate, "Other", Some(site(&file, 3))),
+            Ok(())
+        );
     }
 }
