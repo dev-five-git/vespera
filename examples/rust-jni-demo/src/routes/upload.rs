@@ -30,17 +30,20 @@ pub struct UploadSummary {
 
 /// Summarise a multipart upload (name, file name, content type, size and
 /// hash of every part).
-#[vespera::route(post, tags = ["upload"])]
+///
+/// A malformed multipart body answers `400` and one over the body limit
+/// `413` (axum's `MultipartError::status`).
+#[vespera::route(post, tags = ["upload"], error_status = [400, 413])]
 pub async fn upload(mut multipart: Multipart) -> Result<Json<UploadSummary>, (StatusCode, String)> {
-    let bad_request = |error: vespera::axum::extract::multipart::MultipartError| {
-        (StatusCode::BAD_REQUEST, error.body_text())
+    let rejection = |error: vespera::axum::extract::multipart::MultipartError| {
+        (error.status(), error.body_text())
     };
     let mut parts = Vec::new();
-    while let Some(field) = multipart.next_field().await.map_err(bad_request)? {
+    while let Some(field) = multipart.next_field().await.map_err(rejection)? {
         let name = field.name().unwrap_or_default().to_owned();
         let file_name = field.file_name().map(str::to_owned);
         let content_type = field.content_type().map(str::to_owned);
-        let bytes = field.bytes().await.map_err(bad_request)?;
+        let bytes = field.bytes().await.map_err(rejection)?;
         parts.push(UploadedPart {
             name,
             file_name,

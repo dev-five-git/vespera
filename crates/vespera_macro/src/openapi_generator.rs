@@ -26,7 +26,7 @@ use component_schemas::{
     build_file_cache, build_schema_lookups, build_struct_file_index, parse_component_schemas,
 };
 pub use defaults::extract_default_value_from_function;
-pub use defaults::process_default_functions_for;
+pub use defaults::{instance_defaults, process_default_functions_for};
 use paths::build_path_items;
 pub use paths::{check_duplicate_routes, find_duplicate_operation_id};
 pub use route_claims::{RouteClaims, RouteConflict};

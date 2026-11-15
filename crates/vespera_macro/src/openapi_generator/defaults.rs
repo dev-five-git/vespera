@@ -80,6 +80,21 @@ pub(super) fn process_default_functions(
     );
 }
 
+/// The field defaults of a generic instantiation (`Tree<i32>`, its
+/// substituted definition `item`) in the view being built: the same
+/// `#[schema(default)]` / `#[serde(default)]` type defaults the generic
+/// component gets. There is no stored-default map or file AST for an
+/// instance, so a `#[serde(default = "fn")]` value stays undocumented.
+pub fn instance_defaults(item: &syn::ItemStruct, schema: &mut vespera_core::schema::Schema) {
+    process_default_functions_for(
+        item,
+        None,
+        schema,
+        &BTreeMap::new(),
+        crate::parser::schema::request_view::current_side(),
+    );
+}
+
 /// [`process_default_functions`] for the `side` view of the struct: the
 /// request (`{Name}Input`) view keys its properties by the deserialize name.
 pub fn process_default_functions_for(
@@ -262,7 +277,7 @@ pub(super) fn extract_schema_default_attr(attrs: &[syn::Attribute]) -> Option<St
 
 // Parse a default value string into the appropriate `serde_json::Value`.
 ///
-/// Tries to infer the JSON type: array / object → integer → number → bool →
+/// Tries to infer the JSON type: array / object → `null` → integer → number → bool →
 /// string (fallback).
 pub(super) fn parse_default_string_to_json_value(value: &str) -> serde_json::Value {
     // A JSON array / object (`"[]"`, `"{"a": 1}"`) for a non-string field.
@@ -270,6 +285,10 @@ pub(super) fn parse_default_string_to_json_value(value: &str) -> serde_json::Val
         serde_json::from_str::<serde_json::Value>(value)
     {
         return json;
+    }
+    // `null` (an `Option` field's `None`), never the string `"null"`.
+    if value == "null" {
+        return serde_json::Value::Null;
     }
     // Try integer first
     if let Ok(n) = value.parse::<i64>() {
@@ -348,6 +367,18 @@ pub fn extract_default_value_from_function(func: &syn::ItemFn) -> Option<serde_j
 
 /// The value of `-expr` for a numeric literal `expr`.
 fn negated_value(expr: &syn::Expr) -> Option<serde_json::Value> {
+    // An integer literal's magnitude may exceed `i64::MAX` by one
+    // (`-9223372036854775808` is `i64::MIN`): negate it unsigned.
+    if let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Int(int),
+        ..
+    }) = expr
+    {
+        let magnitude = int.base10_parse::<u64>().ok()?;
+        return 0_i64
+            .checked_sub_unsigned(magnitude)
+            .map(serde_json::Value::from);
+    }
     match extract_value_from_expr(expr)? {
         serde_json::Value::Number(n) => n
             .as_i64()

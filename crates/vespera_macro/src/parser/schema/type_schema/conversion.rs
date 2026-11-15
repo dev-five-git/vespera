@@ -695,11 +695,19 @@ fn parse_type_impl(
                             }
                             return super::generic_instances::inline_or_reference(&name, || {
                                 match &parsed {
-                                    SchemaDef::Struct(item) => parse_struct_to_schema(
-                                        item,
-                                        known_schemas,
-                                        struct_definitions,
-                                    ),
+                                    SchemaDef::Struct(item) => {
+                                        let mut schema = parse_struct_to_schema(
+                                            item,
+                                            known_schemas,
+                                            struct_definitions,
+                                        );
+                                        // The generic component's field defaults.
+                                        crate::openapi_generator::instance_defaults(
+                                            item,
+                                            &mut schema,
+                                        );
+                                        schema
+                                    }
                                     SchemaDef::Enum(item) => parse_enum_to_schema(
                                         item,
                                         known_schemas,

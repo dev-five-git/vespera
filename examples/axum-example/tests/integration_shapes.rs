@@ -104,3 +104,20 @@ async fn telemetry_serializes_documented_wire_shapes() {
         .await
         .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+/// `page * perPage` of two client-supplied `i32`s must not overflow (a debug
+/// build panicked the handler on `{"page": i32::MAX, "perPage": 2}`).
+#[tokio::test]
+async fn flatten_pagination_product_never_overflows() {
+    let server = TestServer::new(create_app().await);
+
+    let huge = server
+        .post("/flatten")
+        .json(&json!({ "page": i32::MAX, "perPage": 2 }))
+        .await;
+    huge.assert_status_ok();
+    assert_eq!(huge.json::<serde_json::Value>()["hasMore"], false);
+
+    let first = server.post("/flatten").json(&json!({})).await;
+    assert_eq!(first.json::<serde_json::Value>()["hasMore"], true);
+}
