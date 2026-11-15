@@ -122,7 +122,9 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
             }
         }
     } else {
-        quote! { _ => {} }
+        // Drained through the meter: multer scans every byte of an ignored
+        // part anyway, so it must count against `max_total_bytes` too.
+        quote! { _ => { __field__.__skip().await?; } }
     };
 
     let missing_name_fallback = if strict {
@@ -132,7 +134,7 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
             )
         }
     } else {
-        quote! { continue }
+        quote! { { __field__.__skip().await?; continue } }
     };
 
     let FieldCodegen {
@@ -156,7 +158,7 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
                     .map_err(vespera::multipart::TypedMultipartError::from)? {
                     // Count EVERY wire part against the request-wide `max_fields`
                     // cap up front — before name resolution / dispatch — so
-                    // unknown parts (the `_ => {}` non-strict arm) and nameless
+                    // unknown parts (the non-strict wildcard arm) and nameless
                     // parts cannot slip past the limit the per-field parsers
                     // formerly enforced only for known fields.
                     vespera::multipart::register_multipart_part()?;

@@ -75,8 +75,9 @@ macro_rules! jni_app {
 ///
 /// ```ignore
 /// vespera::jni_apps! {
-///     "admin"  => admin_app,
-///     "public" => public_app,
+///     "_default" => create_app,
+///     "admin"    => admin_app,
+///     "public"   => public_app,
 /// }
 /// ```
 ///
@@ -93,9 +94,12 @@ macro_rules! jni_app {
 ///
 /// From the Java side, the request's `X-Vespera-App` header
 /// (configurable) selects which app receives the dispatch.  Requests
-/// without the header are routed to the default app (registered via
-/// [`jni_app!`] or `register_app`); requests naming an unregistered
-/// app receive a 404 wire response.
+/// without the header are routed to the default app, which is the
+/// `"_default" => factory` entry of this same `jni_apps!` invocation —
+/// neither [`jni_app!`] (a second `JNI_OnLoad`, see below) nor a
+/// `register_app` call from inside a factory (rejected as re-entrant) can
+/// add it.  Without a `"_default"` entry, header-less requests — and
+/// requests naming an unregistered app — receive a 404 wire response.
 ///
 /// # Composition
 ///

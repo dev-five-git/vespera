@@ -123,7 +123,9 @@ impl PendingFlags {
     fn finish(self, schema: &mut Schema) {
         // A `"null"` in the `type` array admits `null` only when no sibling
         // keyword rejects it: `{type:[T,"null"], enum:[a,b]}` and
-        // `{type:[T,"null"], allOf:[..]}` both reject `null`.  Mapping those
+        // `{type:[T,"null"], allOf:[..]}` both reject `null`, while a
+        // `oneOf` / `anyOf` with a `{type:null}` branch or a `not` of a
+        // non-null schema admits it (`Schema::composition_admits_null`).  Mapping those
         // to `nullable` would widen them on re-serialization (`null` appended
         // to the enum / an `anyOf [.., {type:null}]` wrapper), so the type
         // array's `null` is dropped there instead — the same accepted set.
@@ -133,7 +135,7 @@ impl PendingFlags {
                 .r#enum
                 .as_ref()
                 .is_none_or(|values| values.contains(&serde_json::Value::Null))
-            && !schema.composition_rejects_null();
+            && schema.composition_admits_null();
         schema.nullable = if type_admits_null {
             Some(true)
         } else {
