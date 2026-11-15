@@ -26,6 +26,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{DeriveInput, Fields};
 
+pub use self::attrs::has_form_data_default;
 use self::attrs::{extract_strict, extract_struct_default};
 use self::fields::{DefaultKind, FieldCodegen, default_fn_call, process_fields};
 
@@ -402,27 +403,27 @@ mod tests {
 
     // ── File-field upload-limit defaults (runtime) ───────────
 
-    #[test]
-    fn test_process_derive_file_field_without_limit_uses_runtime_default() {
-        let input: syn::DeriveInput =
-            syn::parse_str("struct Up { pub file: FieldData<NamedTempFile> }").unwrap();
+    /// The LIMIT argument of the parse call (not merely any `Option::None`,
+    /// which every field declaration contains): `None` without a limit (the
+    /// runtime default cap), `Some(bytes)` with one.
+    #[rstest::rstest]
+    #[case::plain(
+        "pub file: FieldData<NamedTempFile>",
+        "std :: option :: Option :: None"
+    )]
+    #[case::optional(
+        "pub file: Option<FieldData<NamedTempFile>>",
+        "std :: option :: Option :: None"
+    )]
+    #[case::limited(
+        r#"#[form_data(limit = "1KiB")] pub file: FieldData<NamedTempFile>"#,
+        "std :: option :: Option :: Some (1024usize)"
+    )]
+    fn test_process_derive_file_field_limit_argument(#[case] field: &str, #[case] limit: &str) {
+        let input: syn::DeriveInput = syn::parse_str(&format!("struct Up {{ {field} }}")).unwrap();
         let code = process_derive(&input).to_string();
-        assert!(
-            code.contains("Option :: None"),
-            "a file field without a limit should pass None to runtime default cap: {code}"
-        );
-    }
-
-    #[test]
-    fn test_process_derive_optional_file_field_without_limit_uses_runtime_default() {
-        let input: syn::DeriveInput =
-            syn::parse_str("struct Up { pub file: Option<FieldData<NamedTempFile>> }").unwrap();
-        assert!(
-            process_derive(&input)
-                .to_string()
-                .contains("Option :: None"),
-            "an Option-wrapped file field without a limit should use runtime default cap"
-        );
+        let call = format!("try_from_field_with_state (__field__ , {limit} , __state__)");
+        assert!(code.contains(&call), "expected `{call}` in: {code}");
     }
 
     #[test]

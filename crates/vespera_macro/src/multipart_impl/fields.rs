@@ -8,7 +8,7 @@ use super::attrs::{
     FormDataAttrs, extract_limit_tokens, parse_form_data, resolve_default_kind, resolve_field_name,
 };
 use super::types::{extract_inner_generic, is_option_type, is_vec_type};
-use crate::parser::schema::extract_serde_skip_flags;
+use crate::parser::schema::{extract_aliases, extract_serde_skip_flags};
 
 /// Collected codegen fragments for each struct field.
 pub(super) struct FieldCodegen<'a> {
@@ -94,15 +94,20 @@ pub(super) fn process_fields<'a>(
 
         let field_name =
             resolve_field_name(ident, &field.attrs, form.field_name.as_deref(), rename_all);
-        if let Some(first) = wire_names.insert(field_name.clone(), ident) {
-            cg.errors.push(syn::Error::new(
-                ident.span(),
-                format!(
-                    "Multipart: fields `{first}` and `{ident}` both read the multipart field \
-                     \"{field_name}\" — give one a distinct `#[form_data(field_name = \"...\")]` \
-                     or `#[serde(rename = \"...\")]`"
-                ),
-            ));
+        // `#[serde(alias = "..")]`: the request schema lists every alias as
+        // an accepted part name, so the parser matches each of them too.
+        let aliases = extract_aliases(&field.attrs);
+        for wire in std::iter::once(&field_name).chain(&aliases) {
+            if let Some(first) = wire_names.insert(wire.clone(), ident) {
+                cg.errors.push(syn::Error::new(
+                    ident.span(),
+                    format!(
+                        "Multipart: fields `{first}` and `{ident}` both read the multipart field \
+                         \"{wire}\" — give one a distinct `#[form_data(field_name = \"...\")]`, \
+                         `#[serde(rename = \"...\")]` or `#[serde(alias = \"...\")]`"
+                    ),
+                ));
+            }
         }
         let limit_tokens = extract_limit_tokens(form.limit.as_ref());
 
@@ -118,7 +123,7 @@ pub(super) fn process_fields<'a>(
             &mut cg,
             ident,
             &parse_ty,
-            &field_name,
+            (&field_name, &aliases),
             &limit_tokens,
             is_vec,
             strict,
@@ -161,7 +166,7 @@ fn push_assignment<'a>(
     cg: &mut FieldCodegen<'a>,
     ident: &'a syn::Ident,
     parse_ty: &Type,
-    field_name: &str,
+    (field_name, aliases): (&str, &[String]),
     limit_tokens: &TokenStream,
     is_vec: bool,
     strict: bool,
@@ -182,7 +187,7 @@ fn push_assignment<'a>(
     };
 
     cg.assignments
-        .push(quote! { #field_name => { #assignment } });
+        .push(quote! { #field_name #(| #aliases)* => { #assignment } });
 }
 
 fn push_post_loop<'a>(
@@ -443,5 +448,40 @@ mod tests {
         assert_eq!(cg.declarations.len(), 3);
         assert_eq!(cg.assignments.len(), 3);
         assert_eq!(cg.post_loop.len(), 1);
+    }
+
+    /// `#[serde(alias)]` names join the match arm, and an alias colliding with
+    /// another field's name is the duplicate-wire-name error.
+    #[test]
+    fn test_process_fields_serde_alias_arms_and_collisions() {
+        let input = parse_fields_from(
+            r#"struct T { #[serde(alias = "upload", alias = "doc")] pub file: String }"#,
+        );
+        let cg = process_fields(
+            get_named_fields(&input).iter(),
+            None,
+            false,
+            false,
+            &HashSet::new(),
+        );
+        assert!(cg.errors.is_empty());
+        assert!(
+            cg.assignments[0]
+                .to_string()
+                .starts_with("\"file\" | \"upload\" | \"doc\" =>")
+        );
+
+        let input = parse_fields_from(
+            r#"struct T { pub upload: String, #[serde(alias = "upload")] pub file: String }"#,
+        );
+        let cg = process_fields(
+            get_named_fields(&input).iter(),
+            None,
+            false,
+            false,
+            &HashSet::new(),
+        );
+        assert_eq!(cg.errors.len(), 1);
+        assert!(cg.errors[0].to_string().contains("\"upload\""));
     }
 }

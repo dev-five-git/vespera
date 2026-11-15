@@ -6,7 +6,10 @@
 //! function of another module would be picked, or none found).  A
 //! `crate::a::b::f` path (what `schema_type!` re-roots a source field's
 //! default function to) is looked up in that module's items; `self::` /
-//! `super::` / `child::f` walk the inline modules of the struct's file.
+//! `super::` / `child::f` walk the inline modules of the struct's file, and
+//! when that finds nothing (an out-of-line `mod defaults;`, `super::` past
+//! the file's top level, a `use`-imported name) the path is resolved through
+//! the crate's module tree from the struct's absolute module.
 
 use std::path::Path;
 
@@ -31,31 +34,67 @@ pub(super) fn resolve_default_fn(
     }
     let segments: Vec<String> = path.segments.iter().map(|s| ident_name(&s.ident)).collect();
     let (fn_name, module) = segments.split_last()?;
-    let items = if module.first().is_some_and(|first| first == "crate") {
-        module_scope::module_items(module)?
-    } else {
-        let file = file_cache::get_parsed_file(file_path)?;
-        let mut chain =
-            module_scope::item_module_chain_in_file(file_path, &file.items, struct_name, line);
-        for segment in module {
-            match segment.as_str() {
-                "self" => {}
-                "super" => {
-                    chain.pop()?;
-                }
-                child => chain.push(child.to_string()),
+    if module.first().is_some_and(|first| first == "crate") {
+        return default_fn_value(&module_scope::module_items(module)?, fn_name);
+    }
+    let file = file_cache::get_parsed_file(file_path)?;
+    let chain = module_scope::item_module_chain_in_file(file_path, &file.items, struct_name, line);
+    in_file(file.items, chain.clone(), module, fn_name, file_path)
+        .or_else(|| in_module_tree(&segments, &chain, file_path))
+}
+
+/// `fn_name` through `module` (`self` / `super` / child segments) from the
+/// inline `chain` of the struct's file, within that file only.
+fn in_file(
+    items: Vec<syn::Item>,
+    mut chain: Vec<String>,
+    module: &[String],
+    fn_name: &str,
+    file_path: &Path,
+) -> Option<serde_json::Value> {
+    for segment in module {
+        match segment.as_str() {
+            "self" => {}
+            "super" => {
+                chain.pop()?;
             }
+            child => chain.push(child.to_string()),
         }
-        if chain.is_empty() {
-            // The file's top level: the per-file cache already holds it.
-            return super::cached_default_functions(file_path)?
-                .get(fn_name)
-                .cloned();
-        }
-        inline_module_items(file.items, &chain)?
+    }
+    if chain.is_empty() {
+        // The file's top level: the per-file cache already holds it.
+        return super::cached_default_functions(file_path)?
+            .get(fn_name)
+            .cloned();
+    }
+    default_fn_value(&inline_module_items(items, &chain)?, fn_name)
+}
+
+/// The function `segments` names from the struct's absolute module (the
+/// file's module plus `chain`), through the crate's module tree: out-of-line
+/// child modules, `super::` past the file and `use` imports included.
+fn in_module_tree(
+    segments: &[String],
+    chain: &[String],
+    file_path: &Path,
+) -> Option<serde_json::Value> {
+    let mut module = module_scope::file_module(file_path)?;
+    module.extend(chain.iter().cloned());
+    let module_scope::Resolved::Path(mut target) = module_scope::resolve_name(segments, &module)
+    else {
+        return None;
     };
+    let fn_name = target.pop()?;
+    if target.first().is_none_or(|root| root != "crate") {
+        return None;
+    }
+    default_fn_value(&module_scope::module_items(&target)?, &fn_name)
+}
+
+/// The literal value of the function `fn_name` among `items`.
+fn default_fn_value(items: &[syn::Item], fn_name: &str) -> Option<serde_json::Value> {
     items.iter().find_map(|item| match item {
-        syn::Item::Fn(func) if ident_name(&func.sig.ident) == *fn_name => {
+        syn::Item::Fn(func) if ident_name(&func.sig.ident) == fn_name => {
             crate::openapi_generator::extract_default_value_from_function(func)
         }
         _ => None,

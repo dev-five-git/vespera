@@ -174,13 +174,40 @@ async fn multipart_schema_type_keeps_the_source_defaults_skip_and_strict() {
     assert!(parse::<SourceDto>(&[("other", "x")]).await.is_err());
     assert!(parse::<SourceDto>(&[("cache", "1")]).await.is_err());
 
-    // `partial`: the container default still builds the DTO (wrapped
-    // `Some(..)`); a wrapped field's `default = "fn"` (typed `T`) is dropped,
-    // so `n` comes from the container default too.
+    // `partial`: the container default still fills the unwrapped fields, but
+    // an absent wrapped field stays `None` (a PATCH must not overwrite it
+    // with the source default — serde-mode DTOs behave the same); a wrapped
+    // field's `default = "fn"` (typed `T`) is dropped.
     let patch: SourcePatch = parse(&[]).await.unwrap();
-    assert_eq!(patch.title.as_deref(), Some("untitled"));
-    assert_eq!(patch.n, Some(2));
+    assert_eq!(patch.title, None);
+    assert_eq!(patch.n, None);
     assert_eq!(patch.tags, ["fallback"]);
+    let patch: SourcePatch = parse(&[("title", "t")]).await.unwrap();
+    assert_eq!(patch.title.as_deref(), Some("t"));
+    assert_eq!(patch.n, None);
+}
+
+/// `#[serde(alias)]` names are accepted part names (the request schema lists
+/// them), also under `strict`.
+#[derive(Multipart, Schema, Debug)]
+#[try_from_multipart(strict)]
+pub struct Aliased {
+    #[serde(alias = "heading", alias = "caption")]
+    pub title: String,
+}
+
+#[tokio::test]
+async fn serde_alias_names_are_accepted_part_names() {
+    for name in ["title", "heading", "caption"] {
+        let parsed: Aliased = parse(&[(name, "x")]).await.unwrap();
+        assert_eq!(parsed.title, "x");
+    }
+    assert!(parse::<Aliased>(&[("other", "x")]).await.is_err());
+    assert!(
+        parse::<Aliased>(&[("title", "a"), ("heading", "b")])
+            .await
+            .is_err()
+    );
 }
 
 /// Generic structs get serde's `Default` bounds: `T: Default` for a field

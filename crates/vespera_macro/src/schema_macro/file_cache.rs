@@ -449,10 +449,21 @@ fn ensure_file_list(cache: &mut FileCache, src_dir: &Path) -> Arc<[PathBuf]> {
     files
 }
 
+/// Where [`ensure_struct_definitions`] left a file's struct definitions.
+#[derive(Debug, PartialEq, Eq)]
+enum StructDefs {
+    /// In `cache.struct_definitions`, current.
+    Cached,
+    /// Freshly parsed but not cacheable (the file has no fingerprint); any
+    /// stale cache entry was evicted.
+    Uncached(HashMap<String, String>),
+}
+
 /// Ensure struct definitions are extracted and cached for the given file.
 /// On first call, parses the file and caches all struct definitions as strings.
 /// On subsequent calls, checks the mtime+len fingerprint to validate cache.
-fn ensure_struct_definitions(cache: &mut FileCache, path: &Path) -> bool {
+/// `None` when the file cannot be read or parsed.
+fn ensure_struct_definitions(cache: &mut FileCache, path: &Path) -> Option<StructDefs> {
     let current_fp = get_fingerprint_cached(cache, path);
 
     if let Some(fp) = current_fp
@@ -460,12 +471,10 @@ fn ensure_struct_definitions(cache: &mut FileCache, path: &Path) -> bool {
         && *cached_fp == fp
     {
         cache.struct_def_cache_hits += 1;
-        return true;
+        return Some(StructDefs::Cached);
     }
 
-    let Some(file_ast) = parse_file_cached(cache, path) else {
-        return false;
-    };
+    let file_ast = parse_file_cached(cache, path)?;
 
     // A struct the compiler drops (`#[cfg(any())]`, the inactive one of
     // cfg twins) is no definition; of the rest, the first of a name wins.
@@ -480,13 +489,14 @@ fn ensure_struct_definitions(cache: &mut FileCache, path: &Path) -> bool {
         }
     }
 
-    if let Some(fp) = current_fp {
-        cache
-            .struct_definitions
-            .insert(path.to_path_buf(), (fp, defs));
-    }
-
-    true
+    let Some(fp) = current_fp else {
+        cache.struct_definitions.remove(path);
+        return Some(StructDefs::Uncached(defs));
+    };
+    cache
+        .struct_definitions
+        .insert(path.to_path_buf(), (fp, defs));
+    Some(StructDefs::Cached)
 }
 
 /// Get a struct definition string by name from a file, using cached extraction.
@@ -500,15 +510,15 @@ fn ensure_struct_definitions(cache: &mut FileCache, path: &Path) -> bool {
 pub fn get_struct_definition(path: &Path, struct_name: &str) -> Option<String> {
     FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if !ensure_struct_definitions(&mut cache, path) {
-            return None;
+        match ensure_struct_definitions(&mut cache, path)? {
+            StructDefs::Cached => cache
+                .struct_definitions
+                .get(path)?
+                .1
+                .get(struct_name)
+                .cloned(),
+            StructDefs::Uncached(mut defs) => defs.remove(struct_name),
         }
-        cache
-            .struct_definitions
-            .get(path)?
-            .1
-            .get(struct_name)
-            .cloned()
     })
 }
 

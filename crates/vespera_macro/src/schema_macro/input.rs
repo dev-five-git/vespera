@@ -13,7 +13,7 @@ use syn::{
 /// Supports:
 /// - `schema!(Type)` - Full schema
 /// - `schema!(Type, omit = ["field1", "field2"])` - Schema with fields omitted
-/// - `schema!(Type, pick = ["field1", "field2"])` - Schema with only specified fields (future)
+/// - `schema!(Type, pick = ["field1", "field2"])` - Schema with only specified fields
 pub struct SchemaInput {
     /// The type to generate schema for
     pub ty: Type,

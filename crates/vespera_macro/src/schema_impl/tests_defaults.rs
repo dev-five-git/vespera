@@ -195,3 +195,85 @@ fn crate_path_default_fn_is_resolved_through_the_module_tree(
         expected.is_some()
     );
 }
+
+/// Paths the in-file walk cannot follow resolve through the module tree: an
+/// out-of-line child module, `super::` above the file's top level, and a
+/// `use`-imported name (they used to demand an explicit `#[schema(default)]`);
+/// a function another crate exports cannot be read.
+#[rstest]
+#[case::out_of_line_child("A", Some("child"))]
+#[case::super_past_file("B", Some("parent"))]
+#[case::imported_name("C", Some("imported"))]
+#[case::missing("D", None)]
+#[case::external_crate("E", None)]
+fn default_fn_is_resolved_through_the_module_tree(
+    #[case] name: &str,
+    #[case] expected: Option<&str>,
+) {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let src = temp_dir.path().join("src");
+    let files = [
+        ("lib.rs", "pub mod models;\npub mod shared;"),
+        (
+            "shared.rs",
+            "pub fn imported_role() -> String { \"imported\".to_string() }",
+        ),
+        (
+            "models/mod.rs",
+            "pub mod user;\npub fn parent_role() -> String { \"parent\".to_string() }",
+        ),
+        (
+            "models/user/defaults.rs",
+            "pub fn role() -> String { \"child\".to_string() }",
+        ),
+    ];
+    for (path, content) in files {
+        std::fs::create_dir_all(src.join(path).parent().unwrap()).unwrap();
+        std::fs::write(src.join(path), content).unwrap();
+    }
+    let user = "mod defaults;\nuse crate::shared::imported_role;\nuse other_crate::role as foreign_role;\n\
+        pub struct A { #[serde(default = \"defaults::role\")] role: String }\n\
+        pub struct B { #[serde(default = \"super::parent_role\")] role: String }\n\
+        pub struct C { #[serde(default = \"imported_role\")] role: String }\n\
+        pub struct D { #[serde(default = \"nowhere::role\")] role: String }\n\
+        pub struct E { #[serde(default = \"foreign_role\")] role: String }\n";
+    let file_path = src.join("models/user.rs");
+    std::fs::write(&file_path, user).unwrap();
+    let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
+    crate::schema_macro::file_cache::bump_epoch();
+
+    let input = syn::parse_file(user)
+        .unwrap()
+        .items
+        .into_iter()
+        .find_map(|item| match item {
+            syn::Item::Struct(item) if item.ident == name => Some(syn::DeriveInput::from(item)),
+            _ => None,
+        })
+        .unwrap();
+    let defaults = extract_field_defaults_from_path(&input, &file_path);
+    assert_eq!(
+        defaults.get("role"),
+        expected
+            .map(|value| serde_json::Value::String(value.to_string()))
+            .as_ref()
+    );
+}
+
+/// A field serde never reads (`skip` / `skip_deserializing`) has no request
+/// property, so an unresolvable `default = "fn"` on it is not an error.
+#[rstest]
+#[case::skip(quote::quote!(#[serde(skip, default = "new_client")]), true)]
+#[case::skip_deserializing(quote::quote!(#[serde(skip_deserializing, default = "new_client")]), true)]
+#[case::read(quote::quote!(#[serde(default = "new_client")]), false)]
+fn skipped_field_default_is_not_validated(
+    #[case] attrs: proc_macro2::TokenStream,
+    #[case] ok: bool,
+) {
+    let input: syn::DeriveInput =
+        syn::parse2(quote::quote!(struct S { #attrs client: Client })).unwrap();
+    assert_eq!(
+        validate_serde_default_values(&input, &BTreeMap::new()).is_ok(),
+        ok
+    );
+}

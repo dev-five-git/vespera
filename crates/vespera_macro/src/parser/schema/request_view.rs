@@ -391,6 +391,7 @@ fn field_differs(field: &syn::Field) -> bool {
             || field_codec_differs(field)
             || field_type_differs(field)
             || extract_default(&field.attrs).is_some()
+            || crate::multipart_impl::has_form_data_default(&field.attrs)
             || !extract_aliases(&field.attrs).is_empty()
             // Omitted from output when the predicate holds, but read as a
             // required key (serde has no default to fill it in).

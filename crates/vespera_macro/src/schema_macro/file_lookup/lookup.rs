@@ -21,6 +21,8 @@ pub enum LookupError {
     },
     /// A bare source name was not found in the macro call-site file.
     BareNotFound { struct_name: String },
+    /// The source module path goes through an import of another crate.
+    ExternalCrate { path: String },
 }
 
 impl LookupError {
@@ -43,6 +45,12 @@ impl LookupError {
                 format!(
                     "schema_type! struct `{struct_name}` not found. Searched: {}",
                     render_paths(searched)
+                ),
+            ),
+            Self::ExternalCrate { path } => syn::Error::new_spanned(
+                span,
+                format!(
+                    "schema_type! source module `{path}` is in another crate: only structs of this crate can be read (declare the DTO in that crate, or copy the struct here)"
                 ),
             ),
             Self::BareNotFound { struct_name } => syn::Error::new_spanned(
@@ -118,14 +126,31 @@ pub fn find_struct_from_path_detailed(
     _schema_name_hint: Option<&str>,
 ) -> Result<(StructMetadata, Vec<String>), LookupError> {
     let call_site = proc_macro2::Span::call_site().local_file();
-    find_struct_with_call_site(ty, call_site.as_deref())
+    find_struct_with_call_site(ty, call_site.as_deref(), call_site_line())
 }
 
-/// [`find_struct_from_path_detailed`] with the macro call-site file passed
-/// explicitly (unit tests have none).
+/// The line the macro is invoked on (it picks the inline `mod` the call
+/// sits in, see [`call_site_module_of`]).
+fn call_site_line() -> usize {
+    proc_macro2::Span::call_site().start().line
+}
+
+/// The module a macro invoked on `line` of `file` resolves names in: the
+/// file's module plus the inline `mod`s enclosing that line.
+fn call_site_module_of(layout: &CrateLayout, file: &Path, line: usize) -> Vec<String> {
+    let mut module = layout.module_path_of(file);
+    module.extend(crate::schema_macro::module_scope::inline_chain_at(
+        file, line,
+    ));
+    module
+}
+
+/// [`find_struct_from_path_detailed`] with the macro call-site file and line
+/// passed explicitly (unit tests have none).
 pub(super) fn find_struct_with_call_site(
     ty: &Type,
     call_site: Option<&Path>,
+    line: usize,
 ) -> Result<(StructMetadata, Vec<String>), LookupError> {
     // Get CARGO_MANIFEST_DIR to locate src folder (cached to avoid repeated syscalls)
     let manifest_dir = crate::schema_macro::file_cache::get_manifest_dir()
@@ -154,13 +179,13 @@ pub(super) fn find_struct_with_call_site(
     // qualified path for anything outside the file that invokes the macro.
     if module_part.is_empty() {
         return match call_site {
-            Some(file_path) => find_bare_struct_in_file(file_path, &struct_name, &layout),
+            Some(file_path) => find_bare_struct_in_file(file_path, &struct_name, &layout, line),
             None => Err(LookupError::BareNotFound { struct_name }),
         };
     }
 
-    let call_site_module = call_site.map(|file| layout.module_path_of(file));
-    let module_path = absolute_module_path(module_part, call_site_module.as_deref());
+    let call_site_module = call_site.map(|file| call_site_module_of(&layout, file, line));
+    let module_path = absolute_module_path(module_part, call_site_module.as_deref())?;
     let module_segments: Vec<&str> = module_path[1..].iter().map(String::as_str).collect();
 
     if let Some(definition) = find_struct_in_module(src_dir, &module_segments, &struct_name) {
@@ -196,23 +221,31 @@ pub(super) fn find_struct_with_call_site(
 /// `crate::a` as is, `self::a` / `super::a` relative to the call-site
 /// module (when known), a first segment the call-site module imports or
 /// defines (`use crate::models::memo;` → `memo::Model`) through that
-/// import, anything else relative to the crate root.
+/// import, anything else relative to the crate root.  A first segment
+/// imported from ANOTHER crate (`use entity::user;` -> `user::Model`) is
+/// [`LookupError::ExternalCrate`]: its source is not in this crate.
 fn absolute_module_path(
     module_part: &[String],
     call_site_module: Option<&[String]>,
-) -> Vec<String> {
+) -> Result<Vec<String>, LookupError> {
     let first = module_part[0].as_str();
     if !matches!(first, "crate" | "self" | "super")
         && let Some(module) = call_site_module
         && let crate::schema_macro::module_scope::Resolved::Path(path) =
             crate::schema_macro::module_scope::resolve_name(&module_part[..1], module)
     {
-        return path
+        let full: Vec<String> = path
             .into_iter()
             .chain(module_part[1..].iter().cloned())
             .collect();
+        if full[0] != "crate" {
+            return Err(LookupError::ExternalCrate {
+                path: full.join("::"),
+            });
+        }
+        return Ok(full);
     }
-    match (first, call_site_module) {
+    Ok(match (first, call_site_module) {
         ("crate", _) => module_part.to_vec(),
         ("self", Some(module)) => module.iter().chain(&module_part[1..]).cloned().collect(),
         ("super", Some(module)) => {
@@ -232,7 +265,7 @@ fn absolute_module_path(
                     .cloned(),
             )
             .collect(),
-    }
+    })
 }
 
 /// Definition of `struct_name` in the crate module `module_segments`
@@ -268,8 +301,14 @@ fn find_bare_struct_in_file(
     file_path: &Path,
     struct_name: &str,
     layout: &CrateLayout,
+    line: usize,
 ) -> Result<(StructMetadata, Vec<String>), LookupError> {
     let module_path = layout.module_path_of(file_path);
+    let chain = crate::schema_macro::module_scope::inline_chain_at(file_path, line);
+    if !chain.is_empty() {
+        let module: Vec<String> = module_path.into_iter().chain(chain).collect();
+        return find_bare_struct_in_inline_module(struct_name, &module);
+    }
     if let Some(definition) =
         crate::schema_macro::file_cache::get_struct_definition(file_path, struct_name)
     {
@@ -290,6 +329,40 @@ fn find_bare_struct_in_file(
         StructMetadata::new_model(struct_name.to_string(), definition),
         module_path.into_iter().chain(chain).collect(),
     ))
+}
+
+/// A bare name written inside an inline `mod` (`module`, absolute): that
+/// module's own struct, else the one its scope imports (`use super::Model;`)
+/// — never a same-named struct of the file's top level, which Rust would not
+/// resolve there.
+fn find_bare_struct_in_inline_module(
+    struct_name: &str,
+    module: &[String],
+) -> Result<(StructMetadata, Vec<String>), LookupError> {
+    use crate::schema_macro::module_scope::{
+        Resolved, module_items, resolve_name, struct_in_items,
+    };
+    let found = |module: Vec<String>| {
+        let definition = struct_in_items(&module_items(&module)?, struct_name)?;
+        Some((
+            StructMetadata::new_model(struct_name.to_string(), definition),
+            module,
+        ))
+    };
+    let imported = || match resolve_name(&[struct_name.to_string()], module) {
+        Resolved::Path(path)
+            if path.first().is_some_and(|root| root == "crate")
+                && path.last().is_some_and(|last| last == struct_name) =>
+        {
+            found(path[..path.len() - 1].to_vec())
+        }
+        _ => None,
+    };
+    found(module.to_vec())
+        .or_else(imported)
+        .ok_or_else(|| LookupError::BareNotFound {
+            struct_name: struct_name.to_string(),
+        })
 }
 
 /// Classifies one already-typed directory entry, keeping the recursive collector's
@@ -464,11 +537,8 @@ pub fn requested_module_path(ty: &Type) -> Option<Vec<String>> {
     let call_site = proc_macro2::Span::call_site().local_file();
     let call_site_module = call_site
         .zip(crate::schema_macro::crate_layout::crate_layout())
-        .map(|(file, layout)| layout.module_path_of(&file));
-    Some(absolute_module_path(
-        module_part,
-        call_site_module.as_deref(),
-    ))
+        .map(|(file, layout)| call_site_module_of(&layout, &file, call_site_line()));
+    absolute_module_path(module_part, call_site_module.as_deref()).ok()
 }
 
 /// The call-site file's own definition of the bare source name, when the
@@ -498,7 +568,7 @@ fn call_site_definition_in(
     if Path::new(file) == call_site {
         return None;
     }
-    find_struct_with_call_site(source, Some(call_site)).ok()
+    find_struct_with_call_site(source, Some(call_site), call_site_line()).ok()
 }
 
 #[cfg(test)]

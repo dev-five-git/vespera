@@ -8,6 +8,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::punctuated::Punctuated;
 
+use super::cfg_eval::Predicate;
 use super::transformation::{reroot_serde_metas, serde_key};
 
 /// What a source field contributes to the generated field.
@@ -20,7 +21,11 @@ pub struct CarriedAttrs {
     pub other: Vec<TokenStream>,
     /// `#[cfg_attr(pred, serde(..))]` items (paths re-rooted at the source
     /// module), emitted after `other`.
-    pub cfg_serde: Vec<(syn::Meta, Vec<syn::Meta>)>,
+    pub cfg_serde: Vec<(Predicate, Vec<syn::Meta>)>,
+    /// `#[cfg_attr(pred, schema(..))]` items (only when `Schema` is
+    /// derived), as `#[schema(..)]` attributes: `partial` rewrites them like
+    /// [`Self::schema`].
+    pub cfg_schema: Vec<(Predicate, syn::Attribute)>,
     /// The `#[cfg(..)]` attributes alone: they also gate the field's
     /// assignment in the generated `From` / `from_model`.
     pub cfgs: Vec<syn::Attribute>,
@@ -74,7 +79,7 @@ fn filtered_cfg_attr(
     carried: &mut CarriedAttrs,
 ) {
     let Ok((predicate, metas)) = attr.parse_args_with(|input: syn::parse::ParseStream| {
-        let predicate: syn::Meta = input.parse()?;
+        let predicate: Predicate = input.parse()?;
         input.parse::<syn::Token![,]>()?;
         let metas = Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated(input)?;
         Ok((predicate, metas))
@@ -88,11 +93,11 @@ fn filtered_cfg_attr(
         carried.deprecated |= path.is_ident("deprecated");
         if path.is_ident("serde") {
             carried_cfg_serde(&predicate, meta, module_path, carried);
-        } else if (schema_derived && path.is_ident("schema"))
-            || path.is_ident("garde")
-            || path.is_ident("deprecated")
-            || path.is_ident("doc")
-        {
+        } else if schema_derived && path.is_ident("schema") {
+            let attr: syn::Attribute = syn::parse_quote! { #[#meta] };
+            carried.schema_default |= schema_has_default(&attr);
+            carried.cfg_schema.push((predicate.clone(), attr));
+        } else if path.is_ident("garde") || path.is_ident("deprecated") || path.is_ident("doc") {
             kept.push(meta);
         }
     }
@@ -105,7 +110,7 @@ fn filtered_cfg_attr(
 
 /// The items of a `serde(..)` inside `cfg_attr(predicate, ..)`.
 fn carried_cfg_serde(
-    predicate: &syn::Meta,
+    predicate: &Predicate,
     meta: &syn::Meta,
     module_path: &[String],
     carried: &mut CarriedAttrs,
@@ -189,20 +194,12 @@ impl CarriedAttrs {
         self.schema = self
             .schema
             .into_iter()
-            .filter_map(|attr| {
-                let Some(items) = schema_items(&attr) else {
-                    return Some(attr);
-                };
-                let kept: Vec<TokenStream> = items
-                    .into_iter()
-                    .filter(|item| item.key != "default")
-                    .map(|item| match item.value_type {
-                        Some(ty) => quote! { value_type = ::std::option::Option<#ty> },
-                        None => item.tokens,
-                    })
-                    .collect();
-                (!kept.is_empty()).then(|| syn::parse_quote! { #[schema(#(#kept),*)] })
-            })
+            .filter_map(option_wrap_schema)
+            .collect();
+        self.cfg_schema = self
+            .cfg_schema
+            .into_iter()
+            .filter_map(|(predicate, attr)| Some((predicate, option_wrap_schema(attr)?)))
             .collect();
         for (_, items) in &mut self.cfg_serde {
             items.retain(|item| {
@@ -222,6 +219,17 @@ impl CarriedAttrs {
         self
     }
 
+    /// The `#[cfg_attr(pred, schema(..))]` attributes.
+    pub fn cfg_schema_attrs(&self) -> Vec<TokenStream> {
+        self.cfg_schema
+            .iter()
+            .map(|(predicate, attr)| {
+                let meta = &attr.meta;
+                quote! { #[cfg_attr(#predicate, #meta)] }
+            })
+            .collect()
+    }
+
     /// The `#[cfg_attr(pred, serde(..))]` attributes.
     pub fn cfg_serde_attrs(&self) -> Vec<TokenStream> {
         self.cfg_serde
@@ -229,6 +237,23 @@ impl CarriedAttrs {
             .map(|(predicate, items)| quote! { #[cfg_attr(#predicate, serde(#(#items),*))] })
             .collect()
     }
+}
+
+/// A `#[schema(..)]` attribute of a field `partial` wraps in `Option` (see
+/// [`CarriedAttrs::for_option_wrap`]): `None` when nothing is left.
+fn option_wrap_schema(attr: syn::Attribute) -> Option<syn::Attribute> {
+    let Some(items) = schema_items(&attr) else {
+        return Some(attr);
+    };
+    let kept: Vec<TokenStream> = items
+        .into_iter()
+        .filter(|item| item.key != "default")
+        .map(|item| match item.value_type {
+            Some(ty) => quote! { value_type = ::std::option::Option<#ty> },
+            None => item.tokens,
+        })
+        .collect();
+    (!kept.is_empty()).then(|| syn::parse_quote! { #[schema(#(#kept),*)] })
 }
 
 /// Whether a `#[schema(..)]` attribute sets `default`.
@@ -256,9 +281,10 @@ mod tests {
 
     fn render(carried: &CarriedAttrs) -> String {
         let schema = &carried.schema;
+        let cfg_schema = carried.cfg_schema_attrs();
         let other = &carried.other;
         let cfg_serde = carried.cfg_serde_attrs();
-        quote! { #(#schema)* #(#other)* #(#cfg_serde)* }.to_string()
+        quote! { #(#schema)* #(#cfg_schema)* #(#other)* #(#cfg_serde)* }.to_string()
     }
 
     #[rstest]
@@ -298,6 +324,12 @@ mod tests {
         "# [cfg_attr (all () , garde (skip) , deprecated , doc = \"d\")]"
     )]
     #[case::cfg_attr_unparseable(quote!(#[cfg_attr(feature = "x")]), true, "")]
+    // `cfg_attr(true, ..)` (a literal predicate, Rust 1.88+) used to be dropped.
+    #[case::cfg_attr_literal(
+        quote!(#[cfg_attr(true, garde(skip), schema(minimum = 1))]),
+        true,
+        "# [cfg_attr (true , schema (minimum = 1))] # [cfg_attr (true , garde (skip))]"
+    )]
     #[case::dropped(quote!(#[sea_orm(primary_key)] #[serde(default)]), true, "")]
     fn carries_expected_attributes(
         #[case] attrs: TokenStream,
@@ -323,6 +355,8 @@ mod tests {
         true
     )]
     #[case::unparseable(quote!(#[schema(= 1)]), false)]
+    // A `schema(default ..)` inside `cfg_attr` counts too.
+    #[case::cfg_attr_default(quote!(#[cfg_attr(feature = "x", schema(default = 5))]), true)]
     fn detects_schema_default(#[case] attrs: TokenStream, #[case] expected: bool) {
         assert_eq!(
             carried_field_attrs(&field(attrs), true, &[]).schema_default,
@@ -357,6 +391,11 @@ mod tests {
     #[case::cfg_attr_skip_serializing_if(
         quote!(#[cfg_attr(feature = "x", serde(skip_serializing_if = "String::is_empty"))]),
         "# [cfg_attr (feature = \"x\" , serde (skip_serializing_if = \"Option::is_none\"))]"
+    )]
+    // A `cfg_attr` schema gets the same rewrite.
+    #[case::cfg_attr_schema(
+        quote!(#[cfg_attr(feature = "x", schema(value_type = String, default = "5"))] #[cfg_attr(all(), schema(default = 1))]),
+        "# [cfg_attr (feature = \"x\" , schema (value_type = :: std :: option :: Option < String >))]"
     )]
     fn option_wrap_attrs(#[case] attrs: TokenStream, #[case] expected: &str) {
         let carried = carried_field_attrs(&field(attrs), true, &[]).for_option_wrap();

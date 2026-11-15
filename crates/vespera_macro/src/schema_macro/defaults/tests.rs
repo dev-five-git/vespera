@@ -207,29 +207,25 @@ fn test_sea_orm_default_attrs_sql_function_unknown_type_skips() {
     assert!(fns.is_empty());
 }
 
-#[test]
-fn test_sea_orm_default_attrs_existing_serde_default() {
+/// A field's own serde default is what serde applies: the SeaORM literal is
+/// NOT advertised — only the bare marker, so the DTO's derive documents the
+/// serde default (`0` / `seven()`), never `42`.
+#[rstest::rstest]
+#[case::bare(quote::quote!(#[serde(default)]))]
+#[case::function(quote::quote!(#[serde(default = "seven")]))]
+fn test_sea_orm_default_attrs_existing_serde_default(#[case] serde_attr: proc_macro2::TokenStream) {
     let attrs: Vec<syn::Attribute> = vec![
         syn::parse_quote!(#[sea_orm(default_value = "42")]),
-        syn::parse_quote!(#[serde(default)]),
+        syn::parse_quote!(#serde_attr),
     ];
     let struct_name = syn::Ident::new("Test", proc_macro2::Span::call_site());
     let ty: syn::Type = syn::parse_str("i32").unwrap();
     let mut fns = Vec::new();
     let (serde, schema) =
         generate_sea_orm_default_attrs(&attrs, &struct_name, "count", &ty, &ty, false, &mut fns);
-    // serde attr should be empty (already has serde default)
     assert!(serde.is_empty());
-    // schema attr should still be generated
-    let schema_str = schema.to_string();
-    assert!(
-        schema_str.contains("schema"),
-        "should have schema attr: {schema_str}"
-    );
-    assert!(
-        fns.is_empty(),
-        "no default fn needed when serde(default) exists"
-    );
+    assert_eq!(schema.to_string(), "# [schema (default)]");
+    assert!(fns.is_empty());
 }
 
 #[test]
@@ -357,46 +353,6 @@ fn test_generate_schema_type_code_with_omit_default() {
     );
     // name should remain
     assert!(output.contains("name"), "name should remain: {output}");
-}
-
-// ============================================================
-// Coverage: SQL function default with existing serde default (line 554)
-// ============================================================
-
-#[test]
-fn test_sea_orm_default_attrs_sql_function_with_existing_serde_default() {
-    let attrs: Vec<syn::Attribute> = vec![
-        syn::parse_quote!(#[sea_orm(default_value = "NOW()")]),
-        syn::parse_quote!(#[serde(default)]),
-    ];
-    let struct_name = syn::Ident::new("Test", proc_macro2::Span::call_site());
-    let ty: syn::Type = syn::parse_str("DateTimeWithTimeZone").unwrap();
-    let mut fns = Vec::new();
-    let (serde, schema) = generate_sea_orm_default_attrs(
-        &attrs,
-        &struct_name,
-        "created_at",
-        &ty,
-        &ty,
-        false,
-        &mut fns,
-    );
-    // serde attr should be empty (already has serde default)
-    assert!(serde.is_empty());
-    // schema attr should still be generated
-    let schema_str = schema.to_string();
-    assert!(
-        schema_str.contains("schema"),
-        "should have schema attr: {schema_str}"
-    );
-    assert!(
-        schema_str.contains("1970-01-01"),
-        "should have epoch default: {schema_str}"
-    );
-    assert!(
-        fns.is_empty(),
-        "no default fn needed when serde(default) exists"
-    );
 }
 
 // ============================================================
@@ -798,11 +754,14 @@ fn now_default_matches_field_type(#[case] ty: &str, #[case] expr: &str, #[case] 
 }
 
 /// A source field that already carries `#[serde(default)]` keeps it (no
-/// generated fn) but still gets the schema marker, so a `Local` `NOW()`
-/// field compiles under the DTO's `#[derive(Schema)]`.
+/// generated fn) and gets only the bare schema marker: serde fills the field
+/// from ITS default, so no epoch / SeaORM value is advertised, and a `Local`
+/// `NOW()` field still compiles under the DTO's `#[derive(Schema)]`.
 #[rstest::rstest]
 #[case::local("DateTimeLocal", "# [schema (default)]")]
-#[case::utc("DateTimeUtc", "# [schema (default = \"1970-01-01T00:00:00Z\")]")]
+#[case::utc("DateTimeUtc", "# [schema (default)]")]
+#[case::with_time_zone("DateTimeWithTimeZone", "# [schema (default)]")]
+#[case::unknown_type("MyCustomType", "# [schema (default)]")]
 fn now_default_with_existing_serde_default(#[case] ty: &str, #[case] expected: &str) {
     let attrs: Vec<syn::Attribute> = vec![
         syn::parse_quote!(#[sea_orm(default_value = "NOW()")]),

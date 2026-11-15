@@ -52,7 +52,7 @@ fn lookup(
     call_site: Option<&Path>,
 ) -> Result<(StructMetadata, Vec<String>), LookupError> {
     let ty: syn::Type = syn::parse_str(path).unwrap();
-    find_struct_with_call_site(&ty, call_site)
+    find_struct_with_call_site(&ty, call_site, 0)
 }
 
 #[rstest]
@@ -117,6 +117,70 @@ fn path_through_call_site_import() {
     // Not imported: crate-root relative, as before.
     let (_, module_path) = lookup("models::ModsModel", Some(&call_site)).unwrap();
     assert_eq!(module_path.join("::"), "crate::models");
+}
+
+/// A `schema_type!` inside an inline `mod` resolves `super::` / `self::`,
+/// that module's imports and bare names in THAT module, not the file's top
+/// level (`line` is the macro call's line).
+#[rstest]
+#[case::super_from_inline("super::Model", 9, "a", "crate::models::user")]
+#[case::bare_in_inline("Model", 4, "b", "crate::models::user::v2")]
+#[case::bare_imported_in_inline("Model", 8, "a", "crate::models::user")]
+#[case::self_in_inline("self::Model", 4, "b", "crate::models::user::v2")]
+#[case::top_level("Model", 1, "a", "crate::models::user")]
+fn lookup_inside_an_inline_module(
+    #[case] path: &str,
+    #[case] line: usize,
+    #[case] field: &str,
+    #[case] module: &str,
+) {
+    let (dir, _guard) = temp_crate("lib.rs");
+    let call_site = dir.path().join("src/models/user.rs");
+    std::fs::write(
+        &call_site,
+        "pub struct Model { pub a: i32 }\n\
+         pub mod v2 {\n\
+             pub struct Model { pub b: i32 }\n\
+             // schema_type!(D from Model);\n\
+         }\n\
+         pub mod dto {\n\
+             use super::Model;\n\
+             // schema_type!(D from Model);\n\
+             // schema_type!(D from super::Model);\n\
+         }\n",
+    )
+    .unwrap();
+    bump_epoch();
+    let ty: syn::Type = syn::parse_str(path).unwrap();
+    let (metadata, module_path) = find_struct_with_call_site(&ty, Some(&call_site), line).unwrap();
+    assert!(
+        metadata.definition.contains(&format!("pub {field} :")),
+        "{}",
+        metadata.definition
+    );
+    assert_eq!(module_path.join("::"), module);
+    // A bare name neither defined nor imported in the inline module.
+    let missing: syn::Type = syn::parse_str("Hidden").unwrap();
+    assert!(matches!(
+        find_struct_with_call_site(&missing, Some(&call_site), 4),
+        Err(LookupError::BareNotFound { .. })
+    ));
+}
+
+/// A module path through an import of ANOTHER crate (`use entity::user;`)
+/// is a clear error, not a lookup of `crate::user` in this crate.
+#[test]
+fn path_through_external_crate_import_is_an_error() {
+    let (dir, _guard) = temp_crate("lib.rs");
+    let call_site = dir.path().join("src/handlers.rs");
+    std::fs::write(&call_site, "use entity::user;").unwrap();
+    bump_epoch();
+    let Err(err) = lookup("user::Model", Some(&call_site)) else {
+        panic!("an external-crate source must be rejected");
+    };
+    assert!(matches!(&err, LookupError::ExternalCrate { path } if path == "entity::user"));
+    let message = err.to_syn_error(&quote::quote!(x)).to_string();
+    assert!(message.contains("another crate"), "{message}");
 }
 
 /// L17: in an integration test, `crate::` is the test crate (`tests/`), not
