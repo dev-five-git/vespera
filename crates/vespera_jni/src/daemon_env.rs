@@ -94,8 +94,10 @@ fn attach_daemon_thread(jvm: &jni::JavaVM) -> jni::errors::Result<*mut jni::sys:
     // SAFETY: `raw_vm` comes from `Env::get_java_vm()` and is therefore a
     // valid JavaVM pointer for this process.  JNI 1.4 provides
     // `AttachCurrentThreadAsDaemon`; the returned `JNIEnv` is valid only
-    // on the current OS thread and is cached in thread-local storage by
-    // the sole caller below.
+    // on the current OS thread.  The sole caller below keeps only the
+    // `OwnedAttachment` record (for the detach on thread exit) in
+    // thread-local storage; the env pointer itself never outlives that
+    // call and is re-resolved with `GetEnv` on every use.
     let res = unsafe {
         ((*(*raw_vm)).v1_4.AttachCurrentThreadAsDaemon)(
             raw_vm,

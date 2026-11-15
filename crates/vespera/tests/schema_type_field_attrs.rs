@@ -150,6 +150,14 @@ fn ignored_schema_keeps_serde_defaults_only() {
     assert_eq!(dto.bonus, 0, "serde's default, not the SeaORM `42`");
     let schema: SeededSchema = serde_json::from_str(r#"{"note":""}"#).unwrap();
     assert_eq!((schema.count, schema.bonus), (5, 0));
+    // The document agrees with serde: `bonus` documents serde's own default
+    // (never the SeaORM `42` serde does not apply), `count` the SeaORM one.
+    let document = vespera::schema!(SeededSchema);
+    let properties = document.properties.as_ref().expect("properties");
+    let default_of =
+        |name: &str| serde_json::to_value(&properties[name]).unwrap()["default"].clone();
+    assert_eq!(default_of("bonus"), serde_json::json!(0));
+    assert_eq!(default_of("count"), serde_json::json!(5));
 }
 
 #[derive(Serialize, Deserialize, Clone, Schema)]

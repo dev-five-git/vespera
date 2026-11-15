@@ -1,4 +1,4 @@
-error: Multipart: fields `file` and `upload` both read the multipart field "file" — give one a distinct `#[form_data(field_name = "...")]`, `#[serde(rename = "...")]` or `#[serde(alias = "...")]`
+error: Multipart: fields `file` and `upload` both read the multipart field "file" — give one a distinct `#[form_data(field_name = "...")]` or `#[serde(rename = "...")]`
   --> tests/ui/multipart_duplicate_field.rs:10:9
    |
 10 |     pub upload: String,

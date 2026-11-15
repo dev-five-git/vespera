@@ -294,10 +294,13 @@ impl TypedMultipartError {
     /// name when known, else empty. Infallible in practice; the fallback keeps
     /// this request-time path panic-free instead of unwinding in a handler.
     ///
-    /// `pub(super)` so the inline test module (a sibling of this file) can
-    /// snapshot the wire body via `err.error_body()` exactly as before — the
-    /// `IntoResponse` impl below remains the only production call site.
-    pub(super) fn error_body(&self) -> Vec<u8> {
+    /// Public + `#[doc(hidden)]` (not API) so the inline test module can
+    /// snapshot the wire body and `benches/multipart_error.rs` times this very
+    /// serializer, not a mirror of it — the `IntoResponse` impl below remains
+    /// the only production call site.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn error_body(&self) -> Vec<u8> {
         serde_json::to_vec(&MultipartErrorEnvelope {
             errors: [MultipartOneError {
                 message: MultipartMessage(self),
