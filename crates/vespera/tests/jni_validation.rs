@@ -230,12 +230,10 @@ fn jni_dispatch_multiple_violations_envelope_contains_all_paths() {
     assert!(paths.contains(&"email"), "got {paths:?}");
     assert!(paths.contains(&"age"), "got {paths:?}");
 
-    // NEW: hoisted validation_errors must mirror the body.
+    // NEW: hoisted validation_errors must mirror the body — same entries
+    // (`path` + `message`), same order.
     let hoisted = header["validation_errors"].as_array().unwrap();
-    let hoisted_paths: Vec<&str> = hoisted.iter().filter_map(|e| e["path"].as_str()).collect();
-    assert!(hoisted_paths.contains(&"username"), "got {hoisted_paths:?}");
-    assert!(hoisted_paths.contains(&"email"), "got {hoisted_paths:?}");
-    assert!(hoisted_paths.contains(&"age"), "got {hoisted_paths:?}");
+    assert_eq!(hoisted, errors, "hoisted header must mirror the body");
 }
 
 #[test]
