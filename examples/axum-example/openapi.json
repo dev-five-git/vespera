@@ -1223,6 +1223,23 @@
         }
       }
     },
+    "/health/live": {
+      "get": {
+        "operationId": "liveness",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/hello": {
       "get": {
         "operationId": "mod_file_endpoint",

@@ -50,10 +50,7 @@ pub(super) fn target_variant() -> String {
 /// `rustc --test` harness build (the only trace of `cfg(test)` a proc macro
 /// can observe), else `""`.
 fn variant_of(args: &[String], exe: Option<&Path>) -> &'static str {
-    let in_ide = exe
-        .and_then(Path::file_name)
-        .is_some_and(|name| name.to_string_lossy().contains("rust-analyzer"));
-    if in_ide {
+    if crate::macro_storage::is_rust_analyzer(exe) {
         ".ide"
     } else if args.iter().any(|arg| arg == "--test") {
         ".test"

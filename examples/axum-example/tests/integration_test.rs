@@ -16,6 +16,18 @@ async fn test_health_endpoint() {
     response.assert_text("ok");
 }
 
+/// A `macro_rules!`-generated route is mounted (its file never spells the
+/// declaration out for the stale-entry filter to find).
+#[tokio::test]
+async fn test_macro_generated_route_is_mounted() {
+    let server = TestServer::new(create_app().await);
+
+    let response = server.get("/health/live").await;
+
+    response.assert_status_ok();
+    response.assert_text("alive");
+}
+
 /// `Form<T>` on GET reads the query string, as the document says.
 #[tokio::test]
 async fn test_form_on_get_reads_the_query_string() {
