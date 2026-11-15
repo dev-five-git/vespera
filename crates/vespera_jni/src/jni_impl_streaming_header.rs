@@ -168,6 +168,29 @@ fn reject_null_header_consumer(
     true
 }
 
+/// A null `OutputStream` / `InputStream` is a caller error: deliver the same
+/// `400` wire header the non-header streaming symbols return for it
+/// (`dispatchStreaming` / `dispatchFullStreaming`), not the `500 JNI
+/// streaming setup failed` the null check inside the setup would produce.
+fn reject_null_streams(
+    env: &mut jni::Env<'_>,
+    header_consumer: &JObject<'_>,
+    streams: &[&JObject<'_>],
+    message: &str,
+    flags: &StreamingFlags,
+) -> bool {
+    if streams.iter().all(|stream| !stream.is_null()) {
+        return false;
+    }
+    notify_local_header(
+        env,
+        header_consumer,
+        &vespera_inprocess::error_wire(400, message),
+        flags,
+    );
+    true
+}
+
 fn notify_local_header(
     env: &mut jni::Env<'_>,
     header_consumer: &JObject<'_>,
@@ -297,6 +320,15 @@ fn dispatch_full_streaming_with_header_body(env: &mut jni::Env<'_>, args: &FullH
     if reject_null_header_consumer(env, args.header_consumer, args.flags) {
         return;
     }
+    if reject_null_streams(
+        env,
+        args.header_consumer,
+        &[args.input_stream, args.output_stream],
+        "inputStream and outputStream must not be null",
+        args.flags,
+    ) {
+        return;
+    }
     let Some(header_input) =
         read_header_or_notify(env, args.header_bytes, args.header_consumer, args.flags)
     else {
@@ -390,6 +422,15 @@ struct StreamHeaderArgs<'a, 'local> {
 
 fn dispatch_streaming_with_header_body(env: &mut jni::Env<'_>, args: &StreamHeaderArgs<'_, '_>) {
     if reject_null_header_consumer(env, args.header_consumer, args.flags) {
+        return;
+    }
+    if reject_null_streams(
+        env,
+        args.header_consumer,
+        &[args.output_stream],
+        "outputStream must not be null",
+        args.flags,
+    ) {
         return;
     }
     let Some(input) =
@@ -514,6 +555,15 @@ struct StashStreamArgs<'a, 'local> {
 /// `IOException` on a post-header truncation) — the handler is NOT re-run.
 fn stream_stashed_body(env: &mut jni::Env<'_>, args: &StashStreamArgs<'_, '_>) {
     if reject_null_header_consumer(env, args.header_consumer, args.flags) {
+        return;
+    }
+    if reject_null_streams(
+        env,
+        args.header_consumer,
+        &[args.output_stream],
+        "outputStream must not be null",
+        args.flags,
+    ) {
         return;
     }
     let Some(pending) = crate::jni_impl::direct_stash::take_stashed(args.token) else {
