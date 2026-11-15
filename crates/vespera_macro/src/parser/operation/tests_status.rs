@@ -84,6 +84,23 @@ fn render(
     &[][..],
     &[][..]
 )]
+// Round 11: an explicit `(200, T)` is another response: `status = 201`
+// moves only the inferred success, and an `error_status` entry never
+// replaces it.
+#[case::status_keeps_explicit_200(
+    "status_keeps_explicit_200",
+    "fn f() -> Json<Created>",
+    Some(201),
+    &[(200, "User")][..],
+    &[][..]
+)]
+#[case::status_beats_error_status(
+    "status_beats_error_status",
+    "fn f() -> Result<Json<Created>, Json<User>>",
+    Some(201),
+    &[][..],
+    &[201][..]
+)]
 fn declared_statuses(
     #[case] name: &str,
     #[case] sig: &str,
@@ -95,4 +112,37 @@ fn declared_statuses(
         format!("declared_statuses_{name}"),
         render(sig, success_status, typed, error_status)
     );
+}
+
+/// Declared 1xx / 3xx statuses are not labelled "Error response".
+#[rstest]
+#[case::informational(&[(101, "User")][..], &[][..], "101", "Informational response")]
+#[case::typed_redirect(&[(303, "User")][..], &[][..], "303", "Redirect")]
+#[case::error_status_redirect(&[][..], &[304][..], "304", "Redirect")]
+#[case::error(&[][..], &[404][..], "404", "Error response")]
+fn declared_status_descriptions(
+    #[case] typed: &[(u16, &str)],
+    #[case] error_status: &[u16],
+    #[case] code: &str,
+    #[case] description: &str,
+) {
+    let sig: syn::Signature = syn::parse_str("fn f() -> Json<User>").unwrap();
+    let known = HashSet::from(["User"]);
+    let definitions = HashMap::from([("User", "pub struct User { pub id: u32 }")]);
+    let typed: Vec<(u16, String)> = typed
+        .iter()
+        .map(|(code, name)| (*code, (*name).to_string()))
+        .collect();
+    let op = build_operation_from_function(
+        &sig,
+        "/x",
+        &known,
+        &definitions,
+        OperationRouteConfig {
+            typed_responses: (!typed.is_empty()).then_some(typed.as_slice()),
+            error_status: (!error_status.is_empty()).then_some(error_status),
+            ..OperationRouteConfig::default()
+        },
+    );
+    assert_eq!(op.responses[code].description, description);
 }

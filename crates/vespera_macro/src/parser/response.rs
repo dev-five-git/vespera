@@ -32,6 +32,7 @@ fn unwrap_json(ty: &Type) -> &Type {
 /// type `axum::response::ErrorResponse`): its error body is opaque. User
 /// aliases such as `type ApiResult<T> = Result<Json<T>, AppError>` are
 /// expanded before this point (see [`super::result_alias`]).
+#[cfg(test)]
 fn extract_result_types(ty: &Type) -> Option<(Type, Type)> {
     let (ok_ty, err_ty) = result_args(ty)?;
     let err_ty = err_ty.cloned().unwrap_or_else(axum_error_response);
@@ -78,7 +79,9 @@ fn is_non_body_type(ty: &Type) -> bool {
 /// metadata only (`()`, `StatusCode`, `HeaderMap`, `(StatusCode, CookieJar)`),
 /// otherwise the type itself. A nested response tuple (`(StatusCode,
 /// (HeaderMap, Json<T>))` — the last element only has to be
-/// `IntoResponse`) is searched the same way.
+/// `IntoResponse`) is searched the same way, and so is the `Ok` side of a
+/// `Result` (axum's `IntoResponse for Result` sends `T` or `E`'s response,
+/// never serde's `{"Ok": ..}`; the errors are [`result_errors`]).
 fn body_element(ty: &Type) -> Option<&Type> {
     match ty {
         Type::Tuple(tuple) => body_element(
@@ -89,16 +92,38 @@ fn body_element(ty: &Type) -> Option<&Type> {
                 .find(|elem| !is_non_body_type(elem))?,
         ),
         _ if is_non_body_type(ty) => None,
-        _ => Some(ty),
+        _ => result_args(ty).map_or(Some(ty), |(ok, _)| body_element(ok)),
+    }
+}
+
+/// The error types of the `Result`s on the body path of `ty`
+/// (`Result<Result<Json<T>, E1>, E2>`, `(StatusCode, Result<Json<T>, E>)`),
+/// outermost first: each is an error response.
+fn result_errors(ty: &Type) -> Vec<Type> {
+    match ty {
+        Type::Tuple(tuple) => tuple
+            .elems
+            .iter()
+            .rev()
+            .find(|elem| !is_non_body_type(elem))
+            .map_or_else(Vec::new, result_errors),
+        _ => result_args(ty).map_or_else(Vec::new, |(ok, err)| {
+            let mut errors = vec![err.cloned().unwrap_or_else(axum_error_response)];
+            errors.extend(result_errors(ok));
+            errors
+        }),
     }
 }
 
 /// Whether a response type sets headers through a `HeaderMap` (bare or as a
-/// tuple element, nested tuples included).
+/// tuple element, nested tuples and a `Result`'s `Ok` side included).
 fn has_header_map(ty: &Type) -> bool {
     match ty {
         Type::Tuple(tuple) => tuple.elems.iter().any(has_header_map),
-        _ => is_keyword_type(ty, &KeywordType::HeaderMap),
+        _ => result_args(ty).map_or_else(
+            || is_keyword_type(ty, &KeywordType::HeaderMap),
+            |(ok, _)| has_header_map(ok),
+        ),
     }
 }
 
@@ -395,41 +420,56 @@ pub fn parse_return_type(
         );
         return responses;
     };
-    if let Some((ok_ty, err_ty)) = extract_result_types(ty) {
-        insert_success_response(&mut responses, &ok_ty, known_schemas, struct_definitions);
-        // `Result<T, Infallible>` / `Result<T, !>` never takes the error side.
-        if is_infallible(&err_ty) {
-            return responses;
-        }
-        // The error body is found like the success one: `(StatusCode,
-        // Json<E>)`, `(HeaderMap, Json<E>)` and header arrays document `E`; a
-        // metadata-only error (`StatusCode`, `(StatusCode, HeaderMap)`) has
-        // no content. The default error status is `400`; an error that is a
-        // `Redirect` / `NoContent` is keyed like the success side (`3XX` /
-        // `204`), never overwriting the success entry.
-        let key = match success_key(&err_ty) {
-            "200" => "400",
-            key => key,
-        };
-        responses
-            .entry(key.to_string())
-            .or_insert_with(|| Response {
-                // Labelled by the status it is keyed under: a `NoContent`
-                // error is still a 2xx.
-                description: match key {
-                    "3XX" => "Redirect",
-                    "204" => "Successful response",
-                    _ => "Error response",
-                }
-                .to_string(),
-                headers: None,
-                content: response_content(&err_ty, known_schemas, struct_definitions),
-                ..Default::default()
-            });
-    } else {
-        insert_success_response(&mut responses, ty, known_schemas, struct_definitions);
+    // `Result<T, E>`: `T` is the success, `E` (and the error of any `Result`
+    // nested in `T`) an error response.
+    insert_success_response(&mut responses, ty, known_schemas, struct_definitions);
+    for err_ty in result_errors(ty) {
+        insert_error_response(&mut responses, &err_ty, known_schemas, struct_definitions);
     }
     responses
+}
+
+/// Document the error type `err_ty` of a `Result` return type.
+///
+/// The error body is found like the success one: `(StatusCode, Json<E>)`,
+/// `(HeaderMap, Json<E>)` and header arrays document `E`; a metadata-only
+/// error (`StatusCode`, `(StatusCode, HeaderMap)`) has no content. The
+/// default error status is `400`; an error that is a `Redirect` /
+/// `NoContent` is keyed like the success side (`3XX` / `204`), never
+/// overwriting the success entry. An error documented without a body (an
+/// outer `StatusCode`) takes the body of a later (inner) one.
+fn insert_error_response(
+    responses: &mut BTreeMap<String, Response>,
+    err_ty: &Type,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
+) {
+    // `Result<T, Infallible>` / `Result<T, !>` never takes the error side.
+    if is_infallible(err_ty) {
+        return;
+    }
+    let key = match success_key(err_ty) {
+        "200" => "400",
+        key => key,
+    };
+    let response = responses
+        .entry(key.to_string())
+        .or_insert_with(|| Response {
+            // Labelled by the status it is keyed under: a `NoContent` error is
+            // still a 2xx.
+            description: match key {
+                "3XX" => "Redirect",
+                "204" => "Successful response",
+                _ => "Error response",
+            }
+            .to_string(),
+            headers: None,
+            content: None,
+            ..Default::default()
+        });
+    if response.content.is_none() {
+        response.content = response_content(err_ty, known_schemas, struct_definitions);
+    }
 }
 
 #[cfg(test)]

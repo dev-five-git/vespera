@@ -10,7 +10,7 @@ use super::super::{
     request_view::in_request_view,
     schema_attrs::extract_schema_constraints,
     serde_attrs::{extract_doc_comment, extract_field_codec},
-    struct_schema::{resolve_type, tuple_fields_schema, with_description},
+    struct_schema::{flattened_unit_variants, resolve_type, tuple_fields_schema, with_description},
 };
 use super::{
     EnumRenames,
@@ -125,9 +125,26 @@ pub(super) fn parse_externally_tagged_enum(
         } else {
             // Unit variant in mixed enum: string with const value
             one_of_schemas.push(SchemaRef::Inline(Box::new(Schema {
-                description: variant_description,
-                ..tag_value_schema(keys)
+                description: variant_description.clone(),
+                ..tag_value_schema(keys.clone())
             })));
+            // serde_json also reads the map form `{"Name": null}`
+            // (`VariantAccess::unit_variant` deserializes `()` from the
+            // entry's value).
+            if request {
+                one_of_schemas.extend(keys.into_iter().map(|key| {
+                    SchemaRef::Inline(Box::new(Schema {
+                        description: variant_description.clone(),
+                        properties: Some(BTreeMap::from([(
+                            key.clone(),
+                            SchemaRef::Inline(Box::new(Schema::new(SchemaType::Null))),
+                        )])),
+                        required: Some(vec![key]),
+                        max_properties: Some(1),
+                        ..Schema::object()
+                    }))
+                }));
+            }
         }
     }
 
@@ -199,6 +216,10 @@ fn with_tag_property(
     if description.is_some() {
         object.description = description;
     }
+    // The tag is one more property of the object (a map payload's
+    // `length` bounds count its entries only).
+    object.min_properties = object.min_properties.map(|min| min + 1);
+    object.max_properties = object.max_properties.map(|max| max + 1);
     object
 }
 
@@ -211,9 +232,12 @@ fn with_tag_property(
 /// `allOf: [{tag object}, <inner schema>]` — except over a closed or map
 /// payload (`additionalProperties: false | <value>`), which would reject the
 /// tag: the tag is merged into a copy of the payload object instead. A unit
-/// payload (`()`, a unit struct) serializes as just the tag. Non-object
-/// inner types are rejected at `#[derive(Schema)]` time (see
-/// `validate_enum_for_schema`).
+/// payload (`()`, a unit struct) serializes as just the tag, and an
+/// externally tagged enum payload keeps its variant key next to the tag (a
+/// unit variant as `{"A": null}`). Non-object inner types are rejected at
+/// `#[derive(Schema)]` time when the syntax tells (see
+/// `validate_enum_for_schema`), else once every component is known
+/// (`reject_internally_tagged_non_object_refs`).
 #[allow(clippy::too_many_lines)]
 pub(super) fn parse_internally_tagged_enum(
     enum_item: &syn::ItemEnum,
@@ -281,42 +305,47 @@ pub(super) fn parse_internally_tagged_enum(
                         resolve_type(declared, known_schemas, struct_definitions)
                     }
                 };
-                match payload.as_ref().and_then(|payload| payload.schema_type) {
-                    // Newtype of `()` / a unit struct serializes as just the
-                    // tag, and serde reads the payload only from an EMPTY
-                    // remaining map (`ContentDeserializer::deserialize_unit`).
-                    Some(SchemaType::Null) => Schema {
-                        additional_properties: Some(AdditionalProperties::Bool(false)),
-                        ..tag_object(variant_description)
-                    },
-                    // A map-like (or referenced struct) inner value carries the
-                    // tag: a closed payload object as one of its own properties.
-                    None | Some(SchemaType::Object) => {
-                        match payload.clone().and_then(closed_payload_object) {
-                            Some(object) => with_tag_property(
-                                object,
-                                &tag_string,
-                                &tag_schema,
-                                variant_description,
-                            ),
-                            // An externally tagged enum payload is read from the
-                            // map left once the tag is taken out.
-                            None => match payload.as_ref().and_then(without_single_key_bounds) {
-                                Some(open) => {
-                                    tag_and(SchemaRef::Inline(Box::new(open)), variant_description)
-                                }
+                // An externally tagged enum payload is read from the map left
+                // once the tag is taken out: its variant key sits next to the
+                // tag, and serde writes a unit variant as that key
+                // (`TaggedSerializer::serialize_unit_variant`: `{tag, "A": null}`).
+                let open_enum = payload.as_ref().and_then(|payload| {
+                    let open = without_single_key_bounds(payload);
+                    flattened_unit_variants(open.as_ref().unwrap_or(payload)).or(open)
+                });
+                if let Some(open) = open_enum {
+                    tag_and(SchemaRef::Inline(Box::new(open)), variant_description)
+                } else {
+                    match payload.as_ref().and_then(|payload| payload.schema_type) {
+                        // Newtype of `()` / a unit struct serializes as just
+                        // the tag, and serde reads the payload only from an
+                        // EMPTY remaining map
+                        // (`ContentDeserializer::deserialize_unit`).
+                        Some(SchemaType::Null) => Schema {
+                            additional_properties: Some(AdditionalProperties::Bool(false)),
+                            ..tag_object(variant_description)
+                        },
+                        // A map-like (or referenced struct) inner value carries
+                        // the tag: a closed payload object as one of its own
+                        // properties.
+                        None | Some(SchemaType::Object) => {
+                            match payload.and_then(closed_payload_object) {
+                                Some(object) => with_tag_property(
+                                    object,
+                                    &tag_string,
+                                    &tag_schema,
+                                    variant_description,
+                                ),
                                 None => tag_and(inner, variant_description),
-                            },
+                            }
                         }
+                        // A non-object payload (a `$ref` to a non-object
+                        // component, an inline `Uuid` string) cannot carry the
+                        // tag in serde: it is kept as `allOf: [{tag}, <payload>]`
+                        // and reported once every component is known (see
+                        // `validate_enum_for_schema`).
+                        Some(_) => tag_and(inner, variant_description),
                     }
-                    // A `$ref` to a non-object component is reported once
-                    // every component is known (see `validate_enum_for_schema`).
-                    Some(_) if matches!(inner, SchemaRef::Ref(_)) => {
-                        tag_and(inner, variant_description)
-                    }
-                    // Newtype of a non-map value cannot carry the tag in serde;
-                    // rejected at derive time, skipped here defensively.
-                    Some(_) => continue,
                 }
             }
             // Multi-field tuple variants are a serde compile error here.
@@ -326,10 +355,19 @@ pub(super) fn parse_internally_tagged_enum(
         one_of_schemas.push(SchemaRef::Inline(Box::new(variant_schema)));
     }
 
+    // Only multi-field tuple variants (a serde compile error): nothing is
+    // accepted, and a `discriminator` without `oneOf` is invalid.
+    let Some(one_of) = non_empty(one_of_schemas) else {
+        return Schema {
+            description,
+            not: Some(SchemaRef::Inline(Box::default())),
+            ..Schema::default()
+        };
+    };
     Schema {
         schema_type: None,
         description,
-        one_of: non_empty(one_of_schemas),
+        one_of: Some(one_of),
         discriminator: Some(Discriminator {
             property_name: tag_string,
             mapping: None, // Mapping not needed for inline schemas

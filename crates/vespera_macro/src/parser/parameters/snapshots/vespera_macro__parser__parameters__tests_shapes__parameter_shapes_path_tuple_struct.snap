@@ -1,0 +1,29 @@
+---
+source: crates/vespera_macro/src/parser/parameters/tests_shapes.rs
+assertion_line: 158
+expression: "render(func_src, path_params)"
+---
+fn f(p: Path<TupleIds>) {}
+[
+  {
+    "name": "org",
+    "in": "path",
+    "description": "The org.",
+    "required": true,
+    "schema": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "maximum": 9
+    }
+  },
+  {
+    "name": "id",
+    "in": "path",
+    "required": true,
+    "schema": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+]

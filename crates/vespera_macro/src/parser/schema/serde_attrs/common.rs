@@ -8,10 +8,12 @@ use super::extract::{walk_attr_keys, walk_serde_keys};
 /// Extract doc comments from attributes.
 /// Returns the doc comment text or `None` if there are no doc comments.
 ///
-/// rustdoc semantics: `/// text` is stored as `" text"`, so ONE leading space
-/// is removed from every line when all non-blank lines start with one —
-/// deeper indentation (indented code blocks, nested Markdown lists) is kept.
-/// Trailing whitespace and leading / trailing blank lines are dropped.
+/// rustdoc semantics (`unindent_doc_fragments`): `/// text` is stored as
+/// `" text"`, and the minimum indentation common to every non-blank line is
+/// removed — indentation beyond it (indented code blocks, nested Markdown
+/// lists) is kept, while a uniformly indented `///     Note` becomes
+/// `Note`. Trailing whitespace and leading / trailing blank lines are
+/// dropped.
 ///
 /// Known limitation: a leading `" / "` / `"/ "` is treated as a leaked
 /// doc-comment marker (see below) and removed, so a doc line whose own text
@@ -57,18 +59,23 @@ pub fn extract_doc_comment(attrs: &[syn::Attribute]) -> Option<String> {
         }
     }
 
-    let strip_one = doc_lines
+    // Every non-blank line is indented by at least `indent` whitespace
+    // characters (blank lines are empty after `trim_end`).
+    let indent = doc_lines
         .iter()
         .filter(|line| !line.is_empty())
-        .all(|line| line.starts_with(' '));
+        .map(|line| {
+            line.chars()
+                .take_while(|ch| matches!(ch, ' ' | '\t'))
+                .count()
+        })
+        .min()
+        .unwrap_or(0);
     let lines: Vec<&str> = doc_lines
         .iter()
         .map(|line| {
-            if strip_one {
-                line.strip_prefix(' ').unwrap_or(line)
-            } else {
-                line.as_str()
-            }
+            // Leading whitespace is ASCII: `indent` chars are `indent` bytes.
+            line.get(indent..).unwrap_or_default()
         })
         .collect();
     let first = lines.iter().position(|line| !line.is_empty())?;
@@ -129,6 +136,37 @@ pub fn extract_schema_name_from_entity(ty: &syn::Type) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// What a SeaORM relation's `<module>::Entity` documents (see
+/// [`entity_target`]).
+#[derive(Debug, PartialEq, Eq)]
+pub enum EntityTarget {
+    /// The known component of that name.
+    Component(String),
+    /// No known component matches: nothing to `$ref`.
+    Unknown,
+}
+
+/// The known component a `<module>::Entity` path names (`None` when `ty` is
+/// not such a path): `{Module}`, then `{Module}Schema` — `Module` both
+/// `PascalCase`d (`user_profile` → `UserProfile`) and first-letter
+/// capitalized (`User_profile`) — so the `$ref` never dangles.
+pub fn entity_target(
+    ty: &syn::Type,
+    known_schemas: &std::collections::HashSet<impl std::borrow::Borrow<str> + Eq + std::hash::Hash>,
+) -> Option<EntityTarget> {
+    let capitalized = extract_schema_name_from_entity(ty)?;
+    let pascal = crate::schema_macro::type_utils::snake_to_pascal_case(&capitalized);
+    let found = [
+        pascal.clone(),
+        format!("{pascal}Schema"),
+        capitalized.clone(),
+        format!("{capitalized}Schema"),
+    ]
+    .into_iter()
+    .find(|name| known_schemas.contains(name.as_str()));
+    Some(found.map_or(EntityTarget::Unknown, EntityTarget::Component))
 }
 
 /// Extract whether `#[serde(transparent)]` is present on a struct (in any
@@ -234,10 +272,15 @@ mod tests {
         assert_eq!(result, Some("No leading space".to_string()));
     }
 
-    /// Only the single space rustdoc inserts after `///` is removed, so
-    /// indented Markdown (code blocks, nested lists) survives; blank edges
+    /// The indentation common to every non-blank line is removed (rustdoc),
+    /// so indented Markdown (code blocks, nested lists) survives; blank edges
     /// and trailing whitespace are dropped; `/** */` blocks split into lines.
     #[rstest::rstest]
+    // Round 11: a uniformly indented `///     Note: x` is the text `Note: x`,
+    // not an indented code block.
+    #[case::uniform_indent(&["     Note: x"], Some("Note: x"))]
+    #[case::uniform_indent_multi(&["   a", "", "     b"], Some("a\n\n  b"))]
+    #[case::tab_indent(&["\tTabbed"], Some("Tabbed"))]
     #[case::indented_code(
         &[" Example:", "", "     let x = 1;", " - item", "   - nested  "],
         Some("Example:

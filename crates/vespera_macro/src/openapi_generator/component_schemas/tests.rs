@@ -146,6 +146,28 @@ fn internally_tagged_newtype_over_non_object_ref(
     ] }),
     Some("`?`")
 )]
+// An inline non-object payload (`Data(Uuid)`) is named by its wire type.
+#[case::inline_string(
+    json!({ "allOf": [
+        { "type": "object", "properties": { "type": { "type": "string", "enum": ["Data"] } } },
+        { "type": "string", "format": "uuid" }
+    ] }),
+    Some("`string (uuid)` serializes")
+)]
+#[case::inline_integer(
+    json!({ "allOf": [
+        { "type": "object", "properties": { "type": { "type": "string", "enum": ["Data"] } } },
+        { "type": "integer" }
+    ] }),
+    Some("`integer` serializes")
+)]
+#[case::inline_object(
+    json!({ "allOf": [
+        { "type": "object", "properties": { "type": { "type": "string", "enum": ["Data"] } } },
+        { "type": "object", "additionalProperties": { "type": "integer" } }
+    ] }),
+    None
+)]
 fn internally_tagged_check_inspects_only_tag_object_plus_local_ref(
     #[case] branch: Value,
     #[case] error_variant: Option<&str>,
@@ -170,6 +192,25 @@ fn internally_tagged_check_inspects_only_tag_object_plus_local_ref(
         }
         (got, want) => panic!("got {got:?}, want error variant {want:?}"),
     }
+}
+
+/// An internally tagged newtype over an inline non-object type (`Uuid`,
+/// which `#[derive(Schema)]` cannot tell from a user struct) is a compile
+/// error once the schema is built, like a `$ref` to a non-object component;
+/// one over a unit-only enum (serde writes `{"type": "A", "On": null}`) is
+/// not.
+#[rstest]
+#[case::uuid(r#"#[serde(tag = "type")] enum Event { Ping, Data(Uuid) }"#, true)]
+#[case::unit_only_enum(r#"#[serde(tag = "type")] enum Event { Ping, Data(Mode) }"#, false)]
+fn internally_tagged_newtype_over_inline_non_object(#[case] src: &str, #[case] is_error: bool) {
+    let mut metadata = CollectedMetadata::new();
+    metadata
+        .structs
+        .push(struct_meta("Mode", "enum Mode { On, Off }"));
+    metadata.structs.push(struct_meta("Event", src));
+    let result =
+        try_generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
+    assert_eq!(result.is_err(), is_error, "{src}");
 }
 
 #[rstest]

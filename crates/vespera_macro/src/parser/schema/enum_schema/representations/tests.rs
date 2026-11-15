@@ -553,10 +553,11 @@ fn test_internally_tagged_newtype_variant_uses_all_of() {
     });
 }
 
-// Defensive fallback: a scalar newtype (rejected at derive time) and a
-// multi-field tuple (a serde compile error) are skipped by the generator.
+// A scalar newtype (rejected at derive time, or by the document generator)
+// is kept as `allOf: [{tag}, <payload>]`; a multi-field tuple (a serde
+// compile error) is skipped.
 #[test]
-fn internally_tagged_scalar_newtype_is_skipped_by_generator() {
+fn internally_tagged_scalar_newtype_is_kept_for_the_generator() {
     let enum_item: syn::ItemEnum = syn::parse_str(
         r#"#[serde(tag = "type")] enum M { Number(i32), Pair(i32, i32), Unit(()), Empty }"#,
     )
@@ -566,11 +567,21 @@ fn internally_tagged_scalar_newtype_is_skipped_by_generator() {
         &HashSet::<String>::new(),
         &HashMap::<String, String>::new(),
     );
-    // `Unit(())` → tag only; `Empty` → tag only.
     let one_of = schema.one_of.expect("one_of");
-    let tags: Vec<String> = one_of.iter().map(|v| tag_value(v, "type")).collect();
+    assert_eq!(one_of.len(), 3);
+    let number = inline(&one_of[0])
+        .all_of
+        .as_ref()
+        .expect("Number is tag + payload");
+    assert_eq!(tag_value(&number[0], "type"), "Number");
+    assert_eq!(
+        serde_json::to_value(&number[1]).unwrap(),
+        serde_json::json!({"type": "integer", "format": "int32"})
+    );
+    // `Unit(())` → tag only; `Empty` → tag only.
+    let tags: Vec<String> = one_of[1..].iter().map(|v| tag_value(v, "type")).collect();
     assert_eq!(tags, ["Unit", "Empty"]);
-    for variant in &one_of {
+    for variant in &one_of[1..] {
         let keys: Vec<&String> = inline(variant)
             .properties
             .as_ref()
@@ -672,18 +683,50 @@ fn test_untagged_tuple_variant_with_known_schema_ref() {
     assert_eq!(simple_variant.schema_type, Some(SchemaType::String));
 }
 
+/// A non-object newtype payload is kept as `allOf: [{tag}, <payload>]` (the
+/// document generator rejects it once every component is known), never
+/// dropped silently.
 #[test]
-fn internally_tagged_only_tuple_variants_have_no_one_of() {
+fn internally_tagged_non_object_payloads_are_kept() {
     let enum_item: syn::ItemEnum =
-        syn::parse_str(r#"#[serde(tag = "type")] enum Message { Text(String), Number(i32) }"#)
+        syn::parse_str(r#"#[serde(tag = "type")] enum Message { Text(String), Id(Uuid) }"#)
             .unwrap();
     let schema = parse_enum_to_schema(
         &enum_item,
         &HashSet::<String>::new(),
         &HashMap::<String, String>::new(),
     );
-    assert!(schema.one_of.is_none());
+    let payloads: Vec<_> = schema
+        .one_of
+        .expect("both variants are listed")
+        .iter()
+        .map(|branch| serde_json::to_value(&inline(branch).all_of.as_ref().unwrap()[1]).unwrap())
+        .collect();
+    assert_eq!(
+        payloads,
+        [
+            serde_json::json!({"type": "string"}),
+            serde_json::json!({"type": "string", "format": "uuid"})
+        ]
+    );
     assert_eq!(schema.discriminator.unwrap().property_name, "type");
+}
+
+/// Only multi-field tuple variants (a serde compile error): `{not: {}}`,
+/// never a `discriminator` without `oneOf`.
+#[test]
+fn internally_tagged_without_listed_variants_accepts_nothing() {
+    let enum_item: syn::ItemEnum =
+        syn::parse_str(r#"#[serde(tag = "type")] enum Pair { P(u8, u8) }"#).unwrap();
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
+    assert_eq!(
+        serde_json::to_value(&schema).unwrap(),
+        serde_json::json!({"not": {}})
+    );
 }
 
 /// An enum with no variant on the current side accepts nothing: `{not: {}}`

@@ -1,0 +1,16 @@
+---
+source: crates/vespera_macro/src/parser/schema/garde_rules/tests.rs
+assertion_line: 180
+expression: field_json(field_src)
+---
+{
+  "type": "array",
+  "items": {
+    "type": "integer",
+    "format": "uint8",
+    "minimum": 0,
+    "maximum": 255
+  },
+  "minItems": 1,
+  "maxItems": 5
+}

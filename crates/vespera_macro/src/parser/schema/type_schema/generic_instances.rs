@@ -52,19 +52,37 @@ pub fn instance_name_with<'a>(
     args: impl IntoIterator<Item = &'a Type>,
     component: &dyn Fn(&syn::Path) -> Option<String>,
 ) -> String {
-    let mut name = base.to_string();
+    let mut name = escape_name(base);
     for arg in args {
         push_type_segments(&mut name, arg, component);
     }
     name
 }
 
+/// `name` (an identifier or a component name) spelled without `_`, so it
+/// never reads as a separator: `_` → `-`, and the `-` / `.` a
+/// `#[schema(name)]` may hold → `.h` / `.d` (a `.` always starts an escape,
+/// so `My_Tree` and `My-Tree` stay apart). A Rust identifier only changes
+/// its `_`.
+fn escape_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        match ch {
+            '_' => out.push('-'),
+            '-' => out.push_str(".h"),
+            '.' => out.push_str(".d"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 /// Append `_<segment>` for every name inside `ty` (prefix order: a generic
 /// segment's arguments follow it).
 ///
-/// The encoding is injective for a fixed arity per type name: an `_` inside
-/// an identifier is written `-` (`my_type` → `my-type`, so it never reads as
-/// a separator), and the structural markers carry a `.` (which no
+/// The encoding is injective for a fixed arity per type name: a name is
+/// escaped by [`escape_name`] (`my_type` → `my-type`, so it never reads as
+/// a separator; the base name too), and the structural markers carry a `.` (which no
 /// identifier contains) together with their size — `[T; 4]` → `_Array.4_T`,
 /// `[T]` → `_Slice._T`, `(A, B)` → `_Tuple.2_A_B`, anything else (`impl
 /// Trait`, `dyn Trait`, …) → `_.Value`.
@@ -78,7 +96,7 @@ fn push_type_segments(
             if let Some(segment) = type_path.path.segments.last() {
                 let ident = component(&type_path.path).unwrap_or_else(|| segment.ident.to_string());
                 name.push('_');
-                name.push_str(&ident.replace('_', "-"));
+                name.push_str(&escape_name(&ident));
                 if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                     for arg in &args.args {
                         if let syn::GenericArgument::Type(inner) = arg {
@@ -237,6 +255,9 @@ mod tests {
     #[case::other("Page", &["impl Trait"], "Page_.Value")]
     #[case::qualified_self("Page", &["<T as Tr>::Out"], "Page_Out")]
     #[case::underscore_ident("Pair", &["A_B", "C"], "Pair_A-B_C")]
+    // Round 11: the base is escaped like an argument.
+    #[case::underscore_base("My_Tree", &["i32"], "My-Tree_i32")]
+    #[case::dash_dot_base("My-Tree.v1", &["i32"], "My.hTree.dv1_i32")]
     fn instance_names(#[case] base: &str, #[case] args: &[&str], #[case] expected: &str) {
         let types: Vec<Type> = args
             .iter()
@@ -263,6 +284,20 @@ mod tests {
         assert_ne!(
             instance_name("Pair", &parse(left)),
             instance_name("Pair", &parse(right))
+        );
+    }
+
+    #[test]
+    fn base_names_never_collide_with_arguments() {
+        let i32_ty: Type = syn::parse_str("i32").unwrap();
+        let tree_i32: Type = syn::parse_str("Tree<i32>").unwrap();
+        assert_ne!(
+            instance_name("My_Tree", [&i32_ty]),
+            instance_name("My", [&tree_i32])
+        );
+        assert_ne!(
+            instance_name("My_Tree", [&i32_ty]),
+            instance_name("My-Tree", [&i32_ty])
         );
     }
 

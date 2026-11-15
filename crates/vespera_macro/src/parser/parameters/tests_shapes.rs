@@ -42,6 +42,11 @@ const DEFINITIONS: &[(&str, &str)] = &[
         "#[serde(transparent)] pub struct PhantomPath<T> { pub _p: std::marker::PhantomData<T>, pub ids: TwoIds }",
     ),
     (
+        "TupleIds",
+        "pub struct TupleIds(#[doc = \" The org.\"] #[garde(range(max = 9))] u32, #[serde(skip)] String, uuid::Uuid);",
+    ),
+    ("OneId", "pub struct OneId(u32);"),
+    (
         "WrapPath",
         "#[serde(transparent)] pub struct WrapPath(TwoIds);",
     ),
@@ -135,6 +140,19 @@ fn render(func_src: &str, path_params: &[&str]) -> String {
     &["a", "b"]
 )]
 #[case::path_transparent_tuple("path_transparent_tuple", "fn f(p: Path<WrapPath>) {}", &["a", "b"])]
+// Round 11: a tuple struct is filled positionally, like a tuple.
+#[case::path_tuple_struct("path_tuple_struct", "fn f(p: Path<TupleIds>) {}", &["org", "id"])]
+#[case::path_tuple_struct_nested(
+    "path_tuple_struct_nested",
+    "fn f(p: Path<TupleIds>) {}",
+    &["id"]
+)]
+#[case::path_tuple_struct_short(
+    "path_tuple_struct_short",
+    "fn f(p: Path<TupleIds>) {}",
+    &["a", "b", "c"]
+)]
+#[case::path_newtype_struct("path_newtype_struct", "fn f(p: Path<OneId>) {}", &["id"])]
 #[case::raw_identifier_bare("raw_identifier_bare", "fn f(r#type: i32) {}", &["type"])]
 fn parameter_shapes(#[case] name: &str, #[case] func_src: &str, #[case] path_params: &[&str]) {
     insta::assert_snapshot!(

@@ -29,8 +29,8 @@ use crate::schema_macro::type_utils::is_option_type;
 
 mod flatten;
 
-pub(super) use flatten::resolve_type;
 use flatten::{FlatPart, flatten_part};
+pub(super) use flatten::{flattened_unit_variants, resolve_type};
 
 /// Parses a Rust struct into an `OpenAPI` Schema.
 ///
@@ -202,20 +202,54 @@ pub(super) fn tuple_fields_schema(
         })
         .collect();
     let len = emitted.len();
+    // serde_derive leaves out a position whose `skip_serializing_if`
+    // predicate holds (and counts it out of the tuple length), so every
+    // later element moves one slot to the left.
+    let omittable: Vec<bool> = emitted
+        .iter()
+        .map(|field| {
+            side == SerdeSide::Serialize
+                && extract_serde_skip_flags(&field.attrs).skip_serializing_if
+        })
+        .collect();
     let min_items = match side {
-        SerdeSide::Serialize => len,
+        SerdeSide::Serialize => omittable.iter().filter(|omittable| !**omittable).count(),
         SerdeSide::Deserialize if container_default => 0,
         SerdeSide::Deserialize => emitted
             .iter()
             .rposition(|field| extract_default(&field.attrs).is_none())
             .map_or(0, |last| last + 1),
     };
-    let prefix_items = emitted
+    let schemas: Vec<SchemaRef> = emitted
         .into_iter()
         .map(|field| {
             let schema_ref =
                 positional_field_schema(field, side, known_schemas, struct_definitions);
             annotate_field(schema_ref, field, false, false)
+        })
+        .collect();
+    // Slot `k` holds field `j >= k` when `j - k` omittable positions precede
+    // `j`: one schema per possible field (`anyOf` when several can land there).
+    let prefix_items = (0..len)
+        .map(|slot| {
+            let mut candidates = (slot..len)
+                .filter(|&field| {
+                    field - slot
+                        <= omittable[..field]
+                            .iter()
+                            .filter(|omittable| **omittable)
+                            .count()
+                })
+                .map(|field| schemas[field].clone())
+                .collect::<Vec<_>>();
+            if candidates.len() == 1 {
+                candidates.remove(0)
+            } else {
+                SchemaRef::Inline(Box::new(Schema {
+                    any_of: Some(candidates),
+                    ..Schema::default()
+                }))
+            }
         })
         .collect();
     Schema {

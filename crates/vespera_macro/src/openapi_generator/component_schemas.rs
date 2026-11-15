@@ -543,22 +543,36 @@ fn reject_internally_tagged_non_object_refs(
             let SchemaRef::Inline(branch) = branch else {
                 continue;
             };
-            let Some([SchemaRef::Inline(tag_object), SchemaRef::Ref(reference)]) =
-                branch.all_of.as_deref()
-            else {
+            let Some([SchemaRef::Inline(tag_object), payload]) = branch.all_of.as_deref() else {
                 continue;
             };
-            let Some(target) = reference.ref_path.strip_prefix("#/components/schemas/") else {
-                continue;
-            };
-            let non_object = schemas.get(target).is_some_and(|target| {
-                target
+            let non_object = |schema: &vespera_core::schema::Schema| {
+                schema
                     .schema_type
                     .is_some_and(|ty| !matches!(ty, SchemaType::Object | SchemaType::Null))
-            });
-            if !non_object {
-                continue;
-            }
+            };
+            // An inline payload (`Uuid`, `NaiveDate`, ...) is named by its
+            // wire type.
+            let target = match payload {
+                SchemaRef::Ref(reference) => {
+                    let Some(target) = reference.ref_path.strip_prefix("#/components/schemas/")
+                    else {
+                        continue;
+                    };
+                    if !schemas.get(target).is_some_and(non_object) {
+                        continue;
+                    }
+                    target.to_string()
+                }
+                SchemaRef::Inline(inline) if non_object(inline) => {
+                    let ty = format!("{:?}", inline.schema_type.unwrap_or(SchemaType::Null));
+                    inline.format.as_ref().map_or_else(
+                        || ty.to_lowercase(),
+                        |format| format!("{} ({format})", ty.to_lowercase()),
+                    )
+                }
+                SchemaRef::Inline(_) => continue,
+            };
             let variant = tag_object
                 .properties
                 .as_ref()
@@ -573,7 +587,7 @@ fn reject_internally_tagged_non_object_refs(
                 format!(
                     "`{enum_name}`: {}",
                     crate::parser::schema::internally_tagged_non_object_message(
-                        tag, variant, target
+                        tag, variant, &target
                     )
                 ),
             ));
