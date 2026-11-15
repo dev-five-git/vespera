@@ -24,7 +24,9 @@ fn strip_comments(src: &str) -> String {
 }
 
 /// Every `;`-terminated declaration (whitespace-normalised) that is not a
-/// preprocessor line.
+/// preprocessor line.  Only empty pieces and the closing `}` of the
+/// `extern "C"` block are dropped, so any other declaration — whatever its
+/// name — reaches the exact comparison below.
 fn declarations(src: &str) -> Vec<String> {
     let code: String = strip_comments(src)
         .lines()
@@ -34,8 +36,30 @@ fn declarations(src: &str) -> Vec<String> {
     code.replace("extern \"C\" {", "")
         .split(';')
         .map(|d| d.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|d| d.contains("vespera"))
+        .filter(|d| !d.is_empty() && d != "}")
         .collect()
+}
+
+#[test]
+fn a_declaration_without_the_vespera_prefix_is_not_skipped() {
+    let src = "#ifdef __cplusplus
+extern \"C\" {
+#endif
+               typedef struct Handle Handle;
+int dispatch_raw(void);
+               int vespera_init(void);
+#ifdef __cplusplus
+}
+#endif
+";
+    assert_eq!(
+        declarations(src),
+        [
+            "typedef struct Handle Handle",
+            "int dispatch_raw(void)",
+            "int vespera_init(void)"
+        ]
+    );
 }
 
 /// `#define VESPERA_* <int>` values.  Panics on any other `#define` — a
