@@ -26,6 +26,9 @@ pub mod type_utils;
 mod validation;
 
 pub use file_cache::print_profile_summary;
+#[cfg(test)]
+pub use file_lookup::set_test_call_site_module;
+pub use file_lookup::{reexported_item, storage_module_path};
 pub use generate_type::generate_schema_type_code;
 pub use input::{SchemaInput, SchemaTypeInput};
 
@@ -61,6 +64,16 @@ pub fn storage_entry<'a>(
     renamed.next().is_none().then_some(first)
 }
 
+/// The module a `schema!` type path names: its qualified module, else (a
+/// bare name) the call site's; `None` when unknown.
+fn requested_module(ty: &syn::Type) -> Option<Vec<String>> {
+    match file_lookup::requested_module_path(ty) {
+        Ok(Some(module)) => Some(module),
+        Ok(None) => file_lookup::call_site_module(),
+        Err(_) => None,
+    }
+}
+
 /// Generate schema code from a struct with optional field filtering
 pub fn generate_schema_code(
     input: &SchemaInput,
@@ -71,6 +84,11 @@ pub fn generate_schema_code(
 
     // Find struct definition in storage (O(1) HashMap lookup)
     let struct_def = storage_entry(schema_storage, &type_name).ok_or_else(|| syn::Error::new_spanned(&input.ty, format!("type `{type_name}` not found. Make sure it has #[derive(Schema)] before this macro invocation")))?;
+    // Same-named items of several modules: the one of the module the path
+    // names (the storage keeps only the last derived).
+    let variant = requested_module(&input.ty)
+        .and_then(|module| crate::schema_impl::variants::in_module(&struct_def.name, &module));
+    let struct_def = variant.as_ref().unwrap_or(struct_def);
 
     // Parse the struct definition
     let parsed_struct: syn::ItemStruct = file_cache::parse_struct_cached(&struct_def.definition)

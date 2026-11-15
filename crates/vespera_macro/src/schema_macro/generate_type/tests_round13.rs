@@ -206,3 +206,30 @@ fn inline_relation_type_carries_the_field_cfg() {
         "{output}"
     );
 }
+
+/// L2 (round 14): a source container `#[serde(default)]` the multipart DTO
+/// cannot carry (`add` fields, so no DTO-building fn) leaves its bare `Vec`
+/// parts to `#[form_data(default)]` — in the emitted struct and in the
+/// metadata the schema is built from — instead of listing them as required.
+#[test]
+fn multipart_vec_fields_default_when_the_container_default_is_dropped() {
+    let storage = stored(
+        "Up",
+        "#[serde(default)] pub struct Up { pub files: Vec<String>, #[serde(default)] pub own: Vec<u8>, pub title: String }",
+    );
+    let (code, metadata) = generate(
+        r#"UpDto from Up, multipart, name = "UpForm", add = [("extra": String)]"#,
+        &storage,
+    );
+    assert!(!code.contains("__vespera_UpDto_default"), "{code}");
+    assert_eq!(code.matches("#[form_data(default)]").count(), 1, "{code}");
+    assert!(
+        code.contains("#[form_data(default)]\n    pub files: Vec<String>"),
+        "{code}"
+    );
+    let metadata = metadata.unwrap();
+    assert!(
+        metadata.contains("#[form_data(default)]\n    pub files: Vec<String>"),
+        "{metadata}"
+    );
+}

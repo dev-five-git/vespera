@@ -645,8 +645,61 @@ fn call_site_definition_prefers_the_local_struct() {
     assert!(call_site_definition_in(&stored(Some("no-position".into())), &ty, &lib).is_none());
     assert!(call_site_definition_in(&stored(Some("file@1:1".into())), &ty, &lib).is_none());
     let missing: syn::Type = syn::parse_str("Missing").unwrap();
-    assert!(call_site_definition_in(&stored(Some(other.clone())), &missing, &lib).is_none());
-    // Without a call-site file (unit tests) nothing is local, even for an
-    // entry of another file that the call site would define.
-    assert!(call_site_definition(&stored(Some(other)), &ty, None).is_none());
+    assert!(call_site_definition_in(&stored(Some(other)), &missing, &lib).is_none());
+}
+
+/// L6 (round 14): a bare source name follows a `use` import at a file's top
+/// level too (it did only inside an inline `mod`), and both follow `pub use`
+/// re-export chains; a name neither defined nor imported stays not found.
+#[rstest]
+#[case::top_level_import("Model", 1, "crate::models::user")]
+#[case::top_level_reexport("User", 1, "crate::models::user")]
+#[case::inline_reexport("User", 6, "crate::models::user")]
+#[case::reexport_missing("Gone", 1, "")]
+#[case::external_import("Foreign", 1, "")]
+#[case::unknown("Nothing", 1, "")]
+fn bare_lookup_follows_imports_and_reexports(
+    #[case] name: &str,
+    #[case] line: usize,
+    #[case] module: &str,
+) {
+    let (dir, _guard) = temp_crate("lib.rs");
+    let src = dir.path().join("src");
+    std::fs::write(src.join("lib.rs"), "pub mod models;\npub mod routes;").unwrap();
+    std::fs::write(
+        src.join("models/mod.rs"),
+        "pub mod user;\npub use user::User;\npub use user::Gone;",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("models/user.rs"),
+        "pub struct Model { pub m: i32 }\npub struct User { pub u: i32 }",
+    )
+    .unwrap();
+    let call_site = src.join("routes.rs");
+    std::fs::write(
+        &call_site,
+        "use crate::models::user::Model;\n\
+         use crate::models::{User, Gone};\n\
+         use other_crate::Foreign;\n\
+         pub mod dto {\n\
+             use crate::models::User;\n\
+             // schema_type!(D from User);\n\
+         }\n",
+    )
+    .unwrap();
+    bump_epoch();
+    let ty: syn::Type = syn::parse_str(name).unwrap();
+    let result = find_struct_with_call_site(&ty, Some(&call_site), line);
+    if module.is_empty() {
+        assert!(
+            matches!(result, Err(LookupError::BareNotFound { .. })),
+            "{result:?}"
+        );
+        return;
+    }
+    let (metadata, module_path) = result.unwrap();
+    assert_eq!(metadata.name, name);
+    assert!(metadata.definition.contains(&format!("struct {name}")));
+    assert_eq!(module_path.join("::"), module);
 }

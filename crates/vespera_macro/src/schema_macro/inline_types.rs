@@ -3,6 +3,8 @@
 //! When schemas have circular references, we generate inline types that
 //! exclude the circular fields to prevent infinite recursion.
 
+use std::fmt::Write as _;
+
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -263,19 +265,24 @@ fn generate_inline_type_core(
 
 /// `name` as a valid Rust identifier: a `name = "..."` schema override may
 /// contain characters (`-`, `.`, spaces) or start with a digit, which used
-/// to panic `syn::Ident::new` for the inline relation type.
+/// to panic `syn::Ident::new` for the inline relation type. Identifier
+/// characters (non-ASCII ones such as `메모` too) are kept and every other
+/// one becomes `_u{hex}_`, so distinct names stay distinct (`"메모"` /
+/// `"회원"` and `"memo-detail"` / `"memo.detail"` all used to collapse into
+/// one ident: E0428).
 fn ident_safe(name: &str) -> String {
-    let mut ident: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if ident.starts_with(|c: char| c.is_ascii_digit()) {
+    let mut ident = String::with_capacity(name.len());
+    for c in name.chars() {
+        let continues = c.is_ascii_alphanumeric()
+            || c == '_'
+            || (!c.is_ascii() && syn::parse_str::<syn::Ident>(&format!("a{c}")).is_ok());
+        if continues {
+            ident.push(c);
+        } else {
+            let _ = write!(ident, "_u{:x}_", u32::from(c));
+        }
+    }
+    if syn::parse_str::<syn::Ident>(&ident).is_err() {
         ident.insert(0, '_');
     }
     ident

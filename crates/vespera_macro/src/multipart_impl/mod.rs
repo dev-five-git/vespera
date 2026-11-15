@@ -28,7 +28,7 @@ use syn::{DeriveInput, Fields};
 
 pub use self::attrs::has_form_data_default;
 use self::attrs::{extract_strict, extract_struct_default};
-use self::fields::{DefaultKind, FieldCodegen, default_fn_call, process_fields};
+use self::fields::{DefaultKind, FieldCodegen, default_fn_call, process_fields, shadowed_locals};
 pub use self::types::is_vec_type;
 
 /// Message of the `compile_error!` emitted when `vespera`'s `multipart`
@@ -73,19 +73,21 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
         Err(err) => return err,
     };
 
-    // One local per field is bound in the derived fn (see `default_fn_expr`).
-    let locals: std::collections::HashSet<String> = fields
-        .iter()
-        .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
-        .collect();
     // serde's container default: bound once after the read loop (it is not
     // held across an `.await`), every field without a default of its own
     // takes its value from it.
     let struct_default_kind = extract_struct_default(&input.attrs);
+    // One local per field is bound in the derived fn: those a bare default
+    // function name would resolve to are renamed (see `shadowed_locals`).
+    let container_fn = match &struct_default_kind {
+        DefaultKind::Function(fn_path) => Some(fn_path.as_str()),
+        _ => None,
+    };
+    let locals = shadowed_locals(fields.iter(), container_fn);
     let container_trait_default = matches!(struct_default_kind, DefaultKind::Trait);
     let container_default = match struct_default_kind {
         DefaultKind::Trait => Some(quote! { ::core::default::Default::default() }),
-        DefaultKind::Function(fn_path) => Some(default_fn_call(struct_name, &fn_path, &locals)),
+        DefaultKind::Function(fn_path) => Some(default_fn_call(struct_name, &fn_path)),
         DefaultKind::None | DefaultKind::Container => None,
     };
     let struct_default = container_default.is_some();
@@ -202,7 +204,7 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
 /// and a `TryFromFieldWithState` bound on each parsed type that mentions one.
 fn impl_generics(
     input: &DeriveInput,
-    cg: &fields::FieldCodegen<'_>,
+    cg: &fields::FieldCodegen,
     container_trait_default: bool,
 ) -> (TokenStream, TokenStream, TokenStream) {
     let mut generics = input.generics.clone();
@@ -287,7 +289,18 @@ mod tests {
             syn::parse_str("struct MyForm { pub name: String, pub bio: Option<String> }").unwrap();
         let code = process_derive(&input).to_string();
         assert!(code.contains("TryFromMultipartWithState"));
-        assert!(code.contains("Option :: None"));
+        // L11 (round 14): what only an `Option` field produces — declared
+        // `Option<String> = None` and never a `MissingField` (every field's
+        // codegen contains `Option :: None`, so that probe could not fail).
+        assert!(
+            code.contains("let mut bio : Option < String > = std :: option :: Option :: None ;"),
+            "{code}"
+        );
+        assert!(
+            code.contains("MissingField { field_name : std :: string :: String :: from (\"name\")"),
+            "{code}"
+        );
+        assert!(!code.contains("String :: from (\"bio\")"), "{code}");
     }
 
     #[test]

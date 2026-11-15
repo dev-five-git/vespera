@@ -99,24 +99,51 @@ fn has_serde_rename(attrs: &[syn::Attribute]) -> bool {
 /// nothing when it does not parse.
 fn filtered_cfg_attr(
     attr: &syn::Attribute,
-    (schema_derived, keep_rename, module_path): (bool, bool, &[String]),
+    context: (bool, bool, &[String]),
     carried: &mut CarriedAttrs,
 ) {
-    let Ok((predicate, metas)) = attr.parse_args_with(|input: syn::parse::ParseStream| {
-        let predicate: Predicate = input.parse()?;
-        input.parse::<syn::Token![,]>()?;
-        let metas = Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated(input)?;
-        Ok((predicate, metas))
-    }) else {
-        return;
-    };
+    if let Ok((predicate, metas)) = attr.parse_args_with(parse_cfg_attr) {
+        filtered_cfg_items(&predicate, &metas, context, carried);
+    }
+}
+
+/// The `pred, a, b` of a `cfg_attr(..)`.
+fn parse_cfg_attr(
+    input: syn::parse::ParseStream<'_>,
+) -> syn::Result<(Predicate, Punctuated<syn::Meta, syn::Token![,]>)> {
+    let predicate: Predicate = input.parse()?;
+    input.parse::<syn::Token![,]>()?;
+    let metas = Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated(input)?;
+    Ok((predicate, metas))
+}
+
+/// The items of one `cfg_attr(predicate, ..)` (see [`filtered_cfg_attr`]);
+/// a nested `cfg_attr(inner, ..)` is flattened under `all(predicate,
+/// inner)` (it used to be dropped).
+fn filtered_cfg_items(
+    predicate: &Predicate,
+    metas: &Punctuated<syn::Meta, syn::Token![,]>,
+    context: (bool, bool, &[String]),
+    carried: &mut CarriedAttrs,
+) {
+    let (schema_derived, keep_rename, module_path) = context;
     let mut kept: Vec<syn::Meta> = Vec::new();
-    for meta in &metas {
+    for meta in metas {
         let path = meta.path();
+        if path.is_ident("cfg_attr") {
+            if let Ok((inner, metas)) = meta
+                .require_list()
+                .and_then(|list| list.parse_args_with(parse_cfg_attr))
+            {
+                let combined: Predicate = syn::parse_quote!(all(#predicate, #inner));
+                filtered_cfg_items(&combined, &metas, context, carried);
+            }
+            continue;
+        }
         carried.garde |= path.is_ident("garde");
         carried.deprecated |= path.is_ident("deprecated");
         if path.is_ident("serde") {
-            carried_cfg_serde(&predicate, meta, (keep_rename, module_path), carried);
+            carried_cfg_serde(predicate, meta, (keep_rename, module_path), carried);
         } else if path.is_ident("schema") {
             let attr: syn::Attribute = syn::parse_quote! { #[#meta] };
             // Gates the SeaORM-derived default of the emitted field only
@@ -391,6 +418,18 @@ mod tests {
         "# [cfg_attr (true , schema (minimum = 1))] # [cfg_attr (true , garde (skip))]"
     )]
     #[case::dropped(quote!(#[sea_orm(primary_key)] #[serde(default)]), true, "")]
+    // L3 (round 14): a nested `cfg_attr` is flattened under `all(..)` (it
+    // used to be dropped, so the DTO lost the source's cfg-gated rename).
+    #[case::nested_cfg_attr(
+        quote!(#[cfg_attr(feature = "pg", cfg_attr(not(test), serde(rename = "x"), garde(skip)), deprecated)]),
+        true,
+        "# [cfg_attr (all (feature = \"pg\" , not (test)) , garde (skip))] # [cfg_attr (feature = \"pg\" , deprecated)] # [cfg_attr (all (feature = \"pg\" , not (test)) , serde (rename = \"x\"))]"
+    )]
+    #[case::nested_cfg_attr_unparseable(
+        quote!(#[cfg_attr(feature = "pg", cfg_attr(not(test)), cfg_attr)]),
+        true,
+        ""
+    )]
     fn carries_expected_attributes(
         #[case] attrs: TokenStream,
         #[case] schema_derived: bool,

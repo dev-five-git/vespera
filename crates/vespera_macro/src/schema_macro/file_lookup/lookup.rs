@@ -341,6 +341,11 @@ fn find_bare_struct_in_file(
             module_path,
         ));
     }
+    // A top-level `use crate::models::user::Model;` names the struct, as an
+    // inline module's import does (it was `BareNotFound` at the top level).
+    if let Some(found) = imported_struct(struct_name, &module_path) {
+        return Ok(found);
+    }
     let nested = crate::schema_macro::file_cache::get_parsed_file(file_path).and_then(|file| {
         crate::schema_macro::module_scope::unique_nested_struct(&file.items, struct_name)
     });
@@ -363,9 +368,7 @@ fn find_bare_struct_in_inline_module(
     struct_name: &str,
     module: &[String],
 ) -> Result<(StructMetadata, Vec<String>), LookupError> {
-    use crate::schema_macro::module_scope::{
-        Resolved, module_items, resolve_name, struct_in_items,
-    };
+    use crate::schema_macro::module_scope::{module_items, struct_in_items};
     let found = |module: Vec<String>| {
         let definition = struct_in_items(&module_items(&module)?, struct_name)?;
         Some((
@@ -373,24 +376,40 @@ fn find_bare_struct_in_inline_module(
             module,
         ))
     };
-    // The import may rename the struct (`use super::Model as User;`): the
-    // definition is the one the import names.
-    let imported = || match resolve_name(&[struct_name.to_string()], module) {
-        Resolved::Path(mut path) if path.len() > 1 && path[0] == "crate" => {
-            let defined = path.pop()?;
-            let definition = struct_in_items(&module_items(&path)?, &defined)?;
-            Some((
-                StructMetadata::new_model(struct_name.to_string(), definition),
-                path,
-            ))
-        }
-        _ => None,
-    };
     found(module.to_vec())
-        .or_else(imported)
+        .or_else(|| imported_struct(struct_name, module))
         .ok_or_else(|| LookupError::BareNotFound {
             struct_name: struct_name.to_string(),
         })
+}
+
+/// The struct a bare `struct_name` imports into `module` (`use
+/// super::Model;`, a renaming `use super::Model as User;`), following `pub
+/// use` re-export chains (`use crate::models::User;` where `models` has
+/// `pub use user::User;`).
+fn imported_struct(struct_name: &str, module: &[String]) -> Option<(StructMetadata, Vec<String>)> {
+    use crate::schema_macro::module_scope::{
+        Resolved, module_items, resolve_name, struct_in_items,
+    };
+    let Resolved::Path(mut path) = resolve_name(&[struct_name.to_string()], module) else {
+        return None;
+    };
+    if path.len() < 2 || path[0] != "crate" {
+        return None;
+    }
+    let defined = path.pop()?;
+    let (path, definition) =
+        if let Some(definition) = struct_in_items(&module_items(&path)?, &defined) {
+            (path, definition)
+        } else {
+            let (defined_in, name) = reexported_item(&path, &defined)?;
+            let definition = struct_in_items(&module_items(&defined_in)?, &name)?;
+            (defined_in, definition)
+        };
+    Some((
+        StructMetadata::new_model(struct_name.to_string(), definition),
+        path,
+    ))
 }
 
 /// Classifies one already-typed directory entry, keeping the recursive collector's

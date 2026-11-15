@@ -262,6 +262,11 @@ pub fn generate_schema_type_code(
     // A source container default fills a missing `Vec` part itself (the
     // Multipart derive reads the container's value, not `[]`).
     let container_default = crate::parser::extract_default(&parsed_struct.attrs).is_some();
+    // Multipart bare `Vec` fields left to that container default: their
+    // `#[form_data(default)]` twin (emitted, metadata), used when the DTO
+    // cannot carry the container default (`add`, relations, unreadable
+    // fields) and the parts would otherwise read as required.
+    let mut container_vec_fields: Vec<(usize, TokenStream, TokenStream)> = Vec::new();
 
     if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
         let pk_count = primary_key_count(fields_named);
@@ -520,6 +525,7 @@ pub fn generate_schema_type_code(
                 )
             };
             let carried_attrs = quote! { #emitted_schema #(#carried_other)* #garde_skip };
+            let mut container_vec_twin = None;
 
             if input.multipart {
                 // Multipart mode: emit form_data attrs, suppress serde attrs
@@ -533,12 +539,12 @@ pub fn generate_schema_type_code(
                 // A bare `Vec` reads "no parts" as `[]`: the request schema
                 // must not list it as required (a hand-written Multipart
                 // struct gets the same in its stored definition).
-                let vec_default = (!should_wrap_option
-                    && !container_default
+                let bare_vec = !should_wrap_option
                     && crate::multipart_impl::is_vec_type(original_ty)
                     && crate::parser::extract_default(&field.attrs).is_none()
-                    && !crate::multipart_impl::has_form_data_default(&field.attrs))
-                .then(|| quote! { #[form_data(default)] });
+                    && !crate::multipart_impl::has_form_data_default(&field.attrs);
+                let vec_default =
+                    (bare_vec && !container_default).then(|| quote! { #[form_data(default)] });
                 // The form field keeps the source's name (a source
                 // `#[serde(rename)]` keeps naming it).
                 let form_name_attr = field_form_name(
@@ -548,15 +554,21 @@ pub fn generate_schema_type_code(
                     renamed,
                 );
 
-                field_tokens.push(quote! {
-                    #(#doc_attrs)*
-                    #carried_attrs
-                    #(#form_data_attrs)*
-                    #vec_default
-                    #serde_carry
-                    #form_name_attr
-                    #vis #dto_field_ident: #field_ty
-                });
+                let field = |vec_default: Option<TokenStream>| {
+                    quote! {
+                        #(#doc_attrs)*
+                        #carried_attrs
+                        #(#form_data_attrs)*
+                        #vec_default
+                        #serde_carry
+                        #form_name_attr
+                        #vis #dto_field_ident: #field_ty
+                    }
+                };
+                if bare_vec && container_default {
+                    container_vec_twin = Some(field(Some(quote! { #[form_data(default)] })));
+                }
+                field_tokens.push(field(vec_default));
             } else {
                 // Normal (serde) mode: keep serde and doc attributes, drop
                 // sea_orm and others (a model of another file may carry
@@ -634,6 +646,10 @@ pub fn generate_schema_type_code(
             });
             let emitted = field_tokens.last().cloned().unwrap_or_default();
             metadata_field_tokens.push(quote! { #metadata_only #emitted });
+            if let Some(twin) = container_vec_twin {
+                let metadata = quote! { #metadata_only #twin };
+                container_vec_fields.push((field_tokens.len() - 1, twin, metadata));
+            }
         }
     }
     checks::check_emitted(
@@ -774,6 +790,14 @@ pub fn generate_schema_type_code(
             default_assignments.as_deref(),
         );
         let container_carry = carry.attrs;
+        // The container default is not carried: the bare `Vec` parts it
+        // would have filled default to `[]` themselves.
+        if carry.helper.is_empty() {
+            for (index, field, metadata) in container_vec_fields {
+                field_tokens[index] = field;
+                metadata_field_tokens[index] = metadata;
+            }
+        }
         (
             quote! {
                 #[serde(rename_all = #effective_rename_all)]
