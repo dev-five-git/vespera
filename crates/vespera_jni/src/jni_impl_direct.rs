@@ -14,8 +14,9 @@ use super::{
     block_on_shared_runtime, clear_pending_exception, panic_wire, runtime_unavailable_wire,
 };
 
-// Overflow stash + the resumable / fetch / stream / discard symbols bound to
-// `com.devfive.vespera.bridge.DirectStash`.
+// Overflow stash + the resumable / fetch / discard symbols bound to
+// `com.devfive.vespera.bridge.DirectStash` (`stream0` lives in
+// `jni_impl_streaming_header.rs`).
 #[path = "jni_impl_direct_stash.rs"]
 pub mod stash;
 

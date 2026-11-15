@@ -11,7 +11,8 @@
 //!
 //! Same `jint` protocol as `dispatchDirect0` — `>= 0` complete,
 //! `Integer.MIN_VALUE` unrepresentable — except for an overflow: it returns
-//! `-(required)` (clamped to `i32::MAX`; exact only when flagged) and writes
+//! `-(required)` (clamped to `i32::MAX`; exact only when flagged, never
+//! flagged when clamped) and writes
 //! the stash handle into `out[0..9]` (an `out` below [`STASH_HANDLE_LEN`]
 //! bytes is answered `-(MIN_DIRECT_OUT_BYTES)` without dispatching; a
 //! handler panic's `500` wire is stashed like any response, so the handler
@@ -164,11 +165,22 @@ fn pending_code(pending: &PendingDirectResponse) -> jint {
 }
 
 fn pending_flags(pending: &PendingDirectResponse) -> u8 {
+    handle_flags(
+        pending.required_bytes(),
+        pending.is_exact(),
+        pending.prefers_streaming(),
+    )
+}
+
+/// Handle flags byte.  [`FLAG_EXACT`] is set only when the size
+/// [`pending_code`] reports is the exact one: a size above `i32::MAX` is
+/// clamped there, so it is never flagged exact.
+fn handle_flags(required: usize, exact: bool, prefers_streaming: bool) -> u8 {
     let mut flags = 0;
-    if pending.is_exact() {
+    if exact && jint::try_from(required).is_ok() {
         flags |= FLAG_EXACT;
     }
-    if pending.prefers_streaming() {
+    if prefers_streaming {
         flags |= FLAG_STREAM;
     }
     flags
@@ -396,6 +408,19 @@ mod tests {
             ResumableDirectWrite::Overflow(pending) => pending,
             ResumableDirectWrite::Complete(_) => panic!("an empty buffer always overflows"),
         }
+    }
+
+    #[test]
+    fn exact_flag_only_for_an_unclamped_size() {
+        let max = usize::try_from(jint::MAX).unwrap();
+        assert_eq!(handle_flags(max, true, false), FLAG_EXACT);
+        assert_eq!(
+            handle_flags(max + 1, true, false),
+            0,
+            "clamped size is not exact"
+        );
+        assert_eq!(handle_flags(usize::MAX, true, true), FLAG_STREAM);
+        assert_eq!(handle_flags(10, false, true), FLAG_STREAM);
     }
 
     /// One test: the stash is process-global, so the scenarios must not

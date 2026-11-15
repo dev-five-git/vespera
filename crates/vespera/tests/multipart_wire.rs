@@ -20,7 +20,7 @@ use ::axum::{
     Router,
     body::Body,
     extract::{DefaultBodyLimit, FromRequest},
-    http::{HeaderMap, HeaderValue, Request},
+    http::Request,
     routing::post,
 };
 use ::serde::Serialize;
@@ -83,9 +83,9 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for ObservedField {
     ) -> Result<Self, TypedMultipartError> {
         let file_name = field.file_name().map(str::to_owned);
         let content_type = field.content_type().map(str::to_owned);
-        let mut headers = HeaderMap::new();
-        headers.insert("x-observed", HeaderValue::from_static("yes"));
-        let metadata = FieldMetadata::from(&field).with_headers(headers);
+        // The part's real headers: the request sends `X-Observed: yes` on
+        // the file part, so a broken `MeteredField::headers` fails the test.
+        let metadata = FieldMetadata::from(&field).with_headers(field.headers().clone());
         let captured_header = metadata
             .headers()
             .and_then(|headers| headers.get("x-observed"))
@@ -326,7 +326,7 @@ fn encode_multipart_wire(
     file_name: &str,
     file_bytes: &[u8],
 ) -> Vec<u8> {
-    encode_multipart_upload_wire("/upload", boundary, name, file_name, file_bytes)
+    encode_multipart_upload_wire("/upload", boundary, name, file_name, file_bytes, "")
 }
 
 fn encode_multipart_upload_wire(
@@ -335,6 +335,7 @@ fn encode_multipart_upload_wire(
     name: &str,
     file_name: &str,
     file_bytes: &[u8],
+    extra_file_headers: &str,
 ) -> Vec<u8> {
     let mut body = Vec::new();
     body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
@@ -346,7 +347,9 @@ fn encode_multipart_upload_wire(
         format!("Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n")
             .as_bytes(),
     );
-    body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+    body.extend_from_slice(b"Content-Type: application/octet-stream\r\n");
+    body.extend_from_slice(extra_file_headers.as_bytes());
+    body.extend_from_slice(b"\r\n");
     body.extend_from_slice(file_bytes);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
 
@@ -670,6 +673,7 @@ fn named_temp_file_over_default_cap_rejected_413() {
         "bob",
         "too-large.bin",
         &payload,
+        "",
     );
     let resp = dispatch_from_bytes(wire, &runtime);
     let (header, _body) = decode_wire(&resp);
@@ -745,6 +749,7 @@ fn custom_field_parser_observes_metadata_headers_and_whole_bytes() {
         "ignored",
         "evidence.bin",
         b"proof",
+        "X-Observed: yes\r\n",
     );
 
     let response = dispatch_from_bytes(wire, &runtime);

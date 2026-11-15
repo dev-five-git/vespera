@@ -131,8 +131,12 @@ pub struct Parameter {
     /// Schema reference or inline schema
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<SchemaRef>,
-    /// Example value
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Example value (a JSON `null` example is `Some(Value::Null)`)
+    #[serde(
+        default,
+        deserialize_with = "present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub example: Option<serde_json::Value>,
     /// Serialization style (e.g. `form` for repeated query keys). `None`
     /// means the location's OpenAPI default applies.
@@ -180,8 +184,12 @@ pub struct MediaType {
     /// Schema reference or inline schema
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<SchemaRef>,
-    /// Example
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Example (a JSON `null` example is `Some(Value::Null)`)
+    #[serde(
+        default,
+        deserialize_with = "present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub example: Option<serde_json::Value>,
     /// Examples
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -231,12 +239,25 @@ pub struct Example {
     /// Example description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Example value
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Example value (a JSON `null` value is `Some(Value::Null)`)
+    #[serde(
+        default,
+        deserialize_with = "present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub value: Option<serde_json::Value>,
     /// URL of an external example (mutually exclusive with `value`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_value: Option<String>,
+}
+
+/// `deserialize_with` for an `example` / `value` field: a present JSON
+/// `null` is a real example (`Some(Value::Null)`), told apart from an absent
+/// key (`None`, via `#[serde(default)]`) the way [`crate::Schema`] keeps it.
+fn present_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(deserializer).map(Some)
 }
 
 /// `Serialize` / `Deserialize` for an inline-only type whose fields are all
@@ -315,8 +336,12 @@ pub struct Header {
     /// Whether array/object values expand
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explode: Option<bool>,
-    /// Example value
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Example value (a JSON `null` example is `Some(Value::Null)`)
+    #[serde(
+        default,
+        deserialize_with = "present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub example: Option<serde_json::Value>,
     /// Named examples (mutually exclusive with `example`)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -516,6 +541,27 @@ mod tests {
             parsed.encoding.unwrap()["avatar"].content_type.as_deref(),
             Some("image/png")
         );
+    }
+
+    fn round_trip<T: Serialize + serde::de::DeserializeOwned>(json: &str) -> String {
+        serde_json::to_string(&serde_json::from_str::<T>(json).unwrap()).unwrap()
+    }
+
+    #[rstest]
+    #[case::parameter_null(round_trip::<Parameter>, r#"{"name":"q","in":"query","example":null}"#)]
+    #[case::parameter_absent(round_trip::<Parameter>, r#"{"name":"q","in":"query"}"#)]
+    #[case::media_type_null(round_trip::<MediaType>, r#"{"example":null}"#)]
+    #[case::media_type_absent(round_trip::<MediaType>, "{}")]
+    #[case::example_null(round_trip::<Example>, r#"{"value":null}"#)]
+    #[case::example_absent(round_trip::<Example>, r#"{"summary":"s"}"#)]
+    #[case::header_null(round_trip::<Header>, r#"{"example":null}"#)]
+    #[case::header_absent(round_trip::<Header>, "{}")]
+    #[case::nested_example_null(round_trip::<MediaType>, r#"{"examples":{"none":{"value":null}}}"#)]
+    fn explicit_null_example_survives_round_trip(
+        #[case] round_trip: fn(&str) -> String,
+        #[case] json: &str,
+    ) {
+        assert_eq!(round_trip(json), json);
     }
 
     #[test]
