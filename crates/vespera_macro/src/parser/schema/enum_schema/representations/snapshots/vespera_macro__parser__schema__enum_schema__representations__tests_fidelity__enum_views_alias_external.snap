@@ -1,7 +1,8 @@
 ---
 source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
+assertion_line: 198
 expression: both_views(src)
 ---
 enum Shape { #[serde(alias = "sq")] Square(u8), #[serde(alias = "pt")] Point }
 response: {"oneOf":[{"type":"object","properties":{"Square":{"type":"integer","format":"uint8","minimum":0,"maximum":255}},"required":["Square"],"maxProperties":1},{"type":"string","enum":["Point"]}]}
-request: {"oneOf":[{"type":"object","properties":{"Square":{"type":"integer","format":"uint8","minimum":0,"maximum":255}},"required":["Square"],"maxProperties":1},{"type":"object","properties":{"sq":{"type":"integer","format":"uint8","minimum":0,"maximum":255}},"required":["sq"],"maxProperties":1},{"type":"string","enum":["Point","pt"]}]}
+request: {"oneOf":[{"type":"object","properties":{"Square":{"type":"integer","format":"uint8","minimum":0,"maximum":255}},"required":["Square"],"maxProperties":1},{"type":"object","properties":{"sq":{"type":"integer","format":"uint8","minimum":0,"maximum":255}},"required":["sq"],"maxProperties":1},{"type":"string","enum":["Point","pt"]},{"type":"object","properties":{"Point":{"type":"null"}},"required":["Point"],"maxProperties":1},{"type":"object","properties":{"pt":{"type":"null"}},"required":["pt"],"maxProperties":1}]}

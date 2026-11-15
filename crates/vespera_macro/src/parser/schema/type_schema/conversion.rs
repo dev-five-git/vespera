@@ -25,7 +25,7 @@ use super::super::{
     enum_schema::parse_enum_to_schema,
     generics::substitute_type,
     request_view,
-    serde_attrs::{capitalize_first, extract_schema_name_from_entity, extract_schema_ref_override},
+    serde_attrs::{EntityTarget, capitalize_first, entity_target, extract_schema_ref_override},
     struct_schema::parse_struct_to_schema,
 };
 
@@ -298,16 +298,21 @@ fn parse_type_impl(
                     "HasOne" | "BelongsTo" => {
                         // HasOne<Entity> / BelongsTo<Entity> (SeaORM 2.0 also
                         // spells `BelongsTo<Option<Entity>>`) -> nullable
-                        // reference to the corresponding Schema
+                        // reference to the corresponding Schema (any value
+                        // when no such component is known).
                         if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
-                            && let Some(schema_name) = extract_schema_name_from_entity(
+                            && let Some(target) = entity_target(
                                 crate::schema_macro::type_utils::option_inner(inner_ty)
                                     .unwrap_or(inner_ty),
+                                known_schemas,
                             )
                         {
-                            return SchemaRef::Inline(Box::new(Schema::nullable_reference(
-                                format!("#/components/schemas/{schema_name}"),
-                            )));
+                            return SchemaRef::Inline(Box::new(match target {
+                                EntityTarget::Component(name) => Schema::nullable_reference(
+                                    format!("#/components/schemas/{name}"),
+                                ),
+                                EntityTarget::Unknown => Schema::default(),
+                            }));
                         }
                         // Fallback: generic object
                         return SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)));
@@ -316,21 +321,21 @@ fn parse_type_impl(
                         // HasMany<Entity> -> nullable array of references to the
                         // corresponding Schema: sea-orm serializes `Unloaded` as
                         // `null` (and reads `null` back as `Unloaded`).
-                        let schema_name = match args.args.first() {
+                        let target = match args.args.first() {
                             Some(syn::GenericArgument::Type(inner_ty)) => {
-                                extract_schema_name_from_entity(inner_ty)
+                                entity_target(inner_ty, known_schemas)
                             }
                             _ => None,
                         };
-                        // Fallback: array of generic objects
-                        let items = schema_name.map_or_else(
-                            || SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object))),
-                            |name| {
-                                SchemaRef::Ref(Reference::new(format!(
-                                    "#/components/schemas/{name}"
-                                )))
-                            },
-                        );
+                        // Fallback: array of generic objects (any items for an
+                        // entity without a known component).
+                        let items = match target {
+                            Some(EntityTarget::Component(name)) => SchemaRef::Ref(Reference::new(
+                                format!("#/components/schemas/{name}"),
+                            )),
+                            Some(EntityTarget::Unknown) => SchemaRef::Inline(Box::default()),
+                            None => SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object))),
+                        };
                         return super::nullable::nullable(SchemaRef::Inline(Box::new(
                             Schema::array(items),
                         )));

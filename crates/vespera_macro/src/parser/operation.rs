@@ -179,6 +179,25 @@ pub fn build_operation_from_function(
     // Parse return type - may return multiple responses (for Result types)
     let mut responses = parse_return_type(&sig.output, known_schemas, struct_definitions);
 
+    // Feature 2: re-key the inferred success response under the declared
+    // non-200 status (`status = <u16>`, validated 2xx) BEFORE any declared
+    // entry is added: an explicit `responses = [(200, T)]` is another
+    // response, never the one moved. `responses = [(N, T)]` still documents
+    // `N` explicitly (inserted below). No-body success statuses (204 No
+    // Content, 205 Reset Content) must not carry a response body.
+    let success_key = config
+        .success_status
+        .filter(|success| *success != 200)
+        .map_or_else(|| "200".to_string(), |success| success.to_string());
+    if success_key != "200"
+        && let Some(mut response) = responses.remove("200")
+    {
+        if matches!(success_key.as_str(), "204" | "205") {
+            response.content = None;
+        }
+        responses.entry(success_key.clone()).or_insert(response);
+    }
+
     if let Some(example) = config.request_example
         && let Some(body) = request_body.as_mut()
     {
@@ -285,26 +304,12 @@ pub fn build_operation_from_function(
     }
 
     if let Some(example) = config.response_example
-        && let Some(response) = responses.get_mut("200")
+        && let Some(response) = responses.get_mut(&success_key)
         && let Some(content) = response.content.as_mut()
     {
         for media in content.values_mut() {
             media.example = Some(example.clone());
         }
-    }
-
-    // Feature 2: re-key the inferred success response under the declared
-    // non-200 status (`status = <u16>`, validated 2xx) unless `responses =
-    // [(N, T)]` documents it explicitly. No-body success statuses (204 No
-    // Content, 205 Reset Content) must not carry a response body.
-    if let Some(success) = config.success_status
-        && success != 200
-        && let Some(mut response) = responses.remove("200")
-    {
-        if matches!(success, 204 | 205) {
-            response.content = None;
-        }
-        responses.entry(success.to_string()).or_insert(response);
     }
 
     Operation {
@@ -357,10 +362,12 @@ fn error_response_description() -> String {
 }
 
 fn response_description_for_status(status_code: u16) -> String {
-    if (200..300).contains(&status_code) {
-        "Successful response".to_string()
-    } else {
-        error_response_description()
+    match status_code {
+        100..=199 => "Informational response".to_string(),
+        200..=299 => "Successful response".to_string(),
+        // Labelled like an inferred `Redirect` (`3XX`).
+        300..=399 => "Redirect".to_string(),
+        _ => error_response_description(),
     }
 }
 

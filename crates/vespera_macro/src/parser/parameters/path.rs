@@ -127,26 +127,17 @@ fn path_parameters_from(
             depth + 1,
         );
     }
-    if let Some(struct_item) =
-        struct_item.filter(|struct_item| matches!(struct_item.fields, syn::Fields::Named(_)))
+    if let Some(struct_item) = struct_item
+        .as_ref()
+        .filter(|struct_item| matches!(struct_item.fields, syn::Fields::Named(_)))
     {
         return path_params
             .iter()
             .map(|name| {
-                let field = find_path_field(&struct_item, name, struct_definitions, depth);
+                let field = find_path_field(struct_item, name, struct_definitions, depth);
                 let field = field.as_ref();
                 let schema = field.map_or_else(string_path_schema, |field| {
-                    let constraints = extract_schema_constraints(&field.attrs);
-                    let mut schema = field_schema_ref(
-                        field,
-                        &constraints,
-                        SerdeSide::Deserialize,
-                        known_schemas,
-                        struct_definitions,
-                    );
-                    // `#[schema(..)]` / `#[garde(..)]` rules a validated path enforces.
-                    apply_field_rules(&mut schema, field, &constraints);
-                    schema
+                    typed_field_schema(field, known_schemas, struct_definitions)
                 });
                 // The field's doc comment documents the parameter.
                 Parameter {
@@ -155,6 +146,37 @@ fn path_parameters_from(
                 }
             })
             .collect();
+    }
+
+    // `Path<Ids>` with `struct Ids(u32, Uuid)`: axum fills a tuple struct
+    // positionally, like a tuple (only the positions serde reads count, and a
+    // longer struct is aligned from the end).
+    if let Some(syn::Fields::Unnamed(fields)) = struct_item.as_ref().map(|item| &item.fields) {
+        let read: Vec<&syn::Field> = fields
+            .unnamed
+            .iter()
+            .filter(|field| {
+                let flags = extract_serde_skip_flags(&field.attrs);
+                !(flags.skip || flags.skip_deserializing)
+            })
+            .collect();
+        if read.len() > 1 {
+            let offset = read.len().saturating_sub(path_params.len());
+            return path_params
+                .iter()
+                .enumerate()
+                .map(|(idx, name)| {
+                    let field = read.get(offset + idx);
+                    let schema = field.map_or_else(string_path_schema, |field| {
+                        typed_field_schema(field, known_schemas, struct_definitions)
+                    });
+                    Parameter {
+                        description: field.and_then(|field| extract_doc_comment(&field.attrs)),
+                        ..path_parameter(name, schema)
+                    }
+                })
+                .collect();
+        }
     }
 
     if let [name] = path_params {
@@ -167,6 +189,25 @@ fn path_parameters_from(
         .iter()
         .map(|name| path_parameter(name, string_path_schema()))
         .collect()
+}
+
+/// The schema of a path struct field as serde reads it, with the
+/// `#[schema(..)]` / `#[garde(..)]` rules a validated path enforces.
+fn typed_field_schema(
+    field: &syn::Field,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
+) -> SchemaRef {
+    let constraints = extract_schema_constraints(&field.attrs);
+    let mut schema = field_schema_ref(
+        field,
+        &constraints,
+        SerdeSide::Deserialize,
+        known_schemas,
+        struct_definitions,
+    );
+    apply_field_rules(&mut schema, field, &constraints);
+    schema
 }
 
 /// The field serde fills from the path segment `name`: one read under that

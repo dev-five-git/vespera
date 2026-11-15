@@ -106,6 +106,45 @@ fn field_json(field_src: &str) -> String {
     "inner_no_target",
     "#[garde(inner(length(chars, min = 1)))] value: String"
 )]
+// Round 11: garde's `Inner` impls for `Box<[T]>` / `&[T]`.
+#[case::inner_boxed_slice_items(
+    "inner_boxed_slice_items",
+    "#[garde(inner(length(chars, max = 8)))] value: Box<[String]>"
+)]
+#[case::inner_slice_ref_items(
+    "inner_slice_ref_items",
+    "#[garde(inner(length(chars, max = 8)))] value: &'a [String]"
+)]
+#[case::inner_box_non_slice_no_target(
+    "inner_box_non_slice_no_target",
+    "#[garde(inner(length(chars, max = 8)))] value: Box<String>"
+)]
+#[case::inner_map_no_target(
+    "inner_map_no_target",
+    "#[garde(inner(length(chars, max = 8)))] value: HashMap<String, String>"
+)]
+#[case::inner_ref_non_slice_no_target(
+    "inner_ref_non_slice_no_target",
+    "#[garde(inner(length(chars, max = 8)))] value: &'a String"
+)]
+// Round 11: one `length` rule per mode; every rule's bounds apply.
+#[case::length_per_mode(
+    "length_per_mode",
+    "#[garde(length(chars, min = 2, max = 10), length(bytes, max = 40))] value: String"
+)]
+#[case::length_per_mode_tightest(
+    "length_per_mode_tightest",
+    "#[garde(length(min = 1), length(chars, max = 10))] #[garde(length(chars, min = 3), length(utf16, max = 4))] value: String"
+)]
+#[case::length_per_mode_vec(
+    "length_per_mode_vec",
+    "#[garde(length(min = 1, max = 5), length(bytes, max = 2))] value: Vec<u8>"
+)]
+// Round 11: a Rust-only `regex` construct has no ECMA-262 reading.
+#[case::pattern_rust_only_skipped(
+    "pattern_rust_only_skipped",
+    r#"#[garde(pattern(r"(?i)^abc$"), prefix("x"))] value: String"#
+)]
 #[case::ref_field_skipped("ref_field_skipped", "#[garde(length(min = 1))] value: User")]
 #[case::bool_field_skipped("bool_field_skipped", "#[garde(email)] value: bool")]
 #[case::skipped_rules(
@@ -185,4 +224,28 @@ fn escape_regex_escapes_every_syntax_character() {
         escape_regex(r"a\^$.|?*+()[]{}-/#"),
         r"a\\\^\$\.\|\?\*\+\(\)\[\]\{\}-/#"
     );
+}
+
+#[rstest]
+#[case::plain(r"^[A-Z]{2}\d+$", true)]
+#[case::non_capturing(r"(?:ab)+", true)]
+#[case::named_ecma(r"(?<year>\d{4})", true)]
+#[case::lookahead(r"(?=a)(?!b)", true)]
+#[case::unicode_class(r"\p{L}+", true)]
+#[case::escaped_backslash(r"\\A", true)]
+#[case::nested_class(r"[[a]]", true)]
+#[case::trailing_backslash(r"a\", true)]
+#[case::trailing_open_paren(r"a(", true)]
+#[case::inline_flag(r"(?i)abc", false)]
+#[case::flag_group(r"(?x: a b )", false)]
+#[case::negated_flag(r"(?-i)abc", false)]
+#[case::rust_named(r"(?P<y>\d)", false)]
+#[case::start_of_text(r"\Aabc", false)]
+#[case::end_of_text(r"abc\z", false)]
+#[case::hex_brace(r"\x{41}", false)]
+#[case::hex_plain(r"\x41", true)]
+#[case::one_letter_property(r"\pL", false)]
+#[case::posix_class(r"[[:alpha:]]", false)]
+fn ecma_compatible_patterns(#[case] pattern: &str, #[case] expected: bool) {
+    assert_eq!(is_ecma_compatible(pattern), expected, "{pattern}");
 }

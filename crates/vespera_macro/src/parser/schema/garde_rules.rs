@@ -12,13 +12,14 @@
 //! | `length(chars, min, max, equal)` on a string | `minLength` / `maxLength` (both count Unicode scalar values) |
 //! | `length(min, max)` on a string in any other mode (`simple` — the default — `bytes`, `graphemes`, `utf16`) | only `min <= 1` → `minLength` (empty ⇔ zero units in every mode); a larger byte / grapheme / UTF-16 bound has no code-point equivalent and is skipped |
 //! | `length(...)` (default `simple` mode) on an array / map | `minItems` / `maxItems`, `minProperties` / `maxProperties` |
+//! | several `length(..)` rules (one per mode) | every rule's bounds, tightest wins |
 //! | `range(min, max, equal)` with numeric literals | `minimum` / `maximum` (garde's range is inclusive) |
 //! | `email` / `url` / `ipv4` / `ipv6` | `format: email` / `uri` / `ipv4` / `ipv6` |
 //! | `ip` | `anyOf: [{format: ipv4}, {format: ipv6}]` |
-//! | `pattern("literal")` | `pattern` |
+//! | `pattern("literal")` | `pattern` (skipped when it uses Rust-only regex syntax, see [`is_ecma_compatible`]) |
 //! | `prefix("x")` / `suffix("x")` / `contains("x")` | `pattern` `^x` / `x$` / `x` (regex metacharacters escaped) |
 //! | `ascii` | `pattern: ^[\x00-\x7F]*$` |
-//! | `inner(...)` on `Vec<T>` / `[T; N]` | the rules land on `items`; on `Option<T>` on the value itself |
+//! | `inner(...)` on `Vec<T>` / `[T; N]` / `Box<[T]>` / `&[T]` | the rules land on `items`; on `Option<T>` on the value itself |
 //!
 //! The first pattern occupies `pattern`; further ones are ANDed via `allOf`
 //! members. Rules on an `Option<T>` field constrain the non-null value
@@ -98,7 +99,9 @@ enum FormatRule {
 /// The schema-relevant subset of a field's `#[garde(...)]` rules.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GardeRules {
-    length: Option<LengthRule>,
+    /// One per mode: garde rejects only a repeated mode
+    /// (`length(chars, ..), length(bytes, ..)` both apply).
+    length: Vec<LengthRule>,
     minimum: Option<f64>,
     maximum: Option<f64>,
     format: Option<FormatRule>,
@@ -128,7 +131,7 @@ fn parse_rule(rules: &mut GardeRules, meta: &ParseNestedMeta<'_>) -> syn::Result
     if path.is_ident("length") {
         let mut length = LengthRule::default();
         meta.parse_nested_meta(|arg| parse_length_arg(&mut length, &arg))?;
-        rules.length = Some(length);
+        rules.length.push(length);
     } else if path.is_ident("range") {
         meta.parse_nested_meta(|arg| parse_range_arg(rules, &arg))?;
     } else if path.is_ident("email") {
@@ -144,7 +147,9 @@ fn parse_rule(rules: &mut GardeRules, meta: &ParseNestedMeta<'_>) -> syn::Result
     } else if path.is_ident("ascii") {
         rules.patterns.push(ASCII_PATTERN.to_owned());
     } else if path.is_ident("pattern") {
-        rules.patterns.extend(string_arg(meta)?);
+        rules
+            .patterns
+            .extend(string_arg(meta)?.filter(|pattern| is_ecma_compatible(pattern)));
     } else if path.is_ident("prefix") {
         rules
             .patterns
@@ -271,14 +276,16 @@ fn apply_to_schema(
     match schema.schema_type {
         Some(SchemaType::String) => apply_string_rules(schema, rules, explicit),
         Some(SchemaType::Array) => {
-            let (min, max) = count_bounds(rules);
-            tighten(&mut schema.min_items, explicit.min_items, min, true);
-            tighten(&mut schema.max_items, explicit.max_items, max, false);
+            for (min, max) in rules.length.iter().map(LengthRule::count_bounds) {
+                tighten(&mut schema.min_items, explicit.min_items, min, true);
+                tighten(&mut schema.max_items, explicit.max_items, max, false);
+            }
         }
         Some(SchemaType::Object) => {
-            let (min, max) = count_bounds(rules);
-            tighten(&mut schema.min_properties, None, min, true);
-            tighten(&mut schema.max_properties, None, max, false);
+            for (min, max) in rules.length.iter().map(LengthRule::count_bounds) {
+                tighten(&mut schema.min_properties, None, min, true);
+                tighten(&mut schema.max_properties, None, max, false);
+            }
         }
         Some(SchemaType::Integer | SchemaType::Number) => {
             tighten(&mut schema.minimum, explicit.minimum, rules.minimum, true);
@@ -300,20 +307,11 @@ fn apply_to_schema(
     }
 }
 
-fn count_bounds(rules: &GardeRules) -> (Option<usize>, Option<usize>) {
-    rules
-        .length
-        .as_ref()
-        .map_or((None, None), LengthRule::count_bounds)
-}
-
 fn apply_string_rules(schema: &mut Schema, rules: &GardeRules, explicit: &SchemaConstraints) {
-    let (min, max) = rules
-        .length
-        .as_ref()
-        .map_or((None, None), LengthRule::string_bounds);
-    tighten(&mut schema.min_length, explicit.min_length, min, true);
-    tighten(&mut schema.max_length, explicit.max_length, max, false);
+    for (min, max) in rules.length.iter().map(LengthRule::string_bounds) {
+        tighten(&mut schema.min_length, explicit.min_length, min, true);
+        tighten(&mut schema.max_length, explicit.max_length, max, false);
+    }
 
     if let Some(format) = rules.format
         && schema.format.is_none()
@@ -373,16 +371,69 @@ fn tighten<T: Copy + PartialOrd>(
 }
 
 /// Where garde's `inner` rules apply: the `Option` value itself (`false`) or
-/// the elements of a `Vec` / array (`true`).
+/// the elements of a `Vec` / array / `Box<[T]>` / `&[T]` (`true`) — garde's
+/// `Inner` impls.
 fn inner_target(ty: &Type) -> Option<(&Type, bool)> {
     if let Some(inner) = option_inner(ty) {
         return Some((inner, false));
     }
-    if let Type::Array(array) = ty {
-        return Some((&array.elem, true));
+    match ty {
+        Type::Array(array) => return Some((&array.elem, true)),
+        Type::Reference(reference) => return slice_elem(&reference.elem),
+        _ => {}
     }
-    let segment = last_path_segment(ty).filter(|segment| segment.ident == "Vec")?;
-    first_generic_type_arg(segment).map(|elem| (elem, true))
+    let segment = last_path_segment(ty)?;
+    let elem = first_generic_type_arg(segment)?;
+    if segment.ident == "Vec" {
+        Some((elem, true))
+    } else if segment.ident == "Box" {
+        slice_elem(elem)
+    } else {
+        None
+    }
+}
+
+/// `T` of a slice type `[T]`, as an `inner` target.
+fn slice_elem(ty: &Type) -> Option<(&Type, bool)> {
+    match ty {
+        Type::Slice(slice) => Some((&slice.elem, true)),
+        _ => None,
+    }
+}
+
+/// Whether a garde `pattern` (Rust `regex` syntax) reads the same as an
+/// ECMA-262 `pattern`. A Rust-only construct — an inline flag group (`(?i)`,
+/// `(?x:..)`), `(?P<name>..)`, `\A` / `\z`, `\x{..}`, a one-letter `\pL`, a
+/// POSIX class (`[[:alpha:]]`) — makes it skipped rather than documented
+/// wrongly. Known limitation: `\d` / `\w` / `\s` / `\b` are Unicode-aware in
+/// Rust but ASCII in ECMA-262, so the documented pattern may be stricter.
+fn is_ecma_compatible(pattern: &str) -> bool {
+    let mut chars = pattern.chars().peekable();
+    while let Some(ch) = chars.next() {
+        let next = chars.peek().copied();
+        let rust_only = match (ch, next) {
+            ('\\', Some(escaped)) => {
+                chars.next();
+                let brace = chars.peek() == Some(&'{');
+                matches!(escaped, 'A' | 'z')
+                    || (escaped == 'x' && brace)
+                    || (matches!(escaped, 'p' | 'P') && !brace)
+            }
+            ('(', Some('?')) => {
+                chars.next();
+                chars.peek().is_some_and(|flag| "imsxuUR-P".contains(*flag))
+            }
+            ('[', Some('[')) => {
+                chars.next();
+                chars.peek() == Some(&':')
+            }
+            _ => false,
+        };
+        if rust_only {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]

@@ -25,6 +25,32 @@ mod tests {
         HashSet::new()
     }
 
+    /// The components SeaORM relation tests point at.
+    fn relation_known() -> HashSet<String> {
+        HashSet::from(["User".to_string(), "Comment".to_string()])
+    }
+
+    /// A relation `$ref` names a KNOWN component: `{Module}` or
+    /// `{Module}Schema` (`snake_case` modules PascalCased); without one the
+    /// relation documents any value instead of a dangling `$ref`.
+    #[rstest::rstest]
+    #[case::plain("BelongsTo<super::user::Entity>", &["User", "UserSchema"][..], r##"{"anyOf":[{"$ref":"#/components/schemas/User"},{"type":"null"}]}"##)]
+    #[case::schema_suffix("BelongsTo<super::user::Entity>", &["UserSchema"][..], r##"{"anyOf":[{"$ref":"#/components/schemas/UserSchema"},{"type":"null"}]}"##)]
+    #[case::snake_module("HasOne<super::user_profile::Entity>", &["UserProfileSchema"][..], r##"{"anyOf":[{"$ref":"#/components/schemas/UserProfileSchema"},{"type":"null"}]}"##)]
+    #[case::capitalized_module("HasOne<super::user_profile::Entity>", &["User_profile"][..], r##"{"anyOf":[{"$ref":"#/components/schemas/User_profile"},{"type":"null"}]}"##)]
+    #[case::unknown("BelongsTo<super::user::Entity>", &[][..], "{}")]
+    #[case::has_many_unknown("HasMany<super::user::Entity>", &[][..], r#"{"type":["array","null"],"items":{}}"#)]
+    fn relation_refs_resolve_known_components(
+        #[case] ty: &str,
+        #[case] known: &[&str],
+        #[case] expected: &str,
+    ) {
+        let ty: Type = syn::parse_str(ty).unwrap();
+        let known: HashSet<String> = known.iter().map(|name| (*name).to_string()).collect();
+        let schema_ref = parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions());
+        assert_eq!(serde_json::to_string(&schema_ref).unwrap(), expected);
+    }
+
     fn empty_struct_definitions() -> HashMap<String, String> {
         HashMap::new()
     }
@@ -292,7 +318,8 @@ mod tests {
     fn test_parse_type_to_schema_ref_has_one_entity() {
         // HasOne<super::user::Entity> should produce nullable ref to UserSchema
         let ty: Type = syn::parse_str("HasOne<super::user::Entity>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
+        let schema_ref =
+            parse_type_to_schema_ref(&ty, &relation_known(), &empty_struct_definitions());
         match schema_ref {
             SchemaRef::Inline(schema) => {
                 // Should have ref_path to UserSchema and be nullable
@@ -315,7 +342,7 @@ mod tests {
     fn single_relations_are_nullable_refs(#[case] ty: &str) {
         let ty: Type = syn::parse_str(ty).unwrap();
         let SchemaRef::Inline(schema) =
-            parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions())
+            parse_type_to_schema_ref(&ty, &relation_known(), &empty_struct_definitions())
         else {
             panic!("expected an inline nullable reference");
         };
@@ -360,7 +387,8 @@ mod tests {
     fn test_parse_type_to_schema_ref_has_many_entity() {
         // HasMany<super::comment::Entity> should produce array of refs
         let ty: Type = syn::parse_str("HasMany<super::comment::Entity>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
+        let schema_ref =
+            parse_type_to_schema_ref(&ty, &relation_known(), &empty_struct_definitions());
         match schema_ref {
             SchemaRef::Inline(schema) => {
                 // Should be array type
@@ -384,7 +412,8 @@ mod tests {
     #[case::no_type_argument("has_many_lifetime_only", "HasMany<'a>")]
     fn has_many_is_nullable(#[case] name: &str, #[case] src: &str) {
         let ty: Type = syn::parse_str(src).unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
+        let schema_ref =
+            parse_type_to_schema_ref(&ty, &relation_known(), &empty_struct_definitions());
         insta::assert_snapshot!(
             format!("has_many_nullable_{name}"),
             serde_json::to_string_pretty(&schema_ref).unwrap()
