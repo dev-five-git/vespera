@@ -217,13 +217,14 @@ pub unsafe extern "C" fn vespera_dispatch_into(
     out_capacity: usize,
     written: *mut usize,
 ) -> c_int {
-    // A `request_len` above `isize::MAX` is answered with a `400` wire (no
-    // buffer can be that large), so it takes no part in the overlap test:
-    // the outcome must not depend on where the buffers happen to live.
-    let request_extent = if isize::try_from(request_len).is_ok() {
-        request_len
-    } else {
+    // A NULL `request` or a `request_len` above `isize::MAX` is answered
+    // with a `400` wire (nothing is read), so it takes no part in the
+    // overlap test: the outcome must not depend on where the buffers
+    // happen to live.
+    let request_extent = if request.is_null() || isize::try_from(request_len).is_err() {
         0
+    } else {
+        request_len
     };
     if written.is_null()
         || (out.is_null() && out_capacity != 0)
@@ -632,6 +633,37 @@ mod tests {
         assert_eq!(code, VESPERA_OK);
         let wire = &buf[..written];
         assert!(wire.ends_with(REQUEST_LEN_TOO_LARGE_MSG.as_bytes()));
+        assert!(
+            std::str::from_utf8(wire)
+                .unwrap()
+                .contains("\"status\":400")
+        );
+    }
+    /// A NULL `request` with a non-zero length is a `400` wire whatever the
+    /// buffer addresses: its `[0, request_len)` range never counts as
+    /// overlapping `out`, even when `out` lies inside it.
+    #[test]
+    fn null_request_is_a_400_not_an_overlap() {
+        let mut buf = vec![0u8; MIN_DIRECT_OUT_BYTES];
+        let mut written = 0usize;
+        let out = buf.as_mut_ptr();
+        // `[0, out + 1)` contains `out`; still `<= isize::MAX` on every host.
+        let request_len = out.addr() + 1;
+        assert!(isize::try_from(request_len).is_ok());
+        // SAFETY: the NULL request is rejected before any read; `out` is
+        // live for its capacity.
+        let code = unsafe {
+            vespera_dispatch_into(
+                std::ptr::null(),
+                request_len,
+                out,
+                buf.len(),
+                &raw mut written,
+            )
+        };
+        assert_eq!(code, VESPERA_OK);
+        let wire = &buf[..written];
+        assert!(wire.ends_with(NULL_REQUEST_MSG.as_bytes()));
         assert!(
             std::str::from_utf8(wire)
                 .unwrap()
