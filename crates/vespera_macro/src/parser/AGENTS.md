@@ -111,7 +111,7 @@ not from their defining submodule.
 | `Query<T>` / `OptionalQuery<T>` | query parameters (`OptionalQuery`: every parameter optional) |
 | `Form<T>` | requestBody `application/x-www-form-urlencoded` (query parameters with `form_in_query`, e.g. GET) |
 | `Json<T>` | requestBody `application/json` |
-| `TypedMultipart<T>` / `Multipart` | requestBody `multipart/form-data` |
+| `TypedMultipart<T>` / `TypedMultipartWithLimits<T, ..>` / `Multipart` | requestBody `multipart/form-data` |
 | `Validated<E>` / `Result<E, R>` / `WithRejection<E, R>` / `Cached<E>` | documented as the wrapped extractor `E` |
 | `State<T>` | ignored |
 | `TypedHeader<T>` | header parameter (reserved names `Accept` / `Content-Type` / `Authorization` are dropped; route-level `headers = [...]` keeps them as written) |
