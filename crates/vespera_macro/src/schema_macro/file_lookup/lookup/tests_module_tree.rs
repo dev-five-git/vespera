@@ -412,3 +412,39 @@ fn reexported_module_follows_crate_imports_only() {
     );
     assert_eq!(reexported_module(&module("crate::models"), "Missing"), None);
 }
+
+/// A bare source name: the call-site file's own definition is preferred
+/// over a storage entry derived in another file; an entry of the call-site
+/// file itself, one without a (well-formed) identity, or a name the file does
+/// not define keeps the storage entry.
+#[test]
+fn call_site_definition_prefers_the_local_struct() {
+    let (dir, _guard) = temp_crate("lib.rs");
+    let lib = dir.path().join("src/lib.rs");
+    let stored = |identity: Option<String>| StructMetadata {
+        source_identity: identity,
+        ..StructMetadata::new("RootModel".to_string(), String::new())
+    };
+    let ty: syn::Type = syn::parse_str("RootModel").unwrap();
+    let other = format!(
+        "{}::RootModel@1:1",
+        dir.path().join("src/other.rs").display()
+    );
+    let (found, module) = call_site_definition_in(&stored(Some(other.clone())), &ty, &lib)
+        .expect("the call-site file defines RootModel");
+    assert!(
+        found.definition.contains("RootModel"),
+        "{}",
+        found.definition
+    );
+    assert_eq!(module, ["crate"]);
+    let own = format!("{}::RootModel@2:1", lib.display());
+    assert!(call_site_definition_in(&stored(Some(own)), &ty, &lib).is_none());
+    assert!(call_site_definition_in(&stored(None), &ty, &lib).is_none());
+    assert!(call_site_definition_in(&stored(Some("no-position".into())), &ty, &lib).is_none());
+    assert!(call_site_definition_in(&stored(Some("file@1:1".into())), &ty, &lib).is_none());
+    let missing: syn::Type = syn::parse_str("Missing").unwrap();
+    assert!(call_site_definition_in(&stored(Some(other)), &missing, &lib).is_none());
+    // Without a call-site file (unit tests) nothing is local.
+    assert!(call_site_definition(&stored(None), &ty, None).is_none());
+}

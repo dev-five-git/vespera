@@ -13,7 +13,8 @@ use super::defaults::generate_sea_orm_default_attrs;
 use super::field_attrs::carried_field_attrs;
 use super::file_cache;
 use super::file_lookup::{
-    find_struct_from_path_detailed, reexported_module, requested_module_path, storage_module_path,
+    call_site_definition, find_struct_from_path_detailed, reexported_module, requested_module_path,
+    storage_module_path,
 };
 use super::from_model::generate_from_model_with_relations;
 use super::inline_types::{
@@ -973,26 +974,6 @@ fn source_field_assignments(
 }
 
 mod multipart_carry;
-
-/// The call-site file's own definition of the bare source name, when the
-/// storage entry `stored` was derived in another file: the struct in scope at
-/// a bare `schema_type!(Dto from User)` is the local one, not a same-named
-/// `#[derive(Schema)]` of another module.  `None` without a call-site file
-/// (unit tests), for an entry of this file, or without a local definition.
-fn call_site_definition(
-    stored: &StructMetadata,
-    source: &syn::Type,
-    schema_name_hint: Option<&str>,
-) -> Option<(StructMetadata, Vec<String>)> {
-    let identity = stored.source_identity.as_deref()?;
-    let (located, _) = identity.rsplit_once('@')?;
-    let (file, _) = located.rsplit_once("::")?;
-    let call_site = proc_macro2::Span::call_site().local_file()?;
-    if std::path::Path::new(file) == call_site {
-        return None;
-    }
-    find_struct_from_path_detailed(source, schema_name_hint).ok()
-}
 
 #[cfg(test)]
 mod tests;

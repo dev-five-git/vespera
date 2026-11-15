@@ -471,6 +471,35 @@ pub fn requested_module_path(ty: &Type) -> Option<Vec<String>> {
     ))
 }
 
+/// The call-site file's own definition of the bare source name, when the
+/// storage entry `stored` was derived in another file: the struct in scope at
+/// a bare `schema_type!(Dto from User)` is the local one, not a same-named
+/// `#[derive(Schema)]` of another module.  `None` without a call-site file
+/// (unit tests), for an entry of this file, or without a local definition.
+pub fn call_site_definition(
+    stored: &StructMetadata,
+    source: &Type,
+    _schema_name_hint: Option<&str>,
+) -> Option<(StructMetadata, Vec<String>)> {
+    let call_site = proc_macro2::Span::call_site().local_file()?;
+    call_site_definition_in(stored, source, &call_site)
+}
+
+/// [`call_site_definition`] with the call-site file passed explicitly.
+fn call_site_definition_in(
+    stored: &StructMetadata,
+    source: &Type,
+    call_site: &Path,
+) -> Option<(StructMetadata, Vec<String>)> {
+    let identity = stored.source_identity.as_deref()?;
+    let (located, _) = identity.rsplit_once('@')?;
+    let (file, _) = located.rsplit_once("::")?;
+    if Path::new(file) == call_site {
+        return None;
+    }
+    find_struct_with_call_site(source, Some(call_site)).ok()
+}
+
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

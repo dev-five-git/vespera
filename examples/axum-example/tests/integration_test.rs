@@ -25,7 +25,7 @@ async fn test_memo_rel_query_failure_is_a_500() {
     let response = server.get("/memos/1/rel").await;
 
     response.assert_status(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-    assert!(!response.text().is_empty());
+    assert_ne!(response.text(), "");
 }
 
 /// A `macro_rules!`-generated route is mounted (its file never spells the

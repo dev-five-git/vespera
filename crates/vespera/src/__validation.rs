@@ -94,12 +94,12 @@ macro_rules! integer_range_bound {
             }
             // `MAX as f64 + 1.0` is exact up to 32 bits and rounds to the
             // power of two `MAX + 1` beyond, so `<` is the exact test.
-            #[allow(clippy::cast_precision_loss)]
+            #[allow(clippy::cast_precision_loss, clippy::cast_lossless)]
             fn admits_min(bound: f64) -> bool {
                 bound.ceil() < Self::MAX as f64 + 1.0
             }
             // `MIN` is zero or a power of two: exact as `f64`.
-            #[allow(clippy::cast_precision_loss)]
+            #[allow(clippy::cast_precision_loss, clippy::cast_lossless)]
             fn admits_max(bound: f64) -> bool {
                 bound.floor() >= Self::MIN as f64
             }
