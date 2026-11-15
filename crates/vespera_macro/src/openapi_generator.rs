@@ -106,7 +106,8 @@ pub fn try_generate_openapi_doc_with_metadata(
     // candidate whose built request view turns out identical to its response
     // view is dropped and the components rebuilt, until every remaining input
     // really differs (dropping one can make a referencing type identical).
-    let mut input_names = component_schemas::input_names(metadata, &known_schema_names);
+    let mut input_names =
+        component_schemas::input_names(metadata, &known_schema_names, &scoped_rust_idents);
     let mut schemas = loop {
         crate::parser::schema::generic_instances::take_materialized();
         crate::parser::schema::request_view::install(std::sync::Arc::clone(&input_names));
