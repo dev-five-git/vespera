@@ -77,6 +77,13 @@ pub fn extract_belongs_to_to_field(attrs: &[syn::Attribute]) -> Option<String> {
         .map(|value| normalize_columns(&value, &syn::Fields::Unit))
 }
 
+/// The `to` value as written: a `via_rel` relation's `to` names a column of
+/// the model holding the `HasMany`, normalized against its fields by
+/// [`normalize_columns`] once that model is at hand.
+pub fn extract_belongs_to_to_raw(attrs: &[syn::Attribute]) -> Option<String> {
+    extract_sea_orm_attr_value(attrs, "to")
+}
+
 /// Whether a normalized `from` / `to` value lists several columns.
 pub fn is_composite_columns(columns: &str) -> bool {
     columns.starts_with('(')
@@ -84,7 +91,7 @@ pub fn is_composite_columns(columns: &str) -> bool {
 
 /// `Column::UserId` / `UserId` / `user_id` -> `user_id`; `(A, b)` ->
 /// `(a, b)`. A value that is no column path is kept as written.
-fn normalize_columns(value: &str, fields: &syn::Fields) -> String {
+pub fn normalize_columns(value: &str, fields: &syn::Fields) -> String {
     let trimmed = value.trim();
     if let Some(list) = trimmed
         .strip_prefix('(')

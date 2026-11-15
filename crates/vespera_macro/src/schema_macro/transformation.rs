@@ -319,7 +319,7 @@ fn serde_key_of(path: &syn::Path) -> String {
 
 /// `path` resolved in `module_path` (`None` when it is not a path or not
 /// known there).
-fn reroot_path(path: &str, module_path: &[String]) -> Option<String> {
+pub(super) fn reroot_path(path: &str, module_path: &[String]) -> Option<String> {
     let path: syn::Path = syn::parse_str(path).ok()?;
     let segments: Vec<String> = path
         .segments

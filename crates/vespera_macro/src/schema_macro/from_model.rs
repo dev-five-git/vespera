@@ -10,6 +10,21 @@ mod target_shape;
 
 pub use generate::generate_from_model_with_relations;
 
+/// One emitted DTO field and the source field it is built from (`From`,
+/// the container default, `from_model`).
+pub struct FieldMapping {
+    pub new_ident: syn::Ident,
+    pub source_ident: syn::Ident,
+    /// `partial` wrapped the field into `Option`.
+    pub wrapped: bool,
+    /// The field's entry among the relation fields (a SeaORM relation):
+    /// `#[cfg]` twins share a name, so they are paired by position.
+    pub relation: Option<usize>,
+    /// The source field's `#[cfg(..)]` attributes, repeated on everything
+    /// that touches it.
+    pub cfg: TokenStream,
+}
+
 /// A parameter of the generated `from_model`, named so no relation field
 /// (whose loaded value becomes a local of the field's name) can shadow it.
 pub(super) struct Param(&'static str);

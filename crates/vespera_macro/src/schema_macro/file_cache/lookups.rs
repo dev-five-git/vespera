@@ -7,8 +7,8 @@
 //! resolution: struct / FK / module-path / circular lookups) from the raw
 //! file/dir/content caching that remains in `file_cache.rs`, and operate on a
 //! disjoint set of [`super::FileCache`] fields (`circular_analysis`,
-//! `struct_lookup`, `fk_column_lookup`, `module_path_cache`; `file_contents`
-//! is only read, to fingerprint out-of-tree files). They share the
+//! `struct_lookup`, `fk_column_lookup`, `module_path_cache`;
+//! `mtime_epoch_cache` is only read, to fingerprint out-of-tree files). They share the
 //! parent's `FILE_CACHE` thread-local plus the `ensure_file_list` /
 //! `get_fingerprint_cached` helpers via `super::`.
 
@@ -47,18 +47,20 @@ fn insert_fingerprint(
     path_str: &str,
     (fingerprint, files_read): (u64, usize),
 ) -> u64 {
-    if cache.file_contents.len() == files_read {
+    if cache.mtime_epoch_cache.len() == files_read {
         fingerprint
     } else {
         path_lookup_fingerprint(cache, path_str)
     }
 }
 
-/// Every file this thread has read outside `src_dir` (`#[path =
-/// "../generated/models.rs"]` modules the resolution opened), sorted.
+/// Every file this thread has probed outside `src_dir` (`#[path =
+/// "../generated/models.rs"]` modules the resolution opened, or looked for:
+/// a missing one is probed too, and creating it later must invalidate the
+/// cached miss — only the files READ used to be covered), sorted.
 fn out_of_tree_files(cache: &FileCache, src_dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = cache
-        .file_contents
+        .mtime_epoch_cache
         .keys()
         // `src/../generated/x.rs` (how a `#[path]` is joined) is outside too.
         .filter(|path| {
@@ -167,7 +169,7 @@ fn crate_fingerprint(
     thread_local! {
         static MEMO: std::cell::RefCell<Memo> = const { std::cell::RefCell::new(None) };
     }
-    let at = (cache.epoch, cache.file_contents.len());
+    let at = (cache.epoch, cache.mtime_epoch_cache.len());
     let hit = MEMO.with(|memo| {
         memo.borrow()
             .as_ref()
@@ -192,6 +194,9 @@ fn crate_fingerprint(
         fingerprint_path(cache, path, &mut hasher);
     }
     let fingerprint = hasher.finish();
+    // Keyed by the probe count AFTER hashing: the first hash of an epoch
+    // probes the source files itself.
+    let at = (cache.epoch, cache.mtime_epoch_cache.len());
     MEMO.with(|memo| *memo.borrow_mut() = Some((at, layout, fingerprint)));
     fingerprint
 }
@@ -254,7 +259,7 @@ pub fn get_struct_from_schema_path(path_str: &str) -> Option<Arc<StructMetadata>
             entry.last_epoch_validated = epoch;
             return Probe::Hit(entry.value.clone());
         }
-        Probe::Miss(fingerprint, cache.file_contents.len())
+        Probe::Miss(fingerprint, cache.mtime_epoch_cache.len())
     });
     let fingerprint = match probe {
         Probe::Hit(value) => {
@@ -311,7 +316,7 @@ pub fn get_fk_column(schema_path: &str, via_rel: &str) -> Option<(String, Option
             entry.last_epoch_validated = epoch;
             return Probe::Hit(entry.value.clone());
         }
-        Probe::Miss(fingerprint, cache.file_contents.len())
+        Probe::Miss(fingerprint, cache.mtime_epoch_cache.len())
     });
     let fingerprint = match probe {
         Probe::Hit(value) => {

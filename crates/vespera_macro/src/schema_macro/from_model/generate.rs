@@ -1,8 +1,6 @@
 //! Async `from_model` impl generation for SeaORM models with
 //! relations (inline types for circular relations, FK lookups).
 
-use std::collections::HashMap;
-
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Type;
@@ -17,7 +15,7 @@ use super::super::{
 };
 use super::loads::relation_load;
 use super::target_shape::{TargetShape, target_shape};
-use super::{DB, MODEL};
+use super::{DB, FieldMapping, MODEL};
 
 /// Generate `from_model` impl for `SeaORM` Model WITH relations (async version).
 ///
@@ -59,47 +57,40 @@ use super::{DB, MODEL};
 pub fn generate_from_model_with_relations(
     new_type_name: &syn::Ident,
     source_type: &Type,
-    field_mappings: &[(syn::Ident, syn::Ident, bool, bool)],
+    field_mappings: &[FieldMapping],
     relation_fields: &[RelationFieldInfo],
     source_module_path: &[String],
-    field_cfgs: &HashMap<String, TokenStream>,
+    source_fields: &syn::Fields,
 ) -> syn::Result<TokenStream> {
-    // `#[cfg(..)]` of a source field, repeated on everything touching it.
-    let cfg_of = |ident: &syn::Ident| {
-        field_cfgs
-            .get(&crate::parser::strip_raw_prefix_owned(ident.to_string()))
-            .cloned()
-            .unwrap_or_default()
-    };
-
-    // Build relation loading statements
-    let relation_loads: Vec<TokenStream> = relation_fields
+    // Build relation loading statements, each under its field's `#[cfg]`
+    // (twin relation fields of one name each load under their own).
+    let relation_loads: Vec<TokenStream> = field_mappings
         .iter()
-        .map(|rel| {
-            let cfg = cfg_of(&rel.field_name);
-            relation_load(rel, source_type, source_module_path).map(|load| quote! { #cfg #load })
+        .filter_map(|mapping| Some((mapping, relation_fields.get(mapping.relation?)?)))
+        .map(|(mapping, rel)| {
+            let cfg = &mapping.cfg;
+            relation_load(rel, source_type, source_module_path, source_fields)
+                .map(|load| quote! { #cfg #load })
         })
         .collect::<syn::Result<_>>()?;
 
-    // Pre-build relation lookup for O(1) access in field assignments loop
-    let relation_by_name: HashMap<&syn::Ident, &RelationFieldInfo> = relation_fields
-        .iter()
-        .map(|rel| (&rel.field_name, rel))
-        .collect();
-
     let field_assignments: Vec<TokenStream> = field_mappings
         .iter()
-        .map(|(new_ident, source_ident, wrapped, is_relation)| {
-            let cfg = cfg_of(source_ident);
-            let value = if *is_relation {
-                relation_by_name.get(source_ident).map_or_else(
+        .map(|mapping| {
+            let FieldMapping {
+                new_ident,
+                source_ident,
+                wrapped,
+                relation,
+                cfg,
+            } = mapping;
+            let value = match relation {
+                Some(index) => relation_fields.get(*index).map_or_else(
                     || quote! { Default::default() },
                     |rel| relation_value(rel, source_ident, source_module_path),
-                )
-            } else if *wrapped {
-                quote! { Some(#MODEL.#source_ident) }
-            } else {
-                quote! { #MODEL.#source_ident }
+                ),
+                None if *wrapped => quote! { Some(#MODEL.#source_ident) },
+                None => quote! { #MODEL.#source_ident },
             };
             quote! { #cfg #new_ident: #value }
         })

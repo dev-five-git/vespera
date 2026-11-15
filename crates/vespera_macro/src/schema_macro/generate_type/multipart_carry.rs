@@ -60,11 +60,7 @@ pub(super) struct ContainerCarry {
 }
 
 /// The source container's `#[try_from_multipart(..)]` (verbatim) and its
-/// `#[serde(default)]` / `default = "fn"`: the DTO has no `Default` impl, so
-/// the default becomes a generated fn building the DTO from the SOURCE's
-/// default (`assignments` are the `field: source.field` initialisers).
-/// `None` assignments (`add` fields or relations: the DTO cannot be built
-/// from the source) drop the container default.
+/// default ([`container_default`]).
 pub(super) fn container(
     source_attrs: &[syn::Attribute],
     module_path: &[String],
@@ -75,6 +71,27 @@ pub(super) fn container(
     let strict = source_attrs
         .iter()
         .filter(|attr| attr.path().is_ident("try_from_multipart"));
+    let default = container_default(source_attrs, module_path, source_type, dto, assignments);
+    let default_attr = default.attrs;
+    ContainerCarry {
+        attrs: quote! { #(#strict)* #default_attr },
+        helper: default.helper,
+    }
+}
+
+/// The source container's `#[serde(default)]` / `default = "fn"` (serde and
+/// multipart DTOs alike): the DTO has no `Default` impl, so the default
+/// becomes a generated fn building the DTO from the SOURCE's default
+/// (`assignments` are the `field: source.field` initialisers). `None`
+/// assignments (`add` fields, relations or fields the call site cannot read:
+/// the DTO cannot be built from the source) drop the container default.
+pub(super) fn container_default(
+    source_attrs: &[syn::Attribute],
+    module_path: &[String],
+    source_type: &syn::Type,
+    dto: &syn::Ident,
+    assignments: Option<&[TokenStream]>,
+) -> ContainerCarry {
     let source_default = serde_metas(&reroot_serde_paths(source_attrs, module_path))
         .into_iter()
         .find_map(|meta| match meta {
@@ -93,7 +110,7 @@ pub(super) fn container(
             },
             _ => None,
         });
-    let (default_attr, helper) = match (source_default, assignments) {
+    let (attrs, helper) = match (source_default, assignments) {
         (Some(source_default), Some(assignments)) => {
             let helper_name = format_ident!(
                 "__vespera_{}_default",
@@ -114,10 +131,7 @@ pub(super) fn container(
         }
         _ => (TokenStream::new(), TokenStream::new()),
     };
-    ContainerCarry {
-        attrs: quote! { #(#strict)* #default_attr },
-        helper,
-    }
+    ContainerCarry { attrs, helper }
 }
 
 #[cfg(test)]

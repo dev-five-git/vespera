@@ -22,9 +22,11 @@ pub(super) fn is_option_type(ty: &Type) -> bool {
     )
 }
 
-/// Check if a type matches `Vec<T>`.
-pub(super) fn is_vec_type(ty: &Type) -> bool {
-    matches_type_name(ty, &["Vec", "std::vec::Vec"])
+/// Check if a type matches `Vec<T>` (`std::vec::Vec` / `alloc::vec::Vec`): the
+/// Multipart derive's repeated part, and the one predicate the `Schema`
+/// derive uses for it too (`heapless::Vec` is a single part).
+pub fn is_vec_type(ty: &Type) -> bool {
+    matches_type_name(ty, &["Vec", "std::vec::Vec", "alloc::vec::Vec"])
 }
 
 /// Check if a type's path matches any of the given names.
@@ -192,6 +194,11 @@ mod tests {
         assert!(is_vec_type(&ty));
         let ty: syn::Type = syn::parse_str("std::vec::Vec<i32>").unwrap();
         assert!(is_vec_type(&ty));
+        let ty: syn::Type = syn::parse_str("alloc::vec::Vec<i32>").unwrap();
+        assert!(is_vec_type(&ty));
+        // Another crate's `Vec` is one part (the derive parses it whole).
+        let ty: syn::Type = syn::parse_str("heapless::Vec<u32, 8>").unwrap();
+        assert!(!is_vec_type(&ty));
         let ty: syn::Type = syn::parse_str("Option<String>").unwrap();
         assert!(!is_vec_type(&ty));
         let ty: syn::Type = syn::parse_str("String").unwrap();

@@ -13,6 +13,7 @@ mod field_attrs;
 pub mod file_cache;
 mod file_lookup;
 mod from_model;
+mod garde_paths;
 mod generate_type;
 mod inline_types;
 mod input;

@@ -115,3 +115,35 @@ fn module_path_lookup_returns_cached_value() {
     assert_eq!(get_module_path_from_schema_path(&schema_path), expected);
     assert_eq!(hits(), before + 1);
 }
+
+/// L4 (round 13): a probed but MISSING file outside the module directory
+/// (a `#[path = "../generated/models.rs"]` not generated yet) is part of
+/// the fingerprint, so creating it invalidates a cached miss; only the files
+/// actually read used to be covered.
+#[test]
+fn missing_out_of_tree_probe_is_fingerprinted() {
+    let temp = TempDir::new().unwrap();
+    let src = temp.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    let missing = temp.path().join("generated").join("models.rs");
+    bump_epoch();
+    assert!(crate::schema_macro::file_cache::get_file_content(&missing).is_none());
+    FILE_CACHE.with(|cache| {
+        assert!(out_of_tree_files(&cache.borrow(), &src).contains(&missing));
+    });
+}
+
+/// L5 (round 13): circular analyses are readable only in their epoch, so
+/// the epoch bump drops them (they used to pile up in a long-lived host).
+#[test]
+fn circular_analysis_is_evicted_on_epoch_bump() {
+    bump_epoch();
+    let _ = get_circular_analysis(
+        &["crate".to_string()],
+        &["crate".to_string(), "x".to_string()],
+        "pub struct Model { pub id: i32 }",
+    );
+    FILE_CACHE.with(|cache| assert!(!cache.borrow().circular_analysis.is_empty()));
+    bump_epoch();
+    FILE_CACHE.with(|cache| assert!(cache.borrow().circular_analysis.is_empty()));
+}

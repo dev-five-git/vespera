@@ -1,10 +1,12 @@
 ---
 source: crates/vespera_macro/src/schema_macro/generate_type/tests_field_attrs.rs
+assertion_line: 96
 expression: "prettyplease::unparse(&file)"
 ---
 /// An upload.
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
+#[serde(default = "__vespera_Dto_default")]
 pub struct Dto {
     pub title: String,
 }

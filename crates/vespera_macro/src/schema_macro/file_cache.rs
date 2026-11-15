@@ -41,6 +41,14 @@ use std::time::SystemTime;
 #[cfg(test)]
 thread_local! {
     static METADATA_CALL_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// `read_to_string` attempts (the content cache's misses, hit or not).
+    static READ_ATTEMPT_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Return the test-only `read_to_string` attempt counter for this thread.
+#[cfg(test)]
+pub fn read_attempt_count() -> usize {
+    READ_ATTEMPT_COUNT.with(std::cell::Cell::get)
 }
 
 /// Reset the test-only metadata call counter to zero for this thread.
@@ -262,6 +270,9 @@ pub fn bump_epoch() {
         let mut cache = cache.borrow_mut();
         cache.epoch = cache.epoch.wrapping_add(1);
         cache.sources_stable = stable;
+        // Readable only within their epoch (a cycle check reads other
+        // models from disk): dropped here, not kept forever.
+        cache.circular_analysis.clear();
     });
 }
 
@@ -619,6 +630,8 @@ fn get_file_content_inner(cache: &mut FileCache, path: &Path) -> Option<Arc<Stri
         return None;
     }
 
+    #[cfg(test)]
+    READ_ATTEMPT_COUNT.with(|c| c.set(c.get() + 1));
     let Some(content) = std::fs::read_to_string(path).ok().map(Arc::new) else {
         if current_fp.is_none() {
             cache

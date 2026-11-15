@@ -373,12 +373,16 @@ fn find_bare_struct_in_inline_module(
             module,
         ))
     };
+    // The import may rename the struct (`use super::Model as User;`): the
+    // definition is the one the import names.
     let imported = || match resolve_name(&[struct_name.to_string()], module) {
-        Resolved::Path(path)
-            if path.first().is_some_and(|root| root == "crate")
-                && path.last().is_some_and(|last| last == struct_name) =>
-        {
-            found(path[..path.len() - 1].to_vec())
+        Resolved::Path(mut path) if path.len() > 1 && path[0] == "crate" => {
+            let defined = path.pop()?;
+            let definition = struct_in_items(&module_items(&path)?, &defined)?;
+            Some((
+                StructMetadata::new_model(struct_name.to_string(), definition),
+                path,
+            ))
         }
         _ => None,
     };
@@ -602,10 +606,24 @@ pub fn reexported_item(module: &[String], name: &str) -> Option<(Vec<String>, St
 }
 
 /// The absolute module a qualified source path (`models::user::Model`,
-/// `super::user::Model`) names; `None` for a bare name.
-pub fn requested_module_path(ty: &Type) -> Option<Vec<String>> {
+/// `super::user::Model`) names; `Ok(None)` for a bare name.
+///
+/// # Errors
+///
+/// [`LookupError::ExternalCrate`]: the path goes through an import of
+/// another crate (`use other::types;` -> `types::User`). It used to read as
+/// a bare name, so a same-named local `#[derive(Schema)]` was used silently.
+pub fn requested_module_path(ty: &Type) -> Result<Option<Vec<String>>, LookupError> {
+    requested_module_path_in(ty, call_site_module().as_deref())
+}
+
+/// [`requested_module_path`] with the call-site module passed explicitly.
+fn requested_module_path_in(
+    ty: &Type,
+    call_site_module: Option<&[String]>,
+) -> Result<Option<Vec<String>>, LookupError> {
     let Type::Path(type_path) = ty else {
-        return None;
+        return Ok(None);
     };
     let segments: Vec<String> = type_path
         .path
@@ -613,15 +631,48 @@ pub fn requested_module_path(ty: &Type) -> Option<Vec<String>> {
         .iter()
         .map(|s| crate::parser::strip_raw_prefix_owned(s.ident.to_string()))
         .collect();
-    let (_, module_part) = segments.split_last()?;
-    if module_part.is_empty() {
-        return None;
+    match segments.split_last() {
+        Some((_, module_part)) if !module_part.is_empty() => {
+            absolute_module_path(module_part, call_site_module).map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+/// The module the macro call site resolves names in (the call-site file's
+/// module plus its enclosing inline `mod`s); `None` without a call-site
+/// file (unit tests).
+pub fn call_site_module() -> Option<Vec<String>> {
+    #[cfg(test)]
+    if let Some(module) = TEST_CALL_SITE_MODULE.with(|module| module.borrow().clone()) {
+        return Some(module);
     }
     let call_site = proc_macro2::Span::call_site().local_file();
-    let call_site_module = call_site
+    call_site
         .zip(crate::schema_macro::crate_layout::crate_layout())
-        .map(|(file, layout)| call_site_module_of(&layout, &file, call_site_line()));
-    absolute_module_path(module_part, call_site_module.as_deref()).ok()
+        .map(|(file, layout)| call_site_module_of(&layout, &file, call_site_line()))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// [`call_site_module`]'s answer in unit tests (which have no call-site
+    /// file), set through [`set_test_call_site_module`].
+    static TEST_CALL_SITE_MODULE: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Pretend the macro runs in `module` (unit tests) until the guard drops.
+#[cfg(test)]
+pub fn set_test_call_site_module(module: &str) -> impl Drop {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_CALL_SITE_MODULE.with(|module| module.borrow_mut().take());
+        }
+    }
+    let module = module.split("::").map(str::to_string).collect();
+    TEST_CALL_SITE_MODULE.with(|current| *current.borrow_mut() = Some(module));
+    Reset
 }
 
 /// The call-site file's own definition of the bare source name, when the

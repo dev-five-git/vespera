@@ -126,6 +126,9 @@ fn path_through_call_site_import() {
 #[case::super_from_inline("super::Model", 9, "a", "crate::models::user")]
 #[case::bare_in_inline("Model", 4, "b", "crate::models::user::v2")]
 #[case::bare_imported_in_inline("Model", 8, "a", "crate::models::user")]
+// L8 (round 13): an aliased import (`use super::Model as User;`) names the
+// struct it imports; it required the alias to be the struct's own name.
+#[case::bare_aliased_in_inline("User", 13, "a", "crate::models::user")]
 #[case::self_in_inline("self::Model", 4, "b", "crate::models::user::v2")]
 #[case::top_level("Model", 1, "a", "crate::models::user")]
 fn lookup_inside_an_inline_module(
@@ -147,6 +150,10 @@ fn lookup_inside_an_inline_module(
              use super::Model;\n\
              // schema_type!(D from Model);\n\
              // schema_type!(D from super::Model);\n\
+         }\n\
+         pub mod alias {\n\
+             use super::Model as User;\n\
+             // schema_type!(D from User);\n\
          }\n",
     )
     .unwrap();
@@ -336,10 +343,37 @@ fn storage_module_path_follows_inline_modules(
 fn requested_module_path_absolutizes(#[case] path: &str, #[case] expected: Option<&str>) {
     let ty: syn::Type = syn::parse_str(path).unwrap();
     assert_eq!(
-        requested_module_path(&ty).map(|m| m.join("::")),
+        requested_module_path(&ty).unwrap().map(|m| m.join("::")),
         expected.map(str::to_string)
     );
-    assert!(requested_module_path(&syn::parse_str("(i32, i32)").unwrap()).is_none());
+    assert!(
+        requested_module_path(&syn::parse_str("(i32, i32)").unwrap())
+            .unwrap()
+            .is_none()
+    );
+    // Unit tests have no call-site file.
+    assert!(call_site_module().is_none());
+}
+
+/// M4 (round 13): a source path through an import of another crate
+/// (`use entity::types;` -> `types::User`) is an error, not a bare name: a
+/// bare name let a same-named local `#[derive(Schema)]` win silently.
+#[test]
+fn requested_module_path_through_external_import_is_an_error() {
+    let (dir, _guard) = temp_crate("lib.rs");
+    std::fs::write(dir.path().join("src/handlers.rs"), "use entity::types;").unwrap();
+    bump_epoch();
+    let module = ["crate", "handlers"].map(String::from);
+    let ty: syn::Type = syn::parse_str("types::User").unwrap();
+    assert!(matches!(
+        requested_module_path_in(&ty, Some(&module)),
+        Err(LookupError::ExternalCrate { path }) if path == "entity::types"
+    ));
+    let local: syn::Type = syn::parse_str("models::User").unwrap();
+    assert_eq!(
+        requested_module_path_in(&local, Some(&module)).unwrap(),
+        Some(vec!["crate".to_string(), "models".to_string()])
+    );
 }
 
 /// Storage keyed by bare name must not answer a qualified path into another
@@ -611,7 +645,8 @@ fn call_site_definition_prefers_the_local_struct() {
     assert!(call_site_definition_in(&stored(Some("no-position".into())), &ty, &lib).is_none());
     assert!(call_site_definition_in(&stored(Some("file@1:1".into())), &ty, &lib).is_none());
     let missing: syn::Type = syn::parse_str("Missing").unwrap();
-    assert!(call_site_definition_in(&stored(Some(other)), &missing, &lib).is_none());
-    // Without a call-site file (unit tests) nothing is local.
-    assert!(call_site_definition(&stored(None), &ty, None).is_none());
+    assert!(call_site_definition_in(&stored(Some(other.clone())), &missing, &lib).is_none());
+    // Without a call-site file (unit tests) nothing is local, even for an
+    // entry of another file that the call site would define.
+    assert!(call_site_definition(&stored(Some(other)), &ty, None).is_none());
 }

@@ -29,6 +29,7 @@ use syn::{DeriveInput, Fields};
 pub use self::attrs::has_form_data_default;
 use self::attrs::{extract_strict, extract_struct_default};
 use self::fields::{DefaultKind, FieldCodegen, default_fn_call, process_fields};
+pub use self::types::is_vec_type;
 
 /// Message of the `compile_error!` emitted when `vespera`'s `multipart`
 /// feature is off (see [`feature_disabled_error`]).

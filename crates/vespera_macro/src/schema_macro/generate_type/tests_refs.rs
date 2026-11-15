@@ -7,6 +7,7 @@ use rstest::rstest;
 
 use super::*;
 use crate::schema_macro::SchemaTypeInput;
+use crate::schema_macro::validation::ErrorAt;
 
 const SOURCE: &str = "pub struct Source { pub id: i32, pub name: String, pub owner: OwnerEntity }";
 

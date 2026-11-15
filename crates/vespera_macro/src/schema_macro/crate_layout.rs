@@ -168,13 +168,26 @@ fn target_root(dir: &Path, target_name: Option<&str>, entry: &str) -> Option<Pat
 /// `file` below `dir` as a `/`-separated relative path (both sides made
 /// absolute against the current directory — rustc's, which the
 /// cwd-relative span paths are relative to — and compared like
-/// [`crate::file_utils::normalize_path_key`]).
+/// [`crate::file_utils::normalize_path_key`]). The segments keep the
+/// file's own spelling: the key is lowercased on Windows, which turned
+/// `src/models/UserDto.rs` into `crate::models::userdto` there only.
 fn relative_to(file: &Path, dir: &Path) -> Option<String> {
-    let file = path_key(file);
-    let dir = path_key(dir);
-    file.strip_prefix(&dir)?
-        .strip_prefix('/')
-        .map(str::to_string)
+    let key = path_key(file);
+    let relative = key.strip_prefix(&path_key(dir))?.strip_prefix('/')?;
+    let count = relative.split('/').count();
+    // The file's components with `.` / `..` folded, like the key.
+    let mut names: Vec<String> = Vec::new();
+    for component in file.components() {
+        match component {
+            std::path::Component::Normal(name) => names.push(name.to_string_lossy().into_owned()),
+            std::path::Component::ParentDir => {
+                names.pop();
+            }
+            _ => {}
+        }
+    }
+    let skip = names.len().checked_sub(count)?;
+    Some(names[skip..].join("/"))
 }
 
 fn same_path(left: &Path, right: &Path) -> bool {
@@ -341,5 +354,20 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         let layout = layout_for(&cwd, Some(Path::new("src/a.rs")));
         assert_eq!(layout.module_path_of(Path::new("src/a.rs")), ["crate", "a"]);
+        assert_eq!(
+            layout.module_path_of(Path::new("src/x/../b.rs")),
+            ["crate", "b"]
+        );
+    }
+
+    /// L3 (round 13): module segments keep the file's spelling; the
+    /// comparison key is lowercased on Windows (`mod UserDto;` used to give
+    /// `crate::models::userdto` there).
+    #[test]
+    fn module_segments_keep_their_case() {
+        let dir = TempDir::new().unwrap();
+        let layout = layout_for(dir.path(), None);
+        let file = dir.path().join("src").join("models").join("UserDto.rs");
+        assert_eq!(layout.module_path_of(&file), ["crate", "models", "UserDto"]);
     }
 }

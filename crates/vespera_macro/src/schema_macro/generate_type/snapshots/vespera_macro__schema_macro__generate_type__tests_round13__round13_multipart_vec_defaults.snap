@@ -1,0 +1,19 @@
+---
+source: crates/vespera_macro/src/schema_macro/generate_type/tests_round13.rs
+assertion_line: 82
+expression: code
+---
+#[derive(vespera::Multipart, vespera::Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpDto {
+    #[form_data(default)]
+    pub files: Vec<vespera::multipart::FieldData<vespera::tempfile::NamedTempFile>>,
+    #[form_data(default)]
+    pub tags: std::vec::Vec<String>,
+    #[serde(default)]
+    pub own: Vec<u8>,
+    #[form_data(default)]
+    pub kept: Vec<u8>,
+    pub opt: Option<Vec<u8>>,
+    pub title: String,
+}
