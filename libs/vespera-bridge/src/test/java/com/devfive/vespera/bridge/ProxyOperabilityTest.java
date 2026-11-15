@@ -9,6 +9,8 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import jakarta.servlet.ServletOutputStream;
+import jakarta.servlet.WriteListener;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -20,9 +22,11 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.web.server.ResponseStatusException;
 
 /**
  * Request ids, client address forwarding, proxy-written errors and the
@@ -428,6 +432,61 @@ class ProxyOperabilityTest {
         assertSame(committedFailure, assertThrows(IllegalStateException.class,
                 () -> late.proxy(new MockHttpServletRequest("GET", "/x"), committed)));
         assertEquals(2, observer.events.size());
+    }
+
+    @Test
+    void aThrowingModeResolverIsReportedUnderTheSelectedApp() throws Exception {
+        RecordingObserver observer = new RecordingObserver();
+        VesperaProxyController controller = controller(request -> {
+            throw new IllegalStateException("resolver exploded");
+        }, observer);
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/x");
+        request.addHeader("X-Vespera-App", "public");
+
+        assertNull(controller.proxy(request, new MockHttpServletResponse()));
+
+        assertEquals(500, observer.events.get(0).status());
+        assertEquals("public", observer.events.get(0).app(), "not the default app");
+    }
+
+    @Test
+    void aProxyErrorTheClientNeverReceivesIsStillObserved() throws Exception {
+        RecordingObserver observer = new RecordingObserver();
+        VesperaProxyController controller = controller(request -> {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE, "too large");
+        }, observer);
+        IOException gone = new IOException("client disconnected");
+        MockHttpServletResponse response = new MockHttpServletResponse() {
+            @Override
+            public ServletOutputStream getOutputStream() {
+                return new ServletOutputStream() {
+                    @Override
+                    public boolean isReady() {
+                        return true;
+                    }
+
+                    @Override
+                    public void setWriteListener(WriteListener listener) {}
+
+                    @Override
+                    public void write(int b) throws IOException {
+                        throw gone;
+                    }
+
+                    @Override
+                    public void write(byte[] b, int off, int len) throws IOException {
+                        throw gone;
+                    }
+                };
+            }
+        };
+
+        assertSame(gone, assertThrows(IOException.class,
+                () -> controller.proxy(new MockHttpServletRequest("POST", "/upload"), response)));
+
+        assertEquals(1, observer.events.size(), "the failed error write is still reported");
+        assertEquals(413, observer.events.get(0).status());
+        assertEquals("/upload", observer.events.get(0).path());
     }
 
     @Test

@@ -224,6 +224,16 @@ class VesperaReactiveProxyHandlerTest {
     }
 
     @Test
+    void unlimitedCapNamesTheBuiltInBoundNotAnUnsetProperty() {
+        String unlimited = VesperaReactiveProxyHandler.bodyTooLargeMessage(0, 64L * 1024 * 1024);
+        assertTrue(unlimited.contains("built-in 67108864-byte bound"), unlimited);
+        assertTrue(unlimited.contains("max-buffered-request-bytes=0"), unlimited);
+        assertFalse(unlimited.contains("max-buffered-request-bytes=67108864"), unlimited);
+        assertEquals("buffered request body exceeds vespera.bridge.max-buffered-request-bytes=1024",
+                VesperaReactiveProxyHandler.bodyTooLargeMessage(1024, 1024));
+    }
+
+    @Test
     void requestBodyOverTheCapIs413() throws Exception {
         WebTestClient client = client(handler());
         // Declared Content-Length over the cap: rejected before reading.

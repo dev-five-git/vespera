@@ -2,8 +2,10 @@ package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
 class VesperaBridgePropertiesTest {
@@ -50,5 +52,29 @@ class VesperaBridgePropertiesTest {
         assertEquals(java.util.List.of("public"), properties.getExposedApps());
         properties.setExposedApps(null);
         assertTrue(properties.getExposedApps().isEmpty());
+    }
+
+    @Test
+    void subMillisecondDispatchTimeoutRoundsUpInsteadOfDisabling() {
+        assertEquals(0, VesperaBridgeProperties.Native.dispatchTimeoutMillis(Duration.ZERO));
+        assertEquals(1, VesperaBridgeProperties.Native.dispatchTimeoutMillis(Duration.ofNanos(1)));
+        assertEquals(1, VesperaBridgeProperties.Native.dispatchTimeoutMillis(Duration.ofNanos(500_000)));
+        assertEquals(1, VesperaBridgeProperties.Native.dispatchTimeoutMillis(Duration.ofMillis(1)));
+        assertEquals(1501, VesperaBridgeProperties.Native.dispatchTimeoutMillis(Duration.ofNanos(1_500_000_001)));
+        assertEquals(30_000, VesperaBridgeProperties.Native.dispatchTimeoutMillis(Duration.ofSeconds(30)));
+        assertEquals(Long.MAX_VALUE,
+                VesperaBridgeProperties.Native.dispatchTimeoutMillis(Duration.ofSeconds(Long.MAX_VALUE)));
+    }
+
+    @Test
+    void negativeDispatchTimeoutIsRejectedAtBinding() {
+        VesperaBridgeProperties.Native nativeSettings = new VesperaBridgeProperties.Native();
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> nativeSettings.setDispatchTimeout(Duration.ofSeconds(-1)));
+        assertTrue(e.getMessage().contains("dispatch-timeout"), e.getMessage());
+        nativeSettings.setDispatchTimeout(Duration.ofMillis(5));
+        assertEquals(Duration.ofMillis(5), nativeSettings.getDispatchTimeout());
+        nativeSettings.setDispatchTimeout(null);
+        assertEquals(null, nativeSettings.getDispatchTimeout());
     }
 }

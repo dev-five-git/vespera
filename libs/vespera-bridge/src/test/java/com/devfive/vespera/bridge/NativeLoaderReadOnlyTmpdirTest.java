@@ -18,8 +18,10 @@ import org.junit.jupiter.api.Test;
 /**
  * {@code vespera.native.dir} must be enough on hosts whose
  * {@code java.io.tmpdir} is missing or read-only (read-only root file system
- * containers): extraction — including the current-user ownership probe —
- * stays inside the configured directory. {@code Files.createTempFile}
+ * containers): extraction stays inside the configured directory, and the
+ * current user is worked out without {@code java.io.tmpdir} (procfs,
+ * {@code user.name} lookup, or the guarded in-directory probe — see
+ * {@link CurrentUser}). {@code Files.createTempFile}
  * resolves {@code java.io.tmpdir} once per JVM, so the scenario runs in a
  * child JVM started with a {@code java.io.tmpdir} that does not exist.
  */

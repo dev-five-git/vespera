@@ -280,7 +280,18 @@ public class VesperaProxyController {
             message = ProxyErrors.describe(failure);
         }
         response.applyDefaultRequestId();
-        if (!ProxyErrors.write(response, status, message)) {
+        boolean written;
+        try {
+            written = ProxyErrors.write(response, status, message);
+        } catch (IOException clientGone) {
+            // Writing the error failed (client disconnected): still report the
+            // request — the sibling catch (IOException) of proxy() never sees
+            // an exception thrown from another catch clause.
+            exchange.complete(response.isCommitted() ? response.getStatus() : status,
+                    response.panicked());
+            throw clientGone;
+        }
+        if (!written) {
             exchange.complete(response.getStatus(), response.panicked());
             throw failure;
         }
@@ -312,6 +323,9 @@ public class VesperaProxyController {
         final String path = pathWithinApplication(request);
         exchange.path = path;
         final String appName = resolveAppName(request, exchange);
+        // Before the mode is resolved: a throwing DispatchModeResolver's 500
+        // is still reported under the selected app.
+        exchange.app = appName;
         final Boolean currentThreadIsVirtual;
         final DispatchMode mode;
         // Exactly the built-in class: a subclass may override
@@ -327,7 +341,6 @@ public class VesperaProxyController {
             mode = modeResolver.resolveMode(request);
         }
         final String method = shape.method;
-        exchange.app = appName;
         final String query = Objects.toString(request.getQueryString(), "");
         // Adaptive DIRECT-overflow avoidance: a route that overflowed the
         // pooled direct buffer before is streamed up front instead of paying

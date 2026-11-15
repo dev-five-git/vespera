@@ -53,6 +53,8 @@ import java.util.regex.Pattern;
  * symbolic link, owned by the current user, not group/other-writable —
  * before a cached copy is trusted, so another local user can neither plant
  * nor swap the library between the digest check and {@code System.load}.
+ * "The current user" never comes from the directory being verified while
+ * a trusted source answers ({@link CurrentUser}).
  * The extracted file is made owner read/execute only ({@code 0500}).  When
  * verification fails (a squatted, shared or symlinked directory) the
  * library is extracted into a fresh private
@@ -525,52 +527,24 @@ final class VesperaNativeLoader {
         if (attrs.isSymbolicLink() || !attrs.isDirectory()) {
             throw new UnsafeDirectoryException(dir + " is a symbolic link or not a directory");
         }
-        UserPrincipal me = currentUser(dir);
-        if (!attrs.owner().equals(me)) {
-            throw new UnsafeDirectoryException(
-                    dir + " is owned by " + attrs.owner().getName() + ", not " + me.getName());
-        }
+        // Mode first: a group/other-writable directory is rejected before
+        // anything else looks at it.
         Set<PosixFilePermission> perms = attrs.permissions();
         if (perms.contains(PosixFilePermission.GROUP_WRITE)
                 || perms.contains(PosixFilePermission.OTHERS_WRITE)) {
             throw new UnsafeDirectoryException(dir + " is group/other-writable ("
                     + PosixFilePermissions.toString(perms) + ")");
         }
+        UserPrincipal me = currentUser(dir);
+        if (!attrs.owner().equals(me)) {
+            throw new UnsafeDirectoryException(
+                    dir + " is owned by " + attrs.owner().getName() + ", not " + me.getName());
+        }
     }
 
-    private static volatile UserPrincipal cachedCurrentUser;
-
-    /**
-     * The current OS user: the owner of a freshly created probe file (robust
-     * where {@code user.name} has no passwd entry, e.g. containers). The
-     * probe is created in {@code probeDir} — the extraction directory being
-     * verified — and only falls back to {@code java.io.tmpdir} when that
-     * fails, so {@code vespera.native.dir} works on hosts whose system temp
-     * directory is missing or read-only.
-     */
-    static UserPrincipal currentUser(Path probeDir) throws IOException {
-        UserPrincipal cached = cachedCurrentUser;
-        if (cached != null) {
-            return cached;
-        }
-        Path probe;
-        try {
-            probe = Files.createTempFile(probeDir, "vespera-owner-", ".probe");
-        } catch (IOException | SecurityException | UnsupportedOperationException inDir) {
-            try {
-                probe = Files.createTempFile("vespera-owner-", ".probe");
-            } catch (IOException inTmp) {
-                inTmp.addSuppressed(inDir);
-                throw inTmp;
-            }
-        }
-        try {
-            cached = Files.getOwner(probe, LinkOption.NOFOLLOW_LINKS);
-        } finally {
-            Files.deleteIfExists(probe);
-        }
-        cachedCurrentUser = cached;
-        return cached;
+    /** The current OS user, never decided by the unverified {@code dir} alone (see {@link CurrentUser}). */
+    static UserPrincipal currentUser(Path dir) throws IOException {
+        return CurrentUser.of(dir);
     }
 
     /**

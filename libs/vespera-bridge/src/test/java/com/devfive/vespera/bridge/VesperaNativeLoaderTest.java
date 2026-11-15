@@ -671,6 +671,7 @@ class VesperaNativeLoaderTest {
         protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
             if (name.equals("com.devfive.vespera.bridge.VesperaBridge")
                     || name.startsWith("com.devfive.vespera.bridge.VesperaNativeLoader")
+                    || name.startsWith("com.devfive.vespera.bridge.CurrentUser")
                     || name.startsWith("com.devfive.vespera.bridge.NativePlatformDetector")) {
                 synchronized (getClassLoadingLock(name)) {
                     Class<?> loaded = findLoadedClass(name);
