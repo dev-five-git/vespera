@@ -499,21 +499,19 @@ pub fn storage_module_path(metadata: &StructMetadata) -> Option<Vec<String>> {
         return None;
     }
     let mut module = layout.module_path_of(file);
-    if let Some(parsed) = crate::schema_macro::file_cache::get_parsed_file(file) {
-        // Only disambiguates a repeated name: an unreadable line is no line.
-        let line = position
-            .split(':')
-            .next()
-            .and_then(|line| line.parse().ok())
-            .unwrap_or_default();
-        module.extend(
-            crate::schema_macro::module_scope::item_module_chain_in_file(
-                file,
-                &parsed.items,
-                ident.trim_start_matches("r#"),
-                line,
-            ),
-        );
+    // Only disambiguates a repeated name: an unreadable line is no line.
+    let line = position
+        .split(':')
+        .next()
+        .and_then(|line| line.parse().ok())
+        .unwrap_or_default();
+    // The file's cached line index (no parse per storage hit).
+    if let Some(chain) = crate::schema_macro::module_scope::item_module_chain_cached(
+        file,
+        ident.trim_start_matches("r#"),
+        line,
+    ) {
+        module.extend(chain);
     }
     Some(module)
 }

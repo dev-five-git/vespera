@@ -37,16 +37,17 @@ pub(super) fn resolve_default_fn(
     if module.first().is_some_and(|first| first == "crate") {
         return default_fn_value(&module_scope::module_items(module)?, fn_name);
     }
-    let file = file_cache::get_parsed_file(file_path)?;
-    let chain = module_scope::item_module_chain_in_file(file_path, &file.items, struct_name, line);
-    in_file(file.items, chain.clone(), module, fn_name, file_path)
+    // The struct's inline chain comes from the file's cached line index: the
+    // file is parsed (per field) only when the function lives in an inline
+    // module, not for the common top-level case.
+    let chain = module_scope::item_module_chain_cached(file_path, struct_name, line)?;
+    in_file(chain.clone(), module, fn_name, file_path)
         .or_else(|| in_module_tree(&segments, &chain, file_path))
 }
 
 /// `fn_name` through `module` (`self` / `super` / child segments) from the
 /// inline `chain` of the struct's file, within that file only.
 fn in_file(
-    items: Vec<syn::Item>,
     mut chain: Vec<String>,
     module: &[String],
     fn_name: &str,
@@ -67,6 +68,7 @@ fn in_file(
             .get(fn_name)
             .cloned();
     }
+    let items = file_cache::get_parsed_file(file_path)?.items;
     default_fn_value(&inline_module_items(items, &chain)?, fn_name)
 }
 

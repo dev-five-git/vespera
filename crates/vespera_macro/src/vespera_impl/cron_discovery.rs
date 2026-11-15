@@ -364,10 +364,7 @@ impl ModuleTree {
         if !self.files.insert(display.clone()) {
             return;
         }
-        if let Some(content) = file_cache::get_file_content(file)
-            && (content.contains("mod") || content.contains(CRON_ATTR_MARKER))
-            && let Ok(ast) = syn::parse_file(&content)
-        {
+        if let Some(summary) = file_summary(file) {
             let scope = Scope {
                 mod_dir,
                 module_path,
@@ -375,25 +372,26 @@ impl ModuleTree {
                 inline: "",
                 gated,
             };
-            self.visit(&ast.items, &scope, content.contains(CRON_ATTR_MARKER));
+            self.visit(&summary.items, &scope, summary.collect_jobs);
         }
     }
 
-    fn visit(&mut self, items: &[syn::Item], scope: &Scope<'_>, collect_jobs: bool) {
-        let foreign_cron = imports_foreign_cron(items);
+    fn visit(&mut self, items: &[ItemSummary], scope: &Scope<'_>, collect_jobs: bool) {
         for item in items {
             match item {
-                syn::Item::Mod(module) => {
-                    let name = module.ident.unraw().to_string();
-                    let child_path = join_module(scope.module_path, &name);
-                    let gated = scope.gated || is_cfg_gated(&module.attrs);
-                    if let Some((_, inner)) = &module.content {
+                ItemSummary::Mod {
+                    name,
+                    cfg_gated,
+                    path,
+                    inline,
+                } => {
+                    let child_path = join_module(scope.module_path, name);
+                    let gated = scope.gated || *cfg_gated;
+                    if let Some(inner) = inline {
                         // rustc: `#[path = "dir"] mod m { .. }` resolves the
                         // block's file modules under `dir`, not `m`.
-                        let child_dir = scope
-                            .mod_dir
-                            .join(path_attr(&module.attrs).unwrap_or_else(|| name.clone()));
-                        let inline = join_module(scope.inline, &name);
+                        let child_dir = scope.mod_dir.join(path.as_deref().unwrap_or(name));
+                        let inline = join_module(scope.inline, name);
                         let child = Scope {
                             mod_dir: &child_dir,
                             module_path: &child_path,
@@ -402,7 +400,7 @@ impl ModuleTree {
                             gated,
                         };
                         self.visit(inner, &child, collect_jobs);
-                    } else if let Some(path) = path_attr(&module.attrs) {
+                    } else if let Some(path) = path {
                         // rustc: relative to the declaring file's directory at
                         // file level, to the inline modules' directory inside
                         // them; the loaded file's children resolve next to it.
@@ -417,7 +415,7 @@ impl ModuleTree {
                             self.walk(&child, &dir, &child_path, gated);
                         }
                     } else {
-                        let child_dir = scope.mod_dir.join(&name);
+                        let child_dir = scope.mod_dir.join(name);
                         if let Some(child) = [
                             scope.mod_dir.join(format!("{name}.rs")),
                             child_dir.join("mod.rs"),
@@ -429,12 +427,10 @@ impl ModuleTree {
                         }
                     }
                 }
-                syn::Item::Fn(function)
-                    if collect_jobs && function.attrs.iter().any(|a| is_cron_path(a.path())) =>
-                {
-                    self.add_cron_fn(function, scope, foreign_cron);
+                ItemSummary::Cron { name, job } if collect_jobs => {
+                    self.add_cron_fn(name, job.as_ref(), scope);
                 }
-                _ => {}
+                ItemSummary::Cron { .. } => {}
             }
         }
     }
@@ -458,30 +454,108 @@ impl ModuleTree {
 
     /// Index a function carrying a cron attribute and, when it is
     /// schedulable and not `#[cfg]`-gated, record it as a scanned job.
-    fn add_cron_fn(&mut self, function: &syn::ItemFn, scope: &Scope<'_>, foreign_cron: bool) {
-        let function_name = function.sig.ident.unraw().to_string();
+    fn add_cron_fn(&mut self, function_name: &str, job: Option<&CronJob>, scope: &Scope<'_>) {
         self.cron_fns
-            .entry((scope.file.to_owned(), function_name.clone()))
+            .entry((scope.file.to_owned(), function_name.to_owned()))
             .or_insert_with(|| scope.module_path.to_owned());
         self.scoped_cron_fns
             .entry((
                 scope.file.to_owned(),
                 scope.inline.to_owned(),
-                function_name.clone(),
+                function_name.to_owned(),
             ))
             .or_insert_with(|| scope.module_path.to_owned());
         if !scope.gated
-            && let Some(args) = cron_args(function, foreign_cron)
+            && let Some((expression, options)) = job
         {
             self.jobs.push(CronMetadata {
-                expression: args.expression.value(),
-                function_name,
+                expression: expression.clone(),
+                function_name: function_name.to_owned(),
                 module_path: scope.module_path.to_owned(),
                 file_path: scope.file.to_owned(),
-                options: args.options(),
+                options: options.clone(),
             });
         }
     }
+}
+
+/// A schedulable job's expression and options (see [`cron_args`]).
+type CronJob = (String, crate::metadata::CronOptions);
+
+/// What the module-tree walk reads off one file: whether it can hold jobs
+/// (`cron(` occurs in it) and its items.  Plain data derived from one
+/// parse, kept while the file is unchanged (`file_cache::derived`): every
+/// `vespera!` walks the whole crate, route-cache hits included.
+struct FileSummary {
+    collect_jobs: bool,
+    items: Vec<ItemSummary>,
+}
+
+/// One item the walk reads: a `mod` or a function carrying a cron attribute.
+enum ItemSummary {
+    Mod {
+        /// Unraw name.
+        name: String,
+        /// Carries a `#[cfg]`.
+        cfg_gated: bool,
+        /// Its `#[path = "…"]`.
+        path: Option<String>,
+        /// The items of an inline `mod m { .. }`.
+        inline: Option<Vec<Self>>,
+    },
+    Cron {
+        /// Unraw name.
+        name: String,
+        /// Its job when schedulable (see [`cron_args`]).
+        job: Option<CronJob>,
+    },
+}
+
+/// The cached [`FileSummary`]: `None` for a file without `mod` or a cron
+/// attribute (nothing to contribute, never parsed) or one that does not
+/// parse.
+struct CachedSummary(Option<std::rc::Rc<FileSummary>>);
+
+fn file_summary(file: &Path) -> Option<std::rc::Rc<FileSummary>> {
+    file_cache::derived(file, |content| {
+        let collect_jobs = content.contains(CRON_ATTR_MARKER);
+        CachedSummary(
+            (content.contains("mod") || collect_jobs)
+                .then(|| syn::parse_file(content).ok())
+                .flatten()
+                .map(|ast| {
+                    std::rc::Rc::new(FileSummary {
+                        collect_jobs,
+                        items: summarize(&ast.items),
+                    })
+                }),
+        )
+    })?
+    .0
+    .clone()
+}
+
+fn summarize(items: &[syn::Item]) -> Vec<ItemSummary> {
+    let foreign_cron = imports_foreign_cron(items);
+    items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Mod(module) => Some(ItemSummary::Mod {
+                name: module.ident.unraw().to_string(),
+                cfg_gated: is_cfg_gated(&module.attrs),
+                path: path_attr(&module.attrs),
+                inline: module.content.as_ref().map(|(_, inner)| summarize(inner)),
+            }),
+            syn::Item::Fn(function) if function.attrs.iter().any(|a| is_cron_path(a.path())) => {
+                Some(ItemSummary::Cron {
+                    name: function.sig.ident.unraw().to_string(),
+                    job: cron_args(function, foreign_cron)
+                        .map(|args| (args.expression.value(), args.options())),
+                })
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// The arguments of a schedulable `#[cron("…", tz = "…", overlap = "…")]`
@@ -574,9 +648,9 @@ fn join_module(parent: &str, name: &str) -> String {
 /// Canonical, `/`-separated rendering used to compare scan paths with the
 /// `Span::local_file()` paths `#[cron]` stored.
 fn canonical_display(path: &Path) -> String {
-    path.canonicalize()
+    file_cache::canonicalize_cached(path)
         .map_or_else(
-            |_| path.display().to_string(),
+            || path.display().to_string(),
             |path| path.display().to_string(),
         )
         .replace('\\', "/")

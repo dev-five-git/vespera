@@ -72,7 +72,9 @@ mod lookups;
 mod derived;
 #[cfg(test)]
 pub use derived::derived_computes;
-pub use derived::{derived, with_fallback_parse};
+pub use derived::{canonicalize_cached, derived, with_fallback_parse};
+/// A file parse that skips the bodies of top-level functions.
+mod shallow;
 /// Results read off several files, reused while none of them changed.
 mod tracked;
 pub use tracked::Tracked;
@@ -362,6 +364,14 @@ pub fn get_parsed_file(path: &Path) -> Option<syn::File> {
         let mut cache = cache.borrow_mut();
         parse_file_cached(&mut cache, path)
     })
+}
+
+/// [`get_parsed_file`] with the bodies of top-level functions skipped (see
+/// `shallow`): for callers that read only names, `use` trees and signatures.
+pub fn get_shallow_parsed_file(path: &Path) -> Option<syn::File> {
+    let content = get_file_content(path)?;
+    FILE_CACHE.with(|cache| cache.borrow_mut().ast_parses += 1);
+    shallow::parse_shallow(&content)
 }
 
 /// Every `.rs` file under `dir` (sorted), served from the epoch-validated

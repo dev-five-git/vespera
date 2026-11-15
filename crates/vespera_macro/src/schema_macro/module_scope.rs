@@ -242,29 +242,20 @@ pub fn item_module_chain(items: &[syn::Item], name: &str, line: usize) -> Vec<St
     pick_chain(chain_candidates(items, name), line)
 }
 
-/// [`item_module_chain`] for `file`, whose cached parse is `items`.  A repeated
-/// name is told apart by line, so the file is then re-parsed with
-/// proc-macro2's fallback forced: inside the compiler every token of re-parsed
-/// text carries the call site's span, so no candidate's line would match.
-pub fn item_module_chain_in_file(
-    file: &Path,
-    items: &[syn::Item],
-    name: &str,
-    line: usize,
-) -> Vec<String> {
-    let found = chain_candidates(items, name);
-    if found.len() <= 1 {
-        return pick_chain(found, line);
-    }
-    file_lines(file).map_or_else(Vec::new, |lines| {
-        let found = lines
-            .items
-            .iter()
-            .filter(|(item, ..)| item == name)
-            .map(|(_, at, chain)| (*at, chain.clone()))
-            .collect();
-        pick_chain(found, line)
-    })
+/// [`item_module_chain`] for `file`, read off its cached line index: a
+/// repeated name is told apart by line, which only a parse with
+/// proc-macro2's fallback forced reports (inside the compiler every token of
+/// re-parsed text carries the call site's span).  `None` when `file` cannot
+/// be read or parsed.
+pub fn item_module_chain_cached(file: &Path, name: &str, line: usize) -> Option<Vec<String>> {
+    let lines = file_lines(file)?;
+    let found = lines
+        .items
+        .iter()
+        .filter(|(item, ..)| item == name)
+        .map(|(_, at, chain)| (*at, chain.clone()))
+        .collect();
+    Some(pick_chain(found, line))
 }
 
 /// Line-accurate plain data of one file, read off a parse with
@@ -355,6 +346,7 @@ fn pick_chain(mut found: Vec<(usize, Vec<String>)>, line: usize) -> Vec<String> 
 
 /// Every struct / enum `name` in `items` (inline modules included): its
 /// ident's line and inline `mod` chain.
+#[cfg(test)]
 fn chain_candidates(items: &[syn::Item], name: &str) -> Vec<(usize, Vec<String>)> {
     let mut found = Vec::new();
     walk_chains(items, &mut Vec::new(), &mut |ident, chain| {

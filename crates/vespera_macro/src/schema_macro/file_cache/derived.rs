@@ -69,6 +69,30 @@ pub fn derived<T: 'static>(path: &Path, compute: impl FnOnce(&str) -> T) -> Opti
     Some(value)
 }
 
+/// [`Path::canonicalize`], memoised for the current macro invocation (the
+/// test-scope and cron module-tree walks canonicalize the same files once
+/// per schema / route / module).
+pub fn canonicalize_cached(path: &Path) -> Option<PathBuf> {
+    type Memo = (u64, HashMap<PathBuf, Option<PathBuf>>);
+    thread_local! {
+        static MEMO: RefCell<Memo> = RefCell::new((u64::MAX, HashMap::new()));
+    }
+    let epoch = super::current_epoch();
+    let hit = MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if memo.0 != epoch {
+            *memo = (epoch, HashMap::new());
+        }
+        memo.1.get(path).cloned()
+    });
+    if let Some(canonical) = hit {
+        return canonical;
+    }
+    let canonical = path.canonicalize().ok();
+    MEMO.with(|memo| memo.borrow_mut().1.insert(path.to_path_buf(), canonical.clone()));
+    canonical
+}
+
 /// Parse `content` with proc-macro2's fallback implementation forced, so
 /// every span carries its real line / column (tokens parsed from a string
 /// through the compiler bridge all carry the call-site span), and hand the

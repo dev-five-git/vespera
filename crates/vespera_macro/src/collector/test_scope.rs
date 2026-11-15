@@ -79,7 +79,7 @@ impl TestScope {
     /// The scope of the crate whose sources live in `src_dir`.
     pub fn new(src_dir: Option<&Path>) -> Self {
         Self {
-            src_dir: src_dir.and_then(|dir| dir.canonicalize().ok()),
+            src_dir: src_dir.and_then(file_cache::canonicalize_cached),
             gated_mods: HashMap::new(),
         }
     }
@@ -99,9 +99,7 @@ impl TestScope {
         let Some(src_dir) = self.src_dir.clone() else {
             return false;
         };
-        let Some(segments) = file
-            .canonicalize()
-            .ok()
+        let Some(segments) = file_cache::canonicalize_cached(file)
             .and_then(|file| module_segments(&src_dir, &file))
         else {
             return false;
@@ -125,24 +123,42 @@ impl TestScope {
     }
 
     fn gated_mods_of(&mut self, declarer: &Path) -> &HashSet<String> {
+        /// A declarer's test-gated `mod` names, kept while it is unchanged.
+        struct GatedMods(HashSet<String>);
         self.gated_mods
             .entry(declarer.to_path_buf())
             .or_insert_with(|| {
-                parse_if_gating(declarer)
-                    .map(|file| {
-                        file.items
-                            .iter()
-                            .filter_map(|item| match item {
-                                Item::Mod(module) if attrs_test_only(&module.attrs) => {
-                                    Some(syn::ext::IdentExt::unraw(&module.ident).to_string())
-                                }
-                                _ => None,
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default()
+                let gated = file_cache::derived(declarer, |content| {
+                    GatedMods(gating_names(content, |item| match item {
+                        Item::Mod(module) if attrs_test_only(&module.attrs) => Some(&module.ident),
+                        _ => None,
+                    }))
+                });
+                gated.map(|gated| gated.0.clone()).unwrap_or_default()
             })
     }
+}
+
+/// The unraw names `pick` selects among the top-level items of `content`,
+/// when its text could gate anything on `cfg(test)` (empty otherwise or
+/// when it does not parse).  Only `String`s leave, so the result can be
+/// cached across invocations (`file_cache::derived`).
+fn gating_names(
+    content: &str,
+    pick: impl Fn(&Item) -> Option<&syn::Ident>,
+) -> HashSet<String> {
+    if !may_gate_tests(content) {
+        return HashSet::new();
+    }
+    syn::parse_file(content)
+        .map(|ast| {
+            ast.items
+                .iter()
+                .filter_map(|item| pick(item))
+                .map(|ident| syn::ext::IdentExt::unraw(ident).to_string())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// `src/a/b.rs` / `src/a/b/mod.rs` → `["a", "b"]`; a crate root → `[]`.
@@ -162,30 +178,18 @@ fn module_segments(src_dir: &Path, file: &Path) -> Option<Vec<String>> {
     Some(segments)
 }
 
-/// Parse `file` when its text could gate anything on `cfg(test)`.
-fn parse_if_gating(file: &Path) -> Option<syn::File> {
-    let content = file_cache::get_file_content(file)?;
-    if !may_gate_tests(&content) {
-        return None;
-    }
-    syn::parse_file(&content).ok()
-}
-
-/// Top-level functions of `file` behind a test-only `#[cfg(..)]`.
+/// Top-level functions of `file` behind a test-only `#[cfg(..)]` (kept while
+/// the file is unchanged).
 pub fn test_only_fns(file: &Path) -> HashSet<String> {
-    parse_if_gating(file)
-        .map(|ast| {
-            ast.items
-                .iter()
-                .filter_map(|item| match item {
-                    Item::Fn(function) if attrs_test_only(&function.attrs) => {
-                        Some(syn::ext::IdentExt::unraw(&function.sig.ident).to_string())
-                    }
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    struct TestFns(HashSet<String>);
+    file_cache::derived(file, |content| {
+        TestFns(gating_names(content, |item| match item {
+            Item::Fn(function) if attrs_test_only(&function.attrs) => Some(&function.sig.ident),
+            _ => None,
+        }))
+    })
+    .map(|fns| fns.0.clone())
+    .unwrap_or_default()
 }
 
 /// The test-only items of one file: the `(name, line)` of every struct /
@@ -211,33 +215,26 @@ impl GatedItems {
     }
 }
 
-fn gated_items(file: &Path) -> GatedItems {
-    /// Restores proc-macro2's normal mode even if parsing panics.
-    struct Unforce;
-    impl Drop for Unforce {
-        fn drop(&mut self) {
-            proc_macro2::fallback::unforce();
+/// `file`'s [`GatedItems`] (empty for an unreadable file), kept while the
+/// file is unchanged (`file_cache::derived`): `vespera!` asks for every
+/// schema file on every invocation, route-cache hits included.
+fn gated_items(file: &Path) -> std::rc::Rc<GatedItems> {
+    file_cache::derived(file, |content| {
+        let mut gated = GatedItems::default();
+        if may_gate_tests(content) {
+            // Only fallback spans carry real line numbers (see `cron_impl`);
+            // nothing parsed here leaves the closure.
+            file_cache::with_fallback_parse(content, |ast| {
+                let mut collector = GatedCollector {
+                    gated: false,
+                    out: &mut gated,
+                };
+                syn::visit::Visit::visit_file(&mut collector, ast);
+            });
         }
-    }
-    let mut gated = GatedItems::default();
-    let Some(content) = file_cache::get_file_content(file) else {
-        return gated;
-    };
-    if !may_gate_tests(&content) {
-        return gated;
-    }
-    // Only fallback spans carry real line numbers (see `cron_impl`); nothing
-    // parsed here leaves this function.
-    proc_macro2::fallback::force();
-    let _unforce = Unforce;
-    if let Ok(ast) = syn::parse_file(&content) {
-        let mut collector = GatedCollector {
-            gated: false,
-            out: &mut gated,
-        };
-        syn::visit::Visit::visit_file(&mut collector, &ast);
-    }
-    gated
+        gated
+    })
+    .unwrap_or_default()
 }
 
 /// Walks a file carrying "inside a test-only scope" through every nested
@@ -340,7 +337,7 @@ impl TestScope {
     fn schema_test_only(
         &mut self,
         identity: &str,
-        items: &mut HashMap<String, GatedItems>,
+        items: &mut HashMap<String, std::rc::Rc<GatedItems>>,
     ) -> bool {
         let Some((file, ident, line)) = parse_identity(identity) else {
             return false;
