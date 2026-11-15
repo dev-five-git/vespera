@@ -102,6 +102,15 @@ final class VesperaDirectBufferPool {
         byte[] dispatch(byte[] wireRequest);
     }
 
+    /**
+     * The buffered fallback for a request that cannot use the pool: on a
+     * virtual thread it parks ({@link ParkingDispatch#park}) instead of
+     * pinning the carrier inside {@code dispatchBytes}.
+     */
+    static HeapDispatcher heapDispatcher(boolean currentThreadIsVirtual) {
+        return currentThreadIsVirtual ? ParkingDispatch::park : VesperaBridge::dispatchBytes;
+    }
+
     private static OversizePolicy oversizePolicy() {
         String configured = System.getProperty("vespera.direct.oversize-policy", "heap-fallback");
         if ("throw".equalsIgnoreCase(configured)) {
@@ -359,7 +368,7 @@ final class VesperaDirectBufferPool {
     static ByteBuffer dispatchDirectPooled(
             byte[] wireRequest, boolean retryOnOverflow, boolean currentThreadIsVirtual) {
         return dispatchDirectPooled(
-                wireRequest, retryOnOverflow, currentThreadIsVirtual, VesperaBridge::dispatchBytes);
+                wireRequest, retryOnOverflow, currentThreadIsVirtual, heapDispatcher(currentThreadIsVirtual));
     }
 
     static ByteBuffer dispatchDirectPooled(
@@ -402,7 +411,7 @@ final class VesperaDirectBufferPool {
         return dispatchDirectPooled(
                 appName, method, path, query, headers, body, retryOnOverflow,
                 VesperaDirectBufferPool::currentThreadIsVirtual,
-                VesperaBridge::dispatchBytes);
+                wire -> ParkingDispatch.dispatchBytes(wire, currentThreadIsVirtual()));
     }
 
     static ByteBuffer dispatchDirectPooled(
@@ -470,7 +479,7 @@ final class VesperaDirectBufferPool {
             boolean currentThreadIsVirtual) {
         return dispatchDirectPooled(
                 appName, method, path, query, headers, body,
-                retryOnOverflow, currentThreadIsVirtual, VesperaBridge::dispatchBytes);
+                retryOnOverflow, currentThreadIsVirtual, heapDispatcher(currentThreadIsVirtual));
     }
 
     static ByteBuffer dispatchDirectPooled(

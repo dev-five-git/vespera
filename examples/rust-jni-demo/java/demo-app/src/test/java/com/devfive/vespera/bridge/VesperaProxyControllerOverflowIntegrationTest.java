@@ -79,7 +79,7 @@ class VesperaProxyControllerOverflowIntegrationTest {
 
         MockHttpServletResponse response = new MockHttpServletResponse();
         controller.dispatchDirectMode(
-                response, null, "GET", path, "", sink -> {}, VesperaWireCodec.EMPTY_BODY, Boolean.TRUE);
+                response, null, "GET", path, "", sink -> {}, VesperaWireCodec.EMPTY_BODY, Boolean.TRUE, null);
 
         assertEquals(200, response.getStatus());
         assertEquals("x".repeat(16), response.getContentAsString(StandardCharsets.UTF_8));
@@ -101,7 +101,7 @@ class VesperaProxyControllerOverflowIntegrationTest {
 
         MockHttpServletResponse overflow = new MockHttpServletResponse();
         controller.dispatchDirectMode(
-                overflow, null, "GET", path, "", sink -> {}, VesperaWireCodec.EMPTY_BODY, Boolean.FALSE);
+                overflow, null, "GET", path, "", sink -> {}, VesperaWireCodec.EMPTY_BODY, Boolean.FALSE, null);
 
         assertEquals(200, overflow.getStatus());
         assertEquals(BEYOND_POOL_CAP, overflow.getContentAsByteArray().length);

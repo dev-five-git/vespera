@@ -228,6 +228,28 @@ class VesperaBridgePluginFunctionalTest {
     }
 
     @Test
+    fun extraNativeLibsWithoutCargoRootBundlesOnlyThePrebuiltLibraries() {
+        write("prebuilt/native/$extraPlatform/libmy_app.dylib", "prebuilt")
+        setUpWithoutCargoRoot("""    extraNativeLibs.set(layout.projectDirectory.dir("prebuilt"))""")
+
+        val result = run("processResources").build()
+
+        assertEquals(TaskOutcome.SUCCESS, result.task(":bundleNativeLib")?.outcome)
+        assertEquals("prebuilt", resource("$extraPlatform/libmy_app.dylib").readText())
+    }
+
+    @Test
+    fun emptyExtraNativeLibsWithoutCargoRootFailsTheBuild() {
+        File(dir, "prebuilt").mkdirs()
+        setUpWithoutCargoRoot("""    extraNativeLibs.set(layout.projectDirectory.dir("prebuilt"))""")
+
+        val result = run("processResources").buildAndFail()
+
+        assertTrue(result.output.contains("holds no native/<platform>/<lib> file"), result.output)
+        assertFalse(File(dir, "build/resources/main/native").exists())
+    }
+
+    @Test
     fun hostKeyMappedToMuslStillBundlesTheHostLibrary() {
         assumeTrue(host == "linux-x86_64", "needs a glibc linux-x86_64 build host")
         write("rust/target/release/libdemo.so", "glibc host")

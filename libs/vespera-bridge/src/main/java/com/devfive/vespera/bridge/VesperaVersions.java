@@ -23,8 +23,10 @@ import java.util.function.Supplier;
  *       default {@code strict} mode), or only a WARNING with
  *       {@code -Dvespera.native.versionCheck=warn}; {@code off} skips the
  *       check;</li>
- *   <li>a native library that predates {@code nativeVersion0()} (≤ 0.5.x) or
- *       a bridge whose version is unknown: a WARNING, never a failure.</li>
+ *   <li>a native library that predates {@code nativeVersion0()} (≤ 0.5.x):
+ *       a WARNING, never a failure;</li>
+ *   <li>a bridge whose own version is unknown (not embedded, e.g. an IDE
+ *       build): nothing to compare, so the check is skipped silently.</li>
  * </ul>
  *
  * <p>Package-private: an internal collaborator of {@link VesperaBridge}.

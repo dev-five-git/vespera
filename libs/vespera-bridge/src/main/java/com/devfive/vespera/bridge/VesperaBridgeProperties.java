@@ -113,10 +113,13 @@ public class VesperaBridgeProperties {
      *       falls back to bidirectional streaming.  Measured 2.2 µs
      *       (DIRECT) / 3.2 µs (SYNC) vs 24.1 µs (bidirectional) on
      *       a small {@code GET /health} round-trip.  Trade-offs:
-     *       DIRECT re-runs the handler when a response overflows the
-     *       pooled buffer ({@code vespera.direct.maxBufferBytes},
-     *       default 4 MiB) — acceptable for safe requests
-     *       only; SYNC fully buffers the response on the JVM heap.</li>
+     *       a DIRECT response that overflows the pooled buffer
+     *       ({@code vespera.direct.maxBufferBytes}, default 4 MiB) is
+     *       kept on the Rust side and fetched into a grown buffer, or
+     *       streamed from there beyond the cap; the handler runs once
+     *       (only the rare stash-less fallback re-runs it, which is why
+     *       DIRECT stays limited to safe requests); SYNC fully buffers
+     *       the response on the JVM heap.</li>
      *   <li>{@code bidirectional-streaming} — opt-out, restores the
      *       pre-0.2.0 default: every request that may carry a body
      *       streams both ways; safe for any payload size; the
@@ -127,10 +130,13 @@ public class VesperaBridgeProperties {
     private String dispatchMode = "smart";
 
     /**
-     * Whether the Spring proxy may retry a DIRECT response-buffer overflow
-     * for safe methods.  Default {@code true} preserves the 0.2.x
-     * behavior (grow the direct response buffer once and re-run the Rust
-     * handler). Set {@code false} to surface
+     * Whether the Spring proxy may re-dispatch a DIRECT response-buffer
+     * overflow for safe methods when the overflow stash cannot be used.
+     * Normally an overflowing response is kept on the Rust side and
+     * fetched into a grown buffer (or streamed from there beyond the
+     * pool cap) without re-running the handler, so this only matters for
+     * that rare stash-less fallback: {@code true} (default) re-runs the
+     * Rust handler through response streaming; {@code false} surfaces
      * {@link VesperaBridge.BufferTooSmallException} as a 500 instead,
      * avoiding any automatic double execution.
      */

@@ -237,19 +237,73 @@ class VesperaProxyControllerCoverageTest {
                     request -> null, request -> DispatchMode.DIRECT, Runnable::run, false);
             assertThrows(UnsatisfiedLinkError.class, () -> controller.dispatchDirectMode(
                     new MockHttpServletResponse(), null, "POST", "/echo", "",
-                    sink -> {}, new byte[] {1}, Boolean.FALSE));
+                    sink -> {}, new byte[] {1}, Boolean.FALSE, null));
             assertThrows(UnsatisfiedLinkError.class, () -> controller.dispatchDirectMode(
                     new MockHttpServletResponse(), null, "POST", "/echo", "",
-                    sink -> {}, new byte[] {1}, Boolean.FALSE));
+                    sink -> {}, new byte[] {1}, Boolean.FALSE, null));
             assertTrue(warned.get());
 
             logger.setLevel(ch.qos.logback.classic.Level.INFO);
             assertThrows(UnsatisfiedLinkError.class, () -> controller.dispatchDirectMode(
                     new MockHttpServletResponse(), null, "POST", "/echo", "",
-                    sink -> {}, new byte[] {1}, Boolean.FALSE));
+                    sink -> {}, new byte[] {1}, Boolean.FALSE, null));
+
+            // With an exchange the downgrade is what gets reported.
+            ProxyExchange exchange = new ProxyExchange(
+                    org.slf4j.LoggerFactory.getLogger(VesperaProxyControllerCoverageTest.class),
+                    java.util.List.of(), "POST", null);
+            exchange.mode = DispatchMode.DIRECT;
+            assertThrows(UnsatisfiedLinkError.class, () -> controller.dispatchDirectMode(
+                    new MockHttpServletResponse(), null, "POST", "/echo", "",
+                    sink -> {}, new byte[] {1}, Boolean.FALSE, exchange));
+            assertEquals(DispatchMode.SYNC, exchange.mode);
         } finally {
             logger.setLevel(previousLevel);
             warned.set(previousWarned);
+        }
+    }
+
+    @Test
+    void aDirectRequestServedThroughAnotherPathReportsThatMode() throws Exception {
+        Field loaded = VesperaBridge.class.getDeclaredField("loaded");
+        loaded.setAccessible(true);
+        boolean wasLoaded = loaded.getBoolean(null);
+        previousOversizePolicy = System.getProperty("vespera.direct.oversize-policy");
+        java.util.List<DispatchEvent> events = new java.util.concurrent.CopyOnWriteArrayList<>();
+        VesperaProxyController controller = new VesperaProxyController(
+                request -> null, request -> DispatchMode.DIRECT, Runnable::run, true, 0, 0, null,
+                java.util.List.of(events::add));
+        try {
+            // Past the isInitialized() gate; every native call then fails
+            // with UnsatisfiedLinkError (answered 503) after the mode is final.
+            loaded.setBoolean(null, true);
+
+            // An unsafe method is downgraded to SYNC.
+            MockHttpServletRequest post = new MockHttpServletRequest("POST", "/echo");
+            post.setContent(new byte[] {1});
+            MockHttpServletResponse posted = new MockHttpServletResponse();
+            controller.proxy(post, posted);
+            assertEquals(503, posted.getStatus());
+            assertEquals(DispatchMode.SYNC, events.get(0).mode());
+            assertEquals("/echo", events.get(0).path());
+
+            // oversize-policy=throw: a request beyond the pool cap is re-routed
+            // through response streaming before anything is dispatched.
+            System.setProperty("vespera.direct.oversize-policy", "throw");
+            MockHttpServletRequest big = new MockHttpServletRequest("GET", "/big");
+            big.setContent(new byte[4 * 1024 * 1024 + 1]);
+            MockHttpServletResponse bigResponse = new MockHttpServletResponse();
+            controller.proxy(big, bigResponse);
+            assertEquals(503, bigResponse.getStatus());
+            assertEquals(DispatchMode.STREAMING, events.get(1).mode());
+
+            // A plain safe DIRECT request keeps reporting DIRECT.
+            MockHttpServletResponse got = new MockHttpServletResponse();
+            controller.proxy(new MockHttpServletRequest("GET", "/small"), got);
+            assertEquals(503, got.getStatus());
+            assertEquals(DispatchMode.DIRECT, events.get(2).mode());
+        } finally {
+            loaded.setBoolean(null, wasLoaded);
         }
     }
 

@@ -26,7 +26,7 @@ class VesperaBridgeInitTest {
 
     @Test
     void reInitWithDifferentLibraryThrowsAndSameNameIsNoOp() throws Exception {
-        Field loadedField = VesperaBridge.class.getDeclaredField("loaded");
+        Field loadedField = VesperaBridge.class.getDeclaredField("nativeLoaded");
         Field nameField = VesperaBridge.class.getDeclaredField("loadedLibraryName");
         loadedField.setAccessible(true);
         nameField.setAccessible(true);
@@ -45,6 +45,44 @@ class VesperaBridgeInitTest {
                     "re-init with a different library name must throw");
         } finally {
             loadedField.setBoolean(null, prevLoaded);
+            nameField.set(null, prevName);
+        }
+    }
+
+    @Test
+    void isInitializedIsPublishedOnlyAfterThePendingConfigurationWasApplied() throws Exception {
+        Field loadedField = VesperaBridge.class.getDeclaredField("loaded");
+        Field nativeField = VesperaBridge.class.getDeclaredField("nativeLoaded");
+        Field nameField = VesperaBridge.class.getDeclaredField("loadedLibraryName");
+        loadedField.setAccessible(true);
+        nativeField.setAccessible(true);
+        nameField.setAccessible(true);
+        boolean prevLoaded = loadedField.getBoolean(null);
+        boolean prevNative = nativeField.getBoolean(null);
+        Object prevName = nameField.get(null);
+        try {
+            AtomicInteger applied = new AtomicInteger();
+            VesperaBridge.completeLoad("libA", () -> {
+                // A concurrent dispatcher gating on isInitialized() must not
+                // run before the pending configure* values reach Rust ...
+                assertFalse(VesperaBridge.isInitialized());
+                // ... while configure* (and a re-init) already treat the
+                // library as loaded.
+                assertDoesNotThrow(() -> VesperaBridge.init("libA"));
+                applied.incrementAndGet();
+            });
+            assertEquals(1, applied.get());
+            assertTrue(VesperaBridge.isInitialized());
+
+            // A failing configuration hook still marks the library loaded.
+            loadedField.setBoolean(null, false);
+            assertThrows(IllegalStateException.class, () -> VesperaBridge.completeLoad("libA", () -> {
+                throw new IllegalStateException("hook failed");
+            }));
+            assertTrue(VesperaBridge.isInitialized());
+        } finally {
+            loadedField.setBoolean(null, prevLoaded);
+            nativeField.setBoolean(null, prevNative);
             nameField.set(null, prevName);
         }
     }

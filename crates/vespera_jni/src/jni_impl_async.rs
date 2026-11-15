@@ -69,9 +69,13 @@ use crate::streaming_closures::{CompleteAttempt, complete_future, complete_futur
 /// group `async_completion_ab`: ~1.5 µs inline vs ~24.5 µs hand-off), so the
 /// worker-thread completion is kept and this contract is documented instead —
 /// matching how Netty / async HTTP clients complete futures from their I/O
-/// threads.  The autoconfigured Spring proxy never selects `ASYNC` (its
-/// `SmartDispatchModeResolver` uses DIRECT / SYNC / streaming), so this path is
-/// opt-in for callers doing their own `CompletableFuture` composition.
+/// threads.  Java callers that reach this symbol: the WebFlux proxy
+/// (`VesperaReactiveProxyHandler`, every buffered request), `VesperaClient`'s
+/// `sendAsync()`, SYNC on a virtual thread with
+/// `-Dvespera.virtualThread.pollFirst=false` (`ParkingDispatch`), a servlet
+/// proxy whose resolver picks `ASYNC`, and callers doing their own
+/// `CompletableFuture` composition (the servlet proxy's default
+/// `SmartDispatchModeResolver` never selects `ASYNC`).
 ///
 /// Cancellation: the spawned dispatch is registered with
 /// [`vespera_inprocess::cancellable`] under the returned token.  The Java
