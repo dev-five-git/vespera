@@ -134,6 +134,14 @@ fn parse_flow(input: ParseStream, kind: &syn::Ident) -> syn::Result<OAuthFlow> {
     syn::braced!(content in input);
     let mut urls: BTreeMap<String, String> = BTreeMap::new();
     let mut scopes = None;
+    // The URLs the OpenAPI Flow Object of `kind` requires — and the only
+    // ones besides `refresh_url` it takes (`implicit` has no `token_url`,
+    // `password` / `client_credentials` no `authorization_url`).
+    let required: &[&str] = match kind.to_string().as_str() {
+        "implicit" => &["authorization_url"],
+        "authorization_code" => &["authorization_url", "token_url"],
+        _ => &["token_url"],
+    };
     while !content.is_empty() {
         let field: syn::Ident = content.parse()?;
         let field_str = field.to_string();
@@ -145,6 +153,12 @@ fn parse_flow(input: ParseStream, kind: &syn::Ident) -> syn::Result<OAuthFlow> {
         }
         content.parse::<syn::Token![=]>()?;
         match field_str.as_str() {
+            "authorization_url" | "token_url" if !required.contains(&field_str.as_str()) => {
+                return Err(syn::Error::new(
+                    field.span(),
+                    format!("OAuth2 `{kind}` flow does not take `{field_str}`; it uses {}", quoted_list(required)),
+                ));
+            }
             "authorization_url" | "token_url" | "refresh_url" => {
                 urls.insert(field_str, content.parse::<LitStr>()?.value());
             }
@@ -164,11 +178,6 @@ fn parse_flow(input: ParseStream, kind: &syn::Ident) -> syn::Result<OAuthFlow> {
         }
         content.parse::<syn::Token![,]>()?;
     }
-    let required: &[&str] = match kind.to_string().as_str() {
-        "implicit" => &["authorization_url"],
-        "authorization_code" => &["authorization_url", "token_url"],
-        _ => &["token_url"],
-    };
     if let Some(missing) = required.iter().find(|field| !urls.contains_key(**field)) {
         return Err(syn::Error::new(
             kind.span(),

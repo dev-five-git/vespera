@@ -12,14 +12,20 @@ error: OAuth2 `authorization_code` flow is missing required field `token_url`
 14 |         flows = { authorization_code = { authorization_url = "https://auth.example.com/authorize" } },
    |                   ^^^^^^^^^^^^^^^^^^
 
-error: top-level `security` requires scope `admin`, which no flow of oauth2 security scheme `oauth2` declares; declared scopes: `read:users`
-  --> tests/ui/vespera_oauth2_security_invalid.rs:30:20
+error: OAuth2 `implicit` flow does not take `token_url`; it uses `authorization_url`
+  --> tests/ui/vespera_oauth2_security_invalid.rs:24:13
    |
-30 |         security = [("oauth2", ["read:users", "admin"])],
+24 |             token_url = "https://auth.example.com/token",
+   |             ^^^^^^^^^
+
+error: top-level `security` requires scope `admin`, which no flow of oauth2 security scheme `oauth2` declares; declared scopes: `read:users`
+  --> tests/ui/vespera_oauth2_security_invalid.rs:41:20
+   |
+41 |         security = [("oauth2", ["read:users", "admin"])],
    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error: #[route] `security` entries must be a scheme name (`"bearerAuth"`), a scheme with scopes (`("oauth2", ["read:users"])`), or an AND group of those (`["apiKey", ("oauth2", ["read:users"])]`)
-  --> tests/ui/vespera_oauth2_security_invalid.rs:34:26
+  --> tests/ui/vespera_oauth2_security_invalid.rs:45:26
    |
-34 | #[route(get, security = [("oauth2", "read:users")])]
+45 | #[route(get, security = [("oauth2", "read:users")])]
    |                          ^^^^^^^^^^^^^^^^^^^^^^^^

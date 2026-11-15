@@ -1,5 +1,5 @@
 //! OAuth2 / scoped-security DSL errors: an `oauth2` scheme without `flows`, a
-//! flow missing a URL OpenAPI requires, a top-level requirement asking for a
+//! flow missing a URL OpenAPI requires, a URL its flow does not take, a top-level requirement asking for a
 //! scope no flow declares, and a malformed `#[route(security = [...])]` entry.
 use vespera_macro::{route, vespera};
 
@@ -12,6 +12,17 @@ fn flow_missing_token_url() {
         name = "oauth2",
         type = "oauth2",
         flows = { authorization_code = { authorization_url = "https://auth.example.com/authorize" } },
+    }]);
+}
+
+fn implicit_flow_with_token_url() {
+    let _ = vespera!(security_schemes = [{
+        name = "oauth2",
+        type = "oauth2",
+        flows = { implicit = {
+            authorization_url = "https://auth.example.com/authorize",
+            token_url = "https://auth.example.com/token",
+        } },
     }]);
 }
 
