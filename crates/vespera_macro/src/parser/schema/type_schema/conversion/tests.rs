@@ -967,3 +967,23 @@ fn generic_missing_argument_without_default_is_a_reference() {
         SchemaRef::Ref(_)
     ));
 }
+
+/// `rust_decimal`'s default `Deserialize` (`deserialize_any`) also reads a
+/// JSON number: the request view is `anyOf [decimal string, number]`.
+#[test]
+fn decimal_request_view_also_reads_numbers() {
+    let ty: Type = syn::parse_str("rust_decimal::Decimal").unwrap();
+    let schema = request_view::with_request_view(|| {
+        parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions())
+    });
+    let SchemaRef::Inline(schema) = schema else {
+        panic!("inline")
+    };
+    let Some([SchemaRef::Inline(string), SchemaRef::Inline(number)]) = schema.any_of.as_deref()
+    else {
+        panic!("two inline branches: {schema:?}")
+    };
+    assert_eq!(string.format.as_deref(), Some("decimal"));
+    assert_eq!(string.schema_type, Some(SchemaType::String));
+    assert_eq!(number.schema_type, Some(SchemaType::Number));
+}

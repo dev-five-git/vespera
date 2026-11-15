@@ -456,7 +456,10 @@ fn parse_type_impl(
                 "f64" => Some(number_with_format("double")),
                 // `rust_decimal` serializes `Decimal` as a JSON *string* (to
                 // preserve precision), so the wire type is string, not number.
-                "Decimal" => Some(string_with_format("decimal")),
+                // Its default `Deserialize` (`deserialize_any`, without the
+                // `serde-str` feature) also reads a JSON number, so the
+                // request view accepts either.
+                "Decimal" => Some(decimal_schema()),
                 "bool" => Some(SchemaRef::Inline(Box::new(Schema::boolean()))),
                 "char" => Some(string_with_format("char")),
                 "Uuid" => Some(string_with_format("uuid")),
@@ -856,6 +859,19 @@ fn time_crate_schema() -> SchemaRef {
 /// `time::<..>::Ident` — a path rooted at the `time` crate.
 fn is_time_crate_path(path: &syn::Path) -> bool {
     path.segments.len() > 1 && path.segments[0].ident == "time"
+}
+
+/// `rust_decimal::Decimal`: a `decimal` string; in the request view also a
+/// JSON number (see the `"Decimal"` arm of the primitive match).
+fn decimal_schema() -> SchemaRef {
+    let string = string_with_format("decimal");
+    if !request_view::in_request_view() {
+        return string;
+    }
+    SchemaRef::Inline(Box::new(Schema {
+        any_of: Some(vec![string, SchemaRef::Inline(Box::new(Schema::number()))]),
+        ..Schema::default()
+    }))
 }
 
 /// `std::time::Duration` / `core::time::Duration`.

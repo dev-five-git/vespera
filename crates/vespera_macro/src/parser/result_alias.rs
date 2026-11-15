@@ -94,15 +94,23 @@ fn module_items<'a>(items: &'a [syn::Item], path: &[String]) -> Option<&'a [syn:
     })
 }
 
-/// The inline module path of the first function `name` among `items`.
+/// The inline module path of the function `name` among `items`, preferring
+/// the shallowest one: a same-named helper in an inline module never shadows
+/// a top-level handler, and test-only (`#[cfg(test)]`) modules are skipped.
 fn fn_module(items: &[syn::Item], name: &syn::Ident) -> Option<Vec<String>> {
+    if items
+        .iter()
+        .any(|item| matches!(item, syn::Item::Fn(function) if function.sig.ident == *name))
+    {
+        return Some(Vec::new());
+    }
     items.iter().find_map(|item| match item {
-        syn::Item::Fn(function) if function.sig.ident == *name => Some(Vec::new()),
         syn::Item::Mod(syn::ItemMod {
+            attrs,
             ident,
             content: Some((_, inner)),
             ..
-        }) => fn_module(inner, name).map(|mut path| {
+        }) if !attrs_test_only(attrs) => fn_module(inner, name).map(|mut path| {
             path.insert(0, ident.to_string());
             path
         }),
@@ -270,7 +278,7 @@ fn find_alias<'a>(
             Some(Import::External) => return None,
             Some(Import::Local)
                 if import_parent(items, name)
-                    .is_some_and(|module| nominal_in_module(name, &module, scope, src_dir)) =>
+                    .is_some_and(|parent| imported_nominal(name, &parent, scope, src_dir)) =>
             {
                 return None;
             }
@@ -416,23 +424,29 @@ fn declares_nominal(items: &[syn::Item], name: &str) -> bool {
     })
 }
 
-/// The module a plain `use` among `items` imports `name` from (`models` for
-/// `use crate::models::ApiResponse;`). `None` without such an import, for a
-/// rename / glob, and when the parent is `crate` / `self` / `super`.
-fn import_parent(items: &[syn::Item], name: &str) -> Option<String> {
+/// Where a plain `use` among `items` imports `name` from: the module
+/// (`models` for `use crate::models::ApiResponse;`), the crate root (`use
+/// crate::ApiResponse;`) or the parent module (`use super::ApiResponse;`).
+/// `None` without such an import, for a rename / glob, and for `self`.
+fn import_parent(items: &[syn::Item], name: &str) -> Option<Qualifier> {
     /// `Some(parent)` once the import of `name` is found (stops the walk).
     #[allow(clippy::option_option)]
     fn walk(
         tree: &syn::UseTree,
         parent: Option<&syn::Ident>,
         name: &str,
-    ) -> Option<Option<String>> {
+    ) -> Option<Option<Qualifier>> {
         match tree {
             syn::UseTree::Path(path) => walk(&path.tree, Some(&path.ident), name),
             syn::UseTree::Name(used) => (used.ident == name).then(|| {
-                parent
-                    .filter(|parent| !is_local_root(parent))
-                    .map(|parent| syn::ext::IdentExt::unraw(parent).to_string())
+                parent.and_then(|parent| match parent.to_string().as_str() {
+                    "crate" => Some(Qualifier::CrateRoot),
+                    "super" => Some(Qualifier::Super),
+                    "self" => None,
+                    _ => Some(Qualifier::Module(
+                        syn::ext::IdentExt::unraw(parent).to_string(),
+                    )),
+                })
             }),
             syn::UseTree::Group(group) => {
                 group.items.iter().find_map(|tree| walk(tree, parent, name))
@@ -447,6 +461,43 @@ fn import_parent(items: &[syn::Item], name: &str) -> Option<String> {
             _ => None,
         })
         .flatten()
+}
+
+/// Whether the module a `use` imports `name` from ([`import_parent`])
+/// declares a struct / enum / union `name`: a named module (see
+/// [`nominal_in_module`]), the crate root (the top level of `lib.rs` /
+/// `main.rs` under `src_dir`), or the parent module (the inline parent in
+/// the handler's file; for a file module, any file's top level — the parent
+/// file is not known).
+fn imported_nominal(
+    name: &str,
+    parent: &Qualifier,
+    scope: &Scope<'_>,
+    src_dir: Option<&Path>,
+) -> bool {
+    let top_level = |root_only: bool| {
+        src_dir.is_some_and(|src_dir| {
+            file_cache::list_rs_files(src_dir).iter().any(|path| {
+                (!root_only || file_module(path).is_none())
+                    && parsed_with(path, name)
+                        .is_some_and(|file| declares_nominal(&file.items, name))
+            })
+        })
+    };
+    match parent {
+        Qualifier::Module(module) => nominal_in_module(name, module, scope, src_dir),
+        Qualifier::CrateRoot => top_level(true),
+        Qualifier::Super => match scope.module.split_last() {
+            Some((_, parent)) => {
+                let parent = Scope {
+                    file: scope.file.clone(),
+                    module: parent.to_vec(),
+                };
+                declares_nominal(parent.items(), name)
+            }
+            None => top_level(false),
+        },
+    }
 }
 
 /// Whether a module named `module` (an inline `mod` of the handler's file,

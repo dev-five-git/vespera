@@ -101,6 +101,15 @@ fn render(
     &[][..],
     &[201][..]
 )]
+// Round 12: an `error_status` that cannot carry content (1xx, 204, 205,
+// 304) is documented without the error body.
+#[case::error_status_no_body(
+    "error_status_no_body",
+    "fn f() -> Result<Json<Created>, Json<User>>",
+    None,
+    &[][..],
+    &[101, 204, 205, 304, 404][..]
+)]
 fn declared_statuses(
     #[case] name: &str,
     #[case] sig: &str,
