@@ -570,20 +570,19 @@ pub(super) fn parallel_filter_map<T: Sync, R: Send>(
     // mode: a `syn::Error` created on this thread keeps its span, and a
     // fallback span would make `to_compile_error()` (run in compiler mode)
     // panic with "compiler/fallback mismatch", hiding the worker's message.
-    let outcome = {
-        let _guard = FallbackGuard::force();
-        run_parallel(jobs, f, workers)
-    };
-    outcome.unwrap_or_else(|message| Err(worker_panic_error(&message)))
+    // `run_parallel` drops its guard on return, before this error is built.
+    run_parallel(jobs, f, workers).unwrap_or_else(|message| Err(worker_panic_error(&message)))
 }
 
 /// The parallel section of [`parallel_filter_map`]; runs with the fallback
-/// forced. `Err` carries a worker's panic message (no span is created here).
+/// forced until it returns. `Err` carries a worker's panic message (no span
+/// is created here).
 fn run_parallel<T: Sync, R: Send>(
     jobs: &[T],
     f: &(dyn Fn(&T) -> syn::Result<Option<R>> + Sync),
     workers: usize,
 ) -> Result<syn::Result<Vec<R>>, String> {
+    let _guard = FallbackGuard::force();
     let chunk_size = jobs.len().div_ceil(workers);
     // Workers do not inherit the caller's thread-locals.
     let input_names = request_view::snapshot();
