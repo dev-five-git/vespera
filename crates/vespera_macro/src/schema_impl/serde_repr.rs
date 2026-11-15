@@ -52,9 +52,9 @@ pub(super) fn with_multipart_vec_defaults(
     input: &syn::DeriveInput,
     call_site_file: Option<&Path>,
 ) -> Option<syn::DeriveInput> {
-    if !matches!(input.data, syn::Data::Struct(_)) {
+    let syn::Data::Struct(data) = &input.data else {
         return None;
-    }
+    };
     let path = call_site_file?;
     let file = crate::schema_macro::file_cache::get_file_content(path)?;
     if !file.contains("Multipart")
@@ -62,10 +62,7 @@ pub(super) fn with_multipart_vec_defaults(
     {
         return None;
     }
-    let mut input = input.clone();
-    let syn::Data::Struct(data) = &mut input.data else {
-        return None;
-    };
+    let mut data = data.clone();
     let mut changed = false;
     for field in data.fields.iter_mut().filter(|field| {
         is_vec(&field.ty)
@@ -75,7 +72,10 @@ pub(super) fn with_multipart_vec_defaults(
         field.attrs.push(syn::parse_quote!(#[form_data(default)]));
         changed = true;
     }
-    changed.then_some(input)
+    changed.then(|| syn::DeriveInput {
+        data: syn::Data::Struct(data),
+        ..input.clone()
+    })
 }
 
 /// `Vec<T>` / `std::vec::Vec<T>` (the Multipart derive's repeated part).
