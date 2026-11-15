@@ -359,3 +359,23 @@ fn path_attr_requires_string_literal() {
     let item: syn::ItemMod = syn::parse_str("#[path = 1] #[doc = \"x\"] #[cfg(x)] mod m;").unwrap();
     assert!(path_attr(&item.attrs).is_none());
 }
+
+/// `item_module_chain` finds structs and enums inside inline modules, picks
+/// a repeated name by its line, and falls back to the top level.
+#[rstest]
+#[case::enum_in_inline_mod("Kind", 0, &["a"])]
+#[case::struct_in_nested_mod("Row", 0, &["a", "b"])]
+#[case::repeated_name_by_line("Dup", 5, &["b2"])]
+#[case::repeated_name_wrong_line("Dup", 99, &[])]
+#[case::missing("Nope", 0, &[])]
+fn item_module_chain_walks_inline_modules(
+    #[case] name: &str,
+    #[case] line: usize,
+    #[case] expected: &[&str],
+) {
+    let file = syn::parse_file(
+        "mod a {\n    pub enum Kind { A }\n    mod b { pub struct Row; }\n}\nmod b2 { pub struct Dup; }\nmod b3 { pub struct Dup; }\nmod decl;\nfn f() {}\n",
+    )
+    .unwrap();
+    assert_eq!(item_module_chain(&file.items, name, line), expected);
+}
