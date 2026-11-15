@@ -22,14 +22,16 @@ use std::collections::HashMap;
 use crate::parser::openapi_path_template;
 
 /// The shape of an axum path (`{name}` → `{}`, `{*name}` → `{*}`) and its
-/// parameter names in order.  `{{` / `}}` escapes stay literal.
+/// parameter names in order.  `{{` / `}}` escapes become `%7B` / `%7D`, the
+/// spelling a merged child's OpenAPI template carries.
 pub fn path_shape(path: &str) -> (String, Vec<String>) {
     let mut shape = String::with_capacity(path.len());
     let mut names = Vec::new();
     let mut chars = path.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
-            '{' if chars.next_if_eq(&'{').is_some() => shape.push_str("{{"),
+            '{' if chars.next_if_eq(&'{').is_some() => shape.push_str("%7B"),
+            '}' if chars.next_if_eq(&'}').is_some() => shape.push_str("%7D"),
             '{' => {
                 let catch_all = chars.next_if_eq(&'*').is_some();
                 names.push(chars.by_ref().take_while(|&c| c != '}').collect());
@@ -62,10 +64,6 @@ fn wildcard_positions(shape: &str, template: bool) -> Option<Vec<(String, Wildca
     while let Some(c) = chars.next() {
         if c != '{' {
             prefix.push(c);
-            continue;
-        }
-        if chars.next_if_eq(&'{').is_some() {
-            prefix.push_str("{{");
             continue;
         }
         let catch_all = chars.next_if_eq(&'*').is_some();
@@ -244,7 +242,7 @@ mod tests {
     #[case::param("/users/{id}", "/users/{}", &["id"])]
     #[case::catch_all("/files/{*rest}", "/files/{*}", &["rest"])]
     #[case::partial_segment("/f/{name}.json", "/f/{}.json", &["name"])]
-    #[case::escaped_braces("/a/{{x}}/{id}", "/a/{{x}}/{}", &["id"])]
+    #[case::escaped_braces("/a/{{x}}/{id}", "/a/%7Bx%7D/{}", &["id"])]
     fn shapes_hide_parameter_names(
         #[case] path: &str,
         #[case] shape: &str,
@@ -314,6 +312,30 @@ mod template_tests {
     use rstest::rstest;
 
     use super::*;
+
+    /// A merged child's template spells the `{{x}}` escape `%7Bx%7D`: both
+    /// are one shape, so different parameter names next to it still conflict.
+    #[rstest]
+    #[case::parent_first("/a/{{x}}/{id}", "/a/%7Bx%7D/{user_id}", true)]
+    #[case::child_first("/a/%7Bx%7D/{user_id}", "/a/{{x}}/{id}", false)]
+    fn escaped_braces_match_percent_escapes(
+        #[case] first: &str,
+        #[case] second: &str,
+        #[case] parent_first: bool,
+    ) {
+        let mut claims = RouteClaims::default();
+        let result = if parent_first {
+            claims.claim("get", first, "first").unwrap();
+            claims.claim_template("post", second, "second")
+        } else {
+            claims.claim_template("get", first, "first").unwrap();
+            claims.claim("post", second, "second")
+        };
+        assert!(
+            matches!(result, Err(RouteConflict::ParamNames { .. })),
+            "{result:?}"
+        );
+    }
 
     /// A merged child's template drops the `*`, so its path-final parameter is
     /// compatible with either kind; a non-final one is still a parameter.

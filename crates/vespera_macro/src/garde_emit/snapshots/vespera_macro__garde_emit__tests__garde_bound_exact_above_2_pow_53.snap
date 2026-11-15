@@ -30,7 +30,7 @@ impl ::vespera::__validation::garde::Validate for U {
             if let ::std::result::Result::Err(__garde_error) = (::vespera::__validation::garde::rules::range::apply)(
                 __garde_binding,
                 (
-                    ::std::option::Option::Some(9007199254740993u64),
+                    ::std::option::Option::Some(9007199254740992u64),
                     ::std::option::Option::None,
                 ),
             ) {

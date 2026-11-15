@@ -10,9 +10,8 @@
 //!
 //! # Key Functions
 //!
-//! - [`err_call_site`] - Create an error at the macro call site
-//! - [`err_spanned`] - Create an error at a specific AST node location
-//! - [`IntoSynError`] - Convert other error types to `syn::Error`
+//! - [`err_call_site`] - Create an error at the macro call site; spanned
+//!   errors use `syn::Error::new_spanned` directly
 //!
 //! # Example
 //!

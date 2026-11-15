@@ -65,6 +65,18 @@ fn segment_idents(#[case] name: &str, #[case] expected: Option<&str>) {
     assert_eq!(ident.as_deref(), expected);
 }
 
+/// The rename suggestion for an invalid segment is itself a valid segment.
+#[rstest]
+#[case::hyphen("my-file", "my_file")]
+#[case::leading_digit("2fa", "_2fa")]
+#[case::path_keyword("self", "self_")]
+#[case::underscore_only("-", "__")]
+fn suggested_idents_are_valid(#[case] name: &str, #[case] expected: &str) {
+    let suggestion = suggested_ident(name);
+    assert_eq!(suggestion, expected);
+    assert!(segment_ident(&suggestion).is_some(), "{suggestion}");
+}
+
 /// Keyword module / handler names become raw identifiers; gated routes are
 /// mounted under their `#[cfg]` after the ungated chain.
 #[test]

@@ -437,8 +437,10 @@ pub fn get_users() -> String {
     // Check route is present
     assert!(code.contains("get_users"));
 
-    // Module path should not have double colons
-    assert!(!code.contains("::users::users"));
+    // An empty folder name adds no segment: the handler is `crate::users::get_users`.
+    let compact: String = code.split_whitespace().collect();
+    assert!(compact.contains("crate::users::get_users"), "{code}");
+    assert!(!compact.contains("::::"), "{code}");
 
     drop(temp_dir);
 }
@@ -723,9 +725,9 @@ fn test_generate_router_code_with_both_docs_and_merge() {
         "Should have at least 2 MERGED_SPEC for docs and redoc, got: {merged_spec_count}"
     );
     // __VESPERA_SPEC should appear exactly once (the const declaration)
-    let vespera_spec_count = code.matches("__VESPERA_SPEC").count();
-    assert!(
-        vespera_spec_count >= 1,
+    let vespera_spec_count = code.matches("const __VESPERA_SPEC").count();
+    assert_eq!(
+        vespera_spec_count, 1,
         "Should have __VESPERA_SPEC const, got: {vespera_spec_count}"
     );
     // Both docs_url and redoc_url should be present

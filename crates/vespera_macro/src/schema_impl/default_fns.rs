@@ -35,7 +35,8 @@ pub(super) fn resolve_default_fn(
         module_scope::module_items(module)?
     } else {
         let file = file_cache::get_parsed_file(file_path)?;
-        let mut chain = module_scope::item_module_chain(&file.items, struct_name, line);
+        let mut chain =
+            module_scope::item_module_chain_in_file(file_path, &file.items, struct_name, line);
         for segment in module {
             match segment.as_str() {
                 "self" => {}

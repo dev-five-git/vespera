@@ -90,6 +90,7 @@ fn doc_route_shadowing_an_app_route_is_rejected() {
 /// router must mount only functions the file still declares.
 #[test]
 fn stale_storage_entries_of_renamed_handlers_are_ignored() {
+    let _ide = crate::macro_storage::test_ide::force();
     let temp_dir = TempDir::new().unwrap();
     let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
     let routes = temp_dir.path().join("src").join("routes");
@@ -188,6 +189,45 @@ fn merged_and_exported_apps_carry_the_export_key() {
         parent.contains("ItemsApp :: __VESPERA_EXPORT_KEY =="),
         "{parent}"
     );
+}
+
+/// A merged child's route colliding with the parent's is rejected BEFORE the
+/// parent's `openapi.json` is written: a failed build keeps the old spec.
+#[test]
+fn merge_route_conflict_writes_no_spec() {
+    let temp_dir = TempDir::new().unwrap();
+    let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
+    let _crate = crate::env_access::test_env::set_var("CARGO_CRATE_NAME", "parent");
+    let routes = temp_dir.path().join("src").join("routes");
+    fs::create_dir_all(&routes).unwrap();
+    fs::write(
+        routes.join("items.rs"),
+        "#[vespera::route(get)] pub async fn list() {}
+",
+    )
+    .unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    process_export_app(
+        &syn::parse_quote!(ClashApp),
+        "routes",
+        &HashMap::new(),
+        &temp_dir.path().to_string_lossy(),
+        &[],
+        "",
+        Span::call_site(),
+    )
+    .unwrap();
+
+    let spec = temp_dir.path().join("openapi.json");
+    let input = ProcessedVesperaInput {
+        merge: vec![syn::parse_quote!(crate::ClashApp)],
+        openapi_file_names: vec![spec.display().to_string()],
+        ..spec_less("routes")
+    };
+    let err = process_vespera_macro(&input, &HashMap::new(), &[], Span::call_site())
+        .expect_err("the child's GET /items collides");
+    assert!(err.to_string().contains("/items"), "{err}");
+    assert!(!spec.exists(), "a failed build must not write the spec");
 }
 
 /// The same check guards `export_app!`.

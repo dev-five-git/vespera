@@ -92,19 +92,76 @@ pub fn current_crate_items<T>(storage: &CrateStorage<T>) -> Arc<Vec<T>> {
 /// [`register`] replaces an entry only when the SAME function is expanded
 /// again, so in a long-lived rust-analyzer proc-macro server a renamed or
 /// deleted handler / job leaves its old entry behind — and `vespera!` would
-/// mount a function that no longer exists.  Entries are checked against the
-/// current file text (the fingerprint-validated `file_cache`, so a file is
-/// read once per change); one without a file path or whose file cannot be
-/// read is kept.  Borrows when nothing is stale — always under rustc, whose
-/// storage only ever holds the current compilation.
+/// mount a function that no longer exists.  Inside that server, entries are
+/// checked against the current file text (the fingerprint-validated
+/// `file_cache`, so a file is read once per change); one without a file path
+/// or whose file cannot be read is kept.  Under rustc the storage only ever
+/// holds the current compilation, so nothing is filtered: a handler / job a
+/// `macro_rules!` macro generates (`h!(list)`) has no literal `fn list` in
+/// its file and must not be dropped.  Borrows when nothing is stale.
 pub fn retain_declared<T: Clone + SourceIdentified>(items: &[T]) -> std::borrow::Cow<'_, [T]> {
+    retain_declared_if(items, in_long_lived_server())
+}
+
+/// Whether this process is rust-analyzer's long-lived proc-macro server,
+/// whose storage keeps entries of edited-away items.
+pub fn in_long_lived_server() -> bool {
+    static IN_IDE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *IN_IDE.get_or_init(|| is_rust_analyzer(std::env::current_exe().ok().as_deref()))
+        || test_ide::forced()
+}
+
+/// Test-only switch emulating the IDE for [`retain_declared`].
+#[cfg(test)]
+pub mod test_ide {
+    use std::cell::Cell;
+
+    thread_local! {
+        static FORCED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub fn forced() -> bool {
+        FORCED.with(Cell::get)
+    }
+
+    /// Emulates rust-analyzer on this thread until the guard drops.
+    pub fn force() -> impl Drop {
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                FORCED.with(|forced| forced.set(false));
+            }
+        }
+        FORCED.with(|forced| forced.set(true));
+        Restore
+    }
+}
+
+#[cfg(not(test))]
+mod test_ide {
+    pub(super) const fn forced() -> bool {
+        false
+    }
+}
+
+/// Whether `exe` is rust-analyzer's (long-lived) proc-macro server.
+pub fn is_rust_analyzer(exe: Option<&std::path::Path>) -> bool {
+    exe.and_then(std::path::Path::file_name)
+        .is_some_and(|name| name.to_string_lossy().contains("rust-analyzer"))
+}
+
+/// [`retain_declared`], filtering only when `filter` (inside the IDE).
+fn retain_declared_if<T: Clone + SourceIdentified>(
+    items: &[T],
+    filter: bool,
+) -> std::borrow::Cow<'_, [T]> {
     let declared = |item: &T| {
         item.file_path().is_none_or(|file| {
             crate::schema_macro::file_cache::get_file_content(std::path::Path::new(file))
                 .is_none_or(|content| declares_fn(&content, item.fn_name()))
         })
     };
-    if items.iter().all(declared) {
+    if !filter || items.iter().all(declared) {
         std::borrow::Cow::Borrowed(items)
     } else {
         std::borrow::Cow::Owned(
@@ -178,12 +235,26 @@ mod tests {
                 ..entry("pathless", "", "pathless")
             },
         ];
-        let kept = retain_declared(&items);
+        let kept = retain_declared_if(&items, true);
         assert!(matches!(kept, std::borrow::Cow::Owned(_)));
         let payloads: Vec<_> = kept.iter().map(|item| item.payload).collect();
         assert_eq!(payloads, ["live", "unreadable", "pathless"]);
-        let live = retain_declared(&items[1..]);
+        let live = retain_declared_if(&items[1..], true);
         assert!(matches!(live, std::borrow::Cow::Borrowed(_)));
+        // Outside the IDE (rustc, this test binary) nothing is filtered: a
+        // `macro_rules!`-generated function has no literal `fn name`.
+        assert!(
+            matches!(retain_declared(&items), std::borrow::Cow::Borrowed(all) if all.len() == 4)
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::server(Some("rust-analyzer-proc-macro-srv"), true)]
+    #[case::exe(Some("rust-analyzer.exe"), true)]
+    #[case::rustc(Some("rustc"), false)]
+    #[case::unknown(None, false)]
+    fn is_rust_analyzer_matches_the_server_exe(#[case] exe: Option<&str>, #[case] expected: bool) {
+        assert_eq!(is_rust_analyzer(exe.map(std::path::Path::new)), expected);
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]

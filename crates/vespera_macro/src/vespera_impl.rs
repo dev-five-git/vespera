@@ -6,6 +6,7 @@
 
 mod cache;
 mod cron_discovery;
+mod export_names;
 mod invocation;
 mod merge_conflicts;
 mod merge_lookup;

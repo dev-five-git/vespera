@@ -1,0 +1,11 @@
+error: export_app! macro: route folder 'missing_admin_routes' not found. Create src/missing_admin_routes or specify a different folder with `dir = "your_folder"`.
+ --> tests/ui/export_app_duplicate_name.rs:4:43
+  |
+4 |     vespera_macro::export_app!(App, dir = "missing_admin_routes");
+  |                                           ^^^^^^^^^^^^^^^^^^^^^^
+
+error: export_app! macro: `App` is already exported by this crate (export_app_duplicate_name.rs, line 4); every export_app! of a crate needs a distinct name (its OpenAPI sidecar, cache and export key are named `<crate>/App`)
+ --> tests/ui/export_app_duplicate_name.rs:8:32
+  |
+8 |     vespera_macro::export_app!(App, dir = "missing_public_routes");
+  |                                ^^^

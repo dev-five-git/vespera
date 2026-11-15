@@ -105,9 +105,14 @@ pub(super) fn generate_sea_orm_default_attrs(
                 return (quote! {}, quote! {});
             };
 
-            let schema_default_attr = schema_default_str
-                .map(|value| quote! { #[schema(default = #value)] })
-                .unwrap_or_default();
+            // A machine-dependent value (`Local`) advertises no OpenAPI
+            // default, but the bare `#[schema(default)]` marker still tells
+            // the DTO's `#[derive(Schema)]` the serde default is deliberate
+            // (its generated fn is not in any source file to resolve).
+            let schema_default_attr = schema_default_str.map_or_else(
+                || quote! { #[schema(default)] },
+                |value| quote! { #[schema(default = #value)] },
+            );
 
             if has_existing_serde_default {
                 return (quote! {}, schema_default_attr);

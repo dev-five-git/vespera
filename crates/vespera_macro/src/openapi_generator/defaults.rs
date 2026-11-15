@@ -17,17 +17,30 @@ use crate::{
     schema_macro::type_utils::get_type_default as utils_get_type_default,
 };
 
-/// Set the default value on an inline property schema, if not already set.
+/// Set the default value on a property schema, if not already set.
 ///
-/// Looks up `field_name` in the properties map. If found as an inline schema
-/// and the schema has no existing default, sets `value` as the default.
+/// Looks up `field_name` in the properties map. An inline schema without a
+/// default gets `value`; a pure `$ref` becomes `{"$ref": .., "default": ..}`
+/// (OpenAPI 3.1 allows siblings of `$ref`), so an explicit
+/// `#[schema(default = "active")]` on an enum-typed field is documented.
 pub(super) fn set_property_default(
     properties: &mut BTreeMap<String, vespera_core::schema::SchemaRef>,
     field_name: &str,
     value: serde_json::Value,
 ) {
-    use vespera_core::schema::{SchemaRef, SchemaType};
+    use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
+    if let Some(property) = properties.get_mut(field_name)
+        && let SchemaRef::Ref(reference) = property
+    {
+        let ref_path = std::mem::take(&mut reference.ref_path);
+        *property = SchemaRef::Inline(Box::new(Schema {
+            ref_path: Some(ref_path),
+            default: Some(value),
+            ..Schema::default()
+        }));
+        return;
+    }
     if let Some(SchemaRef::Inline(prop_schema)) = properties.get_mut(field_name)
         && prop_schema.default.is_none()
     {
@@ -69,7 +82,7 @@ pub(super) fn process_default_functions(
 
 /// [`process_default_functions`] for the `side` view of the struct: the
 /// request (`{Name}Input`) view keys its properties by the deserialize name.
-pub(super) fn process_default_functions_for(
+pub fn process_default_functions_for(
     struct_item: &syn::ItemStruct,
     file_ast: Option<&syn::File>,
     schema: &mut vespera_core::schema::Schema,
@@ -249,8 +262,15 @@ pub(super) fn extract_schema_default_attr(attrs: &[syn::Attribute]) -> Option<St
 
 // Parse a default value string into the appropriate `serde_json::Value`.
 ///
-/// Tries to infer the JSON type: integer → number → bool → string (fallback).
+/// Tries to infer the JSON type: array / object → integer → number → bool →
+/// string (fallback).
 pub(super) fn parse_default_string_to_json_value(value: &str) -> serde_json::Value {
+    // A JSON array / object (`"[]"`, `"{"a": 1}"`) for a non-string field.
+    if let Ok(json @ (serde_json::Value::Array(_) | serde_json::Value::Object(_))) =
+        serde_json::from_str::<serde_json::Value>(value)
+    {
+        return json;
+    }
     // Try integer first
     if let Ok(n) = value.parse::<i64>() {
         return serde_json::Value::Number(n.into());
@@ -326,6 +346,42 @@ pub fn extract_default_value_from_function(func: &syn::ItemFn) -> Option<serde_j
     None
 }
 
+/// The value of `-expr` for a numeric literal `expr`.
+fn negated_value(expr: &syn::Expr) -> Option<serde_json::Value> {
+    match extract_value_from_expr(expr)? {
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .and_then(i64::checked_neg)
+            .map(serde_json::Value::from)
+            .or_else(|| {
+                n.as_f64()
+                    .and_then(|v| serde_json::Number::from_f64(-v))
+                    .map(serde_json::Value::Number)
+            }),
+        _ => None,
+    }
+}
+
+/// The value of an argument-less conversion of a literal: `to_owned` /
+/// `into` keep a string, `to_string` also renders a number or bool as the
+/// STRING (`42.to_string()` is `"42"`).
+fn method_call_value(call: &syn::ExprMethodCall) -> Option<serde_json::Value> {
+    use serde_json::Value;
+    if !call.args.is_empty() {
+        return None;
+    }
+    match (
+        call.method.to_string().as_str(),
+        extract_value_from_expr(&call.receiver)?,
+    ) {
+        ("to_owned" | "into" | "to_string", value @ Value::String(_)) => Some(value),
+        ("to_string", value @ (Value::Number(_) | Value::Bool(_))) => {
+            Some(Value::String(value.to_string()))
+        }
+        _ => None,
+    }
+}
+
 /// Extract value from expression
 pub(super) fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Value> {
     use syn::{Expr, ExprLit, ExprMacro, Lit};
@@ -346,24 +402,14 @@ pub(super) fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Va
             Lit::Bool(b) => Some(serde_json::Value::Bool(b.value)),
             _ => None,
         },
-        // Method calls like "value".to_string()
-        Expr::MethodCall(method_call) => {
-            if method_call.method == "to_string" {
-                // Get the receiver (the string literal)
-                // Try direct match first
-                if let Expr::Lit(ExprLit {
-                    lit: Lit::Str(s), ..
-                }) = method_call.receiver.as_ref()
-                {
-                    return Some(serde_json::Value::String(s.value()));
-                }
-                // Try to extract from nested expressions (e.g., if the receiver is wrapped)
-                if let Some(value) = extract_value_from_expr(method_call.receiver.as_ref()) {
-                    return Some(value);
-                }
-            }
-            None
-        }
+        // `-1` / `-0.5`: a negated numeric literal.
+        Expr::Unary(syn::ExprUnary {
+            op: syn::UnOp::Neg(_),
+            expr,
+            ..
+        }) => negated_value(expr),
+        // `"value".to_string()` / `.to_owned()` / `.into()`, `42.to_string()`
+        Expr::MethodCall(method_call) => method_call_value(method_call),
         // Associated function calls like String::from("value")
         Expr::Call(call) => {
             let Expr::Path(path) = call.func.as_ref() else {
@@ -372,6 +418,14 @@ pub(super) fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Va
             let mut segments = path.path.segments.iter().rev();
             let last = segments.next()?;
             let prev = segments.next()?;
+            // `String::new()` / `Vec::new()`: the empty value.
+            if last.ident == "new" && call.args.is_empty() {
+                return match prev.ident.to_string().as_str() {
+                    "String" => Some(serde_json::Value::String(String::new())),
+                    "Vec" => Some(serde_json::Value::Array(Vec::new())),
+                    _ => None,
+                };
+            }
             if last.ident == "from"
                 && prev.ident == "String"
                 && call.args.len() == 1

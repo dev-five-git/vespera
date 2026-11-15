@@ -21,6 +21,20 @@ fn segment_ident(name: &str) -> Option<syn::Ident> {
     Some(ident)
 }
 
+/// A snake_case identifier to rename the invalid segment `name` to: other
+/// characters become `_`, a leading digit gets a `_` prefix (`2fa` →
+/// `_2fa`), and a name still no identifier (`self`, `_`) gets a `_` suffix.
+fn suggested_ident(name: &str) -> String {
+    let mut suggestion = name.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+    if suggestion.starts_with(|c: char| c.is_ascii_digit()) {
+        suggestion.insert(0, '_');
+    }
+    if segment_ident(&suggestion).is_none() {
+        suggestion.push('_');
+    }
+    suggestion
+}
+
 /// Build `crate::<module_path>::<function_name>` as a `syn::Path`.
 /// Empty segments inside `module_path` (from accidental `::` doubling)
 /// are dropped, matching the existing behaviour of both call sites.
@@ -46,7 +60,7 @@ fn crate_path_to(
         let Some(ident) = segment_ident(name) else {
             let message = format!(
                 "vespera: '{file_path}' maps to the module path segment `{name}`, which is not a valid Rust identifier. Rename the file (or folder) to snake_case, e.g. `{}`.",
-                name.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+                suggested_ident(name)
             );
             return Err(syn::Error::new(Span::call_site(), message).to_compile_error());
         };

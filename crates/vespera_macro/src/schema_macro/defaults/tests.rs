@@ -782,7 +782,8 @@ fn now_default_matches_field_type(#[case] ty: &str, #[case] expr: &str, #[case] 
         return;
     }
     if schema == "-" {
-        assert!(schema_attr.is_empty(), "{schema_attr}");
+        // Only the bare marker the DTO's `#[derive(Schema)]` accepts.
+        assert_eq!(schema_attr.to_string(), "# [schema (default)]");
     } else {
         assert!(
             schema_attr.to_string().contains(&format!("\"{schema}\"")),
@@ -791,6 +792,26 @@ fn now_default_matches_field_type(#[case] ty: &str, #[case] expr: &str, #[case] 
     }
     let body = fns[0].to_string();
     assert!(body.contains(expr), "{body}");
+}
+
+/// A source field that already carries `#[serde(default)]` keeps it (no
+/// generated fn) but still gets the schema marker, so a `Local` `NOW()`
+/// field compiles under the DTO's `#[derive(Schema)]`.
+#[rstest::rstest]
+#[case::local("DateTimeLocal", "# [schema (default)]")]
+#[case::utc("DateTimeUtc", "# [schema (default = \"1970-01-01T00:00:00Z\")]")]
+fn now_default_with_existing_serde_default(#[case] ty: &str, #[case] expected: &str) {
+    let attrs: Vec<syn::Attribute> = vec![
+        syn::parse_quote!(#[sea_orm(default_value = "NOW()")]),
+        syn::parse_quote!(#[serde(default)]),
+    ];
+    let struct_name = syn::Ident::new("Test", proc_macro2::Span::call_site());
+    let ty: syn::Type = syn::parse_str(ty).unwrap();
+    let mut fns = Vec::new();
+    let (serde_attr, schema_attr) =
+        generate_sea_orm_default_attrs(&attrs, &struct_name, "at", &ty, &ty, false, &mut fns);
+    assert!(fns.is_empty() && serde_attr.is_empty());
+    assert_eq!(schema_attr.to_string(), expected);
 }
 
 /// `primary_key, auto_increment = false` is a client-supplied key: no

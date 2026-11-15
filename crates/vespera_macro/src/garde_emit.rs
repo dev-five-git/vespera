@@ -130,6 +130,12 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
         .iter()
         .filter_map(|(field, constraints)| {
             let ident = field.ident.as_ref()?;
+            // serde never reads a skipped field (it holds its default): a
+            // rule on it would reject every request.
+            let skip = crate::parser::schema::extract_serde_skip_flags(&field.attrs);
+            if skip.skip || skip.skip_deserializing {
+                return None;
+            }
             let wire_name = crate::parser::extract_field_rename_for(
                 &field.attrs,
                 crate::parser::SerdeSide::Deserialize,
@@ -140,7 +146,10 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
                     rename_all.as_deref(),
                 )
             });
-            emit_field_block(ident, &wire_name, field, constraints)
+            // A flattened field's keys sit at the parent's level on the
+            // wire, so its errors keep the parent's path.
+            let flatten = crate::parser::schema::extract_flatten(&field.attrs);
+            emit_field_block(ident, (&wire_name, flatten), field, constraints)
         })
         .collect();
     // Non-empty: the gate above found a field with a runtime rule, and every
@@ -176,7 +185,7 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
 #[cfg(feature = "validation")]
 fn emit_field_block(
     field_ident: &syn::Ident,
-    field_name_str: &str,
+    (field_name_str, flatten): (&str, bool),
     field: &syn::Field,
     c: &SchemaConstraints,
 ) -> Option<TokenStream> {
@@ -185,22 +194,29 @@ fn emit_field_block(
     }
 
     let field_ty = &field.ty;
-    let numeric_kind = rust_numeric_kind(
-        crate::schema_macro::type_utils::option_inner(field_ty).unwrap_or(field_ty),
-    );
+    // Every `Option` layer: `Option<Option<i32>>` still ranges as an `i32`.
+    let mut numeric_ty = field_ty;
+    while let Some(inner) = crate::schema_macro::type_utils::option_inner(numeric_ty) {
+        numeric_ty = inner;
+    }
+    let numeric_kind = rust_numeric_kind(numeric_ty);
     let exact = ExactBounds::from_attrs(&field.attrs);
     let rule_blocks = emit_rule_blocks(c, &exact, field_ident, numeric_kind.as_deref());
     // `has_runtime_rule` holds, so at least one of the two is non-empty.
     let dive_block = emit_dive_block(c);
 
+    // The field's own path segment; a flattened field keeps the parent's.
+    let nest = if flatten {
+        TokenStream::new()
+    } else {
+        quote! { let mut __garde_path = ::vespera::__validation::garde::util::nested_path!(__garde_path, #field_name_str); }
+    };
     let block = if crate::schema_macro::type_utils::is_option_type(field_ty) {
         // `field_ident` is `&Option<T>` after the `let Self { .. } = self` destructure.
         // Match ergonomics make `inner` end up as `&T`.
         quote! {
             {
-                let mut __garde_path = ::vespera::__validation::garde::util::nested_path!(
-                    __garde_path, #field_name_str
-                );
+                #nest
                 if let ::std::option::Option::Some(__garde_binding) = #field_ident {
                     #rule_blocks
                     #dive_block
@@ -210,9 +226,7 @@ fn emit_field_block(
     } else {
         quote! {
             {
-                let mut __garde_path = ::vespera::__validation::garde::util::nested_path!(
-                    __garde_path, #field_name_str
-                );
+                #nest
                 let __garde_binding = &*#field_ident;
                 #rule_blocks
                 #dive_block
@@ -525,29 +539,85 @@ struct ExactBounds {
 
 #[cfg(feature = "validation")]
 impl ExactBounds {
+    /// Walks the attributes exactly like `try_extract_schema_constraints`
+    /// (every key's payload consumed, a `value_type` read as a type, the
+    /// last `minimum` / `maximum` winning), so the exact bound always
+    /// belongs to the `f64` the parsed constraints carry.
     fn from_attrs(attrs: &[syn::Attribute]) -> Self {
         let mut bounds = Self::default();
         for attr in attrs.iter().filter(|attr| attr.path().is_ident("schema")) {
-            let Ok(metas) = attr.parse_args_with(
-                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
-            ) else {
-                continue;
-            };
-            for meta in metas {
-                let syn::Meta::NameValue(name_value) = meta else {
-                    continue;
-                };
-                let slot = if name_value.path.is_ident("minimum") {
+            // The derive already rejected a malformed attribute.
+            let _ = attr.parse_nested_meta(|meta| {
+                let slot = if meta.path.is_ident("minimum") {
                     &mut bounds.minimum
-                } else if name_value.path.is_ident("maximum") {
+                } else if meta.path.is_ident("maximum") {
                     &mut bounds.maximum
                 } else {
-                    continue;
+                    if meta.path.is_ident("value_type") {
+                        meta.value()?.parse::<syn::Type>()?;
+                    } else if meta.input.peek(syn::token::Paren) {
+                        meta.input.parse::<proc_macro2::Group>()?;
+                    } else if let Ok(value) = meta.value() {
+                        value.parse::<syn::Expr>()?;
+                    }
+                    return Ok(());
                 };
-                *slot = ExactInt::from_expr(&name_value.value);
-            }
+                *slot = ExactInt::from_expr(&meta.value()?.parse()?);
+                Ok(())
+            });
         }
         bounds
+    }
+
+    /// The looser of the exact bound and the documented (`f64`) one `v`,
+    /// within the type's range: past 2^53 the OpenAPI document can only
+    /// carry a rounded value, and a client sending that advertised bound
+    /// must not be rejected.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn loosen(
+        exact: ExactInt,
+        v: f64,
+        bound: Bound,
+        (type_min, type_max): (i128, u128),
+    ) -> ExactInt {
+        // `as` saturates: an out-of-range `f64` lands at the `u128` edge and
+        // is clamped below.
+        let doc = ExactInt {
+            negative: v < 0.0,
+            magnitude: v.abs() as u128,
+        };
+        let looser = match bound {
+            Bound::Min => exact.min(doc),
+            Bound::Max => exact.max(doc),
+        };
+        let lowest = ExactInt {
+            negative: type_min < 0,
+            magnitude: type_min.unsigned_abs(),
+        };
+        let highest = ExactInt {
+            negative: false,
+            magnitude: type_max,
+        };
+        looser.clamp(lowest, highest)
+    }
+}
+
+#[cfg(feature = "validation")]
+impl Ord for ExactInt {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self.negative, other.negative) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            (false, false) => self.magnitude.cmp(&other.magnitude),
+            (true, true) => other.magnitude.cmp(&self.magnitude),
+        }
+    }
+}
+
+#[cfg(feature = "validation")]
+impl PartialOrd for ExactInt {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -596,9 +666,25 @@ fn numeric_some(
     let Some(v) = value else {
         return Ok(quote! { ::std::option::Option::None });
     };
+    let key = match bound {
+        Bound::Min => "minimum",
+        Bound::Max => "maximum",
+    };
+    if !v.is_finite() {
+        return Err(format!("`{key}` must be a finite number (got {v})"));
+    }
     let Some(kind) = numeric_kind else {
-        // Unknown numeric kind — last-resort `as _` and let the user
-        // see a compiler error pointing at their field type.
+        // Unknown numeric kind (a type alias, a newtype): an integer literal
+        // stays unsuffixed so the compiler types and range-checks it;
+        // otherwise last-resort `as _` and let the user see a compiler
+        // error pointing at their field type.
+        if let Some(exact) = exact {
+            let literal: TokenStream = exact
+                .to_string()
+                .parse()
+                .expect("an integer literal is a valid token stream");
+            return Ok(quote! { ::std::option::Option::Some(#literal) });
+        }
         return Ok(quote! { ::std::option::Option::Some(#v as _) });
     };
     let ty_ident = syn::Ident::new(kind, Span::call_site());
@@ -608,10 +694,6 @@ fn numeric_some(
     if let Some(exact) = exact {
         // An integer literal bound keeps every digit: the `f64` copy loses
         // precision past 2^53 (`i64::MAX` would read as 2^63 and "not fit").
-        let key = match bound {
-            Bound::Min => "minimum",
-            Bound::Max => "maximum",
-        };
         let fits = if exact.negative {
             exact.magnitude <= type_min.unsigned_abs()
         } else {
@@ -622,6 +704,7 @@ fn numeric_some(
                 "`{key} = {exact}` does not fit the field type `{kind}` (range {type_min}..={type_max})"
             ));
         }
+        let exact = ExactBounds::loosen(exact, v, bound, (type_min, type_max));
         let literal: TokenStream = format!("{exact}{kind}")
             .parse()
             .expect("an integer literal with a type suffix is a valid token stream");
@@ -629,9 +712,9 @@ fn numeric_some(
     }
     // `+ 0.0` turns a `-0.0` (`minimum = -0.5` rounded up) into `0.0`, so no
     // `-0u32` literal is ever emitted.
-    let (key, rounded) = match bound {
-        Bound::Min => ("minimum", v.ceil() + 0.0),
-        Bound::Max => ("maximum", v.floor() + 0.0),
+    let rounded = match bound {
+        Bound::Min => v.ceil() + 0.0,
+        Bound::Max => v.floor() + 0.0,
     };
     // Every integer type's MIN is a power of two (exact as f64), so the lower
     // bound compares in the float domain; the upper one compares as `u128`
@@ -685,3 +768,5 @@ fn rust_numeric_kind(ty: &Type) -> Option<String> {
 
 #[cfg(all(test, feature = "validation"))]
 mod tests;
+#[cfg(all(test, feature = "validation"))]
+mod tests_wire;

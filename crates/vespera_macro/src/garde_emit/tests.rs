@@ -500,10 +500,11 @@ fn only_maximum_set_emits_none_for_min_bound() {
 fn minimum_on_non_primitive_field_falls_back_to_as_wildcard() {
     // Field type is a user-defined `Money` newtype — peel_option
     // returns None and rust_numeric_kind returns None, forcing
-    // numeric_some down the `as _` fallback branch.
+    // numeric_some down the `as _` fallback branch (an integer literal
+    // stays an unsuffixed literal the compiler types and range-checks).
     let s: DeriveInput = parse_quote! {
         struct Order {
-            #[schema(minimum = 0)]
+            #[schema(minimum = 0.5)]
             pub price: Money,
         }
     };
@@ -655,7 +656,9 @@ fn integer_range_covers_every_kind(#[case] kind: &str, #[case] expected: Option<
 }
 
 /// Integer-literal bounds keep every digit: through `f64` `i64::MAX` read as
-/// 2^63 (a false "does not fit") and `2^53 + 1` lost its last unit.
+/// 2^63 (a false "does not fit").  A bound the `f64` OpenAPI value rounds
+/// (`2^53 + 1` is documented as 2^53) loosens to the documented value, so a
+/// client sending the advertised bound is accepted.
 #[rstest::rstest]
 #[case::i64_extremes("garde_bound_exact_i64_extremes", parse_quote! {
     struct U { #[schema(minimum = -9223372036854775808, maximum = 9223372036854775807)] pub n: i64 }

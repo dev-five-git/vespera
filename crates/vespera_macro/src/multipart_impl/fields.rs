@@ -19,6 +19,9 @@ pub(super) struct FieldCodegen<'a> {
     /// The type each parsed (non-skipped) field is read as — the
     /// `TryFromFieldWithState` bound a generic struct's impl needs.
     pub(super) parsed_types: Vec<Type>,
+    /// The type of each field filled from `Default::default()` — the
+    /// `Default` bound a generic struct's impl needs (serde infers it too).
+    pub(super) default_types: Vec<Type>,
     /// Malformed `#[form_data(...)]` attributes.
     pub(super) errors: Vec<syn::Error>,
 }
@@ -51,6 +54,7 @@ pub(super) fn process_fields<'a>(
         post_loop: Vec::new(),
         idents: Vec::new(),
         parsed_types: Vec::new(),
+        default_types: Vec::new(),
         errors: Vec::new(),
     };
     // Wire name -> the field that claimed it first: two fields resolving to
@@ -79,6 +83,7 @@ pub(super) fn process_fields<'a>(
                 DefaultKind::Function(fn_path) => default_fn_call(ident, fn_path, locals),
                 DefaultKind::Container => quote! { __vespera_default__.#ident },
                 DefaultKind::Trait | DefaultKind::None => {
+                    cg.default_types.push(ty.clone());
                     quote! { ::core::default::Default::default() }
                 }
             };
@@ -209,6 +214,9 @@ fn push_post_loop<'a>(
         return;
     }
 
+    if matches!(default_kind, DefaultKind::Trait) {
+        cg.default_types.push(ty.clone());
+    }
     cg.post_loop.push(post_loop_binding(
         ident,
         ty,

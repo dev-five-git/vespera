@@ -34,6 +34,18 @@ async fn custom_codecs_round_trip_in_their_documented_shape() {
     StatusCode::OK,
     json!({"amount": "12.34", "currency": "EUR"})
 )]
+#[case::negative_money(
+    "/codecs/money",
+    json!({"cents": -5, "currency": "EUR"}),
+    StatusCode::OK,
+    json!({"amount": "-0.05", "currency": "EUR"})
+)]
+#[case::negative_money_above_one(
+    "/codecs/money",
+    json!({"cents": -105, "currency": "EUR"}),
+    StatusCode::OK,
+    json!({"amount": "-1.05", "currency": "EUR"})
+)]
 #[case::stamp("/codecs/stamp", json!(1_700_000_000), StatusCode::OK, json!(1_700_000_000))]
 #[case::json(
     "/codecs/json",

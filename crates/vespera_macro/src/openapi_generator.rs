@@ -28,6 +28,7 @@ use component_schemas::{
 pub use defaults::extract_default_value_from_function;
 #[cfg(test)]
 pub use defaults::find_function_in_file;
+pub use defaults::process_default_functions_for;
 use paths::build_path_items;
 pub use paths::{check_duplicate_routes, find_duplicate_operation_id};
 pub use route_claims::{RouteClaims, RouteConflict};

@@ -54,8 +54,9 @@ pub(super) fn module_cfg_predicates(folder_path: &Path, segments: &[String]) -> 
                 continue;
             };
             for item in &file.items {
+                // `pub mod r#type;` declares the `type.rs` segment.
                 if let Item::Mod(module) = item
-                    && module.ident == segment.as_str()
+                    && crate::parser::strip_raw_prefix_owned(module.ident.to_string()) == *segment
                 {
                     predicates.extend(cfg_predicates(&module.attrs));
                 }
@@ -115,23 +116,29 @@ pub(super) fn inline_mod_route_error(file: &Path, (module, handler): &(String, S
 /// `(module, handler)` of a fast-path `file`'s stored handler declared inside
 /// an inline module.  `#[route]` recorded where each handler sits, so a known
 /// inline one is rejected without re-parsing; only handlers whose scope could
-/// not be located fall back to the source scan.
+/// not be located fall back to the source scan.  Inside rust-analyzer every
+/// handler takes the source scan: the storage still holds the entry of a
+/// handler since moved out of its inline module (a different scope, so it
+/// was never replaced), which would keep the error alive.
 pub(super) fn stored_routes_inline_module(
     file: &Path,
     stored_routes: &[&crate::route_impl::StoredRouteInfo],
 ) -> Option<(String, String)> {
-    if let Some(found) = stored_routes.iter().find_map(|stored| {
-        stored
-            .inline_module
-            .as_ref()
-            .filter(|module| !module.is_empty())
-            .map(|module| (module.clone(), stored.fn_name.clone()))
-    }) {
+    let in_ide = crate::macro_storage::in_long_lived_server();
+    if !in_ide
+        && let Some(found) = stored_routes.iter().find_map(|stored| {
+            stored
+                .inline_module
+                .as_ref()
+                .filter(|module| !module.is_empty())
+                .map(|module| (module.clone(), stored.fn_name.clone()))
+        })
+    {
         return Some(found);
     }
     let stored_names: Vec<&str> = stored_routes
         .iter()
-        .filter(|stored| stored.inline_module.is_none())
+        .filter(|stored| in_ide || stored.inline_module.is_none())
         .map(|stored| stored.fn_name.as_str())
         .collect();
     if stored_names.is_empty() {
@@ -173,6 +180,7 @@ mod tests {
     #[case::two_cfgs("#[cfg(unix)] #[cfg(test)] #[cfg] mod admin;", &["admin"], &["unix", "test"])]
     #[case::other_module_gated("#[cfg(test)] mod tests; mod admin;", &["admin"], &[])]
     #[case::folder_root(r#"#[cfg(feature = "x")] mod admin;"#, &[], &[])]
+    #[case::raw_keyword_module("#[cfg(unix)] pub mod r#type;", &["type"], &["unix"])]
     fn module_declaration_cfg(
         #[case] mod_rs: &str,
         #[case] segments: &[&str],
@@ -261,6 +269,28 @@ mod tests {
             stored_inline_mod_route(&shadowed, &["list", "create"]),
             Some(("b".to_string(), "create".to_string()))
         );
+        // rust-analyzer still stores `moved` in `mod old` after it moved to
+        // the top level: the IDE re-reads the file instead of trusting it.
+        let moved = dir.path().join("moved.rs");
+        std::fs::write(&moved, "#[route(get)] pub async fn moved() {}").unwrap();
+        file_cache::bump_epoch();
+        let stale = crate::route_impl::StoredRouteInfo {
+            fn_name: "moved".to_string(),
+            inline_module: Some("old".to_string()),
+            ..Default::default()
+        };
+        let current = crate::route_impl::StoredRouteInfo {
+            inline_module: Some(String::new()),
+            ..stale.clone()
+        };
+        assert!(stored_routes_inline_module(&moved, &[&stale, &current]).is_some());
+        {
+            let _ide = crate::macro_storage::test_ide::force();
+            assert_eq!(
+                stored_routes_inline_module(&moved, &[&stale, &current]),
+                None
+            );
+        }
         let message = inline_mod_route_error(&file, &("v2".to_string(), "list".to_string()));
         assert!(
             message.contains("inline module `mod v2 { .. }`"),

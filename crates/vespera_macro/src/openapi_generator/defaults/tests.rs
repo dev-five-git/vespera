@@ -32,7 +32,21 @@ fn parse_type(src: &str) -> syn::Type {
 #[case::vec_macro_nonempty("vec![1, 2, 3]", Some(json!([1, 2, 3])))]
 #[case::vec_macro_strings(r#"vec!["a", "b"]"#, Some(json!(["a", "b"])))]
 #[case::vec_macro_unresolvable("vec![some_var]", None)]
-#[case::int_to_string("42.to_string()", Some(Value::Number(42.into())))]
+#[case::int_to_string("42.to_string()", Some(json!("42")))]
+// `Vec` has no `Display`: not a default the code could compile with.
+#[case::vec_of_strings_to_string(r#"vec!["a"].to_string()"#, None)]
+#[case::negative_int("-1", Some(json!(-1)))]
+#[case::negative_float("-0.5", Some(json!(-0.5)))]
+#[case::negative_non_number("-true", None)]
+#[case::negative_unresolvable("-x", None)]
+#[case::negative_i64_min("-9223372036854775808", None)]
+#[case::to_owned(r#""x".to_owned()"#, Some(json!("x")))]
+#[case::into(r#""x".into()"#, Some(json!("x")))]
+#[case::into_non_literal("x.into()", None)]
+#[case::conversion_with_arguments(r#""x".into(1)"#, None)]
+#[case::string_new("String::new()", Some(json!("")))]
+#[case::vec_new("Vec::new()", Some(json!([])))]
+#[case::other_new("HashMap::new()", None)]
 #[case::binary_unsupported("1 + 2", None)]
 #[case::method_call_non_to_string(r#""hello".len()"#, None)]
 #[case::byte_lit_unsupported("b'a'", None)]
@@ -235,6 +249,9 @@ fn extract_schema_default_attr_cases(
 #[case::float("2.72", json!(2.72))]
 #[case::bool("true", json!(true))]
 #[case::string_fallback("hello world", json!("hello world"))]
+#[case::empty_array("[]", json!([]))]
+#[case::object(r#"{"a": 1}"#, json!({"a": 1}))]
+#[case::json_scalar_keeps_old_rules("null", json!("null"))]
 fn parse_default_string_to_json_value_cases(#[case] input: &str, #[case] expected: Value) {
     assert_eq!(parse_default_string_to_json_value(input), expected);
 }
@@ -274,17 +291,21 @@ fn set_property_default_does_not_overwrite_existing() {
     assert_inline_default(&properties, "name", &json!("existing"));
 }
 
+/// A `$ref` property keeps its reference and gains a sibling `default`.
 #[test]
-fn set_property_default_skips_ref_schema() {
+fn set_property_default_documents_a_ref_schema() {
     let mut properties = BTreeMap::new();
     properties.insert(
-        "user".to_string(),
-        SchemaRef::Ref(Reference::schema("User")),
+        "status".to_string(),
+        SchemaRef::Ref(Reference::schema("Status")),
     );
 
-    set_property_default(&mut properties, "user", json!("ignored"));
+    set_property_default(&mut properties, "status", json!("active"));
 
-    assert!(matches!(properties.get("user"), Some(SchemaRef::Ref(_))));
+    assert_eq!(
+        serde_json::to_value(&properties["status"]).unwrap(),
+        json!({"$ref": "#/components/schemas/Status", "default": "active"})
+    );
 }
 
 #[test]

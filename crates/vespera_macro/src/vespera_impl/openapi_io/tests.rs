@@ -13,6 +13,13 @@ use crate::vespera_impl::cache::hash_str;
 /// A fresh tempdir posing as `CARGO_MANIFEST_DIR` for this test thread only,
 /// so the `target/vespera/` spec sidecars `generate_and_write_openapi` writes
 /// never collide with another concurrently running test's.
+/// The `vespera` sidecar directory the code under test resolves for the
+/// crate at `manifest` (`find_target_dir`, so `CARGO_TARGET_DIR` /
+/// `VESPERA_TARGET_DIR` are honoured like in the build).
+fn vespera_dir_of(manifest: &std::path::Path) -> std::path::PathBuf {
+    find_target_dir(manifest).join("vespera")
+}
+
 fn isolated_target() -> (TempDir, EnvGuard) {
     let dir = TempDir::new().expect("Failed to create temp dir");
     let guard = test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
@@ -305,7 +312,7 @@ fn test_generate_and_write_openapi_with_merge_and_valid_spec() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
     // Create the vespera directory with a spec file
-    let target_dir = temp_dir.path().join("target").join("vespera");
+    let target_dir = vespera_dir_of(temp_dir.path());
     fs::create_dir_all(&target_dir).expect("Failed to create target/vespera dir");
 
     // Write a valid OpenAPI spec file
@@ -351,7 +358,7 @@ fn test_generate_and_write_openapi_with_merge_and_valid_spec() {
 #[test]
 fn merged_child_schema_conflict_is_a_spanned_compile_error() {
     let temp_dir = TempDir::new().unwrap();
-    let target_dir = temp_dir.path().join("target/vespera");
+    let target_dir = vespera_dir_of(temp_dir.path());
     fs::create_dir_all(&target_dir).unwrap();
     let spec = |property: &str, schema_type: &str| {
         serde_json::json!({
@@ -414,7 +421,7 @@ fn merged_child_schema_conflict_is_a_spanned_compile_error() {
 fn merge_resolves_child_specs_through_a_symlinked_manifest_dir() {
     let temp_dir = TempDir::new().unwrap();
     let real = temp_dir.path().join("real");
-    let target_dir = real.join("target/vespera");
+    let target_dir = vespera_dir_of(&real);
     fs::create_dir_all(&target_dir).unwrap();
     let child = serde_json::json!({
         "openapi": "3.1.0",
@@ -590,7 +597,7 @@ fn merge_input(path: syn::Path) -> ProcessedVesperaInput {
 #[test]
 fn merge_reports_missing_and_malformed_child_specs() {
     let temp = TempDir::new().unwrap();
-    let vespera_dir = temp.path().join("target/vespera");
+    let vespera_dir = vespera_dir_of(temp.path());
     fs::create_dir_all(&vespera_dir).unwrap();
     let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
 
@@ -637,7 +644,7 @@ fn ensure_cached_openapi_reports_parent_creation_error() {
 fn sidecar_validation_covers_missing_fingerprints_corruption_and_success() {
     let temp = TempDir::new().unwrap();
     let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
-    let vespera_dir = temp.path().join("target/vespera");
+    let vespera_dir = vespera_dir_of(temp.path());
     fs::create_dir_all(&vespera_dir).unwrap();
     let compact = embed_spec_path("t", hash_str("compact"));
     let pretty = pretty_sidecar_path("t", hash_str("pretty"));
@@ -646,11 +653,18 @@ fn sidecar_validation_covers_missing_fingerprints_corruption_and_success() {
     let compact_fp = path_fingerprint(&compact).unwrap();
     let pretty_fp = path_fingerprint(&pretty).unwrap();
 
+    // No stored fingerprint: the content hash decides.
     assert!(
-        load_validated_sidecar_specs("t", Some(hash_str("compact")), None, None, None).is_none()
+        load_validated_sidecar_specs("t", Some(hash_str("compact")), None, None, None).is_some()
     );
     assert!(
-        load_validated_sidecar_specs("t", None, Some(hash_str("pretty")), None, None).is_none()
+        load_validated_sidecar_specs("t", None, Some(hash_str("pretty")), None, None).is_some()
+    );
+    let wrong = embed_spec_path("t", hash_str("other"));
+    fs::write(&wrong, "not other").unwrap();
+    assert!(load_validated_sidecar_specs("t", Some(hash_str("other")), None, None, None).is_none());
+    assert!(
+        load_validated_sidecar_specs("t", None, Some(hash_str("missing")), None, None).is_none()
     );
     assert!(
         load_validated_sidecar_specs(
@@ -713,8 +727,8 @@ fn sidecar_validation_accepts_cache_without_generated_specs() {
 fn embedding_reports_directory_creation_and_spec_write_errors() {
     let create_temp = TempDir::new().unwrap();
     let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", create_temp.path());
-    fs::create_dir_all(create_temp.path().join("target")).unwrap();
-    fs::write(create_temp.path().join("target/vespera"), "blocking file").unwrap();
+    fs::create_dir_all(vespera_dir_of(create_temp.path()).parent().unwrap()).unwrap();
+    fs::write(vespera_dir_of(create_temp.path()), "blocking file").unwrap();
     let Err(create_error) = write_spec_for_embedding("t", Some("{}".to_string())) else {
         panic!("blocking parent must fail directory creation");
     };
@@ -742,7 +756,7 @@ fn embedding_reports_directory_creation_and_spec_write_errors() {
 #[test]
 fn merged_children_with_same_operation_id_is_a_compile_error() {
     let temp_dir = TempDir::new().unwrap();
-    let target_dir = temp_dir.path().join("target/vespera");
+    let target_dir = vespera_dir_of(temp_dir.path());
     fs::create_dir_all(&target_dir).unwrap();
     let spec = |path: &str| {
         serde_json::json!({
@@ -783,13 +797,6 @@ fn merged_children_with_same_operation_id_is_a_compile_error() {
 /// A parent route may reference a security scheme that only a merged child
 /// declares: validation runs against the MERGED `components.securitySchemes`.
 /// A name declared nowhere is still rejected.
-///
-/// `#[serial]` MUST follow the `#[case]` list. Placed between `#[rstest]` and
-/// the cases, the generated case functions did not hold the serial lock
-/// (`serial_test::is_locked_serially` was false inside them), so they raced
-/// every other `CARGO_MANIFEST_DIR`-mutating test in this crate — the cause
-/// of the flaky merge / sidecar / from_model failures under multi-threaded
-/// `cargo test`.
 #[rstest::rstest]
 #[case::declared_by_child("childAuth", true, true)]
 #[case::declared_by_child_without_doc("childAuth", true, false)]
@@ -802,7 +809,7 @@ fn security_references_are_validated_after_merge(
     #[case] with_doc: bool,
 ) {
     let temp_dir = TempDir::new().unwrap();
-    let target_dir = temp_dir.path().join("target/vespera");
+    let target_dir = vespera_dir_of(temp_dir.path());
     fs::create_dir_all(&target_dir).unwrap();
     let child = serde_json::json!({
         "openapi": "3.1.0",
@@ -871,7 +878,7 @@ fn security_references_are_validated_after_merge(
 #[test]
 fn security_without_doc_skips_unusable_children() {
     let temp_dir = TempDir::new().unwrap();
-    let target_dir = temp_dir.path().join("target/vespera");
+    let target_dir = vespera_dir_of(temp_dir.path());
     fs::write(
         crate::vespera_impl::merge_lookup::child_spec_path(&target_dir, "broken", "Broken"),
         "{ not json",

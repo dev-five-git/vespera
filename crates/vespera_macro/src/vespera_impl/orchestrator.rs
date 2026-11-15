@@ -160,6 +160,15 @@ pub fn process_vespera_macro(
         let mut metadata = cache.metadata;
         finalize_metadata(&mut metadata, schema_storage, route_storage, "vespera!")?;
         stage("cache_branch_metadata_merge");
+        // A cache hit only proves the parent's own sources are unchanged — a
+        // child's routes can still collide with them.  Checked before any
+        // file is written, so a failed build never replaces the spec.
+        check_merge_route_conflicts(
+            &metadata,
+            &doc_routes(processed),
+            &processed.merge,
+            &mut merge_specs,
+        )?;
 
         // Ensure openapi.json files exist and are up-to-date from cache
         ensure_openapi_files_from_cache(&processed.openapi_file_names, sidecars.pretty.as_deref())?;
@@ -183,6 +192,12 @@ pub fn process_vespera_macro(
         // passed, so the check would be redundant.
         crate::parser::validate_schema_backed_extractors_with_cache(&metadata, &file_asts)?;
         stage("validate_schema_backed_extractors");
+        check_merge_route_conflicts(
+            &metadata,
+            &doc_routes(processed),
+            &processed.merge,
+            &mut merge_specs,
+        )?;
 
         let openapi = generate_and_write_openapi(
             processed,
@@ -223,14 +238,6 @@ pub fn process_vespera_macro(
 
         (metadata, spec_tokens)
     };
-    // Both branches: a cache hit only proves the parent's own sources are
-    // unchanged — a child's routes can still collide with them.
-    check_merge_route_conflicts(
-        &metadata,
-        &doc_routes(processed),
-        &processed.merge,
-        &mut merge_specs,
-    )?;
     let export_checks = merged_export_checks(&processed.merge, &merge_specs);
 
     // --- Cron job discovery: CRON_STORAGE + module-tree scan fallback ---
@@ -243,6 +250,8 @@ pub fn process_vespera_macro(
         let storage = crate::macro_storage::retain_declared(&storage);
         let src_dir = crate::env_access::var("CARGO_MANIFEST_DIR")
             .ok()
+            // Without the `cron` feature no `#[cron]` is vespera's: never scan.
+            .filter(|_| cfg!(feature = "cron"))
             .map(|dir| PathBuf::from(dir).join("src"));
         let call_site = Span::call_site().local_file();
         discover_cron_jobs(&storage, src_dir.as_deref(), call_site.as_deref())
@@ -317,6 +326,20 @@ pub fn process_export_app(
     } else {
         None
     };
+
+    // One sidecar / cache / key per `<crate>/<App>`: a second same-named
+    // export of this crate build is rejected (`export_names`).
+    let build = format!(
+        "{manifest_dir}/{}{}",
+        current_export_crate(),
+        super::path_utils::target_variant()
+    );
+    super::export_names::claim_export_name(
+        &build,
+        &name.to_string(),
+        super::export_names::current_site(name),
+    )
+    .map_err(|msg| syn::Error::new(name.span(), msg))?;
 
     let folder_path = find_folder_path(folder_name)?;
     if !folder_path.exists() {

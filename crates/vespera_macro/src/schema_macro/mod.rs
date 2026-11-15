@@ -89,8 +89,13 @@ pub fn generate_schema_code(
     let pick_set: HashSet<String> = input.pick.iter().flatten().cloned().collect();
 
     // Generate schema with filtering
-    let schema_tokens =
-        generate_filtered_schema(&parsed_struct, &omit_set, &pick_set, schema_storage);
+    let schema_tokens = generate_filtered_schema(
+        &parsed_struct,
+        &omit_set,
+        &pick_set,
+        schema_storage,
+        &struct_def.field_defaults,
+    );
 
     Ok(schema_tokens)
 }

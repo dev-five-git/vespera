@@ -97,10 +97,19 @@ fn collect_use(
             collect_use(&path.tree, prefix, aliases);
             prefix.pop();
         }
+        // `use child::{self, X}` binds `child` itself, not a name `self`.
+        syn::UseTree::Name(name) if name.ident == "self" => {
+            if let Some(last) = prefix.last() {
+                aliases.insert(last.clone(), prefix.clone());
+            }
+        }
         syn::UseTree::Name(name) => {
             let mut full = prefix.clone();
             full.push(name.ident.to_string());
             aliases.insert(name.ident.to_string(), full);
+        }
+        syn::UseTree::Rename(rename) if rename.ident == "self" => {
+            aliases.insert(rename.rename.to_string(), prefix.clone());
         }
         syn::UseTree::Rename(rename) => {
             let mut full = prefix.clone();
@@ -408,6 +417,27 @@ mod tests {
         let _manifest = crate::env_access::test_env::remove_var("CARGO_MANIFEST_DIR");
         let cache = super::super::cache::MergeSpecCache::with_call_site(None);
         cache.check_unambiguous(&merge).unwrap();
+    }
+
+    /// `use child::{self, X}` (and `self as c`) alias the module itself.
+    #[test]
+    fn self_imports_alias_the_module() {
+        let temp = TempDir::new().unwrap();
+        let file = temp.path().join("lib.rs");
+        std::fs::write(
+            &file,
+            "use child::{self, ChildApp}; use other::{self as o}; use {self};",
+        )
+        .unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let aliases = use_aliases(Some(&file));
+        assert_eq!(aliases.get("child"), Some(&vec!["child".to_string()]));
+        assert_eq!(aliases.get("o"), Some(&vec!["other".to_string()]));
+        assert_eq!(
+            aliases.get("ChildApp"),
+            Some(&vec!["child".to_string(), "ChildApp".to_string()])
+        );
+        assert!(!aliases.contains_key("self"));
     }
 
     #[test]

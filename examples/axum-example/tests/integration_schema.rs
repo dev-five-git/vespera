@@ -35,6 +35,51 @@ pub struct TestUserCamelCase {
     pub email_address: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Default, Schema)]
+#[serde(rename_all = "lowercase")]
+pub enum TestStatus {
+    #[default]
+    Active,
+    Archived,
+}
+
+#[derive(Serialize, Deserialize, Clone, Schema)]
+pub struct TestWithRefDefault {
+    #[serde(default)]
+    #[schema(default = "active")]
+    pub status: TestStatus,
+}
+
+/// An explicit `#[schema(default)]` on a `$ref`-typed field is documented
+/// as a sibling of the `$ref` (OpenAPI 3.1), not dropped.
+#[test]
+fn test_schema_macro_documents_ref_default() {
+    let schema = schema!(TestWithRefDefault);
+    let status = serde_json::to_value(&schema.properties.unwrap()["status"]).unwrap();
+    assert_eq!(
+        status,
+        json!({ "$ref": "#/components/schemas/TestStatus", "default": "active" })
+    );
+}
+
+/// `schema_type!` of a cross-file model whose `DateTimeLocal` field has a
+/// `NOW()` default compiles (no OpenAPI default is advertised for a
+/// machine-dependent value) and serde fills the omitted field with the epoch.
+#[tokio::test]
+async fn test_schema_type_local_now_default() {
+    let server = TestServer::new(create_app().await);
+    let response = server
+        .post("/uuid-items/clock")
+        .json(&json!({ "id": 7 }))
+        .await;
+    response.assert_status_ok();
+    let clock: serde_json::Value = response.json();
+    assert_eq!(clock["id"], 7);
+    let created_at = clock["createdAt"].as_str().unwrap();
+    let parsed = vespera::chrono::DateTime::parse_from_rfc3339(created_at).unwrap();
+    assert_eq!(parsed.timestamp(), 0, "{created_at}");
+}
+
 #[test]
 fn test_schema_macro_full() {
     // Generate full schema for TestUser
@@ -133,6 +178,12 @@ fn test_schema_macro_with_optional_fields() {
 
     let properties = user_schema.properties.unwrap();
     assert_eq!(properties.len(), 4);
+    // The component schema's `default` too: `schema!` applies the same
+    // default post-processing.
+    let vespera::schema::SchemaRef::Inline(bio) = &properties["bio"] else {
+        panic!("inline bio");
+    };
+    assert_eq!(bio.default, Some(json!("")));
 
     // Required is nullability-only, matching the OpenAPI component schema:
     // 'id'/'name' are non-Option, and 'bio' is non-Option too — its

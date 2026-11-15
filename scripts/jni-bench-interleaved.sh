@@ -75,10 +75,11 @@ build_side() { # <side> <source-tree>
   [ -n "$(ls -A "$work/lib-$side")" ] || { echo "no cdylib built for $side" >&2; exit 1; }
 
   (cd "$tree/libs/vespera-bridge" && sh ./gradlew jar --console=plain -q)
-  local jar
-  jar=$(find "$tree/libs/vespera-bridge/build/libs" -name 'vespera-bridge-*.jar' \
-    ! -name '*-sources.jar' ! -name '*-javadoc.jar' | head -n 1)
-  [ -n "$jar" ] || { echo "no vespera-bridge jar built for $side" >&2; exit 1; }
+  # The JAR of THIS tree's version: build/libs may still hold older ones.
+  local jar version
+  version=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' "$tree/libs/vespera-bridge/build.gradle.kts" | head -n 1)
+  jar="$tree/libs/vespera-bridge/build/libs/vespera-bridge-$version.jar"
+  [ -n "$version" ] && [ -f "$jar" ] || { echo "no vespera-bridge $version jar built for $side" >&2; exit 1; }
   cp "$jar" "$work/bridge-$side.jar"
 
   mkdir -p "$work/classes-$side"

@@ -46,7 +46,15 @@ fn every_flow_kind_parses_with_its_urls_and_scopes() {
 )]
 #[case::implicit_missing_authorization_url(
     "implicit_missing_authorization_url",
-    quote::quote!(= { implicit = { token_url = "https://t" } })
+    quote::quote!(= { implicit = { scopes = {} } })
+)]
+#[case::implicit_with_token_url(
+    "implicit_with_token_url",
+    quote::quote!(= { implicit = { authorization_url = "https://a", token_url = "https://t" } })
+)]
+#[case::password_with_authorization_url(
+    "password_with_authorization_url",
+    quote::quote!(= { password = { authorization_url = "https://a", token_url = "https://t" } })
 )]
 #[case::authorization_code_missing_token_url(
     "authorization_code_missing_token_url",

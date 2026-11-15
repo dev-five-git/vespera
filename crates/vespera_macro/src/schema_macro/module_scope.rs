@@ -169,6 +169,54 @@ pub fn struct_in_items(items: &[syn::Item], name: &str) -> Option<String> {
 /// file's top level) when it is not found — a `schema_type!` DTO is not
 /// written in the file at all.
 pub fn item_module_chain(items: &[syn::Item], name: &str, line: usize) -> Vec<String> {
+    pick_chain(chain_candidates(items, name), line)
+}
+
+/// [`item_module_chain`] for `file`, whose cached parse is `items`.  A repeated
+/// name is told apart by line, so the file is then re-parsed with
+/// proc-macro2's fallback forced: inside the compiler every token of re-parsed
+/// text carries the call site's span, so no candidate's line would match.
+pub fn item_module_chain_in_file(
+    file: &Path,
+    items: &[syn::Item],
+    name: &str,
+    line: usize,
+) -> Vec<String> {
+    /// Restores proc-macro2's normal mode even if parsing panics.
+    struct Unforce;
+    impl Drop for Unforce {
+        fn drop(&mut self) {
+            proc_macro2::fallback::unforce();
+        }
+    }
+    let found = chain_candidates(items, name);
+    if found.len() <= 1 {
+        return pick_chain(found, line);
+    }
+    let Some(content) = file_cache::get_file_content(file) else {
+        return Vec::new();
+    };
+    proc_macro2::fallback::force();
+    let _unforce = Unforce;
+    syn::parse_file(&content)
+        .map(|parsed| item_module_chain(&parsed.items, name, line))
+        .unwrap_or_default()
+}
+
+/// The only candidate's chain, or (several) the one whose ident is at `line`.
+fn pick_chain(mut found: Vec<(usize, Vec<String>)>, line: usize) -> Vec<String> {
+    if found.len() > 1 {
+        found.retain(|(found_line, _)| *found_line == line);
+    }
+    match found.as_mut_slice() {
+        [(_, chain)] => std::mem::take(chain),
+        _ => Vec::new(),
+    }
+}
+
+/// Every struct / enum `name` in `items` (inline modules included): its
+/// ident's line and inline `mod` chain.
+fn chain_candidates(items: &[syn::Item], name: &str) -> Vec<(usize, Vec<String>)> {
     fn walk(
         items: &[syn::Item],
         name: &str,
@@ -196,13 +244,7 @@ pub fn item_module_chain(items: &[syn::Item], name: &str, line: usize) -> Vec<St
     }
     let mut found = Vec::new();
     walk(items, name, &mut Vec::new(), &mut found);
-    if found.len() > 1 {
-        found.retain(|(found_line, _)| *found_line == line);
-    }
-    match found.as_slice() {
-        [(_, chain)] => chain.clone(),
-        _ => Vec::new(),
-    }
+    found
 }
 
 /// The struct `name` defined anywhere in `items` (inline modules included)

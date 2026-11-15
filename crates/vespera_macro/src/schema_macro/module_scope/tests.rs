@@ -379,3 +379,29 @@ fn item_module_chain_walks_inline_modules(
     .unwrap();
     assert_eq!(item_module_chain(&file.items, name, line), expected);
 }
+
+/// `item_module_chain_in_file` re-parses the file for real line positions
+/// when a name repeats: the cached `items` here stand for a compiler parse
+/// whose tokens all sit on one line (the call site), which matches no line.
+#[rstest]
+#[case::repeated_name_reparsed("Dup", 5, true, &["b2"])]
+#[case::unique_name_uses_items("Kind", 0, true, &["a"])]
+#[case::unreadable_file("Dup", 5, false, &[])]
+fn item_module_chain_in_file_reparses_repeated_names(
+    #[case] name: &str,
+    #[case] line: usize,
+    #[case] write: bool,
+    #[case] expected: &[&str],
+) {
+    let source = "mod a {\n    pub enum Kind { A }\n}\n\nmod b2 { pub struct Dup; }\nmod b3 { pub struct Dup; }\n";
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("lib.rs");
+    if write {
+        std::fs::write(&file, source).unwrap();
+    }
+    let one_line = syn::parse_file(&source.replace('\n', " ")).unwrap();
+    assert_eq!(
+        item_module_chain_in_file(&file, &one_line.items, name, line),
+        expected
+    );
+}
