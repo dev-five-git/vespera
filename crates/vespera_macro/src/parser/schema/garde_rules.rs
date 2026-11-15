@@ -403,8 +403,10 @@ fn slice_elem(ty: &Type) -> Option<(&Type, bool)> {
 
 /// Whether a garde `pattern` (Rust `regex` syntax) reads the same as an
 /// ECMA-262 `pattern`. A Rust-only construct — an inline flag group (`(?i)`,
-/// `(?x:..)`), `(?P<name>..)`, `\A` / `\z`, `\x{..}`, a one-letter `\pL`, or
-/// inside a character class a nested class / POSIX class (`[a[b]]`,
+/// `(?x:..)`), `(?P<name>..)`, `\A` / `\z`, `\x{..}`, a one-letter `\pL`,
+/// the word-boundary escapes `\<` / `\>` / `\b{..}`, the escapes `\U..` /
+/// `\u{..}` / `\a`, a `}` that closes no `{` (a literal in Rust, a syntax
+/// error in ECMA-262's `u` mode), or inside a character class a nested class / POSIX class (`[a[b]]`,
 /// `[[:alpha:]]`), a set operation (`&&`, `--`, `~~`) or a leading `]`
 /// (literal in Rust, an empty class in ECMA-262) — makes it skipped rather
 /// than documented wrongly. Known limitation: `\d` / `\w` / `\s` / `\b` are
@@ -415,6 +417,8 @@ fn is_ecma_compatible(pattern: &str) -> bool {
     let mut in_class = false;
     // Right after a class's `[` / `[^`.
     let mut class_start = false;
+    // Inside a `{..}` outside a class.
+    let mut in_brace = false;
     while let Some(ch) = chars.next() {
         let next = chars.peek().copied();
         let first = std::mem::take(&mut class_start);
@@ -422,8 +426,8 @@ fn is_ecma_compatible(pattern: &str) -> bool {
             ('\\', Some(escaped)) => {
                 chars.next();
                 let brace = chars.peek() == Some(&'{');
-                matches!(escaped, 'A' | 'z')
-                    || (escaped == 'x' && brace)
+                matches!(escaped, 'A' | 'z' | '<' | '>' | 'U' | 'a')
+                    || (matches!(escaped, 'x' | 'b' | 'u') && brace)
                     || (matches!(escaped, 'p' | 'P') && !brace)
             }
             ('(', Some('?')) if !in_class => {
@@ -443,6 +447,11 @@ fn is_ecma_compatible(pattern: &str) -> bool {
                 first
             }
             ('&' | '-' | '~', Some(op)) => in_class && op == ch,
+            ('{', _) if !in_class => {
+                in_brace = true;
+                false
+            }
+            ('}', _) if !in_class => !std::mem::take(&mut in_brace),
             _ => false,
         };
         if rust_only {

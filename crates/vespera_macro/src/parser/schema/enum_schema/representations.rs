@@ -98,9 +98,16 @@ pub(super) fn parse_externally_tagged_enum(
     for variant in emitted_variants(enum_item) {
         let variant_description = extract_doc_comment(&variant.attrs);
         if request && is_other_variant(variant) {
+            let known = known_keys(enum_item, renames.variants);
+            // Like any unit variant, also the map form `{"Unknown": null}`.
+            let map_form = other_map_schema(&known);
+            one_of_schemas.push(SchemaRef::Inline(Box::new(Schema {
+                description: variant_description.clone(),
+                ..other_tag_schema(known)
+            })));
             one_of_schemas.push(SchemaRef::Inline(Box::new(Schema {
                 description: variant_description,
-                ..other_tag_schema(known_keys(enum_item, renames.variants))
+                ..map_form
             })));
             continue;
         }
@@ -153,6 +160,36 @@ pub(super) fn parse_externally_tagged_enum(
         description,
         one_of: non_empty(one_of_schemas),
         ..Schema::new(SchemaType::Object)
+    }
+}
+
+/// The map form of an externally tagged `#[serde(other)]` variant: one
+/// entry with a `null` value whose key names none of the `known` variants
+/// (`{"Hexagon": null}`).
+fn other_map_schema(known: &[serde_json::Value]) -> Schema {
+    let names_known = known
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(|key| {
+            SchemaRef::Inline(Box::new(Schema {
+                required: Some(vec![key.to_owned()]),
+                ..Schema::default()
+            }))
+        })
+        .collect::<Vec<_>>();
+    Schema {
+        additional_properties: Some(AdditionalProperties::Schema(SchemaRef::Inline(Box::new(
+            Schema::new(SchemaType::Null),
+        )))),
+        min_properties: Some(1),
+        max_properties: Some(1),
+        not: non_empty(names_known).map(|any_of| {
+            SchemaRef::Inline(Box::new(Schema {
+                any_of: Some(any_of),
+                ..Schema::default()
+            }))
+        }),
+        ..Schema::object()
     }
 }
 

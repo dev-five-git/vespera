@@ -252,15 +252,18 @@ pub fn build_operation_from_function(
     // These intentionally overwrite `error_status` entries for the same code.
     if let Some(typed_responses) = config.typed_responses {
         for (status_code, schema_name) in typed_responses {
-            responses.insert(
-                status_code.to_string(),
-                typed_response(
-                    schema_name,
-                    response_description_for_status(*status_code),
-                    known_schemas,
-                    struct_definitions,
-                ),
+            let mut response = typed_response(
+                schema_name,
+                response_description_for_status(*status_code),
+                known_schemas,
+                struct_definitions,
             );
+            // 1xx / 204 / 205 / 304 cannot carry a body (RFC 9110): the
+            // status is documented by description only.
+            if status_forbids_body(*status_code) {
+                response.content = None;
+            }
+            responses.insert(status_code.to_string(), response);
         }
     }
 
