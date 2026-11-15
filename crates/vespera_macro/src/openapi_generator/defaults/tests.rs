@@ -274,17 +274,21 @@ fn set_property_default_does_not_overwrite_existing() {
     assert_inline_default(&properties, "name", &json!("existing"));
 }
 
+/// A `$ref` property keeps its reference and gains a sibling `default`.
 #[test]
-fn set_property_default_skips_ref_schema() {
+fn set_property_default_documents_a_ref_schema() {
     let mut properties = BTreeMap::new();
     properties.insert(
-        "user".to_string(),
-        SchemaRef::Ref(Reference::schema("User")),
+        "status".to_string(),
+        SchemaRef::Ref(Reference::schema("Status")),
     );
 
-    set_property_default(&mut properties, "user", json!("ignored"));
+    set_property_default(&mut properties, "status", json!("active"));
 
-    assert!(matches!(properties.get("user"), Some(SchemaRef::Ref(_))));
+    assert_eq!(
+        serde_json::to_value(&properties["status"]).unwrap(),
+        json!({"$ref": "#/components/schemas/Status", "default": "active"})
+    );
 }
 
 #[test]

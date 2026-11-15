@@ -17,17 +17,30 @@ use crate::{
     schema_macro::type_utils::get_type_default as utils_get_type_default,
 };
 
-/// Set the default value on an inline property schema, if not already set.
+/// Set the default value on a property schema, if not already set.
 ///
-/// Looks up `field_name` in the properties map. If found as an inline schema
-/// and the schema has no existing default, sets `value` as the default.
+/// Looks up `field_name` in the properties map. An inline schema without a
+/// default gets `value`; a pure `$ref` becomes `{"$ref": .., "default": ..}`
+/// (OpenAPI 3.1 allows siblings of `$ref`), so an explicit
+/// `#[schema(default = "active")]` on an enum-typed field is documented.
 pub(super) fn set_property_default(
     properties: &mut BTreeMap<String, vespera_core::schema::SchemaRef>,
     field_name: &str,
     value: serde_json::Value,
 ) {
-    use vespera_core::schema::{SchemaRef, SchemaType};
+    use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
+    if let Some(property) = properties.get_mut(field_name)
+        && let SchemaRef::Ref(reference) = property
+    {
+        let ref_path = std::mem::take(&mut reference.ref_path);
+        *property = SchemaRef::Inline(Box::new(Schema {
+            ref_path: Some(ref_path),
+            default: Some(value),
+            ..Schema::default()
+        }));
+        return;
+    }
     if let Some(SchemaRef::Inline(prop_schema)) = properties.get_mut(field_name)
         && prop_schema.default.is_none()
     {

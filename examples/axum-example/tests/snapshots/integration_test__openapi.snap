@@ -5443,7 +5443,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "default": 0
           },
           "status": {
-            "$ref": "#/components/schemas/MemoStatus"
+            "$ref": "#/components/schemas/MemoStatus",
+            "default": "draft"
           },
           "title": {
             "type": "string"
@@ -5564,7 +5565,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             }
           },
           "status": {
-            "$ref": "#/components/schemas/MemoStatus"
+            "$ref": "#/components/schemas/MemoStatus",
+            "default": "draft"
           },
           "title": {
             "type": "string"
@@ -5618,7 +5620,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "default": 0
           },
           "status": {
-            "$ref": "#/components/schemas/MemoStatus"
+            "$ref": "#/components/schemas/MemoStatus",
+            "default": "draft"
           },
           "title": {
             "type": "string"
@@ -5704,7 +5707,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "default": 0
           },
           "status": {
-            "$ref": "#/components/schemas/MemoStatus"
+            "$ref": "#/components/schemas/MemoStatus",
+            "default": "draft"
           },
           "title": {
             "type": "string"
@@ -5744,7 +5748,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "default": 0
           },
           "status": {
-            "$ref": "#/components/schemas/MemoStatus"
+            "$ref": "#/components/schemas/MemoStatus",
+            "default": "draft"
           },
           "title": {
             "type": "string"
@@ -5825,7 +5830,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "type": "string"
           },
           "status": {
-            "$ref": "#/components/schemas/MemoStatus"
+            "$ref": "#/components/schemas/MemoStatus",
+            "default": "draft"
           },
           "title": {
             "type": "string"

@@ -35,6 +35,33 @@ pub struct TestUserCamelCase {
     pub email_address: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Default, Schema)]
+#[serde(rename_all = "lowercase")]
+pub enum TestStatus {
+    #[default]
+    Active,
+    Archived,
+}
+
+#[derive(Serialize, Deserialize, Clone, Schema)]
+pub struct TestWithRefDefault {
+    #[serde(default)]
+    #[schema(default = "active")]
+    pub status: TestStatus,
+}
+
+/// An explicit `#[schema(default)]` on a `$ref`-typed field is documented
+/// as a sibling of the `$ref` (OpenAPI 3.1), not dropped.
+#[test]
+fn test_schema_macro_documents_ref_default() {
+    let schema = schema!(TestWithRefDefault);
+    let status = serde_json::to_value(&schema.properties.unwrap()["status"]).unwrap();
+    assert_eq!(
+        status,
+        json!({ "$ref": "#/components/schemas/TestStatus", "default": "active" })
+    );
+}
+
 /// `schema_type!` of a cross-file model whose `DateTimeLocal` field has a
 /// `NOW()` default compiles (no OpenAPI default is advertised for a
 /// machine-dependent value) and serde fills the omitted field with the epoch.
