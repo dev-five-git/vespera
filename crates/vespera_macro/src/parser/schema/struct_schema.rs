@@ -325,9 +325,10 @@ pub(super) struct NamedFields {
     pub required: Vec<String>,
     /// `#[serde(flatten)]` members (see [`flatten`]).
     flattened: Vec<FlatPart>,
-    /// Request view: required fields that also accept `#[serde(alias)]`
-    /// names — exactly one name of each group must be present.
-    alias_groups: Vec<Vec<String>>,
+    /// Request view: fields that also accept `#[serde(alias)]` names, with
+    /// whether the field is required — exactly one (required) or at most one
+    /// (optional) name of each group may be present.
+    alias_groups: Vec<(Vec<String>, bool)>,
 }
 
 impl NamedFields {
@@ -341,7 +342,10 @@ impl NamedFields {
         let constraints = self
             .alias_groups
             .into_iter()
-            .map(|names| {
+            .map(|(names, required)| {
+                if !required {
+                    return at_most_one(&names);
+                }
                 SchemaRef::Inline(Box::new(Schema {
                     one_of: Some(
                         names
@@ -370,6 +374,33 @@ impl NamedFields {
             deny_unknown_fields,
         )
     }
+}
+
+/// `{not: {anyOf: [{required: [a, b]}, ..]}}` over every pair of `names`:
+/// serde rejects a second name of the same field (`duplicate_field`), even
+/// when the field may be absent.
+fn at_most_one(names: &[String]) -> SchemaRef {
+    let mut pairs = Vec::new();
+    for (index, first) in names.iter().enumerate() {
+        for second in &names[index + 1..] {
+            pairs.push(SchemaRef::Inline(Box::new(Schema {
+                required: Some(vec![first.clone(), second.clone()]),
+                ..Schema::default()
+            })));
+        }
+    }
+    let both = if pairs.len() == 1 {
+        pairs.remove(0)
+    } else {
+        SchemaRef::Inline(Box::new(Schema {
+            any_of: Some(pairs),
+            ..Schema::default()
+        }))
+    };
+    SchemaRef::Inline(Box::new(Schema {
+        not: Some(both),
+        ..Schema::default()
+    }))
 }
 
 /// Walk named fields applying every field-level attribute vespera understands:
@@ -478,14 +509,15 @@ pub(super) fn collect_named_fields(
                 .entry(alias.clone())
                 .or_insert_with(|| schema_ref.clone());
         }
-        if !absent_is_none && !optional {
-            if aliases.is_empty() {
+        let required = !absent_is_none && !optional;
+        if aliases.is_empty() {
+            if required {
                 out.required.push(field_name.clone());
-            } else {
-                let mut names = vec![field_name.clone()];
-                names.extend(aliases);
-                out.alias_groups.push(names);
             }
+        } else {
+            let mut names = vec![field_name.clone()];
+            names.extend(aliases);
+            out.alias_groups.push((names, required));
         }
 
         out.properties.insert(field_name, schema_ref);

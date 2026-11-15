@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_fidelity.rs
+assertion_line: 237
+expression: both_views(src)
+---
+#[serde(tag = "t")] enum E { #[serde(deserialize_with = "f")] Now, Later }
+response: {"oneOf":[{"type":"object","properties":{"t":{"type":"string","enum":["Now"]}},"required":["t"]},{"type":"object","properties":{"t":{"type":"string","enum":["Later"]}},"required":["t"]}],"discriminator":{"propertyName":"t"}}
+request: {"oneOf":[{"allOf":[{"type":"object","properties":{"t":{"type":"string","enum":["Now"]}},"required":["t"]},{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."}]},{"type":"object","properties":{"t":{"type":"string","enum":["Later"]}},"required":["t"]}],"discriminator":{"propertyName":"t"}}

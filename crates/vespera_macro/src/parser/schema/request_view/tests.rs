@@ -186,6 +186,14 @@ fn scoped_names(
     "enum Shape { #[serde(skip_deserializing)] Point, Square(u8) }",
     true
 )]
+// Round 15: a unit variant with a variant codec is a newtype on the wire.
+#[case::unit_codec_makes_mixed(r#"enum E { #[serde(with = "m")] Now, Later }"#, true)]
+#[case::unit_codec_only(r#"enum E { #[serde(with = "m")] Now }"#, false)]
+#[case::adjacent_unit_codec(
+    r#"#[serde(tag = "t", content = "c")] enum E { #[serde(with = "m")] Now, Later }"#,
+    true
+)]
+#[case::adjacent_unit_plain(r#"#[serde(tag = "t", content = "c")] enum E { Now }"#, false)]
 #[case::mixed_unit_fully_skipped("enum Shape { #[serde(skip)] Point, Square(u8) }", false)]
 #[case::mixed_untagged_unit("enum Shape { #[serde(untagged)] Point, Square(u8) }", false)]
 #[case::mixed_internally_tagged(

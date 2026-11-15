@@ -523,7 +523,10 @@ fn enum_differs(item: &syn::ItemEnum, map_bearing: &BTreeSet<String>) -> bool {
                                 && is_option_type(&fields.unnamed[0].ty)
                                 && !extract_field_codec(&variant.attrs).deserialize)
                     }
-                    syn::Fields::Unit => false,
+                    // A content key a unit variant with a `deserialize_with` may omit.
+                    syn::Fields::Unit => {
+                        adjacently_tagged && extract_field_codec(&variant.attrs).deserialize
+                    }
                 })
     })
 }
@@ -541,7 +544,10 @@ fn mixes_unit_and_data(item: &syn::ItemEnum) -> bool {
         if skip.skip || skip.skip_deserializing || extract_untagged(&variant.attrs) {
             continue;
         }
-        if matches!(variant.fields, syn::Fields::Unit) {
+        // A unit variant with a `deserialize_with` is read as a newtype.
+        if matches!(variant.fields, syn::Fields::Unit)
+            && !extract_field_codec(&variant.attrs).deserialize
+        {
             unit = true;
         } else {
             data = true;

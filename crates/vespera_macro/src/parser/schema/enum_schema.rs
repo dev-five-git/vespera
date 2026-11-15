@@ -17,7 +17,7 @@ mod representations;
 mod unit;
 mod variant;
 
-pub(super) use representations::without_single_key_bounds;
+pub(super) use representations::{without_other_map, without_single_key_bounds};
 pub(super) use unit::derives_serde_repr;
 
 /// The two serde renaming rules an enum container can carry.
@@ -106,7 +106,7 @@ fn parse_enum_body(
         .variants
         .iter()
         .filter(|v| !variant::is_variant_omitted(v))
-        .all(|v| matches!(v.fields, syn::Fields::Unit));
+        .all(variant::is_wire_unit);
 
     if all_unit && matches!(repr, SerdeEnumRepr::ExternallyTagged) {
         return unit::parse_unit_enum_to_schema(enum_item, enum_description, rename_all.as_deref());

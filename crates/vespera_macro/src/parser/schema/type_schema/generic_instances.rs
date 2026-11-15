@@ -220,6 +220,11 @@ pub fn with_self_instance<R>(instance: String, component: String, build: impl Fn
     result
 }
 
+/// The component materialised on this thread under `name`, if any.
+pub fn materialized(name: &str) -> Option<Schema> {
+    MATERIALIZED.with(|map| map.borrow().get(name).cloned())
+}
+
 /// Remove and return every component materialised on this thread.
 pub fn take_materialized() -> BTreeMap<String, Schema> {
     MATERIALIZED.with(|map| std::mem::take(&mut *map.borrow_mut()))

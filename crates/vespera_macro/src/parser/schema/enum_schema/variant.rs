@@ -58,16 +58,24 @@ pub(super) fn is_other_variant(variant: &syn::Variant) -> bool {
 /// `{}` for a variant whose content is written / read by a variant-level
 /// `#[serde(with | serialize_with | deserialize_with = "..")]` on the side of
 /// the view being built (its wire shape is unknown, see `wire_override`).
-/// A unit variant has no content, so it never has one.
+/// serde_derive checks the codec before the variant style, so a UNIT variant
+/// with one goes over the wire as a newtype variant too (`{"Now": <custom>}`).
 pub(super) fn variant_codec_schema(variant: &syn::Variant) -> Option<SchemaRef> {
-    (!matches!(variant.fields, syn::Fields::Unit)
-        && extract_field_codec(&variant.attrs).custom_for(current_side()))
-    .then(|| {
-        SchemaRef::Inline(Box::new(Schema {
-            description: Some(CUSTOM_CODEC_DESCRIPTION.to_string()),
-            ..Schema::default()
-        }))
-    })
+    extract_field_codec(&variant.attrs)
+        .custom_for(current_side())
+        .then(|| {
+            SchemaRef::Inline(Box::new(Schema {
+                description: Some(CUSTOM_CODEC_DESCRIPTION.to_string()),
+                ..Schema::default()
+            }))
+        })
+}
+
+/// `true` for a unit variant that is a unit on the wire on the current side
+/// (no variant-level codec there, see [`variant_codec_schema`]).
+pub(super) fn is_wire_unit(variant: &syn::Variant) -> bool {
+    matches!(variant.fields, syn::Fields::Unit)
+        && !extract_field_codec(&variant.attrs).custom_for(current_side())
 }
 
 /// Schema of the single field of a newtype variant on the current side, its

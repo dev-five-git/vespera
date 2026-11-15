@@ -184,8 +184,14 @@ fn test_process_vespera_macro_with_cron_storage() {
     // Create src/ subfolder structure to simulate a real project
     let src_dir = temp_dir.path().join("src");
     std::fs::create_dir_all(src_dir.join("routes")).expect("create routes dir");
-    std::fs::write(src_dir.join("routes").join("health.rs"), "// empty\n")
-        .expect("write health.rs");
+    std::fs::write(
+        src_dir.join("routes").join("health.rs"),
+        "#[vespera::cron(\"0 */5 * * * *\")] pub async fn test_cron_job() {}\n",
+    )
+    .expect("write health.rs");
+    std::fs::write(src_dir.join("routes").join("mod.rs"), "pub mod health;\n")
+        .expect("write mod.rs");
+    std::fs::write(src_dir.join("lib.rs"), "pub mod routes;\n").expect("write lib.rs");
 
     // Set CARGO_MANIFEST_DIR so module path derivation works
     let _env_guard = crate::env_access::test_env::set_var(
@@ -229,10 +235,6 @@ fn test_process_vespera_macro_with_cron_storage() {
 
     // This exercises the CRON_STORAGE → CronMetadata derivation path
     let result = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
-    assert!(
-        result.is_ok(),
-        "Should succeed with cron storage: {result:?}"
-    );
 
     // Clean up: drop this crate-key's cron bucket (temp_dir key is unique to
     // this test, and CARGO_MANIFEST_DIR is still temp_dir at this point).
@@ -241,6 +243,22 @@ fn test_process_vespera_macro_with_cron_storage() {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         storage.remove(&crate::schema_impl::current_crate_key());
+    }
+    let tokens = result
+        .expect("Should succeed with cron storage")
+        .to_string();
+    // The stored job is scheduled, not just accepted.
+    assert!(
+        tokens.contains("vespera :: cron :: start_once_for_crate"),
+        "{tokens}"
+    );
+    // With the `cron` feature the module tree places the job (without it no
+    // tree is scanned and the stored file path is used as is).
+    if cfg!(feature = "cron") {
+        assert!(
+            tokens.contains("crate :: routes :: health :: test_cron_job ()"),
+            "{tokens}"
+        );
     }
 }
 

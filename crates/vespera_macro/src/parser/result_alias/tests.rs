@@ -9,9 +9,17 @@ use super::*;
 fn expand(file_src: &str, ret: &str) -> String {
     let file: syn::File = syn::parse_str(file_src).unwrap();
     let mut sig: syn::Signature = syn::parse_str(&format!("fn handler() {ret}")).unwrap();
-    expand_return_type_alias(&mut sig, Some(&file), None);
+    let before = {
+        let output = &sig.output;
+        quote::quote!(#output).to_string()
+    };
+    let changed = expand_return_type_alias(&mut sig, Some(&file), None);
     let output = &sig.output;
-    quote::quote!(#output).to_string()
+    let after = quote::quote!(#output).to_string();
+    // The return value reports exactly whether the type changed (round 15:
+    // a self-recursive alias reported `true` for an unchanged type).
+    assert_eq!(changed, after != before, "{file_src} {ret}");
+    after
 }
 
 #[rstest]
@@ -60,6 +68,7 @@ fn expand(file_src: &str, ret: &str) -> String {
 #[case::missing_arg_without_default("type R<T, E> = Result<T, E>;", "-> R<A>", "-> R < A >")]
 #[case::unknown_alias("", "-> ApiResult<User>", "-> ApiResult < User >")]
 #[case::self_recursive_stops("type Result<T> = Result<T>;", "-> Result<u8>", "-> Result < u8 >")]
+#[case::cycle_back_to_start("type A = B; type B = A;", "-> A", "-> A")]
 #[case::qualified_self("type F = u8;", "-> <X as Tr>::F", "-> < X as Tr > :: F")]
 #[case::non_path("type F = u8;", "-> (F, F)", "-> (F , F)")]
 #[case::result_without_args("type Result = u8;", "-> Result", "-> Result")]

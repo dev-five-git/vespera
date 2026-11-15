@@ -53,6 +53,24 @@ const DEFINITIONS: &[(&str, &str)] = &[
     ),
     ("Tree", "struct Tree<T> { v: T, kids: Vec<Tree<T>> }"),
     ("Shape", "enum Shape { Square(u8), Point }"),
+    ("Wrapper", "struct Wrapper(Strict);"),
+    ("Open", "enum Open { Square(u8), #[serde(other)] Unknown }"),
+    (
+        "Transparent",
+        "#[serde(transparent)] struct Transparent { inner: Strict }",
+    ),
+    (
+        "StrictKind",
+        r#"#[serde(tag = "kind", deny_unknown_fields)] enum StrictKind { A { x: u8 }, B { y: u8 } }"#,
+    ),
+    (
+        "StrictUntagged",
+        "#[serde(untagged, deny_unknown_fields)] enum StrictUntagged { A { x: u8 }, B { y: String } }",
+    ),
+    (
+        "StrictTree",
+        "#[serde(deny_unknown_fields)] struct StrictTree<T> { v: T, kids: Vec<StrictTree<T>> }",
+    ),
 ];
 
 fn known() -> HashSet<String> {
@@ -189,6 +207,39 @@ fn both_views(src: &str) -> String {
     "flatten_recursive_generic",
     "struct Req { id: i32, #[serde(flatten)] tree: Tree<u8> }"
 )]
+// Round 15 M1: a closed member that is not a plain struct never rejects the
+// outer keys either (serde never shows them to it).
+#[case::flatten_newtype_closed(
+    "flatten_newtype_closed",
+    "struct Req { id: i32, #[serde(flatten)] w: Wrapper }"
+)]
+#[case::flatten_transparent_closed(
+    "flatten_transparent_closed",
+    "struct Req { id: i32, #[serde(flatten)] w: Transparent }"
+)]
+#[case::flatten_internal_enum_closed(
+    "flatten_internal_enum_closed",
+    "struct Req { id: i32, #[serde(flatten)] kind: StrictKind }"
+)]
+#[case::flatten_untagged_enum_closed(
+    "flatten_untagged_enum_closed",
+    "struct Req { id: i32, #[serde(flatten)] u: StrictUntagged }"
+)]
+#[case::flatten_recursive_generic_closed(
+    "flatten_recursive_generic_closed",
+    "struct Req { id: i32, #[serde(flatten)] tree: StrictTree<u8> }"
+)]
+// Round 15 L1: a flattened enum never reads an unknown key as its
+// `#[serde(other)]` variant.
+#[case::flatten_other_enum(
+    "flatten_other_enum",
+    "struct Req { a: Option<String>, #[serde(flatten)] o: Open }"
+)]
+// Round 15 L3: a boxed flattened `Option` is still optional.
+#[case::flatten_boxed_option(
+    "flatten_boxed_option",
+    "struct Req { id: i32, #[serde(flatten)] page: Box<Option<Page>> }"
+)]
 #[case::flatten_custom_codec(
     "flatten_custom_codec",
     r#"struct Req { id: i32, #[serde(flatten, with = "m")] extra: Extra }"#
@@ -205,6 +256,11 @@ fn both_views(src: &str) -> String {
 #[case::alias_single_group(
     "alias_single_group",
     r#"struct A { #[serde(alias = "nm")] name: String, id: u8 }"#
+)]
+// Round 15: an optional aliased field still accepts only one of its names.
+#[case::alias_optional(
+    "alias_optional",
+    r#"struct A { #[serde(alias = "nm")] name: Option<String>, #[serde(alias = "a", alias = "b", default)] x: u8 }"#
 )]
 #[case::flatten_aliased(
     "flatten_aliased",

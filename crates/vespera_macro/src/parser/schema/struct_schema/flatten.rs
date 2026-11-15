@@ -25,7 +25,11 @@
 //! key). Members whose keys are known are therefore MERGED into one object;
 //! only members whose keys cannot be known (a flattened enum, an
 //! unresolvable type) stay `allOf` members — and they keep the merged object
-//! open.
+//! open. Such a member's resolved schema is inlined without its
+//! `additionalProperties: false` (a closed enum's branches): it never sees
+//! the outer keys, so it must not reject them. A newtype / transparent
+//! wrapper (`allOf: [$ref]`) and a recursive generic instance (its
+//! materialised component) are merged like the struct they name.
 
 use std::{
     borrow::Borrow,
@@ -38,11 +42,11 @@ use vespera_core::schema::{AdditionalProperties, Schema, SchemaRef, SchemaType};
 
 use super::{
     super::{
-        enum_schema::{parse_enum_to_schema, without_single_key_bounds},
+        enum_schema::{parse_enum_to_schema, without_other_map, without_single_key_bounds},
         request_view,
         schema_attrs::extract_schema_constraints,
         serde_attrs::{SerdeSide, extract_field_codec},
-        type_schema::parse_type_to_schema_ref,
+        type_schema::{generic_instances, parse_type_to_schema_ref},
     },
     parse_struct_to_schema,
 };
@@ -97,8 +101,9 @@ pub(super) fn flatten_part(
         .value_type
         .as_ref()
         .map_or(&field.ty, |ty| &ty.0);
+    // serde sees through `Box` / `Arc` / ... to a flattened `Option` too.
     let (ty, optional) =
-        option_inner(declared).map_or((declared, omittable), |inner| (inner, true));
+        option_inner(peel(declared)).map_or((declared, omittable), |inner| (inner, true));
     // `#[schema(value_type = T)]` documents a custom codec's wire shape,
     // exactly as on a field that is not flattened.
     let custom = constraints.is_any()
@@ -110,8 +115,11 @@ pub(super) fn flatten_part(
     };
     let (resolved, reference) = match &schema {
         SchemaRef::Inline(inline) => (Some((**inline).clone()), None),
-        SchemaRef::Ref(_) => (
-            resolve_type(ty, known_schemas, struct_definitions),
+        // A recursive generic instance (`Tree<u8>`) has no definition of its
+        // own, but its materialised component.
+        SchemaRef::Ref(reference) => (
+            resolve_type(ty, known_schemas, struct_definitions)
+                .or_else(|| materialized_component(reference)),
             Some(schema.clone()),
         ),
     };
@@ -123,8 +131,18 @@ pub(super) fn flatten_part(
     let schema = resolved
         .as_ref()
         .and_then(|resolved| {
-            let open = without_single_key_bounds(resolved);
-            flattened_unit_variants(open.as_ref().unwrap_or(resolved)).or(open)
+            // Each step rewrites the result of the previous one, if any.
+            let step = |done: Option<Schema>, rewrite: fn(&Schema) -> Option<Schema>| {
+                rewrite(done.as_ref().unwrap_or(resolved)).or(done)
+            };
+            let open = step(None, without_single_key_bounds);
+            let flattened = step(open, flattened_unit_variants);
+            // serde never hands an unknown key to a flattened `other`.
+            let flattened = step(flattened, without_other_map);
+            // A closed (`deny_unknown_fields`) member that cannot be merged
+            // only sees the keys the outer struct does not know: it must not
+            // reject them, so its copy is reopened.
+            step(flattened, without_closed)
         })
         .map_or(schema, |flattened| SchemaRef::Inline(Box::new(flattened)));
     match decomposed {
@@ -350,11 +368,13 @@ fn decompose(
         }),
         None => {
             let (first, rest) = schema.all_of.as_deref()?.split_first()?;
-            let SchemaRef::Inline(own) = first else {
-                return None;
+            let mut parts = match first {
+                // A newtype / transparent wrapper (or a described field)
+                // around a component: that component's keys.
+                SchemaRef::Ref(_) => referenced_parts(first, known_schemas, struct_definitions)?,
+                SchemaRef::Inline(own) => (own.schema_type == Some(SchemaType::Object))
+                    .then(|| decompose(own, known_schemas, struct_definitions))??,
             };
-            let mut parts = (own.schema_type == Some(SchemaType::Object))
-                .then(|| decompose(own, known_schemas, struct_definitions))??;
             for member in rest {
                 match referenced_parts(member, known_schemas, struct_definitions) {
                     Some(member_parts) => {
@@ -380,9 +400,44 @@ fn referenced_parts(
         return None;
     };
     let name = reference.ref_path.strip_prefix("#/components/schemas/")?;
-    let name = request_view::component_of_input(name).unwrap_or_else(|| name.to_string());
-    let schema = resolve_name(&name, known_schemas, struct_definitions)?;
+    let source = request_view::component_of_input(name).unwrap_or_else(|| name.to_string());
+    let schema = resolve_name(&source, known_schemas, struct_definitions)
+        .or_else(|| generic_instances::materialized(name))?;
     decompose(&schema, known_schemas, struct_definitions)
+}
+
+/// The materialised component of a recursive generic instance `$ref`.
+fn materialized_component(reference: &vespera_core::schema::Reference) -> Option<Schema> {
+    generic_instances::materialized(reference.ref_path.strip_prefix("#/components/schemas/")?)
+}
+
+/// `schema` without `additionalProperties: false` (on itself and on every
+/// inline `oneOf` / `anyOf` / `allOf` branch, recursively); `None` when it
+/// has none.
+fn without_closed(schema: &Schema) -> Option<Schema> {
+    let mut changed = false;
+    let mut open = schema.clone();
+    if matches!(
+        open.additional_properties,
+        Some(AdditionalProperties::Bool(false))
+    ) {
+        open.additional_properties = None;
+        changed = true;
+    }
+    for branches in [&mut open.one_of, &mut open.any_of, &mut open.all_of]
+        .into_iter()
+        .flatten()
+    {
+        for branch in branches {
+            if let SchemaRef::Inline(inline) = branch
+                && let Some(reopened) = without_closed(inline)
+            {
+                **inline = reopened;
+                changed = true;
+            }
+        }
+    }
+    changed.then_some(open)
 }
 
 /// Merge `parts` into `target`; `optional` parts (a flattened `Option`)

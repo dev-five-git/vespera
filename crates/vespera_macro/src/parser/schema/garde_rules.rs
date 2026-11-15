@@ -405,8 +405,11 @@ fn slice_elem(ty: &Type) -> Option<(&Type, bool)> {
 /// ECMA-262 `pattern`. A Rust-only construct — an inline flag group (`(?i)`,
 /// `(?x:..)`), `(?P<name>..)`, `\A` / `\z`, `\x{..}`, a one-letter `\pL`,
 /// the word-boundary escapes `\<` / `\>` / `\b{..}`, the escapes `\U..` /
-/// `\u{..}` / `\a`, a `}` that closes no `{` (a literal in Rust, a syntax
-/// error in ECMA-262's `u` mode), or inside a character class a nested class / POSIX class (`[a[b]]`,
+/// `\u{..}` / `\a`, an escape outside the `u`-mode allowlist (Rust accepts
+/// any escaped punctuation — `\-` outside a class, `\#`, `\~`, ... — which
+/// `u` mode rejects, see [`ecma_escape`]), a `\p{..}` name ECMA-262 spells
+/// differently, a `]` or a `}` that closes nothing (a literal in Rust, a
+/// syntax error in ECMA-262's `u` mode), or inside a character class a nested class / POSIX class (`[a[b]]`,
 /// `[[:alpha:]]`), a set operation (`&&`, `--`, `~~`) or a leading `]`
 /// (literal in Rust, an empty class in ECMA-262) — makes it skipped rather
 /// than documented wrongly. Known limitation: `\d` / `\w` / `\s` / `\b` are
@@ -425,10 +428,7 @@ fn is_ecma_compatible(pattern: &str) -> bool {
         let rust_only = match (ch, next) {
             ('\\', Some(escaped)) => {
                 chars.next();
-                let brace = chars.peek() == Some(&'{');
-                matches!(escaped, 'A' | 'z' | '<' | '>' | 'U' | 'a')
-                    || (matches!(escaped, 'x' | 'b' | 'u') && brace)
-                    || (matches!(escaped, 'p' | 'P') && !brace)
+                !ecma_escape(escaped, in_class, &mut chars)
             }
             ('(', Some('?')) if !in_class => {
                 chars.next();
@@ -446,6 +446,8 @@ fn is_ecma_compatible(pattern: &str) -> bool {
                 in_class = false;
                 first
             }
+            // A literal in Rust, a syntax error in ECMA-262's `u` mode.
+            (']', _) => true,
             ('&' | '-' | '~', Some(op)) => in_class && op == ch,
             ('{', _) if !in_class => {
                 in_brace = true;
@@ -459,6 +461,241 @@ fn is_ecma_compatible(pattern: &str) -> bool {
         }
     }
     true
+}
+
+/// Whether `\<escaped>` (the `\` and `escaped` already consumed) is an escape
+/// ECMA-262's `u` mode accepts with the meaning Rust gives it. An allowlist:
+/// the syntax characters and `/` (plus `-` inside a class), the class /
+/// control escapes, `\x..` / `\u....` without braces, and a `\p{..}` /
+/// `\P{..}` (its `{name}` consumed here) whose name both engines spell alike.
+fn ecma_escape(
+    escaped: char,
+    in_class: bool,
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+) -> bool {
+    let brace = chars.peek() == Some(&'{');
+    match escaped {
+        // The syntax characters and `/`, then the class / control escapes
+        // (a `{` after these is a quantifier: `\d{4}`).
+        '^' | '$' | '\\' | '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|'
+        | '/' | 'd' | 'D' | 'w' | 'W' | 's' | 'S' | 'B' | 'n' | 'r' | 't' | 'f' | 'v' => true,
+        '-' => in_class,
+        // Rust's `\b{start}` / `\x{41}` / `\u{41}` (ECMA-262: no braces).
+        'b' | 'x' | 'u' => !brace,
+        'p' | 'P' if brace => {
+            chars.next();
+            let name: String = chars.by_ref().take_while(|ch| *ch != '}').collect();
+            is_ecma_property(&name)
+        }
+        _ => false,
+    }
+}
+
+/// ECMA-262 `General_Category` values (long and short names).
+const ECMA_GENERAL_CATEGORIES: &[&str] = &[
+    "C",
+    "Other",
+    "Cc",
+    "Control",
+    "cntrl",
+    "Cf",
+    "Format",
+    "Cn",
+    "Unassigned",
+    "Co",
+    "Private_Use",
+    "Cs",
+    "Surrogate",
+    "L",
+    "Letter",
+    "LC",
+    "Cased_Letter",
+    "Ll",
+    "Lowercase_Letter",
+    "Lm",
+    "Modifier_Letter",
+    "Lo",
+    "Other_Letter",
+    "Lt",
+    "Titlecase_Letter",
+    "Lu",
+    "Uppercase_Letter",
+    "M",
+    "Mark",
+    "Combining_Mark",
+    "Mc",
+    "Spacing_Mark",
+    "Me",
+    "Enclosing_Mark",
+    "Mn",
+    "Nonspacing_Mark",
+    "N",
+    "Number",
+    "Nd",
+    "Decimal_Number",
+    "digit",
+    "Nl",
+    "Letter_Number",
+    "No",
+    "Other_Number",
+    "P",
+    "Punctuation",
+    "punct",
+    "Pc",
+    "Connector_Punctuation",
+    "Pd",
+    "Dash_Punctuation",
+    "Pe",
+    "Close_Punctuation",
+    "Pf",
+    "Final_Punctuation",
+    "Pi",
+    "Initial_Punctuation",
+    "Po",
+    "Other_Punctuation",
+    "Ps",
+    "Open_Punctuation",
+    "S",
+    "Symbol",
+    "Sc",
+    "Currency_Symbol",
+    "Sk",
+    "Modifier_Symbol",
+    "Sm",
+    "Math_Symbol",
+    "So",
+    "Other_Symbol",
+    "Z",
+    "Separator",
+    "Zl",
+    "Line_Separator",
+    "Zp",
+    "Paragraph_Separator",
+    "Zs",
+    "Space_Separator",
+];
+
+/// ECMA-262 binary Unicode properties (long and short names).
+const ECMA_BINARY_PROPERTIES: &[&str] = &[
+    "ASCII",
+    "ASCII_Hex_Digit",
+    "AHex",
+    "Alphabetic",
+    "Alpha",
+    "Any",
+    "Assigned",
+    "Bidi_Control",
+    "Bidi_C",
+    "Bidi_Mirrored",
+    "Bidi_M",
+    "Case_Ignorable",
+    "CI",
+    "Cased",
+    "Changes_When_Casefolded",
+    "CWCF",
+    "Changes_When_Casemapped",
+    "CWCM",
+    "Changes_When_Lowercased",
+    "CWL",
+    "Changes_When_NFKC_Casefolded",
+    "CWKCF",
+    "Changes_When_Titlecased",
+    "CWT",
+    "Changes_When_Uppercased",
+    "CWU",
+    "Dash",
+    "Default_Ignorable_Code_Point",
+    "DI",
+    "Deprecated",
+    "Dep",
+    "Diacritic",
+    "Dia",
+    "Emoji",
+    "Emoji_Component",
+    "EComp",
+    "Emoji_Modifier",
+    "EMod",
+    "Emoji_Modifier_Base",
+    "EBase",
+    "Emoji_Presentation",
+    "EPres",
+    "Extended_Pictographic",
+    "ExtPict",
+    "Extender",
+    "Ext",
+    "Grapheme_Base",
+    "Gr_Base",
+    "Grapheme_Extend",
+    "Gr_Ext",
+    "Hex_Digit",
+    "Hex",
+    "IDS_Binary_Operator",
+    "IDSB",
+    "IDS_Trinary_Operator",
+    "IDST",
+    "ID_Continue",
+    "IDC",
+    "ID_Start",
+    "IDS",
+    "Ideographic",
+    "Ideo",
+    "Join_Control",
+    "Join_C",
+    "Logical_Order_Exception",
+    "LOE",
+    "Lowercase",
+    "Lower",
+    "Math",
+    "Noncharacter_Code_Point",
+    "NChar",
+    "Pattern_Syntax",
+    "Pat_Syn",
+    "Pattern_White_Space",
+    "Pat_WS",
+    "Quotation_Mark",
+    "QMark",
+    "Radical",
+    "Regional_Indicator",
+    "RI",
+    "Sentence_Terminal",
+    "STerm",
+    "Soft_Dotted",
+    "SD",
+    "Terminal_Punctuation",
+    "Term",
+    "Unified_Ideograph",
+    "UIdeo",
+    "Uppercase",
+    "Upper",
+    "Variation_Selector",
+    "VS",
+    "White_Space",
+    "space",
+    "XID_Continue",
+    "XIDC",
+    "XID_Start",
+    "XIDS",
+];
+
+/// Whether `\p{name}` reads the same in ECMA-262's `u` mode. Rust matches
+/// property names loosely (`\p{lu}`, `\p{sc:Greek}`) and accepts a lone
+/// script name (`\p{Greek}`); ECMA-262 needs the exact spelling, and
+/// `Script=` / `sc=` (or `Script_Extensions=` / `scx=`) for a script. So a
+/// lone name must be a `General_Category` value or a binary property, and a
+/// `key=value` needs a known key with a category value for `gc` or a
+/// `Title_Case`-shaped script name.
+fn is_ecma_property(name: &str) -> bool {
+    match name.split_once('=') {
+        None => ECMA_GENERAL_CATEGORIES.contains(&name) || ECMA_BINARY_PROPERTIES.contains(&name),
+        Some(("General_Category" | "gc", value)) => ECMA_GENERAL_CATEGORIES.contains(&value),
+        Some(("Script" | "sc" | "Script_Extensions" | "scx", value)) => {
+            value.starts_with(|ch: char| ch.is_ascii_uppercase())
+                && value
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphabetic() || ch == '_')
+        }
+        Some(_) => false,
+    }
 }
 
 #[cfg(test)]
