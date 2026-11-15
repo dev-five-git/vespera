@@ -293,7 +293,7 @@ All share the same wire format, registered router, and panic-safe `catch_unwind`
 
 | Sysprop / env | Default | Effect |
 |---|---|---|
-| `vespera.limits.maxRequestBytes` / `VESPERA_MAX_REQUEST_BYTES` | 64 MiB (0 = unlimited) | buffered request body cap → `413` |
+| `vespera.limits.maxRequestBytes` / `VESPERA_MAX_REQUEST_BYTES` | 64 MiB (0 = unlimited) | buffered request size (wire header + body) cap → `413` |
 | `vespera.limits.maxStreamingRequestBytes` / `VESPERA_MAX_STREAMING_REQUEST_BYTES` | 0 = unlimited | streamed request body cap → `413` |
 | `vespera.limits.maxBufferedResponseBytes` / `VESPERA_MAX_BUFFERED_RESPONSE_BYTES` | 256 MiB | buffered response cap → `500` (grown with `try_reserve`; 422 hoist reads ≤ 64 KiB+1) |
 | `vespera.dispatch.timeoutMillis` / `VESPERA_DISPATCH_TIMEOUT_MS` | 0 = disabled | deadline → `504`: buffered/direct bound the whole dispatch; streaming modes bound only time-to-first-header (no total deadline once the header is committed) |

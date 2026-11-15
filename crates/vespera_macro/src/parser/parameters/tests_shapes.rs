@@ -58,6 +58,21 @@ const DEFINITIONS: &[(&str, &str)] = &[
         "WrapPath",
         "#[serde(transparent)] pub struct WrapPath(TwoIds);",
     ),
+    // Round 13: a plain newtype is read as its field (axum's
+    // `deserialize_newtype_struct`), unless the field's wire shape is unknown.
+    ("NewIds", "pub struct NewIds(TwoIds);"),
+    ("Segs", "pub struct Segs(Vec<u32>);"),
+    (
+        "ValueIds",
+        "pub struct ValueIds(#[schema(value_type = TwoIds)] String);",
+    ),
+    ("AnyIds", "pub struct AnyIds(#[schema(any)] TwoIds);"),
+    (
+        "CodecIds",
+        r#"pub struct CodecIds(#[serde(deserialize_with = "f")] TwoIds);"#,
+    ),
+    ("SkipNew", "pub struct SkipNew(#[serde(skip)] TwoIds);"),
+    ("UnitPath", "pub struct UnitPath;"),
     // Two `#[schema(name)]` renames sharing the ident `Foo` (`a::Foo` = `A`,
     // `b::Foo` = `B`); the bare ident aliases the first.
     (
@@ -167,6 +182,14 @@ fn render(func_src: &str, path_params: &[&str]) -> String {
 // string field keeps its schema.
 #[case::path_flatten_string("path_flatten_string", "fn f(p: Path<Slugged>) {}", &["org_id", "slug"])]
 #[case::raw_identifier_bare("raw_identifier_bare", "fn f(r#type: i32) {}", &["type"])]
+// Round 13: a plain newtype with several segments is typed from its field.
+#[case::path_newtype_struct_fields("path_newtype_struct_fields", "fn f(p: Path<NewIds>) {}", &["a", "b"])]
+#[case::path_newtype_vec("path_newtype_vec", "fn f(p: Path<Segs>) {}", &["a", "b"])]
+#[case::path_newtype_value_type("path_newtype_value_type", "fn f(p: Path<ValueIds>) {}", &["a", "b"])]
+#[case::path_newtype_any("path_newtype_any", "fn f(p: Path<AnyIds>) {}", &["a", "b"])]
+#[case::path_newtype_codec("path_newtype_codec", "fn f(p: Path<CodecIds>) {}", &["a", "b"])]
+#[case::path_newtype_skipped("path_newtype_skipped", "fn f(p: Path<SkipNew>) {}", &["a", "b"])]
+#[case::path_unit_struct("path_unit_struct", "fn f(p: Path<UnitPath>) {}", &["a", "b"])]
 fn parameter_shapes(#[case] name: &str, #[case] func_src: &str, #[case] path_params: &[&str]) {
     insta::assert_snapshot!(
         format!("parameter_shapes_{name}"),

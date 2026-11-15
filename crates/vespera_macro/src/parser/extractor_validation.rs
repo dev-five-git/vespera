@@ -5,16 +5,21 @@
 //! (also `TypedMultipartWithLimits<T, ..>`)
 //! and `Path<T>` only appear in the generated OpenAPI when `T` is known to
 //! Vespera (i.e. it derives `Schema`).
-//! When `T` is a struct declared in the same route file that does **not** derive
-//! `Schema`, Vespera silently drops it — `Query<T>` yields no parameters and
-//! `Json<T>` falls back to a generic object — so the spec lies about the route.
+//! When `T` is a struct or enum that does **not** derive `Schema`, Vespera
+//! silently drops it — `Query<T>` yields no parameters and `Json<T>` falls back
+//! to a generic object — so the spec lies about the route.
 //!
 //! This pass turns that silent footgun into a hard compile error, scoped to the
-//! one case the macro can prove: a struct **declared in the handler's own file**
-//! that is absent from `known_schema_names`. Primitives, containers, maps,
-//! external/imported types, and `Schema`-deriving structs are never flagged —
-//! the macro cannot prove `Schema` for types it cannot name-resolve, and a false
-//! positive there would be worse than the residual (cross-file) false negative.
+//! cases the macro can prove: a struct or enum **declared in the handler's own
+//! file**, or one imported (`crate::` / `self::` / `super::` path, `as` renames
+//! included) from **another route file** that declares it, that is absent from
+//! `known_schema_names`. Primitives, containers, maps, types outside the route
+//! folder, and `Schema`-deriving types are never flagged — the macro cannot
+//! prove `Schema` for types it cannot name-resolve, and a false positive there
+//! would be worse than the residual false negative (e.g. a type declared in a
+//! route-folder file with no `#[route]` handler). Test-only routes
+//! (`CollectedMetadata::test_only_routes`) are never documented, so they are
+//! not checked either.
 
 use std::collections::{HashMap, HashSet};
 
@@ -38,7 +43,9 @@ const REQUEST_EXTRACTORS: [&str; 7] = [
 
 /// Validate every route handler's request/query extractors against the set of
 /// `Schema`-backed type names. Returns a `compile_error!`-ready `syn::Error` on
-/// the first same-file non-`Schema` struct used in such an extractor.
+/// the first provably non-`Schema` struct/enum (same-file, or imported from
+/// another route file) used in such an extractor. Test-only routes are
+/// skipped: they are mounted but never documented.
 ///
 /// Runs on every metadata cache miss (`vespera!` / `export_app!`); a cache
 /// hit means the source is byte-identical to a build that already passed, so
@@ -119,7 +126,11 @@ fn check_extractors(metadata: &CollectedMetadata, file_cache: &dyn AstLookup) ->
     // deterministic.
     let mut file_analysis: HashMap<&str, (HashSet<String>, HashSet<String>)> = HashMap::new();
 
-    for route in &metadata.routes {
+    for route in metadata
+        .routes
+        .iter()
+        .filter(|route| !is_test_only(metadata, route))
+    {
         let Some(ast) = file_cache.ast(&route.file_path) else {
             continue;
         };
@@ -191,6 +202,15 @@ fn check_extractors(metadata: &CollectedMetadata, file_cache: &dyn AstLookup) ->
     }
 
     Ok(())
+}
+
+/// Whether `route` only exists in `cfg(test)` builds: such a route is mounted
+/// but never documented (`collector::test_scope::documented_view`), so a
+/// non-`Schema` extractor type cannot make the spec lie about it.
+fn is_test_only(metadata: &CollectedMetadata, route: &crate::metadata::RouteMetadata) -> bool {
+    metadata.test_only_routes.iter().any(|test_only| {
+        test_only.file_path == route.file_path && test_only.function_name == route.function_name
+    })
 }
 
 /// If `ty` is one of the request/query extractors, return its name and the

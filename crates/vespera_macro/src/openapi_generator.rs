@@ -143,9 +143,7 @@ pub fn try_generate_openapi_doc_with_metadata(
         route_storage,
     )?;
     stage("path items");
-    for (name, schema) in crate::parser::schema::generic_instances::take_materialized() {
-        schemas.entry(name).or_insert(schema);
-    }
+    crate::parser::schema::generic_instances::drain_materialized_into(&mut schemas)?;
     let input_names = crate::parser::schema::request_view::snapshot();
     crate::parser::schema::request_view::install(std::sync::Arc::default());
     component_schemas::prune_unreferenced_inputs(&mut schemas, &paths, &input_names);
