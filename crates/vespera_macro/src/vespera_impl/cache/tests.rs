@@ -452,22 +452,23 @@ fn security_requirement_scopes_affect_config_hash(
 #[test]
 fn present_merge_sidecar_content_contributes_to_config_hash() {
     let temp = tempfile::TempDir::new().unwrap();
-    let vespera_dir = temp.path().join("target/vespera");
-    std::fs::create_dir_all(&vespera_dir).unwrap();
-    std::fs::write(
-        crate::vespera_impl::merge_lookup::child_spec_path(&vespera_dir, "child", "Child"),
-        "child-v1",
-    )
-    .unwrap();
+    let vespera_dir = find_target_dir(temp.path()).join("vespera");
+    let sidecar =
+        crate::vespera_impl::merge_lookup::child_spec_path(&vespera_dir, "child", "Child");
     let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
     let processed = ProcessedVesperaInput {
         merge: vec![syn::parse_quote!(child::Child)],
         ..base_processed()
     };
-    let mut cache = MergeSpecCache::new();
+    let hash_with = |content: &str| {
+        std::fs::write(&sidecar, content).unwrap();
+        compute_config_hash_with_merge_cache(&processed, &mut MergeSpecCache::new())
+    };
 
-    let with_child = compute_config_hash_with_merge_cache(&processed, &mut cache);
-    assert_ne!(with_child, compute_config_hash(&base_processed()));
+    // Same merge list, only the sidecar's bytes differ.
+    let v1 = hash_with("child-v1");
+    assert_eq!(v1, hash_with("child-v1"));
+    assert_ne!(v1, hash_with("child-v2"));
 }
 
 #[test]

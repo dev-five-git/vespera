@@ -68,7 +68,10 @@ fn test_schema_macro_documents_ref_default() {
 #[tokio::test]
 async fn test_schema_type_local_now_default() {
     let server = TestServer::new(create_app().await);
-    let response = server.post("/uuid-items/clock").json(&json!({ "id": 7 })).await;
+    let response = server
+        .post("/uuid-items/clock")
+        .json(&json!({ "id": 7 }))
+        .await;
     response.assert_status_ok();
     let clock: serde_json::Value = response.json();
     assert_eq!(clock["id"], 7);

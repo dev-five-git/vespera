@@ -133,20 +133,39 @@ async fn test_form_data_no_limit_field_accepts_large_data() {
     assert_eq!(result.len(), 10_000);
 }
 
+/// `limit = "unlimited"` lifts the 256-byte cap an unannotated scalar field
+/// gets: the same whitespace-padded `true` is rejected without it and parsed
+/// with it.
+#[derive(Debug, Multipart)]
+struct UnlimitedScalarRequest {
+    #[form_data(limit = "unlimited")]
+    pub open: Option<bool>,
+    pub capped: Option<bool>,
+}
+
+async fn unlimited_scalar_handler(
+    TypedMultipart(req): TypedMultipart<UnlimitedScalarRequest>,
+) -> axum::Json<(Option<bool>, Option<bool>)> {
+    axum::Json((req.open, req.capped))
+}
+
+#[rstest::rstest]
+#[case::unlimited("open", 200)]
+#[case::default_cap("capped", 413)]
 #[tokio::test]
-async fn test_form_data_limit_unlimited_keyword() {
-    // Verify that parse_byte_unit handles "unlimited" (code path: returns None)
-    // Tested indirectly: a field without a limit already behaves as unlimited.
-    // This test confirms the same behavior with all fields provided.
-    let server = TestServer::new(create_limit_test_app());
+async fn test_form_data_limit_unlimited_keyword(#[case] field: &str, #[case] status: u16) {
+    let app =
+        axum::Router::new().route("/unlimited", axum::routing::post(unlimited_scalar_handler));
+    let server = TestServer::new(app);
+    let padded = format!("true{}", " ".repeat(1_000));
+    let form = MultipartForm::new().add_text(field, &padded);
 
-    let form = MultipartForm::new()
-        .add_text("name", "test")
-        .add_text("data", "y".repeat(50))
-        .add_part("file", Part::bytes(vec![1u8; 30]).file_name("f.bin"));
-
-    let response = server.post("/limit-test").multipart(form).await;
-    response.assert_status_ok();
+    let response = server.post("/unlimited").multipart(form).await;
+    response.assert_status(axum::http::StatusCode::from_u16(status).unwrap());
+    if status == 200 {
+        let parsed: (Option<bool>, Option<bool>) = response.json();
+        assert_eq!(parsed, (Some(true), None));
+    }
 }
 
 // ============== #[serde(rename)] and #[serde(default)] tests ==============
