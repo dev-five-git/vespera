@@ -10,6 +10,9 @@ use vespera::multipart::{MultipartLimits, default_multipart_limits, set_default_
 
 #[test]
 fn concurrent_readers_never_see_a_mixed_pair() {
+    // Equal pair before any reader starts: the built-in defaults (64 MiB,
+    // 1024 parts) differ, and a reader seeing those is not a torn read.
+    set_default_multipart_limits(MultipartLimits::new(1, 1));
     let stop = Arc::new(AtomicBool::new(false));
     let readers: Vec<_> = (0..3)
         .map(|_| {
@@ -28,7 +31,6 @@ fn concurrent_readers_never_see_a_mixed_pair() {
             })
         })
         .collect();
-    set_default_multipart_limits(MultipartLimits::new(1, 1));
     for round in 0..200_000usize {
         let n = 1 + round % 2;
         let previous = set_default_multipart_limits(MultipartLimits::new(n, n));
