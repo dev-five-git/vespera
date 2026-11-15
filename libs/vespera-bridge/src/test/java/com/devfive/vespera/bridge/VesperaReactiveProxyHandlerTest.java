@@ -572,6 +572,38 @@ class VesperaReactiveProxyHandlerTest {
                 .header(HttpHeaders.ACCEPT, "text/event-stream")).status(), "an explicit stream still 503s");
     }
 
+    /**
+     * No streaming thread can start (thread exhaustion): the pool refuses the
+     * task, which is treated as saturation (explicit stream {@code 503},
+     * implicit one buffered), not a generic proxy {@code 500}; Rust never runs
+     * the stream and the slot is freed.
+     */
+    @Test
+    void aStreamingThreadThatCannotStartIsTreatedAsSaturation() throws Exception {
+        VesperaStreamingExecutor streaming = new VesperaStreamingExecutor(1, 1,
+                java.util.concurrent.TimeUnit.SECONDS.toNanos(60), runnable -> {
+                    throw new OutOfMemoryError("unable to create native thread");
+                });
+        try (streaming) {
+            VesperaReactiveProxyHandler handler = ReactiveTestSupport.handler(transport,
+                    new ReactiveHeaderAppNameResolver("X-Vespera-App", List.of()), null, 1024, 1024,
+                    "X-Request-Id", List.of(events::add), CorsHandling.RUST, streaming);
+            Result explicit = call(client(handler).get().uri("/events")
+                    .header(HttpHeaders.ACCEPT, "text/event-stream"));
+            assertEquals(503, explicit.status());
+            assertTrue(explicit.body().contains(ProxyErrors.STREAMING_SATURATED), explicit.body());
+            assertEquals(0, streaming.inUse());
+            assertEquals(503, awaitEvent().status());
+            events.clear();
+            Result implicit = call(client(handler).get().uri("/users"));
+            assertEquals(200, implicit.status());
+            assertEquals("ok", implicit.body());
+            assertEquals(1, transport.futures.size(), "the implicit stream fell back to buffered");
+            assertEquals(DispatchMode.ASYNC.name(), awaitEvent().mode().name());
+            assertEquals(0, streaming.inUse());
+        }
+    }
+
     @Test
     void spillingGateHoldsUntilTheFlushHintOrTheLimit() throws Exception {
         java.io.ByteArrayOutputStream sink = new java.io.ByteArrayOutputStream();
