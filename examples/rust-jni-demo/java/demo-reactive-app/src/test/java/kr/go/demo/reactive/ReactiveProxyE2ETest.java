@@ -140,6 +140,51 @@ class ReactiveProxyE2ETest {
         assertEquals(413, response.statusCode());
     }
 
+    /**
+     * 1 KiB chunks {@code /diag/panic-mid-body} must emit so at least one
+     * coalesced batch is committed before the panic: two streaming chunks'
+     * worth, at least 512. The chunk size resolves like the bridge + Rust
+     * (demo-app's {@code NonHeaderStreamingE2ETest} has the same helper):
+     * the {@code vespera.streaming.chunkBytes} property ({@code Long.decode};
+     * malformed or {@code <= 0} is never forwarded), else the
+     * {@code VESPERA_STREAMING_CHUNK_BYTES} env var (non-negative decimal,
+     * else the default), else 256 KiB; clamped to 4 KiB .. 8 MiB.
+     */
+    static int panicChunksPastOneStreamingChunk(String property, String env) {
+        long chunkBytes = 0;
+        if (property != null) {
+            try {
+                chunkBytes = Math.min(Integer.MAX_VALUE, Long.decode(property.trim()));
+            } catch (NumberFormatException malformed) {
+                chunkBytes = 0;
+            }
+        }
+        if (chunkBytes <= 0) {
+            chunkBytes = 256 * 1024;
+            if (env != null) {
+                try {
+                    long value = Long.parseLong(env.trim());
+                    chunkBytes = value >= 0 ? value : chunkBytes;
+                } catch (NumberFormatException malformed) {
+                    // Rust uses the default.
+                }
+            }
+        }
+        chunkBytes = Math.max(4 * 1024, Math.min(8L * 1024 * 1024, chunkBytes));
+        return (int) Math.max(512, 2 * chunkBytes / 1024);
+    }
+
+    @Test
+    void panicChunkSizingFollowsTheNativeChunkSizePrecedence() {
+        assertEquals(512, panicChunksPastOneStreamingChunk(null, null));
+        assertEquals(16384, panicChunksPastOneStreamingChunk(null, "8388608"));
+        assertEquals(1024, panicChunksPastOneStreamingChunk("524288", "8388608"));
+        assertEquals(2048, panicChunksPastOneStreamingChunk("0x100000", null));
+        assertEquals(16384, panicChunksPastOneStreamingChunk("0", "8388608"));
+        assertEquals(512, panicChunksPastOneStreamingChunk(null, "big"));
+        assertEquals(512, panicChunksPastOneStreamingChunk(null, "-5"));
+    }
+
     private HttpResponse<InputStream> streamPanic(int chunks) throws Exception {
         return http.send(HttpRequest.newBuilder(
                         URI.create("http://127.0.0.1:" + port + "/diag/panic-mid-body/" + chunks))
@@ -164,7 +209,9 @@ class ReactiveProxyE2ETest {
     void streamedPanicAfterTheCommitAbortsTheResponse() throws Exception {
         HttpResponse<InputStream> response;
         try {
-            response = streamPanic(512);
+            response = streamPanic(panicChunksPastOneStreamingChunk(
+                    System.getProperty("vespera.streaming.chunkBytes"),
+                    System.getenv("VESPERA_STREAMING_CHUNK_BYTES")));
         } catch (IOException aborted) {
             return; // aborted before the status line arrived: also incomplete
         }

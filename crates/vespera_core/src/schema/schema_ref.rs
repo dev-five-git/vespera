@@ -1,4 +1,4 @@
-use super::Schema;
+use super::{Schema, SchemaType};
 use serde::{
     Deserialize, Serialize,
     de::{Error as DeError, IgnoredAny, MapAccess},
@@ -129,8 +129,11 @@ impl PendingFlags {
         // to `nullable` would widen them on re-serialization (`null` appended
         // to the enum / an `anyOf [.., {type:null}]` wrapper), so the type
         // array's `null` is dropped there instead — the same accepted set.
+        // A sibling `$ref` is ANDed with the `type` array in 3.1 (like an
+        // `allOf` member), so its `null` is dropped there too.
         // An explicit 3.0 `nullable` keeps its widening meaning.
         let type_admits_null = self.type_nullable
+            && schema.ref_path.is_none()
             && schema
                 .r#enum
                 .as_ref()
@@ -145,6 +148,26 @@ impl PendingFlags {
             ExclusiveBound::resolve(self.exclusive_minimum, &mut schema.minimum);
         schema.exclusive_maximum =
             ExclusiveBound::resolve(self.exclusive_maximum, &mut schema.maximum);
+        // An explicit 3.0 `nullable` next to a `$ref` that also carries a
+        // `type` or an `anyOf` has no flat serializable form (the nullable
+        // `$ref` itself becomes the `anyOf`), so the widening is spelled out
+        // here as `anyOf: [<schema>, {type: null}]` — the shape serialization
+        // emits for every other nullable composition.
+        if schema.nullable == Some(true)
+            && schema.ref_path.is_some()
+            && (schema.schema_type.is_some() || schema.any_of.is_some())
+        {
+            schema.nullable = None;
+            let inner = std::mem::take(schema);
+            let null = Schema {
+                schema_type: Some(SchemaType::Null),
+                ..Schema::default()
+            };
+            schema.any_of = Some(vec![
+                SchemaRef::Inline(Box::new(inner)),
+                SchemaRef::Inline(Box::new(null)),
+            ]);
+        }
     }
 }
 

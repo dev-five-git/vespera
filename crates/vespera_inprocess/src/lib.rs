@@ -134,6 +134,7 @@ pub use config::{
 };
 pub use direct::{
     DirectWriteResult, MIN_DIRECT_OUT_BYTES, PendingDirectResponse, ResumableDirectWrite,
+    resumable_from_wire,
 };
 pub use dispatch::{
     check_ingress_cap, dispatch, dispatch_from_bytes, dispatch_from_bytes_async, dispatch_into,

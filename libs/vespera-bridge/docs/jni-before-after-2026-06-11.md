@@ -259,7 +259,8 @@ the criterion gate in `bench.yml`:
 - The harness measures these modes. Each op covers encode → JNI → decode status:
   `sync_get` (`dispatchBytes`), `direct_get` (`dispatchDirect`), `streaming_get`
   (`dispatchStreaming`), `full_streaming_post_64k` (`dispatchFullStreaming`, 64 KiB
-  `POST /echo`) and `async_get` (`dispatchAsync` + blocking `get`).
+  `POST /echo`), `async_get` (`dispatchAsync` + blocking `get`) and `client_echo_text_16k`
+  (`VesperaClient` `POST /echo` of a 16 KiB text body, decoded with `bodyString()`).
 - `scripts/jni-bench-compare.ts` pairs round *i* of the two sides. A mode **fails** when the
   median paired change is above **+30%** **and** every round is above **+20%**.
 

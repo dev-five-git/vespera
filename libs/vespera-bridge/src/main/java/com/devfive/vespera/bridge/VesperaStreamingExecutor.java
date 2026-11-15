@@ -4,6 +4,7 @@ import java.util.ArrayDeque;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -60,12 +61,17 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
 
     /** As {@link #VesperaStreamingExecutor(int, int)} with an explicit idle-thread keep-alive (tests). */
     VesperaStreamingExecutor(int maxThreads, int maxQueued, long keepAliveNanos) {
+        this(maxThreads, maxQueued, keepAliveNanos, Thread::new);
+    }
+
+    /** As above, with the factory creating the pool threads (tests inject start failures). */
+    VesperaStreamingExecutor(int maxThreads, int maxQueued, long keepAliveNanos, ThreadFactory threadFactory) {
         this.maxThreads = maxThreads > 0 ? maxThreads : defaultMaxThreads();
         this.maxQueued = Math.max(0, maxQueued);
         // Unbounded queue: admission is enforced by the permits, so a thread
         // still finishing a task can never make execute() reject a stream
         // that was already admitted.
-        this.pool = new Workers(this.maxThreads, keepAliveNanos);
+        this.pool = new Workers(this.maxThreads, keepAliveNanos, threadFactory);
         // long math: maxThreads + maxQueued may exceed Integer.MAX_VALUE (saturate).
         this.permits = new Semaphore(capacity(this.maxThreads, this.maxQueued));
     }
@@ -235,6 +241,7 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
     static final class Workers {
         private final int maxThreads;
         private final long keepAliveNanos;
+        private final ThreadFactory threadFactory;
         private final AtomicInteger seq = new AtomicInteger(1);
         private final ReentrantLock lock = new ReentrantLock();
         private final Condition available = lock.newCondition();
@@ -243,9 +250,10 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
         private int idle;
         private boolean shutdown;
 
-        Workers(int maxThreads, long keepAliveNanos) {
+        Workers(int maxThreads, long keepAliveNanos, ThreadFactory threadFactory) {
             this.maxThreads = maxThreads;
             this.keepAliveNanos = keepAliveNanos;
+            this.threadFactory = threadFactory;
         }
 
         void execute(Runnable task) {
@@ -271,20 +279,49 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
             }
         }
 
+        /**
+         * Start a thread counted (by the caller, under the lock) for
+         * {@code task}. On failure the count is undone and the task leaves the
+         * queue, unless a running worker that finished its own task already
+         * took it (it was queued before the start): it is being served, so
+         * the reservation must keep its slot and nothing is rejected.
+         */
         private void startThread(Runnable task) {
-            Thread thread = new Thread(this::work, "vespera-streaming-" + seq.getAndIncrement());
-            thread.setDaemon(true);
+            Throwable failed = tryStart();
+            if (failed == null) {
+                return;
+            }
+            boolean stillQueued;
+            lock.lock();
             try {
+                stillQueued = queue.remove(task);
+            } finally {
+                lock.unlock();
+            }
+            if (stillQueued) {
+                throw new RejectedExecutionException("cannot start a streaming thread", failed);
+            }
+        }
+
+        /**
+         * Start one counted pool thread; on failure uncount it and return the
+         * failure ({@code null} once started).
+         */
+        private Throwable tryStart() {
+            try {
+                Thread thread = threadFactory.newThread(this::work);
+                thread.setName("vespera-streaming-" + seq.getAndIncrement());
+                thread.setDaemon(true);
                 thread.start();
+                return null;
             } catch (OutOfMemoryError | RuntimeException failed) {
                 lock.lock();
                 try {
                     threads--;
-                    queue.remove(task);
                 } finally {
                     lock.unlock();
                 }
-                throw new RejectedExecutionException("cannot start a streaming thread", failed);
+                return failed;
             }
         }
 
@@ -345,16 +382,60 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
         }
 
         private void work() {
-            Runnable task;
-            while ((task = next()) != null) {
-                try {
-                    task.run();
-                } catch (RuntimeException | Error failed) {
-                    // Same as a ThreadPoolExecutor worker, but the thread
-                    // survives: report it and take the next task.
-                    Thread current = Thread.currentThread();
-                    current.getUncaughtExceptionHandler().uncaughtException(current, failed);
+            boolean exitedNormally = false;
+            try {
+                Runnable task;
+                while ((task = next()) != null) {
+                    try {
+                        task.run();
+                    } catch (RuntimeException | Error failed) {
+                        report(failed);
+                    }
                 }
+                exitedNormally = true;
+            } finally {
+                if (!exitedNormally) {
+                    workerDied();
+                }
+            }
+        }
+
+        /**
+         * Same as a ThreadPoolExecutor worker, but the thread survives: report
+         * the failure and take the next task. A throwing handler (an
+         * application default handler that rethrows, or one failing under
+         * OOM) must not end the thread either: it would stay counted in
+         * {@code threads}, and after {@code maxThreads} such deaths no thread
+         * would ever start again to drain the queue.
+         */
+        private static void report(Throwable failed) {
+            Thread current = Thread.currentThread();
+            try {
+                current.getUncaughtExceptionHandler().uncaughtException(current, failed);
+            } catch (RuntimeException | Error ignored) {
+                // Nowhere left to report it.
+            }
+        }
+
+        /**
+         * A worker left its loop abnormally ({@link #next()} threw): uncount
+         * it and, when queued tasks have no idle thread to take them, start a
+         * replacement so they are not stranded.
+         */
+        private void workerDied() {
+            boolean spawn;
+            lock.lock();
+            try {
+                threads--;
+                spawn = queue.size() > idle && threads < maxThreads;
+                if (spawn) {
+                    threads++;
+                }
+            } finally {
+                lock.unlock();
+            }
+            if (spawn) {
+                tryStart();
             }
         }
 

@@ -264,7 +264,7 @@ final class HeaderPolicy {
     }
 
     /** Up to this many forwarded names, duplicates are found by a linear scan (no set). */
-    private static final int DUPLICATE_SCAN_LIMIT = 16;
+    static final int DUPLICATE_SCAN_LIMIT = 16;
 
     private static void forEachMergedRequestHeader(
             HttpServletRequest request, VesperaBridge.HeaderSink sink, Set<String> connectionTokens) {

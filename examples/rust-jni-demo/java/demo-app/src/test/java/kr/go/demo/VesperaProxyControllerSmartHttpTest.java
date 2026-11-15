@@ -190,11 +190,14 @@ class VesperaProxyControllerSmartHttpTest extends AbstractVesperaHttpIntegration
 
     @Test
     void headSuppressesBodyButRetainsGetContentLength() {
+        ResponseEntity<byte[]> get = exchange(HttpMethod.GET, "/health", null, null);
         ResponseEntity<byte[]> response =
                 exchange(HttpMethod.HEAD, "/health", null, null);
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals(0, requireBody(response).length);
+        assertEquals(requireBody(get).length, response.getHeaders().getContentLength(),
+                "HEAD advertises the GET representation length, not 0");
     }
 
     private static byte[] requireBody(ResponseEntity<byte[]> response) {

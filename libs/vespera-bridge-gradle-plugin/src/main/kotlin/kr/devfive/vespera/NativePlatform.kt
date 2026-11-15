@@ -187,17 +187,18 @@ internal object NativePlatform {
     /**
      * Validate a `targets` key (`<os>-<arch>`, e.g. `linux-aarch64`, or
      * `linux-<arch>-musl`) and return its OS segment, which selects the
-     * library file name.
+     * library file name. [property] names the DSL entry in the error
+     * (`vespera.nativeJarPlatforms` validates with the same rules).
      */
-    fun osOfPlatformKey(key: String): String {
+    fun osOfPlatformKey(key: String, property: String = "vespera.targets key"): String {
         require(PLATFORM_KEY.matches(key)) {
-            "vespera.targets key '$key' must look like '<os>-<arch>' with os one of " +
+            "$property '$key' must look like '<os>-<arch>' with os one of " +
                 "windows, macos, linux (e.g. 'linux-x86_64', 'macos-aarch64'), or 'linux-<arch>-musl'."
         }
         val arch = key.substringAfter('-').removeSuffix(MUSL_SUFFIX)
         val loaderArch = loaderArch(arch)
         require(loaderArch == arch) {
-            "vespera.targets key '$key': the bridge loader never looks up arch '$arch' (the JVM " +
+            "$property '$key': the bridge loader never looks up arch '$arch' (the JVM " +
                 "reports it as '$loaderArch'); use '${key.replace(arch, loaderArch)}'."
         }
         return key.substringBefore('-')

@@ -54,7 +54,9 @@ import java.util.regex.Pattern;
  * symbolic link, owned by the current user, not group/other-writable —
  * before a cached copy is trusted, and every ancestor of the base must be
  * owned by this user or {@code root} and not group/other-writable unless
- * sticky (see {@link #requireSafeAncestors}), so another local user can
+ * sticky (see {@link #requireSafeAncestors}); the base is resolved to its
+ * real path once and the library is extracted, verified and loaded through
+ * that path, so the checked chain is the loaded chain and another local user can
  * neither plant nor swap the library between the digest check and
  * {@code System.load}.
  * "The current user" never comes from the directory being verified while
@@ -391,8 +393,16 @@ final class VesperaNativeLoader {
         try {
             createPrivateDirectories(baseDir);
             requirePrivateDirectory(baseDir);
-            requireSafeAncestors(baseDir);
-            Path dir = baseDir.resolve(hashDirName);
+            // Resolve once and use the real path from here on (hash dir,
+            // digest check, System.load): the ancestors checked are then the
+            // ones the library is loaded through. A symbolic link in the
+            // middle of the configured path (`/shared/app` -> a private
+            // tree) would otherwise be checked as its target while the load
+            // still went by name through a group-writable `/shared`, where
+            // another user could swap the link after the digest check.
+            Path realBase = baseDir.toRealPath();
+            requireSafeAncestors(realBase);
+            Path dir = realBase.resolve(hashDirName);
             try {
                 Files.createDirectory(dir, PosixFilePermissions.asFileAttribute(OWNER_ONLY_DIR));
             } catch (FileAlreadyExistsException exists) {
@@ -428,6 +438,8 @@ final class VesperaNativeLoader {
         try {
             Files.createDirectories(baseDir);
             requireOwnedAclDirectory(baseDir);
+            // As on POSIX: extract and load through the path that was checked.
+            dir = baseDir.toRealPath().resolve(hashDirName);
             try {
                 Files.createDirectory(dir);
             } catch (FileAlreadyExistsException exists) {

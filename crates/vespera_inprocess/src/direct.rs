@@ -458,6 +458,10 @@ pub async fn finish_resumable(
 
 /// [`ResumableDirectWrite`] for a fully-assembled wire response (an error
 /// response, a timeout): copied into `out` when it fits, else kept pending.
+///
+/// Public so a host can keep a response it synthesised itself (the JNI
+/// resumable DIRECT symbol's handler-panic wire) on the same overflow path
+/// as a handler's own response.
 pub fn resumable_from_wire(out: &mut [u8], wire: Vec<u8>) -> ResumableDirectWrite {
     PendingDirectResponse::materialized(wire).copy_into(out)
 }

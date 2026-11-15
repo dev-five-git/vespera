@@ -208,7 +208,24 @@ class NativeJarsFunctionalTest {
 
         val result = run("tasks").buildAndFail()
 
-        assertTrue(result.output.contains("'solaris-sparc' must look like '<os>-<arch>'"), result.output)
+        assertTrue(
+            result.output.contains("vespera.nativeJarPlatforms entry 'solaris-sparc' must look like '<os>-<arch>'"),
+            result.output,
+        )
+        assertFalse(result.output.contains("vespera.targets key"), "names the property that was set")
+    }
+
+    @Test
+    fun aliasedPlatformKeyNamesNativeJarPlatforms() {
+        setUp("""    nativeJarPlatforms.add("linux-amd64")""")
+
+        val result = run("tasks").buildAndFail()
+
+        assertTrue(
+            result.output.contains("vespera.nativeJarPlatforms entry 'linux-amd64': the bridge loader"),
+            result.output,
+        )
+        assertTrue(result.output.contains("use 'linux-x86_64'"), result.output)
     }
 
     @Test
