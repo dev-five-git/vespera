@@ -399,7 +399,8 @@ pub fn storage_module_path(metadata: &StructMetadata) -> Option<Vec<String>> {
             .next()
             .and_then(|line| line.parse().ok())
             .unwrap_or_default();
-        module.extend(crate::schema_macro::module_scope::item_module_chain(
+        module.extend(crate::schema_macro::module_scope::item_module_chain_in_file(
+            file,
             &parsed.items,
             ident.trim_start_matches("r#"),
             line,
