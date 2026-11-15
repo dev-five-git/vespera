@@ -1,7 +1,7 @@
 //! End-to-end checks of parser views: request parameters read through the
 //! request (deserialize) view, transparent and enum-sourced extractors,
-//! recursive generic definitions, and a generic instance name colliding with
-//! a user schema.
+//! recursive generic definitions, a generic instance name colliding with a
+//! user schema, and generic instances' `default = "fn"` values.
 
 use super::tests_accuracy::{generate, pretty, route, schema, stored};
 use crate::metadata::CollectedMetadata;
