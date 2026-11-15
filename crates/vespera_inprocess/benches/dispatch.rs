@@ -115,7 +115,12 @@ async fn handler_many_headers() -> Response {
 fn build_router(n_routes: usize) -> Router {
     let mut router = Router::new()
         .route("/echo", post(handler_echo))
-        .route("/echo/bytes", post(handler_echo_bytes))
+        // No 2 MiB `DefaultBodyLimit` here: the 4 MiB `direct_write_path`
+        // rung would otherwise time axum's `413` rejection, not an echo.
+        .route(
+            "/echo/bytes",
+            post(handler_echo_bytes).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .route("/discard", post(handler_discard_body))
         .route("/headers", get(handler_many_headers));
     for i in 0..n_routes {
@@ -123,6 +128,13 @@ fn build_router(n_routes: usize) -> Router {
         router = router.route(&path, get(handler_get));
     }
     router
+}
+
+/// Wire response status (fails loudly on a malformed response).
+fn wire_status(response: &[u8]) -> u64 {
+    let len = u32::from_be_bytes(response[..4].try_into().expect("len prefix")) as usize;
+    let header: serde_json::Value = serde_json::from_slice(&response[4..4 + len]).expect("header");
+    header["status"].as_u64().expect("status")
 }
 
 /// Owned `RequestEnvelope` for the direct-API benches.
@@ -397,6 +409,8 @@ fn bench_direct_write_path(c: &mut Criterion) {
         });
     }
 
+    // Ids carry `_echo_`: before `/echo/bytes` lifted the 2 MiB body limit
+    // the 4096 KiB rung timed a `413`, so its history is not comparable.
     for &body_kb in &[64_usize, 1024, 4096] {
         let payload = vec![0xA5u8; body_kb * 1024];
         let wire = assemble_wire(
@@ -411,12 +425,20 @@ fn bench_direct_write_path(c: &mut Criterion) {
         let required = {
             let mut probe = vec![0u8; payload.len() + 4096];
             match dispatch_into(wire.clone(), &mut probe, &runtime) {
-                DirectWriteResult::Complete(n) | DirectWriteResult::Overflow(n) => n,
+                DirectWriteResult::Complete(n) => {
+                    // Fail loudly if the rung is not measuring a full echo
+                    // (e.g. an axum `413` body-limit rejection).
+                    assert_eq!(wire_status(&probe[..n]), 200, "echo/bytes {body_kb} KiB");
+                    n
+                }
+                DirectWriteResult::Overflow(n) => {
+                    panic!("echo/bytes {body_kb} KiB probe overflowed: {n} bytes")
+                }
             }
         };
 
         group.bench_with_input(
-            BenchmarkId::new("materialize_dispatch_from_bytes", body_kb),
+            BenchmarkId::new("materialize_echo_dispatch_from_bytes", body_kb),
             &body_kb,
             |b, _| {
                 b.iter(|| dispatch_from_bytes(wire.clone(), &runtime));
@@ -424,7 +446,7 @@ fn bench_direct_write_path(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("direct_write_dispatch_into", body_kb),
+            BenchmarkId::new("direct_write_echo_dispatch_into", body_kb),
             &body_kb,
             |b, _| {
                 let mut out = vec![0u8; required];
