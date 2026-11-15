@@ -363,20 +363,22 @@ mod tests {
         assert_eq!(parse(&json)["status"], 200);
     }
 
-    // ── Coverage: invalid HTTP method fallback ────────────────────
+    // ── Coverage: invalid HTTP method ─────────────────────────────
     #[tokio::test]
-    async fn invalid_method_falls_back_to_get() {
+    async fn invalid_method_is_rejected_with_405() {
         let envelope = RequestEnvelope {
             principal: None,
-            method: "INVALID_METHOD".into(),
-            path: "/nonexistent".into(),
+            // A space is no token character: not a valid method at all
+            // (`INVALID_METHOD` would be a valid extension method).
+            method: "BAD METHOD".into(),
+            path: "/health".into(),
             query: String::new(),
             headers: HashMap::new(),
             body: String::new(),
         };
         let json = dispatch(create_app(), &envelope).await;
-        // Invalid method parses → fallback GET, unknown route → 404
-        assert_eq!(parse(&json)["status"], 404);
+        // Rejected before routing: an existing path does not matter.
+        assert_eq!(parse(&json)["status"], 405);
     }
 
     // ── Form-urlencoded + header-inspection routes ────────────────

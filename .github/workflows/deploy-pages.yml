@@ -50,7 +50,9 @@ jobs:
         with:
           path: |
             apps/landing/.next/cache
-          key: nextjs-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}-${{ hashFiles('apps/landing/**/*.{js,jsx,ts,tsx,md,mdx}') }}
+          # One pattern per extension: hashFiles (@actions/glob) has no brace
+          # expansion, so a `*.{js,ts}` pattern matched nothing and froze the key.
+          key: nextjs-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}-${{ hashFiles('apps/landing/**/*.js', 'apps/landing/**/*.jsx', 'apps/landing/**/*.ts', 'apps/landing/**/*.tsx', 'apps/landing/**/*.md', 'apps/landing/**/*.mdx') }}
           restore-keys: |
             nextjs-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}-
 

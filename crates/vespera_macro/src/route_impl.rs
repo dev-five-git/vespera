@@ -310,6 +310,20 @@ pub fn validate_route_fn(item_fn: &RouteFnHead) -> Result<(), syn::Error> {
 }
 
 /// Process route attribute - extracted for testability
+/// The `#[route]` expansion. A rejected attribute keeps the item next to its
+/// error: `vespera!` still finds the handler in the route file and mounts it,
+/// so dropping it only added a confusing E0425 at the `vespera!` call site.
+pub fn route_attribute(
+    attr: proc_macro2::TokenStream,
+    item: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    process_route_attribute(attr, item.clone()).unwrap_or_else(|error| {
+        let mut out = error.to_compile_error();
+        out.extend(item);
+        out
+    })
+}
+
 pub fn process_route_attribute(
     attr: proc_macro2::TokenStream,
     item: proc_macro2::TokenStream,

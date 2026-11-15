@@ -73,15 +73,23 @@ pub trait RangeBound: Sized {
 /// (aliased) type can satisfy, checked before `garde`'s `range` rule so the
 /// saturated bound never admits a value the document excludes; `None` when
 /// both bounds are reachable.
-pub fn range_unsatisfiable<T: RangeBound>(
+///
+/// Generic over `garde`'s range `Bounds` like the `range` rule itself, so the
+/// field may be an `Option` (any depth, also behind an alias such as
+/// `type MaybeCount = Option<u32>`): the bound type is its `Bounds::Size`.
+pub fn range_unsatisfiable<T>(
     _value: &T,
     min: Option<f64>,
     max: Option<f64>,
-) -> Option<garde::Error> {
-    if let Some(min) = min.filter(|&min| !T::admits_min(min)) {
+) -> Option<garde::Error>
+where
+    T: garde::rules::range::Bounds,
+    T::Size: RangeBound,
+{
+    if let Some(min) = min.filter(|&min| !<T::Size as RangeBound>::admits_min(min)) {
         return Some(garde::Error::new(format!("lower than {min}")));
     }
-    max.filter(|&max| !T::admits_max(max))
+    max.filter(|&max| !<T::Size as RangeBound>::admits_max(max))
         .map(|max| garde::Error::new(format!("greater than {max}")))
 }
 
@@ -190,6 +198,9 @@ mod tests {
         assert!(<f64 as RangeBound>::admits_min(1e300) && <f64 as RangeBound>::admits_max(-1e300));
         assert!(<f32 as RangeBound>::admits_min(1e300) && <f32 as RangeBound>::admits_max(-1e300));
         assert!(super::range_unsatisfiable(&0u8, Some(1.5), Some(2.5)).is_none());
+        // `Option` layers range as their innermost type, like `garde`'s rule.
+        assert!(super::range_unsatisfiable(&Some(Some(0u8)), Some(300.5), None).is_some());
+        assert!(super::range_unsatisfiable(&None::<u8>, None, Some(2.5)).is_none());
         assert_eq!(
             super::range_unsatisfiable(&0u8, Some(300.5), None).map(|e| e.to_string()),
             Some("lower than 300.5".to_owned())

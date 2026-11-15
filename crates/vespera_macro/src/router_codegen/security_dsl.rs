@@ -163,7 +163,9 @@ fn parse_flow(input: ParseStream, kind: &syn::Ident) -> syn::Result<OAuthFlow> {
                 ));
             }
             "authorization_url" | "token_url" | "refresh_url" => {
-                urls.insert(field_str, content.parse::<LitStr>()?.value());
+                let url = content.parse::<LitStr>()?;
+                require_absolute_url(&field_str, &url)?;
+                urls.insert(field_str, url.value());
             }
             "scopes" => scopes = Some(parse_scopes(&content)?),
             _ => {
@@ -193,6 +195,25 @@ fn parse_flow(input: ParseStream, kind: &syn::Ident) -> syn::Result<OAuthFlow> {
         refresh_url: urls.remove("refresh_url"),
         scopes: scopes.unwrap_or_default(),
     })
+}
+
+/// An OAuth2 flow / OpenID Connect URL: OpenAPI 3.1 types them
+/// `format: uri`, so only an absolute `http(s)://` URL is accepted (an empty
+/// or relative value used to be emitted as is).
+pub(super) fn require_absolute_url(field: &str, url: &LitStr) -> syn::Result<()> {
+    let value = url.value();
+    let rest = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"));
+    if rest.is_some_and(|rest| !rest.is_empty() && !rest.contains(char::is_whitespace)) {
+        return Ok(());
+    }
+    Err(syn::Error::new(
+        url.span(),
+        format!(
+            "vespera! macro: `{field}` must be an absolute `http://` or `https://` URL, got \"{value}\""
+        ),
+    ))
 }
 
 /// Parse `{ "scope" = "description", ... }`.

@@ -450,7 +450,10 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
             "in" => location = Some(value.value()),
             "scheme" => scheme = Some(value.value()),
             "bearer_format" => bearer_format = Some(value.value()),
-            "open_id_connect_url" => open_id_connect_url = Some(value.value()),
+            "open_id_connect_url" => {
+                super::security_dsl::require_absolute_url("open_id_connect_url", &value)?;
+                open_id_connect_url = Some(value.value());
+            }
             _ => {
                 return Err(syn::Error::new(
                     span,
@@ -480,78 +483,75 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
             "vespera! macro: security scheme missing required `type` field.",
         )
     })?;
-    // Type-specific OpenAPI validity: reject an under-specified scheme at
-    // compile time instead of silently emitting a spec that violates the
-    // OpenAPI Security Scheme Object requirements.
-    validate_security_scheme_fields(
-        &name,
-        scheme_type,
-        location.as_deref(),
-        header_name.as_deref(),
-        scheme.as_deref(),
-        open_id_connect_url.as_deref(),
-        flows.is_some(),
-    )?;
-
-    Ok(SecuritySchemeConfig {
-        name,
-        scheme: SecurityScheme {
-            r#type: scheme_type,
-            description,
-            name: header_name,
-            r#in: location,
-            scheme,
-            bearer_format,
-            flows,
-            open_id_connect_url,
-        },
-    })
+    let scheme = SecurityScheme {
+        r#type: scheme_type,
+        description,
+        name: header_name,
+        r#in: location,
+        scheme,
+        bearer_format,
+        flows,
+        open_id_connect_url,
+    };
+    // Type-specific OpenAPI validity: reject an under-specified scheme, or a
+    // field its type does not take, at compile time instead of silently
+    // emitting a spec that violates the OpenAPI Security Scheme Object.
+    validate_security_scheme_fields(&name, &scheme)?;
+    Ok(SecuritySchemeConfig { name, scheme })
 }
 
-/// Validate that a security scheme carries the fields OpenAPI requires for
-/// its `type`, so `vespera!` never emits a structurally-invalid
-/// `components.securitySchemes` entry.
+/// Validate that a security scheme carries exactly the fields OpenAPI
+/// defines for its `type`, so `vespera!` never emits a structurally-invalid
+/// `components.securitySchemes` entry (the OpenAPI 3.1 schema evaluates them
+/// per type with `unevaluatedProperties: false`).
 ///
 /// - `apiKey` → `header_name` (the api-key `name`) + `in` ∈ {query, header, cookie}
-/// - `http` → `scheme`
+/// - `http` → `scheme`; `bearer_format` only with `scheme = "bearer"`
 /// - `openIdConnect` → `open_id_connect_url`
 /// - `oauth2` → `flows` (at least one flow — checked by [`parse_flows`])
-/// - `flows` on any other type → rejected (OpenAPI defines it for `oauth2` only)
 /// - `mutualTLS` → no extra required fields
-fn validate_security_scheme_fields(
-    name: &str,
-    scheme_type: SecuritySchemeType,
-    location: Option<&str>,
-    header_name: Option<&str>,
-    scheme: Option<&str>,
-    open_id_connect_url: Option<&str>,
-    has_flows: bool,
-) -> syn::Result<()> {
+/// - any of those fields on another type → rejected
+fn validate_security_scheme_fields(name: &str, scheme: &SecurityScheme) -> syn::Result<()> {
     let span = proc_macro2::Span::call_site();
+    let label = scheme_type_label(scheme.r#type);
     let missing = |field: &str, hint: &str| {
         syn::Error::new(
             span,
             format!(
-                "vespera! macro: security scheme `{name}` of type `{}` is missing required field `{field}` ({hint})",
-                scheme_type_label(scheme_type)
+                "vespera! macro: security scheme `{name}` of type `{label}` is missing required field `{field}` ({hint})"
             ),
         )
     };
-    if has_flows && scheme_type != SecuritySchemeType::OAuth2 {
+    // `(field, set, the types OpenAPI defines it for)`.
+    let typed_fields = [
+        ("header_name", scheme.name.is_some(), "apiKey"),
+        ("in", scheme.r#in.is_some(), "apiKey"),
+        ("scheme", scheme.scheme.is_some(), "http"),
+        ("bearer_format", scheme.bearer_format.is_some(), "http"),
+        (
+            "open_id_connect_url",
+            scheme.open_id_connect_url.is_some(),
+            "openIdConnect",
+        ),
+        ("flows", scheme.flows.is_some(), "oauth2"),
+    ];
+    if let Some((field, _, owner)) = typed_fields
+        .iter()
+        .find(|(_, set, owner)| *set && *owner != label)
+    {
         return Err(syn::Error::new(
             span,
             format!(
-                "vespera! macro: security scheme `{name}` of type `{}` cannot declare `flows`; only `oauth2` schemes have flows",
-                scheme_type_label(scheme_type)
+                "vespera! macro: security scheme `{name}` of type `{label}` cannot declare `{field}`; only `{owner}` schemes have {field}"
             ),
         ));
     }
-    match scheme_type {
+    match scheme.r#type {
         SecuritySchemeType::ApiKey => {
-            if header_name.is_none() {
+            if scheme.name.is_none() {
                 return Err(missing("header_name", "the api-key parameter name"));
             }
-            match location {
+            match scheme.r#in.as_deref() {
                 None => return Err(missing("in", "one of \"query\", \"header\", or \"cookie\"")),
                 Some(loc) if !matches!(loc, "query" | "header" | "cookie") => {
                     return Err(syn::Error::new(
@@ -564,13 +564,22 @@ fn validate_security_scheme_fields(
                 Some(_) => {}
             }
         }
-        SecuritySchemeType::Http => {
-            if scheme.is_none() {
-                return Err(missing("scheme", "e.g. \"bearer\" or \"basic\""));
+        SecuritySchemeType::Http => match scheme.scheme.as_deref() {
+            None => return Err(missing("scheme", "e.g. \"bearer\" or \"basic\"")),
+            Some(http)
+                if scheme.bearer_format.is_some() && !http.eq_ignore_ascii_case("bearer") =>
+            {
+                return Err(syn::Error::new(
+                    span,
+                    format!(
+                        "vespera! macro: security scheme `{name}` declares `bearer_format` with `scheme = \"{http}\"`; OpenAPI defines `bearerFormat` only for `scheme = \"bearer\"`"
+                    ),
+                ));
             }
-        }
+            Some(_) => {}
+        },
         SecuritySchemeType::OpenIdConnect => {
-            if open_id_connect_url.is_none() {
+            if scheme.open_id_connect_url.is_none() {
                 return Err(missing(
                     "open_id_connect_url",
                     "the OpenID Connect discovery URL",
@@ -578,7 +587,7 @@ fn validate_security_scheme_fields(
             }
         }
         SecuritySchemeType::OAuth2 => {
-            if !has_flows {
+            if scheme.flows.is_none() {
                 return Err(missing(
                     "flows",
                     "e.g. `flows = { client_credentials = { token_url = \"...\", scopes = { ... } } }`",
@@ -661,12 +670,26 @@ fn parse_openapi_values(input: ParseStream) -> syn::Result<Vec<LitStr>> {
 /// 3.1 resolves against the URL serving the document).  `{var}` templates
 /// are not accepted: `vespera!` cannot declare the `variables` they need.
 fn is_server_url(url: &str) -> bool {
-    url.starts_with("http://") || url.starts_with("https://") || url.starts_with('/')
+    (url.starts_with("http://") || url.starts_with("https://") || url.starts_with('/'))
+        && !is_url_template(url)
+}
+
+/// Whether `url` holds a `{var}` server-variable template.
+fn is_url_template(url: &str) -> bool {
+    url.contains(['{', '}'])
 }
 
 /// Validate a server URL (see [`is_server_url`]).
 fn validate_server_url(url: &LitStr) -> syn::Result<String> {
     let url_value = url.value();
+    if is_url_template(&url_value) {
+        return Err(syn::Error::new(
+            url.span(),
+            format!(
+                "invalid server URL: `{url_value}`. `{{var}}` templates are not supported: `vespera!` cannot declare the server `variables` they need"
+            ),
+        ));
+    }
     if !is_server_url(&url_value) {
         return Err(syn::Error::new(
             url.span(),

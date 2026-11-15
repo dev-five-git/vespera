@@ -54,11 +54,14 @@ pub(super) struct VesperaCache {
     /// Cached route/struct metadata
     pub(super) metadata: CollectedMetadata,
     /// Content hash of the compact spec in the embed sidecar file
-    /// (`vespera_spec-<tag>.json`).  `None` if docs disabled.
+    /// (content-addressed `vespera_spec-<tag>-<16 hex>.json`, see
+    /// `openapi_io::embed_spec_path`).  `None` if docs disabled.
     #[serde(default)]
     pub(super) spec_json_hash: Option<u64>,
     /// Content hash of the pretty spec in the pretty sidecar file
-    /// (`openapi_pretty-<tag>.json`).  `None` if no openapi file configured.
+    /// (content-addressed `openapi_pretty-<tag>-<16 hex>.json`, see
+    /// `openapi_io::pretty_sidecar_path`).  `None` if no openapi file
+    /// configured.
     #[serde(default)]
     pub(super) spec_pretty_hash: Option<u64>,
     /// Metadata fingerprint (mtime + len) of the compact spec sidecar.
@@ -273,6 +276,19 @@ pub(super) fn with_route_signature_hash(
     hasher.finish()
 }
 
+/// The storage part of the route-cache key: schema contents, the stored
+/// `#[route]` signatures and every test-only verdict the document depends on
+/// (`collector::test_scope::verdict_hash`).
+pub(super) fn storage_hash(
+    schema_storage: &HashMap<String, StructMetadata>,
+    route_storage: &[crate::route_impl::StoredRouteInfo],
+) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    with_route_signature_hash(compute_schema_hash(schema_storage), route_storage).hash(&mut hasher);
+    crate::collector::test_scope::verdict_hash(schema_storage, route_storage).hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Compute a deterministic hash of OpenAPI config fields.
 #[cfg(test)]
 pub(super) fn compute_config_hash(processed: &ProcessedVesperaInput) -> u64 {
@@ -293,7 +309,8 @@ pub(super) fn compute_config_hash_with_merge_cache(
     // child's spec invalidates the parent's cached merged document — the
     // path name alone cannot detect a child whose routes / schemas changed
     // between builds.  Mirrors the sidecar resolution in
-    // `generate_and_write_openapi` (`vespera_dir / <LastSegment>.openapi.json`).
+    // `generate_and_write_openapi` (`merge_lookup::resolve_export`:
+    // `<vespera_dir>/export/<crate>/<App>.openapi.json`).
     for merge_path in &processed.merge {
         if let Some((_struct_name, spec_file)) = merge_specs.spec_file_for(merge_path) {
             match merge_specs.read(&spec_file) {
@@ -395,9 +412,10 @@ pub(super) fn compute_export_config_hash(app_name: &str, folder_name: &str, pref
     hasher.finish()
 }
 
-/// Directory holding child apps' exported OpenAPI sidecars
-/// (`<AppName>.openapi.json`), used by [`compute_config_hash`] to fold a
-/// merged child's spec content into the parent cache key.  Mirrors the
+/// The `target/vespera` directory under which child apps' exported OpenAPI
+/// sidecars live (`export/<crate>/<App>.openapi.json`, see
+/// `merge_lookup::export_spec_path`), used by [`compute_config_hash`] to fold
+/// a merged child's spec content into the parent cache key.  Mirrors the
 /// resolution `generate_and_write_openapi` uses when merging child specs.
 fn merge_spec_dir() -> Option<std::path::PathBuf> {
     let manifest_dir = crate::env_access::var("CARGO_MANIFEST_DIR").ok()?;

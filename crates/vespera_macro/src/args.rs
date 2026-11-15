@@ -361,8 +361,11 @@ fn parse_http_status(lit_int: &LitInt, key: &str) -> syn::Result<u16> {
 /// compile error instead of being silently dropped by the downstream
 /// `filter_map` extraction — which previously produced incomplete OpenAPI with
 /// no diagnostic (e.g. `responses = [(404)]` parsed "successfully" and emitted
-/// nothing).
+/// nothing). A repeated status is rejected on its second literal: the
+/// document keeps one response per status, so the later entry silently
+/// replaced the earlier one.
 fn validate_responses_array(array: &syn::ExprArray) -> syn::Result<()> {
+    let mut seen = std::collections::HashSet::new();
     for elem in &array.elems {
         let syn::Expr::Tuple(tuple) = elem else {
             return Err(syn::Error::new_spanned(
@@ -390,7 +393,13 @@ fn validate_responses_array(array: &syn::ExprArray) -> syn::Result<()> {
                  e.g. `(404, NotFoundError)`.",
             ));
         };
-        parse_http_status(lit_int, "responses")?;
+        let code = parse_http_status(lit_int, "responses")?;
+        if !seen.insert(code) {
+            return Err(syn::Error::new_spanned(
+                lit_int,
+                format!("#[route] `responses` lists status {code} more than once"),
+            ));
+        }
         let schema = &tuple.elems[1];
         let syn::Expr::Path(path) = schema else {
             return Err(syn::Error::new_spanned(

@@ -48,15 +48,14 @@ pub(super) fn discover_cron_jobs(
 ) -> Result<Vec<CronMetadata>, String> {
     let mut canonical_paths = HashMap::new();
     // Most projects declare no `#[vespera::cron]` jobs: without stored jobs
-    // or a `cron(` attribute anywhere under `src/` (or in the call-site file),
-    // nothing is parsed.
+    // or a `cron(` attribute anywhere under `src/` (or, for a call site
+    // outside `src/`, anywhere in the call site's directory, where its
+    // module tree lives — see `outside_src_tree`), nothing is parsed.
     let tree = src_dir
         .filter(|src_dir| {
             !storage.is_empty()
                 || has_cron_attribute(src_dir)
-                || call_site
-                    .and_then(file_cache::get_file_content)
-                    .is_some_and(|content| content.contains(CRON_ATTR_MARKER))
+                || call_site.is_some_and(|call_site| outside_src_has_cron(src_dir, call_site))
         })
         .and_then(|src_dir| crate_tree(src_dir, call_site));
     let storage = same_target(
@@ -230,6 +229,16 @@ fn has_cron_attribute(src_dir: &Path) -> bool {
     })
 }
 
+/// Whether `call_site` lies outside `src_dir` (`examples/demo/main.rs`) and
+/// a `cron(` attribute occurs in its directory: the call-site file itself or
+/// a module it declares (`examples/demo/jobs.rs`), which the `src/` check
+/// never reads.
+fn outside_src_has_cron(src_dir: &Path, call_site: &Path) -> bool {
+    let src_prefix = format!("{}/", canonical_display(src_dir));
+    !canonical_display(call_site).starts_with(&src_prefix)
+        && call_site.parent().is_some_and(has_cron_attribute)
+}
+
 /// The module tree that contains the `vespera!` call site; without call-site
 /// information (unit tests) the library root wins over the binary root.
 fn crate_tree(src_dir: &Path, call_site: Option<&Path>) -> Option<ModuleTree> {
@@ -343,7 +352,11 @@ impl ModuleTree {
     /// attribute cannot contribute anything, so they are never parsed.
     fn walk(&mut self, file: &Path, mod_dir: &Path, module_path: &str, gated: bool) {
         let display = canonical_display(file);
-        self.files.insert(display.clone());
+        // A module cycle (`#[path = "lib.rs"] mod again;`, a symlinked
+        // directory) is rustc's error; the walk must not recurse forever.
+        if !self.files.insert(display.clone()) {
+            return;
+        }
         if let Some(content) = file_cache::get_file_content(file)
             && (content.contains("mod") || content.contains(CRON_ATTR_MARKER))
             && let Ok(ast) = syn::parse_file(&content)

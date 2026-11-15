@@ -18,9 +18,8 @@ use crate::{
 use super::{
     cache::{
         CACHE_FORMAT, CacheKey, MergeSpecCache, VesperaCache, compute_config_hash_with_merge_cache,
-        compute_export_config_hash, compute_macro_dev_fingerprint, compute_schema_hash,
-        get_cache_path, get_export_cache_path, hash_str, read_cache, sidecar_matches,
-        with_route_signature_hash, write_cache,
+        compute_export_config_hash, compute_macro_dev_fingerprint, get_cache_path,
+        get_export_cache_path, hash_str, read_cache, sidecar_matches, storage_hash, write_cache,
     },
     cron_discovery::discover_cron_jobs,
     invocation::invocation_tag,
@@ -117,7 +116,7 @@ pub fn process_vespera_macro(
     let scanned = crate::collector::scan_route_folder(&folder_path)
         .map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: {e}")))?;
     let fingerprints = crate::collector::fingerprints_from_scan(&folder_path, &scanned);
-    let schema_hash = with_route_signature_hash(compute_schema_hash(schema_storage), route_storage);
+    let schema_hash = storage_hash(schema_storage, route_storage);
     let mut merge_specs = MergeSpecCache::new();
     merge_specs.check_unambiguous(&processed.merge)?;
     let config_hash = compute_config_hash_with_merge_cache(processed, &mut merge_specs);
@@ -377,7 +376,7 @@ pub fn process_export_app(
     let scanned = crate::collector::scan_route_folder(&folder_path)
         .map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: {e}")))?;
     let fingerprints = crate::collector::fingerprints_from_scan(&folder_path, &scanned);
-    let schema_hash = with_route_signature_hash(compute_schema_hash(schema_storage), route_storage);
+    let schema_hash = storage_hash(schema_storage, route_storage);
     let config_hash = compute_export_config_hash(&app_name, folder_name, prefix);
     let macro_version = env!("CARGO_PKG_VERSION").to_string();
     let macro_dev_fingerprint = compute_macro_dev_fingerprint();

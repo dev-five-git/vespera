@@ -659,3 +659,65 @@ fn mentions_ident_ignores_unparsable_source() {
     ));
     assert!(!mentions_ident("fn f(x: Foobar)", "Foo"));
 }
+
+/// Set / `Duration` fields make the request view differ without any `serde`
+/// attribute in the whole app.
+#[rstest]
+#[case::hash_set("struct Tags { tags: std::collections::HashSet<String> }", true)]
+#[case::btree_set("struct Tags { tags: BTreeSet<String> }", true)]
+#[case::duration("struct Tags { ttl: std::time::Duration }", true)]
+#[case::plain("struct Tags { tags: Vec<String> }", false)]
+fn input_views_without_serde_attributes(#[case] definition: &str, #[case] differs: bool) {
+    let mut metadata = CollectedMetadata::new();
+    metadata.structs = vec![struct_meta("Tags", definition)];
+    let names = input_names(&metadata, &HashSet::from(["Tags"]), &[]);
+    assert_eq!(names.contains_key("Tags"), differs, "{names:?}");
+}
+
+/// Materialised request-view generic instances (`Tree_i32.Input`) no request
+/// body reaches are pruned with the `{Name}Input` components; reached ones
+/// stay.
+#[test]
+fn unreached_materialised_input_instances_are_pruned() {
+    let schema =
+        |value: Value| serde_json::from_value::<vespera_core::schema::Schema>(value).unwrap();
+    let tree_ref =
+        json!({"type": "array", "items": {"$ref": "#/components/schemas/Tree_i32.Input"}});
+    let mut schemas = BTreeMap::from([
+        ("Forest".to_string(), schema(json!({"type": "object"}))),
+        (
+            "ForestInput".to_string(),
+            schema(json!({"type": "object", "properties": {"trees": tree_ref}})),
+        ),
+        (
+            "Tree_i32.Input".to_string(),
+            schema(json!({"type": "object"})),
+        ),
+        (
+            "Leaf_u8.Input".to_string(),
+            schema(json!({"type": "object"})),
+        ),
+    ]);
+    let names: request_view::InputNames = std::sync::Arc::new(BTreeMap::from([(
+        "Forest".to_string(),
+        "ForestInput".to_string(),
+    )]));
+    let mut response_only = schemas.clone();
+    prune_unreferenced_inputs(&mut response_only, &BTreeMap::new(), &names);
+    assert_eq!(response_only.keys().collect::<Vec<_>>(), ["Forest"]);
+
+    let paths: BTreeMap<String, vespera_core::route::PathItem> = BTreeMap::from([(
+        "/forests".to_string(),
+        serde_json::from_value(
+            json!({"post": {"requestBody": {"content": {"application/json": {
+            "schema": {"$ref": "#/components/schemas/ForestInput"}
+        }}}, "responses": {}}}),
+        )
+        .unwrap(),
+    )]);
+    prune_unreferenced_inputs(&mut schemas, &paths, &names);
+    assert_eq!(
+        schemas.keys().collect::<Vec<_>>(),
+        ["Forest", "ForestInput", "Tree_i32.Input"]
+    );
+}

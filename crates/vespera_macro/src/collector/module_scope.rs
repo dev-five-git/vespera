@@ -75,13 +75,16 @@ pub(super) fn inline_mod_route(
     items: &[Item],
     include: &dyn Fn(&str) -> bool,
 ) -> Option<(String, String)> {
-    inline_mod_route_where(items, include, &|_| true)
+    inline_mod_route_where(items, false, include, &|_| true)
 }
 
 /// [`inline_mod_route`] restricted to handlers `accept` admits — every hit is
-/// considered, so a rejected first hit never hides a later one.
+/// considered, so a rejected first hit never hides a later one.  `gated`:
+/// `items` sit inside a `#[cfg]`-gated module already (a nested
+/// `mod tests { mod fixtures { .. } }` is as gated as `tests`).
 fn inline_mod_route_where(
     items: &[Item],
+    gated: bool,
     include: &dyn Fn(&str) -> bool,
     accept: &dyn Fn(&str) -> bool,
 ) -> Option<(String, String)> {
@@ -90,7 +93,7 @@ fn inline_mod_route_where(
             return None;
         };
         let (_, content) = module.content.as_ref()?;
-        let gated = is_cfg_gated(&module.attrs);
+        let gated = gated || is_cfg_gated(&module.attrs);
         content
             .iter()
             .find_map(|inner| match inner {
@@ -101,7 +104,7 @@ fn inline_mod_route_where(
                 }
                 _ => None,
             })
-            .or_else(|| inline_mod_route_where(content, include, accept))
+            .or_else(|| inline_mod_route_where(content, gated, include, accept))
     })
 }
 
@@ -163,9 +166,12 @@ pub(super) fn stored_inline_mod_route(
             |item| matches!(item, Item::Fn(handler) if handler.sig.ident == name && extract_route_info(&handler.attrs).is_some()),
         )
     };
-    inline_mod_route_where(&ast.items, &|name| stored_names.contains(&name), &|name| {
-        stored_names.contains(&name) && !top_level(name)
-    })
+    inline_mod_route_where(
+        &ast.items,
+        false,
+        &|name| stored_names.contains(&name),
+        &|name| stored_names.contains(&name) && !top_level(name),
+    )
 }
 
 #[cfg(test)]
@@ -221,6 +227,10 @@ mod tests {
     #[case::inline("mod v2 { #[route(get)] pub async fn b() {} }", Some(("v2", "b")))]
     #[case::nested("mod v2 { mod inner { #[vespera::route] pub async fn c() {} } }", Some(("inner", "c")))]
     #[case::gated_skipped("#[cfg(test)] mod tests { #[route(get)] pub async fn t() {} }", None)]
+    #[case::nested_in_gated_skipped(
+        "#[cfg(test)] mod tests { mod fixtures { #[route(get)] pub async fn probe() {} } }",
+        None
+    )]
     #[case::non_route_fn("mod helpers { pub fn h() {} }", None)]
     #[case::declaration_only("mod other;", None)]
     fn finds_inline_module_routes(#[case] src: &str, #[case] expected: Option<(&str, &str)>) {

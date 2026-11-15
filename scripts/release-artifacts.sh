@@ -80,7 +80,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mapfile -t paths < <(jq -r 'if type == "array" then .[] else empty end' <<<"${published:-[]}" | tr -d '\r')
+# Anything but a JSON array of non-empty strings is a changed changepacks
+# output shape: fail loudly instead of reading it as "nothing was published"
+# (that would skip the attestation of a real release with a green job). jq runs
+# outside a process substitution here, so its own failure is not lost either.
+published=${published:-[]}
+if ! jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' \
+  >/dev/null 2>&1 <<<"$published"; then
+  echo "::error::the changepacks output is not a JSON array of project paths: $published" >&2
+  exit 1
+fi
+mapfile -t paths < <(jq -r '.[]' <<<"$published" | tr -d '\r')
 if [ "${#paths[@]}" -eq 0 ]; then
   echo "nothing was published in this run"
   exit 0

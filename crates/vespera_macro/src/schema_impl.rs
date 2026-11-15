@@ -206,6 +206,31 @@ fn build_struct_metadata(
     }
 }
 
+/// The metadata `schema_type!(Dto from .., ignore, name = "DtoSchema")`
+/// pre-registers, built like the derive's for `#[schema(name = ..)]`: the
+/// name is the author's (never namespaced by `export_app!`), the Rust ident
+/// aliases it (`Json<Dto>` → `$ref: DtoSchema`), and the macro call site is
+/// its source identity.
+pub fn named_type_metadata(name: &str, ident: &syn::Ident, definition: String) -> StructMetadata {
+    let mut metadata = StructMetadata::new(name.to_string(), definition);
+    metadata.explicit_schema_name = true;
+    let rust_ident = syn::ext::IdentExt::unraw(ident).to_string();
+    metadata.rust_ident = (rust_ident != name).then_some(rust_ident);
+    let start = ident.span().start();
+    let identity = proc_macro2::Span::call_site().local_file().map(|file| {
+        format!(
+            "{}::{ident}@{}:{}",
+            file.display(),
+            start.line,
+            start.column
+        )
+    });
+    // No call-site file (unit tests): no identity.
+    identity
+        .into_iter()
+        .fold(metadata, StructMetadata::with_source_identity)
+}
+
 /// Overwrite-insert a schema for the current crate — the
 /// `schema_type!(.., ignore)` pre-registration path, which has no
 /// duplicate-name semantics.

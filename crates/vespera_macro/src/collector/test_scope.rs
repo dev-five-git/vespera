@@ -261,6 +261,43 @@ impl TestScope {
     }
 }
 
+/// Hash of every test-only verdict the OpenAPI document depends on: each
+/// documented schema's source identity + verdict and each stored route
+/// file's declarer-chain verdict.  The verdicts come from files outside the
+/// route folder (`src/lib.rs`, `src/routes.rs`, a schema's own file), which
+/// the route-file fingerprints never cover, so the route cache folds this in:
+/// gating `mod fixtures;` on `cfg(test)` must invalidate every build
+/// variant's cache, not only the one whose storage changed.
+pub fn verdict_hash(
+    schemas: &HashMap<String, crate::metadata::StructMetadata>,
+    routes: &[crate::route_impl::StoredRouteInfo],
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut scope = TestScope::current();
+    let mut items = HashMap::new();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut identities: Vec<&str> = schemas
+        .values()
+        .filter(|schema| schema.include_in_openapi)
+        .filter_map(|schema| schema.source_identity.as_deref())
+        .collect();
+    identities.sort_unstable();
+    identities.dedup();
+    for identity in identities {
+        (identity, scope.schema_test_only(identity, &mut items)).hash(&mut hasher);
+    }
+    let mut files: Vec<&str> = routes
+        .iter()
+        .filter_map(|route| route.file_path.as_deref())
+        .collect();
+    files.sort_unstable();
+    files.dedup();
+    for file in files {
+        (file, scope.file_test_only(Path::new(file))).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 /// `metadata` without its test-only routes and schemas — what the OpenAPI
 /// document describes in every build.  Borrows when there is none.
 pub fn documented_view(metadata: &CollectedMetadata) -> Cow<'_, CollectedMetadata> {

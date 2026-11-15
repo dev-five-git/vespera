@@ -1,6 +1,6 @@
 //! `OpenAPI` document generator
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use vespera_core::{
     openapi::{Info, OpenApi, OpenApiVersion, Server, Tag},
@@ -32,6 +32,19 @@ pub use defaults::process_default_functions_for;
 use paths::build_path_items;
 pub use paths::{check_duplicate_routes, find_duplicate_operation_id};
 pub use route_claims::{RouteClaims, RouteConflict};
+
+/// Run `f` with the `$ref` resolution context the component schemas are
+/// built with for `metadata` (every schema name, the `#[schema(name = ..)]`
+/// Rust-ident aliases and their `module::Ident` keys), so `schema!` resolves
+/// a field type exactly like the component it reproduces.
+pub fn with_schema_lookups<R>(
+    metadata: &CollectedMetadata,
+    f: impl FnOnce(&HashSet<&str>, &HashMap<&str, &str>) -> R,
+) -> R {
+    let scoped = component_schemas::scoped_rust_idents(metadata);
+    let (known_schemas, struct_definitions) = build_schema_lookups(metadata, &scoped);
+    f(&known_schemas, &struct_definitions)
+}
 
 /// OpenAPI security data parsed from the `vespera!` macro.
 #[derive(Default)]

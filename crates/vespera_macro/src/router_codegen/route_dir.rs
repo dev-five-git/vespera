@@ -15,7 +15,11 @@ pub fn validate_route_dir(dir: &str, macro_label: &str, span: Span) -> syn::Resu
         && !dir.contains('#')
         && dir
             .split('/')
-            .all(|segment| syn::parse_str::<syn::Ident>(segment).is_ok());
+            // `parse_str` tokenizes, skipping surrounding whitespace
+            // (`" routes"`): the ident must BE the segment.
+            .all(|segment| {
+                syn::parse_str::<syn::Ident>(segment).is_ok_and(|ident| ident == segment)
+            });
     if valid {
         return Ok(());
     }
@@ -58,6 +62,8 @@ mod tests {
             "mod",
             "my-routes",
             "r#type",
+            " routes",
+            "api/ v1",
         ]
         .iter()
         .map(|dir| {

@@ -47,6 +47,21 @@ fn test_validate_server_url_valid_relative() {
     assert!(validate_server_url(&template).is_err());
 }
 
+/// A `{var}` template is rejected even behind an accepted prefix: the
+/// document would reference a server variable it never defines.
+#[rstest]
+#[case::host("https://{tenant}.example.com")]
+#[case::path("/api/{version}")]
+fn test_validate_server_url_rejects_templates(#[case] url: &str) {
+    let err = validate_server_url(&LitStr::new(url, Span::call_site())).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("`{var}` templates are not supported"),
+        "{err}"
+    );
+    assert!(!is_server_url(url));
+}
+
 #[test]
 fn test_validate_server_url_invalid() {
     let lit = LitStr::new("ftp://example.com", Span::call_site());
@@ -678,6 +693,30 @@ fn test_server_duplicate_field_rejected() {
     quote::quote!(security_schemes = [{ name = "apiKey", type = "apiKey", in = "header" }]),
     "vespera! macro: security scheme `apiKey` of type `apiKey` is missing required field `header_name` (the api-key parameter name)"
 )]
+#[case::api_key_with_http_scheme(
+    quote::quote!(security_schemes = [{ name = "key", type = "apiKey", header_name = "X-Key", in = "header", scheme = "bearer" }]),
+    "vespera! macro: security scheme `key` of type `apiKey` cannot declare `scheme`; only `http` schemes have scheme"
+)]
+#[case::http_with_header_name(
+    quote::quote!(security_schemes = [{ name = "basic", type = "http", scheme = "basic", header_name = "X" }]),
+    "vespera! macro: security scheme `basic` of type `http` cannot declare `header_name`; only `apiKey` schemes have header_name"
+)]
+#[case::oauth2_with_oidc_url(
+    quote::quote!(security_schemes = [{ name = "o", type = "oauth2", open_id_connect_url = "https://x/.well-known", flows = { client_credentials = { token_url = "https://t", scopes = {} } } }]),
+    "vespera! macro: security scheme `o` of type `oauth2` cannot declare `open_id_connect_url`; only `openIdConnect` schemes have open_id_connect_url"
+)]
+#[case::bearer_format_on_basic(
+    quote::quote!(security_schemes = [{ name = "basic", type = "http", scheme = "basic", bearer_format = "JWT" }]),
+    "vespera! macro: security scheme `basic` declares `bearer_format` with `scheme = \"basic\"`; OpenAPI defines `bearerFormat` only for `scheme = \"bearer\"`"
+)]
+#[case::empty_token_url(
+    quote::quote!(security_schemes = [{ name = "o", type = "oauth2", flows = { client_credentials = { token_url = "", scopes = {} } } }]),
+    "vespera! macro: `token_url` must be an absolute `http://` or `https://` URL, got \"\""
+)]
+#[case::relative_oidc_url(
+    quote::quote!(security_schemes = [{ name = "oidc", type = "openIdConnect", open_id_connect_url = "/.well-known/openid-configuration" }]),
+    "vespera! macro: `open_id_connect_url` must be an absolute `http://` or `https://` URL, got \"/.well-known/openid-configuration\""
+)]
 #[case::invalid_security_type(
     quote::quote!(security_schemes = [{ name = "auth", type = "custom" }]),
     "invalid security scheme type: `custom`. Expected `apiKey`, `http`, `mutualTLS`, `oauth2`, or `openIdConnect`"
@@ -691,6 +730,17 @@ fn malformed_nested_configuration_reports_the_specific_field_error(
         .expect("fixture must be rejected");
 
     assert_eq!(error.to_string(), expected);
+}
+
+/// `bearer_format` is accepted on a bearer scheme in any case.
+#[test]
+fn bearer_format_on_a_bearer_scheme_in_any_case() {
+    let input = syn::parse2::<AutoRouterInput>(quote::quote!(
+        security_schemes = [{ name = "jwt", type = "http", scheme = "Bearer", bearer_format = "JWT" }]
+    ))
+    .expect("bearerFormat belongs to a bearer scheme");
+    let schemes = input.security_schemes.expect("scheme list is present");
+    assert_eq!(schemes[0].scheme.bearer_format.as_deref(), Some("JWT"));
 }
 
 #[test]

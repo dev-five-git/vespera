@@ -114,3 +114,20 @@ fn raw_identifier_rename_and_add_targets() {
     assert!(rendered.contains("pub r#type : i32"), "{rendered}");
     assert!(rendered.contains("pub r#match : u8"), "{rendered}");
 }
+
+/// The `ignore, name = ".."` pre-registration is an explicitly named schema
+/// aliased by its Rust ident, like a `#[schema(name = "..")]` derive.
+#[rstest]
+#[case::renamed(r#"Dto from Source, ignore, name = "DtoSchema""#, Some("Dto"))]
+#[case::same_name(r#"Dto from Source, ignore, name = "Dto""#, None)]
+fn ignored_metadata_is_an_explicit_name(#[case] input: &str, #[case] rust_ident: Option<&str>) {
+    let storage = HashMap::from([(
+        "Source".to_string(),
+        StructMetadata::new("Source".to_string(), SOURCE.to_string()),
+    )]);
+    let input: SchemaTypeInput = syn::parse_str(input).unwrap();
+    let (_, metadata) = generate_schema_type_code(&input, &storage).unwrap();
+    let metadata = metadata.unwrap();
+    assert!(metadata.explicit_schema_name);
+    assert_eq!(metadata.rust_ident.as_deref(), rust_ident);
+}
