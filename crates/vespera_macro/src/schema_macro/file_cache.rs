@@ -18,13 +18,12 @@
 //!
 //! The epoch mechanism amortises this: each file-cache-reaching top-level macro
 //! invocation (`#[derive(Schema)]`, `schema!`, `schema_type!`, `vespera!`,
-//! `export_app!`, and `#[cron]`) calls [`bump_epoch`] once at entry. Within that epoch, a given
-//! path's mtime is fetched from `fs::metadata` **at most once** and stored in
-//! `mtime_epoch_cache`. Subsequent lookups for the same path in the same epoch
-//! reuse the cached mtime without a syscall. `#[route]` and
-//! `#[derive(Multipart)]` do not call into this module: they parse only the
-//! annotated item tokens and update in-memory macro storage, so they are
-//! intentionally exempt.
+//! `export_app!`, `#[route]` and `#[cron]`) calls [`bump_epoch`] once at
+//! entry. Within that epoch, a given path's mtime is fetched from
+//! `fs::metadata` **at most once** and stored in `mtime_epoch_cache`.
+//! Subsequent lookups for the same path in the same epoch reuse the cached
+//! mtime without a syscall. `#[derive(Multipart)]` does not call into this
+//! module: it parses only the annotated item tokens, so it is exempt.
 //!
 //! Across epochs the full mtime check still runs, preserving the existing
 //! invalidation semantics (important for rust-analyzer's long-lived server).
@@ -236,8 +235,8 @@ thread_local! {
 ///
 /// Call this **once** at the start of each file-cache-reaching top-level macro
 /// invocation (`#[derive(Schema)]`, `schema!`, `schema_type!`, `vespera!`,
-/// `export_app!`). `#[route]`, `#[cron]`, and `#[derive(Multipart)]` are exempt
-/// because they do not read files through this module. Within a single epoch,
+/// `export_app!`, `#[route]`, `#[cron]`). `#[derive(Multipart)]` is exempt
+/// because it does not read files through this module. Within a single epoch,
 /// `fs::metadata` is called at most once per path; subsequent lookups for the
 /// same path reuse the cached mtime without a syscall.
 ///
@@ -468,12 +467,16 @@ fn ensure_struct_definitions(cache: &mut FileCache, path: &Path) -> bool {
         return false;
     };
 
+    // A struct the compiler drops (`#[cfg(any())]`, the inactive one of
+    // cfg twins) is no definition; of the rest, the first of a name wins.
     let mut defs = HashMap::new();
     for item in &file_ast.items {
-        if let syn::Item::Struct(struct_item) = item {
+        if let syn::Item::Struct(struct_item) = item
+            && !super::cfg_eval::statically_inactive(&struct_item.attrs)
+        {
             let name = struct_item.ident.to_string();
-            let def = quote::quote!(#struct_item).to_string();
-            defs.insert(name, def);
+            defs.entry(name)
+                .or_insert_with(|| quote::quote!(#struct_item).to_string());
         }
     }
 

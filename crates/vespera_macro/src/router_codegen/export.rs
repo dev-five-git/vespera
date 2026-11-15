@@ -105,7 +105,7 @@ fn normalize_prefix(prefix: &LitStr) -> syn::Result<LitStr> {
     if !normalized.is_empty() && schema_namespace_from_prefix(normalized).is_empty() {
         return Err(syn::Error::new(
             prefix.span(),
-            "export_app! macro: `prefix` must contain at least one alphanumeric character",
+            "export_app! macro: `prefix` must contain at least one ASCII alphanumeric character (it names the app's components)",
         ));
     }
 
@@ -114,7 +114,9 @@ fn normalize_prefix(prefix: &LitStr) -> syn::Result<LitStr> {
 
 /// Derive a deterministic PascalCase component namespace from a normalized
 /// route prefix. A conventional leading `/api` segment is omitted when more
-/// specific segments follow (`/api/media-library` -> `MediaLibrary`).
+/// specific segments follow (`/api/media-library` -> `MediaLibrary`).  Only
+/// ASCII alphanumerics are kept: an OpenAPI component key must match
+/// `^[a-zA-Z0-9.\-_]+$`.
 pub fn schema_namespace_from_prefix(prefix: &str) -> String {
     let segments: Vec<&str> = prefix
         .trim_matches('/')
@@ -125,11 +127,11 @@ pub fn schema_namespace_from_prefix(prefix: &str) -> String {
     let mut namespace = String::new();
     for word in segments[start..]
         .iter()
-        .flat_map(|segment| segment.split(|ch: char| !ch.is_alphanumeric()))
+        .flat_map(|segment| segment.split(|ch: char| !ch.is_ascii_alphanumeric()))
     {
         let mut chars = word.chars();
         if let Some(first) = chars.next() {
-            namespace.extend(first.to_uppercase());
+            namespace.push(first.to_ascii_uppercase());
             namespace.extend(chars);
         }
     }
@@ -382,7 +384,8 @@ mod tests {
     #[case("/api?version=1", "must be a URL path")]
     #[case("/api#section", "must be a URL path")]
     #[case("/api//users", "must not contain empty path segments")]
-    #[case("/---", "must contain at least one alphanumeric character")]
+    #[case("/---", "must contain at least one ASCII alphanumeric character")]
+    #[case("/카탈로그", "must contain at least one ASCII alphanumeric character")]
     #[case("/api/{tenant}", "must be a static path")]
     #[case("/api/*rest", "must be a static path")]
     #[case("/api/:id", "must be a static path")]
@@ -402,6 +405,7 @@ mod tests {
     #[case("/api/media-library", "MediaLibrary")]
     #[case("/api/v1/user_profile", "V1UserProfile")]
     #[case("/api/-media--library-", "MediaLibrary")]
+    #[case("/카탈로그-v2/éte", "V2Te")]
     fn schema_namespace_covers_empty_api_and_composite_prefixes(
         #[case] prefix: &str,
         #[case] expected: &str,

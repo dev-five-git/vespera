@@ -500,7 +500,9 @@ let app = vespera!(
             name = "oidc",
             type = "openIdConnect",
             open_id_connect_url = "https://auth.example.com/.well-known/openid-configuration"
-        }
+        },
+        { name = "apiKey", type = "apiKey", in = "header", header_name = "X-API-Key" },
+        { name = "bearerAuth", type = "http", scheme = "bearer", bearer_format = "JWT" }
     ],
     security = [("oauth2", ["read:users"])] // document-level default
 );
@@ -583,7 +585,7 @@ Vespera automatically generates `multipart/form-data` content type in OpenAPI, a
 For dynamic multipart handling where the fields aren't known at compile time, use axum's built-in `Multipart` extractor:
 
 ```rust
-use axum::extract::Multipart;
+use vespera::axum::extract::Multipart;
 
 #[vespera::route(post, tags = ["uploads"])]
 pub async fn upload(mut multipart: Multipart) -> Json<UploadResponse> {
@@ -765,7 +767,9 @@ Generates a struct with:
 
 ### Environment Variable Fallbacks
 
-All parameters support environment variable fallbacks:
+These parameters fall back to an environment variable when the macro does
+not set them (the API-info, `security_schemes` / `security` and `merge`
+parameters have no fallback):
 
 | Parameter | Environment Variable |
 |-----------|---------------------|

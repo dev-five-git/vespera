@@ -178,9 +178,8 @@ fn test_route_args_parse_tags(
         (true, Ok(route_args)) => {
             if expected_tags.is_empty() {
                 // Empty array should result in Some with empty vec
-                if let Some(tags_array) = &route_args.tags {
-                    assert!(tags_array.elems.is_empty());
-                }
+                let tags_array = route_args.tags.as_ref().expect("`tags = []` is Some");
+                assert!(tags_array.elems.is_empty());
             } else {
                 assert!(
                     route_args.tags.is_some(),
@@ -284,8 +283,29 @@ fn test_route_args_parse_headers(#[case] input: &str, #[case] expected_headers: 
 #[case(r#"headers = [{ name = "A", name = "B" }]"#)]
 #[case(r#"headers = [{ name = "A", required = true, required = false }]"#)]
 #[case(r#"headers = [{ name = "A", description = "x", description = "y" }]"#)]
+#[case(r#"headers = [{ name = "" }]"#)]
+#[case(r#"headers = [{ name = "x y" }]"#)]
+#[case(r#"headers = [{ name = "X-Caf\u{e9}" }]"#)]
 fn test_route_args_parse_headers_invalid(#[case] input: &str) {
     assert!(syn::parse_str::<RouteArgs>(input).is_err());
+}
+
+/// Header errors point at the offending entry / name, not the call site.
+#[rstest]
+#[case(r"get, headers = [{ required = true }]", "missing required `name`", 16)]
+#[case(
+    r#"get, headers = [{ name = "x y" }]"#,
+    "invalid header name \"x y\"",
+    25
+)]
+fn test_route_args_header_errors_are_spanned(
+    #[case] input: &str,
+    #[case] message: &str,
+    #[case] column: usize,
+) {
+    let error = syn::parse_str::<RouteArgs>(input).err().expect("rejected");
+    assert!(error.to_string().contains(message), "{error}");
+    assert_eq!(error.span().start().column, column);
 }
 
 #[rstest]

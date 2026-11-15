@@ -182,7 +182,9 @@ impl CarriedAttrs {
     /// default no longer holds) and `value_type = T` becomes
     /// `value_type = Option<T>`. An attribute left empty is removed; one
     /// that does not parse is kept as written. A `cfg_attr` serde codec /
-    /// default no longer fits the `Option` field and is dropped.
+    /// default no longer fits the `Option` field and is dropped; its
+    /// `skip_serializing_if` predicate becomes `Option::is_none` (the
+    /// source's predicate takes the unwrapped type).
     pub fn for_option_wrap(mut self) -> Self {
         self.schema = self
             .schema
@@ -209,6 +211,11 @@ impl CarriedAttrs {
                     "with" | "serialize_with" | "deserialize_with" | "default"
                 )
             });
+            for item in items.iter_mut() {
+                if serde_key(item) == "skip_serializing_if" {
+                    *item = syn::parse_quote!(skip_serializing_if = "Option::is_none");
+                }
+            }
         }
         self.cfg_serde.retain(|(_, items)| !items.is_empty());
         self.schema_default = false;
@@ -345,6 +352,11 @@ mod tests {
     #[case::cfg_attr_serde_codec(
         quote!(#[cfg_attr(all(), serde(with = "c", alias = "b"))] #[cfg_attr(all(), serde(default))]),
         "# [cfg_attr (all () , serde (alias = \"b\"))]"
+    )]
+    // Its predicate took the unwrapped `String`: `Option::is_none` fits.
+    #[case::cfg_attr_skip_serializing_if(
+        quote!(#[cfg_attr(feature = "x", serde(skip_serializing_if = "String::is_empty"))]),
+        "# [cfg_attr (feature = \"x\" , serde (skip_serializing_if = \"Option::is_none\"))]"
     )]
     fn option_wrap_attrs(#[case] attrs: TokenStream, #[case] expected: &str) {
         let carried = carried_field_attrs(&field(attrs), true, &[]).for_option_wrap();

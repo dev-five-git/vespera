@@ -44,8 +44,8 @@ fn site_in(file: &Path, name: &syn::Ident) -> ExportSite {
 
 /// Claims `app` for the crate build `krate` at `site`.  Re-expanding the
 /// same site (rust-analyzer) is fine, and a rename there frees the old name;
-/// an earlier site whose file no longer mentions `app` is a stale IDE
-/// leftover and is replaced.
+/// an earlier site whose position no longer holds `app` (the file changed,
+/// or the line moved) is a stale IDE leftover and is replaced.
 pub(super) fn claim_export_name(
     krate: &str,
     app: &str,
@@ -59,7 +59,7 @@ pub(super) fn claim_export_name(
     let key = (krate.to_string(), app.to_string());
     if let Some(existing) = sites.get(&key)
         && *existing != site
-        && still_mentions(existing, app)
+        && still_exports(existing, app)
     {
         return Err(format!(
             "export_app! macro: `{app}` is already exported by this crate ({}, line {}); every export_app! of a crate needs a distinct name (its OpenAPI sidecar, cache and export key are named `<crate>/{app}`)",
@@ -74,10 +74,25 @@ pub(super) fn claim_export_name(
     Ok(())
 }
 
-/// Whether `site`'s file (still) mentions `app` — an unreadable one does not.
-fn still_mentions(site: &ExportSite, app: &str) -> bool {
-    crate::schema_macro::file_cache::get_file_content(Path::new(&site.file))
-        .is_some_and(|content| content.contains(app))
+/// Whether `site`'s position (still) holds the name `app` — an unreadable
+/// file does not.  Inserting a line above an `export_app!` moves it: the old
+/// site then holds something else, so it no longer claims the name.
+fn still_exports(site: &ExportSite, app: &str) -> bool {
+    crate::schema_macro::file_cache::get_file_content(Path::new(&site.file)).is_some_and(
+        |content| {
+            let Some(line) = site
+                .line
+                .checked_sub(1)
+                .and_then(|index| content.lines().nth(index))
+            else {
+                return false;
+            };
+            let rest: String = line.chars().skip(site.column).collect();
+            rest.strip_prefix(app).is_some_and(|after| {
+                !after.starts_with(|ch: char| ch.is_alphanumeric() || ch == '_')
+            })
+        },
+    )
 }
 
 #[cfg(test)]
@@ -93,10 +108,66 @@ mod tests {
         assert_eq!(site.file, "src/lib.rs");
     }
 
+    /// The site of the name after `export_app!(` on `line` of `file` (column
+    /// 0 when there is none).
     fn site(file: &Path, line: usize) -> ExportSite {
+        let column = std::fs::read_to_string(file)
+            .ok()
+            .and_then(|content| {
+                let text = content.lines().nth(line - 1)?.to_owned();
+                let byte = text.find("export_app!(")? + "export_app!(".len();
+                Some(text[..byte].chars().count())
+            })
+            .unwrap_or(0);
         let file = file.display().to_string();
-        let column = 4;
         ExportSite { file, line, column }
+    }
+
+    /// Inserting a line above an `export_app!` (rust-analyzer re-expands it
+    /// one line lower) is no duplicate: the old position no longer holds the
+    /// name.  Another export of the same name still is.
+    #[test]
+    fn a_moved_export_frees_its_old_site() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("lib.rs");
+        let krate = format!("{}/moved", dir.path().display());
+        std::fs::write(&file, "export_app!(MovedApp);\n").unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        assert_eq!(
+            claim_export_name(&krate, "MovedApp", Some(site(&file, 1))),
+            Ok(())
+        );
+        std::fs::write(&file, "// inserted\nexport_app!(MovedApp);\n").unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        assert_eq!(
+            claim_export_name(&krate, "MovedApp", Some(site(&file, 2))),
+            Ok(())
+        );
+        // A line that no longer exists, or a longer name at the old
+        // position, is not this export either.
+        let at = |line, column| ExportSite {
+            file: file.display().to_string(),
+            line,
+            column,
+        };
+        std::fs::write(&file, "export_app!(MovedApp);\n").unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        assert_eq!(
+            claim_export_name(&krate, "MovedApp", Some(at(1, 12))),
+            Ok(())
+        );
+        std::fs::write(&file, "export_app!(MovedAppV2);\nexport_app!(MovedApp);\n").unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        assert_eq!(
+            claim_export_name(&krate, "MovedApp", Some(at(2, 12))),
+            Ok(())
+        );
+        assert!(!still_exports(&at(0, 0), "MovedApp"));
+        assert!(!still_exports(&at(9, 0), "MovedApp"));
+        // A real second export (both positions hold the name) is rejected.
+        std::fs::write(&file, "export_app!(MovedApp);\nexport_app!(MovedApp);\n").unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        assert!(claim_export_name(&krate, "MovedApp", Some(at(1, 12))).is_err());
     }
 
     /// A second site of one name is rejected; the same site, another crate

@@ -364,10 +364,13 @@ fn negated_value(expr: &syn::Expr) -> Option<serde_json::Value> {
 
 /// The value of an argument-less conversion of a literal: `to_owned` /
 /// `into` keep a string, `to_string` also renders a number or bool as the
-/// STRING (`42.to_string()` is `"42"`).
+/// STRING Rust's `Display` produces (`42.to_string()` is `"42"`,
+/// `1.0.to_string()` is `"1"`, `1e20.to_string()` is
+/// `"100000000000000000000"`).  An `f32` literal is not rendered: its
+/// `Display` reads the `f32`-rounded value, not the decimal written.
 fn method_call_value(call: &syn::ExprMethodCall) -> Option<serde_json::Value> {
     use serde_json::Value;
-    if !call.args.is_empty() {
+    if !call.args.is_empty() || is_f32_literal(&call.receiver) {
         return None;
     }
     match (
@@ -375,10 +378,30 @@ fn method_call_value(call: &syn::ExprMethodCall) -> Option<serde_json::Value> {
         extract_value_from_expr(&call.receiver)?,
     ) {
         ("to_owned" | "into" | "to_string", value @ Value::String(_)) => Some(value),
-        ("to_string", value @ (Value::Number(_) | Value::Bool(_))) => {
-            Some(Value::String(value.to_string()))
-        }
+        ("to_string", Value::Number(n)) => Some(Value::String(match n.as_f64() {
+            Some(v) if n.is_f64() => v.to_string(),
+            _ => n.to_string(),
+        })),
+        ("to_string", value @ Value::Bool(_)) => Some(Value::String(value.to_string())),
         _ => None,
+    }
+}
+
+/// `1.5f32` (possibly parenthesized or negated).
+fn is_f32_literal(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Float(float),
+            ..
+        }) => float.suffix() == "f32",
+        // `16777217f32`: integer digits with a float suffix lex as `LitInt`.
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(int),
+            ..
+        }) => int.suffix() == "f32",
+        syn::Expr::Paren(inner) => is_f32_literal(&inner.expr),
+        syn::Expr::Unary(unary) => is_f32_literal(&unary.expr),
+        _ => false,
     }
 }
 

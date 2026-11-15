@@ -393,12 +393,22 @@ fn typed_response(
     known_schemas: &HashSet<&str>,
     struct_definitions: &std::collections::HashMap<&str, &str>,
 ) -> Response {
-    let schema = if known_schemas.contains(schema_name)
-        && let Ok(ty) = syn::parse_str::<Type>(schema_name)
-    {
-        super::schema::parse_type_to_schema_ref(&ty, known_schemas, struct_definitions)
-    } else {
-        SchemaRef::Ref(Reference::schema(schema_name))
+    // `schema_name` is the path as written (`errors::NotFound`): resolve it
+    // like any other type reference, so a module-qualified name picks the
+    // right one of two same-named renamed types (`definition_key`).
+    let ty = syn::parse_str::<Type>(schema_name).ok();
+    let key = match &ty {
+        Some(Type::Path(type_path)) => {
+            super::schema::definition_key(&type_path.path, |key| known_schemas.contains(key))
+        }
+        _ => None,
+    }
+    .unwrap_or_else(|| schema_name.to_owned());
+    let schema = match ty {
+        Some(ty) if known_schemas.contains(key.as_str()) => {
+            super::schema::parse_type_to_schema_ref(&ty, known_schemas, struct_definitions)
+        }
+        _ => SchemaRef::Ref(Reference::schema(&key)),
     };
     let mut content = BTreeMap::new();
     content.insert(

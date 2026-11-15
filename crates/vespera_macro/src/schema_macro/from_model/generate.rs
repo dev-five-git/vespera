@@ -16,6 +16,7 @@ use super::super::{
     type_utils::normalize_token_str,
 };
 use super::loads::relation_load;
+use super::target_shape::{TargetShape, target_shape};
 use super::{DB, MODEL};
 
 /// Generate `from_model` impl for `SeaORM` Model WITH relations (async version).
@@ -162,15 +163,31 @@ fn relation_value(
             quote! { Default::default() }
         };
     }
-    // Not circular (an inline type would exist): a target with FK relations
-    // of its own loads them through its async `from_model`.
-    let model_path = normalize_token_str(schema_path).replace("::Schema", "::Model");
+    // Not circular (an inline type would exist): a target `Schema` that
+    // keeps relation fields loads them through its async `from_model`.  The
+    // `schema_type!` generating it decides (its `omit` / `pick` / `add`);
+    // without one, a target `Model` with FK relations is taken to have them.
+    let schema_str = normalize_token_str(schema_path);
+    let model_path = schema_str.replace("::Schema", "::Model");
     let related = get_struct_from_schema_path(&model_path);
     let related_def = related.as_ref().map_or("", |s| s.definition.as_str());
     let related_module = get_module_path_from_schema_path(schema_path);
-    let target_has_fk =
-        get_circular_analysis(source_module_path, &related_module, related_def).has_fk_relations;
-    match (target_has_fk, rel.is_optional) {
+    let schema_name = schema_str.rsplit("::").next().unwrap_or_default().trim();
+    let target_has_from_model = match target_shape(&related_module, schema_name, related_def) {
+        Some(TargetShape::FromModel) => true,
+        Some(TargetShape::From) => false,
+        Some(TargetShape::Neither) => {
+            let message = format!(
+                "schema_type!: relation field `{source_ident}` converts its row into `{schema_str}`, but the `schema_type!` generating it uses `add` or `multipart`, which emit neither `From` nor `from_model`; `omit` the field or give it a `relation_adapters` wrapper"
+            );
+            return quote! { ::core::compile_error!(#message) };
+        }
+        None => {
+            get_circular_analysis(source_module_path, &related_module, related_def)
+                .has_fk_relations
+        }
+    };
+    match (target_has_from_model, rel.is_optional) {
         (true, true) => quote! {
             match #source_ident {
                 Some(r) => Some(Box::new(#schema_path::from_model(r, #DB).await?)),

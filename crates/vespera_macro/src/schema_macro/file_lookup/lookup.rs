@@ -169,6 +169,13 @@ pub(super) fn find_struct_with_call_site(
             module_path,
         ));
     }
+    // `crate::models::User` through `pub use user::User;` in `models`.
+    if let Some(defined_in) = reexported_module(&module_path, &struct_name) {
+        let segments: Vec<&str> = defined_in[1..].iter().map(String::as_str).collect();
+        if let Some(definition) = find_struct_in_module(src_dir, &segments, &struct_name) {
+            return Ok((StructMetadata::new_model(struct_name, definition), defined_in));
+        }
+    }
 
     let mut searched: Vec<PathBuf> = if module_segments.is_empty() {
         Vec::new()
@@ -409,6 +416,30 @@ pub fn storage_module_path(metadata: &StructMetadata) -> Option<Vec<String>> {
         );
     }
     Some(module)
+}
+
+/// The module a `use` re-export in `module` (absolute, `crate::..`) takes
+/// `name` from: `pub use user::User;` in `crate::models` gives
+/// `crate::models::user`.  Chained re-exports are followed (a few hops);
+/// `None` when `module` neither imports `name` under its own name nor
+/// imports it from inside the crate.
+pub fn reexported_module(module: &[String], name: &str) -> Option<Vec<String>> {
+    let mut current = module.to_vec();
+    for _ in 0..8 {
+        let crate::schema_macro::module_scope::Resolved::Path(mut path) =
+            crate::schema_macro::module_scope::resolve_name(&[name.to_string()], &current)
+        else {
+            break;
+        };
+        if path.first().map(String::as_str) != Some("crate")
+            || path.pop().as_deref() != Some(name)
+            || path == current
+        {
+            break;
+        }
+        current = path;
+    }
+    (current != module).then_some(current)
 }
 
 /// The absolute module a qualified source path (`models::user::Model`,

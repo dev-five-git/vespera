@@ -15,7 +15,8 @@
 //!   --baseline <X>        compare this run against baselines/<X>.txt
 //! ```
 //!
-//! Methodology: each iteration runs `cargo clean -p <target>` to force a full
+//! Methodology: each iteration runs `cargo clean -p <target>` and removes
+//! `<target-dir>/vespera` (the route cache) to force a full
 //! re-expansion, then `cargo rustc … -- -Z time-passes` and parses the pass
 //! time. Compile time has only *positive* noise (a busy machine only ever
 //! adds time), so `min` is the robust point estimate; `median`/`mean`/`sd`
@@ -25,7 +26,7 @@
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 struct Args {
@@ -112,9 +113,45 @@ fn extract_pass_time(stderr: &str, pass: &str) -> Option<f64> {
     None
 }
 
-fn measure_once(target: &str, pass: &str) -> Option<f64> {
+/// `<target-dir>/vespera`, where `vespera!` keeps its route cache
+/// (`routes-<tag>.cache`) and spec sidecars: `VESPERA_TARGET_DIR` when set,
+/// else cargo's `target_directory`.  `None` when neither is known.
+fn vespera_build_dir() -> Option<PathBuf> {
+    if let Some(dir) = env::var_os("VESPERA_TARGET_DIR").filter(|dir| !dir.is_empty()) {
+        return Some(PathBuf::from(dir).join("vespera"));
+    }
+    let out = cargo()
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .output()
+        .ok()?;
+    target_directory(&String::from_utf8_lossy(&out.stdout)).map(|dir| dir.join("vespera"))
+}
+
+/// The `"target_directory"` string of `cargo metadata` JSON (a path holds no
+/// escapes other than `\\` and `\"`).
+fn target_directory(metadata: &str) -> Option<PathBuf> {
+    let rest = metadata.split("\"target_directory\":\"").nth(1)?;
+    let mut dir = String::new();
+    let mut chars = rest.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => return Some(PathBuf::from(dir)),
+            '\\' => dir.push(chars.next()?),
+            _ => dir.push(ch),
+        }
+    }
+    None
+}
+
+fn measure_once(target: &str, pass: &str, vespera_dir: Option<&Path>) -> Option<f64> {
     // Force a full re-expansion of the fixture lib (deps stay built).
     let _ = cargo().args(["clean", "-p", target]).status();
+    // `cargo clean -p` keeps `<target>/vespera/`: its route cache would turn
+    // every measured run into a cache hit that skips route collection,
+    // validation and OpenAPI generation (the code macro changes touch).
+    if let Some(dir) = vespera_dir {
+        let _ = fs::remove_dir_all(dir);
+    }
     let out = cargo()
         .args([
             "rustc",
@@ -173,13 +210,17 @@ fn main() {
         fatal(&format!("warm build of `{}` failed", args.target));
     }
 
+    let vespera_dir = vespera_build_dir();
+    if vespera_dir.is_none() {
+        eprintln!("[warn] target directory unknown: vespera's route cache is not cleared");
+    }
     eprintln!(
         "[measure] {} runs of `{}` on `{}`",
         args.runs, args.pass, args.target
     );
     let mut samples = Vec::new();
     for i in 0..args.runs {
-        match measure_once(&args.target, &args.pass) {
+        match measure_once(&args.target, &args.pass, vespera_dir.as_deref()) {
             Some(t) => {
                 eprintln!("  run {:>2}: {t:.4}s", i + 1);
                 samples.push(t);
@@ -270,5 +311,24 @@ fn main() {
             }
             Err(e) => eprintln!("   baseline `{name}` not found ({e}); use --save-baseline first"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_directory_reads_and_unescapes_the_metadata_field() {
+        let json = r#"{"packages":[],"target_directory":"C:\\work\\tar\"get","version":1}"#;
+        assert_eq!(
+            target_directory(json),
+            Some(PathBuf::from(r#"C:\work\tar"get"#))
+        );
+        assert_eq!(
+            target_directory(r#"{"target_directory":"unterminated"#),
+            None
+        );
+        assert_eq!(target_directory("{}"), None);
     }
 }

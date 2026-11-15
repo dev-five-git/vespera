@@ -11,7 +11,8 @@ Both modes use the same `create_app()` → same routes, same logic.
 
 ## Prerequisites
 
-- Rust 1.85+
+- A recent stable Rust (the published crates need 1.88+; the examples may
+  use newer language features)
 - Java 17+ (for JNI mode)
 
 ## Mode A: Standalone Rust Server
@@ -119,16 +120,19 @@ libs/
 └── vespera-bridge/         # Java JAR (com.devfive.vespera.bridge)
 
 examples/rust-jni-demo/
-├── Cargo.toml              # depends on vespera only: features = ["jni"]
+├── Cargo.toml              # depends on vespera only: features = ["jni", "ffi"]
 ├── src/
-│   ├── lib.rs              # create_app() + vespera::jni_app!(create_app)
+│   ├── lib.rs              # create_app() + admin_app(), registered by
+│   │                       # vespera::jni_apps! { .. } and vespera::ffi_apps! { .. }
 │   ├── main.rs             # Mode A: vespera::axum::serve on :3000
-│   └── routes/
-│       ├── documents.rs    # POST /documents/validate
-│       └── health.rs       # GET /health
+│   ├── routes/             # default app: documents, health, echo, form,
+│   │                       # headers, stream, upload, diag
+│   └── admin_routes/       # "admin" app (X-Vespera-App: admin)
+├── ffi/                    # C ABI demo (ctypes_demo.py, header_check.c)
 └── java/
-    └── demo-app/           # Mode B: Spring Boot proxy
-        └── src/.../DemoApplication.java
+    ├── demo-app/           # Mode B: Spring Boot (servlet) proxy
+    │   └── src/.../DemoApplication.java
+    └── demo-reactive-app/  # Spring WebFlux proxy
 ```
 
 ## How it works
@@ -137,15 +141,32 @@ examples/rust-jni-demo/
 
 ```rust
 // Cargo.toml — single dependency
-// vespera = { features = ["jni"] }
+// vespera = { features = ["jni", "ffi"] }
 
-// lib.rs — the entire JNI integration:
+// lib.rs — the entire JNI (and C ABI) integration:
 pub fn create_app() -> axum::Router {
     vespera!(title = "Document Validation API", version = "0.1.0")
 }
 
-vespera::jni_app!(create_app);
+pub fn admin_app() -> axum::Router {
+    vespera!(dir = "admin_routes", title = "Admin Dashboard API", version = "0.1.0")
+}
+
+// One JNI_OnLoad; Java picks the app per request (`X-Vespera-App`).
+vespera::jni_apps! {
+    "_default" => create_app,
+    "admin"    => admin_app,
+}
+
+// The same cdylib also exports the C ABI (`vespera_init` & co.).
+vespera::ffi_apps! {
+    "_default" => create_app,
+    "admin"    => admin_app,
+}
 ```
+
+A single-app library needs only `vespera::jni_app!(create_app);` (and
+`features = ["jni"]`).
 
 ### Java side
 
@@ -165,7 +186,7 @@ public class DemoApplication {
 
 ### What happens at runtime
 
-1. `vespera::jni_app!` generates `JNI_OnLoad` → calls `vespera::inprocess::register_app(create_app)`
+1. `vespera::jni_apps!` generates `JNI_OnLoad` → calls `vespera::inprocess::register_app(create_app)` and `register_app_named("admin", admin_app)`
 2. Java calls `VesperaBridge.init("rust_jni_demo")` → loads cdylib → triggers `JNI_OnLoad`
 3. `VesperaProxyController` catches all HTTP requests → encodes them into the **binary wire format** → the autoconfigured `SmartDispatchModeResolver` (default since vespera-bridge 0.2) picks a dispatch mode per request: `DIRECT` (direct `ByteBuffer`s, `VesperaBridge.dispatchDirect`) for small / bodyless idempotent requests, `SYNC` (`VesperaBridge.dispatchBytes(byte[])`) for small non-idempotent ones, and the streaming modes for SSE / NDJSON `Accept` or large / unknown-length bodies
 4. The JNI symbol delegates to `vespera_inprocess` (e.g. `dispatch_from_bytes()` for `SYNC`)

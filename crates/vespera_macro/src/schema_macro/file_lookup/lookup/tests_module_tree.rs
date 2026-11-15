@@ -297,3 +297,111 @@ fn missing_qualified_source_never_falls_back(#[case] stored_in: Option<&str>, #[
     assert!(messages[0].contains("User"), "{messages:?}");
     assert_eq!(messages.get(1).map_or("", String::as_str), note);
 }
+
+/// A crate whose `models` module re-exports `user::User` and whose
+/// `user.rs` imports the field type `Money` from `crate::common`.
+fn reexporting_crate() -> (TempDir, crate::env_access::test_env::EnvGuard) {
+    let dir = TempDir::new().unwrap();
+    for (path, content) in [
+        ("lib.rs", "pub mod common;\npub mod models;"),
+        ("common.rs", "pub struct Money(pub i64);"),
+        ("models/mod.rs", "pub mod user;\npub use user::User;"),
+        (
+            "models/user.rs",
+            "use crate::common::Money;\npub struct User { pub price: Money }",
+        ),
+    ] {
+        let path = dir.path().join("src").join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+    let guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    bump_epoch();
+    (dir, guard)
+}
+
+fn stored_priced_user(dir: &TempDir) -> StructMetadata {
+    let file = dir.path().join("src/models/user.rs");
+    StructMetadata::new(
+        "User".to_string(),
+        "pub struct User { pub price: Money }".to_string(),
+    )
+    .with_source_identity(format!("{}::User@2:12", file.display()))
+}
+
+/// MED-1 / MED-2: a trusted storage hit takes its defining module, not the
+/// path as written (`models::user::Money` names a private import), and a
+/// path through a `pub use` re-export names the same item - with and
+/// without a storage entry.
+#[rstest]
+#[case::relative_path_storage("models::user::User", true)]
+#[case::reexport_storage("crate::models::User", true)]
+#[case::reexport_file_lookup("crate::models::User", false)]
+fn field_types_resolve_from_the_defining_module(#[case] source: &str, #[case] stored: bool) {
+    let (dir, _guard) = reexporting_crate();
+    let storage: std::collections::HashMap<_, _> = stored
+        .then(|| ("User".to_string(), stored_priced_user(&dir)))
+        .into_iter()
+        .collect();
+    let input: crate::schema_macro::SchemaTypeInput =
+        syn::parse_str(&format!("UserDto from {source}")).unwrap();
+    let (tokens, _) = crate::schema_macro::generate_schema_type_code(&input, &storage).unwrap();
+    let rendered = tokens.to_string();
+    assert!(
+        rendered.contains("price : crate :: common :: Money"),
+        "{rendered}"
+    );
+}
+
+/// T-1: of cfg twins the lookup takes the one the build compiles, and a
+/// `#[cfg(any())]` struct (or inline module) is no definition at all.
+#[rstest]
+#[case::pg_enabled("--cfg\nfeature=\"pg\"", "pub big")]
+#[case::pg_disabled("--cfg\nfeature=\"other\"", "pub small")]
+fn cfg_inactive_structs_are_skipped(#[case] cfg: &str, #[case] expected: &str) {
+    let dir = TempDir::new().unwrap();
+    let user = dir.path().join("src/models/user.rs");
+    std::fs::create_dir_all(user.parent().unwrap()).unwrap();
+    std::fs::write(
+        &user,
+        "#[cfg(feature = \"pg\")] pub struct User { pub big: i64 }\n\
+         #[cfg(not(feature = \"pg\"))] pub struct User { pub small: i32 }\n\
+         #[cfg(any())] pub struct Dead { pub id: i32 }\n\
+         #[cfg(any())] mod gone { pub struct Gone { pub id: i32 } }",
+    )
+    .unwrap();
+    let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    let _args = crate::env_access::test_env::set_var(
+        crate::env_access::COMPILER_ARGS_KEY,
+        format!("rustc\n--crate-name\napp\n{cfg}"),
+    );
+    bump_epoch();
+    let (metadata, _) = lookup("crate::models::user::User", None).unwrap();
+    assert!(metadata.definition.contains(expected), "{}", metadata.definition);
+    assert!(matches!(
+        lookup("crate::models::user::Dead", None),
+        Err(LookupError::NotFound { .. })
+    ));
+    assert!(matches!(
+        lookup("Gone", Some(&user)),
+        Err(LookupError::BareNotFound { .. })
+    ));
+    let items = syn::parse_file(&std::fs::read_to_string(&user).unwrap())
+        .unwrap()
+        .items;
+    let in_items = crate::schema_macro::module_scope::struct_in_items(&items, "User").unwrap();
+    assert!(in_items.contains(expected), "{in_items}");
+}
+
+#[test]
+fn reexported_module_follows_crate_imports_only() {
+    let (_dir, _guard) = reexporting_crate();
+    let module = |path: &str| path.split("::").map(str::to_string).collect::<Vec<_>>();
+    assert_eq!(
+        reexported_module(&module("crate::models"), "User"),
+        Some(module("crate::models::user"))
+    );
+    // Defined there (no re-export) and unknown names stay put.
+    assert_eq!(reexported_module(&module("crate::models::user"), "User"), None);
+    assert_eq!(reexported_module(&module("crate::models"), "Missing"), None);
+}

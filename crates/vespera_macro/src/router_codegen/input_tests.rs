@@ -38,6 +38,15 @@ fn test_validate_server_url_valid_https() {
     assert_eq!(result.unwrap(), "https://api.example.com");
 }
 
+/// OpenAPI 3.1 resolves a relative server URL against the document's host.
+#[test]
+fn test_validate_server_url_valid_relative() {
+    let lit = LitStr::new("/api/v1", Span::call_site());
+    assert_eq!(validate_server_url(&lit).unwrap(), "/api/v1");
+    let template = LitStr::new("{scheme}://api.example.com", Span::call_site());
+    assert!(validate_server_url(&template).is_err());
+}
+
 #[test]
 fn test_validate_server_url_invalid() {
     let lit = LitStr::new("ftp://example.com", Span::call_site());
@@ -750,6 +759,18 @@ fn spec_url_is_parsed_and_processed() {
 #[case::redoc_url_empty(
     quote::quote!(redoc_url = ""),
     "vespera! macro: `redoc_url` must start with `/`, got \"\""
+)]
+#[case::docs_url_colon_parameter(
+    quote::quote!(docs_url = "/:docs"),
+    "vespera! macro: `docs_url` must be a static path, got \"/:docs\": `:`, `*`, `{` and `}` are axum route-parameter syntax"
+)]
+#[case::spec_url_wildcard(
+    quote::quote!(spec_url = "/spec/*rest"),
+    "vespera! macro: `spec_url` must be a static path, got \"/spec/*rest\": `:`, `*`, `{` and `}` are axum route-parameter syntax"
+)]
+#[case::redoc_url_brace_parameter(
+    quote::quote!(redoc_url = "/redoc/{id}"),
+    "vespera! macro: `redoc_url` must be a static path, got \"/redoc/{id}\": `:`, `*`, `{` and `}` are axum route-parameter syntax"
 )]
 #[case::spec_url_collides_with_docs_url(
     quote::quote!(docs_url = "/docs", spec_url = "/docs"),

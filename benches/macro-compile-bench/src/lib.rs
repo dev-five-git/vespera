@@ -23,7 +23,8 @@ use vespera::{axum, vespera};
 
 /// Expand `vespera!` over `src/routes/` — the call the compile-time harness
 /// measures. No `openapi = ...` output is configured, so building this crate
-/// performs the expansion without writing files.
+/// writes no `openapi.json` — only vespera's route cache and spec sidecars
+/// under `<target-dir>/vespera/`, which the harness removes before each run.
 #[must_use]
 pub fn create_app() -> axum::Router {
     vespera!(title = "Macro Compile Bench", version = "1.0.0")

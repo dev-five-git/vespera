@@ -169,6 +169,19 @@ impl SourceIdentified for StoredCronInfo {
 /// returned `String` leaves this function, so no fallback token is ever mixed
 /// with compiler tokens.
 pub fn inline_module_of(file: Option<&str>, fn_name: &str, line: usize) -> Option<String> {
+    let content = crate::schema_macro::file_cache::get_file_content(std::path::Path::new(file?))?;
+    // No `mod` anywhere: every item is top-level — skip the re-parse that
+    // `#[route]` would otherwise pay once per handler.
+    if !content.contains("mod") {
+        return Some(String::new());
+    }
+    let ast = parse_with_lines(&content)?;
+    find_fn_module(&ast.items, fn_name, line, "")
+}
+
+/// Parse `content` with proc-macro2's fallback forced, so spans carry real
+/// line numbers (see [`inline_module_of`]).
+fn parse_with_lines(content: &str) -> Option<syn::File> {
     /// Restores proc-macro2's normal mode even if parsing panics.
     struct Unforce;
     impl Drop for Unforce {
@@ -176,16 +189,75 @@ pub fn inline_module_of(file: Option<&str>, fn_name: &str, line: usize) -> Optio
             proc_macro2::fallback::unforce();
         }
     }
-    let content = crate::schema_macro::file_cache::get_file_content(std::path::Path::new(file?))?;
-    // No `mod` anywhere: every item is top-level — skip the re-parse that
-    // `#[route]` would otherwise pay once per handler.
-    if !content.contains("mod") {
-        return Some(String::new());
-    }
     proc_macro2::fallback::force();
     let _unforce = Unforce;
-    let ast = syn::parse_file(&content).ok()?;
-    find_fn_module(&ast.items, fn_name, line, "")
+    syn::parse_file(content).ok()
+}
+
+/// Reject a cron function `vespera!` could not call as
+/// `crate::module::function`: one declared (on `line` of `file`) inside an
+/// `impl` / `trait` block or another function's body.  Without this the job
+/// fell back to the file's module path and either failed to resolve at the
+/// `vespera!` call site or — worse — scheduled a same-named free function.
+pub fn check_free_function(
+    file: Option<&str>,
+    item_fn: &syn::ItemFn,
+    line: usize,
+) -> syn::Result<()> {
+    let fn_name = syn::ext::IdentExt::unraw(&item_fn.sig.ident).to_string();
+    let nested = file
+        .and_then(|file| {
+            crate::schema_macro::file_cache::get_file_content(std::path::Path::new(file))
+        })
+        .and_then(|content| parse_with_lines(&content))
+        .is_some_and(|ast| items_nest_fn(&mut ast.items.iter(), &fn_name, line, false));
+    if nested {
+        return Err(syn::Error::new_spanned(
+            &item_fn.sig.ident,
+            "#[cron] attribute: a cron job must be a free function of a module, not an associated function or a function inside another function's body: `vespera!` calls it as `crate::module::function`.",
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `items` (inside a function body when `nested`) declare the
+/// function `fn_name` on `line` in an `impl` / `trait` block or a function
+/// body.
+fn items_nest_fn(
+    items: &mut dyn Iterator<Item = &syn::Item>,
+    fn_name: &str,
+    line: usize,
+    nested: bool,
+) -> bool {
+    let is_target = |sig: &syn::Signature| {
+        syn::ext::IdentExt::unraw(&sig.ident) == fn_name && sig.ident.span().start().line == line
+    };
+    let body_nests = |block: &syn::Block| {
+        let mut items = block.stmts.iter().filter_map(|stmt| match stmt {
+            syn::Stmt::Item(item) => Some(item),
+            _ => None,
+        });
+        items_nest_fn(&mut items, fn_name, line, true)
+    };
+    for item in items {
+        let nests = match item {
+        syn::Item::Fn(function) => (nested && is_target(&function.sig)) || body_nests(&function.block),
+        syn::Item::Mod(syn::ItemMod { content: Some((_, inner)), .. }) => {
+            items_nest_fn(&mut inner.iter(), fn_name, line, nested)
+        }
+        syn::Item::Impl(block) => block.items.iter().any(|item| {
+            matches!(item, syn::ImplItem::Fn(function) if is_target(&function.sig) || body_nests(&function.block))
+        }),
+        syn::Item::Trait(block) => block.items.iter().any(|item| {
+            matches!(item, syn::TraitItem::Fn(function) if is_target(&function.sig) || function.default.as_ref().is_some_and(body_nests))
+        }),
+        _ => false,
+        };
+        if nests {
+            return true;
+        }
+    }
+    false
 }
 
 /// Depth-first search of `items` (and the inline modules inside them) for the
@@ -193,7 +265,8 @@ pub fn inline_module_of(file: Option<&str>, fn_name: &str, line: usize) -> Optio
 fn find_fn_module(items: &[syn::Item], fn_name: &str, line: usize, prefix: &str) -> Option<String> {
     items.iter().find_map(|item| match item {
         syn::Item::Fn(function)
-            if function.sig.ident == fn_name && function.sig.ident.span().start().line == line =>
+            if syn::ext::IdentExt::unraw(&function.sig.ident) == fn_name
+                && function.sig.ident.span().start().line == line =>
         {
             Some(prefix.to_owned())
         }
@@ -245,6 +318,18 @@ pub fn validate_cron_fn(item_fn: &syn::ItemFn) -> Result<(), syn::Error> {
             "#[cron] attribute: cron functions must take no parameters.",
         ));
     }
+    if !item_fn.sig.generics.params.is_empty() || item_fn.sig.generics.where_clause.is_some() {
+        return Err(syn::Error::new_spanned(
+            &item_fn.sig.generics,
+            "#[cron] attribute: cron functions must not be generic: the scheduler calls them without type arguments.",
+        ));
+    }
+    if let syn::Safety::Unsafe(unsafety) = &item_fn.sig.safety {
+        return Err(syn::Error::new_spanned(
+            unsafety,
+            "#[cron] attribute: cron functions must not be `unsafe`: the scheduler calls them from safe code.",
+        ));
+    }
     Ok(())
 }
 
@@ -287,11 +372,14 @@ pub fn process_cron_attribute(
     let item_fn: syn::ItemFn = syn::parse2(item.clone()).map_err(|e| syn::Error::new(e.span(), "#[cron] attribute: can only be applied to functions, not other items. Move or remove the attribute."))?;
     validate_cron_fn(&item_fn)?;
 
-    let fn_name = item_fn.sig.ident.to_string();
+    // Unraw: the module-tree scan and the stored-job dedup key on
+    // `r#match` as `match` (the generated call path re-adds the `r#`).
+    let fn_name = syn::ext::IdentExt::unraw(&item_fn.sig.ident).to_string();
     let file_path = proc_macro2::Span::call_site()
         .local_file()
         .map(|p| p.display().to_string());
     let line = item_fn.sig.ident.span().start().line;
+    check_free_function(file_path.as_deref(), &item_fn, line)?;
     let stored = StoredCronInfo {
         inline_module: inline_module_of(file_path.as_deref(), &fn_name, line),
         fn_name,
@@ -428,6 +516,46 @@ mod tests {
                 .to_string()
                 .contains("must take no parameters")
         );
+    }
+
+    #[rstest::rstest]
+    #[case::generic(syn::parse_quote!(pub async fn job<T>() {}), "must not be generic")]
+    #[case::where_clause(syn::parse_quote!(pub async fn job() where u8: Copy {}), "must not be generic")]
+    #[case::unsafe_fn(syn::parse_quote!(pub async unsafe fn job() {}), "must not be `unsafe`")]
+    fn test_validate_cron_fn_rejects_uncallable_signatures(
+        #[case] item: syn::ItemFn,
+        #[case] message: &str,
+    ) {
+        let error = validate_cron_fn(&item).unwrap_err().to_string();
+        assert!(error.contains(message), "{error}");
+    }
+
+    /// A cron function in an `impl` / `trait` block or a function body has
+    /// no `crate::module::function` path; a free one (top level or in an
+    /// inline module) is fine, and an unreadable file is not checked.
+    #[rstest::rstest]
+    #[case::top_level(2, true)]
+    #[case::inline_module(3, true)]
+    #[case::impl_method(5, false)]
+    #[case::trait_default(8, false)]
+    #[case::nested_in_fn(11, false)]
+    #[case::nested_in_method(15, false)]
+    #[case::nested_in_trait_default(20, false)]
+    fn test_check_free_function(#[case] line: usize, #[case] free: bool) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("jobs.rs");
+        std::fs::write(
+            &file,
+            "\npub async fn tick() {}\nmod a { pub async fn tick() {} }\nimpl S {\n    pub async fn tick() {}\n}\ntrait T {\n    async fn tick() {}\n}\npub fn outer() {\n    pub async fn tick() {}\n}\nimpl S {\n    pub fn method() {\n        pub async fn tick() {}\n    }\n}\ntrait U {\n    fn provided() {\n        pub async fn tick() {}\n    }\n    fn required();\n}\n",
+        )
+        .unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let item: syn::ItemFn = syn::parse_quote!(
+            pub async fn tick() {}
+        );
+        let file = file.display().to_string();
+        assert_eq!(check_free_function(Some(&file), &item, line).is_ok(), free);
+        assert!(check_free_function(None, &item, line).is_ok());
     }
 
     #[test]
@@ -737,6 +865,36 @@ mod tests {
             .expect("registered");
         assert!(stored.options.skip_overlap);
         assert_eq!(stored.options.timezone, None);
+    }
+
+    /// A raw-identifier job is stored unraw (`match`), the name the
+    /// module-tree scan and `inline_module_of` use: otherwise the stored and
+    /// the scanned copy of one job never match and it is scheduled twice.
+    #[test]
+    fn process_cron_attribute_stores_raw_identifiers_unraw() {
+        let item = quote!(
+            pub async fn r#__test_raw_job() {}
+        );
+        process_cron_attribute(quote!("0 * * * * *"), item).expect("valid");
+        assert!(
+            current_crate_crons()
+                .iter()
+                .any(|entry| entry.fn_name == "__test_raw_job")
+        );
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("jobs.rs");
+        std::fs::write(
+            &file,
+            "mod a {
+    pub async fn r#match() {}
+}
+",
+        )
+        .unwrap();
+        assert_eq!(
+            inline_module_of(Some(&file.display().to_string()), "match", 2),
+            Some("a".to_owned())
+        );
     }
 
     #[cfg(feature = "cron-tz")]

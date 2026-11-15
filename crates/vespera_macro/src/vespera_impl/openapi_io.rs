@@ -185,10 +185,10 @@ pub fn generate_and_write_openapi(
             if let Some(parent) = file_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| err_call_site(format!("OpenAPI output: failed to create directory '{}'. Error: {}. Ensure the path is valid and writable.", parent.display(), e)))?;
             }
-            let should_write = !content_unchanged(file_path, &json_pretty);
-            if should_write {
-                std::fs::write(file_path, &json_pretty).map_err(|e| err_call_site(format!("OpenAPI output: failed to write file '{openapi_file_name}'. Error: {e}. Ensure the file path is writable.")))?;
-            }
+            // Atomic (temp file + rename, skipped when unchanged): the lib,
+            // test, bin and IDE builds write the same file concurrently, and
+            // `include_str!` / a CI diff must never read a torn one.
+            super::sidecar_write::write_atomic(file_path, &json_pretty).map_err(|e| err_call_site(format!("OpenAPI output: failed to write file '{openapi_file_name}'. Error: {e}. Ensure the file path is writable.")))?;
         }
         Some(json_pretty)
     };
@@ -262,7 +262,7 @@ pub fn ensure_openapi_files_from_cache(
                     )
                 })?;
             }
-            std::fs::write(file_path, pretty).map_err(|e| {
+            super::sidecar_write::write_atomic(file_path, pretty).map_err(|e| {
                 syn::Error::new(
                     Span::call_site(),
                     format!("OpenAPI output: failed to write file '{openapi_file_name}': {e}"),

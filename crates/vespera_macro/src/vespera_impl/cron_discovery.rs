@@ -206,9 +206,22 @@ fn crate_tree(src_dir: &Path, call_site: Option<&Path>) -> Option<ModuleTree> {
     match (call_site, call_site_display) {
         (Some(call_site), Some(display)) => trees
             .find(|tree| tree.files.contains(&display))
+            .or_else(|| compiler_root_tree(&crate::env_access::compiler_args(), &display))
             .or_else(|| outside_src_tree(src_dir, call_site, &display)),
         _ => trees.next(),
     }
+}
+
+/// The module tree of the crate root rustc compiles (its positional `.rs`
+/// input) when that tree contains the call site: a custom `[lib] path` /
+/// `[[bin]] path` under `src/` (`src/api.rs`) is no `lib.rs` / `main.rs`.
+fn compiler_root_tree(args: &[String], call_site: &str) -> Option<ModuleTree> {
+    let root = args
+        .iter()
+        .map(Path::new)
+        .find(|arg| arg.extension().is_some_and(|ext| ext == "rs") && arg.is_file())?;
+    let tree = ModuleTree::from_root(root, root.parent()?);
+    tree.files.contains(call_site).then_some(tree)
 }
 
 /// A `vespera!` call site outside `src/` — an example, an integration test,

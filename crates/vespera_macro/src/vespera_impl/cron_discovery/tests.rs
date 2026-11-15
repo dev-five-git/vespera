@@ -109,6 +109,56 @@ fn stored_job_outside_the_crate_is_an_error() {
     );
 }
 
+/// A custom `[lib] path = "src/api.rs"`: the crate root rustc compiles is
+/// the call-site file, so its jobs are crate-root jobs (`crate::tick`, not
+/// `crate::api::tick`) and jobs in its child modules are still scanned.
+#[test]
+fn custom_crate_root_under_src_is_read_from_the_compiler_args() {
+    let krate = crate_with(&[
+        (
+            "api.rs",
+            r#"mod jobs; #[cron("1 * * * * *")] pub async fn tick() {}"#,
+        ),
+        (
+            "jobs.rs",
+            r#"#[cron("2 * * * * *")] pub async fn late() {}"#,
+        ),
+    ]);
+    crate::schema_macro::file_cache::bump_epoch();
+    let src = krate.path().join("src");
+    let root = src.join("api.rs");
+    let args = format!(
+        "--crate-name
+api
+--edition=2024
+{}",
+        root.display()
+    );
+    let _args = crate::env_access::test_env::set_var(crate::env_access::COMPILER_ARGS_KEY, args);
+    let storage = [stored("tick", Some(root.display().to_string()))];
+    assert_eq!(
+        summary(&discover(&storage, Some(&src), Some(&root))),
+        rows(&[("", "tick", "0 0 0 * * *"), ("jobs", "late", "2 * * * * *")])
+    );
+    // A compiler root whose tree does not contain the call site is ignored.
+    let elsewhere = src.join("jobs.rs");
+    assert!(
+        compiler_root_tree(
+            &[root.display().to_string()],
+            &canonical_display(&elsewhere)
+        )
+        .is_some()
+    );
+    assert!(
+        compiler_root_tree(
+            &[elsewhere.display().to_string()],
+            &canonical_display(&root)
+        )
+        .is_none()
+    );
+    assert!(compiler_root_tree(&["--test".to_owned()], &canonical_display(&root)).is_none());
+}
+
 /// Write `files` (relative to `src/`) into a fresh temp crate and return it.
 fn crate_with(files: &[(&str, &str)]) -> TempDir {
     let dir = TempDir::new().expect("temp dir");

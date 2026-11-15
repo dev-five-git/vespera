@@ -154,10 +154,14 @@ fn descend_all(mut cursor: Cursor, segments: &[String]) -> Option<Cursor> {
     Some(cursor)
 }
 
-/// Token-string definition of the top-level struct `name` in `items`.
+/// Token-string definition of the top-level struct `name` in `items` (one
+/// the compiler drops by `#[cfg]` is skipped).
 pub fn struct_in_items(items: &[syn::Item], name: &str) -> Option<String> {
     items.iter().find_map(|item| match item {
-        syn::Item::Struct(item) if ident_name(&item.ident) == name => {
+        syn::Item::Struct(item)
+            if ident_name(&item.ident) == name
+                && !super::cfg_eval::statically_inactive(&item.attrs) =>
+        {
             Some(quote!(#item).to_string())
         }
         _ => None,
@@ -249,6 +253,7 @@ fn chain_candidates(items: &[syn::Item], name: &str) -> Vec<(usize, Vec<String>)
 
 /// The struct `name` defined anywhere in `items` (inline modules included)
 /// when exactly one such struct exists, with the inline module chain.
+/// Structs and inline modules the compiler drops by `#[cfg]` do not count.
 pub fn unique_nested_struct(items: &[syn::Item], name: &str) -> Option<(String, Vec<String>)> {
     fn walk(
         items: &[syn::Item],
@@ -258,10 +263,13 @@ pub fn unique_nested_struct(items: &[syn::Item], name: &str) -> Option<(String, 
     ) {
         for item in items {
             match item {
-                syn::Item::Struct(item) if ident_name(&item.ident) == name => {
+                syn::Item::Struct(item)
+                    if ident_name(&item.ident) == name
+                        && !super::cfg_eval::statically_inactive(&item.attrs) =>
+                {
                     found.push((quote!(#item).to_string(), chain.clone()));
                 }
-                syn::Item::Mod(module) => {
+                syn::Item::Mod(module) if !super::cfg_eval::statically_inactive(&module.attrs) => {
                     if let Some((_, inner)) = &module.content {
                         chain.push(ident_name(&module.ident));
                         walk(inner, name, chain, found);

@@ -1,6 +1,6 @@
 //! Compile-fail: without the `cron` feature `#[vespera::cron("...")]` names
 //! the missing feature instead of registering a job that `vespera!` later
-//! starts through an unresolved `vespera::cron::start_once`.
+//! starts through an unresolved `vespera::cron::start_once_for_crate`.
 //!
 //! Runs only when `cron` is off.
 

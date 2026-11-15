@@ -4,6 +4,7 @@
 //! - `schema!` - Generate Schema value with optional field filtering
 //! - `schema_type!` - Generate new struct type derived from existing type
 
+mod cfg_eval;
 mod circular;
 mod codegen;
 mod crate_layout;

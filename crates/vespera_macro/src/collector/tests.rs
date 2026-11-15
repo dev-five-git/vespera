@@ -153,7 +153,7 @@ fn test_collect_metadata_routes(
 }
 
 #[test]
-fn test_collect_metadata_single_struct() {
+fn test_collect_metadata_without_route_files() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let folder_name = "routes";
 
@@ -181,7 +181,6 @@ fn test_collect_metadata_struct_without_schema() {
     let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
     assert_eq!(metadata.routes.len(), 0);
-    assert_eq!(metadata.structs.len(), 0);
 }
 
 #[test]
@@ -251,7 +250,6 @@ fn test_collect_metadata_multiple_routes() {
     let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
     assert_eq!(metadata.routes.len(), 3);
-    assert_eq!(metadata.structs.len(), 0);
 
     let function_names: Vec<&str> = metadata
         .routes
@@ -264,6 +262,8 @@ fn test_collect_metadata_multiple_routes() {
 }
 
 #[test]
+/// Schema structs are no routes; the scan never collects structs (they come
+/// from `#[derive(Schema)]` storage), so only the route count is checked.
 fn test_collect_metadata_multiple_structs() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let folder_name = "routes";
@@ -372,7 +372,6 @@ fn test_collect_metadata_ignores_non_rs_files() {
     let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
     assert_eq!(metadata.routes.len(), 1);
-    assert_eq!(metadata.structs.len(), 0);
 }
 
 #[test]
@@ -533,41 +532,23 @@ fn test_collect_metadata_file_read_error_permissions() {
     fs::set_permissions(&file_path, permissions).ok();
 }
 
+/// A route file that cannot be read as text (invalid UTF-8 — reproducible
+/// on every platform, unlike permission errors) is a compile error naming
+/// the file.
 #[test]
-#[cfg(windows)]
-fn test_collect_metadata_file_read_error_documentation_windows() {
-    // Test line 31-37: Documentation of file read error handling on Windows
-    //
-    // On Windows, file permission errors are harder to reliably trigger in tests
-    // because standard read/write operations on temp files typically succeed.
-    // The error path at line 31-37 is exercised by edge cases:
-    //   1. Files deleted between collect_files scan and read attempt
-    //   2. Network drive disconnections
-    //   3. Permission changes during execution
-    //
-    // These are difficult to simulate reliably in automated tests.
-    // The error handling code itself is straightforward:
-    //   - std::fs::read_to_string() returns an io::Error
-    //   - map_err() wraps it with context message
-    //   - Caller receives "failed to read route file" error
-    //
-    // This is tested indirectly via test_collect_metadata_file_read_error_via_invalid_syntax
-    // which verifies error propagation works correctly.
-
+fn test_collect_metadata_unreadable_route_file_is_an_error() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let folder_name = "routes";
+    let routes = temp_dir.path().join(folder_name);
+    fs::create_dir_all(&routes).unwrap();
+    fs::write(routes.join("not_utf8.rs"), [0x23, 0xff, 0xfe, 0x0a]).unwrap();
 
-    create_temp_file(
-        &temp_dir,
-        "readable.rs",
-        r#"
-    #[route(get)]
-    pub fn get() -> String { "ok".to_string() }
-    "#,
-    );
-
-    let result = collect_metadata(temp_dir.path(), folder_name, &[]);
-    assert!(result.is_ok());
+    let error = collect_metadata(temp_dir.path(), folder_name, &[])
+        .err()
+        .expect("an unreadable route file must be rejected")
+        .to_string();
+    assert!(error.contains("cannot read or parse"), "{error}");
+    assert!(error.contains("not_utf8.rs"), "{error}");
 }
 
 #[test]
@@ -639,8 +620,7 @@ fn test_collect_metadata_struct_without_derive() {
     );
 
     let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
-
-    assert_eq!(metadata.structs.len(), 0);
+    assert!(metadata.routes.is_empty(), "a plain struct is no route");
 }
 
 #[test]
@@ -661,8 +641,7 @@ fn test_collect_metadata_struct_with_other_derive() {
     );
 
     let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
-
-    assert_eq!(metadata.structs.len(), 0);
+    assert!(metadata.routes.is_empty(), "a derived struct is no route");
 }
 
 #[test]

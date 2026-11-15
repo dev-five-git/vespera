@@ -33,6 +33,13 @@ fn parse_type(src: &str) -> syn::Type {
 #[case::vec_macro_strings(r#"vec!["a", "b"]"#, Some(json!(["a", "b"])))]
 #[case::vec_macro_unresolvable("vec![some_var]", None)]
 #[case::int_to_string("42.to_string()", Some(json!("42")))]
+// Rust's `Display`, not serde_json's float formatting.
+#[case::whole_float_to_string("1.0.to_string()", Some(json!("1")))]
+#[case::exponent_float_to_string("1e20.to_string()", Some(json!("100000000000000000000")))]
+#[case::fraction_to_string("0.25f64.to_string()", Some(json!("0.25")))]
+#[case::bool_to_string("true.to_string()", Some(json!("true")))]
+#[case::f32_to_string("16777217f32.to_string()", None)]
+#[case::negated_f32_to_string("(-1.5f32).to_string()", None)]
 // `Vec` has no `Display`: not a default the code could compile with.
 #[case::vec_of_strings_to_string(r#"vec!["a"].to_string()"#, None)]
 #[case::negative_int("-1", Some(json!(-1)))]
