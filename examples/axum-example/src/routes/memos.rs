@@ -245,7 +245,7 @@ pub async fn get_memo_summary(Path(id): Path<i32>) -> Json<MemoSummaryResponse> 
 /// Get memo response format
 #[vespera::route(get, path = "/format")]
 pub async fn get_memo_format() -> &'static str {
-    "MemoResponse has: id, user_id, title, content, created_at (no updated_at, no user relation)"
+    "MemoResponse has: id, userId, title, content, status, createdAt (no updatedAt, no user relation, no memoComments)"
 }
 
 #[cfg(test)]

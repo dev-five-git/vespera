@@ -114,9 +114,9 @@ fn normalize_prefix(prefix: &LitStr) -> syn::Result<LitStr> {
 
 /// Derive a deterministic PascalCase component namespace from a normalized
 /// route prefix. A conventional leading `/api` segment is omitted when more
-/// specific segments follow (`/api/media-library` -> `MediaLibrary`).  Only
-/// ASCII alphanumerics are kept: an OpenAPI component key must match
-/// `^[a-zA-Z0-9.\-_]+$`.
+/// specific segments follow (`/api/media-library` -> `MediaLibrary`) and
+/// name something (`/api/_` keeps `Api`).  Only ASCII alphanumerics are
+/// kept: an OpenAPI component key must match `^[a-zA-Z0-9.\-_]+$`.
 pub fn schema_namespace_from_prefix(prefix: &str) -> String {
     let segments: Vec<&str> = prefix
         .trim_matches('/')
@@ -124,8 +124,18 @@ pub fn schema_namespace_from_prefix(prefix: &str) -> String {
         .filter(|segment| !segment.is_empty())
         .collect();
     let start = usize::from(segments.len() > 1 && segments[0].eq_ignore_ascii_case("api"));
+    let namespace = pascal_namespace(&segments[start..]);
+    if namespace.is_empty() {
+        pascal_namespace(&segments)
+    } else {
+        namespace
+    }
+}
+
+/// The PascalCase words of `segments` (ASCII alphanumeric runs).
+fn pascal_namespace(segments: &[&str]) -> String {
     let mut namespace = String::new();
-    for word in segments[start..]
+    for word in segments
         .iter()
         .flat_map(|segment| segment.split(|ch: char| !ch.is_ascii_alphanumeric()))
     {
@@ -406,6 +416,8 @@ mod tests {
     #[case("/api/v1/user_profile", "V1UserProfile")]
     #[case("/api/-media--library-", "MediaLibrary")]
     #[case("/카탈로그-v2/éte", "V2Te")]
+    #[case("/api/_", "Api")]
+    #[case("/api/-/--", "Api")]
     fn schema_namespace_covers_empty_api_and_composite_prefixes(
         #[case] prefix: &str,
         #[case] expected: &str,
@@ -505,6 +517,7 @@ mod tests {
             module_path: "routes::admin".to_string(),
             function_name: "list".to_string(),
             file_path: "admin.rs".to_string(),
+            deprecated: false,
         };
         let mut metadata = CollectedMetadata::new();
         metadata.cfg_routes.push(gated("/"));

@@ -391,6 +391,52 @@ async fn test_third_app_map_query_with_optional() {
     response.assert_text("third app map query endpoint");
 }
 
+/// `ErrorResponse2` always answers `500`; the routes whose error arm is it
+/// document `500`, not the `400` fallback.
+#[tokio::test]
+async fn test_error_response2_routes_document_their_500() {
+    let server = TestServer::new(create_app().await);
+    let response = server.get("/error/error-alias").await;
+    response.assert_status(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        response.json::<serde_json::Value>(),
+        json!({"error": "Internal server error", "code": 500})
+    );
+
+    let openapi: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string("openapi.json").unwrap()).unwrap();
+    for path in [
+        "/error/error-alias",
+        "/error/header-map",
+        "/error/header-map2",
+    ] {
+        let responses = &openapi["paths"][path]["get"]["responses"];
+        assert!(responses.get("500").is_some(), "{path}: {responses}");
+        assert!(responses.get("400").is_none(), "{path}: {responses}");
+    }
+}
+
+/// `/memos/format` lists exactly the wire fields the spec requires of
+/// `MemoResponse`.
+#[tokio::test]
+async fn test_memo_format_lists_the_documented_fields() {
+    let server = TestServer::new(create_app().await);
+    let text = server.get("/memos/format").await.text();
+    let listed: Vec<&str> = text
+        .strip_prefix("MemoResponse has: ")
+        .and_then(|rest| rest.split_once(" ("))
+        .map_or_default(|(fields, _)| fields.split(", ").collect());
+    let openapi: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string("openapi.json").unwrap()).unwrap();
+    let required: Vec<&str> = openapi["components"]["schemas"]["MemoResponse"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field.as_str().unwrap())
+        .collect();
+    assert_eq!(listed, required);
+}
+
 #[tokio::test]
 async fn test_openapi_contains_third_app_routes() {
     let openapi_content = std::fs::read_to_string("openapi.json").unwrap();

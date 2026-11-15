@@ -43,6 +43,7 @@ fn cfg_route(
         module_path: module_path.to_string(),
         function_name: function_name.to_string(),
         file_path: format!("src/{}.rs", module_path.replace("::", "/")),
+        deprecated: false,
     }
 }
 
@@ -57,6 +58,8 @@ fn pretty(metadata: &CollectedMetadata) -> String {
 #[case::keyword("type", Some("r#type"))]
 #[case::raw_keyword("r#match", Some("r#match"))]
 #[case::raw_plain("r#users", Some("users"))]
+#[case::edition_keyword("gen", Some("r#gen"))]
+#[case::raw_edition_keyword("r#gen", Some("r#gen"))]
 #[case::hyphen("my-file", None)]
 #[case::leading_digit("2fa", None)]
 #[case::path_keyword("self", None)]
@@ -100,6 +103,23 @@ fn keyword_and_gated_routes() {
         "stats",
     ));
     insta::assert_snapshot!("router_keyword_and_gated_routes", pretty(&metadata));
+}
+
+/// Deprecated handlers — ungated and `#[cfg]`-gated — are referenced under
+/// `#[allow(deprecated)]`; the others stay plain paths.
+#[test]
+fn deprecated_handlers_allow_the_lint() {
+    let mut metadata = CollectedMetadata::new();
+    metadata.routes.push(route("get", "routes::legacy", "old"));
+    metadata.routes[0].deprecated = true;
+    metadata
+        .routes
+        .push(route("post", "routes::legacy", "current"));
+    metadata.routes[1].path = "/y".to_string();
+    let mut gated = cfg_route(&["test"], "get", "/gated", "routes::gated", "old");
+    gated.deprecated = true;
+    metadata.cfg_routes.push(gated);
+    insta::assert_snapshot!("router_deprecated_handlers", pretty(&metadata));
 }
 
 /// A gated route on an ungated handler's or a documentation route's path is

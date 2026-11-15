@@ -841,6 +841,24 @@ fn invalid_doc_url_arguments_are_rejected(
     assert_eq!(error.to_string(), expected);
 }
 
+/// An invalid env-var fallback names the variable it came from.
+#[rstest]
+#[case::docs(quote::quote!(), "VESPERA_DOCS_URL", "docs", "vespera! macro: `docs_url` (from the `VESPERA_DOCS_URL` environment variable) must start with `/`, got \"docs\"")]
+#[case::redoc(quote::quote!(), "VESPERA_REDOC_URL", "/:r", "vespera! macro: `redoc_url` (from the `VESPERA_REDOC_URL` environment variable) must be a static path, got \"/:r\": `:`, `*`, `{` and `}` are axum route-parameter syntax")]
+#[case::spec(quote::quote!(docs_url = "/docs"), "VESPERA_SPEC_URL", "/docs", "vespera! macro: `spec_url` (from the `VESPERA_SPEC_URL` environment variable) and `docs_url` both use \"/docs\"; each documentation route needs its own path")]
+fn invalid_doc_url_env_fallbacks_name_the_variable(
+    #[case] tokens: proc_macro2::TokenStream,
+    #[case] var: &str,
+    #[case] value: &str,
+    #[case] expected: &str,
+) {
+    let _var = crate::env_access::test_env::set_var(var, value);
+    let error = syn::parse2::<AutoRouterInput>(tokens)
+        .err()
+        .expect("fallback must be rejected");
+    assert_eq!(error.to_string(), expected);
+}
+
 #[test]
 fn unknown_field_error_lists_spec_url() {
     let error = syn::parse2::<AutoRouterInput>(quote::quote!(spec = "/openapi.json"))

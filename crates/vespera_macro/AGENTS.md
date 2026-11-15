@@ -49,7 +49,7 @@ compile-failure suite.
 | Add macro parameter | `router_codegen/input.rs` | `AutoRouterInput`, `parse()` impl |
 | Add HTTP method | `method.rs` | `http_method_to_token_stream` |
 | Change route scanning | `collector.rs` | `collect_metadata_from_files()` (`collect_metadata()` is `#[cfg(test)]`-only) |
-| Modify OpenAPI output | `openapi_generator.rs` | `generate_openapi_doc_with_metadata()` |
+| Modify OpenAPI output | `openapi_generator.rs` | `try_generate_openapi_doc_with_metadata()` (`generate_openapi_doc_with_metadata()` is its `#[cfg(test)]`-only unwrapping twin) |
 | Change #[route] attrs | `args.rs` | `RouteArgs` struct |
 
 ## KEY FUNCTIONS

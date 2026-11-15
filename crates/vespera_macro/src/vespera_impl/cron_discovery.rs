@@ -241,6 +241,12 @@ fn outside_src_has_cron(src_dir: &Path, call_site: &Path) -> bool {
 
 /// The module tree that contains the `vespera!` call site; without call-site
 /// information (unit tests) the library root wins over the binary root.
+///
+/// The crate root rustc is compiling (its command line) is tried first: a
+/// module shared by the library and a binary (`mod app;` in both
+/// `src/lib.rs` and `src/main.rs`) is in both trees, and only the tree of
+/// the crate being built has its `mod`s — the binary build must not
+/// schedule `crate::jobs::tick` that only the library declares.
 fn crate_tree(src_dir: &Path, call_site: Option<&Path>) -> Option<ModuleTree> {
     let call_site_display = call_site.map(canonical_display);
     let mut trees = crate_roots(src_dir, call_site_display.is_some())
@@ -253,10 +259,11 @@ fn crate_tree(src_dir: &Path, call_site: Option<&Path>) -> Option<ModuleTree> {
             ModuleTree::from_root(&root, &mod_dir)
         });
     match (call_site, call_site_display) {
-        (Some(call_site), Some(display)) => trees
-            .find(|tree| tree.files.contains(&display))
-            .or_else(|| compiler_root_tree(&crate::env_access::compiler_args(), &display))
-            .or_else(|| outside_src_tree(src_dir, call_site, &display)),
+        (Some(call_site), Some(display)) => {
+            compiler_root_tree(&crate::env_access::compiler_args(), &display)
+                .or_else(|| trees.find(|tree| tree.files.contains(&display)))
+                .or_else(|| outside_src_tree(src_dir, call_site, &display))
+        }
         _ => trees.next(),
     }
 }
@@ -379,9 +386,13 @@ impl ModuleTree {
                 syn::Item::Mod(module) => {
                     let name = module.ident.unraw().to_string();
                     let child_path = join_module(scope.module_path, &name);
-                    let child_dir = scope.mod_dir.join(&name);
                     let gated = scope.gated || is_cfg_gated(&module.attrs);
                     if let Some((_, inner)) = &module.content {
+                        // rustc: `#[path = "dir"] mod m { .. }` resolves the
+                        // block's file modules under `dir`, not `m`.
+                        let child_dir = scope
+                            .mod_dir
+                            .join(path_attr(&module.attrs).unwrap_or_else(|| name.clone()));
                         let inline = join_module(scope.inline, &name);
                         let child = Scope {
                             mod_dir: &child_dir,
@@ -405,14 +416,17 @@ impl ModuleTree {
                             let dir = child.parent().unwrap_or(base).to_path_buf();
                             self.walk(&child, &dir, &child_path, gated);
                         }
-                    } else if let Some(child) = [
-                        scope.mod_dir.join(format!("{name}.rs")),
-                        child_dir.join("mod.rs"),
-                    ]
-                    .into_iter()
-                    .find(|candidate| candidate.is_file())
-                    {
-                        self.walk(&child, &child_dir, &child_path, gated);
+                    } else {
+                        let child_dir = scope.mod_dir.join(&name);
+                        if let Some(child) = [
+                            scope.mod_dir.join(format!("{name}.rs")),
+                            child_dir.join("mod.rs"),
+                        ]
+                        .into_iter()
+                        .find(|candidate| candidate.is_file())
+                        {
+                            self.walk(&child, &child_dir, &child_path, gated);
+                        }
                     }
                 }
                 syn::Item::Fn(function)

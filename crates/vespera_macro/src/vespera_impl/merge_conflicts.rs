@@ -402,6 +402,7 @@ mod tests {
             module_path: module_path.to_owned(),
             function_name: "health".to_owned(),
             file_path: "src/routes/ops.rs".to_owned(),
+            deprecated: false,
         };
         let mut metadata = CollectedMetadata::new();
         metadata.routes.push(route("get", "/users"));

@@ -32,7 +32,7 @@ pub async fn create_lenient(
     body.map_err(|rejection| (StatusCode::BAD_REQUEST, rejection.body_text()))
 }
 
-/// Echo the query, or name the rejection when it does not parse.
+/// Echo the query, or answer `invalid query` when it does not parse.
 #[route(get)]
 pub async fn search_lenient(
     query: std::result::Result<Query<RejectionFilter>, QueryRejection>,

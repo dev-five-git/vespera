@@ -162,6 +162,52 @@ fn recursive_generic_instantiation_becomes_a_component() {
     insta::assert_snapshot!("accuracy_recursive_generic_component", pretty(&doc));
 }
 
+/// A generic internally tagged enum is only instantiated by the paths (an
+/// inline response schema, or a materialized recursive component): its
+/// non-object newtype variant is the same compile error as a plain enum's.
+#[test]
+fn internally_tagged_generic_instances_are_checked() {
+    let check = |definition: &str, sig: &str| {
+        let mut metadata = CollectedMetadata::new();
+        metadata.structs.push(schema("Event", definition));
+        metadata.routes.push(route("/events", "events"));
+        super::try_generate_openapi_doc_with_metadata(
+            None,
+            None,
+            None,
+            None,
+            &metadata,
+            None,
+            &[stored("events", sig)],
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    };
+    let inline = check(
+        r#"#[serde(tag = "type")] pub enum Event<T> { Ping, Data(T) }"#,
+        "async fn events() -> Json<Event<String>>",
+    );
+    let error = inline.expect_err("inline instance is checked");
+    assert!(error.starts_with("`GET /events`: "), "{error}");
+    let recursive = check(
+        r#"#[serde(tag = "type")] pub enum Event<T> { Ping, Data(T), Next(Box<Event<T>>) }"#,
+        "async fn events() -> Json<Event<i32>>",
+    );
+    assert!(
+        recursive
+            .expect_err("component instance is checked")
+            .contains("integer")
+    );
+    // An object payload is fine.
+    assert_eq!(
+        check(
+            r#"#[serde(tag = "type")] pub enum Event<T> { Ping, Data(T) }"#,
+            "async fn events() -> Json<Event<std::collections::HashMap<String, i32>>>",
+        ),
+        Ok(())
+    );
+}
+
 pub(super) fn post(path: &str, fn_name: &str) -> RouteMetadata {
     RouteMetadata {
         method: "post".to_string(),

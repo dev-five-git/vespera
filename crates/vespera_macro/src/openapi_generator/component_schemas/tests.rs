@@ -701,9 +701,15 @@ fn mentions_ident_ignores_unparsable_source() {
     assert!(!mentions_ident("fn f(x: Foobar)", "Foo"));
 }
 
-/// Set / `Duration` fields make the request view differ without any `serde`
+/// Set / `Duration` fields, `#[form_data(default)]` and one-sided
+/// `serde_repr` derives make the request view differ without any `serde`
 /// attribute in the whole app.
 #[rstest]
+#[case::form_data_default("struct Tags { #[form_data(default)] tag: String }", true)]
+#[case::one_sided_repr(
+    "#[derive(Serialize_repr, Deserialize)] #[repr(u8)] enum Tags { A = 1 }",
+    true
+)]
 #[case::hash_set("struct Tags { tags: std::collections::HashSet<String> }", true)]
 #[case::btree_set("struct Tags { tags: BTreeSet<String> }", true)]
 #[case::duration("struct Tags { ttl: std::time::Duration }", true)]

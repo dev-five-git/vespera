@@ -173,13 +173,13 @@ impl Parse for AutoRouterInput {
             }
         }
 
-        let docs_url = docs_url.or_else(|| env_lit("VESPERA_DOCS_URL"));
-        let redoc_url = redoc_url.or_else(|| env_lit("VESPERA_REDOC_URL"));
-        let spec_url = spec_url.or_else(|| env_lit("VESPERA_SPEC_URL"));
+        let (docs_url, docs_label) = doc_url_or_env(docs_url, "docs_url", "VESPERA_DOCS_URL");
+        let (redoc_url, redoc_label) = doc_url_or_env(redoc_url, "redoc_url", "VESPERA_REDOC_URL");
+        let (spec_url, spec_label) = doc_url_or_env(spec_url, "spec_url", "VESPERA_SPEC_URL");
         validate_doc_urls(&[
-            ("docs_url", docs_url.as_ref()),
-            ("redoc_url", redoc_url.as_ref()),
-            ("spec_url", spec_url.as_ref()),
+            (docs_label.as_str(), docs_url.as_ref()),
+            (redoc_label.as_str(), redoc_url.as_ref()),
+            (spec_label.as_str(), spec_url.as_ref()),
         ])?;
         let info = validate_info(&info_fields)?;
         let security = match security {
@@ -246,11 +246,23 @@ impl Parse for AutoRouterInput {
     }
 }
 
-/// Read an env-var fallback for a string-valued `vespera!` argument.
-fn env_lit(name: &str) -> Option<LitStr> {
-    crate::env_access::var(name)
-        .ok()
-        .map(|value| LitStr::new(&value, Span::call_site()))
+/// A documentation URL argument, else its env-var fallback, with the label
+/// errors name it by: the argument, or the variable it was read from (the
+/// error points at the whole macro call, so the argument name alone sent
+/// readers looking for an argument they never wrote).
+fn doc_url_or_env(arg: Option<LitStr>, key: &str, var: &str) -> (Option<LitStr>, String) {
+    arg.map_or_else(
+        || {
+            let lit = crate::env_access::var(var)
+                .ok()
+                .map(|value| LitStr::new(&value, Span::call_site()));
+            (
+                lit,
+                format!("`{key}` (from the `{var}` environment variable)"),
+            )
+        },
+        |lit| (Some(lit), format!("`{key}`")),
+    )
 }
 
 /// Reject `docs_url` / `redoc_url` / `spec_url` values axum would panic on at
@@ -266,7 +278,7 @@ fn validate_doc_urls(urls: &[(&str, Option<&LitStr>)]) -> syn::Result<()> {
         if !value.starts_with('/') {
             return Err(syn::Error::new(
                 lit.span(),
-                format!("vespera! macro: `{key}` must start with `/`, got \"{value}\""),
+                format!("vespera! macro: {key} must start with `/`, got \"{value}\""),
             ));
         }
         if value.contains(['{', '}'])
@@ -277,7 +289,7 @@ fn validate_doc_urls(urls: &[(&str, Option<&LitStr>)]) -> syn::Result<()> {
             return Err(syn::Error::new(
                 lit.span(),
                 format!(
-                    "vespera! macro: `{key}` must be a static path, got \"{value}\": `:`, `*`, `{{` and `}}` are axum route-parameter syntax"
+                    "vespera! macro: {key} must be a static path, got \"{value}\": `:`, `*`, `{{` and `}}` are axum route-parameter syntax"
                 ),
             ));
         }
@@ -285,7 +297,7 @@ fn validate_doc_urls(urls: &[(&str, Option<&LitStr>)]) -> syn::Result<()> {
             return Err(syn::Error::new(
                 lit.span(),
                 format!(
-                    "vespera! macro: `{key}` and `{other}` both use \"{value}\"; each documentation route needs its own path"
+                    "vespera! macro: {key} and {other} both use \"{value}\"; each documentation route needs its own path"
                 ),
             ));
         }
