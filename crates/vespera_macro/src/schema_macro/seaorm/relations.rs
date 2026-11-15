@@ -125,26 +125,32 @@ pub fn relation_target_module(ty: &Type, module_path: &[String]) -> Option<Vec<S
     let Type::Path(inner) = option_inner(inner).unwrap_or(inner) else {
         return None;
     };
-    let segments: Vec<String> = inner
-        .path
-        .segments
-        .iter()
-        .map(|s| crate::parser::strip_raw_prefix_owned(s.ident.to_string()))
-        .collect();
-    let mut target = absolute_schema_segments(&segments, module_path);
+    let mut target = absolute_schema_segments(&entity_segments(&inner.path), module_path);
     target.pop();
     Some(target)
 }
 
 fn schema_path_tokens(path: &syn::Path, source_module_path: &[String]) -> TokenStream {
-    // Unraw, like every scope key: `r#type::Entity` names the `type` module
-    // (`path_tokens` re-raws keywords on output).
-    let segments: Vec<String> = path
-        .segments
-        .iter()
-        .map(|s| crate::parser::strip_raw_prefix_owned(s.ident.to_string()))
-        .collect();
-    path_tokens(&absolute_schema_segments(&segments, source_module_path))
+    path_tokens(&absolute_schema_segments(
+        &entity_segments(path),
+        source_module_path,
+    ))
+}
+
+/// A relation's entity path as scope segments: unraw, like every scope key
+/// (`r#type::Entity` names the `type` module; `path_tokens` re-raws
+/// keywords on output), and a leading `::` kept as an empty first segment
+/// (`::entities::bakery::Entity` was re-rooted as a sibling module).
+fn entity_segments(path: &syn::Path) -> Vec<String> {
+    path.leading_colon
+        .map(|_| String::new())
+        .into_iter()
+        .chain(
+            path.segments
+                .iter()
+                .map(|s| crate::parser::strip_raw_prefix_owned(s.ident.to_string())),
+        )
+        .collect()
 }
 
 /// The absolute schema path of a relation's entity path written in the
@@ -721,6 +727,9 @@ mod tests {
         Some("crate::models::bakery")
     )]
     #[case::raw_module("HasOne<super::r#type::Entity>", Some("crate::models::type"))]
+    // L7 (round 16): a `::`-rooted entity path names another crate (it was
+    // `crate::models::entities::bakery`).
+    #[case::leading_colon("BelongsTo<::entities::bakery::Entity>", Some("::entities::bakery"))]
     #[case::not_a_relation("Option<super::bakery::Entity>", None)]
     #[case::non_path_target("HasOne<&'static str>", None)]
     fn relation_target_modules(#[case] ty: &str, #[case] expected: Option<&str>) {
@@ -737,6 +746,11 @@ mod tests {
         assert_eq!(
             schema_path_tokens(&path, &[]).to_string(),
             "crate :: r#type :: Schema"
+        );
+        let path: syn::Path = syn::parse_str("::entities::bakery::Entity").unwrap();
+        assert_eq!(
+            schema_path_tokens(&path, &segs("crate::models::cake")).to_string(),
+            ":: entities :: bakery :: Schema"
         );
     }
 }

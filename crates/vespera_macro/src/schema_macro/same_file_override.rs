@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use proc_macro2::TokenStream;
 use quote::quote;
 
+use super::field_attrs::field_cfgs;
 use super::file_cache;
 use super::seaorm::RelationFieldInfo;
 use super::transformation::{rebuild_serde_attrs, serde_key};
@@ -83,7 +84,8 @@ pub(super) fn named_fields(struct_item: &syn::ItemStruct) -> syn::Result<Vec<&sy
 }
 
 /// `field: <source>.field[.clone()]` per DTO field, each behind the
-/// field's own `#[cfg(..)]` (a field compiled out has no assignment).
+/// field's own conditions ([`field_cfgs`]: a `cfg_attr(p, cfg(q))` too; a
+/// field compiled out has no assignment).
 fn field_assignments(
     fields: &[&syn::Field],
     source: &TokenStream,
@@ -94,17 +96,15 @@ fn field_assignments(
         .iter()
         .filter_map(|field| {
             let ident = field.ident.as_ref()?;
-            let cfgs = field
-                .attrs
-                .iter()
-                .filter(|attr| attr.path().is_ident("cfg"));
+            let cfgs = field_cfgs(&field.attrs);
             Some(quote! { #(#cfgs)* #ident: #source.#ident #clone })
         })
         .collect()
 }
 
-/// The deserialize proxy's fields: the DTO's types with their `serde`,
-/// `doc` and `cfg` attributes and the `serde` items of a `cfg_attr`.
+/// The deserialize proxy's fields: the DTO's types with their `serde` and
+/// `doc` attributes, their conditions ([`field_cfgs`]) and the `serde`
+/// items of a `cfg_attr`.
 fn proxy_fields(fields: &[&syn::Field]) -> Vec<TokenStream> {
     fields
         .iter()
@@ -113,10 +113,12 @@ fn proxy_fields(fields: &[&syn::Field]) -> Vec<TokenStream> {
             let ty = &field.ty;
             let attrs = field.attrs.iter().filter(|attr| {
                 let path = attr.path();
-                path.is_ident("serde") || path.is_ident("doc") || path.is_ident("cfg")
+                path.is_ident("serde") || path.is_ident("doc")
             });
+            let cfgs = field_cfgs(&field.attrs);
             let cfg_serde = cfg_attr_serde(&field.attrs, |_| true);
             Some(quote! {
+                #(#cfgs)*
                 #(#attrs)*
                 #(#cfg_serde)*
                 #ident: #ty
@@ -519,6 +521,12 @@ mod tests {
     #[case::cfg_attr_serde(
         "adapter_cfg_attr_serde",
         "#[cfg_attr(feature = \"x\", serde(rename_all = \"camelCase\", from = \"W\"), schema(name = \"Q\"))] #[cfg_attr(all(), serde(default))] #[cfg_attr(feature)] struct UserInArticle { #[cfg_attr(feature = \"x\", serde(rename = \"uid\"), garde(skip))] user_id: i32, #[cfg_attr(all(), serde, schema(minimum = 1))] other: i32 }"
+    )]
+    // L11 (round 16): a `cfg_attr(p, cfg(q))` field gates its assignments
+    // and its proxy field (both were unconditional: E0560).
+    #[case::cfg_attr_cfg(
+        "adapter_cfg_attr_cfg",
+        "struct UserInArticle { id: i32, #[cfg_attr(feature = \"a\", cfg(feature = \"b\"), serde(rename = \"n\"))] name: String }"
     )]
     fn adapter_helpers_snapshot(#[case] name: &str, #[case] definition: &str) {
         let storage = to_storage(vec![create_test_struct_metadata(

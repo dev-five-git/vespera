@@ -10,7 +10,7 @@ use quote::{ToTokens, quote};
 use syn::ext::IdentExt;
 use syn::punctuated::Punctuated;
 
-use super::transformation::reroot_path;
+use super::transformation::reroot_syn_path as shared_reroot;
 
 /// One garde rule: `name`, `name(..)` or `name = expr` (`if` is a keyword,
 /// so the list is not parsed as `syn::Meta`).
@@ -128,58 +128,33 @@ fn parse_context(
 }
 
 /// The paths of `expr` resolved in `module_path` (`f` / `f(args)` of a
-/// `custom(..)`, a `MAX` / `EMAIL_RE` constant), through calls, references
-/// and operators; `self` / `Self::..` and closures stay as written.
+/// `custom(..)`, a `MAX` / `EMAIL_RE` constant) wherever they sit: calls,
+/// operators, casts (`MAX as usize`), indexing, arrays, tuples, ranges,
+/// blocks. `self` (the validated value) and closures stay as written; a
+/// `Self::..` was already spelled with the source's name
+/// ([`super::transformation::name_self_in_paths`]).
 fn reroot_expr(expr: &mut syn::Expr, module_path: &[String]) {
-    match expr {
-        syn::Expr::Path(path) if path.qself.is_none() && !names_self(&path.path) => {
-            reroot_syn_path(&mut path.path, module_path);
+    syn::visit_mut::VisitMut::visit_expr_mut(&mut RerootExpr(module_path), expr);
+}
+
+/// The [`reroot_expr`] walker.
+struct RerootExpr<'a>(&'a [String]);
+
+impl syn::visit_mut::VisitMut for RerootExpr<'_> {
+    fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
+        match expr {
+            syn::Expr::Path(path) if path.qself.is_none() && !path.path.is_ident("self") => {
+                reroot_syn_path(&mut path.path, self.0);
+            }
+            syn::Expr::Closure(_) => {}
+            _ => syn::visit_mut::visit_expr_mut(self, expr),
         }
-        syn::Expr::Call(call) => {
-            reroot_expr(&mut call.func, module_path);
-            call.args
-                .iter_mut()
-                .for_each(|arg| reroot_expr(arg, module_path));
-        }
-        syn::Expr::MethodCall(call) => {
-            reroot_expr(&mut call.receiver, module_path);
-            call.args
-                .iter_mut()
-                .for_each(|arg| reroot_expr(arg, module_path));
-        }
-        syn::Expr::Binary(binary) => {
-            reroot_expr(&mut binary.left, module_path);
-            reroot_expr(&mut binary.right, module_path);
-        }
-        syn::Expr::Reference(syn::ExprReference { expr, .. })
-        | syn::Expr::Unary(syn::ExprUnary { expr, .. })
-        | syn::Expr::Paren(syn::ExprParen { expr, .. }) => reroot_expr(expr, module_path),
-        syn::Expr::Field(field) => reroot_expr(&mut field.base, module_path),
-        _ => {}
     }
 }
 
-/// `self` (the validated value) or a `Self::..` path.
-fn names_self(path: &syn::Path) -> bool {
-    path.segments.first().is_some_and(|first| {
-        first.ident == "Self" || (path.segments.len() == 1 && first.ident == "self")
-    })
-}
-
-/// `path` resolved in `module_path`, when it has no generic arguments and
-/// the module knows it.
+/// `path` resolved in `module_path`, when the module knows it.
 fn reroot_syn_path(path: &mut syn::Path, module_path: &[String]) {
-    if path
-        .segments
-        .iter()
-        .any(|segment| !segment.arguments.is_none())
-    {
-        return;
-    }
-    let written = quote!(#path).to_string().replace(' ', "");
-    if let Some(rerooted) = reroot_path(&written, module_path)
-        .and_then(|rerooted| syn::parse_str::<syn::Path>(&rerooted).ok())
-    {
+    if let Some(rerooted) = shared_reroot(path, module_path) {
         *path = rerooted;
     }
 }
@@ -236,7 +211,26 @@ mod tests {
         "#[garde(custom(|v: &str, _| Ok(())))]",
         "# [garde (custom (| v : & str , _ | Ok (())))]"
     )]
-    #[case::generic_kept("#[garde(context(Ctx<u8>))]", "# [garde (context (Ctx < u8 >))]")]
+    #[case::generic_context(
+        "#[garde(context(Ctx<u8>))]",
+        "# [garde (context (crate :: models :: user :: Ctx < u8 >))]"
+    )]
+    #[case::cast(
+        "#[garde(length(max = MAX_NAME as usize))]",
+        "# [garde (length (max = crate :: models :: user :: MAX_NAME as usize))]"
+    )]
+    #[case::index_array_tuple(
+        "#[garde(custom(make_check([MAX_NAME][0], (MAX_NAME, 1), MAX_NAME..)))]",
+        "# [garde (custom (crate :: util :: make_check ([crate :: models :: user :: MAX_NAME] [0] , (crate :: models :: user :: MAX_NAME , 1) , crate :: models :: user :: MAX_NAME ..)))]"
+    )]
+    #[case::block(
+        "#[garde(range(max = { MAX_NAME }))]",
+        "# [garde (range (max = { crate :: models :: user :: MAX_NAME }))]"
+    )]
+    #[case::generic_fn(
+        "#[garde(custom(Ctx::<u8>::check))]",
+        "# [garde (custom (crate :: models :: user :: Ctx :: < u8 > :: check))]"
+    )]
     #[case::non_meta_list_kept(
         r#"#[garde(pattern(r"^a"), skip)]"#,
         "# [garde (pattern (r\"^a\") , skip)]"

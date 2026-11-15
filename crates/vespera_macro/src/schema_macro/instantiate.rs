@@ -55,6 +55,23 @@ impl Bindings {
     }
 }
 
+/// What `Self` names on the instantiated source `name`: `Name` for a
+/// non-generic one, else `Name::<A, ..>` with the parameters' values for the
+/// macro call site (as [`Bindings::field_type`] inserts them).
+pub fn self_path(
+    name: &syn::Ident,
+    bindings: Option<&Bindings>,
+    source_module: &[String],
+) -> syn::Path {
+    bindings.map_or_else(
+        || name.clone().into(),
+        |bindings| {
+            let values = bindings.values(|ty, earlier| resolve(ty, source_module, earlier));
+            syn::parse_quote!(#name::<#(#values),*>)
+        },
+    )
+}
+
 /// `ty` resolved in `module`, the `params` left as they are.
 fn resolve(ty: &syn::Type, module: &[String], params: &[String]) -> syn::Type {
     syn::parse2(resolve_type_with_params(ty, module, params)).unwrap_or_else(|_| ty.clone())
@@ -279,6 +296,15 @@ mod field_type_tests {
         let (_, bindings) = instantiate_with_bindings(&item, &ty, "schema_type!").unwrap();
         let raw: syn::Type = syn::parse_str(raw).unwrap();
         let module = ["crate", "page"].map(String::from);
+        // `Self` names the instance (L5, round 16), the default resolved.
+        let self_path = self_path(&item.ident, bindings.as_ref(), &module);
+        assert!(
+            quote::quote!(#self_path)
+                .to_string()
+                .starts_with("Page :: < Row ,"),
+            "{}",
+            quote::quote!(#self_path)
+        );
         assert_eq!(
             bindings
                 .unwrap()
@@ -295,5 +321,7 @@ mod field_type_tests {
         let ty: syn::Type = syn::parse_str("S").unwrap();
         let (_, bindings) = instantiate_with_bindings(&item, &ty, "schema_type!").unwrap();
         assert!(bindings.is_none());
+        let path = self_path(&item.ident, None, &[]);
+        assert_eq!(quote::quote!(#path).to_string(), "S");
     }
 }

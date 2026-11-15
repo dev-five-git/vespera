@@ -1,41 +1,47 @@
 error: `rename` names field `name`, which this type does not include: `omit` drops it
-  --> tests/ui/schema_type_conflicting_refs.rs:16:67
+  --> tests/ui/schema_type_conflicting_refs.rs:17:67
    |
-16 | schema_type!(RenameOmitted from User, omit = ["name"], rename = [("name", "title")]);
+17 | schema_type!(RenameOmitted from User, omit = ["name"], rename = [("name", "title")]);
    |                                                                   ^^^^^^
 
 error: `partial` names field `name`, which this type does not include: `pick` does not list it
-  --> tests/ui/schema_type_conflicting_refs.rs:18:67
+  --> tests/ui/schema_type_conflicting_refs.rs:19:67
    |
-18 | schema_type!(PartialUnpicked from User, pick = ["id"], partial = ["name"]);
+19 | schema_type!(PartialUnpicked from User, pick = ["id"], partial = ["name"]);
    |                                                                   ^^^^^^
 
 error: relation adapter field `owner` does not exist in type `User`. Available fields: ["id", "name"]
-  --> tests/ui/schema_type_conflicting_refs.rs:20:62
+  --> tests/ui/schema_type_conflicting_refs.rs:21:62
    |
-20 | schema_type!(AdapterUnknown from User, relation_adapters = [("owner", UserCard)]);
+21 | schema_type!(AdapterUnknown from User, relation_adapters = [("owner", UserCard)]);
    |                                                              ^^^^^^^
 
 error: `relation_adapters` lists field `id` more than once
-  --> tests/ui/schema_type_conflicting_refs.rs:22:60
+  --> tests/ui/schema_type_conflicting_refs.rs:23:78
    |
-22 | schema_type!(AdapterTwice from User, relation_adapters = [("id", UserCard), ("id", UserCard)]);
-   |                                                            ^^^^
+23 | schema_type!(AdapterTwice from User, relation_adapters = [("id", UserCard), ("id", UserCard)]);
+   |                                                                              ^^^^
 
 error: `relation_adapters` names field `name`, which this type does not include: `omit` drops it
-  --> tests/ui/schema_type_conflicting_refs.rs:24:79
+  --> tests/ui/schema_type_conflicting_refs.rs:25:79
    |
-24 | schema_type!(AdapterOmitted from User, omit = ["name"], relation_adapters = [("name", UserCard)]);
+25 | schema_type!(AdapterOmitted from User, omit = ["name"], relation_adapters = [("name", UserCard)]);
    |                                                                               ^^^^^^
 
 error: `relation_adapters`: field `name` of `User` is not a HasOne / BelongsTo SeaORM relation this type includes
-  --> tests/ui/schema_type_conflicting_refs.rs:26:60
+  --> tests/ui/schema_type_conflicting_refs.rs:27:60
    |
-26 | schema_type!(AdapterPlain from User, relation_adapters = [("name", UserCard)]);
+27 | schema_type!(AdapterPlain from User, relation_adapters = [("name", UserCard)]);
    |                                                            ^^^^^^
 
 error: `add` field name `type` is not a valid Rust identifier; use letters/digits/`_` (not starting with a digit) and avoid reserved keywords
-  --> tests/ui/schema_type_conflicting_refs.rs:28:44
+  --> tests/ui/schema_type_conflicting_refs.rs:29:44
    |
-28 | schema_type!(AddInvalid from User, add = [("type": i32)]);
+29 | schema_type!(AddInvalid from User, add = [("type": i32)]);
    |                                            ^^^^^^
+
+error: `add` field `extra` is already a field of the generated type: omit or rename the source field, or pick another name
+  --> tests/ui/schema_type_conflicting_refs.rs:31:58
+   |
+31 | schema_type!(AddTwice from User, add = [("extra": i32), ("extra": u8)]);
+   |                                                          ^^^^^^^

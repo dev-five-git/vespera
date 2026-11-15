@@ -20,7 +20,7 @@ use super::inline_types::{
     generate_inline_type_definition,
 };
 use super::input::{PartialMode, SchemaTypeInput};
-use super::instantiate::instantiate_with_bindings;
+use super::instantiate::{instantiate_with_bindings, self_path};
 use super::module_scope::segment_ident as field_ident;
 use super::same_file_override::maybe_generate_same_file_relation_override;
 use super::seaorm::{
@@ -89,7 +89,8 @@ pub fn generate_schema_type_code(
         .collect();
     let (mut parsed_struct, bindings) =
         instantiate_with_bindings(&parsed_struct, &input.source_type, "schema_type!")?;
-    super::transformation::name_self_in_serde_paths(&mut parsed_struct);
+    let self_path = self_path(&parsed_struct.ident, bindings.as_ref(), &source_module_path);
+    super::transformation::name_self_in_paths(&mut parsed_struct, &self_path);
     super::field_attrs::hoist_cfg_attr_cfgs(&mut parsed_struct);
 
     // Extract all field names from source struct for validation

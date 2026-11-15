@@ -43,7 +43,11 @@ pub(super) fn record(name: &str, metadata: &StructMetadata) {
 /// -> `metadata`: an IDE edit, or the item moved): when `name` has
 /// variants, the item's variant follows the edit (it kept the old metadata),
 /// and `Err` when another module's variant no longer has its definition
-/// (the duplicate-name error a clean build raises). Nothing changes on `Err`.
+/// (the duplicate-name error a clean build raises). On `Err` the variant
+/// still follows the edit (pending, the storage is unchanged): when the
+/// other module's item is then edited the same way, [`converge`] accepts
+/// it (L1, round 16: both items kept rejecting each other's stale variant
+/// until the proc-macro server restarted).
 pub(super) fn update(
     name: &str,
     previous: &StructMetadata,
@@ -65,14 +69,40 @@ pub(super) fn update(
     let is_this_item = |defined_in: &Vec<String>| {
         *defined_in == module || previous_module.as_ref() == Some(defined_in)
     };
-    if entries.iter().any(|(defined_in, other)| {
+    let conflict = entries.iter().any(|(defined_in, other)| {
         !is_this_item(defined_in) && other.definition != metadata.definition
-    }) {
-        return Err(());
-    }
+    });
     entries.retain(|(defined_in, _)| !is_this_item(defined_in));
     entries.push((module, metadata.clone()));
-    Ok(())
+    if conflict { Err(()) } else { Ok(()) }
+}
+
+/// A registration of `name` from another item than the stored one, with
+/// another definition: when that item already is a variant of `name` (it
+/// was registered as one, then edited), its variant follows the edit, and
+/// `true` when every variant now has its definition — the same-named items
+/// were all edited alike, so the registration is accepted. `false` (the
+/// duplicate-name error) otherwise; an item that is no variant changes
+/// nothing.
+pub(super) fn converge(name: &str, metadata: &StructMetadata) -> bool {
+    let Some(module) = storage_module_path(metadata) else {
+        return false;
+    };
+    let mut variants = VARIANTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(entries) = variants
+        .get_mut(&super::current_crate_key())
+        .and_then(|names| names.get_mut(name))
+        .filter(|entries| entries.iter().any(|(defined_in, _)| *defined_in == module))
+    else {
+        return false;
+    };
+    entries.retain(|(defined_in, _)| *defined_in != module);
+    entries.push((module, metadata.clone()));
+    entries
+        .iter()
+        .all(|(_, other)| other.definition == metadata.definition)
 }
 
 /// The variant of `name` defined in `module`, when same-named items of
@@ -156,6 +186,14 @@ mod tests {
         assert!(first_schema.contains("10"), "{first_schema}");
         assert!(!first_schema.contains("20"), "{first_schema}");
         assert!(schema_of("second::Page").contains("20"));
+        // L2 (round 16): a qualified path through a `pub use` re-export
+        // reads the re-exported module's variant (it read the storage's
+        // last, `second::Page`).
+        let reexported = schema_of("reexp::Page");
+        assert!(
+            reexported.contains("10") && !reexported.contains("20"),
+            "{reexported}"
+        );
         // Through another crate's import: no module, the storage's last.
         assert!(schema_of("types::Page").contains("20"));
         // A bare name the call site does not know: the storage's last.
@@ -202,19 +240,93 @@ mod tests {
             21
         );
         // ... and a definition that no longer matches another module's
-        // variant is the duplicate-name error, changing nothing.
-        let mut edited = page(&lib, 2, 22);
-        edited.definition = "pub struct Page { pub limit: u64 }".to_string();
-        assert!(super::super::register_schema("Page".to_string(), edited).is_err());
+        // variant is the duplicate-name error (the storage keeps the old
+        // item, the variant is pending) ...
+        let edit = |line, default| {
+            let mut edited = page(&lib, line, default);
+            edited.definition = "pub struct Page { pub limit: u64 }".to_string();
+            edited
+        };
+        assert!(super::super::register_schema("Page".to_string(), edit(2, 22)).is_err());
+        let stored = |name: &str| {
+            super::super::current_crate_schemas()[name]
+                .definition
+                .clone()
+        };
+        assert_eq!(stored("Page"), "pub struct Page { pub limit: u32 }");
         assert_eq!(
             in_module("Page", &second).unwrap().field_defaults["limit"],
-            21
+            22
         );
+        // ... L1 (round 16): until the other module's item is edited alike,
+        // which then converges (both kept rejecting each other's stale
+        // variant until the proc-macro server restarted).
+        assert!(super::super::register_schema("Page".to_string(), edit(1, 12)).is_ok());
+        assert_eq!(stored("Page"), "pub struct Page { pub limit: u64 }");
+        assert!(super::super::register_schema("Page".to_string(), edit(2, 23)).is_ok());
+        // The other order: the non-stored item first (pending), then the
+        // stored one re-expanded as itself.
+        let mut third = page(&lib, 1, 13);
+        third.definition = "pub struct Page { pub limit: i8 }".to_string();
+        assert!(super::super::register_schema("Page".to_string(), third.clone()).is_err());
+        let mut fourth = page(&lib, 2, 24);
+        fourth.definition = third.definition.clone();
+        assert!(super::super::register_schema("Page".to_string(), fourth).is_ok());
+        assert_eq!(stored("Page"), "pub struct Page { pub limit: i8 }");
+        // An item that is no variant converges nothing.
+        let mut stranger = page(&lib, 5, 1);
+        stranger.definition = "pub struct Page { pub other: u8 }".to_string();
+        assert!(!converge("Page", &stranger));
+        assert!(!converge("Page", &unknown));
+        assert!(!converge("Other", &page(&lib, 1, 1)));
         // Without a module or without variants: nothing to update.
         assert_eq!(update("Page", &unknown, &unknown), Ok(()));
         assert_eq!(
             update("Other", &page(&lib, 1, 1), &page(&lib, 1, 1)),
             Ok(())
         );
+    }
+
+    /// L3 (round 16): `schema_type!` from a bare name the call site imports
+    /// from one of several same-named variants derives from that module's
+    /// item (the last-derived `second::Page` was used: its `limit` default
+    /// fn, its field types).
+    #[test]
+    fn schema_type_bare_name_reads_the_imported_variant() {
+        const DEFINITION: &str =
+            "pub struct Page { # [serde (default = \"limit\")] pub limit : u32 }";
+        let dir = tempfile::TempDir::new().unwrap();
+        let lib = dir.path().join("src").join("lib.rs");
+        std::fs::create_dir_all(lib.parent().unwrap()).unwrap();
+        std::fs::write(
+            &lib,
+            "mod first { pub struct Page { pub limit: u32 } pub fn limit() -> u32 { 10 } }\n\
+             mod second { pub struct Page { pub limit: u32 } pub fn limit() -> u32 { 20 } }\n\
+             mod api { use crate::first::Page; }\n",
+        )
+        .unwrap();
+        let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        bump_epoch();
+        for line in [1, 2] {
+            let mut metadata = page(&lib, line, 0);
+            metadata.definition = DEFINITION.to_string();
+            assert!(super::super::register_schema("Page".to_string(), metadata).is_ok());
+        }
+        let generate = |module: &str| {
+            let _call_site = set_test_call_site_module(module);
+            let input: crate::schema_macro::SchemaTypeInput =
+                syn::parse_str("PageDto from Page").unwrap();
+            let storage = super::super::current_crate_schemas();
+            crate::schema_macro::generate_schema_type_code(&input, &storage)
+                .unwrap()
+                .0
+                .to_string()
+        };
+        let output = generate("crate::api");
+        assert!(output.contains("\"crate::first::limit\""), "{output}");
+        assert!(!output.contains("crate::second"), "{output}");
+        // A call site the name does not resolve in: its own module, which
+        // has no variant (the storage's last).
+        assert!(generate("crate").contains("\"crate::second::limit\""));
     }
 }

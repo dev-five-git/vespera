@@ -64,12 +64,16 @@ pub fn storage_entry<'a>(
     renamed.next().is_none().then_some(first)
 }
 
-/// The module a `schema!` type path names: its qualified module, else (a
-/// bare name) the module defining the name in scope at the call site;
-/// `None` when unknown.
+/// The module a `schema!` type path names: its qualified module (through a
+/// `pub use` re-export there: `reexp::Page` read the last-derived variant),
+/// else (a bare name) the module defining the name in scope at the call
+/// site; `None` when unknown.
 fn requested_module(ty: &syn::Type) -> Option<Vec<String>> {
     match file_lookup::requested_module_path(ty) {
-        Ok(Some(module)) => Some(module),
+        Ok(Some(module)) => {
+            let name = extract_type_name(ty).ok()?;
+            Some(reexported_item(&module, &name).map_or(module, |(defined_in, _)| defined_in))
+        }
         Ok(None) => bare_name_module(ty),
         Err(_) => None,
     }

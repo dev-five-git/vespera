@@ -37,13 +37,10 @@ pub(super) fn source_field_assignments(
         .collect()
 }
 
-/// The field's `#[cfg(..)]` attributes.
+/// The field's conditions ([`super::super::field_attrs::field_cfgs`]).
 pub(super) fn field_cfg(attrs: &[syn::Attribute]) -> TokenStream {
-    attrs
-        .iter()
-        .filter(|attr| attr.path().is_ident("cfg"))
-        .map(|attr| quote! { #attr })
-        .collect()
+    let cfgs = super::super::field_attrs::field_cfgs(attrs);
+    quote! { #(#cfgs)* }
 }
 
 /// Every item of `items` under the field's `cfg` (unchanged without one):

@@ -26,7 +26,11 @@ use quote::quote;
 
 use super::file_cache;
 
+mod declared;
+pub use declared::declared_module_of;
+
 /// Items of one module plus the location state needed to descend further.
+#[derive(Clone)]
 struct Cursor {
     items: Vec<syn::Item>,
     /// Directory of the file the items come from.
@@ -37,6 +41,8 @@ struct Cursor {
     stem: String,
     /// Inline `mod x { .. }` components walked inside the current file.
     inline: Vec<String>,
+    /// The file the items come from.
+    file: PathBuf,
 }
 
 fn open_file(path: &Path, force_mod_rs: bool) -> Option<Cursor> {
@@ -47,6 +53,7 @@ fn open_file(path: &Path, force_mod_rs: bool) -> Option<Cursor> {
     // opened with `force_mod_rs`.
     let mod_rs = force_mod_rs || stem == "mod";
     Some(Cursor {
+        file: path.to_path_buf(),
         items: file.items,
         file_dir: path.parent()?.to_path_buf(),
         mod_rs,
