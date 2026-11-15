@@ -342,7 +342,12 @@ fn externally_imported_name_skips_crate_wide_lookup() {
 )]
 #[case::imported_from_alias_module("use crate::legacy::ApiResponse;", true)]
 #[case::imported_through_group("use crate::{models::{ApiResponse}};", false)]
-#[case::renamed_import("use crate::models::Other as ApiResponse;", true)]
+// Round 13: a local rename names another item, never the unrelated
+// crate-wide alias of the same name; `X as X` is no rename.
+#[case::renamed_import("use crate::models::Other as ApiResponse;", false)]
+#[case::renamed_in_group("use crate::{models::Envelope as ApiResponse};", false)]
+#[case::renamed_to_itself("use crate::legacy::ApiResponse as ApiResponse;", true)]
+#[case::renamed_other_name("use crate::models::Other as Unrelated;", true)]
 // Round 12: `use crate::X;` / `use super::X;` name the crate root's / the
 // parent module's struct too.
 #[case::imported_from_crate_root("use crate::ApiResponse;", false)]

@@ -403,14 +403,21 @@ fn slice_elem(ty: &Type) -> Option<(&Type, bool)> {
 
 /// Whether a garde `pattern` (Rust `regex` syntax) reads the same as an
 /// ECMA-262 `pattern`. A Rust-only construct — an inline flag group (`(?i)`,
-/// `(?x:..)`), `(?P<name>..)`, `\A` / `\z`, `\x{..}`, a one-letter `\pL`, a
-/// POSIX class (`[[:alpha:]]`) — makes it skipped rather than documented
-/// wrongly. Known limitation: `\d` / `\w` / `\s` / `\b` are Unicode-aware in
-/// Rust but ASCII in ECMA-262, so the documented pattern may be stricter.
+/// `(?x:..)`), `(?P<name>..)`, `\A` / `\z`, `\x{..}`, a one-letter `\pL`, or
+/// inside a character class a nested class / POSIX class (`[a[b]]`,
+/// `[[:alpha:]]`), a set operation (`&&`, `--`, `~~`) or a leading `]`
+/// (literal in Rust, an empty class in ECMA-262) — makes it skipped rather
+/// than documented wrongly. Known limitation: `\d` / `\w` / `\s` / `\b` are
+/// Unicode-aware in Rust but ASCII in ECMA-262, so the documented pattern may
+/// be stricter.
 fn is_ecma_compatible(pattern: &str) -> bool {
     let mut chars = pattern.chars().peekable();
+    let mut in_class = false;
+    // Right after a class's `[` / `[^`.
+    let mut class_start = false;
     while let Some(ch) = chars.next() {
         let next = chars.peek().copied();
+        let first = std::mem::take(&mut class_start);
         let rust_only = match (ch, next) {
             ('\\', Some(escaped)) => {
                 chars.next();
@@ -419,14 +426,23 @@ fn is_ecma_compatible(pattern: &str) -> bool {
                     || (escaped == 'x' && brace)
                     || (matches!(escaped, 'p' | 'P') && !brace)
             }
-            ('(', Some('?')) => {
+            ('(', Some('?')) if !in_class => {
                 chars.next();
                 chars.peek().is_some_and(|flag| "imsxuUR-P".contains(*flag))
             }
-            ('[', Some('[')) => {
-                chars.next();
-                chars.peek() == Some(&':')
+            // Rust opens a nested (or POSIX) class; ECMA-262 reads a literal.
+            ('[', _) if in_class => true,
+            ('[', _) => {
+                in_class = true;
+                class_start = true;
+                chars.next_if_eq(&'^');
+                false
             }
+            (']', _) if in_class => {
+                in_class = false;
+                first
+            }
+            ('&' | '-' | '~', Some(op)) => in_class && op == ch,
             _ => false,
         };
         if rust_only {

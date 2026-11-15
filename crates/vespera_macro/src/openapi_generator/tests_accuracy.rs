@@ -61,7 +61,7 @@ pub(super) fn schema(name: &str, definition: &str) -> StructMetadata {
 
 /// `schema` registered under a `#[schema(name = ...)]` that differs from the
 /// Rust ident, as `#[derive(Schema)]` records it.
-fn renamed(name: &str, ident: &str, definition: &str) -> StructMetadata {
+pub(super) fn renamed(name: &str, ident: &str, definition: &str) -> StructMetadata {
     StructMetadata {
         explicit_schema_name: true,
         rust_ident: Some(ident.to_string()),

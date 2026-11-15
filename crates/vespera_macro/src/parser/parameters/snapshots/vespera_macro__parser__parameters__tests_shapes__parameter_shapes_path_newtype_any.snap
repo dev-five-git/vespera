@@ -1,0 +1,24 @@
+---
+source: crates/vespera_macro/src/parser/parameters/tests_shapes.rs
+assertion_line: 194
+expression: "render(func_src, path_params)"
+---
+fn f(p: Path<AnyIds>) {}
+[
+  {
+    "name": "a",
+    "in": "path",
+    "required": true,
+    "schema": {
+      "type": "string"
+    }
+  },
+  {
+    "name": "b",
+    "in": "path",
+    "required": true,
+    "schema": {
+      "type": "string"
+    }
+  }
+]

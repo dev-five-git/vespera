@@ -1,0 +1,27 @@
+---
+source: crates/vespera_macro/src/parser/parameters/tests_shapes.rs
+assertion_line: 194
+expression: "render(func_src, path_params)"
+---
+fn f(p: Path<ValueIds>) {}
+[
+  {
+    "name": "a",
+    "in": "path",
+    "required": true,
+    "schema": {
+      "type": "integer",
+      "format": "int64"
+    }
+  },
+  {
+    "name": "b",
+    "in": "path",
+    "required": true,
+    "schema": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    }
+  }
+]
