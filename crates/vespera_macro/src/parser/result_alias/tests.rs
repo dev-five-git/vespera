@@ -124,6 +124,18 @@ fn expand(file_src: &str, ret: &str) -> String {
     "-> R",
     "-> Json < u8 >"
 )]
+// Round 12: a same-named helper in an inline module (listed first) or in a
+// test-only module is not the handler.
+#[case::top_level_handler_before_inline_helper(
+    "mod helpers { type R = Json<i8>; fn handler() {} } type R = Json<u8>; pub fn handler() {}",
+    "-> R",
+    "-> Json < u8 >"
+)]
+#[case::test_module_helper_skipped(
+    "#[cfg(test)] mod tests { type R = Json<i8>; fn handler() {} } type R = Json<u8>;",
+    "-> R",
+    "-> Json < u8 >"
+)]
 // An external import is checked before another module's alias.
 #[case::import_before_other_module(
     "use axum::response::Result; mod inner { pub type Result<T> = std::result::Result<T, E>; }",
@@ -331,9 +343,26 @@ fn externally_imported_name_skips_crate_wide_lookup() {
 #[case::imported_from_alias_module("use crate::legacy::ApiResponse;", true)]
 #[case::imported_through_group("use crate::{models::{ApiResponse}};", false)]
 #[case::renamed_import("use crate::models::Other as ApiResponse;", true)]
+// Round 12: `use crate::X;` / `use super::X;` name the crate root's / the
+// parent module's struct too.
+#[case::imported_from_crate_root("use crate::ApiResponse;", false)]
+#[case::imported_from_parent_file("use super::ApiResponse;", false)]
+#[case::imported_from_inline_parent(
+    "pub struct ApiResponse<T>(T); mod m { use super::ApiResponse; pub fn h() {} }",
+    false
+)]
+#[case::imported_from_inline_parent_without_struct(
+    "pub struct Other; mod m { use super::ApiResponse; pub fn h() {} }",
+    true
+)]
 fn same_named_struct_stops_crate_wide_lookup(#[case] handler: &str, #[case] expands: bool) {
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path();
+    std::fs::write(
+        src.join("lib.rs"),
+        "mod legacy; mod models; pub struct ApiResponse<T>(T);",
+    )
+    .unwrap();
     std::fs::write(
         src.join("legacy.rs"),
         "pub type ApiResponse<T> = Result<Json<T>, LegacyError>;",

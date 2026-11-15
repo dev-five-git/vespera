@@ -8,7 +8,7 @@
 //! - the same-run criterion A/B in `benches/dispatch.rs` (through the
 //!   `crate::bench_support::bench_parse_*` / `bench_write_*` re-exports
 //!   in [`super`]), and
-//! - the round-trip property tests in [`super::tests`]
+//! - the round-trip property tests in `wire::tests`
 //!   (`hand_parse_matches_serde_parse`,
 //!    `hand_serialize_matches_serde_serialize`,
 //!    `hand_serialize_matches_serde_for_tiny_header_maps`).

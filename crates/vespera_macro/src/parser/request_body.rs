@@ -23,10 +23,14 @@ fn is_string_like(ty: &Type) -> bool {
 ///
 /// Each entry maps `Extractor<T>` to a request body whose only content entry is
 /// `media type` holding `T`'s schema.
-const GENERIC_BODY_EXTRACTORS: [(&str, &str); 3] = [
+const GENERIC_BODY_EXTRACTORS: [(&str, &str); 4] = [
     ("Json", "application/json"),
     ("Form", "application/x-www-form-urlencoded"),
     ("TypedMultipart", "multipart/form-data"),
+    // `TypedMultipartWithLimits<T, MAX_TOTAL_BYTES, MAX_FIELDS>`: the body
+    // type is the first generic argument; the const limits never reach the
+    // wire.
+    ("TypedMultipartWithLimits", "multipart/form-data"),
 ];
 
 /// Build a required `RequestBody` carrying exactly one media type entry.
@@ -185,6 +189,11 @@ mod tests {
         "fn test(TypedMultipart(req): TypedMultipart<UploadRequest>) {}",
         true,
         "typed_multipart"
+    )]
+    #[case::typed_multipart_with_limits(
+        "fn test(TypedMultipartWithLimits(req): TypedMultipartWithLimits<UploadRequest, { 128 << 20 }, 64>) {}",
+        true,
+        "typed_multipart_with_limits"
     )]
     #[case::multipart_raw("fn test(multipart: Multipart) {}", true, "multipart_raw")]
     #[case::self_ref("fn test(&self) {}", false, "self_ref")]

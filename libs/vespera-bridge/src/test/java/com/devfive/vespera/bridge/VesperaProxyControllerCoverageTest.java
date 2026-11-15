@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.Resource;
 import org.springframework.http.ResponseEntity;
@@ -29,6 +30,11 @@ import org.springframework.web.server.ResponseStatusException;
 class VesperaProxyControllerCoverageTest {
 
     private String previousOversizePolicy;
+
+    @BeforeEach
+    void capturePreviousOversizePolicy() {
+        previousOversizePolicy = System.getProperty("vespera.direct.oversize-policy");
+    }
 
     @AfterEach
     void cleanThreadStateAndProperties() {
@@ -85,6 +91,34 @@ class VesperaProxyControllerCoverageTest {
                 + maxBufferedBody + " (at least " + maxBufferedBody + " bytes)", exception.getReason());
         VesperaProxyController.rejectAtBufferedBodyLimit(maxBufferedBody - 1, maxBufferedBody);
         VesperaProxyController.rejectAtBufferedBodyLimit(maxBufferedBody, maxBufferedBody - 1);
+    }
+
+    @Test
+    void declaredLengthAtTheSingleArrayBoundIsRejectedBeforeReading() {
+        long maxBufferedBody = Integer.MAX_VALUE - 8L;
+        AtomicBoolean read = new AtomicBoolean();
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/upload") {
+            @Override
+            public long getContentLengthLong() {
+                return maxBufferedBody;
+            }
+
+            @Override
+            public ServletInputStream getInputStream() {
+                read.set(true);
+                throw new AssertionError("a body at the single-array bound must not be read");
+            }
+        };
+
+        ResponseStatusException exception = assertThrows(
+                ResponseStatusException.class,
+                () -> VesperaProxyController.readBody(request, 0));
+
+        assertEquals(413, exception.getStatusCode().value());
+        assertFalse(read.get());
+        assertEquals("buffered request body reaches the built-in " + maxBufferedBody
+                + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes=0; actual "
+                + maxBufferedBody + " bytes); use BIDIRECTIONAL_STREAMING", exception.getReason());
     }
 
     @Test
@@ -286,7 +320,6 @@ class VesperaProxyControllerCoverageTest {
         Field loaded = VesperaBridge.class.getDeclaredField("loaded");
         loaded.setAccessible(true);
         boolean wasLoaded = loaded.getBoolean(null);
-        previousOversizePolicy = System.getProperty("vespera.direct.oversize-policy");
         java.util.List<DispatchEvent> events = new java.util.concurrent.CopyOnWriteArrayList<>();
         VesperaProxyController controller = new VesperaProxyController(
                 request -> null, request -> DispatchMode.DIRECT, Runnable::run, true, 0, 0, null,

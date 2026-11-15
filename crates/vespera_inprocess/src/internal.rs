@@ -128,12 +128,27 @@ pub const HEADER_TOO_LARGE_MSG: &str = "response header exceeds u32::MAX bytes";
 /// byte-identical to the prior copy-pasted shape.
 #[inline]
 fn parse_method_or_405(method_str: &str) -> Result<Method, (u16, String)> {
-    method_str.parse::<Method>().map_err(|_| {
-        (
-            405,
-            format!("Method Not Allowed: '{method_str}' is not a valid HTTP method"),
-        )
-    })
+    method_str
+        .parse::<Method>()
+        .map_err(|_| (405, method_not_allowed_msg(method_str)))
+}
+
+/// Longest prefix of an invalid method echoed in the `405` body (and the
+/// WARN event's `detail`): the method is client text of up to the 1 MiB
+/// header cap, which must not be repeated verbatim into every log line.
+const MAX_ECHOED_METHOD_BYTES: usize = 64;
+
+/// `405` message naming the offending method, truncated (on a char
+/// boundary, marked `...`) to [`MAX_ECHOED_METHOD_BYTES`].
+#[cold]
+fn method_not_allowed_msg(method_str: &str) -> String {
+    let mut end = method_str.len().min(MAX_ECHOED_METHOD_BYTES);
+    while !method_str.is_char_boundary(end) {
+        end -= 1;
+    }
+    let ellipsis = if end < method_str.len() { "..." } else { "" };
+    let shown = &method_str[..end];
+    format!("Method Not Allowed: '{shown}{ellipsis}' is not a valid HTTP method")
 }
 
 /// Canonical `(400, "invalid request: <error>")` mapping for any
@@ -436,10 +451,7 @@ fn build_request_from_bytes_builder_old<'h>(
     body_bytes: Bytes,
 ) -> Result<Request<Body>, (u16, String)> {
     let Ok(http_method) = method_str.parse::<Method>() else {
-        return Err((
-            405,
-            format!("Method Not Allowed: '{method_str}' is not a valid HTTP method"),
-        ));
+        return Err((405, method_not_allowed_msg(method_str)));
     };
     let mut builder = request_builder(http_method, path, query);
     let mut has_content_type = false;
@@ -522,7 +534,7 @@ fn header_value_to_owned(v: &http::HeaderValue) -> String {
 /// [`HeaderValue::Multi`] so their semantics survive the conversion.
 ///
 /// Two paths, mirroring the wire-side response serializer
-/// ([`super::wire::header_write::write_headers`]) so the two
+/// (`crate::wire::header_write::write_headers`) so the two
 /// header-collapse sites stay in lockstep:
 ///
 /// - **Fast path** — `headers.len()` counts VALUES while `keys_len()` counts

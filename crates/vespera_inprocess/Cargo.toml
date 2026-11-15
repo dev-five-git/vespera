@@ -68,7 +68,10 @@ serde = { version = "1.0.221", features = ["derive"] }
 serde_json = "1.0.100"
 # `time`: the optional per-dispatch deadline (`set_dispatch_timeout`) and the
 # bounded request-producer join on the bidirectional streaming paths.
-tokio = { version = "1.44", features = ["rt", "sync", "time"] }
+# `rt-multi-thread`: `tokio::task::block_in_place`, which the bidirectional
+# small-body fast path (`streaming/inline_pull.rs`) runs an inline request
+# pull under, so a pull may use Tokio's blocking APIs on the `block_on` thread.
+tokio = { version = "1.44", features = ["rt", "rt-multi-thread", "sync", "time"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]

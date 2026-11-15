@@ -403,3 +403,96 @@ fn unresolvable_ref_is_never_merged_next_to_operations() {
     assert_eq!(item.ref_path.as_deref(), Some("other.yaml#/a"));
     assert!(item.post.is_none());
 }
+
+/// Round 12: path-level `parameters` / `servers` next to a resolvable
+/// `$ref` keep governing the inlined operations (the referencing item wins
+/// on `name` + `in`); they used to be dropped by the push-down.
+#[test]
+fn ref_path_item_siblings_survive_the_inlining() {
+    let mut parent = doc(json!({"security": [{"apiKey": []}]}));
+    parent.merge(doc(path_item_refs(
+        json!({"/a": {
+            "$ref": "#/components/pathItems/A",
+            "parameters": [
+                {"name": "X-Tenant", "in": "header", "required": true, "schema": {"type": "string"}},
+                {"name": "shared", "in": "query", "description": "outer", "schema": {"type": "string"}}
+            ],
+            "servers": [{"url": "https://outer.example"}]
+        }}),
+        json!({"A": {
+            "parameters": [
+                {"name": "shared", "in": "query", "description": "inner", "schema": {"type": "string"}},
+                {"name": "trace", "in": "header", "schema": {"type": "string"}}
+            ],
+            "servers": [{"url": "https://inner.example"}],
+            "get": {"responses": {}}
+        }}),
+    )));
+    let item = &parent.paths["/a"];
+    assert_eq!(item.ref_path, None);
+    let params = item.parameters.as_ref().expect("path-level parameters");
+    let names: Vec<(&str, ParameterLocation)> =
+        params.iter().map(|p| (p.name.as_str(), p.r#in)).collect();
+    assert_eq!(
+        names,
+        [
+            ("X-Tenant", ParameterLocation::Header),
+            ("shared", ParameterLocation::Query),
+            ("trace", ParameterLocation::Header),
+        ]
+    );
+    assert_eq!(params[1].description.as_deref(), Some("outer"));
+    assert_eq!(
+        item.servers.as_ref().unwrap()[0].url,
+        "https://outer.example"
+    );
+    assert!(item.get.is_some());
+
+    // Without siblings the target's own path-level values are kept as is.
+    let mut parent = doc(json!({"security": [{"apiKey": []}]}));
+    parent.merge(doc(path_item_refs(
+        json!({"/a": {"$ref": "#/components/pathItems/A"}}),
+        json!({"A": {
+            "parameters": [{"name": "trace", "in": "header", "schema": {"type": "string"}}],
+            "servers": [{"url": "https://inner.example"}],
+            "get": {"responses": {}}
+        }}),
+    )));
+    let item = &parent.paths["/a"];
+    assert_eq!(item.parameters.as_ref().unwrap()[0].name, "trace");
+    assert_eq!(
+        item.servers.as_ref().unwrap()[0].url,
+        "https://inner.example"
+    );
+
+    // Siblings over a target without path-level values.
+    let mut parent = doc(json!({"security": [{"apiKey": []}]}));
+    parent.merge(doc(path_item_refs(
+        json!({"/a": {
+            "$ref": "#/components/pathItems/A",
+            "parameters": [{"name": "X-Tenant", "in": "header", "schema": {"type": "string"}}]
+        }}),
+        json!({"A": {"get": {"responses": {}}}}),
+    )));
+    let item = &parent.paths["/a"];
+    assert_eq!(item.parameters.as_ref().unwrap()[0].name, "X-Tenant");
+    assert!(item.servers.is_none());
+}
+
+/// Round 12: an unresolvable receiver `$ref` never adopts incoming
+/// path-level `parameters` / `servers` — they would start governing the
+/// referenced operations.
+#[test]
+fn unresolvable_receiver_ref_drops_incoming_path_level_fields() {
+    let mut parent = doc(json!({"paths": {"/a": {"$ref": "other.yaml#/a"}}}));
+    parent.merge(doc(json!({"paths": {"/a": {
+        "summary": "child",
+        "parameters": [{"name": "X-Child", "in": "header", "required": true, "schema": {"type": "string"}}],
+        "servers": [{"url": "https://child.example"}]
+    }}})));
+    let item = &parent.paths["/a"];
+    assert_eq!(item.ref_path.as_deref(), Some("other.yaml#/a"));
+    assert!(item.parameters.is_none());
+    assert!(item.servers.is_none());
+    assert_eq!(item.summary.as_deref(), Some("child"));
+}

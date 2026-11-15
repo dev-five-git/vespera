@@ -591,8 +591,8 @@ async fn bidirectional_with_header_invalid_method_returns_405() {
 async fn bidirectional_with_header_break_when_receiver_dropped_mid_stream() {
     // The handler reads one frame (starting the producer) and returns,
     // dropping the request body while the producer still has chunks: the
-    // bounded 16-slot mpsc fills up, `tx.blocking_send` fails once the
-    // receiver is gone, and the producer takes the `break` branch.  Run
+    // bounded 16-slot mpsc fills up, the producer's blocked send gives up
+    // once the receiver is gone, and the producer takes the `break` branch.  Run
     // inside `tokio::spawn` so no pull happens inline on a `block_on`
     // thread: every pull is the producer's.  At least one pull ran (the
     // frame the handler read) and the counter ends short of the

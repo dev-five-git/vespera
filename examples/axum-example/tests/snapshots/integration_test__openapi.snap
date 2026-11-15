@@ -319,7 +319,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UpdateConfigRequest"
+                "$ref": "#/components/schemas/UpdateConfigRequestInput"
               }
             }
           }
@@ -7249,6 +7249,120 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "null"
             ],
             "format": "decimal"
+          }
+        }
+      },
+      "UpdateConfigRequestInput": {
+        "type": "object",
+        "properties": {
+          "delimiter": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "char"
+          },
+          "discountRate": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "decimal"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxItems": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "maxPrice": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "decimal"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "minPrice": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "decimal"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "priority": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "retryCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint8",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "separator": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "char"
+          },
+          "taxRate": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "decimal"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },

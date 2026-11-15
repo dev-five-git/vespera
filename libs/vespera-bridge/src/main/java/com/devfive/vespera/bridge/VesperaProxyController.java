@@ -556,9 +556,12 @@ public class VesperaProxyController {
         // known Content-Length can never be materialised here, so reject it
         // (413) instead of letting readAllBytes()/readNBytes() attempt an
         // impossible allocation and throw OutOfMemoryError. Such requests must
-        // go through BIDIRECTIONAL_STREAMING.
-        if (contentLength > MAX_BUFFERED_BODY) {
-            throw payloadTooLarge(contentLength, MAX_BUFFERED_BODY);
+        // go through BIDIRECTIONAL_STREAMING. A body of exactly the ceiling
+        // is rejected too: the read could not tell it from a larger one (and
+        // its wire frame would not fit a byte[] either), so ~2 GiB is never
+        // read only to be refused.
+        if (contentLength >= MAX_BUFFERED_BODY) {
+            throw declaredAboveSingleArrayBound(contentLength, cap);
         }
         byte[] body;
         try (InputStream in = request.getInputStream()) {
@@ -661,6 +664,19 @@ public class VesperaProxyController {
                 CONTENT_TOO_LARGE,
                 "buffered request body exceeds vespera.bridge.max-buffered-request-bytes="
                         + capBytes + " (more than " + capBytes + " bytes, length not declared)");
+    }
+
+    /**
+     * {@code 413} for a declared length the single-array bound cannot hold;
+     * names the built-in bound, never a {@code max-buffered-request-bytes}
+     * value the user did not set.
+     */
+    static ResponseStatusException declaredAboveSingleArrayBound(long actualBytes, long cap) {
+        return new ResponseStatusException(
+                CONTENT_TOO_LARGE,
+                "buffered request body reaches the built-in " + MAX_BUFFERED_BODY
+                        + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes="
+                        + cap + "; actual " + actualBytes + " bytes); use BIDIRECTIONAL_STREAMING");
     }
 
     private static ResponseStatusException payloadTooLarge(long actualBytes, long capBytes) {

@@ -614,15 +614,18 @@ where
 /// default 16): if axum reads slowly, the `pull_chunk` call blocks
 /// naturally.
 ///
-/// **Small-body fast path:** when this future is driven directly by
-/// `Runtime::block_on` (not inside a spawned task) and no
-/// [`crate::dispatch_timeout`] is configured, the first two pulls made
-/// **before the handler returns its response** run inline on the calling
-/// thread instead — a body that ends within them (one chunk + `End`) never
-/// starts the blocking producer, channel or producer slot.  `pull_chunk` must
-/// therefore be callable from the thread that drives `block_on` (the JNI
-/// caller thread is attached to the JVM).  Pulls made while the response
-/// streams always go through the producer.
+/// **Small-body fast path:** when this future is driven directly by a
+/// **multi-thread** runtime's `block_on` (not inside a spawned task, not on
+/// a current-thread runtime) and no [`crate::dispatch_timeout`] is
+/// configured, the first two pulls made **before the handler returns its
+/// response** run inline on the calling thread instead — a body that ends
+/// within them (one chunk + `End`) never starts the blocking producer,
+/// channel or producer slot.  `pull_chunk` must therefore be callable from
+/// the thread that drives `block_on` (the JNI caller thread is attached to
+/// the JVM); it runs there under `tokio::task::block_in_place`, outside the
+/// runtime context, so Tokio's blocking APIs (`blocking_recv`,
+/// `Handle::block_on`, ...) work as on the producer thread.  Pulls made while
+/// the response streams always go through the producer.
 ///
 /// Failure modes match [`dispatch_streaming_async`]: malformed
 /// header / unknown version / no app / handler error → normal

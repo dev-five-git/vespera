@@ -307,8 +307,14 @@ fn push_path_level_down(item: &mut PathItem) {
 /// its operations live behind the reference), and `other`'s reference is
 /// adopted only by an `into` that has no operations.
 fn merge_path_item(into: &mut PathItem, mut other: PathItem) {
-    if into.ref_path.is_some() && has_operations(&mut other) {
-        return;
+    if into.ref_path.is_some() {
+        if has_operations(&mut other) {
+            return;
+        }
+        // `into`'s operations live behind its (unresolvable) reference:
+        // `other`'s path-level values governed none of them.
+        other.parameters = None;
+        other.servers = None;
     }
     let into_has_ops = has_operations(into);
     let into_has_path_level = into.parameters.is_some() || into.servers.is_some();
@@ -379,6 +385,11 @@ fn has_operations(item: &mut PathItem) -> bool {
 /// is followed (bounded by the number of components, so a cycle stops); a
 /// reference this document cannot resolve (missing name, external URI) is
 /// left as it is.
+///
+/// Path-level `parameters` / `servers` written next to the reference keep
+/// governing the inlined operations: they are combined with the target's
+/// own path-level values, the referencing item winning (a parameter on
+/// `name` + `in`, the server list as a whole).
 fn inline_path_item_ref(item: &mut PathItem, path_items: &BTreeMap<String, PathItem>) {
     for _ in 0..path_items.len() {
         let Some(target) = item
@@ -390,7 +401,25 @@ fn inline_path_item_ref(item: &mut PathItem, path_items: &BTreeMap<String, PathI
             return;
         };
         item.ref_path = None;
+        let own_parameters = item.parameters.take();
+        let own_servers = item.servers.take();
         merge_path_item(item, target.clone());
+        if let Some(own) = own_parameters {
+            let inherited = item.parameters.take().unwrap_or_default();
+            let mut combined = own;
+            for param in inherited {
+                if !combined
+                    .iter()
+                    .any(|mine| mine.name == param.name && mine.r#in == param.r#in)
+                {
+                    combined.push(param);
+                }
+            }
+            item.parameters = Some(combined);
+        }
+        if own_servers.is_some() {
+            item.servers = own_servers;
+        }
     }
 }
 

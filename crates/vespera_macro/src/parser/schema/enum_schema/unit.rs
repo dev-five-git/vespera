@@ -14,6 +14,13 @@ use super::super::{
 /// string (an unknown name deserializes as that variant), and each variant
 /// also accepts its `#[serde(alias)]` names. The response view lists the
 /// serialized names only (the `other` variant writes its own name).
+///
+/// serde_json would also read a unit variant from the map form
+/// `{"Red": null}`; the request view deliberately leaves it out here (unlike
+/// a mixed enum, see `representations::parse_externally_tagged_enum`): an
+/// all-unit enum is also a query / path / form / map-key value, where only
+/// the string is readable, and listing the map form would give every such
+/// enum a separate `{Name}Input` component for an input no client sends.
 pub(super) fn parse_unit_enum_to_schema(
     enum_item: &syn::ItemEnum,
     description: Option<String>,

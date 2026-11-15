@@ -134,11 +134,25 @@ fn path_parameters_from(
         return path_params
             .iter()
             .map(|name| {
-                let field = find_path_field(struct_item, name, struct_definitions, depth);
-                let field = field.as_ref();
-                let schema = field.map_or_else(string_path_schema, |field| {
-                    typed_field_schema(field, known_schemas, struct_definitions)
-                });
+                let found = find_path_field(struct_item, name, struct_definitions, depth);
+                let field = found.as_ref().map(|(field, _)| field);
+                let schema =
+                    found
+                        .as_ref()
+                        .map_or_else(string_path_schema, |(field, flattened)| {
+                            let schema =
+                                typed_field_schema(field, known_schemas, struct_definitions);
+                            // serde buffers a flattened struct's values through
+                            // `deserialize_any`, which axum's path deserializer
+                            // answers with a string: only a string field reads it
+                            // back (a number / bool field rejects it, or an `Option`
+                            // flatten silently becomes `None`).
+                            if *flattened && !is_string_schema(&schema) {
+                                string_path_schema()
+                            } else {
+                                schema
+                            }
+                        });
                 // The field's doc comment documents the parameter.
                 Parameter {
                     description: field.and_then(|field| extract_doc_comment(&field.attrs)),
@@ -160,7 +174,10 @@ fn path_parameters_from(
                 !(flags.skip || flags.skip_deserializing)
             })
             .collect();
-        if read.len() > 1 {
+        // Every tuple struct but a syntactic newtype (serde reads that as its
+        // field): one read position next to skipped ones is still a
+        // one-element `deserialize_tuple_struct`.
+        if fields.unnamed.len() > 1 && !read.is_empty() {
             let offset = read.len().saturating_sub(path_params.len());
             return path_params
                 .iter()
@@ -212,13 +229,14 @@ fn typed_field_schema(
 
 /// The field serde fills from the path segment `name`: one read under that
 /// deserialize-side name or `#[serde(alias)]`, searched through the structs
-/// of `#[serde(flatten)]` fields too; never a skipped field.
+/// of `#[serde(flatten)]` fields too (then flagged `true`); never a skipped
+/// field.
 fn find_path_field(
     struct_item: &syn::ItemStruct,
     name: &str,
     struct_definitions: &HashMap<&str, &str>,
     depth: usize,
-) -> Option<syn::Field> {
+) -> Option<(syn::Field, bool)> {
     let rename_all = input_rename_all(&struct_item.attrs);
     for field in &struct_item.fields {
         let flags = extract_serde_skip_flags(&field.attrs);
@@ -229,9 +247,10 @@ fn find_path_field(
             let flattened = option_inner(&field.ty).unwrap_or(&field.ty);
             if depth < MAX_CONVERSION_DEPTH
                 && let Some(inner) = named_struct_fields(flattened, struct_definitions)
-                && let Some(found) = find_path_field(&inner, name, struct_definitions, depth + 1)
+                && let Some((found, _)) =
+                    find_path_field(&inner, name, struct_definitions, depth + 1)
             {
-                return Some(found);
+                return Some((found, true));
             }
             continue;
         }
@@ -240,10 +259,15 @@ fn find_path_field(
                 .iter()
                 .any(|alias| alias == name)
         {
-            return Some(field.clone());
+            return Some((field.clone(), false));
         }
     }
     None
+}
+
+/// An inline `{type: string, ..}` schema (a string field, `Uuid`, ...).
+fn is_string_schema(schema: &SchemaRef) -> bool {
+    matches!(schema, SchemaRef::Inline(schema) if schema.schema_type == Some(vespera_core::schema::SchemaType::String))
 }
 
 /// The per-segment type of a `Path<Map<K, V>>` (`V`), `Path<Seq<(K, V)>>`

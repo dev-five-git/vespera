@@ -46,6 +46,14 @@ const DEFINITIONS: &[(&str, &str)] = &[
         "pub struct TupleIds(#[doc = \" The org.\"] #[garde(range(max = 9))] u32, #[serde(skip)] String, uuid::Uuid);",
     ),
     ("OneId", "pub struct OneId(u32);"),
+    // Round 12: one read position next to a skipped one is still a tuple
+    // struct (serde: `deserialize_tuple_struct("SkipId", 1)`), not a newtype.
+    ("SkipId", "pub struct SkipId(u32, #[serde(skip)] String);"),
+    (
+        "Slugged",
+        "pub struct Slugged { pub org_id: u64, #[serde(flatten)] pub key: SlugKey }",
+    ),
+    ("SlugKey", "pub struct SlugKey { pub slug: uuid::Uuid }"),
     (
         "WrapPath",
         "#[serde(transparent)] pub struct WrapPath(TwoIds);",
@@ -116,7 +124,8 @@ fn render(func_src: &str, path_params: &[&str]) -> String {
 // L8: `Path<Vec<(String, V)>>` is one `(name, value)` pair per segment.
 #[case::path_pairs("path_pairs", "fn f(p: Path<Vec<(String, u32)>>) {}", &["a", "b"])]
 // L9: struct fields matched by alias and through `flatten`; skipped fields
-// are never read.
+// are never read. A non-string field reached through `flatten` is a string
+// (serde buffers it via `deserialize_any`, which axum answers with a string).
 #[case::path_alias_flatten("path_alias_flatten", "fn f(p: Path<Ids>) {}", &["org", "repo", "team"])]
 // L12: a raw-identifier binding names its segment without `r#`.
 #[case::raw_identifier_binding("raw_identifier_binding", "fn f(r#type: Path<u8>) {}", &["type"])]
@@ -153,6 +162,10 @@ fn render(func_src: &str, path_params: &[&str]) -> String {
     &["a", "b", "c"]
 )]
 #[case::path_newtype_struct("path_newtype_struct", "fn f(p: Path<OneId>) {}", &["id"])]
+#[case::path_tuple_struct_one_read("path_tuple_struct_one_read", "fn f(p: Path<SkipId>) {}", &["id"])]
+// Round 12: a field reached through `flatten` is buffered as a string; a
+// string field keeps its schema.
+#[case::path_flatten_string("path_flatten_string", "fn f(p: Path<Slugged>) {}", &["org_id", "slug"])]
 #[case::raw_identifier_bare("raw_identifier_bare", "fn f(r#type: i32) {}", &["type"])]
 fn parameter_shapes(#[case] name: &str, #[case] func_src: &str, #[case] path_params: &[&str]) {
     insta::assert_snapshot!(

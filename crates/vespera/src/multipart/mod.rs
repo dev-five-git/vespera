@@ -84,6 +84,25 @@ impl<'a> MeteredField<'a> {
         self.inner.content_type()
     }
 
+    /// The part's full header map (`Content-Disposition`, `Content-Type`,
+    /// `Content-ID`, `Content-Transfer-Encoding`, ...) — feed it to
+    /// [`FieldMetadata::with_headers`] when a custom parser needs it.
+    #[must_use]
+    pub fn headers(&self) -> &axum::http::HeaderMap {
+        self.inner.headers()
+    }
+
+    /// Read and discard the rest of the field, metering every chunk against
+    /// the aggregate `max_total_bytes` cap.  Public + `#[doc(hidden)]`: the
+    /// `#[derive(Multipart)]` loop drains an ignored (unknown / nameless)
+    /// part through it in non-strict mode — the multipart parser scans
+    /// those bytes either way, so they must not escape the byte cap.
+    #[doc(hidden)]
+    pub async fn __skip(mut self) -> Result<(), TypedMultipartError> {
+        while self.chunk().await?.is_some() {}
+        Ok(())
+    }
+
     /// Read the next chunk, metering its length against the request-wide
     /// `max_total_bytes` cap **before** yielding it. Returns
     /// [`TypedMultipartError::RequestTooLarge`] once the running total crosses
@@ -179,9 +198,10 @@ pub struct FieldMetadata {
     /// Full HTTP headers associated with this multipart part, when explicitly captured.
     ///
     /// Vespera's built-in parsers only need `name`, `file_name`, and `content_type`,
-    /// so the default `FieldData<T>` path no longer clones the whole `HeaderMap` for
-    /// every field. Use [`FieldMetadata::with_headers`] when constructing metadata
-    /// manually and the complete part header map is part of your API contract.
+    /// so the default `FieldData<T>` path does not clone the whole `HeaderMap` for
+    /// every field: there it is always `None`. A custom [`TryFromFieldWithState`]
+    /// parser that needs it reads [`MeteredField::headers`] and attaches a copy with
+    /// [`FieldMetadata::with_headers`].
     pub headers: Option<axum::http::HeaderMap>,
 }
 
@@ -217,8 +237,9 @@ impl From<&Field<'_>> for FieldMetadata {
 
 /// A multipart field's parsed contents along with its metadata.
 ///
-/// Use this wrapper when you need access to the file name, content type,
-/// or other headers alongside the parsed value.
+/// Use this wrapper when you need access to the file name or content type
+/// alongside the parsed value (`metadata.headers` stays `None` here — see
+/// [`FieldMetadata::headers`]).
 ///
 /// ```rust,ignore
 /// use vespera::multipart::FieldData;
@@ -231,7 +252,7 @@ impl From<&Field<'_>> for FieldMetadata {
 /// ```
 #[derive(Debug)]
 pub struct FieldData<T> {
-    /// Metadata about the field (name, filename, content-type, headers).
+    /// Metadata about the field (name, filename, content-type; no headers).
     pub metadata: FieldMetadata,
     /// The parsed contents of the field.
     pub contents: T,
@@ -386,7 +407,7 @@ tokio::task_local! {
 /// Invoked by the derived `TryFromMultipart` loop **once per wire part** —
 /// before the field name is resolved — so EVERY part (known, unknown, or
 /// nameless) is counted exactly once.  Counting inside the per-known-field
-/// parsers instead let unknown parts in non-strict mode (the `_ => {}`
+/// parsers instead let unknown parts in non-strict mode (the wildcard
 /// dispatch arm) slip past the cap entirely, so a request with thousands of
 /// unknown parts could burn unbounded parser/boundary-scan work without ever
 /// tripping `TooManyFields`.
@@ -415,6 +436,9 @@ pub fn register_multipart_part() -> Result<(), TypedMultipartError> {
 /// dimension of [`MultipartLimits`]. Vespera's built-in field parsers
 /// (`read_field_data` / the `NamedTempFile` path) already call this once per
 /// `field.chunk()`, so typed multipart structs are accounted automatically.
+///
+/// Parts the struct ignores (unknown or nameless parts in non-strict mode)
+/// are drained through [`MeteredField`] as well, so their bytes count too.
 ///
 /// Built-in field parsers — and any **custom [`TryFromFieldWithState`]**
 /// implementation — read a field's bytes through [`MeteredField::chunk`] /
@@ -457,6 +481,23 @@ pub struct TypedMultipartWithLimits<
     const MAX_TOTAL_BYTES: usize,
     const MAX_FIELDS: usize = DEFAULT_MULTIPART_MAX_FIELDS,
 >(pub T);
+
+impl<T, const MAX_TOTAL_BYTES: usize, const MAX_FIELDS: usize> std::ops::Deref
+    for TypedMultipartWithLimits<T, MAX_TOTAL_BYTES, MAX_FIELDS>
+{
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T, const MAX_TOTAL_BYTES: usize, const MAX_FIELDS: usize> std::ops::DerefMut
+    for TypedMultipartWithLimits<T, MAX_TOTAL_BYTES, MAX_FIELDS>
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 async fn parse_typed_multipart_with_limits<T, S>(
     req: Request,

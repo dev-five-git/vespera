@@ -663,8 +663,20 @@ class VesperaReactiveProxyHandlerTest {
             DispatchEvent event = awaitEvent();
             assertEquals(503, event.status());
             assertEquals(DispatchMode.STREAMING, event.mode());
-            // Buffered requests never touch the streaming pool.
-            assertEquals(200, call(client(handler).get().uri("/plain")).status());
+            // Buffered requests never touch the streaming pool: a concrete
+            // non-streaming Accept (a bodyless GET with no / wildcard Accept
+            // would be an implicit-streaming candidate and try the pool).
+            long attempts = streaming.reserveAttempts();
+            assertEquals(200, call(client(handler).get().uri("/plain")
+                    .header(HttpHeaders.ACCEPT, "application/json")).status());
+            assertEquals(attempts, streaming.reserveAttempts(), "never asked the streaming pool");
+            assertEquals(2, streaming.inUse());
+            assertEquals(DispatchMode.ASYNC, awaitEvent().mode(), "served buffered, not streamed");
+            // The probe is live: an implicit-streaming candidate does ask the
+            // (saturated) pool, then falls back to buffered.
+            assertEquals(200, call(client(handler).get().uri("/implicit")).status());
+            assertEquals(attempts + 1, streaming.reserveAttempts());
+            assertEquals(DispatchMode.ASYNC, awaitEvent().mode());
 
             gate.countDown();
             long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
