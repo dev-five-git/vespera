@@ -263,19 +263,19 @@ fn tagged_enum_payload(payload: &Schema, tag: &str, tag_schema: &SchemaRef) -> O
     let mut other_names = None;
     let mut has_other_map = false;
     for branch in branches.iter_mut() {
-        let SchemaRef::Inline(inline) = branch else {
-            continue;
-        };
-        if is_other_map(inline) {
-            has_other_map = true;
-            **inline = Schema {
-                max_properties: Some(2),
-                ..with_tag_property((**inline).clone(), tag, tag_schema, None)
-            };
-        } else if inline.schema_type == Some(SchemaType::Object) {
-            inline.max_properties = Some(2);
-        } else if let Some(SchemaRef::Inline(not)) = &inline.not {
-            other_names.clone_from(&not.r#enum);
+        // Every branch of an externally tagged enum is inline.
+        if let SchemaRef::Inline(inline) = branch {
+            if is_other_map(inline) {
+                has_other_map = true;
+                **inline = Schema {
+                    max_properties: Some(2),
+                    ..with_tag_property((**inline).clone(), tag, tag_schema, None)
+                };
+            } else if inline.schema_type == Some(SchemaType::Object) {
+                inline.max_properties = Some(2);
+            } else if let Some(SchemaRef::Inline(not)) = &inline.not {
+                other_names.clone_from(&not.r#enum);
+            }
         }
     }
     if !has_other_map && let Some(known) = other_names {
