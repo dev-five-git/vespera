@@ -693,6 +693,8 @@ fn typed_response_resolves_module_qualified_paths() {
     let typed = vec![
         (404, "b::Foo".to_string()),
         (409, "errors::Gone".to_string()),
+        // Not a path (never produced by `#[route]`): referenced as written.
+        (410, "[i32]".to_string()),
     ];
     let sig: syn::Signature = syn::parse_str("fn get() -> String").unwrap();
     let op = build_operation_from_function(
@@ -714,6 +716,7 @@ fn typed_response_resolves_module_qualified_paths() {
     };
     assert_eq!(schema_ref("404"), "#/components/schemas/B");
     assert_eq!(schema_ref("409"), "#/components/schemas/Gone");
+    assert_eq!(schema_ref("410"), "#/components/schemas/[i32]");
 }
 
 // ======== Tests for uncovered lines ========

@@ -533,6 +533,7 @@ mod tests {
     /// A cron function in an `impl` / `trait` block or a function body has
     /// no `crate::module::function` path; a free one (top level or in an
     /// inline module) is fine, and an unreadable file is not checked.
+    /// Statements and items that declare no function are passed over.
     #[rstest::rstest]
     #[case::top_level(2, true)]
     #[case::inline_module(3, true)]
@@ -546,7 +547,7 @@ mod tests {
         let file = dir.path().join("jobs.rs");
         std::fs::write(
             &file,
-            "\npub async fn tick() {}\nmod a { pub async fn tick() {} }\nimpl S {\n    pub async fn tick() {}\n}\ntrait T {\n    async fn tick() {}\n}\npub fn outer() {\n    pub async fn tick() {}\n}\nimpl S {\n    pub fn method() {\n        pub async fn tick() {}\n    }\n}\ntrait U {\n    fn provided() {\n        pub async fn tick() {}\n    }\n    fn required();\n}\n",
+            "\npub async fn tick() {}\nmod a { pub async fn tick() {} }\nimpl S {\n    pub async fn tick() {}\n}\ntrait T {\n    async fn tick() {}\n}\npub fn outer() {\n    let _x = 1; pub async fn tick() {}\n}\nimpl S {\n    pub fn method() {\n        pub async fn tick() {}\n    }\n}\ntrait U {\n    fn provided() {\n        pub async fn tick() {}\n    }\n    fn required();\n}\npub struct S;\n",
         )
         .unwrap();
         crate::schema_macro::file_cache::bump_epoch();
