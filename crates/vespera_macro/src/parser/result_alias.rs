@@ -149,6 +149,8 @@ pub fn expand_return_type_alias(
         })
     });
     let mut expanded = false;
+    // The return type before the first expansion.
+    let mut original: Option<String> = None;
     // Keyed by the resolved definition, not the ident: `type Result<T> =
     // crate::error::Result<Json<T>>;` names another module's `Result`.
     let mut seen: Vec<DefinitionKey> = Vec::new();
@@ -175,13 +177,18 @@ pub fn expand_return_type_alias(
         let Some(next) = apply_alias(&alias, ty) else {
             break;
         };
+        if !expanded {
+            original = Some(quote::quote!(#ty).to_string());
+        }
         **ty = next;
         seen.push(key);
         expanded = true;
         // The alias body names types where the alias is defined.
         scope = Some(alias_scope);
     }
-    expanded
+    // A self-recursive (`type Result<T> = Result<T>;`) or cyclic alias may
+    // leave the type as it was.
+    original.is_some_and(|original| quote::quote!(#ty).to_string() != original)
 }
 
 /// Identifies one alias definition: its tokens, its file (`None` for the

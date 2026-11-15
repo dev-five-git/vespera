@@ -1,0 +1,95 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_serde_fidelity.rs
+assertion_line: 323
+expression: both_views(src)
+---
+struct A { #[serde(alias = "nm")] name: Option<String>, #[serde(alias = "a", alias = "b", default)] x: u8 }
+response: {
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "x": {
+      "type": "integer",
+      "format": "uint8",
+      "minimum": 0,
+      "maximum": 255
+    }
+  },
+  "required": [
+    "x"
+  ]
+}
+request: {
+  "type": "object",
+  "properties": {
+    "a": {
+      "type": "integer",
+      "format": "uint8",
+      "minimum": 0,
+      "maximum": 255
+    },
+    "b": {
+      "type": "integer",
+      "format": "uint8",
+      "minimum": 0,
+      "maximum": 255
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "nm": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "x": {
+      "type": "integer",
+      "format": "uint8",
+      "minimum": 0,
+      "maximum": 255
+    }
+  },
+  "allOf": [
+    {
+      "not": {
+        "required": [
+          "name",
+          "nm"
+        ]
+      }
+    },
+    {
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "x",
+              "a"
+            ]
+          },
+          {
+            "required": [
+              "x",
+              "b"
+            ]
+          },
+          {
+            "required": [
+              "a",
+              "b"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

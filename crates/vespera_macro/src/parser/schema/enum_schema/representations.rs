@@ -221,6 +221,72 @@ pub(in crate::parser::schema) fn without_single_key_bounds(schema: &Schema) -> O
     })
 }
 
+/// Whether `schema` is the map form of an externally tagged
+/// `#[serde(other)]` variant (see [`other_map_schema`]).
+fn is_other_map(schema: &Schema) -> bool {
+    schema.properties.as_ref().is_none_or(BTreeMap::is_empty)
+        && schema.min_properties == Some(1)
+        && matches!(&schema.additional_properties, Some(AdditionalProperties::Schema(SchemaRef::Inline(value))) if value.schema_type == Some(SchemaType::Null))
+}
+
+/// `schema` without the map form of its `#[serde(other)]` variant, for a
+/// `flatten`ed enum: `FlatMapDeserializer::deserialize_enum` only picks an
+/// entry whose key names a declared variant, so an unknown key never reaches
+/// the catch-all. `None` when there is no such branch.
+pub(in crate::parser::schema) fn without_other_map(schema: &Schema) -> Option<Schema> {
+    let branches = schema.one_of.as_ref()?;
+    let kept: Vec<SchemaRef> = branches
+        .iter()
+        .filter(|branch| !matches!(branch, SchemaRef::Inline(inline) if is_other_map(inline)))
+        .cloned()
+        .collect();
+    (kept.len() != branches.len()).then(|| Schema {
+        one_of: Some(kept),
+        ..schema.clone()
+    })
+}
+
+/// An externally tagged enum `payload` read as an internally tagged newtype
+/// payload, next to the `tag` (`None` when `payload` is no such enum).
+/// serde reads it from the map left once the tag is taken out
+/// (`ContentDeserializer::deserialize_enum`), which must hold exactly ONE
+/// entry: every keyed branch allows the tag plus that key
+/// (`maxProperties: 2`), a unit variant is its key (`{tag, "A": null}`), and
+/// the `#[serde(other)]` map form lists the tag as a property — its
+/// `additionalProperties: {type: null}` would reject the tag's value
+/// otherwise — also for an all-unit enum, whose request view only has the
+/// string form of the catch-all.
+fn tagged_enum_payload(payload: &Schema, tag: &str, tag_schema: &SchemaRef) -> Option<Schema> {
+    let open = without_single_key_bounds(payload);
+    let mut schema = flattened_unit_variants(open.as_ref().unwrap_or(payload)).or(open)?;
+    let branches = schema.one_of.as_mut()?;
+    let mut other_names = None;
+    let mut has_other_map = false;
+    for branch in branches.iter_mut() {
+        let SchemaRef::Inline(inline) = branch else {
+            continue;
+        };
+        if is_other_map(inline) {
+            has_other_map = true;
+            **inline = Schema {
+                max_properties: Some(2),
+                ..with_tag_property((**inline).clone(), tag, tag_schema, None)
+            };
+        } else if inline.schema_type == Some(SchemaType::Object) {
+            inline.max_properties = Some(2);
+        } else if let Some(SchemaRef::Inline(not)) = &inline.not {
+            other_names.clone_from(&not.r#enum);
+        }
+    }
+    if !has_other_map && let Some(known) = other_names {
+        branches.push(SchemaRef::Inline(Box::new(Schema {
+            max_properties: Some(2),
+            ..with_tag_property(other_map_schema(&known), tag, tag_schema, None)
+        })));
+    }
+    Some(schema)
+}
+
 /// The object schema of an internally tagged newtype payload that constrains
 /// unlisted properties — closed (`#[serde(deny_unknown_fields)]`,
 /// `additionalProperties: false`) or a map (`additionalProperties: <value>`)
@@ -299,11 +365,12 @@ pub(super) fn parse_internally_tagged_enum(
             all_of: Some(vec![SchemaRef::Inline(Box::new(tag_object(None))), payload]),
             ..Schema::default()
         };
-        // A variant-level `with` hides the payload's shape.
+        // A variant-level `with` hides the payload's shape (serde_derive
+        // checks it before the style, so also on a unit variant).
         let variant_schema = match (variant_codec_schema(variant), &variant.fields) {
-            // Unit variant: {"tag": "VariantName"}
-            (_, syn::Fields::Unit) => tag_object(variant_description),
             (Some(codec), _) => tag_and(codec, variant_description),
+            // Unit variant: {"tag": "VariantName"}
+            (None, syn::Fields::Unit) => tag_object(variant_description),
             (None, syn::Fields::Named(fields_named)) => {
                 // Struct variant: {"tag": "VariantName", field1: type1, ...}
                 let mut fields = build_struct_variant_fields(
@@ -346,10 +413,9 @@ pub(super) fn parse_internally_tagged_enum(
                 // once the tag is taken out: its variant key sits next to the
                 // tag, and serde writes a unit variant as that key
                 // (`TaggedSerializer::serialize_unit_variant`: `{tag, "A": null}`).
-                let open_enum = payload.as_ref().and_then(|payload| {
-                    let open = without_single_key_bounds(payload);
-                    flattened_unit_variants(open.as_ref().unwrap_or(payload)).or(open)
-                });
+                let open_enum = payload
+                    .as_ref()
+                    .and_then(|payload| tagged_enum_payload(payload, &tag_string, &tag_schema));
                 if let Some(open) = open_enum {
                     tag_and(SchemaRef::Inline(Box::new(open)), variant_description)
                 } else {
@@ -441,11 +507,14 @@ pub(super) fn parse_adjacently_tagged_enum(
             properties.insert(content_string.clone(), data_schema);
             // serde reads a missing content key of a newtype variant
             // (without a variant `deserialize_with`) through
-            // `missing_field`, which an `Option` payload answers with `None`.
+            // `missing_field`, which an `Option` payload answers with `None`;
+            // a UNIT variant (here: one with a `deserialize_with`) is read
+            // without its codec when the content key is missing.
             let absent_is_none = in_request_view()
-                && !extract_field_codec(&variant.attrs).deserialize
-                && matches!(&variant.fields, syn::Fields::Unnamed(fields)
-                    if fields.unnamed.len() == 1 && is_option_type(&fields.unnamed[0].ty));
+                && (matches!(variant.fields, syn::Fields::Unit)
+                    || (!extract_field_codec(&variant.attrs).deserialize
+                        && matches!(&variant.fields, syn::Fields::Unnamed(fields)
+                            if fields.unnamed.len() == 1 && is_option_type(&fields.unnamed[0].ty))));
             if !absent_is_none {
                 required.push(content_string.clone());
             }
@@ -505,18 +574,18 @@ pub(super) fn parse_untagged_enum(
     for variant in emitted_variants(enum_item) {
         let variant_description = extract_doc_comment(&variant.attrs);
         let variant_schema = match (variant_codec_schema(variant), &variant.fields) {
-            (_, syn::Fields::Unit) => {
+            (Some(codec), _) => {
+                let mut schema = with_description(codec, None);
+                schema.description = variant_description.or(schema.description);
+                schema
+            }
+            (None, syn::Fields::Unit) => {
                 // Unit variant in untagged enum: null
                 Schema {
                     description: variant_description,
                     schema_type: Some(SchemaType::Null),
                     ..Default::default()
                 }
-            }
-            (Some(codec), _) => {
-                let mut schema = with_description(codec, None);
-                schema.description = variant_description.or(schema.description);
-                schema
             }
             (None, syn::Fields::Unnamed(fields_unnamed)) if fields_unnamed.unnamed.len() == 1 => {
                 // Single field tuple variant - just the inner type; a variant

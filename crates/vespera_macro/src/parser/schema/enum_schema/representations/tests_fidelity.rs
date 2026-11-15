@@ -19,6 +19,8 @@ fn both_views(src: &str) -> String {
         "Shape".to_string(),
         "Kind".to_string(),
         "Mode".to_string(),
+        "Open".to_string(),
+        "OpenUnit".to_string(),
     ]);
     let definitions = HashMap::from([
         ("Ping".to_string(), "struct Ping;".to_string()),
@@ -39,6 +41,14 @@ fn both_views(src: &str) -> String {
             "enum Kind { Point, #[serde(alias = \"pt\")] Dot, Square(u8) }".to_string(),
         ),
         ("Mode".to_string(), "enum Mode { On, Off }".to_string()),
+        (
+            "Open".to_string(),
+            "enum Open { Square(u8), #[serde(other)] Unknown }".to_string(),
+        ),
+        (
+            "OpenUnit".to_string(),
+            "enum OpenUnit { On, #[serde(other)] Unknown }".to_string(),
+        ),
     ]);
     let response = parse_enum_to_schema(&item, &known, &definitions);
     let request = with_request_view(|| parse_enum_to_schema(&item, &known, &definitions));
@@ -193,6 +203,35 @@ fn both_views(src: &str) -> String {
 #[case::tuple_variant_skip_serializing_if(
     "tuple_variant_skip_serializing_if",
     r#"enum E { V(u8, #[serde(skip_serializing_if = "Option::is_none")] Option<u8>) }"#
+)]
+// Round 15 L1: an externally tagged `#[serde(other)]` payload's map form
+// lists the tag (also for an all-unit enum), and the payload map holds
+// exactly one entry besides the tag.
+#[case::internal_external_other_payload(
+    "internal_external_other_payload",
+    r#"#[serde(tag = "t")] enum E { V(Open), U(OpenUnit) }"#
+)]
+// Round 15 L2: serde checks a variant-level codec before the style, so a
+// unit variant with one is a newtype variant on that side.
+#[case::unit_variant_codec_external(
+    "unit_variant_codec_external",
+    r#"enum E { #[serde(serialize_with = "f")] Now, Other(u8) }"#
+)]
+#[case::unit_variant_codec_all_unit(
+    "unit_variant_codec_all_unit",
+    r#"enum E { #[serde(with = "m")] Now, Later }"#
+)]
+#[case::unit_variant_codec_internal(
+    "unit_variant_codec_internal",
+    r#"#[serde(tag = "t")] enum E { #[serde(deserialize_with = "f")] Now, Later }"#
+)]
+#[case::unit_variant_codec_adjacent(
+    "unit_variant_codec_adjacent",
+    r#"#[serde(tag = "t", content = "c")] enum E { #[serde(with = "m")] Now, Later }"#
+)]
+#[case::unit_variant_codec_untagged(
+    "unit_variant_codec_untagged",
+    r#"#[serde(untagged)] enum E { #[serde(with = "m")] Now, Later(u8) }"#
 )]
 fn enum_views(#[case] name: &str, #[case] src: &str) {
     insta::assert_snapshot!(format!("enum_views_{name}"), both_views(src));
