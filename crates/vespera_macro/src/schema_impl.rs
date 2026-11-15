@@ -313,6 +313,25 @@ pub fn process_derive_schema(
             }
         }
     }
+    // Every other `#[schema(...)]` the schema parser reads (the container,
+    // tuple-struct positions, enum variant fields) is checked too: there a
+    // malformed recognized key would silently drop every constraint of that
+    // attribute.
+    let positional: Vec<&syn::Field> = match &input.data {
+        syn::Data::Struct(data) if !matches!(data.fields, syn::Fields::Named(_)) => {
+            data.fields.iter().collect()
+        }
+        syn::Data::Enum(data) => data.variants.iter().flat_map(|v| v.fields.iter()).collect(),
+        _ => Vec::new(),
+    };
+    if let Err(error) = std::iter::once(input.attrs.as_slice())
+        .chain(positional.iter().map(|field| field.attrs.as_slice()))
+        .try_for_each(|attrs| {
+            crate::parser::schema::schema_attrs::try_extract_schema_constraints(attrs).map(drop)
+        })
+    {
+        return (None, error.to_compile_error());
+    }
 
     // Check for custom schema settings from #[schema(...)] attributes in one pass.
     let schema_attr = match collect_schema_attribute_summary(&input.attrs) {

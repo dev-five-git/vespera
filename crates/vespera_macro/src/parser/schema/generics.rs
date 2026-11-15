@@ -117,6 +117,15 @@ pub fn substitute_type(ty: &Type, generic_params: &[String], concrete_types: &[&
                 .collect();
             Type::Tuple(new_type_tuple)
         }
+        // `(T)` and a macro-expanded `$ty` (an invisible group) wrap one type.
+        Type::Paren(paren) => Type::Paren(syn::TypeParen {
+            elem: Box::new(substitute_type(&paren.elem, generic_params, concrete_types)),
+            ..paren.clone()
+        }),
+        Type::Group(group) => Type::Group(syn::TypeGroup {
+            elem: Box::new(substitute_type(&group.elem, generic_params, concrete_types)),
+            ..group.clone()
+        }),
         _ => ty.clone(),
     }
 }
@@ -172,6 +181,9 @@ mod tests {
     #[case("(T, U)", &["T", "U"], &["String", "i32"], "(String , i32)")]
     // Complex nested tuple
     #[case("(Vec<T>, Option<U>)", &["T", "U"], &["String", "bool"], "(Vec < String > , Option < bool >)")]
+    // Parenthesized: (T) and Vec<(T)>
+    #[case("(T)", &["T"], &["String"], "(String)")]
+    #[case("Vec<(T)>", &["T"], &["String"], "Vec < (String) >")]
     // Reference to Vec<T>
     #[case("&Vec<T>", &["T"], &["String"], "& Vec < String >")]
     // Multi-segment path (no substitution for crate::Type)
@@ -197,6 +209,22 @@ mod tests {
         let result_str = quote::quote!(#result).to_string();
 
         assert_eq!(result_str, expected, "Input: {input}");
+    }
+
+    /// A macro-expanded `$ty` reaches the walker as an invisible group.
+    #[test]
+    fn substitutes_inside_invisible_group() {
+        let ty = Type::Group(syn::TypeGroup {
+            attrs: Vec::new(),
+            group_token: syn::token::Group::default(),
+            elem: Box::new(syn::parse_str("Vec<T>").unwrap()),
+        });
+        let concrete: Type = syn::parse_str("String").unwrap();
+        let Type::Group(result) = substitute_type(&ty, &[String::from("T")], &[&concrete]) else {
+            panic!("group preserved");
+        };
+        let elem = &result.elem;
+        assert_eq!(quote::quote!(#elem).to_string(), "Vec < String >");
     }
 
     #[test]

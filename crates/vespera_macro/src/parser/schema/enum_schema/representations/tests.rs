@@ -682,31 +682,36 @@ fn internally_tagged_only_tuple_variants_have_no_one_of() {
     assert_eq!(schema.discriminator.unwrap().property_name, "type");
 }
 
-#[test]
-fn adjacently_tagged_empty_enum_has_no_one_of() {
-    let enum_item: syn::ItemEnum =
-        syn::parse_str(r#"#[serde(tag = "type", content = "data")] enum Empty {}"#).unwrap();
-    let schema = parse_enum_to_schema(
-        &enum_item,
-        &HashSet::<String>::new(),
-        &HashMap::<String, String>::new(),
+/// An enum with no variant on the current side accepts nothing: `{not: {}}`
+/// (no `discriminator` without `oneOf`, no permissive `{type: string}`).
+#[rstest::rstest]
+#[case::external("enum Never {}", false)]
+#[case::internal(r#"#[serde(tag = "type")] enum Never {}"#, false)]
+#[case::adjacent(r#"#[serde(tag = "type", content = "data")] enum Never {}"#, false)]
+#[case::untagged("#[serde(untagged)] enum Never {}", false)]
+#[case::all_skipped("enum E { #[serde(skip)] A, #[serde(skip_serializing)] B(u8) }", false)]
+#[case::request_all_skipped(
+    r#"#[serde(tag = "t")] enum E { #[serde(skip_deserializing)] A { x: u8 } }"#,
+    true
+)]
+fn enum_without_emitted_variants_accepts_nothing(#[case] src: &str, #[case] request: bool) {
+    let enum_item: syn::ItemEnum = syn::parse_str(src).unwrap();
+    let parse = || {
+        parse_enum_to_schema(
+            &enum_item,
+            &HashSet::<String>::new(),
+            &HashMap::<String, String>::new(),
+        )
+    };
+    let schema = if request {
+        crate::parser::schema::request_view::with_request_view(parse)
+    } else {
+        parse()
+    };
+    assert_eq!(
+        serde_json::to_value(&schema).unwrap(),
+        serde_json::json!({"not": {}})
     );
-    assert!(schema.one_of.is_none());
-    assert_eq!(schema.discriminator.unwrap().property_name, "type");
-}
-
-#[test]
-fn untagged_empty_enum_has_no_union_or_discriminator() {
-    let enum_item: syn::ItemEnum = syn::parse_str("#[serde(untagged)] enum Empty {}").unwrap();
-    let schema = parse_enum_to_schema(
-        &enum_item,
-        &HashSet::<String>::new(),
-        &HashMap::<String, String>::new(),
-    );
-    // Untagged enums emit `anyOf`; an empty one emits no union at all.
-    assert!(schema.any_of.is_none());
-    assert!(schema.one_of.is_none());
-    assert!(schema.discriminator.is_none());
 }
 
 // Edge case: Untagged enum with multi-field tuple variant

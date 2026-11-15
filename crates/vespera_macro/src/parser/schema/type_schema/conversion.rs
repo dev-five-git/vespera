@@ -44,8 +44,8 @@ use schema_def::{SchemaDef, parse_schema_def};
 ///
 /// 1. [`parse_type_impl`] below — to decide whether the type maps to a
 ///    specific schema arm (covered by the `matches!` arms at the bottom of
-///    the match) or falls through to the unknown-fallback (`SchemaRef::Inline
-///    (Object)`).
+///    the match) or falls through to the unknown-fallback (the any-value
+///    schema `{}`).
 /// 2. `#[derive(Schema)]` codegen in `schema_impl::process_derive_schema` —
 ///    to decide whether a field's leaf type needs a compile-time
 ///    `T: ::vespera::Schema` assertion (only NON-builtin leaves do).
@@ -629,8 +629,12 @@ fn parse_type_impl(
                         }
                         let concrete_types: Vec<&Type> = concrete_owned.iter().collect();
 
-                        // Substitute generic parameters with concrete types in all fields
-                        if generic_params.len() == concrete_types.len() {
+                        // Substitute generic parameters with concrete types in
+                        // all fields. A lifetime-only definition (`Borrowed<'a>`)
+                        // has no type to substitute: it is its own component.
+                        if !generic_params.is_empty()
+                            && generic_params.len() == concrete_types.len()
+                        {
                             // (named AND tuple fields — tuple structs now map
                             // to their inner / prefixItems schema; every
                             // variant's fields for an enum) and in the types

@@ -12,9 +12,17 @@ use crate::parser::schema::{enum_schema::parse_enum_to_schema, request_view::wit
 /// `response:` / `request:` JSON of `src`.
 fn both_views(src: &str) -> String {
     let item: syn::ItemEnum = syn::parse_str(src).unwrap();
-    let known = HashSet::from(["Ping".to_string(), "Payload".to_string()]);
+    let known = HashSet::from([
+        "Ping".to_string(),
+        "Payload".to_string(),
+        "Closed".to_string(),
+    ]);
     let definitions = HashMap::from([
         ("Ping".to_string(), "struct Ping;".to_string()),
+        (
+            "Closed".to_string(),
+            "#[serde(deny_unknown_fields)] struct Closed { id: u32 }".to_string(),
+        ),
         (
             "Payload".to_string(),
             "struct Payload { id: u32 }".to_string(),
@@ -109,6 +117,28 @@ fn both_views(src: &str) -> String {
 #[case::rename_is_not_tag(
     "rename_is_not_tag",
     r#"#[serde(rename = "Stage", rename_all = "camelCase")] enum Stage { InProgress(u8), Done }"#
+)]
+// Round 9: an adjacently tagged `Option` newtype reads a missing content key
+// as `None` (unless a variant `deserialize_with` reads it).
+#[case::adjacent_option_content(
+    "adjacent_option_content",
+    r#"#[serde(tag = "t", content = "c")] enum E { A(Option<u8>), #[serde(deserialize_with = "d")] B(Option<u8>), C(u8) }"#
+)]
+// Round 9: an internally tagged `()` payload reads only the tag.
+#[case::internal_unit_payload(
+    "internal_unit_payload",
+    r#"#[serde(tag = "type")] enum M { Unit(()) }"#
+)]
+// Round 9: an internally tagged `Option<Closed>` is `Closed` with the tag.
+#[case::internal_option_closed(
+    "internal_option_closed",
+    r#"#[serde(tag = "type")] enum E { A(Option<Closed>), B(Option<Payload>) }"#
+)]
+// Round 9: positional fields keep their `#[schema]` / `#[garde]` rules and
+// a tuple position its doc comment.
+#[case::positional_field_rules(
+    "positional_field_rules",
+    r#"enum E { Score(#[schema(maximum = 10)] u8), Pair(#[garde(length(chars, min = 1))] String, #[doc = " Position."] #[deprecated] u8) }"#
 )]
 fn enum_views(#[case] name: &str, #[case] src: &str) {
     insta::assert_snapshot!(format!("enum_views_{name}"), both_views(src));

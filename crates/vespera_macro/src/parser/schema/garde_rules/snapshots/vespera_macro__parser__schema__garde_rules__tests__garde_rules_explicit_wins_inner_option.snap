@@ -1,0 +1,22 @@
+---
+source: crates/vespera_macro/src/parser/schema/garde_rules/tests.rs
+assertion_line: 145
+expression: field_json(field_src)
+---
+{
+  "anyOf": [
+    {
+      "type": "string",
+      "format": "hostname",
+      "pattern": "^[a-z]+$",
+      "allOf": [
+        {
+          "pattern": "^ab"
+        }
+      ]
+    },
+    {
+      "type": "null"
+    }
+  ]
+}
