@@ -140,21 +140,24 @@ fn oversized_streaming_with_header_request_returns_413() {
     let wire = wire_with_body(200);
     assert!(wire.len() > CAP);
 
-    let header_seen: RefCell<Option<Vec<u8>>> = RefCell::new(None);
+    let header_seen: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
     let chunks = Cell::new(0usize);
     let _ = block_on(dispatch_streaming_with_header_async(
         wire,
-        |header: &[u8]| *header_seen.borrow_mut() = Some(header.to_vec()),
+        |header: &[u8]| header_seen.borrow_mut().push(header.to_vec()),
         |_chunk: &[u8]| {
             chunks.set(chunks.get() + 1);
             ControlFlow::Continue(())
         },
     ));
 
-    let header_bytes = header_seen
-        .into_inner()
-        .expect("the header callback must fire exactly once, even on the 413 cap path");
-    let header = parse_header_json(&header_bytes);
+    let header_frames = header_seen.into_inner();
+    assert_eq!(
+        header_frames.len(),
+        1,
+        "the header callback must fire exactly once, even on the 413 cap path"
+    );
+    let header = parse_header_json(&header_frames[0]);
     assert_eq!(
         header["status"].as_u64(),
         Some(413),

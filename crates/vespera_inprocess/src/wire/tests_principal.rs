@@ -123,6 +123,12 @@ fn entry_cap_is_enforced(
         parse_wire_header(&at_cap).is_ok(),
         "exactly the cap is accepted"
     );
+    // The serde twin carries the same cap (the differential fuzz target
+    // compares the two on well-formed JSON, over-cap documents included).
+    assert!(
+        parse_wire_header_serde(&at_cap).is_ok(),
+        "serde: cap accepted"
+    );
 
     let over = header(&format!(
         r#"{{"name":"a","{field}":{open}{}{close}}}"#,
@@ -133,6 +139,8 @@ fn entry_cap_is_enforced(
         error.ends_with(&format!("too many principal {field} (more than 1024)")),
         "{error}"
     );
+    let error = parse_wire_header_serde(&over).expect_err("serde: over the cap");
+    assert!(error.contains("too many principal entries"), "{error}");
 }
 
 #[test]

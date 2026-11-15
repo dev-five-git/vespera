@@ -28,6 +28,12 @@
 //! Such inputs are not well-formed JSON (`serde_json::Value` rejects them),
 //! which is what the tolerance keys on.
 //!
+//! Not divergences: the serde twin is map-only at the top level (a JSON
+//! array never fills the header by position) and carries the hand parser's
+//! entry caps (`MAX_REQUEST_HEADERS` headers, `MAX_PRINCIPAL_ENTRIES`
+//! principal authorities / attributes), so both reject such well-formed
+//! documents alike.
+//!
 //! Run (Linux/macOS, nightly + `cargo install cargo-fuzz`):
 //! ```text
 //! cargo +nightly fuzz run wire_header_parse

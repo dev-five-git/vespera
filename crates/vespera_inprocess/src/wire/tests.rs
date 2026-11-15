@@ -268,9 +268,10 @@ fn hand_parse_matches_serde_parse() {
                 "value drift on {}",
                 String::from_utf8_lossy(case)
             ),
-            (Err(_), Err(_)) => {}
+            // Every case is a VALID header: a shared regression rejecting
+            // it in both parsers must fail too, not pass as agreement.
             (hand, serde) => panic!(
-                "accept/reject divergence on {}: hand_ok={} serde_ok={}",
+                "valid header not accepted by both parsers on {}: hand_ok={} serde_ok={}",
                 String::from_utf8_lossy(case),
                 hand.is_ok(),
                 serde.is_ok()
@@ -312,6 +313,10 @@ fn hand_parse_rejects_what_serde_rejects() {
         br#"{"v":1,"method":"GET","path":"/p","x":[1,2}"#, // array closed by '}'
         br#"{"v":1,"method":"GET","path":"/p","x":{"a":1,}}"#, // trailing comma in object
         br#"{"v":01,"method":"GET","path":"/p"}"#,         // leading zero in `v`
+        // Top level must be an OBJECT: serde_json's derive would also fill
+        // the struct from a JSON array by position (the twin is map-only).
+        br#"[1,"GET","/p"]"#,
+        b" \t\r\n[1,\"GET\",\"/p\"]", // ... also after leading whitespace
     ];
     for case in bad {
         assert!(
@@ -324,6 +329,25 @@ fn hand_parse_rejects_what_serde_rejects() {
             "serde parser must reject {}",
             String::from_utf8_lossy(case)
         );
+    }
+}
+
+/// Both twins enforce [`super::MAX_REQUEST_HEADERS`] (the differential fuzz
+/// target compares them on well-formed over-cap documents too).
+#[test]
+fn request_header_cap_is_shared_by_both_parsers() {
+    type Parse = for<'a> fn(&'a [u8]) -> Result<WireRequestHeader<'a>, String>;
+    let header = |n: usize| {
+        let pairs: Vec<_> = (0..n).map(|i| format!(r#""x-{i}":"v""#)).collect();
+        format!(
+            r#"{{"method":"GET","path":"/p","headers":{{{}}}}}"#,
+            pairs.join(",")
+        )
+    };
+    for parse in [parse_wire_header as Parse, parse_wire_header_serde] {
+        assert!(parse(header(super::MAX_REQUEST_HEADERS).as_bytes()).is_ok());
+        let error = parse(header(super::MAX_REQUEST_HEADERS + 1).as_bytes()).unwrap_err();
+        assert!(error.contains(super::TOO_MANY_HEADERS_MSG), "{error}");
     }
 }
 

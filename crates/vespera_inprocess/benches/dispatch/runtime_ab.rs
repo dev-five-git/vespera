@@ -54,7 +54,7 @@ pub fn bench_sync_runtime_ab(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("current_thread_tls", body_kb),
+            BenchmarkId::new("current_thread_tls_nolimit", body_kb),
             &body_kb,
             |b, _| {
                 b.iter(|| {
@@ -65,7 +65,7 @@ pub fn bench_sync_runtime_ab(c: &mut Criterion) {
             },
         );
         group.bench_with_input(
-            BenchmarkId::new("shared_multi_thread", body_kb),
+            BenchmarkId::new("shared_multi_thread_nolimit", body_kb),
             &body_kb,
             |b, _| {
                 b.iter(|| {

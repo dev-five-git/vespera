@@ -604,8 +604,13 @@ fn bench_registry(c: &mut Criterion) {
     let mut registered = 0usize;
     for k in ladder(&[100, 500, 2_000], &[10_000]) {
         let started = Instant::now();
+        // Each app answers `/nothing` with `200`, so the probe below can tell
+        // a name hit from a miss (an empty `Router` and an unregistered name
+        // would both answer `404`, and `register_app_named` fails silently).
         for i in registered..k {
-            register_app_named(&format!("app-{i}"), Router::new);
+            register_app_named(&format!("app-{i}"), || {
+                Router::new().route("/nothing", get(ok))
+            });
         }
         eprintln!(
             "[extreme] registry: {} -> {k} apps registered in {:?}",
@@ -623,10 +628,11 @@ fn bench_registry(c: &mut Criterion) {
         );
         expect_status(
             &dispatch_from_bytes(wire.clone(), &runtime),
-            404,
+            200,
             "registry",
         );
-        group.bench_with_input(BenchmarkId::new("dispatch_by_name", k), &k, |b, _| {
+        // Id carries `_hit`: the old one timed a `404` fallback, not a handler.
+        group.bench_with_input(BenchmarkId::new("dispatch_by_name_hit", k), &k, |b, _| {
             b.iter(|| dispatch_from_bytes(wire.clone(), &runtime));
         });
     }

@@ -35,16 +35,24 @@ fn close_hook_panic_is_contained() {
     let join_handle = runtime.spawn(async {});
     let producer_handle: RequestProducerHandle = Arc::new(Mutex::new(Some(join_handle)));
 
+    let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hook_runs = Arc::clone(&runs);
     let mut closer = RequestSourceCloser::new(
         Arc::clone(&producer_handle),
         InlineState::new(false),
-        || panic!("hook boom"),
+        move || {
+            hook_runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            panic!("hook boom");
+        },
     );
     // Returns normally — the panic is caught inside `close_if_started`.
     closer.close_if_started();
+    // The hook really ran (and panicked): a skipped hook must not pass.
+    assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
     // Idempotent: the hook was consumed on the first call, so this is a
     // no-op and does not panic a second time.
     closer.close_if_started();
+    assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 struct ErrorBody;

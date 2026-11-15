@@ -26,8 +26,9 @@ use crate::envelope::ResponseMetadata;
 
 use super::header_write::{JsonSink, SliceSink};
 use super::{
-    CowPairs, STACK_CAP, ValidationErrorItem, WIRE_VERSION, WirePrincipal, WireRequestHeader,
-    parse_wire_header, write_wire_header_into_slice,
+    CowPairs, MAX_PRINCIPAL_ENTRIES, MAX_REQUEST_HEADERS, STACK_CAP, TOO_MANY_HEADERS_MSG,
+    ValidationErrorItem, WIRE_VERSION, WirePrincipal, WireRequestHeader, parse_wire_header,
+    write_wire_header_into_slice,
 };
 
 // ── Borrowed Cow helper for the bench-only serde parse ───────────────
@@ -69,11 +70,26 @@ impl<'de> serde::Deserialize<'de> for BorrowableCow<'de> {
 /// Deserialize a JSON object into a flat `Vec` of `(name, value)`
 /// pairs whose strings borrow from the input where possible — one
 /// `Vec` allocation instead of `HashMap` buckets + per-key hashing.
-/// Bench-only (feeds the serde A/B twin).
+/// Rejects more than [`MAX_REQUEST_HEADERS`] pairs like the hand parser's
+/// `read_headers`.  Bench-only (feeds the serde A/B twin).
 pub(super) fn de_cow_pairs<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<CowPairs<'de>, D::Error> {
-    struct V;
+    de_cow_pairs_capped(deserializer, MAX_REQUEST_HEADERS, TOO_MANY_HEADERS_MSG)
+}
+
+/// [`de_cow_pairs`] with an explicit entry cap and over-cap message, so
+/// the twin rejects exactly the documents the hand parser rejects for size
+/// (request headers and principal attributes carry separate caps).
+fn de_cow_pairs_capped<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+    cap: usize,
+    too_many: &'static str,
+) -> Result<CowPairs<'de>, D::Error> {
+    struct V {
+        cap: usize,
+        too_many: &'static str,
+    }
     impl<'de> serde::de::Visitor<'de> for V {
         type Value = CowPairs<'de>;
 
@@ -89,12 +105,15 @@ pub(super) fn de_cow_pairs<'de, D: serde::Deserializer<'de>>(
             while let Some((k, v)) =
                 access.next_entry::<BorrowableCow<'de>, BorrowableCow<'de>>()?
             {
+                if out.len() == self.cap {
+                    return Err(serde::de::Error::custom(self.too_many));
+                }
                 out.push((k.0, v.0));
             }
             Ok(out)
         }
     }
-    deserializer.deserialize_map(V)
+    deserializer.deserialize_map(V { cap, too_many })
 }
 
 /// Deserialize an `Option<Cow>` that borrows from the input where
@@ -170,8 +189,7 @@ impl<'de> serde::Deserialize<'de> for PrincipalObject<'de> {
                             return Err(A::Error::duplicate_field("authorities"));
                         }
                         "authorities" => {
-                            let list = access.next_value::<Vec<BorrowableCow<'de>>>()?;
-                            authorities = Some(list.into_iter().map(|c| c.0).collect());
+                            authorities = Some(access.next_value::<CowList<'de>>()?.0);
                         }
                         "attributes" if attributes.is_some() => {
                             return Err(A::Error::duplicate_field("attributes"));
@@ -193,12 +211,50 @@ impl<'de> serde::Deserialize<'de> for PrincipalObject<'de> {
     }
 }
 
-/// [`de_cow_pairs`] as a `Deserialize` type (for `next_value`).
+/// Principal `attributes`: [`de_cow_pairs`] capped at
+/// [`MAX_PRINCIPAL_ENTRIES`], as a `Deserialize` type (for `next_value`).
 struct CowMap<'a>(CowPairs<'a>);
 
 impl<'de> serde::Deserialize<'de> for CowMap<'de> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        de_cow_pairs(deserializer).map(CowMap)
+        de_cow_pairs_capped(deserializer, MAX_PRINCIPAL_ENTRIES, PRINCIPAL_CAP_MSG).map(CowMap)
+    }
+}
+
+/// Over-cap message of the twin's principal containers (the hand parser
+/// names the field; only accept/reject is compared, never the message).
+const PRINCIPAL_CAP_MSG: &str = "too many principal entries";
+
+/// Principal `authorities`: a string array capped at
+/// [`MAX_PRINCIPAL_ENTRIES`] while it is read (the hand parser's
+/// `read_bounded`), never collected past the cap.
+struct CowList<'a>(Vec<Cow<'a, str>>);
+
+impl<'de> serde::Deserialize<'de> for CowList<'de> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = CowList<'de>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an array of strings")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut access: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut out = Vec::new();
+                while let Some(item) = access.next_element::<BorrowableCow<'de>>()? {
+                    if out.len() == MAX_PRINCIPAL_ENTRIES {
+                        return Err(serde::de::Error::custom(PRINCIPAL_CAP_MSG));
+                    }
+                    out.push(item.0);
+                }
+                Ok(CowList(out))
+            }
+        }
+        deserializer.deserialize_seq(V)
     }
 }
 
@@ -332,7 +388,20 @@ pub(super) fn write_wire_header_into_slice_serde(
 /// `benches/dispatch.rs` (via [`crate::bench_support`]) so hand-rolled vs
 /// `serde_json` are measured in the same run.  Not part of the public
 /// API and not used on any production path.
+///
+/// Map-only at the top level: the derive's `deserialize_struct` would also
+/// fill the header from a JSON *array* by position (`[1,"GET","/p"]`),
+/// which the hand parser rejects, so a first non-whitespace byte other
+/// than `{` is rejected up front (the `principal` twin is map-only too).
+/// With the entry caps above, the twins accept exactly the same
+/// well-formed documents.
 pub(super) fn parse_wire_header_serde(header_json: &[u8]) -> Result<WireRequestHeader<'_>, String> {
+    let first = header_json
+        .iter()
+        .find(|byte| !matches!(byte, b' ' | b'\t' | b'\n' | b'\r'));
+    if first != Some(&b'{') {
+        return Err("wire header JSON parse error: expected a JSON object".to_owned());
+    }
     serde_json::from_slice(header_json).map_err(|e| format!("wire header JSON parse error: {e}"))
 }
 

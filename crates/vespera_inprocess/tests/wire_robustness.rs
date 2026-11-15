@@ -14,11 +14,26 @@
 //! coverage-guided `cargo fuzz` target under `fuzz/` (which needs
 //! nightly + libFuzzer and runs in CI/Linux).  Any panic prints the
 //! offending input prefix for replay.
+//!
+//! A default app with a catch-all fallback is registered, so every input
+//! that survives parsing goes on to request building (method, URI, header
+//! names / values, Latin-1 mapping, content-type defaulting) and the router
+//! call instead of stopping at a `404` "no app registered".
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Once;
 
+use axum::Router;
+use bytes::Bytes;
 use tokio::runtime::{Builder, Runtime};
-use vespera_inprocess::dispatch_from_bytes;
+use vespera_inprocess::{dispatch_from_bytes, register_app};
+
+/// Default app: every method and path reaches a handler that echoes the
+/// body, so the request-building path runs for every parseable input.
+fn register_catch_all_app() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| register_app(|| Router::new().fallback(|body: Bytes| async move { body })));
+}
 
 /// Tiny deterministic xorshift PRNG — no dependency, exact replay.
 struct XorShift(u64);
@@ -83,10 +98,33 @@ fn assert_robust(rt: &Runtime, wire: &[u8]) {
 }
 
 fn runtime() -> Runtime {
+    register_catch_all_app();
     Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("build current-thread runtime")
+}
+
+/// The mutation base request, framed as a wire request.
+fn base_wire() -> Vec<u8> {
+    let header = br#"{"v":1,"method":"POST","path":"/x","query":"a=1","headers":{"content-type":"application/json"},"app":"_default"}"#;
+    let mut wire = u32::try_from(header.len()).unwrap().to_be_bytes().to_vec();
+    wire.extend_from_slice(header);
+    wire.extend_from_slice(b"{\"k\":\"v\"}");
+    wire
+}
+
+/// The harness really reaches the router: the unmutated base request is
+/// answered `200` with its body echoed (a `404` here would mean every
+/// mutation below stops at app resolution).
+#[test]
+fn base_request_reaches_the_router() {
+    let rt = runtime();
+    let resp = dispatch_from_bytes(base_wire(), &rt);
+    let header_len = u32::from_be_bytes(resp[..4].try_into().unwrap()) as usize;
+    let header: serde_json::Value = serde_json::from_slice(&resp[4..4 + header_len]).unwrap();
+    assert_eq!(header["status"], 200, "{header}");
+    assert_eq!(&resp[4 + header_len..], b"{\"k\":\"v\"}");
 }
 
 #[test]
@@ -131,13 +169,7 @@ fn structured_mutation_never_panic() {
     // truncations — keeps inputs near the parseable manifold so the
     // deeper header-JSON / body-split paths are exercised, not just the
     // early length-prefix rejects.
-    let base = {
-        let header = br#"{"v":1,"method":"POST","path":"/x","query":"a=1","headers":{"content-type":"application/json"},"app":"_default"}"#;
-        let mut wire = u32::try_from(header.len()).unwrap().to_be_bytes().to_vec();
-        wire.extend_from_slice(header);
-        wire.extend_from_slice(b"{\"k\":\"v\"}");
-        wire
-    };
+    let base = base_wire();
 
     let mut rng = XorShift(0xDEAD_BEEF_CAFE_BABE);
     for _ in 0..3000 {
