@@ -14,6 +14,7 @@ import java.util.concurrent.TimeUnit;
 import java.io.IOException;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
@@ -34,6 +35,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
  * pins the new default; a user-supplied bean always wins over all of
  * the above via {@code @ConditionalOnMissingBean}.
  */
+@ExtendWith(NativeConfigReset.class)
 class VesperaBridgeAutoConfigurationTest {
 
     // withConfiguration (not withUserConfiguration): autoconfigurations

@@ -313,7 +313,7 @@ public class VesperaReactiveProxyHandler implements WebHandler {
             throw payloadTooLarge(declared, cap);
         }
         if (declared > MAX_BUFFERED_BODY) {
-            throw payloadTooLarge(declared, MAX_BUFFERED_BODY);
+            throw declaredAboveSingleArrayBound(declared, cap);
         }
         String rawQuery = request.getURI().getRawQuery();
         final String query = rawQuery == null ? "" : rawQuery;
@@ -408,14 +408,29 @@ public class VesperaReactiveProxyHandler implements WebHandler {
 
     /**
      * The {@code 413} reason: the configured cap, or — with
-     * {@code max-buffered-request-bytes=0} (unlimited) — the built-in bound
-     * that applied instead (servlet parity), never a value the user did not set.
+     * {@code max-buffered-request-bytes=0} (unlimited) or a cap above the
+     * single-array bound — the built-in bound that applied instead (servlet
+     * parity), never a value the user did not set.
      */
     static String bodyTooLargeMessage(long cap, long limit) {
-        return cap > 0
-                ? "buffered request body exceeds vespera.bridge.max-buffered-request-bytes=" + limit
+        return cap > 0 && cap <= limit
+                ? "buffered request body exceeds vespera.bridge.max-buffered-request-bytes=" + cap
                 : "buffered request body exceeds the built-in " + limit
-                        + "-byte bound (vespera.bridge.max-buffered-request-bytes=0)";
+                        + "-byte bound (vespera.bridge.max-buffered-request-bytes=" + cap + ")";
+    }
+
+    /**
+     * The {@code 413} for a declared length above the built-in single-array
+     * bound: names that bound and the cap as configured ({@code 0} or above
+     * the bound), never the bound as if it were the property's value
+     * (servlet parity, {@code VesperaProxyController.declaredAboveSingleArrayBound}).
+     */
+    static ResponseStatusException declaredAboveSingleArrayBound(long actualBytes, long cap) {
+        return new ResponseStatusException(
+                HttpStatusCode.valueOf(413),
+                "buffered request body reaches the built-in " + MAX_BUFFERED_BODY
+                        + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes="
+                        + cap + "; actual " + actualBytes + " bytes)");
     }
 
     private static ResponseStatusException payloadTooLarge(long actualBytes, long capBytes) {

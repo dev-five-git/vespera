@@ -10,6 +10,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
@@ -24,6 +25,7 @@ import org.springframework.web.bind.annotation.RestController;
  * Boot 4, 2.x in the {@code testBoot3} run) with a fake
  * {@link VesperaOpenApiSource} standing in for the native spec route.
  */
+@ExtendWith(NativeConfigReset.class)
 class VesperaSpringdocAutoConfigurationTest {
 
     static final String DEFAULT_SPEC = "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Rust\",\"version\":\"1\"},"

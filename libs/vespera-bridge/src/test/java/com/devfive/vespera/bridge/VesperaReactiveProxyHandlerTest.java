@@ -132,6 +132,24 @@ class VesperaReactiveProxyHandlerTest {
         return events.get(events.size() - 1);
     }
 
+    /**
+     * The event of the request to {@code path}: events are recorded after the
+     * response hand-off, so one may arrive after {@code call(...)} returned,
+     * and the newest event overall can still be an earlier request's.
+     */
+    private DispatchEvent awaitEvent(String path) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (System.nanoTime() < deadline) {
+            for (DispatchEvent event : events) {
+                if (path.equals(event.path())) {
+                    return event;
+                }
+            }
+            Thread.sleep(5);
+        }
+        throw new AssertionError("no DispatchEvent for " + path + " in " + events);
+    }
+
     @Test
     void forwardsTheRequestAndWritesTheBufferedResponse() throws Exception {
         transport.response = responseWire(201,
@@ -232,6 +250,28 @@ class VesperaReactiveProxyHandlerTest {
         assertFalse(unlimited.contains("max-buffered-request-bytes=67108864"), unlimited);
         assertEquals("buffered request body exceeds vespera.bridge.max-buffered-request-bytes=1024",
                 VesperaReactiveProxyHandler.bodyTooLargeMessage(1024, 1024));
+        // A cap above the single-array bound was clamped: the bound applied,
+        // the reason names it and the cap as configured.
+        long bound = Integer.MAX_VALUE - 8L;
+        String clamped = VesperaReactiveProxyHandler.bodyTooLargeMessage(4294967296L, bound);
+        assertEquals("buffered request body exceeds the built-in " + bound
+                + "-byte bound (vespera.bridge.max-buffered-request-bytes=4294967296)", clamped);
+    }
+
+    @Test
+    void declaredLengthAboveTheSingleArrayBoundNamesTheBoundNotAnUnsetProperty() {
+        long bound = Integer.MAX_VALUE - 8L;
+        for (long cap : new long[] {0, 4294967296L}) {
+            Result result = call(client(handler(new ReactiveHeaderAppNameResolver("X-Vespera-App", List.of()),
+                    null, cap, 1024, CorsHandling.RUST)).post().uri("/upload")
+                    .header(HttpHeaders.CONTENT_LENGTH, "3221225472"));
+            assertEquals(413, result.status());
+            assertEquals("buffered request body reaches the built-in " + bound
+                    + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes=" + cap
+                    + "; actual 3221225472 bytes)", result.body());
+            assertFalse(result.body().contains("max-buffered-request-bytes=" + bound), result.body());
+        }
+        assertTrue(transport.requests.isEmpty());
     }
 
     @Test
@@ -745,7 +785,7 @@ class VesperaReactiveProxyHandlerTest {
             assertEquals(ProxyErrors.STREAMING_SATURATED, rejected.body());
             assertTrue(rejected.header("X-Request-Id") != null);
             assertEquals(1, transport.requests.size(), "never reached Rust");
-            DispatchEvent event = awaitEvent();
+            DispatchEvent event = awaitEvent("/three");
             assertEquals(503, event.status());
             assertEquals(DispatchMode.STREAMING, event.mode());
             // Buffered requests never touch the streaming pool: a concrete
@@ -756,12 +796,12 @@ class VesperaReactiveProxyHandlerTest {
                     .header(HttpHeaders.ACCEPT, "application/json")).status());
             assertEquals(attempts, streaming.reserveAttempts(), "never asked the streaming pool");
             assertEquals(2, streaming.inUse());
-            assertEquals(DispatchMode.ASYNC, awaitEvent().mode(), "served buffered, not streamed");
+            assertEquals(DispatchMode.ASYNC, awaitEvent("/plain").mode(), "served buffered, not streamed");
             // The probe is live: an implicit-streaming candidate does ask the
             // (saturated) pool, then falls back to buffered.
             assertEquals(200, call(client(handler).get().uri("/implicit")).status());
             assertEquals(attempts + 1, streaming.reserveAttempts());
-            assertEquals(DispatchMode.ASYNC, awaitEvent().mode());
+            assertEquals(DispatchMode.ASYNC, awaitEvent("/implicit").mode());
 
             gate.countDown();
             long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();

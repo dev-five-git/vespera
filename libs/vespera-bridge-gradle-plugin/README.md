@@ -12,7 +12,7 @@ Gradle plugin `kr.devfive.vespera-bridge` (Maven Central / Plugin Portal: `kr.de
 | `autoBuildCargo` | `false` | run `cargoBuild` before `bundleNativeLib` |
 | `targets` | empty | extra cross builds: platform → Rust triple |
 | `extraNativeLibs` | unset | prebuilt `native/<platform>/<lib>` merged into the app jar (alone, without `cargoRoot` / `targetDir`: the only libraries bundled) |
-| `bundleNative` | `true` | `false`: `processResources` bundles nothing, `extraNativeLibs` included (the app takes its library from native jars) |
+| `bundleNative` | `true` | `false`: `processResources` bundles nothing, not even `extraNativeLibs` (the app takes its library from native jars) |
 | `nativeJarPlatforms` | empty | platforms to package as classifier jars (`nativeJar<Platform>`, `nativeJars`) |
 | `nativeJarsDir` | `extraNativeLibs` | source of the native jars (`native/<platform>/<lib>`) |
 | `bridgeVersion` | the bridge release this plugin was built with | `vespera-bridge` dependency version |

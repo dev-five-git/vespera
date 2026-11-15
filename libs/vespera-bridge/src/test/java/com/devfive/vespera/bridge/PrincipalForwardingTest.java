@@ -18,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
@@ -30,6 +31,7 @@ import org.springframework.mock.web.MockHttpServletRequest;
  * {@link ServletPrincipalResolver} and the autoconfigured
  * {@link PrincipalResolver} bean.
  */
+@ExtendWith(NativeConfigReset.class)
 class PrincipalForwardingTest {
 
     // ── fake Spring Security types (the bridge reads them reflectively) ──
