@@ -147,6 +147,37 @@ fn path_lookup_fingerprint(cache: &mut FileCache, path_str: &str) -> u64 {
         Path::new(&manifest_dir),
         proc_macro2::Span::call_site().local_file().as_deref(),
     );
+    crate_fingerprint(cache, layout).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The crate-wide part of [`path_lookup_fingerprint`], memoised per epoch,
+/// layout and number of files read so far (`out_of_tree_files` grows as the
+/// invocation reads `#[path]` files): hashing every source file once per
+/// distinct lookup key made each `schema_type!` O(keys x files).
+fn crate_fingerprint(
+    cache: &mut FileCache,
+    layout: crate::schema_macro::crate_layout::CrateLayout,
+) -> u64 {
+    type Memo = Option<(
+        (u64, usize),
+        crate::schema_macro::crate_layout::CrateLayout,
+        u64,
+    )>;
+    thread_local! {
+        static MEMO: std::cell::RefCell<Memo> = const { std::cell::RefCell::new(None) };
+    }
+    let at = (cache.epoch, cache.file_contents.len());
+    let hit = MEMO.with(|memo| {
+        memo.borrow()
+            .as_ref()
+            .filter(|(memo_at, memo_layout, _)| *memo_at == at && *memo_layout == layout)
+            .map(|(_, _, fingerprint)| *fingerprint)
+    });
+    if let Some(fingerprint) = hit {
+        return fingerprint;
+    }
+    let mut hasher = DefaultHasher::new();
     let src_dir = &layout.module_dir;
     src_dir.hash(&mut hasher);
 
@@ -160,7 +191,9 @@ fn path_lookup_fingerprint(cache: &mut FileCache, path_str: &str) -> u64 {
     for path in files.iter().chain(&layout.roots).chain(&outside) {
         fingerprint_path(cache, path, &mut hasher);
     }
-    hasher.finish()
+    let fingerprint = hasher.finish();
+    MEMO.with(|memo| *memo.borrow_mut() = Some((at, layout, fingerprint)));
+    fingerprint
 }
 
 fn fingerprint_path(cache: &mut FileCache, path: &Path, hasher: &mut DefaultHasher) {

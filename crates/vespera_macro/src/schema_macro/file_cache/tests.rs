@@ -403,3 +403,36 @@ fn struct_definitions_without_fingerprint_are_returned_uncached() {
     assert!(get_struct_definition(&file, "Model").is_some_and(|def| def.contains("pub id")));
     assert_eq!(get_struct_definition(&file, "Other"), None);
 }
+
+/// Inside the compiler (`--crate-name` on the command line, not
+/// rust-analyzer) the sources cannot change: a fingerprint and a directory
+/// listing are fetched once, not once per macro invocation.  Elsewhere every
+/// epoch revalidates them.
+#[rstest::rstest]
+#[case::compiler("rustc\n--crate-name\napp", 1)]
+#[case::other_host("target/debug/deps/tests", 3)]
+fn test_stable_sources_skip_revalidation(#[case] args: &str, #[case] stats: usize) {
+    let args_guard =
+        crate::env_access::test_env::set_var(crate::env_access::COMPILER_ARGS_KEY, args);
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("a.rs");
+    std::fs::write(&path, "x").unwrap();
+    reset_metadata_call_count();
+    for _ in 0..3 {
+        bump_epoch();
+        assert!(get_file_fingerprint(&path).is_some());
+    }
+    assert_eq!(metadata_call_count(), stats);
+    let listed = |cache: &mut FileCache| ensure_file_list(cache, temp.path()).len();
+    bump_epoch();
+    assert_eq!(FILE_CACHE.with(|cache| listed(&mut cache.borrow_mut())), 1);
+    std::fs::write(temp.path().join("b.rs"), "y").unwrap();
+    bump_epoch();
+    let expected = if stats == 1 { 1 } else { 2 };
+    assert_eq!(
+        FILE_CACHE.with(|cache| listed(&mut cache.borrow_mut())),
+        expected
+    );
+    drop(args_guard);
+    bump_epoch();
+}

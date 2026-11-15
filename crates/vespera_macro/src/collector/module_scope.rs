@@ -45,20 +45,35 @@ pub(super) fn cfg_predicates(attrs: &[syn::Attribute]) -> Vec<String> {
 /// `segments == ["admin", "users"]` reads `mod admin;` (declared in
 /// `<folder>/mod.rs` or `<folder>.rs`) and `mod users;` (declared in
 /// `<folder>/admin/mod.rs` or `<folder>/admin.rs`).
+///
+/// Each declarer's `mod` list is read once per file version (`file_cache::
+/// derived`), not once per route file below it.
 pub(super) fn module_cfg_predicates(folder_path: &Path, segments: &[String]) -> Vec<String> {
+    /// A declarer's top-level `mod`s: unraw name, cfg predicates (`None`
+    /// when the file does not parse).
+    struct Declared(Option<Vec<(String, Vec<String>)>>);
     let mut parent = folder_path.to_path_buf();
     let mut predicates = Vec::new();
     for segment in segments {
         for declarer in [parent.join("mod.rs"), parent.with_extension("rs")] {
-            let Some(file) = file_cache::get_parsed_file(&declarer) else {
-                continue;
-            };
-            for item in &file.items {
-                // `pub mod r#type;` declares the `type.rs` segment.
-                if let Item::Mod(module) = item
-                    && crate::parser::strip_raw_prefix_owned(module.ident.to_string()) == *segment
-                {
-                    predicates.extend(cfg_predicates(&module.attrs));
+            let declared = file_cache::derived(&declarer, |content| {
+                Declared(syn::parse_file(content).ok().map(|file| {
+                    file.items
+                        .iter()
+                        .filter_map(|item| match item {
+                            // `pub mod r#type;` declares the `type.rs` segment.
+                            Item::Mod(module) => Some((
+                                crate::parser::strip_raw_prefix_owned(module.ident.to_string()),
+                                cfg_predicates(&module.attrs),
+                            )),
+                            _ => None,
+                        })
+                        .collect()
+                }))
+            });
+            for (name, cfgs) in declared.iter().filter_map(|d| d.0.as_ref()).flatten() {
+                if name == segment {
+                    predicates.extend(cfgs.iter().cloned());
                 }
             }
         }
@@ -160,18 +175,71 @@ pub(super) fn stored_inline_mod_route(
     if !content.contains("mod ") || !content.contains("#[") {
         return None;
     }
-    let ast = file_cache::get_parsed_file(file)?;
-    let top_level = |name: &str| {
-        ast.items.iter().any(
-            |item| matches!(item, Item::Fn(handler) if handler.sig.ident == name && extract_route_info(&handler.attrs).is_some()),
-        )
-    };
-    inline_mod_route_where(
-        &ast.items,
-        false,
-        &|name| stored_names.contains(&name),
-        &|name| stored_names.contains(&name) && !top_level(name),
-    )
+    // [`inline_mod_route_where`] with `include` = `accept` = stored: a gated
+    // block's handler counts exactly when it is stored, like any other.
+    let routes = file_routes(file)?;
+    routes
+        .inline
+        .iter()
+        .find(|(_, name)| stored_names.contains(&name.as_str()) && !routes.top_level.contains(name))
+        .cloned()
+}
+
+/// The `#[route]` handlers of one file, read off one parse and kept while
+/// the file is unchanged (`file_cache::derived`): every `vespera!` asks for
+/// each fast-path file.
+struct FileRoutes {
+    /// Top-level handler names.
+    top_level: std::collections::HashSet<String>,
+    /// `(module, handler)` of every handler inside an inline module, in
+    /// [`inline_mod_route_where`]'s search order.
+    inline: Vec<(String, String)>,
+}
+
+/// The cached [`FileRoutes`]: `None` when the file does not parse.
+struct CachedRoutes(Option<std::rc::Rc<FileRoutes>>);
+
+fn file_routes(file: &Path) -> Option<std::rc::Rc<FileRoutes>> {
+    fn inline(items: &[Item], out: &mut Vec<(String, String)>) {
+        let inline_mods = items.iter().filter_map(|item| match item {
+            Item::Mod(syn::ItemMod {
+                ident,
+                content: Some((_, content)),
+                ..
+            }) => Some((ident, content)),
+            _ => None,
+        });
+        for (ident, content) in inline_mods {
+            for inner in content {
+                if let Item::Fn(handler) = inner
+                    && extract_route_info(&handler.attrs).is_some()
+                {
+                    out.push((ident.to_string(), handler.sig.ident.to_string()));
+                }
+            }
+            inline(content, out);
+        }
+    }
+    let cached = file_cache::derived(file, |content| {
+        CachedRoutes(syn::parse_file(content).ok().map(|ast| {
+            let mut routes = FileRoutes {
+                top_level: ast
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        Item::Fn(handler) if extract_route_info(&handler.attrs).is_some() => {
+                            Some(handler.sig.ident.to_string())
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                inline: Vec::new(),
+            };
+            inline(&ast.items, &mut routes.inline);
+            std::rc::Rc::new(routes)
+        }))
+    })?;
+    cached.0.clone()
 }
 
 #[cfg(test)]

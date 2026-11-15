@@ -53,7 +53,10 @@ pub(super) fn generate_spec_route_tokens(
     quote!(
         .route(#url, #method_path(|| async {
             (
-                [(vespera::axum::http::header::CONTENT_TYPE, "application/json")],
+                [(
+                    vespera::axum::http::header::CONTENT_TYPE,
+                    vespera::axum::http::HeaderValue::from_static("application/json"),
+                )],
                 #spec_expr,
             )
         }))

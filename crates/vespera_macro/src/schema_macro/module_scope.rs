@@ -135,14 +135,6 @@ fn crate_relative(module_path: &[String]) -> Option<&[String]> {
 /// declaration-aware tree walk finds it. A parent that is not on disk
 /// keeps the fast path (trees without a crate root).
 pub fn fast_path_is_plain<S: AsRef<str>>(src: &Path, roots: &[PathBuf], segments: &[S]) -> bool {
-    let redirected = |file: &Path, segment: &str| {
-        file_cache::get_parsed_file(file).is_some_and(|file| {
-            file.items.iter().any(|item| {
-                matches!(item, syn::Item::Mod(module) if ident_name(&module.ident) == segment
-                    && (module.content.is_some() || path_attr(&module.attrs).is_some()))
-            })
-        })
-    };
     segments.iter().enumerate().all(|(level, segment)| {
         let segment = segment.as_ref();
         let parents: Vec<PathBuf> = if level == 0 {
@@ -157,6 +149,33 @@ pub fn fast_path_is_plain<S: AsRef<str>>(src: &Path, roots: &[PathBuf], segments
         };
         !parents.iter().any(|parent| redirected(parent, segment))
     })
+}
+
+/// Names of a file's top-level `mod`s declared inline or with `#[path]`
+/// (empty for a file that does not parse), kept while it is unchanged.
+struct Redirected(HashSet<String>);
+
+/// Whether `file` declares `segment` inline or with `#[path]`.
+fn redirected(file: &Path, segment: &str) -> bool {
+    file_cache::derived(file, redirected_mods).is_some_and(|names| names.0.contains(segment))
+}
+
+fn redirected_mods(content: &str) -> Redirected {
+    let names = file_cache::with_fallback_parse(content, |file| {
+        file.items.iter().filter_map(redirected_name).collect()
+    });
+    Redirected(names.unwrap_or_default())
+}
+
+fn redirected_name(item: &syn::Item) -> Option<String> {
+    match item {
+        syn::Item::Mod(module)
+            if module.content.is_some() || path_attr(&module.attrs).is_some() =>
+        {
+            Some(ident_name(&module.ident))
+        }
+        _ => None,
+    }
 }
 
 /// The items of the module at `module_path` (`crate::a::b` or `a::b`).
@@ -220,64 +239,88 @@ pub fn struct_in_items(items: &[syn::Item], name: &str) -> Option<String> {
 /// one of that name, or the one whose ident starts at `line`; empty (the
 /// file's top level) when it is not found — a `schema_type!` DTO is not
 /// written in the file at all.
+#[cfg(test)]
 pub fn item_module_chain(items: &[syn::Item], name: &str, line: usize) -> Vec<String> {
     pick_chain(chain_candidates(items, name), line)
 }
 
-/// [`item_module_chain`] for `file`, whose cached parse is `items`.  A repeated
-/// name is told apart by line, so the file is then re-parsed with
-/// proc-macro2's fallback forced: inside the compiler every token of re-parsed
-/// text carries the call site's span, so no candidate's line would match.
-pub fn item_module_chain_in_file(
-    file: &Path,
-    items: &[syn::Item],
-    name: &str,
-    line: usize,
-) -> Vec<String> {
-    let found = chain_candidates(items, name);
-    if found.len() <= 1 {
-        return pick_chain(found, line);
-    }
-    with_line_spans(file, |parsed| item_module_chain(&parsed.items, name, line)).unwrap_or_default()
+/// [`item_module_chain`] for `file`, read off its cached line index: a
+/// repeated name is told apart by line, which only a parse with
+/// proc-macro2's fallback forced reports (inside the compiler every token of
+/// re-parsed text carries the call site's span).  `None` when `file` cannot
+/// be read or parsed.
+pub fn item_module_chain_cached(file: &Path, name: &str, line: usize) -> Option<Vec<String>> {
+    let lines = file_lines(file)?;
+    let found = lines
+        .items
+        .iter()
+        .filter(|(item, ..)| item == name)
+        .map(|(_, at, chain)| (*at, chain.clone()))
+        .collect();
+    Some(pick_chain(found, line))
 }
 
-/// Run `read` over `file` re-parsed with proc-macro2's fallback forced, so
-/// spans carry real line numbers (inside the compiler every token of
-/// re-parsed text carries the call site's span).  Only `read`'s result
-/// leaves: no fallback token is mixed with compiler tokens.
-fn with_line_spans<R>(file: &Path, read: impl FnOnce(&syn::File) -> R) -> Option<R> {
-    let content = file_cache::get_file_content(file)?;
-    proc_macro2::fallback::force();
-    let _unforce = Unforce;
-    syn::parse_file(&content).ok().map(|parsed| read(&parsed))
+/// Line-accurate plain data of one file, read off a parse with
+/// proc-macro2's fallback forced (inside the compiler every token of
+/// re-parsed text carries the call site's span) and kept while the file is
+/// unchanged (`file_cache::derived`).
+#[derive(Default)]
+struct FileLines {
+    /// Every struct / enum (inline modules included, in source order): its
+    /// name, ident line and inline `mod` chain (see [`chain_candidates`]).
+    items: Vec<(String, usize, Vec<String>)>,
+    /// The inline `mod { .. }` blocks: name, brace line range, children.
+    mods: Vec<InlineMod>,
 }
 
-/// Restores proc-macro2's normal mode even if parsing panics.
-struct Unforce;
+struct InlineMod {
+    name: String,
+    lines: std::ops::RangeInclusive<usize>,
+    inner: Vec<Self>,
+}
 
-impl Drop for Unforce {
-    fn drop(&mut self) {
-        proc_macro2::fallback::unforce();
+/// The cached [`FileLines`] of a file: `None` when it does not parse.
+struct CachedLines(Option<std::rc::Rc<FileLines>>);
+
+/// `file`'s [`FileLines`]; `None` when it cannot be read or parsed.
+fn file_lines(file: &Path) -> Option<std::rc::Rc<FileLines>> {
+    fn mods(items: &[syn::Item]) -> Vec<InlineMod> {
+        items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Mod(syn::ItemMod {
+                    ident,
+                    content: Some((brace, inner)),
+                    ..
+                }) => Some(InlineMod {
+                    name: ident_name(ident),
+                    lines: brace.span.open().start().line..=brace.span.close().end().line,
+                    inner: mods(inner),
+                }),
+                _ => None,
+            })
+            .collect()
     }
+    let cached = file_cache::derived(file, |content| {
+        CachedLines(
+            file_cache::with_fallback_parse(content, |parsed| FileLines {
+                items: all_chain_candidates(&parsed.items),
+                mods: mods(&parsed.items),
+            })
+            .map(std::rc::Rc::new),
+        )
+    })?;
+    cached.0.clone()
 }
 
 /// The inline `mod` chain whose braces enclose `line` of `file` — where a
 /// macro invoked on that line resolves its names (empty at the file's top
 /// level, for line `0` or an unreadable file).
 pub fn inline_chain_at(file: &Path, line: usize) -> Vec<String> {
-    fn enclosing(items: &[syn::Item], line: usize, chain: &mut Vec<String>) {
-        for item in items {
-            if let syn::Item::Mod(syn::ItemMod {
-                ident,
-                content: Some((brace, inner)),
-                ..
-            }) = item
-                && (brace.span.open().start().line..=brace.span.close().end().line).contains(&line)
-            {
-                chain.push(ident_name(ident));
-                enclosing(inner, line, chain);
-                return;
-            }
+    fn enclosing(mods: &[InlineMod], line: usize, chain: &mut Vec<String>) {
+        if let Some(module) = mods.iter().find(|module| module.lines.contains(&line)) {
+            chain.push(module.name.clone());
+            enclosing(&module.inner, line, chain);
         }
     }
     if line == 0
@@ -285,12 +328,11 @@ pub fn inline_chain_at(file: &Path, line: usize) -> Vec<String> {
     {
         return Vec::new();
     }
-    with_line_spans(file, |parsed| {
-        let mut chain = Vec::new();
-        enclosing(&parsed.items, line, &mut chain);
-        chain
-    })
-    .unwrap_or_default()
+    let mut chain = Vec::new();
+    if let Some(lines) = file_lines(file) {
+        enclosing(&lines.mods, line, &mut chain);
+    }
+    chain
 }
 
 /// The only candidate's chain, or (several) the one whose ident is at `line`.
@@ -306,35 +348,49 @@ fn pick_chain(mut found: Vec<(usize, Vec<String>)>, line: usize) -> Vec<String> 
 
 /// Every struct / enum `name` in `items` (inline modules included): its
 /// ident's line and inline `mod` chain.
+#[cfg(test)]
 fn chain_candidates(items: &[syn::Item], name: &str) -> Vec<(usize, Vec<String>)> {
-    fn walk(
-        items: &[syn::Item],
-        name: &str,
-        chain: &mut Vec<String>,
-        found: &mut Vec<(usize, Vec<String>)>,
-    ) {
-        for item in items {
-            let ident = match item {
-                syn::Item::Struct(item) => &item.ident,
-                syn::Item::Enum(item) => &item.ident,
-                syn::Item::Mod(module) => {
-                    if let Some((_, inner)) = &module.content {
-                        chain.push(ident_name(&module.ident));
-                        walk(inner, name, chain, found);
-                        chain.pop();
-                    }
-                    continue;
-                }
-                _ => continue,
-            };
-            if ident_name(ident) == name {
-                found.push((ident.span().start().line, chain.clone()));
-            }
-        }
-    }
     let mut found = Vec::new();
-    walk(items, name, &mut Vec::new(), &mut found);
+    walk_chains(items, &mut Vec::new(), &mut |ident, chain| {
+        if ident_name(ident) == name {
+            found.push((ident.span().start().line, chain.to_vec()));
+        }
+    });
     found
+}
+
+/// [`chain_candidates`] of every name at once: `(name, line, chain)`.
+fn all_chain_candidates(items: &[syn::Item]) -> Vec<(String, usize, Vec<String>)> {
+    let mut found = Vec::new();
+    walk_chains(items, &mut Vec::new(), &mut |ident, chain| {
+        found.push((ident_name(ident), ident.span().start().line, chain.to_vec()));
+    });
+    found
+}
+
+/// Visit every struct / enum ident of `items` (inline modules included, in
+/// source order) with its inline `mod` chain.
+fn walk_chains(
+    items: &[syn::Item],
+    chain: &mut Vec<String>,
+    visit: &mut dyn FnMut(&syn::Ident, &[String]),
+) {
+    for item in items {
+        let ident = match item {
+            syn::Item::Struct(item) => &item.ident,
+            syn::Item::Enum(item) => &item.ident,
+            syn::Item::Mod(module) => {
+                if let Some((_, inner)) = &module.content {
+                    chain.push(ident_name(&module.ident));
+                    walk_chains(inner, chain, visit);
+                    chain.pop();
+                }
+                continue;
+            }
+            _ => continue,
+        };
+        visit(ident, chain);
+    }
 }
 
 /// The struct `name` defined anywhere in `items` (inline modules included)
@@ -441,16 +497,18 @@ impl ModuleScope {
             if item_use.leading_colon.is_some() {
                 prefix.push(String::new());
             }
-            let before: HashSet<String> = scope.imports.keys().cloned().collect();
+            // Collect this `use` into an empty map (`collect_use` never reads
+            // the imports so far), then fold it in: the names it newly adds
+            // are known without cloning every earlier key per `use`.
+            let earlier = std::mem::take(&mut scope.imports);
             scope.collect_use(&item_use.tree, &mut prefix, module_path);
-            if matches!(item_use.vis, syn::Visibility::Inherited) {
-                let added: Vec<String> = scope
-                    .imports
-                    .keys()
-                    .filter(|key| !before.contains(*key))
-                    .cloned()
-                    .collect();
-                scope.private.extend(added);
+            let added = std::mem::replace(&mut scope.imports, earlier);
+            let private = matches!(item_use.vis, syn::Visibility::Inherited);
+            for (key, path) in added {
+                if private && !scope.imports.contains_key(&key) {
+                    scope.private.insert(key.clone());
+                }
+                scope.imports.insert(key, path);
             }
         }
         scope.reroot_chained_imports();
@@ -586,40 +644,43 @@ fn normalize_use_path(path: &[String], module: &[String], locals: &HashSet<Strin
     }
 }
 
-type ScopeCache = (
-    u64,
-    HashMap<(Option<PathBuf>, Vec<String>), Option<Arc<ModuleScope>>>,
-);
+type ScopeCache = HashMap<
+    (Option<super::crate_layout::CrateLayout>, Vec<String>),
+    file_cache::Tracked<Option<Arc<ModuleScope>>>,
+>;
 
 thread_local! {
-    static SCOPES: RefCell<ScopeCache> = RefCell::new((u64::MAX, HashMap::new()));
+    static SCOPES: RefCell<ScopeCache> = RefCell::new(HashMap::new());
 }
 
-/// The scope of the module at `module_path` (absolute, `crate::..`), cached
-/// for the current macro invocation. `None` when the module is not found.
+/// The scope of the module at `module_path` (absolute, `crate::..`). `None`
+/// when the module is not found.
+///
+/// A scope holds only `String`s, so it is kept across macro invocations
+/// while every file its lookup opened — or probed and found missing — is
+/// unchanged (`file_cache::Tracked`, re-checked once per invocation): each
+/// `schema_type!` otherwise re-parsed its source model's file, one more per
+/// relation and one per glob target.
 pub fn module_scope(module_path: &[String]) -> Option<Arc<ModuleScope>> {
     if module_path.first().is_none_or(|first| first != "crate") {
         return None;
     }
-    let epoch = file_cache::current_epoch();
-    let key = (
-        super::crate_layout::crate_layout().map(|layout| layout.module_dir),
-        module_path.to_vec(),
-    );
+    let key = (super::crate_layout::crate_layout(), module_path.to_vec());
     let cached = SCOPES.with(|scopes| {
-        let mut scopes = scopes.borrow_mut();
-        if scopes.0 != epoch {
-            *scopes = (epoch, HashMap::new());
-        }
-        scopes.1.get(&key).cloned()
+        scopes
+            .borrow_mut()
+            .get_mut(&key)
+            .and_then(file_cache::Tracked::get)
     });
     if let Some(scope) = cached {
         return scope;
     }
-    let scope =
-        module_items(module_path).map(|items| Arc::new(ModuleScope::build(&items, module_path)));
+    let entry = file_cache::Tracked::compute(|| {
+        module_items(module_path).map(|items| Arc::new(ModuleScope::build(&items, module_path)))
+    });
+    let scope = entry.peek().clone();
     SCOPES.with(|scopes| {
-        scopes.borrow_mut().1.insert(key, scope.clone());
+        scopes.borrow_mut().insert(key, entry);
     });
     scope
 }
@@ -712,7 +773,78 @@ pub fn segment_ident(segment: &str) -> syn::Ident {
     if matches!(raw, "crate" | "self" | "super" | "Self") {
         return syn::Ident::new(raw, span);
     }
+    // A plain ASCII identifier (the common case, once per emitted segment) is
+    // built directly; anything else goes through syn's parser as before.
+    let plain = raw != "_"
+        && raw.bytes().next().is_some_and(|b| !b.is_ascii_digit())
+        && raw.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    if plain {
+        return if is_keyword(raw) {
+            syn::Ident::new_raw(raw, span)
+        } else {
+            syn::Ident::new(raw, span)
+        };
+    }
     syn::parse_str::<syn::Ident>(raw).unwrap_or_else(|_| syn::Ident::new_raw(raw, span))
+}
+
+/// The words `syn` refuses to parse as an identifier (its
+/// `accept_as_ident`), `_` excepted.
+fn is_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "abstract"
+            | "as"
+            | "async"
+            | "await"
+            | "become"
+            | "box"
+            | "break"
+            | "const"
+            | "continue"
+            | "crate"
+            | "do"
+            | "dyn"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "final"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "macro"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "override"
+            | "priv"
+            | "pub"
+            | "ref"
+            | "return"
+            | "Self"
+            | "self"
+            | "static"
+            | "struct"
+            | "super"
+            | "trait"
+            | "true"
+            | "try"
+            | "type"
+            | "typeof"
+            | "unsafe"
+            | "unsized"
+            | "use"
+            | "virtual"
+            | "where"
+            | "while"
+            | "yield"
+    )
 }
 
 #[cfg(test)]

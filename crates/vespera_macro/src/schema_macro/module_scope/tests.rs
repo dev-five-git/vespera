@@ -497,18 +497,20 @@ fn item_module_chain_walks_inline_modules(
     assert_eq!(item_module_chain(&file.items, name, line), expected);
 }
 
-/// `item_module_chain_in_file` re-parses the file for real line positions
-/// when a name repeats: the cached `items` here stand for a compiler parse
-/// whose tokens all sit on one line (the call site), which matches no line.
+/// `item_module_chain_cached` reads real line positions off the file's
+/// fallback-parsed line index (a compiler parse puts every re-parsed token on
+/// the call site's line), so a repeated name is told apart by line.
 #[rstest]
-#[case::repeated_name_reparsed("Dup", 5, true, &["b2"])]
-#[case::unique_name_uses_items("Kind", 0, true, &["a"])]
-#[case::unreadable_file("Dup", 5, false, &[])]
-fn item_module_chain_in_file_reparses_repeated_names(
+#[case::repeated_name("Dup", 5, true, Some(&["b2"][..]))]
+#[case::repeated_name_other_line("Dup", 6, true, Some(&["b3"][..]))]
+#[case::repeated_name_no_line("Dup", 0, true, Some(&[][..]))]
+#[case::unique_name("Kind", 0, true, Some(&["a"][..]))]
+#[case::unreadable_file("Dup", 5, false, None)]
+fn item_module_chain_cached_tells_repeated_names_apart(
     #[case] name: &str,
     #[case] line: usize,
     #[case] write: bool,
-    #[case] expected: &[&str],
+    #[case] expected: Option<&[&str]>,
 ) {
     let source = "mod a {\n    pub enum Kind { A }\n}\n\nmod b2 { pub struct Dup; }\nmod b3 { pub struct Dup; }\n";
     let dir = TempDir::new().unwrap();
@@ -516,9 +518,36 @@ fn item_module_chain_in_file_reparses_repeated_names(
     if write {
         std::fs::write(&file, source).unwrap();
     }
-    let one_line = syn::parse_file(&source.replace('\n', " ")).unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
     assert_eq!(
-        item_module_chain_in_file(&file, &one_line.items, name, line),
-        expected
+        item_module_chain_cached(&file, name, line),
+        expected.map(|chain| chain.iter().map(ToString::to_string).collect())
     );
+}
+
+/// A file that does not parse has no line index.
+#[test]
+fn item_module_chain_cached_unparsable_file() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("lib.rs");
+    std::fs::write(&file, "mod {{{").unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    assert_eq!(item_module_chain_cached(&file, "Dup", 1), None);
+    assert_eq!(inline_chain_at(&file, 1), Vec::<String>::new());
+}
+
+/// The direct construction of a plain segment matches what syn's parser
+/// (the previous path for every segment) builds: keywords raw, the rest
+/// plain; other text still goes through the parser.
+#[rstest]
+#[case::plain("user", "user")]
+#[case::raw_input("r#type", "r#type")]
+#[case::keyword("type", "r#type")]
+#[case::reserved("yield", "r#yield")]
+#[case::edition_word("gen", "gen")]
+#[case::root("self", "self")]
+#[case::underscored("_private", "_private")]
+#[case::non_ascii("caf\u{e9}", "caf\u{e9}")]
+fn segment_ident_builds_plain_and_raw_idents(#[case] segment: &str, #[case] expected: &str) {
+    assert_eq!(segment_ident(segment).to_string(), expected);
 }

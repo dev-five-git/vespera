@@ -391,36 +391,85 @@ fn find_bare_struct_in_inline_module(
 
 /// Classifies one already-typed directory entry, keeping the recursive collector's
 /// file/dir invariant while accepting scan results as explicit inputs.
+#[cfg(test)]
 fn collect_rs_entry(
     entry: &std::fs::DirEntry,
     file_type: std::fs::FileType,
     files: &mut Vec<PathBuf>,
 ) {
-    let path = entry.path();
-    if file_type.is_dir() {
-        collect_rs_files_recursive(&path, files);
-    } else if file_type.is_file() && path.extension().is_some_and(|ext| ext == "rs") {
-        files.push(path);
+    let mut walk = RsWalk {
+        files,
+        ancestors: std::collections::HashSet::new(),
+    };
+    walk.entry(entry, file_type, Path::new(""));
+}
+
+/// One [`collect_rs_files_recursive`] walk.
+struct RsWalk<'a> {
+    files: &'a mut Vec<PathBuf>,
+    /// Canonical directories on the current recursion path only: a link
+    /// back to one of them cannot recurse forever, while a sibling alias of
+    /// an already-walked directory is still walked (rustc compiles it).
+    ancestors: std::collections::HashSet<PathBuf>,
+}
+
+impl RsWalk<'_> {
+    /// Walk `dir`, whose canonical path is `canonical`.
+    fn dir(&mut self, dir: &Path, canonical: &Path) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            // `entry.file_type()` reads the kind from the directory-entry
+            // data the OS already returned for this `read_dir` walk — no
+            // extra `metadata` stat per entry (only a symlink costs one).
+            if let Ok(file_type) = entry.file_type() {
+                self.entry(&entry, file_type, canonical);
+            }
+        }
+    }
+
+    /// One entry of the directory whose canonical path is `parent`.
+    ///
+    /// A symlink is followed like rustc's module loader (and the route
+    /// scanner, `file_utils::collect_files_with_mtimes`) does: a symlinked
+    /// module directory is part of the crate, so an edit below it must reach
+    /// the lookup fingerprint.  A dangling link is skipped.
+    fn entry(&mut self, entry: &std::fs::DirEntry, file_type: std::fs::FileType, parent: &Path) {
+        let path = entry.path();
+        let (is_file, is_dir, canonical) = if file_type.is_symlink() {
+            let meta = std::fs::metadata(&path).ok();
+            (
+                meta.as_ref().is_some_and(std::fs::Metadata::is_file),
+                meta.as_ref().is_some_and(std::fs::Metadata::is_dir),
+                std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone()),
+            )
+        } else {
+            (
+                file_type.is_file(),
+                file_type.is_dir(),
+                parent.join(entry.file_name()),
+            )
+        };
+        if is_dir {
+            if self.ancestors.insert(canonical.clone()) {
+                self.dir(&path, &canonical);
+                self.ancestors.remove(&canonical);
+            }
+        } else if is_file && path.extension().is_some_and(|ext| ext == "rs") {
+            self.files.push(path);
+        }
     }
 }
 
-/// Recursively collect all `.rs` files in a directory.
+/// Recursively collect all `.rs` files in a directory (symlinks followed).
 pub fn collect_rs_files_recursive(dir: &Path, files: &mut Vec<std::path::PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let mut walk = RsWalk {
+        files,
+        ancestors: std::collections::HashSet::from([canonical.clone()]),
     };
-
-    for entry in entries.flatten() {
-        // `entry.file_type()` reads the kind from the directory-entry data the
-        // OS already returned for this `read_dir` walk — no extra `metadata`
-        // stat per entry, unlike `path.is_dir()`.  Mirrors the established
-        // `file_utils::collect_with_mtimes_into` pattern (symlinks, which are
-        // neither file nor dir here, are skipped — never present in a `src/`
-        // tree this indexes).
-        if let Ok(file_type) = entry.file_type() {
-            collect_rs_entry(&entry, file_type, files);
-        }
-    }
+    walk.dir(dir, &canonical);
 }
 
 /// Derive module path from a file path relative to the crate's module
@@ -499,21 +548,19 @@ pub fn storage_module_path(metadata: &StructMetadata) -> Option<Vec<String>> {
         return None;
     }
     let mut module = layout.module_path_of(file);
-    if let Some(parsed) = crate::schema_macro::file_cache::get_parsed_file(file) {
-        // Only disambiguates a repeated name: an unreadable line is no line.
-        let line = position
-            .split(':')
-            .next()
-            .and_then(|line| line.parse().ok())
-            .unwrap_or_default();
-        module.extend(
-            crate::schema_macro::module_scope::item_module_chain_in_file(
-                file,
-                &parsed.items,
-                ident.trim_start_matches("r#"),
-                line,
-            ),
-        );
+    // Only disambiguates a repeated name: an unreadable line is no line.
+    let line = position
+        .split(':')
+        .next()
+        .and_then(|line| line.parse().ok())
+        .unwrap_or_default();
+    // The file's cached line index (no parse per storage hit).
+    if let Some(chain) = crate::schema_macro::module_scope::item_module_chain_cached(
+        file,
+        ident.trim_start_matches("r#"),
+        line,
+    ) {
+        module.extend(chain);
     }
     Some(module)
 }

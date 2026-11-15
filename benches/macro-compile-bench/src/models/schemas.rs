@@ -92,6 +92,12 @@ pub struct Warehouse {
     pub id: u32,
     pub name: String,
     pub location: Address,
+    #[serde(default = "default_capacity")]
+    pub capacity: u32,
+}
+
+const fn default_capacity() -> u32 {
+    10_000
 }
 
 #[derive(Default, Clone, Serialize, Deserialize, Schema)]
@@ -139,9 +145,27 @@ pub struct Order {
 pub struct Payment {
     pub id: u64,
     pub order_id: u64,
+    /// `serde(default = "fn")` fields: the schema derive resolves each
+    /// function in this file to document its value as the default.
+    #[serde(default = "default_method")]
     pub method: String,
+    #[serde(default = "default_currency")]
+    pub currency: String,
     pub amount: f64,
+    #[serde(default = "default_paid")]
     pub paid: bool,
+}
+
+fn default_method() -> String {
+    "card".to_owned()
+}
+
+fn default_currency() -> String {
+    "USD".to_owned()
+}
+
+const fn default_paid() -> bool {
+    false
 }
 
 // ── Generic envelopes (Wrapper<T> — exercises the generic schema path) ─────

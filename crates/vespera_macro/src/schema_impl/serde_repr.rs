@@ -27,7 +27,7 @@ pub(super) fn with_serde_repr_derives(
     if !file.contains("_repr") {
         return None;
     }
-    let source_derives = source_derives(&file, &input.ident, &SERDE_REPR_DERIVES, false)?;
+    let source_derives = source_derives(path, &input.ident, &SERDE_REPR_DERIVES, false)?;
     let missing: Vec<&str> = source_derives
         .into_iter()
         .filter(|name| !derives(&input.attrs, name))
@@ -58,7 +58,7 @@ pub(super) fn with_multipart_vec_defaults(
     let path = call_site_file?;
     let file = crate::schema_macro::file_cache::get_file_content(path)?;
     if !file.contains("Multipart")
-        || source_derives(&file, &input.ident, &["Multipart"], true)?.is_empty()
+        || source_derives(path, &input.ident, &["Multipart"], true)?.is_empty()
     {
         return None;
     }
@@ -93,43 +93,72 @@ fn is_vec(ty: &syn::Type) -> bool {
 /// server), a single same-named enum is still unambiguous.  Several candidates
 /// and no positional match → `None` (never borrow another enum's derives).
 ///
-/// The file is parsed with proc-macro2's fallback forced so its spans carry
-/// real positions (compiler spans of re-parsed text all point at the call
-/// site), and every result is computed before normal mode is restored.
+/// The declarations come from the file's [`Declarations`] index, read off a
+/// parse with proc-macro2's fallback forced so its spans carry real
+/// positions (compiler spans of re-parsed text all point at the call site)
+/// and kept while the file is unchanged: every enum / `Multipart` struct
+/// derive of a file otherwise re-parsed it.
 fn source_derives(
-    content: &str,
+    file: &Path,
     ident: &syn::Ident,
     names: &[&'static str],
     is_struct: bool,
 ) -> Option<Vec<&'static str>> {
-    /// Restores proc-macro2's normal mode even if parsing panics.
-    struct Unforce;
-    impl Drop for Unforce {
-        fn drop(&mut self) {
-            proc_macro2::fallback::unforce();
-        }
-    }
-    struct Finder<'n> {
-        ident: String,
-        names: &'n [&'static str],
-        is_struct: bool,
-        found: Vec<((usize, usize), Vec<&'static str>)>,
-    }
-    impl Finder<'_> {
+    let declarations = declarations(file)?;
+    let start = ident.span().start();
+    let ident = ident.to_string();
+    let found: Vec<&Declaration> = declarations
+        .iter()
+        .filter(|declaration| declaration.is_struct == is_struct && declaration.ident == ident)
+        .collect();
+    let index = found
+        .iter()
+        .position(|declaration| declaration.position == (start.line, start.column))
+        .or_else(|| (found.len() == 1).then_some(0))?;
+    Some(
+        names
+            .iter()
+            .copied()
+            .filter(|name| found[index].derives.contains(name))
+            .collect(),
+    )
+}
+
+/// Every derive [`source_derives`] can be asked about.
+const KNOWN_DERIVES: [&str; 3] = ["Serialize_repr", "Deserialize_repr", "Multipart"];
+
+/// One enum / struct declaration of a file.
+struct Declaration {
+    is_struct: bool,
+    ident: String,
+    /// The ident's `(line, column)`.
+    position: (usize, usize),
+    /// Its derives among [`KNOWN_DERIVES`].
+    derives: Vec<&'static str>,
+}
+
+/// A file's declarations (`None`: it does not parse).
+struct Declarations(Option<std::rc::Rc<Vec<Declaration>>>);
+
+fn declarations(file: &Path) -> Option<std::rc::Rc<Vec<Declaration>>> {
+    #[derive(Default)]
+    struct Finder(Vec<Declaration>);
+    impl Finder {
         fn record(&mut self, ident: &syn::Ident, attrs: &[syn::Attribute], is_struct: bool) {
-            if is_struct == self.is_struct && *ident == self.ident {
-                let start = ident.span().start();
-                let found = self
-                    .names
+            let start = ident.span().start();
+            self.0.push(Declaration {
+                is_struct,
+                ident: ident.to_string(),
+                position: (start.line, start.column),
+                derives: KNOWN_DERIVES
                     .iter()
                     .copied()
                     .filter(|name| derives(attrs, name))
-                    .collect();
-                self.found.push(((start.line, start.column), found));
-            }
+                    .collect(),
+            });
         }
     }
-    impl<'ast> syn::visit::Visit<'ast> for Finder<'_> {
+    impl<'ast> syn::visit::Visit<'ast> for Finder {
         fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
             self.record(&item.ident, &item.attrs, false);
             syn::visit::visit_item_enum(self, item);
@@ -139,23 +168,15 @@ fn source_derives(
             syn::visit::visit_item_struct(self, item);
         }
     }
-    let start = ident.span().start();
-    let mut finder = Finder {
-        ident: ident.to_string(),
-        names,
-        is_struct,
-        found: Vec::new(),
-    };
-    proc_macro2::fallback::force();
-    let _unforce = Unforce;
-    let file = syn::parse_file(content).ok()?;
-    syn::visit::Visit::visit_file(&mut finder, &file);
-    let index = finder
-        .found
-        .iter()
-        .position(|(position, _)| *position == (start.line, start.column))
-        .or_else(|| (finder.found.len() == 1).then_some(0))?;
-    Some(finder.found.swap_remove(index).1)
+    use crate::schema_macro::file_cache;
+    let cached = file_cache::derived(file, |content| {
+        Declarations(file_cache::with_fallback_parse(content, |file| {
+            let mut finder = Finder::default();
+            syn::visit::Visit::visit_file(&mut finder, file);
+            std::rc::Rc::new(finder.0)
+        }))
+    })?;
+    cached.0.clone()
 }
 
 /// Whether a `#[derive(..)]` among `attrs` names `name` (by any path).

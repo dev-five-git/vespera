@@ -60,7 +60,13 @@ pub(super) fn related_model_type_from_schema_path(schema_path: &TokenStream) -> 
     // generic arguments on the segment.
     let mut type_path: syn::TypePath = syn::parse2(schema_path.clone()).ok()?;
     let last = type_path.path.segments.last_mut()?;
-    let renamed = last.ident.to_string().replace("Schema", "Model");
+    // Only the `Schema` SUFFIX names the DTO: `FooSchemaBarSchema` is the
+    // DTO of `FooSchemaBarModel`, not `FooModelBarModel`.
+    let ident = last.ident.to_string();
+    let renamed = ident.strip_suffix("Schema").map_or_else(
+        || ident.replace("Schema", "Model"),
+        |stem| format!("{stem}Model"),
+    );
     last.ident = syn::Ident::new(&renamed, last.ident.span());
     Some(syn::Type::Path(type_path))
 }
@@ -669,6 +675,20 @@ mod tests {
         assert_eq!(
             quote!(#ty2).to_string(),
             quote!(crate::models::user::Model).to_string(),
+        );
+        // Only the suffix is renamed: an inner `Schema` of the ident stays.
+        let ty3 = related_model_type_from_schema_path(&quote!(crate::FooSchemaBarSchema))
+            .expect("valid schema path");
+        assert_eq!(
+            quote!(#ty3).to_string(),
+            quote!(crate::FooSchemaBarModel).to_string(),
+        );
+        // No `Schema` suffix: the historical rename of every occurrence.
+        let ty4 =
+            related_model_type_from_schema_path(&quote!(crate::SchemaUser)).expect("valid path");
+        assert_eq!(
+            quote!(#ty4).to_string(),
+            quote!(crate::ModelUser).to_string()
         );
         // A non-path token stream (e.g. a stray `?`) yields None, not a panic.
         assert!(related_model_type_from_schema_path(&quote!(?)).is_none());

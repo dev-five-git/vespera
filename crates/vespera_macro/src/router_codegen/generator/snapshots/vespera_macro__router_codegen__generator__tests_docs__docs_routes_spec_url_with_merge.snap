@@ -32,7 +32,9 @@ fn create_app() {
                             [
                                 (
                                     vespera::axum::http::header::CONTENT_TYPE,
-                                    "application/json",
+                                    vespera::axum::http::HeaderValue::from_static(
+                                        "application/json",
+                                    ),
                                 ),
                             ],
                             __vespera_merged_spec(),

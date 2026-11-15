@@ -1,5 +1,6 @@
 use vespera::axum::{Json, extract::Path};
 
+use crate::error::ApiResult;
 use crate::models::schemas::{
     ApiResponse, Category, Inventory, Paginated, Product, Tag, Warehouse,
 };
@@ -30,8 +31,8 @@ pub async fn list_categories() -> Json<Paginated<Category>> {
 
 /// A product's tags.
 #[vespera::route(get, path = "/{id}/tags", tags = ["catalog"])]
-pub async fn product_tags(Path(_id): Path<u64>) -> Json<Vec<Tag>> {
-    Json(Vec::new())
+pub async fn product_tags(Path(_id): Path<u64>) -> ApiResult<Vec<Tag>> {
+    Ok(Json(Vec::new()))
 }
 
 /// Inventory (paginated).
@@ -42,6 +43,6 @@ pub async fn list_inventory() -> Json<Paginated<Inventory>> {
 
 /// Warehouses.
 #[vespera::route(get, path = "/warehouses", tags = ["catalog"])]
-pub async fn list_warehouses() -> Json<Vec<Warehouse>> {
-    Json(Vec::new())
+pub async fn list_warehouses() -> ApiResult<Vec<Warehouse>> {
+    Ok(Json(Vec::new()))
 }

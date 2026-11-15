@@ -257,7 +257,9 @@ fn stored_signature(sig: &syn::Signature, source_file: Option<&std::path::Path>)
     let mut sig = sig.clone();
     if let Some(file) = source_file.filter(|_| crate::parser::needs_alias_expansion(&sig)) {
         use crate::schema_macro::file_cache;
-        let same_file = file_cache::get_parsed_file(file);
+        // Only item names, `use` trees and inline modules are read: the
+        // handler bodies are skipped.
+        let same_file = file_cache::get_shallow_parsed_file(file);
         let src_dir =
             file_cache::get_manifest_dir().map(|dir| std::path::PathBuf::from(dir).join("src"));
         crate::parser::expand_return_type_alias(&mut sig, same_file.as_ref(), src_dir.as_deref());

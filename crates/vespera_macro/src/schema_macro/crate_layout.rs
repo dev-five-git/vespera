@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use super::file_cache;
 
 /// The module directory of the crate root and its root file candidates.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CrateLayout {
     /// Directory the crate root's child modules live in (`src`, `tests`,
     /// `examples/tool`, ...).
@@ -69,10 +69,37 @@ impl CrateLayout {
 }
 
 /// The layout of the crate the current macro invocation compiles.
+///
+/// Memoised per macro invocation (one `schema_type!` asks ~100 times; each
+/// computation reads the current directory and probes target roots): the
+/// memo is keyed by the epoch and by every input of [`layout_for`].
 pub fn crate_layout() -> Option<CrateLayout> {
+    type Key = (u64, String, Option<PathBuf>, Option<String>, Option<String>);
+    thread_local! {
+        static MEMO: std::cell::RefCell<Option<(Key, CrateLayout)>> =
+            const { std::cell::RefCell::new(None) };
+    }
     let manifest_dir = file_cache::get_manifest_dir()?;
     let call_site = proc_macro2::Span::call_site().local_file();
-    Some(layout_for(Path::new(&manifest_dir), call_site.as_deref()))
+    let key: Key = (
+        file_cache::current_epoch(),
+        manifest_dir,
+        call_site,
+        crate_var("CARGO_BIN_NAME"),
+        crate_var("CARGO_CRATE_NAME"),
+    );
+    let hit = MEMO.with(|memo| {
+        memo.borrow()
+            .as_ref()
+            .filter(|(memo_key, _)| *memo_key == key)
+            .map(|(_, layout)| layout.clone())
+    });
+    if let Some(layout) = hit {
+        return Some(layout);
+    }
+    let layout = layout_for(Path::new(&key.1), key.2.as_deref());
+    MEMO.with(|memo| *memo.borrow_mut() = Some((key, layout.clone())));
+    Some(layout)
 }
 
 /// The layout for a crate in `manifest_dir` whose macro call site is

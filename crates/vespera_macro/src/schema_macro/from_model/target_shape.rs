@@ -21,7 +21,51 @@ pub(super) enum TargetShape {
 /// `module` (absolute, `crate::..`) from the `Model` defined as `model_def`.
 /// `None` when the module holds no such invocation (a hand-written
 /// `Schema`, or one generated elsewhere).
+///
+/// Memoised across invocations while every file the module lookup read is
+/// unchanged (`file_cache::Tracked`): each relation otherwise re-parsed its
+/// target module and every `schema_type!` input in it.
 pub(super) fn target_shape(
+    module: &[String],
+    schema_name: &str,
+    model_def: &str,
+) -> Option<TargetShape> {
+    type Key = (
+        Option<crate::schema_macro::crate_layout::CrateLayout>,
+        Vec<String>,
+        String,
+        String,
+    );
+    type Memo = std::collections::HashMap<
+        Key,
+        crate::schema_macro::file_cache::Tracked<Option<TargetShape>>,
+    >;
+    thread_local! {
+        static MEMO: std::cell::RefCell<Memo> = std::cell::RefCell::new(Memo::new());
+    }
+    let key: Key = (
+        crate::schema_macro::crate_layout::crate_layout(),
+        module.to_vec(),
+        schema_name.to_owned(),
+        model_def.to_owned(),
+    );
+    let hit = MEMO.with(|memo| {
+        memo.borrow_mut()
+            .get_mut(&key)
+            .and_then(crate::schema_macro::file_cache::Tracked::get)
+    });
+    if let Some(shape) = hit {
+        return shape;
+    }
+    let entry = crate::schema_macro::file_cache::Tracked::compute(|| {
+        compute_target_shape(module, schema_name, model_def)
+    });
+    let shape = *entry.peek();
+    MEMO.with(|memo| memo.borrow_mut().insert(key, entry));
+    shape
+}
+
+fn compute_target_shape(
     module: &[String],
     schema_name: &str,
     model_def: &str,

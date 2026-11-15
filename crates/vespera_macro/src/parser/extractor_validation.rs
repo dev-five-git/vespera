@@ -50,32 +50,47 @@ pub fn validate_schema_backed_extractors_with_cache(
     metadata: &CollectedMetadata,
     file_cache: &HashMap<String, syn::File>,
 ) -> syn::Result<()> {
+    // Only names, `use` trees and signatures are read: handler bodies are
+    // skipped (`get_shallow_parsed_file`), and the collector's ASTs are
+    // looked up in place instead of deep-cloned into one map.
     let mut missing: HashMap<String, syn::File> = HashMap::new();
     for route in &metadata.routes {
         if !file_cache.contains_key(&route.file_path)
             && !missing.contains_key(&route.file_path)
-            && let Some(ast) = crate::schema_macro::file_cache::get_parsed_file(
+            && let Some(ast) = crate::schema_macro::file_cache::get_shallow_parsed_file(
                 std::path::Path::new(&route.file_path),
             )
         {
             missing.insert(route.file_path.clone(), ast);
         }
     }
-    if missing.is_empty() {
-        return check_extractors(metadata, file_cache);
-    }
-    missing.extend(
-        file_cache
-            .iter()
-            .map(|(path, ast)| (path.clone(), ast.clone())),
-    );
-    check_extractors(metadata, &missing)
+    check_extractors(metadata, &Both(file_cache, &missing))
 }
 
-fn check_extractors(
-    metadata: &CollectedMetadata,
-    file_cache: &HashMap<String, syn::File>,
-) -> syn::Result<()> {
+/// Route-file ASTs by file path.
+trait AstLookup {
+    fn ast(&self, path: &str) -> Option<&syn::File>;
+}
+
+impl AstLookup for HashMap<String, syn::File> {
+    fn ast(&self, path: &str) -> Option<&syn::File> {
+        self.get(path)
+    }
+}
+
+/// The collector's ASTs, then the ones parsed here.
+struct Both<'a>(
+    &'a HashMap<String, syn::File>,
+    &'a HashMap<String, syn::File>,
+);
+
+impl AstLookup for Both<'_> {
+    fn ast(&self, path: &str) -> Option<&syn::File> {
+        self.0.get(path).or_else(|| self.1.get(path))
+    }
+}
+
+fn check_extractors(metadata: &CollectedMetadata, file_cache: &dyn AstLookup) -> syn::Result<()> {
     // Renamed schemas (`#[schema(name = "X")] struct Foo`) are known under
     // their Rust ident too — that is the name a handler signature uses.
     let known: HashSet<&str> = metadata
@@ -105,7 +120,7 @@ fn check_extractors(
     let mut file_analysis: HashMap<&str, (HashSet<String>, HashSet<String>)> = HashMap::new();
 
     for route in &metadata.routes {
-        let Some(ast) = file_cache.get(&route.file_path) else {
+        let Some(ast) = file_cache.ast(&route.file_path) else {
             continue;
         };
 
@@ -269,7 +284,7 @@ fn collect_imported_route_types(
     ast: &syn::File,
     current_module: &str,
     route_module_files: &HashMap<&str, &str>,
-    file_cache: &HashMap<String, syn::File>,
+    file_cache: &dyn AstLookup,
     known: &HashSet<&str>,
     out: &mut HashSet<String>,
 ) {
@@ -326,7 +341,7 @@ fn walk_module_path(
     tree: &syn::UseTree,
     module_segments: &mut Vec<String>,
     route_module_files: &HashMap<&str, &str>,
-    file_cache: &HashMap<String, syn::File>,
+    file_cache: &dyn AstLookup,
     known: &HashSet<&str>,
     out: &mut HashSet<String>,
 ) {
@@ -393,7 +408,7 @@ fn record_route_type(
     declared: &syn::Ident,
     bound: &syn::Ident,
     route_module_files: &HashMap<&str, &str>,
-    file_cache: &HashMap<String, syn::File>,
+    file_cache: &dyn AstLookup,
     known: &HashSet<&str>,
     out: &mut HashSet<String>,
 ) {
@@ -402,7 +417,7 @@ fn record_route_type(
     }
     let module = module_segments.join("::");
     if let Some(&file_path) = route_module_files.get(module.as_str())
-        && let Some(file_ast) = file_cache.get(file_path)
+        && let Some(file_ast) = file_cache.ast(file_path)
         && file_declares_type(file_ast, declared)
     {
         out.insert(bound.to_string());

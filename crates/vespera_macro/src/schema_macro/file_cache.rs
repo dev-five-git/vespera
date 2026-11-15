@@ -62,16 +62,26 @@ use crate::metadata::StructMetadata;
 /// A relation's FK columns: `from` and, when given, `to`.
 type FkColumns = (String, Option<String>);
 
+/// Plain data derived from a file's content, reused while the content is.
+mod derived;
 /// Phase-4 path-string resolution caches (struct / FK / module-path / circular
 /// lookups), split into the `lookups` sidecar to keep this file within the
 /// source-size budget. They share the parent `FILE_CACHE` + the
 /// `ensure_file_list` / `get_fingerprint_cached` helpers via `super::` but
 /// operate on a disjoint set of `FileCache` fields.
 mod lookups;
+#[cfg(test)]
+pub use derived::derived_computes;
+pub use derived::{canonicalize_cached, derived, with_fallback_parse};
+/// A file parse that skips the bodies of top-level functions.
+mod shallow;
+/// Results read off several files, reused while none of them changed.
+mod tracked;
 pub use lookups::{
     get_circular_analysis, get_fk_column, get_module_path_from_schema_path,
     get_struct_from_schema_path,
 };
+pub use tracked::Tracked;
 
 /// Combined per-file fingerprint: modification time **and** byte length,
 /// both read from a single `fs::metadata` call.
@@ -203,6 +213,9 @@ struct FileCache {
     /// fetched during this invocation and `fs::metadata` is skipped.
     /// When the epoch differs the entry is stale and the syscall runs again.
     mtime_epoch_cache: HashMap<PathBuf, (u64, Option<FileFingerprint>)>,
+    /// Set by [`bump_epoch`] (see [`sources_stable`]): a fingerprint / file
+    /// list validated in an earlier epoch is still valid.
+    sources_stable: bool,
 }
 
 thread_local! {
@@ -228,6 +241,7 @@ thread_local! {
         struct_def_cache_hits: 0,
         epoch: 0,
         mtime_epoch_cache: HashMap::with_capacity(32),
+        sources_stable: false,
     });
 }
 
@@ -243,10 +257,32 @@ thread_local! {
 /// Across epochs the full mtime check still runs, preserving the existing
 /// invalidation semantics for long-lived processes (e.g. rust-analyzer).
 pub fn bump_epoch() {
+    let stable = sources_stable();
     FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         cache.epoch = cache.epoch.wrapping_add(1);
+        cache.sources_stable = stable;
     });
+}
+
+/// Whether the sources cannot change for the rest of this process: the
+/// macro runs inside the compiler (`--crate-name` on its command line),
+/// not in rust-analyzer's long-lived proc-macro server.  One compilation
+/// reads each source file once; the macro itself only ever writes `.json`
+/// files, never anything this cache reads.  Then a fingerprint or directory
+/// listing is fetched once per process instead of once per invocation.
+fn sources_stable() -> bool {
+    static STABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let compute = || {
+        !crate::macro_storage::in_long_lived_server()
+            && crate::env_access::compiler_args()
+                .iter()
+                .any(|arg| arg == "--crate-name")
+    };
+    if crate::env_access::compiler_args_overridden() {
+        return compute();
+    }
+    *STABLE.get_or_init(compute)
 }
 
 /// The current per-invocation epoch (see [`bump_epoch`]), for caches outside
@@ -263,9 +299,16 @@ pub fn current_epoch() -> u64 {
 /// no extra syscall over the previous mtime-only fetch. Returns `None` if the
 /// file does not exist or its mtime is unavailable.
 fn get_fingerprint_cached(cache: &mut FileCache, path: &Path) -> Option<FileFingerprint> {
+    let fingerprint = lookup_fingerprint(cache, path);
+    // Every file read goes through here: a tracked computation depends on it.
+    tracked::record_file(path, fingerprint);
+    fingerprint
+}
+
+fn lookup_fingerprint(cache: &mut FileCache, path: &Path) -> Option<FileFingerprint> {
     let current_epoch = cache.epoch;
     if let Some(&(entry_epoch, fingerprint)) = cache.mtime_epoch_cache.get(path)
-        && entry_epoch == current_epoch
+        && (entry_epoch == current_epoch || cache.sources_stable)
     {
         return fingerprint;
     }
@@ -349,6 +392,14 @@ pub fn get_parsed_file(path: &Path) -> Option<syn::File> {
     })
 }
 
+/// [`get_parsed_file`] with the bodies of top-level functions skipped (see
+/// `shallow`): for callers that read only names, `use` trees and signatures.
+pub fn get_shallow_parsed_file(path: &Path) -> Option<syn::File> {
+    let content = get_file_content(path)?;
+    FILE_CACHE.with(|cache| cache.borrow_mut().ast_parses += 1);
+    shallow::parse_shallow(&content)
+}
+
 /// Every `.rs` file under `dir` (sorted), served from the epoch-validated
 /// directory cache shared with the struct lookups.
 pub fn list_rs_files(dir: &Path) -> Arc<[PathBuf]> {
@@ -416,10 +467,30 @@ fn walk_and_fingerprint(cache: &mut FileCache, dir: &Path) -> (Vec<PathBuf>, u64
 ///   to suppress further work in the rest of the epoch.
 /// * New epoch, different fingerprint → install a fresh `DirEntry`.
 fn ensure_file_list(cache: &mut FileCache, src_dir: &Path) -> Arc<[PathBuf]> {
+    let files = ensure_file_list_untracked(cache, src_dir);
+    if let Some(entry) = cache.file_lists.get(src_dir) {
+        tracked::record_dir(src_dir, entry.fingerprint);
+    }
+    files
+}
+
+/// The current listing fingerprint of `dir` (see [`ensure_file_list`]).
+fn dir_fingerprint(dir: &Path) -> u64 {
+    FILE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        ensure_file_list(&mut cache, dir);
+        cache
+            .file_lists
+            .get(dir)
+            .map_or(0, |entry| entry.fingerprint)
+    })
+}
+
+fn ensure_file_list_untracked(cache: &mut FileCache, src_dir: &Path) -> Arc<[PathBuf]> {
     let current_epoch = cache.epoch;
 
     if let Some(entry) = cache.file_lists.get(src_dir)
-        && entry.last_epoch_validated == current_epoch
+        && (entry.last_epoch_validated == current_epoch || cache.sources_stable)
     {
         return Arc::clone(&entry.files);
     }

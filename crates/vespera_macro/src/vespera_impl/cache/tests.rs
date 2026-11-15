@@ -579,3 +579,16 @@ fn rs_fingerprints_skip_other_extensions_and_survive_nesting() {
         "dropping a nested `.rs` file must move the digest"
     );
 }
+
+/// The call-site file is parsed for `use` aliases only once a merge path is
+/// resolved: a `vespera!` without `merge = [..]` never pays that parse.
+#[test]
+fn merge_spec_cache_reads_call_site_aliases_lazily() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let call_site = dir.path().join("main.rs");
+    std::fs::write(&call_site, "use child::App as Child;\n").unwrap();
+    let mut cache = MergeSpecCache::with_call_site(Some(&call_site));
+    compute_config_hash_with_merge_cache(&base_processed(), &mut cache);
+    assert!(cache.aliases.get().is_none(), "no merge, no parse");
+    assert_eq!(cache.aliases()["Child"], ["child", "App"]);
+}

@@ -307,8 +307,17 @@ pub fn generate_schema_type_code(
     let schema_derived = !input.ignore_schema;
     // A source field with `#[garde(..)]` makes the DTO derive
     // `garde::Validate`; every other field then needs `#[garde(skip)]`.
+    // Only a direct `#[garde]` or one inside a `cfg_attr` sets it, so the
+    // full attribute carry (clone, quote, `cfg_attr` parse) runs only for a
+    // field with a `cfg_attr`.
     let any_garde = parsed_struct.fields.iter().any(|field| {
-        carried_field_attrs(&field.attrs, schema_derived, &source_module_path, false).garde
+        field.attrs.iter().any(|attr| attr.path().is_ident("garde"))
+            || (field
+                .attrs
+                .iter()
+                .any(|attr| attr.path().is_ident("cfg_attr"))
+                && carried_field_attrs(&field.attrs, schema_derived, &source_module_path, false)
+                    .garde)
     });
     // A carried `#[deprecated]` field: the struct (and so its serde
     // derives) `#[allow(deprecated)]`.
