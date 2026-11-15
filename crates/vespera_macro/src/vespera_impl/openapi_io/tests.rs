@@ -646,11 +646,20 @@ fn sidecar_validation_covers_missing_fingerprints_corruption_and_success() {
     let compact_fp = path_fingerprint(&compact).unwrap();
     let pretty_fp = path_fingerprint(&pretty).unwrap();
 
+    // No stored fingerprint: the content hash decides.
     assert!(
-        load_validated_sidecar_specs("t", Some(hash_str("compact")), None, None, None).is_none()
+        load_validated_sidecar_specs("t", Some(hash_str("compact")), None, None, None).is_some()
     );
     assert!(
-        load_validated_sidecar_specs("t", None, Some(hash_str("pretty")), None, None).is_none()
+        load_validated_sidecar_specs("t", None, Some(hash_str("pretty")), None, None).is_some()
+    );
+    let wrong = embed_spec_path("t", hash_str("other"));
+    fs::write(&wrong, "not other").unwrap();
+    assert!(
+        load_validated_sidecar_specs("t", Some(hash_str("other")), None, None, None).is_none()
+    );
+    assert!(
+        load_validated_sidecar_specs("t", None, Some(hash_str("missing")), None, None).is_none()
     );
     assert!(
         load_validated_sidecar_specs(
