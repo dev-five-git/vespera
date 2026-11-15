@@ -359,6 +359,8 @@ fn parse_type_impl(
                                         ),
                                     )])),
                                     required: Some(vec![key.to_string()]),
+                                    // serde rejects an entry after the variant.
+                                    max_properties: Some(1),
                                     ..Schema::object()
                                 }))
                             };

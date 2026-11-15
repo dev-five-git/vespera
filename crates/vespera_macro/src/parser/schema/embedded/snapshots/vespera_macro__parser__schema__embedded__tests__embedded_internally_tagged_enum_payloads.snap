@@ -1,0 +1,501 @@
+---
+source: crates/vespera_macro/src/parser/schema/embedded/tests.rs
+expression: both_views(src)
+---
+#[serde(tag = "type")] enum Outer { X(Adj), Y(Int), Z(Unt), W(W), S(StrictW), G(Ghost) }
+response: {
+  "oneOf": [
+    {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "X"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "c": {
+                  "type": "integer",
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255
+                },
+                "t": {
+                  "type": "string",
+                  "enum": [
+                    "A"
+                  ]
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "X"
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "t",
+                "c"
+              ],
+              "additionalProperties": false
+            }
+          ],
+          "discriminator": {
+            "propertyName": "t"
+          }
+        }
+      ]
+    },
+    {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "Y"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "A"
+                  ]
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "Y"
+                  ]
+                },
+                "x": {
+                  "type": "integer",
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255
+                }
+              },
+              "required": [
+                "type",
+                "kind",
+                "x"
+              ],
+              "additionalProperties": false
+            }
+          ],
+          "discriminator": {
+            "propertyName": "kind"
+          }
+        }
+      ]
+    },
+    {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "Z"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "Z"
+                  ]
+                },
+                "x": {
+                  "type": "integer",
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255
+                }
+              },
+              "required": [
+                "type",
+                "x"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "W"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "Square": {
+                  "type": "integer",
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255
+                }
+              },
+              "required": [
+                "Square"
+              ],
+              "maxProperties": 2
+            },
+            {
+              "type": "object",
+              "properties": {
+                "Point": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "Point"
+              ],
+              "maxProperties": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "S"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "token"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "G"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "$ref": "#/components/schemas/Ghost"
+        }
+      ]
+    }
+  ],
+  "discriminator": {
+    "propertyName": "type"
+  }
+}
+request: {
+  "oneOf": [
+    {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "X"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "c": {
+                  "type": "integer",
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255
+                },
+                "t": {
+                  "type": "string",
+                  "enum": [
+                    "A"
+                  ]
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "X"
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "t",
+                "c"
+              ],
+              "additionalProperties": false
+            }
+          ],
+          "discriminator": {
+            "propertyName": "t"
+          }
+        }
+      ]
+    },
+    {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "Y"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "A"
+                  ]
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "Y"
+                  ]
+                },
+                "x": {
+                  "type": "integer",
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255
+                }
+              },
+              "required": [
+                "type",
+                "kind",
+                "x"
+              ],
+              "additionalProperties": false
+            }
+          ],
+          "discriminator": {
+            "propertyName": "kind"
+          }
+        }
+      ]
+    },
+    {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "Z"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "Z"
+                  ]
+                },
+                "x": {
+                  "type": "integer",
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255
+                }
+              },
+              "required": [
+                "type",
+                "x"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "W"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "Square": {
+                  "type": "integer",
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255
+                }
+              },
+              "required": [
+                "Square"
+              ],
+              "maxProperties": 2
+            },
+            {
+              "type": "object",
+              "properties": {
+                "Point": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "Point"
+              ],
+              "maxProperties": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "S"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "token"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "G"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "$ref": "#/components/schemas/Ghost"
+        }
+      ]
+    }
+  ],
+  "discriminator": {
+    "propertyName": "type"
+  }
+}

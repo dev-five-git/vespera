@@ -30,7 +30,7 @@ use crate::schema_macro::type_utils::is_option_type;
 mod flatten;
 
 use flatten::{FlatPart, flatten_part};
-pub(super) use flatten::{flattened_unit_variants, resolve_type};
+pub(super) use flatten::{flattened_unit_variants, resolve_reference, resolve_type};
 
 /// Parses a Rust struct into an `OpenAPI` Schema.
 ///
@@ -499,11 +499,15 @@ pub(super) fn collect_named_fields(
         // field" error), so in the request view every alias is a property
         // with the field's schema, and a required field needs exactly one of
         // its names.
-        let aliases = if request {
+        // serde_derive keeps a field's accepted names in a set: an alias equal
+        // to the wire name, or repeated, is that one name.
+        let mut aliases = if request {
             extract_aliases(&field.attrs)
         } else {
             Vec::new()
         };
+        let mut seen = HashSet::from([field_name.clone()]);
+        aliases.retain(|alias| seen.insert(alias.clone()));
         for alias in &aliases {
             out.properties
                 .entry(alias.clone())

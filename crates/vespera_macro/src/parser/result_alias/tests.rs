@@ -237,7 +237,25 @@ fn crate_and_super_paths_skip_the_handler_module() {
             "-> super::ApiResult<u8>",
             None
         ),
-        "-> Result < u8 , Own >"
+        "-> super :: ApiResult < u8 >"
+    );
+    // The parent's `ApiResult` is a struct: never the handler module's own
+    // alias either.
+    let other = tempfile::tempdir().unwrap();
+    let other_src = other.path();
+    std::fs::write(other_src.join("lib.rs"), "mod routes;").unwrap();
+    std::fs::create_dir(other_src.join("routes")).unwrap();
+    std::fs::write(
+        other_src.join("routes").join("mod.rs"),
+        "pub mod users; pub struct ApiResult<T>(T);",
+    )
+    .unwrap();
+    let own = "type ApiResult<T> = Result<T, Own>;";
+    std::fs::write(other_src.join("routes").join("users.rs"), own).unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    assert_eq!(
+        expand_in(own, "-> super::ApiResult<u8>", Some(other_src)),
+        "-> super :: ApiResult < u8 >"
     );
     // An inline parent in the handler's file.
     assert_eq!(

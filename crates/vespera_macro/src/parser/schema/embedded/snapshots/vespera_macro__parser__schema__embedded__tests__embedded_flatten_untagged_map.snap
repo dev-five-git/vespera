@@ -1,0 +1,77 @@
+---
+source: crates/vespera_macro/src/parser/schema/embedded/tests.rs
+expression: both_views(src)
+---
+struct Req { name: String, #[serde(flatten)] m: M }
+response: {
+  "allOf": [
+    {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    {
+      "anyOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "b": {
+              "type": "integer",
+              "format": "uint8",
+              "minimum": 0,
+              "maximum": 255
+            }
+          },
+          "required": [
+            "b"
+          ]
+        }
+      ]
+    }
+  ]
+}
+request: {
+  "allOf": [
+    {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    {
+      "anyOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "b": {
+              "type": "integer",
+              "format": "uint8",
+              "minimum": 0,
+              "maximum": 255
+            }
+          },
+          "required": [
+            "b"
+          ]
+        }
+      ]
+    }
+  ]
+}

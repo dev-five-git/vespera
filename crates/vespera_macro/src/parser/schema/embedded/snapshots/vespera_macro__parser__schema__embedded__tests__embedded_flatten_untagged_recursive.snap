@@ -1,0 +1,103 @@
+---
+source: crates/vespera_macro/src/parser/schema/embedded/tests.rs
+expression: both_views(src)
+---
+struct Req { id: i32, #[serde(flatten)] r: Rec }
+response: {
+  "allOf": [
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "token": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "token"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "token": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "token"
+              ]
+            },
+            {
+              "$ref": "#/components/schemas/Rec"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+request: {
+  "allOf": [
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "token": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "token"
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "token": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "token"
+              ]
+            },
+            {
+              "$ref": "#/components/schemas/Rec"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

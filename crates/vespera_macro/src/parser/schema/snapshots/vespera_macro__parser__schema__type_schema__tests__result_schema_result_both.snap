@@ -14,7 +14,8 @@ expression: "serde_json::to_string_pretty(&schema_ref).unwrap()"
       },
       "required": [
         "Ok"
-      ]
+      ],
+      "maxProperties": 1
     },
     {
       "type": "object",
@@ -26,7 +27,8 @@ expression: "serde_json::to_string_pretty(&schema_ref).unwrap()"
       },
       "required": [
         "Err"
-      ]
+      ],
+      "maxProperties": 1
     }
   ]
 }
