@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use vespera::axum::Json;
 use vespera::axum::extract::Form;
 use vespera::axum::extract::Multipart;
+use vespera::axum::http::StatusCode;
 use vespera::{Schema, route};
 
 // ============== Request/Response DTOs ==============
@@ -72,14 +73,22 @@ pub async fn contact(Form(input): Form<ContactFormRequest>) -> Json<ContactFormR
 }
 
 /// Upload a file via raw multipart form data
-#[route(post, path = "/upload", tags = ["form"])]
-pub async fn upload(mut multipart: Multipart) -> Json<ContactFormResponse> {
-    while let Some(field) = multipart.next_field().await.unwrap() {
+///
+/// A malformed multipart body (or one over the body limit) answers `400`
+/// instead of panicking the handler.
+#[route(post, path = "/upload", tags = ["form"], error_status = [400])]
+pub async fn upload(
+    mut multipart: Multipart,
+) -> Result<Json<ContactFormResponse>, (StatusCode, String)> {
+    let bad_request = |error: vespera::axum::extract::multipart::MultipartError| {
+        (StatusCode::BAD_REQUEST, error.body_text())
+    };
+    while let Some(field) = multipart.next_field().await.map_err(bad_request)? {
         let _name = field.name().unwrap_or("unknown").to_string();
-        let _data = field.bytes().await.unwrap();
+        let _data = field.bytes().await.map_err(bad_request)?;
     }
-    Json(ContactFormResponse {
+    Ok(Json(ContactFormResponse {
         success: true,
         ticket_id: "UPLOAD-001".to_string(),
-    })
+    }))
 }

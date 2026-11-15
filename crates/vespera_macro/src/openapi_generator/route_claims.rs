@@ -1,7 +1,7 @@
 //! The `(method, path)` pairs one router claims, and the overlaps axum rejects
 //! while building it.
 //!
-//! axum (matchit) panics on two kinds of overlap:
+//! axum (matchit) panics on these overlaps:
 //!
 //! * the same method on the same path — whatever the parameter names
 //!   (`GET /users/{id}` twice);

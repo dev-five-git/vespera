@@ -3,7 +3,9 @@ use serde_json::json;
 use testkit::TestServer;
 use vespera::axum;
 
-const HTTP_METHODS: [&str; 7] = ["get", "post", "put", "patch", "delete", "head", "options"];
+const HTTP_METHODS: [&str; 8] = [
+    "get", "post", "put", "patch", "delete", "head", "options", "trace",
+];
 
 #[tokio::test]
 async fn test_health_endpoint() {
