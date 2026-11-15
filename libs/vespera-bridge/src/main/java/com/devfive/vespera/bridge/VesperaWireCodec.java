@@ -305,8 +305,17 @@ final class VesperaWireCodec {
     }
 
     /**
+     * Largest wire request a {@code byte[]} can hold: HotSpot refuses arrays
+     * longer than {@code Integer.MAX_VALUE - 8} ({@code OutOfMemoryError:
+     * Requested array size exceeds VM limit}), so a total in
+     * {@code (MAX - 8, MAX]} is rejected like any other oversized request.
+     */
+    static final int MAX_WIRE_LENGTH = Integer.MAX_VALUE - 8;
+
+    /**
      * Total wire length {@code 4 + headerLen + bodyLen}, computed in
-     * {@code long} and validated against {@code Integer.MAX_VALUE}.
+     * {@code long} and validated against {@link #MAX_WIRE_LENGTH} (the JVM
+     * array-length ceiling, {@code Integer.MAX_VALUE - 8}).
      *
      * <p>A body approaching the ~2 GiB Java array limit would otherwise
      * overflow the {@code int} addition into a negative / small value,
@@ -318,7 +327,7 @@ final class VesperaWireCodec {
      */
     static int wireTotalLength(int headerLen, int bodyLen) {
         long total = 4L + headerLen + bodyLen;
-        if (total > Integer.MAX_VALUE) {
+        if (total > MAX_WIRE_LENGTH) {
             throw new IllegalArgumentException(
                     "wire request exceeds 2 GiB (4 + headerLen=" + headerLen
                             + " + bodyLen=" + bodyLen + " = " + total

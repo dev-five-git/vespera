@@ -280,7 +280,7 @@ async fn dispatch_owned_to_parts(
 /// the nested object mirrors [`ResponseMetadata`].  Adding or renaming a
 /// serialized field on either type (`envelope.rs`) without updating this
 /// literal breaks the byte-identity guard
-/// [`tests::fallback_matches_serde_serialization`] below — that test is the
+/// `tests::fallback_matches_serde_serialization` below — that test is the
 /// drift tripwire, so keep the two in lockstep.  Mirrors the same discipline
 /// `crate::wire::header_write::write_response_header` documents against
 /// `hand_serialize_matches_serde_serialize`.
@@ -415,6 +415,16 @@ pub async fn dispatch_owned(router: Router, envelope: RequestEnvelope) -> Respon
 /// * router/handler errors → surfaced verbatim as response wire
 ///   (a handler panic unwinds to the caller; the JNI / C ABI hosts turn
 ///   it into a `500` with `"panicked":"true"` metadata)
+///
+/// # Panics
+///
+/// When a [`crate::dispatch_timeout`] is configured (including through
+/// `VESPERA_DISPATCH_TIMEOUT_MS`), `runtime` must have the time driver
+/// enabled (`Builder::enable_time` / `enable_all`; `Runtime::new` and the
+/// shared host runtime always do): the deadline timer panics with "timers
+/// are disabled" otherwise.  The same holds for every dispatch entry point
+/// that applies the deadline (`dispatch_into`, the streaming and `*_async`
+/// variants — for those, the runtime polling them).
 pub fn dispatch_from_bytes(input: Vec<u8>, runtime: &tokio::runtime::Runtime) -> Vec<u8> {
     runtime.block_on(dispatch_from_bytes_async(input))
 }
@@ -556,6 +566,11 @@ async fn drain_buffered_body(mut out: Vec<u8>, mut body: Body, max: usize) -> Ve
 
 /// Sync wrapper around [`dispatch_into_async`] for FFI callers that
 /// own a [`tokio::runtime::Runtime`].
+///
+/// # Panics
+///
+/// Like [`dispatch_from_bytes`]: with a [`crate::dispatch_timeout`]
+/// configured, `runtime` must have the time driver enabled.
 pub fn dispatch_into(
     input: Vec<u8>,
     out: &mut [u8],
@@ -591,10 +606,13 @@ pub fn dispatch_into(
 /// [`DirectWriteResult::Overflow`].  An exact-length body (a `Full`
 /// response / explicit `Content-Length`) reports it immediately from the
 /// body's size hint **without draining**; an unknown-length (streaming)
-/// body is drained (counting, not writing) to compute the size — bounded by
-/// [`crate::max_buffered_response_bytes`], past which a `500` wire response
-/// naming the limit is written instead.  Either way the handler has already
-/// run; retrying runs it again — callers must gate retries on idempotency,
+/// body is drained (counting, not writing) to compute the size.  Either way
+/// the body is held to [`crate::max_buffered_response_bytes`] exactly like
+/// the buffered path — for every status, whether or not it fits `out`: a
+/// body past the cap writes the `500` wire response naming the limit
+/// instead (never an `Overflow` the buffered path would refuse).  On an
+/// overflow the handler has already run; retrying runs it again — callers
+/// must gate retries on idempotency,
 /// or use [`dispatch_into_async_borrowed_resumable`], which keeps the
 /// overflowing response instead.
 ///
@@ -678,7 +696,11 @@ async fn dispatch_into_borrowed_inner(input: &[u8], out: &mut [u8]) -> DirectWri
 /// here.  A `text/event-stream` response is returned pending immediately
 /// ([`PendingDirectResponse::prefers_streaming`](crate::PendingDirectResponse::prefers_streaming))
 /// because it may never end.  A configured [`crate::dispatch_timeout`]
-/// bounds the call (expiry → `504` wire, written into `out`).
+/// bounds the call (expiry → `504` wire, written into `out`).  The body
+/// bytes this call and [`PendingDirectResponse::write_into`](crate::PendingDirectResponse::write_into)
+/// write are held to [`crate::max_buffered_response_bytes`] like the
+/// buffered path (`500` past it); [`PendingDirectResponse::stream`](crate::PendingDirectResponse::stream)
+/// delivers the rest uncapped, like the streaming dispatch modes.
 pub async fn dispatch_into_async_borrowed_resumable(
     input: &[u8],
     out: &mut [u8],

@@ -134,11 +134,31 @@ fn current_dispatch_span() -> Option<Span> {
         .then_some(span)
 }
 
-/// Record the parsed request method (never the concrete path) onto the
-/// current dispatch span.
+/// Record the request method (never the concrete path) onto the current
+/// dispatch span, as [`span_method`] buckets it.
 pub fn record_request(method: &str) {
     if let Some(span) = current_dispatch_span() {
-        span.record("method", method);
+        span.record("method", span_method(method));
+    }
+}
+
+/// The `method` span value: one of the nine standard methods verbatim,
+/// anything else (an extension token, an invalid string -- the raw wire text
+/// is client-controlled, up to the 1 MiB header cap) the fixed `_OTHER`, as
+/// OpenTelemetry's HTTP semantic conventions do.  Like `app` and `route`,
+/// raw client text never reaches the span and the cardinality stays bounded.
+fn span_method(method: &str) -> &'static str {
+    match method {
+        "GET" => "GET",
+        "HEAD" => "HEAD",
+        "POST" => "POST",
+        "PUT" => "PUT",
+        "DELETE" => "DELETE",
+        "CONNECT" => "CONNECT",
+        "OPTIONS" => "OPTIONS",
+        "TRACE" => "TRACE",
+        "PATCH" => "PATCH",
+        _ => "_OTHER",
     }
 }
 

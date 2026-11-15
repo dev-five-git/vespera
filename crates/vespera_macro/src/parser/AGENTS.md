@@ -13,12 +13,17 @@ parser/
 ├── schema/                         # Rust types → JSON Schema (see below)
 ├── parameters.rs + parameters/     # Handler params → OpenAPI Parameters
 │                                   #   parameters/{header,path,query,shared}.rs
-├── operation.rs + operation/       # Function → OpenAPI Operation (operation/tests.rs)
-├── request_body.rs                 # Json<T> → requestBody
-├── response.rs + response/         # Return type → response schema (response/tests.rs)
+│                                   #   + parameters/tests_shapes.rs
+├── operation.rs + operation/       # Function → OpenAPI Operation
+│                                   #   operation/{tests,tests_extractor_wrappers,tests_form_query,
+│                                   #   tests_request_shapes,tests_status,tests_validated}.rs
+├── request_body.rs                 # Json<T> / Form<T> / TypedMultipart<T> / raw bodies → requestBody
+├── response.rs + response/         # Return type → responses (response/{tests,tests_parts}.rs)
+├── result_alias.rs + result_alias/ # Return-type alias expansion (type ApiResult<T> = ..)
 ├── path.rs                         # Path parameter extraction
-├── extractors.rs                   # Validated<T> unwrapping helpers
-├── extractor_validation.rs         # Compile-time Schema-backed extractor check
+├── extractors.rs                   # Validated<T> / Result / WithRejection / Cached unwrapping
+├── extractor_validation.rs + extractor_validation/ # Compile-time Schema-backed extractor check
+│                                   #   (extractor_validation/tests_scope.rs)
 ├── is_keyword_type.rs              # Axum extractor detection
 └── snapshots/                      # insta test snapshots
 ```
@@ -26,16 +31,24 @@ parser/
 ```
 parser/schema/
 ├── mod.rs                          # Re-exports the schema public API
-├── type_schema.rs + type_schema/   # Type → SchemaRef (type_schema/conversion.rs)
-├── struct_schema.rs + struct_schema/ # Struct → JSON Schema (struct_schema/tests.rs)
+├── type_schema.rs + type_schema/   # Type → SchemaRef
+│                                   #   type_schema/{conversion.rs + conversion/{schema_def,tests,
+│                                   #   tests_instances}.rs, generic_instances.rs, nullable.rs}
+├── struct_schema.rs + struct_schema/ # Struct → JSON Schema
+│                                   #   struct_schema/{flatten,tests,tests_serde_fidelity,
+│                                   #   tests_transparent,tests_wire_names,tests_wire_override}.rs
 ├── enum_schema.rs + enum_schema/   # Enum → JSON Schema
-│                                   #   enum_schema/{representations.rs,unit.rs,variant.rs}
+│                                   #   enum_schema/{representations.rs + representations/
+│                                   #   {tests,tests_closed,tests_fidelity}.rs, unit.rs, variant.rs,
+│                                   #   tests_validate.rs}
 ├── serde_attrs.rs + serde_attrs/   # Serde attribute extraction
 │                                   #   serde_attrs/{codec,common,enum_repr,extract,fallback,rename_case}.rs
+├── garde_rules.rs + garde_rules/   # #[garde(..)] rules → JSON Schema keywords (garde_rules/tests.rs)
 ├── generics.rs                     # Generic type parameter substitution
 ├── schema_attrs.rs                 # #[schema(...)] constraint extraction (incl. value_type)
+├── scoped_ident.rs                 # Module-scoped keys for renames sharing an ident
 ├── wire_override.rs                # value_type / serde with / into / from schema overrides
-├── request_view.rs                 # {Name}Input request views
+├── request_view.rs + request_view/ # {Name}Input request views (request_view/tests.rs)
 └── snapshots/                      # insta test snapshots
 ```
 
@@ -94,11 +107,14 @@ not from their defining submodule.
 
 | Axum Extractor | OpenAPI Location |
 |----------------|------------------|
-| `Path<T>` | path parameter |
-| `Query<T>` | query parameters |
-| `Json<T>` | requestBody |
+| `Path<T>` / `Option<Path<T>>` | path parameters (one per `{name}` of the route path) |
+| `Query<T>` / `OptionalQuery<T>` | query parameters (`OptionalQuery`: every parameter optional) |
+| `Form<T>` | requestBody `application/x-www-form-urlencoded` (query parameters with `form_in_query`, e.g. GET) |
+| `Json<T>` | requestBody `application/json` |
+| `TypedMultipart<T>` / `TypedMultipartWithLimits<T, ..>` / `Multipart` | requestBody `multipart/form-data` |
+| `Validated<E>` / `Result<E, R>` / `WithRejection<E, R>` / `Cached<E>` | documented as the wrapped extractor `E` |
 | `State<T>` | ignored |
-| `TypedHeader<T>` | header parameter |
+| `TypedHeader<T>` | header parameter (reserved names `Accept` / `Content-Type` / `Authorization` are dropped; route-level `headers = [...]` keeps them as written) |
 
 ## ANTI-PATTERNS
 

@@ -303,13 +303,30 @@ class NativeImageMetadataTest {
     @Test
     void everyCachedJniMethodIsRegistered() throws IOException {
         JsonNode jni = metadata("jni-config.json");
-        List<String[]> resolved = matches(RESOLVE, rustSources());
+        Map<Path, String> sources = rustSources();
+        List<String[]> resolved = matches(RESOLVE, sources);
         assertFalse(resolved.isEmpty(), "found no CachedMethod::resolve(..) lookups — extraction is stale");
+        // Every call site must match RESOLVE: one with another shape (a const
+        // class name, `&mut env`, ...) would otherwise be skipped silently.
+        int callSites = 0;
+        for (String source : sources.values()) {
+            callSites += occurrences(source, "CachedMethod::resolve(");
+        }
+        assertEquals(callSites, resolved.size(),
+                "a CachedMethod::resolve(..) call site does not match the RESOLVE extraction rule");
         for (String[] lookup : resolved) {
             String type = binaryName(lookup[0]);
             assertTrue(hasMethod(jniEntry(jni, type), lookup[1], parameterTypes(lookup[2])),
                     "jni-config.json lacks " + type + "." + lookup[1] + lookup[2]);
         }
+    }
+
+    private static int occurrences(String haystack, String needle) {
+        int count = 0;
+        for (int at = haystack.indexOf(needle); at >= 0; at = haystack.indexOf(needle, at + 1)) {
+            count++;
+        }
+        return count;
     }
 
     @Test

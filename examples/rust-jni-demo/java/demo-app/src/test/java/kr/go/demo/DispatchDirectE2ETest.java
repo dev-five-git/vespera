@@ -54,6 +54,12 @@ class DispatchDirectE2ETest {
         return out;
     }
 
+    /** The {@code [4, 4 + N)} header JSON of a wire frame. */
+    private static byte[] wireHeader(byte[] wire) {
+        int n = ByteBuffer.wrap(wire, 0, 4).getInt();
+        return java.util.Arrays.copyOfRange(wire, 4, 4 + n);
+    }
+
     private static byte[] sha256(byte[] data) throws Exception {
         return MessageDigest.getInstance("SHA-256").digest(data);
     }
@@ -61,18 +67,19 @@ class DispatchDirectE2ETest {
     /**
      * The DIRECT response must be semantically identical to the
      * dispatchBytes response: same status, same headers, SHA256-equal
-     * body.  (Raw wire bytes are NOT compared — the wire header JSON
-     * serialises a Rust HashMap whose key order is intentionally
-     * unspecified per response.)
+     * body, and byte-identical wire header JSON (the serializer writes the
+     * response {@code HeaderMap} in sorted name order, locked by
+     * {@code crates/vespera_inprocess/tests/wire_contract.rs}, so both paths
+     * must emit the same bytes).
      */
     private static void assertDirectMatchesBytes(int bodySize, long seed) throws Exception {
         byte[] wire = echoWire(randomBody(bodySize, seed));
 
-        VesperaBridge.DecodedResponse viaBytes =
-                VesperaBridge.decodeResponse(VesperaBridge.dispatchBytes(wire));
-        VesperaBridge.DecodedResponse viaDirect =
-                VesperaBridge.decodeResponse(
-                        toArray(VesperaBridge.dispatchDirectPooled(wire, true)));
+        byte[] bytesWire = VesperaBridge.dispatchBytes(wire);
+        byte[] directWire = toArray(VesperaBridge.dispatchDirectPooled(wire, true));
+        VesperaBridge.DecodedResponse viaBytes = VesperaBridge.decodeResponse(bytesWire);
+        VesperaBridge.DecodedResponse viaDirect = VesperaBridge.decodeResponse(directWire);
+        assertArrayEquals(wireHeader(bytesWire), wireHeader(directWire), "wire header bytes");
 
         assertEquals(200, viaDirect.status());
         assertEquals(viaBytes.status(), viaDirect.status(), "status");
@@ -156,7 +163,7 @@ class DispatchDirectE2ETest {
         assertEquals(viaBytes.body().remaining(), viaDirect.body().remaining(),
                 "body length — a mismatch means the garbage tail leaked past inLen");
         assertArrayEquals(viaBytes.bodyBytes(), viaDirect.bodyBytes(), "body bytes");
-        // Map equality — wire JSON key order is unspecified.
+        // Same headers (sorted on the wire, so the decoded maps match too).
         assertEquals(viaBytes.headers(), viaDirect.headers(), "headers");
     }
 

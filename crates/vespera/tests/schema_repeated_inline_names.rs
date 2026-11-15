@@ -21,6 +21,13 @@ mod first {
     }
 }
 
+/// `first::Page`'s schema, read BEFORE `second::Page` is derived: schema
+/// storage is keyed by the Rust name, so a later `schema!(first::Page)`
+/// would read `second::Page` (the last `Page` derived).
+fn first_page_schema() -> vespera::schema::Schema {
+    vespera::schema!(first::Page)
+}
+
 mod second {
     use serde::{Deserialize, Serialize};
     use vespera::Schema;
@@ -42,10 +49,10 @@ fn each_page_resolves_its_own_default_fn() {
     let second: second::Page = serde_json::from_str("{}").unwrap();
     assert_eq!((first.limit, second.limit), (10, 20));
     // serde resolves those on its own; the derive's statically extracted
-    // OpenAPI `default` is what this file is about.  Schema storage is keyed
-    // by name, so `schema!` reads the LAST derived `Page` (`second`, whatever
-    // path it is given): its `default` must be 20 — a derive that resolved
-    // `first::limit` for both structs would answer 10 here.
+    // OpenAPI `default` is what this file is about.  Each struct must carry
+    // its OWN module's default: a derive that resolved one module's `limit`
+    // for both structs (either direction) fails one of these.
+    assert_eq!(limit_default(&first_page_schema()), json!(10));
     assert_eq!(limit_default(&vespera::schema!(second::Page)), json!(20));
 }
 

@@ -5,7 +5,7 @@
 //! C FFI, or WASM.  It exposes two API layers on top of a single
 //! shared dispatch core:
 //!
-//! 1. **Direct API** — [`dispatch`] / [`dispatch_typed`] /
+//! 1. **Direct API** — [`dispatch()`] / [`dispatch_typed`] /
 //!    [`dispatch_owned`] drive a [`Router`] with a [`RequestEnvelope`]
 //!    and return a [`ResponseEnvelope`].  Bodies on this path are
 //!    UTF-8 text only; if the upstream response body is not valid
@@ -22,7 +22,7 @@
 //!    which borrows the wire header, serialises response headers
 //!    straight from the `http::HeaderMap`, and carries the body as raw
 //!    bytes (no UTF-8 round-trip).  Within the direct API itself,
-//!    prefer [`dispatch_owned`] over [`dispatch`] / [`dispatch_typed`]
+//!    prefer [`dispatch_owned`] over [`dispatch()`] / [`dispatch_typed`]
 //!    to avoid cloning the request envelope.
 //!
 //! 2. **Binary wire API** — [`dispatch_from_bytes`] is the

@@ -208,12 +208,16 @@ impl PendingDirectResponse {
         let Some(mut body) = self.body.take() else {
             return ResumableDirectWrite::Complete(written);
         };
+        let max = max_buffered_response_bytes();
         loop {
             match body.frame().await {
                 Some(Ok(frame)) => {
                     let Ok(data) = frame.into_data() else {
                         continue;
                     };
+                    if exceeds_cap(max, written - self.header.len(), data.len()) {
+                        return Self::materialized(response_too_large_wire(max)).copy_into(out);
+                    }
                     if let Some(dst) = written
                         .checked_add(data.len())
                         .and_then(|end| out.get_mut(written..end))
@@ -263,30 +267,35 @@ impl PendingDirectResponse {
     }
 
     /// Legacy (non-resumable) overflow: report the exact required size,
-    /// draining the unread remainder only to count it — bounded by
-    /// [`max_buffered_response_bytes`] (`500` once exceeded) so an unbounded
-    /// body can no longer be drained forever.
+    /// draining the unread remainder only to count it.  The size a caller is
+    /// asked to allocate (and re-run the handler for) is bounded by
+    /// [`max_buffered_response_bytes`] like the buffered path: a body past it
+    /// answers the `500` naming the limit instead — whether its length is
+    /// known up front from an exact size hint or counted by draining (so an
+    /// unbounded body can no longer be drained forever either).
     async fn into_exact_overflow(self, out: &mut [u8]) -> DirectWriteResult {
         let known = self.header.len().saturating_add(self.prefix.len());
         let Some(mut body) = self.body else {
             return DirectWriteResult::Overflow(known);
         };
-        if let Some(exact) = self.exact_remaining {
-            return DirectWriteResult::Overflow(
-                known.saturating_add(usize::try_from(exact).unwrap_or(usize::MAX)),
-            );
-        }
         let max = max_buffered_response_bytes();
+        if let Some(exact) = self.exact_remaining {
+            let exact = usize::try_from(exact).unwrap_or(usize::MAX);
+            if exceeds_cap(max, self.prefix.len(), exact) {
+                return write_wire_into(out, &response_too_large_wire(max));
+            }
+            return DirectWriteResult::Overflow(known.saturating_add(exact));
+        }
         let header_len = self.header.len();
         let mut body_len = self.prefix.len();
         loop {
             match body.frame().await {
                 Some(Ok(frame)) => {
                     let len = frame.data_ref().map_or(0, Bytes::len);
-                    body_len = body_len.saturating_add(len);
-                    if max != 0 && body_len > max {
+                    if exceeds_cap(max, body_len, len) {
                         return write_wire_into(out, &response_too_large_wire(max));
                     }
+                    body_len = body_len.saturating_add(len);
                 }
                 Some(Err(_)) => {
                     return write_wire_into(out, &error_wire(500, BODY_STREAM_ERROR_MSG));
@@ -295,6 +304,12 @@ impl PendingDirectResponse {
             }
         }
     }
+}
+
+/// Whether `body_len` body bytes already produced plus a `frame_len` frame
+/// pass the [`max_buffered_response_bytes`] cap `max` (`0` = unlimited).
+const fn exceeds_cap(max: usize, body_len: usize, frame_len: usize) -> bool {
+    max != 0 && body_len.saturating_add(frame_len) > max
 }
 
 /// Whether the response is an incremental `text/event-stream`.
@@ -343,8 +358,8 @@ pub async fn finish_resumable(
         match prefetch_422_body(body).await {
             Prefetched422::Small(bytes) => {
                 // Same cap check as the buffered `finish_buffered_wire` 422
-                // branch, so the two modes agree when the cap is below the
-                // hoist prefetch bound (64 KiB).
+                // branch (and the direct body loop below), so the two modes
+                // agree when the cap is below the hoist prefetch bound.
                 let max = max_buffered_response_bytes();
                 let wire = if max != 0 && bytes.len() > max {
                     response_too_large_wire(max)
@@ -386,6 +401,7 @@ pub async fn finish_resumable(
         ));
     }
 
+    let max = max_buffered_response_bytes();
     let mut written = header_total;
     loop {
         match body.frame().await {
@@ -393,6 +409,12 @@ pub async fn finish_resumable(
                 let Ok(data) = frame.into_data() else {
                     continue;
                 };
+                // The buffered path's response cap, so DIRECT and buffered
+                // answer the same `500` whatever the status and `out` size.
+                if exceeds_cap(max, written - header_total, data.len()) {
+                    return PendingDirectResponse::materialized(response_too_large_wire(max))
+                        .copy_into(out);
+                }
                 // `checked_add` guards the bounds test against a
                 // pathological frame length wrapping `usize`.
                 if let Some(dst) = written

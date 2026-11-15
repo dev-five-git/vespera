@@ -81,7 +81,14 @@ pub(super) fn validated_inner_type(ty: &Type) -> Option<&Type> {
 /// Payload-carrying extractors that `vespera::Validated` / `ValidatedWith`
 /// support out of the box (`ValidatePayloadWith` impls in `vespera`).
 #[cfg(feature = "validation")]
-const PAYLOAD_EXTRACTORS: [&str; 5] = ["Json", "Form", "Query", "Path", "TypedMultipart"];
+const PAYLOAD_EXTRACTORS: [&str; 6] = [
+    "Json",
+    "Form",
+    "Query",
+    "Path",
+    "TypedMultipart",
+    "TypedMultipartWithLimits",
+];
 
 /// The validated payload `U` of a `Validated<E<U>>` / `ValidatedWith<C, E<U>>`
 /// argument, where `E` is one of the built-in payload extractors. A custom
@@ -195,6 +202,10 @@ mod tests {
     #[case::query("ValidatedWith<Ctx, Query<Filter>>", Some("Filter"))]
     #[case::path("Validated<Path<(i64, String)>>", Some("(i64 , String)"))]
     #[case::multipart("Validated<TypedMultipart<Upload>>", Some("Upload"))]
+    #[case::multipart_with_limits(
+        "Validated<TypedMultipartWithLimits<Upload, 1024, 8>>",
+        Some("Upload")
+    )]
     #[case::custom_extractor("Validated<MyExtractor<User>>", None)]
     #[case::with_rejection_validated("WithRejection<Validated<Json<User>>, R>", Some("User"))]
     #[case::cached_result_validated("Cached<Result<Validated<Query<F>>, R>>", Some("F"))]

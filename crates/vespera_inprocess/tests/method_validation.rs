@@ -58,3 +58,26 @@ async fn valid_method_dispatches_normally() {
     assert_eq!(response.status, 200);
     assert_eq!(response.body, "would-have-been-wrong");
 }
+
+/// An invalid method is client text of up to the header cap: the `405` body
+/// (and the WARN event built from it) echoes at most a 64-byte prefix, cut on
+/// a char boundary and marked `...`.
+#[tokio::test(flavor = "current_thread")]
+async fn long_invalid_method_is_truncated_in_the_405_body() {
+    let prefix = "B".repeat(60);
+    // 62 ASCII bytes + a 3-byte char straddling the 64-byte cut.
+    let method = format!("{prefix} x\u{20ac}tail");
+    let response = dispatch_typed(router_with_get_test(), &envelope_with_method(&method)).await;
+    assert_eq!(response.status, 405);
+    assert_eq!(
+        response.body,
+        format!("Method Not Allowed: '{prefix} x...' is not a valid HTTP method")
+    );
+    // Exactly 64 bytes: echoed whole, no marker.
+    let method = format!("{prefix} xyz");
+    let response = dispatch_typed(router_with_get_test(), &envelope_with_method(&method)).await;
+    assert_eq!(
+        response.body,
+        format!("Method Not Allowed: '{method}' is not a valid HTTP method")
+    );
+}

@@ -192,7 +192,7 @@ pub fn build_operation_from_function(
     if success_key != "200"
         && let Some(mut response) = responses.remove("200")
     {
-        if matches!(success_key.as_str(), "204" | "205") {
+        if success_key.parse().is_ok_and(status_forbids_body) {
             response.content = None;
         }
         responses.entry(success_key.clone()).or_insert(response);
@@ -222,13 +222,17 @@ pub fn build_operation_from_function(
         for &status_code in status_codes {
             // Only add if not already present. When the error type carries no
             // body (`Result<_, StatusCode>`, plain non-`Result` returns) the
-            // declared status is still documented — description only.
+            // declared status is still documented — description only, like
+            // a status that cannot carry a body (1xx, 204, 205, 304).
+            let media = error_media
+                .as_ref()
+                .filter(|_| !status_forbids_body(status_code));
             responses
                 .entry(status_code.to_string())
                 .or_insert_with(|| Response {
                     description: response_description_for_status(status_code),
                     headers: None,
-                    content: error_media.as_ref().map(|(content_type, schema)| {
+                    content: media.map(|(content_type, schema)| {
                         BTreeMap::from([(
                             content_type.clone(),
                             MediaType {
@@ -340,6 +344,15 @@ pub fn build_operation_from_function(
     }
 }
 
+/// An `in: header` parameter declared by `#[route(headers = [...])]`.
+///
+/// Unlike the `TypedHeader` path (which drops `Accept` / `Content-Type` /
+/// `Authorization` via `is_reserved_header_name`), an explicit declaration
+/// is emitted as written, even for those names: it is the user's own
+/// documentation, and existing routes rely on it. OpenAPI 3.1 (Parameter
+/// Object, `in: header`) says tools SHALL ignore such parameters, so
+/// document authentication through `security = [...]` and media types
+/// through the request body / responses instead.
 fn header_parameter(header: &HeaderParam) -> Parameter {
     Parameter {
         name: header.name.clone(),
@@ -355,6 +368,13 @@ fn header_parameter(header: &HeaderParam) -> Parameter {
         explode: None,
         ..Default::default()
     }
+}
+
+/// A status whose response never carries content (RFC 9110 sections 15.2,
+/// 15.3.5, 15.3.6 and 15.4.5): 1xx, `204 No Content`, `205 Reset Content`
+/// and `304 Not Modified`.
+fn status_forbids_body(status_code: u16) -> bool {
+    matches!(status_code, 100..=199 | 204 | 205 | 304)
 }
 
 fn error_response_description() -> String {

@@ -78,6 +78,11 @@ final class BundledNativeIndex {
             }
             URLConnection connection = root.openConnection();
             if (connection instanceof JarURLConnection jarConnection) {
+                // useCaches=false makes getJarFile() a fresh JarFile we own and
+                // may close: the JDK jar: handler and Spring Boot's 3.2+ loader
+                // (UrlJarFiles.getOrCreate(false, ..)) open a new one; the
+                // CLASSIC loader hands out a JarFileWrapper whose own ZipFile is
+                // closed at construction (close is a no-op, the parent stays open).
                 jarConnection.setUseCaches(false);
                 try (JarFile jar = jarConnection.getJarFile()) {
                     Enumeration<JarEntry> entries = jar.entries();

@@ -1,6 +1,6 @@
 ---
 source: crates/vespera_macro/src/multipart_impl/mod.rs
-assertion_line: 508
+assertion_line: 599
 expression: derive_pretty(src)
 ---
 impl<
@@ -26,7 +26,10 @@ where
             vespera::multipart::register_multipart_part()?;
             let __field__ = vespera::multipart::MeteredField::__from_field(__field__);
             let __field_name__ = match __field__.name() {
-                std::option::Option::Some("") | std::option::Option::None => continue,
+                std::option::Option::Some("") | std::option::Option::None => {
+                    __field__.__skip().await?;
+                    continue;
+                }
                 std::option::Option::Some(__name__) => __name__,
             };
             match __field_name__ {
@@ -42,7 +45,9 @@ where
                             .await?,
                     );
                 }
-                _ => {}
+                _ => {
+                    __field__.__skip().await?;
+                }
             }
         }
         std::result::Result::Ok(Self { value })

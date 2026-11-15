@@ -1,6 +1,8 @@
 //! Criterion benchmarks for the in-process dispatch surface.
 //!
-//! Five groups:
+//! Groups (the full list is the `criterion_group!` at the bottom; the
+//! streaming, runtime and serde A/B families live in the `dispatch/`
+//! sub-modules), among them:
 //!
 //! - `router_path`: `Router::clone()` of a pre-built router  (post-P1)
 //!   vs rebuilding the router from a factory closure        (pre-P1, simulated).
@@ -373,8 +375,8 @@ fn bench_direct_write_path(c: &mut Criterion) {
     let mut group = c.benchmark_group("direct_write_path");
 
     // Bodyless GET — the #3 borrowed-input sweet spot. Same-run A/B:
-    // `bodyless_owned` clones the wire into a `Vec` (mirrors the JNI
-    // `dispatchDirect0` `.to_vec()` copy of the direct buffer), while
+    // `bodyless_owned` clones the wire into a `Vec` (the input copy the JNI
+    // `dispatchDirect0` made before it switched to the borrowed path), while
     // `bodyless_borrowed` reads the wire in place and builds an empty body,
     // copying nothing. The delta isolates the eliminated input copy.
     {

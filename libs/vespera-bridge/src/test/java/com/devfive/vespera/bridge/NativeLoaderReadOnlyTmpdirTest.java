@@ -2,6 +2,7 @@ package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -42,6 +43,7 @@ class NativeLoaderReadOnlyTmpdirTest {
             Path base = root.resolve("native");
             Path missingTmp = root.resolve("no-such-tmp");
             Path argFile = root.resolve("java.args");
+            Path outputFile = root.resolve("child.out");
             // An argument file: the test classpath can exceed the Windows command-line limit.
             Files.writeString(argFile, "-cp\n\"" + System.getProperty("java.class.path")
                     .replace('\\', '/') + "\"\n");
@@ -50,9 +52,15 @@ class NativeLoaderReadOnlyTmpdirTest {
                     "-Djava.io.tmpdir=" + missingTmp, NativeLoaderReadOnlyTmpdirTest.class.getName(),
                     base.toString()))
                     .redirectErrorStream(true)
+                    // To a file, not a pipe: reading a pipe to EOF before
+                    // waitFor would make the timeout below unreachable.
+                    .redirectOutput(outputFile.toFile())
                     .start();
-            String output = new String(child.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            assertTrue(child.waitFor(60, TimeUnit.SECONDS), "child JVM timed out");
+            if (!child.waitFor(60, TimeUnit.SECONDS)) {
+                child.destroyForcibly().waitFor();
+                fail("child JVM timed out: " + Files.readString(outputFile, StandardCharsets.UTF_8));
+            }
+            String output = Files.readString(outputFile, StandardCharsets.UTF_8);
             assertEquals(0, child.exitValue(), output);
             String line = output.lines().filter(l -> l.startsWith("EXTRACTED=")).findFirst().orElseThrow();
             Path extracted = Paths.get(line.substring("EXTRACTED=".length()));

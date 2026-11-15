@@ -232,3 +232,110 @@ async fn spawned_dispatch_never_pulls_inline() {
         "current-thread runtime: the spawned task runs here, pulls must not"
     );
 }
+
+/// Round 12: a current-thread runtime's `block_on` thread is its only
+/// worker, so the fast path is off there.  The pull below waits on a
+/// `std::sync::mpsc` fed by a task of that same runtime: inline it would
+/// block the only thread that can run the sender — a permanent hang (the
+/// watchdog turns it into a failure).
+#[test]
+fn current_thread_block_on_never_pulls_inline() {
+    ensure();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let caller = std::thread::current().id();
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let pulled_on = Arc::new(Mutex::new(Vec::new()));
+        let threads = Arc::clone(&pulled_on);
+        let rx = Mutex::new(rx);
+        let pull = move || {
+            threads.lock().unwrap().push(std::thread::current().id());
+            rx.lock()
+                .unwrap()
+                .recv()
+                .map_or(RequestChunk::End, RequestChunk::Data)
+        };
+        let (got_status, body) = runtime.block_on(async move {
+            tokio::spawn(async move {
+                tokio::task::yield_now().await;
+                tx.send(vec![b'q'; 7]).unwrap();
+            });
+            let mut body = Vec::new();
+            let header = dispatch_bidirectional_streaming_closing(
+                encode("/echo"),
+                pull,
+                |chunk: &[u8]| {
+                    body.extend_from_slice(chunk);
+                    ControlFlow::Continue(())
+                },
+                || {},
+            )
+            .await;
+            (status(&header), body)
+        });
+        let inline = pulled_on
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|t| **t == caller)
+            .count();
+        done_tx.send((got_status, body, inline)).unwrap();
+    });
+    let (got_status, body, inline) = done_rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("an inline pull hung the current-thread runtime");
+    assert_eq!(got_status, 200);
+    assert_eq!(body, b"qqqqqqq");
+    assert_eq!(
+        inline, 0,
+        "no pull may run on the current-thread block_on thread"
+    );
+}
+
+/// Round 12: an inline pull runs outside the runtime context, so Tokio's
+/// blocking APIs work in it exactly as on the `spawn_blocking` producer
+/// (before, `blocking_recv` panicked "Cannot block the current thread from
+/// within a runtime" and every upload failed with a body error `400`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inline_pull_may_use_tokio_blocking_apis() {
+    ensure();
+    let caller = std::thread::current().id();
+    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(2);
+    tx.send(vec![b'z'; 5]).await.unwrap();
+    drop(tx);
+    let pulled_on = Arc::new(Mutex::new(Vec::new()));
+    let threads = Arc::clone(&pulled_on);
+    let rx = Mutex::new(rx);
+    let pull = move || {
+        threads.lock().unwrap().push(std::thread::current().id());
+        let handle = tokio::runtime::Handle::current();
+        let chunk = rx.lock().unwrap().blocking_recv();
+        // `Handle::block_on` works too (as on a blocking-pool thread).
+        handle.block_on(tokio::task::yield_now());
+        chunk.map_or(RequestChunk::End, RequestChunk::Data)
+    };
+    let mut body = Vec::new();
+    let header = dispatch_bidirectional_streaming_closing(
+        encode("/echo"),
+        pull,
+        |chunk: &[u8]| {
+            body.extend_from_slice(chunk);
+            ControlFlow::Continue(())
+        },
+        || {},
+    )
+    .await;
+    assert_eq!(status(&header), 200);
+    assert_eq!(body, b"zzzzz");
+    let inline = pulled_on
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|t| **t == caller)
+        .count();
+    assert_eq!(inline, 2, "both pulls ran inline on the block_on thread");
+}

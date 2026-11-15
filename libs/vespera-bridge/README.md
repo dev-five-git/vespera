@@ -155,7 +155,7 @@ Trade-offs the new default makes on your behalf:
 
 - **DIRECT** writes the wire response straight into a pooled direct `ByteBuffer` (per-thread, 64 KiB → `vespera.direct.maxBufferBytes` default 4 MiB). A response larger than the pooled buffer is kept natively and copied into a bigger buffer (or, beyond the cap and for `text/event-stream`, streamed) — the Rust handler runs once. Requests that `Accept` an event stream / NDJSON are streamed from the start.
 - **SYNC** fully buffers the response on the JVM heap. The 256 KiB request-size gate keeps the response size reasonable for JSON-RPC-shaped traffic; large or unknown-length bodies still stream.
-- **`BIDIRECTIONAL_STREAMING`** is unchanged for large/unknown-length bodies — multi-GB upload + multi-GB download still runs chunk-bounded: about `chunkBytes x (channelCapacity + 1)` resident per stream, ~4 MiB with the defaults (256 KiB x 17).
+- **`BIDIRECTIONAL_STREAMING`** is unchanged for large/unknown-length bodies — multi-GB upload + multi-GB download still runs chunk-bounded: about `chunkBytes x (slots + 1)` resident per stream (slots = `channelCapacity`, capped at 64 MiB / `chunkBytes` — see [Streaming tuning](#streaming-tuning)), ~4 MiB with the defaults (256 KiB x 17).
 
 The Spring endpoints **always** mirror vespera's `openapi.json` — `smart` picks the JNI path per request without any URL prefix or path-based heuristic that could diverge from the Rust router's view of the world.
 
@@ -1164,6 +1164,11 @@ runs. Configuration precedence (first hit wins, then cached):
 | Request channel slots | `vespera.streaming.channelCapacity` | `VESPERA_STREAMING_CHANNEL_CAPACITY` | 16 | 1 – 1024 |
 | Tokio worker threads | `vespera.runtime.workerThreads` | `VESPERA_RUNTIME_WORKERS` | logical CPUs | 1 – 1024 |
 | Concurrent upload producers (bidirectional streaming; further uploads wait for a slot) | `vespera.streaming.maxRequestProducers` | `VESPERA_MAX_STREAMING_REQUEST_PRODUCERS` | 256 | `0` = unlimited |
+
+The slots actually used are further capped so that `chunkBytes x slots` stays at or below
+**64 MiB** of buffered request body per stream (at least 1 slot): with the default 256 KiB
+chunk every configured value up to 256 applies unchanged, but `configureStreaming(8 MiB, 32)`
+runs with 8 slots, silently (no warning).
 
 `maxRequestProducers` is also set by `VesperaBridge.configureMaxRequestProducers(n)` and by the Spring property `vespera.bridge.native.max-request-producers`.
 
