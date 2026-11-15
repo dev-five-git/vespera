@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/parser/request_body.rs
-assertion_line: 222
 expression: body
 ---
 Some(
@@ -44,6 +43,7 @@ Some(
                             additional_properties: None,
                             min_properties: None,
                             max_properties: None,
+                            property_names: None,
                             enum: None,
                             all_of: None,
                             any_of: None,

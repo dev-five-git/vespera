@@ -26,7 +26,10 @@ use component_schemas::{
     build_file_cache, build_schema_lookups, build_struct_file_index, parse_component_schemas,
 };
 pub use defaults::extract_default_value_from_function;
-pub use defaults::{instance_defaults, process_default_functions_for};
+pub use defaults::{
+    install_stored_defaults, instance_defaults, process_default_functions_for,
+    snapshot_stored_defaults,
+};
 use paths::build_path_items;
 pub use paths::{check_duplicate_routes, find_duplicate_operation_id};
 pub use route_claims::{RouteClaims, RouteConflict};
@@ -41,7 +44,11 @@ pub fn with_schema_lookups<R>(
 ) -> R {
     let scoped = component_schemas::scoped_rust_idents(metadata);
     let (known_schemas, struct_definitions) = build_schema_lookups(metadata, &scoped);
-    f(&known_schemas, &struct_definitions)
+    // Generic instances read their `default = "fn"` values from it.
+    let previous = install_stored_defaults(defaults::stored_defaults_of(metadata));
+    let result = f(&known_schemas, &struct_definitions);
+    install_stored_defaults(previous);
+    result
 }
 
 /// OpenAPI security data parsed from the `vespera!` macro.
@@ -106,6 +113,9 @@ pub fn try_generate_openapi_doc_with_metadata(
     // schemas and paths are built; start from a clean slate (a previous
     // expansion on this thread may have left some behind).
     crate::parser::schema::generic_instances::take_materialized();
+    // Generic instances (`Tree_i32`) document the generic component's
+    // `#[serde(default = "fn")]` values (installed for this generation only).
+    install_stored_defaults(defaults::stored_defaults_of(metadata));
     let scoped_rust_idents = component_schemas::scoped_rust_idents(metadata);
     let (known_schema_names, struct_definitions) =
         build_schema_lookups(metadata, &scoped_rust_idents);
@@ -146,6 +156,7 @@ pub fn try_generate_openapi_doc_with_metadata(
     crate::parser::schema::generic_instances::drain_materialized_into(&mut schemas)?;
     let input_names = crate::parser::schema::request_view::snapshot();
     crate::parser::schema::request_view::install(std::sync::Arc::default());
+    install_stored_defaults(std::sync::Arc::default());
     component_schemas::prune_unreferenced_inputs(&mut schemas, &paths, &input_names);
     component_schemas::reject_internally_tagged_in_document(&schemas, &paths)?;
     let security_config = security_config.unwrap_or_default();

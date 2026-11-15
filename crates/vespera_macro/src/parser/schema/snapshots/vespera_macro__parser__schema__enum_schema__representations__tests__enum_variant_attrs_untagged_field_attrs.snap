@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests.rs
-assertion_line: 573
 expression: schema
 ---
 Schema {
@@ -30,6 +29,7 @@ Schema {
     additional_properties: None,
     min_properties: None,
     max_properties: None,
+    property_names: None,
     enum: None,
     all_of: None,
     any_of: Some(
@@ -93,6 +93,7 @@ Schema {
                                     additional_properties: None,
                                     min_properties: None,
                                     max_properties: None,
+                                    property_names: None,
                                     enum: None,
                                     all_of: None,
                                     any_of: None,
@@ -141,6 +142,7 @@ Schema {
                                     additional_properties: None,
                                     min_properties: None,
                                     max_properties: None,
+                                    property_names: None,
                                     enum: None,
                                     all_of: None,
                                     any_of: None,
@@ -169,6 +171,7 @@ Schema {
                     additional_properties: None,
                     min_properties: None,
                     max_properties: None,
+                    property_names: None,
                     enum: None,
                     all_of: None,
                     any_of: None,
@@ -240,6 +243,7 @@ Schema {
                                     additional_properties: None,
                                     min_properties: None,
                                     max_properties: None,
+                                    property_names: None,
                                     enum: None,
                                     all_of: None,
                                     any_of: None,
@@ -286,6 +290,7 @@ Schema {
                                     additional_properties: None,
                                     min_properties: None,
                                     max_properties: None,
+                                    property_names: None,
                                     enum: None,
                                     all_of: None,
                                     any_of: None,
@@ -316,6 +321,7 @@ Schema {
                     additional_properties: None,
                     min_properties: None,
                     max_properties: None,
+                    property_names: None,
                     enum: None,
                     all_of: None,
                     any_of: None,

@@ -29,6 +29,7 @@ Schema {
     additional_properties: None,
     min_properties: None,
     max_properties: None,
+    property_names: None,
     enum: None,
     all_of: None,
     any_of: None,
@@ -93,6 +94,7 @@ Schema {
                                     additional_properties: None,
                                     min_properties: None,
                                     max_properties: None,
+                                    property_names: None,
                                     enum: None,
                                     all_of: None,
                                     any_of: None,
@@ -139,6 +141,7 @@ Schema {
                                     additional_properties: None,
                                     min_properties: None,
                                     max_properties: None,
+                                    property_names: None,
                                     enum: Some(
                                         [
                                             String("A"),
@@ -170,6 +173,7 @@ Schema {
                     additional_properties: None,
                     min_properties: None,
                     max_properties: None,
+                    property_names: None,
                     enum: None,
                     all_of: None,
                     any_of: None,
@@ -243,6 +247,7 @@ Schema {
                                     additional_properties: None,
                                     min_properties: None,
                                     max_properties: None,
+                                    property_names: None,
                                     enum: None,
                                     all_of: None,
                                     any_of: None,
@@ -289,6 +294,7 @@ Schema {
                                     additional_properties: None,
                                     min_properties: None,
                                     max_properties: None,
+                                    property_names: None,
                                     enum: Some(
                                         [
                                             String("Unknown"),
@@ -319,6 +325,7 @@ Schema {
                     additional_properties: None,
                     min_properties: None,
                     max_properties: None,
+                    property_names: None,
                     enum: None,
                     all_of: None,
                     any_of: None,

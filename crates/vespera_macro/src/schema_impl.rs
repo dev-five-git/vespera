@@ -97,6 +97,7 @@ fn with_current_crate_bucket<R>(f: impl FnOnce(&mut HashMap<String, StructMetada
 /// source identity replaces the previous metadata, which keeps long-lived
 /// proc-macro servers correct across IDE edits.
 pub fn register_schema(name: String, metadata: StructMetadata) -> Result<(), ()> {
+    stale::record(metadata.source_identity.as_deref());
     with_current_crate_bucket(|bucket| {
         if let Some(existing) = bucket.get(&name) {
             let same_identity = existing.source_identity.is_some()
@@ -119,8 +120,9 @@ pub fn register_schema(name: String, metadata: StructMetadata) -> Result<(), ()>
                 bucket.insert(name, metadata);
                 return Ok(());
             }
-            // Same-named variants edited alike, the stored one first.
-            if variants::converge(&name, &metadata) {
+            // Same-named variants edited alike, the stored one first; or the
+            // stored item left its file (an IDE rename / move).
+            if variants::converge(&name, &metadata) || stale::left_its_file(existing) {
                 bucket.insert(name, metadata);
                 return Ok(());
             }
@@ -627,6 +629,7 @@ fn extract_default_functions_from_file(
 
 mod default_fns;
 mod serde_repr;
+mod stale;
 pub mod variants;
 
 #[cfg(test)]
@@ -638,3 +641,6 @@ mod tests_wire_override;
 
 #[cfg(test)]
 mod tests_defaults;
+
+#[cfg(test)]
+mod tests_stale;

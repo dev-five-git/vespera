@@ -90,6 +90,18 @@ use std::{
 ///
 /// Other inner-extractor rejections (malformed JSON syntax `400`, missing or
 /// wrong `Content-Type` `415`, body-limit errors, …) pass through unchanged.
+///
+/// # Non-finite floats
+///
+/// `Query` / `Form` / `Path` (and multipart text fields) parse an `f32` /
+/// `f64` with [`str::parse`], which accepts `NaN`, `inf` and `-infinity`
+/// (JSON has no such literals, so `Json` bodies never carry them). Only a
+/// float field with a `#[schema(minimum = ..)]` / `#[schema(maximum = ..)]`
+/// bound rejects a non-finite value (`"not a finite number"`, `422`); an
+/// unbounded float field passes `NaN` / `±inf` to the handler although the
+/// document says `type: number`. Give such a field a bound, or reject the
+/// value yourself with `#[garde(custom(..))]` (e.g. a function returning an
+/// error unless `value.is_finite()`).
 #[derive(Debug, Clone, Copy)]
 pub struct Validated<T>(pub T);
 
