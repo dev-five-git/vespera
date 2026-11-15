@@ -1,7 +1,7 @@
 //! `shutdown_runtime_then` called from inside a Tokio runtime (a host
 //! completion running on a worker) refuses dispatches at once and finishes
-//! the drain + cleanup on a background thread; a never-started runtime is
-//! never built.  Own process: shutdown is irreversible.
+//! the drain + cleanup on a background thread; afterwards `runtime()` hands
+//! out no lease.  Own process: shutdown is irreversible.
 #![cfg(feature = "runtime")]
 
 use std::sync::atomic::{AtomicBool, Ordering};

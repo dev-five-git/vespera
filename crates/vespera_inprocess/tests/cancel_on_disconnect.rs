@@ -117,25 +117,56 @@ fn dying_sink(ok_calls: usize, writes: Arc<AtomicUsize>) -> impl FnMut(&[u8]) ->
     }
 }
 
+/// A sink that accepts every flush hint and `ok_calls` non-empty chunks,
+/// then fails the next DATA write: the stop comes from `FrameBatch`
+/// delivering a non-empty frame, never from a flush hint.
+fn data_write_dying_sink(
+    ok_calls: usize,
+    writes: Arc<AtomicUsize>,
+) -> impl FnMut(&[u8]) -> ControlFlow<()> {
+    move |chunk: &[u8]| {
+        if chunk.is_empty() || writes.fetch_add(1, Ordering::SeqCst) < ok_calls {
+            ControlFlow::Continue(())
+        } else {
+            ControlFlow::Break(())
+        }
+    }
+}
+
 #[rstest]
-#[case::endless_body("endless")]
-#[case::waiting_body("stalls")]
+// The endless body stops on a failed data write (flush hints accepted) ...
+#[case::endless_body("endless", true)]
+// ... the waiting one on the failed flush hint before it waits.
+#[case::waiting_body("stalls", false)]
 #[tokio::test]
-async fn header_first_streaming_drops_the_body_on_sink_failure(#[case] route: &str) {
+async fn header_first_streaming_drops_the_body_on_sink_failure(
+    #[case] route: &str,
+    #[case] fail_on_data: bool,
+) {
     install();
     let key = format!("header-first-{route}");
     let dropped = flag(&key);
     let writes = Arc::new(AtomicUsize::new(0));
     let mut header_seen = false;
-    let outcome = dispatch_streaming_with_header_async(
-        encode(&format!("/{route}/{key}")),
-        |_h: &[u8]| header_seen = true,
-        dying_sink(1, Arc::clone(&writes)),
-    )
-    .await;
+    let wire = encode(&format!("/{route}/{key}"));
+    let on_header = |_h: &[u8]| header_seen = true;
+    let outcome = if fail_on_data {
+        let sink = data_write_dying_sink(1, Arc::clone(&writes));
+        dispatch_streaming_with_header_async(wire, on_header, sink).await
+    } else {
+        let sink = dying_sink(1, Arc::clone(&writes));
+        dispatch_streaming_with_header_async(wire, on_header, sink).await
+    };
     assert!(header_seen);
     assert_eq!(outcome, StreamOutcome::SinkStopped);
     assert!(dropped.load(Ordering::SeqCst), "body dropped before return");
+    if fail_on_data {
+        assert_eq!(
+            writes.load(Ordering::SeqCst),
+            2,
+            "no write after the failed one"
+        );
+    }
 }
 
 #[tokio::test]
@@ -167,12 +198,17 @@ async fn bidirectional_streaming_drops_the_body_on_sink_failure() {
     let outcome = dispatch_bidirectional_streaming_with_header(
         encode(&format!("/endless/{key}")),
         || RequestChunk::End,
-        dying_sink(1, Arc::clone(&writes)),
+        data_write_dying_sink(1, Arc::clone(&writes)),
         |_h: &[u8]| {},
     )
     .await;
     assert_eq!(outcome, StreamOutcome::SinkStopped);
     assert!(dropped.load(Ordering::SeqCst), "body dropped before return");
+    assert_eq!(
+        writes.load(Ordering::SeqCst),
+        2,
+        "stopped on the failed data write, nothing after it"
+    );
 }
 
 /// The async-dispatch cancellation primitive wrapped around a real dispatch:
