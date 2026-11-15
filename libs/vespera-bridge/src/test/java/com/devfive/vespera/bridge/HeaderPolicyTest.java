@@ -239,7 +239,7 @@ class HeaderPolicyTest {
             plain.values(name, name);
         }
         Map<String, String> headers = HeaderPolicy.collectHeaders(plain);
-        assertEquals(1, plain.nameCall, "one getHeaderNames() enumeration");
+        assertEquals(1, plain.nameEnumerations, "one getHeaderNames() enumeration");
         assertEquals(40, headers.size());
         List<String> keys = new ArrayList<>(headers.keySet());
         for (int i = 0; i < 40; i++) {
@@ -312,7 +312,7 @@ class HeaderPolicyTest {
                 new ScriptedRequest(List.of("X-One"), null).nullConnectionHeaders();
         namesDisappear.values("X-One", "one");
         assertEquals(Map.of("x-one", "one"), HeaderPolicy.collectHeaders(namesDisappear));
-        assertEquals(1, namesDisappear.nameCall);
+        assertEquals(1, namesDisappear.nameEnumerations);
 
         ScriptedRequest mergedNamesDisappear =
                 new ScriptedRequest(List.of("X-One", "x-one"), null);
@@ -336,6 +336,8 @@ class HeaderPolicyTest {
         private final Set<String> emptyValues = new HashSet<>();
         private final Map<String, String> fallbacks = new HashMap<>();
         private int nameCall;
+        /** Every getHeaderNames() call, also past the scripted lists ({@link #nameCall} stops there). */
+        private int nameEnumerations;
         private boolean nullConnectionHeaders;
 
         @SafeVarargs
@@ -371,6 +373,7 @@ class HeaderPolicyTest {
 
         @Override
         public Enumeration<String> getHeaderNames() {
+            nameEnumerations++;
             List<String> names = nameCall < nameCalls.size()
                     ? nameCalls.get(nameCall++)
                     : nameCalls.get(nameCalls.size() - 1);

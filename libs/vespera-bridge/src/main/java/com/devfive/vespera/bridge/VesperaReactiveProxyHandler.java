@@ -481,8 +481,9 @@ public class VesperaReactiveProxyHandler implements WebHandler {
      * ({@link SpillingGate}) so an ordinary response keeps its
      * {@code Content-Length}; it starts streaming as soon as the Rust body
      * would wait (the native flush hint), grows past
-     * {@code min(maxBufferedResponseBytes, }{@value #IMPLICIT_BUFFER_BYTES}{@code )} bytes, or the Rust
-     * {@code Content-Type} is an event / NDJSON stream.
+     * {@code min(maxBufferedResponseBytes, }{@value #IMPLICIT_BUFFER_BYTES}{@code )} bytes; a Rust
+     * event / NDJSON {@code Content-Type} gets the explicit stream's hold
+     * (no {@code Content-Length}).
      */
     private Mono<Void> stream(byte[] wire, ReactiveProxyResponse out, ProxyExchange px, String method,
             boolean implicit) {
@@ -718,15 +719,23 @@ public class VesperaReactiveProxyHandler implements WebHandler {
      * The implicit-streaming body ({@link #stream} with {@code implicit}):
      * holds the body back so a complete in-memory response is written once
      * with its {@code Content-Length}, like the buffered path, and switches
-     * to pass-through ("spills") as soon as the response is a stream: an
-     * event / NDJSON {@code Content-Type}, the native flush hint (the Rust
-     * body is about to wait — never sent for an in-memory body), or more
-     * than {@code limit} bytes. Used by one streaming thread at a time.
+     * to pass-through ("spills") as soon as the response is a stream: the
+     * native flush hint (the Rust body is about to wait — never sent for an
+     * in-memory body) or more than {@code limit} bytes. An event / NDJSON
+     * {@code Content-Type} gets the explicit stream's {@link BodyGate} hold
+     * instead: held up to {@value #STREAM_CHUNK_BYTES} bytes, released on the
+     * flush hint, past that limit or at the end of the body, never with a
+     * {@code Content-Length} — so a stream that fails before its first flush
+     * hint is still answered with the proxy {@code 500}, whatever the client's
+     * {@code Accept}. Used by one streaming thread at a time.
      */
     static final class SpillingGate extends BodyGate {
         private final ReactiveProxyResponse out;
         private final String method;
-        private final int limit;
+        /** Hold limit: {@code limit}, or {@value #STREAM_CHUNK_BYTES} for a stream {@code Content-Type}. */
+        private int limit;
+        /** Whether the Rust {@code Content-Type} is an event / NDJSON stream (no {@code Content-Length}). */
+        private boolean streamType;
         private HeaderPolicy.ResponseHeaderAccumulator acc;
         /** Whether the body is still held back ({@code false} once spilled). */
         private boolean holding = true;
@@ -747,9 +756,9 @@ public class VesperaReactiveProxyHandler implements WebHandler {
             for (HeaderPolicy.HeaderPair header : acc.headers) {
                 if (header.name().equalsIgnoreCase(HttpHeaders.CONTENT_TYPE)
                         && SmartDispatchModeResolver.isStreamingMediaType(header.value())) {
-                    // Before any body byte: nothing is held yet.
-                    holding = false;
-                    held = null;
+                    // A stream: hold like the explicit BodyGate (nothing is held yet).
+                    streamType = true;
+                    limit = STREAM_CHUNK_BYTES;
                     return;
                 }
             }
@@ -811,7 +820,7 @@ public class VesperaReactiveProxyHandler implements WebHandler {
             held = null;
             holding = false;
             int size = bytes == null ? 0 : bytes.size();
-            if (acc != null) {
+            if (acc != null && !streamType) {
                 out.setContentLength(WireResponseWriter.bufferedContentLength(
                         acc.status, method, size, acc.declaredContentLength()));
             }
