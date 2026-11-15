@@ -151,7 +151,7 @@ fn gating_names(content: &str, pick: impl Fn(&Item) -> Option<&syn::Ident>) -> H
         .map(|ast| {
             ast.items
                 .iter()
-                .filter_map(|item| pick(item))
+                .filter_map(pick)
                 .map(|ident| syn::ext::IdentExt::unraw(ident).to_string())
                 .collect()
         })

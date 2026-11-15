@@ -533,7 +533,7 @@ fn item_module_chain_cached_unparsable_file() {
     std::fs::write(&file, "mod {{{").unwrap();
     crate::schema_macro::file_cache::bump_epoch();
     assert_eq!(item_module_chain_cached(&file, "Dup", 1), None);
-    assert!(inline_chain_at(&file, 1).is_empty());
+    assert_eq!(inline_chain_at(&file, 1), Vec::<String>::new());
 }
 
 /// The direct construction of a plain segment matches what syn's parser

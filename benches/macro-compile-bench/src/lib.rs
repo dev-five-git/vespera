@@ -5,7 +5,10 @@
 //! stable, representative proc-macro expansion workload to measure. Hub
 //! schemas (`User`, `Product`, `Order`) are referenced by many routes so the
 //! per-reference schema-generation cost — exactly what compile-time macro
-//! optimizations target — is exercised.
+//! optimizations target — is exercised. Some handlers return the crate-wide
+//! `ApiResult<T>` alias (`error.rs`, the alias lookup), `jobs.rs` declares
+//! `#[vespera::cron]` jobs (cron discovery) and `Payment` / `Warehouse` carry
+//! `serde(default = "fn")` fields (default-function resolution).
 //!
 //! The harness measures the `macro_expand_crate` rustc pass of this crate's
 //! `lib`, which isolates `vespera!` / `#[derive(Schema)]` expansion from the
@@ -16,6 +19,8 @@
 //! which does not count as an import use).
 #![allow(clippy::all, clippy::pedantic, unused)]
 
+pub mod error;
+pub mod jobs;
 pub mod models;
 mod routes;
 

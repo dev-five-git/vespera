@@ -8,7 +8,7 @@ allocation gate (`crates/vespera_inprocess/tests/alloc_budget.rs`).
 
 | Crate | Role |
 |---|---|
-| [`macro-compile-bench`](./macro-compile-bench) | **Fixture** — a deliberately schema- and cross-reference-heavy `vespera!` app. Hub schemas (`User`, `Product`, `Order`) are referenced by many routes, so the per-reference schema-generation cost that macro optimizations target is exercised. |
+| [`macro-compile-bench`](./macro-compile-bench) | **Fixture** — a deliberately schema- and cross-reference-heavy `vespera!` app. Hub schemas (`User`, `Product`, `Order`) are referenced by many routes, so the per-reference schema-generation cost that macro optimizations target is exercised. It also covers return-type aliases (`ApiResult<T>`), `#[vespera::cron]` jobs and `serde(default = "fn")` fields. |
 | [`compile-bench-runner`](./compile-bench-runner) | **Harness** — a std-only orchestrator that measures the `macro_expand_crate` rustc pass and reports min/median/mean/stddev with baseline A/B comparison. |
 
 ## What it measures

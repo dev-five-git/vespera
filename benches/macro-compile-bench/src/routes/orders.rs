@@ -1,5 +1,6 @@
 use vespera::axum::{Json, extract::Path};
 
+use crate::error::ApiResult;
 use crate::models::schemas::{
     ApiResponse, Order, OrderItem, OrderStatus, Paginated, Payment, User,
 };
@@ -24,8 +25,8 @@ pub async fn create_order(Json(body): Json<Order>) -> Json<ApiResponse<Order>> {
 
 /// An order's items.
 #[vespera::route(get, path = "/{id}/items", tags = ["orders"])]
-pub async fn order_items(Path(_id): Path<u64>) -> Json<Vec<OrderItem>> {
-    Json(Vec::new())
+pub async fn order_items(Path(_id): Path<u64>) -> ApiResult<Vec<OrderItem>> {
+    Ok(Json(Vec::new()))
 }
 
 /// An order's customer.
@@ -36,8 +37,8 @@ pub async fn order_customer(Path(_id): Path<u64>) -> Json<ApiResponse<User>> {
 
 /// An order's payments.
 #[vespera::route(get, path = "/{id}/payments", tags = ["orders"])]
-pub async fn order_payments(Path(_id): Path<u64>) -> Json<Vec<Payment>> {
-    Json(Vec::new())
+pub async fn order_payments(Path(_id): Path<u64>) -> ApiResult<Vec<Payment>> {
+    Ok(Json(Vec::new()))
 }
 
 /// Update an order's status.

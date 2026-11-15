@@ -412,7 +412,8 @@ fn struct_definitions_without_fingerprint_are_returned_uncached() {
 #[case::compiler("rustc\n--crate-name\napp", 1)]
 #[case::other_host("target/debug/deps/tests", 3)]
 fn test_stable_sources_skip_revalidation(#[case] args: &str, #[case] stats: usize) {
-    let _args = crate::env_access::test_env::set_var(crate::env_access::COMPILER_ARGS_KEY, args);
+    let args_guard =
+        crate::env_access::test_env::set_var(crate::env_access::COMPILER_ARGS_KEY, args);
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("a.rs");
     std::fs::write(&path, "x").unwrap();
@@ -432,6 +433,6 @@ fn test_stable_sources_skip_revalidation(#[case] args: &str, #[case] stats: usiz
         FILE_CACHE.with(|cache| listed(&mut cache.borrow_mut())),
         expected
     );
-    drop(_args);
+    drop(args_guard);
     bump_epoch();
 }

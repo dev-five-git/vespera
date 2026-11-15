@@ -586,12 +586,14 @@ fn parse_type_impl(
                 };
                 // The override of a non-generic reference comes from the
                 // per-definition memo (no parse per reference).
-                let ref_override = match &parsed_def {
-                    Some(parsed_item) => extract_schema_ref_override(parsed_item.attrs()),
-                    None => def_str
-                        .filter(|_| maybe_has_schema_attr && !is_generic)
-                        .and_then(ref_override_of),
-                };
+                let ref_override = parsed_def.as_ref().map_or_else(
+                    || {
+                        def_str
+                            .filter(|_| maybe_has_schema_attr && !is_generic)
+                            .and_then(ref_override_of)
+                    },
+                    |parsed_item| extract_schema_ref_override(parsed_item.attrs()),
+                );
 
                 if let Some((schema_name, nullable)) = ref_override {
                     return SchemaRef::Inline(Box::new(Schema {

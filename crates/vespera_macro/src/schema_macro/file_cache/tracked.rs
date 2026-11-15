@@ -132,16 +132,16 @@ impl<T: Clone> Tracked<T> {
     /// [`tracked`] computation records them.
     pub fn get(&mut self) -> Option<T> {
         let epoch = super::current_epoch();
-        if self.validated_epoch != epoch {
-            if !self.deps.still_valid() {
-                return None;
-            }
-            self.validated_epoch = epoch;
-        } else {
+        if self.validated_epoch == epoch {
             // Same epoch: report the inputs to an enclosing computation.
             for dep in &self.deps.0 {
                 record(dep.clone());
             }
+        } else {
+            if !self.deps.still_valid() {
+                return None;
+            }
+            self.validated_epoch = epoch;
         }
         Some(self.value.clone())
     }
@@ -201,7 +201,7 @@ mod tests {
         let path = temp.path().join("a.rs");
         std::fs::write(&path, "x").unwrap();
         super::super::bump_epoch();
-        let (_, outer) = tracked(|| {
+        let ((), outer) = tracked(|| {
             let (_, inner) = tracked(|| super::super::get_file_content(&path));
             assert_eq!(inner.0.len(), 1);
         });

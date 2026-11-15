@@ -479,6 +479,50 @@ fn qualified_and_glob_imported_names_resolve_their_origin() {
     );
 }
 
+/// The crate-wide scan for an alias name runs once while `src/` is
+/// unchanged, and again after an edit or a new file (rust-analyzer's
+/// long-lived server sees both between invocations).
+#[test]
+fn crate_wide_scan_is_memoised_until_src_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path();
+    std::fs::write(
+        src.join("error.rs"),
+        "pub type ApiResult<T> = Result<Json<T>, AppError>;",
+    )
+    .unwrap();
+    let expand_in = || {
+        crate::schema_macro::file_cache::bump_epoch();
+        let mut sig: syn::Signature = syn::parse_str("fn h() -> ApiResult<u8>").unwrap();
+        expand_return_type_alias(&mut sig, None, Some(src));
+        let output = &sig.output;
+        quote::quote!(#output).to_string()
+    };
+    let scans = || SCANS.with(std::cell::Cell::get);
+    let before = scans();
+    for _ in 0..3 {
+        assert_eq!(expand_in(), "-> Result < Json < u8 > , AppError >");
+    }
+    assert_eq!(scans() - before, 1);
+
+    std::fs::write(
+        src.join("error.rs"),
+        "pub type ApiResult<T> = Result<Json<T>, ChangedError>;",
+    )
+    .unwrap();
+    assert_eq!(expand_in(), "-> Result < Json < u8 > , ChangedError >");
+    assert_eq!(scans() - before, 2);
+
+    std::fs::write(
+        src.join("other.rs"),
+        "pub type ApiResult<T> = Result<T, OtherError>;",
+    )
+    .unwrap();
+    // Two different definitions: ambiguous, left unexpanded.
+    assert_eq!(expand_in(), "-> ApiResult < u8 >");
+    assert_eq!(scans() - before, 3);
+}
+
 #[test]
 fn default_return_is_untouched() {
     let mut sig: syn::Signature = syn::parse_str("fn handler()").unwrap();

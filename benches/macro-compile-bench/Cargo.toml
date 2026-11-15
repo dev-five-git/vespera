@@ -11,7 +11,7 @@ publish = false
 # example, so it depends only on `vespera` + `serde`.
 
 [dependencies]
-vespera = { path = "../../crates/vespera" }
+vespera = { path = "../../crates/vespera", features = ["cron"] }
 serde = { version = "1", features = ["derive"] }
 
 [lints]

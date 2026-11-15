@@ -28,7 +28,13 @@
 //! response parser then documents it by description only instead of
 //! inventing a schema.
 
-use std::{borrow::Cow, path::Path};
+use std::{
+    borrow::Cow,
+    cell::RefCell,
+    collections::HashMap,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use syn::{ReturnType, Type};
 
@@ -132,9 +138,11 @@ pub fn expand_return_type_alias(
     let ReturnType::Type(_, ty) = &mut sig.output else {
         return false;
     };
-    let mut scope = same_file.map(|file| Scope {
-        module: fn_module(&file.items, &handler).unwrap_or_default(),
-        file: Cow::Borrowed(file),
+    let mut scope = same_file.map(|file| {
+        NextScope::Ready(Scope {
+            module: fn_module(&file.items, &handler).unwrap_or_default(),
+            file: Cow::Borrowed(file),
+        })
     });
     let mut expanded = false;
     let mut seen: Vec<String> = Vec::new();
@@ -142,14 +150,18 @@ pub fn expand_return_type_alias(
         let Some(name) = alias_candidate(ty) else {
             break;
         };
-        if seen.contains(&name)
-            || matches!(&**ty, Type::Path(path) if is_external_path(&path.path, scope.as_ref()))
-        {
+        if seen.contains(&name) {
+            break;
+        }
+        // An alias found under `src/` names its file, parsed only now that
+        // the alias body turned out to be another alias candidate.
+        let here = scope.take().and_then(NextScope::materialize);
+        if matches!(&**ty, Type::Path(path) if is_external_path(&path.path, here.as_ref())) {
             break;
         }
         let qualifier = alias_qualifier(ty);
         let Some((alias, alias_scope)) =
-            find_alias(&name, qualifier.as_ref(), scope.as_ref(), src_dir)
+            find_alias(&name, qualifier.as_ref(), here.as_ref(), src_dir)
         else {
             break;
         };
@@ -231,7 +243,99 @@ fn alias_qualifier(ty: &Type) -> Option<Qualifier> {
 /// innermost module that declares it (inline `mod`, else the file's module;
 /// `None` when unknown), and whether that is the crate root (the top level
 /// of `lib.rs` / `main.rs` under `src/`).
-type Definition<'a> = (syn::ItemType, Scope<'a>, Option<String>, bool);
+type Definition<'a> = (syn::ItemType, NextScope<'a>, Option<String>, bool);
+
+/// The scope an alias was found in: parsed (the handler's file), or a file
+/// under `src/` with the inline module path inside it, parsed on demand.
+#[derive(Clone)]
+enum NextScope<'a> {
+    Ready(Scope<'a>),
+    File(Rc<PathBuf>, Vec<String>),
+}
+
+impl<'a> NextScope<'a> {
+    fn materialize(self) -> Option<Scope<'a>> {
+        match self {
+            Self::Ready(scope) => Some(scope),
+            Self::File(path, module) => parse_items(&path).map(|file| Scope {
+                file: Cow::Owned(file),
+                module,
+            }),
+        }
+    }
+}
+
+/// One `type <name>` definition under `src/`, as plain data: the alias
+/// tokens, its file, the inline module path inside it, the innermost
+/// declaring module and whether that is the crate root.
+#[derive(Clone)]
+struct SrcDefinition {
+    alias: String,
+    file: Rc<PathBuf>,
+    module: Vec<String>,
+    innermost: Option<String>,
+    root: bool,
+}
+
+/// Every non-test `type <name>` definition under `src_dir`.
+///
+/// Memoised across invocations while every file and listing the scan read
+/// is unchanged (`file_cache::Tracked`): each `#[route]` returning an alias
+/// otherwise re-listed `src/` and re-parsed every file declaring the name.
+fn src_definitions(src_dir: &Path, name: &str) -> Rc<[SrcDefinition]> {
+    type Memo = HashMap<(PathBuf, String), file_cache::Tracked<Rc<[SrcDefinition]>>>;
+    thread_local! {
+        static MEMO: RefCell<Memo> = RefCell::new(Memo::new());
+    }
+    let key = (src_dir.to_path_buf(), name.to_owned());
+    let hit = MEMO.with(|memo| {
+        memo.borrow_mut()
+            .get_mut(&key)
+            .and_then(file_cache::Tracked::get)
+    });
+    if let Some(hit) = hit {
+        return hit;
+    }
+    let entry = file_cache::Tracked::compute(|| scan_src_definitions(src_dir, name));
+    let found = Rc::clone(entry.peek());
+    MEMO.with(|memo| memo.borrow_mut().insert(key, entry));
+    found
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times [`scan_src_definitions`] ran (memo misses).
+    static SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn scan_src_definitions(src_dir: &Path, name: &str) -> Rc<[SrcDefinition]> {
+    #[cfg(test)]
+    SCANS.with(|scans| scans.set(scans.get() + 1));
+    let needle = format!("type {name}");
+    let mut test_scope = TestScope::new(Some(src_dir));
+    let mut definitions = Vec::new();
+    for path in file_cache::list_rs_files(src_dir).iter() {
+        if let Some(file) = parsed_with(path, &needle)
+            && !test_scope.file_test_only(path)
+        {
+            let module = file_module(path);
+            let root = module.is_none();
+            let mut found = Vec::new();
+            collect_aliases(&Cow::Owned(file), module.as_deref(), root, name, &mut found);
+            let file = Rc::new(path.clone());
+            definitions.extend(found.into_iter().map(|(alias, scope, innermost, root)| {
+                SrcDefinition {
+                    alias: quote::quote!(#alias).to_string(),
+                    file: Rc::clone(&file),
+                    module: scope.module,
+                    innermost,
+                    root,
+                }
+            }));
+        }
+    }
+    definitions.into()
+}
 
 /// The `type <name>` definition visible from `scope`, if any, with the
 /// scope it is defined in. A `qualifier` skips the handler's own module:
@@ -244,7 +348,7 @@ fn find_alias<'a>(
     qualifier: Option<&Qualifier>,
     scope: Option<&Scope<'a>>,
     src_dir: Option<&Path>,
-) -> Option<(syn::ItemType, Scope<'a>)> {
+) -> Option<(syn::ItemType, NextScope<'a>)> {
     if qualifier == Some(&Qualifier::Super)
         && let Some(scope) = scope
         && let Some((_, parent)) = scope.module.split_last()
@@ -258,13 +362,13 @@ fn find_alias<'a>(
             .iter()
             .find_map(|item| alias_item(item, name))
         {
-            return Some((alias, parent_scope));
+            return Some((alias, NextScope::Ready(parent_scope)));
         }
     }
     if let Some(scope) = scope.filter(|_| qualifier.is_none()) {
         let items = scope.items();
         if let Some(alias) = items.iter().find_map(|item| alias_item(item, name)) {
-            return Some((alias, scope.clone()));
+            return Some((alias, NextScope::Ready(scope.clone())));
         }
         // A struct / enum of that name in the handler's module (or imported
         // from the module that declares one) is the return type itself.
@@ -287,26 +391,25 @@ fn find_alias<'a>(
     }
     let mut definitions: Vec<Definition<'a>> = Vec::new();
     if let Some(scope) = scope {
-        collect_aliases(&scope.file, None, false, name, &mut definitions);
+        let mut found = Vec::new();
+        collect_aliases(&scope.file, None, false, name, &mut found);
+        definitions.extend(found.into_iter().map(|(alias, scope, innermost, root)| {
+            (alias, NextScope::Ready(scope), innermost, root)
+        }));
     }
     if let Some(src_dir) = src_dir {
-        let needle = format!("type {name}");
-        let mut test_scope = TestScope::new(Some(src_dir));
-        for path in file_cache::list_rs_files(src_dir).iter() {
-            if let Some(file) = parsed_with(path, &needle)
-                && !test_scope.file_test_only(path)
-            {
-                let module = file_module(path);
-                let root = module.is_none();
-                collect_aliases(
-                    &Cow::Owned(file),
-                    module.as_deref(),
-                    root,
-                    name,
-                    &mut definitions,
-                );
-            }
-        }
+        definitions.extend(
+            src_definitions(src_dir, name)
+                .iter()
+                .filter_map(|definition| {
+                    Some((
+                        syn::parse_str(&definition.alias).ok()?,
+                        NextScope::File(Rc::clone(&definition.file), definition.module.clone()),
+                        definition.innermost.clone(),
+                        definition.root,
+                    ))
+                }),
+        );
     }
     if let Some(qualifier) = qualifier {
         let own =
@@ -369,7 +472,7 @@ fn collect_aliases<'a>(
     file_module: Option<&str>,
     file_root: bool,
     name: &str,
-    out: &mut Vec<Definition<'a>>,
+    out: &mut Vec<(syn::ItemType, Scope<'a>, Option<String>, bool)>,
 ) {
     fn walk(
         items: &[syn::Item],
@@ -638,7 +741,13 @@ fn use_tree_imports(
 fn parsed_with(path: &Path, needle: &str) -> Option<syn::File> {
     file_cache::get_file_content(path)
         .filter(|content| content.contains(needle))
-        .and_then(|_| file_cache::get_parsed_file(path))
+        .and_then(|_| parse_items(path))
+}
+
+/// The items of the file at `path`. Function bodies are skipped: only item
+/// names, `use` trees and inline modules are ever read here.
+fn parse_items(path: &Path) -> Option<syn::File> {
+    file_cache::get_shallow_parsed_file(path)
 }
 
 fn same_definition(a: &syn::ItemType, b: &syn::ItemType) -> bool {

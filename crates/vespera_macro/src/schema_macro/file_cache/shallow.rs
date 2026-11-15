@@ -89,7 +89,7 @@ mod tests {
                     let (a, b) = (&shallow.sig, &full.sig);
                     assert_eq!(quote::quote!(#a).to_string(), quote::quote!(#b).to_string());
                     assert_eq!(shallow.attrs.len(), full.attrs.len());
-                    assert!(shallow.block.stmts.is_empty());
+                    assert_eq!(shallow.block.stmts.len(), 0);
                 }
                 (shallow, full) => assert_eq!(
                     quote::quote!(#shallow).to_string(),

@@ -32,6 +32,8 @@ pub(super) fn parse_schema_def(def: &str) -> Option<SchemaDef> {
 /// [`parse_schema_def`]); the memo is dropped when the epoch changes so it
 /// stays bounded in a long-lived proc-macro server.
 #[derive(Default)]
+// The outer `Option` is "not computed yet", the inner the fact itself.
+#[allow(clippy::option_option)]
 struct DefFacts {
     /// `#[schema(name = "..")]` (see `component_name`).
     name: Option<Option<String>>,
