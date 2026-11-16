@@ -88,7 +88,7 @@ val micrometerVersion = "1.17.2"
 // Optional springdoc-openapi integration (VesperaSpringdocAutoConfiguration):
 // springdoc 3.x targets Boot 4, 2.x Boot 3.5 — the APIs the bridge uses exist in both.
 val springdocVersion = "3.2.0"
-val springdoc3Version = "2.10.0"
+val springdoc3Version = "3.2.0"
 // Kotlin extensions: compiled against these, provided by the Kotlin app.
 // kotlinx-coroutines >= 1.7 carries `kotlinx.coroutines.future.await` in core.
 val kotlinVersion = "2.4.21"
