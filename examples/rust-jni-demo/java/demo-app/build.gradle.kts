@@ -11,7 +11,7 @@ plugins {
     // with GraalVM for JDK 25 as JAVA_HOME. Applied (below) only with -PnativeImage,
     // so the regular JVM build and the E2E suite never run Spring AOT. The version is
     // the one Spring Boot 4.1 manages. CI: .github/workflows/native-image.yml.
-    id("org.graalvm.buildtools.native") version "1.1.14" apply false
+    id("org.graalvm.buildtools.native") version "1.1.18" apply false
     // ───────────────────────────────────────────────────────────────────
     // Vespera bridge plugin — auto-wires:
     //   - bundleNativeLib task (cdylib → resources/native/<os>-<arch>/)
