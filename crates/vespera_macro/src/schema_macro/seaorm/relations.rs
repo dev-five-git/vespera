@@ -682,6 +682,13 @@ mod tests {
         (true, true),
         (None, None, Some("Owner"))
     )]
+    // M3 (round 18): a `self_ref` `HasMany`'s `relation_reverse` is its `via_rel`.
+    #[case::has_many_relation_reverse(
+        r#"#[sea_orm(self_ref, relation_enum = "Manages", relation_reverse = "ReportsTo")] pub manages: HasMany<super::cake::Entity>"#,
+        "Vec < crate :: models :: cake :: Schema >",
+        (false, true),
+        (None, None, Some("ReportsTo"))
+    )]
     #[case::composite_key(
         r#"#[sea_orm(belongs_to, from = "(BakeryId, tenant_id)", to = "(Id, TenantId)")] pub bakery: BelongsTo<super::bakery::Entity>"#,
         "Option < Box < crate :: models :: bakery :: Schema >>",

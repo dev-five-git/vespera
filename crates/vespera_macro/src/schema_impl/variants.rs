@@ -132,7 +132,8 @@ mod tests {
         mod api { use crate::first::Page; }\n\
         mod reexp { pub use crate::first::Page; }\n\
         mod api2 { use crate::reexp::Page; }\n\
-        mod api3 { use other_crate::Page; }\n";
+        mod api3 { use other_crate::Page; }\n\
+        mod plain { pub struct Page { pub limit: u32 } }\n";
 
     fn page(lib: &std::path::Path, line: usize, default: u32) -> StructMetadata {
         StructMetadata {
@@ -153,10 +154,43 @@ mod tests {
             .to_string()
     }
 
+    fn schema_error(path: &str) -> String {
+        let input: crate::schema_macro::SchemaInput = syn::parse_str(path).unwrap();
+        let storage = super::super::current_crate_schemas();
+        crate::schema_macro::generate_schema_code(&input, &storage)
+            .unwrap_err()
+            .to_string()
+    }
+
+    /// L3 (round 18): a path through another crate's import, a module whose
+    /// `Page` has no `#[derive(Schema)]` and a bare name imported from
+    /// another crate are errors (each read the storage's last,
+    /// `second::Page`).
+    fn unknown_modules_are_errors() {
+        let call_site = set_test_call_site_module("crate");
+        assert!(schema_error("types::Page").contains("is in another crate"));
+        let error = schema_error("plain::Page");
+        assert!(
+            error.contains(
+                "`Page` of `crate::plain` has no `#[derive(Schema)]` in this crate (the `#[derive(Schema)]` `Page` is in `crate::second`)"
+            ),
+            "{error}"
+        );
+        drop(call_site);
+        let _call_site = set_test_call_site_module("crate::api3");
+        let error = schema_error("Page");
+        assert!(
+            error.contains("`Page` of `other_crate` has no `#[derive(Schema)]`"),
+            "{error}"
+        );
+    }
+
     /// R14-X1: two same-named items of different modules with one stored
     /// definition both register (the storage keeps the last), and `schema!`
     /// reads the one of the module its path names — or, for a bare name,
-    /// the call site's module; an unknown module falls back to the storage.
+    /// the call site's module; a bare name the call site does not resolve
+    /// falls back to the storage, a module of another crate or one without
+    /// that item derived is an error.
     #[test]
     fn same_named_items_are_read_by_module() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -194,8 +228,6 @@ mod tests {
             reexported.contains("10") && !reexported.contains("20"),
             "{reexported}"
         );
-        // Through another crate's import: no module, the storage's last.
-        assert!(schema_of("types::Page").contains("20"));
         // A bare name the call site does not know: the storage's last.
         assert!(schema_of("Page").contains("20"));
         drop(call_site);
@@ -213,9 +245,7 @@ mod tests {
                 "{module}: {schema}"
             );
         }
-        // Imported from another crate: no variant, the storage's last.
-        let _call_site = set_test_call_site_module("crate::api3");
-        assert!(schema_of("Page").contains("20"));
+        unknown_modules_are_errors();
 
         // Re-registering a module replaces its variant; an item without a
         // known module is not kept.

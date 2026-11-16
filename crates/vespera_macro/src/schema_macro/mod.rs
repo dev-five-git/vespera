@@ -4,7 +4,7 @@
 //! - `schema!` - Generate Schema value with optional field filtering
 //! - `schema_type!` - Generate new struct type derived from existing type
 
-mod cfg_eval;
+pub mod cfg_eval;
 mod circular;
 mod codegen;
 mod crate_layout;
@@ -14,6 +14,7 @@ pub mod file_cache;
 mod file_lookup;
 mod from_model;
 mod garde_paths;
+mod garde_peers;
 mod generate_type;
 mod inline_types;
 mod input;
@@ -64,19 +65,57 @@ pub fn storage_entry<'a>(
     renamed.next().is_none().then_some(first)
 }
 
-/// The module a `schema!` type path names: its qualified module (through a
-/// `pub use` re-export there: `reexp::Page` read the last-derived variant),
-/// else (a bare name) the module defining the name in scope at the call
-/// site; `None` when unknown.
-fn requested_module(ty: &syn::Type) -> Option<Vec<String>> {
-    match file_lookup::requested_module_path(ty) {
-        Ok(Some(module)) => {
-            let name = extract_type_name(ty).ok()?;
-            Some(reexported_item(&module, &name).map_or(module, |(defined_in, _)| defined_in))
-        }
-        Ok(None) => bare_name_module(ty),
-        Err(_) => None,
+/// The stored item a `schema!` type path names among same-named items of
+/// several modules: the variant of its qualified module (through a `pub
+/// use` re-export there: `reexp::Page` read the last-derived variant), else
+/// (a bare name) of the module defining the name in scope at the call site;
+/// `None`: the storage entry `stored`.
+///
+/// # Errors
+///
+/// (L3, round 18: each used to document `stored` silently) The path goes
+/// through another crate's import (`use other::types;` -> `types::Page`),
+/// a bare name is imported from another crate, or a qualified path names a
+/// module whose item is not the stored one (it has no `#[derive(Schema)]`).
+fn requested_variant(
+    ty: &syn::Type,
+    stored: &StructMetadata,
+) -> syn::Result<Option<StructMetadata>> {
+    let name = extract_type_name(ty)?;
+    let requested = file_lookup::requested_module_path(ty).map_err(|err| err.to_syn_error(ty))?;
+    let qualified = requested.is_some();
+    let Some(module) = requested.map_or_else(
+        || bare_name_module(ty),
+        |module| Some(reexported_item(&module, &name).map_or(module, |(defined_in, _)| defined_in)),
+    ) else {
+        return Ok(None);
+    };
+    if let Some(found) = crate::schema_impl::variants::in_module(&stored.name, &module) {
+        return Ok(Some(found));
     }
+    let defined_in = storage_module_path(stored);
+    let other_crate = module.first().map(String::as_str) != Some("crate");
+    if other_crate
+        || (qualified
+            && defined_in
+                .as_ref()
+                .is_some_and(|defined| *defined != module))
+    {
+        let stored_at = defined_in.map_or_else(String::new, |defined| {
+            format!(
+                " (the `#[derive(Schema)]` `{name}` is in `{}`)",
+                defined.join("::")
+            )
+        });
+        return Err(syn::Error::new_spanned(
+            ty,
+            format!(
+                "schema!: `{name}` of `{}` has no `#[derive(Schema)]` in this crate{stored_at}",
+                module.join("::")
+            ),
+        ));
+    }
+    Ok(None)
 }
 
 /// The module defining the bare type name `ty` at the call site: the one a
@@ -107,8 +146,7 @@ pub fn generate_schema_code(
     let struct_def = storage_entry(schema_storage, &type_name).ok_or_else(|| syn::Error::new_spanned(&input.ty, format!("type `{type_name}` not found. Make sure it has #[derive(Schema)] before this macro invocation")))?;
     // Same-named items of several modules: the one of the module the path
     // names (the storage keeps only the last derived).
-    let variant = requested_module(&input.ty)
-        .and_then(|module| crate::schema_impl::variants::in_module(&struct_def.name, &module));
+    let variant = requested_variant(&input.ty, struct_def)?;
     let struct_def = variant.as_ref().unwrap_or(struct_def);
 
     // Parse the struct definition

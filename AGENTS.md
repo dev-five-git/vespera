@@ -418,7 +418,7 @@ Generate request/response types from existing structs with powerful transformati
 | `rename_all` | Serde rename strategy (default: the source's, else `camelCase`) |
 | `ignore` | Skip Schema derive |
 | `multipart` | Derive `Multipart` instead of serde (no `From`, no relations; bare `Vec` fields get `#[form_data(default)]`) |
-| `omit_default` | Drop fields with `sea_orm(default_value)` / an auto-increment primary key |
+| `omit_default` | Drop fields with `sea_orm(default_value)` / `sea_orm(default_expr)` / an auto-increment primary key |
 | `relation_adapters` | Replace a HasOne / BelongsTo relation by a wrapper type: `[("field", Wrapper)]` |
 
 `From` (and a source container `#[serde(default)]`, kept as a DTO-building fn) is emitted only when no `add` / relation field is present and every source field is readable from the call site; `#[cfg]` twin fields keep their own `#[cfg]` on assignments and helpers.

@@ -148,11 +148,12 @@ fn parse_struct_body(
                 fields.required.insert(0, tag);
             }
 
-            // `deny_unknown_fields` → closed object (see `into_object_schema`
-            // for how it combines with `flatten`).
+            // `deny_unknown_fields` (or a strict Multipart derive) → closed
+            // object (see `into_object_schema` for how it combines with `flatten`).
             fields.into_object_schema(
                 struct_description,
-                extract_deny_unknown_fields(&struct_item.attrs),
+                extract_deny_unknown_fields(&struct_item.attrs)
+                    || crate::multipart_impl::rejects_unknown_parts(&struct_item.attrs),
             )
         }
         // `struct Pair(A, B)` → `[A, B]` (positions skipped on the current

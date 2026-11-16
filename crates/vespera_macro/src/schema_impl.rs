@@ -185,20 +185,32 @@ fn is_same_item_moved(existing: Option<&str>, incoming: Option<&str>) -> bool {
 
 /// Count struct/enum items named `ident` ANYWHERE in `items`: inline modules,
 /// fn bodies, impl / trait blocks, const / static initializers, and any other
-/// nested block that can declare items.
+/// nested block that can declare items.  Items (and inline modules) whose
+/// `#[cfg]` is known to be false are not counted (L5, round 18: an inactive
+/// cfg twin hid a move or a stale entry).
 fn count_items_named(items: &[syn::Item], ident: &str) -> usize {
+    use crate::schema_macro::cfg_eval::statically_inactive;
     struct Counter<'a> {
         ident: &'a str,
         count: usize,
     }
     impl<'ast> syn::visit::Visit<'ast> for Counter<'_> {
         fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
-            self.count += usize::from(item.ident == self.ident);
-            syn::visit::visit_item_struct(self, item);
+            if !statically_inactive(&item.attrs) {
+                self.count += usize::from(item.ident == self.ident);
+                syn::visit::visit_item_struct(self, item);
+            }
         }
         fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
-            self.count += usize::from(item.ident == self.ident);
-            syn::visit::visit_item_enum(self, item);
+            if !statically_inactive(&item.attrs) {
+                self.count += usize::from(item.ident == self.ident);
+                syn::visit::visit_item_enum(self, item);
+            }
+        }
+        fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+            if !statically_inactive(&item.attrs) {
+                syn::visit::visit_item_mod(self, item);
+            }
         }
     }
     let mut counter = Counter { ident, count: 0 };

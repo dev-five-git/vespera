@@ -45,6 +45,14 @@ pub fn feature_disabled_error(input: &DeriveInput) -> TokenStream {
     syn::Error::new(input.ident.span(), FEATURE_DISABLED_MSG).to_compile_error()
 }
 
+/// Whether a container `#[try_from_multipart(strict)]` makes the derive
+/// reject unknown parts: the request schema then closes the object like
+/// under `#[serde(deny_unknown_fields)]` (L4, round 18: it stayed open, so a
+/// client sending an extra part the spec allowed got a `400`).
+pub fn rejects_unknown_parts(attrs: &[syn::Attribute]) -> bool {
+    extract_strict(attrs).unwrap_or(false)
+}
+
 /// The named fields of a struct input; anything else is a compile error.
 fn named_fields(
     input: &DeriveInput,
