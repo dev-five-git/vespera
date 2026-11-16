@@ -4,9 +4,17 @@
 //! key the outer struct does not know itself, then deserializes each
 //! flattened member from that buffer:
 //!
-//! - a flattened STRUCT takes only the keys it knows
-//!   (`FlatStructAccess`), so its own `deny_unknown_fields` never fires —
-//!   its fields are simply more keys of the outer object;
+//! - a flattened STRUCT without flatten fields of its own takes only the
+//!   keys it knows (`FlatStructAccess`), so its own `deny_unknown_fields`
+//!   never fires — its fields are simply more keys of the outer object;
+//! - a flattened struct WITH a flatten field of its own (read through
+//!   `deserialize_map`) and a flattened internally tagged / untagged enum
+//!   (`deserialize_any`) read through `FlatMapAccess` and take nothing
+//!   (see `request_view::FlatRead`): their keys stay in the buffer, so the
+//!   outer `deny_unknown_fields` rejects them (in the request view their
+//!   properties are `{not: {}}`, and such an opaque member does not open
+//!   the object) and every flattened map reads them, also one declared
+//!   after them;
 //! - a flattened MAP reads every key still in the buffer
 //!   (`FlatMapAccess`) WITHOUT taking it: it types the outer object's
 //!   unlisted keys AND every key of a flattened member declared after it
@@ -20,7 +28,9 @@
 //!   other variant key to the outer struct, so its request-view branches are
 //!   an `anyOf` (several may match), never a `oneOf`;
 //! - the OUTER `deny_unknown_fields` rejects any key no member consumed
-//!   (a map borrows, never consumes, so with it the map stays empty).
+//!   (a map borrows, never consumes, so with it the map stays empty);
+//! - a flattened newtype (`deserialize_newtype_struct` passes the buffer
+//!   on) or `#[serde(transparent)]` wrapper reads like the type it wraps.
 //!
 //! JSON Schema `additionalProperties` only sees the `properties` of its own
 //! schema object, so composing members with `allOf` gets these semantics
@@ -49,7 +59,7 @@ use super::{
     super::{
         embedded::{open_embedded, unwrap_wrappers, without_unlisted_bounds},
         enum_schema::{parse_enum_to_schema, without_other_map, without_single_key_bounds},
-        request_view,
+        request_view::{self, FlatRead},
         schema_attrs::{SchemaConstraints, extract_schema_constraints},
         serde_attrs::{SerdeSide, extract_field_codec},
         type_schema::{generic_instances, parse_type_to_schema_ref},
@@ -80,16 +90,18 @@ pub(super) struct ObjectParts {
     pub closed: bool,
 }
 
-/// One `#[serde(flatten)]` field.
+/// One `#[serde(flatten)]` field. `leaves`: serde leaves its keys in the
+/// outer buffer ([`leaves_keys`]).
 pub(super) enum FlatPart {
     /// A member whose keys are known; `reference` is its `$ref`, if any.
     Known {
         reference: Option<SchemaRef>,
         parts: ObjectParts,
         optional: bool,
+        leaves: bool,
     },
     /// A member whose keys cannot be known.
-    Opaque(SchemaRef),
+    Opaque { schema: SchemaRef, leaves: bool },
 }
 
 /// Classify a `#[serde(flatten)]` field on `side`; an `omittable` member
@@ -110,6 +122,7 @@ pub(super) fn flatten_part(
     // exactly as on a field that is not flattened.
     let custom = constraints.is_any()
         || (constraints.value_type.is_none() && extract_field_codec(&field.attrs).custom_for(side));
+    let leaves = !custom && leaves_keys(ty, struct_definitions, WRAPPER_DEPTH);
     let schema = if custom {
         SchemaRef::Inline(Box::default())
     } else {
@@ -139,6 +152,7 @@ pub(super) fn flatten_part(
             }),
             parts,
             optional,
+            leaves,
         };
     }
     // A newtype / transparent wrapper around an enum is flattened like that
@@ -178,15 +192,36 @@ pub(super) fn flatten_part(
             .or(flattened)
         })
         .map_or(schema, |flattened| SchemaRef::Inline(Box::new(flattened)));
-    if optional {
-        // serde turns any failure of the inner value into `None`.
-        FlatPart::Opaque(SchemaRef::Inline(Box::new(Schema {
-            any_of: Some(vec![schema, SchemaRef::Inline(Box::default())]),
-            ..Schema::default()
-        })))
-    } else {
-        FlatPart::Opaque(schema)
-    }
+    // serde turns any failure of an optional member into `None`.
+    let schema = if optional { lenient(schema) } else { schema };
+    FlatPart::Opaque { schema, leaves }
+}
+
+/// How many newtype / transparent wrappers [`leaves_keys`] looks through
+/// (a bound for `struct S(Box<S>)`).
+const WRAPPER_DEPTH: usize = 8;
+
+/// Whether serde leaves the keys of a flattened `ty` in the outer buffer
+/// (`request_view::FlatRead::Leaves`, seen through `depth` newtype /
+/// transparent wrappers): its definition must be known.
+fn leaves_keys(
+    ty: &syn::Type,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
+    depth: usize,
+) -> bool {
+    let syn::Type::Path(type_path) = peel(ty) else {
+        return false;
+    };
+    super::super::definition_key(&type_path.path, |key| struct_definitions.contains_key(key))
+        .and_then(|key| struct_definitions.get(key.as_str()))
+        .and_then(|definition| syn::parse_str::<syn::Item>(definition.as_ref()).ok())
+        .is_some_and(|item| match request_view::flat_read(&item) {
+            FlatRead::Takes => false,
+            FlatRead::Leaves { .. } => true,
+            FlatRead::Through(inner) => {
+                depth > 0 && leaves_keys(inner, struct_definitions, depth - 1)
+            }
+        })
 }
 
 /// The flattened form of an externally tagged enum `schema` with unit
@@ -521,18 +556,35 @@ fn lenient(schema: SchemaRef) -> SchemaRef {
 ///   keys fail, so its properties (and map values) reject nothing;
 /// - every non-optional map declared EARLIER also reads this member's keys
 ///   (it borrows the buffered entries before this member takes them), so
-///   each of its properties must satisfy those maps' value schema too.
+///   each of its properties must satisfy those maps' value schema too;
+/// - `left`: the member leaves its keys in the buffer (see the module doc):
+///   `later_maps` (the value schema of the non-optional maps declared
+///   after it) read them too, and the outer `deny_unknown_fields`
+///   (`rejected`) rejects them — every property is `{not: {}}`.
 ///
 /// Returns the value schema later members must also satisfy.
 fn request_member(
     parts: &mut ObjectParts,
     optional: bool,
     earlier_maps: Option<SchemaRef>,
+    left: Option<(Option<SchemaRef>, bool)>,
 ) -> Option<SchemaRef> {
+    let (later_maps, rejected) = left.unwrap_or_default();
+    let maps = [earlier_maps.clone(), later_maps]
+        .into_iter()
+        .flatten()
+        .reduce(both);
     for schema in parts.properties.values_mut() {
+        if rejected {
+            *schema = SchemaRef::Inline(Box::new(Schema {
+                not: Some(SchemaRef::Inline(Box::default())),
+                ..Schema::default()
+            }));
+            continue;
+        }
         let own = std::mem::replace(schema, SchemaRef::Inline(Box::default()));
         let own = if optional { lenient(own) } else { own };
-        *schema = match &earlier_maps {
+        *schema = match &maps {
             Some(map_value) => both(own, map_value.clone()),
             None => own,
         };
@@ -557,7 +609,9 @@ fn request_member(
 /// `deny_unknown_fields` closes the merged object; with a flattened map the
 /// request view is still closed (serde rejects every key no member
 /// consumed, and a map consumes none), while the response view lists the
-/// map's entries (serde writes them).
+/// map's entries (serde writes them). In the request view an opaque member
+/// that leaves its keys does not open the object under it either (serde
+/// rejects them).
 pub(super) fn assemble(
     mut own: ObjectParts,
     flattened: Vec<FlatPart>,
@@ -569,12 +623,31 @@ pub(super) fn assemble(
         || flattened.iter().any(|part| {
             matches!(part, FlatPart::Known { parts, .. } if parts.additional.is_some() || parts.closed)
         });
+    // The value schema of the non-optional maps declared after each member.
+    let mut later_maps = Vec::with_capacity(flattened.len());
+    let mut maps_after: Option<SchemaRef> = None;
+    for part in flattened.iter().rev() {
+        later_maps.push(maps_after.clone());
+        if let FlatPart::Known {
+            parts:
+                ObjectParts {
+                    additional: Some(value),
+                    ..
+                },
+            optional: false,
+            ..
+        } = part
+        {
+            maps_after =
+                Some(maps_after.map_or_else(|| value.clone(), |after| both(value.clone(), after)));
+        }
+    }
     let mut open = false;
     let mut earlier_maps: Option<SchemaRef> = None;
-    for part in flattened {
+    for (part, later) in flattened.into_iter().zip(later_maps.into_iter().rev()) {
         match part {
-            FlatPart::Opaque(schema) => {
-                open = true;
+            FlatPart::Opaque { schema, leaves } => {
+                open |= !(request && deny_unknown_fields && leaves);
                 own.opaque.push(schema);
             }
             // Its keys are known, so it does not open the object.
@@ -586,12 +659,17 @@ pub(super) fn assemble(
             FlatPart::Known {
                 mut parts,
                 optional,
+                leaves,
                 ..
             } => {
+                // serde rejects every key such a member leaves behind, its
+                // unknown members' keys too: they do not open the object.
+                let rejected = request && deny_unknown_fields && leaves;
                 if request {
-                    earlier_maps = request_member(&mut parts, optional, earlier_maps);
+                    let left = leaves.then_some((later, deny_unknown_fields));
+                    earlier_maps = request_member(&mut parts, optional, earlier_maps, left);
                 }
-                open |= merge(&mut own, parts, optional);
+                open |= merge(&mut own, parts, optional) && !rejected;
             }
         }
     }
@@ -792,6 +870,31 @@ mod tests {
                 }
             ])
         );
+    }
+
+    /// Only a path naming a known definition that serde reads without
+    /// taking its keys leaves them behind.
+    #[rstest]
+    #[case::tuple("(Meta, u8)", false)]
+    #[case::unknown("Ghost", false)]
+    #[case::alias("Alias", false)]
+    #[case::leaving("Meta", true)]
+    #[case::newtype("Wrapped", true)]
+    fn leaves_keys_needs_a_known_leaving_definition(#[case] ty: &str, #[case] leaves: bool) {
+        let definitions = HashMap::from([
+            (
+                "Audit".to_string(),
+                "struct Audit { by: String }".to_string(),
+            ),
+            (
+                "Meta".to_string(),
+                "struct Meta { #[serde(flatten)] audit: Audit }".to_string(),
+            ),
+            ("Wrapped".to_string(), "struct Wrapped(Meta);".to_string()),
+            ("Alias".to_string(), "type Alias = Meta;".to_string()),
+        ]);
+        let ty: syn::Type = syn::parse_str(ty).unwrap();
+        assert_eq!(leaves_keys(&ty, &definitions, WRAPPER_DEPTH), leaves);
     }
 
     /// A macro-expanded `$ty` arrives as an invisible group.

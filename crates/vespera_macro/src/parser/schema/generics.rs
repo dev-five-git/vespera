@@ -266,8 +266,8 @@ mod tests {
 
     #[test]
     fn test_substitute_type_parenthesized_args() {
-        // Fn(T) -> U style (parenthesized arguments)
-        // This tests the `other => other.clone()` branch for PathArguments
+        // A bare `fn(T) -> U` pointer is a `Type::BareFn`, not a path: it is
+        // returned unchanged by the catch-all arm.
         let ty: Type = syn::parse_str("fn(T) -> U").unwrap();
         let concrete_t: Type = syn::parse_str("String").unwrap();
         let concrete_u: Type = syn::parse_str("i32").unwrap();
@@ -292,6 +292,25 @@ mod tests {
             &[&concrete_t, &concrete_u],
         );
         // Type::TraitObject falls to _ => ty.clone()
+        assert_eq!(result, ty);
+    }
+
+    #[test]
+    fn test_substitute_type_path_with_parenthesized_arguments() {
+        // A `Type::Path` whose segment carries `PathArguments::Parenthesized`
+        // (`Fn(T) -> U`): the segment arguments go through the
+        // `other => other.clone()` arm unchanged.
+        let bound: syn::TraitBound = syn::parse_str("Fn(T) -> U").unwrap();
+        assert!(matches!(
+            bound.path.segments[0].arguments,
+            syn::PathArguments::Parenthesized(_)
+        ));
+        let mut ty: Type = syn::parse_str("Placeholder").unwrap();
+        if let Type::Path(path) = &mut ty {
+            path.path = bound.path;
+        }
+        let concrete_t: Type = syn::parse_str("String").unwrap();
+        let result = substitute_type(&ty, &[String::from("T")], &[&concrete_t]);
         assert_eq!(result, ty);
     }
 }

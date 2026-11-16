@@ -54,6 +54,7 @@ const DEFINITIONS: &[(&str, &str)] = &[
     ("Tree", "struct Tree<T> { v: T, kids: Vec<Tree<T>> }"),
     ("Shape", "enum Shape { Square(u8), Point }"),
     ("Wrapper", "struct Wrapper(Strict);"),
+    ("Attrs", "struct Attrs(HashMap<String, u8>);"),
     ("Open", "enum Open { Square(u8), #[serde(other)] Unknown }"),
     (
         "Transparent",
@@ -167,6 +168,26 @@ fn both_views(src: &str) -> String {
 #[case::flatten_plain_struct_outer_deny(
     "flatten_plain_struct_outer_deny",
     "#[serde(deny_unknown_fields)] struct Req { id: i32, #[serde(flatten)] meta: Meta }"
+)]
+// Round 18 M-A: `Meta` (it flattens `Audit`) and the internally tagged
+// `Kind` leave their keys in serde's buffer: the outer `deny_unknown_fields`
+// rejects them, and a map declared after them reads them.
+#[case::flatten_leaving_struct_then_map(
+    "flatten_leaving_struct_then_map",
+    "struct Req { #[serde(flatten)] meta: Meta, #[serde(flatten)] extra: HashMap<String, u8> }"
+)]
+#[case::flatten_leaving_optional_outer_deny(
+    "flatten_leaving_optional_outer_deny",
+    "#[serde(deny_unknown_fields)] struct Req { id: i32, #[serde(flatten)] meta: Option<Meta> }"
+)]
+#[case::flatten_leaving_enum_outer_deny(
+    "flatten_leaving_enum_outer_deny",
+    "#[serde(deny_unknown_fields)] struct Req { id: i32, #[serde(flatten)] kind: Kind }"
+)]
+// Round 18 M-B: a flattened newtype around a map reads every buffered key.
+#[case::flatten_newtype_map_outer_deny(
+    "flatten_newtype_map_outer_deny",
+    "#[serde(deny_unknown_fields)] struct Req { id: u8, #[serde(flatten)] attrs: Attrs }"
 )]
 // M5: a flattened unit struct contributes nothing.
 #[case::flatten_unit_struct(

@@ -79,6 +79,36 @@ fn scoped_names(
     true
 )]
 #[case::enum_variant_flatten_struct("enum E { V { #[serde(flatten)] p: Page } }", false)]
+// Round 18 M-A: a member that leaves its keys in serde's buffer (`Leaving`:
+// a struct with a flatten field of its own; `LeavingEnum`: an internally
+// tagged enum) has them rejected by the outer `deny_unknown_fields`, and
+// read by a map declared after it.
+#[case::deny_flatten_leaving_struct(
+    "#[serde(deny_unknown_fields)] struct A { id: u8, #[serde(flatten)] l: Leaving }",
+    true
+)]
+#[case::deny_flatten_leaving_enum(
+    "#[serde(deny_unknown_fields)] struct A { id: u8, #[serde(flatten)] l: LeavingEnum }",
+    true
+)]
+#[case::flatten_leaving_struct("struct A { id: u8, #[serde(flatten)] l: Leaving }", false)]
+#[case::flatten_leaving_struct_then_map(
+    "struct A { #[serde(flatten)] l: Leaving, #[serde(flatten)] m: HashMap<String, u8> }",
+    true
+)]
+#[case::flatten_leaving_enum_then_map(
+    "struct A { #[serde(flatten)] l: LeavingEnum, #[serde(flatten)] m: HashMap<String, u8> }",
+    false
+)]
+#[case::deny_flatten_tuple(
+    "#[serde(deny_unknown_fields)] struct A { id: u8, #[serde(flatten)] t: (Page, u8) }",
+    false
+)]
+// Round 18 M-B: a newtype around a map reads every buffered key.
+#[case::deny_flatten_newtype_map(
+    "#[serde(deny_unknown_fields)] struct A { id: u8, #[serde(flatten)] attrs: Attrs }",
+    true
+)]
 // M2: members are seen through `Box` / `Arc` / `&` / `value_type`, like the
 // schema builder (`struct_schema::flatten::flattened_member`) sees them.
 #[case::flatten_boxed_option("struct A { id: i32, #[serde(flatten)] p: Box<Option<Page>> }", true)]
@@ -240,37 +270,117 @@ fn scoped_names(
 #[case::decimal_field("struct A { price: Decimal }", true)]
 #[case::decimal_tuple("struct A(rust_decimal::Decimal);", true)]
 fn direct_differences(#[case] src: &str, #[case] expected: bool) {
-    let map_bearing = BTreeSet::from(["HasMap".to_string()]);
+    let flat = FlatKinds(BTreeMap::from([
+        ("HasMap".to_string(), FlatKind::Map),
+        ("Attrs".to_string(), FlatKind::Map),
+        ("Leaving".to_string(), FlatKind::Leaves { known_keys: true }),
+        (
+            "LeavingEnum".to_string(),
+            FlatKind::Leaves { known_keys: false },
+        ),
+    ]));
     assert_eq!(
-        directly_differs(&syn::parse_str(src).unwrap(), &map_bearing),
+        directly_differs(&syn::parse_str(src).unwrap(), &flat),
         expected
     );
 }
 
 /// Structs flattening a map — directly, through an `Option`, or through
-/// another such struct — read every buffered key.
+/// another such struct — and newtype / transparent wrappers around a map
+/// read every buffered key; a struct with any other flatten field and an
+/// internally tagged / untagged enum leave their keys in the buffer.
 #[test]
-fn map_bearing_structs_are_transitive() {
+fn flat_kinds_are_transitive() {
     let items: Vec<syn::Item> = [
         "struct Outer { #[serde(flatten)] h: Option<HasMap> }",
         "struct HasMap { #[serde(flatten)] m: HashMap<String, u8> }",
         "struct Boxed { #[serde(flatten)] m: Box<Option<BTreeMap<String, u8>>> }",
         "struct Plain { #[serde(flatten)] p: Page, m: HashMap<String, u8> }",
         "struct Tuple(HashMap<String, u8>);",
+        "struct WrapsWrapper(Tuple);",
+        "#[serde(transparent)] struct Clear { #[serde(skip)] marker: (), m: HashMap<String, u8> }",
+        "#[serde(transparent)] struct Skipped { #[serde(skip)] marker: () }",
+        "struct Pair(HashMap<String, u8>, u8);",
+        "struct Flat { #[serde(flatten)] p: Page }",
+        "struct SkippedFlat { #[serde(flatten, skip_deserializing)] p: Page }",
+        "struct Page { page: u32 }",
         "enum E { V { #[serde(flatten)] m: HashMap<String, u8> } }",
+        r#"#[serde(tag = "t")] enum Internal { A }"#,
+        "#[serde(untagged)] enum Untagged { A(u8) }",
+        "enum WithUntagged { A, #[serde(untagged)] B(u8) }",
+        r#"#[serde(tag = "t", content = "c")] enum Adjacent { A(u8) }"#,
+        "struct NewInternal(Internal);",
+        "fn not_a_type() {}",
     ]
     .iter()
     .map(|src| syn::parse_str(src).unwrap())
     .collect();
     let items: Vec<&syn::Item> = items.iter().collect();
+    let leaves = |known_keys| FlatKind::Leaves { known_keys };
     assert_eq!(
-        map_bearing_structs(&items),
-        BTreeSet::from([
-            "Boxed".to_string(),
-            "HasMap".to_string(),
-            "Outer".to_string()
+        FlatKinds::of(&items).0,
+        BTreeMap::from([
+            ("Boxed".to_string(), FlatKind::Map),
+            ("Clear".to_string(), FlatKind::Map),
+            ("Flat".to_string(), leaves(true)),
+            ("HasMap".to_string(), FlatKind::Map),
+            ("Internal".to_string(), leaves(false)),
+            ("NewInternal".to_string(), leaves(false)),
+            ("Outer".to_string(), FlatKind::Map),
+            ("Plain".to_string(), leaves(true)),
+            ("Tuple".to_string(), FlatKind::Map),
+            ("Untagged".to_string(), leaves(false)),
+            ("WithUntagged".to_string(), leaves(false)),
+            ("WrapsWrapper".to_string(), FlatKind::Map),
         ])
     );
+}
+
+/// Round 18 M-A / M-B, checked against serde itself: a flattened struct
+/// with a flatten field of its own leaves its keys for the outer
+/// `deny_unknown_fields` and for a later map, and a flattened newtype
+/// around a map reads every buffered key.
+#[test]
+#[allow(dead_code)]
+fn serde_leaves_keys_of_a_flattened_struct_with_flatten() {
+    #[derive(serde::Deserialize)]
+    struct Audit {
+        by: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct Meta {
+        tag: String,
+        #[serde(flatten)]
+        audit: Audit,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Denied {
+        id: i32,
+        #[serde(flatten)]
+        meta: Meta,
+    }
+    #[derive(serde::Deserialize)]
+    struct WithMap {
+        #[serde(flatten)]
+        meta: Meta,
+        #[serde(flatten)]
+        extra: std::collections::HashMap<String, u8>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Attrs(std::collections::HashMap<String, u8>);
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct DeniedAttrs {
+        id: u8,
+        #[serde(flatten)]
+        attrs: Attrs,
+    }
+    let denied = serde_json::from_str::<Denied>(r#"{"id":1,"tag":"a","by":"b"}"#);
+    assert!(denied.is_err_and(|err| err.to_string().contains("unknown field `tag`")));
+    assert!(serde_json::from_str::<WithMap>(r#"{"tag":"a","by":"b"}"#).is_err());
+    assert!(serde_json::from_str::<DeniedAttrs>(r#"{"id":1,"x":2}"#).is_err());
+    assert!(serde_json::from_str::<DeniedAttrs>(r#"{"id":1}"#).is_ok());
 }
 
 #[test]
@@ -461,7 +571,7 @@ fn current_side_follows_the_view() {
 fn non_type_items_reference_nothing() {
     let item: syn::Item = syn::parse_str("fn f() {}").unwrap();
     assert!(referenced_idents(&item).is_empty());
-    assert!(!directly_differs(&item, &BTreeSet::new()));
+    assert!(!directly_differs(&item, &FlatKinds(BTreeMap::new())));
 }
 
 /// M2: serde reads a flattened `Box<Option<T>>` like a flattened `Option<T>`

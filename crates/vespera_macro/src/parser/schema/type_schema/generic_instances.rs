@@ -145,7 +145,7 @@ fn push_array_len(name: &mut String, len: &syn::Expr) {
     }
 }
 
-// Inline the generic instantiation `name`, built by `build`, unless that
+/// Inline the generic instantiation `name`, built by `build`, unless that
 /// would recurse forever — then a `$ref` to the materialised component.
 pub fn inline_or_reference(name: &str, build: impl FnOnce() -> Schema) -> SchemaRef {
     // In the request view the instantiation carries a `.Input` suffix when

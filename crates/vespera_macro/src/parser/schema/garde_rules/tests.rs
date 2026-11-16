@@ -297,6 +297,14 @@ fn escape_regex_escapes_every_syntax_character() {
 #[case::binary_property(r"\p{White_Space}\p{Alpha}", true)]
 #[case::unknown_key(r"\p{Block=Basic_Latin}", false)]
 #[case::unclosed_property(r"\p{L", true)]
+// Round 18: Rust skips whitespace inside a counted repetition; ECMA-262 reads
+// only `digits[,[digits]]` there.
+#[case::brace_spaces(r"a{ 5 }", false)]
+#[case::brace_space_after_comma(r"^\d{3, 4}$", false)]
+#[case::brace_open_range(r"a{2,}", true)]
+#[case::brace_leading_comma(r"a{,5}", false)]
+#[case::brace_two_commas(r"a{1,2,3}", false)]
+#[case::brace_letter(r"a{x}", false)]
 fn ecma_compatible_patterns(#[case] pattern: &str, #[case] expected: bool) {
     assert_eq!(is_ecma_compatible(pattern), expected, "{pattern}");
 }

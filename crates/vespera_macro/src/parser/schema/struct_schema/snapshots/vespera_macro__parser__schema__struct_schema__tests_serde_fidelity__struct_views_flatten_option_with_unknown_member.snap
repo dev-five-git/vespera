@@ -1,5 +1,6 @@
 ---
 source: crates/vespera_macro/src/parser/schema/struct_schema/tests_serde_fidelity.rs
+assertion_line: 350
 expression: both_views(src)
 ---
 #[serde(deny_unknown_fields)] struct Req { id: i32, #[serde(flatten)] tagged: Option<Tagged> }
@@ -29,18 +30,11 @@ request: {
       "format": "int32"
     },
     "t": {
-      "anyOf": [
-        {
-          "type": "integer",
-          "format": "uint8",
-          "minimum": 0,
-          "maximum": 255
-        },
-        {}
-      ]
+      "not": {}
     }
   },
   "required": [
     "id"
-  ]
+  ],
+  "additionalProperties": false
 }
