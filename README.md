@@ -279,8 +279,10 @@ module, the final fn segment removed):
 | `serde_with::rust::display_fromstr` | `string` |
 | `serde_bytes` | array of integers `0..=255` (what `serde_json` writes) |
 
-The re-export paths (`vespera::chrono::serde::ts_seconds`) are not in the
-table: add `value_type` there.
+The table matches from the first segment naming a table crate, so a re-export
+prefix is skipped: `vespera::chrono::serde::ts_seconds` matches like
+`chrono::serde::ts_seconds`. A path that does not end in a table entry needs
+`value_type`.
 
 The derive's `Schema` assertion checks `T` instead of the field type, and
 skips a field whose type is never documented (`with` without `value_type`).

@@ -70,6 +70,24 @@ pub const CODEC_TABLE: &[(&str, &str)] = &[
     ("serde_bytes", "Vec<u8>"),
 ];
 
+/// The table entry for a codec module path. The path matches from its first
+/// segment naming a table crate (`chrono`, `time`, ...), so a re-export
+/// prefix is skipped: `vespera::chrono::serde::ts_seconds` matches
+/// `chrono::serde::ts_seconds`.
+fn table_wire(module: &[String]) -> Option<&'static str> {
+    let is_root = |segment: &str| {
+        CODEC_TABLE
+            .iter()
+            .any(|(path, _)| path.split("::").next() == Some(segment))
+    };
+    let start = module.iter().position(|segment| is_root(segment))?;
+    let path = module[start..].join("::");
+    CODEC_TABLE
+        .iter()
+        .find(|(entry, _)| *entry == path)
+        .map(|(_, wire)| *wire)
+}
+
 /// What a field's custom serde codec on one side documents.
 pub enum CodecWire {
     /// No codec on this side: the field's Rust type is documented.
@@ -117,8 +135,7 @@ pub fn codec_wire(field: &syn::Field, side: SerdeSide) -> CodecWire {
     if !extract_field_codec(&field.attrs).custom_for(side) {
         return CodecWire::RustType;
     }
-    let module = extract_codec_module(&field.attrs, side).join("::");
-    if let Some((_, wire)) = CODEC_TABLE.iter().find(|(path, _)| *path == module) {
+    if let Some(wire) = table_wire(&extract_codec_module(&field.attrs, side)) {
         return CodecWire::Documented(Box::new(parse_wire_type(wire)));
     }
     if is_string_type(&field.ty) {
@@ -418,6 +435,35 @@ mod tests {
             wire_tokens(&src, SerdeSide::Deserialize).as_deref(),
             Some(expected)
         );
+    }
+
+    #[rstest]
+    #[case::re_export_chrono("vespera::chrono::serde::ts_seconds", "i64")]
+    #[case::re_export_chrono_option(
+        "::vespera::chrono::serde::ts_seconds_option",
+        "Option < i64 >"
+    )]
+    #[case::re_export_time("app::time::serde::rfc3339", "DateTime < Utc >")]
+    #[case::re_export_time_option(
+        "a::b::time::serde::rfc3339::option",
+        "Option < DateTime < Utc > >"
+    )]
+    #[case::re_export_humantime("x::humantime_serde::option", "Option < String >")]
+    #[case::re_export_serde_bytes("x::serde_bytes", "Vec < u8 >")]
+    fn re_exported_codec_modules_match_the_table(#[case] module: &str, #[case] expected: &str) {
+        let src = format!("#[serde(with = \"{module}\")] x: u8");
+        assert_eq!(
+            wire_tokens(&src, SerdeSide::Serialize).as_deref(),
+            Some(expected)
+        );
+    }
+
+    #[rstest]
+    #[case::unknown_under_re_export("vespera::chrono::serde::nope")]
+    #[case::wrong_suffix("vespera::chrono::serde::ts_seconds::extra")]
+    fn re_exported_unknown_modules_stay_unknown(#[case] module: &str) {
+        let src = format!("#[serde(with = \"{module}\")] x: Vec<u8>");
+        assert_eq!(wire_tokens(&src, SerdeSide::Serialize), None);
     }
 
     #[rstest]
