@@ -462,8 +462,8 @@ fn renamed(name: &str, ident: &str, definition: &str) -> StructMetadata {
 /// that key is never replaced.
 #[test]
 fn scoped_rust_idents_are_registered() {
-    let scoped = |key: &str, name: &'static str, definition: &'static str| ScopedRustIdent {
-        key: key.to_string(),
+    let scoped = |modules: &[&str], name: &'static str, definition: &'static str| ScopedRustIdent {
+        keys: registry_keys(modules, "Foo"),
         name,
         definition,
     };
@@ -473,39 +473,80 @@ fn scoped_rust_idents_are_registered() {
         "struct Real;".to_string(),
     )];
     let entries = [
-        scoped("b::Foo", "B", "struct Foo { b: String }"),
-        scoped("a::Foo", "C", "struct Foo { c: i32 }"),
-        scoped("a::Foo", "A", "struct Foo { a: i32 }"),
-        scoped("d::Foo", "D", "struct Foo { d: i32 }"),
+        scoped(&["b"], "B", "struct Foo { b: String }"),
+        // Two declarations at one exact path (`cfg` twins): the first by name.
+        scoped(&["a"], "C", "struct Foo { c: i32 }"),
+        scoped(&["a"], "A", "struct Foo { a: i32 }"),
+        scoped(&["d"], "D", "struct Foo { d: i32 }"),
     ];
     let (known, definitions) = build_schema_lookups(&metadata, &entries);
     assert!(known.contains("a::Foo") && known.contains("b::Foo"));
+    assert!(known.contains("crate::a::Foo") && known.contains("crate::b::Foo"));
     assert_eq!(definitions.get("a::Foo"), Some(&"struct Foo { a: i32 }"));
     assert_eq!(definitions.get("b::Foo"), Some(&"struct Foo { b: String }"));
     assert_eq!(definitions.get("d::Foo"), Some(&"struct Real;"));
 }
 
-/// Only a rename with a source identity gets a scoped key, derived from the
-/// module around its declaration.
+/// A key two declarations in different modules claim (`models::user::User`
+/// and `api::user::User` both reach `user::User`) is registered for neither;
+/// the exact `crate::` keys still tell them apart.
+#[test]
+fn shared_suffix_key_is_registered_for_neither_declaration() {
+    let scoped = |modules: &[&str], name: &'static str, definition: &'static str| ScopedRustIdent {
+        keys: registry_keys(modules, "User"),
+        name,
+        definition,
+    };
+    let entries = [
+        scoped(&["models", "user"], "AdminUser", "struct User { id: i32 }"),
+        scoped(&["api", "user"], "User", "struct User { name: String }"),
+    ];
+    let mut metadata = CollectedMetadata::new();
+    metadata.structs = vec![StructMetadata::new(
+        "User".to_string(),
+        "struct User { name: String }".to_string(),
+    )];
+    let (known, definitions) = build_schema_lookups(&metadata, &entries);
+    assert!(!known.contains("user::User") && !definitions.contains_key("user::User"));
+    assert_eq!(
+        definitions.get("crate::models::user::User"),
+        Some(&"struct User { id: i32 }")
+    );
+    assert_eq!(
+        definitions.get("crate::api::user::User"),
+        Some(&"struct User { name: String }")
+    );
+}
+
+/// Every struct with a source identity gets its module-path keys (renamed or
+/// plain), derived from the module around its declaration.
 #[test]
 fn scoped_rust_idents_come_from_source_identities() {
     let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("lib.rs"), "").unwrap();
     let file = dir.path().join("models.rs");
     fs::write(&file, "mod b {\n    struct Foo;\n}\n").unwrap();
     let identity = format!("{}::Foo@2:11", file.display());
+    let plain_identity = format!("{}::Plain@4:11", file.display());
     let mut metadata = CollectedMetadata::new();
     metadata.structs = vec![
-        renamed("B", "Foo", "struct Foo;").with_source_identity(identity.clone()),
+        renamed("B", "Foo", "struct Foo;").with_source_identity(identity),
         renamed("A", "Foo", "struct Foo;"),
         StructMetadata::new("Plain".to_string(), "struct Plain;".to_string())
-            .with_source_identity(identity),
+            .with_source_identity(plain_identity),
     ];
     let scoped = scoped_rust_idents(&metadata);
     let keys: Vec<(&str, &str)> = scoped
         .iter()
-        .map(|entry| (entry.key.as_str(), entry.name))
+        .map(|entry| (entry.keys[0].as_str(), entry.name))
         .collect();
-    assert_eq!(keys, [("b::Foo", "B")]);
+    assert_eq!(
+        keys,
+        [
+            ("crate::models::b::Foo", "B"),
+            ("crate::models::Plain", "Plain")
+        ]
+    );
 }
 
 /// Two renamed types sharing a Rust ident resolve the same way whatever
@@ -823,4 +864,76 @@ fn response_property_named_like_a_request_key_does_not_reach_input() {
         schemas.keys().collect::<Vec<_>>(),
         ["Filter", "FilterInput"]
     );
+}
+
+/// Two modules sharing the leaf name `user`: `src/models/user.rs` renames its
+/// `User` to `AdminUser`, `src/api/user.rs` keeps a plain `User`. A qualified
+/// reference names the declaration in its own module; a relative `user::User`
+/// is ambiguous between the two and falls back to the bare ident.
+#[rstest]
+#[case::api_anchored("crate::api::user::User", "#/components/schemas/User")]
+#[case::models_anchored("crate::models::user::User", "#/components/schemas/AdminUser")]
+#[case::relative_ambiguous("user::User", "#/components/schemas/User")]
+#[case::bare_ident("User", "#/components/schemas/User")]
+fn same_leaf_modules_resolve_to_their_own_declaration(#[case] ty: &str, #[case] expected: &str) {
+    let dir = TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("models")).unwrap();
+    fs::create_dir_all(src.join("api")).unwrap();
+    fs::write(src.join("lib.rs"), "").unwrap();
+    let models = src.join("models").join("user.rs");
+    let api = src.join("api").join("user.rs");
+    fs::write(&models, "pub struct User { id: i32 }").unwrap();
+    fs::write(&api, "pub struct User { name: String }").unwrap();
+    let mut metadata = CollectedMetadata::new();
+    metadata.structs = vec![
+        renamed(
+            "AdminUser",
+            "User",
+            "#[schema(name = \"AdminUser\")] struct User { id: i32 }",
+        )
+        .with_source_identity(format!("{}::User@1:11", models.display())),
+        StructMetadata::new(
+            "User".to_string(),
+            "struct User { name: String }".to_string(),
+        )
+        .with_source_identity(format!("{}::User@1:11", api.display())),
+    ];
+    let scoped = scoped_rust_idents(&metadata);
+    let (known, definitions) = build_schema_lookups(&metadata, &scoped);
+    let ty: syn::Type = syn::parse_str(ty).unwrap();
+    let schema = crate::parser::schema::parse_type_to_schema_ref(&ty, &known, &definitions);
+    let SchemaRef::Ref(reference) = schema else {
+        panic!("expected a $ref, got {schema:?}");
+    };
+    assert_eq!(reference.ref_path, expected);
+}
+
+/// With the plain `User` absent, the leaf is unambiguous: a relative
+/// `user::User` resolves to the renamed declaration of its module.
+#[test]
+fn unambiguous_relative_module_path_resolves_to_the_rename() {
+    let dir = TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("models")).unwrap();
+    fs::write(src.join("lib.rs"), "").unwrap();
+    let models = src.join("models").join("user.rs");
+    fs::write(&models, "pub struct User { id: i32 }").unwrap();
+    let mut metadata = CollectedMetadata::new();
+    metadata.structs = vec![
+        renamed(
+            "AdminUser",
+            "User",
+            "#[schema(name = \"AdminUser\")] struct User { id: i32 }",
+        )
+        .with_source_identity(format!("{}::User@1:11", models.display())),
+    ];
+    let scoped = scoped_rust_idents(&metadata);
+    let (known, definitions) = build_schema_lookups(&metadata, &scoped);
+    let ty: syn::Type = syn::parse_str("user::User").unwrap();
+    let schema = crate::parser::schema::parse_type_to_schema_ref(&ty, &known, &definitions);
+    let SchemaRef::Ref(reference) = schema else {
+        panic!("expected a $ref, got {schema:?}");
+    };
+    assert_eq!(reference.ref_path, "#/components/schemas/AdminUser");
 }

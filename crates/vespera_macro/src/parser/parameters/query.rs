@@ -393,6 +393,7 @@ mod tests {
     fn same_ident_structs_in_one_flatten_chain_are_both_read() {
         let defs = [
             ("a::Foo", "pub struct Foo { pub a_field: i32 }"),
+            ("crate::a::Foo", "pub struct Foo { pub a_field: i32 }"),
             (
                 "b::Foo",
                 "pub struct Foo { #[serde(flatten)] pub inner: crate::a::Foo, pub b_field: i32 }",
