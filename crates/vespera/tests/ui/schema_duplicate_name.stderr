@@ -1,0 +1,5 @@
+error: duplicate vespera Schema name `Dup` -- two different struct definitions both register under the same OpenAPI schema name. The later definition would silently overwrite the earlier one in the generated `openapi.json`. Rename one of the structs, or annotate one with `#[schema(name = "OtherName")]` to give them distinct OpenAPI names.
+  --> tests/ui/schema_duplicate_name.rs:15:16
+   |
+15 |     pub struct Dup {
+   |                ^^^

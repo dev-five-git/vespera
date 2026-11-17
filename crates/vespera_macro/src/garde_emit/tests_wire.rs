@@ -59,7 +59,11 @@ fn transparent_struct_field_keeps_the_parent_path() {
 #[case::nested_option("#[schema(minimum = 0.5)] f: Option<Option<i32>>", "Some (1i32)")]
 #[case::alias_exact(
     "#[schema(maximum = 3)] f: Count",
-    "Some (< _ as :: vespera :: __validation :: RangeBound > :: exact (3))"
+    "Some (< _ as :: vespera :: __validation :: RangeBound > :: exact_within (3 , 3f64 , false))"
+)]
+#[case::alias_past_2_pow_53(
+    "#[schema(minimum = 9007199254740993)] f: UserId",
+    "Some (< _ as :: vespera :: __validation :: RangeBound > :: exact_within (9007199254740993 , 9007199254740992f64 , true))"
 )]
 #[case::alias_unreachable_guard(
     "#[schema(minimum = 300.5, maximum = 3)] f: Small",

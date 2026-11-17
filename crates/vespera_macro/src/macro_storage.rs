@@ -197,7 +197,10 @@ fn retain_declared_if<T: Clone + SourceIdentified>(
     let declared = |item: &T| {
         item.file_path().is_none_or(|file| {
             crate::schema_macro::file_cache::get_file_content(std::path::Path::new(file))
-                .is_none_or(|content| declares_fn(&content, item.fn_name()))
+                .is_none_or(|content| {
+                    declares_fn(&content, item.fn_name())
+                        || may_come_from_macro(&content, item.fn_name())
+                })
         })
     };
     if !filter || items.iter().all(declared) {
@@ -211,6 +214,32 @@ fn retain_declared_if<T: Clone + SourceIdentified>(
                 .collect(),
         )
     }
+}
+
+/// Whether a macro invocation of `content` names `name` (`h!(list);` may
+/// generate `list` from `macro_rules! h`): such a handler / job has no
+/// literal `fn name` in its file, so its entry is kept. A name a
+/// `macro_rules!` body spells out keeps its `fn name` text and is covered by
+/// [`declares_fn`]. Textual like [`declares_fn`]: a line with a `!` and a
+/// whole-identifier `name` counts.
+fn may_come_from_macro(content: &str, name: &str) -> bool {
+    content
+        .lines()
+        .any(|line| line.contains('!') && contains_ident(line, name))
+}
+
+/// Whether `text` contains `name` as a whole identifier (an unraw `name`
+/// also matches `r#name`).
+fn contains_ident(text: &str, name: &str) -> bool {
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(name).any(|(at, _)| {
+        let before = text[..at].chars().next_back().is_none_or(|c| !is_ident(c));
+        let after = text[at + name.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !is_ident(c));
+        before && after
+    })
 }
 
 /// Whether `content` contains `fn <name>` (the name as a whole identifier,
@@ -299,6 +328,28 @@ mod tests {
         assert!(
             matches!(retain_declared(&items), std::borrow::Cow::Borrowed(all) if all.len() == 4)
         );
+    }
+
+    /// An entry a `macro_rules!` expansion may generate is kept even without a
+    /// literal `fn <name>` (the IDE filter must not drop it).
+    #[test]
+    fn retain_declared_keeps_entries_a_macro_may_generate() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let file = temp.path().join("generated_routes.rs");
+        std::fs::write(
+            &file,
+            "macro_rules! handler { ($n:ident) => { pub async fn $n() {} } }\nhandler!(list);\n",
+        )
+        .unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let path = file.display().to_string();
+        let items = vec![
+            entry("list", &path, "generated"),
+            entry("gone", &path, "stale"),
+        ];
+        let kept = retain_declared_if(&items, true);
+        let payloads: Vec<_> = kept.iter().map(|item| item.payload).collect();
+        assert_eq!(payloads, ["generated"]);
     }
 
     #[rstest::rstest]

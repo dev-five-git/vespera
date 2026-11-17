@@ -76,6 +76,17 @@ fn test_validate_server_url_no_scheme() {
     assert!(result.is_err());
 }
 
+/// An absolute server URL needs a host without whitespace, the same rule as
+/// the `info` URLs and the OAuth2 / OIDC URLs.
+#[rstest]
+#[case::empty_host("https://")]
+#[case::space_in_path("https://example.com/api v1")]
+fn test_validate_server_url_rejects_hostless_or_spaced_absolute(#[case] url: &str) {
+    let lit = LitStr::new(url, Span::call_site());
+    assert!(validate_server_url(&lit).is_err(), "{url}");
+    assert!(!is_server_url(url));
+}
+
 #[test]
 fn test_auto_router_input_parse_dir_only() {
     let tokens = quote::quote!(dir = "api");

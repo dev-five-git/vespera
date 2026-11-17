@@ -709,6 +709,12 @@ fn sidecar_validation_covers_missing_fingerprints_corruption_and_success() {
         )
         .is_none()
     );
+    // A matching stored fingerprint accepts the file without hashing it: the
+    // documented metadata shortcut (even though "other" is not its content).
+    assert!(
+        load_validated_sidecar_specs("t", Some(hash_str("other")), None, Some(wrong_fp), None)
+            .is_some()
+    );
     // A stale fingerprint with a matching content hash is still accepted.
     assert!(
         load_validated_sidecar_specs(

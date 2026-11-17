@@ -221,29 +221,42 @@ async fn documented_garde_bounds_match_422_boundary(
     assert_eq!(response.json::<Value>()["errors"][0]["path"], field);
 }
 
-/// Pattern / format rules: the documented `items.pattern` and `format`
-/// reject what the runtime rejects.
+/// Pattern / format rules: the documented `pattern` (or `items.pattern`, or
+/// `format`) accepts the valid sample and rejects the invalid one, and the
+/// runtime rejects that invalid value with a 422 on the same path.
 #[rstest]
-#[case::hashtag_prefix("hashtags", json!(["rust"]), "hashtags[0]")]
-#[case::email_format("email", json!("not-an-email"), "email")]
-#[case::country_pattern("country", json!("kr"), "country")]
-#[case::avatar_suffix("avatar", json!("me.jpg"), "avatar")]
+#[case::hashtag_prefix("hashtags", json!(["rust"]), "hashtags[0]", &["items", "pattern"], "#rust", "rust")]
+#[case::email_format("email", json!("not-an-email"), "email", &[], "a@example.com", "not-an-email")]
+#[case::country_pattern("country", json!("kr"), "country", &["pattern"], "KR", "kr")]
+#[case::avatar_suffix("avatar", json!("me.jpg"), "avatar", &["pattern"], "me.png", "me.jpg")]
 #[tokio::test]
 async fn documented_garde_patterns_match_422(
     #[case] field: &str,
     #[case] value: Value,
     #[case] error_path: &str,
+    #[case] pattern_path: &[&str],
+    #[case] accepted: &str,
+    #[case] rejected: &str,
 ) {
     let property = garde_profile_property(field);
-    let documented = [
-        &property["pattern"],
-        &property["format"],
-        &property["items"]["pattern"],
-    ];
-    assert!(
-        documented.iter().any(|v| v.is_string()),
-        "{field} documents a pattern / format: {property}"
-    );
+    if pattern_path.is_empty() {
+        // `format: email` is not a regex; the document must name it exactly.
+        assert_eq!(property["format"], "email", "{field}: {property}");
+    } else {
+        let documented = pattern_path.iter().fold(&property, |node, key| &node[*key]);
+        let pattern = documented
+            .as_str()
+            .unwrap_or_else(|| panic!("{field} documents no pattern: {property}"));
+        let regex = regex::Regex::new(pattern).expect("a documented pattern is a regex");
+        assert!(
+            regex.is_match(accepted),
+            "{field}: `{pattern}` rejects {accepted}"
+        );
+        assert!(
+            !regex.is_match(rejected),
+            "{field}: `{pattern}` accepts {rejected}"
+        );
+    }
 
     let server = TestServer::new(create_app().await);
     let mut body = valid_profile();

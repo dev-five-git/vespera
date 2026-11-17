@@ -79,9 +79,10 @@ async fn test_form_data_limit_text_field_exceeds_limit() {
     let response = server.post("/limit-test").multipart(form).await;
     response.assert_status(axum::http::StatusCode::PAYLOAD_TOO_LARGE);
     let body = response.text();
+    // The exact message: a bare "data" also matches "database" or "metadata".
     assert!(
-        body.contains("data"),
-        "Error should mention the field name 'data': {body}"
+        body.contains("Field `data` exceeds size limit"),
+        "Error should name the over-limit field 'data': {body}"
     );
 }
 
@@ -113,8 +114,8 @@ async fn test_form_data_limit_file_field_exceeds_limit() {
     response.assert_status(axum::http::StatusCode::PAYLOAD_TOO_LARGE);
     let body = response.text();
     assert!(
-        body.contains("file"),
-        "Error should mention the field name 'file': {body}"
+        body.contains("Field `file` exceeds size limit"),
+        "Error should name the over-limit field 'file': {body}"
     );
 }
 
@@ -868,7 +869,7 @@ async fn test_missing_required_field() {
         "Expected MissingField error, got: {body}"
     );
     assert!(
-        body.contains("age"),
+        body.contains("Missing field: `age`"),
         "Should name the missing field 'age', got: {body}"
     );
 }

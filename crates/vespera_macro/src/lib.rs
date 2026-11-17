@@ -166,8 +166,12 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
              annotate one with `#[schema(name = \"OtherName\")]` to give \
              them distinct OpenAPI names."
         );
+        // The derive's other output (the `garde::Validate` impl, the
+        // `Schema` marker, the leaf assertions) stays: without it every
+        // later `Validated<T>` / `T: Schema` use adds a cascade of
+        // "trait bound not satisfied" errors next to this one.
         let err = syn::Error::new(span, msg).to_compile_error();
-        return TokenStream::from(err);
+        return TokenStream::from(quote::quote! { #err #expanded });
     }
 
     TokenStream::from(expanded)

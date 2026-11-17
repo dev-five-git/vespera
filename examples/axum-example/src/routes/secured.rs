@@ -8,6 +8,10 @@
 //! required scopes, checked against the flows at compile time.
 //! `security = []` documents an explicitly unauthenticated operation.
 //!
+//! The credential checks below are demo code, not production auth: a real
+//! service verifies signed tokens and stored keys, and only compares secrets
+//! in constant time (`credential_matches`).
+//!
 //! The scheme only *documents* auth — enforcing it stays the handler's (or a
 //! middleware's) job, shown here with a plain `HeaderMap` check. A `401`
 //! carries the `WWW-Authenticate` challenge RFC 9110 requires, and a
@@ -46,6 +50,23 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     scheme.eq_ignore_ascii_case("bearer").then_some(token)
 }
 
+/// Whether the presented credential is `expected`, compared in constant time
+/// (every byte is folded whatever the first mismatch), so the response time
+/// does not reveal how long a matching prefix is. The length check leaks only
+/// the length, which these demo credentials make public anyway.
+fn credential_matches(presented: Option<&str>, expected: &str) -> bool {
+    let Some(presented) = presented else {
+        return false;
+    };
+    let (presented, expected) = (presented.as_bytes(), expected.as_bytes());
+    presented.len() == expected.len()
+        && presented
+            .iter()
+            .zip(expected)
+            .fold(0_u8, |diff, (a, b)| diff | (a ^ b))
+            == 0
+}
+
 /// The authenticated caller.
 #[derive(Debug, Serialize, Deserialize, Schema)]
 pub struct CurrentUser {
@@ -71,7 +92,7 @@ pub const DEMO_API_KEY: &str = "demo-key";
     error_status = [401]
 )]
 pub async fn current_user(headers: HeaderMap) -> Result<Json<CurrentUser>, AuthError> {
-    if bearer_token(&headers) != Some(DEMO_TOKEN) {
+    if !credential_matches(bearer_token(&headers), DEMO_TOKEN) {
         return Err(unauthorized("Bearer"));
     }
     Ok(Json(CurrentUser {
@@ -95,7 +116,8 @@ pub async fn current_user(headers: HeaderMap) -> Result<Json<CurrentUser>, AuthE
     error_status = [401]
 )]
 pub async fn legacy_reports(headers: HeaderMap) -> Result<Json<Vec<String>>, AuthError> {
-    if headers.get("x-api-key").and_then(|v| v.to_str().ok()) != Some(DEMO_API_KEY) {
+    let key = headers.get("x-api-key").and_then(|v| v.to_str().ok());
+    if !credential_matches(key, DEMO_API_KEY) {
         return Err(unauthorized("ApiKey"));
     }
     Ok(Json(vec!["2026-q1".to_string(), "2026-q2".to_string()]))
@@ -134,5 +156,19 @@ pub async fn user_directory(headers: HeaderMap) -> Result<Json<Vec<String>>, Aut
             )],
         )),
         _ => Err(unauthorized("Bearer")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::credential_matches;
+
+    #[test]
+    fn credential_matches_only_the_exact_secret() {
+        assert!(credential_matches(Some("demo-key"), "demo-key"));
+        assert!(!credential_matches(None, "demo-key"));
+        assert!(!credential_matches(Some("demo-ke"), "demo-key"));
+        assert!(!credential_matches(Some("demo-keyx"), "demo-key"));
+        assert!(!credential_matches(Some("demo-kex"), "demo-key"));
     }
 }

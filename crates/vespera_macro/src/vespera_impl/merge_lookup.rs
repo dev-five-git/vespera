@@ -74,15 +74,19 @@ pub(super) struct ResolvedExport {
 
 /// `use` aliases of one source file: local name → full path segments.
 pub(super) fn use_aliases(file: Option<&Path>) -> HashMap<String, Vec<String>> {
+    struct Uses<'a>(&'a mut HashMap<String, Vec<String>>);
+    impl<'ast> syn::visit::Visit<'ast> for Uses<'_> {
+        fn visit_item_use(&mut self, item_use: &'ast syn::ItemUse) {
+            collect_use(&item_use.tree, &mut Vec::new(), self.0);
+        }
+    }
     let mut aliases = HashMap::new();
     let Some(ast) = file.and_then(crate::schema_macro::file_cache::get_parsed_file) else {
         return aliases;
     };
-    for item in &ast.items {
-        if let syn::Item::Use(item_use) = item {
-            collect_use(&item_use.tree, &mut Vec::new(), &mut aliases);
-        }
-    }
+    // Every `use` of the file, including one in a function body (the
+    // `vespera!` call often sits in `fn create_app()`) or an inline module.
+    syn::visit::visit_file(&mut Uses(&mut aliases), &ast);
     aliases
 }
 
@@ -438,6 +442,29 @@ mod tests {
             Some(&vec!["child".to_string(), "ChildApp".to_string()])
         );
         assert!(!aliases.contains_key("self"));
+    }
+
+    /// A `use` inside a function body (where `vespera!` is usually called) or
+    /// an inline module is an alias of the call site too.
+    #[test]
+    fn aliases_inside_a_function_body_and_inline_modules_count() {
+        let temp = TempDir::new().unwrap();
+        let file = temp.path().join("app.rs");
+        std::fs::write(
+            &file,
+            "pub fn create_app() { use child::ChildApp as Admin; }\nmod inner { use other::Other as O; }\n",
+        )
+        .unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let aliases = use_aliases(Some(&file));
+        assert_eq!(
+            aliases.get("Admin"),
+            Some(&vec!["child".to_string(), "ChildApp".to_string()])
+        );
+        assert_eq!(
+            aliases.get("O"),
+            Some(&vec!["other".to_string(), "Other".to_string()])
+        );
     }
 
     #[test]

@@ -392,9 +392,6 @@ fn storage_entries_without_src_dir_keep_their_derived_paths() {
     );
 }
 
-/// Jobs in modules rustc expands after `vespera!` are recovered from the
-/// module tree (`#[path]` modules included); storage-known, gated, private,
-/// non-literal and unreachable ones are not.
 /// `#[cron ("..")]` is valid Rust: its file is still scanned, so the job
 /// is found although no file spells `cron(` with no space.
 #[test]
@@ -418,6 +415,53 @@ fn scan_finds_a_cron_attribute_with_a_space_before_its_parenthesis() {
     );
 }
 
+/// A file that two `#[path]` declarations include is a module under each of
+/// them, so its unexpanded job is scanned once per module path.
+#[test]
+fn scan_walks_a_file_included_by_two_path_declarations_once_per_module() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "#[path = \"common.rs\"]\nmod a;\n#[path = \"common.rs\"]\nmod b;\npub fn create_app() {}\n",
+        ),
+        (
+            "common.rs",
+            "#[cron(\"0 * * * * *\")]\npub async fn tick() {}\n",
+        ),
+    ]);
+    let src = krate.path().join("src");
+    let jobs = discover(&[], Some(&src), None);
+    let mut modules: Vec<&str> = jobs.iter().map(|job| job.module_path.as_str()).collect();
+    modules.sort_unstable();
+    assert_eq!(modules, ["a", "b"]);
+}
+
+/// A STORED job of such a file cannot be placed in one module: a clear
+/// compile error instead of a call to the wrong module's function.
+#[test]
+fn stored_job_of_a_file_included_by_two_path_declarations_is_rejected() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "#[path = \"common.rs\"]\nmod a;\n#[path = \"common.rs\"]\nmod b;\npub fn create_app() {}\n",
+        ),
+        (
+            "common.rs",
+            "#[cron(\"0 * * * * *\")]\npub async fn tick() {}\n",
+        ),
+    ]);
+    let src = krate.path().join("src");
+    let storage = [stored(
+        "tick",
+        Some(src.join("common.rs").display().to_string()),
+    )];
+    let err = discover_cron_jobs(&storage, Some(&src), None).unwrap_err();
+    assert!(err.contains("more than one module includes"), "{err}");
+}
+
+/// Jobs in modules rustc expands after `vespera!` are recovered from the
+/// module tree (`#[path]` modules included); storage-known, gated, private,
+/// non-literal and unreachable ones are not.
 #[test]
 fn scan_recovers_unexpanded_jobs_from_the_module_tree() {
     let krate = crate_with(&[
@@ -765,5 +809,29 @@ fn stored_jobs_of_another_target_are_dropped_in_the_ide() {
     assert!(
         error.contains("cannot place `#[cron]` job `demo_job`"),
         "{error}"
+    );
+}
+
+/// `#[cfg]` twins of one job in one module index the same function twice
+/// under the same module path: that is not an ambiguity, and only the
+/// ungated twin is scanned.
+#[test]
+fn cfg_twins_of_a_job_in_one_module_are_not_ambiguous() {
+    let krate = crate_with(&[
+        ("lib.rs", "mod late;\npub fn create_app() {}\n"),
+        (
+            "late.rs",
+            "#[cfg(any())]\n#[cron(\"1 * * * * *\")]\npub async fn tick() {}\n#[cron(\"2 * * * * *\")]\npub async fn tick() {}\n",
+        ),
+    ]);
+    let src = krate.path().join("src");
+    let jobs = discover(&[], Some(&src), None);
+    assert_eq!(
+        summary(&jobs),
+        vec![(
+            "late".to_owned(),
+            "tick".to_owned(),
+            "2 * * * * *".to_owned()
+        )]
     );
 }

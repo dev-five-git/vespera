@@ -43,15 +43,26 @@ pub fn is_info_field(name: &str) -> bool {
     INFO_FIELDS.contains(&name)
 }
 
+/// Whether `value` is an absolute `http(s)` URL: the scheme, then a non-empty
+/// host-and-path with no whitespace (OpenAPI types these URLs `format: uri`).
+/// Shared by the `info` URLs, the absolute `servers` form and the OAuth2 / OIDC
+/// URLs (`security_dsl::require_absolute_url`), so they agree.
+pub(super) fn is_absolute_http_url(value: &str) -> bool {
+    value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))
+        .is_some_and(|rest| !rest.is_empty() && !rest.contains(char::is_whitespace))
+}
+
 fn require_http_url(key: &str, lit: &LitStr) -> syn::Result<()> {
     let value = lit.value();
-    if value.starts_with("http://") || value.starts_with("https://") {
+    if is_absolute_http_url(&value) {
         Ok(())
     } else {
         Err(syn::Error::new(
             lit.span(),
             format!(
-                "vespera! macro: `{key}` must start with `http://` or `https://`, got \"{value}\""
+                "vespera! macro: `{key}` must start with `http://` or `https://` followed by a host without spaces, got \"{value}\""
             ),
         ))
     }
@@ -194,6 +205,12 @@ mod tests {
     #[rstest]
     #[case::tos_not_url(&[("terms_of_service", "/terms")], "`terms_of_service` must start with")]
     #[case::contact_url_not_url(&[("contact_url", "example.com")], "`contact_url` must start with")]
+    // An absolute URL needs a host: an empty one or a space is not a URI.
+    #[case::tos_empty_host(&[("terms_of_service", "https://")], "`terms_of_service` must start with")]
+    #[case::contact_url_space(
+        &[("contact_url", "https://example.com/support page")],
+        "`contact_url` must start with"
+    )]
     #[case::license_url_not_url(
         &[("license_name", "X"), ("license_url", "ftp://x")],
         "`license_url` must start with"
