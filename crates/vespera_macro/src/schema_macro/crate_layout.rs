@@ -54,15 +54,25 @@ impl CrateLayout {
         };
         let names: Vec<&str> = relative.split('/').filter(|s| !s.is_empty()).collect();
         // The default crate roots and every `src/bin/` binary, when the
-        // layout is the crate's `src`.
-        let is_root = match names.as_slice() {
-            [file] => *file == "main.rs" || *file == "lib.rs",
-            [bin, file] => {
-                *bin == "bin" && Path::new(file).extension().is_some_and(|ext| ext == "rs")
-            }
-            [bin, _, file] => *bin == "bin" && *file == "main.rs",
-            _ => false,
+        // layout is the crate's `src`. A `bin/` directory of a test,
+        // example or bench target is ordinary module code (`tests/bin/mod.rs`
+        // is `crate::bin`), so the rule only applies to `src`.
+        // Only a test, example or bench target directory (or one below it)
+        // is excluded: the crate's `src` and a plain layout dir keep the rule.
+        let in_target = |dir: Option<&std::ffi::OsStr>| {
+            dir.is_some_and(|name| matches!(name.to_str(), Some("tests" | "examples" | "benches")))
         };
+        let root_rules = !in_target(self.module_dir.file_name())
+            && !in_target(self.module_dir.parent().and_then(Path::file_name));
+        let is_root = root_rules
+            && match names.as_slice() {
+                [file] => *file == "main.rs" || *file == "lib.rs",
+                [bin, file] => {
+                    *bin == "bin" && Path::new(file).extension().is_some_and(|ext| ext == "rs")
+                }
+                [bin, _, file] => *bin == "bin" && *file == "main.rs",
+                _ => false,
+            };
         if is_root {
             return segments;
         }
@@ -223,6 +233,7 @@ mod tests {
         "src/bin/multi/helper.rs",
         "tests/api.rs",
         "tests/common/mod.rs",
+        "tests/bin/mod.rs",
         "tests/multi_part/main.rs",
         "tests/multi_part/util.rs",
         "examples/demo.rs",
@@ -254,6 +265,15 @@ mod tests {
         "tests",
         "tests/api.rs",
         "crate::common"
+    )]
+    // A `bin/` directory under `tests/` is a helper module, not a binary root.
+    #[case::test_bin_helper(
+        "tests/bin/mod.rs",
+        Some("api"),
+        None,
+        "tests",
+        "tests/api.rs",
+        "crate::bin"
     )]
     #[case::multi_file_test(
         "tests/multi_part/util.rs",

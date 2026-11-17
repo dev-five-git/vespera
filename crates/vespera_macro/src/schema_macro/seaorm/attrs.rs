@@ -174,12 +174,14 @@ pub fn has_sea_orm_database_default(attrs: &[syn::Attribute]) -> bool {
 /// Check if a `sea_orm(default_value)` is a SQL function call: a (possibly
 /// schema-qualified) identifier followed by a parenthesised argument list —
 /// `now()`, `gen_random_uuid()`, `nextval('seq')`.  A text default that merely
-/// contains a parenthesis (`"N/A (unknown)"`, `":)"`) is a literal.
+/// contains a parenthesis (`"N/A (unknown)"`, `":)"`, `"Active (new)"`) is a
+/// literal: a space before `(` only fits an empty call (`now ()`).
 pub fn is_sql_function_default(value: &str) -> bool {
     let value = value.trim();
     let Some((name, args)) = value.split_once('(') else {
         return false;
     };
+    let spaced = name.ends_with(char::is_whitespace);
     let name = name.trim_end();
     let mut chars = name.chars();
     chars
@@ -187,6 +189,7 @@ pub fn is_sql_function_default(value: &str) -> bool {
         .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
         && args.ends_with(')')
+        && (!spaced || args.trim() == ")")
 }
 
 /// Check if a field is a database-generated primary key, mirroring
@@ -488,6 +491,10 @@ mod tests {
     #[case("nextval('seq')", true)]
     #[case("pg_catalog.now()", true)]
     #[case("N/A (unknown)", false)]
+    // A text value with a parenthesised note: a space before `(` only fits
+    // an empty call (`now ()`), never an argument list.
+    #[case("Active (new)", false)]
+    #[case("Draft (WIP)", false)]
     #[case("(none)", false)]
     #[case(":)", false)]
     #[case("now(", false)]

@@ -34,10 +34,9 @@ fn renamed_garde_peer_is_followed() {
     );
 }
 
-/// L1: both wrapped (`Option`s compare) or only the rule's field wrapped
-/// (the rule moves into `inner(..)`) still compiles; no diagnostic.
+/// L1: only the rule's field wrapped (the rule moves into `inner(..)`, and
+/// `matches` compares the inner values) still compiles; no diagnostic.
 #[rstest]
-#[case::all_partial("Dto from Signup, partial")]
 #[case::field_partial(r#"Dto from Signup, partial = ["confirm"]"#)]
 fn wrapped_garde_rule_field_is_accepted(#[case] input: &str) {
     assert!(generate(input).is_ok());
@@ -51,6 +50,11 @@ fn wrapped_garde_rule_field_is_accepted(#[case] input: &str) {
 #[case::partial_peer(
     r#"Dto from Signup, partial = ["password"]"#,
     "`#[garde(matches(password))]` on field `confirm` compares it with `password`, which `partial` wraps in `Option`"
+)]
+// `self.password` reads the `Option<String>` the DTO field becomes.
+#[case::partial_self_read(
+    "Dto from Signup, partial",
+    "reads `self.password`, which `partial` wraps in `Option`"
 )]
 fn broken_garde_peer_is_reported(#[case] input: &str, #[case] message: &str) {
     let err = generate(input).unwrap_err().to_string();
