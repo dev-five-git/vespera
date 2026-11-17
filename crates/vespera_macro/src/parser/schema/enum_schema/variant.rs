@@ -31,6 +31,7 @@ pub(super) fn build_struct_variant_fields(
         fields_named,
         variant_rename_all.as_deref().or(enum_rename_all_fields),
         false,
+        false,
         known_schemas,
         struct_definitions,
     )

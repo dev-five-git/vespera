@@ -107,25 +107,66 @@ pub fn extract_field_rename(attrs: &[syn::Attribute]) -> Option<String> {
     extract_field_rename_for(attrs, SerdeSide::Serialize)
 }
 
-/// Field / variant `rename` for `side`, falling back to
-/// `#[form_data(field_name = "...")]`.
+/// Field / variant `rename` for `side`, for an owner that does NOT derive
+/// `Serialize`; see [`extract_field_rename_owned`].
+pub fn extract_field_rename_for(attrs: &[syn::Attribute], side: SerdeSide) -> Option<String> {
+    extract_field_rename_owned(attrs, side, false)
+}
+
+/// Field rename for `side`, where `owner_serializes` says whether the struct
+/// (or enum) owning the field derives `serde::Serialize` ([`derives_serialize`]).
 ///
 /// On the read side `form_data(field_name)` comes FIRST: the `Multipart`
 /// derive (its only reader) parses a form field by that name before any serde
-/// rename, so the request view documents what the parser accepts. The write
-/// side keeps serde's rename when it sets one; with none, a multipart-only
-/// struct's response view documents its form field name (the struct
-/// `struct_schema` tests `multipart_field_names` pin this), so a field with
-/// `form_data(field_name)` and no serde rename is documented under that name
-/// on both sides. A `Serialize` derive of such a field still emits the
-/// Rust name: the documented name differs there.
-pub fn extract_field_rename_for(attrs: &[syn::Attribute], side: SerdeSide) -> Option<String> {
-    if side == SerdeSide::Deserialize
-        && let Some(name) = extract_form_data_field_name(attrs)
-    {
-        return Some(name);
+/// rename, so the request view documents what the parser accepts.
+///
+/// The write side keeps serde's rename when it sets one. With none, an owner
+/// that does NOT derive `Serialize` (a multipart-only struct) writes nothing
+/// serde-named, so its response view documents the form field name (the
+/// `struct_schema` tests `multipart_field_names` pin this): the field is
+/// documented under `form_data(field_name)` on both sides. An owner that
+/// derives `Serialize` writes the Rust name (or `rename_all`) instead, so its
+/// response view documents that name while the request view keeps the form
+/// field name.
+pub fn extract_field_rename_owned(
+    attrs: &[syn::Attribute],
+    side: SerdeSide,
+    owner_serializes: bool,
+) -> Option<String> {
+    match side {
+        SerdeSide::Deserialize => {
+            extract_form_data_field_name(attrs).or_else(|| extract_sided_key(attrs, "rename", side))
+        }
+        SerdeSide::Serialize => extract_sided_key(attrs, "rename", side).or_else(|| {
+            if owner_serializes {
+                None
+            } else {
+                extract_form_data_field_name(attrs)
+            }
+        }),
     }
-    extract_sided_key(attrs, "rename", side).or_else(|| extract_form_data_field_name(attrs))
+}
+
+/// Whether the item's `#[derive(..)]` lists serde's `Serialize`, by its last
+/// path segment (`Serialize`, `serde::Serialize`, `::serde::Serialize`). Like
+/// [`super::enum_schema::derives_serde_repr`], only plain `derive` lists are
+/// read.
+pub fn derives_serialize(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("derive"))
+        .any(|attr| {
+            let mut found = false;
+            let _ = attr.parse_nested_meta(|meta| {
+                found |= meta
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|seg| seg.ident == "Serialize");
+                Ok(())
+            });
+            found
+        })
 }
 
 /// `#[form_data(field_name = "...")]`.
@@ -698,9 +739,10 @@ mod tests {
         assert_eq!(extract_field_rename(&attrs).as_deref(), Some("userId"));
     }
 
-    /// Without a serde rename, the form field name is documented on both
-    /// sides (the response view of a multipart-only struct, see
-    /// `extract_field_rename_for`).
+    /// Without a serde rename, a owner that does not derive `Serialize`
+    /// documents the form field name on both sides (see
+    /// `extract_field_rename_owned`). A `Serialize` owner writes the Rust name
+    /// instead, while the read side keeps the form field name.
     #[test]
     fn form_data_field_name_is_returned() {
         let attrs: Vec<syn::Attribute> = syn::parse_quote! {
@@ -708,6 +750,30 @@ mod tests {
         };
 
         assert_eq!(extract_field_rename(&attrs).as_deref(), Some("upload"));
+        assert_eq!(
+            extract_field_rename_owned(&attrs, SerdeSide::Serialize, false).as_deref(),
+            Some("upload")
+        );
+        assert_eq!(
+            extract_field_rename_owned(&attrs, SerdeSide::Serialize, true),
+            None
+        );
+        assert_eq!(
+            extract_field_rename_owned(&attrs, SerdeSide::Deserialize, true).as_deref(),
+            Some("upload")
+        );
+    }
+
+    #[rstest]
+    #[case::plain("#[derive(Debug, Serialize)] struct S;", true)]
+    #[case::qualified("#[derive(serde::Serialize)] struct S;", true)]
+    #[case::absolute("#[derive(::serde::Serialize)] struct S;", true)]
+    #[case::deserialize_only("#[derive(Deserialize)] struct S;", false)]
+    #[case::serialize_repr("#[derive(Serialize_repr)] struct S;", false)]
+    #[case::no_derive("struct S;", false)]
+    fn derives_serialize_reads_derive_lists(#[case] source: &str, #[case] expected: bool) {
+        let item: syn::ItemStruct = syn::parse_str(source).unwrap();
+        assert_eq!(derives_serialize(&item.attrs), expected);
     }
 
     #[test]

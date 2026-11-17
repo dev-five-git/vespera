@@ -16,11 +16,11 @@ use super::{
     garde_rules::{apply_garde_rules, extract_garde_rules},
     schema_attrs::{SchemaConstraints, SchemaValueType, extract_schema_constraints},
     serde_attrs::{
-        SerdeSide, extract_aliases, extract_default, extract_deny_unknown_fields,
-        extract_doc_comment, extract_field_codec, extract_field_rename_for, extract_flatten,
-        extract_rename_all, extract_rename_all_for, extract_schema_ref_override,
-        extract_serde_skip_flags, extract_tag, extract_transparent, rename_field,
-        skips_none_on_output, strip_raw_prefix_owned,
+        SerdeSide, derives_serialize, extract_aliases, extract_default,
+        extract_deny_unknown_fields, extract_doc_comment, extract_field_codec,
+        extract_field_rename_for, extract_field_rename_owned, extract_flatten, extract_rename_all,
+        extract_rename_all_for, extract_schema_ref_override, extract_serde_skip_flags, extract_tag,
+        extract_transparent, rename_field, skips_none_on_output, strip_raw_prefix_owned,
     },
     type_schema::parse_type_to_schema_ref,
     wire_override::{current_container_override, field_schema_ref},
@@ -125,6 +125,7 @@ fn parse_struct_body(
                 fields_named,
                 rename_all.as_deref(),
                 container_default,
+                derives_serialize(&struct_item.attrs),
                 known_schemas,
                 struct_definitions,
             );
@@ -418,6 +419,7 @@ pub(super) fn collect_named_fields(
     fields_named: &syn::FieldsNamed,
     rename_all: Option<&str>,
     container_default: bool,
+    owner_serializes: bool,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> NamedFields {
@@ -462,7 +464,7 @@ pub(super) fn collect_named_fields(
             || "unknown".to_string(),
             |i| strip_raw_prefix_owned(i.to_string()),
         );
-        let field_name = extract_field_rename_for(&field.attrs, side)
+        let field_name = extract_field_rename_owned(&field.attrs, side, owner_serializes)
             .unwrap_or_else(|| rename_field(&rust_field_name, rename_all));
 
         // `#[schema(any)]` / `#[schema(value_type = T)]` / serde `with`

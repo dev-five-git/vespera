@@ -43,6 +43,29 @@ pub(super) fn with_serde_repr_derives(
     Some(input)
 }
 
+/// `input` (a struct) with the `serde::Serialize` derive its source
+/// declaration carries appended to its attributes, or `None` when there is
+/// nothing to add. The response view of a struct reads its `Serialize` derive
+/// (`extract::derives_serialize`), which `Schema` cannot see either.
+pub(super) fn with_serialize_derive(
+    input: &syn::DeriveInput,
+    call_site_file: Option<&Path>,
+) -> Option<syn::DeriveInput> {
+    if !matches!(input.data, syn::Data::Struct(_)) || derives(&input.attrs, "Serialize") {
+        return None;
+    }
+    let path = call_site_file?;
+    let file = crate::schema_macro::file_cache::get_file_content(path)?;
+    if !file.contains("Serialize")
+        || source_derives(path, &input.ident, &["Serialize"], true)?.is_empty()
+    {
+        return None;
+    }
+    let mut input = input.clone();
+    input.attrs.push(syn::parse_quote!(#[derive(Serialize)]));
+    Some(input)
+}
+
 /// A `#[derive(Multipart)]` struct (that derive is as invisible to `Schema`
 /// as `serde_repr`'s): its `Vec<T>` fields without a default of their own
 /// get `#[form_data(default)]` in the stored definition. The Multipart
@@ -119,7 +142,12 @@ fn source_derives(
 }
 
 /// Every derive [`source_derives`] can be asked about.
-const KNOWN_DERIVES: [&str; 3] = ["Serialize_repr", "Deserialize_repr", "Multipart"];
+const KNOWN_DERIVES: [&str; 4] = [
+    "Serialize_repr",
+    "Deserialize_repr",
+    "Multipart",
+    "Serialize",
+];
 
 /// One enum / struct declaration of a file.
 struct Declaration {
@@ -287,6 +315,62 @@ mod tests {
         let input: syn::DeriveInput =
             syn::parse_str("#[derive(Serialize_repr)] #[repr(u8)] enum E { A }").unwrap();
         assert!(with_serde_repr_derives(&input, Some(&path)).is_none());
+    }
+
+    /// A struct's `Serialize` derive (invisible to `Schema`) is copied from its
+    /// source declaration, and only for a struct that declares it there.
+    #[rstest]
+    #[case::serialize(
+        "#[derive(Serialize, Schema)] struct S { a: u8 }",
+        "struct S { a: u8 }",
+        true
+    )]
+    #[case::qualified(
+        "#[derive(serde::Serialize, Multipart)] struct S { a: u8 }",
+        "struct S { a: u8 }",
+        true
+    )]
+    #[case::deserialize_only(
+        "#[derive(Deserialize, Schema)] struct S { a: u8 }",
+        "struct S { a: u8 }",
+        false
+    )]
+    #[case::serialize_on_another_struct(
+        "#[derive(Serialize, Schema)] struct Other {} struct S { a: u8 }",
+        "struct S { a: u8 }",
+        false
+    )]
+    #[case::no_matching_declaration(
+        "#[derive(Serialize, Schema)] struct T { a: u8 }",
+        "struct S { a: u8 }",
+        false
+    )]
+    #[case::enum_input("#[derive(Serialize, Schema)] enum S { A }", "enum S { A }", false)]
+    #[case::already_derived(
+        "#[derive(Serialize, Schema)] struct S { a: u8 }",
+        "#[derive(Serialize)] struct S { a: u8 }",
+        false
+    )]
+    fn copies_serialize_derive_from_source(
+        #[case] source: &str,
+        #[case] input: &str,
+        #[case] expected: bool,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        std::fs::write(&path, source).unwrap();
+        let input: syn::DeriveInput = syn::parse_str(input).unwrap();
+        let copied = with_serialize_derive(&input, Some(&path));
+        assert_eq!(copied.is_some(), expected);
+        if let Some(copied) = copied {
+            assert!(derives(&copied.attrs, "Serialize"));
+        }
+    }
+
+    #[test]
+    fn serialize_derive_needs_a_call_site_file() {
+        let input: syn::DeriveInput = syn::parse_str("struct S { a: u8 }").unwrap();
+        assert!(with_serialize_derive(&input, None).is_none());
     }
 
     /// The enum `nth` (0-based) named `E` in `source`, as a derive input whose
