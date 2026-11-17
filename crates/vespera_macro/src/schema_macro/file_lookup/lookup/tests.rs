@@ -343,8 +343,13 @@ fn collect_rs_files_recursive_follows_symlinks_without_cycling() {
     collect_rs_files_recursive(&src, &mut plain);
     assert_eq!(plain.len(), 1, "{plain:?}");
     // Creating links needs privileges on Windows (Developer Mode). Without
-    // them the link part cannot run; say so instead of passing silently.
+    // them the link part cannot run; on CI that is a failure, not a silent
+    // pass (R21-SM1-02, round 21), and locally it is announced.
     if link(&shared, &src.join("models"), true).is_err() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "symlink privilege missing on CI: the symlink part of this test cannot run"
+        );
         eprintln!("symlink privilege missing: the symlink part of this test was not run");
         return;
     }

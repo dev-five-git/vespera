@@ -240,6 +240,29 @@ fn count_items_named(items: &[syn::Item], ident: &str) -> usize {
                 syn::visit::visit_item_static(self, item);
             }
         }
+        // The associated items of an impl / trait block (R21-SM0-1, round 21):
+        // a false `#[cfg]` on a method or associated const hides what its body
+        // declares, like a free fn does.
+        fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+            if !statically_inactive(&item.attrs) {
+                syn::visit::visit_impl_item_fn(self, item);
+            }
+        }
+        fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
+            if !statically_inactive(&item.attrs) {
+                syn::visit::visit_trait_item_fn(self, item);
+            }
+        }
+        fn visit_impl_item_const(&mut self, item: &'ast syn::ImplItemConst) {
+            if !statically_inactive(&item.attrs) {
+                syn::visit::visit_impl_item_const(self, item);
+            }
+        }
+        fn visit_trait_item_const(&mut self, item: &'ast syn::TraitItemConst) {
+            if !statically_inactive(&item.attrs) {
+                syn::visit::visit_trait_item_const(self, item);
+            }
+        }
     }
     let mut counter = Counter { ident, count: 0 };
     for item in items {

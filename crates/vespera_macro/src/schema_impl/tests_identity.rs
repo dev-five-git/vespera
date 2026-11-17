@@ -131,6 +131,17 @@ fn moved_item_replacement(#[case] source: &str, #[case] replaced: bool) {
 #[case::inactive_trait("#[cfg(any())] trait T { fn g() { struct X; } } struct X;", 1)]
 #[case::inactive_const("#[cfg(any())] const C: () = { struct X; }; struct X;", 1)]
 #[case::inactive_static("#[cfg(any())] static S: u8 = { struct X; 0 }; struct X;", 1)]
+// R21-SM0-1 (round 21): the same holds for a method or associated const of an
+// impl / trait block; an active method is the control.
+#[case::impl_method_control("impl T { #[cfg(all())] fn g() { struct X; } } struct X;", 2)]
+#[case::inactive_impl_method("impl T { #[cfg(any())] fn g() { struct X; } } struct X;", 1)]
+#[case::inactive_trait_method("trait T { #[cfg(any())] fn g() { struct X; } } struct X;", 1)]
+#[case::inactive_impl_const("impl T { #[cfg(any())] const C: () = { struct X; }; } struct X;", 1)]
+#[case::inactive_trait_const("trait T { #[cfg(any())] const C: () = { struct X; }; } struct X;", 1)]
+#[case::active_trait_const_control(
+    "trait T { #[cfg(all())] const C: () = { struct X; }; } struct X;",
+    2
+)]
 fn count_items_named_descends_into_nested_items(#[case] source: &str, #[case] expected: usize) {
     let parsed: syn::File = syn::parse_str(source).unwrap();
     assert_eq!(count_items_named(&parsed.items, "X"), expected);

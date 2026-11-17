@@ -2,10 +2,12 @@
 //! `schema_type!` invocation that generates it (its `omit` / `pick` / `add`
 //! decide between `From` and `from_model`, not the target `Model` alone).
 
+use super::{source_column_read, source_field_named};
 use crate::schema_macro::generate_type::readable_from;
 use crate::schema_macro::input::SchemaTypeInput;
 use crate::schema_macro::seaorm::{
-    has_sea_orm_database_default, has_sea_orm_primary_key, primary_key_count,
+    convert_relation_type_to_schema_with_info, has_sea_orm_database_default,
+    has_sea_orm_primary_key, primary_key_count,
 };
 use crate::schema_macro::transformation::{build_omit_set, build_pick_set, should_skip_field};
 use crate::schema_macro::type_utils::{SeaOrmRelationKind, is_seaorm_model, seaorm_relation_kind};
@@ -99,12 +101,12 @@ fn compute_target_shape(
     // `omit_default` drops a primary key too (`generate_type`'s rule, through
     // `has_sea_orm_primary_key` with the model's key count): the same predicate
     // here, or a private dropped key made the shape `Neither` (R20-SM2-01).
-    let pk_count = match &model.fields {
-        syn::Fields::Named(named) => primary_key_count(named),
-        _ => 0,
-    };
+    let pk_count = primary_key_count(&model.fields);
     let mut has_relation = false;
     let mut all_readable = true;
+    // The relations `generate_type` emits as non-adapter fields: their loads
+    // read source columns (R21-SM2-L1, round 21).
+    let mut relations = Vec::new();
     for field in &model.fields {
         let name = field
             .ident
@@ -122,10 +124,37 @@ fn compute_target_shape(
             // An un-picked HasMany is dropped by `generate_type` before its
             // readability is looked at.
             Some(SeaOrmRelationKind::HasMany) if !pick.contains(&name) => {}
-            Some(_) => has_relation = true,
+            Some(_) => {
+                has_relation = true;
+                let adapter = input
+                    .relation_adapters
+                    .iter()
+                    .any(|(field_name, _)| field_name == &name);
+                if let Some(ident) = field.ident.clone()
+                    && !adapter
+                    && let Some((_, rel)) = convert_relation_type_to_schema_with_info(
+                        &field.ty,
+                        &field.attrs,
+                        &model,
+                        &source_module,
+                        ident,
+                    )
+                {
+                    relations.push(rel);
+                }
+            }
             None => {
                 all_readable &= readable_from(&field.vis, &source_module, Some(module));
             }
+        }
+    }
+    // The source column each emitted load reads must be readable from the DTO
+    // module, even when `omit` removed it from the DTO (as `generate_type`).
+    for rel in &relations {
+        if let Some(column) = source_column_read(rel, &model.fields)
+            && let Some(source) = source_field_named(&model.fields, &column)
+        {
+            all_readable &= readable_from(&source.vis, &source_module, Some(module));
         }
     }
     // `From` needs no relation field and every field readable; `from_model`
@@ -240,12 +269,6 @@ mod tests {
         "crate::legacy::Model",
         TargetShape::From
     )]
-    // A tuple struct has no named fields to count keys of (`pk_count` is 0).
-    #[case::tuple_struct_source(
-        "pub struct Model(pub i32);",
-        "crate::legacy::Model",
-        TargetShape::From
-    )]
     // ... and so is an `omit_default` primary key (private, so unreadable).
     #[case::omit_default_private_primary_key(
         "pub struct Model { #[sea_orm(primary_key)] id: i32, pub name: String }",
@@ -264,6 +287,34 @@ mod tests {
         };
         let dir = tempfile::TempDir::new().unwrap();
         write_crate(dir.path(), legacy, source, args);
+        let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        let module: Vec<String> = ["crate", "models", "user"].map(String::from).to_vec();
+        assert_eq!(
+            compute_target_shape(&module, "Schema", USER_MODEL),
+            Some(expected)
+        );
+    }
+
+    /// R21-SM2-L1 (round 21): the relation's load reads its FK from the source
+    /// even when `omit` drops that field, so a private FK leaves both impls out
+    /// (as `generate_type` decides). A public FK keeps `from_model`.
+    #[rstest]
+    #[case::private_fk_read_by_the_load("", TargetShape::Neither)]
+    #[case::public_fk_is_readable("pub ", TargetShape::FromModel)]
+    fn omitted_fk_of_a_relation_follows_its_readability(
+        #[case] fk_vis: &str,
+        #[case] expected: TargetShape,
+    ) {
+        let legacy = format!(
+            "#[sea_orm(table_name = \"memos\")]\npub struct Model {{\n    pub id: i32,\n    {fk_vis}owner_id: i32,\n    #[sea_orm(belongs_to = \"super::user::Entity\", from = \"owner_id\", to = \"id\", relation_enum = \"Owner\")]\n    pub owner: BelongsTo<super::user::Entity>,\n}}"
+        );
+        let dir = tempfile::TempDir::new().unwrap();
+        write_crate(
+            dir.path(),
+            &legacy,
+            "crate::legacy::Model",
+            ", omit = [\"owner_id\"]",
+        );
         let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
         let module: Vec<String> = ["crate", "models", "user"].map(String::from).to_vec();
         assert_eq!(

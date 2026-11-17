@@ -173,19 +173,30 @@ pub fn has_sea_orm_database_default(attrs: &[syn::Attribute]) -> bool {
 
 /// SQL functions a `default_value` may spell with arguments (`nextval('seq')`):
 /// the name (schema qualifier dropped, lower-cased) must be one of these.
+///
+/// **A closed list, on purpose** (R20-SM3-02, widened R21-SM3-04): a call with
+/// arguments whose name is not listed is a text literal (`Draft(WIP)`), so an
+/// unlisted SQL function used with arguments is emitted as its literal text.
+/// Extend the list when a real default needs it; it is not a parser.
 const SQL_FUNCTION_NAMES: &[&str] = &[
     "clock_timestamp",
     "current_date",
+    "current_schema",
+    "current_setting",
     "current_time",
     "current_timestamp",
+    "current_user",
     "gen_random_uuid",
     "localtime",
     "localtimestamp",
     "nextval",
     "now",
     "random",
+    "session_user",
     "statement_timestamp",
     "transaction_timestamp",
+    "txid_current",
+    "uuid_generate_v1",
     "uuid_generate_v4",
 ];
 
@@ -253,12 +264,16 @@ fn is_natural_key_type(ty: &syn::Type) -> bool {
 }
 
 /// How many distinct fields of a model are (part of) its primary key; a
-/// `#[cfg]` twin pair under one name counts once.
-pub fn primary_key_count(fields: &syn::FieldsNamed) -> usize {
+/// `#[cfg]` twin pair under one name counts once. A field that a statically
+/// false `#[cfg]` removes is not a key (R21-SM3-03, round 21), and a tuple
+/// field has no name to count.
+pub fn primary_key_count(fields: &syn::Fields) -> usize {
     let mut names: Vec<String> = fields
-        .named
         .iter()
-        .filter(|field| is_sea_orm_primary_key(&field.attrs))
+        .filter(|field| {
+            is_sea_orm_primary_key(&field.attrs)
+                && !crate::schema_macro::cfg_eval::statically_inactive(&field.attrs)
+        })
         .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
         .collect();
     names.sort_unstable();
@@ -530,6 +545,10 @@ mod tests {
     #[case(":)", false)]
     #[case("now(", false)]
     #[case("9lives()", false)]
+    // R21-SM3-04 (round 21): the widened list names the common ones.
+    #[case("current_setting('app.tenant')", true)]
+    #[case("txid_current()", true)]
+    #[case("Draft(wip)", false)]
     fn test_is_sql_function_default(#[case] value: &str, #[case] expected: bool) {
         assert_eq!(is_sql_function_default(value), expected);
     }
@@ -659,7 +678,7 @@ mod tests {
             other: i32,
             plain: i32,
         });
-        assert_eq!(primary_key_count(&fields), 2);
+        assert_eq!(primary_key_count(&syn::Fields::Named(fields)), 2);
     }
 
     // SeaORM's column forms name the model field (`Column::UserId`,
@@ -718,5 +737,36 @@ mod tests {
             Some("user_id")
         );
         assert_eq!(extract_belongs_to_to_field(&attrs).as_deref(), Some("id"));
+    }
+
+    /// Named fields of a `struct` item, for the key-count cases.
+    fn named_fields(source: &str) -> syn::Fields {
+        let item: syn::ItemStruct = syn::parse_str(source).unwrap();
+        item.fields
+    }
+
+    // R21-SM3-03 (round 21): a key a statically false `#[cfg]` removes is not
+    // counted; a `#[cfg]` twin under one name counts once; a tuple field has no
+    // name and counts none.
+    #[rstest]
+    #[case::one_key("pub struct M { #[sea_orm(primary_key)] pub id: i32 }", 1)]
+    #[case::inactive_key_not_counted(
+        "pub struct M { #[sea_orm(primary_key)] pub id: i32, #[cfg(any())] #[sea_orm(primary_key)] pub legacy_key: i32 }",
+        1
+    )]
+    #[case::active_second_key_counted(
+        "pub struct M { #[sea_orm(primary_key)] pub id: i32, #[cfg(all())] #[sea_orm(primary_key)] pub legacy_key: i32 }",
+        2
+    )]
+    #[case::cfg_twin_counts_once(
+        "pub struct M { #[cfg(unix)] #[sea_orm(primary_key)] pub id: i32, #[cfg(not(unix))] #[sea_orm(primary_key)] pub id: i32 }",
+        1
+    )]
+    #[case::tuple_field_counts_none("pub struct M(#[sea_orm(primary_key)] pub i32);", 0)]
+    fn primary_key_count_skips_statically_inactive_keys(
+        #[case] source: &str,
+        #[case] expected: usize,
+    ) {
+        assert_eq!(primary_key_count(&named_fields(source)), expected);
     }
 }

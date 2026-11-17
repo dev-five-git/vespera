@@ -445,26 +445,33 @@ impl TypeResolver<'_> {
             let path = path_tokens(&path);
             return quote! { #path #args };
         }
-        // A name the source module neither defines nor imports, nor a std
-        // prelude name, comes from one of its external glob imports (it
-        // compiled there): emitted through that glob, not as a bare alias
-        // (`use toml::*;` `Value` was `serde_json::Value`) (R20-S4-L1, round 20).
-        if let Some(glob) = self.scope.and_then(external_glob)
-            && !is_prelude_name(&name)
-        {
-            let base = path_tokens(glob);
-            return quote! { #base :: #ident #args };
-        }
         let sea_orm_scope = self.scope.is_some_and(ModuleScope::has_sea_orm_glob);
-        if let Some(converted) = self.alias(&name, &segment.arguments, sea_orm_scope) {
-            return converted;
-        }
+        let sea_orm_alias = self.alias(&name, &segment.arguments, sea_orm_scope);
         let sea_orm_glob = self.scope.and_then(|scope| {
             scope
                 .globs
                 .iter()
                 .find(|glob| first_named(glob) == Some("sea_orm"))
         });
+        // A SeaORM prelude name (an alias, or `Uuid` / `Decimal`) with a SeaORM
+        // glob in scope is the SeaORM one, not an external glob's
+        // (`use std::collections::*;` took `Uuid`, R21-B4-M2, round 21).
+        let sea_orm_prelude_name = sea_orm_glob.is_some()
+            && (sea_orm_alias.is_some() || matches!(name.as_str(), "Uuid" | "Decimal"));
+        // A name the source module neither defines nor imports, nor a std
+        // prelude name, comes from one of its external glob imports (it
+        // compiled there): emitted through that glob, not as a bare alias
+        // (`use toml::*;` `Value` was `serde_json::Value`) (R20-S4-L1, round 20).
+        if let Some(glob) = self.scope.and_then(external_glob)
+            && !is_prelude_name(&name)
+            && !sea_orm_prelude_name
+        {
+            let base = path_tokens(glob);
+            return quote! { #base :: #ident #args };
+        }
+        if let Some(converted) = sea_orm_alias {
+            return converted;
+        }
         if matches!(name.as_str(), "Uuid" | "Decimal")
             && let Some(glob) = sea_orm_glob
         {
@@ -610,8 +617,13 @@ fn external_glob(scope: &ModuleScope) -> Option<&Vec<String>> {
 
 /// Names a glob import never supplies: the primitives and the std prelude.
 fn is_prelude_name(name: &str) -> bool {
+    // `char` and `str` are primitives the list above does not carry: a glob
+    // import would have been taken for them (R21-B4-M1, round 21).
     PRIMITIVE_TYPE_NAMES.contains(&name)
-        || matches!(name, "Vec" | "Option" | "Result" | "Box" | "Self")
+        || matches!(
+            name,
+            "char" | "str" | "Vec" | "Option" | "Result" | "Box" | "Self"
+        )
 }
 
 fn first_named(path: &[String]) -> Option<&str> {

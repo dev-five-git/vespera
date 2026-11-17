@@ -7,7 +7,7 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::Type;
+use syn::{Type, ext::IdentExt};
 
 use super::super::{
     file_cache::{get_fk_column, get_struct_from_schema_path},
@@ -116,7 +116,7 @@ pub(super) fn relation_load(
     // `to` names a column of the SOURCE model (`Column::Address2Id` is its
     // `address_2_id` field), so it is normalized against the source fields.
     let to = to.map_or_else(
-        || "id".to_string(),
+        || source_key_column(source_fields),
         |to| normalize_columns(&to, source_fields),
     );
     let to_ident = ident("to", &to)?;
@@ -129,6 +129,61 @@ pub(super) fn relation_load(
         .#fetch(#DB)
         .await?;
     })
+}
+
+/// The source-model field the generated load of `rel` reads (R21-SM2-L1,
+/// round 21): the `from` column of a single relation whose key is on the
+/// source, else the source column its target-side relation names (`to`, or
+/// the source key). `None` when the load reads no source field. The DTO
+/// module must be able to read it, whether or not the DTO emits it.
+pub(in crate::schema_macro) fn source_column_read(
+    rel: &RelationFieldInfo,
+    source_fields: &syn::Fields,
+) -> Option<String> {
+    let single = match rel.relation_type.as_str() {
+        "HasOne" | "BelongsTo" => true,
+        "HasMany" => false,
+        _ => return None,
+    };
+    if single && let Some(fk_col) = &rel.fk_column {
+        return Some(fk_col.clone());
+    }
+    let fk_rel = rel.via_rel.as_ref().or(rel.relation_enum.as_ref())?;
+    let (_, to) = get_fk_column(&normalize_token_str(&rel.schema_path), fk_rel)?;
+    Some(to.map_or_else(
+        || source_key_column(source_fields),
+        |to| normalize_columns(&to, source_fields),
+    ))
+}
+
+/// The source field named `column` (a raw field is named by its column).
+pub(in crate::schema_macro) fn source_field_named<'a>(
+    source_fields: &'a syn::Fields,
+    column: &str,
+) -> Option<&'a syn::Field> {
+    source_fields.iter().find(|field| {
+        field
+            .ident
+            .as_ref()
+            .is_some_and(|ident| ident.unraw() == column)
+    })
+}
+
+/// The source column a `belongs_to` without `to` references: SeaORM's default
+/// is the referenced entity's primary key, and here that entity is the source
+/// model, so its single `#[sea_orm(primary_key)]` field (R21-SM2-M1, round 21).
+/// `id` when the source declares no single primary key, as before.
+fn source_key_column(source_fields: &syn::Fields) -> String {
+    let mut keys = source_fields
+        .iter()
+        .filter(|field| is_sea_orm_primary_key(&field.attrs));
+    match (keys.next(), keys.next()) {
+        (Some(key), None) => key
+            .ident
+            .as_ref()
+            .map_or_else(|| "id".to_string(), |ident| ident.unraw().to_string()),
+        _ => "id".to_string(),
+    }
 }
 
 /// Whether `column` is the whole primary key of the `Model` behind
@@ -232,5 +287,113 @@ mod tests {
         let variant = column_variant(value);
         assert_eq!(variant, expected);
         assert!(sea_orm_value_ident(&source, &field, "from", &variant).is_ok());
+    }
+
+    /// The source fields of `pub struct Model { .. }`.
+    fn source_fields(body: &str) -> syn::Fields {
+        let item: syn::ItemStruct =
+            syn::parse_str(&format!("pub struct Model {{ {body} }}")).unwrap();
+        item.fields
+    }
+
+    /// `notifications` reached through `Owner`: the target `notification`
+    /// holds the FK `owner_id` and no `to`, so the load reads the source key.
+    fn notifications_rel() -> RelationFieldInfo {
+        RelationFieldInfo {
+            field_name: syn::Ident::new("notifications", proc_macro2::Span::call_site()),
+            relation_type: "HasMany".to_string(),
+            schema_path: quote::quote! { crate::models::notification::Schema },
+            is_optional: false,
+            inline_type_info: None,
+            relation_enum: Some("Owner".to_string()),
+            fk_column: None,
+            fk_optional: false,
+            fk_to: None,
+            via_rel: None,
+            adapter: false,
+        }
+    }
+
+    /// The `notification` model: `owner` is the `Owner` relation of
+    /// `super::user::Entity` with no `to` (the source key is the reference).
+    const NOTIFICATION: &str = "pub struct Model { pub id: i32, pub owner_id: i32, #[sea_orm(belongs_to = \"super::user::Entity\", from = \"owner_id\", relation_enum = \"Owner\")] pub owner: BelongsTo<super::user::Entity> }";
+
+    /// The same relation with an explicit `to = "code"` (a source column).
+    const NOTIFICATION_TO_CODE: &str = "pub struct Model { pub id: i32, pub owner_code: String, #[sea_orm(belongs_to = \"super::user::Entity\", from = \"owner_code\", to = \"code\", relation_enum = \"Owner\")] pub owner: BelongsTo<super::user::Entity> }";
+
+    /// Runs `check` in a crate whose `notification` model is `model`.
+    fn with_notification_model(model: &str, check: impl FnOnce()) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let models = dir.path().join("src").join("models");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::write(models.join("notification.rs"), model).unwrap();
+        let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        crate::schema_macro::file_cache::bump_epoch();
+        check();
+    }
+
+    /// A relation with `to` names that source column, not the key.
+    #[test]
+    fn source_column_read_follows_an_explicit_to() {
+        let fields = source_fields("pub code: String");
+        with_notification_model(NOTIFICATION_TO_CODE, || {
+            assert_eq!(
+                source_column_read(&notifications_rel(), &fields).as_deref(),
+                Some("code")
+            );
+        });
+    }
+
+    // R21-SM2-M1 (round 21): without `to` the source key is the source's own
+    // primary key, not a literal `id`.
+    #[rstest::rstest]
+    #[case::declared_key(
+        "#[sea_orm(primary_key)] pub user_id: i32, pub name: String",
+        "user_id"
+    )]
+    #[case::no_key_falls_back_to_id("pub id: i32, pub name: String", "id")]
+    #[case::two_keys_fall_back_to_id(
+        "#[sea_orm(primary_key)] pub a: i32, #[sea_orm(primary_key)] pub b: i32",
+        "id"
+    )]
+    fn load_without_to_reads_the_source_key(#[case] body: &str, #[case] expected: &str) {
+        let fields = source_fields(body);
+        with_notification_model(NOTIFICATION, || {
+            assert_eq!(
+                source_column_read(&notifications_rel(), &fields).as_deref(),
+                Some(expected)
+            );
+            let source: Type = syn::parse_quote!(crate::models::user::Model);
+            let module = ["crate", "models", "user"].map(String::from);
+            let load = relation_load(&notifications_rel(), &source, &module, &fields)
+                .unwrap()
+                .to_string();
+            assert!(load.contains(&format!(". {expected}")), "{load}");
+        });
+    }
+
+    // R21-SM2-L1 (round 21): a relation load reads its source column only when
+    // it has one; a relation kind it does not load reads none.
+    #[test]
+    fn source_column_read_follows_the_load() {
+        let fields = source_fields("pub user_id: i32");
+        let mut fk_on_source = notifications_rel();
+        fk_on_source.relation_type = "BelongsTo".to_string();
+        fk_on_source.fk_column = Some("user_id".to_string());
+        assert_eq!(
+            source_column_read(&fk_on_source, &fields).as_deref(),
+            Some("user_id")
+        );
+        let mut other = notifications_rel();
+        other.relation_type = "Unknown".to_string();
+        assert_eq!(source_column_read(&other, &fields), None);
+    }
+
+    #[test]
+    fn source_field_named_matches_raw_fields_by_column() {
+        let fields = source_fields("pub r#type: String, pub id: i32");
+        assert!(source_field_named(&fields, "type").is_some());
+        assert!(source_field_named(&fields, "id").is_some());
+        assert!(source_field_named(&fields, "missing").is_none());
     }
 }
