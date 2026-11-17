@@ -165,7 +165,7 @@ fn oversized_streaming_with_header_request_returns_413() {
     );
     assert_eq!(
         chunks.get(),
-        0,
-        "a capped request must never stream body chunks"
+        1,
+        "the 413 message follows through on_chunk as one body chunk"
     );
 }

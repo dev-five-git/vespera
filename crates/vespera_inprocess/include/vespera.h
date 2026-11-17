@@ -29,7 +29,7 @@
  * than 1024 request headers 431, handler panic 500 with metadata
  * "panicked":"true", shared runtime could not be built 500, response over
  * the buffered response cap or not allocatable 500, response body stream
- * error 500, response header too large 500, runtime shut down 503,
+ * error 500, response header too large 500, async in-flight cap 503, async dispatch dropped by shutdown 503, runtime shut down 503,
  * deadline 504) is returned as a normal wire response with
  * VESPERA_OK.  Negative return codes are reserved for API misuse and
  * conditions where no response can be produced.

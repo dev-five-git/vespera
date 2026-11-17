@@ -66,6 +66,38 @@ unsafe extern "C" fn on_response(user_data: *mut c_void, response: *mut u8, len:
     }
 }
 
+/// Records the in-flight count seen INSIDE the callback: the permit is
+/// released before the callback runs (`Completion::deliver`), so it is 0.
+unsafe extern "C" fn on_response_observing_slot(
+    user_data: *mut c_void,
+    response: *mut u8,
+    len: usize,
+) {
+    // SAFETY: boxed sender leaked by `start_observing`; the response is freed once.
+    unsafe {
+        let sender = Box::from_raw(user_data.cast::<mpsc::Sender<(Vec<u8>, usize)>>());
+        let body = std::slice::from_raw_parts(response, len).to_vec();
+        vespera_free(response, len);
+        let _ = sender.send((body, async_in_flight()));
+    }
+}
+
+fn start_observing(req: &[u8]) -> mpsc::Receiver<(Vec<u8>, usize)> {
+    let (tx, rx) = mpsc::channel();
+    let user_data = Box::into_raw(Box::new(tx)).cast::<c_void>();
+    // SAFETY: live request; the boxed sender is reclaimed by the callback.
+    let code = unsafe {
+        vespera_dispatch_async(
+            req.as_ptr(),
+            req.len(),
+            Some(on_response_observing_slot),
+            user_data,
+        )
+    };
+    assert_eq!(code, VESPERA_OK);
+    rx
+}
+
 fn start_async(req: &[u8]) -> mpsc::Receiver<Vec<u8>> {
     let (tx, rx) = mpsc::channel();
     let user_data = Box::into_raw(Box::new(tx)).cast::<c_void>();
@@ -126,7 +158,7 @@ fn configure_applies_once_and_caps_async_dispatches() {
 
     // The single in-flight slot is taken: the next async dispatch is
     // answered inline with a 503 and never reaches the handler.
-    let pending = start_async(&request("GET", "/slow", b""));
+    let pending = start_observing(&request("GET", "/slow", b""));
     assert_eq!(async_in_flight(), 1);
     // `try_recv` right after the call returns: delivered on this thread
     // before `vespera_dispatch_async` returned, not later on a worker.
@@ -136,11 +168,15 @@ fn configure_applies_once_and_caps_async_dispatches() {
         (status, body.as_slice()),
         (503, ASYNC_OVERLOADED_MSG.as_bytes())
     );
-    assert_eq!(recv(&pending), (200, b"slow".to_vec()));
+    let (slow_wire, slot_seen_by_callback) = pending.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(parse(&slow_wire), (200, b"slow".to_vec()));
 
     // The slot is released BEFORE the callback runs (`Completion::deliver`
-    // drops the permit first), so it is free once the response arrived.
-    assert_eq!(async_in_flight(), 0, "permit released after the callback");
+    // drops the permit first): the callback itself observes 0.
+    assert_eq!(
+        slot_seen_by_callback, 0,
+        "the permit is released before the callback runs"
+    );
     assert_eq!(
         recv(&start_async(&request("GET", "/fast", b""))),
         (200, b"fast".to_vec())

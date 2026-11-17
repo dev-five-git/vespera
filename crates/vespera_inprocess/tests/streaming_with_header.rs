@@ -281,7 +281,7 @@ async fn streaming_with_header_emits_header_before_chunks() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn streaming_with_header_error_on_short_input_skips_chunk_callback() {
+async fn streaming_with_header_error_on_short_input_delivers_body_through_chunks() {
     let bad_wire: Vec<u8> = vec![0u8, 0]; // less than 4 bytes
     let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let chunks: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
@@ -301,10 +301,11 @@ async fn streaming_with_header_error_on_short_input_skips_chunk_callback() {
     let header_bytes = single_header(&header_buf);
     let (header_json, body) = decode_wire(&header_bytes);
     assert_eq!(header_json["status"].as_u64(), Some(400));
-    assert!(!body.is_empty(), "error body must explain the failure");
+    assert!(body.is_empty(), "the header callback carries no body");
+    let delivered: Vec<u8> = chunks.lock().unwrap().iter().flatten().copied().collect();
     assert!(
-        chunks.lock().unwrap().is_empty(),
-        "on_chunk must not fire on error path"
+        String::from_utf8_lossy(&delivered).contains("too short"),
+        "the error body must explain the failure through on_chunk"
     );
 }
 
@@ -329,7 +330,10 @@ async fn streaming_with_header_error_on_version_mismatch() {
 
     let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(400));
-    assert!(chunks.lock().unwrap().is_empty());
+    assert!(
+        !chunks.lock().unwrap().is_empty(),
+        "the error body follows through on_chunk"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -353,7 +357,10 @@ async fn streaming_with_header_error_on_unknown_app() {
 
     let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(404));
-    assert!(chunks.lock().unwrap().is_empty());
+    assert!(
+        !chunks.lock().unwrap().is_empty(),
+        "the error body follows through on_chunk"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -377,7 +384,10 @@ async fn streaming_with_header_invalid_method_returns_405_via_header_callback() 
 
     let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(405));
-    assert!(chunks.lock().unwrap().is_empty());
+    assert!(
+        !chunks.lock().unwrap().is_empty(),
+        "the error body follows through on_chunk"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -518,8 +528,11 @@ async fn bidirectional_with_header_error_on_short_input() {
 
     let (header_json, body) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(400));
-    assert_ne!(body, Vec::<u8>::new());
-    assert!(body_buf.lock().unwrap().is_empty());
+    assert!(body.is_empty(), "the header callback carries no body");
+    assert!(
+        !body_buf.lock().unwrap().is_empty(),
+        "the error body follows through on_chunk"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -545,7 +558,10 @@ async fn bidirectional_with_header_error_on_version_mismatch() {
 
     let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(400));
-    assert!(body_buf.lock().unwrap().is_empty());
+    assert!(
+        !body_buf.lock().unwrap().is_empty(),
+        "the error body follows through on_chunk"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -571,7 +587,10 @@ async fn bidirectional_with_header_error_on_unknown_app() {
 
     let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(404));
-    assert!(body_buf.lock().unwrap().is_empty());
+    assert!(
+        !body_buf.lock().unwrap().is_empty(),
+        "the error body follows through on_chunk"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -597,7 +616,10 @@ async fn bidirectional_with_header_invalid_method_returns_405() {
 
     let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(405));
-    assert!(body_buf.lock().unwrap().is_empty());
+    assert!(
+        !body_buf.lock().unwrap().is_empty(),
+        "the error body follows through on_chunk"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -659,9 +681,10 @@ async fn bidirectional_with_header_break_when_receiver_dropped_mid_stream() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn bidirectional_with_header_slow_producer_yields_poll_pending() {
-    // Producer sleeps between chunks so the consumer polls an empty
-    // channel and exercises the `Poll::Pending` arm of ChannelBody.
+async fn bidirectional_with_header_slow_producer_delivers_every_chunk() {
+    // Producer sleeps between chunks, so the body is consumed across waits.
+    // (`Poll::Pending` from ChannelBody is observed directly by the unit test
+    // `channel_body_is_pending_while_the_producer_is_slow`.)
     install_router();
     let wire = encode_wire(
         "POST",

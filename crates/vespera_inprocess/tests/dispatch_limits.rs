@@ -190,7 +190,7 @@ async fn streaming_deadline_before_commit_is_a_clean_504_header() {
     .await;
     assert_eq!(outcome, StreamOutcome::Complete);
     assert_eq!(split(&header).0["status"], 504);
-    assert_eq!(chunks, 0);
+    assert_eq!(chunks, 1, "the 504 message follows through on_chunk");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -407,7 +407,7 @@ async fn streaming_422_prefetch_past_the_deadline_is_a_504_header() {
     assert_quick(started);
     assert_eq!(outcome, StreamOutcome::Complete);
     assert_eq!(split(&header).0["status"], 504);
-    assert_eq!(chunks, 0);
+    assert_eq!(chunks, 1, "the 504 message follows through on_chunk");
 }
 
 /// The legacy direct-write overflow drains an unknown-length body only to

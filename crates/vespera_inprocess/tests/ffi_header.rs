@@ -475,6 +475,8 @@ fn header_documents_every_synthesised_status_and_the_latin1_mapping() {
             "response over the buffered response cap or not allocatable 500",
             "response body stream error 500",
             "response header too large 500",
+            "async in-flight cap 503",
+            "async dispatch dropped by shutdown 503",
             "runtime shut down 503",
             "deadline 504",
         ]

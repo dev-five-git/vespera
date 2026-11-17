@@ -387,17 +387,27 @@ async fn bidirectional_rejects_body_bytes_embedded_after_header() {
     let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&header_buf);
 
+    let delivered = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let body_sink = Arc::clone(&delivered);
     let outcome = dispatch_bidirectional_streaming_with_header(
         wire,
         || RequestChunk::End,
-        |_chunk| ControlFlow::Continue(()),
+        move |chunk| {
+            body_sink.lock().unwrap().extend_from_slice(chunk);
+            ControlFlow::Continue(())
+        },
         move |header| captured.lock().unwrap().push(header.to_vec()),
     )
     .await;
 
     assert_eq!(outcome, StreamOutcome::Complete);
-    let (header_json, body) = decode_wire(&single_header(&header_buf));
+    let (header_json, header_body) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(400));
+    assert!(
+        header_body.is_empty(),
+        "the header callback carries no body"
+    );
+    let body = delivered.lock().unwrap().clone();
     assert!(
         String::from_utf8_lossy(&body).contains("header-only"),
         "error explains that request bytes must come from pull_chunk"
