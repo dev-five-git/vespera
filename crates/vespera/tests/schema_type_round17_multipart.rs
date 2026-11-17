@@ -88,8 +88,10 @@ async fn dto_reads_the_sources_form_field_names() {
             source.label_text
         )
     );
-    // The serialize-side name is not the form's.
-    let screaming = [("USER_NAME", "u"), ("file", "t"), ("label-text", "l")];
+    // The serialize-side name is not the form's. `lbl` (the alias) is used
+    // for the last field so that the M2 bug, which would accept `USER_NAME`,
+    // parses successfully and only the fixed DTO rejects this request.
+    let screaming = [("USER_NAME", "u"), ("file", "t"), ("lbl", "l")];
     assert!(extract::<UploadDto>(&screaming).await.is_err());
 }
 
