@@ -88,6 +88,7 @@ fn expand(file_src: &str, ret: &str) -> String {
 #[case::cycle_back_to_start("type A = B; type B = A;", "-> A", "-> A")]
 #[case::qualified_self("type F = u8;", "-> <X as Tr>::F", "-> < X as Tr > :: F")]
 #[case::non_path("type F = u8;", "-> (F, F)", "-> (u8 , u8)")]
+#[case::reference_untouched("type F = u8;", "-> &'static F", "-> & 'static F")]
 #[case::result_without_args("type Result = u8;", "-> Result", "-> Result")]
 #[case::lifetime_arg_ignored(
     "type R<'a, T> = Result<Json<T>, E>;",

@@ -532,9 +532,12 @@ impl FlatKinds {
             let argument = args
                 .args
                 .iter()
-                .filter_map(|arg| match arg {
-                    syn::GenericArgument::Type(ty) => Some(ty),
-                    _ => None,
+                .filter_map(|arg| {
+                    if let syn::GenericArgument::Type(ty) = arg {
+                        Some(ty)
+                    } else {
+                        None
+                    }
                 })
                 .nth(index)?;
             return self.type_kind(argument);
