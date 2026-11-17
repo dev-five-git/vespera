@@ -748,7 +748,10 @@ public class VesperaBridge {
      *       running the handler</em>: such a buffer could not hold a
      *       synthesized panic / timeout response, and growing it and
      *       retrying would re-run a failing handler.  Retrying with at
-     *       least that capacity dispatches normally.</li>
+     *       least that capacity dispatches normally.  The native input
+     *       checks run first: an overlapping {@code in} / {@code out}
+     *       pair is answered with its {@code 400} wire (or its
+     *       {@code -(requiredSize)}) instead of the size rule above.</li>
      *   <li>{@code Integer.MIN_VALUE}: response exceeds 2 GiB and is
      *       unrepresentable in this protocol.</li>
      * </ul>

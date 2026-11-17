@@ -91,10 +91,13 @@ fn shutdown_makes_later_dispatches_answer_503() {
         drop(handle.spawn(async move { hook_tx_later.send("late").unwrap() }));
     }));
     assert_eq!(hook_rx.recv_timeout(Duration::from_secs(5)), Ok("late"));
+    // The runtime is up here, so this does not exercise a build failure: it
+    // only pins that the unavailable wire of a runtime that is not shut down
+    // is the `500` (a shut-down runtime answers `503`).
     let (header, _) = status_and_body(&runtime_unavailable_wire());
     assert!(
         header.contains(r#""status":500"#),
-        "build failure stays a 500: {header}"
+        "unavailable outside a shutdown is a 500: {header}"
     );
     let (header, body) = status_and_body(
         &block_on_shared_runtime(vespera_inprocess::dispatch_from_bytes_async(request()))

@@ -405,8 +405,10 @@ class StreamingClosureStressTest {
      * code path" contract requires {@code dispatchStreamingWithHeader} to
      * still fire the consumer — with a wire-format {@code 500} header (the
      * Rust-side {@code header_sent} fallback) — instead of leaving this
-     * caller hanging.  Guards the JNI catch_unwind + fallback path that
-     * has no Rust-level unit test (it needs a real JVM).
+     * caller hanging.  The error body follows the header through the sink
+     * (header-first contract): the sink holds exactly the panic text.
+     * Guards the JNI catch_unwind + fallback path that has no Rust-level
+     * unit test (it needs a real JVM).
      */
     @Test
     @Order(4)
@@ -433,8 +435,9 @@ class StreamingClosureStressTest {
         VesperaBridge.DecodedResponse resp = VesperaBridge.decodeResponse(hdr);
         assertEquals(500, resp.status(),
                 "a panic before the header must surface as a 500 header, not a hang");
-        assertEquals(0, sink.size(),
-                "no body should be written when the handler panics before headers");
+        assertEquals("panic in Rust engine",
+                new String(sink.toBytes(), java.nio.charset.StandardCharsets.UTF_8),
+                "the 500 error body must follow the header through the sink");
     }
 
     /**

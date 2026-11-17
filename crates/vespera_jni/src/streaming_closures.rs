@@ -683,6 +683,29 @@ pub fn call_header_consumer_local(
     })
 }
 
+/// Write a locally built response body to an `OutputStream` through a
+/// **local** reference: the body half of the header-first fallbacks (see
+/// `notify_local_wire` in `jni_impl_streaming_header.rs`), which run on the
+/// JNI entry thread where the original stream local ref is still valid.
+/// Like [`call_header_consumer_local`] it uses the checked `call_method`
+/// and clears any exception the write raised, so the caller decides what
+/// to surface.
+pub fn write_output_local(
+    env: &mut jni::Env<'_>,
+    stream: &JObject<'_>,
+    body: &[u8],
+) -> jni::errors::Result<()> {
+    cold_path_byte_array_call(env, body, |env, arr_obj| {
+        env.call_method(
+            stream,
+            jni_str!("write"),
+            jni_sig!("([B)V"),
+            &[JValue::Object(arr_obj)],
+        )
+        .map(|_| ())
+    })
+}
+
 /// Complete a `CompletableFuture` via a **local** reference, for the
 /// cold error / fallback paths of `dispatchAsync` that run on the JNI
 /// entry thread (where the original `future` local ref is still valid).
