@@ -83,9 +83,10 @@ pub(super) fn parse_form_data(attrs: &[syn::Attribute]) -> syn::Result<FormDataA
                         "expected `limit = \"<size>\"`, e.g. `limit = \"10MiB\"` or `limit = \"unlimited\"`",
                     ));
                 };
+                // Every literal is validated, not only the winning one: a
+                // later invalid `limit` used to be silently ignored.
+                limit_tokens(lit)?;
                 if out.limit.is_none() {
-                    // Validate now so the error points at the literal.
-                    limit_tokens(lit)?;
                     out.limit = Some(lit.clone());
                 }
             } else if meta.path.is_ident("default") {
@@ -459,6 +460,14 @@ mod tests {
         "overflows"
     )]
     #[case::malformed(r"#[form_data(limit = )] pub file: String", "expected")]
+    #[case::second_invalid_size(
+        r#"#[form_data(limit = "10MiB")] #[form_data(limit = "10mb")] pub file: String"#,
+        "invalid `limit`"
+    )]
+    #[case::second_non_string(
+        r#"#[form_data(limit = "10MiB")] #[form_data(limit = 10)] pub file: String"#,
+        "expected `limit"
+    )]
     fn malformed_limit_is_an_error(#[case] code: &str, #[case] message: &str) {
         let Err(err) = parse_form_data(&parse_attrs(code)) else {
             panic!("`{code}` must be rejected");

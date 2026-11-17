@@ -234,6 +234,24 @@ fn build_struct_metadata(
     }
 }
 
+/// A custom schema name must match the OpenAPI component-key pattern
+/// `^[a-zA-Z0-9.\-_]+$` (the `components.schemas` key it becomes).
+pub fn require_component_key(name: &str, span: proc_macro2::Span) -> syn::Result<()> {
+    if !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    {
+        return Ok(());
+    }
+    Err(syn::Error::new(
+        span,
+        format!(
+            "schema name \"{name}\" must match `^[a-zA-Z0-9.\\-_]+$` (it is a `components.schemas` key): use `#[schema(name = \"..\")]` with letters, digits, `.`, `-` or `_`"
+        ),
+    ))
+}
+
 /// The metadata `schema_type!(Dto from .., ignore, name = "DtoSchema")`
 /// pre-registers, built like the derive's for `#[schema(name = ..)]`: the
 /// name is the author's (never namespaced by `export_app!`), the Rust ident
@@ -406,6 +424,13 @@ pub fn process_derive_schema(
         if let Err(error) = crate::parser::validate_enum_for_schema(&enum_item) {
             return (None, error.to_compile_error());
         }
+    }
+    // A custom name is the `components.schemas` key: a value outside the
+    // OpenAPI key pattern would otherwise reach the document unchecked.
+    if let Some(custom) = schema_attr.name.as_deref()
+        && let Err(error) = require_component_key(custom, input.ident.span())
+    {
+        return (None, error.to_compile_error());
     }
     let has_explicit_schema_name = schema_attr.name.is_some();
     let schema_name = schema_attr.name.unwrap_or_else(|| name.to_string());

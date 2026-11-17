@@ -350,18 +350,23 @@ fn test_generate_schema_type_code_with_omit_default() {
 
     assert!(result.is_ok());
     let (tokens, _metadata) = result.unwrap();
-    let output = tokens.to_string();
-    // id (primary_key) and created_at (default_value) should be omitted
-    assert!(
-        !output.contains("id :"),
-        "id should be omitted by omit_default: {output}"
-    );
-    assert!(
-        !output.contains("created_at"),
-        "created_at should be omitted by omit_default: {output}"
-    );
-    // name should remain
-    assert!(output.contains("name"), "name should remain: {output}");
+    // The DTO's field list, read from the parsed items (a substring probe
+    // would miss a field emitted under different spacing).
+    let file: syn::File = syn::parse2(tokens).unwrap();
+    let fields: Vec<String> = file
+        .items
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Struct(item) => Some(item),
+            _ => None,
+        })
+        .expect("the DTO struct")
+        .fields
+        .iter()
+        .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
+        .collect();
+    // id (primary_key) and created_at (default_value) are omitted; name stays.
+    assert_eq!(fields, ["name"]);
 }
 
 // ============================================================

@@ -653,11 +653,55 @@ pub fn is_primitive_like(ty: &Type) -> bool {
     is_primitive_or_known_type(&extract_type_name(ty).unwrap_or_default())
 }
 
+/// Names whose default below is the value of an ecosystem type (SeaORM /
+/// chrono / rust_decimal / uuid), which a crate may also define itself.
+const ECOSYSTEM_DEFAULT_NAMES: &[&str] = &[
+    "Decimal",
+    "Uuid",
+    "Date",
+    "Time",
+    "DateTime",
+    "DateTimeUtc",
+    "DateTimeWithTimeZone",
+    "NaiveDate",
+    "NaiveTime",
+    "NaiveDateTime",
+];
+
+/// Whether the path `segments`, written in the call-site module, names an
+/// ecosystem type. A crate-local type of the same name (`struct Decimal(i64)`)
+/// advertised `"0"` / `"1970-01-01"` before. Without a call-site module the
+/// name is taken as the ecosystem type, as before.
+fn names_ecosystem_type(segments: &[String]) -> bool {
+    let Some(module) = super::file_lookup::call_site_module() else {
+        return true;
+    };
+    match super::module_scope::resolve_name(segments, &module) {
+        super::module_scope::Resolved::Path(path) => matches!(
+            path.first().map(String::as_str),
+            Some("sea_orm" | "chrono" | "rust_decimal" | "uuid" | "time")
+        ),
+        super::module_scope::Resolved::Unknown => true,
+    }
+}
+
 /// Get type-specific default value for simple #[serde(default)]
 pub fn get_type_default(ty: &Type) -> Option<serde_json::Value> {
     match ty {
         Type::Path(type_path) => type_path.path.segments.last().and_then(|segment| {
-            match segment.ident.to_string().as_str() {
+            let name = segment.ident.to_string();
+            if ECOSYSTEM_DEFAULT_NAMES.contains(&name.as_str()) {
+                let segments: Vec<String> = type_path
+                    .path
+                    .segments
+                    .iter()
+                    .map(|segment| segment.ident.to_string())
+                    .collect();
+                if !names_ecosystem_type(&segments) {
+                    return None;
+                }
+            }
+            match name.as_str() {
                 "String" => Some(serde_json::Value::String(String::new())),
                 "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64"
                 | "u128" | "usize" => Some(serde_json::Value::Number(serde_json::Number::from(0))),
