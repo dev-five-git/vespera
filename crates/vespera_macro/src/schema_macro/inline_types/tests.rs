@@ -611,7 +611,13 @@ fn no_relations_uses_source_module_when_schema_path_has_no_module() {
 #[rstest]
 #[case::dashes_and_dots(Some("memo-detail.v2"), "items", "memo_u2d_detail_u2e_v2_Items")]
 #[case::dots_and_dashes(Some("memo.detail-v2"), "items", "memo_u2e_detail_u2d_v2_Items")]
-#[case::leading_digit(Some("2024 Memo"), "items", "_2024_u20_Memo_Items")]
+// A leading digit is escaped (not prefixed with `_`), so `2024 Memo` and a
+// literal `_2024 Memo` cannot share a name.
+#[case::leading_digit(Some("2024 Memo"), "items", "_u32_024_u20_Memo_Items")]
+#[case::dash_name(Some("memo-detail"), "items", "memo_u2d_detail_Items")]
+// `_u2d_` spelled out is escaped, so it no longer equals the `-` escape.
+#[case::escape_lookalike(Some("memo_u2d_detail"), "items", "memo_u5f_u2d_detail_Items")]
+#[case::leading_underscore(Some("_hidden"), "items", "_u5f_hidden_Items")]
 // L4 (round 14): non-ASCII identifier characters are kept (every Hangul
 // name used to become `__`, so two such names collided: E0428).
 #[case::hangul(Some("메모"), "items", "메모_Items")]

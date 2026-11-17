@@ -152,8 +152,23 @@ pub fn check_garde_peers(
             };
             return Err(at.error_at(param, peer, format!("{rule} on field `{field}` names field `{peer}`, which this type does not include ({reason}): keep `{peer}` or omit `{field}`")));
         }
-        if reference.matches && !reference.field_wrapped && context.wrapped.contains(peer) {
-            return Err(at.error_at("partial", peer, format!("{rule} on field `{field}` compares it with `{peer}`, which `partial` wraps in `Option` while `{field}` stays required: make `{field}` partial too, or omit it")));
+        if context.wrapped.contains(peer) {
+            // `matches(peer)` compares the two values, so both must be
+            // `Option`s; a `self.peer` expression reads the peer as written
+            // (`&Option<T>` where `T` is expected) whatever the rule field is.
+            if reference.matches && reference.field_wrapped {
+                continue;
+            }
+            let message = if reference.matches {
+                format!(
+                    "{rule} on field `{field}` compares it with `{peer}`, which `partial` wraps in `Option` while `{field}` stays required: make `{field}` partial too, or omit it"
+                )
+            } else {
+                format!(
+                    "{rule} on field `{field}` reads `self.{peer}`, which `partial` wraps in `Option` (the expression sees `Option<T>`): drop `{peer}` from `partial`, or omit `{field}`"
+                )
+            };
+            return Err(at.error_at("partial", peer, message));
         }
     }
     Ok(())
@@ -223,7 +238,7 @@ mod tests {
     #[case::not_picked(false, set(&["confirm"]), set(&[]), set(&["confirm"]), set(&[]), Some("`pick` does not keep it"))]
     #[case::omit_default(false, set(&["confirm"]), set(&[]), set(&[]), set(&[]), Some("a SeaORM default"))]
     #[case::partial_peer(true, set(&["password", "confirm"]), set(&[]), set(&[]), set(&["password"]), Some("which `partial` wraps in `Option` while `confirm` stays required"))]
-    #[case::partial_self_access(false, set(&["password", "confirm"]), set(&[]), set(&[]), set(&["password"]), None)]
+    #[case::partial_self_access(false, set(&["password", "confirm"]), set(&[]), set(&[]), set(&["password"]), Some("reads `self.password`, which `partial` wraps in `Option`"))]
     fn checks_named_peers(
         #[case] matches: bool,
         #[case] emitted: HashSet<String>,
@@ -265,6 +280,36 @@ mod tests {
                 assert!(err.contains(message), "{err}");
             }
         }
+    }
+
+    /// Only `matches` between two wrapped fields compares `Option`s; a
+    /// `self.peer` read sees `Option<T>` whatever the rule field is.
+    #[rstest]
+    #[case::matches_both_wrapped(true, true, false)]
+    #[case::matches_plain_field(true, false, true)]
+    #[case::self_read_wrapped_field(false, true, true)]
+    #[case::self_read_plain_field(false, false, true)]
+    fn wrapped_peer_rules(#[case] matches: bool, #[case] field_wrapped: bool, #[case] fails: bool) {
+        let all: HashSet<String> = set(&["password", "confirm"]);
+        let wrapped: HashSet<String> = set(&["password"]);
+        let none: HashSet<String> = HashSet::new();
+        let dropped: HashMap<String, &'static str> = HashMap::new();
+        let context = PeerContext {
+            source_fields: &all,
+            emitted: &all,
+            omit: &none,
+            pick: &none,
+            dropped: &dropped,
+            wrapped: &wrapped,
+        };
+        let refs = [PeerRef {
+            field: "confirm".into(),
+            field_wrapped,
+            peer: "password".into(),
+            matches,
+        }];
+        let at: syn::Type = syn::parse_quote!(Source);
+        assert_eq!(check_garde_peers(&refs, &context, &at).is_err(), fails);
     }
 
     /// A wrapped field's `matches` (moved into `inner(..)` or comparing two

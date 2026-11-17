@@ -1,6 +1,37 @@
 use rstest::rstest;
 
 use super::*;
+
+/// A crate-local `Decimal` is not rust_decimal's: its `"0"` default is not
+/// advertised. The SeaORM `Date` imported in the call-site module still is.
+#[test]
+fn ecosystem_default_names_follow_the_call_site_scope() {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("src/lib.rs"),
+        "pub struct Decimal(pub i64);\nmod sea;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("src/sea.rs"),
+        "use sea_orm::prelude::Date;\npub struct Holder { pub d: Date }\n",
+    )
+    .unwrap();
+    let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    let decimal: syn::Type = syn::parse_quote!(Decimal);
+    let date: syn::Type = syn::parse_quote!(Date);
+    {
+        let _site = crate::schema_macro::file_lookup::set_test_call_site_module("crate");
+        assert_eq!(get_type_default(&decimal), None);
+    }
+    let _site = crate::schema_macro::file_lookup::set_test_call_site_module("crate::sea");
+    assert_eq!(
+        get_type_default(&date),
+        Some(serde_json::json!("1970-01-01"))
+    );
+}
+
 fn empty_type_path() -> syn::Type {
     syn::Type::Path(syn::TypePath {
         attrs: Vec::new(),

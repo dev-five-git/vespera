@@ -19,18 +19,36 @@ pub(super) struct __VesperaSameFileLookupFixture {
     value: i32,
 }
 
+/// Same-file adapter fixture: the storage holds a different struct of this
+/// name, which the adapter lookup must not pick.
+#[cfg(test)]
+pub(super) struct __VesperaAdapterFixture {
+    id: i32,
+    name: String,
+}
+
+/// The struct a `relation_adapters` entry names: the one defined in the
+/// call-site file first (the route-local DTO the user listed), then the
+/// crate-wide storage (for a call site without a file). The storage is keyed
+/// by schema name, so a same-named `Schema` in another module used to win
+/// over the listed DTO (its `#[schema(name = ..)]` / serde renames lost).
 pub(super) fn find_same_file_struct_metadata<'a>(
     struct_name: &str,
     schema_storage: &'a HashMap<String, StructMetadata>,
 ) -> Option<Cow<'a, StructMetadata>> {
-    // Cache hit: hand back a borrow so the (potentially large) struct
-    // definition string is not cloned per lookup.  The fallback path
-    // produces an owned `StructMetadata` from disk, so the unified return
-    // type is `Cow<'_, StructMetadata>`.
-    if let Some(metadata) = super::storage_entry(schema_storage, struct_name) {
-        return Some(Cow::Borrowed(metadata));
+    if let Some(definition) = same_file_definition(struct_name) {
+        return Some(Cow::Owned(StructMetadata::new(
+            struct_name.to_string(),
+            definition,
+        )));
     }
+    // Cache hit: hand back a borrow so the (potentially large) struct
+    // definition string is not cloned per lookup.
+    super::storage_entry(schema_storage, struct_name).map(Cow::Borrowed)
+}
 
+/// The definition of `struct_name` in the macro call-site file.
+fn same_file_definition(struct_name: &str) -> Option<String> {
     let file_path = proc_macro2::Span::call_site().local_file();
     #[cfg(test)]
     let file_path = file_path.or_else(|| {
@@ -41,12 +59,7 @@ pub(super) fn find_same_file_struct_metadata<'a>(
                 .join("same_file_override.rs"),
         )
     });
-    let file_path = file_path?;
-    let definition = file_cache::get_struct_definition(&file_path, struct_name)?;
-    Some(Cow::Owned(StructMetadata::new(
-        struct_name.to_string(),
-        definition,
-    )))
+    file_cache::get_struct_definition(&file_path?, struct_name)
 }
 
 pub(super) fn related_model_type_from_schema_path(schema_path: &TokenStream) -> Option<syn::Type> {
@@ -470,6 +483,37 @@ mod tests {
                 .contains("__VesperaSameFileLookupFixture")
         );
         assert!(metadata.definition.contains("value"));
+    }
+
+    /// A same-named struct in the crate-wide storage (another module's
+    /// `Schema`) must not replace the adapter the call-site file defines.
+    #[test]
+    fn explicit_adapter_prefers_the_call_site_file_over_storage() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "__VesperaAdapterFixture",
+            "struct __VesperaAdapterFixture { value: i32 }",
+        )]);
+        let ident = syn::Ident::new("__VesperaAdapterFixture", proc_macro2::Span::call_site());
+        let (_, dto) = explicit_adapter_struct("author", &ident, &storage).unwrap();
+        let fields: Vec<String> = named_fields(&dto)
+            .unwrap()
+            .iter()
+            .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
+            .collect();
+        assert_eq!(fields, ["id", "name"]);
+    }
+
+    /// A name the call-site file does not define falls back to the storage.
+    #[test]
+    fn explicit_adapter_falls_back_to_storage_when_the_file_lacks_it() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "__VesperaStorageOnly",
+            "struct __VesperaStorageOnly { value: i32 }",
+        )]);
+        let ident = syn::Ident::new("__VesperaStorageOnly", proc_macro2::Span::call_site());
+        let (name, dto) = explicit_adapter_struct("author", &ident, &storage).unwrap();
+        assert_eq!(name, "__VesperaStorageOnly");
+        assert_eq!(dto.ident.to_string(), "__VesperaStorageOnly");
     }
 
     #[test]

@@ -58,6 +58,13 @@ pub fn generate_schema_type_code(
 ) -> Result<(TokenStream, Option<StructMetadata>), syn::Error> {
     // Extract type name from the source Type
     let source_type_name = extract_type_name(&input.source_type)?;
+    // The `name = ..` override is a `components.schemas` key.
+    if let Some(name) = input.schema_name.as_deref() {
+        crate::schema_impl::require_component_key(
+            name,
+            syn::spanned::Spanned::span(&input.source_type),
+        )?;
+    }
 
     // SCHEMA_STORAGE first (no file I/O), else a file lookup (e.g. a SeaORM
     // Model); the defining module overrides the path as written.

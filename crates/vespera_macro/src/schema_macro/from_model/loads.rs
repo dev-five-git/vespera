@@ -60,8 +60,7 @@ pub(super) fn relation_load(
             Some(to) if !is_target_primary_key(&schema_path_str, to) => {
                 let column = column_path(&entity_path);
                 // The raw value first: the diagnostic quotes what was written.
-                let to_ident =
-                    ident("to", to).and_then(|_| ident("to", &snake_to_pascal_case(to)))?;
+                let to_ident = ident("to", to).and_then(|_| ident("to", &column_variant(to)))?;
                 quote! {
                     sea_orm::QueryFilter::filter(
                         #entity::find(),
@@ -105,7 +104,7 @@ pub(super) fn relation_load(
         ));
     };
     let from_ident = ident("from", &from)
-        .and_then(|_| ident("from", &snake_to_pascal_case(&from)))
+        .and_then(|_| ident("from", &column_variant(&from)))
         .map_err(|_| {
             syn::Error::new_spanned(
                 source_type,
@@ -151,6 +150,13 @@ fn is_target_primary_key(schema_path: &str, column: &str) -> bool {
         .map(|ident| crate::parser::strip_raw_prefix_owned(ident.to_string()))
         .collect();
     keys == [column]
+}
+
+/// The `Column` variant of a SeaORM column value: `address_id` → `AddressId`,
+/// and a raw field `r#type` (SeaORM's `Column::Type`) → `Type`. The `r#`
+/// prefix is stripped first: converting it as text made `R#type`.
+fn column_variant(value: &str) -> String {
+    snake_to_pascal_case(value.trim_start_matches("r#"))
 }
 
 /// `path::to::Entity` → `path::to::Column`.
@@ -211,5 +217,20 @@ mod tests {
         let field = syn::Ident::new("parent", proc_macro2::Span::call_site());
         let ident = sea_orm_value_ident(&source, &field, "from", value).unwrap();
         assert_eq!(ident.to_string(), expected);
+    }
+
+    /// A raw-identifier column (`from = "r#type"`) names the `Column::Type`
+    /// variant: the variant must be a valid identifier.
+    #[rstest::rstest]
+    #[case::snake("address_id", "AddressId")]
+    #[case::keyword("ref", "Ref")]
+    #[case::raw_field("r#type", "Type")]
+    #[case::raw_snake("r#user_id", "UserId")]
+    fn column_variants_are_valid_identifiers(#[case] value: &str, #[case] expected: &str) {
+        let source: Type = syn::parse_quote!(Model);
+        let field = syn::Ident::new("parent", proc_macro2::Span::call_site());
+        let variant = column_variant(value);
+        assert_eq!(variant, expected);
+        assert!(sea_orm_value_ident(&source, &field, "from", &variant).is_ok());
     }
 }

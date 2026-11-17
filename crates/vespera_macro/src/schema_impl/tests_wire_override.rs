@@ -5,6 +5,20 @@ use rstest::rstest;
 
 use super::*;
 
+/// A custom `#[schema(name)]` / `schema_type!(name = ..)` is a
+/// `components.schemas` key: the OpenAPI pattern, checked at compile time.
+#[rstest]
+#[case::plain("UserSchema", true)]
+#[case::dotted_dashed("user.v2-dto_x", true)]
+#[case::space("user dto", false)]
+#[case::slash("a/b", false)]
+#[case::empty("", false)]
+#[case::non_ascii("회원", false)]
+fn schema_name_must_be_a_component_key(#[case] name: &str, #[case] valid: bool) {
+    let result = require_component_key(name, proc_macro2::Span::call_site());
+    assert_eq!(result.is_ok(), valid, "{name}");
+}
+
 #[rstest]
 #[case::generic_type(
     "#[schema(value_type = Vec<Wire>)] struct S { a: Opaque }",

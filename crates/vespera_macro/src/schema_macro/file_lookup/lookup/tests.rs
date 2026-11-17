@@ -338,9 +338,14 @@ fn collect_rs_files_recursive_follows_symlinks_without_cycling() {
     std::fs::write(src.join("lib.rs"), "").unwrap();
     std::fs::write(shared.join("user.rs"), "pub struct User;").unwrap();
     std::fs::write(temp.path().join("extra.rs"), "").unwrap();
-    // Creating links needs privileges on Windows (Developer Mode); the walk
-    // itself is platform-neutral, so skip where it is refused.
+    // The walk over a tree without links always runs and is asserted.
+    let mut plain = Vec::new();
+    collect_rs_files_recursive(&src, &mut plain);
+    assert_eq!(plain.len(), 1, "{plain:?}");
+    // Creating links needs privileges on Windows (Developer Mode). Without
+    // them the link part cannot run; say so instead of passing silently.
     if link(&shared, &src.join("models"), true).is_err() {
+        eprintln!("symlink privilege missing: the symlink part of this test was not run");
         return;
     }
     link(&temp.path().join("extra.rs"), &src.join("extra.rs"), false).unwrap();

@@ -276,16 +276,37 @@ fn generate_inline_type_core(
 /// `"회원"` and `"memo-detail"` / `"memo.detail"` all used to collapse into
 /// one ident: E0428).
 fn ident_safe(name: &str) -> String {
+    // `_u<hex>_` escapes one character, so the escape is injective only if a
+    // literal `_u` is escaped too (`memo-detail` and `memo_u2d_detail` both
+    // became `memo_u2d_detail`), as is a leading `_` (`_type` against the
+    // `_` the keyword fix-up prepends) and a leading digit (`1x` against
+    // `_1x`).
     let mut ident = String::with_capacity(name.len());
-    for c in name.chars() {
-        let continues = c.is_ascii_alphanumeric()
-            || c == '_'
-            || (!c.is_ascii() && syn::parse_str::<syn::Ident>(&format!("a{c}")).is_ok());
-        if continues {
-            ident.push(c);
-        } else {
+    let mut chars = name.chars().peekable();
+    let mut first = true;
+    while let Some(c) = chars.next() {
+        let escape = match c {
+            '_' => first || chars.peek() == Some(&'u'),
+            c if c.is_ascii_digit() => first,
+            c if c.is_ascii_alphanumeric() => false,
+            // Every other ASCII character escapes (`syn` would accept a
+            // trailing space in a probe).
+            c if c.is_ascii() => true,
+            c => {
+                let probe = if first {
+                    c.to_string()
+                } else {
+                    format!("a{c}")
+                };
+                syn::parse_str::<syn::Ident>(&probe).is_err()
+            }
+        };
+        if escape {
             let _ = write!(ident, "_u{:x}_", u32::from(c));
+        } else {
+            ident.push(c);
         }
+        first = false;
     }
     if syn::parse_str::<syn::Ident>(&ident).is_err() {
         ident.insert(0, '_');
