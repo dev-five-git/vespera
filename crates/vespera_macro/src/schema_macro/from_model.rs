@@ -9,6 +9,7 @@ mod loads;
 mod target_shape;
 
 pub use generate::generate_from_model_with_relations;
+pub(super) use loads::{source_column_read, source_field_named};
 
 /// One emitted DTO field and the source field it is built from (`From`,
 /// the container default, `from_model`).

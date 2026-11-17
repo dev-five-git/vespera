@@ -297,7 +297,10 @@ fn test_generate_schema_type_code_raw_identifier_field() {
     assert!(result.is_ok());
     let (tokens, _metadata) = result.unwrap();
     let output = tokens.to_string();
-    assert!(output.contains("ConfigDTO"));
+    // R21-B4-L2 (round 21): the raw field itself is emitted, not just the
+    // struct name (a dropped or bare `type` field also contained "ConfigDTO").
+    assert!(output.contains("ConfigDTO"), "{output}");
+    assert!(output.contains("r#type : String"), "{output}");
 }
 
 // Test Option field not double-wrapped with partial

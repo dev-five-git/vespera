@@ -13,7 +13,9 @@ use super::defaults::{gate_sea_orm_defaults, generate_sea_orm_default_attrs};
 use super::field_attrs::carried_field_attrs;
 use super::file_cache;
 use super::file_lookup::call_site_module;
-use super::from_model::{FieldMapping, generate_from_model_with_relations};
+use super::from_model::{
+    FieldMapping, generate_from_model_with_relations, source_column_read, source_field_named,
+};
 use super::garde_paths::reroot_garde_attr;
 use super::garde_peers::{PeerContext, PeerRef, check_garde_peers};
 use super::inline_types::{
@@ -305,7 +307,7 @@ pub fn generate_schema_type_code(
     let mut container_vec_fields: Vec<(usize, TokenStream, TokenStream)> = Vec::new();
 
     if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
-        let pk_count = primary_key_count(fields_named);
+        let pk_count = primary_key_count(&parsed_struct.fields);
         for (field_index, field) in fields_named.named.iter().enumerate() {
             let rust_field_name = field.ident.as_ref().map_or_else(
                 || "unknown".to_string(),
@@ -781,6 +783,18 @@ pub fn generate_schema_type_code(
         schema_name_attr = quote! {};
     }
 
+    // The `from_model` load reads the source column behind each relation it
+    // emits (R21-SM2-L1, round 21), even when `omit` removed that field from
+    // the DTO: it must be readable from the DTO module too.
+    for rel in relation_fields.iter().filter(|rel| !rel.adapter) {
+        if let Some(column) = source_column_read(rel, &parsed_struct.fields)
+            && let Some(field) = source_field_named(&parsed_struct.fields, &column)
+        {
+            all_readable &=
+                assignments::readable_from(&field.vis, &source_module_path, call_site.as_deref());
+        }
+    }
+
     // Check if there are any relation fields
     let has_relation_fields = field_mappings
         .iter()
@@ -973,3 +987,5 @@ mod tests_refs;
 mod tests_round13;
 #[cfg(test)]
 mod tests_round18;
+#[cfg(test)]
+mod tests_round21;

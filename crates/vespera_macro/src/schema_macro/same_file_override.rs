@@ -27,11 +27,13 @@ pub(super) struct __VesperaAdapterFixture {
     name: String,
 }
 
-/// The struct a `relation_adapters` entry names: the one defined in the
-/// call-site file first (the route-local DTO the user listed), then the
-/// crate-wide storage (for a call site without a file). The storage is keyed
-/// by schema name, so a same-named `Schema` in another module used to win
-/// over the listed DTO (its `#[schema(name = ..)]` / serde renames lost).
+/// The struct a `relation_adapters` entry names. The call-site file's
+/// definition wins only when it derives `Schema` (the route-local DTO the user
+/// listed, see [`choose_same_file`]); otherwise the crate-wide storage entry
+/// is used, and the file's plain struct only when nothing is stored (R21-SM3-01
+/// corrects the earlier "file first" wording). The storage is keyed by schema
+/// name, so a same-named `Schema` in another module must not replace the
+/// listed DTO (its `#[schema(name = ..)]` / serde renames would be lost).
 pub(super) fn find_same_file_struct_metadata<'a>(
     struct_name: &str,
     schema_storage: &'a HashMap<String, StructMetadata>,
@@ -300,6 +302,18 @@ fn explicit_adapter_struct(
             ),
         ));
     };
+    // The wrapper names the call-site struct (`#dto_ident { .. }`). When the
+    // stored `Schema` supplies the fields instead of a plain call-site struct
+    // of that name, the expansion does not compile (E0560): say what to fix
+    // (R21-SM3-02, round 21).
+    if same_file_definition(&dto_name).is_some_and(|file| file != dto_meta.definition) {
+        return Err(syn::Error::new_spanned(
+            adapter_name,
+            format!(
+                "schema_type!: relation field `{field_name}` explicitly requested adapter `{dto_name}`, but the call-site struct `{dto_name}` does not derive `Schema`, so its fields would come from another `{dto_name}`; derive `Schema` on the call-site struct or rename the adapter"
+            ),
+        ));
+    }
 
     let dto_struct = file_cache::parse_struct_cached(&dto_meta.definition).map_err(|e| {
         syn::Error::new_spanned(
@@ -521,24 +535,24 @@ mod tests {
         assert!(metadata.definition.contains("value"));
     }
 
-    /// R20-SM3-01 (round 20): a plain (not `Schema`-derived) struct of the
-    /// adapter's name in the call-site file does not replace the `Schema`
-    /// the storage holds (the one the imports name); the file's own
-    /// `__VesperaAdapterFixture` (`id`, `name`) is ignored here.
+    /// R20-SM3-01 (round 20) kept the stored `Schema` over a plain struct of
+    /// the adapter's name in the call-site file. The wrapper names that file
+    /// struct, so the stored fields cannot build it (R21-SM3-02): the adapter
+    /// is rejected with a diagnostic asking for `#[derive(Schema)]` there.
     #[test]
-    fn explicit_adapter_keeps_the_stored_schema_over_an_underived_file_struct() {
+    fn explicit_adapter_rejects_an_underived_file_struct_the_storage_would_replace() {
         let storage = to_storage(vec![create_test_struct_metadata(
             "__VesperaAdapterFixture",
             "struct __VesperaAdapterFixture { value: i32 }",
         )]);
         let ident = syn::Ident::new("__VesperaAdapterFixture", proc_macro2::Span::call_site());
-        let (_, dto) = explicit_adapter_struct("author", &ident, &storage).unwrap();
-        let fields: Vec<String> = named_fields(&dto)
-            .unwrap()
-            .iter()
-            .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
-            .collect();
-        assert_eq!(fields, ["value"]);
+        let Err(error) = explicit_adapter_struct("author", &ident, &storage) else {
+            panic!("a plain call-site struct must not take the stored fields")
+        };
+        assert!(
+            error.to_string().contains("does not derive `Schema`"),
+            "{error}"
+        );
     }
 
     /// The file's `Schema`-derived DTO beats a same-named stored entry, and

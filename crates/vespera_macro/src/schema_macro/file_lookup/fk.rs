@@ -302,39 +302,39 @@ pub struct Model {
         );
     }
     /// The model file HAS the relation: only the injected unparseable cached
-    /// definition makes the lookup fail (the control crate, same file without
-    /// the injection, finds the column).
+    /// definition makes the lookup fail. The twin module in the same crate
+    /// (same text, no injection) resolves the column first, so the `None`
+    /// cannot come from a missing file (R21-SM1-01, round 21).
     #[test]
     fn test_find_fk_column_parse_struct_cached_failure() {
         const MODEL: &str = "pub struct Model { pub id: i32, pub user_id: i32, \
             #[sea_orm(belongs_to, relation_enum = \"SomeRelation\", from = \"user_id\", to = \"id\")] \
             pub user: HasOne<super::user::Entity> }";
+        let temp_dir = TempDir::new().unwrap();
+        let models_dir = temp_dir.path().join("src").join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
         // Distinct module names: the FK lookup caches per target path.
-        let crate_with_model = |module: &str| {
-            let temp_dir = TempDir::new().unwrap();
-            let models_dir = temp_dir.path().join("src").join("models");
-            std::fs::create_dir_all(&models_dir).unwrap();
-            let model_file = models_dir.join(format!("{module}.rs"));
-            std::fs::write(&model_file, MODEL).unwrap();
-            (temp_dir, model_file)
-        };
-        let lookup = |dir: &TempDir, module: &str| {
-            let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        let model_file = models_dir.join("item.rs");
+        std::fs::write(&model_file, MODEL).unwrap();
+        std::fs::write(models_dir.join("item_twin.rs"), MODEL).unwrap();
+        // The manifest dir is cached per epoch: each lookup starts a new one.
+        let lookup = |module: &str| {
+            let _env_guard =
+                crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
+            crate::schema_macro::file_cache::bump_epoch();
             let path = format!("crate::models::{module}::Schema");
             find_fk_column_from_target_entity(&path, "SomeRelation")
         };
 
-        let (control, _) = crate_with_model("control_item");
-        assert_eq!(lookup(&control, "control_item").as_deref(), Some("user_id"));
+        assert_eq!(lookup("item_twin").as_deref(), Some("user_id"));
 
-        let (temp_dir, model_file) = crate_with_model("item");
         crate::schema_macro::file_cache::inject_struct_definition_for_test(
             &model_file,
             "Model",
             "not valid rust {{ struct }}",
         );
         assert!(
-            lookup(&temp_dir, "item").is_none(),
+            lookup("item").is_none(),
             "Should return None when struct definition fails to parse"
         );
     }

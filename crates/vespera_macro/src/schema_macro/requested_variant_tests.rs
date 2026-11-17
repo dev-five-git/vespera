@@ -36,5 +36,19 @@ fn bare_name_import_of_an_underived_item(#[case] routes_source: &str, #[case] re
     .with_source_identity(format!("{stored_file}::Page@1:1"));
     let ty: syn::Type = syn::parse_quote!(Page);
     let result = requested_variant(&ty, &stored);
-    assert_eq!(result.is_err(), rejected);
+    // R21-SM3-05 (round 21): the rejection is the explicit-import diagnostic,
+    // not any error (a missing file would also be an error).
+    if rejected {
+        let Err(error) = result else {
+            panic!("an explicit import of an underived item is rejected")
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("has no `#[derive(Schema)]` in this crate"),
+            "{error}"
+        );
+    } else {
+        assert!(result.is_ok(), "a glob import stays lenient");
+    }
 }
