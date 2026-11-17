@@ -117,6 +117,33 @@ fn bytes_like_wrappers(#[case] ty: &str, #[case] expected: bool) {
     assert_eq!(is_bytes_like(&ty), expected);
 }
 
+/// Two error bodies on one status (the default `400`) are alternatives: the
+/// status documents `oneOf` of both, and an identical body appears once.
+#[rstest]
+#[case::distinct_bodies(
+    "Result<Result<Json<User>, (StatusCode, Json<UserErr>)>, (StatusCode, Json<AppError>)>",
+    true
+)]
+#[case::identical_bodies(
+    "Result<Result<Json<User>, (StatusCode, Json<AppError>)>, (StatusCode, Json<AppError>)>",
+    false
+)]
+fn error_bodies_sharing_a_status_are_merged(#[case] ty: &str, #[case] distinct: bool) {
+    let sig: syn::Signature = syn::parse_str(&format!("fn handler() -> {ty}")).unwrap();
+    let known: HashSet<&str> = HashSet::from(["User", "UserErr", "AppError"]);
+    let defs: HashMap<&str, &str> = HashMap::from([
+        ("User", "pub struct User { pub id: i32 }"),
+        ("UserErr", "pub struct UserErr { pub code: i32 }"),
+        ("AppError", "pub struct AppError { pub msg: String }"),
+    ]);
+    let responses = parse_return_type(&sig.output, &known, &defs);
+    let content = responses["400"].content.as_ref().expect("400 body");
+    let schema = serde_json::to_string(&content["application/json"].schema).unwrap();
+    assert_eq!(schema.contains("oneOf"), distinct, "{schema}");
+    assert_eq!(schema.contains("UserErr"), distinct, "{schema}");
+    assert!(schema.contains("AppError"), "{schema}");
+}
+
 #[test]
 fn no_return_type_is_an_empty_200() {
     let responses = parse_return_type(&ReturnType::Default, &HashSet::new(), &HashMap::new());

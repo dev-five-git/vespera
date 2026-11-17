@@ -13,8 +13,8 @@ use super::shared::{
 };
 use crate::{
     parser::schema::{
-        SerdeSide, apply_field_rules, extract_default, extract_doc_comment, extract_field_codec,
-        extract_flatten, extract_serde_skip_flags, parse_struct_to_schema,
+        SerdeSide, apply_field_rules, definition_key, extract_default, extract_doc_comment,
+        extract_field_codec, extract_flatten, extract_serde_skip_flags, parse_struct_to_schema,
         parse_type_to_schema_ref, request_view::component_of_input,
         schema_attrs::extract_schema_constraints, wire_override::field_schema_ref,
     },
@@ -167,12 +167,20 @@ fn collect_query_struct_parameters(
     let Some(struct_item) = struct_definition(ty, struct_definitions) else {
         return;
     };
-    // A (boxed) struct that flattens itself would recurse forever.
-    let struct_name = struct_item.ident.to_string();
-    if visiting.contains(&struct_name) {
+    // A (boxed) struct that flattens itself would recurse forever. Keyed by
+    // the resolved definition (`b::Foo` / `a::Foo`), not the bare ident: two
+    // same-named structs of one flatten chain are different structs.
+    let struct_key = match ty {
+        Type::Path(type_path) => {
+            definition_key(&type_path.path, |key| struct_definitions.contains_key(key))
+        }
+        _ => None,
+    }
+    .unwrap_or_else(|| struct_item.ident.to_string());
+    if visiting.contains(&struct_key) {
         return;
     }
-    visiting.push(struct_name);
+    visiting.push(struct_key);
     // Container `#[serde(from = "X")]` / `try_from` (or `#[schema(value_type =
     // X)]`), or `#[serde(transparent)]` (named or tuple struct): serde reads
     // `X` / the transparent field's type from the query string, never this
@@ -383,6 +391,25 @@ mod tests {
         #[case] expected: Vec<ParamShape>,
     ) {
         assert_eq!(query_shapes(ty, &defs), expected);
+    }
+
+    /// Two same-named structs in one flatten chain are different structs: the
+    /// recursion guard keys them by their resolved definition, so the inner
+    /// `crate::a::Foo` is read too (not skipped as a recursion of `b::Foo`).
+    #[test]
+    fn same_ident_structs_in_one_flatten_chain_are_both_read() {
+        let defs = [
+            ("a::Foo", "pub struct Foo { pub a_field: i32 }"),
+            (
+                "b::Foo",
+                "pub struct Foo { #[serde(flatten)] pub inner: crate::a::Foo, pub b_field: i32 }",
+            ),
+            ("Q", "pub struct Q { #[serde(flatten)] pub page: b::Foo }"),
+        ];
+        assert_eq!(
+            query_shapes("Q", &defs),
+            vec![shape("a_field", true), shape("b_field", true)]
+        );
     }
 
     #[test]

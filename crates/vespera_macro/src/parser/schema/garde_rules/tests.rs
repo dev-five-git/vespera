@@ -245,9 +245,16 @@ fn escape_regex_escapes_every_syntax_character() {
 #[case::escaped_brackets_in_class(r"[\[\]]+", true)]
 #[case::class_then_class(r"[a-][b]&&--~~", true)]
 #[case::group_in_class(r"[(?i)]", true)]
-#[case::unclosed_class(r"[a", true)]
-#[case::trailing_backslash(r"a\", true)]
-#[case::trailing_open_paren(r"a(", true)]
+// Unbalanced constructs are not valid in either dialect: never documented.
+#[case::unclosed_class(r"[a", false)]
+#[case::trailing_backslash(r"a\", false)]
+#[case::trailing_open_paren(r"a(", false)]
+#[case::lone_close_paren(r"a)", false)]
+#[case::unclosed_brace(r"a{2,", false)]
+#[case::balanced_group(r"(a|b)+", true)]
+#[case::non_capturing_group(r"(?:ab)+", true)]
+#[case::escaped_paren(r"\(a\)", true)]
+#[case::paren_in_class(r"[()]", true)]
 #[case::inline_flag(r"(?i)abc", false)]
 #[case::flag_group(r"(?x: a b )", false)]
 #[case::negated_flag(r"(?-i)abc", false)]
@@ -296,7 +303,7 @@ fn escape_regex_escapes_every_syntax_character() {
 #[case::category_loose(r"\p{lu}", false)]
 #[case::binary_property(r"\p{White_Space}\p{Alpha}", true)]
 #[case::unknown_key(r"\p{Block=Basic_Latin}", false)]
-#[case::unclosed_property(r"\p{L", true)]
+#[case::unclosed_property(r"\p{L", false)]
 // Round 18: Rust skips whitespace inside a counted repetition; ECMA-262 reads
 // only `digits[,[digits]]` there.
 #[case::brace_spaces(r"a{ 5 }", false)]

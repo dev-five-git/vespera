@@ -50,6 +50,14 @@ pub(super) fn is_variant_omitted(variant: &syn::Variant) -> bool {
         }
 }
 
+/// `true` when a variant is left out of BOTH the request and the response
+/// views: `#[serde(skip)]`, or `skip_serializing` together with
+/// `skip_deserializing`.
+pub(super) fn is_variant_omitted_both_ways(variant: &syn::Variant) -> bool {
+    let flags = extract_serde_skip_flags(&variant.attrs);
+    flags.skip || (flags.skip_serializing && flags.skip_deserializing)
+}
+
 /// `true` for the `#[serde(other)]` catch-all unit variant.
 pub(super) fn is_other_variant(variant: &syn::Variant) -> bool {
     extract_serde_skip_flags(&variant.attrs).other

@@ -387,6 +387,11 @@ fn externally_imported_name_skips_crate_wide_lookup() {
     "pub struct Other; mod m { use super::ApiResponse; pub fn h() {} }",
     true
 )]
+// A local glob brings the struct in too; a glob of a module without one
+// still reaches the crate-wide alias.
+#[case::local_glob_of_declaring_module("use crate::models::*;", false)]
+#[case::local_glob_of_other_module("use crate::legacy::*;", true)]
+#[case::external_glob_is_not_local("use axum::response::*;", false)]
 fn same_named_struct_stops_crate_wide_lookup(#[case] handler: &str, #[case] expands: bool) {
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path();
@@ -411,6 +416,35 @@ fn same_named_struct_stops_crate_wide_lookup(#[case] handler: &str, #[case] expa
     assert_eq!(
         expand_return_type_alias(&mut sig, Some(&file), Some(src)),
         expands
+    );
+}
+
+/// Only `src/lib.rs` / `src/main.rs` is the crate root: a `main.rs` in a
+/// subdirectory is an ordinary module, so `crate::ApiResult` names the
+/// root's alias alone (it is not ambiguous with the nested `main.rs`).
+#[test]
+fn nested_main_file_is_not_the_crate_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path();
+    std::fs::write(
+        src.join("lib.rs"),
+        "pub mod admin; pub type ApiResult<T> = Result<Json<T>, AppErr>;",
+    )
+    .unwrap();
+    std::fs::create_dir(src.join("admin")).unwrap();
+    std::fs::write(
+        src.join("admin").join("main.rs"),
+        "pub type ApiResult<T> = Result<Json<T>, AdminErr>;",
+    )
+    .unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    let file: syn::File = syn::parse_str("pub fn unrelated() {}").unwrap();
+    let mut sig: syn::Signature = syn::parse_str("fn h() -> crate::ApiResult<u8>").unwrap();
+    assert!(expand_return_type_alias(&mut sig, Some(&file), Some(src)));
+    let output = &sig.output;
+    assert_eq!(
+        quote::quote!(#output).to_string(),
+        "-> Result < Json < u8 > , AppErr >"
     );
 }
 

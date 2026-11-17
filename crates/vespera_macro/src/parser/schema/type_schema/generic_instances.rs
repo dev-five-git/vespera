@@ -94,9 +94,13 @@ fn push_type_segments(
     match ty {
         Type::Path(type_path) => {
             if let Some(segment) = type_path.path.segments.last() {
-                let ident = component(&type_path.path).unwrap_or_else(|| segment.ident.to_string());
+                if let Some(qself) = &type_path.qself {
+                    // `<T as Tr>::Out`: the self type leads the spelling.
+                    name.push_str("_.Qself");
+                    push_type_segments(name, &qself.ty, component);
+                }
                 name.push('_');
-                name.push_str(&escape_name(&ident));
+                name.push_str(&path_spelling(&type_path.path, component));
                 if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                     for arg in &args.args {
                         if let syn::GenericArgument::Type(inner) = arg {
@@ -129,19 +133,48 @@ fn push_type_segments(
     }
 }
 
-/// The length of `[T; len]`: an integer literal as written, a const path as
-/// its (escaped) name, anything else as `N`.
+/// The spelling of a type path: its registered component name, else every
+/// segment (`other::Foo` → `other.pFoo`, `.p` standing for `::`), so a
+/// module-qualified type never shares the bare type's name.
+fn path_spelling(path: &syn::Path, component: &dyn Fn(&syn::Path) -> Option<String>) -> String {
+    if let Some(name) = component(path) {
+        return escape_name(&name);
+    }
+    // A leading `crate::` names the same items as the bare path (`crate::User`
+    // is `User`), so it is not spelled.
+    let skip = usize::from(
+        path.leading_colon.is_none()
+            && path.segments.len() > 1
+            && path.segments[0].ident == "crate",
+    );
+    path.segments
+        .iter()
+        .skip(skip)
+        .map(|segment| escape_name(&segment.ident.to_string()))
+        .collect::<Vec<_>>()
+        .join(".p")
+}
+
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+/// The length of `[T; len]`: an integer literal as written (its value), a
+/// const path as its (qualified, escaped) spelling, and any other expression
+/// as the hex bytes of its tokens (`.e`), so distinct lengths stay distinct.
 fn push_array_len(name: &mut String, len: &syn::Expr) {
     match len {
         syn::Expr::Lit(syn::ExprLit {
             lit: syn::Lit::Int(int),
             ..
         }) => name.push_str(int.base10_digits()),
-        syn::Expr::Path(path) => name.push_str(&path.path.segments.last().map_or_else(
-            || "N".to_string(),
-            |segment| segment.ident.to_string().replace('_', "-"),
-        )),
-        _ => name.push('N'),
+        syn::Expr::Path(path) => name.push_str(&path_spelling(&path.path, &|_| None)),
+        other => {
+            name.push_str(".e");
+            let tokens = quote::ToTokens::to_token_stream(other).to_string();
+            for byte in tokens.bytes() {
+                name.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+                name.push(char::from(HEX_DIGITS[usize::from(byte & 0xf)]));
+            }
+        }
     }
 }
 
@@ -274,10 +307,13 @@ mod tests {
     #[case::paren("Page", &["(u8)"], "Page_u8")]
     #[case::array_slice("Page", &["[u8; 4]", "&[u8]"], "Page_Array.4_u8_Slice._u8")]
     #[case::array_const_len("Page", &["[u8; LEN_MAX]"], "Page_Array.LEN-MAX_u8")]
-    #[case::array_expr_len("Page", &["[u8; 2 * 2]"], "Page_Array.N_u8")]
+    #[case::array_expr_len("Page", &["[u8; 2 * 2]"], "Page_Array..e32202a2032_u8")]
+    #[case::array_path_len("Page", &["[u8; crate::N]"], "Page_Array.N_u8")]
+    #[case::module_qualified("Page", &["other::Foo"], "Page_other.pFoo")]
+    #[case::crate_qualified("Page", &["crate::Foo"], "Page_Foo")]
     #[case::tuples("Page", &["()", "(u8, bool)"], "Page_Tuple.0_Tuple.2_u8_bool")]
     #[case::other("Page", &["impl Trait"], "Page_.Value")]
-    #[case::qualified_self("Page", &["<T as Tr>::Out"], "Page_Out")]
+    #[case::qualified_self("Page", &["<T as Tr>::Out"], "Page_.Qself_T_Tr.pOut")]
     #[case::underscore_ident("Pair", &["A_B", "C"], "Pair_A-B_C")]
     // Round 11: the base is escaped like an argument.
     #[case::underscore_base("My_Tree", &["i32"], "My-Tree_i32")]
@@ -299,6 +335,12 @@ mod tests {
     #[case::array_vs_slice(&["[u8; 4]"], &["&[u8]"])]
     #[case::tuple_arity(&["(A, B)", "(C,)"], &["(A,)", "(B, C)"])]
     #[case::marker_vs_ident(&["[u8]"], &["Array<u8>"])]
+    // A module-qualified type and a qualified self type are not their bare
+    // names; a const path and an expression length are not the same length.
+    #[case::qualified_vs_bare(&["other::Foo"], &["Foo"])]
+    #[case::qualified_self_vs_bare(&["<T as Tr>::Out"], &["Out"])]
+    #[case::const_len_vs_expr(&["[u8; N]"], &["[u8; 2 * 2]"])]
+    #[case::const_len_path_vs_bare(&["[u8; a::N]"], &["[u8; N]"])]
     fn instance_names_are_injective(#[case] left: &[&str], #[case] right: &[&str]) {
         let parse = |args: &[&str]| -> Vec<Type> {
             args.iter()

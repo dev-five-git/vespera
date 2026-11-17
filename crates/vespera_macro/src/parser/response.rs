@@ -437,7 +437,8 @@ pub fn parse_return_type(
 /// default error status is `400`; an error that is a `Redirect` /
 /// `NoContent` is keyed like the success side (`3XX` / `204`), never
 /// overwriting the success entry. An error documented without a body (an
-/// outer `StatusCode`) takes the body of a later (inner) one.
+/// outer `StatusCode`) takes the body of a later (inner) one, and several
+/// bodies on one status are merged with `oneOf` ([`merge_error_bodies`]).
 fn insert_error_response(
     responses: &mut BTreeMap<String, Response>,
     err_ty: &Type,
@@ -467,8 +468,38 @@ fn insert_error_response(
             content: None,
             ..Default::default()
         });
-    if response.content.is_none() {
-        response.content = response_content(err_ty, known_schemas, struct_definitions);
+    let Some(content) = response_content(err_ty, known_schemas, struct_definitions) else {
+        return;
+    };
+    match &mut response.content {
+        None => response.content = Some(content),
+        Some(existing) => merge_error_bodies(existing, content),
+    }
+}
+
+/// Add the body `later` of another error that shares a status key with
+/// `existing`. Two bodies of one status are alternatives, so a media type
+/// both document is `oneOf` of the two (an identical body is kept once).
+fn merge_error_bodies(
+    existing: &mut BTreeMap<String, MediaType>,
+    later: BTreeMap<String, MediaType>,
+) {
+    for (media, later) in later {
+        let Some(earlier) = existing.get_mut(&media) else {
+            existing.insert(media, later);
+            continue;
+        };
+        earlier.schema = match (earlier.schema.take(), later.schema) {
+            (Some(first), Some(second))
+                if serde_json::to_string(&first).ok() != serde_json::to_string(&second).ok() =>
+            {
+                Some(SchemaRef::Inline(Box::new(Schema {
+                    one_of: Some(vec![first, second]),
+                    ..Schema::default()
+                })))
+            }
+            (first, second) => first.or(second),
+        };
     }
 }
 

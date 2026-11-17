@@ -226,8 +226,11 @@ pub fn validate_enum_for_schema(enum_item: &syn::ItemEnum) -> syn::Result<()> {
         return Ok(());
     }
     for variant in &enum_item.variants {
-        // An untagged variant carries no tag, so any payload is fine.
-        if variant::is_variant_omitted(variant) || extract_untagged(&variant.attrs) {
+        // An untagged variant carries no tag, so any payload is fine. A
+        // variant only one direction skips still reaches the other view (and
+        // serde would fail on it there), so only a variant left out of both
+        // is exempt.
+        if variant::is_variant_omitted_both_ways(variant) || extract_untagged(&variant.attrs) {
             continue;
         }
         let syn::Fields::Unnamed(fields) = &variant.fields else {
@@ -294,7 +297,7 @@ fn is_unambiguous_non_object(ty: &syn::Type) -> bool {
             match ident.as_str() {
                 "Vec" | "VecDeque" | "LinkedList" | "BinaryHeap" | "HashSet" | "BTreeSet" => true,
                 "Option" => arg.is_some_and(is_primitive_type),
-                "Box" | "Rc" | "Arc" => arg.is_some_and(is_unambiguous_non_object),
+                "Box" | "Rc" | "Arc" | "Cow" => arg.is_some_and(is_unambiguous_non_object),
                 _ => is_primitive_ident(&ident),
             }
         }

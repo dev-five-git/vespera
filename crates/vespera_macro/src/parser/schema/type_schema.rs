@@ -375,8 +375,10 @@ mod tests {
         let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         match schema_ref {
             SchemaRef::Inline(schema) => {
-                // Fallback: generic object since not "Entity"
+                // Fallback: generic object since not "Entity", nullable (an
+                // unloaded relation serializes as `null`).
                 assert_eq!(schema.schema_type, Some(SchemaType::Object));
+                assert_eq!(schema.nullable, Some(true));
             }
             SchemaRef::Ref(_) => panic!("Expected inline schema"),
         }

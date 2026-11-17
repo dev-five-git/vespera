@@ -72,12 +72,17 @@ pub(in crate::parser) fn path_extractor_parameters(
             .iter()
             .enumerate()
             .map(|(idx, name)| {
-                let schema = tuple
-                    .elems
-                    .get(offset + idx)
-                    .map_or_else(string_path_schema, |elem| {
-                        parse_type_to_schema_ref(elem, known_schemas, struct_definitions)
-                    });
+                let schema =
+                    tuple
+                        .elems
+                        .get(offset + idx)
+                        .map_or_else(string_path_schema, |elem| {
+                            parse_type_to_schema_ref(
+                                segment_type(elem),
+                                known_schemas,
+                                struct_definitions,
+                            )
+                        });
                 path_parameter(name, schema)
             })
             .collect();
@@ -106,7 +111,11 @@ fn path_parameters_from(
             .map(|name| {
                 path_parameter(
                     name,
-                    parse_type_to_schema_ref(element, known_schemas, struct_definitions),
+                    parse_type_to_schema_ref(
+                        segment_type(element),
+                        known_schemas,
+                        struct_definitions,
+                    ),
                 )
             })
             .collect();
@@ -207,7 +216,7 @@ fn path_parameters_from(
     if let [name] = path_params {
         return vec![path_parameter(
             name,
-            parse_type_to_schema_ref(inner_ty, known_schemas, struct_definitions),
+            parse_type_to_schema_ref(segment_type(inner_ty), known_schemas, struct_definitions),
         )];
     }
     path_params
@@ -243,6 +252,13 @@ fn newtype_source(struct_item: &syn::ItemStruct) -> Option<Type> {
     )
 }
 
+/// The type a path segment is read as. serde hands a path segment to an
+/// `Option<T>` as `Some` (`visit_some`), never as `null`, so the `Option`
+/// wrapper is dropped: the segment stays a required `T`.
+fn segment_type(ty: &Type) -> &Type {
+    option_inner(ty).unwrap_or(ty)
+}
+
 /// The schema of a path struct field as serde reads it, with the
 /// `#[schema(..)]` / `#[garde(..)]` rules a validated path enforces.
 fn typed_field_schema(
@@ -250,15 +266,22 @@ fn typed_field_schema(
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) -> SchemaRef {
-    let constraints = extract_schema_constraints(&field.attrs);
+    let mut constraints = extract_schema_constraints(&field.attrs);
+    // A path segment is never `null` (see [`segment_type`]), also when the
+    // field's type or its `#[schema(value_type = ..)]` is an `Option`.
+    let mut field = field.clone();
+    field.ty = segment_type(&field.ty).clone();
+    if let Some(value_type) = constraints.value_type.as_mut() {
+        value_type.0 = segment_type(&value_type.0).clone();
+    }
     let mut schema = field_schema_ref(
-        field,
+        &field,
         &constraints,
         SerdeSide::Deserialize,
         known_schemas,
         struct_definitions,
     );
-    apply_field_rules(&mut schema, field, &constraints);
+    apply_field_rules(&mut schema, &field, &constraints);
     schema
 }
 
@@ -367,7 +390,7 @@ pub(super) fn parse_bare_path_parameter(
     if !path_param_set.contains(param_name) {
         return None;
     }
-    let schema = parse_type_to_schema_ref(ty, known_schemas, struct_definitions);
+    let schema = parse_type_to_schema_ref(segment_type(ty), known_schemas, struct_definitions);
     // A type with no known shape (a custom extractor such as `org: OrgCtx`)
     // says nothing about the segment: keep its `{type: string}` placeholder
     // rather than widening it to any value (`{}`).
@@ -473,6 +496,54 @@ mod tests {
             "path_struct_parameters_validation_rules",
             serde_json::to_string_pretty(&params).unwrap()
         );
+    }
+
+    /// serde reads a path segment through `visit_some` (never `null`): an
+    /// `Option` segment is a required, non-nullable parameter of its inner
+    /// type, in a struct field (also `value_type`), a tuple element, a
+    /// collection element and a bare argument.
+    #[test]
+    fn option_path_segments_are_not_nullable() {
+        let defs = HashMap::from([(
+            "Ids",
+            "pub struct Ids { pub id: Option<u64>, #[schema(value_type = Option<u32>)] pub org: String }",
+        )]);
+        let names = vec!["id".to_string(), "org".to_string()];
+        let ty: syn::Type = syn::parse_quote!(Ids);
+        let mut documented = super::path_extractor_parameters(&ty, &names, &HashSet::new(), &defs);
+        let tuple: syn::Type = syn::parse_quote!((Option<u64>, Option<u32>));
+        documented.extend(super::path_extractor_parameters(
+            &tuple,
+            &names,
+            &HashSet::new(),
+            &HashMap::new(),
+        ));
+        let collection: syn::Type = syn::parse_quote!(Vec<Option<u32>>);
+        documented.extend(super::path_extractor_parameters(
+            &collection,
+            &names,
+            &HashSet::new(),
+            &HashMap::new(),
+        ));
+        let bare: syn::Type = syn::parse_quote!(Option<u64>);
+        let path_param_set: HashSet<&str> = ["id"].into_iter().collect();
+        documented.extend(
+            super::parse_bare_path_parameter(
+                "id",
+                &bare,
+                &path_param_set,
+                &HashSet::new(),
+                &HashMap::new(),
+            )
+            .unwrap_or_default(),
+        );
+        assert_eq!(documented.len(), 7);
+        for param in &documented {
+            assert_eq!(param.required, Some(true), "{}", param.name);
+            let json = serde_json::to_string(&param.schema).unwrap();
+            assert!(!json.contains("null"), "{}: {json}", param.name);
+            assert!(json.contains("\"integer\""), "{}: {json}", param.name);
+        }
     }
 
     #[test]

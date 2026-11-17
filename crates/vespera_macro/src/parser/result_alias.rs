@@ -345,7 +345,7 @@ fn scan_src_definitions(src_dir: &Path, name: &str) -> Rc<[SrcDefinition]> {
         if let Some(file) = parsed_with(path, &needle)
             && !test_scope.file_test_only(path)
         {
-            let module = file_module(path);
+            let module = file_module(path, src_dir);
             let root = module.is_none();
             let mut found = Vec::new();
             collect_aliases(&Cow::Owned(file), module.as_deref(), root, name, &mut found);
@@ -410,6 +410,14 @@ fn find_alias<'a>(
             // unrelated.
             Some(Import::Local) if renames_to(items, name) => return None,
             Some(Import::Local) => imported = import_parent(items, name),
+            // `use crate::models::*;` / `use super::*;` brings a same-named
+            // struct / enum into scope just as a named import does.
+            None if glob_parents(items)
+                .iter()
+                .any(|parent| imported_nominal(name, parent, scope, src_dir)) =>
+            {
+                return None;
+            }
             _ => {}
         }
         if imported == Some(Qualifier::Super)
@@ -493,13 +501,19 @@ fn inline_parent_alias<'a>(
     Some((alias, NextScope::Ready(parent_scope)))
 }
 
-/// The module a source file declares: its stem, the directory name for a
-/// `mod.rs`, nothing for the crate root.
-fn file_module(file: &Path) -> Option<String> {
+/// The module a source file under `src_dir` declares: its stem, the directory
+/// name for a `mod.rs`, nothing for the crate root (`lib.rs` / `main.rs`
+/// directly in `src_dir`). A `main.rs` / `lib.rs` deeper down (`src/admin/
+/// main.rs`, `src/bin/tool/main.rs`) is an ordinary module named by its stem.
+fn file_module(file: &Path, src_dir: &Path) -> Option<String> {
     let stem = file.file_stem()?.to_str()?;
+    let parent = file.parent()?;
+    let at_root = parent
+        .strip_prefix(src_dir)
+        .is_ok_and(|rest| rest.as_os_str().is_empty());
     match stem {
-        "lib" | "main" => None,
-        "mod" => file.parent()?.file_name()?.to_str().map(str::to_owned),
+        "lib" | "main" if at_root => None,
+        "mod" => parent.file_name()?.to_str().map(str::to_owned),
         _ => Some(stem.to_owned()),
     }
 }
@@ -580,6 +594,56 @@ fn declares_nominal(items: &[syn::Item], name: &str) -> bool {
     })
 }
 
+/// The module each glob of this crate among `items` imports from (`crate::
+/// models::*` → `models`, `super::*` → the parent, `crate::*` → the root).
+/// A glob of another crate, or of `self`, names no module of this crate.
+fn glob_parents(items: &[syn::Item]) -> Vec<Qualifier> {
+    fn walk(
+        tree: &syn::UseTree,
+        root: Option<&syn::Ident>,
+        parent: Option<&syn::Ident>,
+        items: &[syn::Item],
+        out: &mut Vec<Qualifier>,
+    ) {
+        match tree {
+            syn::UseTree::Path(path) => walk(
+                &path.tree,
+                root.or(Some(&path.ident)),
+                Some(&path.ident),
+                items,
+                out,
+            ),
+            syn::UseTree::Group(group) => {
+                for tree in &group.items {
+                    walk(tree, root, parent, items, out);
+                }
+            }
+            syn::UseTree::Glob(_) => {
+                let local =
+                    root.is_some_and(|root| is_local_root(root) || declares_module(items, root));
+                if let Some(parent) = parent.filter(|_| local) {
+                    out.extend(match parent.to_string().as_str() {
+                        "crate" => Some(Qualifier::CrateRoot),
+                        "super" => Some(Qualifier::Super),
+                        "self" => None,
+                        _ => Some(Qualifier::Module(
+                            syn::ext::IdentExt::unraw(parent).to_string(),
+                        )),
+                    });
+                }
+            }
+            syn::UseTree::Name(_) | syn::UseTree::Rename(_) => {}
+        }
+    }
+    let mut out = Vec::new();
+    for item in items {
+        if let syn::Item::Use(item_use) = item {
+            walk(&item_use.tree, None, None, items, &mut out);
+        }
+    }
+    out
+}
+
 /// Where a plain `use` among `items` imports `name` from: the module
 /// (`models` for `use crate::models::ApiResponse;`), the crate root (`use
 /// crate::ApiResponse;`) or the parent module (`use super::ApiResponse;`).
@@ -652,7 +716,7 @@ fn imported_nominal(
     let top_level = |root_only: bool| {
         src_dir.is_some_and(|src_dir| {
             file_cache::list_rs_files(src_dir).iter().any(|path| {
-                (!root_only || file_module(path).is_none())
+                (!root_only || file_module(path, src_dir).is_none())
                     && parsed_with(path, name)
                         .is_some_and(|file| declares_nominal(&file.items, name))
             })
@@ -696,7 +760,12 @@ fn nominal_in_module(name: &str, module: &str, scope: &Scope<'_>, src_dir: Optio
         || src_dir.is_some_and(|src_dir| {
             file_cache::list_rs_files(src_dir).iter().any(|path| {
                 parsed_with(path, name).is_some_and(|file| {
-                    walk(&file.items, file_module(path).as_deref(), name, module)
+                    walk(
+                        &file.items,
+                        file_module(path, src_dir).as_deref(),
+                        name,
+                        module,
+                    )
                 })
             })
         })

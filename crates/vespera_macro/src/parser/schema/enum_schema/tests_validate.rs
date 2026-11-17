@@ -59,9 +59,10 @@ fn codec_and_value_type_payloads(#[case] variant: &str, #[case] is_error: bool) 
 #[case::option_array("Option<[u8; 2]>", false)]
 #[case::qualified_self("<T as Trait>::Output", false)]
 #[case::fn_pointer("fn() -> i32", false)]
-// `Cow` is not a wrapper the classifier looks through (a `Cow<T>` may be an
-// object), so it is left to serde.
-#[case::cow_is_not_classified("std::borrow::Cow<'static, str>", false)]
+// `Cow<T>` serializes as `T`: a string payload is rejected, a user type is
+// left to serde (it may be an object).
+#[case::cow_str("std::borrow::Cow<'static, str>", true)]
+#[case::cow_user("std::borrow::Cow<'static, Payload>", false)]
 fn internally_tagged_newtype_payload_classification(#[case] inner: &str, #[case] is_error: bool) {
     let inner: syn::Type = syn::parse_str(inner).unwrap();
     let enum_item: syn::ItemEnum = syn::parse_quote! {
@@ -98,6 +99,25 @@ fn invisible_type_groups_are_classified_by_their_contents() {
         syn::parse_quote!(Option<#inner>)
     };
     assert!(is_unambiguous_non_object(&option_of_group));
+}
+
+/// A variant only one direction skips is still validated: its payload reaches
+/// the other view. Only a variant skipped both ways is exempt.
+#[rstest]
+#[case::skip_serializing_only("#[serde(skip_serializing)]", true)]
+#[case::skip_deserializing_only("#[serde(skip_deserializing)]", true)]
+#[case::skip_both_ways("#[serde(skip_serializing, skip_deserializing)]", false)]
+#[case::skip("#[serde(skip)]", false)]
+fn one_sided_skip_is_still_validated(#[case] attr: &str, #[case] is_error: bool) {
+    let enum_item: syn::ItemEnum = syn::parse_str(&format!(
+        r#"#[serde(tag = "type")] enum Event {{ Ping, {attr} Data(String) }}"#
+    ))
+    .unwrap();
+    assert_eq!(
+        validate_enum_for_schema(&enum_item).is_err(),
+        is_error,
+        "{attr}"
+    );
 }
 
 /// Multi-field tuple variants are a serde compile error under

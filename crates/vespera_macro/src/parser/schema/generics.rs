@@ -5,6 +5,25 @@
 
 use syn::Type;
 
+/// The path of the concrete type `segment` names when it is a generic
+/// parameter (`T` with no arguments) and that type is a plain path.
+fn concrete_param_path(
+    segment: &syn::PathSegment,
+    generic_params: &[String],
+    concrete_types: &[&Type],
+) -> Option<syn::Path> {
+    if !matches!(segment.arguments, syn::PathArguments::None) {
+        return None;
+    }
+    let index = generic_params
+        .iter()
+        .position(|param| segment.ident == *param)?;
+    match concrete_types.get(index)? {
+        Type::Path(concrete) if concrete.qself.is_none() => Some(concrete.path.clone()),
+        _ => None,
+    }
+}
+
 /// Substitutes generic type parameters with concrete types in a given type.
 ///
 /// This function recursively walks through the type tree and replaces any
@@ -18,6 +37,9 @@ use syn::Type;
 /// # Examples
 /// Given `Vec<T>` with params `["T"]` and concrete types `[String]`,
 /// returns `Vec<String>`.
+// One arm per `syn::Type` shape; the path arm is kept whole with its generic
+// argument, qualified-self and projection handling.
+#[allow(clippy::too_many_lines)]
 pub fn substitute_type(ty: &Type, generic_params: &[String], concrete_types: &[&Type]) -> Type {
     match ty {
         Type::Path(type_path) => {
@@ -42,9 +64,20 @@ pub fn substitute_type(ty: &Type, generic_params: &[String], concrete_types: &[&
             }
 
             // For types with generic arguments (e.g., Vec<T>, Option<T>, HashMap<K, V>),
-            // recursively substitute the type arguments
+            // recursively substitute the type arguments. A qualified self type
+            // (`<T as Tr>::Out`) and an associated-type binding (`Iterator<Item =
+            // T>`) carry types too; a leading parameter of a projection (`T::Out`)
+            // becomes the concrete type's path.
+            let mut segments: Vec<syn::PathSegment> = path.segments.iter().cloned().collect();
+            if path.segments.len() > 1
+                && type_path.qself.is_none()
+                && let Some(concrete_path) =
+                    concrete_param_path(&path.segments[0], generic_params, concrete_types)
+            {
+                segments.splice(0..1, concrete_path.segments.iter().cloned());
+            }
             let mut new_segments = syn::punctuated::Punctuated::new();
-            for segment in &path.segments {
+            for segment in &segments {
                 let new_arguments = match &segment.arguments {
                     syn::PathArguments::AngleBracketed(args) => {
                         let mut new_args = syn::punctuated::Punctuated::new();
@@ -53,6 +86,15 @@ pub fn substitute_type(ty: &Type, generic_params: &[String], concrete_types: &[&
                                 syn::GenericArgument::Type(inner_ty) => syn::GenericArgument::Type(
                                     substitute_type(inner_ty, generic_params, concrete_types),
                                 ),
+                                syn::GenericArgument::AssocType(binding) => {
+                                    let mut binding = binding.clone();
+                                    binding.ty = substitute_type(
+                                        &binding.ty,
+                                        generic_params,
+                                        concrete_types,
+                                    );
+                                    syn::GenericArgument::AssocType(binding)
+                                }
                                 other => other.clone(),
                             };
                             new_args.push(new_arg);
@@ -74,6 +116,10 @@ pub fn substitute_type(ty: &Type, generic_params: &[String], concrete_types: &[&
             }
 
             let mut new_type_path = type_path.clone();
+            new_type_path.qself = type_path.qself.as_ref().map(|qself| syn::QSelf {
+                ty: Box::new(substitute_type(&qself.ty, generic_params, concrete_types)),
+                ..qself.clone()
+            });
             new_type_path.path.segments = new_segments;
             Type::Path(new_type_path)
         }
@@ -135,6 +181,25 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+
+    /// A projection and an associated-type binding carry the parameter too:
+    /// `<T as Tr>::Out`, `Source<Item = T>`, and `T::Out` (the concrete type's
+    /// path leads it).
+    #[rstest]
+    #[case::qualified_self("<T as Tr>::Out", "<Foo as Tr>::Out")]
+    #[case::assoc_binding("Source<Item = T>", "Source<Item = Foo>")]
+    #[case::leading_param("T::Out", "Foo::Out")]
+    #[case::unrelated_leading("Other::Out", "Other::Out")]
+    fn substitutes_projections_and_bindings(#[case] ty: &str, #[case] expected: &str) {
+        let ty: Type = syn::parse_str(ty).unwrap();
+        let foo: Type = syn::parse_str("Foo").unwrap();
+        let substituted = substitute_type(&ty, &["T".to_string()], &[&foo]);
+        let expected: Type = syn::parse_str(expected).unwrap();
+        assert_eq!(
+            quote::ToTokens::to_token_stream(&substituted).to_string(),
+            quote::ToTokens::to_token_stream(&expected).to_string()
+        );
+    }
 
     #[rstest]
     #[case("$invalid", "String")]
