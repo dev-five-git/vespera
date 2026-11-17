@@ -421,6 +421,44 @@ fn same_named_struct_stops_crate_wide_lookup(#[case] handler: &str, #[case] expa
     );
 }
 
+/// A qualified return type naming a module (or the crate root) that declares
+/// a struct of that name is that struct: the crate-wide alias of the same
+/// name in another module is not expanded. A qualifier naming the alias's own
+/// module still expands it.
+#[rstest]
+#[case::module_struct("-> models::ApiResponse<u8>", false)]
+#[case::crate_module_struct("-> crate::models::ApiResponse<u8>", false)]
+#[case::crate_root_struct("-> crate::ApiResponse<u8>", false)]
+#[case::module_alias("-> legacy::ApiResponse<u8>", true)]
+fn same_named_struct_stops_qualified_lookup(#[case] ret: &str, #[case] expands: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path();
+    std::fs::write(
+        src.join("lib.rs"),
+        "mod legacy; mod models; pub struct ApiResponse<T>(T);",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("legacy.rs"),
+        "pub type ApiResponse<T> = Result<Json<T>, LegacyError>;",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("models.rs"),
+        "pub struct ApiResponse<T> { data: T }",
+    )
+    .unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    // The handler's file declares the modules it names (a qualifier of a
+    // module the file does not declare is another crate's path).
+    let file: syn::File = syn::parse_str("mod legacy; mod models; pub fn unrelated() {}").unwrap();
+    let mut sig: syn::Signature = syn::parse_str(&format!("fn h() {ret}")).unwrap();
+    assert_eq!(
+        expand_return_type_alias(&mut sig, None, Some(&file), Some(src)),
+        expands
+    );
+}
+
 /// The local modules the globs of `items` name: `crate::m::*` → `m`, `super::*`
 /// → the parent, `crate::*` → the root; `self` and another crate name none, and
 /// a glob inside a group counts.

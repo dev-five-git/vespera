@@ -214,17 +214,38 @@ fn is_u8(ty: &Type) -> bool {
 /// IntoResponse` (any `impl Trait`), a type-erased `Response`, axum's
 /// `ErrorResponse`, a `Redirect` and `NoContent` (no body at all), and a bare
 /// `Body` (axum sets no `Content-Type` for it, so none can be claimed). They
-/// are documented by description only.
-fn is_opaque_body(ty: &Type) -> bool {
+/// are documented by description only. A user type of one of those names (a
+/// known schema or a struct definition) is not axum's, so it is not opaque.
+fn is_opaque_body(
+    ty: &Type,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
+) -> bool {
     match ty {
         Type::ImplTrait(_) => true,
-        Type::Path(type_path) => type_path.path.segments.last().is_some_and(|seg| {
-            ["Response", "Redirect", "ErrorResponse", "NoContent", "Body"]
-                .iter()
-                .any(|ident| seg.ident == ident)
-        }),
+        Type::Path(type_path) => {
+            type_path.path.segments.last().is_some_and(|seg| {
+                ["Response", "Redirect", "ErrorResponse", "NoContent", "Body"]
+                    .iter()
+                    .any(|ident| seg.ident == ident)
+            }) && !names_user_type(ty, known_schemas, struct_definitions)
+        }
         _ => false,
     }
+}
+
+/// Whether `ty`'s last path segment names a type this crate defines (a known
+/// `Schema` type or a struct definition): such a user type shadows an axum
+/// wrapper of the same name, so the ident alone does not identify the wrapper.
+fn names_user_type(
+    ty: &Type,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
+) -> bool {
+    crate::schema_macro::type_utils::last_path_segment(ty).is_some_and(|segment| {
+        let ident = segment.ident.to_string();
+        known_schemas.contains(ident.as_str()) || struct_definitions.contains_key(ident.as_str())
+    })
 }
 
 /// The last path segment's ident of `ty`, if it is a path.
@@ -238,8 +259,12 @@ fn last_ident_is(ty: &Type, ident: &str) -> bool {
 /// bare strings are `text/plain`, `Html<T>` is `text/html`, `Sse<S>` is
 /// `text/event-stream`, raw bytes are `application/octet-stream`; `Json<T>`
 /// and structs are `application/json`.
-fn body_content_type(ty: &Type) -> Option<&'static str> {
-    if is_opaque_body(ty) {
+fn body_content_type(
+    ty: &Type,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
+) -> Option<&'static str> {
+    if is_opaque_body(ty, known_schemas, struct_definitions) {
         None
     } else if is_string_like(ty) {
         Some(TEXT_PLAIN)
@@ -358,7 +383,7 @@ fn response_content(
     }
     content_for_type(
         unwrap_json(body),
-        body_content_type(body),
+        body_content_type(body, known_schemas, struct_definitions),
         known_schemas,
         struct_definitions,
     )
@@ -367,10 +392,17 @@ fn response_content(
 /// The status key of a successful response: `204` for axum's `NoContent`,
 /// the `3XX` range for a `Redirect` (its constructor — `to` 303, `temporary`
 /// 307, `permanent` 308 — is not visible in the signature), else `200`.
-fn success_key(ty: &Type) -> &'static str {
+fn success_key(
+    ty: &Type,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
+) -> &'static str {
+    let axum_ident = |body: &Type, ident: &str| {
+        last_ident_is(body, ident) && !names_user_type(body, known_schemas, struct_definitions)
+    };
     match body_element(ty) {
-        Some(body) if last_ident_is(body, "NoContent") => "204",
-        Some(body) if last_ident_is(body, "Redirect") => "3XX",
+        Some(body) if axum_ident(body, "NoContent") => "204",
+        Some(body) if axum_ident(body, "Redirect") => "3XX",
         _ => "200",
     }
 }
@@ -387,7 +419,7 @@ fn insert_success_response(
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) {
-    let key = success_key(ty);
+    let key = success_key(ty, known_schemas, struct_definitions);
     responses.insert(
         key.to_string(),
         Response {
@@ -449,7 +481,7 @@ fn insert_error_response(
     if is_infallible(err_ty) {
         return;
     }
-    let key = match success_key(err_ty) {
+    let key = match success_key(err_ty, known_schemas, struct_definitions) {
         "200" => "400",
         key => key,
     };

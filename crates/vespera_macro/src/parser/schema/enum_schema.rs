@@ -281,8 +281,9 @@ pub fn internally_tagged_non_object_message(tag: &str, variant: &str, inner: &st
 
 /// `true` only when `ty` serializes as a non-object value no matter what any
 /// user type is called: Rust primitives / `str` / `String`, arrays, slices,
-/// non-empty tuples, std sequences and sets, `Option<primitive>`, and those
-/// behind `&`, `Box`, `Rc` or `Arc`.
+/// non-empty tuples, std sequences and sets, and `Option`, `Box`, `Rc`, `Arc`
+/// or `Cow` of such a type (`Option<Vec<i32>>` included: a `None` payload is
+/// rejected like the bare type), and those behind `&`.
 fn is_unambiguous_non_object(ty: &syn::Type) -> bool {
     match ty {
         syn::Type::Array(_) | syn::Type::Slice(_) => true,

@@ -89,7 +89,10 @@ fn query_inner(ty: &Type) -> Option<(&Type, bool)> {
 /// form, explode: true` an object schema's properties are the query keys.
 /// A tuple struct of several fields cannot be read from a query string's
 /// key/value pairs, so it documents nothing. A struct read through `from =
-/// "E"` / `transparent`, or a plain newtype, documents its source type.
+/// "E"` / `transparent` documents its source type when that source is a known
+/// non-struct, non-primitive type (e.g. an enum). A plain newtype is read
+/// through its field (see [`parse_query_struct_to_parameters`]); a newtype
+/// over a non-struct, like a primitive source, documents nothing.
 pub(super) fn parse_query_extractor(
     param_name: &str,
     ty: &Type,
@@ -146,6 +149,7 @@ pub(super) fn parse_query_struct_to_parameters(
 ) -> Option<Vec<Parameter>> {
     let mut parameters = Vec::new();
     let mut visiting = Vec::new();
+    let mut budget = MAX_FLATTEN_NODES;
     collect_query_struct_parameters(
         ty,
         false,
@@ -153,6 +157,7 @@ pub(super) fn parse_query_struct_to_parameters(
         struct_definitions,
         &mut visiting,
         &mut parameters,
+        &mut budget,
     );
     (!parameters.is_empty()).then_some(parameters)
 }
@@ -161,6 +166,11 @@ pub(super) fn parse_query_struct_to_parameters(
 /// struct whose flattened instances grow without repeating stops here.
 const MAX_FLATTEN_DEPTH: usize = 32;
 
+/// Total struct nodes one `Query<T>` walk may visit. Each flattened field
+/// recurses into its own branch, so several growing flatten fields multiply
+/// (two fields of depth 32 visit 2^33 instances) before the depth bound helps.
+const MAX_FLATTEN_NODES: usize = 4096;
+
 fn collect_query_struct_parameters(
     ty: &Type,
     force_optional: bool,
@@ -168,6 +178,7 @@ fn collect_query_struct_parameters(
     struct_definitions: &HashMap<&str, &str>,
     visiting: &mut Vec<String>,
     parameters: &mut Vec<Parameter>,
+    budget: &mut usize,
 ) {
     // A (boxed) struct that flattens itself would recurse forever. Keyed by
     // the resolved definition (`b::Foo` / `a::Foo`), not the bare ident: two
@@ -178,6 +189,10 @@ fn collect_query_struct_parameters(
     let Some((struct_key, struct_item)) = struct_definition_keyed(ty, struct_definitions) else {
         return;
     };
+    if *budget == 0 {
+        return;
+    }
+    *budget -= 1;
     let instance_key = format!("{struct_key} {}", ty.to_token_stream());
     if visiting.contains(&instance_key) || visiting.len() >= MAX_FLATTEN_DEPTH {
         return;
@@ -198,6 +213,7 @@ fn collect_query_struct_parameters(
             struct_definitions,
             visiting,
             parameters,
+            budget,
         );
     }
     if source.is_some() || !matches!(struct_item.fields, syn::Fields::Named(_)) {
@@ -225,6 +241,7 @@ fn collect_query_struct_parameters(
                 struct_definitions,
                 visiting,
                 parameters,
+                budget,
             );
             continue;
         }
@@ -447,6 +464,37 @@ mod tests {
         assert_ne!(params.len(), 0);
         assert!(params.len() <= MAX_FLATTEN_DEPTH);
         assert!(params.iter().all(|param| param.0 == "own"));
+    }
+
+    /// Two growing flatten fields branch at every level: without the node
+    /// budget the walk visits 2^depth instances. It must stop and return.
+    #[test]
+    fn two_growing_flatten_fields_stay_within_the_node_budget() {
+        let defs = [(
+            "G",
+            "pub struct G<T> { pub own: T, #[serde(flatten)] pub a: G<Vec<T>>, #[serde(flatten)] pub b: G<Vec<T>> }",
+        )];
+        let params = query_shapes("G<u8>", &defs);
+        assert_ne!(params.len(), 0);
+        assert!(params.len() <= MAX_FLATTEN_NODES);
+        assert!(params.iter().all(|param| param.0 == "own"));
+    }
+
+    /// A plain newtype over an enum documents nothing at the top level
+    /// (its field is not a struct), while the bare enum is documented.
+    #[test]
+    fn newtype_over_a_non_struct_documents_nothing() {
+        let struct_definitions: HashMap<&str, &str> =
+            HashMap::from([("Id", "pub struct Id(pub Status);")]);
+        let known_schemas: HashSet<&str> = HashSet::from(["Status"]);
+        let newtype: Type = syn::parse_str("Query<Id>").unwrap();
+        assert!(
+            parse_query_extractor("id", &newtype, &known_schemas, &struct_definitions).is_none()
+        );
+        let bare: Type = syn::parse_str("Query<Status>").unwrap();
+        let params = parse_query_extractor("status", &bare, &known_schemas, &struct_definitions)
+            .expect("the enum is documented");
+        assert_eq!(params[0].name, "status");
     }
 
     #[test]

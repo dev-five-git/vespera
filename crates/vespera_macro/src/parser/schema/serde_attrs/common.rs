@@ -230,7 +230,16 @@ pub fn extract_schema_ref_override(attrs: &[syn::Attribute]) -> Option<(String, 
             ref_name.get_or_insert(name);
             return Ok(true);
         }
-        nullable |= meta.path.is_ident("nullable");
+        if meta.path.is_ident("nullable") {
+            // Bare `nullable` is true; `nullable = <bool>` takes its value, so
+            // `nullable = false` is not nullable.
+            let value = match meta.value() {
+                Ok(value) => value.parse::<syn::LitBool>()?.value,
+                Err(_) => true,
+            };
+            nullable |= value;
+            return Ok(true);
+        }
         Ok(false)
     });
     ref_name.map(|name| (name, nullable))
@@ -413,6 +422,15 @@ mod tests {
     #[case::none(r#"#[schema(name = "Dto")]"#, None)]
     #[case::nullable_separate_attr(
         r#"#[schema(ref = "User")] #[schema(nullable)]"#,
+        Some(("User", true))
+    )]
+    #[case::nullable_false_is_not_nullable(
+        r#"#[schema(ref = "User", nullable = false)]"#,
+        Some(("User", false))
+    )]
+    #[case::nullable_true_value(r#"#[schema(nullable = true, ref = "User")]"#, Some(("User", true)))]
+    #[case::nullable_false_then_bare(
+        r#"#[schema(ref = "User", nullable = false)] #[schema(nullable)]"#,
         Some(("User", true))
     )]
     #[case::after_value_type(

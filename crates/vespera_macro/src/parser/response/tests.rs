@@ -746,6 +746,33 @@ fn opaque_and_raw_bodies(
     assert_eq!(media_shape(&responses, status), expected);
 }
 
+/// A user struct named like an axum wrapper (`Body`, `Redirect`, `NoContent`)
+/// is that struct: its JSON body is documented under `200`, and it is not
+/// taken for the opaque / no-body wrapper of the same name.
+#[rstest]
+#[case::body("-> Body")]
+#[case::redirect("-> Redirect")]
+#[case::no_content("-> NoContent")]
+fn user_types_named_like_axum_wrappers_are_documented(#[case] return_type: &str) {
+    let known_schemas: HashSet<&str> = HashSet::from(["Body", "Redirect", "NoContent"]);
+    let struct_definitions: HashMap<&str, &str> = HashMap::from([
+        ("Body", "pub struct Body { pub id: u32 }"),
+        ("Redirect", "pub struct Redirect { pub to: String }"),
+        ("NoContent", "pub struct NoContent { pub n: u8 }"),
+    ]);
+    let responses = parse_return_type(
+        &parse_return_type_str(return_type),
+        &known_schemas,
+        &struct_definitions,
+    );
+    assert_eq!(responses.keys().collect::<Vec<_>>(), vec!["200"]);
+    let content = responses["200"]
+        .content
+        .as_ref()
+        .expect("the struct body is documented");
+    assert!(content.contains_key("application/json"));
+}
+
 #[rstest]
 #[case::reference_to_slice("&'static [i32]")]
 #[case::tuple("(i32, i32)")]

@@ -184,6 +184,44 @@ fn garde_rules_reflect_into_field_schema(#[case] name: &str, #[case] field_src: 
     insta::assert_snapshot!(format!("garde_rules_{name}"), field_json(field_src));
 }
 
+/// `(minimum, maximum)` of the `value` property of `struct S { <field_src> }`.
+fn numeric_bounds(field_src: &str) -> (Option<f64>, Option<f64>) {
+    let struct_item: syn::ItemStruct =
+        syn::parse_str(&format!("struct S {{ {field_src} }}")).unwrap();
+    let known: HashSet<String> = HashSet::new();
+    let schema = parse_struct_to_schema(&struct_item, &known, &HashMap::<String, String>::new());
+    let SchemaRef::Inline(property) = &schema.properties.as_ref().unwrap()["value"] else {
+        panic!("inline numeric property");
+    };
+    (property.minimum, property.maximum)
+}
+
+/// Several `range` rules all apply at runtime, so the schema documents the
+/// tightest literal bound; a non-literal bound leaves the earlier one alone.
+#[rstest]
+#[case::repeated_minimum_keeps_larger(
+    "#[garde(range(min = 18))] #[garde(range(min = 5))] value: i32",
+    (Some(18.0), None)
+)]
+#[case::repeated_maximum_keeps_smaller(
+    "#[garde(range(max = 10))] #[garde(range(max = 20))] value: i32",
+    (None, Some(10.0))
+)]
+#[case::non_literal_keeps_earlier_minimum(
+    "#[garde(range(min = 18))] #[garde(range(min = LOW))] value: i32",
+    (Some(18.0), None)
+)]
+#[case::non_literal_then_literal(
+    "#[garde(range(min = LOW))] #[garde(range(min = 18, max = 30))] value: i32",
+    (Some(18.0), Some(30.0))
+)]
+fn repeated_range_rules_document_the_tightest_bound(
+    #[case] field_src: &str,
+    #[case] expected: (Option<f64>, Option<f64>),
+) {
+    assert_eq!(numeric_bounds(field_src), expected);
+}
+
 #[rstest]
 #[case::lower_raises(Some(1), None, Some(5), true, Some(5))]
 #[case::lower_keeps_tighter(Some(9), None, Some(5), true, Some(9))]
