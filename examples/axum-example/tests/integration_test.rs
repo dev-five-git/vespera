@@ -19,7 +19,8 @@ async fn test_health_endpoint() {
 }
 
 /// `/memos/{id}/rel` loads relations from the database; a failed query is
-/// answered `500` with the error text instead of panicking the handler.
+/// answered `500` with a generic body (the database's text is logged, not
+/// sent) instead of panicking the handler.
 #[tokio::test]
 async fn test_memo_rel_query_failure_is_a_500() {
     let server = TestServer::new(create_app().await);
@@ -27,10 +28,11 @@ async fn test_memo_rel_query_failure_is_a_500() {
     let response = server.get("/memos/1/rel").await;
 
     response.assert_status(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-    // The database's own error text, not a placeholder: the example's
-    // in-memory database has no `user` table.
+    // The example's in-memory database has no `user` table: its error text
+    // must not reach the caller.
     let body = response.text();
-    assert!(body.contains("no such table: user"), "{body}");
+    assert_eq!(body, "internal error");
+    assert!(!body.contains("no such table"), "{body}");
 }
 
 /// A `macro_rules!`-generated route is mounted (its file never spells the

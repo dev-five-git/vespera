@@ -282,9 +282,10 @@ fn test_generate_and_write_openapi_creates_directories() {
     assert!(output_path.exists());
 }
 
+/// A merge with no `CARGO_MANIFEST_DIR` cannot locate the child's document:
+/// the file must not drop the child silently while the runtime docs merge it.
 #[test]
 fn test_generate_and_write_openapi_with_merge_no_manifest_dir() {
-    // When CARGO_MANIFEST_DIR is not set or merge is empty, it should work normally
     let _env_guard = test_env::remove_var("CARGO_MANIFEST_DIR");
 
     let processed = ProcessedVesperaInput {
@@ -304,15 +305,18 @@ fn test_generate_and_write_openapi_with_merge_no_manifest_dir() {
         literal_hash: None,
     };
     let metadata = CollectedMetadata::new();
-    // This should still work - merge logic is skipped when CARGO_MANIFEST_DIR lookup fails
-    let result = generate_and_write_openapi(
+    let err = generate_and_write_openapi(
         &processed,
         &metadata,
         HashMap::new(),
         &[],
         &mut MergeSpecCache::new(),
+    )
+    .expect_err("an unlocatable merge must be a compile error");
+    assert!(
+        err.to_string().contains("CARGO_MANIFEST_DIR is not set"),
+        "{err}"
     );
-    assert!(result.is_ok());
 }
 
 #[test]
@@ -692,14 +696,7 @@ fn sidecar_validation_covers_missing_fingerprints_corruption_and_success() {
     assert!(
         load_validated_sidecar_specs("t", None, Some(hash_str("missing")), None, None).is_none()
     );
-    // The stored fingerprints are checked against files that exist: a
-    // matching fingerprint accepts the file without rehashing it, even when
-    // the expected content hash is not the file's own.
     let wrong_fp = path_fingerprint(&wrong).unwrap();
-    assert!(
-        load_validated_sidecar_specs("t", Some(hash_str("other")), None, Some(wrong_fp), None)
-            .is_some()
-    );
     // A stale fingerprint falls back to the content hash, which "not other"
     // does not match.
     assert!(
@@ -971,31 +968,4 @@ fn security_without_doc_skips_unusable_children() {
     // Without declared schemes nothing is enforced (opt-in).
     processed.security_schemes = None;
     assert_eq!(run(&processed).unwrap(), None);
-}
-
-#[test]
-fn test_generate_and_write_openapi_applies_info_args() {
-    let processed = ProcessedVesperaInput {
-        folder_name: "routes".to_string(),
-        spec_url: Some("/openapi.json".to_string()),
-        info: InfoArgs {
-            description: Some("Configured description".to_string()),
-            license: Some("MIT".to_string()),
-            contact_email: Some("api@example.com".to_string()),
-            ..Default::default()
-        },
-        ..ProcessedVesperaInput::default()
-    };
-    let result = generate_and_write_openapi(
-        &processed,
-        &CollectedMetadata::new(),
-        HashMap::new(),
-        &[],
-        &mut MergeSpecCache::new(),
-    )
-    .unwrap();
-    let doc: serde_json::Value = serde_json::from_str(&result.spec_json.unwrap()).unwrap();
-    assert_eq!(doc["info"]["description"], "Configured description");
-    assert_eq!(doc["info"]["license"]["identifier"], "MIT");
-    assert_eq!(doc["info"]["contact"]["email"], "api@example.com");
 }

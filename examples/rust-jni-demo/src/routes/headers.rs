@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 
 use vespera::axum::{
     Extension, Json,
-    extract::ConnectInfo,
+    extract::{ConnectInfo, RawQuery},
     http::{HeaderMap, HeaderValue, header, uri::Scheme},
     response::{IntoResponse, Response},
 };
@@ -49,15 +49,29 @@ fn quoted_filename(name: &[u8]) -> Vec<u8> {
 }
 
 /// The client address and scheme the Java proxy forwarded on the wire
-/// (`remote_addr` / `scheme`), as `"<scheme> <ip:port>"`.
+/// (`remote_addr` / `scheme`), as `"<scheme> <ip:port>"`. Both are optional
+/// on the wire, so an absent one reads `none` (a missing `ConnectInfo` would
+/// otherwise fail the request with a `500`).
 #[allow(clippy::unused_async)]
 #[vespera::route(get, path = "/client", tags = ["headers"])]
 pub async fn client(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     scheme: Option<Extension<Scheme>>,
 ) -> String {
     let scheme = scheme.map_or_else(|| "none".to_owned(), |Extension(s)| s.to_string());
+    let addr = connect_info.map_or_else(
+        || "none".to_owned(),
+        |Extension(ConnectInfo(addr))| addr.to_string(),
+    );
     format!("{scheme} {addr}")
+}
+
+/// The raw query string the Java proxy forwarded (the wire `query` is joined
+/// onto the path), without the leading `?`; `none` when there is none.
+#[allow(clippy::unused_async)]
+#[vespera::route(get, path = "/query-string", tags = ["headers"])]
+pub async fn query_string(RawQuery(query): RawQuery) -> String {
+    query.unwrap_or_else(|| "none".to_owned())
 }
 
 /// The trusted principal the Java proxy forwarded in the `principal` wire

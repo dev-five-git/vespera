@@ -290,7 +290,7 @@ mod tests {
         let envelope = RequestEnvelope {
             principal: None,
             method: "GET".into(),
-            path: "/health".into(),
+            path: "/headers".into(),
             query: String::new(),
             headers: HashMap::from([
                 ("cookie".into(), "session=abc123".into()),
@@ -299,7 +299,13 @@ mod tests {
             body: String::new(),
         };
         let json = dispatch(create_app(), &envelope).await;
-        assert_eq!(parse(&json)["status"], 200);
+        let v = parse(&json);
+        assert_eq!(v["status"], 200);
+        // `/headers` lists the names it received: both forwarded headers arrive.
+        assert_eq!(
+            parse(v["body"].as_str().unwrap()),
+            serde_json::json!(["cookie", "x-custom"])
+        );
     }
 
     #[tokio::test]
@@ -307,13 +313,26 @@ mod tests {
         let envelope = RequestEnvelope {
             principal: None,
             method: "GET".into(),
-            path: "/health".into(),
+            path: "/headers/query-string".into(),
             query: "foo=bar&baz=1".into(),
             headers: HashMap::new(),
             body: String::new(),
         };
         let json = dispatch(create_app(), &envelope).await;
-        assert_eq!(parse(&json)["status"], 200);
+        let v = parse(&json);
+        assert_eq!(v["status"], 200);
+        // The route echoes the query it received, byte for byte.
+        assert_eq!(v["body"], "foo=bar&baz=1");
+    }
+
+    /// The wire `remote_addr` / `scheme` are optional: a request without them
+    /// is answered, with `none` where they would be.
+    #[tokio::test]
+    async fn client_route_answers_without_a_remote_address() {
+        let json = dispatch(create_app(), &req("GET", "/headers/client", "")).await;
+        let v = parse(&json);
+        assert_eq!(v["status"], 200);
+        assert_eq!(v["body"], "none none");
     }
 
     // ── Coverage: inprocess::dispatch_typed ───────────────────────

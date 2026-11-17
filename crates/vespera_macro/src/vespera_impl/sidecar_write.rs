@@ -50,7 +50,11 @@ pub(super) fn write_atomic(path: &Path, content: &str) -> io::Result<()> {
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::write(&temp, content)?;
+    if let Err(err) = std::fs::write(&temp, content) {
+        // A partial write (disk full, permissions) must not leave the temp file.
+        let _ = std::fs::remove_file(&temp);
+        return Err(err);
+    }
     if let Err(err) = std::fs::rename(&temp, path) {
         let _ = std::fs::remove_file(&temp);
         // A concurrent writer installed the same bytes first (Windows refuses

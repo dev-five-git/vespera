@@ -35,8 +35,10 @@ use crate::cron_impl::{CronArgs, StoredCronInfo, validate_cron_fn};
 use crate::metadata::CronMetadata;
 use crate::schema_macro::file_cache;
 
-/// Substring every `#[cron("…")]` / `#[vespera::cron("…")]` attribute contains.
-const CRON_ATTR_MARKER: &str = "cron(";
+/// Substring every `#[cron(..)]` / `#[vespera::cron(..)]` attribute contains.
+/// Only a pre-filter: `#[cron ("..")]` is valid Rust too, so the marker is the
+/// name alone and the parse decides what is a job.
+const CRON_ATTR_MARKER: &str = "cron";
 
 /// Build the cron job list for one `vespera!` expansion: the storage entries
 /// first (unchanged order), then any job the module-tree scan finds that the
@@ -48,7 +50,7 @@ pub(super) fn discover_cron_jobs(
 ) -> Result<Vec<CronMetadata>, String> {
     let mut canonical_paths = HashMap::new();
     // Most projects declare no `#[vespera::cron]` jobs: without stored jobs
-    // or a `cron(` attribute anywhere under `src/` (or, for a call site
+    // or a `cron` attribute anywhere under `src/` (or, for a call site
     // outside `src/`, anywhere in the call site's directory, where its
     // module tree lives — see `outside_src_tree`), nothing is parsed.
     let tree = src_dir

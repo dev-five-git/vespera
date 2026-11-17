@@ -289,9 +289,11 @@ fn current_crate_cron_jobs() -> syn::Result<Vec<crate::metadata::CronMetadata>> 
     } else {
         std::borrow::Cow::Borrowed(&[][..])
     };
+    // The module-tree scan places jobs too, so it is off with the feature.
     let src_dir = crate::env_access::var("CARGO_MANIFEST_DIR")
         .ok()
-        .map(|dir| PathBuf::from(dir).join("src"));
+        .map(|dir| PathBuf::from(dir).join("src"))
+        .filter(|_| cfg!(feature = "cron"));
     let call_site = Span::call_site().local_file();
     discover_cron_jobs(&storage, src_dir.as_deref(), call_site.as_deref())
         .map_err(|message| syn::Error::new(Span::call_site(), message))

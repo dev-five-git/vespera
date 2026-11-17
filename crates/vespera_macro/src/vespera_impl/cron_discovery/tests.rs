@@ -395,6 +395,29 @@ fn storage_entries_without_src_dir_keep_their_derived_paths() {
 /// Jobs in modules rustc expands after `vespera!` are recovered from the
 /// module tree (`#[path]` modules included); storage-known, gated, private,
 /// non-literal and unreachable ones are not.
+/// `#[cron ("..")]` is valid Rust: its file is still scanned, so the job
+/// is found although no file spells `cron(` with no space.
+#[test]
+fn scan_finds_a_cron_attribute_with_a_space_before_its_parenthesis() {
+    let krate = crate_with(&[
+        ("lib.rs", "mod late;\npub fn create_app() {}\n"),
+        (
+            "late.rs",
+            "#[cron (\"1 * * * * *\")]\npub async fn tick() {}\n",
+        ),
+    ]);
+    let src = krate.path().join("src");
+    let jobs = discover(&[], Some(&src), None);
+    assert_eq!(
+        summary(&jobs),
+        vec![(
+            "late".to_owned(),
+            "tick".to_owned(),
+            "1 * * * * *".to_owned()
+        )]
+    );
+}
+
 #[test]
 fn scan_recovers_unexpanded_jobs_from_the_module_tree() {
     let krate = crate_with(&[

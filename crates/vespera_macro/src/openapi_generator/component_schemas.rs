@@ -567,7 +567,7 @@ fn struct_default_file<'a>(
     struct_file_index: &HashMap<String, &str>,
 ) -> Option<&'a syn::File> {
     if let Some(identity) = struct_meta.source_identity.as_deref() {
-        return identity_file(identity).and_then(|path| file_cache.get(path));
+        return identity_file(identity).and_then(|path| file_for_path(file_cache, path));
     }
     struct_file_index
         .get(&struct_meta.name)
@@ -584,6 +584,26 @@ fn struct_default_file<'a>(
 fn identity_file(identity: &str) -> Option<&str> {
     let (base, _position) = identity.rsplit_once('@')?;
     base.rsplit_once("::").map(|(file, _ident)| file)
+}
+
+/// The cached file AST at `path`. The identity spells its file as the
+/// compiler reported it (cwd-relative, `\` on Windows, `.` components), while
+/// `file_cache` is keyed by the collector's normalized route paths, so an
+/// exact miss falls back to the entry with the same comparison key
+/// ([`normalize_path_key`]). The exact lookup stays the fast path.
+fn file_for_path<'a>(
+    file_cache: &'a HashMap<String, syn::File>,
+    path: &str,
+) -> Option<&'a syn::File> {
+    if let Some(ast) = file_cache.get(path) {
+        return Some(ast);
+    }
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let wanted = crate::file_utils::normalize_path_key(path, &cwd);
+    file_cache
+        .iter()
+        .find(|(key, _)| crate::file_utils::normalize_path_key(key, &cwd) == wanted)
+        .map(|(_, ast)| ast)
 }
 
 /// Parse struct and enum definitions into `OpenAPI` component schemas.
