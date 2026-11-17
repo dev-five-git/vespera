@@ -124,26 +124,56 @@ impl Timer {
     }
 }
 
-/// The shared timer, its thread started on first use and retried on every
-/// call until it runs (see [`Timer::ensure_running`]).
+/// The shared timer (created on first use; its thread is started by
+/// [`sleep`], see [`Timer::ensure_running`]).
 fn timer() -> &'static Timer {
     static TIMER: OnceLock<&'static Timer> = OnceLock::new();
-    let timer = *TIMER.get_or_init(|| -> &'static Timer { Box::leak(Box::default()) });
-    timer.ensure_running(|timer| {
-        std::thread::Builder::new()
-            .name("vespera-cron-timer".to_owned())
-            .spawn(move || timer.run())
-            .map(drop)
-    });
-    timer
+    TIMER.get_or_init(|| -> &'static Timer { Box::leak(Box::default()) })
 }
+
+/// Start the process-wide timer thread.
+fn spawn_timer_thread(timer: &'static Timer) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("vespera-cron-timer".to_owned())
+        .spawn(move || timer.run())
+        .map(drop)
+}
+
+/// Longest blocking wait between two attempts to start the timer thread.
+const RETRY_SLICE: Duration = Duration::from_millis(50);
 
 /// Resolve after `duration`, without needing a Tokio time driver.
 pub(super) fn sleep(duration: Duration) -> impl Future<Output = ()> {
-    let slot = timer().register(Instant::now() + duration);
+    sleep_with(timer(), spawn_timer_thread, duration)
+}
+
+/// [`sleep`] on `timer`, starting its thread through `spawn` while it does
+/// not run.
+///
+/// The sleep is registered even while the thread is down, but nothing fires
+/// it then.  Each poll retries the start, and while it still fails the future
+/// waits in short blocking slices and resolves at its deadline regardless of
+/// the thread, so a process at its thread limit never parks a job forever.
+/// Once the thread runs, the registered slot fires as usual.
+fn sleep_with(
+    timer: &'static Timer,
+    spawn: fn(&'static Timer) -> std::io::Result<()>,
+    duration: Duration,
+) -> impl Future<Output = ()> {
+    let deadline = Instant::now() + duration;
+    let slot = timer.register(deadline);
     poll_fn(move |cx| {
         if slot.fired.load(Ordering::SeqCst) {
             return Poll::Ready(());
+        }
+        if !timer.ensure_running(spawn) {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Poll::Ready(());
+            }
+            std::thread::sleep(left.min(RETRY_SLICE));
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
         }
         *slot.waker.lock().unwrap_or_else(PoisonError::into_inner) = Some(cx.waker().clone());
         // Re-check: a `fire` between the first check and storing the waker
@@ -217,5 +247,24 @@ mod tests {
         }
         // Once running, further calls never spawn again.
         assert!(timer.ensure_running(|_| panic!("the timer thread was started twice")));
+    }
+
+    /// A sleep whose thread cannot start (a process at its thread limit)
+    /// still resolves at its deadline instead of waiting for a thread that
+    /// never comes.
+    #[test]
+    fn a_sleep_resolves_at_its_deadline_while_the_thread_cannot_start() {
+        let timer: &'static Timer = Box::leak(Box::default());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let started = Instant::now();
+        runtime.block_on(sleep_with(
+            timer,
+            |_| Err(std::io::Error::other("no threads left")),
+            Duration::from_millis(30),
+        ));
+        assert!(started.elapsed() >= Duration::from_millis(30));
+        assert!(!timer.queue.lock().unwrap().running);
     }
 }

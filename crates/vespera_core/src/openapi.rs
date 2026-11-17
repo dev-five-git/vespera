@@ -422,6 +422,20 @@ fn merge_path_item(into: &mut PathItem, mut other: PathItem) {
     }
 }
 
+/// Whether a `components.pathItems` name of `other` is also one of `self`'s.
+/// Then an incoming `#/components/pathItems/*` reference that `merge` adopts
+/// unresolved would, after the merge, resolve to `self`'s component of that
+/// name (self wins the component merge), not to `other`'s.
+fn shares_path_item_name(
+    theirs: Option<&BTreeMap<String, PathItem>>,
+    mine: Option<&BTreeMap<String, PathItem>>,
+) -> bool {
+    match (theirs, mine) {
+        (Some(theirs), Some(mine)) => theirs.keys().any(|name| mine.contains_key(name)),
+        _ => false,
+    }
+}
+
 fn has_operations(item: &mut PathItem) -> bool {
     operation_slots_mut(item).iter().any(|op| op.is_some())
 }
@@ -450,6 +464,13 @@ fn inline_path_item_ref(item: &mut PathItem, path_items: &BTreeMap<String, PathI
             .and_then(|r| r.strip_prefix("#/components/pathItems/"))
             .and_then(|name| path_items.get_key_value(name))
         else {
+            // Nothing (more) to inline.  A chain that dangles after a step
+            // (the item still holds a reference) is restored: the reference
+            // the item started from is the one the document wrote, not the
+            // last name of the broken chain.  A fully inlined item is kept.
+            if !visited.is_empty() && item.ref_path.is_some() {
+                *item = original;
+            }
             return;
         };
         if visited.contains(&name.as_str()) {
@@ -544,7 +565,10 @@ impl OpenApi {
     /// requirement does not start applying to them. A path item or webhook
     /// of `other` that is a `$ref` to `other`'s `components.pathItems` is
     /// inlined for this push-down (a reference `other` cannot resolve is
-    /// kept, and its operations are not reached). On a shared path, each
+    /// kept, and its operations are not reached). When `other` and `self`
+    /// share a `components.pathItems` name, every such reference is inlined
+    /// (also when it is adopted as a new path or webhook), so it cannot
+    /// resolve to `self`'s component of that name. On a shared path, each
     /// side's path-level `parameters` / `servers` stay with its own
     /// operations (see `merge_path_item`). Top-level `external_docs` is adopted only
     /// when `self` has none. On any key/field conflict, `self` takes
@@ -587,10 +611,16 @@ impl OpenApi {
         // are inlined first (whatever the push-down above decided), so a
         // `$ref` never lands next to the other side's operations.
         let self_path_items = self.components.as_ref().and_then(|c| c.path_items.as_ref());
+        // With a shared name, an adopted reference is inlined too (see
+        // `shares_path_item_name`); an unrelated one keeps its `$ref`.
+        let name_clash = shares_path_item_name(path_items, self_path_items);
         for (path, mut item) in other.paths {
             use std::collections::btree_map::Entry;
             match self.paths.entry(path) {
                 Entry::Vacant(slot) => {
+                    if name_clash && let Some(path_items) = path_items {
+                        inline_path_item_ref(&mut item, path_items);
+                    }
                     slot.insert(item);
                 }
                 Entry::Occupied(mut slot) => {
@@ -603,6 +633,18 @@ impl OpenApi {
                     }
                     merge_path_item(into, item);
                 }
+            }
+        }
+
+        // Webhooks: union by name, self-wins on a name conflict.  Before the
+        // components move below: an adopted reference reads `path_items`.
+        if let Some(other_webhooks) = other.webhooks {
+            let self_webhooks = self.webhooks.get_or_insert_with(BTreeMap::new);
+            for (name, mut item) in other_webhooks {
+                if name_clash && let Some(path_items) = path_items {
+                    inline_path_item_ref(&mut item, path_items);
+                }
+                self_webhooks.entry(name).or_insert(item);
             }
         }
 
@@ -640,13 +682,6 @@ impl OpenApi {
         // Top-level `x-*` extensions: union by key, self-wins.
         for (key, value) in other.extensions {
             self.extensions.entry(key).or_insert(value);
-        }
-        // Webhooks: union by name, self-wins on a name conflict.
-        if let Some(other_webhooks) = other.webhooks {
-            let self_webhooks = self.webhooks.get_or_insert_with(BTreeMap::new);
-            for (name, item) in other_webhooks {
-                self_webhooks.entry(name).or_insert(item);
-            }
         }
 
         // Merge tags, de-duplicating by name with first-wins semantics while

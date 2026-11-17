@@ -151,6 +151,14 @@ impl PendingDirectResponse {
         known.saturating_add(rest)
     }
 
+    /// Bytes this response holds in memory now: the serialized header plus
+    /// the body bytes already read.  The unread rest of the body is not
+    /// counted (it stays with the response's body stream).
+    #[must_use]
+    pub fn held_bytes(&self) -> usize {
+        self.header.len().saturating_add(self.prefix.len())
+    }
+
     /// Whether [`Self::required_bytes`] is the exact final size.
     #[must_use]
     pub const fn is_exact(&self) -> bool {

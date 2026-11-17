@@ -579,3 +579,63 @@ fn bad_map_entry_error_names_its_keys() {
         "{error}"
     );
 }
+
+/// A `$ref` path item of `other` adopted under a new path must not resolve
+/// to `self`'s component of the same name: with a name shared by both
+/// documents, the reference is inlined, so the child's operation survives.
+#[test]
+fn adopted_ref_path_item_is_not_retargeted_by_a_shared_component_name() {
+    let mut parent = doc(path_item_refs(
+        json!({}),
+        json!({"U": {"get": {"summary": "parent", "responses": {}}}}),
+    ));
+    parent.merge(doc(path_item_refs(
+        json!({"/users": {"$ref": "#/components/pathItems/U"}}),
+        json!({"U": {"get": {"summary": "child", "responses": {}}}}),
+    )));
+    let item = &parent.paths["/users"];
+    assert_eq!(item.ref_path, None);
+    assert_eq!(
+        op(&parent, "/users", "get").summary.as_deref(),
+        Some("child")
+    );
+}
+
+/// The same for an adopted webhook reference.
+#[test]
+fn adopted_ref_webhook_is_not_retargeted_by_a_shared_component_name() {
+    let mut parent = doc(path_item_refs(
+        json!({}),
+        json!({"U": {"get": {"summary": "parent", "responses": {}}}}),
+    ));
+    let mut child = path_item_refs(
+        json!({}),
+        json!({"U": {"post": {"summary": "child", "responses": {}}}}),
+    );
+    child["webhooks"] = json!({"evt": {"$ref": "#/components/pathItems/U"}});
+    parent.merge(doc(child));
+    let hook = &parent.webhooks.as_ref().expect("webhooks")["evt"];
+    assert_eq!(hook.ref_path, None);
+    assert_eq!(
+        hook.post.as_ref().and_then(|o| o.summary.as_deref()),
+        Some("child")
+    );
+}
+
+/// A chain that dangles after one inlining step keeps the reference the
+/// item started from, not the last name of the broken chain.
+#[test]
+fn dangling_ref_chain_keeps_the_first_reference() {
+    let mut parent = doc(json!({"security": [{"apiKey": []}]}));
+    parent.merge(doc(path_item_refs(
+        json!({"/a": {"$ref": "#/components/pathItems/A"}}),
+        json!({
+            "A": {"$ref": "#/components/pathItems/B"},
+            "B": {"$ref": "#/components/pathItems/Missing"}
+        }),
+    )));
+    assert_eq!(
+        parent.paths["/a"].ref_path.as_deref(),
+        Some("#/components/pathItems/A")
+    );
+}

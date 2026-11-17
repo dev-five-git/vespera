@@ -116,6 +116,9 @@ impl_try_from_field_for_number!(
 
 // ─── char ───────────────────────────────────────────────────────────────────
 
+/// The field must be exactly one character: unlike the numeric and `bool`
+/// impls, surrounding whitespace is NOT trimmed, so `"a\n"` is rejected.
+/// Kept exact on purpose: a `char` is a value, not a token to parse.
 impl<S: Send + Sync> TryFromFieldWithState<S> for char {
     async fn try_from_field_with_state(
         field: MeteredField<'_>,
