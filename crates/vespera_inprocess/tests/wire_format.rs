@@ -81,7 +81,7 @@ fn header_json_invalid_returns_400() {
 
 #[test]
 fn wire_version_missing_returns_400_version_mismatch() {
-    // No "v" field -> serde default of 0, which != WIRE_VERSION (1).
+    // No "v" field -> the parser's default of 0, which != WIRE_VERSION (1).
     let header_json = br#"{"method":"GET","path":"/ping"}"#;
     let header_len = u32::try_from(header_json.len()).unwrap();
     let mut wire = Vec::new();

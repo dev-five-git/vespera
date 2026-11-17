@@ -731,7 +731,7 @@ async fn bidirectional_with_header_slow_producer_delivers_every_chunk() {
 /// skipped, not treated as EOF or as an abort.  `spawned = false` dispatches
 /// on the test's `block_on` thread, where the inline fast path serves the
 /// first two pulls; `spawned = true` runs inside `tokio::spawn`, so every
-/// pull is the producer's (its `consecutive_empty` skip).  The pull records
+/// pull is the producer's (its empty-pull back-off skip).  The pull records
 /// its thread, so the inline variant proves it ran inline (the first two
 /// pulls on the `block_on` thread) and the producer variant that it did not.
 async fn run_empty_pull_chunk_skip(spawned: bool) {

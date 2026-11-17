@@ -24,6 +24,7 @@ mod inline_pull;
 use inline_pull::InlineState;
 mod outcome;
 pub use outcome::StreamOutcome;
+mod empty_pull;
 mod producer;
 pub use producer::REQUEST_PRODUCER_JOIN_GRACE;
 use producer::{ChannelBody, RequestProducerHandle, RequestSourceCloser, join_request_producer};
@@ -32,13 +33,16 @@ use producer::{ChannelBody, RequestProducerHandle, RequestSourceCloser, join_req
 /// path (the `pull_chunk` callback).
 ///
 /// `Data(empty)` means "nothing right now, keep the stream open" — it
-/// is skipped, not treated as EOF.  [`RequestChunk::Error`] terminates
+/// is skipped, not treated as EOF.  While the source keeps answering
+/// empty the producer backs off (a short spin, then sleeps that grow up
+/// to 10 ms); the request body is aborted only after the source has been
+/// silent for 10 s in total.  [`RequestChunk::Error`] terminates
 /// the request body with a [`StreamAbort`] so axum and the handler see
 /// a failed body rather than a clean EOF — a truncated upload (e.g. the
 /// source `InputStream` threw mid-stream) is never silently accepted as
 /// complete.
 pub enum RequestChunk {
-    /// A request body chunk (an empty vec is a no-op "keep open" signal).
+    /// A request body chunk (an empty vec is a "keep open" signal, see above).
     Data(Vec<u8>),
     /// Clean end of the request body.
     End,
@@ -46,13 +50,6 @@ pub enum RequestChunk {
     /// ending cleanly.
     Error,
 }
-
-/// Upper bound on consecutive empty request-body pulls before the
-/// producer aborts the stream.  A conformant blocking `InputStream`
-/// never returns 0 for a non-empty buffer, so sustained empty reads
-/// indicate a stuck or hostile producer; the cap stops a DoS busy-spin
-/// on a blocking-pool thread.
-const MAX_CONSECUTIVE_EMPTY_READS: u32 = 1024;
 
 /// Error yielded by the request body when the producer reports
 /// [`RequestChunk::Error`].  Surfaced to axum so a truncated upload is
@@ -490,10 +487,14 @@ where
 /// the body bytes one frame at a time.
 ///
 /// `on_header` is called **exactly once** in every code path —
-/// success or error. On error (malformed wire, no app, invalid
-/// method, …) the bytes passed to `on_header` are the header of a normal
-/// `error_wire(...)` response and its body follows through `on_chunk` (one
-/// call, never empty), so the error reads exactly like a success response.
+/// success or error — except when the handler panics: the panic unwinds
+/// out of this future before any header is produced (no `catch_unwind`
+/// here; the JNI wrapper delivers its own fallback header, direct Rust
+/// callers must catch the unwind themselves). On error (malformed wire,
+/// no app, invalid method, …) the bytes passed to `on_header` are the
+/// header of a normal `error_wire(...)` response and its body follows
+/// through `on_chunk` (one call, never empty), so the error reads exactly
+/// like a success response.
 ///
 /// Body frames that are ready back-to-back are coalesced (up to
 /// [`crate::streaming_chunk_bytes`]) into one `on_chunk` call.  `on_chunk`
@@ -606,7 +607,8 @@ where
 ///   [`RequestChunk::End`] to signal clean EOF.  An empty
 ///   `Data(Vec::new())` is treated as "no more data right now, but
 ///   keep the stream open" — rarely useful; most callers should just
-///   return `End`.  Return [`RequestChunk::Error`] to abort the
+///   return `End`.  Repeated empty pulls back off (no busy-spin); the
+///   body aborts only after 10 s of nothing but empty pulls.  Return [`RequestChunk::Error`] to abort the
 ///   request body (e.g. the source stream threw) so the truncated
 ///   upload is rejected rather than seen as complete.
 /// - `on_chunk` receives response body chunks in arrival order, same
@@ -632,9 +634,10 @@ where
 /// within them (one chunk + `End`) never starts the blocking producer,
 /// channel or producer slot.  `pull_chunk` must therefore be callable from
 /// the thread that drives `block_on` (the JNI caller thread is attached to
-/// the JVM); it runs there under `tokio::task::block_in_place`, outside the
-/// runtime context, so Tokio's blocking APIs (`blocking_recv`,
-/// `Handle::block_on`, ...) work as on the producer thread.  Pulls made while
+/// the JVM); it runs there under `tokio::task::block_in_place`, which exits
+/// the runtime's entered state (so Tokio's blocking APIs such as
+/// `blocking_recv` and `Handle::block_on` work as on the producer thread)
+/// but keeps the handle, so `Handle::current()` still works.  Pulls made while
 /// the response streams always go through the producer.
 ///
 /// Failure modes match [`dispatch_streaming_async`]: malformed
@@ -715,7 +718,9 @@ where
 /// from the callback while the response is still uncommitted.
 ///
 /// `on_header` is called exactly once on every code path (success or
-/// error). On any pre-dispatch / wire error the bytes passed to
+/// error), except when the handler panics: the unwind leaves this future
+/// before any header is produced (see [`dispatch_streaming_with_header_async`]).
+/// On any pre-dispatch / wire error the bytes passed to
 /// `on_header` are the header of a normal `error_wire(...)` response and
 /// its body follows through `on_chunk`; `pull_chunk` is not invoked beyond
 /// that point.
