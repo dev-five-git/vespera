@@ -145,11 +145,11 @@ pub(super) fn collapse_request_only_inputs(
         })
         .map(|(component, input)| (input.as_str(), component.as_str()))
         .collect();
-    for name in schemas.keys() {
-        if let Some(component) = name.strip_suffix(".Input") {
-            inputs.insert(name, component);
-        }
-    }
+    inputs.extend(
+        schemas
+            .keys()
+            .filter_map(|name| Some((name.as_str(), name.strip_suffix(".Input")?))),
+    );
     if inputs.is_empty() {
         return Ok(());
     }
@@ -181,25 +181,32 @@ pub(super) fn collapse_request_only_inputs(
             schemas.insert(component.clone(), schema);
         }
     }
-    // A plain-data round-trip (cannot fail).
-    let rename = |value: serde_json::Result<serde_json::Value>| {
-        value.map(|mut value| {
-            crate::router_codegen::rewrite_schema_refs(&mut value, &renames);
-            value
-        })
+    // A plain-data round-trip (cannot fail) through JSON text, like
+    // `export_app!`'s: the text reader is already instantiated for every
+    // OpenAPI type, a `from_value` one would compile a second copy.
+    let rename = |text: serde_json::Result<String>| {
+        text.and_then(|text| serde_json::from_str::<serde_json::Value>(&text))
+            .map(|mut value| {
+                crate::router_codegen::rewrite_schema_refs(&mut value, &renames);
+                value.to_string()
+            })
     };
-    let rebuild_error = |error: serde_json::Error| {
-        syn::Error::new(
-            proc_macro2::Span::call_site(),
-            format!("vespera: failed to rename request-only input components: {error}"),
-        )
-    };
-    *schemas = rename(serde_json::to_value(&*schemas))
-        .and_then(serde_json::from_value)
-        .map_err(rebuild_error)?;
-    *paths = rename(serde_json::to_value(&*paths))
-        .and_then(serde_json::from_value)
-        .map_err(rebuild_error)?;
+    *schemas = rename(serde_json::to_string(&*schemas))
+        .and_then(|text| serde_json::from_str(&text))
+        .map_err(|error| {
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!("vespera: failed to rename request-only input components: {error}"),
+            )
+        })?;
+    *paths = rename(serde_json::to_string(&*paths))
+        .and_then(|text| serde_json::from_str(&text))
+        .map_err(|error| {
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!("vespera: failed to rename request-only input paths: {error}"),
+            )
+        })?;
     Ok(())
 }
 
