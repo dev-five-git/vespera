@@ -62,13 +62,22 @@ fn struct_tag(#[case] name: &str, #[case] src: &str) {
 
 /// Multipart form field names: the request view uses the `Multipart`
 /// derive's order (`form_data(field_name)` > deserialize-side serde rename >
-/// deserialize-side `rename_all`); the response view keeps serde's
-/// serialize-side rename, falling back to `form_data(field_name)` before
-/// `rename_all` (`doc`, not `DOC_FILE`).
+/// deserialize-side `rename_all`). The response view keeps serde's
+/// serialize-side rename. Without one, a struct that does not derive
+/// `Serialize` (multipart-only) documents `form_data(field_name)` (`doc`, not
+/// `DOC_FILE`); a `Serialize` struct writes its Rust name instead (`doc_file`).
 #[rstest]
 #[case::form_data_over_serde_rename(
     "form_data_over_serde_rename",
     r#"struct Upload { #[serde(rename = "a")] #[form_data(field_name = "b")] file: String }"#
+)]
+#[case::form_data_without_serialize(
+    "form_data_without_serialize",
+    r#"struct Upload { #[form_data(field_name = "doc")] doc_file: String }"#
+)]
+#[case::form_data_with_serialize(
+    "form_data_with_serialize",
+    r#"#[derive(serde::Serialize)] struct Upload { #[form_data(field_name = "doc")] doc_file: String }"#
 )]
 #[case::sided_rename(
     "sided_rename",

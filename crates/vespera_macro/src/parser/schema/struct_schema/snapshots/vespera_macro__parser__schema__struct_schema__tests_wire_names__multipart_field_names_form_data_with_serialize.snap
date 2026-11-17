@@ -1,0 +1,29 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_wire_names.rs
+assertion_line: 91
+expression: "format!(\"response:\\n{}\\nrequest:\\n{}\", render(src, false), render(src, true))"
+---
+response:
+{
+  "type": "object",
+  "properties": {
+    "doc_file": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "doc_file"
+  ]
+}
+request:
+{
+  "type": "object",
+  "properties": {
+    "doc": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "doc"
+  ]
+}

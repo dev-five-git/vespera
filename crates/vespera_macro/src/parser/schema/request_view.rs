@@ -76,8 +76,9 @@ use super::{
     schema_attrs::extract_schema_constraints,
     scoped_ident::lookup_key,
     serde_attrs::{
-        SerdeEnumRepr, SerdeSide, extract_aliases, extract_default, extract_deny_unknown_fields,
-        extract_enum_repr, extract_field_codec, extract_field_rename_for, extract_flatten,
+        SerdeEnumRepr, SerdeSide, derives_serialize, extract_aliases, extract_default,
+        extract_deny_unknown_fields, extract_enum_repr, extract_field_codec,
+        extract_field_rename_for, extract_field_rename_owned, extract_flatten,
         extract_rename_all_fields_for, extract_rename_all_for, extract_serde_skip_flags,
         extract_tag, extract_transparent, extract_untagged, skips_none_on_output,
     },
@@ -572,7 +573,11 @@ fn struct_differs(item: &syn::ItemStruct, flat: &FlatKinds) -> bool {
     {
         return true;
     }
-    fields.named.iter().any(field_differs)
+    let owner_serializes = derives_serialize(&item.attrs);
+    fields
+        .named
+        .iter()
+        .any(|field| field_differs(field, owner_serializes))
         || flatten_differs(
             &fields.named,
             &item.generics,
@@ -652,7 +657,7 @@ fn is_map_type(ty: &syn::Type) -> bool {
 }
 
 /// A named field reads differently than it writes.
-fn field_differs(field: &syn::Field) -> bool {
+fn field_differs(field: &syn::Field, owner_serializes: bool) -> bool {
     let skip = extract_serde_skip_flags(&field.attrs);
     !skip.fully_skipped()
         && (skip.skip_deserializing
@@ -674,7 +679,9 @@ fn field_differs(field: &syn::Field) -> bool {
             || (is_option_type(&field.ty)
                 && (!skip.skip_serializing_if || skips_none_on_output(&field.attrs))
                 && !extract_flatten(&field.attrs))
-            || sided_differs(|side| extract_field_rename_for(&field.attrs, side)))
+            || sided_differs(|side| {
+                extract_field_rename_owned(&field.attrs, side, owner_serializes)
+            }))
 }
 
 /// A tuple-struct / tuple-variant position reads differently than it
@@ -787,7 +794,9 @@ fn enum_differs(item: &syn::ItemEnum, flat: &FlatKinds) -> bool {
                 || sided_differs(|side| extract_rename_all_for(&variant.attrs, side))
                 || match &variant.fields {
                     syn::Fields::Named(fields) => {
-                        fields.named.iter().any(field_differs)
+                        // Enum variant fields: the enum's own `Serialize` derive
+                        // is not read here (see `variant::build_struct_variant_fields`).
+                        fields.named.iter().any(|field| field_differs(field, false))
                             || flatten_differs(
                                 &fields.named,
                                 &item.generics,

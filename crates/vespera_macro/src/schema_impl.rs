@@ -513,6 +513,12 @@ pub fn process_derive_schema(
     // Schema-derived types appear in OpenAPI spec (include_in_openapi: true)
     let repr_input = serde_repr::with_serde_repr_derives(input, call_site_file.as_deref())
         .or_else(|| serde_repr::with_multipart_vec_defaults(input, call_site_file.as_deref()));
+    // Applied on top of the copies above: a struct can need several.
+    let serialized = serde_repr::with_serialize_derive(
+        repr_input.as_ref().unwrap_or(input),
+        call_site_file.as_deref(),
+    );
+    let repr_input = serialized.or(repr_input);
     let mut metadata = build_struct_metadata(
         repr_input.as_ref().unwrap_or(input),
         schema_name,

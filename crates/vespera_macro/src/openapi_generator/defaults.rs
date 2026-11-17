@@ -15,7 +15,9 @@ use std::{
 use crate::{
     parser::{
         extract_default, rename_field,
-        schema::{SerdeSide, extract_field_rename_for, extract_rename_all_for},
+        schema::{
+            SerdeSide, derives_serialize, extract_field_rename_owned, extract_rename_all_for,
+        },
         strip_raw_prefix_owned,
     },
     schema_macro::type_utils::get_type_default as utils_get_type_default,
@@ -181,6 +183,7 @@ pub fn process_default_functions_for(
     // not on whether we could statically extract the default value.
     let mut serde_default_fields: BTreeSet<String> = BTreeSet::new();
     let function_index = file_ast.map(function_index_by_name);
+    let owner_serializes = derives_serialize(&struct_item.attrs);
 
     // Process each field in the struct
     if let Some(properties) = target.properties.as_mut()
@@ -191,7 +194,7 @@ pub fn process_default_functions_for(
                 || "unknown".to_string(),
                 |i| strip_raw_prefix_owned(i.to_string()),
             );
-            let field_name = extract_field_rename_for(&field.attrs, side)
+            let field_name = extract_field_rename_owned(&field.attrs, side, owner_serializes)
                 .unwrap_or_else(|| rename_field(&rust_field_name, struct_rename_all.as_deref()));
 
             // Priority 0: Pre-extracted defaults from SCHEMA_STORAGE (populated by #[derive(Schema)])
