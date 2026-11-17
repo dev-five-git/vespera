@@ -13,9 +13,10 @@
 //! - `Path<scalar>` (a primitive such as `u32` / `String`) on a route with
 //!   two or more own parameters;
 //! - `Path<Struct>` (a named-field struct declared once in the handler's own
-//!   module of the route file) with `#[serde(deny_unknown_fields)]` when one of the route's own
-//!   parameters matches no field (by serde name or `alias`). Structs with a
-//!   `#[serde(flatten)]` field or generics are not checked.
+//!   module of the route file) with `#[serde(deny_unknown_fields)]` when one of
+//!   the route's own parameters matches no field (by serde name or `alias`).
+//!   Structs with a `#[serde(flatten)]` field, generics, or a container
+//!   `from` / `try_from` are not checked.
 //!
 //! A longer tuple, a scalar on a route with 0 / 1 own parameters, and a
 //! struct field without a matching segment are accepted (a prefix may supply
@@ -30,7 +31,7 @@ use syn::Type;
 use crate::parser::schema::{
     SerdeSide, extract_deny_unknown_fields, extract_field_rename_for, extract_flatten,
     extract_rename_all_for, extract_serde_skip_flags, is_primitive_type, rename_field,
-    strip_raw_prefix_owned,
+    strip_raw_prefix_owned, wire_override::container_override_type,
 };
 use crate::parser::{extract_path_parameters, request_extractor};
 
@@ -166,7 +167,13 @@ fn struct_mismatch(
     let syn::Fields::Named(fields) = &item.fields else {
         return None;
     };
+    // A container `from` / `try_from` makes serde's derived impl deserialize
+    // another type and convert it, so this struct's own `deny_unknown_fields`
+    // never runs (and its fields are never read). `container_override_type`
+    // also returns a `#[schema(value_type)]` override: treating that as a
+    // serde override only skips the check, which is the safe direction.
     if !extract_deny_unknown_fields(&item.attrs)
+        || container_override_type(&item.attrs, SerdeSide::Deserialize).is_some()
         || !item.generics.params.is_empty()
         || fields.named.iter().any(|f| extract_flatten(&f.attrs))
     {
@@ -268,6 +275,11 @@ mod tests {
         struct StrictCamel { user_id: u32 }
         #[serde(deny_unknown_fields)]
         struct StrictGeneric<T> { id: T }
+        struct RawIds { org: String, id: u32 }
+        #[serde(deny_unknown_fields, from = "RawIds")]
+        struct StrictFrom { org: String }
+        #[serde(deny_unknown_fields, try_from = "RawIds")]
+        struct StrictTryFrom { org: String }
     "#;
 
     fn lookup(name: &str) -> Option<syn::ItemStruct> {
@@ -321,6 +333,10 @@ mod tests {
     #[case::bare_path_type(Some("/{a}/{b}"), "p: Path")]
     #[case::option_tuple_exact(Some("/{a}/{b}"), "p: Option<Path<(String, u32)>>")]
     #[case::option_of_other(Some("/{a}/{b}"), "p: Option<Query<u32>>")]
+    // serde's `from` / `try_from` deserializes another type: `deny_unknown_fields`
+    // on this struct is never applied, so the unmatched `{id}` is fine.
+    #[case::strict_from(Some("/{org}/{id}"), "p: Path<StrictFrom>")]
+    #[case::strict_try_from(Some("/{org}/{id}"), "p: Path<StrictTryFrom>")]
     #[case::no_path_extractor(None, "Json(b): Json<(u32, u32)>")]
     fn accepted(#[case] path: Option<&str>, #[case] arg: &str) {
         assert_eq!(check(path, arg), Ok(()));

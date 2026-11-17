@@ -1,5 +1,6 @@
 ---
 source: examples/axum-example/tests/integration_test.rs
+assertion_line: 529
 expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
 ---
 {
@@ -24,7 +25,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
     "/": {
       "get": {
         "operationId": "root_endpoint",
-        "summary": "Health check endpoint",
+        "summary": "Root endpoint.",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1824,7 +1825,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
     "/rejection": {
       "get": {
         "operationId": "search_lenient",
-        "summary": "Echo the query, or answer `invalid query` when it does not parse.",
+        "summary": "Echo the query, or answer `invalid query` with `400` when it does not parse.",
         "parameters": [
           {
             "name": "q",
@@ -1859,12 +1860,22 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
                 }
               }
             }
+          },
+          "400": {
+            "description": "Error response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         }
       },
       "post": {
         "operationId": "create_lenient",
-        "summary": "Echo the name, answering a malformed body with a plain-text `400`.",
+        "summary": "Echo the name, answering a malformed body with a plain-text error whose status is axum's own for the rejection (`400` syntax, `415` no JSON content type, `422` wrong shape).",
         "requestBody": {
           "required": true,
           "content": {
@@ -1887,6 +1898,26 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             }
           },
           "400": {
+            "description": "Error response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Error response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
             "description": "Error response",
             "content": {
               "text/plain": {

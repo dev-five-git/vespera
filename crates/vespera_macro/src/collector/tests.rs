@@ -484,54 +484,6 @@ fn test_collect_metadata_collect_files_error() {
     assert!(error_msg.contains("failed to scan route folder"));
 }
 
-#[test]
-#[cfg(unix)]
-fn test_collect_metadata_file_read_error_permissions() {
-    // On Unix, we can create a file and then remove read permissions
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-
-    let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let folder_name = "routes";
-
-    let file_path = temp_dir.path().join("unreadable.rs");
-    fs::write(
-        &file_path,
-        r#"
-    #[route(get)]
-    pub fn get_users() -> String {
-    "users".to_string()
-    }
-    "#,
-    )
-    .expect("Failed to write temp file");
-
-    let permissions = fs::Permissions::from_mode(0o000);
-    fs::set_permissions(&file_path, permissions).expect("Failed to set permissions");
-
-    // Verify permissions actually took effect (they don't on WSL with Windows filesystem)
-    // If we can still read the file, skip this test
-    if fs::read_to_string(&file_path).is_ok() {
-        // Restore permissions for cleanup
-        let permissions = fs::Permissions::from_mode(0o644);
-        fs::set_permissions(&file_path, permissions).ok();
-        eprintln!(
-            "Skipping test: filesystem doesn't respect Unix permissions (likely WSL with NTFS)"
-        );
-        return;
-    }
-
-    let result = collect_metadata(temp_dir.path(), folder_name, &[]);
-
-    assert!(result.is_err());
-    let error_msg = result.unwrap_err().to_string();
-    assert!(error_msg.contains("cannot read or parse"));
-    assert!(error_msg.contains("unreadable.rs"));
-
-    let permissions = fs::Permissions::from_mode(0o644);
-    fs::set_permissions(&file_path, permissions).ok();
-}
-
 /// A route file that cannot be read as text (invalid UTF-8 — reproducible
 /// on every platform, unlike permission errors) is a compile error naming
 /// the file.

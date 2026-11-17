@@ -128,7 +128,9 @@ fn get_type_default_global_path_still_resolved() {
 
 #[rstest]
 #[case("foo", true)]
-#[case("defaults::foo", true)]
+// A qualified path names another module's function: never the local `foo`.
+#[case("defaults::foo", false)]
+#[case("crate::config::foo", false)]
 #[case("bar", true)]
 #[case("baz", true)]
 #[case("nonexistent", false)]
@@ -234,6 +236,29 @@ fn process_default_functions_preserves_lexical_string_default() {
 fn extract_default_value_from_function_no_value() {
     let func = parse_fn("fn default_value() { let x = 1; }");
     assert!(extract_default_value_from_function(&func).is_none());
+}
+
+/// Only the last statement is the function's value. A literal statement
+/// before it is not the result, and a `return` or branch before it means the
+/// literal is not the only outcome (documenting it would be wrong).
+#[rstest]
+#[case::early_return_in_if("fn d() -> u32 { if std::env::var(\"S\").is_ok() { return 1; } 3 }")]
+#[case::early_return_in_match("fn d() -> u32 { match 0 { 0 => return 1, _ => {} } 3 }")]
+#[case::try_operator("fn d() -> u32 { maybe()?; 3 }")]
+#[case::branch_in_let("fn d() -> u32 { let _x = if true { 1 } else { 2 }; 3 }")]
+#[case::literal_before_tail("fn d() -> u32 { 9; compute() }")]
+fn extract_default_value_from_function_rejects_non_tail_values(#[case] src: &str) {
+    let func = parse_fn(src);
+    assert_eq!(extract_default_value_from_function(&func), None, "{src}");
+}
+
+#[rstest]
+#[case::tail("fn d() -> u32 { let _x = 1; 3 }", Value::Number(3.into()))]
+#[case::semicolon_tail("fn d() -> u32 { 3; }", Value::Number(3.into()))]
+#[case::tail_return("fn d() -> u32 { return 3; }", Value::Number(3.into()))]
+fn extract_default_value_from_function_reads_the_tail(#[case] src: &str, #[case] expected: Value) {
+    let func = parse_fn(src);
+    assert_eq!(extract_default_value_from_function(&func), Some(expected));
 }
 
 // ---------- extract_schema_default_attr ----------

@@ -771,3 +771,46 @@ fn unreached_materialised_input_instances_are_pruned() {
         ["Forest", "ForestInput", "Tree_i32.Input"]
     );
 }
+
+/// A response property named `parameters` / `requestBody` is not an
+/// operation key: the type it references is not request-reachable, so its
+/// `.Input` twin is pruned. The same key under an operation does reach it.
+#[test]
+fn response_property_named_like_a_request_key_does_not_reach_input() {
+    let names: request_view::InputNames = std::sync::Arc::new(BTreeMap::from([(
+        "Filter".to_string(),
+        "FilterInput".to_string(),
+    )]));
+    let schema =
+        |value: Value| serde_json::from_value::<vespera_core::schema::Schema>(value).unwrap();
+    let base = || {
+        BTreeMap::from([
+            ("Filter".to_string(), schema(json!({"type": "object"}))),
+            ("FilterInput".to_string(), schema(json!({"type": "object"}))),
+        ])
+    };
+    let path = |value: serde_json::Value| {
+        BTreeMap::from([(
+            "/search".to_string(),
+            serde_json::from_value::<vespera_core::route::PathItem>(value).unwrap(),
+        )])
+    };
+    let response_body = json!({"type": "object", "properties": {
+        "parameters": {"$ref": "#/components/schemas/Filter"},
+        "requestBody": {"$ref": "#/components/schemas/Filter"}
+    }});
+    let mut schemas = base();
+    let paths = path(json!({"get": {"responses": {"200": {"description": "ok",
+        "content": {"application/json": {"schema": response_body}}}}}}));
+    prune_unreferenced_inputs(&mut schemas, &paths, &names);
+    assert_eq!(schemas.keys().collect::<Vec<_>>(), ["Filter"]);
+
+    let mut schemas = base();
+    let paths = path(json!({"get": {"parameters": [{"name": "q", "in": "query",
+        "schema": {"$ref": "#/components/schemas/FilterInput"}}], "responses": {}}}));
+    prune_unreferenced_inputs(&mut schemas, &paths, &names);
+    assert_eq!(
+        schemas.keys().collect::<Vec<_>>(),
+        ["Filter", "FilterInput"]
+    );
+}

@@ -117,7 +117,7 @@ pub(super) fn prune_unreferenced_inputs(
     for item in paths.values() {
         // Serialization of these plain data types cannot fail.
         let value = serde_json::to_value(item).unwrap_or_default();
-        collect_request_body_refs(&value, false, &mut pending);
+        collect_path_item_request_refs(&value, &mut pending);
     }
     let mut reached: BTreeSet<String> = BTreeSet::new();
     while let Some(name) = pending.pop() {
@@ -125,37 +125,59 @@ pub(super) fn prune_unreferenced_inputs(
             && reached.insert(name)
         {
             let value = serde_json::to_value(schema).unwrap_or_default();
-            collect_request_body_refs(&value, true, &mut pending);
+            collect_component_refs(&value, &mut pending);
         }
     }
     schemas.retain(|name, _| !prunable(name) || reached.contains(name));
 }
 
-/// Component names of the `$ref`s inside `value`, counting only those under
-/// a `requestBody` or `parameters` unless `inside` is already set.
-fn collect_request_body_refs(value: &serde_json::Value, inside: bool, out: &mut Vec<String>) {
+/// Component names of every `$ref` inside `value`.
+fn collect_component_refs(value: &serde_json::Value, out: &mut Vec<String>) {
     match value {
         serde_json::Value::Object(map) => {
             for (key, child) in map {
-                if inside
-                    && key == "$ref"
+                if key == "$ref"
                     && let Some(name) = child
                         .as_str()
                         .and_then(|r| r.strip_prefix("#/components/schemas/"))
                 {
                     out.push(name.to_string());
                 }
-                // Request bodies and parameters are both deserialized.
-                let request = key == "requestBody" || key == "parameters";
-                collect_request_body_refs(child, inside || request, out);
+                collect_component_refs(child, out);
             }
         }
         serde_json::Value::Array(items) => {
             for child in items {
-                collect_request_body_refs(child, inside, out);
+                collect_component_refs(child, out);
             }
         }
         _ => {}
+    }
+}
+
+/// Request-side `$ref`s of one serialized path item: the path-level
+/// `parameters`, and each operation's `parameters` and `requestBody` (both
+/// deserialized). Only operation-level keys count: a response schema with a
+/// property named `parameters` or `requestBody` is not a request.
+fn collect_path_item_request_refs(item: &serde_json::Value, out: &mut Vec<String>) {
+    const METHODS: [&str; 8] = [
+        "get", "put", "post", "delete", "options", "head", "patch", "trace",
+    ];
+    let Some(map) = item.as_object() else {
+        return;
+    };
+    for (key, child) in map {
+        if key == "parameters" {
+            collect_component_refs(child, out);
+        } else if METHODS.contains(&key.as_str())
+            && let Some(operation) = child.as_object()
+        {
+            for (op_key, op_child) in operation {
+                if op_key == "parameters" || op_key == "requestBody" {
+                    collect_component_refs(op_child, out);
+                }
+            }
+        }
     }
 }
 
