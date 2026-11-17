@@ -35,10 +35,9 @@ fn file_modules(file: &Path) -> Option<Vec<String>> {
     })?;
     let mut modules = Vec::new();
     for component in file.strip_prefix(root).ok()?.components() {
-        let Component::Normal(name) = component else {
-            return None;
-        };
-        modules.push(name.to_str()?.to_owned());
+        if let Component::Normal(name) = component {
+            modules.push(name.to_str()?.to_owned());
+        }
     }
     let file_name = modules.pop()?;
     match Path::new(&file_name).file_stem()?.to_str()? {
