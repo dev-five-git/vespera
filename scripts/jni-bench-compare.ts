@@ -68,14 +68,34 @@ export function isRegression(
   return median(changes) > t.mean && Math.min(...changes) > t.lower
 }
 
+const RESULT_LINE =
+  /^\s*(?:RESULT\s+)?(\S+)\s+(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*$/
+
 /** Parses `<mode> <ns>` lines into a map (blank / malformed lines ignored). */
 export function parseRound(text: string): Map<string, number> {
   const out = new Map<string, number>()
   for (const line of text.split(/\r?\n/)) {
-    const m = /^\s*(?:RESULT\s+)?(\S+)\s+(\d+(?:\.\d+)?)\s*$/.exec(line)
+    const m = RESULT_LINE.exec(line)
     if (m) out.set(m[1], Number(m[2]))
   }
   return out
+}
+
+/**
+ * Modes that a base round reports but no head round reports. `evaluate`
+ * cannot gate them (there is no head value to pair), so a benchmark that
+ * vanished from the head would otherwise pass silently.
+ */
+export function missingOnHead(
+  base: readonly Map<string, number>[],
+  head: readonly Map<string, number>[],
+): string[] {
+  const headModes = new Set<string>()
+  for (const r of head) for (const k of r.keys()) headModes.add(k)
+  const missing = new Set<string>()
+  for (const r of base)
+    for (const k of r.keys()) if (!headModes.has(k)) missing.add(k)
+  return [...missing].sort()
 }
 
 export function evaluate(
@@ -174,7 +194,9 @@ function main(): number {
     return 2
   }
   const t: Thresholds = { mean, lower }
-  const verdicts = evaluate(readSide(dir, 'base'), readSide(dir, 'head'), t)
+  const base = readSide(dir, 'base')
+  const head = readSide(dir, 'head')
+  const verdicts = evaluate(base, head, t)
   const report = renderMarkdown(verdicts, t)
   process.stdout.write(report)
   const summary = process.env.GITHUB_STEP_SUMMARY
@@ -183,6 +205,13 @@ function main(): number {
     console.error('::error::No comparable JNI bench results found.')
     return 2
   }
+  const missing = missingOnHead(base, head)
+  for (const mode of missing) {
+    console.error(
+      `::error::JNI bench mode ${mode} is reported by the base but missing from the head; it cannot be gated`,
+    )
+  }
+  if (missing.length > 0) return 1
   for (const v of verdicts.filter((x) => x.regressed)) {
     console.error(
       `::error::JNI performance regression: ${v.mode} median ${pct(v.median)} with every paired round > ${pct(t.lower)}`,

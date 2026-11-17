@@ -4,6 +4,7 @@ import {
   evaluate,
   isRegression,
   median,
+  missingOnHead,
   pairedChanges,
   parseRound,
   parseThreshold,
@@ -58,11 +59,12 @@ describe('isRegression', () => {
 describe('parseRound', () => {
   it('accepts raw RESULT lines and plain pairs, ignores noise', () => {
     const r = parseRound(
-      'RESULT sync_get 2900\nnoise line here\ndirect_get 2100\r\n\n',
+      'RESULT sync_get 2900\nnoise line here\ndirect_get 2100\r\nRESULT exp_get 1.2E4\n\n',
     )
     expect([...r.entries()]).toEqual([
       ['sync_get', 2900],
       ['direct_get', 2100],
+      ['exp_get', 12000],
     ])
   })
 })
@@ -90,6 +92,17 @@ describe('evaluate', () => {
   it('ignores a mode present on one side only', () => {
     const verdicts = evaluate([new Map([['a', 1]])], [new Map([['b', 2]])], T)
     expect(verdicts).toEqual([])
+  })
+
+  it('reports a base-only mode as missing on the head (not gated)', () => {
+    const base = [round(1000, 1000), round(1000, 1000)]
+    const head = [new Map([['sync_get', 1000]]), new Map([['sync_get', 1000]])]
+    expect(missingOnHead(base, head)).toEqual(['direct_get'])
+    expect(missingOnHead(base, base)).toEqual([])
+    // a head-only mode is a new benchmark, not a vanished one
+    expect(missingOnHead(head, base)).toEqual([])
+    // a head that produced no rounds at all reports every base mode
+    expect(missingOnHead(base, [])).toEqual(['direct_get', 'sync_get'])
   })
 })
 

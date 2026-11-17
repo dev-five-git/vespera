@@ -61,12 +61,14 @@ else
 fi
 base_tree="$work/base-tree"
 
-git -C "$repo" worktree add --detach "$base_tree" "$base_rev" >/dev/null
+# Installed before `worktree add`: a failing add under `set -e` must still
+# remove the work dir this run created (the worktree remove is best-effort).
 cleanup() {
   git -C "$repo" worktree remove --force "$base_tree" >/dev/null 2>&1 || true
   if [ -n "$owned_work" ]; then rm -rf "$owned_work"; fi
 }
 trap cleanup EXIT
+git -C "$repo" worktree add --detach "$base_tree" "$base_rev" >/dev/null
 
 # Each side gets its OWN fresh target dir. A shared (or pre-existing) one is
 # unsafe: cargo keys workspace members relative to the workspace root, so both

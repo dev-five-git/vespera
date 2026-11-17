@@ -4,7 +4,7 @@
 //!
 //! | Mode | Entry | Transport |
 //! |------|-------|-----------|
-//! | Server (default app only) | `main.rs` → `axum::serve` | TCP :3000 |
+//! | Server (default app only) | `main.rs` → `create_app().serve(addr)` | TCP :3000 |
 //! | JNI multi-app | `jni_apps!` → Java picks app via `X-Vespera-App` header | In-process binary wire |
 //!
 //! Two named apps are registered:

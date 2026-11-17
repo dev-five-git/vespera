@@ -95,7 +95,8 @@ fn build_route_info_from_args(route_args: &RouteArgs) -> RouteInfo {
         .responses
         .as_ref()
         .and_then(extract_typed_responses);
-    // `#[route]` already rejected a malformed array at its own expansion.
+    // `#[route]` already rejected a malformed array at its own expansion (the
+    // fast path reports it), so a build that compiled never reaches this drop.
     let security = route_args.security.as_ref().and_then(|arr| {
         crate::security::parse_security_requirements(arr, "#[route] `security`").ok()
     });
@@ -723,7 +724,6 @@ mod tests {
         r#"#[route(get, security = [("oauth2", ["read:users"]), "apiKey"])] fn t() {}"#,
         Some(r#"[{"oauth2":["read:users"]},{"apiKey":[]}]"#)
     )]
-    #[case::malformed_is_dropped("#[route(get, security = [oauth2])] fn t() {}", None)]
     fn slow_path_reads_scoped_security(#[case] code: &str, #[case] expected: Option<&str>) {
         let route_info = extract_route_info(&parse_attrs_from_code(code)).expect("route attribute");
         assert_eq!(

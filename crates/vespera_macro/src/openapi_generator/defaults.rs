@@ -376,8 +376,13 @@ fn find_function_in_index<'a>(
     function_index: &HashMap<String, &'a syn::ItemFn>,
     function_name: &str,
 ) -> Option<&'a syn::ItemFn> {
-    let local_name = function_name.rsplit("::").next().unwrap_or(function_name);
-    function_index.get(local_name).copied()
+    // The index holds only this file's top-level functions. A qualified path
+    // (`crate::config::d`) names another module's `d`, and matching it by its
+    // last segment would document a same-named local function's value.
+    if function_name.contains("::") {
+        return None;
+    }
+    function_index.get(function_name).copied()
 }
 
 /// Extract default value from function body
@@ -387,24 +392,56 @@ fn find_function_in_index<'a>(
 /// - true -> true
 /// - vec![] -> []
 pub fn extract_default_value_from_function(func: &syn::ItemFn) -> Option<serde_json::Value> {
-    // Try to find return statement or expression
-    for stmt in &func.block.stmts {
-        if let syn::Stmt::Expr(expr, _) = stmt {
-            // Direct expression (like "value".to_string())
-            if let Some(value) = extract_value_from_expr(expr) {
-                return Some(value);
+    // Only the function's LAST statement can supply the value. An earlier
+    // literal statement is not the result, and a `return` / branch before it
+    // (`if flag { return 1; } 3`) means the literal is not the only outcome.
+    let (last, rest) = func.block.stmts.split_last()?;
+    if rest.iter().any(may_exit_early) {
+        return None;
+    }
+    let syn::Stmt::Expr(expr, _) = last else {
+        return None;
+    };
+    // Direct expression (like "value".to_string())
+    if let Some(value) = extract_value_from_expr(expr) {
+        return Some(value);
+    }
+    // Or a return statement
+    if let syn::Expr::Return(ret) = expr
+        && let Some(expr) = &ret.expr
+    {
+        return extract_value_from_expr(expr);
+    }
+    None
+}
+
+/// Whether `stmt` contains anything that can leave the function body before
+/// its last statement: `return`, `?`, or a branch / loop (which may hold one).
+fn may_exit_early(stmt: &syn::Stmt) -> bool {
+    use syn::visit::Visit;
+
+    struct ExitFinder(bool);
+    impl<'ast> Visit<'ast> for ExitFinder {
+        fn visit_expr(&mut self, expr: &'ast syn::Expr) {
+            if matches!(
+                expr,
+                syn::Expr::Return(_)
+                    | syn::Expr::Try(_)
+                    | syn::Expr::If(_)
+                    | syn::Expr::Match(_)
+                    | syn::Expr::Loop(_)
+                    | syn::Expr::While(_)
+                    | syn::Expr::ForLoop(_)
+            ) {
+                self.0 = true;
             }
-            // Or return statement
-            if let syn::Expr::Return(ret) = expr
-                && let Some(expr) = &ret.expr
-                && let Some(value) = extract_value_from_expr(expr)
-            {
-                return Some(value);
-            }
+            syn::visit::visit_expr(self, expr);
         }
     }
 
-    None
+    let mut finder = ExitFinder(false);
+    finder.visit_stmt(stmt);
+    finder.0
 }
 
 /// The value of `-expr` for a numeric literal `expr`.

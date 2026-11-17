@@ -33,4 +33,5 @@ async fn upload_declares_both_rejection_statuses() {
     let responses = &spec.json::<serde_json::Value>()["paths"]["/upload"]["post"]["responses"];
     assert!(responses.get("400").is_some(), "{responses}");
     assert!(responses.get("413").is_some(), "{responses}");
+    assert!(responses.get("500").is_some(), "{responses}");
 }

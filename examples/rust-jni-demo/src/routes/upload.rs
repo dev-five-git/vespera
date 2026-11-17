@@ -32,8 +32,9 @@ pub struct UploadSummary {
 /// hash of every part).
 ///
 /// A malformed multipart body answers `400` and one over the body limit
-/// `413` (axum's `MultipartError::status`).
-#[vespera::route(post, tags = ["upload"], error_status = [400, 413])]
+/// `413` (axum's `MultipartError::status`); a body stream that fails for any
+/// other reason (a dropped connection) answers `500`.
+#[vespera::route(post, tags = ["upload"], error_status = [400, 413, 500])]
 pub async fn upload(mut multipart: Multipart) -> Result<Json<UploadSummary>, (StatusCode, String)> {
     let rejection = |error: vespera::axum::extract::multipart::MultipartError| {
         (error.status(), error.body_text())

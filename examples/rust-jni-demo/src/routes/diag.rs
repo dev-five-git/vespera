@@ -1,10 +1,12 @@
 //! Diagnostic routes for the JNI E2E suite: a response of a chosen size (the
 //! buffered-response cap), a deliberately slow handler (the Spring async
 //! timeout / async cancellation) and a long trickling stream (streaming
-//! client disconnect; bounded at [`MAX_DRIP_CHUNKS`] chunks). Each records under a caller-chosen key how often it
-//! finished — and, when dropped before finishing, `"<key>:dropped"` — so a
-//! test can prove the handler ran exactly once, or was cancelled. Sizes and
-//! delays are clamped so the routes stay harmless.
+//! client disconnect; bounded at [`MAX_DRIP_CHUNKS`] chunks). Each records
+//! under a caller-chosen key how often it finished — and, when dropped before
+//! finishing, `"<key>:dropped"` — so a test can prove the handler ran exactly
+//! once, or was cancelled. Sizes and delays are clamped, and at most
+//! [`MAX_TRACKED_KEYS`] distinct keys are recorded, so the routes stay
+//! harmless on the standalone server.
 
 use std::{
     collections::HashMap,
@@ -26,14 +28,25 @@ pub const MAX_SLEEP_MILLIS: u64 = 60_000;
 /// Most chunks `/diag/drip` emits before ending on its own.
 pub const MAX_DRIP_CHUNKS: u64 = 10_000;
 
+/// Most distinct keys `RUNS` holds. The routes are unauthenticated on the
+/// standalone server, so a client choosing a new key per request must not
+/// grow the map without bound; a key past the cap is simply not counted.
+pub const MAX_TRACKED_KEYS: usize = 4096;
+
 static RUNS: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(Mutex::default);
 
 fn record(key: String) {
-    *RUNS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .entry(key)
-        .or_default() += 1;
+    let mut runs = RUNS.lock().unwrap_or_else(PoisonError::into_inner);
+    record_capped(&mut runs, key, MAX_TRACKED_KEYS);
+}
+
+/// Counts a run of `key`, unless `key` is new and `runs` already holds `cap`
+/// keys.
+fn record_capped(runs: &mut HashMap<String, u64>, key: String, cap: usize) {
+    if !runs.contains_key(&key) && runs.len() >= cap {
+        return;
+    }
+    *runs.entry(key).or_default() += 1;
 }
 
 fn count(key: &str) -> u64 {
@@ -177,4 +190,23 @@ pub async fn panic_mid_body(Path(chunks): Path<u64>, body: Body) -> Response {
         Body::from_stream(stream),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Uses a local map and a small cap: the global `RUNS` is shared by every
+    /// test in this binary and must not be filled up here.
+    #[test]
+    fn keys_past_the_cap_are_not_tracked() {
+        let mut runs = HashMap::new();
+        for key in ["a", "b", "c", "a"] {
+            record_capped(&mut runs, key.to_owned(), 2);
+        }
+        assert_eq!(runs.get("a"), Some(&2));
+        assert_eq!(runs.get("b"), Some(&1));
+        assert_eq!(runs.get("c"), None);
+        assert_eq!(runs.len(), 2);
+    }
 }

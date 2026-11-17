@@ -266,10 +266,22 @@ fn parse_date(s: &str) -> Option<(i32, u32, u32)> {
     let year: i32 = parts[0].parse().ok()?;
     let month: u32 = parts[1].parse().ok()?;
     let day: u32 = parts[2].parse().ok()?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || year < 1 {
+    if !(1..=12).contains(&month) || year < 1 || day < 1 || day > days_in_month(year, month) {
         return None;
     }
     Some((year, month, day))
+}
+
+/// Days in `month` of `year` (Gregorian, leap years included).
+fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+            if leap { 29 } else { 28 }
+        }
+        _ => 31,
+    }
 }
 
 fn generate_document_id() -> String {
@@ -278,6 +290,28 @@ fn generate_document_id() -> String {
         .unwrap_or_default()
         .as_millis();
     format!("DOC-{ts}")
+}
+
+#[cfg(test)]
+mod parse_date_tests {
+    use super::parse_date;
+
+    #[test]
+    fn rejects_days_that_do_not_exist_in_the_month() {
+        assert_eq!(parse_date("2025-02-31"), None);
+        assert_eq!(parse_date("2025-04-31"), None);
+        assert_eq!(parse_date("2025-02-29"), None);
+        assert_eq!(parse_date("1900-02-29"), None);
+        assert_eq!(parse_date("2025-01-00"), None);
+    }
+
+    #[test]
+    fn accepts_real_calendar_dates() {
+        assert_eq!(parse_date("2024-02-29"), Some((2024, 2, 29)));
+        assert_eq!(parse_date("2000-02-29"), Some((2000, 2, 29)));
+        assert_eq!(parse_date("2025-04-30"), Some((2025, 4, 30)));
+        assert_eq!(parse_date("2025-12-31"), Some((2025, 12, 31)));
+    }
 }
 
 #[cfg(test)]

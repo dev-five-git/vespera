@@ -22,6 +22,22 @@ async fn result_json_body_dispatches_and_hands_the_rejection_to_the_handler() {
         .bytes("{".into())
         .await;
     rejected.assert_status(StatusCode::BAD_REQUEST);
+
+    // axum's own status per rejection kind: a wrong shape is 422, a missing
+    // JSON content type is 415.
+    let wrong_shape = server
+        .post("/rejection")
+        .content_type("application/json")
+        .bytes(r#"{"name": 5}"#.into())
+        .await;
+    wrong_shape.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+    let no_json = server
+        .post("/rejection")
+        .content_type("text/plain")
+        .bytes(r#"{"name": "x"}"#.into())
+        .await;
+    no_json.assert_status(StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
 
 #[tokio::test]
@@ -32,7 +48,9 @@ async fn result_query_dispatches_and_hands_the_rejection_to_the_handler() {
         .get("/rejection?q=a&limit=3")
         .await
         .assert_text("a:3");
-    server.get("/rejection").await.assert_text("invalid query");
+    let rejected = server.get("/rejection").await;
+    rejected.assert_status(StatusCode::BAD_REQUEST);
+    rejected.assert_text("invalid query");
 }
 
 #[tokio::test]

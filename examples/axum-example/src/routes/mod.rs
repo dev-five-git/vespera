@@ -34,7 +34,7 @@ pub mod users;
 pub mod uuid_items;
 pub mod validated;
 
-/// Health check endpoint
+/// Root endpoint.
 #[vespera::route(get)]
 pub async fn root_endpoint() -> &'static str {
     "root endpoint"
