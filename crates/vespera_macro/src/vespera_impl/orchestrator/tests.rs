@@ -263,6 +263,52 @@ fn test_process_vespera_macro_with_cron_storage() {
     }
 }
 
+/// The module-tree scan places an unexpanded `#[cron]` in `src/` only with the
+/// `cron` feature: without it no `#[cron]` is vespera's, so nothing is placed.
+#[test]
+fn process_vespera_macro_places_unexpanded_cron_only_with_the_feature() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let src_dir = temp_dir.path().join("src");
+    std::fs::create_dir_all(src_dir.join("routes")).expect("create routes dir");
+    std::fs::write(src_dir.join("lib.rs"), "pub mod routes;\n").expect("write lib.rs");
+    std::fs::write(src_dir.join("routes").join("mod.rs"), "pub mod health;\n")
+        .expect("write mod.rs");
+    std::fs::write(
+        src_dir.join("routes").join("health.rs"),
+        "#[vespera::cron(\"0 */5 * * * *\")] pub async fn unexpanded_job() {}\n",
+    )
+    .expect("write health.rs");
+
+    let _env_guard = crate::env_access::test_env::set_var(
+        "CARGO_MANIFEST_DIR",
+        temp_dir.path().to_string_lossy().as_ref(),
+    );
+    let processed = ProcessedVesperaInput {
+        folder_name: src_dir.join("routes").to_string_lossy().to_string(),
+        openapi_file_names: vec![],
+        title: None,
+        version: None,
+        docs_url: None,
+        redoc_url: None,
+        spec_url: None,
+        servers: None,
+        security_schemes: None,
+        security: None,
+        tag_descriptions: None,
+        merge: vec![],
+        info: InfoArgs::default(),
+        literal_hash: None,
+    };
+    let tokens = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site())
+        .expect("the scan alone never fails")
+        .to_string();
+    assert_eq!(
+        tokens.contains("vespera :: cron :: start_once_for_crate"),
+        cfg!(feature = "cron"),
+        "{tokens}"
+    );
+}
+
 // ========== Tests for process_export_app ==========
 
 #[test]

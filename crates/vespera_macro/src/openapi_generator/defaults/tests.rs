@@ -247,6 +247,8 @@ fn extract_default_value_from_function_no_value() {
 #[case::try_operator("fn d() -> u32 { maybe()?; 3 }")]
 #[case::branch_in_let("fn d() -> u32 { let _x = if true { 1 } else { 2 }; 3 }")]
 #[case::literal_before_tail("fn d() -> u32 { 9; compute() }")]
+#[case::macro_statement_may_return("fn d() -> u32 { bail_early!(flag); 3 }")]
+#[case::macro_expression_may_return("fn d() -> u32 { let _x = early!(flag); 3 }")]
 fn extract_default_value_from_function_rejects_non_tail_values(#[case] src: &str) {
     let func = parse_fn(src);
     assert_eq!(extract_default_value_from_function(&func), None, "{src}");

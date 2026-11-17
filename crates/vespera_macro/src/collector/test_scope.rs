@@ -88,8 +88,11 @@ pub struct TestScope {
     /// Canonical `<manifest>/src`, the fallback for a file whose logical
     /// path does not lie under `src_dir` (a different spelling of it).
     canonical_src_dir: Option<PathBuf>,
-    /// Declaring file → names of the `mod name;` declarations it gates.
-    gated_mods: HashMap<PathBuf, HashSet<String>>,
+    /// Declaring file → its test-gated `mod` declarations.
+    gated_mods: HashMap<PathBuf, std::rc::Rc<GatedMods>>,
+    /// The files every test-gated `#[path]` module of `src/` names, found by
+    /// one scan of the crate (`None` until a file needs it).
+    path_targets: Option<Vec<PathBuf>>,
 }
 
 impl TestScope {
@@ -99,6 +102,7 @@ impl TestScope {
             src_dir: src_dir.and_then(lexical),
             canonical_src_dir: src_dir.and_then(file_cache::canonicalize_cached),
             gated_mods: HashMap::new(),
+            path_targets: None,
         }
     }
 
@@ -142,6 +146,7 @@ impl TestScope {
             let rest = &segments[depth..];
             if declarers.iter().any(|declarer| {
                 self.gated_mods_of(declarer)
+                    .chains
                     .iter()
                     .any(|gated| chain_starts_with(rest, gated))
             }) {
@@ -149,43 +154,114 @@ impl TestScope {
             }
             parent.push(segment);
         }
-        false
+        self.file_path_gated(file)
     }
 
-    /// A declarer's test-gated `mod`s as `::`-joined paths relative to it:
-    /// `b` for a top-level `#[cfg(test)] mod b;`, `a::b` for one declared
-    /// inside an inline `mod a { .. }` (whose file is `<dir>/a/b.rs`).
-    fn gated_mods_of(&mut self, declarer: &Path) -> &HashSet<String> {
-        /// A declarer's test-gated `mod` paths, kept while it is unchanged.
-        struct GatedMods(HashSet<String>);
+    /// Whether a test-gated `#[path = ".."]` module names `file`. Such a
+    /// module carries no name the chain could match, so the file is found by
+    /// its path (or by the directory of a non-`mod.rs` module's own file,
+    /// whose child modules sit beside it).
+    fn file_path_gated(&mut self, file: &Path) -> bool {
+        lexical(file).is_some_and(|file| {
+            self.path_targets()
+                .iter()
+                .any(|target| file == *target || file.starts_with(target.with_extension("")))
+        })
+    }
+
+    /// The files every test-gated `#[path]` module under `src/` names, from
+    /// one scan of the crate (memoized per scope).
+    fn path_targets(&mut self) -> &[PathBuf] {
+        if self.path_targets.is_none() {
+            let files: Vec<PathBuf> = self
+                .src_dir
+                .as_deref()
+                .map(|dir| file_cache::list_rs_files(dir).to_vec())
+                .unwrap_or_default();
+            let mut targets = Vec::new();
+            for file in &files {
+                targets.extend(self.gated_mods_of(file).path_targets.iter().cloned());
+            }
+            self.path_targets = Some(targets);
+        }
+        self.path_targets.as_deref().unwrap_or_default()
+    }
+
+    /// A declarer's test-gated `mod`s, kept while the declarer is unchanged.
+    fn gated_mods_of(&mut self, declarer: &Path) -> std::rc::Rc<GatedMods> {
+        if let Some(gated) = self.gated_mods.get(declarer) {
+            return gated.clone();
+        }
+        let dir = declarer.parent().map(Path::to_path_buf).unwrap_or_default();
+        let gated = file_cache::derived(declarer, |content| {
+            let mut gated = GatedMods::default();
+            if may_gate_tests(content)
+                && let Ok(ast) = syn::parse_file(content)
+            {
+                gated_mod_paths(&ast.items, "", &dir, &mut gated);
+            }
+            gated
+        })
+        .unwrap_or_default();
         self.gated_mods
-            .entry(declarer.to_path_buf())
-            .or_insert_with(|| {
-                let gated = file_cache::derived(declarer, |content| {
-                    let mut paths = HashSet::new();
-                    if may_gate_tests(content)
-                        && let Ok(ast) = syn::parse_file(content)
-                    {
-                        gated_mod_paths(&ast.items, "", &mut paths);
-                    }
-                    GatedMods(paths)
-                });
-                gated.map(|gated| gated.0.clone()).unwrap_or_default()
-            })
+            .insert(declarer.to_path_buf(), gated.clone());
+        gated
     }
 }
 
-/// Collect the test-gated `mod`s among `items` (prefixed by `prefix`),
-/// recursing into the ungated inline modules: a gated inline module gates
-/// everything it nests, so its own name is enough.
-fn gated_mod_paths(items: &[Item], prefix: &str, out: &mut HashSet<String>) {
+/// A declarer's test-gated `mod`s: the `::`-joined chain paths (relative to
+/// the declarer: `b` for `#[cfg(test)] mod b;`, `a::b` inside an inline
+/// `mod a { .. }`) of those loaded by their own name, and the files of those
+/// given a `#[path]`.
+#[derive(Clone, Default)]
+struct GatedMods {
+    chains: HashSet<String>,
+    path_targets: Vec<PathBuf>,
+}
+
+/// The `#[path = ".."]` value of `attrs`.
+fn path_attr(attrs: &[syn::Attribute]) -> Option<String> {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("path"))
+        .find_map(|attr| attr.meta.require_name_value().ok())
+        .and_then(|named| string_literal(&named.value))
+}
+
+/// The value of a string literal expression.
+fn string_literal(expr: &syn::Expr) -> Option<String> {
+    let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Str(value),
+        ..
+    }) = expr
+    else {
+        return None;
+    };
+    Some(value.value())
+}
+
+/// Collect the test-gated `mod`s among `items` (prefixed by `prefix`; `dir`
+/// is the directory their out-of-line files are loaded from), recursing into
+/// the ungated inline modules: a gated inline module gates everything it
+/// nests, so its own name is enough. A gated `#[path]` module names its file
+/// directly, relative to `dir` (rustc resolves it from the declaring file's
+/// directory, nested inline module names included).
+fn gated_mod_paths(items: &[Item], prefix: &str, dir: &Path, out: &mut GatedMods) {
     for item in items {
         let Item::Mod(module) = item else { continue };
-        let path = format!("{prefix}{}", syn::ext::IdentExt::unraw(&module.ident));
+        let name = syn::ext::IdentExt::unraw(&module.ident).to_string();
+        let path = format!("{prefix}{name}");
         if attrs_test_only(&module.attrs) {
-            out.insert(path);
+            match path_attr(&module.attrs) {
+                Some(target) if module.content.is_none() => {
+                    out.path_targets.extend(lexical(&dir.join(target)));
+                }
+                _ => {
+                    out.chains.insert(path);
+                }
+            }
         } else if let Some((_, content)) = &module.content {
-            gated_mod_paths(content, &format!("{path}::"), out);
+            gated_mod_paths(content, &format!("{path}::"), &dir.join(&name), out);
         }
     }
 }
@@ -271,27 +347,43 @@ pub fn test_only_fns(file: &Path) -> HashSet<String> {
     .unwrap_or_default()
 }
 
-/// The test-only items of one file: the `(name, line)` of every struct /
+/// A `(line, column)` source position, as `proc_macro2` reports it.
+type Position = (usize, usize);
+
+/// The test-only items of one file: the `(name, position)` of every struct /
 /// enum gated by a test-only `#[cfg(..)]` on itself or an enclosing scope,
-/// and the line range of every other gated item or statement (an inline
+/// and the position range of every other gated item or statement (an inline
 /// module, a fn / impl / trait / const / static, an item or statement macro
 /// such as `#[cfg(test)] schema_type!(..)`) — whatever it nests is
 /// test-only too (a `#[derive(Schema)]` inside a `#[test] fn`, a
-/// `schema_type!` inside `mod tests`).
+/// `schema_type!` inside `mod tests`). Ranges are compared by position, so
+/// an item sharing a line with a gated one is not gated by it.
 #[derive(Default)]
 struct GatedItems {
-    items: HashSet<(String, usize)>,
-    ranges: Vec<(usize, usize)>,
+    items: HashSet<(String, Position)>,
+    ranges: Vec<(Position, Position)>,
 }
 
 impl GatedItems {
-    fn contains(&self, ident: &str, line: usize) -> bool {
-        self.items.contains(&(ident.to_owned(), line))
+    fn contains(&self, ident: &str, position: Position) -> bool {
+        self.items.contains(&(ident.to_owned(), position))
             || self
                 .ranges
                 .iter()
-                .any(|&(start, end)| (start..=end).contains(&line))
+                .any(|&(start, end)| (start..=end).contains(&position))
     }
+}
+
+/// Where `span` starts.
+fn start_of(span: proc_macro2::Span) -> Position {
+    let start = span.start();
+    (start.line, start.column)
+}
+
+/// Where `span` ends.
+fn end_of(span: proc_macro2::Span) -> Position {
+    let end = span.end();
+    (end.line, end.column)
 }
 
 /// `file`'s [`GatedItems`] (empty for an unreadable file), kept while the
@@ -337,7 +429,7 @@ impl GatedCollector<'_> {
         let outer = self.gated;
         if !outer && (attrs_test_only(attrs) || attrs_test_harness(attrs)) {
             let span = node.span();
-            self.out.ranges.push((span.start().line, span.end().line));
+            self.out.ranges.push((start_of(span), end_of(span)));
             self.gated = true;
         }
         visit(self);
@@ -367,7 +459,7 @@ impl<'ast> syn::visit::Visit<'ast> for GatedCollector<'_> {
             if self.gated || attrs_test_only(attrs) {
                 self.out
                     .items
-                    .insert((ident.to_string(), ident.span().start().line));
+                    .insert((ident.to_string(), start_of(ident.span())));
             }
             return;
         }
@@ -403,13 +495,13 @@ impl<'ast> syn::visit::Visit<'ast> for GatedCollector<'_> {
     }
 }
 
-/// `(file, ident, line)` of a `#[derive(Schema)]` source identity
+/// `(file, ident, (line, column))` of a `#[derive(Schema)]` source identity
 /// (`<file>::<Ident>@<line>:<column>`, see `schema_impl`).
-fn parse_identity(identity: &str) -> Option<(&str, &str, usize)> {
+fn parse_identity(identity: &str) -> Option<(&str, &str, Position)> {
     let (path_ident, position) = identity.rsplit_once('@')?;
     let (file, ident) = path_ident.rsplit_once("::")?;
-    let line = position.split_once(':')?.0.parse().ok()?;
-    Some((file, ident, line))
+    let (line, column) = position.split_once(':')?;
+    Some((file, ident, (line.parse().ok()?, column.parse().ok()?)))
 }
 
 impl TestScope {
@@ -420,14 +512,14 @@ impl TestScope {
         identity: &str,
         items: &mut HashMap<String, std::rc::Rc<GatedItems>>,
     ) -> bool {
-        let Some((file, ident, line)) = parse_identity(identity) else {
+        let Some((file, ident, position)) = parse_identity(identity) else {
             return false;
         };
         self.file_test_only(Path::new(file))
             || items
                 .entry(file.to_owned())
                 .or_insert_with(|| gated_items(Path::new(file)))
-                .contains(ident, line)
+                .contains(ident, position)
     }
 }
 

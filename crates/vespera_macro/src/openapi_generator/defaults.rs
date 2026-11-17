@@ -453,6 +453,12 @@ fn may_exit_early(stmt: &syn::Stmt) -> bool {
 
     struct ExitFinder(bool);
     impl<'ast> Visit<'ast> for ExitFinder {
+        fn visit_macro(&mut self, _: &'ast syn::Macro) {
+            // A macro body is only tokens: a `return` or `?` inside it is not
+            // visible to this walk, so any macro before the tail may exit.
+            self.0 = true;
+        }
+
         fn visit_expr(&mut self, expr: &'ast syn::Expr) {
             if matches!(
                 expr,

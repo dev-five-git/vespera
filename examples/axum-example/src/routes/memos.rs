@@ -163,11 +163,18 @@ pub async fn get_memo_rel(
     };
     // The relation loads query the database (the example's in-memory one has
     // no `user` / `memo_comment` tables): a failed query is a `500`, never a
-    // handler panic.
+    // handler panic. The database's own text (table, column, driver detail)
+    // stays server-side: the caller gets a generic body.
     MemoResponseRel::from_model(model, app_state.db.as_ref())
         .await
         .map(Json)
-        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+        .map_err(|error| {
+            eprintln!("memo relation query failed: {error}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error".to_owned(),
+            )
+        })
 }
 
 #[vespera::route(get, path = "/{id}/detail")]

@@ -488,13 +488,9 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let absolute_path = temp_dir.path().to_string_lossy().to_string();
 
-        // When given an absolute path that exists, it should return it
+        // An absolute folder is returned unchanged, not joined under `src/`.
         let result = find_folder_path(&absolute_path).unwrap();
-        // The function tries src/{folder_name} first, then falls back to the folder_name directly
-        assert!(
-            result.to_string_lossy().contains(&absolute_path)
-                || result == Path::new(&absolute_path)
-        );
+        assert_eq!(result, PathBuf::from(&absolute_path));
     }
 
     #[test]

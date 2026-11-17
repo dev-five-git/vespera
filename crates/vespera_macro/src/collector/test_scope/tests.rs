@@ -200,7 +200,18 @@ fn documented_view_leaves_out_test_only_items() {
     let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", krate.path());
     let src = krate.path().join("src");
     let at = |file: &str, ident: &str, line: usize| {
-        Some(format!("{}::{ident}@{line}:11", src.join(file).display()))
+        // The identity names the ident's own column, as the derive records it
+        // (a same-name identity on a line without it keeps a placeholder).
+        let text = std::fs::read_to_string(src.join(file)).unwrap_or_default();
+        let column = text
+            .lines()
+            .nth(line - 1)
+            .and_then(|text| text.find(ident))
+            .unwrap_or(11);
+        Some(format!(
+            "{}::{ident}@{line}:{column}",
+            src.join(file).display()
+        ))
     };
     let mut metadata = CollectedMetadata::new();
     metadata.routes = vec![route("users.rs", "list"), route("users.rs", "debug")];
@@ -255,13 +266,17 @@ fn documented_view_leaves_out_test_only_items() {
 }
 
 #[rstest]
-#[case::unix("/src/models.rs::User@12:11", Some(("/src/models.rs", "User", 12)))]
-#[case::windows(r"C:\src\models.rs::User@3:0", Some((r"C:\src\models.rs", "User", 3)))]
+#[case::unix("/src/models.rs::User@12:11", Some(("/src/models.rs", "User", (12, 11))))]
+#[case::windows(r"C:\src\models.rs::User@3:0", Some((r"C:\src\models.rs", "User", (3, 0))))]
 #[case::no_position("src/models.rs::User", None)]
 #[case::no_ident("src/models.rs@1:0", None)]
 #[case::no_column("src/models.rs::User@1", None)]
 #[case::bad_line("src/models.rs::User@x:0", None)]
-fn source_identities_parse(#[case] identity: &str, #[case] expected: Option<(&str, &str, usize)>) {
+#[case::bad_column("src/models.rs::User@1:y", None)]
+fn source_identities_parse(
+    #[case] identity: &str,
+    #[case] expected: Option<(&str, &str, (usize, usize))>,
+) {
     assert_eq!(parse_identity(identity), expected);
 }
 
@@ -329,7 +344,9 @@ fn gated_scopes_nest_test_only_schemas() {
         ("InTokioTest", 33),
         ("InImplTest", 34),
     ] {
-        assert!(gated.contains(ident, line), "{ident}@{line} is test-only");
+        let at = position_of(&source, ident);
+        assert_eq!(at.0, line, "{ident} is on line {line}");
+        assert!(gated.contains(ident, at), "{ident}@{line} is test-only");
     }
     for (ident, line) in [
         ("OpenLocal", 10),
@@ -338,22 +355,77 @@ fn gated_scopes_nest_test_only_schemas() {
         ("After", 31),
         ("OpenAttr", 35),
     ] {
+        let at = position_of(&source, ident);
+        assert_eq!(at.0, line, "{ident} is on line {line}");
         assert!(
-            !gated.contains(ident, line),
+            !gated.contains(ident, at),
             "{ident}@{line} is not test-only"
         );
     }
+}
+
+/// `(line, column)` of the first whole-word `ident` in `source`, as
+/// `proc_macro2` reports a span start (0-based column, in characters).
+fn position_of(source: &str, ident: &str) -> (usize, usize) {
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let at = source
+        .match_indices(ident)
+        .map(|(at, _)| at)
+        .find(|&at| {
+            source[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !is_ident(c))
+                && source[at + ident.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(|c| !is_ident(c))
+        })
+        .expect("ident occurs in the source");
+    let line_start = source[..at].rfind('\n').map_or(0, |newline| newline + 1);
+    (
+        source[..at].matches('\n').count() + 1,
+        source[line_start..at].chars().count(),
+    )
 }
 
 /// A file whose only gate is a `#[test]` fn (no `cfg` anywhere) is still
 /// scanned: `cargo test` registers the schema, `cargo build` never does.
 #[test]
 fn bare_test_fn_without_cfg_gates_its_schemas() {
-    let krate = crate_with(&[(
-        "lib.rs",
-        "#[test]\nfn probe() { struct Probe {} }\npub struct Kept {}",
-    )]);
+    let source = "#[test]\nfn probe() { struct Probe {} }\npub struct Kept {}";
+    let krate = crate_with(&[("lib.rs", source)]);
     let gated = gated_items(&krate.path().join("src/lib.rs"));
-    assert!(gated.contains("Probe", 2));
-    assert!(!gated.contains("Kept", 3));
+    assert!(gated.contains("Probe", position_of(source, "Probe")));
+    assert!(!gated.contains("Kept", position_of(source, "Kept")));
+}
+
+/// A test-only range is matched by position: a struct on the same line as a
+/// gated module, after it, is not test-only (and one inside it is).
+#[test]
+fn gated_ranges_match_by_column_not_just_line() {
+    let source = "#[cfg(test)] mod t { pub struct Fixture {} } pub struct Public { pub id: i32 }";
+    let krate = crate_with(&[("lib.rs", source)]);
+    let gated = gated_items(&krate.path().join("src/lib.rs"));
+    assert!(gated.contains("Fixture", position_of(source, "Fixture")));
+    assert!(!gated.contains("Public", position_of(source, "Public")));
+}
+
+/// A `#[cfg(test)] #[path = ".."] mod` gates the file its path names, not a
+/// file named after the module (`support.rs` here stays production).
+#[test]
+fn path_attributed_test_module_gates_the_file_it_names() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "#[cfg(test)]\n#[path = \"fixtures.rs\"]\nmod support;\n",
+        ),
+        ("fixtures.rs", "pub struct Fixture {}"),
+        ("support.rs", "pub struct Kept {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(scope.file_test_only(&src.join("fixtures.rs")));
+    assert!(!scope.file_test_only(&src.join("support.rs")));
+    assert!(!scope.file_test_only(&src.join("lib.rs")));
 }

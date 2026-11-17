@@ -147,6 +147,17 @@ pub fn generate_and_write_openapi(
                         ),
                     ));
                 }
+            } else {
+                // The runtime docs merge the child unconditionally, so a merge
+                // the file cannot resolve must not be dropped from it silently.
+                return Err(syn::Error::new(
+                    merge_path.span(),
+                    format!(
+                        "OpenAPI merge: `{}` cannot be located because CARGO_MANIFEST_DIR is \
+                         not set, so its exported OpenAPI document cannot be found",
+                        display_merge_path(merge_path)
+                    ),
+                ));
             }
         }
     }
@@ -326,10 +337,13 @@ pub(super) struct SidecarSpecs {
 
 /// Load and hash-validate the sidecar spec files on a warm cache hit.
 ///
-/// Returns `None` when any expected sidecar is missing or fails its
-/// content-hash check — the caller must then treat the cache as a miss
-/// (a full regeneration rewrites both sidecars, so corruption
-/// self-heals on the next build).
+/// Returns `None` when any expected sidecar is missing, or when its stored
+/// metadata fingerprint no longer matches and its content does not hash to
+/// the expected value — the caller must then treat the cache as a miss (a
+/// full regeneration rewrites both sidecars, so corruption self-heals on the
+/// next build). A stored fingerprint that still matches accepts the file
+/// without hashing it: the metadata shortcut of `cache::sidecar_matches`, so
+/// content swapped behind an unchanged size and mtime is not detected here.
 pub(super) fn load_validated_sidecar_specs(
     tag: &str,
     spec_json_hash: Option<u64>,
@@ -422,3 +436,6 @@ pub(super) fn write_spec_for_embedding(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_info;

@@ -45,11 +45,17 @@ pub trait SourceIdentified {
     fn scope(&self) -> Option<&str>;
 }
 
-/// Whether two entries came from the same function in the same file (and the
-/// same scope inside it), treating `\` and `/` as equivalent separators.
-fn same_source<T: SourceIdentified>(left: &T, right: &T) -> bool {
+/// Whether two entries came from the same function in the same file,
+/// treating `\` and `/` as equivalent separators (scope not compared).
+fn same_fn_and_file<T: SourceIdentified>(left: &T, right: &T) -> bool {
     left.fn_name() == right.fn_name()
         && crate::file_utils::paths_equal_normalized(left.file_path(), right.file_path())
+}
+
+/// Whether two entries came from the same function in the same file (and the
+/// same scope inside it).
+fn same_source<T: SourceIdentified>(left: &T, right: &T) -> bool {
+    same_fn_and_file(left, right)
         && match (left.scope(), right.scope()) {
             (Some(left), Some(right)) => left == right,
             (None, None) => true,
@@ -57,10 +63,30 @@ fn same_source<T: SourceIdentified>(left: &T, right: &T) -> bool {
         }
 }
 
+/// Whether the IDE's current file text declares `info`'s function exactly
+/// once. Only the long-lived server keeps entries of edited-away text, so
+/// rustc never asks.
+fn single_declaration_in_ide<T: SourceIdentified>(info: &T) -> bool {
+    in_long_lived_server()
+        && info.file_path().is_some_and(|file| {
+            crate::schema_macro::file_cache::get_file_content(std::path::Path::new(file))
+                .is_some_and(|content| count_fn_declarations(&content, info.fn_name()) == 1)
+        })
+}
+
 /// Replace-insert one metadata entry in the current crate's bucket.
 ///
 /// A re-expansion of the same source item (same function name, same normalized
 /// file path) overwrites the previous entry; anything else is appended.
+///
+/// An entry whose scope is unknown next to a known-scope entry of the same
+/// function and file is a stale view of that function (an IDE expansion of
+/// the unsaved buffer). Inside the IDE, when the file declares the function
+/// once, the unknown entry is not kept beside the known one: a later save
+/// registers the known scope and would otherwise leave the stale entry behind
+/// as a twin, so `vespera!` would mount the function twice. A file declaring
+/// the name more than once, and rustc, keep both (a `macro_rules!`
+/// expansion of the same name is a different function).
 pub fn register<T: Clone + SourceIdentified>(storage: &CrateStorage<T>, info: T) {
     let mut guard = storage.lock().unwrap_or_else(PoisonError::into_inner);
     let bucket = Arc::make_mut(
@@ -73,9 +99,19 @@ pub fn register<T: Clone + SourceIdentified>(storage: &CrateStorage<T>, info: T)
         .find(|existing| same_source(&**existing, &info))
     {
         *existing = info;
-    } else {
-        bucket.push(info);
+        return;
     }
+    let rival = |existing: &T| {
+        existing.scope().is_some() != info.scope().is_some() && same_fn_and_file(existing, &info)
+    };
+    if bucket.iter().any(rival) && single_declaration_in_ide(&info) {
+        if info.scope().is_none() {
+            return;
+        }
+        bucket
+            .retain(|existing| !(existing.scope().is_none() && same_fn_and_file(existing, &info)));
+    }
+    bucket.push(info);
 }
 
 /// Snapshot of the current crate's bucket — a cheap `Arc` clone, so consumers
@@ -183,21 +219,30 @@ fn retain_declared_if<T: Clone + SourceIdentified>(
 /// unraw `name` (cron jobs store `r#match` as `match`) also matches its raw
 /// spelling `fn r#match`.
 fn declares_fn(content: &str, name: &str) -> bool {
+    count_fn_declarations(content, name) > 0
+}
+
+/// How many times `content` declares `fn <name>` (same matching as
+/// [`declares_fn`]).
+fn count_fn_declarations(content: &str, name: &str) -> usize {
     let is_ident = |c: char| c.is_alphanumeric() || c == '_';
-    content.match_indices(name).any(|(at, _)| {
-        let ends_ident = content[at + name.len()..]
-            .chars()
-            .next()
-            .is_none_or(|c| !is_ident(c));
-        let before = &content[..at];
-        let before = before.strip_suffix("r#").unwrap_or(before);
-        let keyword = before.trim_end();
-        ends_ident
-            && keyword.len() < before.len()
-            && keyword
-                .strip_suffix("fn")
-                .is_some_and(|rest| rest.chars().next_back().is_none_or(|c| !is_ident(c)))
-    })
+    content
+        .match_indices(name)
+        .filter(|&(at, _)| {
+            let ends_ident = content[at + name.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !is_ident(c));
+            let before = &content[..at];
+            let before = before.strip_suffix("r#").unwrap_or(before);
+            let keyword = before.trim_end();
+            ends_ident
+                && keyword.len() < before.len()
+                && keyword
+                    .strip_suffix("fn")
+                    .is_some_and(|rest| rest.chars().next_back().is_none_or(|c| !is_ident(c)))
+        })
+        .count()
 }
 
 #[cfg(test)]
@@ -355,6 +400,74 @@ mod tests {
 
         assert_eq!(payloads_for("__push_first"), vec!["first"]);
         assert_eq!(payloads_for("__push_second"), vec!["second"]);
+    }
+
+    fn located(
+        fn_name: &str,
+        file_path: &str,
+        scope: Option<&'static str>,
+        payload: &'static str,
+    ) -> TestEntry {
+        TestEntry {
+            scope,
+            ..entry(fn_name, file_path, payload)
+        }
+    }
+
+    /// `src/<name>.rs` holding `text`, with the file cache refreshed.
+    fn write_source(name: &str, text: &str) -> (tempfile::TempDir, String) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let file = temp.path().join(name);
+        std::fs::write(&file, text).unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let path = file.display().to_string();
+        (temp, path)
+    }
+
+    /// Edit without save: the IDE expands the buffer's `ide_list` with an
+    /// unknown scope, then the saved file registers it with a known scope.
+    /// The stale twin is gone, and so is a later unknown re-expansion.
+    #[test]
+    fn ide_stale_unknown_scope_entry_does_not_twin_the_saved_one() {
+        let (_temp, path) = write_source("ide_once.rs", "pub async fn ide_list() {}");
+        let _ide = test_ide::force();
+        register(
+            &TEST_STORAGE,
+            located("ide_list", &path, None, "stale-buffer"),
+        );
+        register(&TEST_STORAGE, located("ide_list", &path, Some(""), "saved"));
+        assert_eq!(payloads_for("ide_list"), vec!["saved"]);
+        register(&TEST_STORAGE, located("ide_list", &path, None, "again"));
+        assert_eq!(payloads_for("ide_list"), vec!["saved"]);
+    }
+
+    /// When the file declares the name twice, an unknown scope may be the
+    /// other declaration: both entries stay (IDE).
+    #[test]
+    fn ide_unknown_scope_entry_is_kept_when_the_name_is_declared_twice() {
+        let (_temp, path) = write_source(
+            "ide_twice.rs",
+            "pub fn twice_list() {}\nmod inner { pub fn twice_list() {} }",
+        );
+        let _ide = test_ide::force();
+        register(&TEST_STORAGE, located("twice_list", &path, None, "unknown"));
+        register(
+            &TEST_STORAGE,
+            located("twice_list", &path, Some(""), "known"),
+        );
+        assert_eq!(payloads_for("twice_list"), vec!["unknown", "known"]);
+    }
+
+    /// Outside the IDE (rustc) the unknown-scope entry is never dropped.
+    #[test]
+    fn rustc_keeps_unknown_scope_entry_beside_the_known_one() {
+        let (_temp, path) = write_source("rustc_once.rs", "pub fn rustc_list() {}");
+        register(&TEST_STORAGE, located("rustc_list", &path, None, "unknown"));
+        register(
+            &TEST_STORAGE,
+            located("rustc_list", &path, Some(""), "known"),
+        );
+        assert_eq!(payloads_for("rustc_list"), vec!["unknown", "known"]);
     }
 
     #[test]
