@@ -112,13 +112,102 @@ pub(super) fn prune_unreferenced_inputs(
     if !schemas.keys().any(|name| prunable(name)) {
         return;
     }
-    // Every component reachable from a request body.
-    let mut pending: Vec<String> = Vec::new();
-    for item in paths.values() {
-        // Serialization of these plain data types cannot fail.
-        let value = serde_json::to_value(item).unwrap_or_default();
-        collect_path_item_request_refs(&value, &mut pending);
+    let reached = reach(schemas, path_refs(paths).request);
+    schemas.retain(|name, _| !prunable(name) || reached.contains(name));
+}
+
+/// Give a request-only type its own name back: when a request body reaches
+/// a type's `{Name}Input` but nothing outside the request side reaches its
+/// `{Name}` (the response view), the request view takes over `{Name}` and
+/// every `{Name}Input` `$ref` (of `paths` and `schemas`) points at it, so no
+/// orphan response view is left behind. `Tree_i32.Input` → `Tree_i32`
+/// alike. A type also returned keeps both components.
+///
+/// The response side is everything a path reaches outside its request
+/// parameters / bodies, plus every component the request side does not
+/// reach (an unused type stays documented, with what it references) — not
+/// the `{Name}` views being replaced, which only their own (also replaced)
+/// views reference: `CreateOrder { items: Vec<LineItem> }` used only as a
+/// request body gives `CreateOrder` and `LineItem`.
+///
+/// Runs after [`prune_unreferenced_inputs`] (every remaining input is
+/// reached by a request).
+pub(super) fn collapse_request_only_inputs(
+    schemas: &mut BTreeMap<String, vespera_core::schema::Schema>,
+    paths: &mut BTreeMap<String, vespera_core::route::PathItem>,
+    input_names: &request_view::InputNames,
+) -> syn::Result<()> {
+    // Input component → the component whose request view it is.
+    let mut inputs: BTreeMap<&str, &str> = input_names
+        .iter()
+        .filter(|(component, input)| {
+            schemas.contains_key(component.as_str()) && schemas.contains_key(input.as_str())
+        })
+        .map(|(component, input)| (input.as_str(), component.as_str()))
+        .collect();
+    for name in schemas.keys() {
+        if let Some(component) = name.strip_suffix(".Input") {
+            inputs.insert(name, component);
+        }
     }
+    if inputs.is_empty() {
+        return Ok(());
+    }
+    let refs = path_refs(paths);
+    let request = reach(schemas, refs.request);
+    let views: BTreeSet<&str> = inputs.values().copied().collect();
+    let mut roots = refs.other;
+    roots.extend(
+        schemas
+            .keys()
+            .filter(|name| {
+                !request.contains(*name)
+                    && !views.contains(name.as_str())
+                    && !inputs.contains_key(name.as_str())
+            })
+            .cloned(),
+    );
+    let response = reach(schemas, roots);
+    let renames: BTreeMap<String, String> = inputs
+        .into_iter()
+        .filter(|(_, component)| !response.contains(*component))
+        .map(|(input, component)| (input.to_string(), component.to_string()))
+        .collect();
+    if renames.is_empty() {
+        return Ok(());
+    }
+    for (input, component) in &renames {
+        if let Some(schema) = schemas.remove(input) {
+            schemas.insert(component.clone(), schema);
+        }
+    }
+    // A plain-data round-trip (cannot fail).
+    let rename = |value: serde_json::Result<serde_json::Value>| {
+        value.map(|mut value| {
+            crate::router_codegen::rewrite_schema_refs(&mut value, &renames);
+            value
+        })
+    };
+    let rebuild_error = |error: serde_json::Error| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("vespera: failed to rename request-only input components: {error}"),
+        )
+    };
+    *schemas = rename(serde_json::to_value(&*schemas))
+        .and_then(serde_json::from_value)
+        .map_err(rebuild_error)?;
+    *paths = rename(serde_json::to_value(&*paths))
+        .and_then(serde_json::from_value)
+        .map_err(rebuild_error)?;
+    Ok(())
+}
+
+/// Every component reachable from `pending` (its `$ref`s, transitively).
+fn reach(
+    schemas: &BTreeMap<String, vespera_core::schema::Schema>,
+    mut pending: Vec<String>,
+) -> BTreeSet<String> {
     let mut reached: BTreeSet<String> = BTreeSet::new();
     while let Some(name) = pending.pop() {
         if let Some(schema) = schemas.get(&name)
@@ -128,7 +217,28 @@ pub(super) fn prune_unreferenced_inputs(
             collect_component_refs(&value, &mut pending);
         }
     }
-    schemas.retain(|name, _| !prunable(name) || reached.contains(name));
+    reached
+}
+
+/// The component `$ref`s of `paths`, split by side.
+struct PathRefs {
+    /// Request parameters and bodies (see [`collect_path_item_refs`]).
+    request: Vec<String>,
+    /// Everything else (responses, callbacks, ...).
+    other: Vec<String>,
+}
+
+fn path_refs(paths: &BTreeMap<String, vespera_core::route::PathItem>) -> PathRefs {
+    let mut refs = PathRefs {
+        request: Vec::new(),
+        other: Vec::new(),
+    };
+    for item in paths.values() {
+        // Serialization of these plain data types cannot fail.
+        let value = serde_json::to_value(item).unwrap_or_default();
+        collect_path_item_refs(&value, &mut refs);
+    }
+    refs
 }
 
 /// Component names of every `$ref` inside `value`.
@@ -155,24 +265,28 @@ fn collect_component_refs(value: &serde_json::Value, out: &mut Vec<String>) {
     }
 }
 
-/// Request-side `$ref`s of one serialized path item: the path-level
-/// `parameters`, and each operation's `parameters` and `requestBody` (both
-/// deserialized). Only operation-level keys count: a response schema with a
-/// property named `parameters` or `requestBody` is not a request.
-fn collect_path_item_request_refs(item: &serde_json::Value, out: &mut Vec<String>) {
+/// The `$ref`s of one serialized path item, split into [`PathRefs`]: the
+/// request side is the path-level `parameters`, and each operation's
+/// `parameters` and `requestBody` (both deserialized). Only operation-level
+/// keys count: a response schema with a property named `parameters` or
+/// `requestBody` is not a request.
+fn collect_path_item_refs(item: &serde_json::Value, refs: &mut PathRefs) {
     const METHODS: [&str; 8] = [
         "get", "put", "post", "delete", "options", "head", "patch", "trace",
     ];
     for (key, child) in item.as_object().into_iter().flatten() {
         if key == "parameters" {
-            collect_component_refs(child, out);
+            collect_component_refs(child, &mut refs.request);
         } else if METHODS.contains(&key.as_str())
             && let Some(operation) = child.as_object()
         {
             for (op_key, op_child) in operation {
-                if op_key == "parameters" || op_key == "requestBody" {
-                    collect_component_refs(op_child, out);
-                }
+                let out = if op_key == "parameters" || op_key == "requestBody" {
+                    &mut refs.request
+                } else {
+                    &mut refs.other
+                };
+                collect_component_refs(op_child, out);
             }
         }
     }

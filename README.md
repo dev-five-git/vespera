@@ -222,7 +222,9 @@ one-sided `skip_deserializing` / `skip_serializing`, or
 `rename(deserialize = "..")` — request bodies reference a separate
 `{Name}Input` component (defaulted fields optional, `skip_deserializing`
 fields absent, deserialize names), FastAPI-style, while responses keep
-`{Name}`. Types whose two views are identical get no extra component.
+`{Name}`. Types whose two views are identical get no extra component, and a
+type that is only read (no response reaches it) keeps its own name: `{Name}`
+is then its request view and no `{Name}Input` is emitted.
 `#[schema(name = "X")]` yields `XInput`; if that name is already taken the
 first free `XInput2`, `XInput3`, … is used.
 
@@ -250,7 +252,7 @@ pub struct Rgb { pub r: u8, pub g: u8, pub b: u8 }
 | Attribute | Documented as |
 |---|---|
 | field `#[schema(value_type = T)]` | `T`'s schema (constraints such as `minimum` still apply) |
-| field `#[serde(with / serialize_with / deserialize_with)]` without `value_type` | `{}` (any value) with a description saying the shape is unknown — never the Rust type. One-sided `serialize_with` / `deserialize_with` only affects that direction (`{Name}Input` for requests); an `Option` read by a custom deserializer is `required` in requests, as in serde |
+| field `#[serde(with / serialize_with / deserialize_with)]` without `value_type` | responses (`with` / `serialize_with`): `{}` (any value) with a description saying the shape is unknown; requests: the field's Rust type, like any other field (add `value_type` when the function reads another shape). An `Option` read by a custom deserializer is `required` in requests, as in serde |
 | container `#[serde(into = "T")]` | responses use `T`; requests keep the fields (`{Name}Input`) |
 | container `#[serde(from = "T")]` / `try_from` | requests use `T` (`{Name}Input`); responses keep the fields |
 | container `#[schema(value_type = T)]` | `T` in both directions (wins over `into` / `from`) |

@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/parser/schema/struct_schema/tests_serde_fidelity.rs
-assertion_line: 209
 expression: both_views(src)
 ---
 struct P(#[serde(with = "ts")] DateTime<Utc>, #[schema(value_type = String)] Id, #[serde(serialize_with = "f")] u8);
@@ -24,7 +23,8 @@ request: {
   "type": "array",
   "prefixItems": [
     {
-      "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+      "type": "string",
+      "format": "date-time"
     },
     {
       "type": "string"

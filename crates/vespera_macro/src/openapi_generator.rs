@@ -21,6 +21,8 @@ mod route_claims;
 mod tests_accuracy;
 #[cfg(test)]
 mod tests_parser_views;
+#[cfg(test)]
+mod tests_request_only;
 
 use component_schemas::{
     build_file_cache, build_schema_lookups, build_struct_file_index, parse_component_schemas,
@@ -145,7 +147,7 @@ pub fn try_generate_openapi_doc_with_metadata(
         }
     };
     stage("component schemas");
-    let (paths, all_tags) = build_path_items(
+    let (mut paths, all_tags) = build_path_items(
         metadata,
         &known_schema_names,
         &struct_definitions,
@@ -158,6 +160,7 @@ pub fn try_generate_openapi_doc_with_metadata(
     crate::parser::schema::request_view::install(std::sync::Arc::default());
     install_stored_defaults(std::sync::Arc::default());
     component_schemas::prune_unreferenced_inputs(&mut schemas, &paths, &input_names);
+    component_schemas::collapse_request_only_inputs(&mut schemas, &mut paths, &input_names)?;
     component_schemas::reject_internally_tagged_in_document(&schemas, &paths)?;
     let security_config = security_config.unwrap_or_default();
     let tags = build_tags(all_tags, security_config.tag_descriptions.as_ref());

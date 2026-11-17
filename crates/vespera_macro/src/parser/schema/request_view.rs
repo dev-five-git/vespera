@@ -17,8 +17,9 @@
 //! - the container is documented through a different type per direction
 //!   (`#[serde(into = "A")]` and/or `from` / `try_from = "B"`, see
 //!   `wire_override`),
-//! - a field has a one-sided `serialize_with` / `deserialize_with` (without
-//!   `#[schema(value_type)]`), or is an `Option` read through a custom
+//! - a field has a `with` / `serialize_with` (without
+//!   `#[schema(value_type)]`: the request view documents the Rust type),
+//!   or is an `Option` read through a custom
 //!   deserializer (serde then requires it),
 //! - a field has `#[serde(alias)]` names (accepted keys), or a non-`Option`
 //!   `skip_serializing_if` field without `default` (optional on output,
@@ -78,7 +79,7 @@ use super::{
         extract_tag, extract_transparent, extract_untagged,
     },
     struct_schema::{flattened_member, peel},
-    wire_override::container_override_type,
+    wire_override::{codec_hides_shape, container_override_type},
 };
 use crate::schema_macro::type_utils::is_option_type;
 
@@ -271,12 +272,22 @@ fn container_override_differs(attrs: &[syn::Attribute]) -> bool {
 }
 
 /// The field's documented schema or `required`-ness differs per direction
-/// because of a custom serde function: a one-sided `serialize_with` /
-/// `deserialize_with` without `value_type`, or an `Option` read through a
-/// custom function (serde no longer defaults it to `None` when absent).
+/// because of a custom serde function: a serialize-side one (`with` /
+/// `serialize_with`) without `value_type` hides the response shape while
+/// the request view documents the Rust type (see `wire_override`), and an
+/// `Option` read through a custom function is required (serde no longer
+/// defaults it to `None` when absent). A `deserialize_with` alone documents
+/// the same type on both sides.
 fn field_codec_differs(field: &syn::Field) -> bool {
-    one_sided_codec(&field.attrs)
+    codec_differs(&field.attrs)
         || (extract_field_codec(&field.attrs).deserialize && is_option_type(&field.ty))
+}
+
+/// A field's custom serde function documents a different schema per side
+/// (see [`field_codec_differs`]).
+fn codec_differs(attrs: &[syn::Attribute]) -> bool {
+    codec_hides_shape(attrs, SerdeSide::Serialize)
+        && extract_schema_constraints(attrs).value_type.is_none()
 }
 
 /// The type's own attributes make its request view differ. `flat` classifies
@@ -550,13 +561,14 @@ fn field_differs(field: &syn::Field) -> bool {
 }
 
 /// A tuple-struct / tuple-variant position reads differently than it
-/// writes: skipped on one side only (the array length differs), a one-sided
-/// custom serde function, or a type whose schema differs per side.
+/// writes: skipped on one side only (the array length differs), a
+/// serialize-side custom serde function, or a type whose schema differs
+/// per side.
 fn positional_differs(field: &syn::Field) -> bool {
     let skip = extract_serde_skip_flags(&field.attrs);
     !skip.fully_skipped()
         && (skip.skip_serializing != skip.skip_deserializing
-            || one_sided_codec(&field.attrs)
+            || codec_differs(&field.attrs)
             || field_type_differs(field))
 }
 
@@ -580,7 +592,7 @@ fn tuple_differs(fields: &syn::FieldsUnnamed, container_default: bool) -> bool {
                 })))
 }
 
-/// A one-sided `serialize_with` / `deserialize_with` (field or variant)
+/// A one-sided variant-level `serialize_with` / `deserialize_with`
 /// without `#[schema(value_type)]`.
 fn one_sided_codec(attrs: &[syn::Attribute]) -> bool {
     let codec = extract_field_codec(attrs);

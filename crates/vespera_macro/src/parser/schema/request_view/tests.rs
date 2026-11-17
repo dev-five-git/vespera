@@ -214,7 +214,12 @@ fn scoped_names(
     false
 )]
 #[case::enum_into(r#"#[serde(into = "String")] enum E { A }"#, true)]
-#[case::with_both_sides(r#"struct A { #[serde(with = "m")] x: u8 }"#, false)]
+// The response view hides a `with` / `serialize_with` field's shape, the
+// request view documents its Rust type; a `deserialize_with` alone documents
+// the Rust type on both sides.
+#[case::with_both_sides(r#"struct A { #[serde(with = "m")] x: u8 }"#, true)]
+#[case::deserialize_with(r#"struct A { #[serde(deserialize_with = "f")] x: u8 }"#, false)]
+#[case::tuple_deserialize_with(r#"struct A(#[serde(deserialize_with = "f")] u8);"#, false)]
 #[case::serialize_with(r#"struct A { #[serde(serialize_with = "f")] x: u8 }"#, true)]
 #[case::deserialize_with_value_type(
     r#"struct A { #[serde(deserialize_with = "f")] #[schema(value_type = u8)] x: u8 }"#,

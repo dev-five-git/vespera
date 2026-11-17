@@ -315,7 +315,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UpdateConfigRequestInput"
+                "$ref": "#/components/schemas/UpdateConfigRequest"
               }
             }
           }
@@ -800,7 +800,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UserListRequestInput"
+                "$ref": "#/components/schemas/UserListRequest"
               }
             }
           }
@@ -831,7 +831,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AdvancedSearchRequestInput"
+                "$ref": "#/components/schemas/AdvancedSearchRequest"
               }
             }
           }
@@ -3031,7 +3031,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreateUuidItemRequestInput"
+                "$ref": "#/components/schemas/CreateUuidItemRequest"
               }
             }
           }
@@ -3674,26 +3674,6 @@
           }
         ]
       },
-      "AdvancedSearchRequestInput": {
-        "description": "Request combining multiple flattened structs",
-        "allOf": [
-          {
-            "type": "object",
-            "properties": {
-              "query": {
-                "type": "string",
-                "description": "Search query string"
-              }
-            },
-            "required": [
-              "query"
-            ]
-          },
-          {
-            "$ref": "#/components/schemas/PaginationInput"
-          }
-        ]
-      },
       "Audit": {
         "type": "object",
         "description": "Optional audit block flattened into [`Telemetry`].",
@@ -3730,6 +3710,7 @@
             "type": "string"
           },
           "flagship": {
+            "description": "`HasOne` selected through the target's `FlagshipOf` relation.",
             "anyOf": [
               {
                 "$ref": "#/components/schemas/BakerySchema_Flagship"
@@ -3737,8 +3718,7 @@
               {
                 "type": "null"
               }
-            ],
-            "description": "`HasOne` selected through the target's `FlagshipOf` relation."
+            ]
           },
           "id": {
             "type": "integer",
@@ -4494,35 +4474,6 @@
             "type": "array",
             "items": {
               "type": "string"
-            },
-            "uniqueItems": true
-          }
-        },
-        "required": [
-          "name",
-          "tags"
-        ]
-      },
-      "CreateUuidItemRequestInput": {
-        "type": "object",
-        "description": "UUID item model for testing UUID format in OpenAPI",
-        "properties": {
-          "externalRef": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "uuid",
-            "description": "External reference UUID"
-          },
-          "name": {
-            "type": "string",
-            "description": "Item name"
-          },
-          "tags": {
-            "type": "array",
-            "items": {
-              "type": "string"
             }
           }
         },
@@ -5064,7 +5015,13 @@
         "description": "Timestamps written by custom serde functions.",
         "properties": {
           "checksum": {
-            "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "uint8",
+              "minimum": 0,
+              "maximum": 255
+            }
           },
           "createdAt": {
             "type": "integer",
@@ -6232,28 +6189,6 @@
             "description": "Items per page",
             "default": 20
           }
-        },
-        "required": [
-          "page",
-          "perPage"
-        ]
-      },
-      "PaginationInput": {
-        "type": "object",
-        "description": "Common pagination parameters that can be reused across requests",
-        "properties": {
-          "page": {
-            "type": "integer",
-            "format": "int32",
-            "description": "Page number (1-indexed)",
-            "default": 1
-          },
-          "perPage": {
-            "type": "integer",
-            "format": "int32",
-            "description": "Items per page",
-            "default": 20
-          }
         }
       },
       "Paging": {
@@ -7230,76 +7165,6 @@
             "format": "char"
           },
           "discountRate": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "decimal"
-          },
-          "maxItems": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0
-          },
-          "maxPrice": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "decimal"
-          },
-          "minPrice": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "decimal"
-          },
-          "priority": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int32"
-          },
-          "retryCount": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "uint8",
-            "minimum": 0,
-            "maximum": 255
-          },
-          "separator": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "char"
-          },
-          "taxRate": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "decimal"
-          }
-        }
-      },
-      "UpdateConfigRequestInput": {
-        "type": "object",
-        "properties": {
-          "delimiter": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "char"
-          },
-          "discountRate": {
             "anyOf": [
               {
                 "anyOf": [
@@ -7585,38 +7450,10 @@
                 "description": "Sort order: \"asc\" or \"desc\"",
                 "default": "asc"
               }
-            },
-            "required": [
-              "sort"
-            ]
-          },
-          {
-            "$ref": "#/components/schemas/Pagination"
-          }
-        ]
-      },
-      "UserListRequestInput": {
-        "description": "Request with flattened pagination parameters\n\nThe pagination fields (page, per_page) are merged into this struct's JSON representation.",
-        "allOf": [
-          {
-            "type": "object",
-            "properties": {
-              "filter": {
-                "type": [
-                  "string",
-                  "null"
-                ],
-                "description": "Filter users by name (optional)"
-              },
-              "sort": {
-                "type": "string",
-                "description": "Sort order: \"asc\" or \"desc\"",
-                "default": "asc"
-              }
             }
           },
           {
-            "$ref": "#/components/schemas/PaginationInput"
+            "$ref": "#/components/schemas/Pagination"
           }
         ]
       },

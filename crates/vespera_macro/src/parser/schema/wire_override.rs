@@ -5,11 +5,15 @@
 //!   `#[serde(from = "T")]` / `try_from` deserializes from `T` (the request
 //!   view, see [`super::request_view`]); an explicit container
 //!   `#[schema(value_type = ..)]` wins over both.
-//! - A field written / read by a custom serde function (`with`,
-//!   `serialize_with`, `deserialize_with`) without a `value_type` has an
-//!   unknowable shape. It is documented as any value (`{}`) with a
-//!   description saying why — never as the declared type, which would be a
-//!   confident lie (`ts_seconds` turns a date-time string into an integer).
+//! - A field WRITTEN by a custom serde function (`with`, `serialize_with`)
+//!   without a `value_type` has an unknowable output shape: the response
+//!   view documents it as any value (`{}`) with a description saying why.
+//! - A field READ by one (`with`, `deserialize_with`) is documented from its
+//!   Rust type in the request view, like a plain field: a custom
+//!   deserializer most often reads the type's own shape (the
+//!   `Option<Option<T>>` "absent vs `null`" helpers), and an untyped request
+//!   field is useless to a generated client. A `value_type` documents any
+//!   other shape (`ts_seconds`: `#[schema(value_type = i64)]`).
 
 use std::{
     borrow::Borrow,
@@ -46,13 +50,21 @@ pub fn field_schema_ref(
     if let Some(value_type) = &constraints.value_type {
         return parse_type_to_schema_ref(&value_type.0, known_schemas, struct_definitions);
     }
-    if extract_field_codec(&field.attrs).custom_for(side) {
+    if codec_hides_shape(&field.attrs, side) {
         return SchemaRef::Inline(Box::new(Schema {
             description: Some(CUSTOM_CODEC_DESCRIPTION.to_string()),
             ..Schema::default()
         }));
     }
     parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions)
+}
+
+/// A field's custom serde function hides its wire shape on `side`: only a
+/// serialize-side one (`with` / `serialize_with`) — the request view
+/// documents a field read by one from its Rust type (see the module docs).
+/// `value_type` / `#[schema(any)]` are the caller's to check.
+pub fn codec_hides_shape(attrs: &[syn::Attribute], side: SerdeSide) -> bool {
+    side == SerdeSide::Serialize && extract_field_codec(attrs).serialize
 }
 
 /// The type a container is documented as on `side` instead of its own

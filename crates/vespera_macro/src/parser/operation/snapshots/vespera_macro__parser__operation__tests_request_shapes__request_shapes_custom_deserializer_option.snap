@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/parser/operation/tests_request_shapes.rs
-assertion_line: 147
 expression: "serde_json::to_string_pretty(&summary).unwrap()"
 ---
 {
@@ -11,23 +10,39 @@ expression: "serde_json::to_string_pretty(&summary).unwrap()"
       "name": "since",
       "required": true,
       "schema": {
-        "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
       }
     },
     {
+      "explode": true,
       "in": "query",
       "name": "tags",
       "required": true,
       "schema": {
-        "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
-      }
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "style": "form"
     },
     {
       "in": "query",
       "name": "until",
       "required": false,
       "schema": {
-        "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
       }
     },
     {

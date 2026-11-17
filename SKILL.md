@@ -253,7 +253,7 @@ pub async fn reindex() {}
 | `url::Url` | `string` + `format: uri` | |
 | `serde_json::Value`, SeaORM `Json` / `JsonValue` | `{}` | Any JSON value (a `Json<T>` with a type argument is axum's wrapper) |
 | field `#[schema(value_type = T)]` | `T`'s schema | Use with `#[serde(with = ..)]` etc. |
-| field `#[serde(with / serialize_with / deserialize_with)]` without `value_type` | `{}` + description note | Shape unknown; per direction for one-sided keys |
+| field `#[serde(with / serialize_with / deserialize_with)]` without `value_type` | responses: `{}` + description note; requests: the Rust type | Response shape unknown (`with` / `serialize_with`); request views document the field's type |
 | container `#[serde(into = "T")]` / `from` / `try_from` | `T` for responses / requests | Other direction keeps the fields (`{Name}Input`); container `#[schema(value_type = T)]` = both |
 | `std::time::Duration` | `object` `{secs, nanos}` | serde's std shape; other qualified `Duration`s → `{}` |
 | `()` | empty response | `200` without `content` (use `status = 204` for No Content) |
@@ -646,7 +646,7 @@ vespera::schema_type!(Schema from Model, name = "MemoSchema");
 
 **Required Logic:** `required` follows nullability (`Option<T>`) and what serde writes: `skip_serializing` / `skip_serializing_if` fields are not required in the response view.
 
-**Request views (`{Name}Input`):** when serde reads a type differently than it writes it (`#[serde(default)]` on a field or the container, one-sided `skip_deserializing` / `skip_serializing`, `rename(deserialize = ..)` / `rename_all(deserialize = ..)` differing from the serialize side, a container `into` / `from` / `try_from` documented through a different type per direction, a one-sided `serialize_with` / `deserialize_with`, an `Option` read by a custom deserializer (required in requests), or a field type that itself has an input view), request bodies (`Json` / `Form` / `TypedMultipart`) reference an extra `{Name}Input` component: defaulted fields are optional, `skip_deserializing` fields are absent, keys use the deserialize name. `{Name}` stays the response view. Nothing extra is emitted when both views are identical or no request body uses the type. `#[schema(name = "X")]` gives `XInput`; if that name is taken, `XInput2`, `XInput3`, ….
+**Request views (`{Name}Input`):** when serde reads a type differently than it writes it (`#[serde(default)]` on a field or the container, one-sided `skip_deserializing` / `skip_serializing`, `rename(deserialize = ..)` / `rename_all(deserialize = ..)` differing from the serialize side, a container `into` / `from` / `try_from` documented through a different type per direction, a `with` / `serialize_with` (response shape unknown, request typed), an `Option` read by a custom deserializer (required in requests), or a field type that itself has an input view), request bodies (`Json` / `Form` / `TypedMultipart`) reference an extra `{Name}Input` component: defaulted fields are optional, `skip_deserializing` fields are absent, keys use the deserialize name. `{Name}` stays the response view. Nothing extra is emitted when both views are identical or no request body uses the type; a type only request bodies reach (no response, directly or transitively) keeps its name — `{Name}` is then its request view, no `{Name}Input`. `#[schema(name = "X")]` gives `XInput`; if that name is taken, `XInput2`, `XInput3`, ….
 
 ### Same-File Relation Adapters
 

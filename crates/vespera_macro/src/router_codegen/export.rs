@@ -249,7 +249,8 @@ pub fn namespace_export_schemas(
     Ok(())
 }
 
-fn rewrite_schema_refs(value: &mut serde_json::Value, renames: &BTreeMap<String, String>) {
+/// Point every `#/components/schemas/{old}` `$ref` inside `value` at `renames[old]`.
+pub fn rewrite_schema_refs(value: &mut serde_json::Value, renames: &BTreeMap<String, String>) {
     match value {
         serde_json::Value::Object(object) => {
             if let Some(serde_json::Value::String(reference)) = object.get_mut("$ref")

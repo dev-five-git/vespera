@@ -1,0 +1,21 @@
+---
+source: crates/vespera_macro/src/openapi_generator/tests_request_only.rs
+expression: "serde_json::to_string_pretty(request).unwrap()"
+---
+{
+  "properties": {
+    "productionEndDate": {
+      "default": null,
+      "format": "date",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "title": {
+      "default": "",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
