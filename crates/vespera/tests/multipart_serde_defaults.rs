@@ -182,6 +182,9 @@ async fn multipart_schema_type_keeps_the_source_defaults_skip_and_strict() {
     assert_eq!(patch.title, None);
     assert_eq!(patch.n, None);
     assert_eq!(patch.tags, ["fallback"]);
+    // The skipped unwrapped field takes the container default (3), not the
+    // type's `Default` (0).
+    assert_eq!(patch.cache, 3);
     let patch: SourcePatch = parse(&[("title", "t")]).await.unwrap();
     assert_eq!(patch.title.as_deref(), Some("t"));
     assert_eq!(patch.n, None);

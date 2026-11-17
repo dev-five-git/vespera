@@ -5,7 +5,7 @@
 
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, Ordering, fence},
 };
 
 use jni::objects::{Global, JObject};
@@ -110,7 +110,15 @@ impl PullToken {
     /// finished (or never started) and no Java array is in flight.
     #[must_use]
     pub fn producer_dropped(&self) -> bool {
-        Arc::strong_count(&self.0) == 1
+        // `Arc::strong_count` loads with `Relaxed`, so reading `1` does not by
+        // itself order the producer's last writes into the pooled array (done
+        // before its closure dropped with a `Release` decrement) before the
+        // caller's reuse. The `Acquire` fence pairs with that decrement.
+        let dropped = Arc::strong_count(&self.0) == 1;
+        if dropped {
+            fence(Ordering::Acquire);
+        }
+        dropped
     }
 }
 
