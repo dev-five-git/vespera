@@ -181,7 +181,6 @@ mod tests {
         Some("#/components/schemas/Value")
     )]
     #[case("Result<String, i32>", false, Some(SchemaType::Object), None)]
-    #[case("crate::Value", false, None, None)]
     #[case("(i32, bool)", false, Some(SchemaType::Array), None)]
     fn test_parse_type_to_schema_ref_additional_cases(
         #[case] ty_src: &str,
@@ -216,10 +215,24 @@ mod tests {
                         assert_eq!(schema.schema_type, expected_type);
                     }
                 }
-                SchemaRef::Ref(_) => {
-                    assert!(ty_src.contains("Value"));
+                SchemaRef::Ref(reference) => {
+                    panic!("expected an inline schema for {ty_src}, got $ref {reference:?}");
                 }
             },
+        }
+    }
+
+    /// A qualified path to a known schema is a `$ref` to it, not the
+    /// unconstrained `{}` a foreign `Value` would be.
+    #[test]
+    fn qualified_known_schema_is_a_ref_to_it() {
+        let known: HashSet<String> = HashSet::from(["Value".to_string()]);
+        let ty: Type = syn::parse_str("crate::Value").unwrap();
+        match parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions()) {
+            SchemaRef::Ref(reference) => {
+                assert_eq!(reference.ref_path, "#/components/schemas/Value");
+            }
+            SchemaRef::Inline(schema) => panic!("expected a $ref, got inline {schema:?}"),
         }
     }
 
@@ -503,12 +516,11 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_type_to_schema_ref_module_schema_with_empty_parent() {
-        // Test the branch for module::Schema where PascalCase conversion handles edge case
-        // Use a path like `::Schema` which has empty segments before Schema
+    fn test_parse_type_to_schema_ref_bare_known_schema_is_a_ref() {
+        // A bare `Schema` (one segment) takes the generic known-schema path; the
+        // `module::Schema` branch is covered by `..._module_schema_path_pascal`.
         let ty: Type = syn::parse_str("Schema").unwrap();
 
-        // Register schemas to trigger the module::Schema lookup path
         let mut known = HashSet::new();
         known.insert("Schema".to_string());
 

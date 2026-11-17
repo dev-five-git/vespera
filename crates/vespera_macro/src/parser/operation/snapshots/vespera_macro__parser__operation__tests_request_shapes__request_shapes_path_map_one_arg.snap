@@ -1,6 +1,6 @@
 ---
 source: crates/vespera_macro/src/parser/operation/tests_request_shapes.rs
-assertion_line: 147
+assertion_line: 155
 expression: "serde_json::to_string_pretty(&summary).unwrap()"
 ---
 {
@@ -10,7 +10,9 @@ expression: "serde_json::to_string_pretty(&summary).unwrap()"
       "in": "path",
       "name": "a",
       "required": true,
-      "schema": {}
+      "schema": {
+        "type": "string"
+      }
     }
   ],
   "requestBody": null

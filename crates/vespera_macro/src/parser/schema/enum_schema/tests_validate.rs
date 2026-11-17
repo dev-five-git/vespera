@@ -56,7 +56,10 @@ fn codec_and_value_type_payloads(#[case] variant: &str, #[case] is_error: bool) 
 #[case::parenthesized("(String)", true)]
 #[case::option_str_ref("Option<&'static str>", true)]
 #[case::option_parenthesized("Option<(u8)>", true)]
-#[case::option_array("Option<[u8; 2]>", false)]
+#[case::option_array("Option<[u8; 2]>", true)]
+// `None` / a sequence / a map cannot be an internally tagged newtype payload
+// either: an `Option` wrapping any of them is rejected like the bare type.
+#[case::option_vec("Option<Vec<i32>>", true)]
 #[case::qualified_self("<T as Trait>::Output", false)]
 #[case::fn_pointer("fn() -> i32", false)]
 // `Cow<T>` serializes as `T`: a string payload is rejected, a user type is

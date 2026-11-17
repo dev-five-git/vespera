@@ -296,24 +296,11 @@ fn is_unambiguous_non_object(ty: &syn::Type) -> bool {
             };
             match ident.as_str() {
                 "Vec" | "VecDeque" | "LinkedList" | "BinaryHeap" | "HashSet" | "BTreeSet" => true,
-                "Option" => arg.is_some_and(is_primitive_type),
-                "Box" | "Rc" | "Arc" | "Cow" => arg.is_some_and(is_unambiguous_non_object),
+                "Option" | "Box" | "Rc" | "Arc" | "Cow" => {
+                    arg.is_some_and(is_unambiguous_non_object)
+                }
                 _ => is_primitive_ident(&ident),
             }
-        }
-        _ => false,
-    }
-}
-
-/// `true` for a primitive (`bool`, integers, floats, `char`, `str`,
-/// `String`), possibly behind `&`.
-fn is_primitive_type(ty: &syn::Type) -> bool {
-    match ty {
-        syn::Type::Reference(reference) => is_primitive_type(&reference.elem),
-        syn::Type::Paren(paren) => is_primitive_type(&paren.elem),
-        syn::Type::Group(group) => is_primitive_type(&group.elem),
-        syn::Type::Path(type_path) if type_path.qself.is_none() => {
-            std_path_ident(&type_path.path).is_some_and(|(ident, _)| is_primitive_ident(&ident))
         }
         _ => false,
     }

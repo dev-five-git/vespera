@@ -312,6 +312,10 @@ fn escape_regex_escapes_every_syntax_character() {
 #[case::brace_leading_comma(r"a{,5}", false)]
 #[case::brace_two_commas(r"a{1,2,3}", false)]
 #[case::brace_letter(r"a{x}", false)]
+// Round 20: an empty `{}` holds no count, which is not a valid quantifier
+// (the `u`-mode ECMA-262 grammar rejects it, and so does the regex crate).
+#[case::brace_empty(r"a{}", false)]
+#[case::brace_comma_only(r"a{,}", false)]
 fn ecma_compatible_patterns(#[case] pattern: &str, #[case] expected: bool) {
     assert_eq!(is_ecma_compatible(pattern), expected, "{pattern}");
 }
