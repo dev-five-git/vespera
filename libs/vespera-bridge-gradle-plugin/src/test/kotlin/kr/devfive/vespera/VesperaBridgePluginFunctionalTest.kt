@@ -307,6 +307,31 @@ class VesperaBridgePluginFunctionalTest {
         assertEquals("musl", resource("linux-x86_64-musl/libdemo.so").readText())
     }
 
+    /**
+     * Only the host's folder changes (glibc -> musl, the same library bytes):
+     * the folder mapping is a task input, so bundleNativeLib re-runs and the
+     * library moves to the new folder instead of staying under the old one.
+     */
+    @Test
+    fun changingOnlyTheHostFolderReBundlesTheLibrary() {
+        assumeTrue(hostOs == "linux", "the glibc/musl folder split is linux-only")
+        val arch = host.substringAfter('-').removeSuffix("-musl")
+        val glibcFolder = "linux-$arch"
+        val muslFolder = "$glibcFolder-musl"
+        val hostLib = NativePlatform.mapLibraryName("linux", "demo")
+        write("rust/target/release/$hostLib", "host")
+        setUp("")
+
+        run("-D${NativePlatform.LIBC_PROPERTY}=glibc", "processResources").build()
+        assertEquals("host", resource("$glibcFolder/$hostLib").readText())
+
+        val result = run("-D${NativePlatform.LIBC_PROPERTY}=musl", "processResources").build()
+
+        assertEquals(TaskOutcome.SUCCESS, result.task(":bundleNativeLib")?.outcome, result.output)
+        assertEquals("host", resource("$muslFolder/$hostLib").readText())
+        assertFalse(resource("$glibcFolder/$hostLib").exists(), "the old folder is not kept")
+    }
+
     @Test
     fun cargoBuildIsNeverUpToDate() {
         write("rust/Cargo.toml", "[workspace]\n")

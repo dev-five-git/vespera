@@ -216,6 +216,22 @@ internal object NativePlatform {
     private val ARM32_ALIAS = Regex("armv[0-9][a-z0-9_]*|armhf|armel")
 
     /**
+     * A `targets` entry's Rust triple must build the arch its key names: the
+     * key's arch alone is checked by [osOfPlatformKey], so
+     * `linux-aarch64 = x86_64-unknown-linux-gnu` would bundle an x86_64 library
+     * that the aarch64 JVM loads from `native/linux-aarch64/` and fails on.
+     * The key is validated first, so its arch is well formed here.
+     */
+    private fun requireTripleArch(key: String, triple: String) {
+        val keyArch = loaderArch(key.substringAfter('-').removeSuffix(MUSL_SUFFIX))
+        val tripleArch = loaderArch(triple.substringBefore('-'))
+        require(tripleArch == keyArch) {
+            "vespera.targets['$key'] names the Rust target '$triple' (arch '$tripleArch'), but the " +
+                "key's arch is '$keyArch'; the library would load on the wrong platform."
+        }
+    }
+
+    /**
      * Map a Cargo profile name to its `target/` output subdirectory.
      * Cargo's built-in `dev` and `test` profiles emit to `debug`, `bench` to
      * `release` (they inherit those directories); every other profile
@@ -276,8 +292,10 @@ internal object NativePlatform {
     ): List<NativeBuild> {
         val builds = targets.toSortedMap().map { (key, triple) ->
             require(triple.isNotBlank()) { "vespera.targets['$key'] must name a Rust target triple." }
+            val platform = bundlePlatform(key, triple)
+            requireTripleArch(key, triple)
             NativeBuild(
-                bundlePlatform(key, triple),
+                platform,
                 triple,
                 cdylibRelativePath(osOfPlatformKey(key), libStem, profile, triple),
             )

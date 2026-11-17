@@ -602,7 +602,7 @@ final class VesperaDirectBufferPool {
             if (token != 0L) {
                 n = fetchStashed(pool, -n, token, DirectStash.flags(pool[1]), stash, keepStash);
             } else if (n < 0) {
-                n = redispatch(pool, reqLen, -n, retryOnOverflow, dispatcher);
+                n = redispatch(pool, reqLen, -n, retryOnOverflow, dispatcher, stash);
             }
             ByteBuffer view = pool[1].asReadOnlyBuffer();
             view.position(0).limit(n);
@@ -663,7 +663,7 @@ final class VesperaDirectBufferPool {
     /** Legacy overflow: re-run the dispatch into a grown buffer when permitted. */
     private static int redispatch(
             ByteBuffer[] pool, int reqLen, int required, boolean retryOnOverflow,
-            DirectDispatcher dispatcher) {
+            DirectDispatcher dispatcher, DirectStash.Ops stash) {
         if (!retryOnOverflow) {
             throw new BufferTooSmallException(required);
         }
@@ -684,7 +684,11 @@ final class VesperaDirectBufferPool {
             // A second overflow is legitimate: the retry re-ran the
             // handler, and a non-deterministic handler may produce a
             // larger response this time.  Surface the new exact size
-            // instead of retrying unboundedly.
+            // instead of retrying unboundedly. A stash handle the retry left
+            // is released now, as fetchStashed does, not held until its TTL.
+            if (stash != null && DirectStash.token(pool[1]) != 0L) {
+                stash.discard(DirectStash.token(pool[1]));
+            }
             throw new BufferTooSmallException(-n);
         }
         return n;

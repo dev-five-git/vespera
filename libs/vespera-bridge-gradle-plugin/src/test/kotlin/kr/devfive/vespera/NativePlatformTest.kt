@@ -313,6 +313,31 @@ class NativePlatformTest {
         }
     }
 
+    /**
+     * The key's arch is validated alone; the triple must build that arch too,
+     * or an x86_64 library is bundled as `native/linux-aarch64/`.
+     */
+    @Test
+    fun aTripleOfAnotherArchIsRejectedForItsKey() {
+        val wrongArch = assertThrows<IllegalArgumentException> {
+            NativePlatform.plannedBuilds(
+                "linux-x86_64", "demo", "release", mapOf("linux-aarch64" to "x86_64-unknown-linux-gnu"),
+            )
+        }
+        assertTrue(wrongArch.message!!.contains("'x86_64-unknown-linux-gnu'"), wrongArch.message)
+        assertTrue(wrongArch.message!!.contains("key's arch is 'aarch64'"), wrongArch.message)
+        assertThrows<IllegalArgumentException> {
+            NativePlatform.plannedBuilds(
+                "linux-x86_64", "demo", "release", mapOf("linux-x86_64-musl" to "aarch64-unknown-linux-musl"),
+            )
+        }
+        // The matching arch (32-bit ARM aliases included) is still accepted.
+        val arm = NativePlatform.plannedBuilds(
+            "linux-x86_64", "demo", "release", mapOf("linux-arm" to "armv7-unknown-linux-gnueabihf"),
+        )
+        assertTrue(arm.any { it.platform == "linux-arm" && it.triple == "armv7-unknown-linux-gnueabihf" })
+    }
+
     @ParameterizedTest
     @CsvSource(
         "rust-jni-demo, , rust_jni_demo",

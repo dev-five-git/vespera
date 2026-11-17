@@ -140,4 +140,32 @@ class GatedRequestInputStreamTest {
                 new GatedRequestInputStream(InputStream.nullInputStream()), idle));
         assertNull(idle.getHeader("Connection"), "a fully drained request keeps keep-alive");
     }
+
+    /**
+     * {@code available()} touches the servlet stream like a read does, so a
+     * {@link GatedRequestInputStream#detach()} issued while it runs must see
+     * the call in flight (and mark the connection non-reusable).
+     */
+    @Test
+    void availableIsCountedAsAnInFlightReadForDetach() throws IOException {
+        AtomicReference<GatedRequestInputStream> gateRef = new AtomicReference<>();
+        AtomicReference<Boolean> inFlightDuringAvailable = new AtomicReference<>();
+        InputStream delegate = new InputStream() {
+            @Override
+            public int read() {
+                return -1;
+            }
+
+            @Override
+            public int available() {
+                inFlightDuringAvailable.set(gateRef.get().detach());
+                return 0;
+            }
+        };
+        GatedRequestInputStream gate = new GatedRequestInputStream(delegate);
+        gateRef.set(gate);
+        gate.available();
+        assertEquals(Boolean.TRUE, inFlightDuringAvailable.get(),
+                "the delegate's available() was in flight when the gate detached");
+    }
 }

@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import jakarta.servlet.http.HttpServletRequest;
@@ -34,6 +35,16 @@ class ProxyResolverAndCorsTest {
             System.setProperty("vespera.direct.oversize-policy", previousOversizePolicy);
         }
         VesperaDirectBufferPool.clearCurrentThreadBuffers();
+    }
+
+    /** Whether a frame of {@code owner} is on the throwable's stack. */
+    private static boolean passesThrough(Throwable failure, Class<?> owner) {
+        for (StackTraceElement frame : failure.getStackTrace()) {
+            if (frame.getClassName().equals(owner.getName())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static byte[] wire(String header, String body) {
@@ -89,10 +100,17 @@ class ProxyResolverAndCorsTest {
             // A virtual thread under oversize-policy=throw: rejected before any
             // dispatch, so the request is streamed (the native streaming
             // symbol is missing here) instead of answering a "DIRECT overflow"
-            // 500 or remembering the route as an overflowing one.
-            assertThrows(UnsatisfiedLinkError.class, () -> controller.dispatchDirectMode(
-                    response, null, "GET", "/health", "", sink -> { },
-                    VesperaWireCodec.EMPTY_BODY, Boolean.TRUE, null));
+            // 500 or remembering the route as an overflowing one. Both paths
+            // end in UnsatisfiedLinkError, so the stack says which one ran: the
+            // heap fallback reaches ParkingDispatch, the streamed one does not.
+            UnsatisfiedLinkError failure = assertThrows(UnsatisfiedLinkError.class,
+                    () -> controller.dispatchDirectMode(
+                            response, null, "GET", "/health", "", sink -> { },
+                            VesperaWireCodec.EMPTY_BODY, Boolean.TRUE, null));
+            assertFalse(passesThrough(failure, ParkingDispatch.class),
+                    "oversize-policy=throw must not fall back to the heap dispatch");
+            assertTrue(passesThrough(failure, DirectModeDispatcher.class),
+                    "the rejected request is streamed by DirectModeDispatcher");
             assertEquals(0, response.getContentAsByteArray().length, "no proxy-written 500");
             assertFalse(controller.avoidsDirect(null, "GET", "/health", ""), "no overflow recorded");
         }

@@ -159,10 +159,28 @@ public final class VesperaResponse {
                 + ", bodyBytes=" + decoded.body().remaining() + '}';
     }
 
-    /** The {@code charset} parameter of a media type, or UTF-8. */
+    /**
+     * The {@code charset} parameter of a media type, or UTF-8. A name the JVM
+     * does not know falls back to UTF-8 (decoding a response); a request body
+     * must not use that fallback, see {@link VesperaRequest#body(String, String)}.
+     */
     static Charset charsetOf(@Nullable String contentType) {
-        if (contentType == null) {
+        String name = charsetParameter(contentType);
+        if (name == null) {
             return StandardCharsets.UTF_8;
+        }
+        try {
+            return Charset.forName(name);
+        } catch (IllegalCharsetNameException | UnsupportedCharsetException e) {
+            return StandardCharsets.UTF_8;
+        }
+    }
+
+    /** The raw (unquoted) {@code charset=} parameter of a media type, or {@code null} when absent. */
+    @Nullable
+    static String charsetParameter(@Nullable String contentType) {
+        if (contentType == null) {
+            return null;
         }
         for (String param : contentType.split(";")) {
             String p = param.trim();
@@ -171,13 +189,9 @@ public final class VesperaResponse {
                 if (name.length() >= 2 && name.charAt(0) == '"' && name.charAt(name.length() - 1) == '"') {
                     name = name.substring(1, name.length() - 1);
                 }
-                try {
-                    return Charset.forName(name);
-                } catch (IllegalCharsetNameException | UnsupportedCharsetException e) {
-                    return StandardCharsets.UTF_8;
-                }
+                return name;
             }
         }
-        return StandardCharsets.UTF_8;
+        return null;
     }
 }
