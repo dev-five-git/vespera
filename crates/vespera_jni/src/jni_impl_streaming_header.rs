@@ -717,7 +717,9 @@ fn stream_stashed_body(env: &mut jni::Env<'_>, args: &StashStreamArgs<'_, '_>) {
 /// `com.devfive.vespera.bridge.DirectStash.stream0(long, Consumer<byte[]>, OutputStream) -> void`
 ///
 /// Stream the stashed DIRECT overflow `token` header-first (see
-/// [`stream_stashed_body`]); an unknown token delivers a `500` header.
+/// [`stream_stashed_body`]); an unknown token delivers a `500` header, or a
+/// `503` header once the runtime has been shut down (the shutdown clears the
+/// stash, so a token it dropped reads as unknown).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_devfive_vespera_bridge_DirectStash_stream0<'local>(
     mut unowned_env: EnvUnowned<'local>,

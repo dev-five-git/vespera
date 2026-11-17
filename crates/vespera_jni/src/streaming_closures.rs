@@ -153,6 +153,18 @@ static METHOD_CACHE: OnceLock<MethodCacheState> = OnceLock::new();
 const ZERO_READ_YIELD_THRESHOLD: u32 = 16;
 const ZERO_READ_BACKOFF_STEP: Duration = Duration::from_micros(50);
 const ZERO_READ_BACKOFF_CAP: Duration = Duration::from_millis(1);
+/// Total silence after which a run of empty `InputStream.read` results
+/// aborts the request body.  The stream may stay open with no data for any
+/// length of time (the keep-open contract), so the abort is not a count:
+/// only an unbroken run of empty reads lasting this long is treated as a
+/// stalled stream (matches the inprocess producer's budget).
+const ZERO_READ_SILENCE_BUDGET: Duration = Duration::from_secs(10);
+
+/// Whether a run of empty reads that began at `started` has been silent for
+/// at least [`ZERO_READ_SILENCE_BUDGET`] by `now`.
+fn zero_read_silence_exhausted(started: std::time::Instant, now: std::time::Instant) -> bool {
+    now.saturating_duration_since(started) >= ZERO_READ_SILENCE_BUDGET
+}
 
 fn zero_read_backoff(consecutive_empty_reads: u32) -> Option<Duration> {
     let over_threshold = consecutive_empty_reads.checked_sub(ZERO_READ_YIELD_THRESHOLD)?;
@@ -431,6 +443,8 @@ pub fn make_pull_closure(
     use vespera_inprocess::RequestChunk;
     let chunk_size = streaming_chunk_size();
     let mut consecutive_empty_reads = 0_u32;
+    // When the current run of empty reads began (`None` = no run).
+    let mut empty_run_started: Option<std::time::Instant> = None;
     move || -> RequestChunk {
         // Daemon-attach this (Tokio `spawn_blocking`) thread once,
         // cached in TLS, instead of attach+detach per chunk.  No local
@@ -462,16 +476,25 @@ pub fn make_pull_closure(
                 // chunk rather than end-of-stream.
                 if n < 0 {
                     consecutive_empty_reads = 0;
+                    empty_run_started = None;
                     return Ok(RequestChunk::End);
                 }
                 if n == 0 {
                     consecutive_empty_reads = consecutive_empty_reads.saturating_add(1);
+                    let now = std::time::Instant::now();
+                    let started = *empty_run_started.get_or_insert(now);
+                    // Only a long unbroken silence aborts; short runs back
+                    // off (bounded) and keep the stream open.
+                    if zero_read_silence_exhausted(started, now) {
+                        return Ok(RequestChunk::Error);
+                    }
                     if let Some(delay) = zero_read_backoff(consecutive_empty_reads) {
                         std::thread::sleep(delay);
                     }
                     return Ok(RequestChunk::Data(Vec::new()));
                 }
                 consecutive_empty_reads = 0;
+                empty_run_started = None;
                 // `n > 0` here (the `< 0` and `== 0` cases returned above), so a
                 // positive `jint` always fits `usize`.  Avoid a panic site on
                 // this FFI hot path: an impossible conversion failure aborts the
@@ -851,7 +874,9 @@ pub fn complete_future(
 mod tests {
     use std::time::Duration;
 
-    use super::zero_read_backoff;
+    use std::time::Instant;
+
+    use super::{ZERO_READ_SILENCE_BUDGET, zero_read_backoff, zero_read_silence_exhausted};
 
     #[test]
     fn zero_read_backoff_starts_after_repeated_empty_reads() {
@@ -862,5 +887,28 @@ mod tests {
         assert_eq!(zero_read_backoff(15), None);
         assert_eq!(zero_read_backoff(16), Some(Duration::from_micros(50)));
         assert_eq!(zero_read_backoff(35), Some(Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn empty_reads_abort_only_after_the_total_silence_budget() {
+        // Given: an empty-read run that began at a fixed instant.
+        let started = Instant::now();
+        // Then: many empty reads within the budget keep the stream open,
+        // however many there were (no count cap).
+        assert!(!zero_read_silence_exhausted(
+            started,
+            started + ZERO_READ_SILENCE_BUDGET.saturating_sub(Duration::from_millis(1))
+        ));
+        // And: the budget of unbroken silence aborts it.
+        assert!(zero_read_silence_exhausted(
+            started,
+            started + ZERO_READ_SILENCE_BUDGET
+        ));
+        // A clock that did not advance (or went backwards) never aborts.
+        assert!(!zero_read_silence_exhausted(started, started));
+        assert!(!zero_read_silence_exhausted(
+            started + Duration::from_secs(1),
+            started
+        ));
     }
 }

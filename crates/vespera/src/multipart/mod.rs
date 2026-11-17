@@ -640,7 +640,8 @@ fn tiny_scalar_limit(limit_bytes: Option<usize>) -> usize {
 
 /// Parse a string as a boolean using clap-style conventions.
 ///
-/// Surrounding ASCII whitespace is ignored, so a multipart text value that
+/// Surrounding whitespace is ignored (`str::trim`, so every Unicode
+/// `White_Space` character, not only ASCII), so a multipart text value that
 /// arrives with incidental padding (e.g. a trailing newline) parses like the
 /// trimmed token — matching the numeric field impls, which `text.trim().parse()`.
 ///
