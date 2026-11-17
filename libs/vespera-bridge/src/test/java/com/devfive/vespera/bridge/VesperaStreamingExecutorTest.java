@@ -345,10 +345,56 @@ class VesperaStreamingExecutorTest {
     }
 
     /**
+     * A thread start fails while another worker is still busy with a stream:
+     * that worker takes the queued task when its stream ends, so the task
+     * keeps its slot and runs. Rejecting it at once answered 503 although the
+     * queue had room and a live thread would free up.
+     */
+    @Test
+    void aFailedThreadStartKeepsQueuedTasksWhileAnotherWorkerIsBusy() throws Exception {
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        AtomicInteger created = new AtomicInteger();
+        java.util.concurrent.ThreadFactory factory = runnable -> {
+            if (created.incrementAndGet() == 1) {
+                return new Thread(runnable);
+            }
+            return new Thread(runnable) {
+                @Override
+                public synchronized void start() {
+                    throw new OutOfMemoryError("unable to create native thread");
+                }
+            };
+        };
+        try (VesperaStreamingExecutor executor = new VesperaStreamingExecutor(
+                2, 1, TimeUnit.SECONDS.toNanos(60), factory)) {
+            CountDownLatch firstStarted = new CountDownLatch(1);
+            executor.tryReserve().executor().execute(() -> {
+                firstStarted.countDown();
+                try {
+                    releaseFirst.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(firstStarted.await(5, TimeUnit.SECONDS));
+            CountDownLatch secondRan = new CountDownLatch(1);
+            VesperaStreamingExecutor.Reservation second = executor.tryReserve();
+            second.executor().execute(secondRan::countDown);
+            assertFalse(second.wasRejected(), "queued behind the busy worker, not rejected");
+            assertEquals(1, executor.queuedTaskCount());
+
+            releaseFirst.countDown();
+            assertTrue(secondRan.await(5, TimeUnit.SECONDS), "the busy worker takes the queued task");
+            assertFalse(second.wasRejected());
+            awaitCondition(() -> executor.inUse() == 0, "both streams ended");
+        }
+    }
+
+    /**
      * A task queued behind a thread start that then fails had no thread
      * left (round-14 L-1): it waited, holding its slot, until some later
-     * stream happened to start a thread. Every queued task no idle or
-     * starting thread can take is now rejected and frees its slot.
+     * stream happened to start a thread. Once no pool thread is left, every
+     * queued task is rejected and frees its slot.
      */
     @Test
     void aFailedThreadStartRejectsEveryTaskQueuedBehindIt() throws Exception {

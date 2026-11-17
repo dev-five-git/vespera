@@ -287,10 +287,9 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
      * out and being recreated. Here a task goes to a waiting idle thread
      * first, and a thread starts only when no idle one can take it. All
      * bookkeeping runs under one lock, so a thread timing out can never
-     * strand a queued task. When a thread fails to start, the queued tasks
-     * no idle or starting thread can take are rejected
-     * ({@link Task#reject}) instead of waiting for a thread that may never
-     * start.
+     * strand a queued task. When a thread fails to start and no pool thread
+     * is left, the queued tasks are rejected ({@link Task#reject}) instead of
+     * waiting for a thread that may never start.
      */
     static final class Workers {
         /** A pool task that can be dropped unrun. */
@@ -346,10 +345,10 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
         /**
          * Start one pool thread counted (by the caller, under the lock) in
          * {@link #threads} and {@link #starting}. On failure the count is
-         * undone and every queued task that no idle or starting thread can
-         * take is rejected, newest first: the failed thread was their only
-         * prospect (a task a running worker already took is not in the queue,
-         * so it keeps its slot). The rest stay queued for those threads.
+         * undone. When no pool thread is left at all, every queued task is
+         * rejected, newest first (a task a running worker already took is not
+         * in the queue, so it keeps its slot). While other threads live, the
+         * queue stays: they take those tasks once their streams end.
          */
         private void startThread() {
             Throwable failed;
@@ -367,8 +366,13 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
             try {
                 threads--;
                 starting--;
-                while (queue.size() > idle + starting) {
-                    stranded.add(queue.pollLast());
+                // Only a pool with no live worker left can never run the queue:
+                // busy workers take queued tasks when their streams end, so
+                // those tasks keep waiting (and their slots) instead of a 503.
+                if (threads == 0) {
+                    while (!queue.isEmpty()) {
+                        stranded.add(queue.pollLast());
+                    }
                 }
             } finally {
                 lock.unlock();

@@ -113,6 +113,32 @@ class DirectStashTest {
         assertEquals(List.of("discard"), discarding.calls);
     }
 
+    /**
+     * A re-dispatch that overflows again and leaves a stash handle must not
+     * leak it until the 30 s TTL: the handle is discarded before the
+     * {@link VesperaBridge.BufferTooSmallException} is thrown.
+     */
+    @Test
+    void aRedispatchOverflowReleasesTheHandleItLeft() {
+        AtomicInteger calls = new AtomicInteger();
+        VesperaDirectBufferPool.DirectDispatcher dispatcher = (in, inLen, out) -> {
+            if (calls.incrementAndGet() == 1) {
+                return -100; // first overflow: no handle (token 0)
+            }
+            out.putLong(0, TOKEN); // the retry overflows again and stashes
+            out.put(8, (byte) 0);
+            return -200;
+        };
+        FakeOps ops = new FakeOps();
+        VesperaBridge.BufferTooSmallException rejected = assertThrows(
+                VesperaBridge.BufferTooSmallException.class,
+                () -> VesperaDirectBufferPool.dispatchViaPool(
+                        freshPool(), 1, true, dispatcher, ops, false));
+        assertEquals(200, rejected.requiredSize());
+        assertEquals(2, calls.get(), "the retry ran once");
+        assertEquals(List.of("discard"), ops.calls, "the retry's stash entry is released");
+    }
+
     @Test
     void responseBeyondThePoolCapIsKeptAfterGrowingToTheCap() {
         FakeOps ops = new FakeOps();

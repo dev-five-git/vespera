@@ -72,10 +72,10 @@ abstract class VesperaBridgeExtension @Inject constructor(objects: ObjectFactory
     abstract val bridgeVersion: Property<String>
 
     /**
-     * When `true`, registers a `cargoBuild` task that runs
-     * `cargo build -p <package>` with the [cargoProfile] flag (default
-     * `release` → `--release`) and wires it as a
-     * dependency of `bundleNativeLib`.  Defaults to `false` (opt-in)
+     * When `true`, `cargoBuild` (always registered; it runs
+     * `cargo build -p <package>` with the [cargoProfile] flag, default
+     * `release` → `--release`) becomes a dependency of `bundleNativeLib`.
+     * Defaults to `false` (opt-in)
      * — most CI pipelines build Rust separately and don't want the
      * Java build to invoke cargo implicitly.
      */

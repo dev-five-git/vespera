@@ -213,6 +213,20 @@ class VesperaClientTest {
         assertTrue(rejected.getMessage().contains("can only decode"), rejected.getMessage());
     }
 
+    /**
+     * A request body is never encoded as UTF-8 under a charset label the JVM
+     * does not know: the server would decode it with that label (and the
+     * request fails at the call site instead).
+     */
+    @Test
+    void unknownRequestCharsetIsRejectedInsteadOfSendingUtf8() {
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> client.post("/s").body("é", "text/plain; charset=x-no-such-cs"));
+        assertTrue(rejected.getMessage().contains("x-no-such-cs"), rejected.getMessage());
+        assertThrows(IllegalArgumentException.class,
+                () -> client.post("/s").body("é", "text/plain; charset="));
+    }
+
     @Test
     void appSelectionFromClientAndRequest() throws IOException {
         VesperaClient admin = client.forApp("  admin ");

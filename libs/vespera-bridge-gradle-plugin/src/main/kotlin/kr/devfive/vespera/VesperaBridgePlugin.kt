@@ -28,10 +28,10 @@ import java.util.Properties
  * 3. Adds `kr.devfive:vespera-bridge:<bridgeVersion>` as an
  *    `implementation` dependency (default: the bridge release this plugin
  *    was built with).
- * 4. Optionally (`autoBuildCargo = true`) registers a `cargoBuild`
- *    task that invokes `cargo build -p <package>` (plus one
- *    `--target <triple>` build per `vespera.targets` entry) before
- *    `bundleNativeLib`.
+ * 4. Registers a `cargoBuild` task that invokes `cargo build -p <package>`
+ *    (plus one `--target <triple>` build per `vespera.targets` entry). It
+ *    runs before `bundleNativeLib` only with `autoBuildCargo = true`; by
+ *    default it is run explicitly or not at all.
  * 5. Packages `vespera.nativeJarPlatforms` as per-platform classifier jars
  *    (`nativeJar<Platform>` / `nativeJars`, see [NativeJars]) and, with
  *    `maven-publish`, publishes them as the `vesperaNative` publication.
@@ -180,6 +180,16 @@ class VesperaBridgePlugin : Plugin<Project> {
                     val planned = targetBase.zip(plannedBuilds) { base, builds ->
                         builds.associate { build -> pathKey(File(base, build.relativePath)) to build.platform }
                     }.orElse(emptyMap())
+                    // The folder each library is copied to is decided in the
+                    // eachFile closure, which Gradle does not track: a changed
+                    // mapping (glibc <-> musl on the host, a re-keyed target)
+                    // must re-run the task, so it is declared as an input.
+                    t.inputs.property(
+                        "bundledFolders",
+                        plannedBuilds.map { builds ->
+                            builds.joinToString("\n") { "${it.relativePath}=${it.platform}" }
+                        },
+                    )
                     t.from(planned.map { files -> files.keys.map(::File) }) {
                         eachFile(object : org.gradle.api.Action<org.gradle.api.file.FileCopyDetails> {
                             override fun execute(details: org.gradle.api.file.FileCopyDetails) {

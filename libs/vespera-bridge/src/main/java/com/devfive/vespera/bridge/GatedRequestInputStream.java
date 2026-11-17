@@ -70,7 +70,16 @@ final class GatedRequestInputStream extends InputStream {
 
     @Override
     public int available() throws IOException {
-        return closed ? 0 : delegate.available();
+        if (closed) {
+            return 0;
+        }
+        // Counted like a read: detach() must see a delegate call in flight.
+        inFlight.incrementAndGet();
+        try {
+            return closed ? 0 : delegate.available();
+        } finally {
+            inFlight.decrementAndGet();
+        }
     }
 
     /**

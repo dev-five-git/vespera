@@ -231,10 +231,22 @@ public final class VesperaRequest {
      * {@code contentType} (UTF-8 when absent).
      *
      * @param contentType sent as {@code content-type}; {@code null} leaves the header alone
+     * @throws IllegalArgumentException when the {@code charset} parameter names a charset this JVM
+     *     does not know or cannot encode (the bytes would not match the declared label)
      */
     public VesperaRequest body(String text, @Nullable String contentType) {
         Objects.requireNonNull(text, "text");
-        java.nio.charset.Charset charset = VesperaResponse.charsetOf(contentType);
+        String declared = VesperaResponse.charsetParameter(contentType);
+        java.nio.charset.Charset charset = StandardCharsets.UTF_8;
+        if (declared != null) {
+            try {
+                charset = java.nio.charset.Charset.forName(declared);
+            } catch (java.nio.charset.IllegalCharsetNameException
+                    | java.nio.charset.UnsupportedCharsetException unknown) {
+                throw new IllegalArgumentException("the charset '" + declared + "' of content type '"
+                        + contentType + "' is not known to this JVM", unknown);
+            }
+        }
         if (!charset.canEncode()) {
             throw new IllegalArgumentException("the charset " + charset.name() + " of content type '"
                     + contentType + "' can only decode; send the body as bytes or use another charset");

@@ -9,6 +9,7 @@ import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.TaskAction
 import org.gradle.process.ExecOperations
+import org.gradle.work.DisableCachingByDefault
 import java.io.ByteArrayOutputStream
 import javax.inject.Inject
 
@@ -20,6 +21,7 @@ import javax.inject.Inject
  * the task declares no file inputs either (fingerprinting the Rust sources
  * would be pure cost).
  */
+@DisableCachingByDefault(because = "cargo decides what to rebuild; no file inputs are declared")
 abstract class CargoBuildTask : DefaultTask() {
     @get:Inject
     abstract val execOperations: ExecOperations

@@ -66,9 +66,14 @@ import java.util.regex.Pattern;
  * library is extracted into a fresh private
  * {@code Files.createTempDirectory("vespera-native-")} for this JVM only,
  * with no reuse, and a warning is logged.  On file systems without POSIX
- * attributes (Windows) the same guarantee comes from the owner and the ACL
- * (see {@link #prepareAclDir}); a directory that fails it — or a file system
- * without ACLs — falls back to a fresh, randomly named temp directory.
+ * attributes (Windows) the base and the hash directory are checked for their
+ * owner and ACL (see {@link #prepareAclDir}); a directory that fails it — or a
+ * file system without ACLs — falls back to a fresh, randomly named temp
+ * directory. Unlike the POSIX path, the ancestors of the base directory are
+ * not checked there: a user who may rename a shared base directory's parent
+ * can still swap the directory between the check and {@code System.load}.
+ * Point {@code -Dvespera.native.dir} only at a location in a
+ * directory this user alone can modify (the default temp location is).
  *
  * <p>A fresh extraction writes a temp file inside the target directory and
  * publishes it with an atomic rename, so concurrent JVMs either see no file
