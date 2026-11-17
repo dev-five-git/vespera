@@ -24,6 +24,12 @@ fn ecosystem_default_names_follow_the_call_site_scope() {
     {
         let _site = crate::schema_macro::file_lookup::set_test_call_site_module("crate");
         assert_eq!(get_type_default(&decimal), None);
+        // Not imported here, so the name cannot be shown to be a user type:
+        // the ecosystem default stays (the `Unknown` resolution).
+        assert_eq!(
+            get_type_default(&date),
+            Some(serde_json::json!("1970-01-01"))
+        );
     }
     let _site = crate::schema_macro::file_lookup::set_test_call_site_module("crate::sea");
     assert_eq!(

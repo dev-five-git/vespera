@@ -278,9 +278,10 @@ fn generate_inline_type_core(
 fn ident_safe(name: &str) -> String {
     // `_u<hex>_` escapes one character, so the escape is injective only if a
     // literal `_u` is escaped too (`memo-detail` and `memo_u2d_detail` both
-    // became `memo_u2d_detail`), as is a leading `_` (`_type` against the
-    // `_` the keyword fix-up prepends) and a leading digit (`1x` against
-    // `_1x`).
+    // became `memo_u2d_detail`), as is a leading `_` and a leading digit
+    // (`1x` against `_1x`). Every character then yields a valid identifier
+    // part, and the caller appends `_<Field>`, so the result is never a
+    // keyword and never empty: no fallback is needed.
     let mut ident = String::with_capacity(name.len());
     let mut chars = name.chars().peekable();
     let mut first = true;
@@ -307,9 +308,6 @@ fn ident_safe(name: &str) -> String {
             ident.push(c);
         }
         first = false;
-    }
-    if syn::parse_str::<syn::Ident>(&ident).is_err() {
-        ident.insert(0, '_');
     }
     ident
 }

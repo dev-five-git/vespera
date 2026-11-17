@@ -71,6 +71,8 @@ fn container_value_type_must_be_a_type() {
     r#"enum E { A { #[schema(min_length = "3", max_length = 10)] s: String } }"#
 )]
 #[case::enum_tuple_field(r#"enum E { A(#[schema(maximum = "x")] u8) }"#)]
+// A custom name outside the component-key pattern.
+#[case::invalid_schema_name(r#"#[schema(name = "bad name")] struct S { a: u8 }"#)]
 fn malformed_schema_constraints_are_compile_errors(#[case] src: &str) {
     let input: syn::DeriveInput = syn::parse_str(src).unwrap();
     let (metadata, expanded) = process_derive_schema(&input);
