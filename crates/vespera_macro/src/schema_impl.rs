@@ -405,7 +405,13 @@ struct DefaultFunctionCacheEntry {
     values: Arc<BTreeMap<String, serde_json::Value>>,
 }
 
-/// Extract custom schema name from #[schema(name = "...")] attribute
+/// Extract custom schema name from #[schema(name = "...")] attribute.
+///
+/// A malformed `#[schema(..)]` yields `None` here rather than an error. That
+/// is safe for the `schema_type!` callers: `schema` is only a helper attribute
+/// of `derive(Schema)`, so a source type that carries one without deriving
+/// `Schema` is already rejected by rustc ("cannot find attribute"), and a
+/// deriving source reports the same malformed attribute from the derive.
 pub fn extract_schema_name_attr(attrs: &[syn::Attribute]) -> Option<String> {
     collect_schema_attribute_summary(attrs).ok()?.name
 }
@@ -489,7 +495,9 @@ pub fn process_derive_schema(
         return (None, error.to_compile_error());
     }
     let has_explicit_schema_name = schema_attr.name.is_some();
-    let schema_name = schema_attr.name.unwrap_or_else(|| name.to_string());
+    // Unraw'd like every other schema name (`struct r#type` is `type`).
+    let rust_name = strip_raw_prefix_owned(name.to_string());
+    let schema_name = schema_attr.name.unwrap_or_else(|| rust_name.clone());
 
     // Extract default values from serde(default = "fn_name") attributes at derive time.
     // Span::call_site().local_file() returns None in unit tests — the map/unwrap_or_default
@@ -510,6 +518,12 @@ pub fn process_derive_schema(
     // Schema-derived types appear in OpenAPI spec (include_in_openapi: true)
     let repr_input = serde_repr::with_serde_repr_derives(input, call_site_file.as_deref())
         .or_else(|| serde_repr::with_multipart_vec_defaults(input, call_site_file.as_deref()));
+    // Applied on top of the copies above: a struct can need several.
+    let serialized = serde_repr::with_serialize_derive(
+        repr_input.as_ref().unwrap_or(input),
+        call_site_file.as_deref(),
+    );
+    let repr_input = serialized.or(repr_input);
     let mut metadata = build_struct_metadata(
         repr_input.as_ref().unwrap_or(input),
         schema_name,
@@ -517,8 +531,8 @@ pub fn process_derive_schema(
     );
     if has_explicit_schema_name {
         metadata.explicit_schema_name = true;
-        if *name != metadata.name {
-            metadata.rust_ident = Some(name.to_string());
+        if rust_name != metadata.name {
+            metadata.rust_ident = Some(rust_name);
         }
     }
     if schema_attr.has_ref_override {
@@ -714,6 +728,9 @@ fn extract_default_functions_from_file(
             let syn::Item::Fn(func) = item else {
                 return None;
             };
+            if crate::schema_macro::cfg_eval::statically_inactive(&func.attrs) {
+                return None;
+            }
             crate::openapi_generator::extract_default_value_from_function(func)
                 .map(|value| (strip_raw_prefix_owned(func.sig.ident.to_string()), value))
         })
@@ -737,6 +754,9 @@ mod tests_wire_override;
 
 #[cfg(test)]
 mod tests_defaults;
+
+#[cfg(test)]
+mod tests_twins_and_raw;
 
 #[cfg(test)]
 mod tests_stale;

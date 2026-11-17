@@ -886,8 +886,9 @@ fn cfg_gated_overrides_gate_the_sea_orm_default(#[case] field: &str, #[case] exp
     assert!(!output.contains("# [schema (default = \"5\")]"), "{output}");
 }
 
-/// Without a `Schema` derive the metadata reads no `cfg_attr`: only the
-/// serde default is gated.
+/// Without a `Schema` derive the metadata reads no `cfg_attr`, so the SeaORM
+/// schema default is dropped (advertising it would be wrong where the gated
+/// serde default applies); only the serde default is gated.
 #[test]
 fn cfg_serde_default_without_schema_derive_gates_serde_only() {
     let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[cfg_attr(a, serde(default))])];
@@ -904,7 +905,7 @@ fn cfg_serde_default_without_schema_derive_gates_serde_only() {
         serde.to_string(),
         "# [cfg_attr (not (any (a)) , serde (default = \"f\"))]"
     );
-    assert_eq!(schema.to_string(), "# [schema (default = \"5\")]");
+    assert!(schema.is_empty(), "{schema}");
 }
 
 /// L1 (round 14): a `usize` / `isize` literal outside the 16-bit range gets

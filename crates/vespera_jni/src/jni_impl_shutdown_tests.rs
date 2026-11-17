@@ -136,7 +136,10 @@ fn shutdown_makes_later_dispatches_answer_503() {
     assert!(runtime().is_none());
     on_shared_runtime(Box::new(|_| panic!("never runs after shutdown")));
     assert!(!start_runtime_for_hooks());
-    assert!(block_on_shared_runtime(async {}).is_none());
+    // A real dispatch after the shutdown never runs: no runtime, no lease.
+    assert!(
+        block_on_shared_runtime(vespera_inprocess::dispatch_from_bytes_async(request())).is_none()
+    );
     let (header, body) = status_and_body(&runtime_unavailable_wire());
     assert!(header.contains(r#""status":503"#), "{header}");
     assert_eq!(body, RUNTIME_SHUT_DOWN_MSG.as_bytes());
@@ -146,6 +149,28 @@ fn shutdown_makes_later_dispatches_answer_503() {
     );
 
     overflow_after_shutdown_is_not_stashed();
+    fetch_after_shutdown_retries_with_a_larger_buffer();
+}
+
+/// A `fetch0` after the shutdown answers the `503` wire.  A buffer too small
+/// for it gets `-(len)` (the caller retries with a larger one), never
+/// `Integer.MIN_VALUE`, which reads as "expired": the retry reads the same
+/// `503` again.
+fn fetch_after_shutdown_retries_with_a_larger_buffer() {
+    let wire = runtime_unavailable_wire();
+    let len = i32::try_from(wire.len()).unwrap();
+    let mut small = [0xAAu8; 16];
+    assert_eq!(
+        super::direct::stash::fetch_into(1, &mut small),
+        -len,
+        "a too-small buffer asks to retry"
+    );
+    assert_eq!(small[..9], [0; 9], "the handle area is zeroed");
+    let mut big = vec![0u8; wire.len()];
+    assert_eq!(super::direct::stash::fetch_into(1, &mut big), len);
+    let (header, body) = status_and_body(&big);
+    assert!(header.contains(r#""status":503"#), "{header}");
+    assert_eq!(body, RUNTIME_SHUT_DOWN_MSG.as_bytes());
 }
 
 /// An overflow stashed once the shutdown has cleared the stash (its drain

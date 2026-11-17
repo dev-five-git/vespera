@@ -16,8 +16,9 @@ pub use common::{
 };
 pub use enum_repr::{SerdeEnumRepr, extract_enum_repr, extract_tag, extract_untagged};
 pub use extract::{
-    SerdeSide, extract_aliases, extract_default, extract_deny_unknown_fields, extract_field_rename,
-    extract_field_rename_for, extract_flatten, extract_rename_all, extract_rename_all_fields_for,
-    extract_rename_all_for, extract_serde_skip_flags, extract_skip,
+    SerdeSide, derives_serialize, extract_aliases, extract_default, extract_deny_unknown_fields,
+    extract_field_rename, extract_field_rename_for, extract_field_rename_owned, extract_flatten,
+    extract_rename_all, extract_rename_all_fields_for, extract_rename_all_for,
+    extract_serde_skip_flags, extract_skip,
 };
 pub use rename_case::{rename_field, rename_variant};

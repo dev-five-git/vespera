@@ -178,7 +178,12 @@ fn absolute_schema_segments(segments: &[String], source_module_path: &[String]) 
         // (an import of another crate too, like a multi-segment path).
         Some(name) if segments.len() == 1 && name != "Entity" => {
             match resolve_name(segments, source_module_path) {
-                Resolved::Path(path) => path,
+                Resolved::Path(path) => match local_alias_target(&path) {
+                    Some((target, alias_module)) => {
+                        return absolute_schema_segments(&target, &alias_module);
+                    }
+                    None => path,
+                },
                 Resolved::Unknown => in_module(source_module_path, segments),
             }
         }
@@ -196,6 +201,32 @@ fn absolute_schema_segments(segments: &[String], source_module_path: &[String]) 
 
 fn in_module(module: &[String], rest: &[String]) -> Vec<String> {
     module.iter().chain(rest).cloned().collect()
+}
+
+/// The entity path a local `type Alias = a::b::Entity;` names, with the module
+/// the alias is written in, for the absolute `path` of the alias
+/// (`crate::models::category::LocalEntity`). Only a multi-segment target is
+/// followed, once: a `type` alias of a bare name is not chased, so a cyclic
+/// alias cannot recurse. `Entity` itself is never an alias.
+fn local_alias_target(path: &[String]) -> Option<(Vec<String>, Vec<String>)> {
+    let (name, module) = path.split_last()?;
+    if name == "Entity" {
+        return None;
+    }
+    let items = crate::schema_macro::module_scope::module_items(module)?;
+    items.iter().find_map(|item| match item {
+        syn::Item::Type(alias)
+            if alias.ident == name.as_str()
+                && !crate::schema_macro::cfg_eval::statically_inactive(&alias.attrs) =>
+        {
+            let syn::Type::Path(target) = alias.ty.as_ref() else {
+                return None;
+            };
+            let segments = entity_segments(&target.path);
+            (segments.len() > 1).then(|| (segments, module.to_vec()))
+        }
+        _ => None,
+    })
 }
 
 fn entity_to_schema(segment: &String) -> String {
@@ -623,13 +654,18 @@ mod tests {
     // import (it used to name `crate::models::category::ExtEntity`).
     #[case::external_entity_alias("ExtEntity", "entity_crate::user::Schema")]
     #[case::unimported_single("Other", "crate::models::category::Other")]
+    // R22-SM3-01: a local `type` alias of an entity path is followed to that
+    // entity (it used to keep its own name, which is not a `Schema`).
+    #[case::local_entity_alias("LocalEntity", "crate::models::user::Schema")]
+    // A `type` alias of a non-path type names no entity: the name is kept.
+    #[case::non_path_alias("Bytes", "crate::models::category::Bytes")]
     fn relation_paths_resolve_in_source_module(#[case] path: &str, #[case] expected: &str) {
         let dir = tempfile::TempDir::new().unwrap();
         let file = dir.path().join("src/models/category.rs");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(
             &file,
-            "use super::user;\nuse super::user::Entity as UserEntity;\nuse entity_crate::user::Entity as ExtEntity;\npub mod nested {}\n",
+            "use super::user;\nuse super::user::Entity as UserEntity;\nuse entity_crate::user::Entity as ExtEntity;\npub mod nested {}\npub type LocalEntity = super::user::Entity;\npub type Bytes = [u8; 2];\n",
         )
         .unwrap();
         let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());

@@ -48,19 +48,38 @@ class VesperaProxyControllerCoverageTest {
     }
 
     @Test
-    void compatibilityConstructorsDelegateToTheFullConstructor() {
+    void compatibilityConstructorsDelegateToTheFullConstructor() throws Exception {
         AppNameResolver app = request -> null;
         DispatchModeResolver mode = request -> DispatchMode.SYNC;
         Executor executor = Runnable::run;
 
-        new VesperaProxyController(app, mode);
-        new VesperaProxyController(app, mode, executor, false);
-        new VesperaProxyController(app, mode, executor, true, 123);
+        // Each shorter overload must hand its arguments on, not drop them.
+        VesperaProxyController plain = new VesperaProxyController(app, mode);
+        assertSame(java.util.concurrent.ForkJoinPool.commonPool(), fieldOf(plain, "asyncResponseExecutor"));
+        assertEquals(VesperaProxyController.DEFAULT_MAX_BUFFERED_REQUEST_BYTES,
+                fieldOf(plain, "maxBufferedRequestBytes"));
+
+        VesperaProxyController withExecutor = new VesperaProxyController(app, mode, executor, false);
+        assertSame(executor, fieldOf(withExecutor, "asyncResponseExecutor"));
+        assertEquals(VesperaProxyController.DEFAULT_MAX_BUFFERED_REQUEST_BYTES,
+                fieldOf(withExecutor, "maxBufferedRequestBytes"));
+
+        VesperaProxyController withRequestCap = new VesperaProxyController(app, mode, executor, true, 123);
+        assertSame(executor, fieldOf(withRequestCap, "asyncResponseExecutor"));
+        assertEquals(123L, fieldOf(withRequestCap, "maxBufferedRequestBytes"));
+        assertEquals(VesperaProxyController.DEFAULT_MAX_BUFFERED_RESPONSE_BYTES,
+                fieldOf(withRequestCap, "maxBufferedResponseBytes"));
 
         NullPointerException missingApp = assertThrows(
                 NullPointerException.class,
                 () -> new VesperaProxyController(null, mode, executor, true, 1, 1));
         assertEquals("appResolver", missingApp.getMessage());
+    }
+
+    private static Object fieldOf(Object target, String name) throws ReflectiveOperationException {
+        Field field = VesperaProxyController.class.getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(target);
     }
 
     @Test
@@ -213,10 +232,9 @@ class VesperaProxyControllerCoverageTest {
         assertEquals(1, readAndClose.getSuppressed().length);
         assertEquals("close failure", readAndClose.getSuppressed()[0].getMessage());
 
-        NullPointerException nullStream = assertThrows(
-                NullPointerException.class,
+        // Only the type is asserted: helpful NPE messages can be switched off.
+        assertThrows(NullPointerException.class,
                 () -> VesperaProxyController.readBody(requestWithStream(null), 0));
-        assertTrue(nullStream.getMessage().contains("readNBytes"), nullStream.getMessage());
     }
 
     @Test
@@ -283,11 +301,20 @@ class VesperaProxyControllerCoverageTest {
 
     @Test
     void streamingHeaderSuppressesHeadBodyAfterBodyPermittingStatus() {
-        byte[] header = heapWire(200, "represented");
+        // The wire declares a 12-byte body; HEAD keeps that Content-Length and
+        // writes no body bytes.
+        String json = "{\"v\":1,\"status\":200,\"headers\":{\"content-type\":\"text/plain\","
+                + "\"content-length\":\"12\"},\"metadata\":{}}";
+        byte[] jsonBytes = json.getBytes(StandardCharsets.UTF_8);
+        byte[] body = "represented".getBytes(StandardCharsets.UTF_8);
+        byte[] header = ByteBuffer.allocate(4 + jsonBytes.length + body.length)
+                .putInt(jsonBytes.length).put(jsonBytes).put(body).array();
         MockHttpServletResponse response = new MockHttpServletResponse();
 
         assertFalse(WireResponseWriter.applyDecodedHeader(header, response, "HEAD"));
         assertEquals(200, response.getStatus());
+        assertEquals("12", response.getHeader("Content-Length"));
+        assertEquals(0, response.getContentAsByteArray().length, "HEAD writes no body bytes");
     }
 
     @Test

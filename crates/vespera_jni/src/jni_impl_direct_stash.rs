@@ -21,8 +21,10 @@
 //! `fetch0` (copy into a larger buffer), `stream0` (header-first streaming)
 //! or released with `discard0`.  An unredeemed entry expires after
 //! [`STASH_TTL`] (swept on every stash access — put, fetch, stream,
-//! discard); at most [`MAX_STASHED`] entries are kept (least recently
-//! stashed evicted).
+//! discard); at most [`MAX_STASHED`] entries, holding at most
+//! [`MAX_STASHED_BYTES`] bytes, are kept (least recently stashed evicted).
+//! The byte count covers what an entry holds in memory (its header and the
+//! body bytes already read), not the unread rest of a body.
 
 use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
@@ -53,45 +55,75 @@ pub const FLAG_STREAM: u8 = 2;
 pub const STASH_TTL: Duration = Duration::from_secs(30);
 /// Maximum number of stashed responses (oldest evicted first).
 pub const MAX_STASHED: usize = 1024;
+/// Maximum bytes the stash holds across its entries (see
+/// [`PendingDirectResponse::held_bytes`]), oldest evicted first.  Matches the
+/// default buffered-response cap.  A single response larger than this is
+/// kept alone: refusing it would force the handler to run again.
+pub const MAX_STASHED_BYTES: usize = 256 * 1024 * 1024;
+
+/// One stashed response: when it was stashed, the response, and the bytes
+/// it was counted at (what [`Stash::held`] added for it).
+type Entry = (Instant, PendingDirectResponse, usize);
 
 struct Stash {
     next: u64,
-    /// Token → (stashed at, response).  A partially fetched response is
-    /// re-stashed under its old token with a fresh timestamp, so key order
-    /// is NOT timestamp order: expiry and eviction compare timestamps.
-    entries: BTreeMap<u64, (Instant, PendingDirectResponse)>,
+    /// Token → entry.  A partially fetched response is re-stashed under its
+    /// old token with a fresh timestamp, so key order is NOT timestamp
+    /// order: expiry and eviction compare timestamps.
+    entries: BTreeMap<u64, Entry>,
+    /// Sum of the byte counts of `entries`.
+    held: usize,
 }
 
 impl Stash {
+    /// Insert `pending` under `token`, counting its held bytes.
+    fn insert(&mut self, token: u64, at: Instant, pending: PendingDirectResponse) {
+        let bytes = pending.held_bytes();
+        self.held += bytes;
+        if let Some((_, _, replaced)) = self.entries.insert(token, (at, pending, bytes)) {
+            self.held -= replaced;
+        }
+    }
+
+    /// Remove `token`'s entry, releasing its counted bytes.
+    fn remove(&mut self, token: u64) -> Option<(Instant, PendingDirectResponse)> {
+        let (at, pending, bytes) = self.entries.remove(&token)?;
+        self.held -= bytes;
+        Some((at, pending))
+    }
+
     /// Move every entry older than [`STASH_TTL`] into `evicted`, then — when
-    /// `make_room` — the least recently stashed ones until one more fits.
+    /// `room` is `Some((incoming, budget))` — the least recently stashed
+    /// ones until one more entry of `incoming` bytes fits both
+    /// [`MAX_STASHED`] and `budget`.
     fn evict(
         &mut self,
         now: Instant,
-        make_room: bool,
+        room: Option<(usize, usize)>,
         evicted: &mut Vec<(Instant, PendingDirectResponse)>,
     ) {
         let expired: Vec<u64> = self
             .entries
             .iter()
-            .filter(|(_, (at, _))| now.duration_since(*at) > STASH_TTL)
+            .filter(|(_, (at, _, _))| now.duration_since(*at) > STASH_TTL)
             .map(|(token, _)| *token)
             .collect();
-        evicted.extend(
-            expired
-                .iter()
-                .filter_map(|token| self.entries.remove(token)),
-        );
-        while make_room && self.entries.len() >= MAX_STASHED {
+        for token in expired {
+            evicted.extend(self.remove(token));
+        }
+        let Some((incoming, budget)) = room else {
+            return;
+        };
+        while self.entries.len() >= MAX_STASHED || self.held.saturating_add(incoming) > budget {
             let Some(oldest) = self
                 .entries
                 .iter()
-                .min_by_key(|(_, (at, _))| *at)
+                .min_by_key(|(_, (at, _, _))| *at)
                 .map(|(token, _)| *token)
             else {
                 break;
             };
-            evicted.extend(self.entries.remove(&oldest));
+            evicted.extend(self.remove(oldest));
         }
     }
 }
@@ -99,6 +131,7 @@ impl Stash {
 static STASH: Mutex<Stash> = Mutex::new(Stash {
     next: 1,
     entries: BTreeMap::new(),
+    held: 0,
 });
 
 fn lock_stash() -> std::sync::MutexGuard<'static, Stash> {
@@ -111,17 +144,23 @@ fn lock_stash() -> std::sync::MutexGuard<'static, Stash> {
 /// and surplus entries.  Evicted responses are dropped AFTER the lock is
 /// released (dropping a body may run arbitrary code).
 fn stash_put(token: Option<u64>, pending: PendingDirectResponse) -> u64 {
+    stash_put_within(token, pending, MAX_STASHED_BYTES)
+}
+
+/// [`stash_put`] with an explicit byte budget (tests use a small one).
+fn stash_put_within(token: Option<u64>, pending: PendingDirectResponse, budget: usize) -> u64 {
     let now = Instant::now();
     let mut evicted = Vec::new();
     let token = {
         let mut stash = lock_stash();
-        stash.evict(now, true, &mut evicted);
+        let incoming = pending.held_bytes();
+        stash.evict(now, Some((incoming, budget)), &mut evicted);
         let token = token.unwrap_or_else(|| {
             let token = stash.next;
             stash.next = stash.next.wrapping_add(1).max(1);
             token
         });
-        stash.entries.insert(token, (now, pending));
+        stash.insert(token, now, pending);
         token
     };
     drop(evicted);
@@ -135,8 +174,8 @@ fn stash_take(token: u64) -> Option<PendingDirectResponse> {
     let mut evicted = Vec::new();
     let removed = {
         let mut stash = lock_stash();
-        stash.evict(Instant::now(), false, &mut evicted);
-        stash.entries.remove(&token)
+        stash.evict(Instant::now(), None, &mut evicted);
+        stash.remove(token)
     };
     drop(evicted);
     removed.map(|(_, pending)| pending)
@@ -149,7 +188,11 @@ pub fn take_stashed(token: jlong) -> Option<PendingDirectResponse> {
 
 /// Drop every stashed response (runtime shutdown).
 pub fn clear_stash() {
-    let drained = std::mem::take(&mut lock_stash().entries);
+    let drained = {
+        let mut stash = lock_stash();
+        stash.held = 0;
+        std::mem::take(&mut stash.entries)
+    };
     drop(drained);
 }
 
@@ -157,6 +200,12 @@ pub fn clear_stash() {
 #[cfg(test)]
 pub fn stashed_count() -> usize {
     lock_stash().entries.len()
+}
+
+/// Bytes the live stash entries count (tests).
+#[cfg(test)]
+pub fn stashed_bytes() -> usize {
+    lock_stash().held
 }
 
 /// `-(required)`, clamped so it is never the `MIN` sentinel.
@@ -321,13 +370,13 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_DirectStash_fetch0<'local
 
 /// Redeem stash entry `token` into `out` (the body of `fetch0`, run under
 /// its panic guard).
-fn fetch_into(token: jlong, out: &mut [u8]) -> jint {
+pub fn fetch_into(token: jlong, out: &mut [u8]) -> jint {
     let Some(pending) = take_stashed(token) else {
         // `shutdown_runtime` clears the stash once it has drained the
         // leases — possibly between `dispatchResumable0` and this fetch:
         // answer the retryable `503` every other request gets, not "expired".
         if vespera_inprocess::runtime::runtime_shut_down() {
-            return write_complete_wire(out, &runtime_unavailable_wire());
+            return write_error_wire(out, &runtime_unavailable_wire());
         }
         return DIRECT_UNREPRESENTABLE;
     };
@@ -353,7 +402,7 @@ fn fetch_into(token: jlong, out: &mut [u8]) -> jint {
     // fits.
     fetched
         .flatten()
-        .unwrap_or_else(|| write_complete_wire(out, &runtime_unavailable_wire()))
+        .unwrap_or_else(|| write_error_wire(out, &runtime_unavailable_wire()))
 }
 
 /// Copy a complete wire response into `out`: its length, or
@@ -486,6 +535,33 @@ mod tests {
             lock_stash().entries.is_empty(),
             "expired entry swept by a take"
         );
+        clear_stash();
+
+        // Byte budget: the oldest entries go first once the held bytes would
+        // exceed it, and every removal releases its bytes.
+        let each = pending().held_bytes();
+        assert!(each > 0, "a materialised wire holds its bytes");
+        let budget = each * 2;
+        let first = stash_put_within(None, pending(), budget);
+        let second = stash_put_within(None, pending(), budget);
+        assert_eq!(stashed_bytes(), each * 2);
+        let third = stash_put_within(None, pending(), budget);
+        assert!(
+            stash_take(first).is_none(),
+            "oldest evicted over the budget"
+        );
+        assert_eq!(stashed_bytes(), each * 2);
+        assert!(stash_take(second).is_some());
+        assert!(stash_take(third).is_some());
+        assert_eq!(stashed_bytes(), 0, "removals release their bytes");
+
+        // A response over the whole budget is kept alone (refusing it would
+        // make its handler run again); the entry before it is evicted.
+        let over_first = stash_put_within(None, pending(), 0);
+        let over_second = stash_put_within(None, pending(), 0);
+        assert!(stash_take(over_first).is_none());
+        assert!(stash_take(over_second).is_some(), "kept alone");
+        assert_eq!(stashed_bytes(), 0);
         clear_stash();
     }
 

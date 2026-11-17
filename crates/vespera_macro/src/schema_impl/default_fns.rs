@@ -14,6 +14,7 @@
 use std::path::Path;
 
 use crate::parser::strip_raw_prefix_owned;
+use crate::schema_macro::cfg_eval::statically_inactive;
 use crate::schema_macro::{file_cache, module_scope};
 
 fn ident_name(ident: &syn::Ident) -> String {
@@ -92,10 +93,15 @@ fn associated_fn_value(
 ) -> Option<serde_json::Value> {
     items.iter().find_map(|item| match item {
         syn::Item::Impl(block)
-            if block.trait_.is_none() && impl_owner_is(&block.self_ty, owner) =>
+            if block.trait_.is_none()
+                && impl_owner_is(&block.self_ty, owner)
+                && !statically_inactive(&block.attrs) =>
         {
             block.items.iter().find_map(|item| match item {
-                syn::ImplItem::Fn(func) if ident_name(&func.sig.ident) == fn_name => {
+                syn::ImplItem::Fn(func)
+                    if ident_name(&func.sig.ident) == fn_name
+                        && !statically_inactive(&func.attrs) =>
+                {
                     let func: syn::ItemFn =
                         syn::parse2(quote::ToTokens::to_token_stream(func)).ok()?;
                     crate::openapi_generator::extract_default_value_from_function(&func)
@@ -225,7 +231,9 @@ fn in_module_tree(
 /// The literal value of the function `fn_name` among `items`.
 fn default_fn_value(items: &[syn::Item], fn_name: &str) -> Option<serde_json::Value> {
     items.iter().find_map(|item| match item {
-        syn::Item::Fn(func) if ident_name(&func.sig.ident) == fn_name => {
+        syn::Item::Fn(func)
+            if ident_name(&func.sig.ident) == fn_name && !statically_inactive(&func.attrs) =>
+        {
             crate::openapi_generator::extract_default_value_from_function(func)
         }
         _ => None,

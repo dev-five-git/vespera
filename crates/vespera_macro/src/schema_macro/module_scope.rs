@@ -125,7 +125,9 @@ fn descend(cursor: Cursor, segment: &str) -> Option<Cursor> {
 }
 
 /// Module segments below the crate root (`crate::a::b` -> `[a, b]`), or
-/// `None` for relative (`self` / `super`) paths.
+/// `None` for relative (`self` / `super`) paths and for an external
+/// `::krate::..` path (its leading empty segment, R22-SM3-02: `Path::join`
+/// would probe a rooted `/entities/..` file instead of the crate's `src`).
 fn crate_relative(module_path: &[String]) -> Option<&[String]> {
     let rest = match module_path.first().map(String::as_str) {
         Some("crate") => &module_path[1..],
@@ -133,7 +135,7 @@ fn crate_relative(module_path: &[String]) -> Option<&[String]> {
     };
     (!rest
         .iter()
-        .any(|s| s == "self" || s == "super" || s == "crate"))
+        .any(|s| s.is_empty() || s == "self" || s == "super" || s == "crate"))
     .then_some(rest)
 }
 

@@ -75,7 +75,7 @@ class HeaderPolicyTest {
     }
 
     @Test
-    void connectionTokenParserTrimsBoundsAndLimitsWork() {
+    void connectionTokenParserTrimsAndKeepsEveryNominatedName() {
         Set<String> existing = new HashSet<>(Set.of("existing"));
         Set<String> parsed = HeaderPolicy.addConnectionTokens(
                 existing,
@@ -83,21 +83,25 @@ class HeaderPolicyTest {
 
         assertSame(existing, parsed);
         assertTrue(parsed.containsAll(Set.of("existing", "foo", "bar", "y".repeat(128))));
-        assertFalse(parsed.contains("x".repeat(129)));
+        // Long names are nominated too: a cap would forward the header they name.
+        assertTrue(parsed.contains("x".repeat(129)));
         assertNull(HeaderPolicy.addConnectionTokens(null, ""));
         assertNull(HeaderPolicy.addConnectionTokens(null, " \t ,\t"));
 
+        // Nominations past the 33rd token are honoured, not silently dropped:
+        // the last one must still keep its header out of the forwarded set.
         StringBuilder many = new StringBuilder();
-        for (int i = 0; i < 33; i++) {
+        for (int i = 0; i < 40; i++) {
             if (i > 0) {
                 many.append(',');
             }
             many.append("Token").append(i);
         }
-        Set<String> limited = HeaderPolicy.addConnectionTokens(null, many.toString());
-        assertEquals(32, limited.size());
-        assertTrue(limited.contains("token31"));
-        assertFalse(limited.contains("token32"));
+        many.append(",x-internal-hop");
+        Set<String> all = HeaderPolicy.addConnectionTokens(null, many.toString());
+        assertEquals(41, all.size());
+        assertTrue(all.contains("token39"));
+        assertTrue(HeaderPolicy.isConnectionNominatedHeader("X-Internal-Hop", all));
     }
 
     @Test

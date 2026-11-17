@@ -45,10 +45,9 @@ struct Sample {
     homepage: String,
 }
 
-/// Produce a [`garde::Report`] with `n` failing fields by validating a
-/// deliberately-invalid `Sample` and truncating the report's iteration
-/// in the benchmarked closures (we just validate the whole struct; it
-/// yields 5 errors — representative of a realistic multi-error 422).
+/// Produce a [`garde::Report`] by validating a deliberately-invalid `Sample`
+/// as a whole: the fixture yields 5 errors, representative of a realistic
+/// multi-error 422.  Nothing is truncated; the count is fixed by the fixture.
 fn failing_report() -> garde::Report {
     let sample = Sample {
         username: "x".to_owned(),         // too short

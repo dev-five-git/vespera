@@ -75,6 +75,23 @@ class VesperaBridgeAutoConfigurationTest {
         }
     }
 
+    @Test
+    void anUnrecognisedOversizePolicyFailsStartupNotTheFirstOversizedRequest() {
+        // The policy is read per oversized dispatch; a typo must surface when
+        // the proxy is created, with the offending value in the message.
+        runner.withSystemProperties("vespera.direct.oversize-policy=trhow").run(ctx -> {
+            assertTrue(ctx.getStartupFailure() != null, "a bad oversize policy must fail startup");
+            boolean named = false;
+            for (Throwable cause = ctx.getStartupFailure(); cause != null; cause = cause.getCause()) {
+                named |= cause instanceof IllegalArgumentException
+                        && String.valueOf(cause.getMessage()).contains("trhow");
+            }
+            assertTrue(named, "the IllegalArgumentException names the bad value");
+        });
+        runner.withSystemProperties("vespera.direct.oversize-policy=throw").run(ctx ->
+                assertTrue(ctx.getStartupFailure() == null, "a valid policy starts"));
+    }
+
     private static boolean causedByExposedAppsRejection(Throwable failure) {
         for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
             if (cause instanceof IllegalArgumentException

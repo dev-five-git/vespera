@@ -207,19 +207,16 @@ class ReactiveProxyE2ETest {
     /** Once bytes reached the client the response cannot change: the transfer is cut short. */
     @Test
     void streamedPanicAfterTheCommitAbortsTheResponse() throws Exception {
+        int chunks = panicChunksPastOneStreamingChunk(
+                System.getProperty("vespera.streaming.chunkBytes"),
+                System.getenv("VESPERA_STREAMING_CHUNK_BYTES"));
         HttpResponse<InputStream> response;
         try {
-            response = streamPanic(panicChunksPastOneStreamingChunk(
-                    System.getProperty("vespera.streaming.chunkBytes"),
-                    System.getenv("VESPERA_STREAMING_CHUNK_BYTES")));
+            response = streamPanic(chunks);
         } catch (IOException aborted) {
-            // Only a connection cut off mid-exchange is the accepted abort; a
-            // refused connection or a hung server is a setup failure.
-            if (aborted instanceof java.net.ConnectException
-                    || aborted instanceof java.net.http.HttpTimeoutException) {
-                throw aborted;
-            }
-            return; // aborted before the status line arrived: also incomplete
+            // The body is past one streaming chunk, so the 200 was committed before
+            // the panic: any abort before the status line is a different failure.
+            throw new AssertionError("aborted before the 200 status line arrived", aborted);
         }
         assertEquals(200, response.statusCode());
         int received = 0;
@@ -229,6 +226,9 @@ class ReactiveProxyE2ETest {
                 received += n;
             }
         } catch (IOException aborted) {
+            // The panic cuts the body short of its full length; a reset after the
+            // whole body was delivered is not the case under test.
+            assertTrue(received < chunks * 1024, "received " + received);
             return; // the connection was aborted mid-body
         }
         throw new AssertionError("a panicked stream completed cleanly after " + received + " bytes");

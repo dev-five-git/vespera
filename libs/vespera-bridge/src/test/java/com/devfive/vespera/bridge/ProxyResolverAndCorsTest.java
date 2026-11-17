@@ -171,6 +171,25 @@ class ProxyResolverAndCorsTest {
     }
 
     @Test
+    void anAsyncRustCorsValueIsRestoredByAProxyErrorReset() {
+        // The ASYNC entity path (dedupeCorsHeaders, RUST) replaces the filter-set
+        // value; a later proxy-error reset must restore that value like the
+        // addHeader/setHeader paths do.
+        MockHttpServletResponse raw = new MockHttpServletResponse();
+        raw.setHeader("Access-Control-Allow-Origin", "https://filter.example");
+        ProxyServletResponse response = new ProxyServletResponse(raw, null, null, CorsHandling.RUST);
+        HttpHeaders rust = new HttpHeaders();
+        rust.add("Access-Control-Allow-Origin", "https://rust.example");
+
+        response.dedupeCorsHeaders(rust);
+        assertEquals(List.of("https://rust.example"), raw.getHeaders("Access-Control-Allow-Origin"));
+
+        response.resetProxyOutput();
+
+        assertEquals(List.of("https://filter.example"), raw.getHeaders("Access-Control-Allow-Origin"));
+    }
+
+    @Test
     void asyncCorsDedupeNeverTouchesAResponseAfterTheAsyncRequestEnded() {
         HttpHeaders rust = new HttpHeaders();
         rust.add("Access-Control-Allow-Origin", "https://rust.example");

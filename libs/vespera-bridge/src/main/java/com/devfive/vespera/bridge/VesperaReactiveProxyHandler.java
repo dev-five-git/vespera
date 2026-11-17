@@ -333,8 +333,10 @@ public class VesperaReactiveProxyHandler implements WebHandler {
         Mono<byte[]> body = readBody(request, declared, cap)
                 .onErrorResume(IllegalStateException.class,
                         failure -> ReactiveFormBodySupport.secondMultipartRead(exchange, failure))
-                .flatMap(read -> ReactiveFormBodySupport.recoverConsumedBody(exchange, read, declared))
-                .map(read -> ReactiveFormBodySupport.rejectConsumedMultipart(exchange, read, declared));
+                .flatMap(read -> ReactiveFormBodySupport.recoverConsumedBody(exchange, read, declared)
+                        .map(recovered -> ReactiveFormBodySupport.rejectConsumedMultipart(exchange, recovered,
+                                declared))
+                        .flatMap(checked -> shortBodyGuard(read, checked, declared)));
         return Mono.zip(body, principal).flatMap(parts -> {
             byte[] bodyBytes = parts.getT1();
             // A rebuilt form body can differ in length from the declared one.
@@ -349,6 +351,22 @@ public class VesperaReactiveProxyHandler implements WebHandler {
             }
             return implicitStreaming ? stream(wire, out, px, method, true) : buffered(wire, out, px, method);
         });
+    }
+
+    /**
+     * Servlet parity: a body of known length that ended early (the container
+     * completed the request body short) is refused with {@code 400}, because
+     * the wire would rewrite {@code Content-Length} to the short size and Rust
+     * would see a complete-looking request. A rebuilt form body (a different
+     * array, see {@link ReactiveFormBodySupport#recoverConsumedBody}) is the
+     * legitimate short case and passes through.
+     */
+    static Mono<byte[]> shortBodyGuard(byte[] read, byte[] checked, long declared) {
+        if (checked == read && declared > 0 && read.length < declared) {
+            return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "request body ended after " + read.length + " of the declared " + declared + " bytes"));
+        }
+        return Mono.just(checked);
     }
 
     /** No request body: {@code Content-Length} absent or {@code 0}, no {@code Transfer-Encoding}. */

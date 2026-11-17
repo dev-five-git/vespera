@@ -394,6 +394,9 @@ public final class VesperaRequest {
         try {
             responseHeader = transport.dispatchStreaming(header, tracked, out);
         } catch (IOException e) {
+            // Same rule as the unchecked branches: a dispatch that failed
+            // before the request body was touched leaves it sendable again.
+            releaseUnreadStream(tracked);
             VesperaClientException failure = new VesperaClientException(
                     "streamed response failed "
                             + (out.size() > 0 ? "after body bytes were written"

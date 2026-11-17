@@ -453,11 +453,14 @@ impl TypeResolver<'_> {
                 .iter()
                 .find(|glob| first_named(glob) == Some("sea_orm"))
         });
-        // A SeaORM prelude name (an alias, or `Uuid` / `Decimal`) with a SeaORM
-        // glob in scope is the SeaORM one, not an external glob's
-        // (`use std::collections::*;` took `Uuid`, R21-B4-M2, round 21).
+        // A bare SeaORM prelude name with a SeaORM glob in scope is the SeaORM
+        // one, not an external glob's (`use std::collections::*;` took `Uuid`,
+        // R21-B4-M2, round 21). Only the names the prelude exports count: a
+        // chrono alias it does not export (`Local`) stays the glob's
+        // (R22-SM4-M1).
         let sea_orm_prelude_name = sea_orm_glob.is_some()
-            && (sea_orm_alias.is_some() || matches!(name.as_str(), "Uuid" | "Decimal"));
+            && segment.arguments.is_none()
+            && SEA_ORM_PRELUDE_NAMES.contains(&name.as_str());
         // A name the source module neither defines nor imports, nor a std
         // prelude name, comes from one of its external glob imports (it
         // compiled there): emitted through that glob, not as a bare alias
@@ -466,6 +469,22 @@ impl TypeResolver<'_> {
             && !is_prelude_name(&name)
             && !sea_orm_prelude_name
         {
+            // Several external globs and no other meaning for the name: which
+            // one supplies it would be a guess, so the user imports it
+            // explicitly (R22-SM4-L1).
+            if sea_orm_alias.is_none()
+                && self
+                    .scope
+                    .is_some_and(|scope| external_globs(scope).count() > 1)
+            {
+                return syn::Error::new(
+                    ident.span(),
+                    format!(
+                        "schema_type!: `{name}` may come from several glob imports of this module; import it explicitly (`use <module>::{name};`)"
+                    ),
+                )
+                .to_compile_error();
+            }
             let base = path_tokens(glob);
             return quote! { #base :: #ident #args };
         }
@@ -580,6 +599,31 @@ const SEA_ORM_PATH_ALIASES: &[&str] = &[
 /// The crates whose paths may spell one of [`SEA_ORM_PATH_ALIASES`].
 const ALIAS_CRATES: &[&str] = &["sea_orm", "vespera", "axum_typed_multipart", "tempfile"];
 
+/// The names sea-orm's `prelude` exports that a bare SeaORM-glob name can
+/// resolve to (the aliases above, `Uuid`, `Decimal`, ..). `Date` / `Time` /
+/// `DateTime` are exported only with sea-orm's `with-chrono` feature, which
+/// the macro cannot see, so they are taken as exported.
+const SEA_ORM_PRELUDE_NAMES: &[&str] = &[
+    "Value",
+    "Json",
+    "Date",
+    "Time",
+    "DateTime",
+    "DateTimeWithTimeZone",
+    "DateTimeUtc",
+    "DateTimeLocal",
+    "ChronoDate",
+    "ChronoTime",
+    "ChronoDateTime",
+    "ChronoDateTimeWithTimeZone",
+    "ChronoDateTimeUtc",
+    "ChronoUtc",
+    "ChronoDateTimeLocal",
+    "Uuid",
+    "Decimal",
+    "BigDecimal",
+];
+
 /// Re-roots every path of an array length expression ([`TypeResolver::len_path`]).
 struct LenPaths<'r, 'a>(&'r TypeResolver<'a>);
 
@@ -605,14 +649,20 @@ fn leading_run_len(segments: &[(String, TokenStream)]) -> usize {
         .max(1)
 }
 
-/// The first external glob import of `scope`: not `crate` / `self` / `super`
-/// (resolved by name) and not a crate [`ALIAS_CRATES`] names (its aliases).
-fn external_glob(scope: &ModuleScope) -> Option<&Vec<String>> {
-    scope.globs.iter().find(|glob| {
+/// The external glob imports of `scope`, in source order: not `crate` /
+/// `self` / `super` (resolved by name) and not a crate [`ALIAS_CRATES`] names
+/// (its aliases).
+fn external_globs(scope: &ModuleScope) -> impl Iterator<Item = &Vec<String>> {
+    scope.globs.iter().filter(|glob| {
         first_named(glob).is_some_and(|root| {
             !matches!(root, "crate" | "self" | "super") && !ALIAS_CRATES.contains(&root)
         })
     })
+}
+
+/// The first of [`external_globs`].
+fn external_glob(scope: &ModuleScope) -> Option<&Vec<String>> {
+    external_globs(scope).next()
 }
 
 /// Names a glob import never supplies: the primitives and the std prelude.

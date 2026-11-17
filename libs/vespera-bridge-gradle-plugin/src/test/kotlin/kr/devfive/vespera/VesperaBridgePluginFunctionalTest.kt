@@ -74,6 +74,21 @@ class VesperaBridgePluginFunctionalTest {
                 }
     """
 
+    /**
+     * Like [printCommands], but also writes the declared `cargo-marker` output
+     * before stopping, so an up-to-date check can see a real, present output.
+     */
+    private val markingPrintCommands = """
+                tasks.named<kr.devfive.vespera.CargoBuildTask>("cargoBuild") {
+                    doFirst {
+                        println("CMDS=" + plannedCommands())
+                        project.layout.buildDirectory.file("cargo-marker").get().asFile
+                            .also { it.parentFile.mkdirs(); it.writeText("ran") }
+                        throw StopExecutionException()
+                    }
+                }
+    """
+
     @Test
     fun bundlesHostTargetsAndExtraLibraries() {
         val hostLib = NativePlatform.mapLibraryName(hostOs, "demo")
@@ -339,10 +354,10 @@ class VesperaBridgePluginFunctionalTest {
             """
                 packageName.set("demo")
                 targets.put("$crossPlatform", "$crossTriple")
-            """ + printCommands,
-            // A declared output: without `upToDateWhen { false }` the second
-            // run would be UP-TO-DATE (a task without outputs never is, so
-            // the assertion would hold either way).
+            """ + markingPrintCommands,
+            // A declared output that the stub really writes: without
+            // `upToDateWhen { false }` the second run finds it present and
+            // inputs unchanged, so it is UP-TO-DATE and the assertion fails.
             extra = """
                 tasks.named("cargoBuild") { outputs.file(layout.buildDirectory.file("cargo-marker")) }
             """,
@@ -352,7 +367,7 @@ class VesperaBridgePluginFunctionalTest {
         val second = run("cargoBuild").build()
 
         assertTrue(first.output.contains("--target, $crossTriple"), first.output)
-        assertEquals(TaskOutcome.SUCCESS, second.task(":cargoBuild")?.outcome)
+        assertEquals(TaskOutcome.SUCCESS, second.task(":cargoBuild")?.outcome, second.output)
     }
 
     @Test

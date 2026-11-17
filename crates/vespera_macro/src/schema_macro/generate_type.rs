@@ -785,8 +785,9 @@ pub fn generate_schema_type_code(
 
     // The `from_model` load reads the source column behind each relation it
     // emits (R21-SM2-L1, round 21), even when `omit` removed that field from
-    // the DTO: it must be readable from the DTO module too.
-    for rel in relation_fields.iter().filter(|rel| !rel.adapter) {
+    // the DTO: it must be readable from the DTO module too. A `relation_adapters`
+    // relation is loaded the same way (only its value expression differs).
+    for rel in &relation_fields {
         if let Some(column) = source_column_read(rel, &parsed_struct.fields)
             && let Some(field) = source_field_named(&parsed_struct.fields, &column)
         {
@@ -969,7 +970,7 @@ pub fn generate_schema_type_code(
     Ok((generated_tokens, metadata))
 }
 
-mod assignments;
+pub(super) mod assignments;
 
 /// Shared with `from_model::target_shape`, which predicts the emitted shape.
 pub(in crate::schema_macro) use assignments::readable_from;

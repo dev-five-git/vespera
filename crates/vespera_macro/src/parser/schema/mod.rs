@@ -48,10 +48,11 @@ pub use enum_schema::{
 pub use generics::{parameter_traits, substitute_type, substitute_type_with_traits};
 pub use scoped_ident::{definition_key, registry_keys};
 pub use serde_attrs::{
-    SerdeSide, extract_aliases, extract_default, extract_deny_unknown_fields, extract_doc_comment,
-    extract_field_codec, extract_field_rename, extract_field_rename_for, extract_flatten,
-    extract_rename_all, extract_rename_all_for, extract_schema_default, extract_serde_skip_flags,
-    extract_skip, extract_transparent, rename_field, strip_raw_prefix_owned,
+    SerdeSide, derives_serialize, extract_aliases, extract_default, extract_deny_unknown_fields,
+    extract_doc_comment, extract_field_codec, extract_field_rename, extract_field_rename_for,
+    extract_field_rename_owned, extract_flatten, extract_rename_all, extract_rename_all_for,
+    extract_schema_default, extract_serde_skip_flags, extract_skip, extract_transparent,
+    rename_field, strip_raw_prefix_owned,
 };
 pub use struct_schema::{apply_field_rules, parse_struct_to_schema, single_emitted_field};
 // Re-export for internal use within the parser module. `parse_type_to_schema_ref`
