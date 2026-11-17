@@ -131,9 +131,18 @@ fn base_request_reaches_the_router() {
 fn random_bytes_never_panic() {
     let rt = runtime();
     let mut rng = XorShift(0x9E37_79B9_7F4A_7C15);
-    for _ in 0..5000 {
+    for i in 0..5000 {
         let len = rng.range(512);
-        let wire: Vec<u8> = (0..len).map(|_| rng.byte()).collect();
+        let mut wire: Vec<u8> = (0..len).map(|_| rng.byte()).collect();
+        // A uniform random u32 prefix almost always exceeds the remaining
+        // input, so most bytes would stop at the length check. Every other
+        // iteration writes an in-range `header_len` so the random header
+        // reaches JSON parsing.
+        if i % 2 == 0 && len >= 4 {
+            let header_len = rng.range(len - 4 + 1);
+            let prefix = u32::try_from(header_len).unwrap_or(0).to_be_bytes();
+            wire[..4].copy_from_slice(&prefix);
+        }
         assert_robust(&rt, &wire);
     }
 }

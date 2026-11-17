@@ -53,8 +53,10 @@ pub enum DirectWriteResult {
     Complete(usize),
     /// The response needs `required` bytes and `out` was too small.
     /// `out` contents are **undefined** (a prefix may have been
-    /// written).  `required` is exact — a retry with a buffer of at
-    /// least this size succeeds, but **re-runs the handler**.  Use
+    /// written).  `required` is exact for *this* run only.  A retry
+    /// **re-runs the handler**, so its response may differ in size: a
+    /// retry with a buffer of at least `required` fits only if the
+    /// re-run response is no larger, and may overflow again.  Use
     /// [`crate::dispatch_into_async_borrowed_resumable`] to keep the
     /// response instead.
     Overflow(usize),
