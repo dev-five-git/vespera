@@ -1,7 +1,11 @@
 //! In-place expansion of a handler's return type through the alias chain
 //! (the lookup rules are in the parent module's docs).
 
-use super::*;
+use super::{
+    Cow, DefinitionKey, MAX_ALIAS_DEPTH, NextScope, Path, ReturnType, Scope, Type, alias_candidate,
+    alias_qualifier, apply_alias, definition_key, find_alias, fn_module, is_external_path,
+    source_key,
+};
 
 /// Expand the return type of `sig` in place through the aliases found in
 /// `same_file` (the handler's file) and (if given) the crate source
