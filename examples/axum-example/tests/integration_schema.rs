@@ -414,3 +414,51 @@ fn decimal_serializes_as_string_at_runtime() {
     );
     assert_eq!(value, serde_json::json!("10.50"));
 }
+
+/// A response type mixing every `Option` / skip combination.
+#[derive(Serialize, Deserialize, Clone, Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct WireProfile {
+    pub name: String,
+    pub nickname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing)]
+    pub secret: String,
+}
+
+/// The response schema matches what axum's `Json` actually sends: a `None`
+/// is sent as `"nickname": null` (so `nickname` is required and nullable),
+/// a `skip_serializing_if` `None` is left out (not required), and a
+/// `skip_serializing` field is never sent (not a property).
+#[tokio::test]
+async fn response_schema_matches_the_serialized_body() {
+    use vespera::axum::{Json, Router, routing::get};
+
+    let app = Router::new().route(
+        "/profile",
+        get(|| async {
+            Json(WireProfile {
+                name: "n".to_string(),
+                nickname: None,
+                email: None,
+                secret: "s".to_string(),
+            })
+        }),
+    );
+    let body: serde_json::Value = TestServer::new(app).get("/profile").await.json();
+    assert_eq!(body, json!({"name": "n", "nickname": null}));
+
+    let schema = serde_json::to_value(schema!(WireProfile)).unwrap();
+    assert_eq!(schema["required"], json!(["name", "nickname"]));
+    assert_eq!(
+        schema["properties"]["nickname"]["type"],
+        json!(["string", "null"])
+    );
+    assert!(schema["properties"].get("email").is_some());
+    assert!(schema["properties"].get("secret").is_none());
+    // Every required key is really in the body.
+    for key in schema["required"].as_array().unwrap() {
+        assert!(body.get(key.as_str().unwrap()).is_some(), "{key} missing");
+    }
+}
