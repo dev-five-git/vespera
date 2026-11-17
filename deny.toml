@@ -22,6 +22,13 @@ ignore = [
     # database/WAL files. No published vespera crate depends on SQLite.
     # Drop this once sqlx ships a release on libsqlite3-sys >= 0.39.
     { id = "RUSTSEC-2026-0459", reason = "example-only (axum-example via sqlx-sqlite); no published crate links SQLite" },
+    # chrono / chrono-tz were flagged unmaintained (informational, no known
+    # vulnerability). chrono is part of vespera's public API (`vespera::chrono`
+    # re-export, SeaORM `DateTimeWithTimeZone` conversion, croner's chrono
+    # backend) and chrono-tz backs the opt-in `cron-tz` feature, so replacing
+    # them (jiff / time) is a breaking change for a future minor release.
+    { id = "RUSTSEC-2026-0543", reason = "chrono is public API (vespera::chrono, SeaORM, croner); migration is a breaking change" },
+    { id = "RUSTSEC-2026-0555", reason = "chrono-tz backs the opt-in cron-tz feature; tied to the chrono migration" },
 ]
 
 [licenses]
