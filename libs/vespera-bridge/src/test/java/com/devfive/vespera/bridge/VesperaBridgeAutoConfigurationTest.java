@@ -61,6 +61,31 @@ class VesperaBridgeAutoConfigurationTest {
     }
 
     @Test
+    void anEmptyExposedAppsValueFailsStartupInsteadOfOpeningTheProxy() {
+        // Spring binds an empty value (and an unset ${VAR:} placeholder that
+        // resolves to "") to an allowlist with no entries: that must fail
+        // startup, not silently fall back to the unrestricted resolver.
+        for (String property : java.util.List.of(
+                "vespera.bridge.exposed-apps=",
+                "vespera.bridge.exposed-apps=${VESPERA_TEST_UNSET_APPS:}")) {
+            runner.withPropertyValues(property).run(ctx -> {
+                assertTrue(ctx.getStartupFailure() != null, property + " must fail startup");
+                assertTrue(causedByExposedAppsRejection(ctx.getStartupFailure()), property);
+            });
+        }
+    }
+
+    private static boolean causedByExposedAppsRejection(Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof IllegalArgumentException
+                    && String.valueOf(cause.getMessage()).contains("exposed-apps")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Test
     void clientBeanIsExposedEvenWithoutTheControllerAndIsReplaceable() {
         runner.withPropertyValues("vespera.bridge.controller-enabled=false")
                 .run(ctx -> {

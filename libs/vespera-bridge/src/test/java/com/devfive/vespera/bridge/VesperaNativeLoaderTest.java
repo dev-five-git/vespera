@@ -155,6 +155,14 @@ class VesperaNativeLoaderTest {
                 Throwable failure = invokeChildLoadBundled(loader, libraryName);
                 UnsatisfiedLinkError error = assertInstanceOf(UnsatisfiedLinkError.class, failure);
                 assertTrue(error.getMessage() != null && !error.getMessage().isBlank());
+                // The rejection must come from the JVM's System.load of the copy, not from
+                // an earlier extraction or digest check (their messages name "extract"/"integrity").
+                assertTrue(java.util.Arrays.stream(error.getStackTrace()).anyMatch(frame ->
+                                "java.lang.System".equals(frame.getClassName())
+                                        && "load".equals(frame.getMethodName())),
+                        "not thrown by System.load: " + error.getMessage());
+                assertFalse(error.getMessage().contains("integrity check failed"), error.getMessage());
+                assertFalse(error.getMessage().contains("Native library extraction failed"), error.getMessage());
             }
             // A resource that fails System.load leaves no cached copy behind.
             try (var left = Files.list(extractDir)) {

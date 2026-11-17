@@ -23,7 +23,7 @@ final class AppHeaderSelection {
     private static final Logger log = LoggerFactory.getLogger(HeaderAppNameResolver.class);
 
     private final String headerName;
-    /** Allowed app names; {@code null} = unrestricted (legacy behaviour). */
+    /** Allowed app names; {@code null} = property absent, unrestricted (legacy behaviour). */
     private final Set<String> exposedApps;
     private final AtomicBoolean unrestrictedWarned = new AtomicBoolean(false);
 
@@ -37,7 +37,8 @@ final class AppHeaderSelection {
     }
 
     private static Set<String> normalizeAllowlist(Collection<String> exposedApps) {
-        if (exposedApps == null || exposedApps.isEmpty()) {
+        if (exposedApps == null) {
+            // Property absent: the only way to stay unrestricted.
             return null;
         }
         Set<String> allowed = new LinkedHashSet<>();
@@ -47,10 +48,11 @@ final class AppHeaderSelection {
             }
         }
         if (allowed.isEmpty()) {
-            // A configured list whose entries are all blank (e.g. ${ADMIN_APP:}
-            // with the variable unset) must not silently become "unrestricted".
+            // A configured list with no real entry (an empty value such as
+            // ${ADMIN_APP:} with the variable unset, or only blank entries)
+            // must not silently become "unrestricted".
             throw new IllegalArgumentException(
-                "vespera.bridge.exposed-apps is set but names no app (blank entries only); "
+                "vespera.bridge.exposed-apps is set but names no app (empty or blank entries only); "
                     + "remove the property to allow any app, or list the apps to expose");
         }
         allowed.add(AppNameResolver.DEFAULT_APP);

@@ -267,7 +267,8 @@ final class WireResponseWriter {
         // before any body advice runs, so a value it cannot parse (`json`)
         // would turn the response into a Spring 500, where SYNC / DIRECT pass
         // it through verbatim. Such a value leaves the entity and the advice
-        // sets it on the servlet response directly.
+        // sets it on the servlet response directly. With a null `proxied`
+        // (package-private callers only) no advice runs, so the value is dropped.
         boolean rawContentType = !parsableContentType(head.headers.getFirst(HttpHeaders.CONTENT_TYPE));
         if (!responseStatusPermitsBody(head.status.value())) {
             // No body object at all: a message converter would otherwise

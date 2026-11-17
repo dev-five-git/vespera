@@ -99,7 +99,8 @@ class HeaderAppNameResolverTest {
                 Arrays.asList(""),
                 Arrays.asList(" "),
                 Arrays.asList("\t", null),
-                Arrays.asList(" ", ""))) {
+                Arrays.asList(" ", ""),
+                List.<String>of())) {
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                     () -> new HeaderAppNameResolver("X-Vespera-App", blanks), blanks.toString());
             assertTrue(failure.getMessage().contains("exposed-apps"), failure.getMessage());
@@ -107,7 +108,7 @@ class HeaderAppNameResolverTest {
     }
 
     @Test
-    void emptyOrAbsentAllowlistKeepsTheUnrestrictedBehaviour() {
+    void absentAllowlistKeepsTheUnrestrictedBehaviour() {
         ch.qos.logback.classic.Logger logger = (ch.qos.logback.classic.Logger)
                 org.slf4j.LoggerFactory.getLogger(HeaderAppNameResolver.class);
         ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> warnings =
@@ -116,8 +117,8 @@ class HeaderAppNameResolverTest {
         logger.addAppender(warnings);
         try {
             for (HeaderAppNameResolver unrestricted : List.of(
-                    new HeaderAppNameResolver("X-Vespera-App", List.of()),
-                    new HeaderAppNameResolver("X-Vespera-App", null))) {
+                    new HeaderAppNameResolver("X-Vespera-App", null),
+                    new HeaderAppNameResolver("X-Vespera-App"))) {
                 warnings.list.clear();
                 assertFalse(unrestricted.isRestricted());
                 // The default app never warns; the first non-default selection

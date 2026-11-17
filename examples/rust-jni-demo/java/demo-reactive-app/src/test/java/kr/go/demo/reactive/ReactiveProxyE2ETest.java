@@ -213,6 +213,12 @@ class ReactiveProxyE2ETest {
                     System.getProperty("vespera.streaming.chunkBytes"),
                     System.getenv("VESPERA_STREAMING_CHUNK_BYTES")));
         } catch (IOException aborted) {
+            // Only a connection cut off mid-exchange is the accepted abort; a
+            // refused connection or a hung server is a setup failure.
+            if (aborted instanceof java.net.ConnectException
+                    || aborted instanceof java.net.http.HttpTimeoutException) {
+                throw aborted;
+            }
             return; // aborted before the status line arrived: also incomplete
         }
         assertEquals(200, response.statusCode());

@@ -170,19 +170,31 @@ class VesperaProxyControllerCoverageTest {
     }
 
     @Test
-    void unknownUnlimitedAndLargeKnownBodiesUseTheirBoundedReadPaths() throws Exception {
+    void unknownLengthBodyUsesItsBoundedReadPath() throws Exception {
         MockHttpServletRequest unknown = requestReportingLength(
                 -1, "unknown".getBytes(StandardCharsets.UTF_8));
         assertArrayEquals(
                 "unknown".getBytes(StandardCharsets.UTF_8),
                 VesperaProxyController.readBody(unknown, 0));
 
-        MockHttpServletRequest largeKnown = requestReportingLength(
-                64L * 1024L * 1024L + 1L,
+    }
+
+    @Test
+    void aKnownLengthBodyEndingEarlyIsRejectedInsteadOfForwardedShort() {
+        // The container stopped the stream at 9 of 1000 declared bytes (client
+        // gone or upload truncated). The short array must not reach Rust as a
+        // complete request with a rewritten Content-Length.
+        MockHttpServletRequest truncated = requestReportingLength(1000L, new byte[9]);
+        ResponseStatusException failure = assertThrows(ResponseStatusException.class,
+                () -> VesperaProxyController.readBody(truncated, 0));
+        assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST, failure.getStatusCode());
+        assertTrue(failure.getReason().contains("9 of the declared 1000"), failure.getReason());
+
+        MockHttpServletRequest truncatedLarge = requestReportingLength(64L * 1024L * 1024L + 1L,
                 "short-eof".getBytes(StandardCharsets.UTF_8));
-        assertArrayEquals(
-                "short-eof".getBytes(StandardCharsets.UTF_8),
-                VesperaProxyController.readBody(largeKnown, 0));
+        assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST,
+                assertThrows(ResponseStatusException.class,
+                        () -> VesperaProxyController.readBody(truncatedLarge, 0)).getStatusCode());
     }
 
     @Test

@@ -310,6 +310,40 @@ class ProxyOperabilityTest {
     }
 
     @Test
+    void appTagsLearnedCapHoldsWhenDistinctNamesRaceForTheLastSlot() throws Exception {
+        // One free slot, 32 threads each learning a different name at once:
+        // reserving the slot before the add keeps the cap; check-then-add did not.
+        for (int round = 0; round < 100; round++) {
+            AppTags tags = new AppTags(null);
+            for (int i = 0; i < AppTags.MAX_LEARNED - 1; i++) {
+                tags.tag("fill-" + round + "-" + i, 200, false, true);
+            }
+            int threads = 32;
+            java.util.concurrent.CyclicBarrier start = new java.util.concurrent.CyclicBarrier(threads);
+            java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(threads);
+            try {
+                java.util.List<java.util.concurrent.Future<String>> answers = new java.util.ArrayList<>();
+                for (int t = 0; t < threads; t++) {
+                    String app = "race-" + round + "-" + t;
+                    answers.add(pool.submit(() -> {
+                        start.await();
+                        return tags.tag(app, 200, false, true);
+                    }));
+                }
+                int learned = 0;
+                for (java.util.concurrent.Future<String> answer : answers) {
+                    if (!AppTags.UNKNOWN.equals(answer.get(30, java.util.concurrent.TimeUnit.SECONDS))) {
+                        learned++;
+                    }
+                }
+                assertTrue(learned <= 1, "round " + round + ": " + learned + " names learned past the cap");
+            } finally {
+                pool.shutdownNow();
+            }
+        }
+    }
+
+    @Test
     void randomAppHeadersDoNotGrowTheMeterRegistry() throws Exception {
         io.micrometer.core.instrument.simple.SimpleMeterRegistry registry =
                 new io.micrometer.core.instrument.simple.SimpleMeterRegistry();

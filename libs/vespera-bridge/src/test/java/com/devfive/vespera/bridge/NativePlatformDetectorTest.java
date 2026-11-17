@@ -94,7 +94,7 @@ class NativePlatformDetectorTest {
     }
 
     @ParameterizedTest
-    @CsvSource({"musl, true", " MUSL , true", "glibc, false", "gnu, false"})
+    @CsvSource({"musl, true", "' MUSL ', true", "glibc, false", "gnu, false"})
     void explicitOverrideWinsWithoutProbing(String override, boolean expected) {
         var exploding = new NativePlatformDetector.LibcProbe() {
             @Override
@@ -113,6 +113,9 @@ class NativePlatformDetectorTest {
     @Test
     void unknownOrBlankOverrideIsIgnored() {
         assertTrue(NativePlatformDetector.isMusl("uclibc", probe(MUSL_MAPS, Map.of())));
+        // A blank override is ignored and detection runs: on a musl host it reports musl
+        // (a blank read as "glibc" would answer false here).
+        assertTrue(NativePlatformDetector.isMusl(" ", probe(MUSL_MAPS, Map.of())));
         assertFalse(NativePlatformDetector.isMusl(" ", probe(GLIBC_MAPS, Map.of())));
     }
 

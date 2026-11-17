@@ -27,7 +27,9 @@ import org.springframework.context.annotation.Bean;
  * <p>The servlet ({@link VesperaBridgeAutoConfiguration}) and WebFlux
  * ({@link VesperaBridgeReactiveAutoConfiguration}) proxies run after it and
  * depend on the native settings bean, so the settings are applied before the
- * proxy (or the client) dispatches anything. Every bean is
+ * proxy (or the client) dispatches anything. Every bean except
+ * {@code vesperaBridgeShutdown} (property-gated only: a
+ * {@code DisposableBean} gate would match unrelated beans) is
  * {@code @ConditionalOnMissingBean}.
  */
 @AutoConfiguration

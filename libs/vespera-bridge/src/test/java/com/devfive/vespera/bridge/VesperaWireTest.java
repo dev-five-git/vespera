@@ -206,15 +206,23 @@ class VesperaWireTest {
         VesperaWireCodec.clearCurrentThreadBuffers();
         String huge = "x".repeat(40 * 1024);
 
-        assertThrows(UnsatisfiedLinkError.class, () -> VesperaDirectBufferPool.dispatchDirectPooled(
-                null,
-                "GET",
-                "/x",
-                null,
-                sink -> sink.put("x-big", huge),
-                new byte[0],
-                false,
-                true));
+        // A stub heap dispatcher stands in for ParkingDispatch.park, so the
+        // native library is never touched (the test runs without it).
+        RuntimeException heapReached = new RuntimeException("heap dispatcher reached");
+        RuntimeException thrown = assertThrows(RuntimeException.class,
+                () -> VesperaDirectBufferPool.dispatchDirectPooled(
+                        null,
+                        "GET",
+                        "/x",
+                        null,
+                        sink -> sink.put("x-big", huge),
+                        new byte[0],
+                        false,
+                        true,
+                        wire -> {
+                            throw heapReached;
+                        }));
+        org.junit.jupiter.api.Assertions.assertSame(heapReached, thrown);
 
         assertEquals(256, VesperaWireCodec.currentHeaderBufferCapacityForTest());
     }

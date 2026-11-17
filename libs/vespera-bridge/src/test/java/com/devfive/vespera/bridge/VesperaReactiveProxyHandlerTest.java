@@ -262,7 +262,7 @@ class VesperaReactiveProxyHandlerTest {
     void declaredLengthAboveTheSingleArrayBoundNamesTheBoundNotAnUnsetProperty() {
         long bound = Integer.MAX_VALUE - 8L;
         for (long cap : new long[] {0, 4294967296L}) {
-            Result result = call(client(handler(new ReactiveHeaderAppNameResolver("X-Vespera-App", List.of()),
+            Result result = call(client(handler(new ReactiveHeaderAppNameResolver("X-Vespera-App", null),
                     null, cap, 1024, CorsHandling.RUST)).post().uri("/upload")
                     .header(HttpHeaders.CONTENT_LENGTH, "3221225472"));
             assertEquals(413, result.status());
@@ -279,7 +279,7 @@ class VesperaReactiveProxyHandlerTest {
         // Servlet parity: a body of exactly the bound cannot fit a wire frame
         // in a byte[] either, so it is a 413 before any aggregation.
         long bound = Integer.MAX_VALUE - 8L;
-        Result result = call(client(handler(new ReactiveHeaderAppNameResolver("X-Vespera-App", List.of()),
+        Result result = call(client(handler(new ReactiveHeaderAppNameResolver("X-Vespera-App", null),
                 null, 0, 1024, CorsHandling.RUST)).post().uri("/upload")
                 .header(HttpHeaders.CONTENT_LENGTH, Long.toString(bound)));
         assertEquals(413, result.status());
@@ -293,14 +293,15 @@ class VesperaReactiveProxyHandlerTest {
     void requestBodyOverTheCapIs413() throws Exception {
         WebTestClient client = client(handler());
         // Declared Content-Length over the cap: rejected before reading.
-        assertEquals(413, call(client.post().uri("/upload").bodyValue("x".repeat(2000))).status());
-        // Unknown length (streamed body): rejected while aggregating.
-        Result streamed = call(client.post().uri("/upload")
+        assertEquals(413, call(client.post().uri("/upload/declared").bodyValue("x".repeat(2000))).status());
+        // Unknown length (streamed body): rejected while aggregating. Its own
+        // path, so its event is told apart from the declared request's.
+        Result streamed = call(client.post().uri("/upload/streamed")
                 .body(Flux.range(0, 40).map(i -> "y".repeat(100)), String.class));
         assertEquals(413, streamed.status());
         assertTrue(streamed.body().contains("max-buffered-request-bytes=1024"), streamed.body());
         assertTrue(transport.requests.isEmpty());
-        assertEquals(413, awaitEvent().status());
+        assertEquals(413, awaitEvent("/upload/streamed").status());
         // At the cap: dispatched.
         assertEquals(200, call(client.post().uri("/upload").bodyValue("z".repeat(1024))).status());
         assertEquals(1024, transport.lastBody().length());
@@ -638,7 +639,7 @@ class VesperaReactiveProxyHandlerTest {
         VesperaStreamingExecutor streaming = new VesperaStreamingExecutor(1, 0);
         streaming.close(); // admits nothing
         VesperaReactiveProxyHandler handler = ReactiveTestSupport.handler(transport,
-                new ReactiveHeaderAppNameResolver("X-Vespera-App", List.of()), null, 1024, 1024,
+                new ReactiveHeaderAppNameResolver("X-Vespera-App", null), null, 1024, 1024,
                 "X-Request-Id", List.of(events::add), CorsHandling.RUST, streaming);
         Result result = call(client(handler).get().uri("/users"));
         assertEquals(200, result.status());
@@ -663,7 +664,7 @@ class VesperaReactiveProxyHandlerTest {
                 });
         try (streaming) {
             VesperaReactiveProxyHandler handler = ReactiveTestSupport.handler(transport,
-                    new ReactiveHeaderAppNameResolver("X-Vespera-App", List.of()), null, 1024, 1024,
+                    new ReactiveHeaderAppNameResolver("X-Vespera-App", null), null, 1024, 1024,
                     "X-Request-Id", List.of(events::add), CorsHandling.RUST, streaming);
             Result explicit = call(client(handler).get().uri("/events")
                     .header(HttpHeaders.ACCEPT, "text/event-stream"));
@@ -805,7 +806,7 @@ class VesperaReactiveProxyHandlerTest {
         // One streaming thread, one queue slot.
         VesperaStreamingExecutor streaming = new VesperaStreamingExecutor(1, 1);
         VesperaReactiveProxyHandler handler = ReactiveTestSupport.handler(transport,
-                new ReactiveHeaderAppNameResolver("X-Vespera-App", List.of()), null, 1024, 1024,
+                new ReactiveHeaderAppNameResolver("X-Vespera-App", null), null, 1024, 1024,
                 "X-Request-Id", List.of(events::add), CorsHandling.RUST, streaming);
         java.util.concurrent.CountDownLatch gate = new java.util.concurrent.CountDownLatch(1);
         transport.streamGate = gate;
@@ -862,7 +863,7 @@ class VesperaReactiveProxyHandlerTest {
         // One streaming thread, one queue slot.
         VesperaStreamingExecutor streaming = new VesperaStreamingExecutor(1, 1);
         VesperaReactiveProxyHandler handler = ReactiveTestSupport.handler(transport,
-                new ReactiveHeaderAppNameResolver("X-Vespera-App", List.of()), null, 1024, 1024,
+                new ReactiveHeaderAppNameResolver("X-Vespera-App", null), null, 1024, 1024,
                 "X-Request-Id", List.of(events::add), CorsHandling.RUST, streaming);
         java.util.concurrent.CountDownLatch gate = new java.util.concurrent.CountDownLatch(1);
         transport.streamGate = gate;

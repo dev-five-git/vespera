@@ -10,6 +10,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.web.servlet.MockMvc;
@@ -77,15 +78,24 @@ class AsyncResponseContentTypeTest {
                 value = "/files/{name}",
                 method = {org.springframework.web.bind.annotation.RequestMethod.GET,
                         org.springframework.web.bind.annotation.RequestMethod.HEAD})
-        Object file(HttpServletRequest request, jakarta.servlet.http.HttpServletResponse servletResponse) {
+        Object file(HttpServletRequest request, jakarta.servlet.http.HttpServletResponse servletResponse,
+                @org.springframework.web.bind.annotation.PathVariable("name") String name) {
             ProxyServletResponse proxied = new ProxyServletResponse(servletResponse, null, null);
             VesperaAsyncResponseBodyAdvice.markProxied(request, proxied);
             DeferredResult<Object> result = new DeferredResult<>();
             result.setResult(WireResponseWriter.buildAsyncResponseEntityFromWire(
-                    wire("{\"content-type\":\"application/pdf\",\"etag\":\"\\\"v1\\\"\","
+                    wire("{\"content-type\":\"" + rustContentType(name) + "\",\"etag\":\"\\\"v1\\\"\","
                             + "\"last-modified\":\"Wed, 21 Oct 2015 07:28:00 GMT\"}", "%PDF-1.7"),
                     request.getMethod(), proxied));
             return result;
+        }
+
+        /** The type Rust declares for the file: the extension decides, so each case differs. */
+        private static String rustContentType(String name) {
+            if (name.endsWith(".pdf")) {
+                return "application/pdf";
+            }
+            return name.endsWith(".bat") ? "application/x-msdownload" : "text/html";
         }
     }
 
@@ -99,14 +109,21 @@ class AsyncResponseContentTypeTest {
         return mvc.perform(asyncDispatch(started)).andReturn().getResponse();
     }
 
-    /** No converter runs, so Spring's RFD guard never adds Content-Disposition. */
+    /**
+     * No converter runs, so Spring's RFD guard never adds Content-Disposition,
+     * whatever the extension. The Rust type differs per case (see
+     * {@code AsyncController#rustContentType}), so each row checks its own.
+     */
     @ParameterizedTest
-    @ValueSource(strings = {"/files/report.pdf", "/files/report.bat", "/files/x.html;a=b"})
-    void typedBodiesGetNoContentDisposition(String path) throws Exception {
+    @CsvSource({
+        "/files/report.pdf, application/pdf",
+        "/files/report.bat, application/x-msdownload",
+        "/files/x.html;a=b, text/html"})
+    void typedBodiesGetNoContentDisposition(String path, String expectedType) throws Exception {
         MockHttpServletResponse response = call(get(path));
         assertEquals(200, response.getStatus());
         assertNull(response.getHeader("Content-Disposition"));
-        assertEquals("application/pdf", response.getContentType());
+        assertEquals(expectedType, response.getContentType());
         assertEquals("%PDF-1.7", response.getContentAsString());
     }
 

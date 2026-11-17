@@ -2,6 +2,7 @@ package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -24,7 +25,7 @@ class VesperaBridgePropertiesTest {
                 properties.getMaxBufferedResponseBytes());
         assertEquals(0, properties.getAsyncPoolSize());
         assertFalse(properties.isClearThreadlocalsAfterRequest());
-        assertTrue(properties.getExposedApps().isEmpty());
+        assertNull(properties.getExposedApps(), "absent property is unrestricted");
     }
 
     @Test
@@ -51,7 +52,7 @@ class VesperaBridgePropertiesTest {
         assertTrue(properties.isClearThreadlocalsAfterRequest());
         assertEquals(java.util.List.of("public"), properties.getExposedApps());
         properties.setExposedApps(null);
-        assertTrue(properties.getExposedApps().isEmpty());
+        assertNull(properties.getExposedApps());
     }
 
     @Test

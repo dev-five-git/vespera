@@ -563,15 +563,24 @@ public class VesperaProxyController {
         if (contentLength >= MAX_BUFFERED_BODY) {
             throw declaredAboveSingleArrayBound(contentLength, cap);
         }
-        byte[] body;
+        byte[] raw;
         try (InputStream in = request.getInputStream()) {
-            body = readBufferedBody(in, contentLength, cap);
+            raw = readBufferedBody(in, contentLength, cap);
         }
         // Spring's FormContentFilter / an earlier getParameter() call may have
         // consumed a form-urlencoded body into request parameters already.
-        body = FormBodySupport.recoverConsumedBody(request, body, contentLength);
+        byte[] body = FormBodySupport.recoverConsumedBody(request, raw, contentLength);
         // A multipart body parsed into parts cannot be rebuilt: fail loudly.
         MultipartBodySupport.rejectIfConsumed(request, shape, body);
+        // The container ended a body of known length early (client gone, or a
+        // truncated upload). forwardedContentLength would rewrite the length to
+        // the short size, so Rust would see a complete-looking request: refuse it.
+        // A rebuilt form body (a different array) is the legitimate short case.
+        if (body == raw && contentLength > 0 && raw.length < contentLength) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "request body ended after " + raw.length + " of the declared "
+                            + contentLength + " bytes");
+        }
         return body;
     }
 
