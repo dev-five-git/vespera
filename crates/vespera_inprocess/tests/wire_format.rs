@@ -107,8 +107,8 @@ fn wire_version_wrong_value_returns_400() {
     assert_eq!(header["status"].as_u64(), Some(400));
     let msg = String::from_utf8_lossy(&body);
     assert!(
-        msg.contains("42"),
-        "error must mention the received version, got {msg}"
+        msg.contains("unsupported wire version: got 42"),
+        "error must name the unsupported version, got {msg}"
     );
 }
 

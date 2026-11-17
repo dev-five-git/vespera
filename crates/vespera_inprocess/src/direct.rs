@@ -344,8 +344,10 @@ pub async fn finish_direct_write(
     }
 }
 
-/// Resumable direct-write tail: `422` responses are materialised so
-/// `validation_errors` hoisting is preserved byte-for-byte; every other
+/// Resumable direct-write tail: `422` responses up to the 64 KiB hoist bound
+/// (`MAX_HOIST_BODY_BYTES`) are materialised so `validation_errors` hoisting
+/// is preserved byte-for-byte; a larger `422` body is written directly,
+/// unhoisted. Every other
 /// status streams status + headers + body frames straight into `out` and,
 /// the moment a frame does not fit (or up front, when the body's exact size
 /// hint already exceeds `out`), stops and returns the response as a
