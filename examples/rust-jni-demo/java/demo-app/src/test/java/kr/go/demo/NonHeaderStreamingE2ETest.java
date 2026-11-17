@@ -209,25 +209,26 @@ class NonHeaderStreamingE2ETest {
 
     @Test
     void onThreadAsyncCompletionReleasesItsSlotBeforeContinuationsRun() throws Exception {
-        // Retry while other dispatches change the in-flight count around us.
-        for (int attempt = 0; attempt < 20; attempt++) {
-            int before = asyncInFlight();
-            CompletableFuture<byte[]> future = new CompletableFuture<>();
-            AtomicReference<Integer> seenInline = new AtomicReference<>();
-            // Registered BEFORE the dispatch: runs inline on the completing
-            // (= calling) thread when the request is rejected on-thread.
-            future.thenAccept(ignored -> seenInline.set(asyncInFlight()));
-            // A null request is rejected on the calling thread (400) after
-            // the in-flight permit was acquired.
-            VesperaBridge.dispatchAsync(future, null);
-            assertEquals(400, VesperaBridge.decodeResponse(future.get(30, TimeUnit.SECONDS)).status());
-            int after = asyncInFlight();
-            if (before == after) {
-                assertEquals(before, seenInline.get(),
-                        "the rejected dispatch's own slot is free when its continuation runs");
-                return;
+        // Stale slots from earlier cancelled or timed-out async dispatches (see
+        // CancelOnDisconnectE2ETest.awaitAsyncIdle) can release late and move the
+        // count inside the window below, so wait for the process to go idle first.
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        while (asyncInFlight() != 0) {
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("async in-flight count never settled");
             }
+            Thread.sleep(10);
         }
-        throw new AssertionError("async in-flight count never settled");
+        CompletableFuture<byte[]> future = new CompletableFuture<>();
+        AtomicReference<Integer> seenInline = new AtomicReference<>();
+        // Registered BEFORE the dispatch: runs inline on the completing
+        // (= calling) thread when the request is rejected on-thread.
+        future.thenAccept(ignored -> seenInline.set(asyncInFlight()));
+        // A null request is rejected on the calling thread (400) after
+        // the in-flight permit was acquired.
+        VesperaBridge.dispatchAsync(future, null);
+        assertEquals(400, VesperaBridge.decodeResponse(future.get(30, TimeUnit.SECONDS)).status());
+        assertEquals(0, seenInline.get(),
+                "the rejected dispatch's own slot is free when its continuation runs");
     }
 }

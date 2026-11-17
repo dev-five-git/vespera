@@ -92,6 +92,16 @@ final class VesperaDirectBufferPool {
 
     private enum OversizePolicy { HEAP_FALLBACK, THROW }
 
+    /**
+     * Startup check for {@code vespera.direct.oversize-policy}: fails with the
+     * same {@link IllegalArgumentException} the oversized dispatch would raise,
+     * but when the proxy is created instead of on the first request that
+     * needs the heap fallback.
+     */
+    static void validateOversizePolicy() {
+        oversizePolicy();
+    }
+
     @FunctionalInterface
     interface DirectDispatcher {
         int dispatch(ByteBuffer in, int inLen, ByteBuffer out);

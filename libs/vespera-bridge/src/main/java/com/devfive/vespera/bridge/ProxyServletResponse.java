@@ -212,11 +212,15 @@ final class ProxyServletResponse extends HttpServletResponseWrapper {
                     boolean first = true;
                     for (String value : values) {
                         if (first) {
+                            // Same bookkeeping as addHeader/setHeader: a proxy-error
+                            // reset restores the filter-set value and drops Rust's.
+                            rememberReplaced(name);
                             super.setHeader(name, value);
                             first = false;
                         } else {
                             super.addHeader(name, value);
                         }
+                        remember(name, value);
                     }
                 }
             });

@@ -273,6 +273,9 @@ public class VesperaBridgeAutoConfiguration {
             VesperaBridgeNativeSettings nativeSettings,
             ObjectProvider<DispatchObserver> observers,
             PrincipalResolver principalResolver) {
+        // Fail at startup on a bad vespera.direct.oversize-policy, not on the
+        // first oversized request.
+        VesperaDirectBufferPool.validateOversizePolicy();
         return new VesperaProxyController(
                 appResolver,
                 modeResolver,

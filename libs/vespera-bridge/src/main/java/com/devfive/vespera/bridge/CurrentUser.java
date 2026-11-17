@@ -80,7 +80,13 @@ final class CurrentUser {
 
         @Override
         public UserPrincipal tmpdirProbeOwner() throws IOException {
-            return ownerOfProbe(Files.createTempFile("vespera-owner-", ".probe"));
+            Path tmp = Paths.get(System.getProperty("java.io.tmpdir", "/tmp"));
+            if (!trustedTmpdir(tmp)) {
+                // Anyone could swap the probe in a shared directory: let the
+                // principal lookup answer instead.
+                return null;
+            }
+            return ownerOfProbe(Files.createTempFile(tmp, "vespera-owner-", ".probe"));
         }
 
         @Override
@@ -197,6 +203,35 @@ final class CurrentUser {
     private static Object key(BasicFileAttributes attrs, Path dir) {
         Object key = attrs.fileKey();
         return key != null ? key : dir.toAbsolutePath();
+    }
+
+    /**
+     * Whether {@code java.io.tmpdir} may host the probe: on POSIX it must be a
+     * directory that is not group/other-writable, or a sticky one (sticky
+     * {@code /tmp}: no other user can replace or delete a file it does not
+     * own). Non-POSIX file systems keep the per-user temp directory default.
+     */
+    static boolean trustedTmpdir(Path dir) throws IOException {
+        if (!VesperaNativeLoader.posixSupported(dir)) {
+            return true;
+        }
+        PosixFileAttributes attrs = Files.readAttributes(dir, PosixFileAttributes.class);
+        if (!attrs.isDirectory()) {
+            return false;
+        }
+        boolean shared = attrs.permissions().contains(PosixFilePermission.GROUP_WRITE)
+                || attrs.permissions().contains(PosixFilePermission.OTHERS_WRITE);
+        return !shared || sticky(dir);
+    }
+
+    /** The sticky bit, read through the {@code unix} view (absent on some file systems: not sticky). */
+    private static boolean sticky(Path dir) throws IOException {
+        try {
+            return Files.getAttribute(dir, "unix:mode") instanceof Integer bits
+                    && (bits & 01000) != 0;
+        } catch (UnsupportedOperationException | IllegalArgumentException noUnixView) {
+            return false;
+        }
     }
 
     private static UserPrincipal ownerOfProbe(Path probe) throws IOException {

@@ -181,18 +181,6 @@ class BidirectionalPanicStatusHttpTest {
     }
 
     /**
-     * Only a connection the server cut off mid-exchange counts as the abort the
-     * tests accept: a refused connection or a hung server is a setup failure
-     * and must fail the test.
-     */
-    static void rethrowSetupFailure(IOException failure) throws IOException {
-        if (failure instanceof java.net.ConnectException
-                || failure instanceof java.net.http.HttpTimeoutException) {
-            throw failure;
-        }
-    }
-
-    /**
      * A body panic after bytes reached the client (at least 512 KiB and two
      * streaming chunks, well past the servlet buffer) cannot change the
      * committed {@code 200}: the connection must be aborted so the client sees
@@ -206,8 +194,10 @@ class BidirectionalPanicStatusHttpTest {
         try {
             response = post("/diag/panic-mid-body/" + chunks, upload);
         } catch (IOException aborted) {
-            rethrowSetupFailure(aborted);
-            return; // aborted before the status line arrived: also incomplete
+            // The body is well past one streaming chunk, so the 200 was committed
+            // before the panic: an abort before the status line is a different
+            // failure and must not pass as "incomplete".
+            throw new AssertionError("aborted before the 200 status line arrived", aborted);
         }
         assertEquals(200, response.statusCode(), chunks + " KiB exceed the servlet buffer");
         int received = 0;
