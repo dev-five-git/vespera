@@ -60,7 +60,7 @@ use crate::streaming_closures::{CompleteAttempt, complete_future, complete_futur
 ///   `500`. This applies to EVERY blocking JNI entry point, not just
 ///   `dispatchBytes` / `dispatchDirect`: the streaming symbols
 ///   (`dispatchStreaming`, `dispatchFullStreaming`, and their `*WithHeader`
-///   variants) also `RUNTIME.block_on(...)` and are *more* damaging to
+///   variants) also `block_on_shared_runtime(...)` and are *more* damaging to
 ///   re-enter because they hold a worker across the entire response/request
 ///   stream.
 ///
@@ -190,7 +190,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_AsyncDispatch_dispatch0<'
         // sound: a panic drops the half-run dispatch and we return a fresh
         // `error_wire`; the registered `Router` is `Arc`-shared and is not
         // left observably inconsistent.  The outer `catch_unwind` still
-        // guards `RUNTIME.spawn` itself so a scheduling failure completes
+        // guards the `runtime.handle().spawn` call itself so a scheduling failure completes
         // the future (with a 500) instead of leaving the Java caller
         // hanging; no runtime (shut down) answers the same `503` as every
         // other dispatch mode.

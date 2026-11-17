@@ -209,8 +209,25 @@ where
 /// `ValidatedWith<C, T>` when the payload derives `garde::Validate` with
 /// `#[garde(context(C))]`; the context is borrowed from axum state through
 /// [`ValidationContext`].
-#[derive(Debug, Clone, Copy)]
 pub struct ValidatedWith<C, T>(pub T, PhantomData<fn() -> C>);
+
+// Written by hand, not derived: a derive would also demand `C: Clone`,
+// `C: Copy` and `C: Debug`, but `C` only appears in `PhantomData<fn() -> C>`
+// (which is all three for every `C`). A context type that holds a pool and
+// implements none of them must not stop the wrapped payload from cloning.
+impl<C, T: Clone> Clone for ValidatedWith<C, T> {
+    fn clone(&self) -> Self {
+        Self::new(self.0.clone())
+    }
+}
+
+impl<C, T: Copy> Copy for ValidatedWith<C, T> {}
+
+impl<C, T: std::fmt::Debug> std::fmt::Debug for ValidatedWith<C, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ValidatedWith").field(&self.0).finish()
+    }
+}
 
 impl<C, T> ValidatedWith<C, T> {
     /// Wrap an already-extracted value. Mostly useful in tests.

@@ -194,8 +194,13 @@ pub struct OpenApi {
     /// consumers, keyed by a unique webhook name.
     ///
     /// `vespera!` never fills this; it exists so a post-processed document
-    /// can declare webhooks and so specs that carry them round-trip.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// can declare webhooks and so specs that carry them round-trip. Like the
+    /// Paths Object, its `x-*` extension keys are skipped on deserialize.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::extensions::skip_optional_extension_keys"
+    )]
     pub webhooks: Option<BTreeMap<String, PathItem>>,
     /// Components (reusable components)
     #[serde(skip_serializing_if = "is_empty_components")]
@@ -426,24 +431,32 @@ fn has_operations(item: &mut PathItem) -> bool {
 /// reaches its operations.  Writing into the shared component instead would
 /// also change every other reference to it — including the receiver's own,
 /// which `merge` keeps on a component-name conflict.  A chain of references
-/// is followed (bounded by the number of components, so a cycle stops); a
-/// reference this document cannot resolve (missing name, external URI) is
-/// left as it is.
+/// is followed; a cycle (a component seen twice on the chain) leaves the item
+/// exactly as it was, the reference included, whatever the number of
+/// components.  A reference this document cannot resolve (missing name,
+/// external URI) is left as it is.
 ///
 /// Path-level `parameters` / `servers` written next to the reference keep
 /// governing the inlined operations: they are combined with the target's
 /// own path-level values, the referencing item winning (a parameter on
 /// `name` + `in`, the server list as a whole).
 fn inline_path_item_ref(item: &mut PathItem, path_items: &BTreeMap<String, PathItem>) {
-    for _ in 0..path_items.len() {
-        let Some(target) = item
+    let original = item.clone();
+    let mut visited: Vec<&str> = Vec::new();
+    loop {
+        let Some((name, target)) = item
             .ref_path
             .as_deref()
             .and_then(|r| r.strip_prefix("#/components/pathItems/"))
-            .and_then(|name| path_items.get(name))
+            .and_then(|name| path_items.get_key_value(name))
         else {
             return;
         };
+        if visited.contains(&name.as_str()) {
+            *item = original;
+            return;
+        }
+        visited.push(name.as_str());
         item.ref_path = None;
         let own_parameters = item.parameters.take();
         let own_servers = item.servers.take();

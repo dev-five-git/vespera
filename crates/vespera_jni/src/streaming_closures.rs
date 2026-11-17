@@ -1,11 +1,13 @@
 //! Streaming closure factories and Java-side callback helpers.
 //!
 //! These helpers are shared by every `dispatch*Streaming*` JNI
-//! entry symbol in [`crate::jni_impl`].  They are split out into
+//! entry symbol: the response-only and bidirectional ones in
+//! [`crate::jni_impl`], the header-first ones in
+//! [`crate::jni_impl_streaming_header`].  They are split out into
 //! a sibling module so:
 //!
 //! * `jni_impl.rs` stays inside the repo's 1000-line file cap
-//!   while keeping every `Java_..._dispatch*` symbol together.
+//!   while keeping its `Java_..._dispatch*` symbols together.
 //! * The `JMethodID` cache for the per-chunk `InputStream.read` /
 //!   `OutputStream.write` calls and the repeated callback helpers
 //!   (`Consumer.accept` / `CompletableFuture.complete`) stays beside
@@ -502,8 +504,10 @@ pub fn make_pull_closure(
     }
 }
 
-/// Build the response-body push closure shared by all four
-/// streaming JNI entry points.
+/// Build the response-body push closure shared by every streaming JNI entry
+/// point that writes a response body (`dispatchStreaming`,
+/// `dispatchFullStreaming`, the two `*WithHeader` symbols and
+/// `DirectStash.stream0`).
 ///
 /// The Java-side buffer (`buf`, [`streaming_chunk_size`] bytes) is
 /// allocated **once** by the caller and reused for every chunk via

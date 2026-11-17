@@ -183,6 +183,35 @@ fn extension_keys_of_map_objects_are_skipped() {
     assert!(out["paths"].get("x-meta").is_none(), "{out}");
 }
 
+/// The Webhooks Object allows `x-*` keys like the Paths Object: they are
+/// skipped on deserialize instead of being read as Path Items.
+#[test]
+fn webhooks_skip_extension_keys() {
+    let doc: OpenApi = serde_json::from_value(json!({
+        "openapi": "3.1.0",
+        "info": {"title": "t", "version": "1"},
+        "webhooks": {
+            "x-note": true,
+            "x-meta": {"a": 1},
+            "newPet": {"post": {"responses": {"200": {"description": "ok"}}}}
+        }
+    }))
+    .unwrap();
+    let hooks = doc.webhooks.as_ref().unwrap();
+    assert_eq!(hooks.keys().collect::<Vec<_>>(), ["newPet"]);
+    let out = serde_json::to_value(&doc).unwrap();
+    assert!(out["webhooks"].get("x-note").is_none(), "{out}");
+    assert!(out["webhooks"].get("newPet").is_some(), "{out}");
+
+    let absent: OpenApi = serde_json::from_value(json!({
+        "openapi": "3.1.0",
+        "info": {"title": "t", "version": "1"},
+        "webhooks": null
+    }))
+    .unwrap();
+    assert!(absent.webhooks.is_none());
+}
+
 #[test]
 fn map_objects_still_reject_non_maps() {
     let err = serde_json::from_value::<OpenApi>(json!({

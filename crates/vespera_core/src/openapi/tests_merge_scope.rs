@@ -326,6 +326,33 @@ fn unresolvable_ref_path_item_is_left_as_a_reference(#[case] target: &str) {
     assert_eq!(parent.paths["/a"].ref_path.as_deref(), Some(target));
 }
 
+/// A cycle of `cycle_len` components (plus an unrelated one, so the component
+/// count differs from the cycle length) keeps the path's own reference. The
+/// old bounded loop rewrote it to whichever component the pass count landed on.
+#[rstest::rstest]
+#[case::two_cycle_beside_unrelated_component(2)]
+#[case::three_cycle_beside_unrelated_component(3)]
+fn reference_cycle_keeps_the_original_reference(#[case] cycle_len: usize) {
+    let mut path_items = serde_json::Map::new();
+    for i in 0..cycle_len {
+        let next = (i + 1) % cycle_len;
+        path_items.insert(
+            format!("C{i}"),
+            json!({"$ref": format!("#/components/pathItems/C{next}")}),
+        );
+    }
+    path_items.insert("X".to_owned(), json!({"get": {"responses": {}}}));
+    let mut parent = doc(json!({"security": [{"apiKey": []}]}));
+    parent.merge(doc(path_item_refs(
+        json!({"/a": {"$ref": "#/components/pathItems/C0"}}),
+        serde_json::Value::Object(path_items),
+    )));
+    assert_eq!(
+        parent.paths["/a"].ref_path.as_deref(),
+        Some("#/components/pathItems/C0")
+    );
+}
+
 #[test]
 fn ref_path_item_stays_a_reference_when_nothing_is_pushed_down() {
     let mut parent = doc(json!({}));

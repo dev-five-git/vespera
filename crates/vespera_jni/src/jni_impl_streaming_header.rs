@@ -303,14 +303,16 @@ fn make_header_callback(
 /// panic that escaped the body (outside the dispatch's own `catch_unwind`,
 /// e.g. in the setup) AND the header consumer has not yet been
 /// notified AND the caller passed a non-null consumer, deliver the
-/// canonical `panic_wire()` bytes through it so the Java caller never
-/// hangs waiting for a header that will never arrive.
+/// canonical `panic_wire()` through [`notify_local_wire`]: its header to the
+/// consumer, then its body to a non-null output stream (a null one gets the
+/// header only), so the Java caller never hangs waiting for a header that
+/// will never arrive.
 ///
-/// Extracted verbatim from the symbols' post-`guard_env_void_symbol`
-/// tails so a future edit to the panic-recovery predicate (extra
-/// atomic fence, logging, changed `panic_wire` shape) can never drift
-/// between them.  `#[inline]` folds it back into each caller so codegen
-/// matches the prior inline block byte-for-byte.
+/// Shared by the symbols' post-`guard_env_void_symbol` tails so a future
+/// edit to the panic-recovery predicate (extra atomic fence, logging,
+/// changed `panic_wire` shape) can never drift between them.  `#[inline]`
+/// folds it back into each caller so codegen matches the prior inline block
+/// byte-for-byte.
 #[inline]
 fn deliver_panic_header_if_needed<'local>(
     unowned_env: &mut EnvUnowned<'local>,

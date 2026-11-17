@@ -1,7 +1,8 @@
 //! Helper functions + setup routines extracted from jni_impl.rs to keep that
 //! file within the project's 1000-line source cap.  Pure code move — no logic
-//! change.  All items are pub(super) (used only by the Java_... symbols in
-//! [crate::jni_impl]).
+//! change.  Items are `pub` only so the Java_... symbols in [crate::jni_impl]
+//! can use them: the module is mounted as `pub mod support` inside the
+//! crate-private `jni_impl`, so nothing outside the crate can name them.
 
 use std::sync::{
     Arc,
