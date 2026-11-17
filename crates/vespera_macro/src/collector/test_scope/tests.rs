@@ -449,3 +449,20 @@ fn path_attributed_test_module_inside_inline_mod_of_non_mod_rs_file() {
     assert!(scope.file_test_only(&src.join("routes/v2/fixtures.rs")));
     assert!(!scope.file_test_only(&src.join("v2/fixtures.rs")));
 }
+/// A `#[path]` whose value is not a string literal names no file, so the
+/// module falls back to the file named after it.
+#[test]
+fn non_literal_path_attribute_falls_back_to_the_module_file() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "#[cfg(test)]\n#[path = concat!(\"fix\", \"tures.rs\")]\nmod support;\n",
+        ),
+        ("fixtures.rs", "pub struct Fixture {}"),
+        ("support.rs", "pub struct Kept {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(!scope.file_test_only(&src.join("fixtures.rs")));
+    assert!(scope.file_test_only(&src.join("support.rs")));
+}
