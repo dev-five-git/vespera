@@ -485,14 +485,15 @@ fn mentions_ident(source: &str, ident: &str) -> bool {
     impl<'ast> syn::visit::Visit<'ast> for Finder<'_> {
         fn visit_attribute(&mut self, _: &'ast syn::Attribute) {}
         fn visit_type_path(&mut self, path: &'ast syn::TypePath) {
-            // Only a bare `Foo` is ambiguous: a module-qualified path
+            // Only a bare `Foo` (with or without generic arguments, as in
+            // `Foo<i32>`) is ambiguous: a module-qualified path
             // (`super::user::Schema`, as `schema_type!` relations emit)
-            // names its module and is resolved through it.
+            // names its module and is resolved through it. `Path::get_ident`
+            // is not used because it rejects any path with arguments.
             self.found |= path.qself.is_none()
-                && path
-                    .path
-                    .get_ident()
-                    .is_some_and(|found| found == self.ident);
+                && path.path.leading_colon.is_none()
+                && path.path.segments.len() == 1
+                && path.path.segments[0].ident == self.ident;
             syn::visit::visit_type_path(self, path);
         }
     }

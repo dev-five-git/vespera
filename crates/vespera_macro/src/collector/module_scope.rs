@@ -126,7 +126,7 @@ fn inline_mod_route_where(
 /// The compile error for a handler found by [`inline_mod_route`].
 pub(super) fn inline_mod_route_error(file: &Path, (module, handler): &(String, String)) -> String {
     format!(
-        "vespera! macro: `#[route]` handler `{handler}` is declared inside the inline module `mod {module} {{ .. }}` in '{}'. Route handlers must be top-level functions of a route file — move `{handler}` out of `mod {module}`, or into its own file `{module}.rs` next to this one.",
+        "vespera! macro: `#[route]` handler `{handler}` is declared inside the inline module `mod {module} {{ .. }}` in '{}'. Route handlers must be top-level functions of a route file — move `{handler}` out of `mod {module}` to the top level of this file, which keeps its route path. (Moving it into its own file `{module}.rs` instead would change the route to `/{module}`.)",
         file.display()
     )
 }
@@ -392,5 +392,12 @@ mod tests {
             message.contains("inline module `mod v2 { .. }`"),
             "{message}"
         );
+        // Moving the handler into `v2.rs` would serve it at `/v2`, not
+        // `/<file>`, so the advice must say the file move changes the URL.
+        assert!(
+            message.contains("to the top level of this file"),
+            "{message}"
+        );
+        assert!(message.contains("change the route to `/v2`"), "{message}");
     }
 }

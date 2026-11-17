@@ -28,6 +28,9 @@ third = { path = "../third" }
 testkit = { path = "../testkit" }
 insta = "1.49"
 rstest = "0.28"
+# Checks the documented `pattern` values of `openapi.json` against samples
+# (`regex` is already in the lock file through garde).
+regex = "1.13"
 
 
 [lints]

@@ -23,6 +23,8 @@ mod tests_accuracy;
 mod tests_parser_views;
 #[cfg(test)]
 mod tests_request_only;
+#[cfg(test)]
+mod tests_state;
 
 use component_schemas::{
     build_file_cache, build_schema_lookups, build_struct_file_index, parse_component_schemas,
@@ -51,6 +53,18 @@ pub fn with_schema_lookups<R>(
     let result = f(&known_schemas, &struct_definitions);
     install_stored_defaults(previous);
     result
+}
+
+/// Clears the thread-local generation state (the `{Name}Input` request views
+/// and the stored `default = "fn"` values an `openapi` generation installs)
+/// when it is dropped, on success or on an error exit.
+struct GenerationState;
+
+impl Drop for GenerationState {
+    fn drop(&mut self) {
+        crate::parser::schema::request_view::install(std::sync::Arc::default());
+        install_stored_defaults(std::sync::Arc::default());
+    }
 }
 
 /// OpenAPI security data parsed from the `vespera!` macro.
@@ -111,6 +125,10 @@ pub fn try_generate_openapi_doc_with_metadata(
         }
     };
 
+    // Every exit below (an `?` error included) clears the thread-local
+    // generation state, so a failed generation never leaves its input names
+    // or stored defaults for the next `schema!` / `schema_type!` expansion.
+    let _state = GenerationState;
     // Recursive generic instantiations materialise as components while the
     // schemas and paths are built; start from a clean slate (a previous
     // expansion on this thread may have left some behind).

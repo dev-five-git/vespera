@@ -437,15 +437,16 @@ async fn dispatch_bidirectional_streaming_endless_empty_pull_aborts_not_hangs() 
     );
 
     // A hostile producer that ALWAYS reports an empty chunk (mirrors a
-    // non-conformant InputStream.read() returning 0 forever).  Without
-    // the consecutive-empty cap this busy-spins the blocking-pool thread
-    // forever; with it, the producer aborts the body so the dispatch
-    // terminates.  A timeout guards against regression to a hang.
+    // non-conformant InputStream.read() returning 0 forever).  The producer
+    // backs off between empty pulls (no busy-spin) and, once the source has
+    // been silent for its 10 s budget, aborts the body so the dispatch
+    // terminates.  The timeout (budget + slack) guards against a regression
+    // to a hang.
     let pull_chunk = || -> RequestChunk { RequestChunk::Data(Vec::new()) };
     let on_chunk = |_: &[u8]| ControlFlow::Continue(());
 
     let dispatched = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(30),
         // Spawned task: the empty reads reach the producer's cap.
         tokio::spawn(vespera_inprocess::dispatch_bidirectional_streaming(
             header_only_wire,
@@ -463,6 +464,66 @@ async fn dispatch_bidirectional_streaming_endless_empty_pull_aborts_not_hangs() 
         header["status"].as_u64(),
         Some(400),
         "endless empty reads must abort the upload (400), not hang"
+    );
+}
+
+/// `Data(empty)` is documented as "keep the stream open": a source that
+/// stays silent past the old 1024-pull cap, then delivers data, must still
+/// complete the upload (200, echoed back).  Fails with a 400 if the empty
+/// pulls abort the body after a fixed pull count instead of a time budget.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dispatch_bidirectional_streaming_empty_pulls_keep_stream_open() {
+    install_router();
+
+    let header_only_wire = encode_wire(
+        "POST",
+        "/echo/bytes",
+        None,
+        HashMap::from([("content-type", "application/octet-stream")]),
+        &[],
+    );
+
+    // 1100 empty pulls (past the 1024 spin phase), then "hello", then EOF.
+    let pulls = Mutex::new(0u32);
+    let pull_chunk = move || -> RequestChunk {
+        let mut n = pulls.lock().unwrap();
+        *n += 1;
+        match *n {
+            1..=1100 => RequestChunk::Data(Vec::new()),
+            1101 => RequestChunk::Data(b"hello".to_vec()),
+            _ => RequestChunk::End,
+        }
+    };
+
+    let received: std::sync::Arc<Mutex<Vec<u8>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let received_clone = std::sync::Arc::clone(&received);
+    let on_chunk = move |chunk: &[u8]| {
+        received_clone.lock().unwrap().extend_from_slice(chunk);
+        ControlFlow::Continue(())
+    };
+
+    let header_bytes = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        tokio::spawn(vespera_inprocess::dispatch_bidirectional_streaming(
+            header_only_wire,
+            pull_chunk,
+            on_chunk,
+        )),
+    )
+    .await
+    .expect("dispatch must terminate")
+    .unwrap();
+
+    let (header, _body) = decode_wire(&header_bytes);
+    assert_eq!(
+        header["status"].as_u64(),
+        Some(200),
+        "empty pulls are a keep-open signal, not an abort"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&received.lock().unwrap()),
+        "hello",
+        "the data sent after the silence must reach the handler"
     );
 }
 

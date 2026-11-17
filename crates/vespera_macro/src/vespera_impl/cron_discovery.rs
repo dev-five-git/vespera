@@ -167,6 +167,17 @@ fn stored_jobs(
                 Some(fp) => {
                     let normalized = canonicalized_cron_path(fp, canonical_paths);
                     let inline = s.inline_module.as_deref();
+                    if placement
+                        .tree
+                        .is_some_and(|tree| tree.is_ambiguous(&normalized, inline, &s.fn_name))
+                    {
+                        return Err(format!(
+                            "vespera! macro: cron job `{}` is declared in '{}', a file that more \
+                             than one module includes (`#[path]`), so its module path cannot be \
+                             told apart. Give the job a file of its own.",
+                            s.fn_name, normalized
+                        ));
+                    }
                     let declared = placement
                         .tree
                         .and_then(|tree| tree.module_of(&normalized, inline, &s.fn_name));
@@ -340,6 +351,15 @@ struct ModuleTree {
     /// module path: places stored jobs that recorded their inline module,
     /// so same-named jobs in different inline modules of one file stay apart.
     scoped_cron_fns: HashMap<(String, String, String), String>,
+    /// (canonical file, function name) of a cron function reached under two
+    /// different module paths (a file that two `mod` declarations include
+    /// with `#[path]`): a stored job of it cannot name one module.
+    ambiguous_cron_fns: HashSet<(String, String)>,
+    /// The same, keyed like `scoped_cron_fns`.
+    ambiguous_scoped_cron_fns: HashSet<(String, String, String)>,
+    /// The files on the current walk, outermost first: a module cycle is a
+    /// file already on it (`files` keeps every file seen, for lookups).
+    stack: Vec<String>,
 }
 
 /// Where [`ModuleTree::visit`] currently is.
@@ -369,10 +389,14 @@ impl ModuleTree {
     fn walk(&mut self, file: &Path, mod_dir: &Path, module_path: &str, gated: bool) {
         let display = canonical_display(file);
         // A module cycle (`#[path = "lib.rs"] mod again;`, a symlinked
-        // directory) is rustc's error; the walk must not recurse forever.
-        if !self.files.insert(display.clone()) {
+        // directory) is rustc's error; the walk must not recurse forever. A
+        // file that two sibling declarations include is walked once per
+        // declaration: each one is a module of its own.
+        if self.stack.contains(&display) {
             return;
         }
+        self.files.insert(display.clone());
+        self.stack.push(display.clone());
         if let Some(summary) = file_summary(file) {
             let scope = Scope {
                 mod_dir,
@@ -383,6 +407,7 @@ impl ModuleTree {
             };
             self.visit(&summary.items, &scope);
         }
+        self.stack.pop();
     }
 
     fn visit(&mut self, items: &[ItemSummary], scope: &Scope<'_>) {
@@ -460,19 +485,52 @@ impl ModuleTree {
             .cloned()
     }
 
+    /// Whether the cron function `fn_name` of `file` (in the inline module
+    /// `inline` when known) is reached under two module paths.
+    fn is_ambiguous(&self, file: &str, inline: Option<&str>, fn_name: &str) -> bool {
+        inline.map_or_else(
+            || {
+                self.ambiguous_cron_fns
+                    .contains(&(file.to_owned(), fn_name.to_owned()))
+            },
+            |inline| {
+                self.ambiguous_scoped_cron_fns.contains(&(
+                    file.to_owned(),
+                    inline.to_owned(),
+                    fn_name.to_owned(),
+                ))
+            },
+        )
+    }
+
     /// Index a function carrying a cron attribute and, when it is
     /// schedulable and not `#[cfg]`-gated, record it as a scanned job.
     fn add_cron_fn(&mut self, function_name: &str, job: Option<&CronJob>, scope: &Scope<'_>) {
-        self.cron_fns
-            .entry((scope.file.to_owned(), function_name.to_owned()))
-            .or_insert_with(|| scope.module_path.to_owned());
-        self.scoped_cron_fns
-            .entry((
-                scope.file.to_owned(),
-                scope.inline.to_owned(),
-                function_name.to_owned(),
-            ))
-            .or_insert_with(|| scope.module_path.to_owned());
+        let key = (scope.file.to_owned(), function_name.to_owned());
+        match self.cron_fns.get(&key) {
+            Some(first) if first != scope.module_path => {
+                self.ambiguous_cron_fns.insert(key);
+            }
+            Some(_) => {}
+            None => {
+                self.cron_fns.insert(key, scope.module_path.to_owned());
+            }
+        }
+        let scoped_key = (
+            scope.file.to_owned(),
+            scope.inline.to_owned(),
+            function_name.to_owned(),
+        );
+        match self.scoped_cron_fns.get(&scoped_key) {
+            Some(first) if first != scope.module_path => {
+                self.ambiguous_scoped_cron_fns.insert(scoped_key);
+            }
+            Some(_) => {}
+            None => {
+                self.scoped_cron_fns
+                    .insert(scoped_key, scope.module_path.to_owned());
+            }
+        }
         if !scope.gated
             && let Some((expression, options)) = job
         {

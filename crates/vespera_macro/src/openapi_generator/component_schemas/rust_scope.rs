@@ -25,6 +25,14 @@ pub(super) fn crate_path(source_identity: &str) -> Option<(Vec<String>, String)>
     Some((modules, ident.trim_start_matches("r#").to_owned()))
 }
 
+/// Whether `dir` can be a crate root: the `src` directory of a cargo package
+/// or the package directory itself (the one holding `Cargo.toml`). A module
+/// directory that happens to hold a module file named `main.rs` or `lib.rs`
+/// (`src/api/main.rs`, declared as `mod main;`) is not one.
+fn is_crate_root_dir(dir: &Path) -> bool {
+    dir.file_name().is_some_and(|name| name == "src") || dir.join("Cargo.toml").is_file()
+}
+
 /// The modules a source file declares under its crate root: its path below
 /// the root, with `mod.rs` naming its directory and `lib.rs` / `main.rs` at
 /// the root naming nothing.
@@ -32,6 +40,7 @@ fn file_modules(file: &Path) -> Option<Vec<String>> {
     let root = file.ancestors().skip(1).find(|dir| {
         !dir.as_os_str().is_empty()
             && (dir.join("lib.rs").is_file() || dir.join("main.rs").is_file())
+            && is_crate_root_dir(dir)
     })?;
     let mut modules = Vec::new();
     for component in file.strip_prefix(root).ok()?.components() {
@@ -133,6 +142,20 @@ mod tests {
         assert_eq!(file_modules(&file).unwrap(), expected);
     }
 
+    /// A module directory holding a `main.rs` / `lib.rs` module file is not a
+    /// crate root: `src/api/user.rs` is `api::user`, under `src/`.
+    #[test]
+    fn module_dir_holding_a_main_rs_is_not_a_crate_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("api")).unwrap();
+        fs::write(src.join("lib.rs"), "").unwrap();
+        fs::write(src.join("api").join("main.rs"), "").unwrap();
+        let file = src.join("api").join("user.rs");
+        fs::write(&file, "").unwrap();
+        assert_eq!(file_modules(&file).unwrap(), ["api", "user"]);
+    }
+
     #[test]
     fn file_outside_a_crate_root_has_no_module() {
         let dir = tempfile::tempdir().unwrap();
@@ -146,6 +169,7 @@ mod tests {
     #[test]
     fn crate_path_from_source_identity() {
         let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"), "").unwrap();
         fs::write(dir.path().join("lib.rs"), "").unwrap();
         let models = dir.path().join("models.rs");
         fs::write(&models, "mod b {\n    struct Foo;\n}\nstruct Foo;\n").unwrap();

@@ -100,10 +100,45 @@ pub async fn list_users(Json(req): Json<UserListRequest>) -> Json<UserListRespon
         data: users,
         meta: ResponseMeta {
             total: 100,
-            // Widened: two client-supplied `i32`s may overflow their product.
-            has_more: i64::from(req.pagination.page) * i64::from(req.pagination.per_page) < 100,
+            has_more: has_more(req.pagination.page, req.pagination.per_page),
         },
     })
+}
+
+/// Whether the page starting at `page` of `per_page` items leaves users out
+/// of the 100 (`total`). The document puts no minimum on either value, so a
+/// page or size below 1 is read as 1 (`page` is 1-indexed) rather than
+/// reporting more results for a page that does not exist. Widened: two
+/// client-supplied `i32`s may overflow their product.
+fn has_more(page: i32, per_page: i32) -> bool {
+    i64::from(page.max(1)) * i64::from(per_page.max(1)) < 100
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_more;
+
+    /// Values below 1 are read as 1: page 0 is the first page, and a size of
+    /// 0 is a size of 1 (`has_more(0, 200)` is the first page of 200 items,
+    /// which leaves users out, not "page 0" of an unbounded list).
+    #[test]
+    fn values_below_one_are_read_as_one() {
+        assert_eq!(has_more(0, 20), has_more(1, 20));
+        assert_eq!(has_more(-3, 20), has_more(1, 20));
+        assert_eq!(has_more(0, 200), has_more(1, 200));
+        assert!(!has_more(0, 200));
+        assert_eq!(has_more(1, 0), has_more(1, 1));
+        assert!(has_more(1, -7));
+    }
+
+    #[test]
+    fn has_more_compares_the_product_with_the_total() {
+        assert!(has_more(4, 24));
+        assert!(!has_more(5, 25));
+        // Two large values overflow an `i32` product; the widened one stays
+        // exact.
+        assert!(!has_more(i32::MAX, i32::MAX));
+    }
 }
 
 /// Request combining multiple flattened structs

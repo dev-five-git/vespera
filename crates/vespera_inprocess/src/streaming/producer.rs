@@ -18,8 +18,9 @@ use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
 use bytes::Bytes;
 use http_body::{Body as HttpBody, Frame};
 
+use super::empty_pull::{EmptyPullBackoff, MAX_EMPTY_WAIT};
 use super::inline_pull::InlineState;
-use super::{MAX_CONSECUTIVE_EMPTY_READS, RequestChunk, StreamAbort};
+use super::{RequestChunk, StreamAbort};
 use crate::config::{effective_streaming_channel_capacity, max_streaming_request_producers};
 
 /// Process-wide request-producer slots ([`max_streaming_request_producers`];
@@ -468,7 +469,7 @@ fn spawn_request_producer(
         //      preserves the observable outcome for a panicking `pull()`.
         //   2. Semantics — a panic ANYWHERE ELSE in the loop body (`Bytes::
         //      from(chunk)`, the chunk-splitter `while`, `send_frame`,
-        //      `consecutive_empty.saturating_add`) used to unwind past the
+        //      the empty-pull back-off) used to unwind past the
         //      per-pull catch, abort the `spawn_blocking` task, and surface
         //      as a `JoinError` that `await_request_producer` silently
         //      discards (`let _ = handle.await;`) — axum then saw a CLEAN
@@ -484,7 +485,7 @@ fn spawn_request_producer(
             // receiver — axum's request body — was dropped because the
             // handler aborted mid-stream, or the dispatch finished while the
             // channel was full and nobody polls the body: stop pulling.
-            let mut consecutive_empty: u32 = 0;
+            let mut empty = EmptyPullBackoff::new(MAX_EMPTY_WAIT);
             // Read once: the configured max bytes per queued frame. A host
             // `pull()` may return an arbitrarily large `Vec`; splitting it into
             // `<= max_chunk` pieces below keeps the channel's `slots * chunk_bytes`
@@ -509,33 +510,19 @@ fn spawn_request_producer(
                 match next {
                     RequestChunk::Data(chunk) => {
                         if chunk.is_empty() {
-                            // A conformant blocking `InputStream.read(byte[])`
-                            // never returns 0 for a non-empty buffer — it
-                            // blocks until ≥1 byte or returns -1 at EOF.
-                            // Sustained empty reads therefore mean a stuck or
-                            // hostile producer; cap them (with a yield so we
-                            // don't peg a blocking-pool core) and abort instead
-                            // of busy-spinning this thread forever.
-                            //
-                            // `saturating_add` aligns this producer-side counter
-                            // with its sibling `consecutive_empty_reads` in
-                            // `crates/vespera_jni/src/streaming_closures.rs` —
-                            // a directly comparable layered-defence counter with
-                            // the same panic-free discipline documented at
-                            // `streaming_closures.rs:141-146`.  Release codegen
-                            // is byte-identical to `+= 1` (LLVM lowers both to
-                            // `add.i32`); the change removes a theoretical
-                            // debug-only overflow panic that MAX_CONSECUTIVE_
-                            // EMPTY_READS = 1024 already prevents in practice.
-                            consecutive_empty = consecutive_empty.saturating_add(1);
-                            if consecutive_empty >= MAX_CONSECUTIVE_EMPTY_READS {
+                            // Empty means "nothing right now, keep open": the
+                            // back-off yields for a short spin, then sleeps with
+                            // a growing delay so a slow source does not peg a
+                            // blocking-pool core. Only a source silent for the
+                            // whole `MAX_EMPTY_WAIT` budget (a stuck or hostile
+                            // producer) is aborted with a `StreamAbort`.
+                            if !empty.on_empty() {
                                 let _ = send_frame(&tx, Err(StreamAbort), finished_state);
                                 break 'producer;
                             }
-                            std::thread::yield_now();
                             continue;
                         }
-                        consecutive_empty = 0;
+                        empty.on_data();
                         // Enforce the per-frame size cap: split an oversized host
                         // chunk into `<= max_chunk` pieces so each QUEUED frame is
                         // bounded and the channel's slot accounting reflects real

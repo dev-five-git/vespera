@@ -202,10 +202,7 @@ fn parse_flow(input: ParseStream, kind: &syn::Ident) -> syn::Result<OAuthFlow> {
 /// or relative value used to be emitted as is).
 pub(super) fn require_absolute_url(field: &str, url: &LitStr) -> syn::Result<()> {
     let value = url.value();
-    let rest = value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"));
-    if rest.is_some_and(|rest| !rest.is_empty() && !rest.contains(char::is_whitespace)) {
+    if super::info::is_absolute_http_url(&value) {
         return Ok(());
     }
     Err(syn::Error::new(

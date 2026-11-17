@@ -430,6 +430,25 @@ fn path_attributed_test_module_gates_the_file_it_names() {
     assert!(!scope.file_test_only(&src.join("lib.rs")));
 }
 
+/// A `#[cfg(test)] #[path]` module inside an inline module of a non-mod-rs
+/// file (`routes.rs`) resolves under `routes/<inline>/`, as rustc does, not
+/// under `<inline>/` beside the declarer.
+#[test]
+fn path_attributed_test_module_inside_inline_mod_of_non_mod_rs_file() {
+    let krate = crate_with(&[
+        ("lib.rs", "mod routes;\n"),
+        (
+            "routes.rs",
+            "mod v2 {\n    #[cfg(test)]\n    #[path = \"fixtures.rs\"]\n    mod support;\n}\n",
+        ),
+        ("routes/v2/fixtures.rs", "pub struct Fixture {}"),
+        ("v2/fixtures.rs", "pub struct Kept {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(scope.file_test_only(&src.join("routes/v2/fixtures.rs")));
+    assert!(!scope.file_test_only(&src.join("v2/fixtures.rs")));
+}
 /// A `#[path]` whose value is not a string literal names no file, so the
 /// module falls back to the file named after it.
 #[test]

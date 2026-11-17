@@ -523,6 +523,7 @@ fn shared_suffix_key_is_registered_for_neither_declaration() {
 #[test]
 fn scoped_rust_idents_come_from_source_identities() {
     let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("Cargo.toml"), "").unwrap();
     fs::write(dir.path().join("lib.rs"), "").unwrap();
     let file = dir.path().join("models.rs");
     fs::write(&file, "mod b {\n    struct Foo;\n}\n").unwrap();
@@ -649,6 +650,9 @@ fn ambiguous_alias_used_by_a_parsed_route_file() {
 #[rstest::rstest]
 #[case::bare("Foo", true)]
 #[case::qualified("crate::b::Foo", false)]
+// A generic use (`Foo<i32>`) is still a use of the bare ident.
+#[case::bare_generic("Foo<i32>", true)]
+#[case::qualified_generic("crate::b::Foo<i32>", false)]
 fn ambiguous_alias_used_by_a_typed_response(#[case] path: &str, #[case] ambiguous: bool) {
     let mut metadata = CollectedMetadata::new();
     metadata.structs = vec![

@@ -48,6 +48,9 @@ fn ui_diagnostics() {
     // Two fields resolving to one multipart field name.
     #[cfg(feature = "multipart")]
     t.compile_fail("tests/ui/multipart_duplicate_field.rs");
+    // Two `#[derive(Schema)]` items named `Dup`: the duplicate-name error comes
+    // alone, without a missing-`Schema` cascade from the second derive.
+    t.compile_fail("tests/ui/schema_duplicate_name.rs");
     // A codec whose wire shape is unknown and has no `value_type`: the error
     // is spanned on the `#[serde(with = "..")]` attribute.
     t.compile_fail("tests/ui/codec_unknown_shape.rs");

@@ -716,12 +716,15 @@ fn numeric_some(
         // `type Count = u32` to 0). A non-numeric field type is a compiler
         // error at the field.
         if let Some(exact) = exact {
+            // The documented `f64` travels with the literal, so the validator
+            // loosens to it exactly like a known integer type does.
             let literal: TokenStream = exact
                 .to_string()
                 .parse()
                 .expect("an integer literal is a valid token stream");
+            let lower = matches!(bound, Bound::Min);
             return Ok(
-                quote! { ::std::option::Option::Some(<_ as ::vespera::__validation::RangeBound>::exact(#literal)) },
+                quote! { ::std::option::Option::Some(<_ as ::vespera::__validation::RangeBound>::exact_within(#literal, #v, #lower)) },
             );
         }
         let convert = match bound {
