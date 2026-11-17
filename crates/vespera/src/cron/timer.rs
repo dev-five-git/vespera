@@ -128,7 +128,7 @@ impl Timer {
 /// [`sleep`], see [`Timer::ensure_running`]).
 fn timer() -> &'static Timer {
     static TIMER: OnceLock<&'static Timer> = OnceLock::new();
-    *TIMER.get_or_init(|| -> &'static Timer { Box::leak(Box::default()) })
+    TIMER.get_or_init(|| -> &'static Timer { Box::leak(Box::default()) })
 }
 
 /// Start the process-wide timer thread.
