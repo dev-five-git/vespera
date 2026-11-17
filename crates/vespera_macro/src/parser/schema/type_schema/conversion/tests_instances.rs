@@ -131,3 +131,30 @@ fn lifetime_only_definition_is_referenced() {
         "#/components/schemas/BorrowedName"
     );
 }
+
+/// The generic definition `Tree<T, M = Meta>` built as its own component:
+/// its self-reference `Tree<T>` (`Tree<T, Meta>`) is the component `Tree`, not
+/// a second component `Tree_T_Meta` with an unresolved `T`.
+#[test]
+fn self_reference_omitting_a_defaulted_parameter_is_the_component() {
+    take_materialized();
+    let src = "struct Tree<T, M = Meta> { value: T, kids: Vec<Tree<T>> }";
+    let item: syn::ItemStruct = syn::parse_str(src).unwrap();
+    let known = HashSet::from(["Tree", "Meta"]);
+    let defs = HashMap::from([("Tree", src), ("Meta", "struct Meta { x: u8 }")]);
+    let schema = crate::parser::schema::parse_struct_to_schema(&item, &known, &defs);
+    let kids = schema
+        .properties
+        .as_ref()
+        .and_then(|props| props.get("kids"))
+        .expect("kids property");
+    let SchemaRef::Inline(kids) = kids else {
+        panic!("kids is an inline array: {kids:?}");
+    };
+    let items = kids.items.clone().expect("array items");
+    assert_eq!(reference(items), "#/components/schemas/Tree");
+    assert!(
+        take_materialized().is_empty(),
+        "no second component for the defaulted instance"
+    );
+}

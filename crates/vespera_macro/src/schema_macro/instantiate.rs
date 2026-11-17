@@ -9,7 +9,7 @@ use proc_macro2::TokenStream;
 use quote::ToTokens;
 
 use super::type_utils::resolve_type_with_params;
-use crate::parser::schema::substitute_type;
+use crate::parser::schema::{parameter_traits, substitute_type_with_traits};
 
 /// One type parameter's value.
 enum Arg {
@@ -25,6 +25,9 @@ enum Arg {
 pub struct Bindings {
     names: Vec<String>,
     args: Vec<Arg>,
+    /// Each parameter's trait bound (`parameter_traits`): qualifies a
+    /// projection of the parameter (`T::Target` → `<Box<Foo> as Deref>::Target`).
+    traits: Vec<Option<syn::Path>>,
 }
 
 impl Bindings {
@@ -37,7 +40,12 @@ impl Bindings {
             let earlier = &self.names[..index];
             values.push(match arg {
                 Arg::CallSite(ty) => ty.clone(),
-                Arg::Default(ty) => substitute(&default(ty, earlier), earlier, &values),
+                Arg::Default(ty) => substitute(
+                    &default(ty, earlier),
+                    earlier,
+                    &self.traits[..index],
+                    &values,
+                ),
             });
         }
         values
@@ -51,7 +59,7 @@ impl Bindings {
     pub fn field_type(&self, raw: &syn::Type, source_module: &[String]) -> TokenStream {
         let values = self.values(|ty, earlier| resolve(ty, source_module, earlier));
         let resolved = resolve(raw, source_module, &self.names);
-        substitute(&resolved, &self.names, &values).into_token_stream()
+        substitute(&resolved, &self.names, &self.traits, &values).into_token_stream()
     }
 }
 
@@ -77,9 +85,14 @@ fn resolve(ty: &syn::Type, module: &[String], params: &[String]) -> syn::Type {
     syn::parse2(resolve_type_with_params(ty, module, params)).unwrap_or_else(|_| ty.clone())
 }
 
-fn substitute(ty: &syn::Type, names: &[String], concrete: &[syn::Type]) -> syn::Type {
+fn substitute(
+    ty: &syn::Type,
+    names: &[String],
+    traits: &[Option<syn::Path>],
+    concrete: &[syn::Type],
+) -> syn::Type {
     let concrete: Vec<&syn::Type> = concrete.iter().collect();
-    substitute_type(ty, names, &concrete)
+    substitute_type_with_traits(ty, names, &concrete, traits)
 }
 
 /// `item` with its type parameters replaced by the type arguments of `ty`'s
@@ -149,12 +162,13 @@ pub fn instantiate_with_bindings(
     let bindings = Bindings {
         names: params.iter().map(|param| param.ident.to_string()).collect(),
         args,
+        traits: parameter_traits(&item.generics),
     };
     let concrete = bindings.values(|ty, _| ty.clone());
     let mut instance = item.clone();
     instance.generics = syn::Generics::default();
     for field in &mut instance.fields {
-        field.ty = substitute(&field.ty, &bindings.names, &concrete);
+        field.ty = substitute(&field.ty, &bindings.names, &bindings.traits, &concrete);
     }
     Ok((instance, Some(bindings)))
 }

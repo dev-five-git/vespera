@@ -483,7 +483,11 @@ fn is_ecma_compatible(pattern: &str) -> bool {
                 (in_brace, brace_digit, brace_comma) = (true, false, false);
                 false
             }
-            ('}', _) if !in_class => !std::mem::take(&mut in_brace),
+            // `{}` holds no count: ECMA-262 reads a quantifier only with digits.
+            ('}', _) if !in_class => {
+                let counted = std::mem::take(&mut in_brace) && brace_digit;
+                !counted
+            }
             _ => false,
         };
         if rust_only {
