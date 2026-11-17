@@ -193,11 +193,16 @@ fn parse_range_arg(rules: &mut GardeRules, arg: &ParseNestedMeta<'_>) -> syn::Re
     let is_max = arg.path.is_ident("max");
     let is_equal = arg.path.is_ident("equal");
     let value = expr_to_f64(arg.value()?.parse()?).ok();
-    if is_min || is_equal {
-        rules.minimum = value;
-    }
-    if is_max || is_equal {
-        rules.maximum = value;
+    // Garde applies every `range` rule (each is a separate check), so the
+    // tightest literal bound wins: the larger minimum, the smaller maximum. A
+    // non-literal bound has no static value and leaves the earlier one alone.
+    if let Some(value) = value {
+        if is_min || is_equal {
+            rules.minimum = Some(rules.minimum.map_or(value, |min| min.max(value)));
+        }
+        if is_max || is_equal {
+            rules.maximum = Some(rules.maximum.map_or(value, |max| max.min(value)));
+        }
     }
     Ok(())
 }

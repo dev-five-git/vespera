@@ -20,9 +20,11 @@
 //! it names: `v2::ApiResult` those `v2` declares, `crate::ApiResult` the
 //! crate root's (`lib.rs` / `main.rs`), `super::ApiResult` the parent's (an
 //! inline parent module in the handler's file, else any definition but the
-//! handler module's own). A plain `use crate::api::v2::ApiResult;` in the
-//! handler's module counts as that qualifier (`v2`). A path-less `use
-//! anyhow;` imports another crate.
+//! handler module's own). Only the innermost module name of a longer path is
+//! matched: `crate::admin::users::ApiResult` names `users` (no full module
+//! path is resolved, so two `users` modules are not told apart). A plain `use
+//! crate::api::v2::ApiResult;` in the handler's module counts as that
+//! qualifier (`v2`). A path-less `use anyhow;` imports another crate.
 //!
 //! Test-only code (`#[cfg(test)]` modules, items and files) never defines a
 //! handler's alias. Generic parameters (including defaults such as `type R<T,
@@ -485,8 +487,13 @@ fn find_alias<'a>(
             .cloned()
             .collect();
         // `super::` never names the handler module's own alias: with only
-        // that one left, the type is not expanded.
-        if named.is_empty() && matches!(qualifier, Qualifier::Super) {
+        // that one left, the type is not expanded. A named module (or the
+        // crate root) that declares a struct / enum of that name holds the
+        // return type itself, so a same-named alias elsewhere is unrelated.
+        if named.is_empty()
+            && (matches!(qualifier, Qualifier::Super)
+                || scope.is_some_and(|scope| imported_nominal(name, qualifier, scope, src_dir)))
+        {
             return None;
         }
         // Not declared in that module itself (a `pub use` re-export): any
