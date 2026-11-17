@@ -277,4 +277,72 @@ mod tests {
             expected
         );
     }
+
+    /// Re-run `test` in a child test process (the getters are process-global
+    /// `OnceLock`s) with `set` env vars applied and `removed` env vars cleared.
+    fn run_in_child(test: &str, marker: &str, set: &[(&str, &str)], removed: &[&str]) {
+        let mut cmd = std::process::Command::new(
+            std::env::current_exe().expect("current unit-test executable"),
+        );
+        cmd.args(["--exact", test, "--nocapture"]).env(marker, "1");
+        for (key, value) in set {
+            cmd.env(key, value);
+        }
+        for key in removed {
+            cmd.env_remove(key);
+        }
+        let output = cmd.output().expect("run isolated limits child test");
+        assert!(
+            output.status.success(),
+            "isolated limits test failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// The call-site env var names feed the getters (not only the parser).
+    #[test]
+    #[cfg_attr(miri, ignore = "re-executes the test binary as a child process")]
+    fn env_overrides_reach_the_getters() {
+        const CHILD_ENV: &str = "VESPERA_LIMITS_ENV_OVERRIDE_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            run_in_child(
+                "config::limits::tests::env_overrides_reach_the_getters",
+                CHILD_ENV,
+                &[
+                    ("VESPERA_MAX_BUFFERED_RESPONSE_BYTES", "4096"),
+                    ("VESPERA_DISPATCH_TIMEOUT_MS", "250"),
+                ],
+                &[],
+            );
+            return;
+        }
+        assert_eq!(max_buffered_response_bytes(), 4096);
+        assert_eq!(dispatch_timeout(), Some(Duration::from_millis(250)));
+    }
+
+    /// With both env vars absent, the getters resolve to the documented
+    /// defaults (`256 MiB` cap, no dispatch deadline).
+    #[test]
+    #[cfg_attr(miri, ignore = "re-executes the test binary as a child process")]
+    fn absent_env_resolves_getters_to_documented_defaults() {
+        const CHILD_ENV: &str = "VESPERA_LIMITS_DEFAULT_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            run_in_child(
+                "config::limits::tests::absent_env_resolves_getters_to_documented_defaults",
+                CHILD_ENV,
+                &[],
+                &[
+                    "VESPERA_MAX_BUFFERED_RESPONSE_BYTES",
+                    "VESPERA_DISPATCH_TIMEOUT_MS",
+                ],
+            );
+            return;
+        }
+        assert_eq!(
+            max_buffered_response_bytes(),
+            DEFAULT_MAX_BUFFERED_RESPONSE_BYTES
+        );
+        assert_eq!(dispatch_timeout(), None);
+    }
 }

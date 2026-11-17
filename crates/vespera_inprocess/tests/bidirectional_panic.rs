@@ -55,6 +55,10 @@ async fn read_then_panic(body: Bytes) -> String {
 async fn body_panic(body: Bytes) -> Response {
     let _ = body.len();
     let stream = futures_util::stream::unfold(0u8, |n| async move {
+        // Yield before each frame: the body then waits, which hands the
+        // already-produced frames to the sink before the panic. Without the
+        // yield, ready frames stay batched and the unwind drops them.
+        tokio::task::yield_now().await;
         assert!(n < 2, "intentional body-stream panic");
         Some((
             Ok::<_, std::convert::Infallible>(Bytes::from_static(b"part")),
@@ -180,10 +184,9 @@ fn panic_after_the_header_unwinds_instead_of_completing(#[case] chunks: usize) {
     );
     assert_eq!(seen.headers.len(), 1, "the 200 header was delivered once");
     assert_eq!(status(&seen.headers[0]), 200);
-    assert!(
-        b"partpart".starts_with(&seen.body),
-        "only (a prefix of) the two frames produced before the panic: {:?}",
-        seen.body
+    assert_eq!(
+        seen.body, b"partpart",
+        "both frames produced before the panic were delivered to the sink"
     );
     assert_eq!(seen.closes, 1, "the request source is closed on the panic");
 }
