@@ -20,7 +20,7 @@ use crate::jni_impl::{
 };
 use crate::streaming_closures::{
     call_header_consumer, call_header_consumer_local, close_input_stream, make_pull_closure,
-    make_push_closure,
+    make_push_closure, write_output_local,
 };
 
 struct StreamingFlags {
@@ -55,6 +55,7 @@ impl StreamingFlags {
 fn handle_header_dispatch_panic(
     env: &mut jni::Env<'_>,
     header_consumer: &JObject<'_>,
+    output_stream: &JObject<'_>,
     flags: &StreamingFlags,
 ) {
     // Cache once so `panic_post_header_action` and `throw_streaming_abort`
@@ -65,7 +66,7 @@ fn handle_header_dispatch_panic(
     let failed = flags.failed.load(Ordering::Acquire);
     match panic_post_header_action(flags.sent.load(Ordering::Relaxed), failed) {
         PanicHeaderAction::FireFallbackHeader => {
-            notify_local_header(env, header_consumer, &panic_wire(), flags);
+            notify_local_wire(env, header_consumer, output_stream, &panic_wire(), flags);
         }
         PanicHeaderAction::ThrowAbort => {
             throw_streaming_abort(env, AbortReason::from_flags(failed, true));
@@ -131,6 +132,7 @@ fn throw_if_stream_aborted(
 fn finish_header_dispatch(
     env: &mut jni::Env<'_>,
     header_consumer: &JObject<'_>,
+    output_stream: &JObject<'_>,
     flags: &StreamingFlags,
     panic_result: &std::thread::Result<vespera_inprocess::StreamOutcome>,
     release_buffers: impl FnOnce(),
@@ -146,7 +148,7 @@ fn finish_header_dispatch(
             throw_if_stream_aborted(env, flags, *outcome);
         }
         // Deliberately does NOT call `release_buffers` — see the doc above.
-        Err(_) => handle_header_dispatch_panic(env, header_consumer, flags),
+        Err(_) => handle_header_dispatch_panic(env, header_consumer, output_stream, flags),
     }
 }
 
@@ -173,6 +175,7 @@ fn reject_null_header_consumer(
 fn reject_null_streams(
     env: &mut jni::Env<'_>,
     header_consumer: &JObject<'_>,
+    output_stream: &JObject<'_>,
     streams: &[&JObject<'_>],
     message: &str,
     flags: &StreamingFlags,
@@ -180,32 +183,61 @@ fn reject_null_streams(
     if streams.iter().all(|stream| !stream.is_null()) {
         return false;
     }
-    notify_local_header(
+    notify_local_wire(
         env,
         header_consumer,
+        output_stream,
         &vespera_inprocess::error_wire(400, message),
         flags,
     );
     true
 }
 
-/// Deliver a locally built header (pre-dispatch error paths, panic fallback)
-/// and latch the outcome like the hot-path callback does.  A consumer that
-/// threw must not let the native call return normally — Java would finish
-/// as if the header had been applied — so the same
+/// Split a locally built wire (`error_wire` / `panic_wire` / …) at its
+/// header boundary: `(length-prefixed header, body)`.  The header-first
+/// contract hands the consumer the header only; the body follows through
+/// the output stream, as it does on the hot path (`pre_header_error` in
+/// `vespera_inprocess::streaming`).  A wire too short for its prefix has no
+/// body and passes through whole as the header.
+fn split_local_wire(wire: &[u8]) -> (&[u8], &[u8]) {
+    let header_len = wire.first_chunk::<4>().map_or(0, |len| {
+        usize::try_from(u32::from_be_bytes(*len)).unwrap_or(usize::MAX)
+    });
+    wire.split_at(4usize.saturating_add(header_len).min(wire.len()))
+}
+
+/// Deliver a locally built wire (pre-dispatch error paths, panic fallback)
+/// header-first, latching the outcome like the hot-path callback does: the
+/// header goes to `header_consumer`, the body to `output_stream`.  A
+/// consumer that threw must not let the native call return normally — Java
+/// would finish as if the header had been applied — so the same
 /// `VesperaStreamAbortedException` (`HeaderCallbackFailed`) as the main path
 /// is thrown (the consumer's own exception was scrubbed by the cold-path
-/// helper so the abort can be raised).
-fn notify_local_header(
+/// helper so the abort can be raised).  A body write that fails after the
+/// header was applied is a truncated response, thrown as `BodyAborted`.
+///
+/// A null `output_stream` has nowhere to take the body, so only the header is
+/// delivered; the callers that can receive a null stream reject it with a
+/// `400` before any body is produced.
+fn notify_local_wire(
     env: &mut jni::Env<'_>,
     header_consumer: &JObject<'_>,
-    header_bytes: &[u8],
+    output_stream: &JObject<'_>,
+    wire: &[u8],
     flags: &StreamingFlags,
 ) {
-    let delivered = call_header_consumer_local(env, header_consumer, header_bytes).is_ok();
+    let (header, body) = split_local_wire(wire);
+    let delivered = call_header_consumer_local(env, header_consumer, header).is_ok();
     flags.record_header_callback_result(delivered);
     if !delivered {
         throw_streaming_abort(env, AbortReason::HeaderCallbackFailed);
+        return;
+    }
+    if !body.is_empty()
+        && !output_stream.is_null()
+        && write_output_local(env, output_stream, body).is_err()
+    {
+        throw_streaming_abort(env, AbortReason::BodyAborted);
     }
 }
 
@@ -216,10 +248,17 @@ fn notify_local_header(
 fn notify_setup_failed(
     env: &mut jni::Env<'_>,
     header_consumer: &JObject<'_>,
+    output_stream: &JObject<'_>,
     flags: &StreamingFlags,
 ) {
     clear_pending_exception(env);
-    notify_local_header(env, header_consumer, &streaming_setup_failed_wire(), flags);
+    notify_local_wire(
+        env,
+        header_consumer,
+        output_stream,
+        &streaming_setup_failed_wire(),
+        flags,
+    );
 }
 
 /// Build the hot-path `on_header` callback shared by both `dispatch*WithHeader`
@@ -276,12 +315,13 @@ fn make_header_callback(
 fn deliver_panic_header_if_needed<'local>(
     unowned_env: &mut EnvUnowned<'local>,
     header_consumer: &JObject<'local>,
+    output_stream: &JObject<'local>,
     flags: &StreamingFlags,
     panicked: bool,
 ) {
     if panicked && !flags.notified.load(Ordering::Acquire) && !header_consumer.is_null() {
         let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
-            notify_local_header(env, header_consumer, &panic_wire(), flags);
+            notify_local_wire(env, header_consumer, output_stream, &panic_wire(), flags);
             Ok(())
         });
     }
@@ -291,12 +331,13 @@ fn read_header_or_notify(
     env: &mut jni::Env<'_>,
     header_bytes: &JByteArray<'_>,
     header_consumer: &JObject<'_>,
+    output_stream: &JObject<'_>,
     flags: &StreamingFlags,
 ) -> Option<Vec<u8>> {
     match read_request_byte_array(env, header_bytes) {
         Ok(buf) => Some(buf),
         Err(err) => {
-            notify_local_header(env, header_consumer, &err, flags);
+            notify_local_wire(env, header_consumer, output_stream, &err, flags);
             None
         }
     }
@@ -311,7 +352,7 @@ fn setup_full_header_or_notify(
 ) -> Option<FullStreamHeaderSetup> {
     setup_full_stream_with_header(env, header_consumer, input_stream, output_stream).map_or_else(
         |_| {
-            notify_setup_failed(env, header_consumer, flags);
+            notify_setup_failed(env, header_consumer, output_stream, flags);
             None
         },
         Some,
@@ -333,15 +374,20 @@ fn dispatch_full_streaming_with_header_body(env: &mut jni::Env<'_>, args: &FullH
     if reject_null_streams(
         env,
         args.header_consumer,
+        args.output_stream,
         &[args.input_stream, args.output_stream],
         "inputStream and outputStream must not be null",
         args.flags,
     ) {
         return;
     }
-    let Some(header_input) =
-        read_header_or_notify(env, args.header_bytes, args.header_consumer, args.flags)
-    else {
+    let Some(header_input) = read_header_or_notify(
+        env,
+        args.header_bytes,
+        args.header_consumer,
+        args.output_stream,
+        args.flags,
+    ) else {
         return;
     };
     let Some((header_global, input_global, output_global, jvm, buffers)) =
@@ -376,9 +422,10 @@ fn dispatch_full_streaming_with_header_body(env: &mut jni::Env<'_>, args: &FullH
     let Some(runtime) = runtime() else {
         mark_streaming_buffer_reusable(pull_buf_lease);
         mark_streaming_buffer_reusable(push_buf_lease);
-        notify_local_header(
+        notify_local_wire(
             env,
             args.header_consumer,
+            args.output_stream,
             &runtime_unavailable_wire(),
             args.flags,
         );
@@ -417,10 +464,17 @@ fn dispatch_full_streaming_with_header_body(env: &mut jni::Env<'_>, args: &FullH
             ),
         )
     }));
-    finish_header_dispatch(env, args.header_consumer, args.flags, &panic_result, || {
-        release_pull_lease(pull_buf_lease, pull_token.producer_dropped());
-        mark_streaming_buffer_reusable(push_buf_lease);
-    });
+    finish_header_dispatch(
+        env,
+        args.header_consumer,
+        args.output_stream,
+        args.flags,
+        &panic_result,
+        || {
+            release_pull_lease(pull_buf_lease, pull_token.producer_dropped());
+            mark_streaming_buffer_reusable(push_buf_lease);
+        },
+    );
 }
 
 struct StreamHeaderArgs<'a, 'local> {
@@ -437,22 +491,27 @@ fn dispatch_streaming_with_header_body(env: &mut jni::Env<'_>, args: &StreamHead
     if reject_null_streams(
         env,
         args.header_consumer,
+        args.output_stream,
         &[args.output_stream],
         "outputStream must not be null",
         args.flags,
     ) {
         return;
     }
-    let Some(input) =
-        read_header_or_notify(env, args.request_bytes, args.header_consumer, args.flags)
-    else {
+    let Some(input) = read_header_or_notify(
+        env,
+        args.request_bytes,
+        args.header_consumer,
+        args.output_stream,
+        args.flags,
+    ) else {
         return;
     };
 
     let Ok((header_global, stream_global, jvm, push_buf, push_buf_lease)) =
         setup_stream_with_header(env, args.header_consumer, args.output_stream)
     else {
-        notify_setup_failed(env, args.header_consumer, args.flags);
+        notify_setup_failed(env, args.header_consumer, args.output_stream, args.flags);
         return;
     };
 
@@ -468,9 +527,10 @@ fn dispatch_streaming_with_header_body(env: &mut jni::Env<'_>, args: &StreamHead
     // produced and a header that was never delivered.
     let Some(runtime) = runtime() else {
         mark_streaming_buffer_reusable(push_buf_lease);
-        notify_local_header(
+        notify_local_wire(
             env,
             args.header_consumer,
+            args.output_stream,
             &runtime_unavailable_wire(),
             args.flags,
         );
@@ -488,9 +548,16 @@ fn dispatch_streaming_with_header_body(env: &mut jni::Env<'_>, args: &StreamHead
             move |chunk: &[u8]| push_unless_header_failed(&flags_for_push.failed, &mut push, chunk),
         ))
     }));
-    finish_header_dispatch(env, args.header_consumer, args.flags, &panic_result, || {
-        mark_streaming_buffer_reusable(push_buf_lease);
-    });
+    finish_header_dispatch(
+        env,
+        args.header_consumer,
+        args.output_stream,
+        args.flags,
+        &panic_result,
+        || {
+            mark_streaming_buffer_reusable(push_buf_lease);
+        },
+    );
 }
 
 #[unsafe(no_mangle)]
@@ -517,7 +584,13 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
         );
         Ok(())
     });
-    deliver_panic_header_if_needed(&mut unowned_env, &header_consumer, &flags, panicked);
+    deliver_panic_header_if_needed(
+        &mut unowned_env,
+        &header_consumer,
+        &output_stream,
+        &flags,
+        panicked,
+    );
 }
 
 #[unsafe(no_mangle)]
@@ -546,7 +619,13 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
         );
         Ok(())
     });
-    deliver_panic_header_if_needed(&mut unowned_env, &header_consumer, &flags, panicked);
+    deliver_panic_header_if_needed(
+        &mut unowned_env,
+        &header_consumer,
+        &output_stream,
+        &flags,
+        panicked,
+    );
 }
 
 /// Wire `500` body when a DIRECT overflow stash token is no longer known.
@@ -570,6 +649,7 @@ fn stream_stashed_body(env: &mut jni::Env<'_>, args: &StashStreamArgs<'_, '_>) {
     if reject_null_streams(
         env,
         args.header_consumer,
+        args.output_stream,
         &[args.output_stream],
         "outputStream must not be null",
         args.flags,
@@ -584,20 +664,27 @@ fn stream_stashed_body(env: &mut jni::Env<'_>, args: &StashStreamArgs<'_, '_>) {
         } else {
             vespera_inprocess::error_wire(500, STASH_EXPIRED_MSG)
         };
-        notify_local_header(env, args.header_consumer, &wire, args.flags);
+        notify_local_wire(
+            env,
+            args.header_consumer,
+            args.output_stream,
+            &wire,
+            args.flags,
+        );
         return;
     };
     let Ok((header_global, stream_global, jvm, push_buf, push_buf_lease)) =
         setup_stream_with_header(env, args.header_consumer, args.output_stream)
     else {
-        notify_setup_failed(env, args.header_consumer, args.flags);
+        notify_setup_failed(env, args.header_consumer, args.output_stream, args.flags);
         return;
     };
     let Some(runtime) = runtime() else {
         mark_streaming_buffer_reusable(push_buf_lease);
-        notify_local_header(
+        notify_local_wire(
             env,
             args.header_consumer,
+            args.output_stream,
             &runtime_unavailable_wire(),
             args.flags,
         );
@@ -613,9 +700,16 @@ fn stream_stashed_body(env: &mut jni::Env<'_>, args: &StashStreamArgs<'_, '_>) {
             move |chunk: &[u8]| push_unless_header_failed(&flags_for_push.failed, &mut push, chunk),
         ))
     }));
-    finish_header_dispatch(env, args.header_consumer, args.flags, &panic_result, || {
-        mark_streaming_buffer_reusable(push_buf_lease);
-    });
+    finish_header_dispatch(
+        env,
+        args.header_consumer,
+        args.output_stream,
+        args.flags,
+        &panic_result,
+        || {
+            mark_streaming_buffer_reusable(push_buf_lease);
+        },
+    );
 }
 
 /// `com.devfive.vespera.bridge.DirectStash.stream0(long, Consumer<byte[]>, OutputStream) -> void`
@@ -644,5 +738,39 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_DirectStash_stream0<'loca
         );
         Ok(())
     });
-    deliver_panic_header_if_needed(&mut unowned_env, &header_consumer, &flags, panicked);
+    deliver_panic_header_if_needed(
+        &mut unowned_env,
+        &header_consumer,
+        &output_stream,
+        &flags,
+        panicked,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_local_wire;
+
+    #[test]
+    fn local_wire_splits_at_the_header_boundary() {
+        let wire = vespera_inprocess::error_wire(400, "invalid input byte array (null)");
+        let (header, body) = split_local_wire(&wire);
+        assert_eq!(body, b"invalid input byte array (null)");
+        assert_eq!(header.len() + body.len(), wire.len());
+        // The header is the length-prefixed JSON only: it ends where the body starts.
+        assert_eq!(&wire[..header.len()], header);
+    }
+
+    #[test]
+    fn short_or_bodyless_wire_is_all_header() {
+        let (header, body) = split_local_wire(&[0, 0]);
+        assert_eq!(header, &[0, 0]);
+        assert_eq!(body, &[] as &[u8]);
+
+        let mut bodyless = vec![0, 0, 0, 2];
+        bodyless.extend_from_slice(b"{}");
+        let (header, body) = split_local_wire(&bodyless);
+        assert_eq!(header, bodyless.as_slice());
+        assert_eq!(body, &[] as &[u8]);
+    }
 }

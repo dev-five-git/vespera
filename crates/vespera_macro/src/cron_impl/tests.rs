@@ -331,8 +331,18 @@ fn test_register_cron_keys_by_inline_module() {
             (Some("b".to_string()), "2 * * * * *".to_string()),
         ]
     );
+    // An unknown scope may be a different `tick` (a `macro_rules!` expansion
+    // in another module): it is kept beside the known scopes, never replacing
+    // them, so no job is silently dropped.
     register_cron(entry(None, "4 * * * * *"));
-    assert_eq!(expressions().len(), 2, "unknown scope replaces, never adds");
+    assert_eq!(
+        expressions(),
+        vec![
+            (Some("a".to_string()), "3 * * * * *".to_string()),
+            (Some("b".to_string()), "2 * * * * *".to_string()),
+            (None, "4 * * * * *".to_string()),
+        ]
+    );
 }
 
 #[rstest::rstest]

@@ -53,6 +53,22 @@ async fn result_query_dispatches_and_hands_the_rejection_to_the_handler() {
     rejected.assert_text("invalid query");
 }
 
+/// A body over axum's default 2 MiB limit is `BytesRejection`, which axum maps
+/// to `413`: the handler answers it with that status, so it is documented.
+#[tokio::test]
+async fn oversized_json_body_is_a_413_rejection() {
+    let server = TestServer::new(create_app().await);
+    let oversized = format!(r#"{{"name": "{}"}}"#, "x".repeat(2 * 1024 * 1024));
+
+    let response = server
+        .post("/rejection")
+        .content_type("application/json")
+        .bytes(oversized.into())
+        .await;
+
+    response.assert_status(StatusCode::PAYLOAD_TOO_LARGE);
+}
+
 #[tokio::test]
 async fn result_extractors_are_documented() {
     let server = TestServer::new(create_app().await);

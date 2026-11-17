@@ -1874,7 +1874,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
       },
       "post": {
         "operationId": "create_lenient",
-        "summary": "Echo the name, answering a malformed body with a plain-text error whose status is axum's own for the rejection (`400` syntax, `415` no JSON content type, `422` wrong shape).",
+        "summary": "Echo the name, answering a malformed body with a plain-text error whose status is axum's own for the rejection (`400` syntax, `413` body over the size limit, `415` no JSON content type, `422` wrong shape).",
         "requestBody": {
           "required": true,
           "content": {
@@ -1897,6 +1897,16 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             }
           },
           "400": {
+            "description": "Error response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "413": {
             "description": "Error response",
             "content": {
               "text/plain": {

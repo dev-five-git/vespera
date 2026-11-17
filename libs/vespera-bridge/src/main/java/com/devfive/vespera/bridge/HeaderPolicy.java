@@ -235,7 +235,8 @@ final class HeaderPolicy {
             if (count < DUPLICATE_SCAN_LIMIT) {
                 for (int i = 1; i < 2 * count; i += 2) {
                     if (lowerName.equals(pairs[i])) {
-                        forEachMergedRequestHeader(request, sink, connectionTokens);
+                        forEachMergedRequestHeader(request, sink, connectionTokens,
+                                pairs, count, name, names);
                         return;
                     }
                 }
@@ -247,7 +248,8 @@ final class HeaderPolicy {
                     }
                 }
                 if (!overflowSeen.add(lowerName)) {
-                    forEachMergedRequestHeader(request, sink, connectionTokens);
+                    forEachMergedRequestHeader(request, sink, connectionTokens,
+                            pairs, count, name, names);
                     return;
                 }
             }
@@ -266,8 +268,17 @@ final class HeaderPolicy {
     /** Up to this many forwarded names, duplicates are found by a linear scan (no set). */
     static final int DUPLICATE_SCAN_LIMIT = 16;
 
+    /**
+     * The duplicate-name fallback of {@link #forEachRequestHeader}. It merges
+     * the names the first pass already read ({@code pairs[0..count)}), the name
+     * that revealed the duplicate ({@code current}) and the rest of that same
+     * enumeration ({@code rest}). It does not call {@code getHeaderNames()}
+     * again: a non-conformant container may answer null the second time, which
+     * used to drop every request header, not only the duplicated one.
+     */
     private static void forEachMergedRequestHeader(
-            HttpServletRequest request, VesperaBridge.HeaderSink sink, Set<String> connectionTokens) {
+            HttpServletRequest request, VesperaBridge.HeaderSink sink, Set<String> connectionTokens,
+            String[] pairs, int count, String current, Enumeration<String> rest) {
         Map<String, String> merged = new LinkedHashMap<>(32);
         // What getHeaders returned for the first spelling of each lower-cased
         // name, and every raw name already read. A spec-conforming container
@@ -275,14 +286,21 @@ final class HeaderPolicy {
         // values, so a later spelling that repeats the first answer -- or a
         // raw name a wrapper lists twice -- is not merged again; only a
         // case-sensitive container's distinct per-spelling values are joined.
+        // Deliberate trade-off: two spellings of one client header that carry
+        // the SAME value (a case-sensitive container listing X-Dup and x-dup
+        // with "v" each) are forwarded once as "v", because getHeaders alone
+        // cannot tell that apart from a conforming container's full answer.
         Map<String, String> firstAnswer = new HashMap<>(8);
         Set<String> readRawNames = new HashSet<>(32);
-        Enumeration<String> names = request.getHeaderNames();
-        if (names == null) {
-            return;
+        List<String> allNames = new ArrayList<>(count + 1 + 32);
+        for (int i = 0; i < count; i++) {
+            allNames.add(pairs[2 * i]);
         }
-        while (names.hasMoreElements()) {
-            String name = names.nextElement();
+        allNames.add(current);
+        while (rest.hasMoreElements()) {
+            allNames.add(rest.nextElement());
+        }
+        for (String name : allNames) {
             String lowerName = canonicalLowerHeaderName(name);
             if (!isHopByHopResponseHeader(lowerName)
                     && !isConnectionNominatedHeader(lowerName, connectionTokens)

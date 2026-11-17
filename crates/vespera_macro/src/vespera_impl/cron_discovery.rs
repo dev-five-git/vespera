@@ -198,9 +198,16 @@ fn derived_module_path(
     placement: &Placement<'_>,
     stored: &StoredCronInfo,
 ) -> Result<String, String> {
-    if let Some(rest) = normalized.strip_prefix(src_display)
-        && (src_display.is_empty() || rest.starts_with('/'))
-    {
+    // Without a known `src/` (no `CARGO_MANIFEST_DIR`) only a relative path is
+    // its own module path: an absolute one is no path under `src/` at all.
+    let under_src = if src_display.is_empty() {
+        (!Path::new(normalized).is_absolute()).then_some(normalized)
+    } else {
+        normalized
+            .strip_prefix(src_display)
+            .filter(|rest| rest.starts_with('/'))
+    };
+    if let Some(rest) = under_src {
         return Ok(cron_module_path(rest.trim_start_matches('/')));
     }
     let call_site = placement.call_site.as_deref().unwrap_or_default();

@@ -75,7 +75,11 @@ fn struct_in_module(items: Vec<syn::Item>, scope: &str, name: &str) -> Option<sy
         _ => None,
     });
     let found = structs.next()?;
-    structs.next().is_none().then_some(found)
+    // A `#[cfg]`-gated struct may be the one a cfg-off build does not define:
+    // the name then means whatever else it resolves to (a `use`), so the
+    // fields are unknown and the check is skipped.
+    let gated = found.attrs.iter().any(|attr| attr.path().is_ident("cfg"));
+    (!gated && structs.next().is_none()).then_some(found)
 }
 
 pub(super) fn check_with_lookup(
@@ -251,6 +255,18 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+
+    #[test]
+    fn cfg_gated_struct_is_not_taken_as_the_definition() {
+        let gated = syn::parse_file(r#"#[cfg(feature = "legacy")] pub struct Params { id: u32 }"#)
+            .unwrap()
+            .items;
+        assert!(struct_in_module(gated, "", "Params").is_none());
+        let plain = syn::parse_file("pub struct Params { id: u32 }")
+            .unwrap()
+            .items;
+        assert!(struct_in_module(plain, "", "Params").is_some());
+    }
 
     const STRUCTS: &str = r#"
         struct Ids { org: String, id: u32 }

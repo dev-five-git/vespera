@@ -44,6 +44,9 @@ struct Queue {
     /// Pending sleeps by `(deadline, sequence number)`, earliest first.
     entries: BTreeMap<(Instant, u64), Arc<Slot>>,
     next_seq: u64,
+    /// Whether the timer thread has been started.  A failed start leaves it
+    /// `false`, so the next [`Timer::ensure_running`] retries it.
+    running: bool,
 }
 
 #[derive(Default)]
@@ -53,6 +56,32 @@ struct Timer {
 }
 
 impl Timer {
+    /// Start the timer thread through `spawn` unless it already runs.
+    /// Returns whether the thread runs.  A failed start is not cached:
+    /// nothing fires until a later call starts the thread, and that call
+    /// fires every sleep that came due in the meantime.
+    fn ensure_running(
+        &'static self,
+        spawn: impl FnOnce(&'static Self) -> std::io::Result<()>,
+    ) -> bool {
+        // Held across the spawn: the new thread's first `run` waits on this
+        // lock, so it cannot race the `running` update below.
+        let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
+        if queue.running {
+            return true;
+        }
+        match spawn(self) {
+            Ok(()) => {
+                queue.running = true;
+                true
+            }
+            Err(error) => {
+                cron_diag!(error, "failed to start the cron timer thread: {error}");
+                false
+            }
+        }
+    }
+
     fn register(&self, deadline: Instant) -> Arc<Slot> {
         let slot = Arc::new(Slot::default());
         let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
@@ -95,20 +124,18 @@ impl Timer {
     }
 }
 
-/// The shared timer, its thread started on first use.
+/// The shared timer, its thread started on first use and retried on every
+/// call until it runs (see [`Timer::ensure_running`]).
 fn timer() -> &'static Timer {
     static TIMER: OnceLock<&'static Timer> = OnceLock::new();
-    TIMER.get_or_init(|| {
-        let timer: &'static Timer = Box::leak(Box::default());
+    let timer = *TIMER.get_or_init(|| -> &'static Timer { Box::leak(Box::default()) });
+    timer.ensure_running(|timer| {
         std::thread::Builder::new()
             .name("vespera-cron-timer".to_owned())
-            .spawn(|| timer.run())
-            .map_or_else(
-                |error| cron_diag!(error, "failed to start the cron timer thread: {error}"),
-                drop,
-            );
-        timer
-    })
+            .spawn(move || timer.run())
+            .map(drop)
+    });
+    timer
 }
 
 /// Resolve after `duration`, without needing a Tokio time driver.
@@ -138,15 +165,57 @@ mod tests {
         let no_timers = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
+        let order = Arc::new(Mutex::new(Vec::new()));
         let started = Instant::now();
         no_timers.block_on(async {
-            let long = sleep(Duration::from_millis(60));
-            sleep(Duration::from_millis(20)).await;
-            assert!(started.elapsed() >= Duration::from_millis(20));
-            long.await;
+            // Both sleeps run concurrently; the record shows which resolved first.
+            let long = {
+                let order = Arc::clone(&order);
+                tokio::spawn(async move {
+                    sleep(Duration::from_millis(60)).await;
+                    order.lock().unwrap().push("long");
+                })
+            };
+            let short = {
+                let order = Arc::clone(&order);
+                tokio::spawn(async move {
+                    sleep(Duration::from_millis(20)).await;
+                    order.lock().unwrap().push("short");
+                })
+            };
+            short.await.unwrap();
+            long.await.unwrap();
         });
+        assert_eq!(*order.lock().unwrap(), ["short", "long"]);
         assert!(started.elapsed() >= Duration::from_millis(60));
         // A past deadline resolves on the first poll after it fired.
         no_timers.block_on(sleep(Duration::ZERO));
+    }
+
+    /// A thread start that fails is retried by the next call, and the sleep
+    /// registered while it was down still fires once the thread runs.
+    #[test]
+    fn a_failed_timer_thread_start_is_retried_not_cached() {
+        let timer: &'static Timer = Box::leak(Box::default());
+        let mut attempts = 0;
+        assert!(!timer.ensure_running(|_| {
+            attempts += 1;
+            Err(std::io::Error::other("no threads left"))
+        }));
+        let slot = timer.register(Instant::now());
+        assert!(timer.ensure_running(|timer| {
+            attempts += 1;
+            std::thread::Builder::new()
+                .spawn(move || timer.run())
+                .map(drop)
+        }));
+        assert_eq!(attempts, 2, "the failed start was retried, not cached");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !slot.fired.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "the sleep never fired");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Once running, further calls never spawn again.
+        assert!(timer.ensure_running(|_| panic!("the timer thread was started twice")));
     }
 }

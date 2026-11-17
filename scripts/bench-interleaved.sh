@@ -132,6 +132,18 @@ while IFS= read -r est; do
   fi
 done < <(find "$work/criterion/head/1" -path '*/new/estimates.json' 2>/dev/null | sort)
 
+# A benchmark the base measured but the head did not (removed, or renamed while
+# regressed) can no longer be gated: fail rather than pass silently. Mirrors
+# `missingOnHead` in scripts/jni-bench-compare.ts.
+while IFS= read -r est; do
+  bench=${est#"$work/criterion/base/1/"}
+  bench=${bench%/new/estimates.json}
+  if [ ! -f "$work/criterion/head/1/$bench/new/estimates.json" ]; then
+    echo "::error::${bench} is reported by the base but missing from the head; it cannot be gated"
+    fail=1
+  fi
+done < <(find "$work/criterion/base/1" -path '*/new/estimates.json' 2>/dev/null | sort)
+
 if [ "$found" -ne 1 ]; then
   echo "::error::No comparable benchmarks found (filter '${filter}'): the gate measured nothing." >&2
   exit 1

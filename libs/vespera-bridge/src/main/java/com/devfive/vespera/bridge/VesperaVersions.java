@@ -26,7 +26,9 @@ import java.util.function.Supplier;
  *   <li>a native library that predates {@code nativeVersion0()} (≤ 0.5.x):
  *       a WARNING, never a failure;</li>
  *   <li>a bridge whose own version is unknown (not embedded, e.g. an IDE
- *       build): nothing to compare, so the check is skipped silently.</li>
+ *       build): nothing to compare, so the major.minor check is skipped
+ *       silently. A native library that does not report its version still
+ *       gets the WARNING above, whatever the bridge version is.</li>
  * </ul>
  *
  * <p>Package-private: an internal collaborator of {@link VesperaBridge}.

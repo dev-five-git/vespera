@@ -2,6 +2,7 @@ package com.devfive.vespera.bridge;
 
 import static com.devfive.vespera.bridge.ReactiveTestSupport.responseWire;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.devfive.vespera.bridge.ReactiveTestSupport.FakeTransport;
@@ -134,6 +135,7 @@ class ReactiveNettyServerTest {
         while (events.isEmpty() && System.nanoTime() < deadline) {
             Thread.sleep(5);
         }
+        assertFalse(events.isEmpty(), "no DispatchEvent after the disconnect");
         assertEquals(VesperaReactiveProxyHandler.CLIENT_CLOSED_REQUEST, events.get(0).status());
     }
 

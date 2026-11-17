@@ -27,6 +27,8 @@ use std::{
 use syn::Type;
 use vespera_core::schema::{Reference, Schema, SchemaRef};
 
+use crate::parser::schema::substitute_type;
+
 thread_local! {
     /// Instantiation names currently being inlined (outermost first).
     static IN_PROGRESS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
@@ -241,15 +243,54 @@ pub fn with_definition<R>(
     }
     let component =
         crate::schema_impl::extract_schema_name_attr(attrs).unwrap_or_else(|| ident.to_string());
-    with_self_instance(instance_name(&component, &params), component, build)
+    // A self-reference may omit a defaulted parameter (`Tree<T>` inside
+    // `Tree<T, M = Meta>` means `Tree<T, Meta>`): it names the same component
+    // as the parameters spelled out (`Tree<T, M>`).
+    let as_written = instance_name(&component, &params);
+    let defaults_filled = instance_name(&component, &default_filled_params(generics, &params));
+    let instances = [as_written, defaults_filled];
+    with_self_instances(&instances, &component, build)
+}
+
+/// `params` (the type parameters as types) with every defaulted parameter
+/// replaced by its default, the earlier parameters substituted into it
+/// (`Tree<T, M = Meta>` → `[T, Meta]`).
+fn default_filled_params(generics: &syn::Generics, params: &[Type]) -> Vec<Type> {
+    let names: Vec<String> = generics
+        .type_params()
+        .map(|param| param.ident.to_string())
+        .collect();
+    let mut filled: Vec<Type> = Vec::with_capacity(params.len());
+    for (index, (param, own)) in generics.type_params().zip(params).enumerate() {
+        let ty = match &param.default {
+            Some((_, default)) => {
+                let earlier: Vec<&Type> = filled.iter().collect();
+                substitute_type(default, &names[..index], &earlier)
+            }
+            None => own.clone(),
+        };
+        filled.push(ty);
+    }
+    filled
 }
 
 /// Run `build` (the schema of a generic definition such as `Tree<T>`) with
-/// its own instantiation `instance` (`Tree_T`) referring to `component`.
-pub fn with_self_instance<R>(instance: String, component: String, build: impl FnOnce() -> R) -> R {
-    DEFINITIONS.with(|stack| stack.borrow_mut().push((instance, component)));
+/// its own instantiations `instances` (`Tree_T`, ...) referring to `component`.
+pub fn with_self_instances<R>(
+    instances: &[String],
+    component: &str,
+    build: impl FnOnce() -> R,
+) -> R {
+    let depth = DEFINITIONS.with(|stack| stack.borrow().len());
+    DEFINITIONS.with(|stack| {
+        stack.borrow_mut().extend(
+            instances
+                .iter()
+                .map(|instance| (instance.clone(), component.to_string())),
+        );
+    });
     let result = build();
-    DEFINITIONS.with(|stack| stack.borrow_mut().pop());
+    DEFINITIONS.with(|stack| stack.borrow_mut().truncate(depth));
     result
 }
 

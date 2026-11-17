@@ -25,9 +25,9 @@ pub struct RejectionFilter {
 }
 
 /// Echo the name, answering a malformed body with a plain-text error whose
-/// status is axum's own for the rejection (`400` syntax, `415` no JSON
-/// content type, `422` wrong shape).
-#[route(post, error_status = [400, 415, 422])]
+/// status is axum's own for the rejection (`400` syntax, `413` body over the
+/// size limit, `415` no JSON content type, `422` wrong shape).
+#[route(post, error_status = [400, 413, 415, 422])]
 pub async fn create_lenient(
     body: Result<Json<RejectionInput>, JsonRejection>,
 ) -> Result<Json<RejectionInput>, (StatusCode, String)> {

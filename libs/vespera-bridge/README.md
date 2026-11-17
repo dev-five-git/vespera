@@ -1228,29 +1228,41 @@ throughput-oriented deployments.
 
 ### Server-side response streaming (Spring `StreamingResponseBody`)
 
-Pair `dispatchStreaming` with `StreamingResponseBody` for true
-server-side streaming — the JVM and Rust both process chunks
-without ever holding the full body in memory:
+Stream the Rust body straight into the servlet response with
+`dispatchStreamingWithHeader`. Its header callback runs exactly once,
+before the first body byte, so the Rust status and headers (a `404`
+JSON error, a `500` panic wire, the real `Content-Type`) are committed
+to the response instead of being replaced by a hard-coded `200`. The
+body is never held in memory; chunks go to the servlet `OutputStream`
+as Rust produces them:
 
 ```java
 @GetMapping("/download/{name}")
-public ResponseEntity<StreamingResponseBody> download(@PathVariable String name) {
+public void download(@PathVariable String name, HttpServletResponse response)
+        throws IOException {
     byte[] wireReq = VesperaBridge.encodeRequest(
         "GET", "/files/" + name, null, Map.of(), new byte[0]);
 
-    // We need status/headers before Spring commits the response —
-    // call streaming once with a buffered sink to get the header,
-    // then stream the actual response. (For pure pass-through, use
-    // a custom controller that wires Spring's HttpServletResponse
-    // OutputStream directly.)
-    StreamingResponseBody body = output -> {
-        VesperaBridge.dispatchStreaming(wireReq, output);
-    };
-    return ResponseEntity.ok()
-        .contentType(MediaType.APPLICATION_OCTET_STREAM)
-        .body(body);
+    VesperaBridge.dispatchStreamingWithHeader(wireReq,
+        headerBytes -> applyRustHeader(response, VesperaBridge.decodeResponse(headerBytes)),
+        response.getOutputStream());
+}
+
+private static void applyRustHeader(HttpServletResponse response, DecodedResponse meta) {
+    response.setStatus(meta.status());
+    for (Map.Entry<String, Object> header : meta.headers().entrySet()) {
+        if (header.getValue() instanceof List<?> values) {
+            values.forEach(v -> response.addHeader(header.getKey(), String.valueOf(v)));
+        } else {
+            response.addHeader(header.getKey(), String.valueOf(header.getValue()));
+        }
+    }
 }
 ```
+
+This writes Rust's status and headers verbatim. Hop-by-hop and
+proxy-owned headers are not filtered here; the `VesperaProxyController`
+applies `HeaderPolicy` for that.
 
 ### Binary upload / download
 

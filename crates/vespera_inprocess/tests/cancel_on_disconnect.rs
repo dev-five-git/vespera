@@ -90,6 +90,14 @@ fn install() {
     });
 }
 
+/// Bound an await so a regression that stops the dispatch from finishing
+/// fails the test instead of hanging CI.
+async fn bounded<F: std::future::Future>(what: &str, fut: F) -> F::Output {
+    tokio::time::timeout(std::time::Duration::from_secs(10), fut)
+        .await
+        .unwrap_or_else(|_| panic!("{what} did not finish within 10 s"))
+}
+
 fn encode(path: &str) -> Vec<u8> {
     let header =
         serde_json::to_vec(&json!({ "v": 1, "method": "GET", "path": path, "app": APP })).unwrap();
@@ -152,10 +160,18 @@ async fn header_first_streaming_drops_the_body_on_sink_failure(
     let on_header = |_h: &[u8]| header_seen = true;
     let outcome = if fail_on_data {
         let sink = data_write_dying_sink(1, Arc::clone(&writes));
-        dispatch_streaming_with_header_async(wire, on_header, sink).await
+        bounded(
+            route,
+            dispatch_streaming_with_header_async(wire, on_header, sink),
+        )
+        .await
     } else {
         let sink = dying_sink(1, Arc::clone(&writes));
-        dispatch_streaming_with_header_async(wire, on_header, sink).await
+        bounded(
+            route,
+            dispatch_streaming_with_header_async(wire, on_header, sink),
+        )
+        .await
     };
     assert!(header_seen);
     assert_eq!(outcome, StreamOutcome::SinkStopped);
@@ -175,9 +191,12 @@ async fn header_last_streaming_drops_the_body_on_sink_failure() {
     let key = "header-last-endless";
     let dropped = flag(key);
     let writes = Arc::new(AtomicUsize::new(0));
-    let (_, outcome) = dispatch_streaming_with_outcome_async(
-        encode(&format!("/endless/{key}")),
-        dying_sink(2, Arc::clone(&writes)),
+    let (_, outcome) = bounded(
+        key,
+        dispatch_streaming_with_outcome_async(
+            encode(&format!("/endless/{key}")),
+            dying_sink(2, Arc::clone(&writes)),
+        ),
     )
     .await;
     assert_eq!(outcome, StreamOutcome::SinkStopped);
@@ -195,11 +214,14 @@ async fn bidirectional_streaming_drops_the_body_on_sink_failure() {
     let key = "bidi-endless";
     let dropped = flag(key);
     let writes = Arc::new(AtomicUsize::new(0));
-    let outcome = dispatch_bidirectional_streaming_with_header(
-        encode(&format!("/endless/{key}")),
-        || RequestChunk::End,
-        data_write_dying_sink(1, Arc::clone(&writes)),
-        |_h: &[u8]| {},
+    let outcome = bounded(
+        key,
+        dispatch_bidirectional_streaming_with_header(
+            encode(&format!("/endless/{key}")),
+            || RequestChunk::End,
+            data_write_dying_sink(1, Arc::clone(&writes)),
+            |_h: &[u8]| {},
+        ),
     )
     .await;
     assert_eq!(outcome, StreamOutcome::SinkStopped);
@@ -230,6 +252,8 @@ async fn cancelled_dispatch_drops_the_handler() {
     assert!(!task.is_finished());
     assert!(!dropped.load(Ordering::SeqCst));
     assert!(cancel(token));
-    assert_eq!(task.await.unwrap(), None);
+    // Cancelling must finish the task (it resolves to None), not leave it
+    // stalled; the bounded await turns a hang into a failure.
+    assert_eq!(bounded(key, task).await.unwrap(), None);
     assert!(dropped.load(Ordering::SeqCst), "cancel dropped the body");
 }

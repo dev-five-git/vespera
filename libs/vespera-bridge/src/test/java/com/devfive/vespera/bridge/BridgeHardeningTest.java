@@ -144,6 +144,9 @@ class BridgeHardeningTest {
     void mismatchOnlyForDifferentReleaseLines() {
         assertNull(VesperaVersions.mismatch("0.6.0", "0.6.3"));
         assertNull(VesperaVersions.mismatch(null, "0.6.3"), "unknown bridge version: nothing to compare");
+        // Unknown bridge AND a native library that predates nativeVersion0():
+        // the missing-version WARNING still applies (the javadoc says so).
+        assertTrue(VesperaVersions.mismatch(null, null).contains("does not report its version"));
         assertTrue(VesperaVersions.mismatch("0.6.0", "0.5.9").contains("0.6 vs 0.5"));
         assertTrue(VesperaVersions.mismatch("0.6.0", "garbage").contains("different release lines"));
         assertTrue(VesperaVersions.mismatch("0.6.0", null).contains("does not report its version"));

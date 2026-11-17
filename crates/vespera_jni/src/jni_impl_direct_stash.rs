@@ -236,7 +236,8 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_DirectStash_dispatchResum
 /// a response produced after the handler ran — its own response or the
 /// `500` panic wire of a panicking handler — is stashed, so the handler
 /// never re-runs.  A smaller `out` asks for
-/// [`vespera_inprocess::MIN_DIRECT_OUT_BYTES`] without dispatching.  An
+/// [`vespera_inprocess::MIN_DIRECT_OUT_BYTES`] without dispatching (as in
+/// `dispatchDirect0`, the input checks of `run_direct_symbol` run first).  An
 /// error wire that overflows without a handle zeroes the handle area
 /// (`write_error_to_out` / [`write_error_wire`]), so no stale token is ever
 /// read back; those are answered before any handler ran (or after a

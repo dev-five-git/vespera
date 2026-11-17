@@ -157,7 +157,11 @@ unsafe fn write_error_to_out(out_addr: *mut u8, out_cap: usize, response: &[u8])
 ///   (1 KiB) returns `-(MIN_DIRECT_OUT_BYTES)` **without dispatching**:
 ///   every wire synthesized after the handler ran (panic `500`, `504`
 ///   timeout, …) fits that minimum, so a retry never re-runs a handler
-///   whose failure response merely overflowed.
+///   whose failure response merely overflowed.  The input checks run
+///   first, so a request whose `in_len` is out of range or whose buffers
+///   overlap is answered with its `400` wire instead, whatever the size of
+///   `out_buf`; that wire is written only when it fits, else the call
+///   returns its `-(required)` size as usual.
 /// * `Integer.MIN_VALUE`: response size exceeds `i32::MAX`.
 ///
 /// Compared with `dispatchBytes`, this path removes BOTH JNI

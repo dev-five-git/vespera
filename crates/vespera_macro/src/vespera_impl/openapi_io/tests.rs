@@ -692,25 +692,46 @@ fn sidecar_validation_covers_missing_fingerprints_corruption_and_success() {
     assert!(
         load_validated_sidecar_specs("t", None, Some(hash_str("missing")), None, None).is_none()
     );
+    // The stored fingerprints are checked against files that exist: a
+    // matching fingerprint accepts the file without rehashing it, even when
+    // the expected content hash is not the file's own.
+    let wrong_fp = path_fingerprint(&wrong).unwrap();
+    assert!(
+        load_validated_sidecar_specs("t", Some(hash_str("other")), None, Some(wrong_fp), None)
+            .is_some()
+    );
+    // A stale fingerprint falls back to the content hash, which "not other"
+    // does not match.
     assert!(
         load_validated_sidecar_specs(
             "t",
-            Some(hash_str("wrong")),
+            Some(hash_str("other")),
+            None,
+            Some(wrong_fp.wrapping_add(1)),
+            None,
+        )
+        .is_none()
+    );
+    // A stale fingerprint with a matching content hash is still accepted.
+    assert!(
+        load_validated_sidecar_specs(
+            "t",
+            Some(hash_str("compact")),
             None,
             Some(compact_fp.wrapping_add(1)),
             None,
         )
-        .is_none()
+        .is_some()
     );
     assert!(
         load_validated_sidecar_specs(
             "t",
             None,
-            Some(hash_str("wrong")),
+            Some(hash_str("pretty")),
             None,
             Some(pretty_fp.wrapping_add(1)),
         )
-        .is_none()
+        .is_some()
     );
 
     // A corrupted content-addressed pretty sidecar (fingerprint and content

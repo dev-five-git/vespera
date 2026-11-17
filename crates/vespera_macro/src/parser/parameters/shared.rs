@@ -5,8 +5,9 @@ use vespera_core::schema::SchemaRef;
 
 use crate::{
     parser::schema::{
-        SerdeSide, definition_key, extract_field_rename_for, extract_rename_all_for,
-        extract_transparent, is_primitive_type, nullable_schema_ref, rename_field,
+        SerdeSide, definition_key, extract_field_codec, extract_field_rename_for,
+        extract_rename_all_for, extract_serde_skip_flags, extract_transparent, is_primitive_type,
+        nullable_schema_ref, rename_field, schema_attrs::extract_schema_constraints,
         single_emitted_field, strip_raw_prefix_owned, substitute_type,
         wire_override::container_override_type,
     },
@@ -142,6 +143,33 @@ pub(super) fn struct_definition_keyed(
         field.ty = substitute_type(&field.ty, &names, &concrete);
     }
     Some((key, struct_item))
+}
+
+/// The type a syntactic newtype struct (`struct Ids(TwoIds);`) is read as:
+/// its field's type, or the field's `#[schema(value_type = T)]`. `None` for
+/// any other struct, a skipped field, and a field whose wire shape is not
+/// known (`#[schema(any)]`, a custom `deserialize_with`).
+pub(super) fn newtype_source(struct_item: &syn::ItemStruct) -> Option<Type> {
+    let syn::Fields::Unnamed(fields) = &struct_item.fields else {
+        return None;
+    };
+    let [field] = fields.unnamed.iter().collect::<Vec<_>>()[..] else {
+        return None;
+    };
+    let flags = extract_serde_skip_flags(&field.attrs);
+    let constraints = extract_schema_constraints(&field.attrs);
+    if flags.skip
+        || flags.skip_deserializing
+        || constraints.is_any()
+        || extract_field_codec(&field.attrs).custom_for(SerdeSide::Deserialize)
+    {
+        return None;
+    }
+    Some(
+        constraints
+            .value_type
+            .map_or_else(|| field.ty.clone(), |value_type| value_type.0),
+    )
 }
 
 /// How many container `from` / `try_from` / `transparent` hops are followed

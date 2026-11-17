@@ -111,9 +111,12 @@ scheduler (24 carriers).
   threads are not preempted). A real server parks on socket I/O between
   requests. The same cells under `park` show what the extra parking buys:
   scheduling fairness at ~5x lower throughput.
-- `hybrid` (pin up to CPUs/2 at a time, park beyond) loses to `pollfirst`
-  everywhere: the parked overflow drags p99 to 0.1-2.4 ms on the fast
-  workload and it still pins up to 12 carriers across waits.
+- `hybrid` (pin up to CPUs/2 at a time, park beyond) loses to `pollfirst` on
+  the `/health` workload (throughput and p99 at 64 and 1000 threads, where
+  the parked overflow drags p99 to 0.1-2.4 ms) and at 1000 threads on the
+  sleep workload (p99 and ops/s). On the sleep workload at 1 and 64 threads
+  it roughly ties `pollfirst` (within the noise described below; slightly
+  ahead on this run). It also still pins up to 12 carriers across waits.
 
 Noise: single machine, desktop OS, one JVM. Short exploratory runs (300 ms
 cells, one round) moved individual cells by up to 2-3x (e.g. single-caller

@@ -479,8 +479,11 @@ mod tests {
         fs::write(shared.join("users.rs"), "").unwrap();
         fs::write(temp_dir.path().join("health.rs"), "").unwrap();
         // Creating links needs privileges on Windows (Developer Mode); the
-        // walk itself is platform-neutral, so skip where it is refused.
-        if link(&shared, &routes.join("admin"), true).is_err() {
+        // walk itself is platform-neutral, so skip where it is refused. The
+        // skip is announced: a silent return would pass without checking
+        // anything.
+        if let Err(error) = link(&shared, &routes.join("admin"), true) {
+            eprintln!("skipping symlink walk test: cannot create directory links: {error}");
             return;
         }
         link(

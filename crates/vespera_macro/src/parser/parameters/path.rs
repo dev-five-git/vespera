@@ -8,12 +8,12 @@ use vespera_core::{
 
 use super::shared::{
     MAX_CONVERSION_DEPTH, deserialized_instead, input_rename_all, named_struct_fields,
-    serde_field_name, struct_definition,
+    newtype_source, serde_field_name, struct_definition,
 };
 use crate::{
     parser::schema::{
-        SerdeSide, apply_field_rules, extract_aliases, extract_doc_comment, extract_field_codec,
-        extract_flatten, extract_serde_skip_flags, parse_type_to_schema_ref,
+        SerdeSide, apply_field_rules, extract_aliases, extract_doc_comment, extract_flatten,
+        extract_serde_skip_flags, parse_type_to_schema_ref,
         schema_attrs::extract_schema_constraints, wire_override::field_schema_ref,
     },
     schema_macro::type_utils::{is_map_type as utils_is_map_type, last_path_segment, option_inner},
@@ -214,42 +214,17 @@ fn path_parameters_from(
     }
 
     if let [name] = path_params {
-        return vec![path_parameter(
+        return vec![single_segment_parameter(
             name,
-            parse_type_to_schema_ref(segment_type(inner_ty), known_schemas, struct_definitions),
+            inner_ty,
+            known_schemas,
+            struct_definitions,
         )];
     }
     path_params
         .iter()
         .map(|name| path_parameter(name, string_path_schema()))
         .collect()
-}
-
-/// The type a syntactic newtype struct (`struct Ids(TwoIds);`) is read as:
-/// its field's type, or the field's `#[schema(value_type = T)]`. `None` for
-/// any other struct, a skipped field, and a field whose wire shape is not
-/// known (`#[schema(any)]`, a custom `deserialize_with`).
-fn newtype_source(struct_item: &syn::ItemStruct) -> Option<Type> {
-    let syn::Fields::Unnamed(fields) = &struct_item.fields else {
-        return None;
-    };
-    let [field] = fields.unnamed.iter().collect::<Vec<_>>()[..] else {
-        return None;
-    };
-    let flags = extract_serde_skip_flags(&field.attrs);
-    let constraints = extract_schema_constraints(&field.attrs);
-    if flags.skip
-        || flags.skip_deserializing
-        || constraints.is_any()
-        || extract_field_codec(&field.attrs).custom_for(SerdeSide::Deserialize)
-    {
-        return None;
-    }
-    Some(
-        constraints
-            .value_type
-            .map_or_else(|| field.ty.clone(), |value_type| value_type.0),
-    )
 }
 
 /// The type a path segment is read as. serde hands a path segment to an
@@ -328,6 +303,12 @@ fn is_string_schema(schema: &SchemaRef) -> bool {
     matches!(schema, SchemaRef::Inline(schema) if schema.schema_type == Some(vespera_core::schema::SchemaType::String))
 }
 
+/// `{}`: the unconstrained schema an unknown type falls back to (any value).
+/// A path segment is never any value, so callers keep the string placeholder.
+fn is_any_value_schema(schema: &SchemaRef) -> bool {
+    matches!(schema, SchemaRef::Inline(inline) if serde_json::to_string(inline).is_ok_and(|json| json == "{}"))
+}
+
 /// The per-segment type of a `Path<Map<K, V>>` (`V`), `Path<Seq<(K, V)>>`
 /// (`V`) or `Path<Seq<T>>` (`T`).
 fn path_collection_element(ty: &Type) -> Option<&Type> {
@@ -380,6 +361,25 @@ pub(super) fn parse_path_extractor(
     (!parameters.is_empty()).then_some(parameters)
 }
 
+/// The parameter of a `Path<T>` with one path segment. An unknown `T` (e.g. a
+/// type of another crate) has no known shape: the string placeholder is kept,
+/// as the bare-argument form does.
+fn single_segment_parameter(
+    name: &str,
+    inner_ty: &Type,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
+) -> Parameter {
+    let schema =
+        parse_type_to_schema_ref(segment_type(inner_ty), known_schemas, struct_definitions);
+    let schema = if is_any_value_schema(&schema) {
+        string_path_schema()
+    } else {
+        schema
+    };
+    path_parameter(name, schema)
+}
+
 pub(super) fn parse_bare_path_parameter(
     param_name: &str,
     ty: &Type,
@@ -394,8 +394,7 @@ pub(super) fn parse_bare_path_parameter(
     // A type with no known shape (a custom extractor such as `org: OrgCtx`)
     // says nothing about the segment: keep its `{type: string}` placeholder
     // rather than widening it to any value (`{}`).
-    if matches!(&schema, SchemaRef::Inline(inline) if serde_json::to_string(inline).is_ok_and(|json| json == "{}"))
-    {
+    if is_any_value_schema(&schema) {
         return None;
     }
     Some(vec![path_parameter(param_name, schema)])
@@ -469,6 +468,25 @@ mod tests {
                 ("id", Some(vespera_core::schema::SchemaType::Integer)),
                 ("rest", Some(vespera_core::schema::SchemaType::String)),
             ]
+        );
+    }
+
+    /// `Path<T>` with an unknown `T` (another crate's type) keeps the string
+    /// placeholder, like the bare-argument form does: `{}` accepts any value.
+    #[test]
+    fn single_segment_unknown_type_keeps_string_placeholder() {
+        let ty: syn::Type = syn::parse_quote!(Path<OrgId>);
+        let names = vec!["org".to_string()];
+        let params = parse_path_extractor(&ty, &names, &HashSet::new(), &HashMap::new())
+            .expect("Path<T> documents its segment");
+        let [param] = params.as_slice() else {
+            panic!("one segment, one parameter: {params:?}");
+        };
+        assert!(
+            matches!(&param.schema, Some(vespera_core::schema::SchemaRef::Inline(s))
+                if s.schema_type == Some(vespera_core::schema::SchemaType::String)),
+            "unknown segment type must be a string, got {:?}",
+            param.schema
         );
     }
 

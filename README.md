@@ -1062,7 +1062,7 @@ When `multipart` is enabled:
 | `rename_all` | Serde rename strategy: `rename_all = "camelCase"`; defaults to the source's `#[serde(rename_all)]`, else `"camelCase"` (a source without one serializes `snake_case` keys, its DTO `camelCase` ones) |
 | `ignore` | Skip Schema derive (bare keyword, no value) |
 | `multipart` | Derive `Multipart` instead of serde (bare keyword) |
-| `omit_default` | Auto-omit fields with DB defaults: `primary_key`, `default_value` (bare keyword) |
+| `omit_default` | Auto-omit fields with DB defaults: `primary_key`, `default_value`, `default_expr` (bare keyword) |
 
 ---
 

@@ -232,6 +232,33 @@ internal object NativePlatform {
     }
 
     /**
+     * The OS segment a Rust [triple] builds for (`<arch>-<vendor>-<os>[-<abi>]`),
+     * or `null` for an OS the plugin does not bundle.
+     */
+    private fun tripleOs(triple: String): String? = when {
+        "-linux" in triple -> "linux"
+        "-windows" in triple -> "windows"
+        "-apple-" in triple || "-darwin" in triple -> "macos"
+        else -> null
+    }
+
+    /**
+     * The same rule as [requireTripleArch] for the OS: `windows-x86_64 =
+     * x86_64-unknown-linux-gnu` would write `demo.dll` for a library Cargo
+     * builds as `libdemo.so`, and fail with a "not found" error that hides the
+     * real cause. The key's OS selects the file name, so the triple must build
+     * that OS.
+     */
+    private fun requireTripleOs(key: String, triple: String) {
+        val keyOs = osOfPlatformKey(key)
+        val builtOs = tripleOs(triple)
+        require(builtOs == keyOs) {
+            "vespera.targets['$key'] names the Rust target '$triple' (os '${builtOs ?: "unsupported"}'), " +
+                "but the key's os is '$keyOs'; the library file name would not match what Cargo builds."
+        }
+    }
+
+    /**
      * Map a Cargo profile name to its `target/` output subdirectory.
      * Cargo's built-in `dev` and `test` profiles emit to `debug`, `bench` to
      * `release` (they inherit those directories); every other profile
@@ -294,6 +321,7 @@ internal object NativePlatform {
             require(triple.isNotBlank()) { "vespera.targets['$key'] must name a Rust target triple." }
             val platform = bundlePlatform(key, triple)
             requireTripleArch(key, triple)
+            requireTripleOs(key, triple)
             NativeBuild(
                 platform,
                 triple,
