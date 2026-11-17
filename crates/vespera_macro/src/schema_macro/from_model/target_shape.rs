@@ -4,7 +4,9 @@
 
 use crate::schema_macro::generate_type::readable_from;
 use crate::schema_macro::input::SchemaTypeInput;
-use crate::schema_macro::seaorm::has_sea_orm_database_default;
+use crate::schema_macro::seaorm::{
+    has_sea_orm_database_default, has_sea_orm_primary_key, primary_key_count,
+};
 use crate::schema_macro::transformation::{build_omit_set, build_pick_set, should_skip_field};
 use crate::schema_macro::type_utils::{SeaOrmRelationKind, is_seaorm_model, seaorm_relation_kind};
 
@@ -94,6 +96,13 @@ fn compute_target_shape(
     // only when `pick`ed; every other kept field must be readable from the
     // module the DTO is emitted in (a private field of another module makes
     // `generate_type` leave both impls out).
+    // `omit_default` drops a primary key too (`generate_type`'s rule, through
+    // `has_sea_orm_primary_key` with the model's key count): the same predicate
+    // here, or a private dropped key made the shape `Neither` (R20-SM2-01).
+    let pk_count = match &model.fields {
+        syn::Fields::Named(named) => primary_key_count(named),
+        _ => 0,
+    };
     let mut has_relation = false;
     let mut all_readable = true;
     for field in &model.fields {
@@ -103,15 +112,18 @@ fn compute_target_shape(
             .map(|ident| crate::parser::strip_raw_prefix_owned(ident.to_string()))
             .unwrap_or_default();
         if should_skip_field(&name, &omit, &pick)
-            || (input.omit_default && has_sea_orm_database_default(&field.attrs))
+            || (input.omit_default
+                && (has_sea_orm_database_default(&field.attrs)
+                    || has_sea_orm_primary_key(&field.attrs, &field.ty, pk_count)))
         {
             continue;
         }
         match seaorm_relation_kind(&field.ty) {
-            Some(kind) if kind != SeaOrmRelationKind::HasMany || pick.contains(&name) => {
-                has_relation = true;
-            }
-            _ => {
+            // An un-picked HasMany is dropped by `generate_type` before its
+            // readability is looked at.
+            Some(SeaOrmRelationKind::HasMany) if !pick.contains(&name) => {}
+            Some(_) => has_relation = true,
+            None => {
                 all_readable &= readable_from(&field.vis, &source_module, Some(module));
             }
         }
@@ -180,7 +192,7 @@ mod tests {
 
     /// A crate whose `models::user` generates `Schema` from `source`, with a
     /// `legacy::Model` written as `legacy`.
-    fn write_crate(dir: &std::path::Path, legacy: &str, source: &str) {
+    fn write_crate(dir: &std::path::Path, legacy: &str, source: &str, args: &str) {
         let files = [
             (
                 "src/lib.rs",
@@ -190,7 +202,7 @@ mod tests {
             ("src/models.rs", "pub mod user;\n".to_string()),
             (
                 "src/models/user.rs",
-                format!("vespera::schema_type!(Schema from {source});\n{USER_MODEL}\n"),
+                format!("vespera::schema_type!(Schema from {source}{args});\n{USER_MODEL}\n"),
             ),
         ];
         for (path, content) in files {
@@ -221,13 +233,37 @@ mod tests {
         "Model",
         TargetShape::FromModel
     )]
+    // R20-SM2-01 (round 20): fields `generate_type` drops are not counted.
+    // An un-picked HasMany (private, so unreadable here) is dropped ...
+    #[case::unpicked_private_has_many(
+        "pub struct Model { pub id: i32, memos: HasMany<super::memo::Entity> }",
+        "crate::legacy::Model",
+        TargetShape::From
+    )]
+    // A tuple struct has no named fields to count keys of (`pk_count` is 0).
+    #[case::tuple_struct_source(
+        "pub struct Model(pub i32);",
+        "crate::legacy::Model",
+        TargetShape::From
+    )]
+    // ... and so is an `omit_default` primary key (private, so unreadable).
+    #[case::omit_default_private_primary_key(
+        "pub struct Model { #[sea_orm(primary_key)] id: i32, pub name: String }",
+        "crate::legacy::Model",
+        TargetShape::From
+    )]
     fn shape_follows_the_schema_type_source(
         #[case] legacy: &str,
         #[case] source: &str,
         #[case] expected: TargetShape,
     ) {
+        let args = if legacy.contains("primary_key") {
+            ", omit_default"
+        } else {
+            ""
+        };
         let dir = tempfile::TempDir::new().unwrap();
-        write_crate(dir.path(), legacy, source);
+        write_crate(dir.path(), legacy, source, args);
         let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
         let module: Vec<String> = ["crate", "models", "user"].map(String::from).to_vec();
         assert_eq!(

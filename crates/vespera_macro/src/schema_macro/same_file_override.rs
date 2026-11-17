@@ -36,15 +36,51 @@ pub(super) fn find_same_file_struct_metadata<'a>(
     struct_name: &str,
     schema_storage: &'a HashMap<String, StructMetadata>,
 ) -> Option<Cow<'a, StructMetadata>> {
-    if let Some(definition) = same_file_definition(struct_name) {
-        return Some(Cow::Owned(StructMetadata::new(
-            struct_name.to_string(),
-            definition,
-        )));
+    choose_same_file(
+        struct_name,
+        same_file_definition(struct_name),
+        super::storage_entry(schema_storage, struct_name),
+    )
+}
+
+/// The file item wins over the stored entry only when it is a `Schema`
+/// (the listed route-local DTO derives it). A plain struct of that name in
+/// the file (not a DTO, e.g. a same-named helper) must not replace the
+/// `Schema` the imports name in another module: the stored entry is used
+/// then, and the file item only when nothing is stored (R20-SM3-01, round 20).
+fn choose_same_file<'a>(
+    struct_name: &str,
+    file_definition: Option<String>,
+    stored: Option<&'a StructMetadata>,
+) -> Option<Cow<'a, StructMetadata>> {
+    match file_definition {
+        Some(definition) if stored.is_none() || derives_schema(&definition) => Some(Cow::Owned(
+            StructMetadata::new(struct_name.to_string(), definition),
+        )),
+        // Cache hit: hand back a borrow so the (potentially large) struct
+        // definition string is not cloned per lookup.
+        _ => stored.map(Cow::Borrowed),
     }
-    // Cache hit: hand back a borrow so the (potentially large) struct
-    // definition string is not cloned per lookup.
-    super::storage_entry(schema_storage, struct_name).map(Cow::Borrowed)
+}
+
+/// Whether the struct `definition` has `Schema` in one of its `derive`s.
+fn derives_schema(definition: &str) -> bool {
+    let Ok(item) = file_cache::parse_struct_cached(definition) else {
+        return false;
+    };
+    item.attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("derive"))
+        .any(|attr| {
+            attr.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+            )
+            .is_ok_and(|paths| {
+                paths
+                    .iter()
+                    .any(|path| path.segments.last().is_some_and(|s| s.ident == "Schema"))
+            })
+        })
 }
 
 /// The definition of `struct_name` in the macro call-site file.
@@ -485,10 +521,12 @@ mod tests {
         assert!(metadata.definition.contains("value"));
     }
 
-    /// A same-named struct in the crate-wide storage (another module's
-    /// `Schema`) must not replace the adapter the call-site file defines.
+    /// R20-SM3-01 (round 20): a plain (not `Schema`-derived) struct of the
+    /// adapter's name in the call-site file does not replace the `Schema`
+    /// the storage holds (the one the imports name); the file's own
+    /// `__VesperaAdapterFixture` (`id`, `name`) is ignored here.
     #[test]
-    fn explicit_adapter_prefers_the_call_site_file_over_storage() {
+    fn explicit_adapter_keeps_the_stored_schema_over_an_underived_file_struct() {
         let storage = to_storage(vec![create_test_struct_metadata(
             "__VesperaAdapterFixture",
             "struct __VesperaAdapterFixture { value: i32 }",
@@ -500,7 +538,46 @@ mod tests {
             .iter()
             .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
             .collect();
-        assert_eq!(fields, ["id", "name"]);
+        assert_eq!(fields, ["value"]);
+    }
+
+    /// The file's `Schema`-derived DTO beats a same-named stored entry, and
+    /// a same-named file struct without `Schema` only fills an empty storage.
+    #[rstest::rstest]
+    #[case::derived_file_item_wins(
+        Some("#[derive(Serialize, vespera::Schema)] struct Dto { id: i32 }"),
+        "struct Dto { value: i32 }",
+        "id"
+    )]
+    #[case::underived_file_item_yields(
+        Some("#[derive(Serialize)] struct Dto { id: i32 }"),
+        "struct Dto { value: i32 }",
+        "value"
+    )]
+    #[case::unparseable_file_item_yields(
+        Some("struct Dto {"),
+        "struct Dto { value: i32 }",
+        "value"
+    )]
+    fn file_definition_beats_storage_only_when_it_is_a_schema(
+        #[case] file: Option<&str>,
+        #[case] stored: &str,
+        #[case] expected_field: &str,
+    ) {
+        let stored = create_test_struct_metadata("Dto", stored);
+        let chosen = choose_same_file("Dto", file.map(str::to_string), Some(&stored)).unwrap();
+        assert!(
+            chosen.definition.contains(expected_field),
+            "{}",
+            chosen.definition
+        );
+    }
+
+    #[test]
+    fn underived_file_item_fills_an_empty_storage() {
+        let chosen =
+            choose_same_file("Dto", Some("struct Dto { id: i32 }".to_string()), None).unwrap();
+        assert!(chosen.definition.contains("id"));
     }
 
     /// A name the call-site file does not define falls back to the storage.

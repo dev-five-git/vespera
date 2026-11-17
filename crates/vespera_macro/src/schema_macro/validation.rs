@@ -161,9 +161,16 @@ pub fn validate_omit_fields(
 /// `"a b"`, `""`, a leading digit) AND reserved keywords (`"type"`,
 /// `"match"`) — both of which would otherwise either panic
 /// `Ident::new` or emit a struct field that fails to compile. Raw
-/// identifiers (`"r#type"`) are accepted.
+/// identifiers (`"r#type"`) are accepted, but not the path keywords with a
+/// raw prefix (`"r#self"`, `"r#super"`, `"r#crate"`, `"r#Self"`, `"r#_"`):
+/// syn accepts those, and the emitted field would lose its `r#` (R20-S4-L2,
+/// round 20).
 fn is_valid_field_ident(name: &str) -> bool {
     syn::parse_str::<syn::Ident>(name).is_ok()
+        && !matches!(
+            name.strip_prefix("r#").unwrap_or(name),
+            "self" | "Self" | "super" | "crate" | "_"
+        )
 }
 
 /// Validates a `rename` pair list: every **source** field must exist in
@@ -529,6 +536,23 @@ mod tests {
 
         let result = validate_rename_fields(rename.as_ref(), &source_fields, &ty, "User");
         assert!(result.is_ok());
+    }
+
+    /// R20-S4-L2 (round 20): a raw path keyword (`r#self`) is not a field
+    /// name: syn accepts it, but the emitted field would be a plain `self`.
+    #[rstest::rstest]
+    #[case::raw_self("r#self")]
+    #[case::raw_super("r#super")]
+    #[case::raw_crate("r#crate")]
+    #[case::raw_capital_self("r#Self")]
+    #[case::raw_underscore("r#_")]
+    fn test_validate_rename_fields_raw_path_keyword_rejected(#[case] target: &str) {
+        let source_fields = create_field_names(&["id"]);
+        let rename = Some(vec![("id".to_string(), target.to_string())]);
+        let ty: syn::Type = syn::parse2(quote!(User)).unwrap();
+
+        let result = validate_rename_fields(rename.as_ref(), &source_fields, &ty, "User");
+        assert!(result.is_err(), "`{target}` must not be a field name");
     }
 
     /// L15: a field renamed twice used to take the last target silently.

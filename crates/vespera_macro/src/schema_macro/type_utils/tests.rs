@@ -10,12 +10,19 @@ fn ecosystem_default_names_follow_the_call_site_scope() {
     std::fs::create_dir_all(dir.path().join("src")).unwrap();
     std::fs::write(
         dir.path().join("src/lib.rs"),
-        "pub struct Decimal(pub i64);\nmod sea;\n",
+        "pub struct Decimal(pub i64);\nmod sea;\nmod own;\n",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("src/sea.rs"),
         "use sea_orm::prelude::Date;\npub struct Holder { pub d: Date }\n",
+    )
+    .unwrap();
+    // `Date` imported from a crate that is not an ecosystem one (R20-S4-L4,
+    // round 20): the call site's own `Date`, so no ecosystem default.
+    std::fs::write(
+        dir.path().join("src/own.rs"),
+        "use my_crate::Date;\npub struct Holder { pub d: Date }\n",
     )
     .unwrap();
     let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
@@ -31,11 +38,15 @@ fn ecosystem_default_names_follow_the_call_site_scope() {
             Some(serde_json::json!("1970-01-01"))
         );
     }
-    let _site = crate::schema_macro::file_lookup::set_test_call_site_module("crate::sea");
-    assert_eq!(
-        get_type_default(&date),
-        Some(serde_json::json!("1970-01-01"))
-    );
+    {
+        let _site = crate::schema_macro::file_lookup::set_test_call_site_module("crate::sea");
+        assert_eq!(
+            get_type_default(&date),
+            Some(serde_json::json!("1970-01-01"))
+        );
+    }
+    let _site = crate::schema_macro::file_lookup::set_test_call_site_module("crate::own");
+    assert_eq!(get_type_default(&date), None);
 }
 
 fn empty_type_path() -> syn::Type {
@@ -669,6 +680,16 @@ fn chrono_names_resolve_bare_only(#[case] src: &str, #[case] expected: &str) {
 #[case::const_generic("[u8; HASH_LEN]", &["HASH_LEN"], "[u8 ; HASH_LEN]")]
 #[case::unknown("[u8; OTHER]", &[], "[u8 ; OTHER]")]
 #[case::leading_colon("[u8; ::lib::LEN]", &[], "[u8 ; :: lib :: LEN]")]
+// R20-S4-M1 (round 20): a leading `super` run resolves as one prefix
+// (`super::super` from `crate::models::file` is `crate`).
+#[case::double_super_type("super::super::consts::Thing", &[], "crate :: consts :: Thing")]
+// R20-S4-L3 (round 20): a const generic argument written as a block is
+// re-rooted like an array length.
+#[case::const_generic_block(
+    "Digest<{ HASH_LEN }>",
+    &[],
+    "crate :: models :: file :: Digest < { crate :: models :: file :: HASH_LEN } >"
+)]
 fn array_length_constant_is_rerooted(
     #[case] ty: &str,
     #[case] generic_params: &[&str],

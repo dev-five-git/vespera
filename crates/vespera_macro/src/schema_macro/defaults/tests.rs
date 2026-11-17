@@ -135,10 +135,11 @@ fn test_sea_orm_default_attrs_primary_key_generates_defaults() {
         serde_str.contains("serde"),
         "primary_key should generate serde default: {serde_str}"
     );
-    let schema_str = schema.to_string();
-    assert!(
-        schema_str.contains('0'),
-        "primary_key i32 should have schema default 0: {schema_str}"
+    // Exact: `contains('0')` also passed for "10" or "0.0" (R20-L2, round 20).
+    assert_eq!(
+        schema.to_string(),
+        "# [schema (default = \"0\")]",
+        "primary_key i32 should have schema default 0"
     );
     assert_eq!(fns.len(), 1, "should generate a default function");
 }
@@ -245,14 +246,11 @@ fn test_sea_orm_default_attrs_non_parseable_type() {
         1,
         &mut fns,
     );
-    // serde attr empty (non-parseable type)
+    // No serde default for a non-primitive type, so no schema default either:
+    // the OpenAPI document must not promise a value serde never fills (R20-L1,
+    // round 20; before the fix the schema attribute was emitted here).
     assert!(serde.is_empty());
-    // schema attr still generated
-    let schema_str = schema.to_string();
-    assert!(
-        schema_str.contains("schema"),
-        "should have schema attr: {schema_str}"
-    );
+    assert!(schema.is_empty(), "no advertised default: {schema}");
     assert!(fns.is_empty());
 }
 
@@ -955,4 +953,29 @@ fn pointer_sized_defaults_are_checked_at_the_target_width(
         }
         None => assert!(guard.is_empty(), "{guard}"),
     }
+}
+
+/// R20-SM3-02 (round 20): a text default with an unspaced parenthesis is a
+/// literal, so the schema default and the serde default carry the text (it
+/// used to be classified as a SQL call: the schema default became `""`).
+#[test]
+fn unspaced_parenthesised_text_default_is_a_literal() {
+    let attrs: Vec<syn::Attribute> =
+        vec![syn::parse_quote!(#[sea_orm(default_value = "Draft(WIP)")])];
+    let struct_name = syn::Ident::new("Test", proc_macro2::Span::call_site());
+    let ty: syn::Type = syn::parse_str("String").unwrap();
+    let mut fns = Vec::new();
+    let (serde, schema) = generate_sea_orm_default_attrs(
+        &attrs,
+        &struct_name,
+        "status",
+        &ty,
+        &ty,
+        false,
+        1,
+        &mut fns,
+    );
+    assert_eq!(schema.to_string(), "# [schema (default = \"Draft(WIP)\")]");
+    assert!(serde.to_string().contains("default_Test_status"), "{serde}");
+    assert_eq!(fns.len(), 1);
 }

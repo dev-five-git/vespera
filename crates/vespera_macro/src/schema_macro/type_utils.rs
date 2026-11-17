@@ -337,6 +337,9 @@ impl TypeResolver<'_> {
             PathArguments::AngleBracketed(angle) => {
                 let items = angle.args.iter().map(|arg| match arg {
                     GenericArgument::Type(inner) => self.ty(inner),
+                    // A const argument (`Digest<{ HASH_LEN }>`) is re-rooted
+                    // like an array length (R20-S4-L3, round 20).
+                    GenericArgument::Const(expr) => self.array_len(expr),
                     other => quote! { #other },
                 });
                 let colon = &angle.colon2_token;
@@ -366,28 +369,40 @@ impl TypeResolver<'_> {
             .collect();
         if path.leading_colon.is_some() {
             segments[0].0.insert_str(0, "::");
-        } else if let Resolved::Path(prefix) =
-            resolve_name(std::slice::from_ref(&segments[0].0), self.module)
-        {
-            let first_args = segments.remove(0).1;
-            let mut rooted: Vec<(String, TokenStream)> = prefix
-                .into_iter()
-                .map(|s| (s, TokenStream::new()))
+        } else {
+            // The whole leading `self` / `super` run is resolved at once:
+            // `super::super::x` resolved one `super` at a time left the second
+            // one in the emitted path (R20-S4-M1, round 20).
+            let run = leading_run_len(&segments);
+            let names: Vec<String> = segments[..run]
+                .iter()
+                .map(|(name, _)| name.clone())
                 .collect();
-            // A `use ::a::b;` import resolves to `["", "a", "b"]`: its empty
-            // root becomes the `::` prefix of the next segment (an empty
-            // segment has no identifier).
-            if rooted.first().is_some_and(|(name, _)| name.is_empty()) {
-                rooted.remove(0);
-                if let Some(next) = rooted.first_mut() {
-                    next.0.insert_str(0, "::");
+            if let Resolved::Path(prefix) = resolve_name(&names, self.module) {
+                let first_args = segments
+                    .drain(..run)
+                    .next_back()
+                    .map(|(_, args)| args)
+                    .unwrap_or_default();
+                let mut rooted: Vec<(String, TokenStream)> = prefix
+                    .into_iter()
+                    .map(|s| (s, TokenStream::new()))
+                    .collect();
+                // A `use ::a::b;` import resolves to `["", "a", "b"]`: its empty
+                // root becomes the `::` prefix of the next segment (an empty
+                // segment has no identifier).
+                if rooted.first().is_some_and(|(name, _)| name.is_empty()) {
+                    rooted.remove(0);
+                    if let Some(next) = rooted.first_mut() {
+                        next.0.insert_str(0, "::");
+                    }
                 }
+                if let Some(last) = rooted.last_mut() {
+                    last.1 = first_args;
+                }
+                rooted.extend(segments);
+                segments = rooted;
             }
-            if let Some(last) = rooted.last_mut() {
-                last.1 = first_args;
-            }
-            rooted.extend(segments);
-            segments = rooted;
         }
         Some(render_segments(&segments))
     }
@@ -429,6 +444,16 @@ impl TypeResolver<'_> {
             }
             let path = path_tokens(&path);
             return quote! { #path #args };
+        }
+        // A name the source module neither defines nor imports, nor a std
+        // prelude name, comes from one of its external glob imports (it
+        // compiled there): emitted through that glob, not as a bare alias
+        // (`use toml::*;` `Value` was `serde_json::Value`) (R20-S4-L1, round 20).
+        if let Some(glob) = self.scope.and_then(external_glob)
+            && !is_prelude_name(&name)
+        {
+            let base = path_tokens(glob);
+            return quote! { #base :: #ident #args };
         }
         let sea_orm_scope = self.scope.is_some_and(ModuleScope::has_sea_orm_glob);
         if let Some(converted) = self.alias(&name, &segment.arguments, sea_orm_scope) {
@@ -561,6 +586,32 @@ impl syn::visit_mut::VisitMut for LenPaths<'_, '_> {
         }
         syn::visit_mut::visit_expr_mut(self, expr);
     }
+}
+
+/// How many leading segments of a type path resolve together: its leading
+/// `self` / `super` run, or the first segment alone (at least one).
+fn leading_run_len(segments: &[(String, TokenStream)]) -> usize {
+    segments
+        .iter()
+        .take_while(|(name, _)| name == "self" || name == "super")
+        .count()
+        .max(1)
+}
+
+/// The first external glob import of `scope`: not `crate` / `self` / `super`
+/// (resolved by name) and not a crate [`ALIAS_CRATES`] names (its aliases).
+fn external_glob(scope: &ModuleScope) -> Option<&Vec<String>> {
+    scope.globs.iter().find(|glob| {
+        first_named(glob).is_some_and(|root| {
+            !matches!(root, "crate" | "self" | "super") && !ALIAS_CRATES.contains(&root)
+        })
+    })
+}
+
+/// Names a glob import never supplies: the primitives and the std prelude.
+fn is_prelude_name(name: &str) -> bool {
+    PRIMITIVE_TYPE_NAMES.contains(&name)
+        || matches!(name, "Vec" | "Option" | "Result" | "Box" | "Self")
 }
 
 fn first_named(path: &[String]) -> Option<&str> {
@@ -760,3 +811,5 @@ pub fn get_type_default(ty: &Type) -> Option<serde_json::Value> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_glob;
