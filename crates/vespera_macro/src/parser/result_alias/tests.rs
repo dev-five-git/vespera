@@ -421,6 +421,24 @@ fn same_named_struct_stops_crate_wide_lookup(#[case] handler: &str, #[case] expa
     );
 }
 
+/// The local modules the globs of `items` name: `crate::m::*` → `m`, `super::*`
+/// → the parent, `crate::*` → the root; `self` and another crate name none, and
+/// a glob inside a group counts.
+#[rstest]
+#[case::crate_module("use crate::models::*;", vec![Qualifier::Module("models".to_string())])]
+#[case::super_parent("use super::*;", vec![Qualifier::Super])]
+#[case::crate_root("use crate::*;", vec![Qualifier::CrateRoot])]
+#[case::self_glob("use self::*;", vec![])]
+#[case::external_glob("use axum::response::*;", vec![])]
+#[case::grouped(
+    "use crate::{models::*, legacy::*};",
+    vec![Qualifier::Module("models".to_string()), Qualifier::Module("legacy".to_string())]
+)]
+fn glob_parents_name_local_modules(#[case] src: &str, #[case] expected: Vec<Qualifier>) {
+    let file: syn::File = syn::parse_str(src).unwrap();
+    assert_eq!(glob_parents(&file.items), expected);
+}
+
 /// `super::X` skips the handler module's own alias by file identity: a parent
 /// module declaring the identical text is still the parent's alias, so it is
 /// the one expanded (not dropped because its tokens equal the handler's).

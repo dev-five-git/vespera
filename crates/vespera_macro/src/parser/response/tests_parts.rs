@@ -144,6 +144,25 @@ fn error_bodies_sharing_a_status_are_merged(#[case] ty: &str, #[case] distinct: 
     assert!(schema.contains("AppError"), "{schema}");
 }
 
+/// An error body of another media type than the one already documented on
+/// its status is added beside it, not merged into it.
+#[test]
+fn error_bodies_of_different_media_types_are_kept_apart() {
+    let sig: syn::Signature = syn::parse_str(
+        "fn handler() -> Result<Result<Json<User>, (StatusCode, String)>, (StatusCode, Json<AppError>)>",
+    )
+    .unwrap();
+    let known: HashSet<&str> = HashSet::from(["User", "AppError"]);
+    let defs: HashMap<&str, &str> = HashMap::from([
+        ("User", "pub struct User { pub id: i32 }"),
+        ("AppError", "pub struct AppError { pub msg: String }"),
+    ]);
+    let responses = parse_return_type(&sig.output, &known, &defs);
+    let content = responses["400"].content.as_ref().expect("400 body");
+    let media: Vec<&str> = content.keys().map(String::as_str).collect();
+    assert_eq!(media, ["application/json", "text/plain"]);
+}
+
 #[test]
 fn no_return_type_is_an_empty_200() {
     let responses = parse_return_type(&ReturnType::Default, &HashSet::new(), &HashMap::new());

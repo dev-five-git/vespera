@@ -9,12 +9,12 @@ use vespera_core::{
 use super::shared::{
     convert_to_inline_schema, deserialized_instead, deserialized_source, input_rename_all,
     is_defined_struct, is_known_type, is_primitive_or_like, named_struct_fields, serde_field_name,
-    struct_definition,
+    struct_definition_keyed,
 };
 use crate::{
     parser::schema::{
-        SerdeSide, apply_field_rules, definition_key, extract_default, extract_doc_comment,
-        extract_field_codec, extract_flatten, extract_serde_skip_flags, parse_struct_to_schema,
+        SerdeSide, apply_field_rules, extract_default, extract_doc_comment, extract_field_codec,
+        extract_flatten, extract_serde_skip_flags, parse_struct_to_schema,
         parse_type_to_schema_ref, request_view::component_of_input,
         schema_attrs::extract_schema_constraints, wire_override::field_schema_ref,
     },
@@ -164,19 +164,12 @@ fn collect_query_struct_parameters(
     visiting: &mut Vec<String>,
     parameters: &mut Vec<Parameter>,
 ) {
-    let Some(struct_item) = struct_definition(ty, struct_definitions) else {
-        return;
-    };
     // A (boxed) struct that flattens itself would recurse forever. Keyed by
     // the resolved definition (`b::Foo` / `a::Foo`), not the bare ident: two
     // same-named structs of one flatten chain are different structs.
-    let struct_key = match ty {
-        Type::Path(type_path) => {
-            definition_key(&type_path.path, |key| struct_definitions.contains_key(key))
-        }
-        _ => None,
-    }
-    .unwrap_or_else(|| struct_item.ident.to_string());
+    let Some((struct_key, struct_item)) = struct_definition_keyed(ty, struct_definitions) else {
+        return;
+    };
     if visiting.contains(&struct_key) {
         return;
     }

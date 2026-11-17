@@ -186,14 +186,22 @@ mod tests {
     /// `<T as Tr>::Out`, `Source<Item = T>`, and `T::Out` (the concrete type's
     /// path leads it).
     #[rstest]
-    #[case::qualified_self("<T as Tr>::Out", "<Foo as Tr>::Out")]
-    #[case::assoc_binding("Source<Item = T>", "Source<Item = Foo>")]
-    #[case::leading_param("T::Out", "Foo::Out")]
-    #[case::unrelated_leading("Other::Out", "Other::Out")]
-    fn substitutes_projections_and_bindings(#[case] ty: &str, #[case] expected: &str) {
+    #[case::qualified_self("<T as Tr>::Out", "Foo", "<Foo as Tr>::Out")]
+    #[case::assoc_binding("Source<Item = T>", "Foo", "Source<Item = Foo>")]
+    #[case::leading_param("T::Out", "Foo", "Foo::Out")]
+    #[case::unrelated_leading("Other::Out", "Foo", "Other::Out")]
+    // A leading parameter that carries arguments is not a parameter; a
+    // concrete type that is not a path (a reference) cannot lead a path.
+    #[case::leading_with_arguments("Wrap<u8>::Out", "Foo", "Wrap<u8>::Out")]
+    #[case::leading_non_path_concrete("T::Out", "&Foo", "T::Out")]
+    fn substitutes_projections_and_bindings(
+        #[case] ty: &str,
+        #[case] concrete: &str,
+        #[case] expected: &str,
+    ) {
         let ty: Type = syn::parse_str(ty).unwrap();
-        let foo: Type = syn::parse_str("Foo").unwrap();
-        let substituted = substitute_type(&ty, &["T".to_string()], &[&foo]);
+        let concrete: Type = syn::parse_str(concrete).unwrap();
+        let substituted = substitute_type(&ty, &["T".to_string()], &[&concrete]);
         let expected: Type = syn::parse_str(expected).unwrap();
         assert_eq!(
             quote::ToTokens::to_token_stream(&substituted).to_string(),
