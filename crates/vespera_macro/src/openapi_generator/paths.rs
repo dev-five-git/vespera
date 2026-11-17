@@ -42,13 +42,17 @@ type AstJob<'a> = (
 );
 
 /// `sig` with its return-type alias expanded (borrowed when nothing changed).
+/// `file_path` is the route's own file (`file_ast`'s), empty when unknown.
 fn expanded_signature<'a>(
     sig: &'a syn::Signature,
+    file_path: &str,
     file_ast: Option<&syn::File>,
     src_dir: Option<&std::path::Path>,
 ) -> std::borrow::Cow<'a, syn::Signature> {
     let mut expanded = sig.clone();
-    if crate::parser::expand_return_type_alias(&mut expanded, file_ast, src_dir) {
+    let file_path =
+        Some(std::path::Path::new(file_path)).filter(|path| !path.as_os_str().is_empty());
+    if crate::parser::expand_return_type_alias(&mut expanded, file_path, file_ast, src_dir) {
         std::borrow::Cow::Owned(expanded)
     } else {
         std::borrow::Cow::Borrowed(sig)
@@ -207,7 +211,8 @@ pub(super) fn build_path_items(
     let src_dir = crate::schema_macro::file_cache::get_manifest_dir()
         .map(|dir| std::path::PathBuf::from(dir).join("src"));
     for (idx, route_meta, fn_sig, file_ast) in ast_jobs {
-        let fn_sig = expanded_signature(fn_sig, file_ast, src_dir.as_deref());
+        let fn_sig =
+            expanded_signature(fn_sig, &route_meta.file_path, file_ast, src_dir.as_deref());
         if let Some((method, operation)) = build_one(route_meta, &fn_sig)? {
             results.push((idx, method, operation));
         }

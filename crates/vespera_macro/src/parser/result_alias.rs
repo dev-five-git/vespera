@@ -44,6 +44,7 @@ use syn::{ReturnType, Type};
 
 use crate::{
     collector::test_scope::{TestScope, attrs_test_only},
+    file_utils::normalize_path_key,
     parser::schema::is_builtin_openapi_type,
     schema_macro::file_cache,
 };
@@ -80,6 +81,18 @@ pub fn needs_alias_expansion(sig: &syn::Signature) -> bool {
 struct Scope<'a> {
     file: Cow<'a, syn::File>,
     module: Vec<String>,
+    /// The [`source_key`] of the file `file` is, when it is known (the
+    /// handler's file, or a file under `src/`); `None` when the caller gave
+    /// no path.
+    path: Option<String>,
+}
+
+/// The identity of a source file: its path normalized against the current
+/// directory, so the handler's path and the walked `src/` paths compare equal
+/// however each was spelled.
+fn source_key(path: &Path) -> String {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    normalize_path_key(&path.to_string_lossy(), &cwd)
 }
 
 impl Scope<'_> {
@@ -135,6 +148,7 @@ fn fn_module(items: &[syn::Item], name: &syn::Ident) -> Option<Vec<String>> {
 /// Returns `true` when the return type changed.
 pub fn expand_return_type_alias(
     sig: &mut syn::Signature,
+    same_path: Option<&Path>,
     same_file: Option<&syn::File>,
     src_dir: Option<&Path>,
 ) -> bool {
@@ -146,6 +160,7 @@ pub fn expand_return_type_alias(
         NextScope::Ready(Scope {
             module: fn_module(&file.items, &handler).unwrap_or_default(),
             file: Cow::Borrowed(file),
+            path: same_path.map(source_key),
         })
     });
     let mut expanded = false;
@@ -287,6 +302,7 @@ impl<'a> NextScope<'a> {
             Self::File(path, module) => parse_items(&path).map(|file| Scope {
                 file: Cow::Owned(file),
                 module,
+                path: Some(source_key(&path)),
             }),
         }
     }
@@ -431,8 +447,12 @@ fn find_alias<'a>(
     if let Some(scope) = scope {
         let mut found = Vec::new();
         collect_aliases(&scope.file, None, false, name, &mut found);
-        definitions.extend(found.into_iter().map(|(alias, scope, innermost, root)| {
-            (alias, NextScope::Ready(scope), innermost, root)
+        definitions.extend(found.into_iter().map(|(alias, found, innermost, root)| {
+            let found = Scope {
+                path: scope.path.clone(),
+                ..found
+            };
+            (alias, NextScope::Ready(found), innermost, root)
         }));
     }
     if let Some(src_dir) = src_dir {
@@ -454,11 +474,13 @@ fn find_alias<'a>(
             scope.and_then(|scope| scope.items().iter().find_map(|item| alias_item(item, name)));
         let named: Vec<Definition<'a>> = definitions
             .iter()
-            .filter(|(alias, _, module, root)| match qualifier {
+            .filter(|(alias, found, module, root)| match qualifier {
                 Qualifier::Module(qualifier) => module.as_deref() == Some(qualifier.as_str()),
                 Qualifier::CrateRoot => *root,
                 // Never the handler module's own alias.
-                Qualifier::Super => own.as_ref().is_none_or(|own| !same_definition(own, alias)),
+                Qualifier::Super => {
+                    !scope.is_some_and(|scope| is_own_alias(scope, own.as_ref(), found, alias))
+                }
             })
             .cloned()
             .collect();
@@ -483,6 +505,25 @@ fn find_alias<'a>(
         .then_some((alias, alias_scope))
 }
 
+/// Whether the definition `found` (of `alias`) is the alias of `scope`'s own
+/// module: the same module of the same file. The file is compared by identity
+/// (see [`source_key`]); when the scope's file is unknown, by its tokens
+/// (`own`, the alias the scope's module declares).
+fn is_own_alias(
+    scope: &Scope<'_>,
+    own: Option<&syn::ItemType>,
+    found: &NextScope<'_>,
+    alias: &syn::ItemType,
+) -> bool {
+    match (&scope.path, found) {
+        (Some(_), NextScope::Ready(found)) => found.module == scope.module,
+        (Some(own_path), NextScope::File(path, module)) => {
+            *module == scope.module && source_key(path) == *own_path
+        }
+        (None, _) => own.is_some_and(|own| same_definition(own, alias)),
+    }
+}
+
 /// The `type <name>` alias of the inline parent of `scope`'s module, with
 /// the parent's scope.
 fn inline_parent_alias<'a>(
@@ -493,6 +534,7 @@ fn inline_parent_alias<'a>(
     let parent_scope = Scope {
         file: scope.file.clone(),
         module: parent.to_vec(),
+        path: scope.path.clone(),
     };
     let alias = parent_scope
         .items()
@@ -577,6 +619,8 @@ fn collect_aliases<'a>(
             Scope {
                 file: file.clone(),
                 module,
+                // The caller knows the file's path (see `find_alias`).
+                path: None,
             },
             innermost,
             root,
@@ -730,6 +774,7 @@ fn imported_nominal(
                 let parent = Scope {
                     file: scope.file.clone(),
                     module: parent.to_vec(),
+                    path: scope.path.clone(),
                 };
                 declares_nominal(parent.items(), name)
             }
