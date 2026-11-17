@@ -14,18 +14,18 @@ use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
 use super::{
     garde_rules::{apply_garde_rules, extract_garde_rules},
-    schema_attrs::{SchemaConstraints, extract_schema_constraints},
+    schema_attrs::{SchemaConstraints, SchemaValueType, extract_schema_constraints},
     serde_attrs::{
         SerdeSide, extract_aliases, extract_default, extract_deny_unknown_fields,
         extract_doc_comment, extract_field_codec, extract_field_rename_for, extract_flatten,
         extract_rename_all, extract_rename_all_for, extract_schema_ref_override,
         extract_serde_skip_flags, extract_tag, extract_transparent, rename_field,
-        strip_raw_prefix_owned,
+        skips_none_on_output, strip_raw_prefix_owned,
     },
     type_schema::parse_type_to_schema_ref,
     wire_override::{current_container_override, field_schema_ref},
 };
-use crate::schema_macro::type_utils::is_option_type;
+use crate::schema_macro::type_utils::{is_option_type, option_inner};
 
 mod flatten;
 
@@ -468,8 +468,18 @@ pub(super) fn collect_named_fields(
         // `#[schema(any)]` / `#[schema(value_type = T)]` / serde `with`
         // replace the Rust type's schema (see `wire_override`).
         let constraints = extract_schema_constraints(&field.attrs);
+        // Response view of an `Option` serde skips when `None`: only a
+        // `Some` is ever written, so its value is documented (no `null`).
+        let some_only = (!request && skips_none_on_output(&field.attrs))
+            .then(|| some_value(field, &constraints))
+            .flatten();
+        let (field, constraints) = some_only
+            .as_ref()
+            .map_or((field, &constraints), |(field, constraints)| {
+                (field, constraints)
+            });
         let mut schema_ref =
-            field_schema_ref(field, &constraints, side, known_schemas, struct_definitions);
+            field_schema_ref(field, constraints, side, known_schemas, struct_definitions);
 
         // Doc comment → description; Rust `#[deprecated]` → `deprecated`;
         // `skip_deserializing` (output only) → `readOnly` in the response
@@ -479,7 +489,7 @@ pub(super) fn collect_named_fields(
         let read_only = !request && skip_flags.skip_deserializing;
         schema_ref = annotate_field(schema_ref, field, read_only);
 
-        apply_field_rules(&mut schema_ref, field, &constraints);
+        apply_field_rules(&mut schema_ref, field, constraints);
 
         // Required in the response view unless a `skip_serializing_if`
         // predicate may leave the key out: serde always writes the rest, an
@@ -532,6 +542,30 @@ pub(super) fn collect_named_fields(
         out.properties.insert(field_name, schema_ref);
     }
     out
+}
+
+/// `field` documented as the `T` of its `Option<T>` (or of a
+/// `#[schema(value_type = Option<T>)]`), or `None` when it is no `Option`.
+fn some_value(
+    field: &syn::Field,
+    constraints: &SchemaConstraints,
+) -> Option<(syn::Field, SchemaConstraints)> {
+    match &constraints.value_type {
+        Some(value_type) => Some((
+            field.clone(),
+            SchemaConstraints {
+                value_type: Some(SchemaValueType(option_inner(&value_type.0)?.clone())),
+                ..constraints.clone()
+            },
+        )),
+        None => Some((
+            syn::Field {
+                ty: option_inner(&field.ty)?.clone(),
+                ..field.clone()
+            },
+            constraints.clone(),
+        )),
+    }
 }
 
 /// A field's doc comment → `description`, Rust `#[deprecated]` →
@@ -702,3 +736,6 @@ mod tests_serde_fidelity;
 
 #[cfg(test)]
 mod tests_transparent;
+
+#[cfg(test)]
+mod tests_option_output;

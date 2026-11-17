@@ -6925,10 +6925,7 @@
         "type": "object",
         "properties": {
           "email4": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "email5": {
             "type": "string",

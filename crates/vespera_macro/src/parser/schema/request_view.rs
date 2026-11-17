@@ -25,7 +25,8 @@
 //!   `skip_serializing_if` field without `default` (optional on output,
 //!   required on input), or an `Option` field without `skip_serializing_if`
 //!   (always written, as `null` when `None`, so required on output; optional
-//!   on input),
+//!   on input) or with `skip_serializing_if = "Option::is_none"` (never
+//!   `null` on output; nullable on input),
 //! - a tuple position is skipped / custom-converted on one side only, or a
 //!   tuple of two or more fields has a `#[serde(default)]` position (or
 //!   container `default`): trailing items may be omitted, or a
@@ -78,7 +79,7 @@ use super::{
         SerdeEnumRepr, SerdeSide, extract_aliases, extract_default, extract_deny_unknown_fields,
         extract_enum_repr, extract_field_codec, extract_field_rename_for, extract_flatten,
         extract_rename_all_fields_for, extract_rename_all_for, extract_serde_skip_flags,
-        extract_tag, extract_transparent, extract_untagged,
+        extract_tag, extract_transparent, extract_untagged, skips_none_on_output,
     },
     struct_schema::{flattened_member, peel},
     wire_override::{codec_hides_shape, container_override_type},
@@ -560,11 +561,13 @@ fn field_differs(field: &syn::Field) -> bool {
             // omitted from output but is a required key on input (serde has
             // no default to fill it in), and an `Option` is always written
             // (as `null`) but may be omitted on input. An `Option` with a
-            // predicate is optional on both sides; a flattened `Option` has
-            // no key of its own (see [`flatten_differs`]).
+            // predicate is optional on both sides — and with
+            // `Option::is_none` never `null` on output, while input accepts
+            // `null`. A flattened `Option` has no key of its own (see
+            // [`flatten_differs`]).
             || (skip.skip_serializing_if && !is_option_type(&field.ty))
             || (is_option_type(&field.ty)
-                && !skip.skip_serializing_if
+                && (!skip.skip_serializing_if || skips_none_on_output(&field.attrs))
                 && !extract_flatten(&field.attrs))
             || sided_differs(|side| extract_field_rename_for(&field.attrs, side)))
 }

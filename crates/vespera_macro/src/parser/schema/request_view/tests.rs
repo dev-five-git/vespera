@@ -46,7 +46,7 @@ fn scoped_names(
 // on input, unless a `skip_serializing_if` omits it on output too.
 #[case::option("struct A { x: i32, y: Option<u8> }", true)]
 #[case::option_skip_if(
-    r#"struct A { #[serde(skip_serializing_if = "Option::is_none")] y: Option<u8> }"#,
+    r#"struct A { #[serde(skip_serializing_if = "is_zero")] y: Option<u8> }"#,
     false
 )]
 #[case::flatten_option("struct A { #[serde(flatten)] p: Option<Page> }", true)]
@@ -157,9 +157,10 @@ fn scoped_names(
     r#"struct A { #[serde(skip_serializing_if = "Vec::is_empty")] v: Vec<u8> }"#,
     true
 )]
+// `Option::is_none` never writes `null`; the request view accepts it.
 #[case::skip_serializing_if_option(
     r#"struct A { #[serde(skip_serializing_if = "Option::is_none")] v: Option<u8> }"#,
-    false
+    true
 )]
 #[case::alias(r#"struct A { #[serde(alias = "b")] a: u8 }"#, true)]
 #[case::hash_set("struct A { tags: std::collections::HashSet<String> }", true)]

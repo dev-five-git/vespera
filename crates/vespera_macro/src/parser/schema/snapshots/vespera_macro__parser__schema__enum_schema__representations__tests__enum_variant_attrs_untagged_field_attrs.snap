@@ -149,9 +149,7 @@ Schema {
                                     one_of: None,
                                     not: None,
                                     discriminator: None,
-                                    nullable: Some(
-                                        true,
-                                    ),
+                                    nullable: None,
                                     read_only: None,
                                     write_only: None,
                                     deprecated: None,

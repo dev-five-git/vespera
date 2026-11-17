@@ -932,7 +932,7 @@ Fields with database defaults automatically get `default` values in the generate
 | `default_value = "gen_random_uuid()"` | `"00000000-0000-0000-0000-000000000000"` |
 | `default_value = "true"` | `true` (literal passthrough) |
 
-> **Note:** In responses every field serde writes is `required` — defaulted fields, and `Option<T>` too (written as `null`, its type is nullable); only `skip_serializing_if` fields are optional, and `skip_serializing` fields are absent. In request bodies (`{Name}Input`, or `{Name}` for a request-only type) `#[serde(default)]` and `Option<T>` fields are optional.
+> **Note:** In responses every field serde writes is `required` — defaulted fields, and `Option<T>` too (written as `null`, its type is nullable); only `skip_serializing_if` fields are optional — with `Option::is_none` (or serde_with's `#[skip_serializing_none]`) also not nullable, since `null` is never written — and `skip_serializing` fields are absent. In request bodies (`{Name}Input`, or `{Name}` for a request-only type) `#[serde(default)]` and `Option<T>` fields are optional.
 
 ### SeaORM Integration
 
