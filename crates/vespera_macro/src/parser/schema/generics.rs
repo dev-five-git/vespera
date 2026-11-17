@@ -268,17 +268,13 @@ impl Subst<'_> {
         &self,
         bounds: &Punctuated<syn::TypeParamBound, P>,
     ) -> Punctuated<syn::TypeParamBound, P> {
-        bounds
-            .iter()
-            .map(|bound| match bound {
-                syn::TypeParamBound::Trait(trait_bound) => {
-                    let mut new_bound = trait_bound.clone();
-                    new_bound.path = self.path(&trait_bound.path);
-                    syn::TypeParamBound::Trait(new_bound)
-                }
-                other => other.clone(),
-            })
-            .collect()
+        let mut new_bounds: Punctuated<syn::TypeParamBound, P> = bounds.iter().cloned().collect();
+        for bound in &mut new_bounds {
+            if let syn::TypeParamBound::Trait(trait_bound) = bound {
+                trait_bound.path = self.path(&trait_bound.path);
+            }
+        }
+        new_bounds
     }
 }
 
