@@ -169,7 +169,7 @@ fn relation_value(
         Some(TargetShape::From) => false,
         Some(TargetShape::Neither) => {
             let message = format!(
-                "schema_type!: relation field `{source_ident}` converts its row into `{schema_str}`, but the `schema_type!` generating it uses `add` or `multipart`, which emit neither `From` nor `from_model`; `omit` the field or give it a `relation_adapters` wrapper"
+                "schema_type!: relation field `{source_ident}` converts its row into `{schema_str}`, but the `schema_type!` generating it emits neither `From` nor `from_model` (it uses `add` or `multipart`, or a field its module cannot read); `omit` the field or give it a `relation_adapters` wrapper"
             );
             return quote! { ::core::compile_error!(#message) };
         }

@@ -2,9 +2,11 @@
 //! `schema_type!` invocation that generates it (its `omit` / `pick` / `add`
 //! decide between `From` and `from_model`, not the target `Model` alone).
 
+use crate::schema_macro::generate_type::readable_from;
 use crate::schema_macro::input::SchemaTypeInput;
+use crate::schema_macro::seaorm::has_sea_orm_database_default;
 use crate::schema_macro::transformation::{build_omit_set, build_pick_set, should_skip_field};
-use crate::schema_macro::type_utils::{SeaOrmRelationKind, seaorm_relation_kind};
+use crate::schema_macro::type_utils::{SeaOrmRelationKind, is_seaorm_model, seaorm_relation_kind};
 
 /// The conversion a generated target `Schema` offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,25 +84,169 @@ fn compute_target_shape(
     if input.add.is_some() || input.multipart {
         return Some(TargetShape::Neither);
     }
-    let model = crate::schema_macro::file_cache::parse_struct_cached(model_def).ok()?;
+    // The source the generated DTO reads, not the target module's `Model`
+    // alone: `generate_type` builds the DTO from that struct.
+    let (source_module, source_def) = source_of(&input.source_type, module, model_def)?;
+    let model = crate::schema_macro::file_cache::parse_struct_cached(&source_def).ok()?;
     let omit = build_omit_set(input.omit.as_ref());
     let pick = build_pick_set(input.pick.as_ref());
-    // The `generate_type` rule: relations survive `omit` / `pick`, HasMany
-    // only when `pick`ed.
-    let has_relation = model.fields.iter().any(|field| {
+    // The `generate_type` rules: relations survive `omit` / `pick`, HasMany
+    // only when `pick`ed; every other kept field must be readable from the
+    // module the DTO is emitted in (a private field of another module makes
+    // `generate_type` leave both impls out).
+    let mut has_relation = false;
+    let mut all_readable = true;
+    for field in &model.fields {
         let name = field
             .ident
             .as_ref()
             .map(|ident| crate::parser::strip_raw_prefix_owned(ident.to_string()))
             .unwrap_or_default();
-        seaorm_relation_kind(&field.ty).is_some_and(|kind| {
-            !should_skip_field(&name, &omit, &pick)
-                && (kind != SeaOrmRelationKind::HasMany || pick.contains(&name))
-        })
-    });
-    Some(if has_relation {
-        TargetShape::FromModel
-    } else {
-        TargetShape::From
+        if should_skip_field(&name, &omit, &pick)
+            || (input.omit_default && has_sea_orm_database_default(&field.attrs))
+        {
+            continue;
+        }
+        match seaorm_relation_kind(&field.ty) {
+            Some(kind) if kind != SeaOrmRelationKind::HasMany || pick.contains(&name) => {
+                has_relation = true;
+            }
+            _ => {
+                all_readable &= readable_from(&field.vis, &source_module, Some(module));
+            }
+        }
+    }
+    // `From` needs no relation field and every field readable; `from_model`
+    // needs relation fields, a SeaORM source and every field readable.
+    let is_model = is_seaorm_model(&model);
+    Some(match (has_relation, all_readable) {
+        (true, true) if is_model => TargetShape::FromModel,
+        (false, true) => TargetShape::From,
+        _ => TargetShape::Neither,
     })
+}
+
+/// The `Model` a `schema_type!` source names, with its module: the module's
+/// own `Model` (`model_def`, the struct the caller read), or a `crate::` path
+/// to another one. Other spellings are not resolved here (`None`: the caller
+/// falls back to the circular analysis).
+fn source_of(
+    source: &syn::Type,
+    module: &[String],
+    model_def: &str,
+) -> Option<(Vec<String>, String)> {
+    let syn::Type::Path(path) = source else {
+        return None;
+    };
+    if path.qself.is_some() {
+        return None;
+    }
+    let names: Vec<String> = path
+        .path
+        .segments
+        .iter()
+        .map(|segment| crate::parser::strip_raw_prefix_owned(segment.ident.to_string()))
+        .collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    if matches!(names.as_slice(), ["Model"] | ["self", "Model"]) {
+        return Some((module.to_vec(), model_def.to_string()));
+    }
+    let [crate_root, .., _] = names.as_slice() else {
+        return None;
+    };
+    if *crate_root != "crate" {
+        return None;
+    }
+    let owner = names[..names.len() - 1]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let definition =
+        crate::schema_macro::file_cache::get_struct_from_schema_path(&names.join("::"))?
+            .definition
+            .clone();
+    Some((owner, definition))
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    /// The target module's `Model`: a relation (`profile`), so its `Schema`
+    /// would get `from_model` when generated from it.
+    const USER_MODEL: &str = r#"#[sea_orm(table_name = "user")] pub struct Model { pub id: i32, pub profile: HasOne<super::profile::Entity> }"#;
+
+    /// A crate whose `models::user` generates `Schema` from `source`, with a
+    /// `legacy::Model` written as `legacy`.
+    fn write_crate(dir: &std::path::Path, legacy: &str, source: &str) {
+        let files = [
+            (
+                "src/lib.rs",
+                "pub mod legacy;\npub mod models;\n".to_string(),
+            ),
+            ("src/legacy.rs", legacy.to_string()),
+            ("src/models.rs", "pub mod user;\n".to_string()),
+            (
+                "src/models/user.rs",
+                format!("vespera::schema_type!(Schema from {source});\n{USER_MODEL}\n"),
+            ),
+        ];
+        for (path, content) in files {
+            let path = dir.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+    }
+
+    /// The shape follows the struct the `schema_type!` reads, not the
+    /// target module's `Model`: a source without relations gets `From`
+    /// (the `models::user::Model` relation used to predict `from_model`,
+    /// which does not exist: E0599), and a private field of another module
+    /// leaves both impls out.
+    #[rstest]
+    #[case::legacy_without_relations(
+        "pub struct Model { pub id: i32 }",
+        "crate::legacy::Model",
+        TargetShape::From
+    )]
+    #[case::private_field_of_another_module(
+        "pub struct Model { id: i32 }",
+        "crate::legacy::Model",
+        TargetShape::Neither
+    )]
+    #[case::own_model_with_relation(
+        "pub struct Model { pub id: i32 }",
+        "Model",
+        TargetShape::FromModel
+    )]
+    fn shape_follows_the_schema_type_source(
+        #[case] legacy: &str,
+        #[case] source: &str,
+        #[case] expected: TargetShape,
+    ) {
+        let dir = tempfile::TempDir::new().unwrap();
+        write_crate(dir.path(), legacy, source);
+        let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        let module: Vec<String> = ["crate", "models", "user"].map(String::from).to_vec();
+        assert_eq!(
+            compute_target_shape(&module, "Schema", USER_MODEL),
+            Some(expected)
+        );
+    }
+
+    /// Sources this module does not resolve (not a path, a qualified path, a
+    /// bare name other than `Model`, a path not rooted at `crate`) fall back
+    /// to the circular analysis: `source_of` gives no struct for them.
+    #[rstest]
+    #[case::not_a_path("[u8; 4]")]
+    #[case::qualified_path("<Model as Trait>::Assoc")]
+    #[case::bare_other_name("Other")]
+    #[case::super_relative("super::legacy::Model")]
+    fn unresolved_sources_fall_back(#[case] source: &str) {
+        let source: syn::Type = syn::parse_str(source).unwrap();
+        let module: Vec<String> = ["crate", "models", "user"].map(String::from).to_vec();
+        assert!(source_of(&source, &module, USER_MODEL).is_none());
+    }
 }

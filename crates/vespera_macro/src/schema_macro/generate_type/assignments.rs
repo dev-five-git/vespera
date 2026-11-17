@@ -68,7 +68,7 @@ pub(super) fn gate_items(cfg: &TokenStream, items: TokenStream) -> TokenStream {
 /// unit tests — taken as readable). A private field is readable from its
 /// module and that module's descendants, `pub(super)` / `pub(in path)` from
 /// the module they name.
-pub(super) fn readable_from(
+pub(in crate::schema_macro) fn readable_from(
     vis: &syn::Visibility,
     source_module: &[String],
     call_site: Option<&[String]>,

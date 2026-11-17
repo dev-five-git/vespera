@@ -478,7 +478,7 @@ fn generate_from_model_scenario_snapshot(
     "< crate :: models :: user :: Schema as From < _ >> :: from (r)"
 )]
 #[case::has_many_picked(
-    "pub struct Model {\n    pub id: i32,\n    pub memos: HasMany<super::memo::Entity>,\n}\nvespera::schema_type!(Schema from Model, pick = [\"id\", \"memos\"]);",
+    "#[sea_orm(table_name = \"user\")]\npub struct Model {\n    pub id: i32,\n    pub memos: HasMany<super::memo::Entity>,\n}\nvespera::schema_type!(Schema from Model, pick = [\"id\", \"memos\"]);",
     "crate :: models :: user :: Schema :: from_model ("
 )]
 #[case::other_schema_name_falls_back(
@@ -487,7 +487,7 @@ fn generate_from_model_scenario_snapshot(
 )]
 #[case::added_field(
     "pub struct Model {\n    pub id: i32,\n}\nschema_type!(Schema from Model, add = [(\"extra\": i32)]);",
-    "compile_error ! (\"schema_type!: relation field `author` converts its row into `crate::models::user::Schema`, but the `schema_type!` generating it uses `add` or `multipart`"
+    "compile_error ! (\"schema_type!: relation field `author` converts its row into `crate::models::user::Schema`, but the `schema_type!` generating it emits neither `From` nor `from_model` (it uses `add` or `multipart`"
 )]
 fn target_schema_call_follows_its_schema_type(#[case] user: &str, #[case] expected: &str) {
     let tokens = try_scenario(

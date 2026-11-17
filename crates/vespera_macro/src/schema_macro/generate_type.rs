@@ -956,6 +956,9 @@ pub fn generate_schema_type_code(
 }
 
 mod assignments;
+
+/// Shared with `from_model::target_shape`, which predicts the emitted shape.
+pub(in crate::schema_macro) use assignments::readable_from;
 mod checks;
 mod multipart_carry;
 mod resolve;
