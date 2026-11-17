@@ -1,48 +1,65 @@
-//! The declaring module of a `#[schema(name = "..")]`-renamed type.
+//! The declaring module of a `#[derive(Schema)]` type, from its source identity.
 //!
-//! Two renames may share a Rust ident (`mod a { #[schema(name = "A")]
-//! struct Foo }` + `mod b { #[schema(name = "B")] struct Foo }`); knowing
-//! that one is `b::Foo` lets a module-qualified use resolve to it (see
-//! `parser::schema::definition_key`).
+//! A type is registered under its full crate-relative module path so that a
+//! module-qualified reference resolves to the declaration it names, not to
+//! another type that merely shares the leaf module name (see
+//! `parser::schema::scoped_ident`).
 
-use std::path::Path;
+use std::path::{Component, Path};
 
-/// `module::Ident` of a renamed type from its derive source identity
-/// (`file::Ident@line:column`): the innermost inline `mod` of the file around
-/// that line, else the file's own module (`b.rs` / `b/mod.rs` → `b`).
-/// `None` for an unparseable identity or a type at the crate root
-/// (`lib.rs` / `main.rs`).
-pub(super) fn scoped_rust_ident(source_identity: &str, rust_ident: &str) -> Option<String> {
+/// The crate-relative module path and Rust ident of the type a derive source
+/// identity (`file::Ident@line:column`) names.
+///
+/// The module path is the file's own module chain under its crate root (the
+/// nearest ancestor directory holding `lib.rs` or `main.rs`), followed by the
+/// inline `mod`s around that line. Empty for a crate-root type. `None` for an
+/// unparseable identity or a file outside any crate root.
+pub(super) fn crate_path(source_identity: &str) -> Option<(Vec<String>, String)> {
     let (base, position) = source_identity.rsplit_once('@')?;
-    let (file, _) = base.rsplit_once("::")?;
+    let (file, ident) = base.rsplit_once("::")?;
     let line = position.split_once(':')?.0.parse().ok()?;
     let file = Path::new(file);
-    let module = crate::schema_macro::file_cache::get_file_content(file)
-        .and_then(|content| inline_module(&content, line))
-        .or_else(|| file_module(file))?;
-    Some(crate::parser::schema::scoped_key(
-        &module,
-        rust_ident.trim_start_matches("r#"),
-    ))
+    let mut modules = file_modules(file)?;
+    let inline = get_inline_modules(file, line).unwrap_or_default();
+    modules.extend(inline);
+    Some((modules, ident.trim_start_matches("r#").to_owned()))
 }
 
-/// The module a source file declares: its stem, the directory name for a
-/// `mod.rs`, nothing for the crate root.
-fn file_module(file: &Path) -> Option<String> {
-    let stem = file.file_stem()?.to_str()?;
-    match stem {
-        "lib" | "main" => None,
-        "mod" => file.parent()?.file_name()?.to_str().map(str::to_owned),
-        _ => Some(stem.to_owned()),
+/// The modules a source file declares under its crate root: its path below
+/// the root, with `mod.rs` naming its directory and `lib.rs` / `main.rs` at
+/// the root naming nothing.
+fn file_modules(file: &Path) -> Option<Vec<String>> {
+    let root = file.ancestors().skip(1).find(|dir| {
+        !dir.as_os_str().is_empty()
+            && (dir.join("lib.rs").is_file() || dir.join("main.rs").is_file())
+    })?;
+    let mut modules = Vec::new();
+    for component in file.strip_prefix(root).ok()?.components() {
+        let Component::Normal(name) = component else {
+            return None;
+        };
+        modules.push(name.to_str()?.to_owned());
     }
+    let file_name = modules.pop()?;
+    match Path::new(&file_name).file_stem()?.to_str()? {
+        "mod" => {}
+        "lib" | "main" if modules.is_empty() => {}
+        stem => modules.push(stem.to_owned()),
+    }
+    Some(modules)
 }
 
-/// Name of the innermost inline `mod` whose braces enclose `line`.
+fn get_inline_modules(file: &Path, line: usize) -> Option<Vec<String>> {
+    let content = crate::schema_macro::file_cache::get_file_content(file)?;
+    inline_modules(&content, line)
+}
+
+/// Names of the inline `mod`s whose braces enclose `line`, outermost first.
 ///
 /// Parsed with proc-macro2's fallback forced so spans carry real positions
-/// (compiler spans of re-parsed text all point at the call site); the name is
-/// extracted before normal mode is restored.
-fn inline_module(content: &str, line: usize) -> Option<String> {
+/// (compiler spans of re-parsed text all point at the call site); the names
+/// are extracted before normal mode is restored.
+fn inline_modules(content: &str, line: usize) -> Option<Vec<String>> {
     /// Restores proc-macro2's normal mode even if parsing panics.
     struct Unforce;
     impl Drop for Unforce {
@@ -53,27 +70,33 @@ fn inline_module(content: &str, line: usize) -> Option<String> {
     proc_macro2::fallback::force();
     let _unforce = Unforce;
     let file = syn::parse_file(content).ok()?;
-    innermost(&file.items, line)
+    Some(nested(&file.items, line))
 }
 
-fn innermost(items: &[syn::Item], line: usize) -> Option<String> {
-    items.iter().find_map(|item| match item {
-        syn::Item::Mod(syn::ItemMod {
-            ident,
-            content: Some((brace, inner)),
-            ..
-        }) if (brace.span.open().start().line..=brace.span.close().end().line).contains(&line) => {
-            Some(
-                innermost(inner, line)
-                    .unwrap_or_else(|| syn::ext::IdentExt::unraw(ident).to_string()),
-            )
-        }
-        _ => None,
-    })
+fn nested(items: &[syn::Item], line: usize) -> Vec<String> {
+    items
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Mod(syn::ItemMod {
+                ident,
+                content: Some((brace, inner)),
+                ..
+            }) if (brace.span.open().start().line..=brace.span.close().end().line)
+                .contains(&line) =>
+            {
+                let mut chain = vec![syn::ext::IdentExt::unraw(ident).to_string()];
+                chain.extend(nested(inner, line));
+                Some(chain)
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use rstest::rstest;
 
     use super::*;
@@ -81,50 +104,72 @@ mod tests {
     const SOURCE: &str = "struct Top;\nmod a {\n    struct Foo;\n    mod r#inner {\n        struct Foo;\n    }\n}\nstruct After;\n";
 
     #[rstest]
-    #[case::top_level(1, None)]
-    #[case::inline(3, Some("a"))]
-    #[case::nested_raw(5, Some("inner"))]
-    #[case::after_module(8, None)]
-    fn inline_module_by_line(#[case] line: usize, #[case] expected: Option<&str>) {
-        assert_eq!(inline_module(SOURCE, line).as_deref(), expected);
+    #[case::top_level(1, &[])]
+    #[case::inline(3, &["a"])]
+    #[case::nested_raw(5, &["a", "inner"])]
+    #[case::after_module(8, &[])]
+    fn inline_module_chain_by_line(#[case] line: usize, #[case] expected: &[&str]) {
+        assert_eq!(inline_modules(SOURCE, line).unwrap(), expected);
     }
 
     #[test]
     fn unparseable_source_has_no_inline_module() {
-        assert_eq!(inline_module("mod a {", 1), None);
+        assert_eq!(inline_modules("mod a {", 1), None);
     }
 
+    /// A crate `src/` holding `lib.rs`: each file's chain is its path below
+    /// `src/`, `mod.rs` naming its directory and `lib.rs` naming nothing.
     #[rstest]
-    #[case::plain("src/models/b.rs", Some("b"))]
-    #[case::mod_rs("src/models/b/mod.rs", Some("b"))]
-    #[case::lib("src/lib.rs", None)]
-    #[case::main("src/main.rs", None)]
-    fn file_module_names(#[case] path: &str, #[case] expected: Option<&str>) {
-        assert_eq!(file_module(Path::new(path)).as_deref(), expected);
+    #[case::plain("models/b.rs", &["models", "b"])]
+    #[case::mod_rs("models/b/mod.rs", &["models", "b"])]
+    #[case::lib("lib.rs", &[])]
+    #[case::main("main.rs", &[])]
+    fn file_module_chains(#[case] path: &str, #[case] expected: &[&str]) {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("models/b")).unwrap();
+        fs::write(src.join("lib.rs"), "").unwrap();
+        let file = src.join(path);
+        fs::write(&file, "").unwrap();
+        assert_eq!(file_modules(&file).unwrap(), expected);
     }
 
-    /// The identity's line picks the inline module; a type outside any
-    /// inline `mod` takes the file's module; the crate root and malformed
-    /// identities give nothing.
     #[test]
-    fn scoped_ident_from_source_identity() {
+    fn file_outside_a_crate_root_has_no_module() {
         let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("loose.rs");
+        assert_eq!(file_modules(&file), None);
+    }
+
+    /// The identity's line adds the inline modules around it; the file adds
+    /// its own chain under the crate root; the crate root and malformed
+    /// identities give no path.
+    #[test]
+    fn crate_path_from_source_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("lib.rs"), "").unwrap();
         let models = dir.path().join("models.rs");
-        std::fs::write(&models, "mod b {\n    struct Foo;\n}\nstruct Foo;\n").unwrap();
+        fs::write(&models, "mod b {\n    struct Foo;\n}\nstruct Foo;\n").unwrap();
         let lib = dir.path().join("lib.rs");
-        std::fs::write(&lib, "struct Foo;\n").unwrap();
         let identity = |file: &Path, line: usize| format!("{}::Foo@{line}:11", file.display());
         assert_eq!(
-            scoped_rust_ident(&identity(&models, 2), "r#Foo").as_deref(),
-            Some("b::Foo")
+            crate_path(&identity(&models, 2)),
+            Some((vec!["models".to_owned(), "b".to_owned()], "Foo".to_owned()))
         );
         assert_eq!(
-            scoped_rust_ident(&identity(&models, 4), "Foo").as_deref(),
-            Some("models::Foo")
+            crate_path(&identity(&models, 4)),
+            Some((vec!["models".to_owned()], "Foo".to_owned()))
         );
-        assert_eq!(scoped_rust_ident(&identity(&lib, 1), "Foo"), None);
+        assert_eq!(
+            crate_path(&format!("{}::r#Foo@4:11", models.display())),
+            Some((vec!["models".to_owned()], "Foo".to_owned()))
+        );
+        assert_eq!(
+            crate_path(&identity(&lib, 1)),
+            Some((Vec::new(), "Foo".to_owned()))
+        );
         for malformed in ["no-position", "Foo@1:2", "f.rs::Foo@x", "f.rs::Foo@x:1"] {
-            assert_eq!(scoped_rust_ident(malformed, "Foo"), None, "{malformed}");
+            assert_eq!(crate_path(malformed), None, "{malformed}");
         }
     }
 }

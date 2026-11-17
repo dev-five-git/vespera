@@ -65,12 +65,11 @@ use std::{
 };
 
 use quote::ToTokens;
-use syn::ext::IdentExt;
 
 use super::{
     enum_schema::derives_serde_repr,
     schema_attrs::extract_schema_constraints,
-    scoped_ident::scoped_key,
+    scoped_ident::lookup_key,
     serde_attrs::{
         SerdeEnumRepr, SerdeSide, extract_aliases, extract_default, extract_deny_unknown_fields,
         extract_enum_repr, extract_field_codec, extract_field_rename_for, extract_flatten,
@@ -175,7 +174,7 @@ pub struct ViewSource<'a> {
     pub rust_ident: Option<&'a str>,
     /// `module::Ident` key of a renamed type whose declaring module is known
     /// (see `parser::schema::definition_key`).
-    pub scoped_key: Option<&'a str>,
+    pub scoped_keys: Vec<&'a str>,
     /// The parsed definition.
     pub item: &'a syn::Item,
 }
@@ -188,7 +187,11 @@ pub fn compute_input_names(sources: &[ViewSource<'_>], taken: &BTreeSet<String>)
     let mut component_of: BTreeMap<&str, &str> = BTreeMap::new();
     for source in sources {
         component_of.insert(source.name, source.name);
-        for ident in [source.rust_ident, source.scoped_key].into_iter().flatten() {
+        for ident in source
+            .rust_ident
+            .into_iter()
+            .chain(source.scoped_keys.iter().copied())
+        {
             component_of.entry(ident).or_insert(source.name);
         }
     }
@@ -236,7 +239,11 @@ pub fn compute_input_names(sources: &[ViewSource<'_>], taken: &BTreeSet<String>)
         names.insert(name.to_string(), input);
     }
     for source in sources {
-        for ident in [source.rust_ident, source.scoped_key].into_iter().flatten() {
+        for ident in source
+            .rust_ident
+            .into_iter()
+            .chain(source.scoped_keys.iter().copied())
+        {
             if component_of
                 .get(ident)
                 .is_none_or(|owner| *owner == source.name)
@@ -742,20 +749,12 @@ fn collect_idents(ty: &syn::Type, idents: &mut BTreeSet<String>) {
     struct Visitor<'a>(&'a mut BTreeSet<String>);
     impl<'ast> syn::visit::Visit<'ast> for Visitor<'_> {
         /// Every segment ident; a module-qualified type (`b::Foo`) as its
-        /// scoped key instead of the bare ident, so it resolves to the
-        /// rename its module declares.
+        /// registry key instead of the bare ident, so it resolves to the
+        /// declaration its path names.
         fn visit_path(&mut self, path: &'ast syn::Path) {
-            let mut segments = path.segments.iter().rev();
-            if let Some(last) = segments.next() {
-                self.0.insert(segments.next().map_or_else(
-                    || last.ident.to_string(),
-                    |module| {
-                        scoped_key(
-                            &module.ident.unraw().to_string(),
-                            &last.ident.unraw().to_string(),
-                        )
-                    },
-                ));
+            if let Some(last) = path.segments.last() {
+                self.0
+                    .insert(lookup_key(path).unwrap_or_else(|| last.ident.to_string()));
             }
             for segment in path.segments.iter().rev().skip(1) {
                 self.0.insert(segment.ident.to_string());

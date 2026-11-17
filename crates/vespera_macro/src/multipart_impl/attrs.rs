@@ -490,7 +490,7 @@ mod tests {
             &[request_view::ViewSource {
                 name: "Up",
                 rust_ident: None,
-                scoped_key: None,
+                scoped_keys: Vec::new(),
                 item: &item,
             }],
             &BTreeSet::new(),

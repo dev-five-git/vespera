@@ -10,7 +10,7 @@ use crate::{
     openapi_generator::{defaults::process_default_functions_for, paths::parallel_filter_map},
     parser::{
         parse_enum_to_schema, parse_struct_to_schema,
-        schema::{SerdeSide, request_view},
+        schema::{SerdeSide, registry_keys, request_view},
     },
 };
 
@@ -58,10 +58,11 @@ pub(super) fn input_names(
             Some(request_view::ViewSource {
                 name: &meta.name,
                 rust_ident: meta.rust_ident.as_deref(),
-                scoped_key: scoped
+                scoped_keys: scoped
                     .iter()
-                    .find(|entry| entry.name == meta.name)
-                    .map(|entry| entry.key.as_str()),
+                    .filter(|entry| entry.name == meta.name)
+                    .flat_map(|entry| entry.keys.iter().map(String::as_str))
+                    .collect(),
                 item: item.as_ref()?,
             })
         })
@@ -193,18 +194,31 @@ pub(super) fn build_schema_lookups<'a>(
         struct_definitions.insert(struct_meta.name.as_str(), struct_meta.definition.as_str());
         known_schema_names.insert(struct_meta.name.as_str());
     }
-    // A renamed type is also reachable by `module::Ident` (`b::Foo`), so a
-    // module-qualified use picks the right one of several same-named renames
-    // (see `parser::schema::definition_key`). Sorted, so a module that
-    // declares two of them resolves the same way whatever the storage order.
-    let scoped: BTreeMap<(&str, &str), &str> = scoped
-        .iter()
-        .map(|entry| ((entry.key.as_str(), entry.name), entry.definition))
-        .collect();
-    for ((scoped, _), definition) in scoped {
-        if !struct_definitions.contains_key(scoped) {
-            struct_definitions.insert(scoped, definition);
-            known_schema_names.insert(scoped);
+    // A type is also reachable by its module path (`crate::a::b::Foo`, or a
+    // module-qualified `b::Foo`, see `parser::schema::definition_key`), so a
+    // module-qualified use picks the declaration it names. A key that two
+    // different declarations claim is registered for neither: the reference
+    // falls back to the bare ident instead of resolving to the wrong one.
+    // Declarations sharing one exact path (`cfg` twins) keep the first one by
+    // schema name, as the ident alias does.
+    let mut claims: BTreeMap<&str, BTreeSet<(&str, &str, &str)>> = BTreeMap::new();
+    for entry in scoped {
+        for key in &entry.keys {
+            claims.entry(key.as_str()).or_default().insert((
+                entry.keys[0].as_str(),
+                entry.name,
+                entry.definition,
+            ));
+        }
+    }
+    for (key, claimed) in claims {
+        let paths: BTreeSet<&str> = claimed.iter().map(|(path, _, _)| *path).collect();
+        if let Some((_, _, definition)) = claimed.iter().next()
+            && paths.len() == 1
+            && !struct_definitions.contains_key(key)
+        {
+            struct_definitions.insert(key, definition);
+            known_schema_names.insert(key);
         }
     }
     // `#[schema(name = "X")] struct Foo` is registered as `X`, but Rust code
@@ -226,27 +240,27 @@ pub(super) fn build_schema_lookups<'a>(
     (known_schema_names, struct_definitions)
 }
 
-/// A renamed type's `module::Ident` lookup key (see [`scoped_rust_idents`]).
+/// A type's registry keys (see [`scoped_rust_idents`]): its exact
+/// `crate::`-anchored module path first, then its module-suffix keys.
 pub(super) struct ScopedRustIdent<'a> {
-    key: String,
+    keys: Vec<String>,
     name: &'a str,
     definition: &'a str,
 }
 
-/// The `module::Ident` key of every `#[schema(name = "..")]` rename whose
-/// declaring module is known from its derive source identity (see
-/// [`rust_scope::scoped_rust_ident`]).
+/// The module-path keys of every struct whose declaring module is known from
+/// its derive source identity (see [`rust_scope::crate_path`]). Renamed and
+/// plain types alike: a plain `api::user::User` is what a relative `user::User`
+/// is ambiguous with when a renamed `models::user::User` exists.
 pub(super) fn scoped_rust_idents(metadata: &CollectedMetadata) -> Vec<ScopedRustIdent<'_>> {
     metadata
         .structs
         .iter()
         .filter_map(|meta| {
-            let key = rust_scope::scoped_rust_ident(
-                meta.source_identity.as_deref()?,
-                meta.rust_ident.as_deref()?,
-            )?;
-            Some(ScopedRustIdent {
-                key,
+            let (modules, ident) = rust_scope::crate_path(meta.source_identity.as_deref()?)?;
+            let keys = registry_keys(&modules, &ident);
+            (!keys.is_empty()).then_some(ScopedRustIdent {
+                keys,
                 name: &meta.name,
                 definition: &meta.definition,
             })

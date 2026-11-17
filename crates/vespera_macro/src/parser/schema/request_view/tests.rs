@@ -28,7 +28,7 @@ fn scoped_names(
         .map(|((name, ident, scoped_key, _), item)| ViewSource {
             name,
             rust_ident: *ident,
-            scoped_key: *scoped_key,
+            scoped_keys: scoped_key.iter().copied().collect(),
             item,
         })
         .collect();
