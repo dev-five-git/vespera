@@ -168,13 +168,6 @@ impl SerdeSkipFlags {
     pub const fn fully_skipped(self) -> bool {
         self.skip || (self.skip_serializing && self.skip_deserializing)
     }
-
-    /// The member may be absent from serialized output (`skip_serializing`
-    /// or a `skip_serializing_if` predicate), so it must not be `required`.
-    #[must_use]
-    pub const fn maybe_omitted_on_output(self) -> bool {
-        self.skip_serializing || self.skip_serializing_if
-    }
 }
 
 /// Collect [`SerdeSkipFlags`] from `#[serde(...)]` attributes.
@@ -791,14 +784,13 @@ mod tests {
             skip_serializing: true,
             ..SerdeSkipFlags::default()
         };
-        assert!(only_ser.maybe_omitted_on_output());
         assert!(!only_ser.fully_skipped());
         let both = SerdeSkipFlags {
             skip_deserializing: true,
             ..only_ser
         };
         assert!(both.fully_skipped());
-        assert!(!SerdeSkipFlags::default().maybe_omitted_on_output());
+        assert!(!SerdeSkipFlags::default().fully_skipped());
     }
 
     #[test]

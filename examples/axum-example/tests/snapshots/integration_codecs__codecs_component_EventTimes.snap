@@ -1,6 +1,5 @@
 ---
 source: examples/axum-example/tests/integration_codecs.rs
-assertion_line: 86
 expression: "serde_json::to_string_pretty(&spec[\"components\"][\"schemas\"][component]).unwrap()"
 ---
 {
@@ -25,6 +24,7 @@ expression: "serde_json::to_string_pretty(&spec[\"components\"][\"schemas\"][com
   },
   "required": [
     "createdAt",
+    "expiresAt",
     "checksum"
   ],
   "type": "object"

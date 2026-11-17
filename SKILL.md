@@ -240,7 +240,7 @@ pub async fn reindex() {}
 | `bool` | `boolean` | |
 | `Vec<T>` | `array` + items | |
 | `BTreeSet<T>`, `HashSet<T>` | `array` + items + `uniqueItems: true` | Set types |
-| `Option<T>` | T (nullable context) | Parent marks as optional |
+| `Option<T>` | T, nullable | Required in responses (serde writes `null`), optional in request bodies |
 | `HashMap<K,V>` | `object` + additionalProperties | |
 | `Uuid` | `string` + `format: uuid` | |
 | `Decimal` | `string` + `format: decimal` | |
@@ -644,7 +644,7 @@ vespera::schema_type!(Schema from Model, name = "MemoSchema");
 
 **Database Defaults in OpenAPI:** Fields with `#[sea_orm(default_value = "...")]` or `#[sea_orm(primary_key)]` automatically get `default` values in the generated OpenAPI schema. SQL functions like `NOW()` and `gen_random_uuid()` are mapped to type-appropriate defaults.
 
-**Required Logic:** `required` follows nullability (`Option<T>`) and what serde writes: `skip_serializing` / `skip_serializing_if` fields are not required in the response view.
+**Required Logic:** the response view requires every field serde writes (`Option<T>` included — it is written as `null`, with a nullable type); `skip_serializing_if` fields are not required and `skip_serializing` fields are absent. Request views make `Option<T>` and `#[serde(default)]` fields optional.
 
 **Request views (`{Name}Input`):** when serde reads a type differently than it writes it (`#[serde(default)]` on a field or the container, one-sided `skip_deserializing` / `skip_serializing`, `rename(deserialize = ..)` / `rename_all(deserialize = ..)` differing from the serialize side, a container `into` / `from` / `try_from` documented through a different type per direction, a `with` / `serialize_with` (response shape unknown, request typed), an `Option` read by a custom deserializer (required in requests), or a field type that itself has an input view), request bodies (`Json` / `Form` / `TypedMultipart`) reference an extra `{Name}Input` component: defaulted fields are optional, `skip_deserializing` fields are absent, keys use the deserialize name. `{Name}` stays the response view. Nothing extra is emitted when both views are identical or no request body uses the type; a type only request bodies reach (no response, directly or transitively) keeps its name — `{Name}` is then its request view, no `{Name}Input`. `#[schema(name = "X")]` gives `XInput`; if that name is taken, `XInput2`, `XInput3`, ….
 

@@ -103,7 +103,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/JsonPayloads"
+                "$ref": "#/components/schemas/JsonPayloadsInput"
               }
             }
           }
@@ -465,7 +465,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/InternallyTaggedMessage"
+                "$ref": "#/components/schemas/InternallyTaggedMessageInput"
               }
             }
           }
@@ -2951,7 +2951,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreateUserWithMeta"
+                "$ref": "#/components/schemas/CreateUserWithMetaInput"
               }
             }
           }
@@ -3165,7 +3165,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/GardeProfile"
+                "$ref": "#/components/schemas/GardeProfileInput"
               }
             }
           }
@@ -3736,7 +3736,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "required": [
           "id",
           "code",
-          "name"
+          "name",
+          "flagship"
         ]
       },
       "BakerySchema_Flagship": {
@@ -3766,7 +3767,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "id",
-          "name"
+          "name",
+          "bakeryId",
+          "flagshipOfId"
         ]
       },
       "CakeBakeryOnly": {
@@ -3841,7 +3844,11 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "id",
-          "name"
+          "name",
+          "bakeryId",
+          "flagshipOfId",
+          "bakery",
+          "flagshipOf"
         ]
       },
       "CakeSchema_Bakery": {
@@ -3933,6 +3940,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "required": [
           "id",
           "name",
+          "bakeryId",
+          "flagshipOfId",
           "bakery",
           "flagshipOf"
         ]
@@ -3968,7 +3977,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "id",
-          "name"
+          "name",
+          "parentId",
+          "parent"
         ]
       },
       "CategorySchema_Parent": {
@@ -3991,7 +4002,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "id",
-          "name"
+          "name",
+          "parentId"
         ]
       },
       "ClockDto": {
@@ -4250,12 +4262,14 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "taxRate",
+          "discountRate",
           "minPrice",
           "maxPrice",
           "maxItems",
           "retryCount",
           "priority",
-          "separator"
+          "separator",
+          "delimiter"
         ]
       },
       "ConfigSchema": {
@@ -4365,9 +4379,13 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "required": [
           "id",
           "userId",
+          "category",
           "title",
           "content",
-          "createdAt"
+          "adminReply",
+          "repliedAt",
+          "createdAt",
+          "updatedAt"
         ]
       },
       "CreateFileUploadRequest": {
@@ -4455,6 +4473,33 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "required": [
           "name",
           "email",
+          "requestId",
+          "createdAt"
+        ]
+      },
+      "CreateUserWithMetaInput": {
+        "type": "object",
+        "description": "Full user model with all fields",
+        "properties": {
+          "createdAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "email",
           "requestId"
         ]
       },
@@ -4515,7 +4560,10 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "null"
             ]
           }
-        }
+        },
+        "required": [
+          "next"
+        ]
       },
       "CycleASchema": {
         "type": "object",
@@ -4548,7 +4596,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "id",
-          "label"
+          "label",
+          "nextId",
+          "next"
         ]
       },
       "CycleASchema_Next": {
@@ -4571,7 +4621,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "id",
-          "label"
+          "label",
+          "nextId"
         ]
       },
       "CycleBSchema": {
@@ -4605,7 +4656,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "id",
-          "label"
+          "label",
+          "nextId",
+          "next"
         ]
       },
       "CycleBSchema_Next": {
@@ -4628,7 +4681,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "id",
-          "label"
+          "label",
+          "nextId"
         ]
       },
       "CycleCSchema": {
@@ -4662,7 +4716,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "id",
-          "label"
+          "label",
+          "nextId",
+          "next"
         ]
       },
       "CycleCSchema_Next": {
@@ -4685,7 +4741,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "id",
-          "label"
+          "label",
+          "nextId"
         ]
       },
       "DocumentResponse": {
@@ -4706,7 +4763,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "id",
-          "body"
+          "body",
+          "meta"
         ]
       },
       "Enum": {
@@ -5011,6 +5069,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "createdAt",
+          "expiresAt",
           "checksum"
         ]
       },
@@ -5152,12 +5211,99 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "required": [
           "id",
           "name",
+          "thumbnailUrl",
+          "documentUrl",
           "tags",
           "isActive",
           "createdAt"
         ]
       },
       "GardeProfile": {
+        "type": "object",
+        "description": "Profile validated by garde's own derive — `#[derive(Schema)]` documents\nevery `#[garde(...)]` rule with a JSON Schema equivalent, so the\nconstraints in `openapi.json` match the `422` this route answers.",
+        "properties": {
+          "age": {
+            "type": "integer",
+            "format": "uint8",
+            "description": "`range` → `minimum` / `maximum` (inclusive).",
+            "minimum": 18,
+            "maximum": 120
+          },
+          "avatar": {
+            "type": "string",
+            "description": "Avatar file name ending in `.png` (`suffix` → escaped `pattern`).",
+            "pattern": "\\.png$"
+          },
+          "country": {
+            "type": "string",
+            "description": "ISO 3166-1 alpha-2 code (`pattern`).",
+            "pattern": "^[A-Z]{2}$"
+          },
+          "display_name": {
+            "type": "string",
+            "description": "2–20 characters (`chars` mode → `minLength` / `maxLength`).",
+            "minLength": 2,
+            "maxLength": 20
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "`email` → `format: email`."
+          },
+          "hashtags": {
+            "type": "array",
+            "description": "1–3 hashtags, each a `#`-prefixed ASCII word of at most 16 chars\n(`inner(...)` → `items`).",
+            "items": {
+              "type": "string",
+              "maxLength": 16,
+              "pattern": "^#",
+              "allOf": [
+                {
+                  "pattern": "^[\\x00-\\x7F]*$"
+                }
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 3
+          },
+          "homepage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "Optional homepage — `url` → `format: uri` on the non-null value."
+          },
+          "last_ip": {
+            "type": "string",
+            "description": "`ip` → `anyOf: [{format: ipv4}, {format: ipv6}]`.",
+            "anyOf": [
+              {
+                "format": "ipv4"
+              },
+              {
+                "format": "ipv6"
+              }
+            ]
+          },
+          "nickname": {
+            "type": "string",
+            "description": "Unicode-aware `alphanumeric` has no portable regex — enforced at\nruntime, not documented."
+          }
+        },
+        "required": [
+          "display_name",
+          "email",
+          "homepage",
+          "age",
+          "hashtags",
+          "last_ip",
+          "country",
+          "avatar",
+          "nickname"
+        ]
+      },
+      "GardeProfileInput": {
         "type": "object",
         "description": "Profile validated by garde's own derive — `#[derive(Schema)]` documents\nevery `#[garde(...)]` rule with a JSON Schema equivalent, so the\nconstraints in `openapi.json` match the `422` this route answers.",
         "properties": {
@@ -5330,6 +5476,80 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             },
             "required": [
               "type",
+              "id",
+              "result"
+            ]
+          },
+          {
+            "type": "object",
+            "description": "A notification (no payload)",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Notification"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type"
+        }
+      },
+      "InternallyTaggedMessageInput": {
+        "description": "Internally tagged enum - serializes as `{\"type\": \"...\", ...fields...}`\nExample: `{\"type\": \"Request\", \"id\": 1, \"method\": \"GET\"}`",
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A request message",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "format": "int32"
+              },
+              "method": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Request"
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "method"
+            ]
+          },
+          {
+            "type": "object",
+            "description": "A response message",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "format": "int32"
+              },
+              "result": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Response"
+                ]
+              }
+            },
+            "required": [
+              "type",
               "id"
             ]
           },
@@ -5373,6 +5593,26 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         ]
       },
       "JsonPayloads": {
+        "type": "object",
+        "description": "A free-form JSON payload in every spelling vespera maps to `{}`.",
+        "properties": {
+          "body": {
+            "description": "SeaORM's `Json` (= `serde_json::Value`): any JSON value."
+          },
+          "extra": {
+            "description": "`serde_json::Value` itself."
+          },
+          "meta": {
+            "description": "SeaORM's `JsonValue` alias."
+          }
+        },
+        "required": [
+          "body",
+          "meta",
+          "extra"
+        ]
+      },
+      "JsonPayloadsInput": {
         "type": "object",
         "description": "A free-form JSON payload in every spelling vespera maps to `{}`.",
         "properties": {
@@ -5433,8 +5673,10 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "required": [
           "id",
           "modelId",
+          "dbId",
           "bakeryCode",
           "model",
+          "db",
           "byCode"
         ]
       },
@@ -5462,7 +5704,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "name",
-          "age"
+          "age",
+          "optional_age"
         ]
       },
       "MemoCardResponse": {
@@ -6029,6 +6272,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "bind",
           "data_dir",
           "homepage",
+          "callback",
           "timeout"
         ]
       },
@@ -6205,7 +6449,10 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "null"
             ]
           }
-        }
+        },
+        "required": [
+          "cursor"
+        ]
       },
       "PatchFileUploadRequest": {
         "type": "object",
@@ -6372,7 +6619,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           }
         },
         "required": [
-          "q"
+          "q",
+          "limit"
         ]
       },
       "RejectionInput": {
@@ -6455,7 +6703,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               }
             },
             "required": [
-              "q"
+              "q",
+              "tags"
             ]
           },
           {
@@ -6610,6 +6859,10 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "email",
           "name",
           "phoneNumber23",
+          "nickname",
+          "birthday",
+          "gender",
+          "job",
           "createdAt"
         ]
       },
@@ -6657,7 +6910,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           }
         },
         "required": [
-          "username"
+          "username",
+          "singleRel"
         ]
       },
       "SingleSchema_SingleRel": {
@@ -6749,7 +7003,11 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "email6",
           "num",
           "in_skip",
-          "in_skip3"
+          "in_skip2",
+          "in_skip3",
+          "in_skip4",
+          "in_skip5",
+          "in_skip6"
         ]
       },
       "StrictInput": {
@@ -6918,7 +7176,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "required": [
           "id",
           "teamId",
-          "team"
+          "mentorTeamId",
+          "team",
+          "mentorTeam"
         ]
       },
       "TeamSchema": {
@@ -6990,7 +7250,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "id",
-          "teamId"
+          "teamId",
+          "mentorTeamId"
         ]
       },
       "TeamWithMembers_Mentees": {
@@ -7014,7 +7275,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "id",
-          "teamId"
+          "teamId",
+          "mentorTeamId"
         ]
       },
       "Telemetry": {
@@ -7116,7 +7378,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "name",
-          "age"
+          "age",
+          "optional_age"
         ]
       },
       "UnixSeconds": {
@@ -7357,7 +7620,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "required": [
           "id",
           "name",
-          "email"
+          "email",
+          "internal_score"
         ]
       },
       "UserDTO": {
@@ -7598,6 +7862,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "required": [
           "id",
           "name",
+          "externalRef",
           "tags"
         ]
       },
@@ -7653,6 +7918,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "required": [
           "id",
           "name",
+          "externalRef",
           "createdAt"
         ]
       },

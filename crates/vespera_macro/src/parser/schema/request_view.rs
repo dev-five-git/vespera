@@ -21,9 +21,11 @@
 //!   `#[schema(value_type)]`: the request view documents the Rust type),
 //!   or is an `Option` read through a custom
 //!   deserializer (serde then requires it),
-//! - a field has `#[serde(alias)]` names (accepted keys), or a non-`Option`
+//! - a field has `#[serde(alias)]` names (accepted keys), a non-`Option`
 //!   `skip_serializing_if` field without `default` (optional on output,
-//!   required on input),
+//!   required on input), or an `Option` field without `skip_serializing_if`
+//!   (always written, as `null` when `None`, so required on output; optional
+//!   on input),
 //! - a tuple position is skipped / custom-converted on one side only, or a
 //!   tuple of two or more fields has a `#[serde(default)]` position (or
 //!   container `default`): trailing items may be omitted, or a
@@ -554,9 +556,16 @@ fn field_differs(field: &syn::Field) -> bool {
             || extract_default(&field.attrs).is_some()
             || crate::multipart_impl::has_form_data_default(&field.attrs)
             || !extract_aliases(&field.attrs).is_empty()
-            // Omitted from output when the predicate holds, but read as a
-            // required key (serde has no default to fill it in).
+            // `required` differs: a `skip_serializing_if` field may be
+            // omitted from output but is a required key on input (serde has
+            // no default to fill it in), and an `Option` is always written
+            // (as `null`) but may be omitted on input. An `Option` with a
+            // predicate is optional on both sides; a flattened `Option` has
+            // no key of its own (see [`flatten_differs`]).
             || (skip.skip_serializing_if && !is_option_type(&field.ty))
+            || (is_option_type(&field.ty)
+                && !skip.skip_serializing_if
+                && !extract_flatten(&field.attrs))
             || sided_differs(|side| extract_field_rename_for(&field.attrs, side)))
 }
 

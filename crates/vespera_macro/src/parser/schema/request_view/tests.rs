@@ -41,7 +41,14 @@ fn scoped_names(
 }
 
 #[rstest]
-#[case::plain("struct A { x: i32, y: Option<u8> }", false)]
+#[case::plain("struct A { x: i32, y: u8 }", false)]
+// An `Option` is written as `null` (required on output) but may be omitted
+// on input, unless a `skip_serializing_if` omits it on output too.
+#[case::option("struct A { x: i32, y: Option<u8> }", true)]
+#[case::option_skip_if(
+    r#"struct A { #[serde(skip_serializing_if = "Option::is_none")] y: Option<u8> }"#,
+    false
+)]
 #[case::flatten_option("struct A { #[serde(flatten)] p: Option<Page> }", true)]
 #[case::flatten_map_then_struct(
     "struct A { #[serde(flatten)] m: HashMap<String, u8>, #[serde(flatten)] p: Page }",

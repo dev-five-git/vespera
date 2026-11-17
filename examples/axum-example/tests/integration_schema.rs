@@ -185,17 +185,16 @@ fn test_schema_macro_with_optional_fields() {
     };
     assert_eq!(bio.default, Some(json!("")));
 
-    // Required is nullability-only, matching the OpenAPI component schema:
-    // 'id'/'name' are non-Option, and 'bio' is non-Option too — its
-    // `#[serde(default)]` does NOT exclude it from `required`. Only 'email'
-    // (Option<T>) is optional. (`schema!` now shares the OpenAPI generation
-    // path, so it no longer diverges by dropping defaulted fields.)
+    // `schema!` is the response view, matching the OpenAPI component
+    // schema: serde writes every field, so all are required — 'bio' despite
+    // its `#[serde(default)]` (which only matters when reading), and the
+    // Option<T> 'email' too (written as `null`, its schema is nullable).
     let required = user_schema.required.unwrap();
     assert!(required.contains(&"id".to_string()));
     assert!(required.contains(&"name".to_string()));
     assert!(
-        !required.contains(&"email".to_string()),
-        "'email' is Option<T>, should not be required"
+        required.contains(&"email".to_string()),
+        "'email' is Option<T>: always written (as null), so required"
     );
     assert!(
         required.contains(&"bio".to_string()),

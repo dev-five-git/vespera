@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/parser/schema/struct_schema/tests_serde_fidelity.rs
-assertion_line: 323
 expression: both_views(src)
 ---
 struct A { #[serde(alias = "nm")] name: Option<String>, #[serde(alias = "a", alias = "b", default)] x: u8 }
@@ -21,6 +20,7 @@ response: {
     }
   },
   "required": [
+    "name",
     "x"
   ]
 }

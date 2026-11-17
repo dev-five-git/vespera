@@ -43,7 +43,8 @@ struct Event {
   "required": [
     "raw",
     "out_only",
-    "in_only"
+    "in_only",
+    "maybe"
   ]
 }
 --- request ---

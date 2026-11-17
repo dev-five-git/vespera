@@ -744,9 +744,10 @@ mod tests {
     }
 
     /// A flattened member serde may leave out of the output
-    /// (`skip_serializing` / `skip_serializing_if`) requires none of its keys
-    /// in the response view (an opaque member becomes lenient); the request
-    /// view still requires them.
+    /// (`skip_serializing_if`) requires none of its keys in the response view
+    /// (an opaque member becomes lenient); one it never writes
+    /// (`skip_serializing`) adds no keys there at all. The request view still
+    /// requires them.
     #[rstest]
     #[case::skip_serializing_if("if", r#"skip_serializing_if = "Meta::is_empty""#, "Meta")]
     #[case::skip_serializing("always", "skip_serializing", "Meta")]

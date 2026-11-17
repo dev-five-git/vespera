@@ -192,6 +192,7 @@ Schema {
                                     required: Some(
                                         [
                                             "id",
+                                            "note",
                                         ],
                                     ),
                                     additional_properties: None,

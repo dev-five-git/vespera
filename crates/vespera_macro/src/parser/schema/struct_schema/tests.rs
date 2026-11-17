@@ -28,12 +28,18 @@ fn test_parse_struct_to_schema_required_optional() {
             .unwrap()
             .contains(&"id".to_string())
     );
+    // serde always writes an `Option` (as `null`): required in the
+    // response view, with a nullable schema.
     assert!(
-        !schema
+        schema
             .required
             .as_ref()
             .unwrap()
             .contains(&"name".to_string())
+    );
+    assert_eq!(
+        serde_json::to_value(&props["name"]).unwrap(),
+        serde_json::json!({"type": ["string", "null"]})
     );
 }
 
@@ -61,7 +67,7 @@ fn test_parse_struct_to_schema_rename_all_and_field_rename() {
     assert!(props.contains_key("displayName")); // rename_all applied
     let required = schema.required.as_ref().expect("required missing");
     assert!(required.contains(&"id".to_string()));
-    assert!(!required.contains(&"displayName".to_string())); // Option makes it optional
+    assert!(required.contains(&"displayName".to_string())); // written as `null`
 }
 
 /// Tuple structs follow serde's wire shape: newtype → inner schema,
@@ -106,12 +112,13 @@ fn test_parse_struct_to_schema_tuple_and_unit_structs(
     insta::assert_debug_snapshot!(format!("tuple_struct_{name}"), schema);
 }
 
-/// `skip_serializing_if` / `skip_serializing` fields are not `required`;
-/// `skip_deserializing` alone and `default` keep the field required; the
-/// pair `skip_serializing` + `skip_deserializing` drops the field.
+/// In the response view a `skip_serializing_if` field is not `required`;
+/// `skip_deserializing` alone and `default` keep the field required; a
+/// `skip_serializing` field (never written) is dropped, as is one skipped on
+/// both sides.
 #[rstest]
 #[case::skip_serializing_if(r#"#[serde(skip_serializing_if = "Vec::is_empty")]"#, Some(false))]
-#[case::skip_serializing("#[serde(skip_serializing)]", Some(false))]
+#[case::skip_serializing("#[serde(skip_serializing)]", None)]
 #[case::skip_deserializing("#[serde(skip_deserializing)]", Some(true))]
 #[case::default("#[serde(default)]", Some(true))]
 #[case::both_skips("#[serde(skip_serializing, skip_deserializing)]", None)]

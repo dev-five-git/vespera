@@ -116,7 +116,7 @@ export async function multipart(): Promise<number | undefined> {
 
 /** `Validated<Json<T>>` — documented `422` envelope as the typed error. */
 export async function validationError(
-  profile: DevupObject<'request'>['GardeProfile'],
+  profile: DevupObject<'request'>['GardeProfileInput'],
 ): Promise<string[]> {
   const res = await api.post('createGardeProfile', { body: profile })
   return res.error?.errors.map((e) => `${e.path}: ${e.message}`) ?? []

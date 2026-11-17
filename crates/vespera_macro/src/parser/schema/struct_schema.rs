@@ -228,7 +228,7 @@ pub(super) fn tuple_fields_schema(
         .map(|field| {
             let schema_ref =
                 positional_field_schema(field, side, known_schemas, struct_definitions);
-            annotate_field(schema_ref, field, false, false)
+            annotate_field(schema_ref, field, false)
         })
         .collect();
     // Slot `k` holds field `j >= k` when `j - k` omittable positions precede
@@ -410,9 +410,10 @@ fn at_most_one(names: &[String]) -> SchemaRef {
 /// `#[serde(skip)]` (and `skip_serializing` + `skip_deserializing`),
 /// `#[serde(flatten)]`, `#[serde(rename)]` / `rename_all` / `alias`, doc
 /// comments, `#[schema(...)]` constraints (incl. `any`), and `required`
-/// inference (`Option<T>`, `skip_serializing`, and `skip_serializing_if`
-/// fields are not required in the response view; `default` fields in the
-/// request view).
+/// inference (`skip_serializing_if` fields are not required in the response
+/// view; `Option<T>` and `default` fields in the request view). A field one
+/// side never touches is absent from that view (`skip_serializing` from the
+/// response view, `skip_deserializing` from the request view).
 pub(super) fn collect_named_fields(
     fields_named: &syn::FieldsNamed,
     rename_all: Option<&str>,
@@ -436,14 +437,17 @@ pub(super) fn collect_named_fields(
     };
     for field in &fields_named.named {
         let skip_flags = extract_serde_skip_flags(&field.attrs);
-        if skip_flags.fully_skipped() || (request && skip_flags.skip_deserializing) {
+        if skip_flags.fully_skipped()
+            || (request && skip_flags.skip_deserializing)
+            || (!request && skip_flags.skip_serializing)
+        {
             continue;
         }
 
         if extract_flatten(&field.attrs) {
-            // Response view: a `skip_serializing(_if)` member may be left
-            // out of the output entirely, so its keys are never required.
-            let omittable = !request && skip_flags.maybe_omitted_on_output();
+            // Response view: a `skip_serializing_if` member may be left out
+            // of the output entirely, so its keys are never required.
+            let omittable = !request && skip_flags.skip_serializing_if;
             out.flattened.push(flatten_part(
                 field,
                 side,
@@ -468,34 +472,32 @@ pub(super) fn collect_named_fields(
             field_schema_ref(field, &constraints, side, known_schemas, struct_definitions);
 
         // Doc comment → description; Rust `#[deprecated]` → `deprecated`;
-        // `skip_deserializing` (output only) → `readOnly`, `skip_serializing`
-        // (input only) → `writeOnly`. A `$ref` is wrapped in `allOf` so the
-        // annotations can sit beside it; explicit `#[schema(read_only, ..)]`
-        // constraints applied below still win.
-        // (Both are meaningless in a request-only view.)
+        // `skip_deserializing` (output only) → `readOnly` in the response
+        // view. A `$ref` is wrapped in `allOf` so the annotations can sit
+        // beside it; explicit `#[schema(read_only, ..)]` constraints applied
+        // below still win.
         let read_only = !request && skip_flags.skip_deserializing;
-        let write_only = !request && skip_flags.skip_serializing;
-        schema_ref = annotate_field(schema_ref, field, read_only, write_only);
+        schema_ref = annotate_field(schema_ref, field, read_only);
 
         apply_field_rules(&mut schema_ref, field, &constraints);
 
-        // Required is determined by nullability (Option<T>) and, in the
-        // response view, by whether the field can be omitted from serialized
-        // output (`skip_serializing`, `skip_serializing_if`); in the request
-        // view by `#[serde(default)]` (field or container), since serde fills
-        // a missing defaulted field in (the Multipart derive's
-        // `#[form_data(default)]` likewise).
+        // Required in the response view unless a `skip_serializing_if`
+        // predicate may leave the key out: serde always writes the rest, an
+        // `Option` as `null` (its schema is nullable). In the request view a
+        // field is optional with `#[serde(default)]` (field or container),
+        // since serde fills a missing defaulted field in (the Multipart
+        // derive's `#[form_data(default)]` likewise), and an `Option`, which
+        // serde fills with `None` — unless a custom `deserialize_with` reads
+        // it, which makes it mandatory.
         let optional = if request {
             container_default
                 || extract_default(&field.attrs).is_some()
                 || crate::multipart_impl::has_form_data_default(&field.attrs)
         } else {
-            skip_flags.maybe_omitted_on_output()
+            skip_flags.skip_serializing_if
         };
-        // serde fills an absent `Option` with `None` only when it reads the
-        // field itself: a custom `deserialize_with` makes it mandatory.
-        let absent_is_none = is_option_type(&field.ty)
-            && !(request && extract_field_codec(&field.attrs).deserialize);
+        let absent_is_none =
+            request && is_option_type(&field.ty) && !extract_field_codec(&field.attrs).deserialize;
 
         // `#[serde(alias = "..")]`: serde's Deserialize also accepts each
         // alias as the key (a second key for the same field is a "duplicate
@@ -533,20 +535,15 @@ pub(super) fn collect_named_fields(
 }
 
 /// A field's doc comment → `description`, Rust `#[deprecated]` →
-/// `deprecated`, plus `readOnly` / `writeOnly` when set. A `$ref` is wrapped
-/// in `allOf` so the annotations can sit beside it.
-fn annotate_field(
-    schema_ref: SchemaRef,
-    field: &syn::Field,
-    read_only: bool,
-    write_only: bool,
-) -> SchemaRef {
+/// `deprecated`, plus `readOnly` when set. A `$ref` is wrapped in `allOf`
+/// so the annotations can sit beside it.
+fn annotate_field(schema_ref: SchemaRef, field: &syn::Field, read_only: bool) -> SchemaRef {
     let doc = extract_doc_comment(&field.attrs);
     let deprecated = field
         .attrs
         .iter()
         .any(|attr| attr.path().is_ident("deprecated"));
-    if !(doc.is_some() || deprecated || read_only || write_only) {
+    if !(doc.is_some() || deprecated || read_only) {
         return schema_ref;
     }
     let mut schema = match schema_ref {
@@ -561,7 +558,6 @@ fn annotate_field(
     }
     schema.deprecated = deprecated.then_some(true).or(schema.deprecated);
     schema.read_only = read_only.then_some(true).or(schema.read_only);
-    schema.write_only = write_only.then_some(true).or(schema.write_only);
     SchemaRef::Inline(schema)
 }
 

@@ -420,6 +420,7 @@ Schema {
                         [
                             "type",
                             "id",
+                            "result",
                         ],
                     ),
                     additional_properties: None,
