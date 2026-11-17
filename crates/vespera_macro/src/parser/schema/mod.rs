@@ -46,7 +46,7 @@ pub use enum_schema::{
     internally_tagged_non_object_message, parse_enum_to_schema, validate_enum_for_schema,
 };
 pub use generics::substitute_type;
-pub use scoped_ident::{definition_key, scoped_key};
+pub use scoped_ident::{definition_key, registry_keys};
 pub use serde_attrs::{
     SerdeSide, extract_aliases, extract_default, extract_deny_unknown_fields, extract_doc_comment,
     extract_field_codec, extract_field_rename, extract_field_rename_for, extract_flatten,

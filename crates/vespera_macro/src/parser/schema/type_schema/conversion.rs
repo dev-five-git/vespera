@@ -670,7 +670,7 @@ fn parse_type_impl(
                             // Inline the substituted struct, unless it
                             // contains itself — then it becomes the named
                             // component `Base_Arg..` (see `generic_instances`).
-                            let base = component_name(resolved_name, def_str);
+                            let base = component_name(&resolved_name, def_str);
                             // A module-scoped argument (`b::Foo`, renamed
                             // apart from `a::Foo`) is spelled by its component.
                             let scoped = |path: &syn::Path| {
@@ -679,7 +679,7 @@ fn parse_type_impl(
                                 })
                                 .filter(|key| key.contains("::"))?;
                                 let def = struct_definitions.get(key.as_str()).map(AsRef::as_ref);
-                                Some(component_name(key, def))
+                                Some(component_name(&key, def))
                             };
                             let mut name = super::generic_instances::instance_name_with(
                                 &base,
@@ -726,7 +726,7 @@ fn parse_type_impl(
                     }
                 }
                 // Non-generic type or generic without parameters - use reference
-                let component = component_name(resolved_name, def_str);
+                let component = component_name(&resolved_name, def_str);
                 let component = request_view::input_component(&component).unwrap_or(component);
                 SchemaRef::Ref(Reference::schema(&component))
             } else {
@@ -785,14 +785,13 @@ fn parse_type_impl(
     }
 }
 
-/// The component name a reference to the known type `ident` must use: the
-/// `#[schema(name = "...")]` of its definition when it carries one (the Rust
-/// ident is only an alias then), otherwise `ident` itself.
-fn component_name(ident: String, definition: Option<&str>) -> String {
+/// The component name of the known type `ident` (a Rust ident or a module-path
+/// key, `b::Foo`): its definition's `#[schema(name)]`, else the last segment.
+fn component_name(ident: &str, definition: Option<&str>) -> String {
     definition
         .filter(|def| def.contains("[schema") && def.contains("name"))
         .and_then(schema_name_of)
-        .unwrap_or(ident)
+        .unwrap_or_else(|| ident.rsplit("::").next().unwrap_or(ident).to_owned())
 }
 
 /// Fixed-length JSON array for a Rust tuple / tuple struct / tuple variant:

@@ -95,6 +95,16 @@ const DEFINITIONS: &[(&str, &str)] = &[
         "b::Foo",
         r#"#[schema(name = "B")] pub struct Foo { pub b_field: String }"#,
     ),
+    // The exact module-path keys a declaration in `crate::a` / `crate::b`
+    // registers (see `parser::schema::registry_keys`).
+    (
+        "crate::a::Foo",
+        r#"#[schema(name = "A")] pub struct Foo { pub a_field: i32 }"#,
+    ),
+    (
+        "crate::b::Foo",
+        r#"#[schema(name = "B")] pub struct Foo { pub b_field: String }"#,
+    ),
 ];
 
 /// Every argument of `func_src` parsed with the route's `path_params`,
