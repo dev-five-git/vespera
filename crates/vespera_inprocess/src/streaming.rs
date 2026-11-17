@@ -388,6 +388,21 @@ where
     StreamOutcome::Complete
 }
 
+/// [`pre_header_error`] for a failure given as a status and message.
+fn reject<H, F>(
+    delivery: Delivery,
+    on_header: &mut H,
+    on_chunk: &mut F,
+    status: u16,
+    msg: &str,
+) -> StreamOutcome
+where
+    H: FnMut(&[u8]),
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+{
+    pre_header_error(delivery, on_header, on_chunk, &error_wire(status, msg))
+}
+
 /// Post-header body tail shared by every header-first streaming path and
 /// [`crate::PendingDirectResponse::stream`]: frame-by-frame delivery with
 /// ready-frame coalescing and (with `flush_hints`) an empty-chunk flush hint
@@ -516,17 +531,14 @@ where
     // 413 through the header callback so the contract (header fires
     // exactly once) holds.  Pre-header error paths return `Complete`: the
     // (error) response was delivered whole, nothing is truncated.
+    let hf = Delivery::HeaderFirst;
     let (header_bytes, body_bytes) = match cap_and_split(input) {
         Ok(parts) => parts,
-        Err(wire) => {
-            return pre_header_error(Delivery::HeaderFirst, &mut on_header, &mut on_chunk, &wire);
-        }
+        Err(wire) => return pre_header_error(hf, &mut on_header, &mut on_chunk, &wire),
     };
     let (header, router) = match parse_validate_resolve(&header_bytes) {
         Ok(parts) => parts,
-        Err(wire) => {
-            return pre_header_error(Delivery::HeaderFirst, &mut on_header, &mut on_chunk, &wire);
-        }
+        Err(wire) => return pre_header_error(hf, &mut on_header, &mut on_chunk, &wire),
     };
 
     // Content-Type defaulting (INP-03): a non-empty body with no explicit
@@ -555,14 +567,7 @@ where
         .await
     {
         Some(Ok(parts)) => parts,
-        Some(Err((status, msg))) => {
-            return pre_header_error(
-                Delivery::HeaderFirst,
-                &mut on_header,
-                &mut on_chunk,
-                &error_wire(status, &msg),
-            );
-        }
+        Some(Err((status, msg))) => return reject(hf, &mut on_header, &mut on_chunk, status, &msg),
         // Deadline expired before the header was committed: a clean 504.
         None => {
             return pre_header_error(
@@ -814,14 +819,7 @@ where
 {
     let (header_bytes, body_tail) = match split_wire_request(input_header) {
         Ok(parts) => parts,
-        Err(msg) => {
-            return pre_header_error(
-                delivery,
-                &mut on_header,
-                &mut on_chunk,
-                &error_wire(400, &msg),
-            );
-        }
+        Err(msg) => return reject(delivery, &mut on_header, &mut on_chunk, 400, &msg),
     };
     // `input_header` MUST be header-only on the bidirectional path — the
     // request body arrives via `pull_chunk`.  A non-empty tail means the
@@ -842,9 +840,7 @@ where
     }
     let (header, router) = match parse_validate_resolve(&header_bytes) {
         Ok(parts) => parts,
-        Err(wire) => {
-            return pre_header_error(delivery, &mut on_header, &mut on_chunk, &wire);
-        }
+        Err(wire) => return pre_header_error(delivery, &mut on_header, &mut on_chunk, &wire),
     };
 
     let mut deadline = Deadline::start();
