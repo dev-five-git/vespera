@@ -421,6 +421,9 @@ fn slice_elem(ty: &Type) -> Option<(&Type, bool)> {
 /// differ by U+0085 (Rust only) and U+FEFF (ECMA-262 only).
 fn is_ecma_compatible(pattern: &str) -> bool {
     let mut chars = pattern.chars().peekable();
+    // Open `(` groups outside a class: unbalanced parentheses (and `)` with
+    // nothing open) are syntax errors in both dialects.
+    let mut groups: i64 = 0;
     let mut in_class = false;
     // Right after a class's `[` / `[^`.
     let mut class_start = false;
@@ -442,13 +445,24 @@ fn is_ecma_compatible(pattern: &str) -> bool {
         let next = chars.peek().copied();
         let first = std::mem::take(&mut class_start);
         let rust_only = match (ch, next) {
+            // A trailing `\` escapes nothing.
+            ('\\', None) => return false,
             ('\\', Some(escaped)) => {
                 chars.next();
                 !ecma_escape(escaped, in_class, &mut chars)
             }
             ('(', Some('?')) if !in_class => {
                 chars.next();
+                groups += 1;
                 chars.peek().is_some_and(|flag| "imsxuUR-P".contains(*flag))
+            }
+            ('(', _) if !in_class => {
+                groups += 1;
+                false
+            }
+            (')', _) if !in_class => {
+                groups -= 1;
+                groups < 0
             }
             // Rust opens a nested (or POSIX) class; ECMA-262 reads a literal.
             ('[', _) if in_class => true,
@@ -476,7 +490,8 @@ fn is_ecma_compatible(pattern: &str) -> bool {
             return false;
         }
     }
-    true
+    // Every class, `{..}` quantifier and group must be closed.
+    !in_class && !in_brace && groups == 0
 }
 
 /// Whether `\<escaped>` (the `\` and `escaped` already consumed) is an escape
@@ -500,8 +515,15 @@ fn ecma_escape(
         'b' | 'x' | 'u' => !brace,
         'p' | 'P' if brace => {
             chars.next();
-            let name: String = chars.by_ref().take_while(|ch| *ch != '}').collect();
-            is_ecma_property(&name)
+            let mut closed = false;
+            let name: String = chars
+                .by_ref()
+                .take_while(|ch| {
+                    closed = *ch == '}';
+                    !closed
+                })
+                .collect();
+            closed && is_ecma_property(&name)
         }
         _ => false,
     }

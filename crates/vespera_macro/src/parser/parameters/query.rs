@@ -9,7 +9,7 @@ use vespera_core::{
 use super::shared::{
     convert_to_inline_schema, deserialized_instead, deserialized_source, input_rename_all,
     is_defined_struct, is_known_type, is_primitive_or_like, named_struct_fields, serde_field_name,
-    struct_definition,
+    struct_definition_keyed,
 };
 use crate::{
     parser::schema::{
@@ -164,15 +164,16 @@ fn collect_query_struct_parameters(
     visiting: &mut Vec<String>,
     parameters: &mut Vec<Parameter>,
 ) {
-    let Some(struct_item) = struct_definition(ty, struct_definitions) else {
+    // A (boxed) struct that flattens itself would recurse forever. Keyed by
+    // the resolved definition (`b::Foo` / `a::Foo`), not the bare ident: two
+    // same-named structs of one flatten chain are different structs.
+    let Some((struct_key, struct_item)) = struct_definition_keyed(ty, struct_definitions) else {
         return;
     };
-    // A (boxed) struct that flattens itself would recurse forever.
-    let struct_name = struct_item.ident.to_string();
-    if visiting.contains(&struct_name) {
+    if visiting.contains(&struct_key) {
         return;
     }
-    visiting.push(struct_name);
+    visiting.push(struct_key);
     // Container `#[serde(from = "X")]` / `try_from` (or `#[schema(value_type =
     // X)]`), or `#[serde(transparent)]` (named or tuple struct): serde reads
     // `X` / the transparent field's type from the query string, never this
@@ -383,6 +384,25 @@ mod tests {
         #[case] expected: Vec<ParamShape>,
     ) {
         assert_eq!(query_shapes(ty, &defs), expected);
+    }
+
+    /// Two same-named structs in one flatten chain are different structs: the
+    /// recursion guard keys them by their resolved definition, so the inner
+    /// `crate::a::Foo` is read too (not skipped as a recursion of `b::Foo`).
+    #[test]
+    fn same_ident_structs_in_one_flatten_chain_are_both_read() {
+        let defs = [
+            ("a::Foo", "pub struct Foo { pub a_field: i32 }"),
+            (
+                "b::Foo",
+                "pub struct Foo { #[serde(flatten)] pub inner: crate::a::Foo, pub b_field: i32 }",
+            ),
+            ("Q", "pub struct Q { #[serde(flatten)] pub page: b::Foo }"),
+        ];
+        assert_eq!(
+            query_shapes("Q", &defs),
+            vec![shape("a_field", true), shape("b_field", true)]
+        );
     }
 
     #[test]

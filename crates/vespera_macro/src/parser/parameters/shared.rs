@@ -81,6 +81,15 @@ pub(super) fn struct_definition(
     ty: &Type,
     struct_definitions: &HashMap<&str, &str>,
 ) -> Option<syn::ItemStruct> {
+    struct_definition_keyed(ty, struct_definitions).map(|(_, struct_item)| struct_item)
+}
+
+/// [`struct_definition`] with the resolved definition key of `ty` (see
+/// [`definition_key`]), which tells two same-named structs apart.
+pub(super) fn struct_definition_keyed(
+    ty: &Type,
+    struct_definitions: &HashMap<&str, &str>,
+) -> Option<(String, syn::ItemStruct)> {
     let Type::Path(type_path) = ty else {
         return None;
     };
@@ -94,7 +103,7 @@ pub(super) fn struct_definition(
         .map(|param| param.ident.to_string())
         .collect();
     if names.is_empty() {
-        return Some(struct_item);
+        return Some((key, struct_item));
     }
     let args: Vec<&Type> = match &segment.arguments {
         syn::PathArguments::AngleBracketed(args) => args
@@ -132,7 +141,7 @@ pub(super) fn struct_definition(
     for field in &mut struct_item.fields {
         field.ty = substitute_type(&field.ty, &names, &concrete);
     }
-    Some(struct_item)
+    Some((key, struct_item))
 }
 
 /// How many container `from` / `try_from` / `transparent` hops are followed

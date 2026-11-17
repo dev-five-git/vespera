@@ -13,7 +13,7 @@ fn expand(file_src: &str, ret: &str) -> String {
         let output = &sig.output;
         quote::quote!(#output).to_string()
     };
-    let changed = expand_return_type_alias(&mut sig, Some(&file), None);
+    let changed = expand_return_type_alias(&mut sig, None, Some(&file), None);
     let output = &sig.output;
     let after = quote::quote!(#output).to_string();
     // The return value reports exactly whether the type changed (round 15:
@@ -164,7 +164,7 @@ fn expands_aliases(#[case] file_src: &str, #[case] ret: &str, #[case] expected: 
 #[test]
 fn qualified_path_without_file_is_external() {
     let mut sig: syn::Signature = syn::parse_str("fn h() -> error::ApiResult<u8>").unwrap();
-    assert!(!expand_return_type_alias(&mut sig, None, None));
+    assert!(!expand_return_type_alias(&mut sig, None, None, None));
 }
 
 #[rstest]
@@ -191,7 +191,7 @@ fn bare_extern_crate_import_is_external() {
     let file: syn::File =
         syn::parse_str("use anyhow; type Result<T> = std::result::Result<T, E>;").unwrap();
     let mut sig: syn::Signature = syn::parse_str("fn h() -> anyhow::Result<u8>").unwrap();
-    assert!(!expand_return_type_alias(&mut sig, Some(&file), None));
+    assert!(!expand_return_type_alias(&mut sig, None, Some(&file), None));
 }
 
 /// `crate::ApiResult` is the crate root's alias and `super::ApiResult` the
@@ -217,7 +217,7 @@ fn crate_and_super_paths_skip_the_handler_module() {
     let expand_in = |file_src: &str, ret: &str, src_dir: Option<&Path>| {
         let file: syn::File = syn::parse_str(file_src).unwrap();
         let mut sig: syn::Signature = syn::parse_str(&format!("fn h() {ret}")).unwrap();
-        expand_return_type_alias(&mut sig, Some(&file), src_dir);
+        expand_return_type_alias(&mut sig, None, Some(&file), src_dir);
         let output = &sig.output;
         quote::quote!(#output).to_string()
     };
@@ -341,12 +341,14 @@ fn externally_imported_name_skips_crate_wide_lookup() {
     let mut sig: syn::Signature = syn::parse_str("fn h() -> Result<Json<u8>>").unwrap();
     assert!(!expand_return_type_alias(
         &mut sig,
+        None,
         Some(&handler_file),
         Some(src)
     ));
     let local_file: syn::File = syn::parse_str("use crate::error::Result;").unwrap();
     assert!(expand_return_type_alias(
         &mut sig,
+        None,
         Some(&local_file),
         Some(src)
     ));
@@ -387,6 +389,11 @@ fn externally_imported_name_skips_crate_wide_lookup() {
     "pub struct Other; mod m { use super::ApiResponse; pub fn h() {} }",
     true
 )]
+// A local glob brings the struct in too; a glob of a module without one
+// still reaches the crate-wide alias.
+#[case::local_glob_of_declaring_module("use crate::models::*;", false)]
+#[case::local_glob_of_other_module("use crate::legacy::*;", true)]
+#[case::external_glob_is_not_local("use axum::response::*;", false)]
 fn same_named_struct_stops_crate_wide_lookup(#[case] handler: &str, #[case] expands: bool) {
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path();
@@ -409,8 +416,93 @@ fn same_named_struct_stops_crate_wide_lookup(#[case] handler: &str, #[case] expa
     let file: syn::File = syn::parse_str(handler).unwrap();
     let mut sig: syn::Signature = syn::parse_str("fn h() -> ApiResponse<u8>").unwrap();
     assert_eq!(
-        expand_return_type_alias(&mut sig, Some(&file), Some(src)),
+        expand_return_type_alias(&mut sig, None, Some(&file), Some(src)),
         expands
+    );
+}
+
+/// The local modules the globs of `items` name: `crate::m::*` → `m`, `super::*`
+/// → the parent, `crate::*` → the root; `self` and another crate name none, and
+/// a glob inside a group counts.
+#[rstest]
+#[case::crate_module("use crate::models::*;", vec![Qualifier::Module("models".to_string())])]
+#[case::super_parent("use super::*;", vec![Qualifier::Super])]
+#[case::crate_root("use crate::*;", vec![Qualifier::CrateRoot])]
+#[case::self_glob("use self::*;", vec![])]
+#[case::external_glob("use axum::response::*;", vec![])]
+#[case::grouped(
+    "use crate::{models::*, legacy::*};",
+    vec![Qualifier::Module("models".to_string()), Qualifier::Module("legacy".to_string())]
+)]
+fn glob_parents_name_local_modules(#[case] src: &str, #[case] expected: Vec<Qualifier>) {
+    let file: syn::File = syn::parse_str(src).unwrap();
+    assert_eq!(glob_parents(&file.items), expected);
+}
+
+/// `super::X` skips the handler module's own alias by file identity: a parent
+/// module declaring the identical text is still the parent's alias, so it is
+/// the one expanded (not dropped because its tokens equal the handler's).
+#[test]
+fn super_keeps_a_parent_alias_identical_to_the_own_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path();
+    let alias = "pub type ApiResult<T> = Result<Json<T>, Shared>;";
+    std::fs::write(src.join("lib.rs"), "mod routes;").unwrap();
+    std::fs::create_dir(src.join("routes")).unwrap();
+    std::fs::write(
+        src.join("routes").join("mod.rs"),
+        format!("pub mod users; {alias}"),
+    )
+    .unwrap();
+    let users = src.join("routes").join("users.rs");
+    std::fs::write(&users, alias).unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    let file: syn::File = syn::parse_str(alias).unwrap();
+    let mut sig: syn::Signature = syn::parse_str("fn h() -> super::ApiResult<u8>").unwrap();
+    assert!(expand_return_type_alias(
+        &mut sig,
+        Some(&users),
+        Some(&file),
+        Some(src)
+    ));
+    let output = &sig.output;
+    assert_eq!(
+        quote::quote!(#output).to_string(),
+        "-> Result < Json < u8 > , Shared >"
+    );
+}
+
+/// Only `src/lib.rs` / `src/main.rs` is the crate root: a `main.rs` in a
+/// subdirectory is an ordinary module, so `crate::ApiResult` names the
+/// root's alias alone (it is not ambiguous with the nested `main.rs`).
+#[test]
+fn nested_main_file_is_not_the_crate_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path();
+    std::fs::write(
+        src.join("lib.rs"),
+        "pub mod admin; pub type ApiResult<T> = Result<Json<T>, AppErr>;",
+    )
+    .unwrap();
+    std::fs::create_dir(src.join("admin")).unwrap();
+    std::fs::write(
+        src.join("admin").join("main.rs"),
+        "pub type ApiResult<T> = Result<Json<T>, AdminErr>;",
+    )
+    .unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    let file: syn::File = syn::parse_str("pub fn unrelated() {}").unwrap();
+    let mut sig: syn::Signature = syn::parse_str("fn h() -> crate::ApiResult<u8>").unwrap();
+    assert!(expand_return_type_alias(
+        &mut sig,
+        None,
+        Some(&file),
+        Some(src)
+    ));
+    let output = &sig.output;
+    assert_eq!(
+        quote::quote!(#output).to_string(),
+        "-> Result < Json < u8 > , AppErr >"
     );
 }
 
@@ -438,7 +530,7 @@ fn crate_wide_aliases_resolve_in_their_own_file() {
     let expand_in = |file_src: &str, ret: &str| {
         let file: syn::File = syn::parse_str(file_src).unwrap();
         let mut sig: syn::Signature = syn::parse_str(&format!("fn h() {ret}")).unwrap();
-        expand_return_type_alias(&mut sig, Some(&file), Some(src));
+        expand_return_type_alias(&mut sig, None, Some(&file), Some(src));
         let output = &sig.output;
         quote::quote!(#output).to_string()
     };
@@ -485,7 +577,7 @@ fn qualified_and_glob_imported_names_resolve_their_origin() {
     let expand_in = |file_src: &str, ret: &str| {
         let file: syn::File = syn::parse_str(file_src).unwrap();
         let mut sig: syn::Signature = syn::parse_str(&format!("fn h() {ret}")).unwrap();
-        expand_return_type_alias(&mut sig, Some(&file), Some(src));
+        expand_return_type_alias(&mut sig, None, Some(&file), Some(src));
         let output = &sig.output;
         quote::quote!(#output).to_string()
     };
@@ -526,7 +618,7 @@ fn crate_wide_scan_is_memoised_until_src_changes() {
     let expand_in = || {
         crate::schema_macro::file_cache::bump_epoch();
         let mut sig: syn::Signature = syn::parse_str("fn h() -> ApiResult<u8>").unwrap();
-        expand_return_type_alias(&mut sig, None, Some(src));
+        expand_return_type_alias(&mut sig, None, None, Some(src));
         let output = &sig.output;
         quote::quote!(#output).to_string()
     };
@@ -558,7 +650,7 @@ fn crate_wide_scan_is_memoised_until_src_changes() {
 #[test]
 fn default_return_is_untouched() {
     let mut sig: syn::Signature = syn::parse_str("fn handler()").unwrap();
-    assert!(!expand_return_type_alias(&mut sig, None, None));
+    assert!(!expand_return_type_alias(&mut sig, None, None, None));
 }
 
 #[test]
@@ -580,7 +672,7 @@ fn crate_wide_lookup_finds_unique_alias_and_rejects_ambiguity() {
     crate::schema_macro::file_cache::bump_epoch();
 
     let mut sig: syn::Signature = syn::parse_str("fn h() -> ApiResult<User>").unwrap();
-    assert!(expand_return_type_alias(&mut sig, None, Some(src)));
+    assert!(expand_return_type_alias(&mut sig, None, None, Some(src)));
     let output = &sig.output;
     assert_eq!(
         quote::quote!(#output).to_string(),
@@ -588,7 +680,7 @@ fn crate_wide_lookup_finds_unique_alias_and_rejects_ambiguity() {
     );
 
     let mut sig: syn::Signature = syn::parse_str("fn h() -> Dup").unwrap();
-    assert!(!expand_return_type_alias(&mut sig, None, Some(src)));
+    assert!(!expand_return_type_alias(&mut sig, None, None, Some(src)));
 }
 
 /// Round 14: a plain `use` names the module the alias comes from (like a
@@ -620,7 +712,7 @@ fn imported_alias_resolves_its_module_and_same_named_chains_follow() {
     let expand_in = |file_src: &str, ret: &str| {
         let file: syn::File = syn::parse_str(file_src).unwrap();
         let mut sig: syn::Signature = syn::parse_str(&format!("fn h() {ret}")).unwrap();
-        expand_return_type_alias(&mut sig, Some(&file), Some(src));
+        expand_return_type_alias(&mut sig, None, Some(&file), Some(src));
         let output = &sig.output;
         quote::quote!(#output).to_string()
     };

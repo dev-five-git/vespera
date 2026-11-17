@@ -315,8 +315,11 @@ fn parse_type_impl(
                                 EntityTarget::Unknown => Schema::default(),
                             }));
                         }
-                        // Fallback: generic object
-                        return SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)));
+                        // Fallback: a generic object, nullable like the entity
+                        // arm: sea-orm serializes an unloaded relation as `null`.
+                        return super::nullable::nullable(SchemaRef::Inline(Box::new(
+                            Schema::new(SchemaType::Object),
+                        )));
                     }
                     "HasMany" => {
                         // HasMany<Entity> -> nullable array of references to the

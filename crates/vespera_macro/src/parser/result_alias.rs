@@ -44,6 +44,7 @@ use syn::{ReturnType, Type};
 
 use crate::{
     collector::test_scope::{TestScope, attrs_test_only},
+    file_utils::normalize_path_key,
     parser::schema::is_builtin_openapi_type,
     schema_macro::file_cache,
 };
@@ -80,6 +81,18 @@ pub fn needs_alias_expansion(sig: &syn::Signature) -> bool {
 struct Scope<'a> {
     file: Cow<'a, syn::File>,
     module: Vec<String>,
+    /// The [`source_key`] of the file `file` is, when it is known (the
+    /// handler's file, or a file under `src/`); `None` when the caller gave
+    /// no path.
+    path: Option<String>,
+}
+
+/// The identity of a source file: its path normalized against the current
+/// directory, so the handler's path and the walked `src/` paths compare equal
+/// however each was spelled.
+fn source_key(path: &Path) -> String {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    normalize_path_key(&path.to_string_lossy(), &cwd)
 }
 
 impl Scope<'_> {
@@ -135,6 +148,7 @@ fn fn_module(items: &[syn::Item], name: &syn::Ident) -> Option<Vec<String>> {
 /// Returns `true` when the return type changed.
 pub fn expand_return_type_alias(
     sig: &mut syn::Signature,
+    same_path: Option<&Path>,
     same_file: Option<&syn::File>,
     src_dir: Option<&Path>,
 ) -> bool {
@@ -146,6 +160,7 @@ pub fn expand_return_type_alias(
         NextScope::Ready(Scope {
             module: fn_module(&file.items, &handler).unwrap_or_default(),
             file: Cow::Borrowed(file),
+            path: same_path.map(source_key),
         })
     });
     let mut expanded = false;
@@ -287,6 +302,7 @@ impl<'a> NextScope<'a> {
             Self::File(path, module) => parse_items(&path).map(|file| Scope {
                 file: Cow::Owned(file),
                 module,
+                path: Some(source_key(&path)),
             }),
         }
     }
@@ -345,7 +361,7 @@ fn scan_src_definitions(src_dir: &Path, name: &str) -> Rc<[SrcDefinition]> {
         if let Some(file) = parsed_with(path, &needle)
             && !test_scope.file_test_only(path)
         {
-            let module = file_module(path);
+            let module = file_module(path, src_dir);
             let root = module.is_none();
             let mut found = Vec::new();
             collect_aliases(&Cow::Owned(file), module.as_deref(), root, name, &mut found);
@@ -410,6 +426,14 @@ fn find_alias<'a>(
             // unrelated.
             Some(Import::Local) if renames_to(items, name) => return None,
             Some(Import::Local) => imported = import_parent(items, name),
+            // `use crate::models::*;` / `use super::*;` brings a same-named
+            // struct / enum into scope just as a named import does.
+            None if glob_parents(items)
+                .iter()
+                .any(|parent| imported_nominal(name, parent, scope, src_dir)) =>
+            {
+                return None;
+            }
             _ => {}
         }
         if imported == Some(Qualifier::Super)
@@ -423,8 +447,12 @@ fn find_alias<'a>(
     if let Some(scope) = scope {
         let mut found = Vec::new();
         collect_aliases(&scope.file, None, false, name, &mut found);
-        definitions.extend(found.into_iter().map(|(alias, scope, innermost, root)| {
-            (alias, NextScope::Ready(scope), innermost, root)
+        definitions.extend(found.into_iter().map(|(alias, found, innermost, root)| {
+            let found = Scope {
+                path: scope.path.clone(),
+                ..found
+            };
+            (alias, NextScope::Ready(found), innermost, root)
         }));
     }
     if let Some(src_dir) = src_dir {
@@ -446,11 +474,13 @@ fn find_alias<'a>(
             scope.and_then(|scope| scope.items().iter().find_map(|item| alias_item(item, name)));
         let named: Vec<Definition<'a>> = definitions
             .iter()
-            .filter(|(alias, _, module, root)| match qualifier {
+            .filter(|(alias, found, module, root)| match qualifier {
                 Qualifier::Module(qualifier) => module.as_deref() == Some(qualifier.as_str()),
                 Qualifier::CrateRoot => *root,
                 // Never the handler module's own alias.
-                Qualifier::Super => own.as_ref().is_none_or(|own| !same_definition(own, alias)),
+                Qualifier::Super => {
+                    !scope.is_some_and(|scope| is_own_alias(scope, own.as_ref(), found, alias))
+                }
             })
             .cloned()
             .collect();
@@ -475,6 +505,25 @@ fn find_alias<'a>(
         .then_some((alias, alias_scope))
 }
 
+/// Whether the definition `found` (of `alias`) is the alias of `scope`'s own
+/// module: the same module of the same file. The file is compared by identity
+/// (see [`source_key`]); when the scope's file is unknown, by its tokens
+/// (`own`, the alias the scope's module declares).
+fn is_own_alias(
+    scope: &Scope<'_>,
+    own: Option<&syn::ItemType>,
+    found: &NextScope<'_>,
+    alias: &syn::ItemType,
+) -> bool {
+    match (&scope.path, found) {
+        (Some(_), NextScope::Ready(found)) => found.module == scope.module,
+        (Some(own_path), NextScope::File(path, module)) => {
+            *module == scope.module && source_key(path) == *own_path
+        }
+        (None, _) => own.is_some_and(|own| same_definition(own, alias)),
+    }
+}
+
 /// The `type <name>` alias of the inline parent of `scope`'s module, with
 /// the parent's scope.
 fn inline_parent_alias<'a>(
@@ -485,6 +534,7 @@ fn inline_parent_alias<'a>(
     let parent_scope = Scope {
         file: scope.file.clone(),
         module: parent.to_vec(),
+        path: scope.path.clone(),
     };
     let alias = parent_scope
         .items()
@@ -493,13 +543,19 @@ fn inline_parent_alias<'a>(
     Some((alias, NextScope::Ready(parent_scope)))
 }
 
-/// The module a source file declares: its stem, the directory name for a
-/// `mod.rs`, nothing for the crate root.
-fn file_module(file: &Path) -> Option<String> {
+/// The module a source file under `src_dir` declares: its stem, the directory
+/// name for a `mod.rs`, nothing for the crate root (`lib.rs` / `main.rs`
+/// directly in `src_dir`). A `main.rs` / `lib.rs` deeper down (`src/admin/
+/// main.rs`, `src/bin/tool/main.rs`) is an ordinary module named by its stem.
+fn file_module(file: &Path, src_dir: &Path) -> Option<String> {
     let stem = file.file_stem()?.to_str()?;
+    let parent = file.parent()?;
+    let at_root = parent
+        .strip_prefix(src_dir)
+        .is_ok_and(|rest| rest.as_os_str().is_empty());
     match stem {
-        "lib" | "main" => None,
-        "mod" => file.parent()?.file_name()?.to_str().map(str::to_owned),
+        "lib" | "main" if at_root => None,
+        "mod" => parent.file_name()?.to_str().map(str::to_owned),
         _ => Some(stem.to_owned()),
     }
 }
@@ -563,6 +619,8 @@ fn collect_aliases<'a>(
             Scope {
                 file: file.clone(),
                 module,
+                // The caller knows the file's path (see `find_alias`).
+                path: None,
             },
             innermost,
             root,
@@ -578,6 +636,56 @@ fn declares_nominal(items: &[syn::Item], name: &str) -> bool {
         syn::Item::Union(item) => item.ident == name && !attrs_test_only(&item.attrs),
         _ => false,
     })
+}
+
+/// The module each glob of this crate among `items` imports from (`crate::
+/// models::*` → `models`, `super::*` → the parent, `crate::*` → the root).
+/// A glob of another crate, or of `self`, names no module of this crate.
+fn glob_parents(items: &[syn::Item]) -> Vec<Qualifier> {
+    fn walk(
+        tree: &syn::UseTree,
+        root: Option<&syn::Ident>,
+        parent: Option<&syn::Ident>,
+        items: &[syn::Item],
+        out: &mut Vec<Qualifier>,
+    ) {
+        match tree {
+            syn::UseTree::Path(path) => walk(
+                &path.tree,
+                root.or(Some(&path.ident)),
+                Some(&path.ident),
+                items,
+                out,
+            ),
+            syn::UseTree::Group(group) => {
+                for tree in &group.items {
+                    walk(tree, root, parent, items, out);
+                }
+            }
+            syn::UseTree::Glob(_) => {
+                let local =
+                    root.is_some_and(|root| is_local_root(root) || declares_module(items, root));
+                if let Some(parent) = parent.filter(|_| local) {
+                    out.extend(match parent.to_string().as_str() {
+                        "crate" => Some(Qualifier::CrateRoot),
+                        "super" => Some(Qualifier::Super),
+                        "self" => None,
+                        _ => Some(Qualifier::Module(
+                            syn::ext::IdentExt::unraw(parent).to_string(),
+                        )),
+                    });
+                }
+            }
+            syn::UseTree::Name(_) | syn::UseTree::Rename(_) => {}
+        }
+    }
+    let mut out = Vec::new();
+    for item in items {
+        if let syn::Item::Use(item_use) = item {
+            walk(&item_use.tree, None, None, items, &mut out);
+        }
+    }
+    out
 }
 
 /// Where a plain `use` among `items` imports `name` from: the module
@@ -652,7 +760,7 @@ fn imported_nominal(
     let top_level = |root_only: bool| {
         src_dir.is_some_and(|src_dir| {
             file_cache::list_rs_files(src_dir).iter().any(|path| {
-                (!root_only || file_module(path).is_none())
+                (!root_only || file_module(path, src_dir).is_none())
                     && parsed_with(path, name)
                         .is_some_and(|file| declares_nominal(&file.items, name))
             })
@@ -666,6 +774,7 @@ fn imported_nominal(
                 let parent = Scope {
                     file: scope.file.clone(),
                     module: parent.to_vec(),
+                    path: scope.path.clone(),
                 };
                 declares_nominal(parent.items(), name)
             }
@@ -696,7 +805,12 @@ fn nominal_in_module(name: &str, module: &str, scope: &Scope<'_>, src_dir: Optio
         || src_dir.is_some_and(|src_dir| {
             file_cache::list_rs_files(src_dir).iter().any(|path| {
                 parsed_with(path, name).is_some_and(|file| {
-                    walk(&file.items, file_module(path).as_deref(), name, module)
+                    walk(
+                        &file.items,
+                        file_module(path, src_dir).as_deref(),
+                        name,
+                        module,
+                    )
                 })
             })
         })
