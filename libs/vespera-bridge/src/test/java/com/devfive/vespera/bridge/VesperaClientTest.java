@@ -448,6 +448,29 @@ class VesperaClientTest {
         assertTrue(again.getMessage().contains("already sent"), again.getMessage());
     }
 
+    /** An IOException before the body was read: the same request can be sent again. */
+    @Test
+    void streamedIoFailureBeforeReadingStaysSendable() throws Exception {
+        boolean[] ready = {false};
+        FakeTransport flaky = new FakeTransport() {
+            @Override
+            public byte[] dispatchStreaming(byte[] header, InputStream in, OutputStream out)
+                    throws IOException {
+                if (!ready[0]) {
+                    throw new IOException("native dispatch failed before the body");
+                }
+                return super.dispatchStreaming(header, in, out);
+            }
+        };
+        byte[] payload = "upload".getBytes(StandardCharsets.UTF_8);
+        VesperaRequest req = new VesperaClient(flaky, null).post("/s")
+                .body(new ByteArrayInputStream(payload), null);
+        assertThrows(VesperaClientException.class, req::send);
+        ready[0] = true;
+        assertEquals(200, req.send().status(), "retried after the failed dispatch");
+        assertArrayEquals(payload, flaky.uploaded);
+    }
+
     @Test
     void streamedBodyFailureIsATransportFailureAndSaysWhetherBodyBytesWentOut() {
         VesperaClient failing = new VesperaClient(new FakeTransport() {

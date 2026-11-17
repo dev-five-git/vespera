@@ -140,25 +140,28 @@ final class HeaderPolicy {
         return result;
     }
 
+    /**
+     * Adds the field names a {@code Connection} value nominates (RFC 9110
+     * section 7.6.1: each of them is hop-by-hop for this message). Every
+     * non-empty token is kept, however many there are and however long: a
+     * capped list would forward the nominated headers past the cap, so the
+     * header value itself is the bound (the container limits request headers,
+     * the wire header limit bounds responses).
+     */
     static Set<String> addConnectionTokens(Set<String> tokens, String value) {
         int start = 0;
         int len = value.length();
         Set<String> result = tokens;
-        int tokenCount = 0;
         while (start < len) {
             int comma = value.indexOf(',', start);
             int end = comma >= 0 ? comma : len;
             int tokenStart = trimHttpWhitespaceStart(value, start, end);
             int tokenEnd = trimHttpWhitespaceEnd(value, tokenStart, end);
-            if (tokenStart < tokenEnd && tokenEnd - tokenStart <= 128) {
+            if (tokenStart < tokenEnd) {
                 if (result == null) {
                     result = new HashSet<>(4);
                 }
                 result.add(toLowerCaseAscii(value, tokenStart, tokenEnd));
-                tokenCount++;
-                if (tokenCount >= 32) {
-                    break;
-                }
             }
             if (comma < 0) {
                 break;

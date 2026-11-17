@@ -265,6 +265,24 @@ class CurrentUserTest {
     }
 
     @Test
+    void aWorldWritableNonStickyTmpdirIsNotProbed() throws Exception {
+        assumeTrue(posix(), "POSIX file permissions required");
+        Path shared = Files.createTempDirectory(dir, "shared-");
+        Files.setPosixFilePermissions(shared, PosixFilePermissions.fromString("rwxrwxrwx"));
+        String saved = System.getProperty("java.io.tmpdir");
+        try {
+            System.setProperty("java.io.tmpdir", shared.toString());
+            // Another local user could replace the probe here: no probe owner is trusted.
+            assertNull(CurrentUser.SYSTEM.tmpdirProbeOwner());
+            try (var listing = Files.list(shared)) {
+                assertEquals(0, listing.count(), "no probe was created in the shared directory");
+            }
+        } finally {
+            System.setProperty("java.io.tmpdir", saved);
+        }
+    }
+
+    @Test
     void userNameLookupIgnoresUnknownAndPlaceholderNames() throws Exception {
         String saved = System.getProperty("user.name");
         try {

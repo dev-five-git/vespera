@@ -430,7 +430,7 @@ SpringApplication.run(ReactiveApplication.class, args);     // spring-boot-start
 
 **Shared behaviour.** The following work exactly as on the servlet side:
 
-- `HeaderPolicy` (hop-by-hop and `Connection`-nominated headers)
+- `HeaderPolicy` (hop-by-hop and `Connection`-nominated headers). Every name a `Connection` header nominates is treated as hop-by-hop, in both directions and however many there are (RFC 9110 section 7.6.1); the header value size is the only bound, so a long list is never cut short and its named headers forwarded.
 - the request id (`vespera.bridge.request-id.*`, put in the MDC around the dispatch call)
 - `remote_addr` and `scheme`
 - CORS ownership (`cors=spring|rust`)
@@ -513,6 +513,7 @@ vespera:
 ```
 
 - With `exposed-apps` set, any other app name is answered with **`404` by the proxy itself — the request is never dispatched to Rust**. The default app (`_default`, or no header) is always selectable.
+- An allowlist that names no app is **rejected at startup** with `IllegalArgumentException`: an empty value (`exposed-apps: []`, or an unset placeholder such as `${ADMIN_APP:}`) used to mean "unrestricted" and now fails context startup. Remove the property to allow any app; the same applies to the `HeaderAppNameResolver` / `ReactiveHeaderAppNameResolver` constructors (`null` is the only unrestricted value).
 - Without it the old behaviour is kept, but the first request that selects a non-default app logs a one-time `WARN`.
 - Apps that must not be reachable from the public internet should not be selectable at all: either leave them out of `exposed-apps` and reach them through a separate deployment, or let a **trusted gateway** set the header (and strip any client-supplied copy), or replace the resolver with one that derives the app from something the client cannot forge (path, host, authenticated principal) — a custom `AppNameResolver` bean may throw `UnknownAppException` to produce the same pre-dispatch `404`.
 - The selection header is **not forwarded** to Rust (`AppNameResolver.selectionHeaderName()`), so handlers never see — or trust — it.
@@ -1365,7 +1366,7 @@ The bundled lookup is a plain classpath resource lookup, so the library may come
 
 **musl vs glibc (Linux).** A glibc `.so` cannot be loaded into a musl JVM (Alpine) and vice versa, so musl builds live under their own `native/linux-<arch>-musl/` folder. On Linux the bridge detects the libc the JVM itself is linked against from `/proc/self/maps` (no process is spawned; a mapped `ld-musl-*` means musl) — falling back, without `/proc`, to "`/lib/ld-musl-*` exists and no `ld-linux*` loader does" — and can be forced with `-Dvespera.native.libc=musl|glibc`. On musl it tries `native/linux-<arch>-musl/` first and only when no musl library is bundled loads `native/linux-<arch>/` with a WARN (that load most likely fails); glibc JVMs only ever look at `native/linux-<arch>/`. Build the musl library with a `*-linux-musl` Rust target (a cdylib needs `RUSTFLAGS="-C target-feature=-crt-static"`).
 
-The platforms CI builds and tests are `linux-x86_64`, `linux-aarch64`, `linux-x86_64-musl`, `linux-aarch64-musl`, `macos-x86_64`, `macos-aarch64`, `windows-x86_64`. The loader-failure diagnostics also probe `windows-aarch64`, `windows-x86`, `linux-arm`, `linux-riscv64`, `linux-ppc64le` and `linux-s390x`, and the Gradle plugin accepts any `<os>-<arch>` target key; none of those are built or tested by CI. Place the cdylib at `src/main/resources/native/{platform}/` to bundle it, or let the [vespera-bridge Gradle plugin](#one-line-setup-via-the-gradle-plugin-recommended) (`vespera { ... }`) build and place it, as the demo's [`build.gradle.kts`](../../examples/rust-jni-demo/java/demo-app/build.gradle.kts) does.
+The platforms CI builds and tests are `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-aarch64` and `windows-x86_64` (the glibc Linux JVM and the Windows/macOS hosts). The `-musl` folders are built by the Gradle plugin and loaded by the bridge on a musl JVM, but no CI job runs an Alpine/musl host, so that path is not exercised by CI. The loader-failure diagnostics also probe `windows-aarch64`, `windows-x86`, `linux-arm`, `linux-riscv64`, `linux-ppc64le` and `linux-s390x`, and the Gradle plugin accepts any `<os>-<arch>` target key; none of those are built or tested by CI. Place the cdylib at `src/main/resources/native/{platform}/` to bundle it, or let the [vespera-bridge Gradle plugin](#one-line-setup-via-the-gradle-plugin-recommended) (`vespera { ... }`) build and place it, as the demo's [`build.gradle.kts`](../../examples/rust-jni-demo/java/demo-app/build.gradle.kts) does.
 
 ## GraalVM native image
 

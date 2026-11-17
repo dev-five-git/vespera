@@ -53,7 +53,9 @@ class ParkingDispatchE2ETest {
     @Test
     void waitingHandlerIsSpawnedAndCompletesTheFuture() throws Exception {
         CompletableFuture<byte[]> future = new CompletableFuture<>();
-        assertNull(AsyncDispatch.dispatchPollFirst0(future, get("/diag/sleep/pollfirst-e2e/30")),
+        // The timer is long enough that a stalled first poll (a loaded CI runner)
+        // cannot make the handler finish before the pending check.
+        assertNull(AsyncDispatch.dispatchPollFirst0(future, get("/diag/sleep/pollfirst-e2e/2000")),
                 "a handler waiting on a timer is still pending after the first poll");
         VesperaBridge.DecodedResponse r = VesperaBridge.decodeResponse(future.get(30, TimeUnit.SECONDS));
         assertEquals(200, r.status());

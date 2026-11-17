@@ -89,13 +89,25 @@ class CancelOnDisconnectE2ETest {
         }
     }
 
-    /** Accepts {@code okWrites} body writes, then throws like a dead socket. */
+    /**
+     * Accepts {@code okWrites} body writes, then throws like a dead socket. By
+     * default the failure is the next {@code write}; with {@code failFlush} the
+     * writes all succeed and the failure is the {@code flush} after them (the
+     * header-first symbols flush empty-chunk hints while the body waits, so a
+     * flush can be the first call that sees the dead socket).
+     */
     private static final class DisconnectingStream extends OutputStream {
         private final int okWrites;
+        private final boolean failFlush;
         private int writes;
 
         DisconnectingStream(int okWrites) {
+            this(okWrites, false);
+        }
+
+        DisconnectingStream(int okWrites, boolean failFlush) {
             this.okWrites = okWrites;
+            this.failFlush = failFlush;
         }
 
         @Override
@@ -105,14 +117,14 @@ class CancelOnDisconnectE2ETest {
 
         @Override
         public void write(byte[] b, int off, int len) throws IOException {
-            if (++writes > okWrites) {
+            if (++writes > okWrites && !failFlush) {
                 throw new IOException("Broken pipe (client disconnected)");
             }
         }
 
         @Override
         public void flush() throws IOException {
-            if (writes >= okWrites) {
+            if (failFlush && writes >= okWrites) {
                 throw new IOException("Broken pipe (client disconnected)");
             }
         }
@@ -137,6 +149,23 @@ class CancelOnDisconnectE2ETest {
             // The truncated stream surfaces as an IOException thrown from native
             // (the JNI call declares none, so it is caught generically). Any other
             // failure is a setup error and must not be swallowed.
+            if (!(expected instanceof IOException)) {
+                throw expected;
+            }
+        }
+        assertDroppedPromptly(key, start);
+    }
+
+    @Test
+    void headerFirstStreamingDropsTheBodyWhenTheClientFlushFails() throws Exception {
+        String key = "cancel-stream-flush-" + System.nanoTime();
+        byte[] wire = VesperaBridge.encodeRequest(
+                "GET", String.format(DRIP, key), null, Map.of(), null);
+        long start = System.nanoTime();
+        try {
+            VesperaBridge.dispatchStreamingWithHeader(wire, header -> { }, new DisconnectingStream(2, true));
+        } catch (Exception expected) {
+            // See headerFirstStreamingDropsTheBodyWhenTheClientWriteFails.
             if (!(expected instanceof IOException)) {
                 throw expected;
             }

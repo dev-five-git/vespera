@@ -24,8 +24,10 @@ public final class ReactiveHeaderAppNameResolver implements ReactiveAppNameResol
     /**
      * @param headerName  HTTP header to inspect (e.g. {@code "X-Vespera-App"})
      * @param exposedApps app names a request may select ({@code _default} is
-     *                    always allowed); {@code null} or empty keeps the
-     *                    unrestricted behaviour
+     *                    always allowed); {@code null} keeps the unrestricted
+     *                    behaviour. An empty or blank-only collection is rejected
+     *                    with {@link IllegalArgumentException} so an unset
+     *                    placeholder such as {@code ${VAR:}} cannot open the proxy
      */
     public ReactiveHeaderAppNameResolver(String headerName, Collection<String> exposedApps) {
         this.selection = new AppHeaderSelection(headerName, exposedApps);

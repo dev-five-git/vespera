@@ -24,7 +24,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
 import org.springframework.test.web.reactive.server.WebTestClient;
@@ -96,6 +98,26 @@ class VesperaReactiveProxyHandlerTest {
             ReactivePrincipalResolver principals, long maxRequest, long maxResponse, CorsHandling cors) {
         return ReactiveTestSupport.handler(transport, apps, principals, maxRequest, maxResponse,
                 "X-Request-Id", List.of(events::add), cors);
+    }
+
+    /**
+     * A body that completes normally after fewer bytes than its Content-Length
+     * (the container may end it that way): Rust must not see it as a complete
+     * request, and the proxy answers 400 like the servlet path. Reactor-netty
+     * itself reports a half-closed request as an error, so this drives the
+     * exchange directly.
+     */
+    @Test
+    void aBodyThatEndsShortOfItsDeclaredLengthIsRefusedBeforeRust() {
+        VesperaReactiveProxyHandler proxy = handler();
+        MockServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/upload")
+                .header(HttpHeaders.CONTENT_LENGTH, "1000")
+                .header("Accept", "application/json")
+                .body(Flux.just(new DefaultDataBufferFactory().wrap(new byte[400]))));
+
+        proxy.handle(exchange).block();
+        assertEquals(HttpStatus.BAD_REQUEST, exchange.getResponse().getStatusCode());
+        assertTrue(transport.requests.isEmpty(), "a short body must not reach Rust");
     }
 
     private VesperaReactiveProxyHandler handler() {

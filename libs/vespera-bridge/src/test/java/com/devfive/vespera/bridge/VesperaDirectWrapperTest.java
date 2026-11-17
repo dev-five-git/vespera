@@ -338,13 +338,15 @@ class VesperaDirectWrapperTest {
     }
 
     @Test
-    void growthRoundsUpAndStopsAtConfiguredMaximum() throws Exception {
+    void growthRoundsUpToTheNeedAndDoublesWithinTheCap() throws Exception {
         Method grownCapacity = VesperaDirectBufferPool.class.getDeclaredMethod("grownCapacity", int.class);
         grownCapacity.setAccessible(true);
 
         assertEquals(64 * 1024, grownCapacity.invoke(null, 1));
         assertEquals(4 * 1024 * 1024, grownCapacity.invoke(null, 3 * 1024 * 1024));
-        assertEquals(5 * 1024 * 1024, grownCapacity.invoke(null, 5 * 1024 * 1024));
+        // A need at the maximum is served at the maximum; larger needs never reach
+        // the pool (they take the heap fallback), so no above-cap case is asserted.
+        assertEquals(4 * 1024 * 1024, grownCapacity.invoke(null, 4 * 1024 * 1024));
     }
 
     @Test
@@ -391,7 +393,7 @@ class VesperaDirectWrapperTest {
     }
 
     @Test
-    void platformThreadDetectionMatchesJavaSeventeenRuntime() {
+    void currentPlatformThreadIsNotVirtual() {
         assertFalse(VesperaDirectBufferPool.currentThreadIsVirtual());
     }
 
