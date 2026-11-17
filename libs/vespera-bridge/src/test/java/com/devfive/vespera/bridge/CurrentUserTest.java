@@ -279,6 +279,7 @@ class CurrentUserTest {
             }
         } finally {
             System.setProperty("java.io.tmpdir", saved);
+            Files.deleteIfExists(shared);
         }
     }
 
