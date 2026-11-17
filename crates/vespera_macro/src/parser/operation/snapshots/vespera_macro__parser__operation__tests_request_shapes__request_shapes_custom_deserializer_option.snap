@@ -10,39 +10,23 @@ expression: "serde_json::to_string_pretty(&summary).unwrap()"
       "name": "since",
       "required": true,
       "schema": {
-        "format": "int64",
-        "type": [
-          "integer",
-          "null"
-        ]
+        "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
       }
     },
     {
-      "explode": true,
       "in": "query",
       "name": "tags",
       "required": true,
       "schema": {
-        "items": {
-          "type": "string"
-        },
-        "type": [
-          "array",
-          "null"
-        ]
-      },
-      "style": "form"
+        "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+      }
     },
     {
       "in": "query",
       "name": "until",
       "required": false,
       "schema": {
-        "format": "int64",
-        "type": [
-          "integer",
-          "null"
-        ]
+        "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
       }
     },
     {

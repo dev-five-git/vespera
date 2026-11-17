@@ -224,12 +224,16 @@ fn scoped_names(
     false
 )]
 #[case::enum_into(r#"#[serde(into = "String")] enum E { A }"#, true)]
-// The response view hides a `with` / `serialize_with` field's shape, the
-// request view documents its Rust type; a `deserialize_with` alone documents
-// the Rust type on both sides.
-#[case::with_both_sides(r#"struct A { #[serde(with = "m")] x: u8 }"#, true)]
-#[case::deserialize_with(r#"struct A { #[serde(deserialize_with = "f")] x: u8 }"#, false)]
-#[case::tuple_deserialize_with(r#"struct A(#[serde(deserialize_with = "f")] u8);"#, false)]
+// A codec documents the same shape on both sides when it is a well-known
+// module (`with` writes and reads it); a codec on one side only documents
+// that side's shape, which differs from the Rust type the other side shows.
+#[case::with_table_both_sides(
+    r#"struct A { #[serde(with = "chrono::serde::ts_seconds")] x: DateTime<Utc> }"#,
+    false
+)]
+#[case::with_string_both_sides(r#"struct A { #[serde(with = "m")] x: String }"#, false)]
+#[case::deserialize_with(r#"struct A { #[serde(deserialize_with = "f")] x: u8 }"#, true)]
+#[case::tuple_deserialize_with(r#"struct A(#[serde(deserialize_with = "f")] u8);"#, true)]
 #[case::serialize_with(r#"struct A { #[serde(serialize_with = "f")] x: u8 }"#, true)]
 #[case::deserialize_with_value_type(
     r#"struct A { #[serde(deserialize_with = "f")] #[schema(value_type = u8)] x: u8 }"#,

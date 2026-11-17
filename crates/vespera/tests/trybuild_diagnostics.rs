@@ -48,4 +48,7 @@ fn ui_diagnostics() {
     // Two fields resolving to one multipart field name.
     #[cfg(feature = "multipart")]
     t.compile_fail("tests/ui/multipart_duplicate_field.rs");
+    // A codec whose wire shape is unknown and has no `value_type`: the error
+    // is spanned on the `#[serde(with = "..")]` attribute.
+    t.compile_fail("tests/ui/codec_unknown_shape.rs");
 }

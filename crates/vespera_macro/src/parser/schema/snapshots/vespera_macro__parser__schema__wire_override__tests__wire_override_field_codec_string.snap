@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/parser/schema/wire_override.rs
+expression: "format!(\"{src} => {}\", serde_json::to_string(&schema).unwrap())"
+---
+#[serde(with = "m")] x: Option<String> => {"type":["string","null"]}

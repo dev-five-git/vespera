@@ -6,7 +6,7 @@ expression: "serde_json::to_string_pretty(&spec[\"components\"][\"schemas\"][com
   "description": "Timestamps written by custom serde functions.",
   "properties": {
     "checksum": {
-      "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+      "type": "string"
     },
     "createdAt": {
       "description": "Unix seconds (`chrono::serde::ts_seconds`) — an integer, not a\ndate-time string.",

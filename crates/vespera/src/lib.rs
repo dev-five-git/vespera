@@ -156,8 +156,10 @@ pub use vespera_macro::MultipartFeatureDisabled as Multipart;
 /// `object`.  `serde_json::Value` fields (and SeaORM's `Json` /
 /// `JsonValue` aliases) are allowlisted automatically.  A field with
 /// `#[schema(value_type = T)]` asserts `T` instead of its own type, and a
-/// field converted by `#[serde(with = "..")]` without `value_type` is
-/// documented as any value and not asserted.
+/// field converted by `#[serde(with = "..")]` is documented from its codec
+/// (a well-known module such as `chrono::serde::ts_seconds`, a string type as
+/// `string`) and not asserted; any other codec without `value_type` is a
+/// compile error (its wire shape is unknown).
 ///
 /// The trait and the `vespera::Schema` derive macro share the same
 /// name but live in different namespaces (trait vs. derive-macro), so

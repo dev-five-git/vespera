@@ -1,0 +1,5 @@
+error: `checksum` uses `#[serde(with = "..")]` (or deserialize_with/serialize_with), so its wire shape is unknown; add `#[schema(value_type = ..)]` (e.g. `value_type = String`, or `serde_json::Value` for any JSON)
+ --> tests/ui/codec_unknown_shape.rs:9:5
+  |
+9 |     #[serde(with = "hex_bytes")]
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

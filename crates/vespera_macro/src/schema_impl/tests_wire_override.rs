@@ -80,6 +80,28 @@ fn malformed_schema_constraints_are_compile_errors(#[case] src: &str) {
     assert!(expanded.to_string().contains("compile_error"), "{expanded}");
 }
 
+/// A custom serde codec with no well-known wire shape, no string type and no
+/// `value_type` is a compile error on the field (struct fields and enum
+/// variant fields alike).
+#[rstest]
+#[case::struct_field(r#"struct S { #[serde(with = "hex")] checksum: Vec<u8> }"#)]
+#[case::enum_variant_field(r#"enum E { A(#[serde(deserialize_with = "f")] u8) }"#)]
+fn unknown_codec_fields_are_compile_errors(#[case] src: &str) {
+    let input: syn::DeriveInput = syn::parse_str(src).unwrap();
+    let (metadata, expanded) = process_derive_schema(&input);
+    assert!(metadata.is_none(), "{src}");
+    assert!(expanded.to_string().contains("compile_error"), "{expanded}");
+}
+
+#[test]
+fn value_type_overrides_an_unknown_codec() {
+    let input: syn::DeriveInput = syn::parse_str(
+        r#"struct S { #[serde(with = "hex")] #[schema(value_type = String)] checksum: Vec<u8> }"#,
+    )
+    .unwrap();
+    assert!(process_derive_schema(&input).0.is_some());
+}
+
 #[test]
 fn well_formed_positional_constraints_derive() {
     let input: syn::DeriveInput = syn::parse_str(

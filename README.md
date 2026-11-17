@@ -240,7 +240,8 @@ pub struct Event {
     #[serde(with = "vespera::chrono::serde::ts_seconds")]
     #[schema(value_type = i64)]
     pub created_at: DateTime<Utc>,
-    #[serde(with = "my_hex")]          // no value_type → `{}` + a note
+    #[serde(with = "my_hex")]          // compile error: add value_type = String
+    #[schema(value_type = String)]
     pub checksum: Vec<u8>,
 }
 
@@ -252,10 +253,34 @@ pub struct Rgb { pub r: u8, pub g: u8, pub b: u8 }
 | Attribute | Documented as |
 |---|---|
 | field `#[schema(value_type = T)]` | `T`'s schema (constraints such as `minimum` still apply) |
-| field `#[serde(with / serialize_with / deserialize_with)]` without `value_type` | responses (`with` / `serialize_with`): `{}` (any value) with a description saying the shape is unknown; requests: the field's Rust type, like any other field (add `value_type` when the function reads another shape). An `Option` read by a custom deserializer is `required` in requests, as in serde |
+| field `#[serde(with / serialize_with / deserialize_with)]` on a well-known codec module (table below) | the shape the codec writes / reads: `chrono::serde::ts_seconds` → `integer`, `time::serde::rfc3339` → `string` (`date-time`), … |
+| field with a codec on a string type (`String`, `&str`, `Cow<str>`, `Box<str>`, `Arc<str>`, or an `Option` of one), no table match | `string` (`null` allowed for `Option`), assuming the codec keeps the value a string (trimming, lower-casing, empty as `None`) |
+| field with any other codec, no `value_type` | **compile error** on the serde attribute: its wire shape is unknown; add `#[schema(value_type = ..)]` (e.g. `String`, or `serde_json::Value` for any JSON) |
+| field `#[schema(any)]` | `{}` (any JSON value), no error |
 | container `#[serde(into = "T")]` | responses use `T`; requests keep the fields (`{Name}Input`) |
 | container `#[serde(from = "T")]` / `try_from` | requests use `T` (`{Name}Input`); responses keep the fields |
 | container `#[schema(value_type = T)]` | `T` in both directions (wins over `into` / `from`) |
+
+A codec applies only on the side it names: `with` affects both views,
+`serialize_with` only responses, `deserialize_with` only requests. The other
+view documents the field's Rust type as usual. An `Option` read by a custom
+deserializer is `required` in requests, as in serde.
+
+Well-known codec modules (matched on the full path; `_option` variants also
+accept `null`; `serialize_with` / `deserialize_with` paths are matched on the
+module, the final fn segment removed):
+
+| Codec | Documented as |
+|---|---|
+| `chrono::serde::ts_seconds`, `ts_milliseconds`, `ts_microseconds`, `ts_nanoseconds` (and `*_option`) | `integer` (`int64`) / `integer` or `null` |
+| `time::serde::rfc3339`, `time::serde::iso8601` (and `::option`) | `string`, `format: date-time` / `null` |
+| `time::serde::timestamp` (and `::option`) | `integer` / `integer` or `null` |
+| `humantime_serde` (and `humantime_serde::option`) | `string` / `string` or `null` |
+| `serde_with::rust::display_fromstr` | `string` |
+| `serde_bytes` | array of integers `0..=255` (what `serde_json` writes) |
+
+The re-export paths (`vespera::chrono::serde::ts_seconds`) are not in the
+table: add `value_type` there.
 
 The derive's `Schema` assertion checks `T` instead of the field type, and
 skips a field whose type is never documented (`with` without `value_type`).
