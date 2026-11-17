@@ -710,7 +710,7 @@ pub fn to_response_envelope_text(parts: ResponseParts) -> ResponseEnvelope {
 // any genuinely-needed data.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the 9 params are distinct per-request inputs; bundling them into a \
+    reason = "the 10 params are distinct per-request inputs; bundling them into a \
               struct would add indirection on this hot path"
 )]
 pub async fn dispatch_and_split<'h>(

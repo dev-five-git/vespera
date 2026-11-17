@@ -24,6 +24,9 @@ async fn spec() -> Value {
 #[case::valid("Bearer demo-token", StatusCode::OK)]
 #[case::wrong_token("Bearer nope", StatusCode::UNAUTHORIZED)]
 #[case::not_bearer("Basic demo-token", StatusCode::UNAUTHORIZED)]
+// The auth-scheme name is case-insensitive (RFC 9110 section 11.1).
+#[case::lowercase_scheme("bearer demo-token", StatusCode::OK)]
+#[case::uppercase_scheme("BEARER demo-token", StatusCode::OK)]
 #[tokio::test]
 async fn bearer_route_checks_the_token(#[case] authorization: &str, #[case] status: StatusCode) {
     let server = TestServer::new(create_app().await);

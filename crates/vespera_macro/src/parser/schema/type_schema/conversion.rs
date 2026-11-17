@@ -31,6 +31,8 @@ use super::super::{
 
 mod schema_def;
 use schema_def::{SchemaDef, parse_schema_def, ref_override_of, schema_name_of};
+mod tuple_schema;
+use tuple_schema::tuple_array_schema;
 
 /// Whether `ident` names a type that this crate already knows how to map to
 /// an OpenAPI schema — Rust primitives, `String`/`str`, the chrono/time
@@ -792,26 +794,6 @@ fn component_name(ident: &str, definition: Option<&str>) -> String {
         .filter(|def| def.contains("[schema") && def.contains("name"))
         .and_then(schema_name_of)
         .unwrap_or_else(|| ident.rsplit("::").next().unwrap_or(ident).to_owned())
-}
-
-/// Fixed-length JSON array for a Rust tuple / tuple struct / tuple variant:
-/// `prefixItems` (one schema per position) with `minItems == maxItems == len`.
-fn tuple_array_schema<'t>(
-    elems: impl ExactSizeIterator<Item = &'t Type>,
-    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
-    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
-) -> Schema {
-    let len = elems.len();
-    let prefix_items: Vec<SchemaRef> = elems
-        .map(|ty| parse_type_to_schema_ref(ty, known_schemas, struct_definitions))
-        .collect();
-    Schema {
-        prefix_items: Some(prefix_items),
-        min_items: Some(len),
-        max_items: Some(len),
-        items: None,
-        ..Schema::new(SchemaType::Array)
-    }
 }
 
 /// First *type* argument of `<...>` (skips lifetimes, e.g. `Cow<'a, str>`).

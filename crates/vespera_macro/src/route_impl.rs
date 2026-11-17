@@ -133,24 +133,54 @@ pub fn current_crate_routes() -> Arc<Vec<StoredRouteInfo>> {
     crate::macro_storage::current_crate_items(&ROUTE_STORAGE)
 }
 
-/// Extract `u16` error status codes from a `syn::ExprArray`.
-fn extract_error_status_codes(arr: &syn::ExprArray) -> Option<Vec<u16>> {
-    let codes: Vec<u16> = arr
+/// The error for an item `#[route]` cannot parse as a function.
+///
+/// An item that starts like a function (the `fn` keyword before its first
+/// parenthesised or braced group) keeps syn's own message, which names the real
+/// fault (a missing comma in the parameter list, a trailing token). Any other
+/// item is reported as not a function.
+fn route_item_error(item: &proc_macro2::TokenStream, error: &syn::Error) -> syn::Error {
+    use proc_macro2::{Delimiter, TokenTree};
+    let is_fn = item
+        .clone()
+        .into_iter()
+        .take_while(|token| {
+            !matches!(token, TokenTree::Group(group) if group.delimiter() != Delimiter::Bracket)
+        })
+        .any(|token| matches!(&token, TokenTree::Ident(ident) if ident == "fn"));
+    if is_fn {
+        syn::Error::new(error.span(), format!("#[route] attribute: {error}"))
+    } else {
+        syn::Error::new(
+            error.span(),
+            "#[route] attribute: can only be applied to functions, not other items. Move or remove the attribute.",
+        )
+    }
+}
+
+/// Extract the `u16` error status codes of `error_status = [...]`.
+///
+/// Every entry must be an integer literal that fits `u16`. A dropped entry
+/// (a named constant, an out-of-range status) would leave its response
+/// undocumented with no diagnostic, so it is a compile error instead.
+fn extract_error_status_codes(arr: &syn::ExprArray) -> syn::Result<Option<Vec<u16>>> {
+    let codes = arr
         .elems
         .iter()
-        .filter_map(|elem| {
-            if let syn::Expr::Lit(syn::ExprLit {
+        .map(|elem| match elem {
+            syn::Expr::Lit(syn::ExprLit {
                 lit: syn::Lit::Int(lit_int),
                 ..
-            }) = elem
-            {
-                lit_int.base10_parse::<u16>().ok()
-            } else {
-                None
-            }
+            }) => lit_int.base10_parse::<u16>().map_err(|_| {
+                syn::Error::new_spanned(elem, "#[route] `error_status` entries must be HTTP status codes (`u16` literals)")
+            }),
+            _ => Err(syn::Error::new_spanned(
+                elem,
+                "#[route] `error_status` entries must be integer literals, e.g. `error_status = [400, 404]`",
+            )),
         })
-        .collect();
-    if codes.is_empty() { None } else { Some(codes) }
+        .collect::<syn::Result<Vec<u16>>>()?;
+    Ok((!codes.is_empty()).then_some(codes))
 }
 
 /// Reject any non-string-literal element of a `[...]` attribute array with a
@@ -211,41 +241,39 @@ fn parse_example_string(lit: &syn::LitStr) -> serde_json::Value {
 }
 
 /// Extract typed response status/schema pairs from `responses = [(404, NotFoundError)]`.
-fn extract_typed_responses(arr: &syn::ExprArray) -> Option<Vec<(u16, String)>> {
-    let responses: Vec<(u16, String)> = arr
+///
+/// Every entry must be a `(status literal, schema path)` tuple: a malformed
+/// entry is a compile error, not a response the document silently lacks.
+fn extract_typed_responses(arr: &syn::ExprArray) -> syn::Result<Option<Vec<(u16, String)>>> {
+    let responses = arr
         .elems
         .iter()
-        .filter_map(|elem| {
-            let syn::Expr::Tuple(tuple) = elem else {
-                return None;
-            };
-            let status = tuple.elems.first().and_then(|status| {
-                if let syn::Expr::Lit(syn::ExprLit {
-                    lit: syn::Lit::Int(lit_int),
-                    ..
-                }) = status
-                {
-                    lit_int.base10_parse::<u16>().ok()
-                } else {
-                    None
-                }
-            })?;
-            let schema_name = tuple.elems.get(1).and_then(|schema| {
-                if let syn::Expr::Path(path) = schema {
-                    crate::route::response_type_path(&path.path)
-                } else {
-                    None
-                }
-            })?;
-            Some((status, schema_name))
-        })
-        .collect();
+        .map(typed_response_entry)
+        .collect::<syn::Result<Vec<(u16, String)>>>()?;
+    Ok((!responses.is_empty()).then_some(responses))
+}
 
-    if responses.is_empty() {
-        None
-    } else {
-        Some(responses)
+/// One `(status, schema)` entry of `responses = [...]`.
+fn typed_response_entry(elem: &syn::Expr) -> syn::Result<(u16, String)> {
+    const EXPECTED: &str = "#[route] `responses` entries must be `(status, SchemaType)` pairs, e.g. `responses = [(404, NotFoundError)]`";
+    let syn::Expr::Tuple(tuple) = elem else {
+        return Err(syn::Error::new_spanned(elem, EXPECTED));
+    };
+    let status = match tuple.elems.first() {
+        Some(syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(lit_int),
+            ..
+        })) => lit_int
+            .base10_parse::<u16>()
+            .map_err(|_| syn::Error::new_spanned(elem, EXPECTED))?,
+        _ => return Err(syn::Error::new_spanned(elem, EXPECTED)),
+    };
+    let schema_name = match tuple.elems.get(1) {
+        Some(syn::Expr::Path(path)) => crate::route::response_type_path(&path.path),
+        _ => None,
     }
+    .ok_or_else(|| syn::Error::new_spanned(elem, EXPECTED))?;
+    Ok((status, schema_name))
 }
 
 /// The signature stored for `vespera!`: the handler's own signature with a
@@ -340,7 +368,8 @@ pub fn process_route_attribute(
     // read source files through the file cache: a fresh epoch re-checks
     // their mtimes (rust-analyzer's long-lived proc-macro server).
     crate::schema_macro::file_cache::bump_epoch();
-    let item_fn: RouteFnHead = syn::parse2(item.clone()).map_err(|e| syn::Error::new(e.span(), "#[route] attribute: can only be applied to functions, not other items. Move or remove the attribute."))?;
+    let item_fn: RouteFnHead =
+        syn::parse2(item.clone()).map_err(|error| route_item_error(&item, &error))?;
     validate_route_fn(&item_fn)?;
     let source_file = proc_macro2::Span::call_site().local_file();
     let inline_module = crate::cron_impl::inline_module_of(
@@ -367,14 +396,14 @@ pub fn process_route_attribute(
         method: route_args.method.as_ref().map(syn::Ident::to_string),
         custom_path: route_args.path.as_ref().map(syn::LitStr::value),
         success_status: route_args.success_status,
-        error_status: route_args
-            .error_status
-            .as_ref()
-            .and_then(extract_error_status_codes),
-        typed_responses: route_args
-            .responses
-            .as_ref()
-            .and_then(extract_typed_responses),
+        error_status: match route_args.error_status.as_ref() {
+            Some(arr) => extract_error_status_codes(arr)?,
+            None => None,
+        },
+        typed_responses: match route_args.responses.as_ref() {
+            Some(arr) => extract_typed_responses(arr)?,
+            None => None,
+        },
         tags: match route_args.tags.as_ref() {
             Some(arr) => extract_tag_strings(arr)?,
             None => None,
@@ -594,7 +623,7 @@ mod tests {
     /// The handler body is only delimited, never parsed: the item is
     /// re-emitted verbatim (so even tokens that are no valid block reach
     /// rustc, which reports them precisely), while a missing body or trailing
-    /// tokens are still rejected like a non-function item.
+    /// tokens are rejected with syn's own message for the function.
     #[rstest]
     #[case::bodyless(quote!(pub async fn h();), false)]
     #[case::trailing_tokens(quote!(pub async fn h() {} extra), false)]
@@ -611,9 +640,21 @@ mod tests {
             }
             Err(err) => {
                 assert!(!accepted, "must be accepted: {item}: {err}");
-                assert!(err.to_string().contains("can only be applied to functions"));
+                assert!(err.to_string().starts_with("#[route] attribute: "), "{err}");
             }
         }
+    }
+
+    /// A function whose parameter list does not parse keeps syn's message: the
+    /// user is told the fault, not sent to move the attribute.
+    #[test]
+    fn test_process_route_attribute_reports_a_malformed_signature() {
+        let item = quote!(pub async fn list(Query(q) Query<Q>) {});
+        let err = process_route_attribute(quote!(get), item)
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("#[route] attribute: "), "{err}");
+        assert!(!err.contains("not other items"), "{err}");
     }
 
     #[test]
@@ -863,18 +904,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_error_status_codes_empty() {
-        let arr: syn::ExprArray = syn::parse_quote!([]);
-        assert_eq!(extract_error_status_codes(&arr), None);
-    }
-
-    #[test]
-    fn test_extract_error_status_codes_values() {
-        let arr: syn::ExprArray = syn::parse_quote!([400, 404, 500]);
-        assert_eq!(extract_error_status_codes(&arr), Some(vec![400, 404, 500]));
-    }
-
-    #[test]
     fn test_extract_tag_strings_empty() {
         let arr: syn::ExprArray = syn::parse_quote!([]);
         assert_eq!(extract_tag_strings(&arr).unwrap(), None);
@@ -902,18 +931,6 @@ mod tests {
         assert!(err.to_string().contains("string literals"), "{err}");
     }
 
-    #[test]
-    fn low_level_collectors_ignore_non_literal_entries() {
-        let statuses: syn::ExprArray = syn::parse_quote!([400, BAD_REQUEST, "404", 70_000]);
-        let strings: syn::ExprArray = syn::parse_quote!(["users", admin, 7]);
-
-        assert_eq!(extract_error_status_codes(&statuses), Some(vec![400]));
-        assert_eq!(
-            collect_string_literal_values(&strings),
-            vec!["users".to_string()]
-        );
-    }
-
     #[rstest]
     #[case::json_array("[1,2]", serde_json::json!([1, 2]))]
     #[case::plain_text("not json", serde_json::Value::String("not json".to_string()))]
@@ -924,27 +941,6 @@ mod tests {
         let literal = syn::LitStr::new(source, proc_macro2::Span::call_site());
 
         assert_eq!(parse_example_string(&literal), expected);
-    }
-
-    #[rstest]
-    #[case::empty(quote!([]), None)]
-    #[case::not_a_tuple(quote!([NotFound]), None)]
-    #[case::missing_status(quote!([()]), None)]
-    #[case::non_integer_status(quote!([(NOT_FOUND, ErrorBody)]), None)]
-    #[case::out_of_range_status(quote!([(70_000, ErrorBody)]), None)]
-    #[case::missing_schema(quote!([(404,)]), None)]
-    #[case::non_path_schema(quote!([(404, "ErrorBody")]), None)]
-    #[case::qualified_schema(
-        quote!([(404, crate::errors::NotFound)]),
-        Some(vec![(404, "crate::errors::NotFound".to_string())])
-    )]
-    fn typed_response_extractor_accepts_only_status_path_tuples(
-        #[case] source: proc_macro2::TokenStream,
-        #[case] expected: Option<Vec<(u16, String)>>,
-    ) {
-        let array = syn::parse2::<syn::ExprArray>(source).expect("valid response array fixture");
-
-        assert_eq!(extract_typed_responses(&array), expected);
     }
 
     #[test]
@@ -975,3 +971,6 @@ mod tests {
 
 #[cfg(all(test, feature = "validation"))]
 mod tests_validated;
+
+#[cfg(test)]
+mod tests_extractors;

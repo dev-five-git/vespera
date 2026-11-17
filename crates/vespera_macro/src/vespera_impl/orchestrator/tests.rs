@@ -247,14 +247,15 @@ fn test_process_vespera_macro_with_cron_storage() {
     let tokens = result
         .expect("Should succeed with cron storage")
         .to_string();
-    // The stored job is scheduled, not just accepted.
-    assert!(
-        tokens.contains("vespera :: cron :: start_once_for_crate"),
-        "{tokens}"
-    );
-    // With the `cron` feature the module tree places the job (without it no
-    // tree is scanned and the stored file path is used as is).
+    // Without the `cron` feature no `#[cron]` is vespera's: stored jobs are
+    // not placed at all.
     if cfg!(feature = "cron") {
+        // The stored job is scheduled, not just accepted, and the module tree
+        // places it.
+        assert!(
+            tokens.contains("vespera :: cron :: start_once_for_crate"),
+            "{tokens}"
+        );
         assert!(
             tokens.contains("crate :: routes :: health :: test_cron_job ()"),
             "{tokens}"
@@ -705,13 +706,12 @@ fn process_export_app_schedules_the_crate_cron_jobs() {
         storage.remove(&crate::schema_impl::current_crate_key());
     }
     let tokens = tokens.unwrap().to_string();
-    assert!(
-        tokens.contains("vespera :: cron :: start_once_for_crate"),
-        "{tokens}"
-    );
-    // With the `cron` feature the module tree places the job (without it no
-    // tree is scanned and the stored file path is used as is).
+    // Without the `cron` feature no `#[cron]` is vespera's: nothing is placed.
     if cfg!(feature = "cron") {
+        assert!(
+            tokens.contains("vespera :: cron :: start_once_for_crate"),
+            "{tokens}"
+        );
         assert!(
             tokens.contains("crate :: jobs :: invoice_sweep ()"),
             "{tokens}"

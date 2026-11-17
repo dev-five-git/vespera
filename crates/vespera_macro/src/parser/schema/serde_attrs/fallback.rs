@@ -12,11 +12,27 @@ pub(super) fn quoted_value_after_key(tokens: &str, key: &str) -> Option<String> 
     None
 }
 
-/// The contents of the `"..."` literal `value_part` starts with (after
-/// whitespace); a value of any other kind yields `None`.
+/// The value of the `"..."` literal `value_part` starts with (after
+/// whitespace); a value of any other kind yields `None`. The closing quote is
+/// the first one not escaped by a backslash, and the literal's escapes
+/// (`\"`, `\\`, `\u{..}`) are decoded by `syn`, as rustc decodes them.
 fn leading_string_literal(value_part: &str) -> Option<String> {
-    let after_quote = value_part.trim_start().strip_prefix('"')?;
-    Some(after_quote[..after_quote.find('"')?].to_string())
+    let body = value_part.trim_start().strip_prefix('"')?;
+    let mut escaped = false;
+    let end = body.char_indices().find_map(|(index, ch)| {
+        if escaped {
+            escaped = false;
+            None
+        } else if ch == '\\' {
+            escaped = true;
+            None
+        } else {
+            (ch == '"').then_some(index)
+        }
+    })?;
+    syn::parse_str::<syn::LitStr>(&format!("\"{}\"", &body[..end]))
+        .ok()
+        .map(|literal| literal.value())
 }
 
 pub(super) fn contains_standalone_word(tokens: &str, word: &str) -> bool {
@@ -743,6 +759,24 @@ mod tests {
         #[case] key: &str,
     ) {
         assert_eq!(super::quoted_value_after_key(tokens, key), None);
+    }
+
+    /// The value is the literal's value (escapes decoded like rustc reads
+    /// it), not the text up to its first `"` byte.
+    #[rstest]
+    #[case::escaped_quote(r#"rename = "a\"b""#, "rename", Some("a\"b"))]
+    #[case::escaped_backslash(r#"rename = "a\\""#, "rename", Some("a\\"))]
+    #[case::unicode_escape(r#"rename = "\u{e9}t\u{e9}""#, "rename", Some("été"))]
+    #[case::next_key_after_escape(r#"rename = "a\"b", default"#, "rename", Some("a\"b"))]
+    fn quoted_value_decodes_escapes(
+        #[case] tokens: &str,
+        #[case] key: &str,
+        #[case] expected: Option<&str>,
+    ) {
+        assert_eq!(
+            super::quoted_value_after_key(tokens, key).as_deref(),
+            expected
+        );
     }
 
     #[rstest]

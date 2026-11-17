@@ -113,7 +113,12 @@ pub fn extract_field_rename(attrs: &[syn::Attribute]) -> Option<String> {
 /// On the read side `form_data(field_name)` comes FIRST: the `Multipart`
 /// derive (its only reader) parses a form field by that name before any serde
 /// rename, so the request view documents what the parser accepts. The write
-/// side keeps serde's name (what a `Serialize` derive emits).
+/// side keeps serde's rename when it sets one; with none, a multipart-only
+/// struct's response view documents its form field name (the struct
+/// `struct_schema` tests `multipart_field_names` pin this), so a field with
+/// `form_data(field_name)` and no serde rename is documented under that name
+/// on both sides. A `Serialize` derive of such a field still emits the
+/// Rust name: the documented name differs there.
 pub fn extract_field_rename_for(attrs: &[syn::Attribute], side: SerdeSide) -> Option<String> {
     if side == SerdeSide::Deserialize
         && let Some(name) = extract_form_data_field_name(attrs)
@@ -700,6 +705,9 @@ mod tests {
         assert_eq!(extract_field_rename(&attrs).as_deref(), Some("userId"));
     }
 
+    /// Without a serde rename, the form field name is documented on both
+    /// sides (the response view of a multipart-only struct, see
+    /// `extract_field_rename_for`).
     #[test]
     fn form_data_field_name_is_returned() {
         let attrs: Vec<syn::Attribute> = syn::parse_quote! {

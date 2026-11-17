@@ -283,10 +283,14 @@ pub fn process_vespera_macro(
 fn current_crate_cron_jobs() -> syn::Result<Vec<crate::metadata::CronMetadata>> {
     let storage = crate::cron_impl::current_crate_crons();
     let storage = crate::macro_storage::retain_declared(&storage);
+    // Without the `cron` feature no `#[cron]` is vespera's: stored jobs are not placed.
+    let storage = if cfg!(feature = "cron") {
+        storage
+    } else {
+        std::borrow::Cow::Borrowed(&[][..])
+    };
     let src_dir = crate::env_access::var("CARGO_MANIFEST_DIR")
         .ok()
-        // Without the `cron` feature no `#[cron]` is vespera's: never scan.
-        .filter(|_| cfg!(feature = "cron"))
         .map(|dir| PathBuf::from(dir).join("src"));
     let call_site = Span::call_site().local_file();
     discover_cron_jobs(&storage, src_dir.as_deref(), call_site.as_deref())

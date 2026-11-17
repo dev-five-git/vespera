@@ -75,7 +75,14 @@ function VesperaCacheDir($crateDir) {
   return Join-Path $v "vespera"
 }
 
-function Median($xs) { $s = @($xs | Sort-Object); $s[[int][Math]::Floor(($s.Count - 1) / 2)] }
+# The middle value of an odd count; the mean of the two middle values of an even one.
+function Median($xs) {
+  $s = @($xs | Sort-Object)
+  $n = $s.Count
+  if ($n % 2 -eq 1) { return $s[[int](($n - 1) / 2)] }
+  $upper = [int]($n / 2)
+  return ($s[$upper - 1] + $s[$upper]) / 2
+}
 
 $rows = @()
 foreach ($n in $Sizes) {

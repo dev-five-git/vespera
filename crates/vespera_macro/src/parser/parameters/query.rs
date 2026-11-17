@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use quote::ToTokens;
 use syn::Type;
 use vespera_core::{
     route::{Parameter, ParameterLocation, ParameterStyle},
@@ -8,8 +9,8 @@ use vespera_core::{
 
 use super::shared::{
     convert_to_inline_schema, deserialized_instead, deserialized_source, input_rename_all,
-    is_defined_struct, is_known_type, is_primitive_or_like, named_struct_fields, serde_field_name,
-    struct_definition_keyed,
+    is_defined_struct, is_known_type, is_primitive_or_like, named_struct_fields, newtype_source,
+    serde_field_name, struct_definition_keyed,
 };
 use crate::{
     parser::schema::{
@@ -86,9 +87,9 @@ fn query_inner(ty: &Type) -> Option<(&Type, bool)> {
 /// tagged enum; struct `T`s are handled by [`parse_query_struct_extractor`]
 /// first): one parameter named after the binding — with the default `style:
 /// form, explode: true` an object schema's properties are the query keys.
-/// A tuple struct cannot be read from a query string's key/value pairs, so it
-/// documents nothing. A struct read through `from = "E"` / `transparent`
-/// documents `E`.
+/// A tuple struct of several fields cannot be read from a query string's
+/// key/value pairs, so it documents nothing. A struct read through `from =
+/// "E"` / `transparent`, or a plain newtype, documents its source type.
 pub(super) fn parse_query_extractor(
     param_name: &str,
     ty: &Type,
@@ -156,6 +157,10 @@ pub(super) fn parse_query_struct_to_parameters(
     (!parameters.is_empty()).then_some(parameters)
 }
 
+/// Flatten nesting bound of [`collect_query_struct_parameters`]: a generic
+/// struct whose flattened instances grow without repeating stops here.
+const MAX_FLATTEN_DEPTH: usize = 32;
+
 fn collect_query_struct_parameters(
     ty: &Type,
     force_optional: bool,
@@ -166,19 +171,25 @@ fn collect_query_struct_parameters(
 ) {
     // A (boxed) struct that flattens itself would recurse forever. Keyed by
     // the resolved definition (`b::Foo` / `a::Foo`), not the bare ident: two
-    // same-named structs of one flatten chain are different structs.
+    // same-named structs of one flatten chain are different structs. And by
+    // the instance (`Wrap<Filter>` vs `Wrap<Wrap<Filter>>`): a generic wrapper
+    // that flattens another instance of itself is not a cycle. Instances that
+    // keep growing (`S<T>` flattening `S<Vec<T>>`) stop at the depth bound.
     let Some((struct_key, struct_item)) = struct_definition_keyed(ty, struct_definitions) else {
         return;
     };
-    if visiting.contains(&struct_key) {
+    let instance_key = format!("{struct_key} {}", ty.to_token_stream());
+    if visiting.contains(&instance_key) || visiting.len() >= MAX_FLATTEN_DEPTH {
         return;
     }
-    visiting.push(struct_key);
+    visiting.push(instance_key);
     // Container `#[serde(from = "X")]` / `try_from` (or `#[schema(value_type =
-    // X)]`), or `#[serde(transparent)]` (named or tuple struct): serde reads
-    // `X` / the transparent field's type from the query string, never this
+    // X)]`), `#[serde(transparent)]` (named or tuple struct), or a plain
+    // newtype (`struct W(Filter);`, which serde reads through
+    // `deserialize_newtype_struct`, handing the query string to its field):
+    // serde reads `X` / the field's type from the query string, never this
     // struct's own fields. Any other tuple / unit struct has no named keys.
-    let source = deserialized_instead(&struct_item);
+    let source = deserialized_instead(&struct_item).or_else(|| newtype_source(&struct_item));
     if let Some(source) = &source {
         collect_query_struct_parameters(
             source,
@@ -353,6 +364,24 @@ mod tests {
         vec![("Q", r"pub struct Q { pub q: String, #[serde(flatten)] pub again: Q }")],
         vec![shape("q", true)]
     )]
+    // serde_urlencoded forwards `deserialize_newtype_struct` to the field.
+    #[case::newtype_struct_reads_its_field(
+        "Q",
+        vec![
+            ("Q", r"pub struct Q(pub Filter);"),
+            ("Filter", r"pub struct Filter { pub q: String, pub page: Option<u32> }"),
+        ],
+        vec![shape("q", true), shape("page", false)]
+    )]
+    // `Wrap<Wrap<Filter>>` flattens another instance of `Wrap`: not a cycle.
+    #[case::generic_wrapper_of_its_own_instance(
+        "Wrap<Wrap<Filter>>",
+        vec![
+            ("Wrap", r"pub struct Wrap<T> { #[serde(flatten)] pub inner: T, pub tag: String }"),
+            ("Filter", r"pub struct Filter { pub q: String }"),
+        ],
+        vec![shape("q", true), shape("tag", true), shape("tag", true)]
+    )]
     #[case::array_fields_use_form_explode(
         "Q",
         vec![(
@@ -404,6 +433,20 @@ mod tests {
             query_shapes("Q", &defs),
             vec![shape("a_field", true), shape("b_field", true)]
         );
+    }
+
+    /// `G<T>` flattening `G<Vec<T>>` is a new instance every level, never a
+    /// repeat: it stops at the depth bound instead of expanding forever.
+    #[test]
+    fn growing_generic_flatten_stops_at_depth_bound() {
+        let defs = [(
+            "G",
+            "pub struct G<T> { pub own: T, #[serde(flatten)] pub next: G<Vec<T>> }",
+        )];
+        let params = query_shapes("G<u8>", &defs);
+        assert_ne!(params.len(), 0);
+        assert!(params.len() <= MAX_FLATTEN_DEPTH);
+        assert!(params.iter().all(|param| param.0 == "own"));
     }
 
     #[test]

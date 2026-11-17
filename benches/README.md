@@ -54,7 +54,9 @@ cargo run -p compile-bench-runner -- --target axum-example --runs 8 --save-basel
 ## Methodology & noise
 
 - Each iteration runs `cargo clean -p <target>` and removes
-  `<target-dir>/vespera/` (`$VESPERA_TARGET_DIR/vespera` when set) to force a
+  `<target-dir>/vespera/` and every `<target-dir>/<triple>/vespera/` (a
+  `build.target` / `CARGO_BUILD_TARGET` build caches under its triple
+  directory), or `$VESPERA_TARGET_DIR/vespera` when that is set, to force a
   **full re-expansion** (`cargo clean -p` keeps vespera's route cache, which
   would turn every run into a cache hit), then `cargo rustc … -- -Z time-passes`.
 - Compile time has only **positive** noise (a busy machine only ever *adds*
