@@ -124,6 +124,8 @@ fn moved_item_replacement(#[case] source: &str, #[case] replaced: bool) {
 )]
 // S20-0-2 (round 20): a `#[cfg]` that is false on a fn / impl / trait /
 // const / static hides the items declared inside its body too.
+// An active trait is walked too (its default method body holds an item).
+#[case::active_trait("trait T { fn g() { struct X; } } struct X;", 2)]
 #[case::inactive_fn("#[cfg(any())] fn f() { struct X; } struct X;", 1)]
 #[case::inactive_impl("#[cfg(any())] impl T { fn g() { enum X {} } } struct X;", 1)]
 #[case::inactive_trait("#[cfg(any())] trait T { fn g() { struct X; } } struct X;", 1)]
