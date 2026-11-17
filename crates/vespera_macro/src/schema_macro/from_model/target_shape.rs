@@ -235,4 +235,18 @@ mod tests {
             Some(expected)
         );
     }
+
+    /// Sources this module does not resolve (not a path, a qualified path, a
+    /// bare name other than `Model`, a path not rooted at `crate`) fall back
+    /// to the circular analysis: `source_of` gives no struct for them.
+    #[rstest]
+    #[case::not_a_path("[u8; 4]")]
+    #[case::qualified_path("<Model as Trait>::Assoc")]
+    #[case::bare_other_name("Other")]
+    #[case::super_relative("super::legacy::Model")]
+    fn unresolved_sources_fall_back(#[case] source: &str) {
+        let source: syn::Type = syn::parse_str(source).unwrap();
+        let module: Vec<String> = ["crate", "models", "user"].map(String::from).to_vec();
+        assert!(source_of(&source, &module, USER_MODEL).is_none());
+    }
 }
