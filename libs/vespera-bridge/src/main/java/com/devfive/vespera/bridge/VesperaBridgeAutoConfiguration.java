@@ -29,9 +29,12 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>Wires up zero-configuration defaults so a typical Spring Boot
  * app needs only {@link VesperaBridge#init(String)} and the
  * routes published in vespera's {@code openapi.json} are reachable
- * at the same URLs.  Every bean is gated by
+ * at the same URLs.  Most beans are gated by
  * {@code @ConditionalOnMissingBean}, so any user-supplied custom
- * bean automatically wins.
+ * bean automatically wins.  Exceptions: the thread-local cleanup filter
+ * and the multipart resolver installer are gated by a property only, and
+ * the startup check is unconditional (a user bean of its type is added
+ * alongside it).
  *
  * <p>Customization recipes:
  * <ul>

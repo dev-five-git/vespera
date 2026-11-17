@@ -449,7 +449,7 @@ class VesperaClientTest {
     }
 
     @Test
-    void streamedBodyFailureAfterBytesIsATransportFailure() {
+    void streamedBodyFailureIsATransportFailureAndSaysWhetherBodyBytesWentOut() {
         VesperaClient failing = new VesperaClient(new FakeTransport() {
             @Override
             public byte[] dispatchStreaming(byte[] header, InputStream in, OutputStream out)
@@ -460,6 +460,38 @@ class VesperaClientTest {
         VesperaClientException e = assertThrows(VesperaClientException.class, () -> failing.post("/s")
                 .body(new ByteArrayInputStream(new byte[1]), null).send());
         assertInstanceOf(IOException.class, e.getCause());
+        assertTrue(e.getMessage().contains("before any body byte was written"), e.getMessage());
+
+        VesperaClient afterBytes = new VesperaClient(new FakeTransport() {
+            @Override
+            public byte[] dispatchStreaming(byte[] header, InputStream in, OutputStream out)
+                    throws IOException {
+                out.write(new byte[] {1, 2, 3});
+                throw new IOException("reset mid-body");
+            }
+        }, null);
+        VesperaClientException mid = assertThrows(VesperaClientException.class, () -> afterBytes.post("/s")
+                .body(new ByteArrayInputStream(new byte[1]), null).send());
+        assertTrue(mid.getMessage().contains("after body bytes were written"), mid.getMessage());
+    }
+
+    /**
+     * A header too large to encode fails before the body is read, so the
+     * caller can fix the header and send the same builder again.
+     */
+    @Test
+    void aFailedHeaderEncodeLeavesTheStreamSendable() throws Exception {
+        byte[] payload = "upload".getBytes(StandardCharsets.UTF_8);
+        VesperaRequest req = client.post("/echo/stream")
+                .header("x-big", "x".repeat(65 * 1024 * 1024))
+                .body(new ByteArrayInputStream(payload), null);
+        assertThrows(IllegalArgumentException.class, req::send);
+        assertTrue(transport.requests.isEmpty(), "nothing was dispatched");
+        assertNull(transport.uploaded, "the body was never read");
+
+        req.header("x-big", "small");
+        assertEquals(200, req.send().status(), "the unread body is still sendable");
+        assertArrayEquals(payload, transport.uploaded);
     }
 
     /**

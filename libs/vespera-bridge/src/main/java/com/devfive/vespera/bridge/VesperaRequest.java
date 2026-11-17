@@ -384,8 +384,10 @@ public final class VesperaRequest {
         if (streamConsumed) {
             throw new IllegalStateException("the InputStream body was already sent");
         }
-        streamConsumed = true;
+        // Encode before marking the stream consumed: a failed encode never
+        // touched the body, so the caller may fix the request and send it again.
         byte[] header = encode(VesperaWireCodec.EMPTY_BODY);
+        streamConsumed = true;
         ExposedOutput out = new ExposedOutput();
         ReadTracking tracked = new ReadTracking(bodyStream);
         byte[] responseHeader;
@@ -393,7 +395,10 @@ public final class VesperaRequest {
             responseHeader = transport.dispatchStreaming(header, tracked, out);
         } catch (IOException e) {
             VesperaClientException failure = new VesperaClientException(
-                    "streamed response failed after body bytes were written", e);
+                    "streamed response failed "
+                            + (out.size() > 0 ? "after body bytes were written"
+                                    : "before any body byte was written"),
+                    e);
             if (tracked.readFailure != null && tracked.readFailure != e) {
                 failure.addSuppressed(tracked.readFailure);
             }

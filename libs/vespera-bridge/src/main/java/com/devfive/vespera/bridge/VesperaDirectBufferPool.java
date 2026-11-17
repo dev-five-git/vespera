@@ -26,9 +26,9 @@ import com.devfive.vespera.bridge.VesperaWireCodec.ExposedByteArrayOutputStream;
  * <p><strong>Virtual thread (Project Loom) limitation:</strong> the pool
  * is backed by {@link ThreadLocal}, which binds to the <em>virtual</em>
  * thread (not the carrier) in Java 21+.  {@link #currentThreadIsVirtual()}
- * detects this and routes virtual threads to the GC-managed heap
- * {@link VesperaBridge#dispatchBytes(byte[])} path so off-heap memory does
- * not accumulate per vthread.
+ * detects this and routes virtual threads to the GC-managed heap path
+ * ({@link ParkingDispatch#park}, which parks instead of pinning the carrier)
+ * so off-heap memory does not accumulate per vthread.
  */
 final class VesperaDirectBufferPool {
 
@@ -42,8 +42,8 @@ final class VesperaDirectBufferPool {
      * overridable via the {@code vespera.direct.maxBufferBytes} system
      * property, clamped to 64 KiB–256 MiB). Payloads beyond the cap use the
      * configured {@code vespera.direct.oversize-policy}: the default
-     * {@code heap-fallback} dispatches through {@link VesperaBridge#dispatchBytes(byte[])}
-     * (fully heap-buffered, not streaming), while {@code throw} rejects before
+     * {@code heap-fallback} dispatches through the heap path ({@link VesperaBridge#dispatchBytes(byte[])}
+     * on a platform thread; fully heap-buffered, not streaming), while {@code throw} rejects before
      * native dispatch.
      */
     private static final int DIRECT_MAX_HARD_CAPACITY = 256 * 1024 * 1024;
@@ -182,8 +182,8 @@ final class VesperaDirectBufferPool {
      * (not its carrier) in Java 21+ — so on a virtual-thread-per-request
      * server every dispatch would allocate a fresh direct buffer and
      * accumulate off-heap memory until GC.  {@link #dispatchDirectPooled}
-     * detects this and routes virtual threads to the GC-managed heap
-     * {@link VesperaBridge#dispatchBytes(byte[])} path instead.
+     * detects this and routes virtual threads to the GC-managed heap path
+     * ({@link ParkingDispatch#park}) instead.
      */
     static boolean currentThreadIsVirtual() {
         return invokeThreadBooleanMethod(IS_VIRTUAL, Thread.currentThread());
@@ -390,8 +390,9 @@ final class VesperaDirectBufferPool {
             }
             // Explicit heap-fallback: virtual threads avoid per-vthread
             // off-heap ThreadLocal retention, and oversized requests cannot fit
-            // the direct pool. This fully buffers via dispatchBytes; it is not a
-            // streaming fallback.
+            // the direct pool. This fully buffers through the heap dispatcher
+            // (ParkingDispatch.park on a virtual thread, else dispatchBytes); it
+            // is not a streaming fallback.
             return dispatchHeap(wireRequest, heapDispatcher);
         }
         ByteBuffer[] pool = directPool();
@@ -441,9 +442,9 @@ final class VesperaDirectBufferPool {
                             pooledFallbackReason(virtualThreadSupplier.getAsBoolean()),
                             total);
                 }
-                // Explicit heap-fallback: fully buffers via dispatchBytes, not
-                // streaming. The reusable header buffer is consumed here, before
-                // any other fillHeaderJson call.
+                // Explicit heap-fallback: fully buffers through the heap dispatcher
+                // (see above), not streaming. The reusable header buffer is consumed
+                // here, before any other fillHeaderJson call.
                 byte[] wire = VesperaWireCodec.assembleWire(hdr.backingArray(), headerLen, bodyBytes);
                 return dispatchHeap(wire, heapDispatcher);
             }

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
@@ -188,6 +189,7 @@ class DispatchDirectE2ETest {
 
     @Test
     @Order(7)
+    @EnabledIfSystemProperty(named = "vespera.bench", matches = "true")
     void microBenchmarkDirectVsBytes() throws Exception {
         System.out.println(
                 "== dispatchBytes vs dispatchDirectPooled(wire) vs dispatchDirectPooled(encode-into) ==");

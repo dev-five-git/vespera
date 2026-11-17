@@ -68,16 +68,18 @@ public class VesperaBridgeProperties {
     /**
      * App names a request may select through {@link #appHeader} (the
      * {@code _default} app is always selectable).  <strong>Security:</strong>
-     * the header is client-controlled — while this list is empty any client
-     * can route any URL into any registered app (e.g. {@code GET /users} with
+     * the header is client-controlled — while this property is absent ({@code null})
+     * any client can route any URL into any registered app (e.g. {@code GET /users} with
      * {@code X-Vespera-App: admin}), bypassing path-based Spring Security
      * rules, and the proxy logs a one-time WARN on the first non-default
      * selection.  When set, any other app name is answered with {@code 404}
-     * without dispatching.  Only the default {@link HeaderAppNameResolver} /
+     * without dispatching.  A value that names no app (an empty list, or only
+     * blank entries such as {@code ${ADMIN_APPS:}} unset) fails startup.  Only the
+     * default {@link HeaderAppNameResolver} /
      * {@link ReactiveHeaderAppNameResolver} honours it; a custom resolver
      * enforces its own policy.
      */
-    private List<String> exposedApps = new ArrayList<>();
+    private List<String> exposedApps;
 
     /**
      * When {@code true} (default), Spring Boot autoconfigures
@@ -284,12 +286,13 @@ public class VesperaBridgeProperties {
         this.appHeader = appHeader;
     }
 
+    /** The allowlist, or {@code null} when {@code vespera.bridge.exposed-apps} is absent. */
     public List<String> getExposedApps() {
         return exposedApps;
     }
 
     public void setExposedApps(List<String> exposedApps) {
-        this.exposedApps = exposedApps == null ? new ArrayList<>() : new ArrayList<>(exposedApps);
+        this.exposedApps = exposedApps == null ? null : new ArrayList<>(exposedApps);
     }
 
     public boolean isControllerEnabled() {
@@ -556,9 +559,9 @@ public class VesperaBridgeProperties {
         private Long maxStreamingRequestBytes;
 
         /**
-         * Buffered response-body cap in bytes ({@code 0} = unlimited). When it,
-         * {@code -Dvespera.limits.maxBufferedResponseBytes} and
-         * {@code VESPERA_MAX_BUFFERED_RESPONSE_BYTES} are all unset, Spring
+         * Buffered response-body cap in bytes ({@code 0} = unlimited). When this
+         * property is unset and {@code -Dvespera.limits.maxBufferedResponseBytes}
+         * and {@code VESPERA_MAX_BUFFERED_RESPONSE_BYTES} are both unset, Spring
          * forwards {@code vespera.bridge.max-buffered-response-bytes} (64 MiB)
          * instead, so the native 256 MiB default applies only outside Spring.
          */

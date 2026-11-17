@@ -4,6 +4,7 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Bounded app names for metrics, logs and {@link DispatchEvent}s.
@@ -33,6 +34,8 @@ final class AppTags {
 
     private final Set<String> preset;
     private final Set<String> learned = ConcurrentHashMap.newKeySet();
+    /** Slots reserved in {@link #learned}; reserved before the add so the cap holds under races. */
+    private final AtomicInteger learnedCount = new AtomicInteger();
 
     AppTags(Collection<String> allowlisted) {
         Set<String> names = new HashSet<>();
@@ -60,11 +63,28 @@ final class AppTags {
         if (preset.contains(app) || learned.contains(app)) {
             return app;
         }
-        if (reachedRust && answeredByHandler(status, panicked) && learned.size() < MAX_LEARNED) {
-            learned.add(app);
+        if (reachedRust && answeredByHandler(status, panicked) && learn(app)) {
             return app;
         }
         return UNKNOWN;
+    }
+
+    /**
+     * Learns {@code app} unless the cap is full. A slot is reserved first and
+     * released again when the cap is already reached or another thread
+     * learned the same name, so concurrent callers cannot overshoot
+     * {@link #MAX_LEARNED}.
+     */
+    private boolean learn(String app) {
+        if (learnedCount.incrementAndGet() > MAX_LEARNED) {
+            learnedCount.decrementAndGet();
+            return false;
+        }
+        if (learned.add(app)) {
+            return true;
+        }
+        learnedCount.decrementAndGet();
+        return true;
     }
 
     static boolean answeredByHandler(int status, boolean panicked) {

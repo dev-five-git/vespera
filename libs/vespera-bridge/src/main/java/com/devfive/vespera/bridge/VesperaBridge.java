@@ -748,10 +748,8 @@ public class VesperaBridge {
      *       running the handler</em>: such a buffer could not hold a
      *       synthesized panic / timeout response, and growing it and
      *       retrying would re-run a failing handler.  Retrying with at
-     *       least that capacity dispatches normally.  The native input
-     *       checks run first: an overlapping {@code in} / {@code out}
-     *       pair is answered with its {@code 400} wire (or its
-     *       {@code -(requiredSize)}) instead of the size rule above.</li>
+     *       least that capacity dispatches normally.  Overlapping
+     *       {@code in} / {@code out} buffers are checked first.</li>
      *   <li>{@code Integer.MIN_VALUE}: response exceeds 2 GiB and is
      *       unrepresentable in this protocol.</li>
      * </ul>
@@ -789,14 +787,13 @@ public class VesperaBridge {
      * virtual thread allocates a fresh direct buffer and loses all
      * pooling benefit; direct memory accumulates until the virtual thread
      * is garbage-collected.  {@link VesperaDirectBufferPool} detects this
-     * and routes virtual threads to the GC-managed heap
-     * {@link #dispatchBytes(byte[])} path.
+     * and routes virtual threads to {@code ParkingDispatch.park} (no carrier pin).
      *
      * <p>Fallback / overflow policy:
      * <ul>
      *   <li>Request larger than the cap, or a virtual thread → falls back
-     *       to {@link #dispatchBytes(byte[])} (safe: no dispatch has run
-     *       yet; fully buffered) and wraps the result — or throws
+     *       to the heap path (safe: no dispatch has run yet; fully buffered)
+     *       and wraps the result — or throws
      *       {@link BufferTooSmallException} under
      *       {@code vespera.direct.oversize-policy=throw}.</li>
      *   <li>Response overflow → the native side keeps the finished

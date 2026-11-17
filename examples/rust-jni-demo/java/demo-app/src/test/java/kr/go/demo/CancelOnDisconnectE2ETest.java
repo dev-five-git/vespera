@@ -134,7 +134,12 @@ class CancelOnDisconnectE2ETest {
         try {
             VesperaBridge.dispatchStreamingWithHeader(wire, header -> { }, new DisconnectingStream(2));
         } catch (Exception expected) {
-            // The truncated stream surfaces as an IOException thrown from native.
+            // The truncated stream surfaces as an IOException thrown from native
+            // (the JNI call declares none, so it is caught generically). Any other
+            // failure is a setup error and must not be swallowed.
+            if (!(expected instanceof IOException)) {
+                throw expected;
+            }
         }
         assertDroppedPromptly(key, start);
     }
@@ -162,6 +167,9 @@ class CancelOnDisconnectE2ETest {
                     header, h -> { }, new ByteArrayInputStream(new byte[0]), new DisconnectingStream(2));
         } catch (Exception expected) {
             // See headerFirstStreamingDropsTheBodyWhenTheClientWriteFails.
+            if (!(expected instanceof IOException)) {
+                throw expected;
+            }
         }
         assertDroppedPromptly(key, start);
     }
