@@ -322,11 +322,11 @@ fn identical_or_unused_request_views_emit_nothing() {
         "Holder",
         "pub struct Holder { pub opt: Opt, pub same: Same }",
     ));
-    // `default` on an `Option` field serde omits when `None`: optional in
-    // both views, so the built `SameInput` equals `Same` and is dropped.
+    // `default` on a field serde may omit: optional in both views, so the
+    // built `SameInput` equals `Same` and is dropped.
     metadata.structs.push(schema(
         "Same",
-        r#"pub struct Same { #[serde(default, skip_serializing_if = "Option::is_none")] pub x: Option<u8> }"#,
+        r#"pub struct Same { #[serde(default, skip_serializing_if = "is_zero")] pub x: u8 }"#,
     ));
     metadata.structs.push(schema(
         "Out",
