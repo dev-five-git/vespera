@@ -29,6 +29,7 @@ response: {
   },
   "required": [
     "userId",
+    "b",
     "d"
   ]
 }

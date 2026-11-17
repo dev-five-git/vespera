@@ -307,8 +307,10 @@ fn input_names_skip_unparsable_definitions() {
 
 /// Inputs no request body reaches emit no `Input` component (`Out`). A
 /// field-level `default` makes the request view differ: serde always writes
-/// the field, so the response keeps it required while `OptInput` does not
-/// (and `Holder` follows transitively).
+/// the field, so the response keeps it required while the request view does
+/// not (and `Holder` follows transitively). `Holder` / `Opt` are only read
+/// (no response returns them), so their request views keep the plain names
+/// instead of an orphan response view plus `HolderInput` / `OptInput`.
 #[test]
 fn identical_or_unused_request_views_emit_nothing() {
     let mut metadata = CollectedMetadata::new();
@@ -320,11 +322,11 @@ fn identical_or_unused_request_views_emit_nothing() {
         "Holder",
         "pub struct Holder { pub opt: Opt, pub same: Same }",
     ));
-    // `default` on an `Option` field: optional in both views, so the built
-    // `SameInput` equals `Same` and is dropped.
+    // `default` on a field serde may omit: optional in both views, so the
+    // built `SameInput` equals `Same` and is dropped.
     metadata.structs.push(schema(
         "Same",
-        "pub struct Same { #[serde(default)] pub x: Option<u8> }",
+        r#"pub struct Same { #[serde(default, skip_serializing_if = "is_zero")] pub x: u8 }"#,
     ));
     metadata.structs.push(schema(
         "Out",
@@ -345,9 +347,16 @@ fn identical_or_unused_request_views_emit_nothing() {
         .unwrap()
         .keys()
         .collect();
+    assert_eq!(names, ["Holder", "Opt", "Out", "Same"]);
+    let json = serde_json::to_value(&doc).unwrap();
     assert_eq!(
-        names,
-        ["Holder", "HolderInput", "Opt", "OptInput", "Out", "Same"]
+        json["paths"]["/holder"]["post"]["requestBody"]["content"]["application/json"]["schema"],
+        serde_json::json!({"$ref": "#/components/schemas/Holder"})
+    );
+    // `Opt` is the request view: the defaulted field is optional.
+    assert_eq!(
+        json["components"]["schemas"]["Opt"]["required"],
+        serde_json::Value::Null
     );
 }
 

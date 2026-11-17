@@ -1,6 +1,5 @@
 ---
 source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests_closed.rs
-assertion_line: 58
 expression: "serde_json::to_string_pretty(&schema).unwrap()"
 ---
 {
@@ -29,7 +28,8 @@ expression: "serde_json::to_string_pretty(&schema).unwrap()"
       },
       "required": [
         "type",
-        "id"
+        "id",
+        "note"
       ],
       "additionalProperties": false
     }

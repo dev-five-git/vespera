@@ -252,10 +252,6 @@ expression: pretty(&doc)
           "plain": {
             "type": "boolean"
           },
-          "secret": {
-            "type": "string",
-            "writeOnly": true
-          },
           "theme": {
             "type": "string",
             "default": ""

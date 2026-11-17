@@ -41,7 +41,14 @@ fn scoped_names(
 }
 
 #[rstest]
-#[case::plain("struct A { x: i32, y: Option<u8> }", false)]
+#[case::plain("struct A { x: i32, y: u8 }", false)]
+// An `Option` is written as `null` (required on output) but may be omitted
+// on input, unless a `skip_serializing_if` omits it on output too.
+#[case::option("struct A { x: i32, y: Option<u8> }", true)]
+#[case::option_skip_if(
+    r#"struct A { #[serde(skip_serializing_if = "is_zero")] y: Option<u8> }"#,
+    false
+)]
 #[case::flatten_option("struct A { #[serde(flatten)] p: Option<Page> }", true)]
 #[case::flatten_map_then_struct(
     "struct A { #[serde(flatten)] m: HashMap<String, u8>, #[serde(flatten)] p: Page }",
@@ -150,9 +157,10 @@ fn scoped_names(
     r#"struct A { #[serde(skip_serializing_if = "Vec::is_empty")] v: Vec<u8> }"#,
     true
 )]
+// `Option::is_none` never writes `null`; the request view accepts it.
 #[case::skip_serializing_if_option(
     r#"struct A { #[serde(skip_serializing_if = "Option::is_none")] v: Option<u8> }"#,
-    false
+    true
 )]
 #[case::alias(r#"struct A { #[serde(alias = "b")] a: u8 }"#, true)]
 #[case::hash_set("struct A { tags: std::collections::HashSet<String> }", true)]
@@ -214,7 +222,12 @@ fn scoped_names(
     false
 )]
 #[case::enum_into(r#"#[serde(into = "String")] enum E { A }"#, true)]
-#[case::with_both_sides(r#"struct A { #[serde(with = "m")] x: u8 }"#, false)]
+// The response view hides a `with` / `serialize_with` field's shape, the
+// request view documents its Rust type; a `deserialize_with` alone documents
+// the Rust type on both sides.
+#[case::with_both_sides(r#"struct A { #[serde(with = "m")] x: u8 }"#, true)]
+#[case::deserialize_with(r#"struct A { #[serde(deserialize_with = "f")] x: u8 }"#, false)]
+#[case::tuple_deserialize_with(r#"struct A(#[serde(deserialize_with = "f")] u8);"#, false)]
 #[case::serialize_with(r#"struct A { #[serde(serialize_with = "f")] x: u8 }"#, true)]
 #[case::deserialize_with_value_type(
     r#"struct A { #[serde(deserialize_with = "f")] #[schema(value_type = u8)] x: u8 }"#,

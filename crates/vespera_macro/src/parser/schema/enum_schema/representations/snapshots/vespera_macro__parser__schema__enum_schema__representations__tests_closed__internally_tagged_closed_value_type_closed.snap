@@ -28,7 +28,8 @@ expression: "serde_json::to_string_pretty(&schema).unwrap()"
       },
       "required": [
         "type",
-        "id"
+        "id",
+        "note"
       ],
       "additionalProperties": false
     }

@@ -61,8 +61,9 @@ use super::{
         enum_schema::{parse_enum_to_schema, without_other_map, without_single_key_bounds},
         request_view::{self, FlatRead},
         schema_attrs::{SchemaConstraints, extract_schema_constraints},
-        serde_attrs::{SerdeSide, extract_field_codec},
+        serde_attrs::SerdeSide,
         type_schema::{generic_instances, parse_type_to_schema_ref},
+        wire_override::codec_hides_shape,
     },
     parse_struct_to_schema,
 };
@@ -121,7 +122,7 @@ pub(super) fn flatten_part(
     // `#[schema(value_type = T)]` documents a custom codec's wire shape,
     // exactly as on a field that is not flattened.
     let custom = constraints.is_any()
-        || (constraints.value_type.is_none() && extract_field_codec(&field.attrs).custom_for(side));
+        || (constraints.value_type.is_none() && codec_hides_shape(&field.attrs, side));
     let leaves = !custom && leaves_keys(ty, struct_definitions, WRAPPER_DEPTH);
     let schema = if custom {
         SchemaRef::Inline(Box::default())
@@ -743,9 +744,10 @@ mod tests {
     }
 
     /// A flattened member serde may leave out of the output
-    /// (`skip_serializing` / `skip_serializing_if`) requires none of its keys
-    /// in the response view (an opaque member becomes lenient); the request
-    /// view still requires them.
+    /// (`skip_serializing_if`) requires none of its keys in the response view
+    /// (an opaque member becomes lenient); one it never writes
+    /// (`skip_serializing`) adds no keys there at all. The request view still
+    /// requires them.
     #[rstest]
     #[case::skip_serializing_if("if", r#"skip_serializing_if = "Meta::is_empty""#, "Meta")]
     #[case::skip_serializing("always", "skip_serializing", "Meta")]

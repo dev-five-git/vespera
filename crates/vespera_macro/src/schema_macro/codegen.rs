@@ -225,12 +225,13 @@ mod tests {
         );
     }
 
-    /// A `skip_serializing_if` / `skip_serializing` field may be absent from
-    /// serialized output, so it is NOT required (shared struct-field walker).
+    /// A `skip_serializing_if` field may be absent from serialized output,
+    /// so it is NOT required; a `skip_serializing` one is never written, so
+    /// it is not a property at all (shared struct-field walker).
     #[rstest::rstest]
-    #[case::skip_serializing_if(r#"#[serde(skip_serializing_if = "String::is_empty")]"#)]
-    #[case::skip_serializing("#[serde(skip_serializing)]")]
-    fn output_omittable_field_is_not_required(#[case] attr: &str) {
+    #[case::skip_serializing_if(r#"#[serde(skip_serializing_if = "String::is_empty")]"#, true)]
+    #[case::skip_serializing("#[serde(skip_serializing)]", false)]
+    fn output_omittable_field_is_not_required(#[case] attr: &str, #[case] present: bool) {
         let item = parse(&format!(
             "pub struct WithSkip {{ {attr} pub field: String, pub id: i32 }}"
         ));
@@ -238,7 +239,11 @@ mod tests {
             build_filtered_schema(&item, &HashSet::new(), &HashSet::new(), &empty_storage());
         let required = schema.required.expect("required present");
         assert_eq!(required, ["id"], "{attr}");
-        assert!(schema.properties.expect("props").contains_key("field"));
+        assert_eq!(
+            schema.properties.expect("props").contains_key("field"),
+            present,
+            "{attr}"
+        );
     }
 
     /// A field naming a renamed type by its Rust ident resolves to the
@@ -261,15 +266,21 @@ mod tests {
     }
 
     #[test]
-    fn option_field_is_not_required() {
+    fn option_field_is_required_and_nullable() {
         let item = parse(r"pub struct WithOpt { pub field: Option<String> }");
         let schema =
             build_filtered_schema(&item, &HashSet::new(), &HashSet::new(), &empty_storage());
-        let still_required = schema
+        // serde always writes it (as `null` when `None`).
+        let required = schema
             .required
             .as_ref()
             .is_some_and(|r| r.iter().any(|f| f == "field"));
-        assert!(!still_required, "an Option<T> field must not be required");
+        assert!(required, "an Option<T> field is always written");
+        let json = serde_json::to_value(&schema).unwrap();
+        assert_eq!(
+            json["properties"]["field"]["type"],
+            serde_json::json!(["string", "null"])
+        );
     }
 
     #[test]

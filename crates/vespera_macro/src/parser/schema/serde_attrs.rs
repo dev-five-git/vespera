@@ -7,7 +7,7 @@ mod extract;
 mod fallback;
 mod rename_case;
 
-pub use codec::{extract_container_conversion, extract_field_codec};
+pub use codec::{extract_container_conversion, extract_field_codec, skips_none_on_output};
 pub use common::{
     EntityTarget, capitalize_first, entity_target, extract_doc_comment, extract_schema_default,
     extract_schema_ref_override, extract_transparent, strip_raw_prefix_owned,

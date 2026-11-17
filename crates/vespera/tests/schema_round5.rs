@@ -73,8 +73,10 @@ fn derived_schemas_compile_and_document_their_fields() {
     };
     assert_eq!((tree.value, tree.children.len()), (6, 0));
 
+    // `schema!` is the response view: serde never writes the
+    // `skip_serializing` `item` (the request view documents it).
     let schema = vespera::schema!(WithSkipped);
     let properties = schema.properties.expect("properties");
     let keys: Vec<&str> = properties.keys().map(String::as_str).collect();
-    assert_eq!(keys, ["id", "item"]);
+    assert_eq!(keys, ["id"]);
 }

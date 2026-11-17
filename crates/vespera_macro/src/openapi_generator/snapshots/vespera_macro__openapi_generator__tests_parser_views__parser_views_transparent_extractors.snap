@@ -145,7 +145,8 @@ expression: doc
           }
         },
         "required": [
-          "q"
+          "q",
+          "page"
         ]
       },
       "Kind": {

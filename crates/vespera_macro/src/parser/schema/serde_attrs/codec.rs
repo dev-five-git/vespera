@@ -41,6 +41,24 @@ pub fn extract_field_codec(attrs: &[syn::Attribute]) -> FieldCodec {
     codec
 }
 
+/// `#[serde(skip_serializing_if = "Option::is_none")]` (any path to it, as
+/// serde_with's `#[skip_serializing_none]` writes it): serde never writes a
+/// `None`, so the output never holds `null` for this field.
+pub fn skips_none_on_output(attrs: &[syn::Attribute]) -> bool {
+    let mut found = false;
+    walk_serde_keys(attrs, |meta| {
+        if !meta.path.is_ident("skip_serializing_if") {
+            return Ok(false);
+        }
+        let path = meta.value()?.parse::<syn::LitStr>()?.parse::<syn::Path>()?;
+        let mut segments = path.segments.iter().rev();
+        found |= segments.next().is_some_and(|last| last.ident == "is_none")
+            && segments.next().is_some_and(|ty| ty.ident == "Option");
+        Ok(true)
+    });
+    found
+}
+
 /// The type a container is converted through on `side`:
 /// `#[serde(into = "T")]` when serializing, `#[serde(from = "T")]` /
 /// `#[serde(try_from = "T")]` when deserializing.
@@ -75,6 +93,20 @@ mod tests {
         syn::parse_str::<syn::ItemStruct>(&format!("{src} struct S;"))
             .unwrap()
             .attrs
+    }
+
+    #[rstest]
+    #[case::option_is_none(r#"#[serde(skip_serializing_if = "Option::is_none")]"#, true)]
+    #[case::std_path(
+        r#"#[serde(skip_serializing_if = "std::option::Option::is_none")]"#,
+        true
+    )]
+    #[case::other_predicate(r#"#[serde(skip_serializing_if = "Vec::is_empty")]"#, false)]
+    #[case::bare_is_none(r#"#[serde(skip_serializing_if = "is_none")]"#, false)]
+    #[case::other_type(r#"#[serde(skip_serializing_if = "Maybe::is_none")]"#, false)]
+    #[case::absent("#[serde(default)]", false)]
+    fn skips_none(#[case] src: &str, #[case] expected: bool) {
+        assert_eq!(skips_none_on_output(&attrs(src)), expected, "{src}");
     }
 
     #[rstest]

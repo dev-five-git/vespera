@@ -185,17 +185,16 @@ fn test_schema_macro_with_optional_fields() {
     };
     assert_eq!(bio.default, Some(json!("")));
 
-    // Required is nullability-only, matching the OpenAPI component schema:
-    // 'id'/'name' are non-Option, and 'bio' is non-Option too — its
-    // `#[serde(default)]` does NOT exclude it from `required`. Only 'email'
-    // (Option<T>) is optional. (`schema!` now shares the OpenAPI generation
-    // path, so it no longer diverges by dropping defaulted fields.)
+    // `schema!` is the response view, matching the OpenAPI component
+    // schema: serde writes every field, so all are required — 'bio' despite
+    // its `#[serde(default)]` (which only matters when reading), and the
+    // Option<T> 'email' too (written as `null`, its schema is nullable).
     let required = user_schema.required.unwrap();
     assert!(required.contains(&"id".to_string()));
     assert!(required.contains(&"name".to_string()));
     assert!(
-        !required.contains(&"email".to_string()),
-        "'email' is Option<T>, should not be required"
+        required.contains(&"email".to_string()),
+        "'email' is Option<T>: always written (as null), so required"
     );
     assert!(
         required.contains(&"bio".to_string()),
@@ -414,4 +413,58 @@ fn decimal_serializes_as_string_at_runtime() {
         "Decimal serialized as {value:?}, expected a JSON string"
     );
     assert_eq!(value, serde_json::json!("10.50"));
+}
+
+/// A response type mixing every `Option` / skip combination.
+#[derive(Serialize, Deserialize, Clone, Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct WireProfile {
+    pub name: String,
+    pub nickname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing)]
+    pub secret: String,
+}
+
+/// The response schema matches what axum's `Json` actually sends: a `None`
+/// is sent as `"nickname": null` (so `nickname` is required and nullable),
+/// an `Option::is_none`-skipped field is a string when `Some` and left out
+/// when `None` — never `null` (optional, not nullable) — and a
+/// `skip_serializing` field is never sent (not a property).
+#[tokio::test]
+async fn response_schema_matches_the_serialized_body() {
+    use vespera::axum::{Json, Router, routing::get};
+
+    let profile = |email: Option<&str>| WireProfile {
+        name: "n".to_string(),
+        nickname: None,
+        email: email.map(str::to_string),
+        secret: "s".to_string(),
+    };
+    let (without, with) = (profile(None), profile(Some("e@x")));
+    let app = Router::new()
+        .route("/none", get(|| async move { Json(without) }))
+        .route("/some", get(|| async move { Json(with) }));
+    let server = TestServer::new(app);
+    let body: serde_json::Value = server.get("/none").await.json();
+    assert_eq!(body, json!({"name": "n", "nickname": null}));
+    let with_email: serde_json::Value = server.get("/some").await.json();
+    assert_eq!(
+        with_email,
+        json!({"name": "n", "nickname": null, "email": "e@x"})
+    );
+
+    let schema = serde_json::to_value(schema!(WireProfile)).unwrap();
+    assert_eq!(schema["required"], json!(["name", "nickname"]));
+    assert_eq!(
+        schema["properties"]["nickname"]["type"],
+        json!(["string", "null"])
+    );
+    assert_eq!(schema["properties"]["email"], json!({"type": "string"}));
+    assert!(schema["properties"].get("secret").is_none());
+    // Every required key is really in the body.
+    for key in schema["required"].as_array().unwrap() {
+        assert!(body.get(key.as_str().unwrap()).is_some(), "{key} missing");
+    }
 }

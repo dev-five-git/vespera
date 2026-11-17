@@ -12,7 +12,8 @@ mod route_dir;
 mod security_dsl;
 
 pub use export::{
-    ExportAppInput, apply_export_prefix, namespace_export_schemas, schema_namespace_from_prefix,
+    ExportAppInput, apply_export_prefix, namespace_export_schemas, rewrite_schema_refs,
+    schema_namespace_from_prefix,
 };
 pub use generator::generate_router_code;
 #[cfg(test)]
