@@ -806,8 +806,18 @@ fn response_property_named_like_a_request_key_does_not_reach_input() {
     assert_eq!(schemas.keys().collect::<Vec<_>>(), ["Filter"]);
 
     let mut schemas = base();
-    let paths = path(json!({"get": {"parameters": [{"name": "q", "in": "query",
-        "schema": {"$ref": "#/components/schemas/FilterInput"}}], "responses": {}}}));
+    let query = json!({"name": "q", "in": "query",
+        "schema": {"$ref": "#/components/schemas/FilterInput"}});
+    let paths = path(json!({"get": {"parameters": [query.clone()], "responses": {}}}));
+    prune_unreferenced_inputs(&mut schemas, &paths, &names);
+    assert_eq!(
+        schemas.keys().collect::<Vec<_>>(),
+        ["Filter", "FilterInput"]
+    );
+
+    // Path-level parameters apply to every operation of the path item.
+    let mut schemas = base();
+    let paths = path(json!({"parameters": [query]}));
     prune_unreferenced_inputs(&mut schemas, &paths, &names);
     assert_eq!(
         schemas.keys().collect::<Vec<_>>(),

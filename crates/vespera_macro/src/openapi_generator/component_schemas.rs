@@ -163,10 +163,7 @@ fn collect_path_item_request_refs(item: &serde_json::Value, out: &mut Vec<String
     const METHODS: [&str; 8] = [
         "get", "put", "post", "delete", "options", "head", "patch", "trace",
     ];
-    let Some(map) = item.as_object() else {
-        return;
-    };
-    for (key, child) in map {
+    for (key, child) in item.as_object().into_iter().flatten() {
         if key == "parameters" {
             collect_component_refs(child, out);
         } else if METHODS.contains(&key.as_str())
