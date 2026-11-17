@@ -432,6 +432,39 @@ pub(super) fn build_struct_file_index(
     index
 }
 
+/// The file AST a struct's Priority-2 (`#[serde(default = "fn")]`) functions
+/// resolve in.
+///
+/// The file its own `source_identity` names is the one that declares it. An
+/// ident-only lookup would read a same-named function from another file: a
+/// `struct User` in two route files, or a renamed `#[schema(name)]` struct whose
+/// ident is shared, resolves to whichever file sorts first. The ident index is
+/// used only for a struct without a source identity.
+fn struct_default_file<'a>(
+    struct_meta: &crate::metadata::StructMetadata,
+    file_cache: &'a HashMap<String, syn::File>,
+    struct_file_index: &HashMap<String, &str>,
+) -> Option<&'a syn::File> {
+    if let Some(identity) = struct_meta.source_identity.as_deref() {
+        return identity_file(identity).and_then(|path| file_cache.get(path));
+    }
+    struct_file_index
+        .get(&struct_meta.name)
+        .or_else(|| {
+            struct_meta
+                .rust_ident
+                .as_ref()
+                .and_then(|ident| struct_file_index.get(ident))
+        })
+        .and_then(|path| file_cache.get(*path))
+}
+
+/// The file part of a `source_identity` (`file::Ident@line:col`).
+fn identity_file(identity: &str) -> Option<&str> {
+    let (base, _position) = identity.rsplit_once('@')?;
+    base.rsplit_once("::").map(|(file, _ident)| file)
+}
+
 /// Parse struct and enum definitions into `OpenAPI` component schemas.
 ///
 /// Only includes structs where `include_in_openapi` is true
@@ -535,15 +568,7 @@ pub(super) fn parse_component_schemas(
         // wrong OpenAPI default; a struct whose file is not indexed now
         // simply forgoes Priority-2 extraction (other default sources still
         // apply) rather than risking an incorrect value.
-        let file_ast = struct_file_index
-            .get(&struct_meta.name)
-            .or_else(|| {
-                struct_meta
-                    .rust_ident
-                    .as_ref()
-                    .and_then(|ident| struct_file_index.get(ident))
-            })
-            .and_then(|path| file_cache.get(*path));
+        let file_ast = struct_default_file(struct_meta, file_cache, struct_file_index);
         match file_ast {
             Some(ast) => ast_backed.push((struct_meta, ast)),
             None => parallel_jobs.push(struct_meta),

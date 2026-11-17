@@ -144,10 +144,12 @@ fn test_collect_metadata_routes(
     assert_eq!(route.function_name, expected_function_name);
     assert_eq!(route.module_path, expected_module_path);
     if let Some((first_filename, _)) = files.first() {
+        // The whole relative path, not just its first segment: the file must
+        // be the one that was written (separator-normalised for Windows).
+        let normalized = route.file_path.replace('\\', "/");
         assert!(
-            route
-                .file_path
-                .contains(first_filename.split('/').next().unwrap())
+            normalized.ends_with(*first_filename),
+            "route file {normalized} must end with {first_filename}"
         );
     }
 }
@@ -503,9 +505,9 @@ fn test_collect_metadata_unreadable_route_file_is_an_error() {
 }
 
 #[test]
-fn test_collect_metadata_file_read_error_via_invalid_syntax() {
-    // While we can't easily trigger read errors on all platforms,
-    // we verify the code path by ensuring errors are properly propagated
+fn test_collect_metadata_invalid_syntax_is_an_error() {
+    // A route file that does not parse is reported, not skipped. (Unreadable
+    // files are covered by the `not_utf8.rs` test above.)
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let folder_name = "routes";
 
@@ -518,7 +520,7 @@ fn test_collect_metadata_file_read_error_via_invalid_syntax() {
 }
 
 #[test]
-fn test_collect_metadata_strip_prefix_succeeds_in_normal_case() {
+fn test_collect_metadata_routes_under_the_folder_are_all_collected() {
     // DEFENSIVE CODE ANALYSIS (line 49-58):
     // The strip_prefix error path is nearly impossible to trigger in practice because:
     // 1. collect_files() returns paths by walking folder_path

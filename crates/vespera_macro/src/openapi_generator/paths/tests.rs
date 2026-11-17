@@ -317,8 +317,14 @@ fn route_storage_dedup_skips_already_in_ast() {
     // source file via `file_cache`, the storage-parse step must skip
     // re-parsing it — exercises the `already_in_ast → return None`
     // branch inside `route_fn_cache` construction.
+    //
+    // The stored signature returns `i32` while the file returns `String`: only
+    // the file's signature may be used, so the response schema must be a
+    // string. Had the storage entry been parsed instead, it would be an
+    // integer.
     let route_file_path = "/virtual/users.rs".to_string();
     let route_src = "pub fn get_users() -> String { \"users\".to_string() }";
+    let stored_src = "pub fn get_users() -> i32 { 1 }";
     let parsed: syn::File = syn::parse_str(route_src).expect("route src parses");
     let mut file_cache: HashMap<String, syn::File> = HashMap::new();
     file_cache.insert(route_file_path.clone(), parsed);
@@ -345,7 +351,7 @@ fn route_storage_dedup_skips_already_in_ast() {
         deprecated: false,
         description: None,
         file_path: Some(route_file_path),
-        fn_sig_str: route_src.to_string(),
+        fn_sig_str: stored_src.to_string(),
         inline_module: None,
     }];
 
@@ -365,6 +371,15 @@ fn route_storage_dedup_skips_already_in_ast() {
         .and_then(|p| p.get.as_ref())
         .expect("GET op");
     assert_eq!(op.operation_id.as_deref(), Some("get_users"));
+    let schema = op
+        .responses
+        .get("200")
+        .and_then(|response| response.content.as_ref())
+        .and_then(|content| content.values().next())
+        .and_then(|media| media.schema.as_ref())
+        .expect("response schema");
+    let schema = serde_json::to_value(schema).expect("schema serialises");
+    assert_eq!(schema["type"], "string", "{schema}");
 }
 
 #[test]

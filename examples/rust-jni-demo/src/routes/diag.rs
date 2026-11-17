@@ -14,12 +14,28 @@ use std::{
     time::Duration,
 };
 
+use futures_util::StreamExt;
 use vespera::axum::{
     body::{Body, Bytes},
     extract::Path,
     http::header,
     response::{IntoResponse, Response},
 };
+
+/// Reads a request body to its end WITHOUT keeping it: the bytes are counted
+/// and dropped, so a client cannot make the standalone server hold an upload
+/// of any size in memory. Returns the number of bytes read.
+async fn drain(body: Body) -> usize {
+    let mut stream = body.into_data_stream();
+    let mut total = 0usize;
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(bytes) => total = total.saturating_add(bytes.len()),
+            Err(_) => break,
+        }
+    }
+    total
+}
 
 /// Largest body `/diag/blob` produces (16 MiB).
 pub const MAX_BLOB_BYTES: usize = 16 * 1024 * 1024;
@@ -130,6 +146,14 @@ pub async fn drip(Path((key, chunks, ms)): Path<(String, u64, u64)>) -> Body {
             if n > 0 {
                 tokio::time::sleep(every).await;
             }
+            // The run is finished with its last chunk: count it now. A
+            // consumer that knows the length stops there and never polls
+            // the stream again, so the end-of-stream poll is not a signal.
+            if n + 1 == chunks
+                && let Some(key) = probe.disarm()
+            {
+                record(key);
+            }
             let chunk = Bytes::from(vec![b'd'; 1024]);
             Some((Ok::<_, std::convert::Infallible>(chunk), (probe, n + 1)))
         },
@@ -160,9 +184,7 @@ pub async fn async_in_flight() -> String {
 #[allow(clippy::panic)]
 #[vespera::route(post, path = "/panic-after-read", tags = ["diag"])]
 pub async fn panic_after_read(body: Body) -> String {
-    let read = vespera::axum::body::to_bytes(body, usize::MAX)
-        .await
-        .map_or(0, |bytes| bytes.len());
+    let read = drain(body).await;
     panic!("intentional panic after reading {read} request bytes");
 }
 
@@ -175,7 +197,7 @@ pub async fn panic_after_read(body: Body) -> String {
 #[allow(clippy::panic)]
 #[vespera::route(post, path = "/panic-mid-body/{chunks}", tags = ["diag"])]
 pub async fn panic_mid_body(Path(chunks): Path<u64>, body: Body) -> Response {
-    let _ = vespera::axum::body::to_bytes(body, usize::MAX).await;
+    let _ = drain(body).await;
     let chunks = chunks.min(MAX_DRIP_CHUNKS);
     let stream = futures_util::stream::unfold(0u64, move |n| async move {
         assert!(
@@ -208,5 +230,40 @@ mod tests {
         assert_eq!(runs.get("b"), Some(&1));
         assert_eq!(runs.get("c"), None);
         assert_eq!(runs.len(), 2);
+    }
+
+    /// A consumer that takes every chunk of a known length and then drops
+    /// the body (never polling the end) has completed the run: it counts as a
+    /// finished run, not a cancellation.
+    #[tokio::test]
+    async fn drip_counts_a_run_once_its_last_chunk_is_read() {
+        let key = "unit-drip-last-chunk".to_owned();
+        let body = drip(Path((key.clone(), 2, 0))).await;
+        let mut stream = body.into_data_stream();
+        assert!(matches!(stream.next().await, Some(Ok(_))));
+        assert!(matches!(stream.next().await, Some(Ok(_))));
+        drop(stream);
+
+        assert_eq!(count(&key), 1);
+        assert_eq!(count(&format!("{key}:dropped")), 0);
+    }
+
+    /// A drip the consumer abandons before its last chunk is a cancellation.
+    #[tokio::test]
+    async fn drip_abandoned_mid_stream_counts_as_dropped() {
+        let key = "unit-drip-abandoned".to_owned();
+        let body = drip(Path((key.clone(), 3, 0))).await;
+        let mut stream = body.into_data_stream();
+        assert!(matches!(stream.next().await, Some(Ok(_))));
+        drop(stream);
+
+        assert_eq!(count(&key), 0);
+        assert_eq!(count(&format!("{key}:dropped")), 1);
+    }
+
+    #[tokio::test]
+    async fn drain_reads_the_whole_body_and_reports_its_length() {
+        assert_eq!(drain(Body::from("abcdef")).await, 6);
+        assert_eq!(drain(Body::empty()).await, 0);
     }
 }

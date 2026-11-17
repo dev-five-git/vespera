@@ -281,12 +281,15 @@ pub fn process_vespera_macro(
 /// runtime), so a crate that only exports an app still runs its jobs when a
 /// parent merges it.
 fn current_crate_cron_jobs() -> syn::Result<Vec<crate::metadata::CronMetadata>> {
+    // Without the `cron` feature no `#[cron]` is vespera's: nothing to place,
+    // and no `src/` scan.
+    if !cfg!(feature = "cron") {
+        return Ok(Vec::new());
+    }
     let storage = crate::cron_impl::current_crate_crons();
     let storage = crate::macro_storage::retain_declared(&storage);
     let src_dir = crate::env_access::var("CARGO_MANIFEST_DIR")
         .ok()
-        // Without the `cron` feature no `#[cron]` is vespera's: never scan.
-        .filter(|_| cfg!(feature = "cron"))
         .map(|dir| PathBuf::from(dir).join("src"));
     let call_site = Span::call_site().local_file();
     discover_cron_jobs(&storage, src_dir.as_deref(), call_site.as_deref())

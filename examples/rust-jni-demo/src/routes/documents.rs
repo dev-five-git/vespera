@@ -260,7 +260,12 @@ fn retention_for_level(level: u8) -> u32 {
 
 fn parse_date(s: &str) -> Option<(i32, u32, u32)> {
     let parts: Vec<&str> = s.split('-').collect();
-    if parts.len() != 3 {
+    // Exactly `YYYY-MM-DD`: `str::parse` alone would also take `+1` and `1`.
+    if parts.len() != 3
+        || !is_digits(parts[0], 4)
+        || !is_digits(parts[1], 2)
+        || !is_digits(parts[2], 2)
+    {
         return None;
     }
     let year: i32 = parts[0].parse().ok()?;
@@ -270,6 +275,11 @@ fn parse_date(s: &str) -> Option<(i32, u32, u32)> {
         return None;
     }
     Some((year, month, day))
+}
+
+/// Whether `part` is exactly `width` ASCII digits.
+fn is_digits(part: &str, width: usize) -> bool {
+    part.len() == width && part.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// Days in `month` of `year` (Gregorian, leap years included).
@@ -303,6 +313,24 @@ mod parse_date_tests {
         assert_eq!(parse_date("2025-02-29"), None);
         assert_eq!(parse_date("1900-02-29"), None);
         assert_eq!(parse_date("2025-01-00"), None);
+    }
+
+    /// The message promises `YYYY-MM-DD`: no sign, no missing zero padding,
+    /// no stray characters.
+    #[test]
+    fn rejects_anything_but_the_zero_padded_format() {
+        for text in [
+            "2025-1-1",
+            "2025-01-1",
+            "25-01-01",
+            "+025-01-01",
+            "2025-+1-+1",
+            "2025-01-01 ",
+            " 2025-01-01",
+            "2025/01/01",
+        ] {
+            assert_eq!(parse_date(text), None, "{text}");
+        }
     }
 
     #[test]

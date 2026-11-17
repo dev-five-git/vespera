@@ -27,7 +27,10 @@ async fn test_memo_rel_query_failure_is_a_500() {
     let response = server.get("/memos/1/rel").await;
 
     response.assert_status(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-    assert_ne!(response.text(), "");
+    // The database's own error text, not a placeholder: the example's
+    // in-memory database has no `user` table.
+    let body = response.text();
+    assert!(body.contains("no such table: user"), "{body}");
 }
 
 /// A `macro_rules!`-generated route is mounted (its file never spells the

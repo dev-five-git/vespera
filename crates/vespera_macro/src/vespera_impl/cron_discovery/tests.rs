@@ -349,6 +349,22 @@ fn cron_module_path_normalizes_rust_module_syntax(#[case] input: &str, #[case] e
     assert_eq!(cron_module_path(input), expected);
 }
 
+/// Without a known `src/`, an absolute file is no module path: placement is
+/// an error, not a path made of the absolute directories.
+#[test]
+fn absolute_storage_path_without_src_dir_is_a_placement_error() {
+    let absolute = std::env::temp_dir()
+        .join("vespera-abs-proj")
+        .join("jobs.rs");
+    let storage = [stored(
+        "tick",
+        Some(absolute.to_string_lossy().into_owned()),
+    )];
+    let err = discover_cron_jobs(&storage, None, None)
+        .expect_err("an absolute path must not become a module path");
+    assert!(err.contains("`#[cron]` job `tick`"), "{err}");
+}
+
 #[test]
 fn storage_entries_without_src_dir_keep_their_derived_paths() {
     let jobs = discover(
