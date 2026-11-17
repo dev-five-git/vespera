@@ -6,7 +6,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -93,8 +92,22 @@ class HeaderAppNameResolverTest {
     }
 
     @Test
-    void emptyOrBlankAllowlistKeepsTheUnrestrictedBehaviour() {
-        List<String> blanks = new ArrayList<>(Arrays.asList(" ", null, ""));
+    void blankOnlyAllowlistFailsStartupInsteadOfOpeningTheProxy() {
+        // ${ADMIN_APP:} with the variable unset binds to [""]: that must not
+        // silently fall back to the unrestricted behaviour.
+        for (List<String> blanks : List.of(
+                Arrays.asList(""),
+                Arrays.asList(" "),
+                Arrays.asList("\t", null),
+                Arrays.asList(" ", ""))) {
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> new HeaderAppNameResolver("X-Vespera-App", blanks), blanks.toString());
+            assertTrue(failure.getMessage().contains("exposed-apps"), failure.getMessage());
+        }
+    }
+
+    @Test
+    void emptyOrAbsentAllowlistKeepsTheUnrestrictedBehaviour() {
         ch.qos.logback.classic.Logger logger = (ch.qos.logback.classic.Logger)
                 org.slf4j.LoggerFactory.getLogger(HeaderAppNameResolver.class);
         ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> warnings =
@@ -104,7 +117,6 @@ class HeaderAppNameResolverTest {
         try {
             for (HeaderAppNameResolver unrestricted : List.of(
                     new HeaderAppNameResolver("X-Vespera-App", List.of()),
-                    new HeaderAppNameResolver("X-Vespera-App", blanks),
                     new HeaderAppNameResolver("X-Vespera-App", null))) {
                 warnings.list.clear();
                 assertFalse(unrestricted.isRestricted());

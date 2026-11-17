@@ -289,7 +289,11 @@ public class VesperaReactiveProxyHandler implements WebHandler {
         ServerHttpRequest request = exchange.getRequest();
         final String appName = resolveAppName(exchange, px);
         HttpHeaders requestHeaders = request.getHeaders();
-        String accept = requestHeaders.getFirst(HttpHeaders.ACCEPT);
+        // Every Accept field line counts (RFC 9110 section 5.3), not just the first.
+        // getValuesAsList(String) exists in both Spring 6.2 (testBoot3) and 7, unlike
+        // getOrEmpty(String) and get(String), which are not in 6.2.
+        List<String> acceptLines = requestHeaders.getValuesAsList(HttpHeaders.ACCEPT);
+        String accept = acceptLines.isEmpty() ? null : String.join(", ", acceptLines);
         final boolean streaming = !"HEAD".equals(method)
                 && SmartDispatchModeResolver.acceptsStreaming(accept);
         // A bodyless GET that did not ask for a stream may still get one (an

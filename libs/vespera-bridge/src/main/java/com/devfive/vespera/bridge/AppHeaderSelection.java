@@ -37,7 +37,7 @@ final class AppHeaderSelection {
     }
 
     private static Set<String> normalizeAllowlist(Collection<String> exposedApps) {
-        if (exposedApps == null) {
+        if (exposedApps == null || exposedApps.isEmpty()) {
             return null;
         }
         Set<String> allowed = new LinkedHashSet<>();
@@ -47,7 +47,11 @@ final class AppHeaderSelection {
             }
         }
         if (allowed.isEmpty()) {
-            return null;
+            // A configured list whose entries are all blank (e.g. ${ADMIN_APP:}
+            // with the variable unset) must not silently become "unrestricted".
+            throw new IllegalArgumentException(
+                "vespera.bridge.exposed-apps is set but names no app (blank entries only); "
+                    + "remove the property to allow any app, or list the apps to expose");
         }
         allowed.add(AppNameResolver.DEFAULT_APP);
         return Set.copyOf(allowed);

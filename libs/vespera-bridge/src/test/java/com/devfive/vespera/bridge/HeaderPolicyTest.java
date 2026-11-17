@@ -301,6 +301,21 @@ class HeaderPolicyTest {
                 HeaderPolicy.collectHeaders(request).get("accept"));
     }
 
+    /**
+     * Pins the documented trade-off in {@code forEachMergedRequestHeader}: two
+     * spellings of one header whose getHeaders answers are identical are merged
+     * once. A conforming container answers every spelling with the same full
+     * list, so this is the common case; a case-sensitive container's identical
+     * per-spelling values are the accepted loss.
+     */
+    @Test
+    void identicalAnswersUnderTwoSpellingsAreForwardedOnce() {
+        ScriptedRequest sameAnswer = new ScriptedRequest(List.of("X-Dup", "x-dup"), null);
+        sameAnswer.values("X-Dup", "v");
+        sameAnswer.values("x-dup", "v");
+        assertEquals(Map.of("x-dup", "v"), HeaderPolicy.collectHeaders(sameAnswer));
+    }
+
     @Test
     void nonConformantServletEnumerationsAreHandledWithoutNulls() {
         ScriptedRequest noNames = new ScriptedRequest((List<String>) null);
@@ -314,11 +329,26 @@ class HeaderPolicyTest {
         assertEquals(Map.of("x-one", "one"), HeaderPolicy.collectHeaders(namesDisappear));
         assertEquals(1, namesDisappear.nameEnumerations);
 
+        // A duplicate sends the merge fallback, which reuses the names the first
+        // pass read: the second getHeaderNames() (null here) is never called, so
+        // the duplicate and every unrelated header keep being forwarded.
         ScriptedRequest mergedNamesDisappear =
-                new ScriptedRequest(List.of("X-One", "x-one"), null);
+                new ScriptedRequest(List.of("X-One", "x-one", "Authorization"), null);
         mergedNamesDisappear.values("X-One", "one");
         mergedNamesDisappear.values("x-one", "two");
-        assertTrue(HeaderPolicy.collectHeaders(mergedNamesDisappear).isEmpty());
+        mergedNamesDisappear.values("Authorization", "Bearer t");
+        assertEquals(Map.of("x-one", "one, two", "authorization", "Bearer t"),
+                HeaderPolicy.collectHeaders(mergedNamesDisappear));
+        assertEquals(1, mergedNamesDisappear.nameEnumerations);
+
+        // Headers listed before the duplicate survive the same fallback.
+        ScriptedRequest headerBeforeDuplicate =
+                new ScriptedRequest(List.of("Accept", "X-One", "x-one"), null);
+        headerBeforeDuplicate.values("Accept", "text/plain");
+        headerBeforeDuplicate.values("X-One", "one");
+        headerBeforeDuplicate.values("x-one", "two");
+        assertEquals(Map.of("accept", "text/plain", "x-one", "one, two"),
+                HeaderPolicy.collectHeaders(headerBeforeDuplicate));
 
         ScriptedRequest missingValues =
                 new ScriptedRequest(List.of("X-Fallback", "X-Empty"));

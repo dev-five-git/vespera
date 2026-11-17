@@ -87,9 +87,10 @@ class VesperaNativeLoaderTest {
                 () -> VesperaNativeLoader.loadBundled("absent_" + UUID.randomUUID()));
 
         assertTrue(error.getMessage().startsWith("Not found in JAR: native/"), error.getMessage());
-        assertTrue(error.getMessage().contains(System.getProperty("os.arch").contains("64")
-                ? "64"
-                : System.getProperty("os.arch")), error.getMessage());
+        // Every platform folder the loader tried for this host must be named.
+        for (String platform : NativePlatformDetector.hostCandidatePlatforms(NativePlatformDetector.HOST)) {
+            assertTrue(error.getMessage().contains("native/" + platform + "/"), error.getMessage());
+        }
     }
 
     @Test
@@ -548,7 +549,7 @@ class VesperaNativeLoaderTest {
     }
 
     @Test
-    void unusableBaseDirSurfacesIoExceptionOrFallsBackOnPosix() throws Exception {
+    void unusableBaseDirFallsBackToAFreshTempDir() throws Exception {
         Path base = Files.createTempDirectory("vespera-native-unusable-");
         try {
             Path file = Files.writeString(base.resolve("not-a-dir"), "x");

@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -253,5 +254,32 @@ class SmartDispatchModeResolverTest {
                 "POST", SmartDispatchModeResolver.DEFAULT_MAX_SYNC_BYTES + 1);
         big.addHeader("Accept", "text/event-stream");
         assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING, resolver.resolveMode(big));
+    }
+
+    /**
+     * RFC 9110 section 5.3: repeated Accept field lines are one comma-joined
+     * value. A streaming range on a later line must still stream; the first
+     * line alone (getHeader) used to miss it and buffer the request.
+     */
+    @Test
+    void streamingRangeOnALaterAcceptLineStillStreams() {
+        MockHttpServletRequest split = new MockHttpServletRequest("GET", "/events");
+        split.addHeader("Accept", "application/json");
+        split.addHeader("Accept", "text/event-stream");
+        assertEquals(DispatchMode.STREAMING, resolver.resolveMode(split));
+        assertEquals(DispatchMode.STREAMING, resolver.resolveMode(split, true));
+
+        MockHttpServletRequest json = new MockHttpServletRequest("GET", "/events");
+        json.addHeader("Accept", "application/json");
+        json.addHeader("Accept", "text/plain");
+        assertNotEquals(DispatchMode.STREAMING, resolver.resolveMode(json));
+    }
+
+    @Test
+    void acceptValueJoinsEveryFieldLineAndIsNullWhenAbsent() {
+        assertNull(SmartDispatchModeResolver.acceptValue(null));
+        assertNull(SmartDispatchModeResolver.acceptValue(java.util.Collections.emptyEnumeration()));
+        assertEquals("application/json, text/event-stream", SmartDispatchModeResolver.acceptValue(
+                java.util.Collections.enumeration(java.util.List.of("application/json", "text/event-stream"))));
     }
 }

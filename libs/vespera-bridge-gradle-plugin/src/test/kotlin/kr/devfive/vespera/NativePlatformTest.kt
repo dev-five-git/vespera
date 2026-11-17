@@ -338,6 +338,43 @@ class NativePlatformTest {
         assertTrue(arm.any { it.platform == "linux-arm" && it.triple == "armv7-unknown-linux-gnueabihf" })
     }
 
+    /**
+     * The key's OS selects the library file name, so a triple that builds
+     * another OS is rejected too: `windows-x86_64 = x86_64-unknown-linux-gnu`
+     * would look for `demo.dll` where Cargo writes `libdemo.so`.
+     */
+    @Test
+    fun aTripleOfAnotherOsIsRejectedForItsKey() {
+        val wrongOs = assertThrows<IllegalArgumentException> {
+            NativePlatform.plannedBuilds(
+                "linux-x86_64", "demo", "release", mapOf("windows-x86_64" to "x86_64-unknown-linux-gnu"),
+            )
+        }
+        assertTrue(wrongOs.message!!.contains("'x86_64-unknown-linux-gnu'"), wrongOs.message)
+        assertTrue(wrongOs.message!!.contains("key's os is 'windows'"), wrongOs.message)
+        assertThrows<IllegalArgumentException> {
+            NativePlatform.plannedBuilds(
+                "linux-x86_64", "demo", "release", mapOf("macos-x86_64" to "x86_64-unknown-linux-gnu"),
+            )
+        }
+        // A triple of an OS the plugin does not bundle is not the key's OS either.
+        assertThrows<IllegalArgumentException> {
+            NativePlatform.plannedBuilds(
+                "linux-x86_64", "demo", "release", mapOf("linux-x86_64" to "x86_64-unknown-freebsd"),
+            )
+        }
+        // The matching OS is accepted for every bundled OS.
+        val builds = NativePlatform.plannedBuilds(
+            "linux-x86_64", "demo", "release",
+            mapOf(
+                "windows-x86_64" to "x86_64-pc-windows-msvc",
+                "macos-aarch64" to "aarch64-apple-darwin",
+            ),
+        )
+        assertTrue(builds.any { it.platform == "windows-x86_64" && it.relativePath.endsWith("demo.dll") })
+        assertTrue(builds.any { it.platform == "macos-aarch64" && it.relativePath.endsWith("libdemo.dylib") })
+    }
+
     @ParameterizedTest
     @CsvSource(
         "rust-jni-demo, , rust_jni_demo",

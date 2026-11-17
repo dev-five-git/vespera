@@ -574,19 +574,41 @@ class VesperaReactiveProxyHandlerTest {
     @Test
     void bodylessGetWithAWildcardAcceptStreamsAnEventStream() throws Exception {
         transport.streamImplicitRequests = true;
-        for (String accept : new String[] {null, "*/*", "text/*;q=0.5, application/json"}) {
-            WebTestClient.RequestHeadersSpec<?> spec = client(handler()).get().uri("/events");
-            if (accept != null) {
-                spec = spec.header(HttpHeaders.ACCEPT, accept);
+        String[] accepts = {null, "*/*", "text/*;q=0.5, application/json"};
+        for (int i = 0; i < accepts.length; i++) {
+            // A distinct path per request: each event is checked against its own
+            // request, not against an earlier one that is still in `events`.
+            String path = "/events/" + i;
+            WebTestClient.RequestHeadersSpec<?> spec = client(handler()).get().uri(path);
+            if (accepts[i] != null) {
+                spec = spec.header(HttpHeaders.ACCEPT, accepts[i]);
             }
             Result result = call(spec);
-            assertEquals(200, result.status(), String.valueOf(accept));
+            assertEquals(200, result.status(), String.valueOf(accepts[i]));
             assertEquals("text/event-stream", result.header(HttpHeaders.CONTENT_TYPE));
             assertEquals("data: a\n\ndata: b\n\n", result.body());
             assertNull(result.header(HttpHeaders.CONTENT_LENGTH), "streamed, not buffered");
+            assertEquals(DispatchMode.STREAMING.name(), awaitEvent(path).mode().name(), path);
         }
         assertTrue(transport.futures.isEmpty(), "never the buffered async path");
-        assertEquals(DispatchMode.STREAMING.name(), awaitEvent().mode().name());
+    }
+
+    /**
+     * RFC 9110 section 5.3: two Accept field lines are one comma-joined value.
+     * The streaming range on the second line must still take the streaming path
+     * (the first line alone used to route the request through buffered ASYNC).
+     */
+    @Test
+    void aStreamingAcceptOnALaterFieldLineStreamsTheResponse() throws Exception {
+        Result result = call(client(handler()).get().uri("/events/split-lines")
+                .headers(headers -> {
+                    headers.add(HttpHeaders.ACCEPT, "application/json");
+                    headers.add(HttpHeaders.ACCEPT, "text/event-stream");
+                }));
+        assertEquals(200, result.status());
+        assertEquals("text/event-stream", result.header(HttpHeaders.CONTENT_TYPE));
+        assertTrue(transport.futures.isEmpty(), "streamed, never the buffered async path");
+        assertEquals(DispatchMode.STREAMING.name(), awaitEvent("/events/split-lines").mode().name());
     }
 
     /** An ordinary response of an implicitly streamed GET is held back and keeps its Content-Length. */

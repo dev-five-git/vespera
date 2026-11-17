@@ -165,7 +165,7 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
         boolean bodyless = shape.definitelyBodyless;
         String method = shape.method;
 
-        if (acceptsStreaming(request.getHeader("Accept"))) {
+        if (acceptsStreaming(acceptValue(request.getHeaders("Accept")))) {
             // SSE / NDJSON: response-stream it so events reach the client as
             // they are produced (buffered modes would hold them until the
             // stream ends — forever for a long-lived event stream).
@@ -210,6 +210,19 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
         return syncSized(contentLength, bodyless)
                 ? DispatchMode.SYNC
                 : DispatchMode.BIDIRECTIONAL_STREAMING;
+    }
+
+    /**
+     * The effective {@code Accept} value of a request whose field lines are
+     * {@code lines}: RFC 9110 section 5.3 makes repeated field lines equivalent
+     * to one comma-joined value, so a streaming range on a later line counts.
+     * {@code null} when there is no {@code Accept} line.
+     */
+    static String acceptValue(java.util.Enumeration<String> lines) {
+        if (lines == null || !lines.hasMoreElements()) {
+            return null;
+        }
+        return String.join(", ", java.util.Collections.list(lines));
     }
 
     /**
