@@ -557,6 +557,15 @@ fn segment_ident_builds_plain_and_raw_idents(#[case] segment: &str, #[case] expe
 /// L6 (round 13): a `main.rs` / `lib.rs` below the crate root is a plain
 /// module file: its inline `mod inner { pub mod y; }` lives in
 /// `main/inner/y.rs` (it was looked up in `inner/y.rs`, like a `mod.rs`).
+/// R22-SM3-02: `::entities::bakery` names an external crate, not a module of
+/// this one, so it has no crate-relative location (it used to be probed as a
+/// rooted `/entities/bakery.rs`).
+#[test]
+fn crate_relative_rejects_an_external_leading_colon_path() {
+    assert!(crate_relative(&segs("::entities::bakery")).is_none());
+    assert!(crate_relative(&segs("crate::entities::bakery")).is_some());
+}
+
 #[test]
 fn nested_main_rs_is_not_a_mod_rs() {
     let (_dir, _guard) = temp_crate(&[

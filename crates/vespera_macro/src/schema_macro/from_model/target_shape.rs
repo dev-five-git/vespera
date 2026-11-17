@@ -104,8 +104,8 @@ fn compute_target_shape(
     let pk_count = primary_key_count(&model.fields);
     let mut has_relation = false;
     let mut all_readable = true;
-    // The relations `generate_type` emits as non-adapter fields: their loads
-    // read source columns (R21-SM2-L1, round 21).
+    // The relations `generate_type` emits (adapters included: their loads read
+    // source columns too, R21-SM2-L1 and R22-SM2-M1).
     let mut relations = Vec::new();
     for field in &model.fields {
         let name = field
@@ -126,12 +126,7 @@ fn compute_target_shape(
             Some(SeaOrmRelationKind::HasMany) if !pick.contains(&name) => {}
             Some(_) => {
                 has_relation = true;
-                let adapter = input
-                    .relation_adapters
-                    .iter()
-                    .any(|(field_name, _)| field_name == &name);
                 if let Some(ident) = field.ident.clone()
-                    && !adapter
                     && let Some((_, rel)) = convert_relation_type_to_schema_with_info(
                         &field.ty,
                         &field.attrs,

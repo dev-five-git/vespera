@@ -577,10 +577,7 @@ status: String,
 
     let defaults = extract_field_defaults_from_path(&input, &file_path);
     // The function should find default_status and extract its return value
-    assert!(
-        defaults.contains_key("status"),
-        "Should extract default for 'status' field"
-    );
+    assert_eq!(defaults.get("status"), Some(&serde_json::json!("active")));
 }
 
 #[test]

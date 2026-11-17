@@ -53,6 +53,63 @@ fn external_glob_supplies_names_the_module_does_not_define(
     );
 }
 
+/// R22-SM4-M1: with a SeaORM glob and an external glob both imported, a name
+/// the SeaORM prelude does not export (`Local`, `Utc`, `NaiveDate`) is the
+/// external glob's, not the chrono alias's.
+#[rstest]
+#[case::local("Local", "my_domain :: Local")]
+#[case::utc("Utc", "my_domain :: Utc")]
+#[case::naive_date("NaiveDate", "my_domain :: NaiveDate")]
+fn sea_orm_glob_does_not_shadow_names_outside_its_prelude(
+    #[case] ty: &str,
+    #[case] expected: &str,
+) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(src.join("models")).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod models;").unwrap();
+    std::fs::write(src.join("models.rs"), "pub mod domain;").unwrap();
+    std::fs::write(
+        src.join("models").join("domain.rs"),
+        "use sea_orm::prelude::*;\nuse my_domain::*;\npub struct Holder { pub v: u8 }",
+    )
+    .unwrap();
+    let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    crate::schema_macro::file_cache::bump_epoch();
+    let module = ["crate", "models", "domain"].map(String::from);
+    let ty: syn::Type = syn::parse_str(ty).unwrap();
+    assert_eq!(
+        resolve_type_with_params(&ty, &module, &[]).to_string(),
+        expected
+    );
+}
+
+/// R22-SM4-L1: with two external globs and no other meaning for a name, the
+/// macro does not guess which glob supplies it: a spanned error asks for an
+/// explicit import instead.
+#[test]
+fn name_from_two_external_globs_asks_for_an_explicit_import() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(src.join("models")).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod models;").unwrap();
+    std::fs::write(src.join("models.rs"), "pub mod two;").unwrap();
+    std::fs::write(
+        src.join("models").join("two.rs"),
+        "use toml::*;\nuse my_domain::*;\npub struct Holder { pub w: u8 }",
+    )
+    .unwrap();
+    let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    crate::schema_macro::file_cache::bump_epoch();
+    let module = ["crate", "models", "two"].map(String::from);
+    let ty: syn::Type = syn::parse_str("Widget").unwrap();
+    let output = resolve_type_with_params(&ty, &module, &[]).to_string();
+    assert!(
+        output.contains("compile_error") && output.contains("import it explicitly"),
+        "{output}"
+    );
+}
+
 /// R21-B4-M1 / M2 (round 21): with the SeaORM prelude and an external glob
 /// both imported, a SeaORM prelude name is SeaORM's (the external glob took
 /// `DateTimeUtc`, `Uuid`, `Json`), and `char` / `str` are never a glob's.
