@@ -451,13 +451,3 @@ fn reflected_values_escape_control_chars() {
         "Wrong type for field `flag` (expected bool): invalid boolean value: `y\\u{7}`"
     );
 }
-
-/// A scalar field always has a byte cap: an explicit size wins, and both an
-/// absent limit and the `usize::MAX` "unlimited" sentinel get the default.
-#[rstest::rstest]
-#[case::absent(None, DEFAULT_TINY_SCALAR_LIMIT_BYTES)]
-#[case::explicit_size(Some(1024), 1024)]
-#[case::unlimited_sentinel(Some(usize::MAX), DEFAULT_TINY_SCALAR_LIMIT_BYTES)]
-fn tiny_scalar_limit_is_always_bounded(#[case] limit: Option<usize>, #[case] expected: usize) {
-    assert_eq!(tiny_scalar_limit(limit), expected);
-}

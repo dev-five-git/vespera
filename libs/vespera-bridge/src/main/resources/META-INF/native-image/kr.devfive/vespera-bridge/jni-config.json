@@ -28,6 +28,12 @@
           "int",
           "int"
         ]
+      },
+      {
+        "name": "write",
+        "parameterTypes": [
+          "byte[]"
+        ]
       }
     ]
   },
