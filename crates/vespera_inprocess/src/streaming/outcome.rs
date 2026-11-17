@@ -29,7 +29,7 @@ pub enum StreamOutcome {
     /// The response body stream errored **after** the header was
     /// committed; the bytes delivered via `on_chunk` are truncated.
     BodyError,
-    /// `on_chunk` returned [`ControlFlow::Break`] — the chunk sink asked
+    /// `on_chunk` returned [`std::ops::ControlFlow::Break`] — the chunk sink asked
     /// to stop early (e.g. the host's output sink failed mid-stream).
     /// The response delivered via `on_chunk` is truncated.
     SinkStopped,
