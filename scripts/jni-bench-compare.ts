@@ -68,13 +68,14 @@ export function isRegression(
   return median(changes) > t.mean && Math.min(...changes) > t.lower
 }
 
+const RESULT_LINE =
+  /^\s*(?:RESULT\s+)?(\S+)\s+(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*$/
+
 /** Parses `<mode> <ns>` lines into a map (blank / malformed lines ignored). */
 export function parseRound(text: string): Map<string, number> {
   const out = new Map<string, number>()
   for (const line of text.split(/\r?\n/)) {
-    const m = /^\s*(?:RESULT\s+)?(\S+)\s+(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*$/.exec(
-      line,
-    )
+    const m = RESULT_LINE.exec(line)
     if (m) out.set(m[1], Number(m[2]))
   }
   return out
