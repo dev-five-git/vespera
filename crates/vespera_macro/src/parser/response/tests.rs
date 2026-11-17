@@ -13,8 +13,14 @@ fn extract_ok_payload_and_headers(
     Option<Type>,
     Option<BTreeMap<String, vespera_core::route::Header>>,
 ) {
-    let payload = body_element(ok_ty).map(|body| unwrap_json(body).clone());
-    (payload, has_header_map(ok_ty).then(BTreeMap::new))
+    let known_schemas: HashSet<&str> = HashSet::new();
+    let struct_definitions: HashMap<&str, &str> = HashMap::new();
+    let shadows = Shadows {
+        known_schemas: &known_schemas,
+        struct_definitions: &struct_definitions,
+    };
+    let payload = body_element(ok_ty, shadows).map(|body| unwrap_json(body).clone());
+    (payload, has_header_map(ok_ty, shadows).then(BTreeMap::new))
 }
 
 #[derive(Debug)]
@@ -621,20 +627,26 @@ fn test_parse_return_type_non_result_status_code() {
 
 #[test]
 fn test_is_non_body_type() {
+    let known_schemas: HashSet<&str> = HashSet::new();
+    let struct_definitions: HashMap<&str, &str> = HashMap::new();
+    let shadows = Shadows {
+        known_schemas: &known_schemas,
+        struct_definitions: &struct_definitions,
+    };
     let status: syn::Type = syn::parse_str("StatusCode").unwrap();
-    assert!(is_non_body_type(&status));
+    assert!(is_non_body_type(&status, shadows));
 
     let header_map: syn::Type = syn::parse_str("HeaderMap").unwrap();
-    assert!(is_non_body_type(&header_map));
+    assert!(is_non_body_type(&header_map, shadows));
 
     let cookie_jar: syn::Type = syn::parse_str("CookieJar").unwrap();
-    assert!(is_non_body_type(&cookie_jar));
+    assert!(is_non_body_type(&cookie_jar, shadows));
 
     let string: syn::Type = syn::parse_str("String").unwrap();
-    assert!(!is_non_body_type(&string));
+    assert!(!is_non_body_type(&string, shadows));
 
     let json: syn::Type = syn::parse_str("Json<String>").unwrap();
-    assert!(!is_non_body_type(&json));
+    assert!(!is_non_body_type(&json, shadows));
 }
 
 #[test]
@@ -643,7 +655,13 @@ fn response_helpers_cover_non_string_tuple_and_reference_fallbacks() {
     assert!(!is_string_like(&tuple));
 
     let metadata_only: Type = syn::parse_quote!((StatusCode, HeaderMap));
-    assert!(body_element(&metadata_only).is_none());
+    let known_schemas: HashSet<&str> = HashSet::new();
+    let struct_definitions: HashMap<&str, &str> = HashMap::new();
+    let shadows = Shadows {
+        known_schemas: &known_schemas,
+        struct_definitions: &struct_definitions,
+    };
+    assert!(body_element(&metadata_only, shadows).is_none());
 
     let reference_to_tuple: Type = syn::parse_quote!(&(String, i32));
     assert!(result_args(&reference_to_tuple).is_none());
@@ -770,6 +788,53 @@ fn user_types_named_like_axum_wrappers_are_documented(#[case] return_type: &str)
         .content
         .as_ref()
         .expect("the struct body is documented");
+    assert!(content.contains_key("application/json"));
+}
+
+/// A path rooted at an external crate names axum's wrapper even when this crate
+/// defines a type of the same name; the bare name stays the user's (above).
+#[rstest]
+#[case::qualified_redirect("-> axum::response::Redirect", "3XX")]
+#[case::vespera_redirect("-> vespera::axum::response::Redirect", "3XX")]
+#[case::qualified_no_content("-> axum::response::NoContent", "204")]
+#[case::qualified_body("-> axum::body::Body", "200")]
+fn qualified_axum_wrappers_are_not_shadowed(#[case] return_type: &str, #[case] status: &str) {
+    let known_schemas: HashSet<&str> = HashSet::from(["Body", "Redirect", "NoContent"]);
+    let struct_definitions: HashMap<&str, &str> = HashMap::from([
+        ("Body", "pub struct Body { pub id: u32 }"),
+        ("Redirect", "pub struct Redirect { pub to: String }"),
+        ("NoContent", "pub struct NoContent { pub n: u8 }"),
+    ]);
+    let responses = parse_return_type(
+        &parse_return_type_str(return_type),
+        &known_schemas,
+        &struct_definitions,
+    );
+    assert_eq!(responses.keys().collect::<Vec<_>>(), vec![status]);
+    assert!(
+        responses[status].content.is_none(),
+        "an axum wrapper is documented by description only"
+    );
+}
+
+/// A user struct named like an axum response part (`Extension`, which sets
+/// headers, cookies or extensions) and implementing `IntoResponse` keeps its
+/// body: it is not the metadata-only part of the same name.
+#[test]
+fn user_type_named_like_a_response_part_keeps_its_body() {
+    let known_schemas: HashSet<&str> = HashSet::from(["Extension"]);
+    let struct_definitions: HashMap<&str, &str> =
+        HashMap::from([("Extension", "pub struct Extension { pub n: u8 }")]);
+    let responses = parse_return_type(
+        &parse_return_type_str("-> Extension"),
+        &known_schemas,
+        &struct_definitions,
+    );
+    assert_eq!(responses.keys().collect::<Vec<_>>(), vec!["200"]);
+    let content = responses["200"]
+        .content
+        .as_ref()
+        .expect("the user struct is the body");
     assert!(content.contains_key("application/json"));
 }
 

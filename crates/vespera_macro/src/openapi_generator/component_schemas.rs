@@ -90,11 +90,7 @@ pub(super) fn without_identical_inputs(
         return None;
     }
     Some(std::sync::Arc::new(
-        input_names
-            .iter()
-            .filter(|(_, input)| !identical.contains(input))
-            .map(|(component, input)| (component.clone(), input.clone()))
-            .collect(),
+        input_names.without_inputs(|input| identical.contains(input)),
     ))
 }
 

@@ -103,9 +103,11 @@ fn scoped_names(
     "struct A { #[serde(flatten)] l: Leaving, #[serde(flatten)] m: HashMap<String, u8> }",
     true
 )]
+// The map also reads the enum's keys (its tag included), which stay in the
+// buffer: `{"t": "A", ..}` fails the `u8` map, so the views differ.
 #[case::flatten_leaving_enum_then_map(
     "struct A { #[serde(flatten)] l: LeavingEnum, #[serde(flatten)] m: HashMap<String, u8> }",
-    false
+    true
 )]
 #[case::deny_flatten_tuple(
     "#[serde(deny_unknown_fields)] struct A { id: u8, #[serde(flatten)] t: (Page, u8) }",
@@ -283,15 +285,18 @@ fn scoped_names(
 #[case::decimal_field("struct A { price: Decimal }", true)]
 #[case::decimal_tuple("struct A(rust_decimal::Decimal);", true)]
 fn direct_differences(#[case] src: &str, #[case] expected: bool) {
-    let flat = FlatKinds(BTreeMap::from([
-        ("HasMap".to_string(), FlatKind::Map),
-        ("Attrs".to_string(), FlatKind::Map),
-        ("Leaving".to_string(), FlatKind::Leaves { known_keys: true }),
-        (
-            "LeavingEnum".to_string(),
-            FlatKind::Leaves { known_keys: false },
-        ),
-    ]));
+    let flat = FlatKinds {
+        param_of: BTreeMap::new(),
+        kinds: BTreeMap::from([
+            ("HasMap".to_string(), FlatKind::Map),
+            ("Attrs".to_string(), FlatKind::Map),
+            ("Leaving".to_string(), FlatKind::Leaves { known_keys: true }),
+            (
+                "LeavingEnum".to_string(),
+                FlatKind::Leaves { known_keys: false },
+            ),
+        ]),
+    };
     assert_eq!(
         directly_differs(&syn::parse_str(src).unwrap(), &flat),
         expected
@@ -302,6 +307,31 @@ fn direct_differences(#[case] src: &str, #[case] expected: bool) {
 /// another such struct — and newtype / transparent wrappers around a map
 /// read every buffered key; a struct with any other flatten field and an
 /// internally tagged / untagged enum leave their keys in the buffer.
+/// A generic newtype reads what its argument reads: `W<HashMap<..>>` is a map
+/// (every key), `W<Page>` is not.
+#[test]
+fn generic_newtype_reads_like_its_argument() {
+    let items: Vec<syn::Item> = [
+        "struct Wrap<T>(T);",
+        "struct Pair((u8, u8));",
+        "struct Bare { #[serde(flatten)] w: Wrap }",
+        "struct Page { page: u32 }",
+        "struct Holds { #[serde(flatten)] w: Wrap<std::collections::HashMap<String, u8>> }",
+        "struct Keeps { #[serde(flatten)] w: Wrap<Page> }",
+    ]
+    .iter()
+    .map(|src| syn::parse_str(src).unwrap())
+    .collect();
+    let items: Vec<&syn::Item> = items.iter().collect();
+    let kinds = FlatKinds::of(&items).kinds;
+    assert_eq!(kinds.get("Holds"), Some(&FlatKind::Map));
+    // `Page` is no map: `Keeps` only leaves its own keys (a struct flattening one).
+    assert_eq!(
+        kinds.get("Keeps"),
+        Some(&FlatKind::Leaves { known_keys: true })
+    );
+}
+
 #[test]
 fn flat_kinds_are_transitive() {
     let items: Vec<syn::Item> = [
@@ -331,7 +361,7 @@ fn flat_kinds_are_transitive() {
     let items: Vec<&syn::Item> = items.iter().collect();
     let leaves = |known_keys| FlatKind::Leaves { known_keys };
     assert_eq!(
-        FlatKinds::of(&items).0,
+        FlatKinds::of(&items).kinds,
         BTreeMap::from([
             ("Boxed".to_string(), FlatKind::Map),
             ("Clear".to_string(), FlatKind::Map),
@@ -442,6 +472,25 @@ fn ident_alias_never_shadows_a_real_component() {
     assert_eq!(result, [("UserDto".into(), "UserDtoInput".into())]);
 }
 
+/// The input of `PetB` is `PetB`'s, even though the Rust-ident alias `Pet`
+/// (`PetB` is `#[schema(name)]`d from `struct Pet`) sorts before it and names
+/// the same input: an input resolves to its component, never to an alias.
+#[test]
+fn input_resolves_to_its_component_not_a_sorted_alias() {
+    let item: syn::Item = syn::parse_str("struct Pet { #[serde(default)] x: u8 }").unwrap();
+    let views = [ViewSource {
+        name: "PetB",
+        rust_ident: Some("Pet"),
+        scoped_keys: Vec::new(),
+        item: &item,
+    }];
+    let names = compute_input_names(&views, &BTreeSet::new());
+    assert_eq!(names.get("Pet").map(String::as_str), Some("PetBInput"));
+    install(names);
+    assert_eq!(component_of_input("PetBInput").as_deref(), Some("PetB"));
+    install(Arc::default());
+}
+
 /// Two renames share the ident `Foo`; the bare `Foo` aliases `A`. A
 /// module-qualified field propagates the input view of the type its
 /// module declares, in both directions.
@@ -489,7 +538,12 @@ fn qualified_references_resolve_their_module(
             result.contains(&("b::Foo".into(), "BInput".into())),
             "{result:?}"
         );
-        install(Arc::new(result.into_iter().collect()));
+        install(Arc::new(
+            result
+                .into_iter()
+                .collect::<BTreeMap<String, String>>()
+                .into(),
+        ));
         let types: [syn::Type; 1] = [syn::parse_quote!(Vec<b::Foo>)];
         assert!(mentions_input(&types));
         assert_eq!(component_of_input("BInput").as_deref(), Some("B"));
@@ -499,10 +553,9 @@ fn qualified_references_resolve_their_module(
 
 #[test]
 fn view_mode_and_installed_names() {
-    install(Arc::new(BTreeMap::from([(
-        "A".to_string(),
-        "AInput".to_string(),
-    )])));
+    install(Arc::new(
+        BTreeMap::from([("A".to_string(), "AInput".to_string())]).into(),
+    ));
     assert!(!in_request_view());
     assert_eq!(input_component("A"), None);
     assert!(has_input("A"));
@@ -584,7 +637,11 @@ fn current_side_follows_the_view() {
 fn non_type_items_reference_nothing() {
     let item: syn::Item = syn::parse_str("fn f() {}").unwrap();
     assert!(referenced_idents(&item).is_empty());
-    assert!(!directly_differs(&item, &FlatKinds(BTreeMap::new())));
+    let flat = FlatKinds {
+        kinds: BTreeMap::new(),
+        param_of: BTreeMap::new(),
+    };
+    assert!(!directly_differs(&item, &flat));
 }
 
 /// M2: serde reads a flattened `Box<Option<T>>` like a flattened `Option<T>`
@@ -606,4 +663,29 @@ fn serde_reads_a_flattened_boxed_option_leniently() {
     assert!(req.page.is_none());
     let req: Req = serde_json::from_str(r#"{"id":1,"page":2}"#).unwrap();
     assert_eq!(req.page.map(|page| page.page), Some(2));
+}
+
+/// The premise of the `flatten_leaving_enum_then_map` classification: serde
+/// rejects the body, because the map declared after the internally tagged
+/// enum also reads the tag `"t": "A"` (a `u8` value).
+#[test]
+fn leaving_enum_before_map_is_rejected_by_serde() {
+    use std::collections::HashMap;
+
+    // The fields are only ever deserialized into, never read back.
+    #[allow(dead_code)]
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "t")]
+    enum Kind {
+        A { a: u8 },
+    }
+    #[allow(dead_code)]
+    #[derive(serde::Deserialize)]
+    struct Outer {
+        #[serde(flatten)]
+        kind: Kind,
+        #[serde(flatten)]
+        extra: HashMap<String, u8>,
+    }
+    assert!(serde_json::from_str::<Outer>(r#"{"t":"A","a":1}"#).is_err());
 }

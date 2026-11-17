@@ -356,10 +356,13 @@ fn struct_views(#[case] name: &str, #[case] src: &str) {
 /// `Input` name.
 #[test]
 fn flattened_input_components_are_resolved() {
-    install(Arc::new(BTreeMap::from([
-        ("Page".to_string(), "PageInput".to_string()),
-        ("Holder".to_string(), "HolderInput".to_string()),
-    ])));
+    install(Arc::new(
+        BTreeMap::from([
+            ("Page".to_string(), "PageInput".to_string()),
+            ("Holder".to_string(), "HolderInput".to_string()),
+        ])
+        .into(),
+    ));
     let mut definitions = definitions();
     definitions.insert(
         "Holder".to_string(),

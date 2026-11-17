@@ -63,6 +63,23 @@ fn expand(file_src: &str, ret: &str) -> String {
     "-> Result<Json<i32>, String>",
     "-> Result < Json < i32 > , String >"
 )]
+// Aliases in the response positions nested in a `Result` or a tuple are
+// expanded too: `Created<User>`'s `Json` body is what the response documents.
+#[case::alias_in_result_ok(
+    "type Created<T> = (StatusCode, Json<T>);",
+    "-> Result<Created<User>, AppError>",
+    "-> Result < (StatusCode , Json < User >) , AppError >"
+)]
+#[case::alias_in_tuple_element(
+    "type ApiResult<T> = Result<Json<T>, AppError>;",
+    "-> (StatusCode, ApiResult<User>)",
+    "-> (StatusCode , Result < Json < User > , AppError >)"
+)]
+#[case::alias_in_result_error(
+    "type Failure = (StatusCode, Json<Problem>);",
+    "-> Result<Json<User>, Failure>",
+    "-> Result < Json < User > , (StatusCode , Json < Problem >) >"
+)]
 #[case::wrapper_untouched("type Json = Bad;", "-> Json<u8>", "-> Json < u8 >")]
 #[case::too_many_args("type R<T> = Result<T, E>;", "-> R<A, B>", "-> R < A , B >")]
 #[case::missing_arg_without_default("type R<T, E> = Result<T, E>;", "-> R<A>", "-> R < A >")]
@@ -70,7 +87,8 @@ fn expand(file_src: &str, ret: &str) -> String {
 #[case::self_recursive_stops("type Result<T> = Result<T>;", "-> Result<u8>", "-> Result < u8 >")]
 #[case::cycle_back_to_start("type A = B; type B = A;", "-> A", "-> A")]
 #[case::qualified_self("type F = u8;", "-> <X as Tr>::F", "-> < X as Tr > :: F")]
-#[case::non_path("type F = u8;", "-> (F, F)", "-> (F , F)")]
+#[case::non_path("type F = u8;", "-> (F, F)", "-> (u8 , u8)")]
+#[case::reference_untouched("type F = u8;", "-> &'static F", "-> & 'static F")]
 #[case::result_without_args("type Result = u8;", "-> Result", "-> Result")]
 #[case::lifetime_arg_ignored(
     "type R<'a, T> = Result<Json<T>, E>;",
@@ -159,6 +177,20 @@ fn expand(file_src: &str, ret: &str) -> String {
 )]
 fn expands_aliases(#[case] file_src: &str, #[case] ret: &str, #[case] expected: &str) {
     assert_eq!(expand(file_src, ret), expected);
+}
+
+/// `type Loop = Result<Loop, AppError>;` nests itself in the `Result` position
+/// forever; the expansion stops at the depth bound, leaving the innermost
+/// `Loop` as it was.
+#[test]
+fn self_nesting_alias_stops_at_the_depth_bound() {
+    let file: syn::File = syn::parse_str("type Loop = Result<Loop, AppError>;").unwrap();
+    let mut sig: syn::Signature = syn::parse_str("fn handler() -> Loop").unwrap();
+    assert!(expand_return_type_alias(&mut sig, None, Some(&file), None));
+    let output = &sig.output;
+    let after = quote::quote!(#output).to_string();
+    assert_eq!(after.matches("Result").count(), MAX_ALIAS_DEPTH);
+    assert!(after.contains("Result < Loop , AppError >"), "{after}");
 }
 
 #[test]
@@ -665,7 +697,8 @@ fn crate_wide_scan_is_memoised_until_src_changes() {
     for _ in 0..3 {
         assert_eq!(expand_in(), "-> Result < Json < u8 > , AppError >");
     }
-    assert_eq!(scans() - before, 1);
+    // One scan for `ApiResult`, one for the nested `AppError` error position.
+    assert_eq!(scans() - before, 2);
 
     std::fs::write(
         src.join("error.rs"),
@@ -673,7 +706,7 @@ fn crate_wide_scan_is_memoised_until_src_changes() {
     )
     .unwrap();
     assert_eq!(expand_in(), "-> Result < Json < u8 > , ChangedError >");
-    assert_eq!(scans() - before, 2);
+    assert_eq!(scans() - before, 4);
 
     std::fs::write(
         src.join("other.rs"),
@@ -682,7 +715,7 @@ fn crate_wide_scan_is_memoised_until_src_changes() {
     .unwrap();
     // Two different definitions: ambiguous, left unexpanded.
     assert_eq!(expand_in(), "-> ApiResult < u8 >");
-    assert_eq!(scans() - before, 3);
+    assert_eq!(scans() - before, 5);
 }
 
 #[test]

@@ -64,7 +64,7 @@ fn parse_header(
     let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() else {
         return None;
     };
-    if is_primitive_or_like(inner_ty) {
+    if is_primitive_or_like(inner_ty) || is_reserved_header_name(param_name) {
         return None;
     }
     Some(vec![Parameter {
@@ -229,6 +229,22 @@ mod tests {
         assert!(
             parse_header_extractor("x", &lifetime_header, &HashSet::new(), &HashMap::new())
                 .is_none()
+        );
+        // The binding names the header: a reserved name is dropped like a
+        // `TypedHeader` of that name, any other binding is documented.
+        let token_header: Type = syn::parse_quote!(Header<Token>);
+        for reserved in ["authorization", "Accept", "content-type"] {
+            assert!(
+                parse_header_extractor(reserved, &token_header, &HashSet::new(), &HashMap::new())
+                    .is_none(),
+                "{reserved}"
+            );
+        }
+        let tenant =
+            parse_header_extractor("x_tenant", &token_header, &HashSet::new(), &HashMap::new());
+        assert_eq!(
+            tenant.map(|params| params[0].name.clone()),
+            Some("x_tenant".to_string())
         );
     }
 

@@ -793,10 +793,9 @@ fn unreached_materialised_input_instances_are_pruned() {
             schema(json!({"type": "object"})),
         ),
     ]);
-    let names: request_view::InputNames = std::sync::Arc::new(BTreeMap::from([(
-        "Forest".to_string(),
-        "ForestInput".to_string(),
-    )]));
+    let names: request_view::InputNames = std::sync::Arc::new(
+        BTreeMap::from([("Forest".to_string(), "ForestInput".to_string())]).into(),
+    );
     let mut response_only = schemas.clone();
     prune_unreferenced_inputs(&mut response_only, &BTreeMap::new(), &names);
     assert_eq!(response_only.keys().collect::<Vec<_>>(), ["Forest"]);
@@ -822,10 +821,9 @@ fn unreached_materialised_input_instances_are_pruned() {
 /// `.Input` twin is pruned. The same key under an operation does reach it.
 #[test]
 fn response_property_named_like_a_request_key_does_not_reach_input() {
-    let names: request_view::InputNames = std::sync::Arc::new(BTreeMap::from([(
-        "Filter".to_string(),
-        "FilterInput".to_string(),
-    )]));
+    let names: request_view::InputNames = std::sync::Arc::new(
+        BTreeMap::from([("Filter".to_string(), "FilterInput".to_string())]).into(),
+    );
     let schema =
         |value: Value| serde_json::from_value::<vespera_core::schema::Schema>(value).unwrap();
     let base = || {
