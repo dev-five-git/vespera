@@ -811,3 +811,52 @@ fn field_bearing_schema_skips_ref_before_inline_member() {
 fn unsupported_call_defaults_are_omitted(#[case] source: &str) {
     assert_eq!(extract_value_from_expr(&parse_expr(source)), None);
 }
+
+#[rstest]
+#[case::f32_suffix_rounds_to_f32("16777217f32", json!(16_777_216.0))]
+#[case::negated_f32_suffix("-16777217f32", json!(-16_777_216.0))]
+#[case::f64_suffix_rounds_to_f64("9007199254740993f64", json!(9_007_199_254_740_992.0))]
+#[case::plain_integer_stays_integer("42", json!(42))]
+fn float_suffixed_integer_literals_read_as_the_float_rust_reads(
+    #[case] source: &str,
+    #[case] expected: Value,
+) {
+    assert_eq!(extract_value_from_expr(&parse_expr(source)), Some(expected));
+}
+
+/// A `#[schema(default)]` literal on a property whose wire type is not
+/// recorded here (`$ref`, allOf wrapper) keeps its lexical form unless it reads
+/// back as the same text.
+#[rstest]
+#[case::ref_leading_zero_stays_a_string(
+    Some(SchemaRef::Ref(Reference::schema("Code"))), "007", json!("007")
+)]
+#[case::ref_canonical_integer_is_a_number(
+    Some(SchemaRef::Ref(Reference::schema("Count"))), "7", json!(7)
+)]
+#[case::ref_bool(Some(SchemaRef::Ref(Reference::schema("Flag"))), "true", json!(true))]
+#[case::untyped_wrapper_leading_zero_stays_a_string(
+    Some(SchemaRef::Inline(Box::default())), "007", json!("007")
+)]
+#[case::untyped_wrapper_canonical_float(
+    Some(SchemaRef::Inline(Box::default())), "1.5", json!(1.5)
+)]
+#[case::inline_string_is_verbatim(
+    Some(SchemaRef::Inline(Box::new(Schema {
+        schema_type: Some(vespera_core::schema::SchemaType::String),
+        ..Schema::default()
+    }))),
+    "007",
+    json!("007")
+)]
+#[case::missing_property_parses(None, "7", json!(7))]
+fn schema_default_literal_keeps_its_lexical_form_without_a_wire_type(
+    #[case] property: Option<SchemaRef>,
+    #[case] literal: &str,
+    #[case] expected: Value,
+) {
+    assert_eq!(
+        schema_default_value(property.as_ref(), literal.to_string()),
+        expected
+    );
+}

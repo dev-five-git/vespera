@@ -37,6 +37,15 @@ const fn unauthorized(scheme: &'static str) -> AuthError {
     (StatusCode::UNAUTHORIZED, [(WWW_AUTHENTICATE, scheme)])
 }
 
+/// The credential of an `Authorization: Bearer <token>` header. The
+/// auth-scheme name is case-insensitive (RFC 9110 section 11.1), so `bearer`
+/// is accepted too.
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get(AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = value.split_once(' ')?;
+    scheme.eq_ignore_ascii_case("bearer").then_some(token)
+}
+
 /// The authenticated caller.
 #[derive(Debug, Serialize, Deserialize, Schema)]
 pub struct CurrentUser {
@@ -62,11 +71,7 @@ pub const DEMO_API_KEY: &str = "demo-key";
     error_status = [401]
 )]
 pub async fn current_user(headers: HeaderMap) -> Result<Json<CurrentUser>, AuthError> {
-    let token = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    if token != Some(DEMO_TOKEN) {
+    if bearer_token(&headers) != Some(DEMO_TOKEN) {
         return Err(unauthorized("Bearer"));
     }
     Ok(Json(CurrentUser {
@@ -118,11 +123,7 @@ pub const READ_USERS_TOKEN: &str = "read-users-token";
     error_status = [401, 403]
 )]
 pub async fn user_directory(headers: HeaderMap) -> Result<Json<Vec<String>>, AuthError> {
-    match headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-    {
+    match bearer_token(&headers) {
         Some(READ_USERS_TOKEN) => Ok(Json(vec!["alice".to_string(), "bob".to_string()])),
         // Authenticated, but the token lacks the `read:users` scope.
         Some(DEMO_TOKEN) => Err((

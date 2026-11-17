@@ -42,17 +42,27 @@ pub(super) fn merge_route_storage_data(
         }
     }
 
+    let mut routes_named: HashMap<String, usize> = HashMap::new();
+    for route in &metadata.routes {
+        *routes_named.entry(route.function_name.clone()).or_default() += 1;
+    }
+
     for route in &mut metadata.routes {
         let route_key = (
             normalize_path_key(&route.file_path, &cwd),
             route.function_name.as_str(),
         );
-        let stored = stored_by_path.get(&route_key).copied().or_else(|| {
-            fallback_by_name
-                .get(route.function_name.as_str())
-                .copied()
-                .flatten()
-        });
+        // A legacy entry names no file, so it applies only when this is the one
+        // collected route of that name; two routes sharing it are ambiguous.
+        let legacy = (routes_named.get(route.function_name.as_str()) == Some(&1))
+            .then(|| {
+                fallback_by_name
+                    .get(route.function_name.as_str())
+                    .copied()
+                    .flatten()
+            })
+            .flatten();
+        let stored = stored_by_path.get(&route_key).copied().or(legacy);
 
         let Some(stored) = stored else {
             continue;
@@ -451,6 +461,45 @@ mod tests {
                 Some(vec!["legacy".to_string()]),
             ]
         );
+    }
+
+    /// A path-less (legacy) entry names no file, so it must not decorate two
+    /// collected routes that share its function name. A lone route of the name
+    /// still receives it.
+    #[test]
+    fn legacy_entry_is_not_applied_to_two_routes_of_one_name() {
+        let route = |name: &str, file: &str| RouteMetadata {
+            method: "get".to_string(),
+            path: "/x".to_string(),
+            function_name: name.to_string(),
+            module_path: "routes".to_string(),
+            file_path: file.to_string(),
+            error_status: None,
+            typed_responses: None,
+            tags: None,
+            security: None,
+            headers: Vec::new(),
+            success_status: None,
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
+            description: None,
+        };
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(route("handler", "routes/users.rs"));
+        metadata.routes.push(route("handler", "routes/posts.rs"));
+        metadata.routes.push(route("alone", "routes/alone.rs"));
+        let storage = vec![
+            stored_route("handler", None, &["legacy-handler"]),
+            stored_route("alone", None, &["legacy-alone"]),
+        ];
+
+        merge_route_storage_data(&mut metadata, &storage);
+
+        let tags: Vec<_> = metadata.routes.iter().map(|r| r.tags.clone()).collect();
+        assert_eq!(tags, [None, None, Some(vec!["legacy-alone".to_string()])]);
     }
 
     #[test]

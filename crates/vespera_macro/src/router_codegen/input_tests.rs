@@ -971,3 +971,15 @@ fn declared_tags_keep_order_and_descriptionless_entries() {
         ])
     );
 }
+
+/// Two entries with no comma between them: the second must be reported, not
+/// silently discarded with the rest of the nested `[...]` / `{...}` buffer.
+#[rstest]
+#[case::servers_strings(quote::quote!(servers = ["https://a.example" "https://b.example"]))]
+#[case::servers_structs(quote::quote!(servers = [{ url = "https://a.example" } { url = "https://b.example" }]))]
+#[case::server_fields(quote::quote!(servers = [{ url = "https://a.example" description = "prod" }]))]
+#[case::tags(quote::quote!(tags = [{ name = "a" } { name = "b" }]))]
+#[case::security_schemes(quote::quote!(security_schemes = [{ name = "a", type = "http", scheme = "bearer" } { name = "b", type = "http", scheme = "bearer" }]))]
+fn missing_comma_between_entries_is_a_compile_error(#[case] tokens: proc_macro2::TokenStream) {
+    assert!(syn::parse2::<AutoRouterInput>(tokens).is_err());
+}

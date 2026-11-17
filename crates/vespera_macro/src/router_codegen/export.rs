@@ -89,17 +89,19 @@ fn normalize_prefix(prefix: &LitStr) -> syn::Result<LitStr> {
     } else {
         format!("/{raw}")
     };
+    // Checked before the trailing slashes go: `//` and `/api//` are empty
+    // segments, not a prefix that merely ends in a slash.
+    if with_leading_slash.contains("//") {
+        return Err(syn::Error::new(
+            prefix.span(),
+            "export_app! macro: `prefix` must not contain empty path segments (`//`)",
+        ));
+    }
     let normalized = with_leading_slash.trim_end_matches('/');
     if normalized.contains([':', '*', '{', '}']) {
         return Err(syn::Error::new(
             prefix.span(),
             "export_app! macro: `prefix` must be a static path: `:`, `*`, `{` and `}` are axum route-parameter syntax",
-        ));
-    }
-    if normalized.contains("//") {
-        return Err(syn::Error::new(
-            prefix.span(),
-            "export_app! macro: `prefix` must not contain empty path segments (`//`)",
         ));
     }
     if !normalized.is_empty() && schema_namespace_from_prefix(normalized).is_empty() {
@@ -394,6 +396,8 @@ mod tests {
     #[case("/api?version=1", "must be a URL path")]
     #[case("/api#section", "must be a URL path")]
     #[case("/api//users", "must not contain empty path segments")]
+    #[case("//", "must not contain empty path segments")]
+    #[case("/api//", "must not contain empty path segments")]
     #[case("/---", "must contain at least one ASCII alphanumeric character")]
     #[case("/카탈로그", "must contain at least one ASCII alphanumeric character")]
     #[case("/api/{tenant}", "must be a static path")]

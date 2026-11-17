@@ -65,12 +65,14 @@ case "$(uname -s)" in
   *) cp_sep=':'; to_native() { printf '%s' "$1"; } ;;
 esac
 
-git -C "$repo" -c core.longpaths=true worktree add --detach "$base_tree" "$base_rev" >/dev/null
+# Installed before `worktree add`: a failing add under `set -e` must still
+# remove the work dir this run created (the worktree remove is best-effort).
 cleanup() {
   git -C "$repo" worktree remove --force "$base_tree" >/dev/null 2>&1 || true
   if [ -n "$owned_work" ]; then rm -rf "$owned_work"; fi
 }
 trap cleanup EXIT
+git -C "$repo" -c core.longpaths=true worktree add --detach "$base_tree" "$base_rev" >/dev/null
 
 # Each side gets its OWN target dir: cargo keys workspace members relative to
 # the workspace root, so a shared one would judge the second build fresh and

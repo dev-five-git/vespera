@@ -206,16 +206,7 @@ pub fn process_default_functions_for(
             // id `"00123"` must NOT normalise to `"123"`), otherwise infer the
             // JSON type from the string.
             if let Some(default_str) = extract_schema_default_attr(&field.attrs) {
-                let is_string_field = matches!(
-                    properties.get(&field_name),
-                    Some(vespera_core::schema::SchemaRef::Inline(s))
-                        if s.schema_type == Some(vespera_core::schema::SchemaType::String)
-                );
-                let value = if is_string_field {
-                    serde_json::Value::String(default_str)
-                } else {
-                    parse_default_string_to_json_value(&default_str)
-                };
+                let value = schema_default_value(properties.get(&field_name), default_str);
                 set_property_default(properties, &field_name, value);
                 continue;
             }
@@ -315,6 +306,46 @@ fn field_bearing_schema_mut(
 /// are skipped, never ending the search early.
 pub(super) fn extract_schema_default_attr(attrs: &[syn::Attribute]) -> Option<String> {
     crate::parser::schema::extract_schema_default(attrs).flatten()
+}
+
+/// The JSON value of a `#[schema(default = "...")]` literal for the property
+/// (`property`) it documents.
+///
+/// A string-typed property keeps the literal VERBATIM so its lexical form
+/// survives (a leading-zero id `"00123"` must NOT normalise to `"123"`). A
+/// `$ref` or an allOf wrapper (a doc-commented field) does not record its wire
+/// type here, so see [`untyped_default_value`].
+fn schema_default_value(
+    property: Option<&vespera_core::schema::SchemaRef>,
+    literal: String,
+) -> serde_json::Value {
+    use vespera_core::schema::{SchemaRef, SchemaType};
+    match property {
+        Some(SchemaRef::Inline(schema)) if schema.schema_type == Some(SchemaType::String) => {
+            serde_json::Value::String(literal)
+        }
+        Some(SchemaRef::Ref(_)) => untyped_default_value(literal),
+        Some(SchemaRef::Inline(schema)) if schema.schema_type.is_none() => {
+            untyped_default_value(literal)
+        }
+        _ => parse_default_string_to_json_value(&literal),
+    }
+}
+
+/// The JSON value of a literal whose property's wire type is unknown.
+///
+/// The literal becomes a number / bool / `null` / array / object only when that
+/// value serialises back to exactly the same text (`"7"` → `7`), so `"007"` on a
+/// `$ref` to a string newtype stays the string `"007"` instead of the number `7`.
+fn untyped_default_value(literal: String) -> serde_json::Value {
+    let parsed = parse_default_string_to_json_value(&literal);
+    if !matches!(parsed, serde_json::Value::String(_))
+        && serde_json::to_string(&parsed).is_ok_and(|text| text == literal)
+    {
+        parsed
+    } else {
+        serde_json::Value::String(literal)
+    }
 }
 
 // Parse a default value string into the appropriate `serde_json::Value`.
@@ -452,6 +483,7 @@ fn negated_value(expr: &syn::Expr) -> Option<serde_json::Value> {
         lit: syn::Lit::Int(int),
         ..
     }) = expr
+        && !matches!(int.suffix(), "f32" | "f64")
     {
         let magnitude = int.base10_parse::<u64>().ok()?;
         return 0_i64
@@ -497,6 +529,28 @@ fn method_call_value(call: &syn::ExprMethodCall) -> Option<serde_json::Value> {
     }
 }
 
+/// The value of an integer literal. A float suffix (`16777217f32`,
+/// `9007199254740993f64`) makes the literal the float Rust reads it as: the
+/// nearest value of that precision, not the integer it spells.
+fn int_literal_value(int: &syn::LitInt) -> Option<serde_json::Value> {
+    match int.suffix() {
+        "f32" => int
+            .base10_parse::<f32>()
+            .ok()
+            .and_then(|v| serde_json::Number::from_f64(f64::from(v)))
+            .map(serde_json::Value::Number),
+        "f64" => int
+            .base10_parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(serde_json::Value::Number),
+        _ => int
+            .base10_parse::<i64>()
+            .ok()
+            .map(|v| serde_json::Value::Number(v.into())),
+    }
+}
+
 /// `1.5f32` (possibly parenthesized or negated).
 fn is_f32_literal(expr: &syn::Expr) -> bool {
     match expr {
@@ -523,10 +577,7 @@ pub(super) fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Va
         // Literal values
         Expr::Lit(ExprLit { lit, .. }) => match lit {
             Lit::Str(s) => Some(serde_json::Value::String(s.value())),
-            Lit::Int(i) => i
-                .base10_parse::<i64>()
-                .ok()
-                .map(|v| serde_json::Value::Number(v.into())),
+            Lit::Int(i) => int_literal_value(i),
             Lit::Float(f) => f
                 .base10_parse::<f64>()
                 .ok()

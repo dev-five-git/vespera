@@ -37,9 +37,11 @@ pub trait SourceIdentified {
     /// Source file path, when the compiler exposed one.
     fn file_path(&self) -> Option<&str>;
     /// Where inside the file the item lives (e.g. its inline `mod` path), when
-    /// known.  Two known scopes must match; an unknown scope matches any, so an
-    /// entry whose scope could not be located still replaces rather than
-    /// duplicates.
+    /// known.  Two entries match only when their scopes are equal; two unknown
+    /// scopes match each other, so an unlocated re-expansion still replaces.
+    /// An unknown scope never replaces a known one: the item it could be is a
+    /// different function of the same name (a `macro_rules!` expansion in
+    /// another module), which must be kept beside it.
     fn scope(&self) -> Option<&str>;
 }
 
@@ -50,7 +52,8 @@ fn same_source<T: SourceIdentified>(left: &T, right: &T) -> bool {
         && crate::file_utils::paths_equal_normalized(left.file_path(), right.file_path())
         && match (left.scope(), right.scope()) {
             (Some(left), Some(right)) => left == right,
-            _ => true,
+            (None, None) => true,
+            _ => false,
         }
 }
 
@@ -300,7 +303,9 @@ mod tests {
         }
     }
 
-    /// Known scopes must match; an unknown scope matches any.
+    /// Known scopes must match. An unknown scope never replaces a known one (it
+    /// is a different function of that name, kept beside it), but two unknown
+    /// scopes of one item do replace each other.
     #[test]
     fn register_keys_by_scope_when_both_know_it() {
         register(&TEST_STORAGE, scoped(Some("a"), "a1"));
@@ -309,7 +314,9 @@ mod tests {
         register(&TEST_STORAGE, scoped(Some("b"), "b2"));
         assert_eq!(payloads_for("__scoped"), vec!["a1", "b2"]);
         register(&TEST_STORAGE, scoped(None, "unknown"));
-        assert_eq!(payloads_for("__scoped"), vec!["unknown", "b2"]);
+        assert_eq!(payloads_for("__scoped"), vec!["a1", "b2", "unknown"]);
+        register(&TEST_STORAGE, scoped(None, "unknown-again"));
+        assert_eq!(payloads_for("__scoped"), vec!["a1", "b2", "unknown-again"]);
     }
 
     fn payloads_for(fn_name: &str) -> Vec<&'static str> {
