@@ -69,7 +69,15 @@ fn lifecycle_from_lazy_build_to_shutdown() {
     assert!(runtime().is_none());
     assert!(block_on_shared_runtime(async {}).is_none());
     assert!(runtime_unavailable_wire().ends_with(RUNTIME_SHUT_DOWN_MSG.as_bytes()));
-    on_shared_runtime(Box::new(|_| panic!("never runs after shutdown")));
+    let hook_ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = std::sync::Arc::clone(&hook_ran);
+    on_shared_runtime(Box::new(move |_| {
+        seen.store(true, std::sync::atomic::Ordering::SeqCst);
+    }));
     assert!(!start_runtime_for_hooks());
     assert!(!shutdown_runtime(Duration::ZERO));
+    assert!(
+        !hook_ran.load(std::sync::atomic::Ordering::SeqCst),
+        "a hook registered after shutdown must never run"
+    );
 }

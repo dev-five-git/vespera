@@ -113,6 +113,7 @@ impl ChannelBody {
                 }
                 RequestChunk::Error => {
                     self.pull_chunk = None;
+                    self.failed = true;
                     return Some(Some(Err(StreamAbort)));
                 }
             }
@@ -129,6 +130,7 @@ impl ChannelBody {
             // channel path does.
             self.limit_exceeded.store(true, Ordering::Release);
             self.pull_chunk = None;
+            self.failed = true;
             return Err(StreamAbort);
         }
         Ok(Frame::data(Bytes::from(data)))

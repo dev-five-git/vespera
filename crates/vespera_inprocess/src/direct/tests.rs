@@ -160,6 +160,8 @@ async fn header_larger_than_out_is_pending() {
 #[case::upper("Text/Event-Stream", true)]
 #[case::json("application/json", false)]
 #[case::short("text/plain", false)]
+#[case::longer_media_type("text/event-streaming", false)]
+#[case::suffix_glued("text/event-streamX; q=1", false)]
 fn event_stream_detection(#[case] content_type: &str, #[case] expected: bool) {
     let mut headers = http::HeaderMap::new();
     headers.insert(
@@ -326,7 +328,11 @@ async fn trailers_are_skipped_and_body_errors_become_500(
         let DirectWriteResult::Overflow(needed) = result else {
             panic!("the 500 does not fit a header+1 buffer either");
         };
-        assert!(needed > small.len());
+        assert_eq!(
+            needed,
+            error_wire(500, BODY_STREAM_ERROR_MSG).len(),
+            "the overflow reports the size of the 500 that replaces the body"
+        );
         let DirectWriteResult::Complete(n) = legacy(
             &mut out[..600],
             script(&[S::Data(&[b'x'; 1024]), S::Trailers, S::Fail]),

@@ -1,6 +1,6 @@
 use super::inline_pull::InlineState;
 use super::{
-    ChannelBody, RequestProducerHandle, RequestSourceCloser, StreamOutcome,
+    ChannelBody, Delivery, RequestProducerHandle, RequestSourceCloser, StreamOutcome,
     emit_header_then_stream_body,
 };
 use crate::bounded::Deadline;
@@ -114,7 +114,7 @@ async fn validation_body_error_commits_a_complete_500_header() {
             chunks.extend_from_slice(bytes);
             ControlFlow::Continue(())
         },
-        false,
+        Delivery::Captured,
     )
     .await;
 
@@ -139,7 +139,7 @@ async fn validation_body_sink_stop_is_reported_after_422_header() {
         &mut Deadline::disabled(),
         &mut |bytes| header.extend_from_slice(bytes),
         &mut |_bytes| ControlFlow::Break(()),
-        false,
+        Delivery::Captured,
     )
     .await;
 
@@ -162,7 +162,7 @@ async fn empty_validation_body_emits_only_a_complete_422_header() {
             chunk_calls += 1;
             ControlFlow::Continue(())
         },
-        false,
+        Delivery::Captured,
     )
     .await;
 
@@ -192,7 +192,7 @@ async fn trailers_and_empty_data_frames_are_ignored_before_payload() {
             chunks.extend_from_slice(bytes);
             ControlFlow::Continue(())
         },
-        false,
+        Delivery::Captured,
     )
     .await;
 
@@ -217,6 +217,7 @@ async fn channel_body_without_a_producer_is_clean_eof() {
         permit_wait: None,
         inline_budget: 0,
         inline: InlineState::new(false),
+        failed: false,
     };
 
     assert!(body.frame().await.is_none());
@@ -234,6 +235,33 @@ where
         // Closed inline gate: these tests exercise the spawned producer.
         InlineState::new(false),
     )
+}
+
+/// While the producer has not sent anything, the body reports `Pending` (the
+/// consumer waits; no frame, no end). The producer is released only after
+/// that is observed, so the check is deterministic.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn channel_body_is_pending_while_the_producer_is_slow() {
+    let (go, wait) = std::sync::mpsc::channel::<()>();
+    let mut sent = false;
+    let mut body = channel_body(move || {
+        if sent {
+            crate::RequestChunk::End
+        } else {
+            sent = true;
+            wait.recv().ok();
+            crate::RequestChunk::Data(b"abc".to_vec())
+        }
+    });
+    let pending = std::future::poll_fn(|cx| {
+        let polled = Pin::new(&mut body).poll_frame(cx);
+        Poll::Ready(polled.is_pending())
+    })
+    .await;
+    assert!(pending, "an empty, still-open channel must be Pending");
+    go.send(()).expect("producer waiting");
+    let data = body.frame().await.expect("frame").expect("data");
+    assert_eq!(data.into_data().expect("data frame"), "abc");
 }
 
 /// A producer that reports a clean `End` yields its data then a clean EOF.
@@ -283,13 +311,133 @@ async fn channel_close_is_eof_only_after_a_clean_end(
         permit_wait: None,
         inline_budget: 0,
         inline: InlineState::new(false),
+        failed: false,
     };
     let first = body.frame().await;
     assert_eq!(matches!(first, Some(Err(_))), expect_abort);
     assert_eq!(first.is_none(), !expect_abort);
-    assert!(
-        body.frame().await.is_none(),
-        "terminal after the first close"
+    // A failed body keeps failing on every later poll (it must never read as
+    // a clean EOF); a cleanly ended one stays at EOF.
+    let second = body.frame().await;
+    assert_eq!(
+        matches!(second, Some(Err(_))),
+        expect_abort,
+        "the state after the first close is sticky"
+    );
+    assert_eq!(second.is_none(), !expect_abort);
+}
+
+/// Every failure latches: polling the body again after the error must keep
+/// failing, not report a clean EOF (a consumer that ignores the first error
+/// and polls on would otherwise accept a truncated upload as complete).
+#[rstest::rstest]
+#[case::producer_error(0)]
+#[case::request_cap(1)]
+#[case::refused_start(2)]
+#[case::inline_error(3)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_body_keeps_failing_on_every_poll(#[case] which: u8) {
+    let mut body = match which {
+        // Producer reports `Error` on its first pull.
+        0 => channel_body(|| crate::RequestChunk::Error),
+        // Producer delivers two bytes against a cap of one.
+        1 => {
+            let mut sent = false;
+            let mut body = ChannelBody::new(
+                move || {
+                    if sent {
+                        crate::RequestChunk::End
+                    } else {
+                        sent = true;
+                        crate::RequestChunk::Data(b"ab".to_vec())
+                    }
+                },
+                Arc::new(Mutex::new(None)),
+                1,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                InlineState::new(false),
+            );
+            body.capacity = 1;
+            body
+        }
+        // The dispatch finished before the producer could start.
+        2 => {
+            let inline = InlineState::new(false);
+            inline.finish();
+            ChannelBody::new(
+                || crate::RequestChunk::End,
+                Arc::new(Mutex::new(None)),
+                0,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                inline,
+            )
+        }
+        // Inline pull reports `Error` (multi-thread `block_on`, no task id).
+        _ => {
+            let mut body = ChannelBody::new(
+                || crate::RequestChunk::Error,
+                Arc::new(Mutex::new(None)),
+                0,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                InlineState::new(true),
+            );
+            body.inline_budget = 2;
+            body
+        }
+    };
+    for _ in 0..3 {
+        assert!(
+            matches!(body.frame().await, Some(Err(_))),
+            "a failed body must keep failing (case {which})"
+        );
+    }
+}
+
+/// A header-first pre-header error whose body the sink refuses reports the
+/// truncation (`SinkStopped`), with the header already delivered.
+#[test]
+fn pre_header_error_body_sink_stop_is_reported() {
+    let wire = crate::wire::error_wire(400, "bad request");
+    let mut header = Vec::new();
+    let outcome = super::pre_header_error(
+        Delivery::HeaderFirst,
+        &mut |bytes: &[u8]| header.extend_from_slice(bytes),
+        &mut |_: &[u8]| ControlFlow::Break(()),
+        &wire,
+    );
+    assert_eq!(outcome, StreamOutcome::SinkStopped);
+    assert_eq!(decode_status(&header), 400);
+}
+
+/// A `HeaderFirst` pre-header error sends its header through `on_header`
+/// and its message through `on_chunk`, matching the framing of a success.
+#[tokio::test]
+async fn validation_body_error_sends_its_message_through_chunks() {
+    let mut header = Vec::new();
+    let mut chunks = Vec::new();
+    let outcome = emit_header_then_stream_body(
+        422,
+        http::HeaderMap::new(),
+        ResponseMetadata::current(),
+        Body::new(ErrorBody),
+        &mut Deadline::disabled(),
+        &mut |bytes| header.extend_from_slice(bytes),
+        &mut |bytes| {
+            chunks.extend_from_slice(bytes);
+            ControlFlow::Continue(())
+        },
+        Delivery::HeaderFirst,
+    )
+    .await;
+
+    assert_eq!(outcome, StreamOutcome::Complete);
+    assert_eq!(decode_status(&header), 500);
+    assert_eq!(chunks, crate::internal::BODY_STREAM_ERROR_MSG.as_bytes());
+    let json_len = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+    assert_eq!(
+        header.len(),
+        4 + json_len,
+        "the header callback gets no body"
     );
 }
 
@@ -378,7 +526,10 @@ async fn body_polled_after_the_dispatch_finished_never_reads_the_source() {
     assert!(matches!(body.frame().await, Some(Err(_))));
     assert_eq!(pulls.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert!(producer_handle.lock().unwrap().is_none(), "no producer");
-    assert!(body.frame().await.is_none(), "terminal after the abort");
+    assert!(
+        matches!(body.frame().await, Some(Err(_))),
+        "still a failed body after the abort, never a clean EOF"
+    );
     drop(source_closer);
     assert_eq!(hook_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
@@ -452,7 +603,11 @@ async fn scripted(
                 ControlFlow::Continue(())
             }
         },
-        flush_hints,
+        if flush_hints {
+            Delivery::HeaderFirst
+        } else {
+            Delivery::Captured
+        },
     )
     .await;
     assert_eq!(decode_status(&header), 200);

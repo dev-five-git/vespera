@@ -44,6 +44,7 @@ pub fn bench_streaming_path(c: &mut Criterion) {
             Some("application/octet-stream"),
             &payload,
         );
+        assert_response_stream_probe(&runtime, &wire, "response_streaming_nolimit");
         group.bench_with_input(
             BenchmarkId::new("response_streaming_nolimit", body_kb),
             &body_kb,
@@ -66,6 +67,7 @@ pub fn bench_streaming_path(c: &mut Criterion) {
             .chunks(pull_chunk_size)
             .map(<[u8]>::to_vec)
             .collect();
+        assert_bidi_probe(&runtime, &header_only, "bidirectional_nolimit");
         group.bench_with_input(
             BenchmarkId::new("bidirectional_nolimit", body_kb),
             &body_kb,
@@ -95,6 +97,7 @@ pub fn bench_streaming_path(c: &mut Criterion) {
 
         let discard_header_only =
             assemble_wire("POST", "/discard", Some("application/octet-stream"), &[]);
+        assert_bidi_probe(&runtime, &discard_header_only, "bidirectional_no_body_poll");
         group.bench_with_input(
             BenchmarkId::new("bidirectional_no_body_poll", body_kb),
             &body_kb,
@@ -127,6 +130,26 @@ pub fn bench_streaming_path(c: &mut Criterion) {
 
     group.finish();
     drop(runtime);
+}
+
+/// Untimed probe: a response-streamed rung must measure a `200`, not a `404`
+/// or `500` a renamed or broken route answers with.
+fn assert_response_stream_probe(runtime: &Runtime, wire: &[u8], rung: &str) {
+    let header = runtime.block_on(dispatch_streaming_async(wire.to_vec(), |_| {
+        ControlFlow::Continue(())
+    }));
+    assert_eq!(wire_status(&header), 200, "{rung} must measure a 200");
+}
+
+/// Untimed probe for the bidirectional rungs: an empty request body is enough
+/// to pin the route's status.
+fn assert_bidi_probe(runtime: &Runtime, header: &[u8], rung: &str) {
+    let response = runtime.block_on(dispatch_bidirectional_streaming(
+        header.to_vec(),
+        || RequestChunk::End,
+        |_| ControlFlow::Continue(()),
+    ));
+    assert_eq!(wire_status(&response), 200, "{rung} must measure a 200");
 }
 
 /// #2 isolation: the `vespera_jni::dispatchAsync` spawn mechanism.
@@ -309,6 +332,7 @@ pub fn bench_bidirectional_small(c: &mut Criterion) {
     let header_only = assemble_wire("POST", "/echo/bytes", Some("application/octet-stream"), &[]);
 
     for &body_len in &[0_usize, 64] {
+        assert_bidi_probe(&runtime, &header_only, "bidirectional_small echo");
         group.bench_with_input(
             BenchmarkId::new("echo_nolimit", body_len),
             &body_len,

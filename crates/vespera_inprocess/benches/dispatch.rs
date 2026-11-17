@@ -324,6 +324,21 @@ fn bench_dispatch_path(c: &mut Criterion) {
     group.finish();
 }
 
+/// Untimed probe run before a rung is measured: the rung must time a `200`,
+/// not the `404`/`500` a renamed or broken route answers with (criterion
+/// would otherwise report that path as a plausible number).
+fn assert_ok_probe(wire: &[u8], runtime: &Runtime, rung: &str) {
+    let response = dispatch_from_bytes(wire.to_vec(), runtime);
+    assert_eq!(wire_status(&response), 200, "{rung} must measure a 200");
+}
+
+/// Operations thread `t` of `threads` runs out of `ops` in total: the first
+/// `ops % threads` threads take one extra, so the timed work is exactly `ops`
+/// (not `threads * ceil(ops / threads)`, which inflates small `iters`).
+fn thread_share(ops: usize, threads: usize, t: usize) -> usize {
+    ops / threads + usize::from(t < ops % threads)
+}
+
 /// End-to-end binary-wire flow: encoded request bytes → decoded
 /// response bytes via the registered app.  Measures the realistic FFI
 /// cost the JNI bridge pays.
@@ -336,6 +351,7 @@ fn bench_wire_path(c: &mut Criterion) {
     for &body_kb in &[1_usize, 64, 1024] {
         let wire = make_wire_request(body_kb);
         group.throughput(Throughput::Bytes((body_kb * 1024) as u64));
+        assert_ok_probe(&wire, &runtime, "wire_path");
 
         group.bench_with_input(
             BenchmarkId::new("dispatch_from_bytes", body_kb),
@@ -371,6 +387,7 @@ fn bench_bytes_path(c: &mut Criterion) {
         );
         group.throughput(Throughput::Bytes((body_kb * 1024) as u64));
 
+        assert_ok_probe(&wire, &runtime, "bytes_path");
         group.bench_with_input(
             BenchmarkId::new("raw_bytes_nolimit_dispatch_from_bytes", body_kb),
             &body_kb,
@@ -407,6 +424,7 @@ fn bench_direct_write_path(c: &mut Criterion) {
     // copying nothing. The delta isolates the eliminated input copy.
     {
         let wire = assemble_wire("GET", "/r0", None, &[]);
+        assert_ok_probe(&wire, &runtime, "bodyless");
         let required = {
             let mut probe = vec![0u8; 4096];
             match dispatch_into(wire.clone(), &mut probe, &runtime) {
@@ -488,11 +506,13 @@ fn bench_resolve_path(c: &mut Criterion) {
     let mut group = c.benchmark_group("resolve_path");
 
     let wire_default = assemble_wire_for_app("GET", "/r0", None, None, &[]);
+    assert_ok_probe(&wire_default, &runtime, "default_oncelock_fast_path");
     group.bench_function("default_oncelock_fast_path", |b| {
         b.iter(|| dispatch_from_bytes(wire_default.clone(), &runtime));
     });
 
     let wire_named = assemble_wire_for_app("GET", "/r0", None, Some("bench-named"), &[]);
+    assert_ok_probe(&wire_named, &runtime, "named_arcswap_path");
     // Named-app resolution now goes through the lock-free `ArcSwap` load
     // (INP-07), not the former `RwLock<HashMap>`.
     group.bench_function("named_arcswap_path", |b| {
@@ -531,18 +551,17 @@ fn bench_contended_path(c: &mut Criterion) {
             ("named_arcswap", Some("bench-named")),
         ] {
             let wire = assemble_wire_for_app("GET", "/r0", None, app, &[]);
+            assert_ok_probe(&wire, &runtime, label);
             group.bench_with_input(BenchmarkId::new(label, threads), &threads, |b, &threads| {
                 b.iter_custom(|iters| {
-                    let per_thread = usize::try_from(iters)
-                        .unwrap_or(usize::MAX)
-                        .div_ceil(threads);
+                    let ops = usize::try_from(iters).unwrap_or(usize::MAX);
                     let start = std::time::Instant::now();
                     std::thread::scope(|scope| {
-                        for _ in 0..threads {
+                        for t in 0..threads {
                             let wire = wire.clone();
                             let runtime = std::sync::Arc::clone(&runtime);
                             scope.spawn(move || {
-                                for _ in 0..per_thread {
+                                for _ in 0..thread_share(ops, threads, t) {
                                     std::hint::black_box(dispatch_from_bytes(
                                         wire.clone(),
                                         &runtime,
@@ -597,15 +616,13 @@ fn bench_registry_ab(c: &mut Criterion) {
             &threads,
             |b, &threads| {
                 b.iter_custom(|iters| {
-                    let per_thread = usize::try_from(iters)
-                        .unwrap_or(usize::MAX)
-                        .div_ceil(threads);
+                    let ops = usize::try_from(iters).unwrap_or(usize::MAX);
                     let start = std::time::Instant::now();
                     std::thread::scope(|scope| {
-                        for _ in 0..threads {
+                        for t in 0..threads {
                             let rwlock = Arc::clone(&rwlock_b);
                             scope.spawn(move || {
-                                for _ in 0..per_thread {
+                                for _ in 0..thread_share(ops, threads, t) {
                                     let guard = rwlock
                                         .read()
                                         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -626,15 +643,13 @@ fn bench_registry_ab(c: &mut Criterion) {
             &threads,
             |b, &threads| {
                 b.iter_custom(|iters| {
-                    let per_thread = usize::try_from(iters)
-                        .unwrap_or(usize::MAX)
-                        .div_ceil(threads);
+                    let ops = usize::try_from(iters).unwrap_or(usize::MAX);
                     let start = std::time::Instant::now();
                     std::thread::scope(|scope| {
-                        for _ in 0..threads {
+                        for t in 0..threads {
                             let arcswap = Arc::clone(&arcswap_a);
                             scope.spawn(move || {
-                                for _ in 0..per_thread {
+                                for _ in 0..thread_share(ops, threads, t) {
                                     std::hint::black_box(
                                         arcswap.load().get("bench-named").cloned(),
                                     );
@@ -659,6 +674,7 @@ fn bench_headers_path(c: &mut Criterion) {
 
     let runtime = Runtime::new().expect("tokio runtime");
     let wire = assemble_wire("GET", "/headers", None, &[]);
+    assert_ok_probe(&wire, &runtime, "headers_path");
     let mut group = c.benchmark_group("headers_path");
 
     group.bench_function("many_headers_roundtrip", |b| {
@@ -733,6 +749,7 @@ fn bench_request_headers_path(c: &mut Criterion) {
     for &n in &[1_usize, 8, 16] {
         let headers = &all_headers[..n.min(all_headers.len())];
         let wire = assemble_wire_with_headers("POST", "/echo", headers, body);
+        assert_ok_probe(&wire, &runtime, "request_headers_path");
         group.bench_with_input(BenchmarkId::new("dispatch_from_bytes", n), &n, |b, _| {
             b.iter(|| dispatch_from_bytes(wire.clone(), &runtime));
         });
@@ -797,6 +814,8 @@ fn bench_query_path(c: &mut Criterion) {
     // COMBINED: query embedded in `path`, no `query` field → borrow branch.
     let combined_path = format!("/r0?{query}");
     let wire_combined = assemble_wire("GET", &combined_path, None, &[]);
+    assert_ok_probe(&wire_separate, &runtime, "query_path separate");
+    assert_ok_probe(&wire_combined, &runtime, "query_path combined");
 
     group.bench_function("separate_query_field_join", |b| {
         b.iter(|| dispatch_from_bytes(wire_separate.clone(), &runtime));

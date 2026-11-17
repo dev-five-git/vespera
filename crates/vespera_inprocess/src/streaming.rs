@@ -12,16 +12,18 @@ use http_body_util::BodyExt;
 
 use crate::bounded::{Deadline, Prefetched422, prefetch_422_body, timeout_wire};
 use crate::dispatch::{cap_and_split, parse_validate_resolve, path_bytes_for_owned};
-use crate::internal::{BODY_SINK_STOPPED_MSG, BODY_STREAM_ERROR_MSG, dispatch_and_split};
+use crate::internal::{BODY_STREAM_ERROR_MSG, dispatch_and_split};
 use crate::wire::{
     WIRE_HEADER_RESERVE, build_wire_header_bytes, build_wire_header_bytes_hoisting, error_wire,
-    error_wire_untraced, split_wire_request,
+    split_wire_borrowed, split_wire_request,
 };
 
 mod frame_batch;
 use frame_batch::{FrameBatch, poll_frame_now};
 mod inline_pull;
 use inline_pull::InlineState;
+mod outcome;
+pub use outcome::StreamOutcome;
 mod producer;
 pub use producer::REQUEST_PRODUCER_JOIN_GRACE;
 use producer::{ChannelBody, RequestProducerHandle, RequestSourceCloser, join_request_producer};
@@ -211,7 +213,7 @@ where
                 delivered = true;
                 on_chunk(chunk)
             },
-            false,
+            Delivery::Captured,
         )
         .await,
     );
@@ -225,61 +227,6 @@ where
                 StreamOutcome::Complete
             },
         ),
-    }
-}
-
-/// Outcome of a **header-first** streaming dispatch
-/// (`dispatch_streaming_with_header_async`,
-/// `dispatch_bidirectional_streaming_with_header*`).
-///
-/// These functions commit the response header (`on_header`) **before**
-/// the body is drained, so a failure that happens afterwards can no
-/// longer be turned into an error status. This value surfaces that
-/// failure to the host so it can abort the transport (drop the
-/// connection / skip the clean chunked terminator) instead of letting a
-/// truncated body masquerade as a complete `2xx` response.
-///
-/// Dropping this value silently turns a `BodyError` / `SinkStopped`
-/// (truncated response) into what looks like a clean `Complete`,
-/// erasing the abort signal the FFI bridge relies on — hence
-/// `#[must_use]`.
-#[must_use]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamOutcome {
-    /// The response body drained to clean EOF — every chunk delivered,
-    /// or the dispatch failed *before* the header was committed (the
-    /// error response was delivered in full via `on_header`).
-    Complete,
-    /// The response body stream errored **after** the header was
-    /// committed; the bytes delivered via `on_chunk` are truncated.
-    BodyError,
-    /// `on_chunk` returned [`ControlFlow::Break`] — the chunk sink asked
-    /// to stop early (e.g. the host's output sink failed mid-stream).
-    /// The response delivered via `on_chunk` is truncated.
-    SinkStopped,
-}
-
-impl StreamOutcome {
-    /// Whether the delivered response body is truncated (anything but
-    /// [`StreamOutcome::Complete`]) and the host must abort its transport.
-    #[must_use]
-    pub const fn is_truncated(self) -> bool {
-        !matches!(self, Self::Complete)
-    }
-
-    /// Canonical error wire response for a truncated outcome (`500` for a
-    /// body error / sink stop); for `Complete` this is never consulted by
-    /// the dispatchers and returns a `500` as well.
-    ///
-    /// Builds the wire without the `tracing` error event: the dispatcher
-    /// already reported the truncation inside its `vespera.dispatch` span
-    /// (a sink stop — the client went away — is not an engine error).
-    #[must_use]
-    pub fn error_wire(self) -> Vec<u8> {
-        match self {
-            Self::SinkStopped => error_wire_untraced(500, BODY_SINK_STOPPED_MSG),
-            Self::Complete | Self::BodyError => error_wire_untraced(500, BODY_STREAM_ERROR_MSG),
-        }
     }
 }
 
@@ -303,9 +250,9 @@ fn reported(outcome: StreamOutcome) -> StreamOutcome {
 /// validation failures from the header in EVERY dispatch mode.  The body is
 /// still delivered verbatim via `on_chunk`.  Because the prefetch runs
 /// *before* the header is committed, a body error (or an expired deadline)
-/// there cleanly becomes a `500` (`504`) via `on_header` with nothing
-/// truncated.  An oversized 422 skips the hoist and streams like any other
-/// status (the already-read prefix first).
+/// there cleanly becomes a `500` (`504`) error response with nothing
+/// truncated (delivered as [`Delivery`] selects).  An oversized 422 skips the
+/// hoist and streams like any other status (the already-read prefix first).
 ///
 /// Every other status: a hoist-free header followed by frame-by-frame body
 /// streaming (so a 1 GiB response is never resident), with a post-commit
@@ -334,7 +281,7 @@ async fn emit_header_then_stream_body<H, F>(
     deadline: &mut Deadline,
     on_header: &mut H,
     on_chunk: &mut F,
-    flush_hints: bool,
+    delivery: Delivery,
 ) -> StreamOutcome
 where
     H: FnMut(&[u8]),
@@ -342,7 +289,9 @@ where
 {
     if status == 422 {
         let prefetched = deadline.run(pin!(prefetch_422_body(body))).await;
-        match finish_prefetched_422(prefetched, &headers, &metadata, on_header, on_chunk) {
+        match finish_prefetched_422(
+            prefetched, &headers, &metadata, delivery, on_header, on_chunk,
+        ) {
             Ok(rest) => body = rest,
             Err(outcome) => return outcome,
         }
@@ -352,16 +301,17 @@ where
     // The header is committed: the dispatch deadline bounds only the time to
     // the first header, never the body (a long download that is still making
     // progress must not be cut off mid-stream).
-    stream_body_tail(body, on_chunk, flush_hints).await
+    stream_body_tail(body, on_chunk, delivery == Delivery::HeaderFirst).await
 }
 
 /// Settle a prefetched `422` body: `Err(outcome)` when the response was
-/// delivered here (hoisting header + body, or a 504/500 error header),
+/// delivered here (hoisting header + body, or a 504/500 error response),
 /// `Ok(body)` when it was too large to hoist and streams normally.
 fn finish_prefetched_422<H, F>(
     prefetched: Option<Prefetched422>,
     headers: &http::HeaderMap,
     metadata: &crate::envelope::ResponseMetadata,
+    delivery: Delivery,
     on_header: &mut H,
     on_chunk: &mut F,
 ) -> Result<Body, StreamOutcome>
@@ -370,10 +320,19 @@ where
     F: FnMut(&[u8]) -> ControlFlow<()>,
 {
     let collected = match prefetched {
-        None => return Err(header_only(on_header, &timeout_wire())),
-        Some(Prefetched422::Failed) => {
-            return Err(header_only(
+        None => {
+            return Err(pre_header_error(
+                delivery,
                 on_header,
+                on_chunk,
+                &timeout_wire(),
+            ));
+        }
+        Some(Prefetched422::Failed) => {
+            return Err(pre_header_error(
+                delivery,
+                on_header,
+                on_chunk,
                 &error_wire(500, BODY_STREAM_ERROR_MSG),
             ));
         }
@@ -389,10 +348,43 @@ where
     Err(StreamOutcome::Complete)
 }
 
-/// A pre-header failure: the (error) response is delivered in full through
-/// the header callback, so nothing is truncated.
-fn header_only<H: FnMut(&[u8])>(on_header: &mut H, wire: &[u8]) -> StreamOutcome {
-    on_header(wire);
+/// Where a pre-header failure's response goes (see [`pre_header_error`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Delivery {
+    /// Captured-header variants (`dispatch_streaming_async`,
+    /// `dispatch_bidirectional_streaming`): the complete `error_wire` is
+    /// handed over inside the captured header bytes, body included, and
+    /// `on_chunk` is never called.
+    Captured,
+    /// Header-callback variants: `on_header` gets the header of the
+    /// `error_wire` only, and its body follows through `on_chunk`, the same
+    /// framing as a success response (the header-callback consumers decode
+    /// the header and stream the body).  Also turns on the flush hints.
+    HeaderFirst,
+}
+
+/// A pre-header failure: the response is delivered whole (nothing is
+/// truncated) in the form [`Delivery`] selects.  `wire` is always an
+/// `error_wire(...)` (length-prefixed header, then body).
+fn pre_header_error<H, F>(
+    delivery: Delivery,
+    on_header: &mut H,
+    on_chunk: &mut F,
+    wire: &[u8],
+) -> StreamOutcome
+where
+    H: FnMut(&[u8]),
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+{
+    if delivery == Delivery::Captured {
+        on_header(wire);
+        return StreamOutcome::Complete;
+    }
+    let (_, body) = split_wire_borrowed(wire).unwrap_or((&[], &[]));
+    on_header(&wire[..wire.len() - body.len()]);
+    if !body.is_empty() && on_chunk(body).is_break() {
+        return StreamOutcome::SinkStopped;
+    }
     StreamOutcome::Complete
 }
 
@@ -484,8 +476,9 @@ where
 ///
 /// `on_header` is called **exactly once** in every code path —
 /// success or error. On error (malformed wire, no app, invalid
-/// method, …) the bytes passed to `on_header` are a normal
-/// `error_wire(...)` response and `on_chunk` is **not** invoked.
+/// method, …) the bytes passed to `on_header` are the header of a normal
+/// `error_wire(...)` response and its body follows through `on_chunk` (one
+/// call, never empty), so the error reads exactly like a success response.
 ///
 /// Body frames that are ready back-to-back are coalesced (up to
 /// [`crate::streaming_chunk_bytes`]) into one `on_chunk` call.  `on_chunk`
@@ -522,15 +515,18 @@ where
     // `dispatch_streaming_async`): apply the ingress cap, delivering the
     // 413 through the header callback so the contract (header fires
     // exactly once) holds.  Pre-header error paths return `Complete`: the
-    // (error) response was delivered in full via `on_header`, nothing is
-    // truncated.
+    // (error) response was delivered whole, nothing is truncated.
     let (header_bytes, body_bytes) = match cap_and_split(input) {
         Ok(parts) => parts,
-        Err(wire) => return header_only(&mut on_header, &wire),
+        Err(wire) => {
+            return pre_header_error(Delivery::HeaderFirst, &mut on_header, &mut on_chunk, &wire);
+        }
     };
     let (header, router) = match parse_validate_resolve(&header_bytes) {
         Ok(parts) => parts,
-        Err(wire) => return header_only(&mut on_header, &wire),
+        Err(wire) => {
+            return pre_header_error(Delivery::HeaderFirst, &mut on_header, &mut on_chunk, &wire);
+        }
     };
 
     // Content-Type defaulting (INP-03): a non-empty body with no explicit
@@ -559,11 +555,22 @@ where
         .await
     {
         Some(Ok(parts)) => parts,
-        Some(Err((status, msg))) => return header_only(&mut on_header, &error_wire(status, &msg)),
+        Some(Err((status, msg))) => {
+            return pre_header_error(
+                Delivery::HeaderFirst,
+                &mut on_header,
+                &mut on_chunk,
+                &error_wire(status, &msg),
+            );
+        }
         // Deadline expired before the header was committed: a clean 504.
         None => {
-            on_header(&timeout_wire());
-            return StreamOutcome::Complete;
+            return pre_header_error(
+                Delivery::HeaderFirst,
+                &mut on_header,
+                &mut on_chunk,
+                &timeout_wire(),
+            );
         }
     };
 
@@ -576,7 +583,7 @@ where
             &mut deadline,
             &mut on_header,
             &mut on_chunk,
-            true,
+            Delivery::HeaderFirst,
         )
         .await,
     )
@@ -678,7 +685,7 @@ where
         on_chunk,
         |h: &[u8]| header_bytes.extend_from_slice(h),
         request_close,
-        false,
+        Delivery::Captured,
     )
     .await;
     match outcome {
@@ -704,8 +711,9 @@ where
 ///
 /// `on_header` is called exactly once on every code path (success or
 /// error). On any pre-dispatch / wire error the bytes passed to
-/// `on_header` are a normal `error_wire(...)` response and neither
-/// `pull_chunk` nor `on_chunk` is invoked beyond that point.
+/// `on_header` are the header of a normal `error_wire(...)` response and
+/// its body follows through `on_chunk`; `pull_chunk` is not invoked beyond
+/// that point.
 ///
 /// Like [`dispatch_streaming_with_header_async`], ready frames are
 /// coalesced and `on_chunk(&[])` is a flush hint fired before the body
@@ -758,7 +766,7 @@ where
         on_chunk,
         on_header,
         request_close,
-        true,
+        Delivery::HeaderFirst,
     )
     .await
 }
@@ -769,7 +777,7 @@ async fn bidirectional_streaming_inner<P, F, H, C>(
     on_chunk: F,
     on_header: H,
     request_close: C,
-    flush_hints: bool,
+    delivery: Delivery,
 ) -> StreamOutcome
 where
     P: FnMut() -> RequestChunk + Send + 'static,
@@ -784,7 +792,7 @@ where
             on_chunk,
             on_header,
             request_close,
-            flush_hints,
+            delivery,
         )
         .await
     })
@@ -796,7 +804,7 @@ async fn bidirectional_streaming_body<P, F, H, C>(
     mut on_chunk: F,
     mut on_header: H,
     request_close: C,
-    flush_hints: bool,
+    delivery: Delivery,
 ) -> StreamOutcome
 where
     P: FnMut() -> RequestChunk + Send + 'static,
@@ -806,7 +814,14 @@ where
 {
     let (header_bytes, body_tail) = match split_wire_request(input_header) {
         Ok(parts) => parts,
-        Err(msg) => return header_only(&mut on_header, &error_wire(400, &msg)),
+        Err(msg) => {
+            return pre_header_error(
+                delivery,
+                &mut on_header,
+                &mut on_chunk,
+                &error_wire(400, &msg),
+            );
+        }
     };
     // `input_header` MUST be header-only on the bidirectional path — the
     // request body arrives via `pull_chunk`.  A non-empty tail means the
@@ -814,16 +829,22 @@ where
     // retaining (then discarding) a full body allocation, which would also
     // violate the advertised O(chunk) memory contract.
     if !body_tail.is_empty() {
-        on_header(&error_wire(
-            400,
-            "bidirectional streaming input_header must be header-only \
-             (no trailing body bytes); send the request body via pull_chunk",
-        ));
-        return StreamOutcome::Complete;
+        return pre_header_error(
+            delivery,
+            &mut on_header,
+            &mut on_chunk,
+            &error_wire(
+                400,
+                "bidirectional streaming input_header must be header-only \
+                 (no trailing body bytes); send the request body via pull_chunk",
+            ),
+        );
     }
     let (header, router) = match parse_validate_resolve(&header_bytes) {
         Ok(parts) => parts,
-        Err(wire) => return header_only(&mut on_header, &wire),
+        Err(wire) => {
+            return pre_header_error(delivery, &mut on_header, &mut on_chunk, &wire);
+        }
     };
 
     let mut deadline = Deadline::start();
@@ -903,8 +924,7 @@ where
             };
             closer.close_if_started();
             join_request_producer(&producer_handle).await;
-            on_header(&wire);
-            return StreamOutcome::Complete;
+            return pre_header_error(delivery, &mut on_header, &mut on_chunk, &wire);
         }
     };
 
@@ -917,7 +937,7 @@ where
             &mut deadline,
             &mut on_header,
             &mut on_chunk,
-            flush_hints,
+            delivery,
         )
         .await,
     );

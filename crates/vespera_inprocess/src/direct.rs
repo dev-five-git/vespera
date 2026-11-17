@@ -312,12 +312,19 @@ const fn exceeds_cap(max: usize, body_len: usize, frame_len: usize) -> bool {
     max != 0 && body_len.saturating_add(frame_len) > max
 }
 
-/// Whether the response is an incremental `text/event-stream`.
+/// Whether the response is an incremental `text/event-stream`: the media type
+/// (before any `;` parameters) is exactly that, so `text/event-streaming`
+/// is not SSE.
 fn is_event_stream(headers: &http::HeaderMap) -> bool {
     headers
         .get(http::header::CONTENT_TYPE)
-        .and_then(|v| v.as_bytes().get(..17))
-        .is_some_and(|v| v.eq_ignore_ascii_case(b"text/event-stream"))
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|s| {
+            s.split_once(';')
+                .map_or(s, |(media, _)| media)
+                .trim()
+                .eq_ignore_ascii_case("text/event-stream")
+        })
 }
 
 /// Legacy direct-write tail ([`crate::dispatch_into_async`] and the borrowed

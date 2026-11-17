@@ -208,6 +208,12 @@ pub struct ChannelBody {
     /// Inline-pull gate + "source touched" flag, shared with the
     /// dispatcher and the [`RequestSourceCloser`].
     pub(super) inline: Arc<InlineState>,
+    /// Latched by every failure (producer `Error`, a channel closed without
+    /// `End`, the request cap, a refused producer start, an inline `Error`).
+    /// Once set, every later poll fails too instead of reading as a clean
+    /// EOF — `clean_end` cannot serve this purpose, because the producer can
+    /// publish `End` while frames queued before a limit trip are still unread.
+    pub(super) failed: bool,
 }
 
 impl ChannelBody {
@@ -234,6 +240,7 @@ impl ChannelBody {
             permit_wait: None,
             inline_budget: super::inline_pull::INLINE_PULL_BUDGET,
             inline,
+            failed: false,
         }
     }
 
@@ -253,6 +260,7 @@ impl ChannelBody {
             if let Some(pull) = self.pull_chunk.take()
                 && !self.start_producer(pull, permit)
             {
+                self.failed = true;
                 return Poll::Ready(Err(StreamAbort));
             }
         }
@@ -331,7 +339,13 @@ impl HttpBody for ChannelBody {
         }
 
         let Some(rx) = self.rx.as_mut() else {
-            return Poll::Ready(None);
+            // No channel left: a failed body keeps failing; a cleanly ended
+            // one is EOF.
+            return if self.failed {
+                Poll::Ready(Some(Err(StreamAbort)))
+            } else {
+                Poll::Ready(None)
+            };
         };
 
         match rx.poll_recv(cx) {
@@ -342,6 +356,7 @@ impl HttpBody for ChannelBody {
                     // receiver (the producer's next send fails → it stops
                     // pulling) and fail the body instead of truncating it.
                     self.limit_exceeded.store(true, Ordering::Release);
+                    self.failed = true;
                     self.rx = None;
                     return Poll::Ready(Some(Err(StreamAbort)));
                 }
@@ -351,6 +366,7 @@ impl HttpBody for ChannelBody {
             // axum/the handler rejects the truncated upload.
             Poll::Ready(Some(Err(abort))) => {
                 self.rx = None;
+                self.failed = true;
                 Poll::Ready(Some(Err(abort)))
             }
             // The channel closed.  Only a producer that saw the host's
@@ -363,6 +379,7 @@ impl HttpBody for ChannelBody {
                 if self.clean_end.load(Ordering::Acquire) {
                     Poll::Ready(None)
                 } else {
+                    self.failed = true;
                     Poll::Ready(Some(Err(StreamAbort)))
                 }
             }
