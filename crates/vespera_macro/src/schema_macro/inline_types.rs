@@ -11,7 +11,8 @@ use quote::quote;
 use super::{
     field_attrs::carried_field_attrs,
     file_cache::{get_circular_analysis, get_module_path_from_schema_path},
-    file_lookup::find_model_from_schema_path,
+    file_lookup::{call_site_module, find_model_from_schema_path},
+    generate_type::assignments::readable_from,
     seaorm::{RelationFieldInfo, convert_type_with_chrono},
     transformation::{RenameAll, reroot_serde_paths},
     type_utils::{is_seaorm_relation_type, snake_to_pascal_case},
@@ -203,6 +204,7 @@ fn generate_inline_type_core(
 
     // Collect fields, excluding circular ones and/or relation types
     let mut fields = Vec::with_capacity(8);
+    let call_site = call_site_module();
     if let syn::Fields::Named(fields_named) = &parsed_model.fields {
         for field in &fields_named.named {
             let field_ident = field.ident.as_ref()?;
@@ -222,6 +224,13 @@ fn generate_inline_type_core(
 
             // Skip fields with serde(skip)
             if extract_skip(&field.attrs) {
+                continue;
+            }
+
+            // Skip a field the call site cannot read (private, in the related
+            // model's module): the `from_model` construction reads every inline
+            // field, which would be E0616 there (R22-SM2-L1).
+            if !readable_from(&field.vis, effective_module_path, call_site.as_deref()) {
                 continue;
             }
 

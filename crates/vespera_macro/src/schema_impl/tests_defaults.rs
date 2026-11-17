@@ -397,9 +397,10 @@ fn std_default_fn_is_the_type_default(
 
 /// M1 (round 14): `#[derive(Schema)] struct S { #[serde(default = "Vec::new")] .. }`
 /// compiles (its default is `[]`), and `Self::f` / `Type::f` resolve an
-/// inherent `impl` function of the struct's module.
+/// inherent `impl` function of the struct's module. Only `missing`, which
+/// names no function, is reported by the validation.
 #[test]
-fn std_and_associated_default_fns_pass_validation() {
+fn std_and_associated_default_fns_resolve_and_flag_only_unresolved() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let file_path = temp_dir.path().join("tags.rs");
     let source = "pub struct S {

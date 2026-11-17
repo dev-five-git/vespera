@@ -152,8 +152,9 @@ pub(super) fn generate_sea_orm_default_attrs(
 /// would be a second `default`, which serde rejects) and the bare
 /// `#[schema(default)]` marker documents it; where a `cfg_attr(Q,
 /// schema(default ..))` holds, that one documents the field. Without a
-/// `Schema` derive (`schema_derived` false) the schema attribute goes to
-/// the metadata, which reads no `cfg_attr`: it is left as is.
+/// `Schema` derive (`schema_derived` false) the schema attribute would go to
+/// the metadata, which reads no `cfg_attr`, so the SeaORM value could be
+/// advertised while a cfg-gated serde default applies: it is dropped instead.
 pub(super) fn gate_sea_orm_defaults(
     (serde_attr, schema_attr): (TokenStream, TokenStream),
     carried: &CarriedAttrs,
@@ -168,7 +169,7 @@ pub(super) fn gate_sea_orm_defaults(
     }
     let serde_attr = gate_attrs(serde_attr, &serde_cfgs);
     if !schema_derived {
-        return (serde_attr, schema_attr);
+        return (serde_attr, TokenStream::new());
     }
     let mut schema = gate_attrs(schema_attr, &serde_cfgs);
     schema.extend(quote! { #[cfg_attr(any(#(#serde_cfgs),*), schema(default))] });
