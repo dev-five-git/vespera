@@ -307,10 +307,17 @@ pub(super) fn shadowed_locals<'a>(
         .filter_map(|field| crate::parser::extract_default(&field.attrs).flatten())
         .chain(container_fn.map(ToString::to_string))
         .filter_map(|path| syn::parse_str::<syn::Ident>(&path).ok())
-        .map(|ident| ident.to_string())
+        .map(|ident| crate::parser::strip_raw_prefix_owned(ident.to_string()))
         .collect();
+    // Both sides without the `r#` prefix (S20-0-3, round 20): `r#tags` is the
+    // same name as the one-segment function `tags`.
     fields
-        .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
+        .filter_map(|field| {
+            field
+                .ident
+                .as_ref()
+                .map(|ident| crate::parser::strip_raw_prefix_owned(ident.to_string()))
+        })
         .filter(|name| bare.contains(name))
         .collect()
 }
@@ -318,11 +325,9 @@ pub(super) fn shadowed_locals<'a>(
 /// The derived fn's local holding the field `ident`: the field's own name,
 /// unless it is `shadowed` (then `__vespera_local_<name>`).
 fn local_ident(ident: &syn::Ident, shadowed: &HashSet<String>) -> syn::Ident {
-    if shadowed.contains(&ident.to_string()) {
-        quote::format_ident!(
-            "__vespera_local_{}",
-            crate::parser::strip_raw_prefix_owned(ident.to_string())
-        )
+    let name = crate::parser::strip_raw_prefix_owned(ident.to_string());
+    if shadowed.contains(&name) {
+        quote::format_ident!("__vespera_local_{}", name)
     } else {
         ident.clone()
     }
@@ -577,5 +582,27 @@ mod tests {
         assert!(code.contains("seed : __vespera_local_seed"), "{code}");
         assert!(code.contains("unwrap_or_else (make)"), "{code}");
         assert!(!code.contains("self ::"), "{code}");
+    }
+
+    /// S20-0-3 (round 20): a raw identifier that is not a keyword (`r#tags`)
+    /// is the same name as the bare default function `tags`, so its local is
+    /// renamed too (the `r#` prefix used to keep it apart: E0618 in the
+    /// generated derive).
+    #[test]
+    fn raw_non_keyword_field_shadows_a_bare_default_fn() {
+        let input = parse_fields_from(
+            r#"struct T {
+                #[serde(default = "tags")] pub other: Vec<String>,
+                pub r#tags: String,
+            }"#,
+        );
+        let fields = get_named_fields(&input);
+        let shadowed = shadowed_locals(fields.iter(), None);
+        assert!(shadowed.contains("tags"), "{shadowed:?}");
+        let cg = process_fields(fields.iter(), None, false, false, &shadowed);
+        let (post_loop, idents) = (&cg.post_loop, &cg.idents);
+        let code = quote::quote!(#(#post_loop)* Self { #(#idents),* }).to_string();
+        assert!(code.contains("(tags) ()"), "{code}");
+        assert!(code.contains("__vespera_local_tags"), "{code}");
     }
 }

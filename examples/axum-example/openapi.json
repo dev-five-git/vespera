@@ -5531,8 +5531,7 @@
             "default": 0
           },
           "status": {
-            "$ref": "#/components/schemas/MemoStatus",
-            "default": "draft"
+            "$ref": "#/components/schemas/MemoStatus"
           },
           "title": {
             "type": "string"
@@ -5653,8 +5652,7 @@
             }
           },
           "status": {
-            "$ref": "#/components/schemas/MemoStatus",
-            "default": "draft"
+            "$ref": "#/components/schemas/MemoStatus"
           },
           "title": {
             "type": "string"
@@ -5708,8 +5706,7 @@
             "default": 0
           },
           "status": {
-            "$ref": "#/components/schemas/MemoStatus",
-            "default": "draft"
+            "$ref": "#/components/schemas/MemoStatus"
           },
           "title": {
             "type": "string"
@@ -5795,8 +5792,7 @@
             "default": 0
           },
           "status": {
-            "$ref": "#/components/schemas/MemoStatus",
-            "default": "draft"
+            "$ref": "#/components/schemas/MemoStatus"
           },
           "title": {
             "type": "string"
@@ -5836,8 +5832,7 @@
             "default": 0
           },
           "status": {
-            "$ref": "#/components/schemas/MemoStatus",
-            "default": "draft"
+            "$ref": "#/components/schemas/MemoStatus"
           },
           "title": {
             "type": "string"
@@ -5918,8 +5913,7 @@
             "type": "string"
           },
           "status": {
-            "$ref": "#/components/schemas/MemoStatus",
-            "default": "draft"
+            "$ref": "#/components/schemas/MemoStatus"
           },
           "title": {
             "type": "string"

@@ -171,11 +171,32 @@ pub fn has_sea_orm_database_default(attrs: &[syn::Attribute]) -> bool {
         || entry(&sea_orm_entries(attrs), "default_expr").is_some_and(|entry| entry.value.is_some())
 }
 
+/// SQL functions a `default_value` may spell with arguments (`nextval('seq')`):
+/// the name (schema qualifier dropped, lower-cased) must be one of these.
+const SQL_FUNCTION_NAMES: &[&str] = &[
+    "clock_timestamp",
+    "current_date",
+    "current_time",
+    "current_timestamp",
+    "gen_random_uuid",
+    "localtime",
+    "localtimestamp",
+    "nextval",
+    "now",
+    "random",
+    "statement_timestamp",
+    "transaction_timestamp",
+    "uuid_generate_v4",
+];
+
 /// Check if a `sea_orm(default_value)` is a SQL function call: a (possibly
 /// schema-qualified) identifier followed by a parenthesised argument list —
 /// `now()`, `gen_random_uuid()`, `nextval('seq')`.  A text default that merely
-/// contains a parenthesis (`"N/A (unknown)"`, `":)"`, `"Active (new)"`) is a
-/// literal: a space before `(` only fits an empty call (`now ()`).
+/// contains a parenthesis (`"N/A (unknown)"`, `":)"`, `"Active (new)"`,
+/// `"Draft(WIP)"`) is a literal: a space before `(` only fits an empty call
+/// (`now ()`), and a call with arguments must name one of
+/// [`SQL_FUNCTION_NAMES`] (R20-SM3-02, round 20: `"Draft(WIP)"` used to be
+/// taken as a function, so the column's literal default was dropped).
 pub fn is_sql_function_default(value: &str) -> bool {
     let value = value.trim();
     let Some((name, args)) = value.split_once('(') else {
@@ -184,12 +205,17 @@ pub fn is_sql_function_default(value: &str) -> bool {
     let spaced = name.ends_with(char::is_whitespace);
     let name = name.trim_end();
     let mut chars = name.chars();
-    chars
+    let well_formed = chars
         .next()
         .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
-        && args.ends_with(')')
-        && (!spaced || args.trim() == ")")
+        && args.ends_with(')');
+    if !well_formed {
+        return false;
+    }
+    let empty_call = args.trim() == ")";
+    let bare = name.rsplit('.').next().unwrap_or(name).to_ascii_lowercase();
+    empty_call || (!spaced && SQL_FUNCTION_NAMES.contains(&bare.as_str()))
 }
 
 /// Check if a field is a database-generated primary key, mirroring
@@ -495,6 +521,11 @@ mod tests {
     // an empty call (`now ()`), never an argument list.
     #[case("Active (new)", false)]
     #[case("Draft (WIP)", false)]
+    // R20-SM3-02 (round 20): an unspaced note is a literal too; an argument
+    // list needs a known SQL function name.
+    #[case("Draft(WIP)", false)]
+    #[case("Active(new)", false)]
+    #[case("pg_catalog.nextval('seq')", true)]
     #[case("(none)", false)]
     #[case(":)", false)]
     #[case("now(", false)]

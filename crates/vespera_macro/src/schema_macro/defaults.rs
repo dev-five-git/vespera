@@ -77,8 +77,12 @@ pub(super) fn generate_sea_orm_default_attrs(
         Some(value) if !is_sql_function_default(value) => {
             let schema_default_attr = quote! { #[schema(default = #value)] };
 
+            // No serde default can be generated for a non-primitive type, so
+            // the literal is not advertised either: an OpenAPI default for a
+            // field serde still requires (a missing key is a 422) was a lie
+            // (R20-L1, round 20).
             if !is_parseable_type(original_ty) {
-                return (quote! {}, schema_default_attr);
+                return (quote! {}, quote! {});
             }
 
             let fn_name = format!("default_{}_{field_name}", unraw(struct_name));

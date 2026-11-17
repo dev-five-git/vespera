@@ -166,17 +166,6 @@ fn generate_inline_type_definition_snapshot(
 }
 
 #[test]
-fn inline_field_struct_holds_constructor_inputs() {
-    let field = field(
-        "test_field",
-        quote!(Option<i32>),
-        vec![syn::parse_quote!(#[doc = "Test doc"])],
-    );
-    assert_eq!(field.name.to_string(), "test_field");
-    assert_eq!(field.attrs.len(), 1);
-}
-
-#[test]
 fn inline_relation_type_struct_holds_constructor_inputs() {
     let inline_type = inline("TestRelation", "SCREAMING_SNAKE_CASE", vec![]);
     assert_eq!(inline_type.type_name.to_string(), "TestRelation");

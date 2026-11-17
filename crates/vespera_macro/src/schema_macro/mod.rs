@@ -20,6 +20,8 @@ mod inline_types;
 mod input;
 mod instantiate;
 pub mod module_scope;
+#[cfg(test)]
+mod requested_variant_tests;
 mod same_file_override;
 mod seaorm;
 mod transformation;
@@ -95,8 +97,12 @@ fn requested_variant(
     }
     let defined_in = storage_module_path(stored);
     let other_crate = module.first().map(String::as_str) != Some("crate");
+    // A bare name the call site imports explicitly (`use crate::a::Page;`) is
+    // named as much as a qualified path is: the stored `Page` of another
+    // module is not it (R20-SM3-03, round 20). A glob import stays lenient.
+    let named_module = qualified || explicitly_imported(&name);
     if other_crate
-        || (qualified
+        || (named_module
             && defined_in
                 .as_ref()
                 .is_some_and(|defined| *defined != module))
@@ -132,6 +138,14 @@ fn bare_name_module(ty: &syn::Type) -> Option<Vec<String>> {
     };
     let defined = path.pop()?;
     Some(reexported_item(&path, &defined).map_or(path, |(defined_in, _)| defined_in))
+}
+
+/// Whether the call site's module imports `name` with an explicit `use`
+/// (glob imports are not in `ModuleScope::imports`).
+fn explicitly_imported(name: &str) -> bool {
+    file_lookup::call_site_module()
+        .and_then(|call_site| module_scope::module_scope(&call_site))
+        .is_some_and(|scope| scope.imports.contains_key(name))
 }
 
 /// Generate schema code from a struct with optional field filtering

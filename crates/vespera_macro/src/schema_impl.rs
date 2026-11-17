@@ -212,6 +212,34 @@ fn count_items_named(items: &[syn::Item], ident: &str) -> usize {
                 syn::visit::visit_item_mod(self, item);
             }
         }
+        // Items whose bodies can declare more items (S20-0-2, round 20): a
+        // `#[cfg]` that is false on the fn / impl / trait / const / static
+        // hides everything inside it too.
+        fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+            if !statically_inactive(&item.attrs) {
+                syn::visit::visit_item_fn(self, item);
+            }
+        }
+        fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+            if !statically_inactive(&item.attrs) {
+                syn::visit::visit_item_impl(self, item);
+            }
+        }
+        fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
+            if !statically_inactive(&item.attrs) {
+                syn::visit::visit_item_trait(self, item);
+            }
+        }
+        fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
+            if !statically_inactive(&item.attrs) {
+                syn::visit::visit_item_const(self, item);
+            }
+        }
+        fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+            if !statically_inactive(&item.attrs) {
+                syn::visit::visit_item_static(self, item);
+            }
+        }
     }
     let mut counter = Counter { ident, count: 0 };
     for item in items {
@@ -672,6 +700,9 @@ pub mod variants;
 #[cfg(test)]
 #[path = "schema_impl/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod tests_identity;
 
 #[cfg(test)]
 mod tests_wire_override;
