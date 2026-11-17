@@ -48,6 +48,13 @@ pub async fn get_config() -> Json<Config> {
 }
 
 /// Update config
+// Not a doc comment: a doc comment would become the operation description in
+// the generated `openapi.json`. Every field is optional and a missing one keeps
+// its current value. An explicit `null` keeps it too: `discountRate` and
+// `delimiter` are nullable in the document, but this PATCH cannot clear them,
+// because `null` reads the same as an omitted field. The demo keeps no state:
+// it merges the request onto a fixed `current` config and returns the result
+// without storing it.
 #[vespera::route(patch, tags = ["config"])]
 pub async fn update_config(Json(req): Json<UpdateConfigRequest>) -> Json<Config> {
     let _ = crate::models::config::Model {

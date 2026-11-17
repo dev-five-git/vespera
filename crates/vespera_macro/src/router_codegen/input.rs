@@ -695,13 +695,13 @@ fn parse_openapi_values(input: ParseStream) -> syn::Result<Vec<LitStr>> {
     }
 }
 
-/// Whether `url` is a server URL `vespera!` accepts: absolute `http(s)://`
-/// or a relative reference to the document's host (`/api/v1`, which OpenAPI
-/// 3.1 resolves against the URL serving the document).  `{var}` templates
-/// are not accepted: `vespera!` cannot declare the `variables` they need.
+/// Whether `url` is a server URL `vespera!` accepts: an absolute `http(s)`
+/// URL (the same check as the `info` URLs: a host, no whitespace) or a
+/// relative reference to the document's host (`/api/v1`, which OpenAPI 3.1
+/// resolves against the URL serving the document).  `{var}` templates are not
+/// accepted: `vespera!` cannot declare the `variables` they need.
 fn is_server_url(url: &str) -> bool {
-    (url.starts_with("http://") || url.starts_with("https://") || url.starts_with('/'))
-        && !is_url_template(url)
+    (super::info::is_absolute_http_url(url) || url.starts_with('/')) && !is_url_template(url)
 }
 
 /// Whether `url` holds a `{var}` server-variable template.

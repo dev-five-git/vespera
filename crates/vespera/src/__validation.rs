@@ -63,6 +63,12 @@ pub trait RangeBound: Sized {
     fn max(bound: f64) -> Self;
     /// The value of the integer-literal bound `literal`.
     fn exact(literal: Self::Literal) -> Self;
+    /// The value of the integer-literal bound `literal`, loosened to the
+    /// documented `bound` (`f64`) when that is looser: past 2^53 the OpenAPI
+    /// document can only carry the rounded value, and a client sending that
+    /// advertised bound must not be rejected. `lower` names the bound's side
+    /// (`minimum` when `true`).
+    fn exact_within(literal: Self::Literal, bound: f64, lower: bool) -> Self;
     /// Whether some value of the type satisfies the lower bound `bound`
     /// (an integer type cannot reach `minimum = 300.5` on a `u8`, which
     /// [`RangeBound::min`] would saturate to an admitting `255`).
@@ -122,6 +128,13 @@ macro_rules! integer_range_bound {
             fn exact(literal: Self) -> Self {
                 literal
             }
+            fn exact_within(literal: Self, bound: f64, lower: bool) -> Self {
+                if lower {
+                    Ord::min(literal, <Self as RangeBound>::min(bound))
+                } else {
+                    Ord::max(literal, <Self as RangeBound>::max(bound))
+                }
+            }
             // `MAX as f64 + 1.0` is exact up to 32 bits and rounds to the
             // power of two `MAX + 1` beyond, so `<` is the exact test.
             #[allow(clippy::cast_precision_loss, clippy::cast_lossless)]
@@ -161,6 +174,11 @@ impl RangeBound for f64 {
     fn exact(literal: i128) -> Self {
         literal as Self
     }
+    // A float keeps the literal's own value: the documented `f64` is that
+    // same value rounded, which the literal already is.
+    fn exact_within(literal: i128, _bound: f64, _lower: bool) -> Self {
+        Self::exact(literal)
+    }
     fn min(bound: f64) -> Self {
         bound
     }
@@ -180,6 +198,9 @@ impl RangeBound for f32 {
     #[allow(clippy::cast_precision_loss)]
     fn exact(literal: i128) -> Self {
         literal as Self
+    }
+    fn exact_within(literal: i128, _bound: f64, _lower: bool) -> Self {
+        Self::exact(literal)
     }
     #[allow(clippy::cast_possible_truncation)]
     fn min(bound: f64) -> Self {
@@ -241,5 +262,27 @@ mod tests {
         assert!(super::non_finite(&f64::MAX).is_none() && super::non_finite(&u8::MAX).is_none());
         assert!((<f64 as RangeBound>::exact(-3) + 3.0).abs() < f64::EPSILON);
         assert!((<f32 as RangeBound>::exact(100) - 100.0).abs() < f32::EPSILON);
+    }
+
+    /// An integer-literal bound keeps the literal, unless the documented
+    /// value is looser (past 2^53 the document rounds it).
+    #[test]
+    fn exact_bounds_loosen_to_the_documented_value() {
+        let past_2_pow_53 = 9_007_199_254_740_993_u64;
+        let documented = 9_007_199_254_740_992.0;
+        assert_eq!(
+            <u64 as RangeBound>::exact_within(past_2_pow_53, documented, true),
+            9_007_199_254_740_992
+        );
+        assert_eq!(
+            <u64 as RangeBound>::exact_within(past_2_pow_53, documented, false),
+            past_2_pow_53
+        );
+        assert_eq!(<i64 as RangeBound>::exact_within(5, 3.0, true), 3);
+        assert_eq!(<i64 as RangeBound>::exact_within(3, 5.0, true), 3);
+        assert_eq!(<u8 as RangeBound>::exact_within(5, 7.0, false), 7);
+        assert_eq!(<u8 as RangeBound>::exact_within(9, 7.0, false), 9);
+        assert!((<f64 as RangeBound>::exact_within(7, 0.0, true) - 7.0).abs() < f64::EPSILON);
+        assert!((<f32 as RangeBound>::exact_within(7, 0.0, false) - 7.0).abs() < f32::EPSILON);
     }
 }

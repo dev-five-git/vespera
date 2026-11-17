@@ -309,10 +309,15 @@ fn type_contains_generic(ty: &Type, generic_idents: &HashSet<String>) -> bool {
         found: bool,
     }
     impl<'ast> Visit<'ast> for Mentions<'_> {
-        fn visit_path_segment(&mut self, segment: &'ast syn::PathSegment) {
-            self.found |=
-                segment.ident == "Self" || self.names.contains(&segment.ident.to_string());
-            syn::visit::visit_path_segment(self, segment);
+        // Only the LEADING segment of a path can name a generic parameter
+        // (`T`, `T::Assoc`, `Self::X`): a later segment is a module or item
+        // (`models::User` is not the generic `User` of `struct Page<User>`).
+        fn visit_path(&mut self, path: &'ast syn::Path) {
+            if let Some(first) = path.segments.first() {
+                self.found |=
+                    first.ident == "Self" || self.names.contains(&first.ident.to_string());
+            }
+            syn::visit::visit_path(self, path);
         }
         fn visit_lifetime(&mut self, lifetime: &'ast syn::Lifetime) {
             self.found |= self.names.contains(&format!("'{}", lifetime.ident));
@@ -631,6 +636,23 @@ mod tests {
         let mut generics = HashSet::new();
         generics.insert("T".to_string());
         assert!(type_contains_generic(&parse_ty("Vec<T>"), &generics));
+    }
+
+    /// A generic named like a later segment of a qualified path does not
+    /// shadow the path (`models::User` under `struct Page<User>` is still
+    /// asserted), while a generic leading a path (`T::Item`) is skipped.
+    #[test]
+    fn qualified_path_is_not_shadowed_by_a_later_generic_segment() {
+        let mut generics = HashSet::new();
+        generics.insert("User".to_string());
+        assert!(!type_contains_generic(&parse_ty("models::User"), &generics));
+        assert!(!type_contains_generic(
+            &parse_ty("::models::User"),
+            &generics
+        ));
+        assert!(type_contains_generic(&parse_ty("Vec<User>"), &generics));
+        assert!(type_contains_generic(&parse_ty("User::Item"), &generics));
+        assert!(type_contains_generic(&parse_ty("Self"), &generics));
     }
 
     #[test]

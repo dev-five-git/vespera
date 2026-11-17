@@ -91,7 +91,12 @@ pub struct StructMetadata {
     ///
     /// This is not part of the OpenAPI output. It lets `#[derive(Schema)]`
     /// replace metadata for the same source item after an IDE edit while still
-    /// rejecting two distinct items that claim the same OpenAPI schema name.
+    /// rejecting two distinct items that claim the same OpenAPI schema name
+    /// with different definitions. Two distinct items with an IDENTICAL
+    /// definition text are one component on purpose (see
+    /// `schema_impl::variants`); the text is compared, not the types it names,
+    /// so identical text whose field types resolve differently in their own
+    /// modules is not detected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_identity: Option<String>,
     /// The Rust identifier of the type when it differs from [`Self::name`]

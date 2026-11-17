@@ -193,12 +193,22 @@ impl TestScope {
             return gated.clone();
         }
         let dir = declarer.parent().map(Path::to_path_buf).unwrap_or_default();
+        // rustc resolves a `#[path]` inside an inline module relative to the
+        // inline module's directory: for a non-mod-rs declarer (`routes.rs`)
+        // that directory is named after the file (`routes/<inline>/`).
+        let inline_dir = if mod_rs(declarer) {
+            dir.clone()
+        } else {
+            declarer
+                .file_stem()
+                .map_or_else(|| dir.clone(), |stem| dir.join(stem))
+        };
         let gated = file_cache::derived(declarer, |content| {
             let mut gated = GatedMods::default();
             if may_gate_tests(content)
                 && let Ok(ast) = syn::parse_file(content)
             {
-                gated_mod_paths(&ast.items, "", &dir, &mut gated);
+                gated_mod_paths(&ast.items, "", &dir, &inline_dir, &mut gated);
             }
             gated
         })
@@ -245,8 +255,17 @@ fn string_literal(expr: &syn::Expr) -> Option<String> {
 /// the ungated inline modules: a gated inline module gates everything it
 /// nests, so its own name is enough. A gated `#[path]` module names its file
 /// directly, relative to `dir` (rustc resolves it from the declaring file's
-/// directory, nested inline module names included).
-fn gated_mod_paths(items: &[Item], prefix: &str, dir: &Path, out: &mut GatedMods) {
+/// directory). `inline_dir` is where the inline modules of `items` nest:
+/// `dir` itself for a mod-rs declarer, `dir/<file stem>` for any other, so a
+/// `#[path]` inside `mod v2 { .. }` of `routes.rs` resolves under
+/// `routes/v2/`.
+fn gated_mod_paths(
+    items: &[Item],
+    prefix: &str,
+    dir: &Path,
+    inline_dir: &Path,
+    out: &mut GatedMods,
+) {
     for item in items {
         let Item::Mod(module) = item else { continue };
         let name = syn::ext::IdentExt::unraw(&module.ident).to_string();
@@ -261,9 +280,21 @@ fn gated_mod_paths(items: &[Item], prefix: &str, dir: &Path, out: &mut GatedMods
                 }
             }
         } else if let Some((_, content)) = &module.content {
-            gated_mod_paths(content, &format!("{path}::"), &dir.join(&name), out);
+            // Everything nested inside an inline module lives under it.
+            let nested = inline_dir.join(&name);
+            gated_mod_paths(content, &format!("{path}::"), &nested, &nested, out);
         }
     }
+}
+
+/// Whether `declarer` is a mod-rs file (`lib.rs`, `main.rs`, `mod.rs`): its
+/// inline modules nest under its own directory, any other file's under a
+/// directory named after the file.
+fn mod_rs(declarer: &Path) -> bool {
+    matches!(
+        declarer.file_stem().and_then(|stem| stem.to_str()),
+        Some("lib" | "main" | "mod")
+    )
 }
 
 /// Whether the module chain `rest` begins with the `::`-joined `path`.

@@ -260,6 +260,10 @@ fn test_process_vespera_macro_with_cron_storage() {
             tokens.contains("crate :: routes :: health :: test_cron_job ()"),
             "{tokens}"
         );
+    } else {
+        // Without the feature the stored job is not placed: the assertion is
+        // what keeps this test meaningful in the default feature set.
+        assert!(!tokens.contains("vespera :: cron"), "{tokens}");
     }
 }
 
@@ -762,6 +766,8 @@ fn process_export_app_schedules_the_crate_cron_jobs() {
             tokens.contains("crate :: jobs :: invoice_sweep ()"),
             "{tokens}"
         );
+    } else {
+        assert!(!tokens.contains("vespera :: cron"), "{tokens}");
     }
 }
 
