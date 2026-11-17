@@ -10,6 +10,7 @@ import com.devfive.vespera.bridge.DispatchMode;
 import com.devfive.vespera.bridge.DispatchObserver;
 import com.devfive.vespera.bridge.VesperaBridge;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -20,7 +21,9 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -137,11 +140,12 @@ class BidirectionalPanicStatusHttpTest {
         }
         String where = path + " " + upload;
         assertEquals(500, response.statusCode(), where);
-        // A pre-header panic answers through the header callback (status +
-        // headers only, empty body); a post-header one through the proxy's
-        // own error body.  Never any of the handler's partial body.
+        // A pre-header panic answers its header through the header callback
+        // and its body through the output stream; a post-header one through
+        // the proxy's own error body.  Either way the client gets exactly the
+        // panic text, never any of the handler's partial body.
         String text = new String(body, StandardCharsets.UTF_8);
-        assertTrue(text.isEmpty() || text.equals("panic in Rust engine"), where + ": " + text);
+        assertEquals("panic in Rust engine", text, where);
         DispatchEvent event = eventFor(response.headers().firstValue("X-Request-Id").orElse(null));
         assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING, event.mode(), event.toString());
         assertTrue(event.panicked(), event.toString());
@@ -207,5 +211,31 @@ class BidirectionalPanicStatusHttpTest {
         }
         fail("a 200 response truncated by a panic (" + received
                 + " bytes) ended cleanly: the client cannot tell it is incomplete");
+    }
+
+    /**
+     * A request the native side rejects before any handler runs (a null
+     * request array) is answered header-first: the header callback gets the
+     * {@code 400} header only, and the message follows through the output
+     * stream.  Both header-first entry points must deliver the body.
+     */
+    @Test
+    void headerFirstFallbackDeliversItsBodyThroughTheOutputStream() {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        AtomicReference<byte[]> header = new AtomicReference<>();
+        VesperaBridge.dispatchStreamingWithHeader(null, header::set, out);
+        assertFallback400(header.get(), out);
+
+        out.reset();
+        header.set(null);
+        VesperaBridge.dispatchFullStreamingWithHeader(
+                null, header::set, new ByteArrayInputStream(new byte[0]), out);
+        assertFallback400(header.get(), out);
+    }
+
+    private static void assertFallback400(byte[] header, ByteArrayOutputStream out) {
+        assertNotNull(header, "the header callback was not invoked");
+        assertEquals(400, VesperaBridge.decodeResponse(header).status());
+        assertEquals("invalid input byte array (null)", out.toString(StandardCharsets.UTF_8));
     }
 }

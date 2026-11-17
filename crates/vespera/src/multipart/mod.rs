@@ -629,11 +629,17 @@ const TINY_SCALAR_INITIAL_CAPACITY_BYTES: usize = 16;
 const STRING_INITIAL_CAPACITY_BYTES: usize = 64;
 
 /// Resolve the buffering cap for a tiny scalar field: the explicit
-/// per-field `#[form_data(limit = "...")]` if present, otherwise the
-/// conservative [`DEFAULT_TINY_SCALAR_LIMIT_BYTES`] default.  A cap is
-/// always applied — scalars never buffer unbounded input.
+/// per-field `#[form_data(limit = "...")]` byte size if present, otherwise
+/// the conservative [`DEFAULT_TINY_SCALAR_LIMIT_BYTES`] default.  A cap is
+/// always applied — scalars never buffer unbounded input.  An explicit
+/// `limit = "unlimited"` arrives as the `usize::MAX` sentinel and is treated
+/// as absent: no legitimate bool/number/char payload needs more than the
+/// default, so the opt-out cannot lift the scalar cap.
 fn tiny_scalar_limit(limit_bytes: Option<usize>) -> usize {
-    limit_bytes.unwrap_or(DEFAULT_TINY_SCALAR_LIMIT_BYTES)
+    match limit_bytes {
+        None | Some(usize::MAX) => DEFAULT_TINY_SCALAR_LIMIT_BYTES,
+        Some(bytes) => bytes,
+    }
 }
 
 /// Parse a string as a boolean using clap-style conventions.
