@@ -22,10 +22,11 @@
 //!   and the attachment is *owned*: only that ownership record is kept
 //!   in TLS, and it releases the attachment with `DetachCurrentThread`
 //!   from the thread-local destructor when the OS thread exits (e.g. a
-//!   `spawn_blocking` worker reaped after its idle timeout).  Threads
-//!   that outlive the process — the leaked static runtime's workers —
-//!   simply never run the destructor, which is harmless at process
-//!   teardown.  The attach cost is therefore still paid once per thread
+//!   `spawn_blocking` worker reaped after its idle timeout).  Workers of
+//!   the shared runtime stopped by `shutdown_runtime` exit normally and
+//!   detach through the same destructor.  Threads still alive when the
+//!   process exits never run it, which is harmless at process teardown.
+//!   The attach cost is therefore still paid once per thread
 //!   (the expensive part); the per-call `GetEnv` is a pointer lookup.
 //!
 //! # Safety invariant

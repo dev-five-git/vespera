@@ -64,14 +64,21 @@ fn shutdown_makes_later_dispatches_answer_503() {
         return;
     }
 
-    vespera_inprocess::register_app_named(APP, || {
+    // `/slow` reports that it started, i.e. that its dispatch holds a lease.
+    let (slow_started_tx, slow_started_rx) = std::sync::mpsc::channel::<()>();
+    vespera_inprocess::register_app_named(APP, move || {
+        let slow_started_tx = slow_started_tx.clone();
         vespera_inprocess::Router::new()
             .route("/ok", get(|| async { "ok" }))
             .route(
                 "/slow",
-                get(|| async {
-                    tokio::time::sleep(Duration::from_millis(300)).await;
-                    "slow"
+                get(move || {
+                    let slow_started_tx = slow_started_tx.clone();
+                    async move {
+                        let _ = slow_started_tx.send(());
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        "slow"
+                    }
                 }),
             )
     });
@@ -112,7 +119,11 @@ fn shutdown_makes_later_dispatches_answer_503() {
             "/slow",
         )))
     });
-    std::thread::sleep(Duration::from_millis(100));
+    // Wait for the handler itself, not a fixed delay: a slow CI host could
+    // otherwise start the shutdown before the dispatch has taken its lease.
+    slow_started_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("slow handler started");
     assert!(shutdown_runtime(Duration::from_secs(5)));
     let (header, body) = status_and_body(
         &slow

@@ -827,7 +827,7 @@ mod nullable_and_boolean_schemas {
         },
         json!({"anyOf": [{"allOf": [{"$ref": "#/components/schemas/A"}]}, {"type": "null"}]})
     )]
-    #[case::typeless_not_wrapped(
+    #[case::typeless_keyword_not_is_wrapped(
         Schema {
             not: Some(inline(Schema::string())),
             nullable: Some(true),
@@ -870,7 +870,7 @@ mod nullable_and_boolean_schemas {
         },
         json!({"anyOf": [{"type": "object", "allOf": [{"$ref": "#/components/schemas/A"}]}, {"type": "null"}]})
     )]
-    #[case::typed_not_wrapped(
+    #[case::typed_keyword_not_is_wrapped(
         Schema {
             not: Some(inline(Schema::integer())),
             nullable: Some(true),
@@ -917,7 +917,7 @@ mod nullable_and_boolean_schemas {
             {"type": "null"}
         ]})
     )]
-    #[case::nullable_ref_not_wrapped(
+    #[case::nullable_ref_keyword_not_is_wrapped(
         Schema {
             not: Some(inline(Schema::string())),
             ..Schema::nullable_reference("#/components/schemas/User".to_owned())
