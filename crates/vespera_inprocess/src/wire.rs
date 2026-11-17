@@ -450,7 +450,7 @@ pub fn error_wire_untraced(status: u16, msg: &str) -> Vec<u8> {
     let body = msg.as_bytes();
     // The fixed single `content-type: text/plain; charset=utf-8` header plus
     // the SemVer version field stays well under `WIRE_HEADER_RESERVE` (192
-    // bytes): `SCAFFOLD(59) + version.len() + (12 + 26 + 8) = 105 +
+    // bytes): `SCAFFOLD(59) + version.len() + (12 + 25 + 8) = 104 +
     // version.len()`.  Even a pathological 80-byte SemVer still fits, so the
     // `.max(WIRE_HEADER_RESERVE)` floor of the prior
     // `header_capacity_estimate(...).max(WIRE_HEADER_RESERVE)` call ALWAYS
