@@ -811,3 +811,27 @@ fn stored_jobs_of_another_target_are_dropped_in_the_ide() {
         "{error}"
     );
 }
+
+/// `#[cfg]` twins of one job in one module index the same function twice
+/// under the same module path: that is not an ambiguity, and only the
+/// ungated twin is scanned.
+#[test]
+fn cfg_twins_of_a_job_in_one_module_are_not_ambiguous() {
+    let krate = crate_with(&[
+        ("lib.rs", "mod late;\npub fn create_app() {}\n"),
+        (
+            "late.rs",
+            "#[cfg(any())]\n#[cron(\"1 * * * * *\")]\npub async fn tick() {}\n#[cron(\"2 * * * * *\")]\npub async fn tick() {}\n",
+        ),
+    ]);
+    let src = krate.path().join("src");
+    let jobs = discover(&[], Some(&src), None);
+    assert_eq!(
+        summary(&jobs),
+        vec![(
+            "late".to_owned(),
+            "tick".to_owned(),
+            "2 * * * * *".to_owned()
+        )]
+    );
+}
