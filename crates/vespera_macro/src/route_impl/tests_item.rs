@@ -13,6 +13,7 @@ use super::*;
 #[case::static_fn_pointer(quote!(static CALLBACK: fn() = cb;), false)]
 #[case::leading_group(quote!((a) fn broken() {}), false)]
 #[case::leading_punct(quote!(- fn broken() {}), false)]
+#[case::only_qualifiers(quote!(pub async), false)]
 #[case::pub_crate_async_fn(quote!(pub(crate) async fn broken(a: u8 b: u8) {}), true)]
 #[case::attributed_extern_fn(quote!(#[inline] extern "C" fn broken(a: u8 b: u8) {}), true)]
 fn route_item_error_names_the_kind_of_item(#[case] item: TokenStream, #[case] is_fn: bool) {

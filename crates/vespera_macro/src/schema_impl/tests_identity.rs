@@ -137,6 +137,10 @@ fn moved_item_replacement(#[case] source: &str, #[case] replaced: bool) {
 #[case::inactive_impl_method("impl T { #[cfg(any())] fn g() { struct X; } } struct X;", 1)]
 #[case::inactive_trait_method("trait T { #[cfg(any())] fn g() { struct X; } } struct X;", 1)]
 #[case::inactive_impl_const("impl T { #[cfg(any())] const C: () = { struct X; }; } struct X;", 1)]
+#[case::active_impl_const_control(
+    "impl T { #[cfg(all())] const C: () = { struct X; }; } struct X;",
+    2
+)]
 #[case::inactive_trait_const("trait T { #[cfg(any())] const C: () = { struct X; }; } struct X;", 1)]
 #[case::active_trait_const_control(
     "trait T { #[cfg(all())] const C: () = { struct X; }; } struct X;",
