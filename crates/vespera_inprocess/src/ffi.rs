@@ -172,7 +172,8 @@ pub extern "C" fn vespera_abi_version() -> u32 {
 /// # Safety
 ///
 /// `request` must be readable for `request_len` bytes (or `request_len ==
-/// 0`); `response` / `response_len` must be NULL or valid for one write.
+/// 0`); `response` / `response_len` must be non-NULL and valid for one write
+/// (a NULL pointer is rejected with `VESPERA_ERR_INVALID_ARGUMENT`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vespera_dispatch(
     request: *const u8,
@@ -204,7 +205,8 @@ pub unsafe extern "C" fn vespera_dispatch(
 ///
 /// `request` must be readable for `request_len` bytes (or `request_len ==
 /// 0`); `out` must be writable for `out_capacity` bytes (or
-/// `out_capacity == 0`); `written` must be NULL or valid for one write.
+/// `out_capacity == 0`); `written` must be non-NULL and valid for one write
+/// (a NULL pointer is rejected with `VESPERA_ERR_INVALID_ARGUMENT`).
 /// The request and output buffers must not overlap (checked: overlapping
 /// ranges are rejected).  An `out_capacity` below [`MIN_DIRECT_OUT_BYTES`]
 /// (including the NULL / 0 size probe) is answered with

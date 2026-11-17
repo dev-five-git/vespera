@@ -223,6 +223,15 @@ pub fn bench_metadata_segment(c: &mut Criterion) {
     // Size the out buffer once outside the timed loop (mirrors the pooled
     // direct buffer the JNI bridge hands in).
     let required = bench_write_hand(&mut [0u8; 256], 200, &headers, &meta_current);
+    // The arms are only comparable when both write the same header length
+    // into the same buffer: a longer general-path version (e.g. after a bump
+    // from `0.8.0` to `0.10.0`) would take a short-write path instead.
+    let mut check = vec![0u8; required];
+    assert_eq!(
+        bench_write_hand(&mut check, 200, &headers, &meta_owned),
+        required,
+        "metadata_owned_general must write the same length as metadata_static_fast"
+    );
 
     let mut group = c.benchmark_group("metadata_segment_ab");
     group.bench_function("metadata_static_fast", |b| {

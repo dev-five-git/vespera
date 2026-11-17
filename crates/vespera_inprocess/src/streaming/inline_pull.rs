@@ -29,9 +29,10 @@
 //! - **on a multi-thread runtime** only: a current-thread runtime's
 //!   `block_on` thread is its only worker, so a pull waiting on one of its
 //!   tasks would hang.  The pull runs under `tokio::task::block_in_place`
-//!   (the thread gives up its worker role but keeps the runtime context, so
-//!   `Handle::current()` still works), so Tokio's blocking APIs behave as on
-//!   the `spawn_blocking` producer thread.
+//!   (the thread gives up its worker role and exits the runtime's entered
+//!   state, which lets Tokio's blocking APIs behave as on the
+//!   `spawn_blocking` producer thread, but keeps the handle, so
+//!   `Handle::current()` still works).
 //!
 //! **Caveat — handler-side timeouts.** An inline pull blocks the polling
 //! thread *inside* `poll_frame`, so a timeout the handler itself puts around
@@ -93,9 +94,10 @@ impl ChannelBody {
             // panicking pull aborts the body instead of unwinding into the
             // handler (or across the FFI boundary of the caller).
             //
-            // `block_in_place` leaves the runtime context for the pull (on
-            // the non-worker `block_on` thread it moves no core, only resets
-            // the context): a pull may use Tokio's blocking APIs
+            // `block_in_place` exits the runtime's entered state for the pull
+            // (on the non-worker `block_on` thread it moves no core, only
+            // clears the entered flag; the handle stays, so `Handle::current()`
+            // works inside the pull): a pull may use Tokio's blocking APIs
             // (`blocking_recv`, `blocking_lock`, `Handle::block_on`) exactly
             // as on the `spawn_blocking` producer thread, where they are
             // allowed, instead of panicking into a body error.
