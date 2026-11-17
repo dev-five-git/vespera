@@ -4,7 +4,7 @@ use quote::ToTokens;
 use syn::Type;
 use vespera_core::{
     route::{Parameter, ParameterLocation, ParameterStyle},
-    schema::{SchemaRef, SchemaType},
+    schema::{Schema, SchemaRef, SchemaType},
 };
 
 use super::shared::{
@@ -136,7 +136,9 @@ pub(super) fn parse_query_extractor(
 /// fields (all optional when the flattened field is an `Option`). A flattened
 /// non-struct (e.g. a `HashMap` catch-all) has no fixed names and is left out.
 /// (serde buffers flattened values as strings, so with `serde_urlencoded`
-/// only string-typed flattened fields deserialize from a query string.)
+/// only string-typed flattened fields deserialize from a query string: a
+/// flattened non-string field is documented as a plain string, without the
+/// `style` / `explode` of an array.)
 ///
 /// Array fields (`Vec<T>`, sets) are documented as `style: form, explode:
 /// true` — repeated keys (`?tag=a&tag=b`). Note that axum's own `Query` uses
@@ -234,6 +236,7 @@ fn collect_query_struct_parameters(
 
         if extract_flatten(&field.attrs) {
             let flattened_ty = option_inner(&field.ty).unwrap_or(&field.ty);
+            let first_flattened = parameters.len();
             collect_query_struct_parameters(
                 flattened_ty,
                 force_optional || is_optional,
@@ -243,6 +246,7 @@ fn collect_query_struct_parameters(
                 parameters,
                 budget,
             );
+            string_flattened_parameters(&mut parameters[first_flattened..]);
             continue;
         }
 
@@ -297,6 +301,23 @@ fn collect_query_struct_parameters(
         });
     }
     visiting.pop();
+}
+
+/// serde hands a flattened struct's values over as strings (see
+/// [`parse_query_struct_to_parameters`]): every parameter that came from a
+/// flattened field and is not a string is documented as one.
+fn string_flattened_parameters(parameters: &mut [Parameter]) {
+    for parameter in parameters {
+        let is_string = matches!(
+            &parameter.schema,
+            Some(SchemaRef::Inline(schema)) if schema.schema_type == Some(SchemaType::String)
+        );
+        if !is_string {
+            parameter.schema = Some(SchemaRef::Inline(Box::new(Schema::string())));
+            parameter.style = None;
+            parameter.explode = None;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -878,5 +899,43 @@ mod tests {
             .map(|p| serde_json::to_string(&p.schema).unwrap())
             .collect();
         insta::assert_snapshot!("query_wire_override_fields", schemas.join("\n"));
+    }
+
+    /// A flattened `u32` / `Vec<u32>` cannot be read back from a query string
+    /// (serde's flatten buffers `"10"` as a string), so it is documented as a
+    /// string, with no array style; a flattened `String` keeps its own schema.
+    #[test]
+    fn flattened_non_string_fields_are_documented_as_strings() {
+        let ty: Type = syn::parse_str("Q").unwrap();
+        let struct_definitions: HashMap<&str, &str> = HashMap::from([
+            ("Q", "pub struct Q { #[serde(flatten)] pub page: Page }"),
+            (
+                "Page",
+                "pub struct Page { pub page_size: u32, pub tags: Vec<u32>, pub name: String }",
+            ),
+        ]);
+        let parameters =
+            parse_query_struct_to_parameters(&ty, &HashSet::new(), &struct_definitions).unwrap();
+        let parameter = |name: &str| {
+            parameters
+                .iter()
+                .find(|parameter| parameter.name == name)
+                .unwrap_or_else(|| panic!("no `{name}` parameter"))
+        };
+        let string = serde_json::json!({ "type": "string" });
+        assert_eq!(
+            serde_json::to_value(&parameter("page_size").schema).unwrap(),
+            string
+        );
+        assert_eq!(
+            serde_json::to_value(&parameter("tags").schema).unwrap(),
+            string
+        );
+        assert_eq!(parameter("tags").style, None);
+        assert_eq!(parameter("tags").explode, None);
+        assert_eq!(
+            serde_json::to_value(&parameter("name").schema).unwrap(),
+            string
+        );
     }
 }

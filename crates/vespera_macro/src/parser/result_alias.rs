@@ -143,70 +143,8 @@ fn fn_module(items: &[syn::Item], name: &syn::Ident) -> Option<Vec<String>> {
     })
 }
 
-/// Expand the return type of `sig` in place through the aliases found in
-/// `same_file` (the handler's file) and (if given) the crate source
-/// directory `src_dir`.
-///
-/// Returns `true` when the return type changed.
-pub fn expand_return_type_alias(
-    sig: &mut syn::Signature,
-    same_path: Option<&Path>,
-    same_file: Option<&syn::File>,
-    src_dir: Option<&Path>,
-) -> bool {
-    let handler = sig.ident.clone();
-    let ReturnType::Type(_, ty) = &mut sig.output else {
-        return false;
-    };
-    let mut scope = same_file.map(|file| {
-        NextScope::Ready(Scope {
-            module: fn_module(&file.items, &handler).unwrap_or_default(),
-            file: Cow::Borrowed(file),
-            path: same_path.map(source_key),
-        })
-    });
-    let mut expanded = false;
-    // The return type before the first expansion.
-    let mut original: Option<String> = None;
-    // Keyed by the resolved definition, not the ident: `type Result<T> =
-    // crate::error::Result<Json<T>>;` names another module's `Result`.
-    let mut seen: Vec<DefinitionKey> = Vec::new();
-    while seen.len() < MAX_ALIAS_DEPTH {
-        let Some(name) = alias_candidate(ty) else {
-            break;
-        };
-        // An alias found under `src/` names its file, parsed only now that
-        // the alias body turned out to be another alias candidate.
-        let here = scope.take().and_then(NextScope::materialize);
-        if matches!(&**ty, Type::Path(path) if is_external_path(&path.path, here.as_ref())) {
-            break;
-        }
-        let qualifier = alias_qualifier(ty);
-        let Some((alias, alias_scope)) =
-            find_alias(&name, qualifier.as_ref(), here.as_ref(), src_dir)
-        else {
-            break;
-        };
-        let key = definition_key(&alias, &alias_scope);
-        if seen.contains(&key) {
-            break;
-        }
-        let Some(next) = apply_alias(&alias, ty) else {
-            break;
-        };
-        if !expanded {
-            original = Some(quote::quote!(#ty).to_string());
-        }
-        **ty = next;
-        seen.push(key);
-        expanded = true;
-        // The alias body names types where the alias is defined.
-        scope = Some(alias_scope);
-    }
-    // A self-recursive (`type Result<T> = Result<T>;`) or cyclic alias may
-    // leave the type as it was.
-    original.is_some_and(|original| quote::quote!(#ty).to_string() != original)
-}
+mod expansion;
+pub use expansion::expand_return_type_alias;
 
 /// Identifies one alias definition: its tokens, its file (`None` for the
 /// handler's own, already parsed file) and the inline module path inside it.

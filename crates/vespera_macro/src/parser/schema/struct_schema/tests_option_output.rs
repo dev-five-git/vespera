@@ -80,6 +80,24 @@ fn response_view(#[case] field: &str, #[case] schema: Value, #[case] required: V
     assert_eq!(view(field, false), (schema, required), "{field}");
 }
 
+/// A tuple struct's skipped `Option` position is omitted by serde when `None`
+/// (the later positions move left), so its response slot documents only the
+/// `Some` value: no `null` in `prefixItems[1]`, which holds the position or
+/// the `u32` that moves into it.
+#[test]
+fn tuple_skip_none_position_documents_some_only() {
+    let item: syn::ItemStruct =
+        syn::parse_str(&format!("struct P(u8, {SKIP_NONE} Option<u16>, u32);")).unwrap();
+    let schema = serde_json::to_value(parse_struct_to_schema(
+        &item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    ))
+    .unwrap();
+    let slot = &schema["prefixItems"][1];
+    assert!(!slot.to_string().contains("null"), "{slot}");
+}
+
 /// The request view reads `null` for any `Option`, predicate or not.
 #[rstest]
 #[case::plain("x: Option<String>")]

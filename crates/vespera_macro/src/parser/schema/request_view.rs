@@ -65,6 +65,7 @@
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
+    ops::Deref,
     sync::Arc,
 };
 
@@ -85,9 +86,61 @@ use super::{
 };
 use crate::schema_macro::type_utils::is_option_type;
 
-/// Component name → input component name, for every type whose request view
-/// differs (Rust-ident aliases of renamed schemas included).
-pub type InputNames = Arc<BTreeMap<String, String>>;
+/// The input components of the documented types.
+///
+/// `names` maps a component name (and a Rust-ident alias of a renamed schema)
+/// to its input component name, for every type whose request view differs.
+/// `owners` is the reverse map, input component name → the component it views:
+/// only a component owns its input, never an alias of another type that
+/// happens to sort first.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct InputMap {
+    names: BTreeMap<String, String>,
+    owners: BTreeMap<String, String>,
+}
+
+impl Deref for InputMap {
+    type Target = BTreeMap<String, String>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.names
+    }
+}
+
+impl InputMap {
+    /// This map without the components whose input `drop` names (owners
+    /// included, so the remaining inputs keep their components).
+    pub fn without_inputs(&self, drop: impl Fn(&String) -> bool) -> Self {
+        Self {
+            names: self
+                .names
+                .iter()
+                .filter(|(_, input)| !drop(input))
+                .map(|(component, input)| (component.clone(), input.clone()))
+                .collect(),
+            owners: self
+                .owners
+                .iter()
+                .filter(|(input, _)| !drop(input))
+                .map(|(input, component)| (input.clone(), component.clone()))
+                .collect(),
+        }
+    }
+}
+
+impl From<BTreeMap<String, String>> for InputMap {
+    /// Without a computed owner map, an input is owned by its smallest name.
+    fn from(names: BTreeMap<String, String>) -> Self {
+        let mut owners = BTreeMap::new();
+        for (name, input) in &names {
+            owners.entry(input.clone()).or_insert_with(|| name.clone());
+        }
+        Self { names, owners }
+    }
+}
+
+/// [`InputMap`] shared between the threads that build schemas.
+pub type InputNames = Arc<InputMap>;
 
 thread_local! {
     static REQUEST_VIEW: Cell<bool> = const { Cell::new(false) };
@@ -131,16 +184,9 @@ pub fn input_name(component: &str) -> Option<String> {
     INPUT_NAMES.with(|names| names.borrow().get(component).cloned())
 }
 
-/// The type (Rust ident or component name) whose input component is
-/// `input`, if `input` is one.
+/// The component whose input component is `input`, if `input` is one.
 pub fn component_of_input(input: &str) -> Option<String> {
-    INPUT_NAMES.with(|names| {
-        names
-            .borrow()
-            .iter()
-            .find(|(component, name)| *name == input && !component.contains("::"))
-            .map(|(component, _)| component.clone())
-    })
+    INPUT_NAMES.with(|names| names.borrow().owners.get(input).cloned())
 }
 
 /// Whether any type named inside `types` has an input view.
@@ -237,9 +283,13 @@ pub fn compute_input_names(sources: &[ViewSource<'_>], taken: &BTreeSet<String>)
 
     let mut used = taken.clone();
     let mut names = BTreeMap::new();
+    let mut owners = BTreeMap::new();
     for name in differs {
         let input = free_input_name(name, &used);
         used.insert(input.clone());
+        if !name.contains("::") {
+            owners.insert(input.clone(), name.to_string());
+        }
         names.insert(name.to_string(), input);
     }
     for source in sources {
@@ -257,7 +307,7 @@ pub fn compute_input_names(sources: &[ViewSource<'_>], taken: &BTreeSet<String>)
             }
         }
     }
-    Arc::new(names)
+    Arc::new(InputMap { names, owners })
 }
 
 /// `{name}Input`, or `{name}Input2`, `{name}Input3`, ... when taken.
@@ -394,11 +444,28 @@ enum FlatKind {
 /// flattened form reads every buffered key or leaves its keys behind —
 /// directly, through a flattened member (a struct flattening a map reads
 /// every key), or through a newtype / transparent wrapper (transitively).
-struct FlatKinds(BTreeMap<String, FlatKind>);
+struct FlatKinds {
+    /// Kind of every item that reads its flattened keys in one of these ways.
+    kinds: BTreeMap<String, FlatKind>,
+    /// Generic newtypes over one of their own type parameters (`struct
+    /// W<T>(T)`), with that parameter's position: `W<X>` reads like `X`.
+    param_of: BTreeMap<String, usize>,
+}
 
 impl FlatKinds {
     fn of(items: &[&syn::Item]) -> Self {
-        let mut kinds = Self(BTreeMap::new());
+        let mut kinds = Self {
+            kinds: BTreeMap::new(),
+            param_of: BTreeMap::new(),
+        };
+        for item in items {
+            if let syn::Item::Struct(definition) = item
+                && let FlatRead::Through(ty) = flat_read(item)
+                && let Some(index) = type_param_index(ty, &definition.generics)
+            {
+                kinds.param_of.insert(definition.ident.to_string(), index);
+            }
+        }
         loop {
             let mut changed = false;
             for item in items {
@@ -408,7 +475,7 @@ impl FlatKinds {
                     _ => continue,
                 };
                 if let Some(kind) = kinds.item_kind(item)
-                    && kinds.0.insert(ident.to_string(), kind) != Some(kind)
+                    && kinds.kinds.insert(ident.to_string(), kind) != Some(kind)
                 {
                     changed = true;
                 }
@@ -455,8 +522,24 @@ impl FlatKinds {
         let syn::Type::Path(path) = ty else {
             return None;
         };
-        let ident = path.path.segments.last()?.ident.to_string();
-        self.0.get(&ident).copied()
+        let segment = path.path.segments.last()?;
+        let ident = segment.ident.to_string();
+        if let Some(&index) = self.param_of.get(&ident) {
+            // `W<X>` over its own parameter reads what `X` reads.
+            let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+                return None;
+            };
+            let argument = args
+                .args
+                .iter()
+                .filter_map(|arg| match arg {
+                    syn::GenericArgument::Type(ty) => Some(ty),
+                    _ => None,
+                })
+                .nth(index)?;
+            return self.type_kind(argument);
+        }
+        self.kinds.get(&ident).copied()
     }
 }
 
@@ -534,8 +617,20 @@ fn flatten_differs(
         }
         follows_map
             || (kind.is_some() && deny_unknown_fields)
-            || (*kind == Some(FlatKind::Leaves { known_keys: true }) && maps > maps_seen)
+            || (matches!(kind, Some(FlatKind::Leaves { .. })) && maps > maps_seen)
     })
+}
+
+/// The position of the type parameter `ty` names (`T` in `<A, T>` is 1), if
+/// `ty` is one of `generics`' type parameters.
+fn type_param_index(ty: &syn::Type, generics: &syn::Generics) -> Option<usize> {
+    let syn::Type::Path(path) = peel(ty) else {
+        return None;
+    };
+    let ident = path.path.get_ident()?;
+    generics
+        .type_params()
+        .position(|param| param.ident == *ident)
 }
 
 /// `ty` is one of `generics`' type parameters (`T`).

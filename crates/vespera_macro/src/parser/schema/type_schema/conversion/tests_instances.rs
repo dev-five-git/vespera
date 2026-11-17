@@ -158,3 +158,26 @@ fn self_reference_omitting_a_defaulted_parameter_is_the_component() {
         "no second component for the defaulted instance"
     );
 }
+
+/// Polymorphic recursion (`Nested<T>` holds `Nested<Vec<T>>` twice) never
+/// repeats an instance, so no `$ref` cuts it, and its expansion doubles with
+/// every level. Its expansion is capped per top-level instance: the instances
+/// past the cap are documented as any value (`{}`), and the schema stays
+/// bounded (the size bound fails when the cap is removed).
+#[test]
+fn polymorphic_recursion_is_capped_per_top_level_instance() {
+    take_materialized();
+    let known: HashSet<String> = HashSet::from(["Nested".to_string()]);
+    let defs = HashMap::from([(
+        "Nested".to_string(),
+        "struct Nested<T> { a: Vec<Nested<Vec<T>>>, b: Vec<Nested<Vec<T>>> }".to_string(),
+    )]);
+    let ty: Type = syn::parse_str("Nested<u8>").unwrap();
+    let schema = serde_json::to_string(&parse_type_to_schema_ref(&ty, &known, &defs)).unwrap();
+    assert!(schema.contains("{}"), "the cut instances are any value");
+    assert!(
+        schema.len() < 2_000_000,
+        "the expansion is bounded: {} bytes",
+        schema.len()
+    );
+}

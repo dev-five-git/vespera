@@ -827,12 +827,13 @@ mod tests {
         let one_of = schema.one_of.unwrap();
         assert_eq!(one_of.len(), 2);
         // Check first variant has description
-        if let SchemaRef::Inline(variant_schema) = &one_of[0] {
-            assert_eq!(
-                variant_schema.description,
-                Some("Text event description".to_string())
-            );
-        }
+        let SchemaRef::Inline(variant_schema) = &one_of[0] else {
+            panic!("the variant is inlined: {:?}", one_of[0]);
+        };
+        assert_eq!(
+            variant_schema.description,
+            Some("Text event description".to_string())
+        );
     }
 
     #[test]
@@ -856,12 +857,13 @@ mod tests {
         );
         assert!(schema.one_of.is_some());
         let one_of = schema.one_of.unwrap();
-        if let SchemaRef::Inline(variant_schema) = &one_of[0] {
-            assert_eq!(
-                variant_schema.description,
-                Some("Record variant".to_string())
-            );
-        }
+        let SchemaRef::Inline(variant_schema) = &one_of[0] else {
+            panic!("the variant is inlined: {:?}", one_of[0]);
+        };
+        assert_eq!(
+            variant_schema.description,
+            Some("Record variant".to_string())
+        );
     }
 
     #[test]

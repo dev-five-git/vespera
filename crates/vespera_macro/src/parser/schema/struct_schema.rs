@@ -226,8 +226,21 @@ pub(super) fn tuple_fields_schema(
     let schemas: Vec<SchemaRef> = emitted
         .into_iter()
         .map(|field| {
-            let schema_ref =
-                positional_field_schema(field, side, known_schemas, struct_definitions);
+            // The response view of an `Option` serde skips when `None` only
+            // ever writes its `Some` value (see `collect_named_fields`).
+            let some_only = (side == SerdeSide::Serialize && skips_none_on_output(&field.attrs))
+                .then(|| some_value(field, &extract_schema_constraints(&field.attrs)))
+                .flatten();
+            let schema_ref = match &some_only {
+                Some((field, constraints)) => positional_schema_with(
+                    field,
+                    constraints,
+                    side,
+                    known_schemas,
+                    struct_definitions,
+                ),
+                None => positional_field_schema(field, side, known_schemas, struct_definitions),
+            };
             annotate_field(schema_ref, field, false)
         })
         .collect();
@@ -606,14 +619,26 @@ pub(super) fn positional_field_schema(
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> SchemaRef {
     let constraints = extract_schema_constraints(&field.attrs);
+    positional_schema_with(field, &constraints, side, known_schemas, struct_definitions)
+}
+
+/// [`positional_field_schema`] with the field's `constraints` given (a
+/// response view may document the `Some` value of a skipped `Option`).
+fn positional_schema_with(
+    field: &syn::Field,
+    constraints: &SchemaConstraints,
+    side: SerdeSide,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
+) -> SchemaRef {
     let mut schema_ref =
-        field_schema_ref(field, &constraints, side, known_schemas, struct_definitions);
+        field_schema_ref(field, constraints, side, known_schemas, struct_definitions);
     if !constraints.is_any() {
         apply_garde_rules(
             &mut schema_ref,
             &field.ty,
             &extract_garde_rules(&field.attrs),
-            &constraints,
+            constraints,
         );
     }
     // Only keywords land on the schema (`value_type` / `any` / `dive` are
@@ -622,7 +647,7 @@ pub(super) fn positional_field_schema(
         dive: None,
         any: None,
         value_type: None,
-        ..constraints
+        ..constraints.clone()
     };
     if !keywords.is_empty() {
         apply_constraints_to_schema_ref(&mut schema_ref, &keywords);

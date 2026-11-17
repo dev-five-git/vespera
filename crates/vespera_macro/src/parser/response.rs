@@ -56,21 +56,56 @@ const RESPONSE_PART_IDENTS: [&str; 6] = [
     "SignedCookieJar",
 ];
 
+/// Path roots naming an external crate (or the `vespera` re-export of axum): a
+/// path rooted there cannot name one of this crate's own types.
+const EXTERNAL_ROOTS: [&str; 6] = ["axum", "axum_extra", "http", "std", "core", "vespera"];
+
+/// The types this crate defines (known `Schema` types and struct definitions).
+/// A user type named like an axum wrapper shadows the wrapper by ident, so the
+/// wrapper checks consult these, except for paths rooted at an external crate.
+#[derive(Clone, Copy)]
+struct Shadows<'a> {
+    known_schemas: &'a HashSet<&'a str>,
+    struct_definitions: &'a HashMap<&'a str, &'a str>,
+}
+
+impl Shadows<'_> {
+    /// Whether `ty`'s last path segment names a type this crate defines (a
+    /// known `Schema` type or a struct definition). A path whose first segment
+    /// is an external root (`axum::response::Redirect`) names the external type.
+    fn names_user_type(self, ty: &Type) -> bool {
+        let Type::Path(type_path) = ty else {
+            return false;
+        };
+        let segments = &type_path.path.segments;
+        let external = segments
+            .first()
+            .is_some_and(|first| EXTERNAL_ROOTS.contains(&first.ident.to_string().as_str()));
+        !external
+            && segments.last().is_some_and(|segment| {
+                let ident = segment.ident.to_string();
+                self.known_schemas.contains(ident.as_str())
+                    || self.struct_definitions.contains_key(ident.as_str())
+            })
+    }
+}
+
 /// Check if a type is a non-body response type (metadata only).
 /// These types contribute to the HTTP response (status, headers, cookies,
 /// extensions) but do not form the response body.
 /// `[(HeaderName, &str); N]` header arrays are axum `IntoResponseParts` too.
 /// A bare `()` is axum's empty response (no body at all), unlike `Json<()>`,
 /// which serializes `null`.
-fn is_non_body_type(ty: &Type) -> bool {
+fn is_non_body_type(ty: &Type, shadows: Shadows<'_>) -> bool {
     is_unit(ty)
         || matches!(ty, Type::Array(array) if matches!(array.elem.as_ref(), Type::Tuple(_)))
-        || is_keyword_type(ty, &KeywordType::StatusCode)
-        || is_keyword_type(ty, &KeywordType::HeaderMap)
-        || is_keyword_type(ty, &KeywordType::CookieJar)
-        || RESPONSE_PART_IDENTS
-            .iter()
-            .any(|ident| last_ident_is(ty, ident))
+        || (!shadows.names_user_type(ty)
+            && (is_keyword_type(ty, &KeywordType::StatusCode)
+                || is_keyword_type(ty, &KeywordType::HeaderMap)
+                || is_keyword_type(ty, &KeywordType::CookieJar)
+                || RESPONSE_PART_IDENTS
+                    .iter()
+                    .any(|ident| last_ident_is(ty, ident))))
 }
 
 /// The element of a response type that forms the body, as written (`Json`
@@ -82,34 +117,35 @@ fn is_non_body_type(ty: &Type) -> bool {
 /// `IntoResponse`) is searched the same way, and so is the `Ok` side of a
 /// `Result` (axum's `IntoResponse for Result` sends `T` or `E`'s response,
 /// never serde's `{"Ok": ..}`; the errors are [`result_errors`]).
-fn body_element(ty: &Type) -> Option<&Type> {
+fn body_element<'a>(ty: &'a Type, shadows: Shadows<'_>) -> Option<&'a Type> {
     match ty {
         Type::Tuple(tuple) => body_element(
             tuple
                 .elems
                 .iter()
                 .rev()
-                .find(|elem| !is_non_body_type(elem))?,
+                .find(|elem| !is_non_body_type(elem, shadows))?,
+            shadows,
         ),
-        _ if is_non_body_type(ty) => None,
-        _ => result_args(ty).map_or(Some(ty), |(ok, _)| body_element(ok)),
+        _ if is_non_body_type(ty, shadows) => None,
+        _ => result_args(ty).map_or(Some(ty), |(ok, _)| body_element(ok, shadows)),
     }
 }
 
 /// The error types of the `Result`s on the body path of `ty`
 /// (`Result<Result<Json<T>, E1>, E2>`, `(StatusCode, Result<Json<T>, E>)`),
 /// outermost first: each is an error response.
-fn result_errors(ty: &Type) -> Vec<Type> {
+fn result_errors(ty: &Type, shadows: Shadows<'_>) -> Vec<Type> {
     match ty {
         Type::Tuple(tuple) => tuple
             .elems
             .iter()
             .rev()
-            .find(|elem| !is_non_body_type(elem))
-            .map_or_else(Vec::new, result_errors),
+            .find(|elem| !is_non_body_type(elem, shadows))
+            .map_or_else(Vec::new, |elem| result_errors(elem, shadows)),
         _ => result_args(ty).map_or_else(Vec::new, |(ok, err)| {
             let mut errors = vec![err.cloned().unwrap_or_else(axum_error_response)];
-            errors.extend(result_errors(ok));
+            errors.extend(result_errors(ok, shadows));
             errors
         }),
     }
@@ -117,12 +153,12 @@ fn result_errors(ty: &Type) -> Vec<Type> {
 
 /// Whether a response type sets headers through a `HeaderMap` (bare or as a
 /// tuple element, nested tuples and a `Result`'s `Ok` side included).
-fn has_header_map(ty: &Type) -> bool {
+fn has_header_map(ty: &Type, shadows: Shadows<'_>) -> bool {
     match ty {
-        Type::Tuple(tuple) => tuple.elems.iter().any(has_header_map),
+        Type::Tuple(tuple) => tuple.elems.iter().any(|elem| has_header_map(elem, shadows)),
         _ => result_args(ty).map_or_else(
-            || is_keyword_type(ty, &KeywordType::HeaderMap),
-            |(ok, _)| has_header_map(ok),
+            || is_keyword_type(ty, &KeywordType::HeaderMap) && !shadows.names_user_type(ty),
+            |(ok, _)| has_header_map(ok, shadows),
         ),
     }
 }
@@ -215,12 +251,9 @@ fn is_u8(ty: &Type) -> bool {
 /// `ErrorResponse`, a `Redirect` and `NoContent` (no body at all), and a bare
 /// `Body` (axum sets no `Content-Type` for it, so none can be claimed). They
 /// are documented by description only. A user type of one of those names (a
-/// known schema or a struct definition) is not axum's, so it is not opaque.
-fn is_opaque_body(
-    ty: &Type,
-    known_schemas: &HashSet<&str>,
-    struct_definitions: &HashMap<&str, &str>,
-) -> bool {
+/// known schema or a struct definition) is not axum's, so it is not opaque;
+/// a path rooted at an external crate (`axum::response::Redirect`) always is.
+fn is_opaque_body(ty: &Type, shadows: Shadows<'_>) -> bool {
     match ty {
         Type::ImplTrait(_) => true,
         Type::Path(type_path) => {
@@ -228,24 +261,10 @@ fn is_opaque_body(
                 ["Response", "Redirect", "ErrorResponse", "NoContent", "Body"]
                     .iter()
                     .any(|ident| seg.ident == ident)
-            }) && !names_user_type(ty, known_schemas, struct_definitions)
+            }) && !shadows.names_user_type(ty)
         }
         _ => false,
     }
-}
-
-/// Whether `ty`'s last path segment names a type this crate defines (a known
-/// `Schema` type or a struct definition): such a user type shadows an axum
-/// wrapper of the same name, so the ident alone does not identify the wrapper.
-fn names_user_type(
-    ty: &Type,
-    known_schemas: &HashSet<&str>,
-    struct_definitions: &HashMap<&str, &str>,
-) -> bool {
-    crate::schema_macro::type_utils::last_path_segment(ty).is_some_and(|segment| {
-        let ident = segment.ident.to_string();
-        known_schemas.contains(ident.as_str()) || struct_definitions.contains_key(ident.as_str())
-    })
 }
 
 /// The last path segment's ident of `ty`, if it is a path.
@@ -259,12 +278,8 @@ fn last_ident_is(ty: &Type, ident: &str) -> bool {
 /// bare strings are `text/plain`, `Html<T>` is `text/html`, `Sse<S>` is
 /// `text/event-stream`, raw bytes are `application/octet-stream`; `Json<T>`
 /// and structs are `application/json`.
-fn body_content_type(
-    ty: &Type,
-    known_schemas: &HashSet<&str>,
-    struct_definitions: &HashMap<&str, &str>,
-) -> Option<&'static str> {
-    if is_opaque_body(ty, known_schemas, struct_definitions) {
+fn body_content_type(ty: &Type, shadows: Shadows<'_>) -> Option<&'static str> {
+    if is_opaque_body(ty, shadows) {
         None
     } else if is_string_like(ty) {
         Some(TEXT_PLAIN)
@@ -377,13 +392,17 @@ fn response_content(
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) -> Option<BTreeMap<String, MediaType>> {
-    let body = body_element(ty)?;
+    let shadows = Shadows {
+        known_schemas,
+        struct_definitions,
+    };
+    let body = body_element(ty, shadows)?;
     if is_unresolved_named_type(body, known_schemas, struct_definitions) {
         return None;
     }
     content_for_type(
         unwrap_json(body),
-        body_content_type(body, known_schemas, struct_definitions),
+        body_content_type(body, shadows),
         known_schemas,
         struct_definitions,
     )
@@ -397,10 +416,13 @@ fn success_key(
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) -> &'static str {
-    let axum_ident = |body: &Type, ident: &str| {
-        last_ident_is(body, ident) && !names_user_type(body, known_schemas, struct_definitions)
+    let shadows = Shadows {
+        known_schemas,
+        struct_definitions,
     };
-    match body_element(ty) {
+    let axum_ident =
+        |body: &Type, ident: &str| last_ident_is(body, ident) && !shadows.names_user_type(body);
+    match body_element(ty, shadows) {
         Some(body) if axum_ident(body, "NoContent") => "204",
         Some(body) if axum_ident(body, "Redirect") => "3XX",
         _ => "200",
@@ -419,6 +441,10 @@ fn insert_success_response(
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) {
+    let shadows = Shadows {
+        known_schemas,
+        struct_definitions,
+    };
     let key = success_key(ty, known_schemas, struct_definitions);
     responses.insert(
         key.to_string(),
@@ -428,7 +454,7 @@ fn insert_success_response(
             } else {
                 "Successful response".to_string()
             },
-            headers: has_header_map(ty).then(BTreeMap::new),
+            headers: has_header_map(ty, shadows).then(BTreeMap::new),
             content: response_content(ty, known_schemas, struct_definitions),
             ..Default::default()
         },
@@ -455,7 +481,11 @@ pub fn parse_return_type(
     // `Result<T, E>`: `T` is the success, `E` (and the error of any `Result`
     // nested in `T`) an error response.
     insert_success_response(&mut responses, ty, known_schemas, struct_definitions);
-    for err_ty in result_errors(ty) {
+    let shadows = Shadows {
+        known_schemas,
+        struct_definitions,
+    };
+    for err_ty in result_errors(ty, shadows) {
         insert_error_response(&mut responses, &err_ty, known_schemas, struct_definitions);
     }
     responses

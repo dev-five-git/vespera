@@ -14,13 +14,19 @@
 //! arrays, slices and tuples are spelled so that different types never share
 //! a name). Non-recursive generics stay inline.
 //!
+//! Polymorphic recursion (`struct Nested<T> { a: Vec<Nested<Vec<T>>>, .. }`)
+//! never repeats an instance, so it cannot be cut by the `$ref` above. Its
+//! expansion would fan out with every level, so the instances built for one
+//! top-level type are capped at [`MAX_INSTANCES_PER_ROOT`]; past the cap an
+//! instance is documented as any value (`{}`), like an unknown type.
+//!
 //! The state is thread-local. `parallel_filter_map` workers hand their
 //! materialised components back to the calling thread
 //! ([`take_materialized`] / [`merge_materialized`]), and the document
 //! generator drains them into `components.schemas` at the end.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, HashSet},
 };
 
@@ -39,7 +45,13 @@ thread_local! {
     static DEFINITIONS: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
     /// Materialised components, by name.
     static MATERIALIZED: RefCell<BTreeMap<String, Schema>> = const { RefCell::new(BTreeMap::new()) };
+    /// Instances built since the current top-level instance started.
+    static BUILT: Cell<usize> = const { Cell::new(0) };
 }
+
+/// How many generic instances one top-level instance may build inline before
+/// a polymorphically recursive expansion is cut (see the module docs).
+const MAX_INSTANCES_PER_ROOT: usize = 4096;
 
 /// The component name of `base<args..>`.
 pub fn instance_name<'a>(base: &str, args: impl IntoIterator<Item = &'a Type>) -> String {
@@ -209,6 +221,13 @@ pub fn inline_or_reference(name: &str, build: impl FnOnce() -> Schema) -> Schema
     if recursive {
         CYCLIC.with(|cyclic| cyclic.borrow_mut().insert(name.to_string()));
         return SchemaRef::Ref(Reference::schema(name));
+    }
+    if IN_PROGRESS.with(|stack| stack.borrow().is_empty()) {
+        BUILT.with(|built| built.set(0));
+    }
+    let earlier = BUILT.with(|built| built.replace(built.get() + 1));
+    if earlier >= MAX_INSTANCES_PER_ROOT {
+        return SchemaRef::Inline(Box::default());
     }
     IN_PROGRESS.with(|stack| stack.borrow_mut().push(name.to_string()));
     let schema = build();

@@ -1,6 +1,6 @@
 ---
 source: crates/vespera_macro/src/parser/schema/struct_schema/tests_serde_fidelity.rs
-assertion_line: 262
+assertion_line: 350
 expression: both_views(src)
 ---
 struct P(u8, #[serde(skip_serializing_if = "Option::is_none")] Option<u16>);
@@ -14,10 +14,7 @@ response: {
       "maximum": 255
     },
     {
-      "type": [
-        "integer",
-        "null"
-      ],
+      "type": "integer",
       "format": "uint16",
       "minimum": 0,
       "maximum": 65535
