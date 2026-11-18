@@ -432,6 +432,25 @@ async fn direct_write_overflow_counting_is_capped(#[case] path: &str) {
     assert!(String::from_utf8_lossy(body).contains(&MAX_RESPONSE.to_string()));
 }
 
+/// Round 23: the resumable direct write answers an exact-length body past the
+/// cap with the legacy path's `500`.  It used to return `Overflow` with the
+/// body's exact size (past the cap) as `required_bytes()`, which a caller
+/// could allocate.
+#[tokio::test]
+async fn resumable_direct_write_exact_length_over_cap_is_500() {
+    use vespera_inprocess::{ResumableDirectWrite, dispatch_into_async_borrowed_resumable};
+    ensure();
+    let mut out = vec![0u8; 512];
+    let ResumableDirectWrite::Complete(n) =
+        dispatch_into_async_borrowed_resumable(&encode("GET", "/big_full", b""), &mut out).await
+    else {
+        panic!("the 500 naming the cap must fit, not an overflow of the exact body");
+    };
+    let (json, body) = split(&out[..n]);
+    assert_eq!(json["status"], 500);
+    assert!(String::from_utf8_lossy(body).contains(&MAX_RESPONSE.to_string()));
+}
+
 /// Resumable direct write: a deadline before the response commits is a
 /// 504; a pending response whose remaining body stalls past the deadline
 /// resumes into a 504 as well (the resume is bounded like the dispatch).

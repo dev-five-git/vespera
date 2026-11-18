@@ -13,9 +13,9 @@
 //! value-identical to the serde twin (`bench_serde::de_opt_principal`) —
 //! any key order, unknown keys validated then skipped, duplicate known keys
 //! rejected, plain strings borrowed.  Additionally caps `authorities` and
-//! `attributes` at [`MAX_PRINCIPAL_ENTRIES`] each (the serde twin does not;
-//! the property tests stay below it), so a hostile host frame cannot grow
-//! them without bound.
+//! `attributes` at [`MAX_PRINCIPAL_ENTRIES`] each (the serde twin enforces
+//! the same cap, `bench_serde`; the property tests stay below it), so a
+//! hostile host frame cannot grow them without bound.
 
 use std::borrow::Cow;
 

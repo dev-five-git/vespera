@@ -24,6 +24,24 @@ use crate::wire::hoist::MAX_HOIST_BODY_BYTES;
 pub const DISPATCH_TIMEOUT_MSG: &str =
     "dispatch exceeded the configured timeout (VESPERA_DISPATCH_TIMEOUT_MS)";
 
+/// Longest piece of client text an error message echoes back (the method or
+/// app name of a rejected request).  The text is client input of up to the
+/// 1 MiB header cap, so it is never repeated verbatim into a message, a
+/// response body or a tracing `detail` field.
+pub const MAX_ECHOED_BYTES: usize = 64;
+
+/// `text` cut to [`MAX_ECHOED_BYTES`] for an error message that names it: cut
+/// on a char boundary and marked `...` when it was longer.
+#[cold]
+pub fn echo_prefix(text: &str) -> String {
+    let mut end = text.len().min(MAX_ECHOED_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let ellipsis = if end < text.len() { "..." } else { "" };
+    format!("{}{ellipsis}", &text[..end])
+}
+
 /// `504 Gateway Timeout` wire response for a dispatch that exceeded its
 /// deadline before anything was committed to the caller.
 #[must_use]
@@ -510,5 +528,22 @@ mod tests {
     #[test]
     fn timeout_wire_is_504() {
         assert_eq!(status_of(&timeout_wire()), 504);
+    }
+
+    #[rstest]
+    #[case::short("abc", "abc")]
+    #[case::exactly_the_limit(&"x".repeat(MAX_ECHOED_BYTES), &"x".repeat(MAX_ECHOED_BYTES))]
+    #[case::one_over_the_limit(
+        &"x".repeat(MAX_ECHOED_BYTES + 1),
+        &format!("{}...", "x".repeat(MAX_ECHOED_BYTES))
+    )]
+    // 65 bytes: byte 64 is the middle of the last 2-byte char, so the cut
+    // backs up to the boundary at byte 63.
+    #[case::cut_inside_a_multibyte_char(
+        &format!("a{}", "é".repeat(32)),
+        &format!("a{}...", "é".repeat(31))
+    )]
+    fn echo_prefix_truncates_on_a_char_boundary(#[case] text: &str, #[case] expected: &str) {
+        assert_eq!(echo_prefix(text), expected);
     }
 }

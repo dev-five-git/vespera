@@ -390,3 +390,41 @@ fn synthesized_post_handler_wires_fit_the_minimum_direct_out() {
         "a synthesized wire of {longest} bytes exceeds MIN_DIRECT_OUT_BYTES"
     );
 }
+
+/// Unknown length until its first frame is read, then an exact (huge) rest.
+struct LateExact(bool);
+
+impl HttpBody for LateExact {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+        self.0 = true;
+        Poll::Ready(Some(Ok(Frame::data(Bytes::from_static(&[b'x'; 64])))))
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        if self.0 {
+            http_body::SizeHint::with_exact(u64::MAX / 2)
+        } else {
+            http_body::SizeHint::new()
+        }
+    }
+}
+
+/// A body whose exact length only shows after the first frame escapes the
+/// up-front cap check, so the legacy overflow applies the cap itself.
+#[tokio::test]
+async fn legacy_overflow_caps_an_exact_rest_learned_mid_body() {
+    let mut out = vec![0u8; 1024];
+    let DirectWriteResult::Complete(n) = legacy(&mut out, Body::new(LateExact(false))).await else {
+        panic!("the 500 fits");
+    };
+    assert_eq!(
+        &out[..n],
+        &response_too_large_wire(max_buffered_response_bytes())[..]
+    );
+}

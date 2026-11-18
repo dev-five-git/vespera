@@ -140,8 +140,11 @@ fn validate_app_name(name: &str) -> Result<&str, String> {
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     {
+        // The name is client text (the wire `app` field): echo only the
+        // capped prefix, so a long hostile name never reaches the WARN event.
         return Err(format!(
-            "app name '{trimmed}' contains invalid characters (allowed: alphanumeric, '_', '-')"
+            "app name '{}' contains invalid characters (allowed: alphanumeric, '_', '-')",
+            crate::bounded::echo_prefix(trimmed)
         ));
     }
     Ok(trimmed)
