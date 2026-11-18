@@ -412,6 +412,10 @@ mod tests {
         vec![shape("q", true), shape("page", false)]
     )]
     // `Wrap<Wrap<Filter>>` flattens another instance of `Wrap`: not a cycle.
+    // Intermediate state only: this collector returns the two `tag` entries
+    // (one per `Wrap` instance) and the operation layer
+    // (`operation.rs` `deduplicate_parameters`) collapses them to one `(name,
+    // in)` pair before the spec is written. The duplicate is expected here.
     #[case::generic_wrapper_of_its_own_instance(
         "Wrap<Wrap<Filter>>",
         vec![

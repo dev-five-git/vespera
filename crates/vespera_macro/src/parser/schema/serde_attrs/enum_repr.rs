@@ -245,7 +245,7 @@ mod tests {
     }
 
     // =================================================================
-    // FALLBACK PATH TESTS FOR TAG/CONTENT (Lines 573, 583-590, 626)
+    // FALLBACK PATH TESTS FOR TAG/CONTENT (path-only and malformed attributes)
     // =================================================================
 
     use proc_macro2::{Span, TokenStream};
@@ -375,7 +375,8 @@ mod tests {
     }
 
     /// Helper to create a path-only serde attribute (#[serde] without parentheses)
-    /// This format causes require_list() to fail (returns Err)
+    /// This format makes `parse_nested_meta` fail (no parenthesised list to
+    /// parse), so the walk skips the attribute
     fn create_path_only_serde_attr() -> syn::Attribute {
         syn::Attribute {
             pound_token: syn::token::Pound::default(),
@@ -386,7 +387,8 @@ mod tests {
     }
 
     /// Test extract_tag with non-list serde attribute
-    /// When require_list() fails, extract_tag should continue to next attribute
+    /// When `parse_nested_meta` fails on a path-only attribute, extract_tag
+    /// should continue to the next attribute
     #[test]
     fn test_extract_tag_non_list_attr_continues() {
         // First attr is path-only (#[serde]), second has the actual tag
@@ -411,7 +413,8 @@ mod tests {
     }
 
     /// Test extract_content with non-list serde attribute
-    /// When require_list() fails, extract_content should continue to next attribute
+    /// When `parse_nested_meta` fails on a path-only attribute, extract_content
+    /// should continue to the next attribute
     #[test]
     fn test_extract_content_non_list_attr_continues() {
         // First attr is path-only (#[serde]), second has the actual content

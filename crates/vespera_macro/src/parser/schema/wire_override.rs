@@ -16,6 +16,11 @@
 //!      `None`);
 //!   3. anything else is a compile error (see [`unknown_codec_error`]): its
 //!      wire shape is unknown, so the field needs `#[schema(value_type = ..)]`.
+//!      This holds on the deserialize side too: a `deserialize_with` helper that
+//!      is not a string (for example one reading `Option<Option<T>>`, the
+//!      "absent vs null" pattern) no longer compiles without `value_type`. This
+//!      is intended (a 0.x minor change); the migration is the `value_type`
+//!      override.
 //!
 //! `value_type` always wins and `#[schema(any)]` documents any JSON value.
 //! A codec on one side only changes only that side's view.
@@ -36,7 +41,6 @@ use super::{
     },
     type_schema::parse_type_to_schema_ref,
 };
-use crate::schema_macro::type_utils::is_option_type;
 
 /// Description of a field whose custom serde function hides its wire shape.
 pub const CUSTOM_CODEC_DESCRIPTION: &str = "Converted by a custom serde function \
@@ -45,7 +49,8 @@ Add `#[schema(value_type = T)]` to document it.";
 
 /// Well-known codec modules (the path a `with` names, or a `serialize_with` /
 /// `deserialize_with` path minus its final fn segment) and the Rust type
-/// naming the shape they write / read. Matched on the full path only.
+/// naming the shape they write / read. Matched on the full path (a `vespera::`
+/// re-export prefix aside, see [`table_wire`]).
 ///
 /// Each `_option` variant also accepts `null`. `serde_bytes` writes a byte
 /// buffer as an array of integers `0..=255`, which is what `serde_json` emits.
@@ -70,18 +75,16 @@ pub const CODEC_TABLE: &[(&str, &str)] = &[
     ("serde_bytes", "Vec<u8>"),
 ];
 
-/// The table entry for a codec module path. The path matches from its first
-/// segment naming a table crate (`chrono`, `time`, ...), so a re-export
-/// prefix is skipped: `vespera::chrono::serde::ts_seconds` matches
-/// `chrono::serde::ts_seconds`.
+/// The table entry for a codec module path. The whole path must name the
+/// entry, except for the `vespera::` prefix: `vespera` re-exports the table's
+/// crates, so `vespera::chrono::serde::ts_seconds` is `chrono::serde::ts_seconds`.
+/// A longer path that only ends in an entry (a crate-local
+/// `crate::hex::serde_bytes`) is a different module and stays unknown.
 fn table_wire(module: &[String]) -> Option<&'static str> {
-    let is_root = |segment: &str| {
-        CODEC_TABLE
-            .iter()
-            .any(|(path, _)| path.split("::").next() == Some(segment))
+    let path = match module {
+        [first, rest @ ..] if first == "vespera" => rest.join("::"),
+        _ => module.join("::"),
     };
-    let start = module.iter().position(|segment| is_root(segment))?;
-    let path = module[start..].join("::");
     CODEC_TABLE
         .iter()
         .find(|(entry, _)| *entry == path)
@@ -139,7 +142,7 @@ pub fn codec_wire(field: &syn::Field, side: SerdeSide) -> CodecWire {
         return CodecWire::Documented(Box::new(parse_wire_type(wire)));
     }
     if is_string_type(&field.ty) {
-        let wire = if is_option_type(&field.ty) {
+        let wire = if optional_string(&field.ty) {
             "Option<String>"
         } else {
             "String"
@@ -252,6 +255,25 @@ fn is_string_type(ty: &syn::Type) -> bool {
     match ty {
         syn::Type::Reference(reference) => is_string_type(&reference.elem),
         syn::Type::Path(path) => path.path.segments.last().is_some_and(string_segment),
+        _ => false,
+    }
+}
+
+/// Whether an `Option` sits anywhere along the string walk of [`is_string_type`]
+/// (`Option<String>`, `Box<Option<String>>`, `&Option<str>`): the codec may then
+/// write `null`, so the documented string is nullable.
+fn optional_string(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Reference(reference) => optional_string(&reference.elem),
+        syn::Type::Path(path) => path.path.segments.last().is_some_and(|segment| {
+            match segment.ident.to_string().as_str() {
+                "Option" => true,
+                "Cow" | "Box" | "Arc" => {
+                    last_type_argument(&segment.arguments).is_some_and(optional_string)
+                }
+                _ => false,
+            }
+        }),
         _ => false,
     }
 }
@@ -443,13 +465,8 @@ mod tests {
         "::vespera::chrono::serde::ts_seconds_option",
         "Option < i64 >"
     )]
-    #[case::re_export_time("app::time::serde::rfc3339", "DateTime < Utc >")]
-    #[case::re_export_time_option(
-        "a::b::time::serde::rfc3339::option",
-        "Option < DateTime < Utc > >"
-    )]
-    #[case::re_export_humantime("x::humantime_serde::option", "Option < String >")]
-    #[case::re_export_serde_bytes("x::serde_bytes", "Vec < u8 >")]
+    #[case::re_export_time("vespera::time::serde::rfc3339", "DateTime < Utc >")]
+    #[case::re_export_serde_bytes("vespera::serde_bytes", "Vec < u8 >")]
     fn re_exported_codec_modules_match_the_table(#[case] module: &str, #[case] expected: &str) {
         let src = format!("#[serde(with = \"{module}\")] x: u8");
         assert_eq!(
@@ -464,6 +481,20 @@ mod tests {
     fn re_exported_unknown_modules_stay_unknown(#[case] module: &str) {
         let src = format!("#[serde(with = \"{module}\")] x: Vec<u8>");
         assert_eq!(wire_tokens(&src, SerdeSide::Serialize), None);
+    }
+
+    /// A module of this crate (or of another crate) that only ends like a
+    /// table entry is not the well-known codec: its wire shape is unknown, so
+    /// its `Vec<u8>` / `u8` field is not documented as the table's shape.
+    #[rstest]
+    #[case::crate_local_serde_bytes("crate::hex::serde_bytes")]
+    #[case::own_serde_bytes_module("hex::serde_bytes")]
+    #[case::other_crate_humantime("x::humantime_serde::option")]
+    #[case::other_crate_time("app::time::serde::rfc3339")]
+    fn modules_ending_like_a_table_entry_stay_unknown(#[case] module: &str) {
+        let src = format!("#[serde(with = \"{module}\")] x: Vec<u8>");
+        assert_eq!(wire_tokens(&src, SerdeSide::Serialize), None);
+        assert_eq!(wire_tokens(&src, SerdeSide::Deserialize), None);
     }
 
     #[rstest]
@@ -497,12 +528,29 @@ mod tests {
     #[case::path_string("std::string::String", "String")]
     #[case::option_string("Option<String>", "Option < String >")]
     #[case::option_cow("Option<Cow<str>>", "Option < String >")]
+    // An `Option` anywhere along the string walk makes the codec's `null` valid.
+    #[case::boxed_option("Box<Option<String>>", "Option < String >")]
+    #[case::arc_option("Arc<Option<str>>", "Option < String >")]
+    #[case::reference_option("&Option<String>", "Option < String >")]
     fn string_types_document_a_string(#[case] ty: &str, #[case] expected: &str) {
         let src = format!("#[serde(with = \"hex_bytes\")] x: {ty}");
         assert_eq!(
             wire_tokens(&src, SerdeSide::Serialize).as_deref(),
             Some(expected)
         );
+    }
+
+    #[rstest]
+    #[case::option_path("Option<String>", true)]
+    #[case::boxed_option("Box<Option<String>>", true)]
+    #[case::reference_option("&Option<String>", true)]
+    #[case::plain_string("String", false)]
+    #[case::boxed_string("Box<String>", false)]
+    #[case::argument_less_wrapper("Box", false)]
+    #[case::tuple_is_not_a_path("(Option<u8>, u8)", false)]
+    fn optional_string_follows_the_string_walk(#[case] ty: &str, #[case] expected: bool) {
+        let ty: syn::Type = syn::parse_str(ty).unwrap();
+        assert_eq!(optional_string(&ty), expected);
     }
 
     #[rstest]

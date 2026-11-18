@@ -75,8 +75,10 @@ pub fn extract_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
     extract_rename_all_for(attrs, SerdeSide::Serialize)
 }
 
-/// Container `rename_all` rule for `side`, falling back to
-/// `#[try_from_multipart(rename_all = "...")]`.
+/// Container `rename_all` rule for `side`: serde's own `rename_all` first, then
+/// the `#[try_from_multipart(rename_all = "...")]` fallback. That fallback
+/// names form fields, so an owner that derives `Serialize` must not use it on
+/// the serialize side (see [`extract_serde_rename_all`]).
 pub fn extract_rename_all_for(attrs: &[syn::Attribute], side: SerdeSide) -> Option<String> {
     if let Some(rule) = extract_sided_key(attrs, "rename_all", side) {
         return Some(rule);
@@ -84,6 +86,13 @@ pub fn extract_rename_all_for(attrs: &[syn::Attribute], side: SerdeSide) -> Opti
 
     // Fallback: check for #[try_from_multipart(rename_all = "...")]
     string_attr_value(attrs, "try_from_multipart", "rename_all")
+}
+
+/// Container `rename_all` that serde's `Serialize` writes: only serde's own
+/// `rename_all` (no `try_from_multipart` fallback). For an owner that derives
+/// `Serialize`, the response view documents the names serde writes.
+pub fn extract_serde_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
+    extract_sided_key(attrs, "rename_all", SerdeSide::Serialize)
 }
 
 /// The string value of `key` in the first `#[attr(...)]` list carrying it;

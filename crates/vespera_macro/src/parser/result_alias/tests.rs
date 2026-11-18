@@ -754,6 +754,50 @@ fn crate_wide_lookup_finds_unique_alias_and_rejects_ambiguity() {
     assert!(!expand_return_type_alias(&mut sig, None, None, Some(src)));
 }
 
+/// The crate-wide scan finds a declaration whatever whitespace follows the
+/// `type` keyword (a line break or several spaces), not only `type Name`.
+#[test]
+fn crate_wide_lookup_reads_declarations_with_any_spacing() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path();
+    std::fs::write(
+        src.join("error.rs"),
+        "pub type\nApiResult<T> = Result<Json<T>, AppError>;",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("wide.rs"),
+        "pub type  Wide<T> = Result<Json<T>, AppError>;",
+    )
+    .unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    for ret in ["-> ApiResult<User>", "-> Wide<User>"] {
+        let mut sig: syn::Signature = syn::parse_str(&format!("fn h() {ret}")).unwrap();
+        assert!(expand_return_type_alias(&mut sig, None, None, Some(src)));
+        let output = &sig.output;
+        assert_eq!(
+            quote::quote!(#output).to_string(),
+            "-> Result < Json < User > , AppError >"
+        );
+    }
+}
+
+#[rstest]
+#[case("pub type Api<T> = T;", true)]
+#[case("pub type\nApi<T> = T;", true)]
+#[case("type   Api = u8;", true)]
+#[case("pub type Api", true)]
+#[case("xtype Api = u8;", false)]
+#[case("type Other = Api;", false)]
+#[case("let x = Api;", false)]
+#[case("", false)]
+fn declares_type_named_matches_the_keyword_and_any_spacing(
+    #[case] content: &str,
+    #[case] expected: bool,
+) {
+    assert_eq!(declares_type_named(content, "Api"), expected);
+}
+
 /// Round 14: a plain `use` names the module the alias comes from (like a
 /// qualified path), so a same-named alias elsewhere is not ambiguous; an
 /// alias of a same-named alias in another module is followed (the cycle
@@ -816,5 +860,30 @@ fn imported_alias_resolves_its_module_and_same_named_chains_follow() {
             "-> Result<u8>"
         ),
         "-> std :: result :: Result < Json < u8 > , AppError >"
+    );
+}
+
+/// A nested position (a `Result` argument) of an alias defined in another
+/// file is looked up where that alias is defined: the handler's own
+/// `Created` alias must not shadow the `Created` the alias body names.
+#[test]
+fn nested_positions_resolve_in_the_defining_alias_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path();
+    std::fs::write(
+        src.join("m.rs"),
+        "type Created<T> = (StatusCode, Json<T>); \
+         pub type Api<T> = Result<Created<T>, AppError>;",
+    )
+    .unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    let file: syn::File =
+        syn::parse_str("use crate::m::Api; type Created<T> = Json<Vec<T>>; pub fn h() {}").unwrap();
+    let mut sig: syn::Signature = syn::parse_str("fn h() -> Api<User>").unwrap();
+    expand_return_type_alias(&mut sig, None, Some(&file), Some(src));
+    let output = &sig.output;
+    assert_eq!(
+        quote::quote!(#output).to_string(),
+        "-> Result < (StatusCode , Json < User >) , AppError >"
     );
 }

@@ -981,4 +981,6 @@ fn non_zero_unsigned(format: Option<&str>, maximum: Option<f64>) -> SchemaRef {
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_arms;
+#[cfg(test)]
 mod tests_instances;

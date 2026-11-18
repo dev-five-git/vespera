@@ -64,16 +64,16 @@ const EXTERNAL_ROOTS: [&str; 6] = ["axum", "axum_extra", "http", "std", "core", 
 /// A user type named like an axum wrapper shadows the wrapper by ident, so the
 /// wrapper checks consult these, except for paths rooted at an external crate.
 #[derive(Clone, Copy)]
-struct Shadows<'a> {
-    known_schemas: &'a HashSet<&'a str>,
-    struct_definitions: &'a HashMap<&'a str, &'a str>,
+pub(super) struct Shadows<'a> {
+    pub(super) known_schemas: &'a HashSet<&'a str>,
+    pub(super) struct_definitions: &'a HashMap<&'a str, &'a str>,
 }
 
 impl Shadows<'_> {
     /// Whether `ty`'s last path segment names a type this crate defines (a
     /// known `Schema` type or a struct definition). A path whose first segment
     /// is an external root (`axum::response::Redirect`) names the external type.
-    fn names_user_type(self, ty: &Type) -> bool {
+    pub(super) fn names_user_type(self, ty: &Type) -> bool {
         let Type::Path(type_path) = ty else {
             return false;
         };

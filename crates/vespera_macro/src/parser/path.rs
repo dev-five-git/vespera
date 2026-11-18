@@ -164,6 +164,11 @@ fn brace_params(path: &str, segment: &str) -> Result<Vec<(String, bool)>, String
                         "route path `{path}`: empty path parameter `{{{raw}}}`"
                     ));
                 }
+                if name.contains('*') {
+                    return Err(format!(
+                        "route path `{path}`: invalid parameter name `{name}` in segment `{segment}`"
+                    ));
+                }
                 params.push((name.to_string(), catch_all));
                 closed = Some(raw);
             }
@@ -228,6 +233,15 @@ mod tests {
     #[case::two_params_one_segment(
         "/{a}{b}",
         "axum's router cannot match text after the path parameter `{a}` in segment `{a}{b}`: a parameter must end its segment (a static prefix such as `file-{name}` is fine)"
+    )]
+    #[case::star_inside_name("/a/{x*y}", "invalid parameter name `x*y` in segment `{x*y}`")]
+    #[case::double_star_catch_all(
+        "/files/{**rest}",
+        "invalid parameter name `*rest` in segment `{**rest}`"
+    )]
+    #[case::star_inside_catch_all_name(
+        "/a/{*x*}",
+        "invalid parameter name `x*` in segment `{*x*}`"
     )]
     #[case::escaped_brace_suffix(
         "/{a}}}",
