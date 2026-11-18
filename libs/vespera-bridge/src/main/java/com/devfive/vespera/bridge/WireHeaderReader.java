@@ -185,10 +185,19 @@ final class WireHeaderReader {
                 pos++;
                 return panicked;
             }
+            int keyAt = pos;
             long key = scanQuotedKey();
+            boolean isPanicKey;
+            if (key >= 0) {
+                isPanicKey = (int) key == 8 && regionEquals((int) (key >>> 32), "panicked");
+            } else {
+                // An escaped key (RFC 8259 allows "panicked"): decode it
+                // rather than mistake it for an unrelated member.
+                pos = keyAt;
+                isPanicKey = "panicked".equals(readString());
+            }
             expect(':');
-            if (key >= 0 && (int) key == 8 && regionEquals((int) (key >>> 32), "panicked")
-                    && peek() == '"') {
+            if (isPanicKey && peek() == '"') {
                 panicked = "true".equals(readString());
             } else {
                 skipValue();

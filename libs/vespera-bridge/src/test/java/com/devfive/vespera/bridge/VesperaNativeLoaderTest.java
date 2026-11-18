@@ -53,8 +53,9 @@ class VesperaNativeLoaderTest {
         List<Path> deleted = new ArrayList<>();
         VesperaNativeLoader.TempFileDeleter deleter = deleted::add;
 
+        VesperaNativeLoader.Extracted privateCopy = new VesperaNativeLoader.Extracted(library, false);
         UnsatisfiedLinkError shared = assertThrows(UnsatisfiedLinkError.class,
-                () -> VesperaNativeLoader.loadExtracted(library, path -> {
+                () -> VesperaNativeLoader.loadExtracted(privateCopy, path -> {
                     throw new UnsatisfiedLinkError(
                             "Native Library " + path + " already loaded in another classloader");
                 }, deleter));
@@ -62,13 +63,23 @@ class VesperaNativeLoaderTest {
         assertTrue(deleted.isEmpty(), "shared verified copy kept: " + deleted);
 
         assertThrows(UnsatisfiedLinkError.class,
-                () -> VesperaNativeLoader.loadExtracted(library, path -> {
+                () -> VesperaNativeLoader.loadExtracted(privateCopy, path -> {
                     throw new UnsatisfiedLinkError("wrong ELF class");
                 }, deleter));
         assertEquals(List.of(library, library.getParent()), deleted);
 
+        // A copy in the shared content-addressed directory is removed alone:
+        // the directory may be in use by a concurrent JVM.
+        deleted.clear();
+        VesperaNativeLoader.Extracted reusableCopy = new VesperaNativeLoader.Extracted(library, true);
+        assertThrows(UnsatisfiedLinkError.class,
+                () -> VesperaNativeLoader.loadExtracted(reusableCopy, path -> {
+                    throw new UnsatisfiedLinkError("wrong ELF class");
+                }, deleter));
+        assertEquals(List.of(library), deleted, "shared directory must survive a failed load");
+
         List<String> loaded = new ArrayList<>();
-        VesperaNativeLoader.loadExtracted(library, loaded::add, deleter);
+        VesperaNativeLoader.loadExtracted(privateCopy, loaded::add, deleter);
         assertEquals(List.of(library.toAbsolutePath().toString()), loaded);
         assertFalse(VesperaNativeLoader.loadedByAnotherClassLoader(new UnsatisfiedLinkError()));
     }
@@ -164,9 +175,10 @@ class VesperaNativeLoaderTest {
                 assertFalse(error.getMessage().contains("integrity check failed"), error.getMessage());
                 assertFalse(error.getMessage().contains("Native library extraction failed"), error.getMessage());
             }
-            // A resource that fails System.load leaves no cached copy behind.
-            try (var left = Files.list(extractDir)) {
-                assertEquals(0, left.count());
+            // A resource that fails System.load leaves no cached copy behind; the
+            // shared extraction directory itself is kept (another JVM may be using it).
+            try (var left = Files.walk(extractDir)) {
+                assertEquals(0, left.filter(Files::isRegularFile).count());
             }
         } finally {
             restoreProperty("vespera.native.verifyExtractedDigest", oldVerify);

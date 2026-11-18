@@ -143,7 +143,9 @@ class DirectStashTest {
     void responseBeyondThePoolCapIsKeptAfterGrowingToTheCap() {
         FakeOps ops = new FakeOps();
         int cap = 4 * 1024 * 1024;
-        ops.fetchCodes.add(-(cap - 1));
+        // The native side reports a size only above the buffer it was given
+        // (cap): a copy that fitted would not come back as an overflow.
+        ops.fetchCodes.add(-(cap + 1));
         StashedOverflowException kept = assertThrows(
                 StashedOverflowException.class,
                 () -> VesperaDirectBufferPool.dispatchViaPool(

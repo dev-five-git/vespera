@@ -40,7 +40,10 @@ import org.springframework.context.annotation.ImportRuntimeHints;
  * </ul>
  *
  * <p>Either way the proxy's catch-all {@code /**} mapping is hidden from
- * springdoc's document.
+ * springdoc's document. That hiding belongs to this outer configuration, not
+ * to the {@code Integration} gate: it applies whenever this autoconfiguration
+ * is active, even with {@code vespera.bridge.springdoc.enabled=false}, so the
+ * catch-all never appears as an operation in the springdoc document.
  */
 @AutoConfiguration(after = VesperaBridgeAutoConfiguration.class)
 @ConditionalOnClass(name = {

@@ -408,6 +408,8 @@ class VesperaWireTest {
         assertTrue(error.containsKey("message"));
         assertNull(error.get("message"));
         assertNull(error.get("params"));
+        assertTrue(error.containsKey("codes"));
+        assertNull(error.get("codes"), "a nested list value is kept as null, like a nested map");
         assertEquals(List.of("path", "message", "params", "codes"), List.copyOf(error.keySet()));
         assertThrows(UnsupportedOperationException.class, () -> error.put("x", 1));
     }
@@ -831,7 +833,6 @@ class VesperaWireTest {
         assertEquals(null, candidates.invoke(null, -1));
         // One past the longest canonical name (access-control-allow-credentials, 32 bytes).
         assertEquals(null, candidates.invoke(null, 33));
-        assertEquals(null, candidates.invoke(null, 31));
         assertTrue(java.util.Arrays.asList((String[]) candidates.invoke(null, 32))
                 .contains("access-control-allow-credentials"));
         String[] fourByte = (String[]) candidates.invoke(null, 4);

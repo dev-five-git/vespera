@@ -237,6 +237,20 @@ class VesperaBridgeInitTest {
             System.clearProperty(property);
             assertEquals(7, VesperaNativeConfig.longProperty(property, 7));
             assertTrue(warnings.isEmpty(), warnings.toString());
+
+            // A zero-padded decimal is decimal (Long.decode would read 0100 as octal 64).
+            System.setProperty(property, "0100");
+            assertEquals(100, VesperaNativeConfig.longProperty(property, 7));
+            System.setProperty(property, "-010");
+            assertEquals(-10, VesperaNativeConfig.longProperty(property, 7));
+            System.setProperty(property, "0x0100");
+            assertEquals(256, VesperaNativeConfig.longProperty(property, 7));
+            System.setProperty(property, "#ff");
+            assertEquals(255, VesperaNativeConfig.longProperty(property, 7));
+            System.setProperty(property, "0x-5");
+            assertEquals(7, VesperaNativeConfig.longProperty(property, 7));
+            assertEquals(1, warnings.size(), warnings.toString());
+            assertTrue(warnings.get(0).contains(property), warnings.get(0));
         } finally {
             jul.removeHandler(capture);
             System.clearProperty(property);

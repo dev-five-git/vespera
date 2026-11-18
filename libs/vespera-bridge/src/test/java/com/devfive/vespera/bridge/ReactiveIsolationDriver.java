@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.aot.hint.RuntimeHints;
+import org.springframework.aot.hint.TypeReference;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ReactiveWebApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
@@ -76,8 +77,13 @@ public final class ReactiveIsolationDriver implements Callable<String> {
                 .getAnnotation(ImportRuntimeHints.class);
         require(imported != null && List.of(imported.value()).contains(VesperaSecurityRuntimeHints.class),
                 "reactive runtime hints");
-        new VesperaSecurityRuntimeHints().registerHints(
-                new RuntimeHints(), getClass().getClassLoader());
+        // Spring Security is absent from this classpath, so the hints register
+        // nothing for it; the call must complete without NoClassDefFoundError.
+        RuntimeHints hints = new RuntimeHints();
+        new VesperaSecurityRuntimeHints().registerHints(hints, getClass().getClassLoader());
+        require(hints.reflection().getTypeHint(
+                TypeReference.of(SecurityAuthorities.AUTHENTICATION)) == null,
+                "security hints registered without Spring Security on the classpath");
         return "ok";
     }
 

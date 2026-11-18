@@ -182,13 +182,13 @@ final class VesperaNativeLoader {
             }
             return in;
         };
-        Path library;
+        Extracted extracted;
         try {
             // Inside the try: an invalid directory must still close the
             // bundled resource stream opened above.
             Path baseDir = resolveExtractionBaseDir(System::getProperty, System::getenv);
             try {
-                library = extract(resourcePath, filename, baseDir, opener);
+                extracted = extractCopy(resourcePath, filename, baseDir, opener);
             } catch (IOException e) {
                 UnsatisfiedLinkError ule = new UnsatisfiedLinkError("Extract failed: " + e.getMessage()
                         + " (extraction dir " + baseDir + "; override with -D" + NATIVE_DIR_PROPERTY
@@ -199,7 +199,7 @@ final class VesperaNativeLoader {
         } finally {
             closeQuietly(first[0]);
         }
-        loadExtracted(library, System::load, Files::deleteIfExists);
+        loadExtracted(extracted, System::load, Files::deleteIfExists);
         try {
             cleanupLegacyExtractions(
                     Paths.get(System.getProperty("java.io.tmpdir")), System.currentTimeMillis());
@@ -234,17 +234,28 @@ final class VesperaNativeLoader {
      * copy is fine and shared with the class loader using it (a second web app
      * or a redeploy), so deleting it would break whoever extracts it next.
      */
-    static void loadExtracted(Path library, NativeLibraryLoader systemLoad, TempFileDeleter deleter) {
+    static void loadExtracted(Extracted copy, NativeLibraryLoader systemLoad, TempFileDeleter deleter) {
+        Path library = copy.library();
         try {
             systemLoad.load(library.toAbsolutePath().toString());
         } catch (UnsatisfiedLinkError loadFailure) {
             if (!loadedByAnotherClassLoader(loadFailure)) {
                 deleteAfterFailedLoad(library, deleter);
-                deleteAfterFailedLoad(library.getParent(), deleter);
+                // Only this JVM's private temp directory is removed with the
+                // copy. The shared content-addressed directory is never
+                // deleted: a concurrent JVM that has passed prepareDir but not
+                // yet created its temp file would then fail with
+                // NoSuchFileException instead of reporting its own load error.
+                if (!copy.reusable()) {
+                    deleteAfterFailedLoad(library.getParent(), deleter);
+                }
             }
             throw loadFailure;
         }
     }
+
+    /** An extracted library and whether its directory is the shared, reusable one. */
+    record Extracted(Path library, boolean reusable) {}
 
     /** The JVM's "Native Library ... already loaded in another classloader" failure. */
     static boolean loadedByAnotherClassLoader(UnsatisfiedLinkError failure) {
@@ -663,6 +674,12 @@ final class VesperaNativeLoader {
      */
     static Path extract(String resourcePath, String filename, Path baseDir, ResourceOpener opener)
             throws IOException {
+        return extractCopy(resourcePath, filename, baseDir, opener).library();
+    }
+
+    /** {@link #extract}, also telling whether the copy lives in the reusable directory. */
+    static Extracted extractCopy(String resourcePath, String filename, Path baseDir, ResourceOpener opener)
+            throws IOException {
         MessageDigest digest = messageDigest("SHA-256");
         byte[] resourceDigest;
         long resourceSize;
@@ -679,7 +696,7 @@ final class VesperaNativeLoader {
         // Only a verified-private directory may serve a cached copy: nobody
         // but this user can replace the file between this check and load.
         if (prepared.reusable() && isVerifiedCopy(target, resourceDigest, digest)) {
-            return target;
+            return new Extracted(target, true);
         }
         if (!prepared.reusable()) {
             target.toFile().deleteOnExit();
@@ -705,7 +722,7 @@ final class VesperaNativeLoader {
                 Files.setPosixFilePermissions(temp, OWNER_READ_EXEC_FILE);
             }
             published = publish(temp, target, resourceDigest, digest);
-            return target;
+            return new Extracted(target, prepared.reusable());
         } finally {
             if (!published) {
                 deleteAfterFailedLoad(temp, Files::deleteIfExists);

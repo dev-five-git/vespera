@@ -261,11 +261,14 @@ public final class VesperaRequest {
      * @param contentType sent as {@code content-type}; {@code null} leaves the header alone
      */
     public VesperaRequest body(byte[] bytes, @Nullable String contentType) {
-        this.body = Objects.requireNonNull(bytes, "bytes");
-        this.bodyStream = null;
+        Objects.requireNonNull(bytes, "bytes");
+        // The header first: a rejected content type (control characters) throws
+        // before the body changes, so a caller that catches it keeps its old body.
         if (contentType != null) {
             header("content-type", contentType);
         }
+        this.body = bytes;
+        this.bodyStream = null;
         return this;
     }
 
@@ -284,12 +287,15 @@ public final class VesperaRequest {
      * @param contentType sent as {@code content-type}; {@code null} leaves the header alone
      */
     public VesperaRequest body(InputStream stream, @Nullable String contentType) {
-        this.bodyStream = Objects.requireNonNull(stream, "stream");
-        this.streamConsumed = false;
-        this.body = VesperaWireCodec.EMPTY_BODY;
+        Objects.requireNonNull(stream, "stream");
+        // Header first, as in body(byte[], ...): a rejected content type leaves
+        // the previous body in place.
         if (contentType != null) {
             header("content-type", contentType);
         }
+        this.bodyStream = stream;
+        this.streamConsumed = false;
+        this.body = VesperaWireCodec.EMPTY_BODY;
         return this;
     }
 

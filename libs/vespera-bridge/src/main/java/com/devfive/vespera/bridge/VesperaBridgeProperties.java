@@ -180,8 +180,12 @@ public class VesperaBridgeProperties {
      * conservative default is
      * 64 MiB so a custom resolver cannot accidentally route an unknown-length
      * upload into a heap-buffered mode and grow toward the JVM array ceiling.
-     * Set {@code 0} explicitly to restore unlimited buffering. Bidirectional
-     * streaming is exempt because it does not fully buffer the request body.
+     * Set {@code 0} explicitly to remove the configured cap. Even then the
+     * proxy keeps a built-in bound (64 MiB) on a body whose length is unknown
+     * (chunked, no {@code Content-Length}), and refuses a declared length
+     * above the single-array ceiling, answering {@code 413} for both: a
+     * {@code 0} is not unlimited for those bodies. Bidirectional streaming is
+     * exempt because it does not fully buffer the request body.
      */
     private long maxBufferedRequestBytes = VesperaProxyController.DEFAULT_MAX_BUFFERED_REQUEST_BYTES;
 

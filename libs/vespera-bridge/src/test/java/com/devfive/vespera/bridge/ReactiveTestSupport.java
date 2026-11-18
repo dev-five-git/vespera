@@ -110,11 +110,20 @@ final class ReactiveTestSupport {
         }
     }
 
+    /**
+     * The streaming pool the default handlers share. One JVM-wide pool of at
+     * most four threads (idle workers expire after their keep-alive): a pool per
+     * handler would leave every test's workers alive until that keep-alive ran
+     * out. Tests that need their own saturation or close semantics pass an
+     * executor explicitly.
+     */
+    private static final VesperaStreamingExecutor SHARED_STREAMING = new VesperaStreamingExecutor(4, 16);
+
     static VesperaReactiveProxyHandler handler(FakeTransport transport, ReactiveAppNameResolver apps,
             ReactivePrincipalResolver principals, long maxRequest, long maxResponse, String requestIdHeader,
             List<DispatchObserver> observers, CorsHandling cors) {
         return handler(transport, apps, principals, maxRequest, maxResponse, requestIdHeader, observers, cors,
-                new VesperaStreamingExecutor(4, 16));
+                SHARED_STREAMING);
     }
 
     static VesperaReactiveProxyHandler handler(FakeTransport transport, ReactiveAppNameResolver apps,

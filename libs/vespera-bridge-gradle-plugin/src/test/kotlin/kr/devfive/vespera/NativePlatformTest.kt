@@ -339,6 +339,34 @@ class NativePlatformTest {
     }
 
     /**
+     * A Rust triple may spell its arch differently from the JVM `os.arch` the
+     * key names (`i686` for `x86`, `riscv64gc` for `riscv64`, `powerpc64le`
+     * for `ppc64le`); the key's arch is the one the bridge probes, so these
+     * pairs are accepted, and the key spelled with the triple's name is not.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        "windows-x86, i686-pc-windows-msvc, windows-x86",
+        "linux-x86, i686-unknown-linux-gnu, linux-x86",
+        "linux-riscv64, riscv64gc-unknown-linux-gnu, linux-riscv64",
+        "linux-ppc64le, powerpc64le-unknown-linux-gnu, linux-ppc64le",
+    )
+    fun aTripleSpellingTheSameJvmArchIsAccepted(key: String, triple: String, platform: String) {
+        val builds = NativePlatform.plannedBuilds(
+            "linux-x86_64", "demo", "release", mapOf(key to triple),
+        )
+        assertTrue(builds.any { it.platform == platform && it.triple == triple }, builds.toString())
+    }
+
+    @Test
+    fun aKeyWithATripleArchAliasIsRejectedForTheJvmArch() {
+        val alias = assertThrows<IllegalArgumentException> {
+            NativePlatform.osOfPlatformKey("linux-i686")
+        }
+        assertTrue(alias.message!!.contains("use 'linux-x86'"), alias.message)
+    }
+
+    /**
      * The key's OS selects the library file name, so a triple that builds
      * another OS is rejected too: `windows-x86_64 = x86_64-unknown-linux-gnu`
      * would look for `demo.dll` where Cargo writes `libdemo.so`.
