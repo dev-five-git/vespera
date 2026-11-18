@@ -104,7 +104,8 @@ pub(super) fn candidate_file_paths(src_dir: &Path, module_segments: &[&str]) -> 
 ///    crate root (`lib.rs` / `main.rs`, `#[path]` modules, inline `mod`s)
 ///
 /// For simple names (e.g., just `Model` without module path), it only checks the
-/// macro call-site file (inline modules included). This supports same-file usage like:
+/// macro call-site file (inline modules included) and that file's `use`
+/// imports (R23-L2). This supports same-file usage like:
 /// ```ignore
 /// pub struct Model { ... }
 /// vespera::schema_type!(Schema from Model, name = "UserSchema");
@@ -174,9 +175,11 @@ pub(super) fn find_struct_with_call_site(
     let (struct_name, module_part) = segments.split_last().ok_or(LookupError::InvalidTypePath)?;
     let struct_name = struct_name.clone();
 
-    // A bare name (`Model`) resolves only in the macro call-site file.
-    // Cross-file bare lookup is action-at-a-distance: callers must use a
-    // qualified path for anything outside the file that invokes the macro.
+    // A bare name (`Model`) resolves in the macro call-site file (inline
+    // modules included), or through a `use` import of that file
+    // (`use crate::models::user::Model as User;` makes `User` resolve from
+    // any file, R23-L2). Other cross-file bare lookups are action-at-a-distance: callers
+    // must use a qualified path for anything the call-site file does not import.
     if module_part.is_empty() {
         return match call_site {
             Some(file_path) => find_bare_struct_in_file(file_path, &struct_name, &layout, line),

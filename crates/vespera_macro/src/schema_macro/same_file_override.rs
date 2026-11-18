@@ -14,6 +14,10 @@ use super::seaorm::RelationFieldInfo;
 use super::transformation::{rebuild_serde_attrs, serde_key};
 use super::type_utils::snake_to_pascal_case;
 use crate::metadata::StructMetadata;
+
+mod unresolved;
+use unresolved::unresolved_at_call_site;
+
 #[cfg(test)]
 pub(super) struct __VesperaSameFileLookupFixture {
     value: i32,
@@ -323,6 +327,20 @@ fn explicit_adapter_struct(
             ),
         )
     })?;
+    // A storage-fallback DTO (declared in another module) has its field types
+    // and serde function paths copied verbatim into this call-site proxy: a
+    // name only the DTO's own module resolves would not compile here
+    // (R23-SM3-02).
+    if same_file_definition(&dto_name).is_none()
+        && let Some(name) = unresolved_at_call_site(&dto_struct)
+    {
+        return Err(syn::Error::new_spanned(
+            adapter_name,
+            format!(
+                "schema_type!: relation field `{field_name}` adapter `{dto_name}` is declared in another module and names `{name}`, which the call-site module does not resolve; import `{name}` here, use an absolute path in that struct, or declare the adapter in this file"
+            ),
+        ));
+    }
     Ok((dto_name, dto_struct))
 }
 
@@ -605,6 +623,56 @@ mod tests {
         let (name, dto) = explicit_adapter_struct("author", &ident, &storage).unwrap();
         assert_eq!(name, "__VesperaStorageOnly");
         assert_eq!(dto.ident.to_string(), "__VesperaStorageOnly");
+    }
+
+    /// R23-SM3-02: a storage-fallback DTO whose field type (`Kind`) only its
+    /// own module resolves is refused with a spanned error, not copied into
+    /// the call-site proxy where it would not compile. A primitive or prelude
+    /// field stays accepted (the test above).
+    #[test]
+    fn explicit_adapter_refuses_a_field_type_only_its_module_resolves() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "__VesperaKindOwner",
+            "struct __VesperaKindOwner { kind: Kind }",
+        )]);
+        let ident = syn::Ident::new("__VesperaKindOwner", proc_macro2::Span::call_site());
+        let Err(error) = explicit_adapter_struct("author", &ident, &storage) else {
+            panic!("the adapter should be refused");
+        };
+        assert!(error.to_string().contains("names `Kind`"), "{error}");
+    }
+
+    /// R23-SM3-02: a `serde(default = "helper")` of a storage-fallback DTO is
+    /// the same kind of path (a bare name the call site may not see).
+    #[test]
+    fn explicit_adapter_refuses_a_serde_default_only_its_module_resolves() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "__VesperaDefaultOwner",
+            "struct __VesperaDefaultOwner { #[serde(default = \"make_value\")] value: i32 }",
+        )]);
+        let ident = syn::Ident::new("__VesperaDefaultOwner", proc_macro2::Span::call_site());
+        let Err(error) = explicit_adapter_struct("author", &ident, &storage) else {
+            panic!("the adapter should be refused");
+        };
+        assert!(error.to_string().contains("names `make_value`"), "{error}");
+    }
+
+    /// R23-SM3-02: a `self::` / `super::` default function is relative to the
+    /// DTO's module too, and it is refused the same way.
+    #[test]
+    fn explicit_adapter_refuses_a_relative_serde_default_path() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "__VesperaRelativeOwner",
+            "struct __VesperaRelativeOwner { #[serde(default = \"super::make_value\")] value: i32 }",
+        )]);
+        let ident = syn::Ident::new("__VesperaRelativeOwner", proc_macro2::Span::call_site());
+        let Err(error) = explicit_adapter_struct("author", &ident, &storage) else {
+            panic!("the adapter should be refused");
+        };
+        assert!(
+            error.to_string().contains("names `super::make_value`"),
+            "{error}"
+        );
     }
 
     #[test]

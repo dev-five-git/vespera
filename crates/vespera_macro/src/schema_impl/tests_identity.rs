@@ -150,3 +150,33 @@ fn count_items_named_descends_into_nested_items(#[case] source: &str, #[case] ex
     let parsed: syn::File = syn::parse_str(source).unwrap();
     assert_eq!(count_items_named(&parsed.items, "X"), expected);
 }
+
+/// R23-SM1: a toolchain reports no position for the derive's input (`0:0`),
+/// so the identity falls back to the item's own tokens. Two same-named
+/// structs of one file with different bodies then keep distinct identities,
+/// and the second registration is a duplicate instead of a silent replacement.
+#[test]
+fn positionless_same_named_items_keep_distinct_identities() {
+    let _positions = hide_positions();
+    let first: syn::DeriveInput = syn::parse_str("struct User { id: i32 }").unwrap();
+    let second: syn::DeriveInput = syn::parse_str("struct User { name: String }").unwrap();
+    let file = Path::new("lib.rs");
+    let first = derive_source_identity(&first, Some(file)).expect("identity");
+    let second = derive_source_identity(&second, Some(file)).expect("identity");
+    assert!(first.starts_with("lib.rs::User@tokens:"), "{first}");
+    assert_ne!(first, second);
+}
+
+/// The same item (identical tokens) gets the same identity: the suffix is a
+/// function of the item, not of when it was expanded.
+#[test]
+fn positionless_identity_is_stable_for_the_same_item() {
+    let _positions = hide_positions();
+    let one: syn::DeriveInput = syn::parse_str("struct User { id: i32 }").unwrap();
+    let two: syn::DeriveInput = syn::parse_str("struct User { id: i32 }").unwrap();
+    let file = Path::new("lib.rs");
+    assert_eq!(
+        derive_source_identity(&one, Some(file)),
+        derive_source_identity(&two, Some(file))
+    );
+}

@@ -161,8 +161,22 @@ fn entity_segments(path: &syn::Path) -> Vec<String> {
 /// child module follows the module scope, and anything else keeps the
 /// historical sibling-module reading (`user::Entity` → `<parent>::user`).
 fn absolute_schema_segments(segments: &[String], source_module_path: &[String]) -> Vec<String> {
+    let resolved = absolute_entity_path(segments, source_module_path);
+    // A local `type` alias of an entity path is followed ONCE, whichever arm
+    // named it (`super::shared::UserAlias` as much as `UserAlias`): its target
+    // is read in the alias's module. Followed once, so a cyclic alias cannot
+    // recurse (R23-SM4-M1, which had followed only the single-name arm).
+    let path = match local_alias_target(&resolved) {
+        Some((target, alias_module)) => absolute_entity_path(&target, &alias_module),
+        None => resolved,
+    };
+    path.iter().map(entity_to_schema).collect()
+}
+
+/// [`absolute_schema_segments`] without the alias step.
+fn absolute_entity_path(segments: &[String], source_module_path: &[String]) -> Vec<String> {
     let first = segments.first().map(String::as_str);
-    let resolved = match first {
+    match first {
         Some("super") => {
             let super_count = segments.iter().take_while(|s| *s == "super").count();
             let parent_path_len = source_module_path.len().saturating_sub(super_count);
@@ -178,12 +192,7 @@ fn absolute_schema_segments(segments: &[String], source_module_path: &[String]) 
         // (an import of another crate too, like a multi-segment path).
         Some(name) if segments.len() == 1 && name != "Entity" => {
             match resolve_name(segments, source_module_path) {
-                Resolved::Path(path) => match local_alias_target(&path) {
-                    Some((target, alias_module)) => {
-                        return absolute_schema_segments(&target, &alias_module);
-                    }
-                    None => path,
-                },
+                Resolved::Path(path) => path,
                 Resolved::Unknown => in_module(source_module_path, segments),
             }
         }
@@ -195,8 +204,7 @@ fn absolute_schema_segments(segments: &[String], source_module_path: &[String]) 
                 in_module(&source_module_path[..parent_path_len], segments)
             }
         },
-    };
-    resolved.iter().map(entity_to_schema).collect()
+    }
 }
 
 fn in_module(module: &[String], rest: &[String]) -> Vec<String> {
@@ -657,6 +665,16 @@ mod tests {
     // R22-SM3-01: a local `type` alias of an entity path is followed to that
     // entity (it used to keep its own name, which is not a `Schema`).
     #[case::local_entity_alias("LocalEntity", "crate::models::user::Schema")]
+    // R23-SM4-M1: the same alias named through a `super::` / `crate::` path
+    // (the multi-segment arms used to return it under its own name).
+    #[case::super_qualified_local_entity_alias(
+        "super::category::LocalEntity",
+        "crate::models::user::Schema"
+    )]
+    #[case::crate_qualified_local_entity_alias(
+        "crate::models::category::LocalEntity",
+        "crate::models::user::Schema"
+    )]
     // A `type` alias of a non-path type names no entity: the name is kept.
     #[case::non_path_alias("Bytes", "crate::models::category::Bytes")]
     fn relation_paths_resolve_in_source_module(#[case] path: &str, #[case] expected: &str) {

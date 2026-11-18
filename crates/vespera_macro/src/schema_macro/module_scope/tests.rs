@@ -418,6 +418,47 @@ fn crate_glob_names_win_over_aliases(#[case] input: &str, #[case] expected: &str
     );
 }
 
+/// R23-SM3-01: a name the glob target re-exports through ITS OWN glob
+/// (`pub use self::types::*;` in `models`) is found through a glob of the
+/// importer (`use super::*;` in `models::memo`). It used to be `Unknown`.
+#[test]
+fn nested_glob_reexport_is_followed() {
+    let (_dir, _guard) = temp_crate(&[
+        (
+            "models.rs",
+            "pub mod memo; pub mod types { pub enum Status { Draft } } pub use self::types::*;",
+        ),
+        (
+            "models/memo.rs",
+            "use super::*; pub struct Model { pub status: Status }",
+        ),
+    ]);
+    let ty: syn::Type = syn::parse_str("Status").unwrap();
+    assert_eq!(
+        resolve_type_to_absolute_path(&ty, &segs("crate::models::memo")).to_string(),
+        "crate :: models :: types :: Status"
+    );
+}
+
+/// R23-SM3-01: globs that re-export each other (`a` -> `b` -> `a`, reached
+/// from `c`) end when the name is nowhere: the visited chain stops the nested
+/// search from looping.
+#[test]
+fn nested_glob_cycle_without_the_name_terminates() {
+    let (_dir, _guard) = temp_crate(&[
+        (
+            "a.rs",
+            "use crate::b::*; pub mod inner { use crate::a::*; }",
+        ),
+        ("b.rs", "use crate::a::*;"),
+        ("c.rs", "use crate::a::*;"),
+    ]);
+    assert_eq!(
+        resolve_name(&segs("Nothing"), &segs("crate::c")),
+        Resolved::Unknown
+    );
+}
+
 #[test]
 fn imported_sea_orm_alias_is_converted() {
     let (_dir, _guard) = temp_crate(&[(

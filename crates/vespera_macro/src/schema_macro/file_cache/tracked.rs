@@ -43,6 +43,12 @@ impl Dep {
 pub struct Deps(Vec<Dep>);
 
 impl Deps {
+    /// Add `other`'s inputs (a revalidated path-lookup entry keeps the inputs
+    /// of its probe and of its resolution together).
+    pub(super) fn extend(&mut self, other: &Self) {
+        self.0.extend(other.0.iter().cloned());
+    }
+
     /// Whether every recorded input still reads the same.
     pub fn still_valid(&self) -> bool {
         self.0.iter().all(|dep| match dep {
@@ -73,6 +79,18 @@ pub(super) fn record_file(path: &Path, fingerprint: Option<FileFingerprint>) {
 /// Record a directory listing the cache served (no-op outside [`tracked`]).
 pub(super) fn record_dir(path: &Path, fingerprint: u64) {
     record(Dep::Dir(path.to_path_buf(), fingerprint));
+}
+
+/// Record the inputs of a cached value served WITHOUT re-reading them (the
+/// epoch fast path, or a revalidated entry): the enclosing computation depends
+/// on them exactly as if it had read them itself (R23-M1). Without this, a
+/// memo built on such a lookup would miss the source file it depends on.
+pub(super) fn replay(deps: &Deps) {
+    FRAMES.with(|frames| {
+        if let Some(frame) = frames.borrow_mut().last_mut() {
+            frame.extend(deps.0.iter().cloned());
+        }
+    });
 }
 
 /// Pops a [`tracked`] computation's frame even if it panics (declared

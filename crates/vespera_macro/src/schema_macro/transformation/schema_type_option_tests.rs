@@ -320,8 +320,11 @@ fn test_generate_schema_type_code_partial_no_double_option() {
     assert!(result.is_ok());
     let (tokens, _metadata) = result.unwrap();
     let output = tokens.to_string();
-    // bio should remain Option<String>, not Option<Option<String>>
+    // bio should remain Option<String>, not Option<Option<String>>, and the
+    // field must still be there (R23-SM4-L2: the negative alone also passes
+    // when `bio` is dropped).
     assert!(!output.contains("Option < Option"));
+    assert!(output.contains("bio : Option < String >"), "{output}");
 }
 
 // Test serde(skip) fields are excluded
@@ -344,9 +347,12 @@ fn test_generate_schema_code_excludes_serde_skip_fields() {
 
     assert!(result.is_ok());
     let output = result.unwrap().to_string();
-    // internal_state should be excluded from schema properties
+    // internal_state should be excluded from schema properties; `name` must
+    // be there as a field (R23-SM4-L2: a bare `contains("name")` matches
+    // almost any output).
     assert!(!output.contains("internal_state"));
-    assert!(output.contains("name"));
+    // (The schema is embedded as a JSON string literal, so keys appear escaped.)
+    assert!(output.contains(r#"\"name\":"#), "{output}");
 }
 
 // Tests for qualified path storage fallback: a qualified source path like
@@ -504,8 +510,9 @@ fn test_generate_schema_type_code_has_one_relation() {
     assert!(result.is_ok());
     let (tokens, _metadata) = result.unwrap();
     let output = tokens.to_string();
-    // HasOne should be included
-    assert!(output.contains("profile"));
+    // HasOne should be included as a field (R23-SM4-L2: a bare `contains`
+    // also matches the name inside a path or a comment).
+    assert!(output.contains("profile :"), "{output}");
 }
 
 // Test for relation fields push into relation_fields

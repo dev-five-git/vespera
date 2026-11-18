@@ -754,17 +754,40 @@ fn is_path_root(segment: &str) -> bool {
 /// a private name unless `module_path` lies inside that glob module (a glob
 /// import only brings in the names visible to the importer).
 fn glob_lookup(scope: &ModuleScope, name: &str, module_path: &[String]) -> Option<Vec<String>> {
-    scope
-        .globs
-        .iter()
-        .filter(|glob| glob.first().is_some_and(|s| s == "crate"))
-        .find_map(|glob| {
-            let target = module_scope(glob)?;
-            if target.private.contains(name) && !module_path.starts_with(glob) {
-                return None;
-            }
-            target.lookup(name, glob)
-        })
+    glob_lookup_through(scope, name, module_path, &mut Vec::new())
+}
+
+/// [`glob_lookup`] with the glob modules already being searched (`chain`):
+/// a glob target that itself glob-re-exports the name (`pub use self::types::*;`
+/// in the target, R23-SM3-01) is searched one level further, and a glob
+/// already on the chain is skipped so a cycle of globs ends.
+fn glob_lookup_through(
+    scope: &ModuleScope,
+    name: &str,
+    module_path: &[String],
+    chain: &mut Vec<Vec<String>>,
+) -> Option<Vec<String>> {
+    for glob in &scope.globs {
+        if glob.first().is_none_or(|s| s != "crate") || chain.contains(glob) {
+            continue;
+        }
+        let Some(target) = module_scope(glob) else {
+            continue;
+        };
+        if target.private.contains(name) && !module_path.starts_with(glob) {
+            continue;
+        }
+        let found = target.lookup(name, glob).or_else(|| {
+            chain.push(glob.clone());
+            let nested = glob_lookup_through(&target, name, module_path, chain);
+            chain.pop();
+            nested
+        });
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
 }
 
 /// `[crate, a, B]` -> `crate::a::B` (`""` first = leading `::`).

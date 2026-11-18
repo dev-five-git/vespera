@@ -692,6 +692,48 @@ pub fn determine_rename_all(
     )
 }
 
+/// How a `schema_type!` DTO renames its fields.
+pub struct DtoRenaming {
+    /// The rule the DTO's serde / Multipart derive is read with (`""` when
+    /// [`Self::raw_names`]: the empty rule is the identity for `rename_field`).
+    pub effective: String,
+    /// The container's `rename_all` attribute source.
+    pub rename_all: RenameAll,
+    /// A `multipart` DTO whose source has no deserialize-side `rename_all`
+    /// keeps the RAW Rust field names, which the source's `Multipart` derive
+    /// reads; the camelCase default would read other form fields (R23-CJ1-M1).
+    pub raw_names: bool,
+}
+
+/// The [`DtoRenaming`] of a DTO built from a source with `source_attrs`.
+pub fn dto_renaming(
+    input_rename_all: Option<&String>,
+    multipart: bool,
+    source_attrs: &[syn::Attribute],
+    side: SerdeSide,
+) -> DtoRenaming {
+    let raw_names = multipart
+        && input_rename_all.is_none()
+        && extract_rename_all_for(source_attrs, SerdeSide::Deserialize).is_none();
+    if raw_names {
+        return DtoRenaming {
+            effective: String::new(),
+            rename_all: RenameAll {
+                serialize: None,
+                deserialize: None,
+            },
+            raw_names,
+        };
+    }
+    let effective = determine_rename_all(input_rename_all, source_attrs, side);
+    let rename_all = RenameAll::new(input_rename_all, source_attrs, &effective);
+    DtoRenaming {
+        effective,
+        rename_all,
+        raw_names,
+    }
+}
+
 /// Extracts `#[form_data(...)]` attributes from a field.
 ///
 /// Used in multipart mode to preserve `form_data` attributes from the source struct

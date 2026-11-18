@@ -91,26 +91,25 @@ fn associated_fn_value(
     owner: &str,
     fn_name: &str,
 ) -> Option<serde_json::Value> {
-    items.iter().find_map(|item| match item {
-        syn::Item::Impl(block)
-            if block.trait_.is_none()
-                && impl_owner_is(&block.self_ty, owner)
-                && !statically_inactive(&block.attrs) =>
-        {
-            block.items.iter().find_map(|item| match item {
-                syn::ImplItem::Fn(func)
-                    if ident_name(&func.sig.ident) == fn_name
-                        && !statically_inactive(&func.attrs) =>
-                {
-                    let func: syn::ItemFn =
-                        syn::parse2(quote::ToTokens::to_token_stream(func)).ok()?;
-                    crate::openapi_generator::extract_default_value_from_function(&func)
-                }
-                _ => None,
-            })
-        }
-        _ => None,
-    })
+    let candidates = items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Impl(block)
+                if block.trait_.is_none()
+                    && impl_owner_is(&block.self_ty, owner)
+                    && !statically_inactive(&block.attrs) =>
+            {
+                Some(block.items.iter().filter_map(|item| match item {
+                    syn::ImplItem::Fn(func) if ident_name(&func.sig.ident) == fn_name => Some(func),
+                    _ => None,
+                }))
+            }
+            _ => None,
+        })
+        .flatten();
+    let func = unique_active(candidates)?;
+    let func: syn::ItemFn = syn::parse2(quote::ToTokens::to_token_stream(func)).ok()?;
+    crate::openapi_generator::extract_default_value_from_function(&func)
 }
 
 /// `self_ty` is the type `owner` (`impl Owner` / `impl<T> Owner<T>`).
@@ -154,7 +153,12 @@ pub(super) fn std_type_default(fn_path: &str, ty: &syn::Type) -> Option<serde_js
         // `<T>::default` / `<T as Default>::default`, and `<T>::new` for a
         // std container `T` (the field's type).
         Some(qself) => {
+            // The qualified type must be the field's own type for `default`
+            // too (`<Other>::default` on a `Vec<String>` field is `Other`'s
+            // default, not the field's; R23-SM2).
+            let same_type = last_name(&qself.ty) == field_ty;
             (function == "default"
+                && same_type
                 && (owner.is_empty() && qself.position == 0
                     || is_default_trait(owner) && qself.position == owner.len()))
                 || (function == "new"
@@ -230,16 +234,45 @@ fn in_module_tree(
     crate_fn_value(&target, &fn_name)
 }
 
-/// The literal value of the function `fn_name` among `items`.
+/// The literal value of the function `fn_name` among `items`. Several active
+/// items of that name (a `#[cfg(unix)]` / `#[cfg(windows)]` pair the static
+/// cfg check cannot decide) leave it unresolved: see [`unique_active`].
 fn default_fn_value(items: &[syn::Item], fn_name: &str) -> Option<serde_json::Value> {
-    items.iter().find_map(|item| match item {
-        syn::Item::Fn(func)
-            if ident_name(&func.sig.ident) == fn_name && !statically_inactive(&func.attrs) =>
-        {
-            crate::openapi_generator::extract_default_value_from_function(func)
-        }
+    let func = unique_active(items.iter().filter_map(|item| match item {
+        syn::Item::Fn(func) if ident_name(&func.sig.ident) == fn_name => Some(func),
         _ => None,
-    })
+    }))?;
+    crate::openapi_generator::extract_default_value_from_function(func)
+}
+
+/// The one candidate of `candidates` that is not statically inactive, or
+/// `None` when there is not exactly one. The top-level, inline-module,
+/// `crate::` and associated lookups all select through this, so a platform
+/// twin pair resolves the same way (to nothing) wherever the default is read
+/// (R23-SM3: the top level took the last twin, an inline module the first).
+pub(super) fn unique_active<'a, T: HasAttrs + 'a>(
+    candidates: impl Iterator<Item = &'a T>,
+) -> Option<&'a T> {
+    let mut active = candidates.filter(|candidate| !statically_inactive(candidate.attrs()));
+    let only = active.next()?;
+    active.next().is_none().then_some(only)
+}
+
+/// The attributes of an item-like node, for [`unique_active`].
+pub(super) trait HasAttrs {
+    fn attrs(&self) -> &[syn::Attribute];
+}
+
+impl HasAttrs for syn::ItemFn {
+    fn attrs(&self) -> &[syn::Attribute] {
+        &self.attrs
+    }
+}
+
+impl HasAttrs for syn::ImplItemFn {
+    fn attrs(&self) -> &[syn::Attribute] {
+        &self.attrs
+    }
 }
 
 /// The items of the inline module `chain` below `items`.

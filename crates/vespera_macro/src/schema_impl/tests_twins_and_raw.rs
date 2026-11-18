@@ -74,6 +74,37 @@ fn cfg_disabled_default_fn_twin_is_ignored(
     assert_eq!(page_count_default(source, chain), expected);
 }
 
+/// R23-SM3: a platform twin pair (`unix` / `windows`) is left to the
+/// compiler, which the static cfg check cannot run, so both survive the
+/// filter. The default is then unresolved on EVERY lookup path (it used to be
+/// the last twin at the top level and the first one in an inline module).
+#[rstest]
+#[case::top_level_platform_twins(
+    "#[cfg(unix)]\nfn limit() -> i64 { 10 }\n#[cfg(windows)]\nfn limit() -> i64 { 100 }\n\
+     pub struct Page { #[serde(default = \"limit\")] count: i64 }",
+    &[],
+    None
+)]
+#[case::inline_module_platform_twins(
+    "mod inner {\n#[cfg(unix)]\nfn limit() -> i64 { 10 }\n#[cfg(windows)]\nfn limit() -> i64 { 100 }\n\
+     pub struct Page { #[serde(default = \"limit\")] count: i64 }\n}",
+    &["inner"],
+    None
+)]
+#[case::inherent_method_platform_twins(
+    "pub struct Page { #[serde(default = \"Page::limit\")] count: i64 }\n\
+     impl Page {\n#[cfg(unix)]\nfn limit() -> i64 { 10 }\n#[cfg(windows)]\nfn limit() -> i64 { 100 }\n}",
+    &[],
+    None
+)]
+fn platform_default_fn_twins_are_unresolved(
+    #[case] source: &str,
+    #[case] chain: &[&str],
+    #[case] expected: Option<serde_json::Value>,
+) {
+    assert_eq!(page_count_default(source, chain), expected);
+}
+
 /// R22-SC-L1: `struct r#type` is the component `type`, never `r#type`, and
 /// an explicit `#[schema(name = ..)]` keeps the unrawed Rust name as its alias.
 #[test]
