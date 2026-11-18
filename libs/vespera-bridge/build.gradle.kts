@@ -11,7 +11,7 @@ plugins {
     jacoco
     id("com.vanniktech.maven.publish") version "0.37.0"
     // CycloneDX SBOM of the published JAR (see "SBOM" at the end of this file).
-    id("org.cyclonedx.bom") version "3.5.1"
+    id("org.cyclonedx.bom") version "3.6.1"
 }
 
 group = "kr.devfive"

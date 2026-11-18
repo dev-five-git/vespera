@@ -61,25 +61,25 @@ ffi = ["runtime"]
 # the lock-free fast path the default app already enjoys.  Registration
 # (startup-only, first-wins) goes through copy-on-write `rcu`.
 arc-swap = "1"
-axum = { version = "0.8.4", default-features = false }
-bytes = "1.3"
+axum = { version = "0.8.9", default-features = false }
+bytes = "1.12"
 http = "1"
 http-body = "1"
 http-body-util = "0.1"
-tower = { version = "0.5.2", features = ["util"] }
-serde = { version = "1.0.221", features = ["derive"] }
-serde_json = "1.0.100"
+tower = { version = "0.5.3", features = ["util"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 # `time`: the optional per-dispatch deadline (`set_dispatch_timeout`) and the
 # bounded request-producer join on the bidirectional streaming paths.
 # `rt-multi-thread`: `tokio::task::block_in_place`, which the bidirectional
 # small-body fast path (`streaming/inline_pull.rs`) runs an inline request
 # pull under, so a pull may use Tokio's blocking APIs on the `block_on` thread.
-tokio = { version = "1.44", features = ["rt", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.54", features = ["rt", "rt-multi-thread", "sync", "time"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
-axum = { version = "0.8.4", default-features = false, features = ["json", "query", "tokio", "http1"] }
-tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "time"] }
+axum = { version = "0.8.9", default-features = false, features = ["json", "query", "tokio", "http1"] }
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "time"] }
 # `FutureExt::catch_unwind` for the `async_spawn_pattern` bench, which
 # A/Bs the vespera_jni `dispatchAsync` spawn-mechanism change (inner
 # `tokio::spawn` vs in-place `catch_unwind`).
@@ -89,7 +89,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 rstest = "0.28"
 # Span/event capture for `tests/tracing_instrumentation.rs` (feature
 # `tracing`): a `Registry` + a tiny collecting `Layer`.  Test-only.
-tracing-subscriber = { version = "0.3.8", default-features = false, features = ["registry", "std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
 
 # The criterion bench runs under mimalloc (set as its `#[global_allocator]`
 # in benches/dispatch.rs) to match the SHIPPED JNI cdylib, which enables

@@ -9,7 +9,7 @@ plugins {
     // come from GRADLE_PUBLISH_KEY / GRADLE_PUBLISH_SECRET env vars in CI.
     id("com.gradle.plugin-publish") version "2.2.1"
     // CycloneDX SBOM of the plugin JAR (see "SBOM" at the end of this file).
-    id("org.cyclonedx.bom") version "3.5.1"
+    id("org.cyclonedx.bom") version "3.6.1"
 }
 
 // Fail LOUDLY when the Plugin Portal release is actually requested without
