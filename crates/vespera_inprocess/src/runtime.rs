@@ -81,7 +81,7 @@ fn parse_worker_threads(raw: Option<&str>) -> Option<usize> {
 #[must_use]
 pub fn runtime_worker_threads() -> Option<usize> {
     *RUNTIME_WORKER_THREADS.get_or_init(|| {
-        parse_worker_threads(std::env::var("VESPERA_RUNTIME_WORKERS").ok().as_deref())
+        parse_worker_threads(crate::config::env_value("VESPERA_RUNTIME_WORKERS").as_deref())
     })
 }
 

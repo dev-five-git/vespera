@@ -205,6 +205,20 @@ pub fn bench_metadata_segment(c: &mut Criterion) {
     use vespera_inprocess::ResponseMetadata;
     use vespera_inprocess::bench_support::bench_write_hand;
 
+    // Same length as the engine's version with every digit changed, so the
+    // content check fails and the arms stay comparable across version bumps
+    // (a hard-coded fixture would panic on the first bump).
+    fn same_length_other_version(version: &str) -> String {
+        version
+            .chars()
+            .map(|c| match c {
+                '9' => '8',
+                d if d.is_ascii_digit() => '9',
+                other => other,
+            })
+            .collect()
+    }
+
     let mut headers = HeaderMap::new();
     headers.insert(
         HeaderName::from_static("content-type"),
@@ -217,7 +231,7 @@ pub fn bench_metadata_segment(c: &mut Criterion) {
     // General path: a same-length version that differs from the engine's, so
     // the content check fails and the `write_json_string` block runs.
     let meta_owned = ResponseMetadata {
-        version: Cow::Owned("9.9.9".to_owned()),
+        version: Cow::Owned(same_length_other_version(env!("CARGO_PKG_VERSION"))),
     };
 
     // Size the out buffer once outside the timed loop (mirrors the pooled

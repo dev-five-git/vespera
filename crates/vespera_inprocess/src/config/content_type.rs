@@ -61,7 +61,7 @@ fn parse_bool_config(var_name: &str, raw: Option<&str>, default: bool) -> bool {
 pub fn default_json_content_type() -> bool {
     *DEFAULT_JSON_CONTENT_TYPE.get_or_init(|| {
         let var_name = "VESPERA_DEFAULT_JSON_CONTENT_TYPE";
-        let raw = std::env::var(var_name).ok();
+        let raw = super::env_value(var_name);
         parse_bool_config(var_name, raw.as_deref(), DEFAULT_DEFAULT_JSON_CONTENT_TYPE)
     })
 }

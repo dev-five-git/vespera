@@ -80,8 +80,9 @@ const TYPICAL_HEADER_CAP: usize = 16;
 /// the dispatch prelude maps to a `431 Request Header Fields Too Large`
 /// wire response.
 ///
-/// The bench-only `serde_json` twin does not enforce this cap (it is never
-/// used in production); the hand-vs-serde property tests stay below it.
+/// The bench-only `serde_json` twin enforces the same cap
+/// (`bench_serde::de_cow_pairs`), so the criterion A/B arms reject the same
+/// inputs; the hand-vs-serde property tests stay below it.
 pub const MAX_REQUEST_HEADERS: usize = 1024;
 
 /// Parse error reported when a wire header carries more than

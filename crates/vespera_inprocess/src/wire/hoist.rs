@@ -61,6 +61,11 @@ fn body_is_json(headers: &http::HeaderMap) -> bool {
 /// fallback walk in [`try_hoist_validation_errors`], so the hoist stays
 /// genuinely best-effort without taxing the common case.
 ///
+/// Unknown keys are read into a `serde_json::Value`, not skipped with
+/// `IgnoredAny`: skipping does not validate `\u` surrogate pairing inside
+/// string values, which the lenient `Value` walk does.  Parsing them the same
+/// way keeps the strict path from accepting a body the fallback rejects.
+///
 /// Both `Deserialize` impls are hand-written **map-only** visitors: a derive
 /// would also accept a JSON array through `visit_seq` (positional
 /// `[path, code, message]` / `[errors]`), hoisting fields the lenient `Value`
@@ -113,7 +118,7 @@ impl<'de> serde::de::Visitor<'de> for EnvelopeVisitor {
             if key == "errors" {
                 set_once(&mut access, &mut errors, "errors")?;
             } else {
-                access.next_value::<serde::de::IgnoredAny>()?;
+                access.next_value::<serde_json::Value>()?;
             }
         }
         let errors = errors.ok_or_else(|| serde::de::Error::missing_field("errors"))?;
@@ -148,7 +153,7 @@ impl<'de> serde::de::Visitor<'de> for ErrorVisitor {
                 "code" => set_once(&mut access, &mut code, "code")?,
                 "message" => set_once(&mut access, &mut message, "message")?,
                 _ => {
-                    access.next_value::<serde::de::IgnoredAny>()?;
+                    access.next_value::<serde_json::Value>()?;
                 }
             }
         }
@@ -448,6 +453,38 @@ mod tests {
         let items = try_hoist_validation_errors(&json_headers(), &body).expect("must hoist");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].path, "b");
+        assert_eq!(
+            bench_hoist_new(&json_headers(), &body),
+            bench_hoist_old(&json_headers(), &body)
+        );
+    }
+
+    /// Regression (round 23): a lone surrogate inside a value the strict path
+    /// reads as unknown used to be accepted there while the `Value` walk
+    /// rejects the whole body.  Both paths must now reject it.
+    #[rstest::rstest]
+    #[case::lone_low_surrogate_unknown_key(br#"{"errors":[{"path":"a"}],"x":"\udc00"}"#.as_slice())]
+    #[case::lone_high_surrogate_nested_unknown(br#"{"errors":[{"path":"a","extra":"\ud800"}]}"#.as_slice())]
+    #[case::lone_surrogate_known_key(br#"{"errors":[{"path":"\udc00"}]}"#.as_slice())]
+    fn hoisting_rejects_what_the_value_walk_rejects(#[case] body: &'static [u8]) {
+        let body = Bytes::from_static(body);
+        assert!(try_hoist_validation_errors(&json_headers(), &body).is_none());
+        assert_eq!(bench_hoist_old(&json_headers(), &body), 0);
+    }
+
+    /// A valid surrogate pair in an ignored value is still accepted, and both
+    /// paths hoist the same errors.
+    #[test]
+    fn hoisting_accepts_valid_surrogate_pairs_in_ignored_values() {
+        // The escaped pair is assembled from pieces, so the source holds no
+        // `\u` sequence the reader or a formatter could decode.
+        let body = Bytes::from(
+            r#"{"errors":[{"path":"a","extra":"PAIR"}],"x":"PAIR"}"#
+                .replace("PAIR", concat!("\\", "ud83d", "\\", "ude00")),
+        );
+        let items = try_hoist_validation_errors(&json_headers(), &body).expect("valid pairs hoist");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].path, "a");
         assert_eq!(
             bench_hoist_new(&json_headers(), &body),
             bench_hoist_old(&json_headers(), &body)

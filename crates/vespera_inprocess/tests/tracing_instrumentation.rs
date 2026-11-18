@@ -372,16 +372,20 @@ fn unknown_app_is_a_rejected_request() {
 
 /// Round 11: `app` is recorded from the RESOLVED name only — trimmed like the
 /// registry looks it up, and never for an invalid (`400`) name, whose raw
-/// client text would otherwise reach every subscriber's span.
+/// client text would otherwise reach every subscriber's span.  Round 23: the
+/// invalid-name WARN event's `detail` echoes at most a 64-byte prefix too.
 #[test]
 fn app_field_is_the_resolved_name_never_the_raw_client_value() {
     setup();
     // Past the 64-byte name limit, under the suite's 4 KiB request cap.
     let long = "x".repeat(2 * 1024);
+    // Long AND invalid: the invalid-characters message is the one that echoes.
+    let long_invalid = format!("{long}!");
     for (app, status, recorded) in [
         (" admin ", 200, "admin"),
         ("bad name!", 400, "<unset>"),
         (long.as_str(), 400, "<unset>"),
+        (long_invalid.as_str(), 400, "<unset>"),
     ] {
         let capture = Capture::default();
         let header = format!(r#"{{"v":1,"method":"GET","path":"/ok","app":"{app}"}}"#);
@@ -390,6 +394,9 @@ fn app_field_is_the_resolved_name_never_the_raw_client_value() {
         let span = capture.dispatch_span();
         assert_eq!(field(&span, "app"), recorded);
         assert!(!format!("{span:?}").contains("xxxxxxxx"), "{span:?}");
+        let state = capture.0.lock().unwrap();
+        let logged = format!("{:?}{:?}", state.spans, state.events);
+        assert!(!logged.contains(&"x".repeat(65)), "{logged:.512}");
     }
 }
 

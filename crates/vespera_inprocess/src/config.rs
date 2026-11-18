@@ -89,8 +89,25 @@ fn parse_config_value(
 /// predicate the existing unit tests exercise; this thin wrapper adds
 /// only the `std::env::var` lookup and is a straight-line delegate.
 pub fn read_env_clamped(var_name: &'static str, default: usize, min: usize, max: usize) -> usize {
-    let raw = std::env::var(var_name).ok();
+    let raw = env_value(var_name);
     parse_config_value(var_name, raw.as_deref(), default, min, max)
+}
+
+/// The raw value of the environment variable `var_name`: `None` only when it
+/// is unset.  A value that is present but not valid Unicode is kept, lossily
+/// converted, so the caller's parser rejects it and takes its warn-and-default
+/// path; mapping it to `None` would silently ignore a knob the operator set.
+pub fn env_value(var_name: &str) -> Option<String> {
+    env_value_from(std::env::var(var_name))
+}
+
+/// [`env_value`] on an already-read `std::env::var` result.
+fn env_value_from(var: Result<String, std::env::VarError>) -> Option<String> {
+    match var {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(raw)) => Some(raw.to_string_lossy().into_owned()),
+    }
 }
 
 /// Effective per-chunk buffer size for streaming dispatches.
@@ -545,5 +562,48 @@ mod tests {
         #[case] expected: bool,
     ) {
         assert_eq!(exceeds(len, max), expected, "exceeds({len}, {max})");
+    }
+
+    #[test]
+    fn env_value_is_none_only_when_the_variable_is_unset() {
+        use std::env::VarError;
+
+        assert_eq!(super::env_value_from(Err(VarError::NotPresent)), None);
+        assert_eq!(
+            super::env_value_from(Ok("4096".to_owned())).as_deref(),
+            Some("4096")
+        );
+    }
+
+    /// A value that is set but not valid Unicode (an unpaired surrogate on
+    /// Windows, a lone `0xFF` byte on Unix) is still a set value.
+    #[cfg(unix)]
+    fn not_unicode() -> std::ffi::OsString {
+        use std::os::unix::ffi::OsStringExt;
+        std::ffi::OsString::from_vec(vec![b'1', 0xFF])
+    }
+
+    #[cfg(windows)]
+    fn not_unicode() -> std::ffi::OsString {
+        use std::os::windows::ffi::OsStringExt;
+        std::ffi::OsString::from_wide(&[u16::from(b'1'), 0xD800])
+    }
+
+    /// Regression (round 23): a present but non-Unicode knob used to read as
+    /// unset and took the default silently.  It must reach the parser as a
+    /// bad value (the warn-and-default path), which can never parse.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn env_value_passes_a_non_unicode_value_on_to_the_warning_path() {
+        use std::env::VarError;
+
+        let raw = super::env_value_from(Err(VarError::NotUnicode(not_unicode())))
+            .expect("a set variable is never reported as unset");
+        assert!(raw.contains('\u{FFFD}'), "{raw:?}");
+        assert_eq!(
+            parse_config_value("VESPERA_TEST_KNOB", Some(&raw), 4096, 1, 1 << 20),
+            4096,
+            "a non-Unicode value takes the default"
+        );
     }
 }

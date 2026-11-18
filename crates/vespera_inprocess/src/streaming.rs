@@ -667,10 +667,14 @@ where
 /// [`dispatch_bidirectional_streaming`] variant that takes a
 /// `request_close` callback.
 ///
-/// `request_close` is invoked once, after the response body is fully
-/// drained, **only if** the request source was read (the handler read at
-/// least one body chunk — through the producer or the inline small-body
-/// fast path).  It must close/abort the request body
+/// `request_close` is invoked once, **only if** the request source was read
+/// (the handler read at least one body chunk — through the producer or the
+/// inline small-body fast path).  It runs when the dispatch finishes: after
+/// the response body is fully drained, right before a pre-header error (a
+/// `504` deadline, a `413` for an over-cap request body, a dispatch error) is
+/// delivered, or when the dispatch future is dropped mid-response.  The
+/// pre-header close is deliberate: it unblocks the producer so the join that
+/// follows cannot hang.  It must close/abort the request body
 /// source (e.g. the Java `InputStream`) so a producer parked in a
 /// blocking read is unblocked and this call cannot hang on a stuck upload
 /// that never reaches EOF.  It is a no-op for full reads (already at EOF)

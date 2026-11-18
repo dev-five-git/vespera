@@ -50,29 +50,32 @@ static PEAK: AtomicIsize = AtomicIsize::new(0);
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
 // SAFETY: forwards every call unchanged to mimalloc; the atomics only observe sizes.
+//
+// `CURRENT` tracks the live bytes on every call, whether or not a window is
+// open: a block allocated before a window and freed inside it must lower the
+// level too, or the window's peak is underestimated.  Only the per-window
+// counters (`ALLOCS`, `PEAK`) are gated on `COUNTING`.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let size = signed(layout.size());
+        let now = CURRENT.fetch_add(size, Ordering::Relaxed) + size;
         if COUNTING.load(Ordering::Relaxed) {
             ALLOCS.fetch_add(1, Ordering::Relaxed);
-            let size = signed(layout.size());
-            let now = CURRENT.fetch_add(size, Ordering::Relaxed) + size;
             PEAK.fetch_max(now, Ordering::Relaxed);
         }
         unsafe { mimalloc::MiMalloc.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if COUNTING.load(Ordering::Relaxed) {
-            CURRENT.fetch_sub(signed(layout.size()), Ordering::Relaxed);
-        }
+        CURRENT.fetch_sub(signed(layout.size()), Ordering::Relaxed);
         unsafe { mimalloc::MiMalloc.dealloc(ptr, layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let delta = signed(new_size) - signed(layout.size());
+        let now = CURRENT.fetch_add(delta, Ordering::Relaxed) + delta;
         if COUNTING.load(Ordering::Relaxed) {
             ALLOCS.fetch_add(1, Ordering::Relaxed);
-            let delta = signed(new_size) - signed(layout.size());
-            let now = CURRENT.fetch_add(delta, Ordering::Relaxed) + delta;
             PEAK.fetch_max(now, Ordering::Relaxed);
         }
         unsafe { mimalloc::MiMalloc.realloc(ptr, layout, new_size) }

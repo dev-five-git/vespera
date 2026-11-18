@@ -396,6 +396,19 @@ pub async fn finish_resumable(
     }
 
     let prefers_streaming = stream_event_streams && is_event_stream(&headers);
+    let max = max_buffered_response_bytes();
+    // An exact-length body past the cap is the buffered path's `500`: its
+    // size is known before any frame is read, so it is refused here rather
+    // than handed back as an `Overflow` whose size a caller would allocate.
+    // An event stream is exempt (streamed, uncapped by design).
+    if !prefers_streaming
+        && body
+            .size_hint()
+            .exact()
+            .is_some_and(|exact| exceeds_cap(max, 0, usize::try_from(exact).unwrap_or(usize::MAX)))
+    {
+        return PendingDirectResponse::materialized(response_too_large_wire(max)).copy_into(out);
+    }
     // Write the wire header straight into `out` — no intermediate Vec
     // and no second copy.  `header_total` is the exact header byte count
     // whether or not it fit.
@@ -427,7 +440,6 @@ pub async fn finish_resumable(
         ));
     }
 
-    let max = max_buffered_response_bytes();
     let mut written = header_total;
     loop {
         match body.frame().await {

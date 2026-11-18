@@ -62,7 +62,7 @@ pub const WIRE_VERSION: u8 = 1;
 ///
 /// The `serde` `Deserialize` derive (plus the `BorrowableCow` /
 /// `de_cow_pairs` / `de_opt_cow` helpers in [`bench_serde`]) is compiled
-/// **only under the `bench-support` feature**, where
+/// **only under the `bench-support` feature or `cfg(test)`**, where
 /// `bench_serde::parse_wire_header_serde` uses it as the criterion A/B
 /// "before" arm — the production path never goes through serde, so it is
 /// not part of the shipped build.
