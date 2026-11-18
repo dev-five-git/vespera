@@ -560,17 +560,7 @@ pub fn process_derive_schema(
         .map(|file_path| extract_field_defaults_from_path(input, file_path))
         .unwrap_or_default();
 
-    // Without the call-site file no default function can be looked up: the
-    // static check is skipped (the default is then left undocumented).
-    let file_known = call_site_file.is_some();
-    if let Err(error) = validate_serde_default_values(input, &field_defaults, file_known) {
-        return (None, error.to_compile_error());
-    }
-
-    // Same-named items of this file that derive different serde / Multipart
-    // sets cannot be told apart without a reported position (R23-SM1): an
-    // error beats copying one of their derive sets onto the other.
-    if let Some(error) = serde_repr::ambiguous_declaration(input, call_site_file.as_deref()) {
+    if let Err(error) = check_derive_input(input, &field_defaults, call_site_file.as_deref()) {
         return (None, error.to_compile_error());
     }
     // Schema-derived types appear in OpenAPI spec (include_in_openapi: true)
@@ -673,6 +663,22 @@ pub fn extract_field_defaults_from_path(
 fn form_data_default_wins(field: &syn::Field) -> bool {
     extract_default(&field.attrs).is_some()
         && crate::multipart_impl::has_form_data_default(&field.attrs)
+}
+
+/// Static checks of a derive input before any metadata is built.
+///
+/// Without the call-site file no default function can be looked up, so the
+/// default check is skipped (the default is then left undocumented).
+/// Same-named items of this file that derive different serde / Multipart sets
+/// cannot be told apart without a reported position (R23-SM1): an error beats
+/// copying one of their derive sets onto the other.
+fn check_derive_input(
+    input: &syn::DeriveInput,
+    field_defaults: &BTreeMap<String, serde_json::Value>,
+    call_site_file: Option<&Path>,
+) -> Result<(), syn::Error> {
+    validate_serde_default_values(input, field_defaults, call_site_file.is_some())?;
+    serde_repr::ambiguous_declaration(input, call_site_file).map_or(Ok(()), Err)
 }
 
 /// `file_known`: the call-site file is known, so `default = "fn"` values
