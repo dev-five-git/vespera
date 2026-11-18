@@ -174,7 +174,9 @@ pub(super) fn std_type_default(fn_path: &str, ty: &syn::Type) -> Option<serde_js
         }
     };
     if applies {
-        crate::schema_macro::type_utils::get_type_default(ty)
+        // Derive path: the struct (and its field types) sit at the call site.
+        let module = crate::schema_macro::call_site_module().unwrap_or_default();
+        crate::schema_macro::type_utils::get_type_default(ty, &module)
     } else {
         None
     }

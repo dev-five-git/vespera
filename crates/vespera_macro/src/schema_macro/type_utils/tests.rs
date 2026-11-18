@@ -5,7 +5,7 @@ use super::*;
 /// A crate-local `Decimal` is not rust_decimal's: its `"0"` default is not
 /// advertised. The SeaORM `Date` imported in the call-site module still is.
 #[test]
-fn ecosystem_default_names_follow_the_call_site_scope() {
+fn ecosystem_default_names_follow_the_source_scope() {
     let dir = tempfile::TempDir::new().unwrap();
     std::fs::create_dir_all(dir.path().join("src")).unwrap();
     std::fs::write(
@@ -28,25 +28,83 @@ fn ecosystem_default_names_follow_the_call_site_scope() {
     let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
     let decimal: syn::Type = syn::parse_quote!(Decimal);
     let date: syn::Type = syn::parse_quote!(Date);
-    {
-        let _site = crate::schema_macro::file_lookup::set_test_call_site_module("crate");
-        assert_eq!(get_type_default(&decimal), None);
-        // Not imported here, so the name cannot be shown to be a user type:
-        // the ecosystem default stays (the `Unknown` resolution).
-        assert_eq!(
-            get_type_default(&date),
-            Some(serde_json::json!("1970-01-01"))
-        );
-    }
-    {
-        let _site = crate::schema_macro::file_lookup::set_test_call_site_module("crate::sea");
-        assert_eq!(
-            get_type_default(&date),
-            Some(serde_json::json!("1970-01-01"))
-        );
-    }
-    let _site = crate::schema_macro::file_lookup::set_test_call_site_module("crate::own");
-    assert_eq!(get_type_default(&date), None);
+    let root = module(&["crate"]);
+    assert_eq!(get_type_default(&decimal, &root), None);
+    // Not imported here, so the name cannot be shown to be a user type:
+    // the ecosystem default stays (the `Unknown` resolution).
+    assert_eq!(
+        get_type_default(&date, &root),
+        Some(serde_json::json!("1970-01-01"))
+    );
+    assert_eq!(
+        get_type_default(&date, &module(&["crate", "sea"])),
+        Some(serde_json::json!("1970-01-01"))
+    );
+    assert_eq!(get_type_default(&date, &module(&["crate", "own"])), None);
+}
+
+/// An absolute module path from its segments.
+fn module(segments: &[&str]) -> Vec<String> {
+    segments.iter().map(|s| (*s).to_string()).collect()
+}
+
+/// The source module decides a crate-local `Decimal`, whatever the macro's
+/// call site is (`vespera!` at the crate root scanning `models/order.rs`).
+/// The root imports rust_decimal; `models::order` defines its own
+/// `Decimal`, so the default is advertised only for the root's.
+#[test]
+fn ecosystem_default_resolves_in_the_source_module_not_the_call_site() {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("src/models")).unwrap();
+    std::fs::write(
+        dir.path().join("src/lib.rs"),
+        "use rust_decimal::Decimal;\npub mod models;\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("src/models.rs"), "pub mod order;\n").unwrap();
+    std::fs::write(
+        dir.path().join("src/models/order.rs"),
+        "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct Decimal(pub i64);\n",
+    )
+    .unwrap();
+    let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    let decimal: syn::Type = syn::parse_quote!(Decimal);
+    // The macro is invoked at the crate root, but the struct lives in
+    // `models::order`: its own `Decimal` gets no `"0"` default.
+    assert_eq!(
+        get_type_default(&decimal, &module(&["crate"])),
+        Some(serde_json::json!("0"))
+    );
+    assert_eq!(
+        get_type_default(&decimal, &module(&["crate", "models", "order"])),
+        None
+    );
+}
+
+/// The reverse: the call site defines the crate-local `Decimal`, while the
+/// struct's module imports rust_decimal's. Its `"0"` default is advertised.
+#[test]
+fn ecosystem_default_reverse_case_uses_the_source_module() {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("src/models")).unwrap();
+    std::fs::write(
+        dir.path().join("src/lib.rs"),
+        "pub struct Decimal(pub i64);\npub mod models;\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("src/models.rs"), "pub mod order;\n").unwrap();
+    std::fs::write(
+        dir.path().join("src/models/order.rs"),
+        "use rust_decimal::Decimal;\n",
+    )
+    .unwrap();
+    let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    let decimal: syn::Type = syn::parse_quote!(Decimal);
+    assert_eq!(get_type_default(&decimal, &module(&["crate"])), None);
+    assert_eq!(
+        get_type_default(&decimal, &module(&["crate", "models", "order"])),
+        Some(serde_json::json!("0"))
+    );
 }
 
 fn empty_type_path() -> syn::Type {
@@ -391,7 +449,7 @@ fn test_is_map_type(#[case] type_str: &str, #[case] expected: bool) {
 #[case("CustomType", None)]
 fn test_get_type_default(#[case] type_str: &str, #[case] expected: Option<serde_json::Value>) {
     let ty: syn::Type = syn::parse_str(type_str).unwrap();
-    let result = get_type_default(&ty);
+    let result = get_type_default(&ty, &[]);
     match expected {
         Some(exp) => {
             assert!(result.is_some());
@@ -622,7 +680,7 @@ fn type_default_returns_temporal_and_uuid_sentinels(
     #[case] expected: serde_json::Value,
 ) {
     let ty: syn::Type = syn::parse_str(input).unwrap();
-    assert_eq!(get_type_default(&ty), Some(expected));
+    assert_eq!(get_type_default(&ty, &[]), Some(expected));
 }
 
 /// SeaORM's `Json` / `JsonValue` aliases and a bare `Value` all become the

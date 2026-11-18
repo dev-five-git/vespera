@@ -108,20 +108,20 @@ fn extract_value_from_expr_float_parse_failure_does_not_panic() {
 #[case::tuple("(i32, String)", None)]
 #[case::array("[i32; 3]", None)]
 fn get_type_default_cases(#[case] src: &str, #[case] expected: Option<Value>) {
-    assert_eq!(utils_get_type_default(&parse_type(src)), expected);
+    assert_eq!(utils_get_type_default(&parse_type(src), &[]), expected);
 }
 
 #[rstest]
 #[case::f32("f32")]
 #[case::f64("f64")]
 fn get_type_default_floats_present(#[case] src: &str) {
-    assert!(utils_get_type_default(&parse_type(src)).is_some());
+    assert!(utils_get_type_default(&parse_type(src), &[]).is_some());
 }
 
 #[test]
 fn get_type_default_global_path_still_resolved() {
     // `::String` has a leading colon-colon but the last segment is still `String`.
-    assert!(utils_get_type_default(&parse_type("::String")).is_some());
+    assert!(utils_get_type_default(&parse_type("::String"), &[]).is_some());
 }
 
 // ---------- find_function_in_file ----------
@@ -558,6 +558,7 @@ fn request_view_defaults(
         schema,
         &BTreeMap::new(),
         SerdeSide::Deserialize,
+        &[],
     );
 }
 
@@ -588,6 +589,7 @@ fn process_default_functions_keeps_required_in_response_view(#[case] src: &str) 
         &mut schema,
         &BTreeMap::new(),
         SerdeSide::Serialize,
+        &[],
     );
     assert_eq!(
         schema.required, required_before,
@@ -600,6 +602,7 @@ fn process_default_functions_keeps_required_in_response_view(#[case] src: &str) 
         &mut schema,
         &BTreeMap::new(),
         SerdeSide::Deserialize,
+        &[],
     );
     assert_eq!(
         schema.required,

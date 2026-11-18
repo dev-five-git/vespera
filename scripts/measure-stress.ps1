@@ -7,7 +7,7 @@
   -Runs times: clean-rebuild only the stress crate (deps stay built) via
   `cargo rustc -- -Z time-passes` (RUSTC_BOOTSTRAP, stable toolchain), and
   report wall seconds, the `macro_expand_crate` pass seconds, peak working
-  set (MB, sampled every 25 ms across all rustc processes) and openapi.json
+  set (MB, the largest single rustc process, sampled every 25 ms) and openapi.json
   size. Also one incremental rebuild (touch one route file). Prints a
   markdown table plus a log-log slope (1.0 = linear, >1 superlinear) of
   macro_expand_crate vs N.
@@ -39,9 +39,9 @@ function Invoke-Measured([string]$manifest, [string[]]$rustcArgs) {
   $outTask = $p.StandardOutput.ReadToEndAsync()
   $peak = 0.0
   while (-not $p.HasExited) {
-    $ws = (Get-Process -Name rustc -ErrorAction SilentlyContinue | Measure-Object WorkingSet64 -Sum).Sum
-    # peak of a single rustc is what matters; sum approximates concurrent crates
-    $one = (Get-Process -Name rustc -ErrorAction SilentlyContinue | Measure-Object WorkingSet64 -Maximum).Maximum
+    # The peak of the largest single rustc process (not the sum over concurrent
+    # rustc processes, which would overstate one crate's memory).
+    $one =(Get-Process -Name rustc -ErrorAction SilentlyContinue | Measure-Object WorkingSet64 -Maximum).Maximum
     if ($one -and $one / 1MB -gt $peak) { $peak = $one / 1MB }
     Start-Sleep -Milliseconds 25
   }

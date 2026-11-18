@@ -781,15 +781,13 @@ const ECOSYSTEM_DEFAULT_NAMES: &[&str] = &[
     "NaiveDateTime",
 ];
 
-/// Whether the path `segments`, written in the call-site module, names an
-/// ecosystem type. A crate-local type of the same name (`struct Decimal(i64)`)
-/// advertised `"0"` / `"1970-01-01"` before. Without a call-site module the
-/// name is taken as the ecosystem type, as before.
-fn names_ecosystem_type(segments: &[String]) -> bool {
-    let Some(module) = super::file_lookup::call_site_module() else {
-        return true;
-    };
-    match super::module_scope::resolve_name(segments, &module) {
+/// Whether the path `segments`, written in the module `source_module` (the
+/// module of the struct the field is declared in), names an ecosystem type.
+/// A crate-local type of the same name (`struct Decimal(i64)`) advertised
+/// `"0"` / `"1970-01-01"` before. Without a known module (`source_module` is
+/// empty) the name is taken as the ecosystem type, as before.
+fn names_ecosystem_type(segments: &[String], source_module: &[String]) -> bool {
+    match super::module_scope::resolve_name(segments, source_module) {
         super::module_scope::Resolved::Path(path) => matches!(
             path.first().map(String::as_str),
             Some("sea_orm" | "chrono" | "rust_decimal" | "uuid" | "time")
@@ -798,8 +796,12 @@ fn names_ecosystem_type(segments: &[String]) -> bool {
     }
 }
 
-/// Get type-specific default value for simple #[serde(default)]
-pub fn get_type_default(ty: &Type) -> Option<serde_json::Value> {
+/// Get type-specific default value for simple #[serde(default)].
+///
+/// `source_module` is the absolute module (`crate::..`) the field's type is
+/// written in; it resolves an ecosystem-looking name (`Decimal`, `Date`).
+/// Empty when unknown.
+pub fn get_type_default(ty: &Type, source_module: &[String]) -> Option<serde_json::Value> {
     match ty {
         Type::Path(type_path) => type_path.path.segments.last().and_then(|segment| {
             let name = segment.ident.to_string();
@@ -810,7 +812,7 @@ pub fn get_type_default(ty: &Type) -> Option<serde_json::Value> {
                     .iter()
                     .map(|segment| segment.ident.to_string())
                     .collect();
-                if !names_ecosystem_type(&segments) {
+                if !names_ecosystem_type(&segments, source_module) {
                     return None;
                 }
             }
