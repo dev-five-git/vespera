@@ -125,6 +125,15 @@ pub fn extract_schema_name_from_entity(ty: &syn::Type) -> Option<String> {
 
             // Get the second-to-last segment (module name)
             let module_segment = segments.get(segments.len() - 2)?;
+            // `self` / `super` / `crate` name no module by themselves: the
+            // module that `self::Entity` or `super::Entity` means is not the
+            // one spelled, so there is no name to derive.
+            if matches!(
+                module_segment.ident.to_string().as_str(),
+                "self" | "super" | "crate"
+            ) {
+                return None;
+            }
             // A raw module name (`super::r#type::Entity`) loses its `r#`.
             let module_name = strip_raw_prefix_owned(module_segment.ident.to_string());
 
@@ -385,11 +394,24 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_schema_name_from_entity_empty_module_name() {
-        // Tests the branch where module name has no characters (edge case)
+    fn test_extract_schema_name_from_entity_snake_module_is_capitalized() {
         let ty: syn::Type = syn::parse_str("super::some_module::Entity").unwrap();
         let result = extract_schema_name_from_entity(&ty);
         assert_eq!(result, Some("Some_module".to_string()));
+    }
+
+    /// A keyword module names no module of its own, so no component name is
+    /// derived (and `entity_target` finds none).
+    #[rstest::rstest]
+    #[case::self_module("self::Entity")]
+    #[case::super_module("super::Entity")]
+    #[case::nested_super("super::super::Entity")]
+    #[case::crate_root("crate::Entity")]
+    fn test_extract_schema_name_from_entity_keyword_module_has_no_name(#[case] path: &str) {
+        let ty: syn::Type = syn::parse_str(path).unwrap();
+        assert_eq!(extract_schema_name_from_entity(&ty), None);
+        let known = std::collections::HashSet::from(["Self", "Super", "Crate", "Entity"]);
+        assert_eq!(entity_target(&ty, &known), None);
     }
     /// Test strip_raw_prefix_owned function
     #[test]

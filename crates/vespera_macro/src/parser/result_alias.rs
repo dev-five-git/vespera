@@ -294,11 +294,10 @@ thread_local! {
 fn scan_src_definitions(src_dir: &Path, name: &str) -> Rc<[SrcDefinition]> {
     #[cfg(test)]
     SCANS.with(|scans| scans.set(scans.get() + 1));
-    let needle = format!("type {name}");
     let mut test_scope = TestScope::new(Some(src_dir));
     let mut definitions = Vec::new();
     for path in file_cache::list_rs_files(src_dir).iter() {
-        if let Some(file) = parsed_with(path, &needle)
+        if let Some(file) = parsed_declaring_type(path, name)
             && !test_scope.file_test_only(path)
         {
             let module = file_module(path, src_dir);
@@ -866,12 +865,34 @@ fn use_tree_imports(
     }
 }
 
-/// The parsed file at `path`. Files whose text lacks `needle` are skipped
-/// without parsing.
+/// The parsed file at `path`, when its text contains `needle` (a name a
+/// struct / enum / alias lookup needs). Files without it are skipped without
+/// parsing.
 fn parsed_with(path: &Path, needle: &str) -> Option<syn::File> {
     file_cache::get_file_content(path)
         .filter(|content| content.contains(needle))
         .and_then(|_| parse_items(path))
+}
+
+/// The parsed file at `path`, when it may declare a `type` named `name` (see
+/// [`declares_type_named`]). Files that do not are skipped without parsing.
+fn parsed_declaring_type(path: &Path, name: &str) -> Option<syn::File> {
+    file_cache::get_file_content(path)
+        .filter(|content| declares_type_named(content, name))
+        .and_then(|_| parse_items(path))
+}
+
+/// Whether `content` may declare `type <name>`: the name is preceded by the
+/// keyword `type` and any whitespace (rustfmt never writes more than one
+/// space, but `pub type\nName<T>` and `type  Name` are valid Rust). A false
+/// positive only costs a parse, so the check errs on the side of matching.
+fn declares_type_named(content: &str, name: &str) -> bool {
+    content.match_indices(name).any(|(at, _)| {
+        content[..at]
+            .trim_end()
+            .strip_suffix("type")
+            .is_some_and(|before| !before.ends_with(|c: char| c.is_alphanumeric() || c == '_'))
+    })
 }
 
 /// The items of the file at `path`. Function bodies are skipped: only item

@@ -4,7 +4,7 @@ use syn::{FnArg, PatType, Type};
 use vespera_core::route::{MediaType, RequestBody};
 use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
-use super::{extractors::request_extractor, schema::parse_type_to_schema_ref};
+use super::{extractors::request_extractor, response::Shadows, schema::parse_type_to_schema_ref};
 use crate::schema_macro::type_utils::option_inner;
 
 fn is_string_like(ty: &Type) -> bool {
@@ -128,7 +128,13 @@ fn body_for_type(
             ));
         }
 
-        if is_bytes_extractor(segment) {
+        // A user type named `Body` / `Bytes` is not axum's wrapper (an
+        // external-rooted path such as `axum::body::Body` still is).
+        let shadows = Shadows {
+            known_schemas,
+            struct_definitions,
+        };
+        if is_bytes_extractor(segment) && !shadows.names_user_type(ty) {
             return Some(single_content_body(
                 "application/octet-stream",
                 SchemaRef::Inline(Box::new(Schema {
@@ -230,6 +236,21 @@ mod tests {
         with_settings!({ snapshot_suffix => format!("req_body_{}", suffix) }, {
             assert_debug_snapshot!(body);
         });
+    }
+
+    #[test]
+    fn user_type_named_like_a_bytes_extractor_is_not_raw_bytes() {
+        let defs = HashMap::from([("Body", "pub struct Body { pub name: String }")]);
+        let bare: syn::ItemFn = syn::parse_str("fn test(body: Body) {}").unwrap();
+        let qualified: syn::ItemFn = syn::parse_str("fn test(body: axum::body::Body) {}").unwrap();
+        let shadowed = parse_request_body(bare.sig.inputs.first().unwrap(), &HashSet::new(), &defs);
+        assert!(shadowed.is_none());
+        let external = parse_request_body(
+            qualified.sig.inputs.first().unwrap(),
+            &HashSet::new(),
+            &defs,
+        );
+        assert!(external.is_some());
     }
 
     #[test]

@@ -14,7 +14,9 @@ use super::{
 /// The top-level type is expanded, and so are the positions a response is
 /// built from: the elements of a tuple and the arguments of a `Result`
 /// (`Result<Created<User>, AppError>` with `type Created<T> = (StatusCode,
-/// Json<T>)` documents the `Json<User>` body). The nesting is bounded by
+/// Json<T>)` documents the `Json<User>` body). Each nested position is looked
+/// up in the scope of the alias its enclosing type came from, so the names of
+/// an alias defined in another file resolve there. The nesting is bounded by
 /// [`MAX_ALIAS_DEPTH`], so a cyclic alias cannot recurse forever.
 ///
 /// Returns `true` when the return type changed.
@@ -29,35 +31,38 @@ pub fn expand_return_type_alias(
         return false;
     };
     let before = quote::quote!(#ty).to_string();
-    let origin = Origin {
-        handler: &handler,
-        same_path,
-        same_file,
-        src_dir,
-    };
-    expand_position(ty, &origin, 0);
+    let handler_scope = same_file.map(|file| {
+        NextScope::Ready(Scope {
+            module: fn_module(&file.items, &handler).unwrap_or_default(),
+            file: Cow::Borrowed(file),
+            path: same_path.map(source_key),
+        })
+    });
+    expand_position(ty, handler_scope.as_ref(), src_dir, 0);
     quote::quote!(#ty).to_string() != before
 }
 
-/// Where the return type being expanded was written.
-struct Origin<'a> {
-    handler: &'a syn::Ident,
-    same_path: Option<&'a Path>,
-    same_file: Option<&'a syn::File>,
-    src_dir: Option<&'a Path>,
-}
-
-/// Expands `ty` through its alias chain, then the response positions nested
-/// in the result (tuple elements, `Result` arguments), `depth` levels deep.
-fn expand_position(ty: &mut Type, origin: &Origin<'_>, depth: usize) {
+/// Expands `ty`, written in `scope` (`None`: no file known), through its alias
+/// chain, then the response positions nested in the result (tuple elements,
+/// `Result` arguments), `depth` levels deep.
+fn expand_position(
+    ty: &mut Type,
+    scope: Option<&NextScope<'_>>,
+    src_dir: Option<&Path>,
+    depth: usize,
+) {
     if depth >= MAX_ALIAS_DEPTH {
         return;
     }
-    expand_alias_chain(ty, origin);
+    // The scope the chain ends in: where the last alias applied is defined,
+    // which is where its body's nested names are written.
+    let mut scope = scope.cloned();
+    expand_alias_chain(ty, &mut scope, src_dir);
+    let scope = scope.as_ref();
     match ty {
         Type::Tuple(tuple) => {
             for elem in &mut tuple.elems {
-                expand_position(elem, origin, depth + 1);
+                expand_position(elem, scope, src_dir, depth + 1);
             }
         }
         Type::Path(type_path) => {
@@ -67,7 +72,7 @@ fn expand_position(ty: &mut Type, origin: &Origin<'_>, depth: usize) {
             {
                 for arg in &mut args.args {
                     if let syn::GenericArgument::Type(inner) = arg {
-                        expand_position(inner, origin, depth + 1);
+                        expand_position(inner, scope, src_dir, depth + 1);
                     }
                 }
             }
@@ -76,15 +81,10 @@ fn expand_position(ty: &mut Type, origin: &Origin<'_>, depth: usize) {
     }
 }
 
-/// Follows the alias chain of `ty` in place (see the module docs).
-fn expand_alias_chain(ty: &mut Type, origin: &Origin<'_>) {
-    let mut scope = origin.same_file.map(|file| {
-        NextScope::Ready(Scope {
-            module: fn_module(&file.items, origin.handler).unwrap_or_default(),
-            file: Cow::Borrowed(file),
-            path: origin.same_path.map(source_key),
-        })
-    });
+/// Follows the alias chain of `ty` in place (see the module docs). `scope` is
+/// the scope `ty` is written in; each alias applied replaces it with the scope
+/// that alias is defined in, where its body is written.
+fn expand_alias_chain(ty: &mut Type, scope: &mut Option<NextScope<'_>>, src_dir: Option<&Path>) {
     // Keyed by the resolved definition, not the ident: `type Result<T> =
     // crate::error::Result<Json<T>>;` names another module's `Result`.
     let mut seen: Vec<DefinitionKey> = Vec::new();
@@ -94,13 +94,13 @@ fn expand_alias_chain(ty: &mut Type, origin: &Origin<'_>) {
         };
         // An alias found under `src/` names its file, parsed only now that
         // the alias body turned out to be another alias candidate.
-        let here = scope.take().and_then(NextScope::materialize);
+        let here = scope.clone().and_then(NextScope::materialize);
         if matches!(&*ty, Type::Path(path) if is_external_path(&path.path, here.as_ref())) {
             break;
         }
         let qualifier = alias_qualifier(ty);
         let Some((alias, alias_scope)) =
-            find_alias(&name, qualifier.as_ref(), here.as_ref(), origin.src_dir)
+            find_alias(&name, qualifier.as_ref(), here.as_ref(), src_dir)
         else {
             break;
         };
@@ -114,6 +114,6 @@ fn expand_alias_chain(ty: &mut Type, origin: &Origin<'_>) {
         *ty = next;
         seen.push(key);
         // The alias body names types where the alias is defined.
-        scope = Some(alias_scope);
+        *scope = Some(alias_scope);
     }
 }

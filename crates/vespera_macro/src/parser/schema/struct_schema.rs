@@ -19,8 +19,9 @@ use super::{
         SerdeSide, derives_serialize, extract_aliases, extract_default,
         extract_deny_unknown_fields, extract_doc_comment, extract_field_codec,
         extract_field_rename_for, extract_field_rename_owned, extract_flatten, extract_rename_all,
-        extract_rename_all_for, extract_schema_ref_override, extract_serde_skip_flags, extract_tag,
-        extract_transparent, rename_field, skips_none_on_output, strip_raw_prefix_owned,
+        extract_rename_all_for, extract_schema_ref_override, extract_serde_rename_all,
+        extract_serde_skip_flags, extract_tag, extract_transparent, rename_field,
+        skips_none_on_output, strip_raw_prefix_owned,
     },
     type_schema::parse_type_to_schema_ref,
     wire_override::{current_container_override, field_schema_ref},
@@ -115,8 +116,14 @@ fn parse_struct_body(
     match &struct_item.fields {
         Fields::Named(fields_named) => {
             let request = super::request_view::in_request_view();
+            let serializes = derives_serialize(&struct_item.attrs);
+            // The response view of an owner that derives `Serialize` documents
+            // serde's own `rename_all`: a `try_from_multipart` rule names the
+            // form fields and never reaches serde's output.
             let rename_all = if request {
                 extract_rename_all_for(&struct_item.attrs, SerdeSide::Deserialize)
+            } else if serializes {
+                extract_serde_rename_all(&struct_item.attrs)
             } else {
                 extract_rename_all(&struct_item.attrs)
             };
@@ -125,7 +132,7 @@ fn parse_struct_body(
                 fields_named,
                 rename_all.as_deref(),
                 container_default,
-                derives_serialize(&struct_item.attrs),
+                serializes,
                 known_schemas,
                 struct_definitions,
             );

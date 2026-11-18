@@ -79,8 +79,9 @@ use super::{
         SerdeEnumRepr, SerdeSide, derives_serialize, extract_aliases, extract_default,
         extract_deny_unknown_fields, extract_enum_repr, extract_field_codec,
         extract_field_rename_for, extract_field_rename_owned, extract_flatten,
-        extract_rename_all_fields_for, extract_rename_all_for, extract_serde_skip_flags,
-        extract_tag, extract_transparent, extract_untagged, skips_none_on_output,
+        extract_rename_all_fields_for, extract_rename_all_for, extract_serde_rename_all,
+        extract_serde_skip_flags, extract_tag, extract_transparent, extract_untagged,
+        skips_none_on_output,
     },
     struct_schema::{flattened_member, peel},
     wire_override::{container_override_type, documented_tokens},
@@ -568,13 +569,19 @@ fn struct_differs(item: &syn::ItemStruct, flat: &FlatKinds) -> bool {
     if fields.named.is_empty() {
         return false;
     }
+    let owner_serializes = derives_serialize(&item.attrs);
+    // The response view names fields as the struct's `Serialize` writes them
+    // (see `struct_schema`): serde's own `rename_all` when it derives it.
+    let response_rename_all = if owner_serializes {
+        extract_serde_rename_all(&item.attrs)
+    } else {
+        extract_rename_all_for(&item.attrs, SerdeSide::Serialize)
+    };
     if extract_default(&item.attrs).is_some()
-        || extract_rename_all_for(&item.attrs, SerdeSide::Serialize)
-            != extract_rename_all_for(&item.attrs, SerdeSide::Deserialize)
+        || response_rename_all != extract_rename_all_for(&item.attrs, SerdeSide::Deserialize)
     {
         return true;
     }
-    let owner_serializes = derives_serialize(&item.attrs);
     fields
         .named
         .iter()

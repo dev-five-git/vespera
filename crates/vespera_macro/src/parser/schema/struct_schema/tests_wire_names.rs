@@ -87,6 +87,13 @@ fn struct_tag(#[case] name: &str, #[case] src: &str) {
     "sided_rename_all",
     r#"#[serde(rename_all(serialize = "SCREAMING_SNAKE_CASE", deserialize = "camelCase"))] struct Upload { file_name: String, #[form_data(field_name = "doc")] doc_file: String }"#
 )]
+// `try_from_multipart(rename_all)` names the form fields only: a `Serialize`
+// owner's response view keeps serde's Rust names (`file_name`), while the
+// request view reads the form field name (`fileName`).
+#[case::serialize_owner_ignores_try_from_multipart_rename_all(
+    "serialize_owner_ignores_try_from_multipart_rename_all",
+    r#"#[derive(serde::Serialize)] #[try_from_multipart(rename_all = "camelCase")] struct Upload { file_name: String }"#
+)]
 fn multipart_field_names(#[case] name: &str, #[case] src: &str) {
     insta::assert_snapshot!(
         format!("multipart_field_names_{name}"),
