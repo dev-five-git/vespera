@@ -18,7 +18,7 @@
 //! wrong guess is a compile error instead of a silently mismatched spec.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
 };
@@ -72,68 +72,117 @@ pub(super) struct ResolvedExport {
     pub(super) spec_file: PathBuf,
 }
 
-/// `use` aliases of one source file: local name → full path segments.
-pub(super) fn use_aliases(file: Option<&Path>) -> HashMap<String, Vec<String>> {
-    struct Uses<'a>(&'a mut HashMap<String, Vec<String>>);
+/// The `use` aliases of one source file.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct UseAliases {
+    /// Local name → full path segments, for every name the file binds to one
+    /// path.
+    pub(super) paths: HashMap<String, Vec<String>>,
+    /// Local names bound to different paths by different `use` items (in
+    /// different scopes of the file). The call site's scope is not known, so
+    /// neither path is chosen: a merge path starting with one is an error.
+    pub(super) ambiguous: HashSet<String>,
+}
+
+/// `use` aliases of one source file (see [`UseAliases`]).
+pub(super) fn use_aliases(file: Option<&Path>) -> UseAliases {
+    let mut aliases = UseAliases::default();
+    for (name, full) in use_bindings(file) {
+        if aliases.ambiguous.contains(&name) {
+            continue;
+        }
+        match aliases.paths.get(&name) {
+            Some(bound) if *bound != full => {
+                aliases.paths.remove(&name);
+                aliases.ambiguous.insert(name);
+            }
+            Some(_) => {}
+            None => {
+                aliases.paths.insert(name, full);
+            }
+        }
+    }
+    aliases
+}
+
+/// Every `use` binding of `file` in source order: `(local name, full path)`.
+fn use_bindings(file: Option<&Path>) -> Vec<(String, Vec<String>)> {
+    struct Uses<'a>(&'a mut Vec<(String, Vec<String>)>);
     impl<'ast> syn::visit::Visit<'ast> for Uses<'_> {
         fn visit_item_use(&mut self, item_use: &'ast syn::ItemUse) {
             collect_use(&item_use.tree, &mut Vec::new(), self.0);
         }
     }
-    let mut aliases = HashMap::new();
+    let mut bindings = Vec::new();
     let Some(ast) = file.and_then(crate::schema_macro::file_cache::get_parsed_file) else {
-        return aliases;
+        return bindings;
     };
     // Every `use` of the file, including one in a function body (the
     // `vespera!` call often sits in `fn create_app()`) or an inline module.
-    syn::visit::visit_file(&mut Uses(&mut aliases), &ast);
-    aliases
+    syn::visit::visit_file(&mut Uses(&mut bindings), &ast);
+    bindings
 }
 
 fn collect_use(
     tree: &syn::UseTree,
     prefix: &mut Vec<String>,
-    aliases: &mut HashMap<String, Vec<String>>,
+    bindings: &mut Vec<(String, Vec<String>)>,
 ) {
     match tree {
         syn::UseTree::Path(path) => {
             prefix.push(path.ident.to_string());
-            collect_use(&path.tree, prefix, aliases);
+            collect_use(&path.tree, prefix, bindings);
             prefix.pop();
         }
         // `use child::{self, X}` binds `child` itself, not a name `self`.
         syn::UseTree::Name(name) if name.ident == "self" => {
             if let Some(last) = prefix.last() {
-                aliases.insert(last.clone(), prefix.clone());
+                bindings.push((last.clone(), prefix.clone()));
             }
         }
         syn::UseTree::Name(name) => {
             let mut full = prefix.clone();
             full.push(name.ident.to_string());
-            aliases.insert(name.ident.to_string(), full);
+            bindings.push((name.ident.to_string(), full));
         }
         syn::UseTree::Rename(rename) if rename.ident == "self" => {
-            aliases.insert(rename.rename.to_string(), prefix.clone());
+            bindings.push((rename.rename.to_string(), prefix.clone()));
         }
         syn::UseTree::Rename(rename) => {
             let mut full = prefix.clone();
             full.push(rename.ident.to_string());
-            aliases.insert(rename.rename.to_string(), full);
+            bindings.push((rename.rename.to_string(), full));
         }
         syn::UseTree::Group(group) => {
             for tree in &group.items {
-                collect_use(tree, prefix, aliases);
+                collect_use(tree, prefix, bindings);
             }
         }
         syn::UseTree::Glob(_) => {}
     }
 }
 
+/// The compile error for a merge path whose first segment is an ambiguous
+/// `use` name of the call-site file.
+pub(super) fn ambiguous_alias_error(
+    merge_path: &syn::Path,
+    aliases: &UseAliases,
+) -> Option<String> {
+    let first = merge_path.segments.first()?.ident.to_string();
+    aliases.ambiguous.contains(&first).then(|| {
+        format!(
+            "vespera! merge: `{first}` is bound by `use` items of this file to different paths \
+             (in different scopes), so the merge path cannot tell which app it names — spell \
+             the merge path out in full (`krate::Module::App`) instead of `{first}`"
+        )
+    })
+}
+
 /// Resolve `merge_path` against the call-site `aliases` and the exported
 /// specs under `vespera_dir`.
 pub(super) fn resolve_export(
     merge_path: &syn::Path,
-    aliases: &HashMap<String, Vec<String>>,
+    aliases: &UseAliases,
     vespera_dir: &Path,
 ) -> Option<ResolvedExport> {
     let mut segments: Vec<String> = merge_path
@@ -142,9 +191,15 @@ pub(super) fn resolve_export(
         .map(|segment| segment.ident.to_string())
         .collect();
     // An alias only ever replaces the first segment (that is the name the
-    // file's `use` brought into scope).
-    if let Some(full) = segments.first().and_then(|first| aliases.get(first)) {
-        segments.splice(..1, full.iter().cloned());
+    // file's `use` brought into scope). An ambiguous one resolves to nothing:
+    // `ambiguous_alias_error` reports it.
+    if let Some(first) = segments.first() {
+        if aliases.ambiguous.contains(first) {
+            return None;
+        }
+        if let Some(full) = aliases.paths.get(first) {
+            segments.splice(..1, full.iter().cloned());
+        }
     }
     let app = segments.last()?.clone();
     let current = current_export_crate();
@@ -198,7 +253,7 @@ fn exporters_of(vespera_dir: &Path, app: &str) -> Vec<String> {
 /// misleading message), so the candidates are listed instead.
 pub(super) fn ambiguous_export_error(
     merge_path: &syn::Path,
-    aliases: &HashMap<String, Vec<String>>,
+    aliases: &UseAliases,
     vespera_dir: &Path,
 ) -> Option<String> {
     let resolved = resolve_export(merge_path, aliases, vespera_dir)?;
@@ -340,7 +395,7 @@ mod tests {
         // ... and the ambiguity itself is a compile error naming the
         // candidates; a found or unique export is not.
         let ambiguous = |path: &str| {
-            ambiguous_export_error(&syn::parse_str(path).unwrap(), &HashMap::new(), dir)
+            ambiguous_export_error(&syn::parse_str(path).unwrap(), &UseAliases::default(), dir)
         };
         insta::assert_snapshot!(
             "ambiguous_export",
@@ -354,7 +409,7 @@ mod tests {
         assert_eq!(
             ambiguous_export_error(
                 &syn::parse_str("dep::ChildApp").unwrap(),
-                &HashMap::new(),
+                &UseAliases::default(),
                 &dir.join("absent")
             ),
             None
@@ -435,13 +490,13 @@ mod tests {
         .unwrap();
         crate::schema_macro::file_cache::bump_epoch();
         let aliases = use_aliases(Some(&file));
-        assert_eq!(aliases.get("child"), Some(&vec!["child".to_string()]));
-        assert_eq!(aliases.get("o"), Some(&vec!["other".to_string()]));
+        assert_eq!(aliases.paths.get("child"), Some(&vec!["child".to_string()]));
+        assert_eq!(aliases.paths.get("o"), Some(&vec!["other".to_string()]));
         assert_eq!(
-            aliases.get("ChildApp"),
+            aliases.paths.get("ChildApp"),
             Some(&vec!["child".to_string(), "ChildApp".to_string()])
         );
-        assert!(!aliases.contains_key("self"));
+        assert!(!aliases.paths.contains_key("self"));
     }
 
     /// A `use` inside a function body (where `vespera!` is usually called) or
@@ -458,19 +513,72 @@ mod tests {
         crate::schema_macro::file_cache::bump_epoch();
         let aliases = use_aliases(Some(&file));
         assert_eq!(
-            aliases.get("Admin"),
+            aliases.paths.get("Admin"),
             Some(&vec!["child".to_string(), "ChildApp".to_string()])
         );
         assert_eq!(
-            aliases.get("O"),
+            aliases.paths.get("O"),
             Some(&vec!["other".to_string(), "Other".to_string()])
         );
     }
 
+    /// The same local name bound to two paths in two scopes of one file is
+    /// neither alias: the call site's scope is unknown.
+    #[test]
+    fn a_name_bound_to_two_paths_in_two_scopes_is_ambiguous() {
+        let temp = TempDir::new().unwrap();
+        let file = temp.path().join("app.rs");
+        std::fs::write(
+            &file,
+            "use admin_crate::AdminApp as App;\n\
+             pub mod public { use public_crate::PublicApp as App; }\n\
+             pub mod third { use admin_crate::AdminApp as App; }\n\
+             use other::Other as Same;\n\
+             pub mod again { use other::Other as Same; }\n",
+        )
+        .unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let aliases = use_aliases(Some(&file));
+        assert!(aliases.ambiguous.contains("App"));
+        assert!(!aliases.paths.contains_key("App"));
+        // Equal bindings are one alias.
+        assert_eq!(
+            aliases.paths.get("Same"),
+            Some(&vec!["other".to_string(), "Other".to_string()])
+        );
+        let merge: syn::Path = syn::parse_str("App").unwrap();
+        assert!(ambiguous_alias_error(&merge, &aliases).is_some());
+        let plain: syn::Path = syn::parse_str("Same").unwrap();
+        assert!(ambiguous_alias_error(&plain, &aliases).is_none());
+        assert!(resolve_export(&merge, &aliases, temp.path()).is_none());
+    }
+
+    /// An alias bound to two paths is an error at the merge path that uses it,
+    /// not a guess (the cache reports it before anything is merged).
+    #[test]
+    fn ambiguous_alias_merge_path_is_rejected_by_the_cache() {
+        let temp = TempDir::new().unwrap();
+        let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
+        let call_site = temp.path().join("call_site.rs");
+        fs::write(
+            &call_site,
+            "use admin::AdminApp as App;\npub mod public { use public::PublicApp as App; }\n",
+        )
+        .unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let cache = super::super::cache::MergeSpecCache::with_call_site(Some(&call_site));
+        let merge: Vec<syn::Path> = vec![syn::parse_quote!(App)];
+        let error = cache.check_unambiguous(&merge).unwrap_err().to_string();
+        assert!(error.contains("bound by `use` items"), "{error}");
+    }
+
     #[test]
     fn aliases_without_a_readable_call_site_are_empty() {
-        assert!(use_aliases(None).is_empty());
-        assert!(use_aliases(Some(Path::new("missing/call_site.rs"))).is_empty());
+        assert_eq!(use_aliases(None), UseAliases::default());
+        assert_eq!(
+            use_aliases(Some(Path::new("missing/call_site.rs"))),
+            UseAliases::default()
+        );
     }
 
     #[test]

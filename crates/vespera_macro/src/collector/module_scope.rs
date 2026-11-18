@@ -55,7 +55,7 @@ pub(super) fn module_cfg_predicates(folder_path: &Path, segments: &[String]) -> 
     let mut parent = folder_path.to_path_buf();
     let mut predicates = Vec::new();
     for segment in segments {
-        for declarer in [parent.join("mod.rs"), parent.with_extension("rs")] {
+        for declarer in [parent.join("mod.rs"), sibling_rs_file(&parent)] {
             let declared = file_cache::derived(&declarer, |content| {
                 Declared(syn::parse_file(content).ok().map(|file| {
                     file.items
@@ -80,6 +80,14 @@ pub(super) fn module_cfg_predicates(folder_path: &Path, segments: &[String]) -> 
         parent.push(segment);
     }
     predicates
+}
+
+/// `<dir>.rs`: the file declaring the module `dir`, appended (not
+/// `with_extension`, which would replace the `.v2` of `api.v2`).
+pub(super) fn sibling_rs_file(dir: &Path) -> std::path::PathBuf {
+    let mut name = dir.as_os_str().to_os_string();
+    name.push(".rs");
+    std::path::PathBuf::from(name)
 }
 
 /// `(module, handler)` of the first `#[route]` handler declared inside an
@@ -270,6 +278,26 @@ mod tests {
         file_cache::bump_epoch();
         let segments: Vec<String> = segments.iter().map(ToString::to_string).collect();
         assert_eq!(module_cfg_predicates(dir.path(), &segments), expected);
+    }
+
+    #[test]
+    fn folder_with_dot_declared_in_sibling_file_with_full_name() {
+        // `api.v2` is declared by `api.v2.rs`; `with_extension` would look
+        // for `api.rs`.
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("api.v2");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            dir.path().join("api.v2.rs"),
+            "#[cfg(feature = \"admin\")] mod admin;",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("api.rs"), "mod admin;").unwrap();
+        file_cache::bump_epoch();
+        assert_eq!(
+            module_cfg_predicates(&folder, &["admin".to_string()]),
+            ["feature = \"admin\""]
+        );
     }
 
     #[test]

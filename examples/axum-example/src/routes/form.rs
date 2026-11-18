@@ -74,9 +74,10 @@ pub async fn contact(Form(input): Form<ContactFormRequest>) -> Json<ContactFormR
 
 /// Upload a file via raw multipart form data
 ///
-/// A malformed multipart body answers `400` and one over the body limit
-/// `413` (axum's `MultipartError::status`) instead of panicking the handler.
-#[route(post, path = "/upload", tags = ["form"], error_status = [400, 413])]
+/// A malformed multipart body answers `400`, one over the body limit `413`
+/// and a stream that breaks mid-body `500` (axum's `MultipartError::status`)
+/// instead of panicking the handler.
+#[route(post, path = "/upload", tags = ["form"], error_status = [400, 413, 500])]
 pub async fn upload(
     mut multipart: Multipart,
 ) -> Result<Json<ContactFormResponse>, (StatusCode, String)> {

@@ -51,7 +51,11 @@ pub(super) fn is_absolute_http_url(value: &str) -> bool {
     value
         .strip_prefix("https://")
         .or_else(|| value.strip_prefix("http://"))
-        .is_some_and(|rest| !rest.is_empty() && !rest.contains(char::is_whitespace))
+        .is_some_and(|rest| {
+            // The authority (up to a path, query or fragment) names a host.
+            let host = rest.split(['/', '?', '#']).next();
+            host.is_some_and(|host| !host.is_empty()) && !rest.contains(char::is_whitespace)
+        })
 }
 
 fn require_http_url(key: &str, lit: &LitStr) -> syn::Result<()> {
@@ -70,10 +74,9 @@ fn require_http_url(key: &str, lit: &LitStr) -> syn::Result<()> {
 
 fn require_email(lit: &LitStr) -> syn::Result<()> {
     let value = lit.value();
-    let valid = value
-        .split_once('@')
-        .is_some_and(|(local, domain)| !local.is_empty() && !domain.is_empty())
-        && !value.chars().any(char::is_whitespace);
+    let valid = value.split_once('@').is_some_and(|(local, domain)| {
+        !local.is_empty() && !domain.is_empty() && !domain.contains('@')
+    }) && !value.chars().any(char::is_whitespace);
     if valid {
         Ok(())
     } else {
@@ -219,6 +222,11 @@ mod tests {
     #[case::email_empty_local(&[("contact_email", "@example.com")], "`contact_email` must be an email")]
     #[case::email_empty_domain(&[("contact_email", "a@")], "`contact_email` must be an email")]
     #[case::email_whitespace(&[("contact_email", "a b@example.com")], "`contact_email` must be an email")]
+    #[case::email_two_ats(&[("contact_email", "a@b@c")], "`contact_email` must be an email")]
+    // The host of an absolute URL is what precedes its path, query or fragment.
+    #[case::url_query_without_host(&[("terms_of_service", "https://?x=1")], "`terms_of_service` must start with")]
+    #[case::url_fragment_without_host(&[("contact_url", "https://#top")], "`contact_url` must start with")]
+    #[case::url_path_without_host(&[("license_name", "X"), ("license_url", "https:///x")], "`license_url` must start with")]
     #[case::license_and_url(
         &[("license", "MIT"), ("license_name", "MIT"), ("license_url", "https://x.dev")],
         "mutually exclusive"

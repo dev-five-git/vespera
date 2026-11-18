@@ -251,11 +251,38 @@ pub fn namespace_export_schemas(
     Ok(())
 }
 
-/// Point every `#/components/schemas/{old}` `$ref` inside `value` at `renames[old]`.
+/// Keys whose values are data (example payloads, defaults, enum members), not
+/// schemas: a `$ref`-shaped value under them is documented content.
+const DATA_KEYS: [&str; 5] = ["example", "examples", "default", "enum", "const"];
+
+/// Keys whose object maps names (property names, component names, status
+/// codes, paths) to schemas or objects: its own keys are never data keywords,
+/// so a property named `example` or a `default` response is still walked.
+const NAME_MAP_KEYS: [&str; 8] = [
+    "properties",
+    "patternProperties",
+    "$defs",
+    "definitions",
+    "dependentSchemas",
+    "schemas",
+    "responses",
+    "paths",
+];
+
+/// Point every `#/components/schemas/{old}` `$ref` in a schema position inside
+/// `value` at `renames[old]`. `value` is a document, a `paths` object or a
+/// component map; example / default / enum data is left as written.
 pub fn rewrite_schema_refs(value: &mut serde_json::Value, renames: &BTreeMap<String, String>) {
+    rewrite_refs(value, renames, true);
+}
+
+/// [`rewrite_schema_refs`]; `names` says `value` is a name map (its keys are
+/// names, not keywords), which the root and each NAME_MAP_KEYS value are.
+fn rewrite_refs(value: &mut serde_json::Value, renames: &BTreeMap<String, String>, names: bool) {
     match value {
         serde_json::Value::Object(object) => {
-            if let Some(serde_json::Value::String(reference)) = object.get_mut("$ref")
+            if !names
+                && let Some(serde_json::Value::String(reference)) = object.get_mut("$ref")
                 && let Some(target) = reference.strip_prefix("#/components/schemas/")
             {
                 let (name, suffix) = target
@@ -269,13 +296,17 @@ pub fn rewrite_schema_refs(value: &mut serde_json::Value, renames: &BTreeMap<Str
                     };
                 }
             }
-            for child in object.values_mut() {
-                rewrite_schema_refs(child, renames);
+            for (key, child) in object.iter_mut() {
+                if !names && DATA_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
+                let child_names = !names && NAME_MAP_KEYS.contains(&key.as_str());
+                rewrite_refs(child, renames, child_names);
             }
         }
         serde_json::Value::Array(values) => {
             for child in values {
-                rewrite_schema_refs(child, renames);
+                rewrite_refs(child, renames, false);
             }
         }
         _ => {}
@@ -668,6 +699,57 @@ mod tests {
         let json = serde_json::to_string(&first).unwrap();
         assert!(json.contains("#/components/schemas/MediaItem"));
         assert!(json.contains("#/components/schemas/CatalogItem"));
+    }
+
+    /// A `$ref`-shaped value that is documented data (an `example`, a schema's
+    /// `default`, an `enum` member) is not a schema reference; a property or a
+    /// response named like a keyword still is.
+    #[test]
+    fn rewrite_leaves_example_and_default_data_alone() {
+        let mut value = serde_json::json!({
+            "components": { "schemas": {
+                "Holder": {
+                    "properties": {
+                        "example": { "$ref": "#/components/schemas/Item" },
+                        "default": { "$ref": "#/components/schemas/Item" }
+                    },
+                    "default": { "$ref": "#/components/schemas/Item" },
+                    "example": { "$ref": "#/components/schemas/Item" }
+                },
+                "default": { "$ref": "#/components/schemas/Item" },
+                "Item": { "type": "object" }
+            } },
+            "paths": { "/x": { "get": { "responses": {
+                "default": { "content": { "application/json": {
+                    "schema": { "$ref": "#/components/schemas/Item" },
+                    "example": { "$ref": "#/components/schemas/Item" }
+                } } }
+            } } } }
+        });
+        let renames = BTreeMap::from([("Item".to_string(), "MediaItem".to_string())]);
+
+        rewrite_schema_refs(&mut value, &renames);
+
+        let holder = &value["components"]["schemas"]["Holder"];
+        assert_eq!(
+            holder["properties"]["example"]["$ref"],
+            "#/components/schemas/MediaItem"
+        );
+        assert_eq!(
+            holder["properties"]["default"]["$ref"],
+            "#/components/schemas/MediaItem"
+        );
+        assert_eq!(holder["default"]["$ref"], "#/components/schemas/Item");
+        assert_eq!(holder["example"]["$ref"], "#/components/schemas/Item");
+        // A component named `default` is a schema, not data.
+        assert_eq!(
+            value["components"]["schemas"]["default"]["$ref"],
+            "#/components/schemas/MediaItem"
+        );
+        let media =
+            &value["paths"]["/x"]["get"]["responses"]["default"]["content"]["application/json"];
+        assert_eq!(media["schema"]["$ref"], "#/components/schemas/MediaItem");
+        assert_eq!(media["example"]["$ref"], "#/components/schemas/Item");
     }
 
     #[test]

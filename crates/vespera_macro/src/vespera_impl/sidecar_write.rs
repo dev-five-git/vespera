@@ -11,8 +11,10 @@
 //!   a torn one;
 //! * **content addressing** — `include_str!` targets carry the content hash in
 //!   their name, so each expansion embeds exactly the bytes it generated.
-//!   Superseded files are pruned once they are old enough that no in-flight
-//!   compilation can still be about to read them;
+//!   Superseded files are pruned once they have been superseded for long
+//!   enough that no in-flight compilation can still be about to read them
+//!   (the grace period runs from the write that superseded them, not from
+//!   their own creation);
 //! * **per-variant names** — the library, a binary, the `--test` harness and
 //!   rust-analyzer get their own file stems (`path_utils::target_variant`),
 //!   so pruning only ever removes an older file of the SAME build variant.
@@ -86,6 +88,12 @@ fn prune_superseded_older_than(keep: &Path, stem: &str, age: Duration) {
     };
     let prefix = format!("{stem}-");
     let now = SystemTime::now();
+    // A superseded file was superseded when the kept file was written (it is
+    // never rewritten, so its own mtime is its creation). The grace period
+    // runs from that later of the two writes, never from creation alone.
+    let kept_modified = std::fs::metadata(keep)
+        .and_then(|meta| meta.modified())
+        .ok();
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -96,7 +104,10 @@ fn prune_superseded_older_than(keep: &Path, stem: &str, age: Duration) {
         let stale = entry
             .metadata()
             .and_then(|meta| meta.modified())
-            .is_ok_and(|modified| now.duration_since(modified).unwrap_or_default() >= age);
+            .is_ok_and(|modified| {
+                let superseded_at = kept_modified.map_or(modified, |kept| kept.max(modified));
+                now.duration_since(superseded_at).unwrap_or_default() >= age
+            });
         if is_sibling && stale && path != keep {
             let _ = std::fs::remove_file(path);
         }
@@ -163,5 +174,38 @@ mod tests {
         // A missing directory / root path is a no-op.
         prune_superseded(&dir.join("missing").join("x.json"), "x");
         prune_superseded(Path::new("/"), "x");
+    }
+
+    /// The grace period of a superseded file runs from the write that
+    /// superseded it (the kept file's), not from its own creation: a file
+    /// written an hour ago, superseded just now, is kept.
+    #[test]
+    fn prune_grace_runs_from_supersession_not_creation() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let keep = content_addressed(dir, "vespera_spec-app", 1);
+        let old = content_addressed(dir, "vespera_spec-app", 2);
+        fs::write(&old, "{}").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(60 * 60))
+            .unwrap();
+        fs::write(&keep, "{}").unwrap();
+
+        prune_superseded_older_than(&keep, "vespera_spec-app", Duration::from_secs(10 * 60));
+        assert!(old.exists());
+
+        // Once it has been superseded for the whole grace period, it goes.
+        fs::File::options()
+            .write(true)
+            .open(&keep)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(60 * 60))
+            .unwrap();
+        prune_superseded_older_than(&keep, "vespera_spec-app", Duration::from_secs(10 * 60));
+        assert!(!old.exists());
+        assert!(keep.exists());
     }
 }

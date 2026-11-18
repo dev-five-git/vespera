@@ -740,6 +740,33 @@ fn process_default_functions_falls_through_when_stored_defaults_present() {
 }
 
 #[test]
+fn stored_default_still_demotes_a_serde_default_field_from_required() {
+    // The stored default (Priority 0) takes the field, but `#[serde(default)]`
+    // still makes the request key optional.
+    let struct_item: syn::ItemStruct =
+        syn::parse_str(r#"pub struct R { #[serde(default = "d")] pub on: bool }"#).unwrap();
+    let mut schema = Schema::object();
+    schema.properties.get_or_insert_with(BTreeMap::new).insert(
+        "on".to_string(),
+        SchemaRef::Inline(Box::new(Schema::boolean())),
+    );
+    schema.required = Some(vec!["on".to_string()]);
+    let stored: BTreeMap<String, Value> = BTreeMap::from([("on".to_string(), json!(true))]);
+
+    process_default_functions_for(
+        &struct_item,
+        None,
+        &mut schema,
+        &stored,
+        SerdeSide::Deserialize,
+        &[],
+    );
+
+    assert_inline_default(schema.properties.as_ref().unwrap(), "on", &json!(true));
+    assert_eq!(schema.required, None);
+}
+
+#[test]
 fn process_default_functions_falls_through_for_schema_default_attr() {
     // `#[schema(default = "...")]` with empty `stored_defaults`: the
     // early-return MUST NOT fire because Priority-1 needs to run.

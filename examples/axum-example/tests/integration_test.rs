@@ -427,18 +427,21 @@ async fn test_error_response2_routes_document_their_500() {
 async fn test_memo_format_lists_the_documented_fields() {
     let server = TestServer::new(create_app().await);
     let text = server.get("/memos/format").await.text();
-    let listed: Vec<&str> = text
+    let mut listed: Vec<&str> = text
         .strip_prefix("MemoResponse has: ")
         .and_then(|rest| rest.split_once(" ("))
         .map_or_default(|(fields, _)| fields.split(", ").collect());
     let openapi: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string("openapi.json").unwrap()).unwrap();
-    let required: Vec<&str> = openapi["components"]["schemas"]["MemoResponse"]["required"]
+    let mut required: Vec<&str> = openapi["components"]["schemas"]["MemoResponse"]["required"]
         .as_array()
         .unwrap()
         .iter()
         .map(|field| field.as_str().unwrap())
         .collect();
+    // The claim is about the set of fields, not their order.
+    listed.sort_unstable();
+    required.sort_unstable();
     assert_eq!(listed, required);
 }
 

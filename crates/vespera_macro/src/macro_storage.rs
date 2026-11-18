@@ -220,12 +220,39 @@ fn retain_declared_if<T: Clone + SourceIdentified>(
 /// generate `list` from `macro_rules! h`): such a handler / job has no
 /// literal `fn name` in its file, so its entry is kept. A name a
 /// `macro_rules!` body spells out keeps its `fn name` text and is covered by
-/// [`declares_fn`]. Textual like [`declares_fn`]: a line with a `!` and a
-/// whole-identifier `name` counts.
+/// [`declares_fn`]. Textual like [`declares_fn`], but only the arguments of
+/// an `ident!(` / `ident![` / `ident!{` invocation count, outside string
+/// literals: `tracing::info!("list called")` does not keep `list`.
 fn may_come_from_macro(content: &str, name: &str) -> bool {
-    content
-        .lines()
-        .any(|line| line.contains('!') && contains_ident(line, name))
+    content.lines().any(|line| {
+        let code = strip_string_literals(line);
+        code.match_indices('!').any(|(bang, _)| {
+            let args = code[bang + 1..].trim_start();
+            args.starts_with(['(', '[', '{']) && contains_ident(&args[1..], name)
+        })
+    })
+}
+
+/// `line` with the contents of its double-quoted string literals removed
+/// (the quotes stay). A literal spanning lines is not seen as one.
+fn strip_string_literals(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    for c in line.chars() {
+        if !in_string {
+            in_string = c == '"';
+            out.push(c);
+        } else if escaped {
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            in_string = false;
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Whether `text` contains `name` as a whole identifier (an unraw `name`
@@ -350,6 +377,21 @@ mod tests {
         let kept = retain_declared_if(&items, true);
         let payloads: Vec<_> = kept.iter().map(|item| item.payload).collect();
         assert_eq!(payloads, ["generated"]);
+    }
+
+    #[test]
+    fn retain_declared_drops_a_name_only_a_string_or_a_non_invocation_mentions() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let file = temp.path().join("renamed_routes.rs");
+        std::fs::write(
+            &file,
+            "#[route(get)]\npub async fn list_all() {}\ntracing::info!(\"list_users called\");\ntracing::info!(\"say \\\"list_users\\\"\");\nlet done = list_users != other;\n",
+        )
+        .unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let path = file.display().to_string();
+        let items = vec![entry("list_users", &path, "stale")];
+        assert!(retain_declared_if(&items, true).is_empty());
     }
 
     #[rstest::rstest]
