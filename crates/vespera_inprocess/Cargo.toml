@@ -105,7 +105,7 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 # `alloca`) would otherwise need a C cross-compiler when Miri interprets a non-host target.
 [target.'cfg(not(miri))'.dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
-mimalloc = "0.1.43"
+mimalloc = "0.1.52"
 
 # loom models of the shared runtime's lease gate (`src/runtime/gate.rs`) and
 # the async in-flight cap shared by JNI and the C ABI (`src/runtime/in_flight.rs`).
