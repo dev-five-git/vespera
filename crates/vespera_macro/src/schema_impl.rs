@@ -461,6 +461,11 @@ pub fn process_derive_schema(
         return (None, error.to_compile_error());
     }
 
+    // A custom serde codec whose wire shape is unknown and not overridden by
+    // `#[schema(value_type = ..)]` is a compile error on the field.
+    if let Some(error) = crate::parser::schema::wire_override::derive_codec_error(input) {
+        return (None, error.to_compile_error());
+    }
     // Check for custom schema settings from #[schema(...)] attributes in one pass.
     let schema_attr = match collect_schema_attribute_summary(&input.attrs) {
         Ok(summary) => summary,

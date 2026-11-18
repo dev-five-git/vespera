@@ -41,6 +41,36 @@ pub fn extract_field_codec(attrs: &[syn::Attribute]) -> FieldCodec {
     codec
 }
 
+/// The module path segments a custom serde function on `side` is read from:
+/// `with = "m::x"` is the module `m::x`, `serialize_with = "m::x::f"` (or
+/// `deserialize_with`) is the module `m::x` with the final fn segment
+/// stripped. Empty when no codec applies on `side` or the path names no module
+/// (`serialize_with = "f"`).
+pub fn extract_codec_module(attrs: &[syn::Attribute], side: SerdeSide) -> Vec<String> {
+    let fn_key = match side {
+        SerdeSide::Serialize => "serialize_with",
+        SerdeSide::Deserialize => "deserialize_with",
+    };
+    let mut module = Vec::new();
+    walk_serde_keys(attrs, |meta| {
+        let whole = meta.path.is_ident("with");
+        if !(whole || meta.path.is_ident(fn_key)) {
+            return Ok(false);
+        }
+        let mut path = meta.value()?.parse::<syn::LitStr>()?.parse::<syn::Path>()?;
+        if !whole {
+            path.segments.pop();
+        }
+        module = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect();
+        Ok(true)
+    });
+    module
+}
+
 /// `#[serde(skip_serializing_if = "Option::is_none")]` (any path to it, as
 /// serde_with's `#[skip_serializing_none]` writes it): serde never writes a
 /// `None`, so the output never holds `null` for this field.

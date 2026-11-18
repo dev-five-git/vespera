@@ -44,14 +44,16 @@ pub struct PortfolioUpdateRequest {
     #[serde(default)]
     pub title: String,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
+    #[schema(value_type = Option<NaiveDate>)]
     pub production_end_date: Option<Option<NaiveDate>>,
 }"#;
 
 /// A request-only type whose views differ is emitted once, as its request
 /// view, under its own name: no `PortfolioUpdateRequestInput`, no orphan
-/// response view. The `deserialize_with` field is documented from its Rust
-/// type (`Option<Option<NaiveDate>>` → a nullable date, not required; its
-/// `#[serde(default)]` documents `default: null`).
+/// response view. The `deserialize_with` field is documented by its
+/// `value_type` (`Option<NaiveDate>` → a nullable date, not required; its
+/// `#[serde(default)]` documents `default: null`): a custom deserializer with
+/// no well-known wire shape needs one.
 #[test]
 fn request_only_type_keeps_its_name() {
     let doc = doc_for(

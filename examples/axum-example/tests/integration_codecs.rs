@@ -95,7 +95,6 @@ async fn seaorm_json_columns_carry_any_json_value() {
 /// The documented component shapes, response and request views.
 #[rstest]
 #[case::event_times("EventTimes")]
-#[case::event_times_input("EventTimesInput")]
 #[case::rgb("Rgb")]
 #[case::money("Money")]
 #[case::money_input("MoneyInput")]
@@ -118,9 +117,8 @@ fn request_bodies_use_the_input_views() {
             .clone()
     };
     assert_eq!(body_ref("/codecs/money"), "#/components/schemas/MoneyInput");
-    assert_eq!(
-        body_ref("/codecs/times"),
-        "#/components/schemas/EventTimesInput"
-    );
+    // Both views document `EventTimes` identically now (`checksum` is a
+    // string on the wire either way), so no `EventTimesInput` is emitted.
+    assert_eq!(body_ref("/codecs/times"), "#/components/schemas/EventTimes");
     assert_eq!(body_ref("/codecs/color"), "#/components/schemas/Rgb");
 }

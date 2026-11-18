@@ -215,7 +215,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/EventTimesInput"
+                "$ref": "#/components/schemas/EventTimes"
               }
             }
           }
@@ -5061,40 +5061,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "description": "Timestamps written by custom serde functions.",
         "properties": {
           "checksum": {
-            "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
-          },
-          "createdAt": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Unix seconds (`chrono::serde::ts_seconds`) — an integer, not a\ndate-time string."
-          },
-          "expiresAt": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Optional unix milliseconds."
-          }
-        },
-        "required": [
-          "createdAt",
-          "expiresAt",
-          "checksum"
-        ]
-      },
-      "EventTimesInput": {
-        "type": "object",
-        "description": "Timestamps written by custom serde functions.",
-        "properties": {
-          "checksum": {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "uint8",
-              "minimum": 0,
-              "maximum": 255
-            }
+            "type": "string"
           },
           "createdAt": {
             "type": "integer",

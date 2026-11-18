@@ -83,7 +83,7 @@ use super::{
         extract_tag, extract_transparent, extract_untagged, skips_none_on_output,
     },
     struct_schema::{flattened_member, peel},
-    wire_override::{codec_hides_shape, container_override_type},
+    wire_override::{container_override_type, documented_tokens},
 };
 use crate::schema_macro::type_utils::is_option_type;
 
@@ -333,22 +333,23 @@ fn container_override_differs(attrs: &[syn::Attribute]) -> bool {
 }
 
 /// The field's documented schema or `required`-ness differs per direction
-/// because of a custom serde function: a serialize-side one (`with` /
-/// `serialize_with`) without `value_type` hides the response shape while
-/// the request view documents the Rust type (see `wire_override`), and an
-/// `Option` read through a custom function is required (serde no longer
-/// defaults it to `None` when absent). A `deserialize_with` alone documents
-/// the same type on both sides.
+/// because of a custom serde function: its documented shape differs per side
+/// (see [`codec_differs`]), or an `Option` read through a custom function is
+/// required (serde no longer defaults it to `None` when absent).
 fn field_codec_differs(field: &syn::Field) -> bool {
-    codec_differs(&field.attrs)
+    codec_differs(field)
         || (extract_field_codec(&field.attrs).deserialize && is_option_type(&field.ty))
 }
 
-/// A field's custom serde function documents a different schema per side
-/// (see [`field_codec_differs`]).
-fn codec_differs(attrs: &[syn::Attribute]) -> bool {
-    codec_hides_shape(attrs, SerdeSide::Serialize)
-        && extract_schema_constraints(attrs).value_type.is_none()
+/// A field's custom serde codec documents a different type per side: no
+/// `value_type` overrides it and the response and request views document
+/// different types (see `wire_override::codec_wire`).
+fn codec_differs(field: &syn::Field) -> bool {
+    extract_schema_constraints(&field.attrs)
+        .value_type
+        .is_none()
+        && documented_tokens(field, SerdeSide::Serialize)
+            != documented_tokens(field, SerdeSide::Deserialize)
 }
 
 /// The type's own attributes make its request view differ. `flat` classifies
@@ -692,7 +693,7 @@ fn positional_differs(field: &syn::Field) -> bool {
     let skip = extract_serde_skip_flags(&field.attrs);
     !skip.fully_skipped()
         && (skip.skip_serializing != skip.skip_deserializing
-            || codec_differs(&field.attrs)
+            || codec_differs(field)
             || field_type_differs(field))
 }
 

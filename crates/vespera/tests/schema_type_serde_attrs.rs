@@ -46,11 +46,13 @@ pub struct Profile {
     #[serde(default = "default_name")]
     pub display_name: String,
     #[serde(with = "as_string")]
+    #[schema(value_type = String)]
     pub big_number: i64,
     #[serde(
         serialize_with = "as_string::serialize",
         deserialize_with = "as_string::deserialize"
     )]
+    #[schema(value_type = String)]
     pub other_number: i64,
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub bio: String,

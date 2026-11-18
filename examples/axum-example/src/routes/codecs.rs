@@ -24,9 +24,11 @@ pub struct EventTimes {
     #[serde(with = "vespera::chrono::serde::ts_milliseconds_option")]
     #[schema(value_type = Option<i64>)]
     pub expires_at: Option<DateTime<Utc>>,
-    // A custom codec without `value_type`: its shape is unknowable, so it is
-    // documented as any value with a note (never as `array<uint8>`).
+    // A custom codec with an unknown wire shape (not a well-known module, not a
+    // string type) is a compile error without `value_type`: here the hex
+    // string codec writes a string, never an `array<uint8>`.
     #[serde(with = "hex_bytes")]
+    #[schema(value_type = String)]
     pub checksum: Vec<u8>,
 }
 
