@@ -11,7 +11,8 @@ use std::path::{Component, Path};
 /// identity (`file::Ident@line:column`) names.
 ///
 /// The module path is the file's own module chain under its crate root (the
-/// nearest ancestor directory holding `lib.rs` or `main.rs`), followed by the
+/// nearest ancestor directory holding `lib.rs` or `main.rs` and named `src`
+/// or holding `Cargo.toml`, see `is_crate_root_dir`), followed by the
 /// inline `mod`s around that line. Empty for a crate-root type. `None` for an
 /// unparseable identity or a file outside any crate root.
 pub(super) fn crate_path(source_identity: &str) -> Option<(Vec<String>, String)> {
@@ -35,7 +36,8 @@ fn is_crate_root_dir(dir: &Path) -> bool {
 
 /// The modules a source file declares under its crate root: its path below
 /// the root, with `mod.rs` naming its directory and `lib.rs` / `main.rs` at
-/// the root naming nothing.
+/// the root naming nothing. The root is the nearest ancestor that is a crate
+/// root by [`is_crate_root_dir`] and holds a `lib.rs` or `main.rs`.
 fn file_modules(file: &Path) -> Option<Vec<String>> {
     let root = file.ancestors().skip(1).find(|dir| {
         !dir.as_os_str().is_empty()

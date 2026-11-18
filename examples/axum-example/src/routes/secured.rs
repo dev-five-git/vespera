@@ -43,11 +43,14 @@ const fn unauthorized(scheme: &'static str) -> AuthError {
 
 /// The credential of an `Authorization: Bearer <token>` header. The
 /// auth-scheme name is case-insensitive (RFC 9110 section 11.1), so `bearer`
-/// is accepted too.
+/// is accepted too, and the separator may be one or more spaces (section
+/// 11.2: `auth-scheme [ 1*SP ( token68 / #auth-param ) ]`).
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     let value = headers.get(AUTHORIZATION)?.to_str().ok()?;
     let (scheme, token) = value.split_once(' ')?;
-    scheme.eq_ignore_ascii_case("bearer").then_some(token)
+    scheme
+        .eq_ignore_ascii_case("bearer")
+        .then(|| token.trim_start_matches(' '))
 }
 
 /// Whether the presented credential is `expected`, compared in constant time

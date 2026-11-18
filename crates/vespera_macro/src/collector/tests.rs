@@ -718,6 +718,70 @@ fn inline_module_route_is_a_compile_error() {
     );
 }
 
+/// A `cfg(test)` twin and a production fn share the name `list`: the
+/// storage entry this build registered decides which one is test-only (by
+/// method and signature). A name with a production route in the build is not
+/// recorded, the name-keyed record would drop that route too.
+#[test]
+fn stored_test_only_routes_pick_the_registered_twin() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let file = create_temp_file(
+        &temp_dir,
+        "users.rs",
+        "#[cfg(test)]\n#[route(get)]\npub async fn list() {}\n#[route(post)]\npub async fn list() {}\n#[cfg(test)]\n#[route(put)]\npub async fn debug() {}\n",
+    );
+    crate::schema_macro::file_cache::bump_epoch();
+    let file_path = file.display().to_string();
+    let defs = test_scope::fn_definitions(&file);
+    let stored = |name: &str, method: &str, signature: &str| StoredRouteInfo {
+        fn_name: name.to_string(),
+        method: Some(method.to_string()),
+        fn_sig_str: signature.to_string(),
+        file_path: Some(file_path.clone()),
+        ..StoredRouteInfo::default()
+    };
+    let names = |records: &[crate::metadata::TestOnlyRoute]| -> Vec<String> {
+        records.iter().map(|r| r.function_name.clone()).collect()
+    };
+
+    // Production build: only the `POST` twin is registered.
+    let production = [stored("list", "post", &defs[1].signature)];
+    let refs: Vec<&StoredRouteInfo> = production.iter().collect();
+    assert_eq!(
+        names(&stored_test_only_routes(&file_path, false, &defs, &refs)),
+        Vec::<String>::new()
+    );
+
+    // Test build: the `GET` twin and `debug` are registered.
+    let test_build = [
+        stored("list", "get", &defs[0].signature),
+        stored("debug", "put", &defs[2].signature),
+    ];
+    let refs: Vec<&StoredRouteInfo> = test_build.iter().collect();
+    assert_eq!(
+        names(&stored_test_only_routes(&file_path, false, &defs, &refs)),
+        ["list", "debug"]
+    );
+
+    // Both twins compiled into one build: `list` has a production route.
+    let both = [
+        stored("list", "get", &defs[0].signature),
+        stored("list", "post", &defs[1].signature),
+        stored("debug", "put", &defs[2].signature),
+    ];
+    let refs: Vec<&StoredRouteInfo> = both.iter().collect();
+    assert_eq!(
+        names(&stored_test_only_routes(&file_path, false, &defs, &refs)),
+        ["debug"]
+    );
+
+    // A file behind a test-only module is test-only as a whole.
+    assert_eq!(
+        names(&stored_test_only_routes(&file_path, true, &defs, &refs)),
+        ["list", "list", "debug"]
+    );
+}
+
 #[test]
 fn stored_inline_module_route_is_a_compile_error() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");

@@ -160,12 +160,79 @@ fn functions_behind_test_only_cfg() {
         ("broken.rs", "#[cfg(test)] fn ("),
     ]);
     let src = krate.path().join("src");
-    let mut fns: Vec<String> = test_only_fns(&src.join("gated.rs")).into_iter().collect();
-    fns.sort();
+    let defs = fn_definitions(&src.join("gated.rs"));
+    let mut fns: Vec<&str> = defs
+        .iter()
+        .filter(|def| def.test_only)
+        .map(|def| def.name.as_str())
+        .collect();
+    fns.sort_unstable();
     assert_eq!(fns, ["a", "type"]);
-    assert!(test_only_fns(&src.join("plain.rs")).is_empty());
-    assert!(test_only_fns(&src.join("broken.rs")).is_empty());
-    assert!(test_only_fns(&src.join("missing.rs")).is_empty());
+    assert!(
+        fn_definitions(&src.join("plain.rs"))
+            .iter()
+            .all(|def| !def.test_only)
+    );
+    assert!(fn_definitions(&src.join("broken.rs")).is_empty());
+    assert!(fn_definitions(&src.join("missing.rs")).is_empty());
+}
+
+/// A `#[cfg(test)]` twin and a production fn share a name: the storage entry
+/// of this build (the production `POST`, or the test `GET`) decides which of
+/// the two is test-only, not the name.
+#[test]
+fn same_named_route_twins_are_told_apart_by_method_and_signature() {
+    let krate = crate_with(&[(
+        "twins.rs",
+        "#[cfg(test)]\n#[route(get)]\npub async fn list() {}\n#[route(post)]\npub async fn list() {}\n#[cfg(test)]\n#[route(status = 201, put)]\npub async fn other() {}\n",
+    )]);
+    let defs = fn_definitions(&krate.path().join("src").join("twins.rs"));
+    let signature = defs[1].signature.clone();
+    assert!(!route_test_only(&defs, "list", "post", &signature));
+    assert!(route_test_only(&defs, "list", "get", &signature));
+    // A method or signature no definition has is not a test-only route.
+    assert!(!route_test_only(&defs, "list", "put", &signature));
+    assert!(!route_test_only(
+        &defs,
+        "list",
+        "post",
+        "async fn list (x : u8)"
+    ));
+    assert!(!route_test_only(&defs, "missing", "get", &signature));
+    // A name whose only definitions are test-only needs no method match.
+    assert!(route_test_only(&defs, "other", "put", "anything"));
+}
+
+/// Two declarations load the same file, one of them ungated: the file is in
+/// every build, so it is production (`file_test_only` is false).
+#[test]
+fn file_also_loaded_by_an_ungated_declaration_is_production() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "mod models;\n#[cfg(test)]\n#[path = \"models.rs\"]\nmod test_models;\n",
+        ),
+        ("models.rs", "pub struct Kept {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(!scope.file_test_only(&src.join("models.rs")));
+}
+
+/// An ungated `#[path]` module loads its file in every build, even beside a
+/// gated `#[path]` module of the same file.
+#[test]
+fn file_also_loaded_by_an_ungated_path_is_production() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "#[cfg(test)]\n#[path = \"shared.rs\"]\nmod test_shared;\n#[path = \"shared.rs\"]\nmod shared;\n",
+        ),
+        ("shared.rs", "pub struct Kept {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(!scope.file_test_only(&src.join("shared.rs")));
 }
 
 fn schema(name: &str, identity: Option<String>) -> StructMetadata {

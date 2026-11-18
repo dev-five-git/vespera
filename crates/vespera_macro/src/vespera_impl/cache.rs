@@ -157,7 +157,7 @@ pub struct MergeSpecCache {
     /// `use` aliases of the call-site file (see `merge_lookup`), read on the
     /// first merge-path resolution: a `vespera!` without `merge = [..]`
     /// never parses its call-site file.
-    aliases: std::cell::OnceCell<HashMap<String, Vec<String>>>,
+    aliases: std::cell::OnceCell<super::merge_lookup::UseAliases>,
     reads: HashMap<PathBuf, MergeSpecRead>,
 }
 
@@ -176,7 +176,7 @@ impl MergeSpecCache {
         }
     }
 
-    fn aliases(&self) -> &HashMap<String, Vec<String>> {
+    fn aliases(&self) -> &super::merge_lookup::UseAliases {
         self.aliases
             .get_or_init(|| super::merge_lookup::use_aliases(self.call_site.as_deref()))
     }
@@ -196,6 +196,14 @@ impl MergeSpecCache {
             return Ok(());
         };
         merge.iter().try_for_each(|merge_path| {
+            if let Some(message) =
+                super::merge_lookup::ambiguous_alias_error(merge_path, self.aliases())
+            {
+                return Err(syn::Error::new(
+                    syn::spanned::Spanned::span(merge_path),
+                    message,
+                ));
+            }
             super::merge_lookup::ambiguous_export_error(merge_path, self.aliases(), dir).map_or(
                 Ok(()),
                 |message| {

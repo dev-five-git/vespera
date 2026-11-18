@@ -221,9 +221,11 @@ async fn documented_garde_bounds_match_422_boundary(
     assert_eq!(response.json::<Value>()["errors"][0]["path"], field);
 }
 
-/// Pattern / format rules: the documented `pattern` (or `items.pattern`, or
-/// `format`) accepts the valid sample and rejects the invalid one, and the
-/// runtime rejects that invalid value with a 422 on the same path.
+/// Pattern / format rules: the documented `pattern` (or `items.pattern`)
+/// accepts the valid sample and rejects the invalid one. A `format` is not a
+/// regex, so the document is checked to name it, and the runtime accepts the
+/// valid sample. Either way the runtime rejects the invalid value with a 422
+/// on the same path.
 #[rstest]
 #[case::hashtag_prefix("hashtags", json!(["rust"]), "hashtags[0]", &["items", "pattern"], "#rust", "rust")]
 #[case::email_format("email", json!("not-an-email"), "email", &[], "a@example.com", "not-an-email")]
@@ -264,4 +266,15 @@ async fn documented_garde_patterns_match_422(
     let response = server.post("/validated/profiles").json(&body).await;
     response.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(response.json::<Value>()["errors"][0]["path"], error_path);
+
+    if pattern_path.is_empty() {
+        // No regex stands for the format: the runtime accepts the valid sample.
+        let mut body = valid_profile();
+        body[field] = json!(accepted);
+        server
+            .post("/validated/profiles")
+            .json(&body)
+            .await
+            .assert_status_ok();
+    }
 }

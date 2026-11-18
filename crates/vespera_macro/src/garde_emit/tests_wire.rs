@@ -44,6 +44,14 @@ fn skipped_fields_are_not_validated_and_flatten_keeps_the_path() {
     );
 }
 
+/// A struct whose only runtime rules sit on skipped fields gets no `Validate`
+/// impl, as a struct with no rule at all, not an empty one.
+#[test]
+fn skipped_runtime_rule_only_struct_emits_no_impl() {
+    let out = emit("struct S { #[serde(skip)] #[schema(min_length = 1)] a: String }");
+    assert!(out.is_empty(), "{out}");
+}
+
 /// A `#[serde(transparent)]` struct's field is the struct itself on the
 /// wire: its rules keep the parent's path.
 #[test]

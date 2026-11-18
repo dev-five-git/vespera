@@ -90,7 +90,12 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
     let per_field: Vec<(&syn::Field, &SchemaConstraints)> =
         fields_named.named.iter().zip(field_constraints).collect();
 
-    if per_field.iter().all(|(_, c)| !c.has_runtime_rule()) {
+    // A rule on a serde-skipped field is never checked (see `field_blocks`),
+    // so it does not make the impl necessary either.
+    if per_field.iter().all(|(field, c)| {
+        let skip = crate::parser::schema::extract_serde_skip_flags(&field.attrs);
+        !c.has_runtime_rule() || skip.skip || skip.skip_deserializing
+    }) {
         // No field requested a runtime rule — skip Validate emission.
         // OpenAPI annotation-only constraints (example / read_only /
         // write_only / unique_items / exclusive bounds / multiple_of /
@@ -156,8 +161,8 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
             emit_field_block(ident, (&wire_name, flatten), field, constraints)
         })
         .collect();
-    // Non-empty: the gate above found a field with a runtime rule, and every
-    // runtime rule emits a block.
+    // Non-empty: the gate above found a field with a runtime rule that serde
+    // reads, and every such (named) field emits a block.
 
     quote! {
         #[allow(

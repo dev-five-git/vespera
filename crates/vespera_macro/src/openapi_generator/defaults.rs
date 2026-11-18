@@ -205,6 +205,12 @@ pub fn process_default_functions_for(
             let field_name = extract_field_rename_owned(&field.attrs, side, owner_serializes)
                 .unwrap_or_else(|| rename_field(&rust_field_name, struct_rename_all.as_deref()));
 
+            // Recorded before the value priorities below, which may `continue`:
+            // the demotion depends on the attribute, not on how the value was found.
+            if extract_default(&field.attrs).is_some() {
+                serde_default_fields.insert(field_name.clone());
+            }
+
             // Priority 0: Pre-extracted defaults from SCHEMA_STORAGE (populated by #[derive(Schema)])
             if let Some(value) = stored_defaults.get(&rust_field_name) {
                 set_property_default(properties, &field_name, value.clone());
@@ -224,12 +230,8 @@ pub fn process_default_functions_for(
 
             // Priority 2: #[serde(default)] / #[serde(default = "fn")]
             let default_info = match extract_default(&field.attrs) {
-                Some(Some(func_name)) => {
-                    serde_default_fields.insert(field_name.clone());
-                    func_name
-                }
+                Some(Some(func_name)) => func_name,
                 Some(None) => {
-                    serde_default_fields.insert(field_name.clone());
                     // Simple default (no function): use the type-specific default
                     // when known. Unresolvable defaults are rejected earlier by
                     // `#[derive(Schema)]`, so this fallback only preserves unit

@@ -619,5 +619,5 @@ fn merge_spec_cache_reads_call_site_aliases_lazily() {
     let mut cache = MergeSpecCache::with_call_site(Some(&call_site));
     compute_config_hash_with_merge_cache(&base_processed(), &mut cache);
     assert!(cache.aliases.get().is_none(), "no merge, no parse");
-    assert_eq!(cache.aliases()["Child"], ["child", "App"]);
+    assert_eq!(cache.aliases().paths["Child"], ["child", "App"]);
 }

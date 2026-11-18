@@ -81,6 +81,8 @@ fn test_validate_server_url_no_scheme() {
 #[rstest]
 #[case::empty_host("https://")]
 #[case::space_in_path("https://example.com/api v1")]
+#[case::query_without_host("https://?v=1")]
+#[case::network_path_reference("//api.other.example/v1")]
 fn test_validate_server_url_rejects_hostless_or_spaced_absolute(#[case] url: &str) {
     let lit = LitStr::new(url, Span::call_site());
     assert!(validate_server_url(&lit).is_err(), "{url}");

@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 
 use syn::{Item, punctuated::Punctuated};
 
+use super::module_scope::sibling_rs_file;
 use crate::{metadata::CollectedMetadata, schema_macro::file_cache};
 
 /// Whether the `#[cfg(..)]` predicate `predicate` (token text) can only hold
@@ -90,9 +91,17 @@ pub struct TestScope {
     canonical_src_dir: Option<PathBuf>,
     /// Declaring file → its test-gated `mod` declarations.
     gated_mods: HashMap<PathBuf, std::rc::Rc<GatedMods>>,
-    /// The files every test-gated `#[path]` module of `src/` names, found by
-    /// one scan of the crate (`None` until a file needs it).
-    path_targets: Option<Vec<PathBuf>>,
+    /// The files the `#[path]` modules of `src/` name, found by one scan of
+    /// the crate (`None` until a file needs it).
+    path_targets: Option<PathTargets>,
+}
+
+/// The files named by `#[path]` modules of a crate, by whether every build
+/// loads them (`open`) or only `cfg(test)` builds do (`gated`).
+#[derive(Default)]
+struct PathTargets {
+    gated: Vec<PathBuf>,
+    open: Vec<PathBuf>,
 }
 
 impl TestScope {
@@ -141,7 +150,7 @@ impl TestScope {
             let declarers = if depth == 0 {
                 vec![src_dir.join("lib.rs"), src_dir.join("main.rs")]
             } else {
-                vec![parent.join("mod.rs"), parent.with_extension("rs")]
+                vec![parent.join("mod.rs"), sibling_rs_file(&parent)]
             };
             let rest = &segments[depth..];
             if declarers.iter().any(|declarer| {
@@ -154,37 +163,71 @@ impl TestScope {
             }
             parent.push(segment);
         }
-        self.file_path_gated(file)
+        self.file_path_gated(file, &src_dir, &segments)
     }
 
-    /// Whether a test-gated `#[path = ".."]` module names `file`. Such a
-    /// module carries no name the chain could match, so the file is found by
-    /// its path (or by the directory of a non-`mod.rs` module's own file,
-    /// whose child modules sit beside it).
-    fn file_path_gated(&mut self, file: &Path) -> bool {
+    /// Whether a test-gated `#[path = ".."]` module names `file` and no
+    /// ungated declaration loads it (`#[cfg(test)] #[path = "m.rs"] mod t;`
+    /// next to `mod m;` leaves `m.rs` in every build). Such a module carries
+    /// no name the chain could match, so the file is found by its path (or
+    /// by the directory of a non-`mod.rs` module's own file, whose child
+    /// modules sit beside it).
+    fn file_path_gated(&mut self, file: &Path, src_dir: &Path, segments: &[String]) -> bool {
         lexical(file).is_some_and(|file| {
-            self.path_targets()
-                .iter()
-                .any(|target| file == *target || file.starts_with(target.with_extension("")))
+            let loads = |targets: &[PathBuf]| {
+                targets
+                    .iter()
+                    .any(|target| file == *target || file.starts_with(target.with_extension("")))
+            };
+            let targets = self.path_targets();
+            let gated = loads(&targets.gated);
+            let open = loads(&targets.open);
+            gated && !open && !self.open_chain_loads(src_dir, segments)
         })
     }
 
-    /// The files every test-gated `#[path]` module under `src/` names, from
-    /// one scan of the crate (memoized per scope).
-    fn path_targets(&mut self) -> &[PathBuf] {
+    /// Whether an ungated `mod` declaration on the module chain of `segments`
+    /// loads the file (the chain's own name, not a `#[path]`).
+    fn open_chain_loads(&mut self, src_dir: &Path, segments: &[String]) -> bool {
+        let mut parent = src_dir.to_path_buf();
+        for (depth, segment) in segments.iter().enumerate() {
+            let declarers = if depth == 0 {
+                vec![src_dir.join("lib.rs"), src_dir.join("main.rs")]
+            } else {
+                vec![parent.join("mod.rs"), sibling_rs_file(&parent)]
+            };
+            let rest = &segments[depth..];
+            if declarers.iter().any(|declarer| {
+                self.gated_mods_of(declarer)
+                    .open_chains
+                    .iter()
+                    .any(|open| chain_starts_with(rest, open))
+            }) {
+                return true;
+            }
+            parent.push(segment);
+        }
+        false
+    }
+
+    /// The `#[path]` files of every module under `src/`, from one scan of
+    /// the crate (memoized per scope).
+    fn path_targets(&mut self) -> &PathTargets {
         if self.path_targets.is_none() {
             let files: Vec<PathBuf> = self
                 .src_dir
                 .as_deref()
                 .map(|dir| file_cache::list_rs_files(dir).to_vec())
                 .unwrap_or_default();
-            let mut targets = Vec::new();
+            let mut targets = PathTargets::default();
             for file in &files {
-                targets.extend(self.gated_mods_of(file).path_targets.iter().cloned());
+                let gated = self.gated_mods_of(file);
+                targets.gated.extend(gated.path_targets.iter().cloned());
+                targets.open.extend(gated.open_path_targets.iter().cloned());
             }
             self.path_targets = Some(targets);
         }
-        self.path_targets.as_deref().unwrap_or_default()
+        self.path_targets.get_or_insert_with(PathTargets::default)
     }
 
     /// A declarer's test-gated `mod`s, kept while the declarer is unchanged.
@@ -227,6 +270,10 @@ impl TestScope {
 struct GatedMods {
     chains: HashSet<String>,
     path_targets: Vec<PathBuf>,
+    /// The ungated `mod`s loaded by their own name (`::`-joined as `chains`)
+    /// and the files of the ungated ones given a `#[path]`.
+    open_chains: HashSet<String>,
+    open_path_targets: Vec<PathBuf>,
 }
 
 /// The `#[path = ".."]` value of `attrs`.
@@ -283,6 +330,14 @@ fn gated_mod_paths(
             // Everything nested inside an inline module lives under it.
             let nested = inline_dir.join(&name);
             gated_mod_paths(content, &format!("{path}::"), &nested, &nested, out);
+        } else {
+            // An ungated out-of-line module: every build loads its file.
+            match path_attr(&module.attrs) {
+                Some(target) => out.open_path_targets.extend(lexical(&dir.join(target))),
+                None => {
+                    out.open_chains.insert(path);
+                }
+            }
         }
     }
 }
@@ -302,25 +357,6 @@ fn chain_starts_with(rest: &[String], path: &str) -> bool {
     let mut rest = rest.iter();
     path.split("::")
         .all(|part| rest.next().is_some_and(|segment| segment == part))
-}
-
-/// The unraw names `pick` selects among the top-level items of `content`,
-/// when its text could gate anything on `cfg(test)` (empty otherwise or
-/// when it does not parse).  Only `String`s leave, so the result can be
-/// cached across invocations (`file_cache::derived`).
-fn gating_names(content: &str, pick: impl Fn(&Item) -> Option<&syn::Ident>) -> HashSet<String> {
-    if !may_gate_tests(content) {
-        return HashSet::new();
-    }
-    syn::parse_file(content)
-        .map(|ast| {
-            ast.items
-                .iter()
-                .filter_map(pick)
-                .map(|ident| syn::ext::IdentExt::unraw(ident).to_string())
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 /// `path` made absolute (against the current directory) with `.` / `..`
@@ -364,18 +400,92 @@ fn module_segments(src_dir: &Path, file: &Path) -> Option<Vec<String>> {
     Some(segments)
 }
 
-/// Top-level functions of `file` behind a test-only `#[cfg(..)]` (kept while
-/// the file is unchanged).
-pub fn test_only_fns(file: &Path) -> HashSet<String> {
-    struct TestFns(HashSet<String>);
+/// The HTTP methods a `#[route(..)]` argument can name.
+const ROUTE_METHODS: [&str; 7] = ["get", "post", "put", "patch", "delete", "head", "options"];
+
+/// A top-level fn of a route file, with what tells the `#[route]` storage
+/// entry of one apart from a same-named fn behind another `cfg`.
+#[derive(Clone)]
+pub struct FnDefinition {
+    name: String,
+    /// The `#[route(<method>)]` method, `get` for a bare `#[route]`.
+    method: String,
+    /// `quote!(#sig)` of the signature: the text `StoredRouteInfo::fn_sig_str` keeps.
+    pub(super) signature: String,
+    test_only: bool,
+}
+
+/// The `#[route]` method of `attrs`, lower case (`get` when none is named).
+fn route_method(attrs: &[syn::Attribute]) -> String {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("route"))
+        .filter_map(|attr| attr.meta.require_list().ok())
+        .filter_map(|list| {
+            list.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+                .ok()
+        })
+        .flatten()
+        .find_map(|meta| {
+            let syn::Meta::Path(path) = meta else {
+                return None;
+            };
+            let method = path.get_ident()?.to_string().to_ascii_lowercase();
+            ROUTE_METHODS.contains(&method.as_str()).then_some(method)
+        })
+        .unwrap_or_else(|| "get".to_owned())
+}
+
+/// The top-level fns of `file` (kept while the file is unchanged; empty when
+/// it does not parse). Called for route files only, so it is not spared a
+/// parse by a text filter.
+pub fn fn_definitions(file: &Path) -> Vec<FnDefinition> {
+    struct FnDefinitions(Vec<FnDefinition>);
     file_cache::derived(file, |content| {
-        TestFns(gating_names(content, |item| match item {
-            Item::Fn(function) if attrs_test_only(&function.attrs) => Some(&function.sig.ident),
-            _ => None,
-        }))
+        FnDefinitions(
+            syn::parse_file(content)
+                .map(|ast| {
+                    ast.items
+                        .iter()
+                        .filter_map(|item| match item {
+                            Item::Fn(function) => {
+                                let sig = &function.sig;
+                                Some(FnDefinition {
+                                    name: sig.ident.to_string().trim_start_matches("r#").to_owned(),
+                                    method: route_method(&function.attrs),
+                                    signature: quote::quote!(#sig).to_string(),
+                                    test_only: attrs_test_only(&function.attrs),
+                                })
+                            }
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        )
     })
     .map(|fns| fns.0.clone())
     .unwrap_or_default()
+}
+
+/// Whether the `#[route]` storage entry `name` / `method` / `signature` of a
+/// file whose fns are `defs` is a test-only fn. Same-named fns are told
+/// apart by method and signature: `#[cfg(test)] #[route(get)] fn list()`
+/// next to `#[route(post)] fn list()` leaves the production `POST` route
+/// documented.
+pub fn route_test_only(defs: &[FnDefinition], name: &str, method: &str, signature: &str) -> bool {
+    let same_name: Vec<&FnDefinition> = defs.iter().filter(|def| def.name == name).collect();
+    if same_name.is_empty() {
+        return false;
+    }
+    if same_name.iter().all(|def| def.test_only) {
+        return true;
+    }
+    let matching: Vec<&FnDefinition> = same_name
+        .into_iter()
+        .filter(|def| def.method.eq_ignore_ascii_case(method) && def.signature == signature)
+        .collect();
+    !matching.is_empty() && matching.iter().all(|def| def.test_only)
 }
 
 /// A `(line, column)` source position, as `proc_macro2` reports it.

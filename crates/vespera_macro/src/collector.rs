@@ -1,6 +1,6 @@
 //! Collector for routes and structs
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use syn::Item;
@@ -96,6 +96,50 @@ fn take_or_clone(
 ///
 /// `module_path` / `file_path` are the per-file invariants; the last route
 /// MOVES them out via [`take_or_clone`], every earlier route clones.
+/// The `test_only_routes` entries of one route file's stored routes: the
+/// ones behind a test-only `#[cfg(..)]` (`file_test_only` for the whole file,
+/// else decided per route from the file's fns `defs`, see
+/// `test_scope::route_test_only`).
+fn stored_test_only_routes(
+    file_path: &str,
+    file_test_only: bool,
+    defs: &[test_scope::FnDefinition],
+    stored_routes: &[&StoredRouteInfo],
+) -> Vec<crate::metadata::TestOnlyRoute> {
+    let verdicts: Vec<bool> = stored_routes
+        .iter()
+        .map(|stored| {
+            file_test_only
+                || test_scope::route_test_only(
+                    defs,
+                    stored.fn_name.trim_start_matches("r#"),
+                    stored.method.as_deref().unwrap_or("get"),
+                    &stored.fn_sig_str,
+                )
+        })
+        .collect();
+    // `TestOnlyRoute` is keyed by name: a name that also has a production
+    // route in this build cannot be recorded without dropping that route too,
+    // so the test-only twin stays documented.
+    let production_names: HashSet<&str> = stored_routes
+        .iter()
+        .zip(&verdicts)
+        .filter(|(_, test_only)| !**test_only)
+        .map(|(stored, _)| stored.fn_name.trim_start_matches("r#"))
+        .collect();
+    stored_routes
+        .iter()
+        .zip(&verdicts)
+        .filter(|(stored, test_only)| {
+            **test_only && !production_names.contains(stored.fn_name.trim_start_matches("r#"))
+        })
+        .map(|(stored, _)| crate::metadata::TestOnlyRoute {
+            file_path: file_path.to_owned(),
+            function_name: stored.fn_name.clone(),
+        })
+        .collect()
+}
+
 fn push_stored_routes(
     metadata: &mut CollectedMetadata,
     base_path: &str,
@@ -337,18 +381,13 @@ pub fn collect_metadata_from_files<'a>(
             // Compiled routes behind a test-only `#[cfg(..)]` (a test build
             // registered them): mounted, but never documented.
             let file_test_only = test_scope.file_test_only(file);
-            let test_fns = test_scope::test_only_fns(file);
-            metadata.test_only_routes.extend(
-                stored_routes
-                    .iter()
-                    .filter(|stored| {
-                        file_test_only || test_fns.contains(stored.fn_name.trim_start_matches("r#"))
-                    })
-                    .map(|stored| crate::metadata::TestOnlyRoute {
-                        file_path: file_path.clone(),
-                        function_name: stored.fn_name.clone(),
-                    }),
-            );
+            let defs = test_scope::fn_definitions(file);
+            metadata.test_only_routes.extend(stored_test_only_routes(
+                &file_path,
+                file_test_only,
+                &defs,
+                stored_routes,
+            ));
             push_stored_routes(
                 &mut metadata,
                 &base_path,
