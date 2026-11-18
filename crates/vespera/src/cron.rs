@@ -314,19 +314,37 @@ impl Controller {
     ///
     /// Needs no Tokio time driver (nor a runtime at all): an idle controller
     /// answers at once, and the timeout is a plain thread that wakes the
-    /// waiter — it exits as soon as the wait ends either way.
+    /// waiter — it exits as soon as the wait ends either way.  When that
+    /// thread cannot start (a process at its thread limit), the wait does
+    /// not block: it reports not idle at once, and the failure is logged.
     async fn wait_idle(&self, timeout: Duration) -> bool {
+        self.wait_idle_with(timeout, |expiry| {
+            std::thread::Builder::new().spawn(expiry).map(drop)
+        })
+        .await
+    }
+
+    /// [`wait_idle`] with the timeout thread started through `spawn`.
+    async fn wait_idle_with(
+        &self,
+        timeout: Duration,
+        spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
+    ) -> bool {
         if self.in_flight.load(Ordering::SeqCst) == 0 {
             return true;
         }
         let (cancel, cancelled) = std::sync::mpsc::channel::<()>();
         let (expire, expired) = tokio::sync::oneshot::channel::<()>();
-        std::thread::spawn(move || {
+        let timer_thread = Box::new(move || {
             // `Disconnected` (the wait ended) exits without firing.
             if let Err(RecvTimeoutError::Timeout) = cancelled.recv_timeout(timeout) {
                 let _ = expire.send(());
             }
         });
+        if let Err(error) = spawn(timer_thread) {
+            cron_diag!(error, "cannot start the shutdown timer thread: {error}");
+            return false;
+        }
         let mut idle = pin!(self.idle());
         let mut expired = pin!(expired);
         let done = poll_fn(|cx| {

@@ -181,8 +181,12 @@ pub fn streaming_setup_failed_wire() -> Vec<u8> {
 ///
 /// * `Ok(bytes)` — request body read successfully.
 /// * `Err(wire)` — a ready-to-deliver wire response the caller forwards
-///   to Java: `413` when the length exceeds the configured cap, `400`
-///   when the JNI length query / region read fails.
+///   to Java:
+///   - `400` when the array is `null`, when the JNI length query fails, or
+///     when the region read fails for a reason other than memory;
+///   - `413` when the length exceeds the configured cap, or when the body
+///     cannot be allocated on the Rust side (the fallible reservation fails:
+///     memory pressure, not a configuration limit).
 ///
 /// On any JNI failure the pending Java exception is cleared first, so
 /// the caller can safely make further JNI calls to deliver `Err`.

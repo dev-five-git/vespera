@@ -23,6 +23,17 @@ use super::{
 };
 use crate::streaming_closures::{CompleteAttempt, complete_future, complete_future_local};
 
+/// The wire completing a dispatch that was not spawned: the runtime-unavailable
+/// `503` when there is no runtime (`Ok(false)`), and the panic `500`
+/// (`"panicked":"true"`) when scheduling itself panicked, so the host counts
+/// it as a panic like every other Rust panic on this path.
+fn unscheduled_wire(outcome: &std::thread::Result<bool>) -> Vec<u8> {
+    match outcome {
+        Ok(_) => runtime_unavailable_wire(),
+        Err(_) => panic_wire(),
+    }
+}
+
 /// `com.devfive.vespera.bridge.AsyncDispatch.dispatch0(CompletableFuture<byte[]>, byte[]) -> long`
 /// (behind the public `VesperaBridge.dispatchAsync`)
 ///
@@ -235,10 +246,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_AsyncDispatch_dispatch0<'
             true
         }));
         if !matches!(scheduled, Ok(true)) {
-            let wire = match scheduled {
-                Ok(_) => runtime_unavailable_wire(),
-                Err(_) => vespera_inprocess::error_wire(500, "failed to schedule Rust dispatch"),
-            };
+            let wire = unscheduled_wire(&scheduled);
             let _ = complete_future_local(env, &future_obj, &wire);
         }
         future_notified_body.store(true, Ordering::Release);
@@ -333,5 +341,28 @@ fn complete_async_future(
             );
             Ok(())
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{panic_wire, runtime_unavailable_wire, unscheduled_wire};
+
+    /// A panic while scheduling answers the panic wire (`"panicked":"true"`),
+    /// not a plain `500`, so the host classifies it as a panic.
+    #[test]
+    fn a_panic_while_scheduling_answers_the_panic_wire() {
+        let panicked: std::thread::Result<bool> = Err(Box::new("scheduling failed"));
+        let wire = unscheduled_wire(&panicked);
+        assert_eq!(wire, panic_wire());
+        let len = u32::from_be_bytes(wire[..4].try_into().unwrap()) as usize;
+        let header = std::str::from_utf8(&wire[4..4 + len]).unwrap();
+        assert!(header.contains(r#""panicked":"true""#), "{header}");
+    }
+
+    /// No runtime (shut down) keeps the runtime-unavailable `503`.
+    #[test]
+    fn a_missing_runtime_answers_the_unavailable_wire() {
+        assert_eq!(unscheduled_wire(&Ok(false)), runtime_unavailable_wire());
     }
 }

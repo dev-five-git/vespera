@@ -618,3 +618,18 @@ fn wait_idle_works_without_a_time_driver() {
     ));
     finisher.join().unwrap();
 }
+
+/// A timeout thread that cannot start (a process at its thread limit) must
+/// not panic the graceful shutdown: the wait gives up at once and reports
+/// the runs as still in flight.
+#[test]
+fn wait_idle_gives_up_when_its_timeout_thread_cannot_start() {
+    let controller = controller();
+    let _run = InFlight::enter(controller);
+    let started = Instant::now();
+    let idle = block_on_without_runtime(controller.wait_idle_with(Duration::from_secs(30), |_| {
+        Err(std::io::Error::other("no threads left"))
+    }));
+    assert!(!idle);
+    assert!(started.elapsed() < Duration::from_secs(5), "waited anyway");
+}

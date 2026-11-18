@@ -18,11 +18,19 @@
 //! vespera!(title = "My API").serve("0.0.0.0:3000").await
 //! ```
 //!
-//! Equivalent to:
+//! Equivalent to (what `serve` adds: `TCP_NODELAY` on every accepted socket,
+//! and `ConnectInfo<SocketAddr>` for handlers):
 //!
 //! ```ignore
+//! use axum::serve::ListenerExt as _;
+//!
 //! let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
-//! axum::serve(listener, app).await?;
+//! let listener = listener.tap_io(|stream| drop(stream.set_nodelay(true)));
+//! axum::serve(
+//!     listener,
+//!     app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+//! )
+//! .await?;
 //! ```
 
 //!
