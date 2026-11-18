@@ -83,6 +83,7 @@ pub(super) fn process_default_functions(
         schema,
         stored_defaults,
         SerdeSide::Serialize,
+        &[],
     );
 }
 
@@ -130,23 +131,30 @@ pub fn instance_defaults(
 ) {
     let stored = snapshot_stored_defaults();
     let empty = BTreeMap::new();
+    // The generic's source module is not at hand here, so its field types
+    // resolve at the call site (as before).
+    let module = crate::schema_macro::call_site_module().unwrap_or_default();
     process_default_functions_for(
         item,
         None,
         schema,
         stored.get(generic).unwrap_or(&empty),
         crate::parser::schema::request_view::current_side(),
+        &module,
     );
 }
 
 /// [`process_default_functions`] for the `side` view of the struct: the
 /// request (`{Name}Input`) view keys its properties by the deserialize name.
+/// `source_module` is the absolute module (`crate::..`) the struct is
+/// declared in, which its field types resolve in.
 pub fn process_default_functions_for(
     struct_item: &syn::ItemStruct,
     file_ast: Option<&syn::File>,
     schema: &mut vespera_core::schema::Schema,
     stored_defaults: &BTreeMap<String, serde_json::Value>,
     side: SerdeSide,
+    source_module: &[String],
 ) {
     use syn::Fields;
 
@@ -226,7 +234,7 @@ pub fn process_default_functions_for(
                     // when known. Unresolvable defaults are rejected earlier by
                     // `#[derive(Schema)]`, so this fallback only preserves unit
                     // test behaviour when called directly.
-                    if let Some(default_value) = utils_get_type_default(&field.ty) {
+                    if let Some(default_value) = utils_get_type_default(&field.ty, source_module) {
                         set_property_default(properties, &field_name, default_value);
                     }
                     continue;

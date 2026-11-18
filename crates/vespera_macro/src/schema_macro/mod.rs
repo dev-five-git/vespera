@@ -31,7 +31,7 @@ mod validation;
 pub use file_cache::print_profile_summary;
 #[cfg(test)]
 pub use file_lookup::set_test_call_site_module;
-pub use file_lookup::{reexported_item, storage_module_path};
+pub use file_lookup::{call_site_module, reexported_item, storage_module_path};
 pub use generate_type::generate_schema_type_code;
 pub use input::{SchemaInput, SchemaTypeInput};
 
@@ -181,13 +181,16 @@ pub fn generate_schema_code(
     // Build pick set
     let pick_set: HashSet<String> = input.pick.iter().flatten().cloned().collect();
 
-    // Generate schema with filtering
+    // Generate schema with filtering; the struct's field types resolve in
+    // the module it is declared in.
+    let source_module = storage_module_path(struct_def).unwrap_or_default();
     let schema_tokens = generate_filtered_schema(
         &parsed_struct,
         &omit_set,
         &pick_set,
         schema_storage,
         &struct_def.field_defaults,
+        &source_module,
     );
 
     Ok(schema_tokens)

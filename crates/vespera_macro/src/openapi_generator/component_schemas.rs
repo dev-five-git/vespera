@@ -668,12 +668,16 @@ pub(super) fn parse_component_schemas(
                 _ => return None,
             };
             if let syn::Item::Struct(struct_item) = &parsed {
+                // The struct's own module (its field types resolve there).
+                let source_module =
+                    crate::schema_macro::storage_module_path(struct_meta).unwrap_or_default();
                 process_default_functions_for(
                     struct_item,
                     file_ast,
                     &mut schema,
                     &struct_meta.field_defaults,
                     side,
+                    &source_module,
                 );
             }
             Some(schema)

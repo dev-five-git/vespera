@@ -590,7 +590,11 @@ pub fn extract_field_defaults_from_path(
         // The Multipart derive fills a `#[form_data(default)]` field with
         // `Default::default()`, whatever serde default it also names.
         if form_data_default_wins(field) {
-            if let Some(value) = crate::schema_macro::type_utils::get_type_default(&field.ty) {
+            // The derive sits on the struct, so the call site is its module.
+            let module = crate::schema_macro::call_site_module().unwrap_or_default();
+            if let Some(value) =
+                crate::schema_macro::type_utils::get_type_default(&field.ty, &module)
+            {
                 defaults.insert(strip_raw_prefix_owned(ident.to_string()), value);
             }
             continue;
@@ -673,12 +677,13 @@ fn serde_default_is_resolvable(
     default_kind: Option<&String>,
     field_defaults: &BTreeMap<String, serde_json::Value>,
 ) -> bool {
-    match default_kind {
-        Some(_) => field.ident.as_ref().is_some_and(|ident| {
+    if default_kind.is_some() {
+        return field.ident.as_ref().is_some_and(|ident| {
             field_defaults.contains_key(&strip_raw_prefix_owned(ident.to_string()))
-        }),
-        None => crate::schema_macro::type_utils::get_type_default(&field.ty).is_some(),
+        });
     }
+    let module = crate::schema_macro::call_site_module().unwrap_or_default();
+    crate::schema_macro::type_utils::get_type_default(&field.ty, &module).is_some()
 }
 
 /// A `#[schema(default ...)]` key on the field, wherever it sits in the list.

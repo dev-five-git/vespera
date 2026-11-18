@@ -40,6 +40,7 @@ pub fn generate_filtered_schema(
     pick_set: &HashSet<String>,
     schema_storage: &HashMap<String, StructMetadata>,
     field_defaults: &BTreeMap<String, serde_json::Value>,
+    source_module: &[String],
 ) -> TokenStream {
     let mut schema = build_filtered_schema(struct_item, omit_set, pick_set, schema_storage);
     // The same `default` post-processing the component schema gets (the
@@ -51,6 +52,7 @@ pub fn generate_filtered_schema(
         &mut schema,
         field_defaults,
         crate::parser::schema::SerdeSide::Serialize,
+        source_module,
     );
     // Serialize at compile time; the runtime value is reconstructed from
     // this spec so it cannot diverge from the OpenAPI component schema.
@@ -370,6 +372,7 @@ mod tests {
             &HashSet::new(),
             &empty_storage(),
             &BTreeMap::new(),
+            &[],
         )
         .to_string();
         assert!(
@@ -399,8 +402,14 @@ mod tests {
             ("gone".to_string(), serde_json::json!(1)),
         ]);
         let omit = HashSet::from(["gone".to_string()]);
-        let output =
-            generate_filtered_schema(&item, &omit, &HashSet::new(), &empty_storage(), &defaults);
+        let output = generate_filtered_schema(
+            &item,
+            &omit,
+            &HashSet::new(),
+            &empty_storage(),
+            &defaults,
+            &[],
+        );
         let syn::Expr::Call(call) = syn::parse2::<syn::Expr>(output).unwrap() else {
             panic!("a call");
         };
