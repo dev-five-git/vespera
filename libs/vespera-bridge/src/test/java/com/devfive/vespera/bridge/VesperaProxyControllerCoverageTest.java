@@ -447,6 +447,14 @@ class VesperaProxyControllerCoverageTest {
         ResponseEntity<?> emptyCompletion = AsyncProxyResponses.asyncFailureToResponse(
                 new CompletionException(null));
         assertEquals(500, emptyCompletion.getStatusCode().value());
+
+        // A pre-wrapped status failure keeps its status and reason through the
+        // CompletionException unwrap (a regression here would answer 500).
+        ResponseEntity<?> prewrapped = AsyncProxyResponses.asyncFailureToResponse(
+                new CompletionException(new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.BAD_REQUEST, "bad input")));
+        assertEquals(400, prewrapped.getStatusCode().value());
+        assertTrue(new String((byte[]) prewrapped.getBody(), StandardCharsets.UTF_8).contains("bad input"));
     }
 
     @Test

@@ -272,6 +272,24 @@ class VesperaClientTest {
                 header(transport.requests.get(4)).get("headers").get("content-type").asText());
     }
 
+    /**
+     * A rejected content type (control character) throws before the body
+     * changes: the request keeps the body it had, not the one being set.
+     */
+    @Test
+    void aRejectedContentTypeLeavesThePreviousBodyInPlace() throws IOException {
+        byte[] first = {7, 7};
+        VesperaRequest request = client.post("/t").body(first, "application/octet-stream");
+        assertThrows(IllegalArgumentException.class,
+                () -> request.body(new ByteArrayInputStream(new byte[] {9}), "text/plain\u0001"));
+        assertThrows(IllegalArgumentException.class,
+                () -> request.body(new byte[] {9}, "text/plain\u0001"));
+        request.send();
+        assertArrayEquals(first, body(transport.requests.get(0)));
+        assertEquals("application/octet-stream",
+                header(transport.requests.get(0)).get("headers").get("content-type").asText());
+    }
+
     @Test
     void remoteAddrAndSchemeTravelAsWireFields() throws IOException {
         client.get("/headers/client").remoteAddr("[::1]:4321").scheme("https").send();

@@ -380,7 +380,12 @@ class WireHeaderReaderTest {
                     IllegalArgumentException.class,
                     () -> WireHeaderReader.decode(json.getBytes(StandardCharsets.UTF_8), 0,
                             json.getBytes(StandardCharsets.UTF_8).length));
-            org.junit.jupiter.api.Assertions.assertTrue(error.getMessage().contains(expected), error.getMessage());
+            // The reason is the message's tail and the position is reported: a
+            // bare substring match would pass a reason printed at the wrong offset.
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    error.getMessage().matches("wire header JSON: .*" + java.util.regex.Pattern.quote(expected)
+                            + " at offset \\d+"),
+                    error.getMessage());
         });
     }
 

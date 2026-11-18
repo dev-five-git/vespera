@@ -64,7 +64,8 @@ class DirectOverflowMemoryTest {
     }
 
     @Test
-    void constructorClampsCapAndDuplicateRouteUsesNormalizedDefaultAppKey() {
+    void zeroCapKeepsOnlyTheLatestRouteAndBlankAppMeansDefault() {
+        // A zero cap behaves as a cap of one: each insert past it clears the set.
         DirectOverflowMemory mem = new DirectOverflowMemory(0);
         mem.recordOverflow("", "GET", "/same", "ignored=1");
         mem.recordOverflow("   ", "GET", "/same", "ignored=2");

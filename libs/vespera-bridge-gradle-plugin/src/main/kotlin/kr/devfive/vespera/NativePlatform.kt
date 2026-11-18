@@ -210,10 +210,26 @@ internal object NativePlatform {
      * `arm` for a 32-bit ARM name (`armv7`, `armhf`, ...), which is what the
      * JVM reports as `os.arch` there.
      */
-    private fun loaderArch(arch: String): String =
-        if (ARM32_ALIAS.matches(arch)) "arm" else detectArch(arch)
+    private fun loaderArch(arch: String): String = when {
+        ARM32_ALIAS.matches(arch) -> "arm"
+        else -> TRIPLE_ARCH_ALIASES[arch] ?: detectArch(arch)
+    }
 
     private val ARM32_ALIAS = Regex("armv[0-9][a-z0-9_]*|armhf|armel")
+
+    /**
+     * Rust triple arch segments that name the same JVM `os.arch` under another
+     * spelling: the 32-bit x86 triples (`i686-pc-windows-msvc`,
+     * `i686-unknown-linux-gnu`) build the `x86` JVM arch the bridge probes,
+     * `riscv64gc` is the `riscv64` JVM arch, `powerpc64le` the `ppc64le` one.
+     */
+    private val TRIPLE_ARCH_ALIASES = mapOf(
+        "i386" to "x86",
+        "i586" to "x86",
+        "i686" to "x86",
+        "riscv64gc" to "riscv64",
+        "powerpc64le" to "ppc64le",
+    )
 
     /**
      * A `targets` entry's Rust triple must build the arch its key names: the

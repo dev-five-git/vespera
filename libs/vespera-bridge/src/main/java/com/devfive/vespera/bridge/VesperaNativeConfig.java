@@ -307,12 +307,40 @@ final class VesperaNativeConfig {
             return fallback;
         }
         try {
-            return Long.decode(raw.trim()); // what Long.getLong accepted (0x.., #..)
+            return parseIntegerProperty(raw.trim());
         } catch (NumberFormatException malformed) {
             LOG.log(Level.WARNING, "vespera: ignoring system property " + name + "='" + raw
                     + "': not an integer; falling back to the default");
             return fallback;
         }
+    }
+
+    /**
+     * A decimal integer, or hexadecimal with a {@code 0x} / {@code #} prefix
+     * (the forms {@code Long.getLong} accepts, minus its octal reading). A
+     * leading zero is decimal: {@code Long.decode("0100")} would be 64, which
+     * a zero-padded {@code 0100} limit must not silently become. An optional
+     * sign applies to either form.
+     */
+    static long parseIntegerProperty(String text) {
+        String sign = "";
+        String digits = text;
+        if (digits.startsWith("-") || digits.startsWith("+")) {
+            sign = digits.substring(0, 1);
+            digits = digits.substring(1);
+        }
+        int radix = 10;
+        if (digits.startsWith("0x") || digits.startsWith("0X")) {
+            radix = 16;
+            digits = digits.substring(2);
+        } else if (digits.startsWith("#")) {
+            radix = 16;
+            digits = digits.substring(1);
+        }
+        if (digits.startsWith("-") || digits.startsWith("+")) {
+            throw new NumberFormatException("sign after the radix prefix: " + text);
+        }
+        return Long.parseLong(sign + digits, radix);
     }
 
     /**

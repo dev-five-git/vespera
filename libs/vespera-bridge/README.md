@@ -261,8 +261,10 @@ A response beyond the pool cap (`vespera.direct.maxBufferBytes`) or a
 the stash cannot be used (a re-dispatch); when `false` that case raises the
 `BufferTooSmallException` path in the proxy (HTTP 500 with the required size).
 
-`vespera.bridge.max-buffered-request-bytes` defaults to 64 MiB (`0` =
-unlimited), matching the Rust-side `VESPERA_MAX_REQUEST_BYTES` default.  The
+`vespera.bridge.max-buffered-request-bytes` defaults to 64 MiB (`0` removes
+the configured cap, but a body of unknown length is still bounded at 64 MiB
+and a declared length above the single-array ceiling is refused with `413`),
+matching the Rust-side `VESPERA_MAX_REQUEST_BYTES` default.  The
 proxy rejects SYNC/ASYNC/DIRECT/STREAMING requests whose buffered body exceeds
 the cap with HTTP 413.  Bidirectional
 streaming is exempt and remains the path for large or unknown-size uploads.
