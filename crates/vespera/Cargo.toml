@@ -96,12 +96,12 @@ validation = ["dep:garde", "dep:serde_path_to_error", "vespera_macro/validation"
 [dependencies]
 vespera_core = { workspace = true }
 vespera_macro = { workspace = true }
-axum = { version = "0.8.4", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio"] }
+axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio"] }
 axum-extra = { version = "0.12", default-features = false }
-chrono = { version = "0.4.42", default-features = false, features = ["serde", "now"] }
+chrono = { version = "0.4.45", default-features = false, features = ["serde", "now"] }
 tempfile = { version = "3", optional = true }
-serde = { version = "1.0.221", features = ["derive"] }
-serde_json = "1.0.100"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 tower-layer = "0.3.3"
 tower-service = "0.3.3"
 # Used by the `Serve` extension trait to bind a TcpListener and drive
@@ -109,7 +109,7 @@ tower-service = "0.3.3"
 # multipart extractor keeps temp-file I/O off the async workers (tokio::fs
 # writes, spawn_blocking).  Always present because virtually every axum
 # user already has tokio in their dependency graph.
-tokio = { version = "1.44", features = ["net"] }
+tokio = { version = "1.54", features = ["net"] }
 vespera_inprocess = { workspace = true, optional = true }
 vespera_jni = { workspace = true, optional = true }
 # Hidden behind `validation` feature; re-exported via the private
@@ -119,7 +119,7 @@ garde = { workspace = true, optional = true }
 # Recovers the field path from axum's Json/Form/Query deserialization
 # rejections so `Validated<T>` can report them in the 422 envelope (already in
 # the graph via axum's json/form/query features).
-serde_path_to_error = { version = "0.1.8", optional = true }
+serde_path_to_error = { version = "0.1.20", optional = true }
 # `tracing` feature: cron diagnostics as `tracing` events (see the feature).
 tracing = { version = "0.1.44", default-features = false, features = ["std"], optional = true }
 
@@ -127,10 +127,10 @@ tracing = { version = "0.1.44", default-features = false, features = ["std"], op
 # Used by integration tests under `tests/` that exercise the
 # `Validated<T>` extractor and the macro-emitted `garde::Validate`
 # impls.  Not pulled into the production build.
-serde = { version = "1.0.221", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
 # `test-util`: paused-clock tests of the cron scheduler's sleep slicing.
-tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "test-util"] }
-tower = { version = "0.5.2", features = ["util"] }
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "test-util"] }
+tower = { version = "0.5.3", features = ["util"] }
 # Integration tests for the JNI dispatch path call
 # `vespera_inprocess::{register_app, dispatch_from_bytes}` directly so
 # they don't need the `inprocess` cargo feature to be enabled.
@@ -142,7 +142,7 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 # `derive` for the `#[derive(Validate)]` fixture; `email`/`url` for its
 # field validators (the workspace `garde` is `default-features = false`).
 garde = { version = "0.23", features = ["derive", "email", "url"] }
-serde_json = "1.0.100"
+serde_json = "1.0.154"
 # Compile-fail (UI) tests that assert the `#[route(responses=[...])]` and
 # `#[cron("...")]` macros reject malformed input with a clean compile error
 # instead of silently dropping it / panicking at runtime. See tests/ui/.
