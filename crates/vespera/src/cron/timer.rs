@@ -47,6 +47,9 @@ struct Queue {
     /// Whether the timer thread has been started.  A failed start leaves it
     /// `false`, so the next [`Timer::ensure_running`] retries it.
     running: bool,
+    /// Whether the failed start of the current outage was already logged, so
+    /// every poll of a waiting sleep does not write another diagnostic.
+    start_reported: bool,
 }
 
 #[derive(Default)]
@@ -76,7 +79,10 @@ impl Timer {
                 true
             }
             Err(error) => {
-                cron_diag!(error, "failed to start the cron timer thread: {error}");
+                if !queue.start_reported {
+                    queue.start_reported = true;
+                    cron_diag!(error, "failed to start the cron timer thread: {error}");
+                }
                 false
             }
         }
@@ -155,6 +161,13 @@ pub(super) fn sleep(duration: Duration) -> impl Future<Output = ()> {
 /// waits in short blocking slices and resolves at its deadline regardless of
 /// the thread, so a process at its thread limit never parks a job forever.
 /// Once the thread runs, the registered slot fires as usual.
+///
+/// Cost while the thread is down: each poll blocks the polling thread for up
+/// to `RETRY_SLICE` before returning `Pending` and waking itself, so a
+/// current-thread runtime serving a waiting job runs its other tasks only
+/// between slices.  No Tokio timer is used, because that would need a probe
+/// for the runtime's time driver, which Tokio does not offer.  The failed
+/// start is logged once per outage, not on every poll.
 fn sleep_with(
     timer: &'static Timer,
     spawn: fn(&'static Timer) -> std::io::Result<()>,
@@ -265,6 +278,19 @@ mod tests {
             Duration::from_millis(30),
         ));
         assert!(started.elapsed() >= Duration::from_millis(30));
+        assert!(!timer.queue.lock().unwrap().running);
+    }
+
+    /// Repeated failed starts within one outage latch the diagnostic: the
+    /// flag is set by the first one and stays set (no per-poll log line).
+    #[test]
+    fn a_failed_start_latches_its_diagnostic_for_the_outage() {
+        let timer: &'static Timer = Box::leak(Box::default());
+        assert!(!timer.queue.lock().unwrap().start_reported);
+        for _ in 0..3 {
+            assert!(!timer.ensure_running(|_| Err(std::io::Error::other("no threads left"))));
+        }
+        assert!(timer.queue.lock().unwrap().start_reported);
         assert!(!timer.queue.lock().unwrap().running);
     }
 }

@@ -319,9 +319,13 @@ fn dispatch_resumable(input: &[u8], out: &mut [u8]) -> Option<jint> {
 /// Continue the stashed response `token` into the direct buffer `out`:
 /// `>= 0` complete (the entry is consumed), `-(required)` still too large
 /// (the entry is kept under the same token, with more of the body read),
-/// `Integer.MIN_VALUE` when the token is unknown (expired / evicted /
-/// already redeemed) or `out` is not a direct buffer.  A configured
-/// dispatch timeout bounds the call (`504` wire).
+/// `Integer.MIN_VALUE` when `out` is not a direct buffer or, while the
+/// runtime is live, the token is unknown (expired / evicted / already
+/// redeemed).  After runtime shutdown an unknown token instead answers the
+/// runtime-unavailable `503` wire, written into `out` like any other
+/// response: `>= 0` its length, or `-(len)` when it does not fit (the handle
+/// area is then zeroed, so the caller retries with a larger buffer).  A
+/// configured dispatch timeout bounds the call (`504` wire).
 ///
 /// A Rust panic while the stashed body is read (the handler's body stream
 /// panicked) is never reported as `Integer.MIN_VALUE` — that would read as
