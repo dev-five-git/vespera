@@ -471,11 +471,12 @@ impl TypeResolver<'_> {
         {
             // Several external globs and no other meaning for the name: which
             // one supplies it would be a guess, so the user imports it
-            // explicitly (R22-SM4-L1).
-            if sea_orm_alias.is_none()
-                && self
-                    .scope
-                    .is_some_and(|scope| external_globs(scope).count() > 1)
+            // explicitly (R22-SM4-L1). A name a SeaORM alias also knows (`Utc`,
+            // `Local`) takes the same path: its alias meaning is no reason to
+            // pick one of the globs silently (R23-SM4-L1).
+            if self
+                .scope
+                .is_some_and(|scope| external_globs(scope).count() > 1)
             {
                 return syn::Error::new(
                     ident.span(),
@@ -666,7 +667,7 @@ fn external_glob(scope: &ModuleScope) -> Option<&Vec<String>> {
 }
 
 /// Names a glob import never supplies: the primitives and the std prelude.
-fn is_prelude_name(name: &str) -> bool {
+pub(super) fn is_prelude_name(name: &str) -> bool {
     // `char` and `str` are primitives the list above does not carry: a glob
     // import would have been taken for them (R21-B4-M1, round 21).
     PRIMITIVE_TYPE_NAMES.contains(&name)

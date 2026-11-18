@@ -110,6 +110,32 @@ fn name_from_two_external_globs_asks_for_an_explicit_import() {
     );
 }
 
+/// R23-SM4-L1: a name that a SeaORM alias also knows (`Utc`) is not exempt
+/// from the several-external-globs error: the alias is no reason to pick one
+/// of the globs silently (it used to emit `std :: collections :: Utc`).
+#[test]
+fn alias_named_type_from_two_external_globs_asks_for_an_explicit_import() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(src.join("models")).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod models;").unwrap();
+    std::fs::write(src.join("models.rs"), "pub mod stamped;").unwrap();
+    std::fs::write(
+        src.join("models").join("stamped.rs"),
+        "use std::collections::*;\nuse my_domain::*;\npub struct Holder { pub v: u8 }",
+    )
+    .unwrap();
+    let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    crate::schema_macro::file_cache::bump_epoch();
+    let module = ["crate", "models", "stamped"].map(String::from);
+    let ty: syn::Type = syn::parse_str("Utc").unwrap();
+    let output = resolve_type_with_params(&ty, &module, &[]).to_string();
+    assert!(
+        output.contains("compile_error") && output.contains("import it explicitly"),
+        "{output}"
+    );
+}
+
 /// R21-B4-M1 / M2 (round 21): with the SeaORM prelude and an external glob
 /// both imported, a SeaORM prelude name is SeaORM's (the external glob took
 /// `DateTimeUtc`, `Uuid`, `Json`), and `char` / `str` are never a glob's.

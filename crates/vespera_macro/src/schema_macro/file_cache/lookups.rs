@@ -8,7 +8,8 @@
 //! file/dir/content caching that remains in `file_cache.rs`, and operate on a
 //! disjoint set of [`super::FileCache`] fields (`circular_analysis`,
 //! `struct_lookup`, `fk_column_lookup`, `module_path_cache`;
-//! `mtime_epoch_cache` is only read, to fingerprint out-of-tree files). They share the
+//! `mtime_epoch_cache` is written only through `get_fingerprint_cached`, which
+//! these lookups call to fingerprint the files they read). They share the
 //! parent's `FILE_CACHE` thread-local plus the `ensure_file_list` /
 //! `get_fingerprint_cached` helpers via `super::`.
 
@@ -23,7 +24,9 @@ use crate::schema_macro::file_lookup::{
     find_fk_column_from_target_entity, find_struct_from_schema_path,
 };
 
-use super::{FILE_CACHE, FileCache, PathLookupEntry, ensure_file_list, get_fingerprint_cached};
+use super::{
+    FILE_CACHE, FileCache, PathLookupEntry, ensure_file_list, get_fingerprint_cached, tracked,
+};
 
 /// Outcome of probing a path-keyed lookup cache.
 ///
@@ -238,31 +241,36 @@ fn fingerprint_path(cache: &mut FileCache, path: &Path, hasher: &mut DefaultHash
 /// long-lived rust-analyzer proc-macro server.
 pub fn get_struct_from_schema_path(path_str: &str) -> Option<Arc<StructMetadata>> {
     // Probe the cache; the borrow ends before the lookup below, which
-    // re-enters FILE_CACHE.
-    let probe = FILE_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let epoch = cache.epoch;
-        // Epoch-hit fast path: an entry already validated THIS epoch is fresh
-        // WITHOUT recomputing the fingerprint — which, for a single-segment
-        // path, walks the entire `src` tree. The previous code computed the
-        // fingerprint unconditionally even when the epoch stamp already proved
-        // freshness.
-        if let Some(entry) = cache.struct_lookup.get(path_str)
-            && entry.last_epoch_validated == epoch
-        {
-            return Probe::Hit(entry.value.clone());
-        }
-        // Cross-epoch / absent: compute the fingerprint ONCE and reuse it for
-        // the insert below on a miss.
-        let fingerprint = path_lookup_fingerprint(&mut cache, path_str);
-        if let Some(entry) = cache.struct_lookup.get_mut(path_str)
-            && entry.fingerprint == fingerprint
-        {
-            // Re-stamp so further lookups this epoch take the fast path.
-            entry.last_epoch_validated = epoch;
-            return Probe::Hit(entry.value.clone());
-        }
-        Probe::Miss(fingerprint, cache.mtime_epoch_cache.len())
+    // re-enters FILE_CACHE. The probe is tracked: its own reads (the
+    // fingerprint) and a served entry's inputs both reach the caller's frame.
+    let (probe, mut deps) = tracked::tracked(|| {
+        FILE_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            let epoch = cache.epoch;
+            // Epoch-hit fast path: an entry already validated THIS epoch is fresh
+            // WITHOUT recomputing the fingerprint — which, for a single-segment
+            // path, walks the entire `src` tree. The previous code computed the
+            // fingerprint unconditionally even when the epoch stamp already proved
+            // freshness.
+            if let Some(entry) = cache.struct_lookup.get(path_str)
+                && entry.last_epoch_validated == epoch
+            {
+                tracked::replay(&entry.deps);
+                return Probe::Hit(entry.value.clone());
+            }
+            // Cross-epoch / absent: compute the fingerprint ONCE and reuse it for
+            // the insert below on a miss.
+            let fingerprint = path_lookup_fingerprint(&mut cache, path_str);
+            if let Some(entry) = cache.struct_lookup.get_mut(path_str)
+                && entry.fingerprint == fingerprint
+            {
+                // Re-stamp so further lookups this epoch take the fast path.
+                entry.last_epoch_validated = epoch;
+                tracked::replay(&entry.deps);
+                return Probe::Hit(entry.value.clone());
+            }
+            Probe::Miss(fingerprint, cache.mtime_epoch_cache.len())
+        })
     });
     let fingerprint = match probe {
         Probe::Hit(value) => {
@@ -272,7 +280,9 @@ pub fn get_struct_from_schema_path(path_str: &str) -> Option<Arc<StructMetadata>
         Probe::Miss(fingerprint, files_read) => (fingerprint, files_read),
     };
 
-    let result = find_struct_from_schema_path(path_str).map(Arc::new);
+    let (result, resolved_deps) =
+        tracked::tracked(|| find_struct_from_schema_path(path_str).map(Arc::new));
+    deps.extend(&resolved_deps);
 
     FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -284,6 +294,7 @@ pub fn get_struct_from_schema_path(path_str: &str) -> Option<Arc<StructMetadata>
                 value: result.clone(),
                 fingerprint,
                 last_epoch_validated: epoch,
+                deps,
             },
         );
     });
@@ -302,26 +313,31 @@ pub fn get_fk_column(schema_path: &str, via_rel: &str) -> Option<(String, Option
 
     // Probe the cache (entries deliberately SURVIVE epoch bumps — freshness
     // comes from `last_epoch_validated` + `path_lookup_fingerprint`). The
-    // borrow ends before the lookup below, which re-enters FILE_CACHE.
-    let probe = FILE_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let epoch = cache.epoch;
-        // Epoch-hit fast path: skip the (possibly `src`-tree-walking)
-        // fingerprint when the entry was already validated this epoch.
-        if let Some(entry) = cache.fk_column_lookup.get(&key)
-            && entry.last_epoch_validated == epoch
-        {
-            return Probe::Hit(entry.value.clone());
-        }
-        // Cross-epoch / absent: compute the fingerprint ONCE, reuse on miss.
-        let fingerprint = path_lookup_fingerprint(&mut cache, schema_path);
-        if let Some(entry) = cache.fk_column_lookup.get_mut(&key)
-            && entry.fingerprint == fingerprint
-        {
-            entry.last_epoch_validated = epoch;
-            return Probe::Hit(entry.value.clone());
-        }
-        Probe::Miss(fingerprint, cache.mtime_epoch_cache.len())
+    // borrow ends before the lookup below, which re-enters FILE_CACHE. The
+    // probe is tracked, as in `get_struct_from_schema_path` (R23-M1).
+    let (probe, mut deps) = tracked::tracked(|| {
+        FILE_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            let epoch = cache.epoch;
+            // Epoch-hit fast path: skip the (possibly `src`-tree-walking)
+            // fingerprint when the entry was already validated this epoch.
+            if let Some(entry) = cache.fk_column_lookup.get(&key)
+                && entry.last_epoch_validated == epoch
+            {
+                tracked::replay(&entry.deps);
+                return Probe::Hit(entry.value.clone());
+            }
+            // Cross-epoch / absent: compute the fingerprint ONCE, reuse on miss.
+            let fingerprint = path_lookup_fingerprint(&mut cache, schema_path);
+            if let Some(entry) = cache.fk_column_lookup.get_mut(&key)
+                && entry.fingerprint == fingerprint
+            {
+                entry.last_epoch_validated = epoch;
+                tracked::replay(&entry.deps);
+                return Probe::Hit(entry.value.clone());
+            }
+            Probe::Miss(fingerprint, cache.mtime_epoch_cache.len())
+        })
     });
     let fingerprint = match probe {
         Probe::Hit(value) => {
@@ -331,7 +347,9 @@ pub fn get_fk_column(schema_path: &str, via_rel: &str) -> Option<(String, Option
         Probe::Miss(fingerprint, files_read) => (fingerprint, files_read),
     };
 
-    let result = find_fk_column_from_target_entity(schema_path, via_rel);
+    let (result, resolved_deps) =
+        tracked::tracked(|| find_fk_column_from_target_entity(schema_path, via_rel));
+    deps.extend(&resolved_deps);
 
     FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -343,6 +361,7 @@ pub fn get_fk_column(schema_path: &str, via_rel: &str) -> Option<(String, Option
                 value: result.clone(),
                 fingerprint,
                 last_epoch_validated: epoch,
+                deps,
             },
         );
     });

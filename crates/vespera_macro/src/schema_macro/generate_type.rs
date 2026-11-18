@@ -31,8 +31,8 @@ use super::seaorm::{
     has_sea_orm_database_default, has_sea_orm_primary_key, primary_key_count,
 };
 use super::transformation::{
-    OptionWrap, RenameAll, build_omit_set, build_partial_config, build_pick_set, build_rename_map,
-    container_serde_attrs, determine_rename_all, extract_doc_attrs, extract_form_data_attrs,
+    OptionWrap, build_omit_set, build_partial_config, build_pick_set, build_rename_map,
+    container_serde_attrs, dto_renaming, extract_doc_attrs, extract_form_data_attrs,
     field_form_name, field_serde_attrs, renamed_field_serde_rename, reroot_serde_paths,
     should_skip_field, should_wrap_in_option,
 };
@@ -204,13 +204,17 @@ pub fn generate_schema_type_code(
     } else {
         SerdeSide::Serialize
     };
-    let effective_rename_all =
-        determine_rename_all(input.rename_all.as_ref(), &parsed_struct.attrs, rename_side);
-    let rename_all = RenameAll::new(
+    // Raw Rust field names for a `multipart` DTO of a source without a
+    // deserialize-side `rename_all` (R23-CJ1-M1, see `dto_renaming`).
+    let renaming = dto_renaming(
         input.rename_all.as_ref(),
+        input.multipart,
         &parsed_struct.attrs,
-        &effective_rename_all,
+        rename_side,
     );
+    let multipart_raw_names = renaming.raw_names;
+    let effective_rename_all = renaming.effective;
+    let rename_all = renaming.rename_all;
     let rename_all_attr = rename_all.attr();
 
     // Check if source is a SeaORM Model
@@ -855,8 +859,11 @@ pub fn generate_schema_type_code(
     // Multipart derive — also the ones the registered metadata repeats.
     // Multipart mode emits `#[serde(rename_all = ...)]` so Multipart applies
     // the rename at runtime AND the Schema derive reads it via the
-    // extract_rename_all() fallback for OpenAPI field naming. Both modes
-    // keep a source container `#[serde(default)]` as a DTO-building fn.
+    // extract_rename_all() fallback for OpenAPI field naming (none when the
+    // source has no rename_all: raw names, see `multipart_raw_names`). Both
+    // modes keep a source container `#[serde(default)]` as a DTO-building fn.
+    let multipart_rename_all_attr =
+        (!multipart_raw_names).then(|| quote! { #[serde(rename_all = #effective_rename_all)] });
     let default_assignments =
         buildable.then(|| assignments::source_field_assignments(&field_mappings, true));
     let (container_attrs, container_default_fn) = if input.multipart {
@@ -878,7 +885,7 @@ pub fn generate_schema_type_code(
         }
         (
             quote! {
-                #[serde(rename_all = #effective_rename_all)]
+                #multipart_rename_all_attr
                 #container_carry
             },
             carry.helper,

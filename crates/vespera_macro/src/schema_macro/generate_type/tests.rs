@@ -81,8 +81,11 @@ fn test_generate_schema_type_code_multipart_with_rename() {
     assert!(output.contains("Multipart"));
     // Should have renamed field
     assert!(output.contains("document_path"));
-    // Original name should NOT appear as field
-    assert!(!output.contains("file_path"));
+    // The Rust field is renamed (no `file_path` field declaration), while its
+    // form field keeps the source's raw name, which the source's Multipart
+    // derive reads (R23-CJ1-M1; it used to read the camelCase `filePath`).
+    assert!(!output.contains("file_path :"), "{output}");
+    assert!(output.contains("field_name = \"file_path\""), "{output}");
 }
 
 #[test]

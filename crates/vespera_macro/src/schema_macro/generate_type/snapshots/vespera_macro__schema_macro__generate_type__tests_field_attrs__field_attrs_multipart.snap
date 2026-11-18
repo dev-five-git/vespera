@@ -5,7 +5,6 @@ expression: "format!(\"{code}\\n// ---- metadata ----\\n{}\", metadata.unwrap_or
 #[allow(deprecated)]
 #[derive(vespera::Multipart, ::garde::Validate, vespera::Schema)]
 #[garde(context(Ctx))]
-#[serde(rename_all = "camelCase")]
 pub struct Dto {
     #[schema(minimum = 1)]
     #[cfg(feature = "x")]

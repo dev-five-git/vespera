@@ -133,6 +133,10 @@ struct PathLookupEntry<T> {
     value: T,
     fingerprint: u64,
     last_epoch_validated: u64,
+    /// Every input the value was computed from (the fingerprinted files and
+    /// the files the resolution read). Replayed into an enclosing `tracked`
+    /// computation whenever the entry is served without a re-read (R23-M1).
+    deps: tracked::Deps,
 }
 
 /// Internal cache state.

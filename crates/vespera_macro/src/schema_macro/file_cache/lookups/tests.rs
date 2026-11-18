@@ -72,6 +72,33 @@ fn struct_and_fk_lookups_revalidate_unchanged_entries_across_epochs() {
     assert_eq!(hits(), (struct_hits + 1, fk_hits + 1));
 }
 
+/// R23-M1: a path lookup served from the epoch fast path inside a `tracked`
+/// computation reports the files it depends on, so a memo built on it goes
+/// stale when the source changes. The fast path used to record nothing, so
+/// the memo kept its stale value after the model file was rewritten.
+#[test]
+fn epoch_hit_inside_tracked_computation_reports_the_lookup_inputs() {
+    use crate::schema_macro::file_cache::Tracked;
+    let temp = TempDir::new().unwrap();
+    let model_dir = temp.path().join("src/models");
+    std::fs::create_dir_all(&model_dir).unwrap();
+    let model_file = model_dir.join("user.rs");
+    std::fs::write(&model_file, "pub struct Model { pub id: i32 }").unwrap();
+    let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
+    let path = "crate::models::user::Model";
+
+    bump_epoch();
+    // Validates the entry in this epoch, so the next lookup takes the fast path.
+    assert!(get_struct_from_schema_path(path).is_some());
+    // Same epoch, inside a tracked computation: served by the fast path.
+    let mut memo = Tracked::compute(|| get_struct_from_schema_path(path).is_some());
+    assert_eq!(memo.get(), Some(true));
+
+    std::fs::write(&model_file, "pub struct Renamed { pub id: i32 }").unwrap();
+    bump_epoch();
+    assert_eq!(memo.get(), None, "the memo must notice the rewritten model");
+}
+
 /// A `#[path]` module outside the module directory is part of the
 /// fingerprint: editing it re-resolves the cached lookup.
 #[test]

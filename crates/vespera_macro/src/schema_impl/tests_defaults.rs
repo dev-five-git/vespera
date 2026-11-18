@@ -379,6 +379,10 @@ fn default_function_cache_keys_are_unrawed() {
 #[case::qself_as_new("<Vec<i32> as Other>::new", quote::quote!(Vec<i32>), None)]
 #[case::qself_other_fn("<Vec<i32>>::with_capacity", quote::quote!(Vec<i32>), None)]
 #[case::qself_other_trait("<Vec<i32> as Other>::default", quote::quote!(Vec<i32>), None)]
+// R23-SM2: a qualified `default` names the field's type, or it is another
+// type's default (serde calls `Other::default()`, not `[]`).
+#[case::qself_default_other_type("<Other>::default", quote::quote!(Vec<String>), None)]
+#[case::qself_as_default_other_type("<Other as Default>::default", quote::quote!(Vec<String>), None)]
 #[case::other_type_new("Vec::new", quote::quote!(String), None)]
 #[case::non_container_new("Uuid::new", quote::quote!(Uuid), None)]
 #[case::other_fn("Vec::with_capacity", quote::quote!(Vec<i32>), None)]

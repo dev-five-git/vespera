@@ -3,7 +3,6 @@ source: crates/vespera_macro/src/schema_macro/generate_type/tests_field_attrs.rs
 expression: "prettyplease::unparse(&file)"
 ---
 /// An upload.
-#[serde(rename_all = "camelCase")]
 #[try_from_multipart(strict)]
 #[serde(deny_unknown_fields)]
 #[serde(default = "__vespera_Dto_default")]

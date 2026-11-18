@@ -290,7 +290,10 @@ mod multipart_names {
             ("doc-title", "t"),
             ("doc-note", "n"),
             ("explicit", "o"),
-            ("plainField", "p"),
+            // The source's raw Rust name (no `rename_all` on the source): the
+            // Multipart derive of `Upload` reads it, and so must the DTO
+            // (R23-CJ1-M1; the DTO used to read the camelCase `plainField`).
+            ("plain_field", "p"),
         ])
         .await;
         assert_eq!(dto.heading, "t");

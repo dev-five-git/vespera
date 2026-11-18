@@ -101,6 +101,41 @@ pub(super) fn with_multipart_vec_defaults(
     })
 }
 
+/// The error for an input whose source declaration cannot be picked out: the
+/// toolchain reports no position for it (`0:0`, see `ident_position`), and
+/// its file holds other same-named declarations whose serde / Multipart
+/// derives differ (R23-SM1). Copying one candidate's derives would silently
+/// give the wrong wire shape, so the derive refuses instead. Same-named items
+/// with equal derives are not an error (one answer serves them all).
+pub(super) fn ambiguous_declaration(
+    input: &syn::DeriveInput,
+    call_site_file: Option<&Path>,
+) -> Option<syn::Error> {
+    let path = call_site_file?;
+    if super::ident_position(&input.ident).is_some() {
+        return None;
+    }
+    let is_struct = matches!(input.data, syn::Data::Struct(_));
+    let declarations = declarations(path)?;
+    let ident = input.ident.to_string();
+    let candidates: Vec<&Declaration> = declarations
+        .iter()
+        .filter(|declaration| declaration.is_struct == is_struct && declaration.ident == ident)
+        .collect();
+    let first = candidates.first()?;
+    candidates
+        .iter()
+        .any(|candidate| candidate.derives != first.derives)
+        .then(|| {
+            syn::Error::new(
+                input.ident.span(),
+                format!(
+                    "`{ident}` is declared more than once in this file with different serde / Multipart derives, and the compiler does not report which declaration this is: give the declarations distinct names, or move them to separate files"
+                ),
+            )
+        })
+}
+
 /// The derives among `names` of THE source declaration of the enum (or,
 /// with `is_struct`, the struct) `ident`.
 ///
@@ -122,16 +157,21 @@ fn source_derives(
     is_struct: bool,
 ) -> Option<Vec<&'static str>> {
     let declarations = declarations(file)?;
-    let start = ident.span().start();
+    let position = super::ident_position(ident);
     let ident = ident.to_string();
     let found: Vec<&Declaration> = declarations
         .iter()
         .filter(|declaration| declaration.is_struct == is_struct && declaration.ident == ident)
         .collect();
+    // Without a reported position, several candidates still give one answer
+    // when they agree on the derives (see `ambiguous_declaration`).
+    let agree = found
+        .windows(2)
+        .all(|pair| pair[0].derives == pair[1].derives);
     let index = found
         .iter()
-        .position(|declaration| declaration.position == (start.line, start.column))
-        .or_else(|| (found.len() == 1).then_some(0))?;
+        .position(|declaration| Some(declaration.position) == position)
+        .or_else(|| (found.len() == 1 || (position.is_none() && agree)).then_some(0))?;
     Some(
         names
             .iter()
@@ -432,8 +472,8 @@ mod tests {
     /// Several same-named enums and none at the input's position (the item
     /// moved, or the file is unparseable): nothing is borrowed.
     #[rstest]
-    #[case::ambiguous_moved(
-        "mod a { #[derive(Serialize_repr)] #[repr(u8)] enum E { A } }\nmod b { #[derive(Serialize_repr)] #[repr(u8)] enum E { A } }"
+    #[case::ambiguous_disagreeing(
+        "mod a { #[derive(Serialize_repr)] #[repr(u8)] enum E { A } }\nmod b { enum E { A } }"
     )]
     #[case::unparseable("#[derive(Serialize_repr)] enum E {")]
     fn ambiguous_or_unparseable_source_adds_nothing(#[case] source: &str) {
@@ -442,6 +482,57 @@ mod tests {
         std::fs::write(&path, source).unwrap();
         let input: syn::DeriveInput = syn::parse_str("#[repr(u8)] enum E { A }").unwrap();
         assert!(with_serde_repr_derives(&input, Some(&path)).is_none());
+    }
+
+    /// R23-SM1: without a reported position, same-named enums whose derives
+    /// AGREE give one answer, which is copied (it is the same for each of
+    /// them). Their input is also not an [`ambiguous_declaration`].
+    #[test]
+    fn agreeing_same_named_enums_share_one_answer() {
+        let _positions = crate::schema_impl::hide_positions();
+        let source = "mod a { #[derive(Serialize_repr)] #[repr(u8)] enum E { A } }\nmod b { #[derive(Serialize_repr)] #[repr(u8)] enum E { B } }";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        std::fs::write(&path, source).unwrap();
+        let input: syn::DeriveInput = syn::parse_str("#[repr(u8)] enum E { A }").unwrap();
+        assert!(ambiguous_declaration(&input, Some(&path)).is_none());
+        let copied = with_serde_repr_derives(&input, Some(&path)).expect("copied");
+        assert!(derives(&copied.attrs, "Serialize_repr"));
+    }
+
+    /// R23-SM1: the same ambiguity WITH derives that differ is a compile error
+    /// at the derive (the copy would come from the wrong declaration), while a
+    /// unique declaration or a positioned input is never an error.
+    #[rstest]
+    #[case::disagreeing_positionless(
+        "mod a { #[derive(Serialize_repr)] #[repr(u8)] enum E { A } }\nmod b { enum E { A } }",
+        false,
+        true
+    )]
+    #[case::unique_positionless("#[derive(Serialize_repr)] #[repr(u8)] enum E { A }", false, false)]
+    #[case::positioned_input(
+        "mod a { #[derive(Serialize_repr)] #[repr(u8)] enum E { A } }\nmod b { enum E { A } }",
+        true,
+        false
+    )]
+    fn differing_same_named_declarations_are_an_error(
+        #[case] source: &str,
+        #[case] positioned: bool,
+        #[case] expected: bool,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        std::fs::write(&path, source).unwrap();
+        let _positions = (!positioned).then(crate::schema_impl::hide_positions);
+        let input = if positioned {
+            enum_at(source, 0)
+        } else {
+            syn::parse_str("#[repr(u8)] enum E { A }").unwrap()
+        };
+        assert_eq!(
+            ambiguous_declaration(&input, Some(&path)).is_some(),
+            expected
+        );
     }
 
     /// L9 (round 12): the Multipart derive fills an absent `Vec<T>` part with

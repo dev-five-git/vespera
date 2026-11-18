@@ -133,23 +133,77 @@ pub fn register_schema(name: String, metadata: StructMetadata) -> Result<(), ()>
     })
 }
 
-/// Source identity of a derive: `file::Ident@line:column`.
+/// The `(line, column)` of an item's ident, when its span reports one.
 ///
-/// The ident's span position distinguishes two same-named items in different
-/// inline `mod`s of ONE file (`file::Ident` alone collided, so the second
-/// silently replaced the first instead of raising the duplicate-name error).
+/// A compiler span reports `0:0` on a stable toolchain (`Span::start` needs the
+/// nightly-only `proc_macro_span`), so a derive's input has no position there
+/// and `None` is the answer (R23-SM1). Re-parsed text (the fallback parser)
+/// always carries real positions.
+fn ident_position(ident: &syn::Ident) -> Option<(usize, usize)> {
+    #[cfg(test)]
+    if HIDE_POSITIONS.with(std::cell::Cell::get) {
+        return None;
+    }
+    let start = ident.span().start();
+    (start.line != 0).then_some((start.line, start.column))
+}
+
+// Test seam: unit tests parse with a fallback parser that always reports real
+// positions, so the stable toolchain's `0:0` is simulated here instead.
+#[cfg(test)]
+thread_local! {
+    static HIDE_POSITIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Hides item positions (as a stable toolchain does) until dropped.
+#[cfg(test)]
+pub struct PositionsHidden;
+
+#[cfg(test)]
+impl Drop for PositionsHidden {
+    fn drop(&mut self) {
+        HIDE_POSITIONS.with(|hidden| hidden.set(false));
+    }
+}
+
+/// Start hiding item positions for the guard's lifetime.
+#[cfg(test)]
+pub fn hide_positions() -> PositionsHidden {
+    HIDE_POSITIONS.with(|hidden| hidden.set(true));
+    PositionsHidden
+}
+
+/// The disambiguating part of an item's source identity: its `line:column`
+/// when the span reports one, else a hash of the item's own tokens (R23-SM1).
+/// Two same-named items of one file with different bodies then keep distinct
+/// identities on a stable toolchain, where every position is `0:0`.
+fn source_suffix(ident: &syn::Ident, item_tokens: &str) -> String {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    if let Some((line, column)) = ident_position(ident) {
+        return format!("{line}:{column}");
+    }
+    let mut hasher = DefaultHasher::new();
+    item_tokens.hash(&mut hasher);
+    format!("tokens:{:016x}", hasher.finish())
+}
+
+/// Source identity of a derive: `file::Ident@line:column` (or `@tokens:..`
+/// without a reported position, see [`source_suffix`]).
+///
+/// The suffix distinguishes two same-named items in different inline `mod`s
+/// of ONE file (`file::Ident` alone collided, so the second silently replaced
+/// the first instead of raising the duplicate-name error).
 fn derive_source_identity(
     input: &syn::DeriveInput,
     call_site_file: Option<&Path>,
 ) -> Option<String> {
     call_site_file.map(|path| {
-        let start = input.ident.span().start();
+        let tokens = quote::ToTokens::to_token_stream(input).to_string();
         format!(
-            "{}::{}@{}:{}",
+            "{}::{}@{}",
             path.display(),
             input.ident,
-            start.line,
-            start.column
+            source_suffix(&input.ident, &tokens)
         )
     })
 }
@@ -309,19 +363,17 @@ pub fn require_component_key(name: &str, span: proc_macro2::Span) -> syn::Result
 /// aliases it (`Json<Dto>` → `$ref: DtoSchema`), and the macro call site is
 /// its source identity.
 pub fn named_type_metadata(name: &str, ident: &syn::Ident, definition: String) -> StructMetadata {
+    let identity = proc_macro2::Span::call_site().local_file().map(|file| {
+        format!(
+            "{}::{ident}@{}",
+            file.display(),
+            source_suffix(ident, &definition)
+        )
+    });
     let mut metadata = StructMetadata::new(name.to_string(), definition);
     metadata.explicit_schema_name = true;
     let rust_ident = syn::ext::IdentExt::unraw(ident).to_string();
     metadata.rust_ident = (rust_ident != name).then_some(rust_ident);
-    let start = ident.span().start();
-    let identity = proc_macro2::Span::call_site().local_file().map(|file| {
-        format!(
-            "{}::{ident}@{}:{}",
-            file.display(),
-            start.line,
-            start.column
-        )
-    });
     // No call-site file (unit tests): no identity.
     identity
         .into_iter()
@@ -515,6 +567,12 @@ pub fn process_derive_schema(
         return (None, error.to_compile_error());
     }
 
+    // Same-named items of this file that derive different serde / Multipart
+    // sets cannot be told apart without a reported position (R23-SM1): an
+    // error beats copying one of their derive sets onto the other.
+    if let Some(error) = serde_repr::ambiguous_declaration(input, call_site_file.as_deref()) {
+        return (None, error.to_compile_error());
+    }
     // Schema-derived types appear in OpenAPI spec (include_in_openapi: true)
     let repr_input = serde_repr::with_serde_repr_derives(input, call_site_file.as_deref())
         .or_else(|| serde_repr::with_multipart_vec_defaults(input, call_site_file.as_deref()));
@@ -726,18 +784,37 @@ fn cached_default_functions(file_path: &Path) -> Option<Arc<BTreeMap<String, ser
 fn extract_default_functions_from_file(
     file_ast: &syn::File,
 ) -> BTreeMap<String, serde_json::Value> {
-    file_ast
+    let active: Vec<&syn::ItemFn> = file_ast
         .items
         .iter()
-        .filter_map(|item| {
-            let syn::Item::Fn(func) = item else {
-                return None;
-            };
-            if crate::schema_macro::cfg_eval::statically_inactive(&func.attrs) {
+        .filter_map(|item| match item {
+            syn::Item::Fn(func)
+                if !crate::schema_macro::cfg_eval::statically_inactive(&func.attrs) =>
+            {
+                Some(func)
+            }
+            _ => None,
+        })
+        .collect();
+    // A name with several active items is a cfg twin pair the static check
+    // cannot decide (`unix` / `windows`): unresolved, as `default_fns` treats
+    // it everywhere else (R23-SM3). Keeping the last twin here (the collect
+    // below) documented a different default than an inline module's lookup.
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for func in &active {
+        *counts
+            .entry(strip_raw_prefix_owned(func.sig.ident.to_string()))
+            .or_default() += 1;
+    }
+    active
+        .into_iter()
+        .filter_map(|func| {
+            let name = strip_raw_prefix_owned(func.sig.ident.to_string());
+            if counts.get(&name) != Some(&1) {
                 return None;
             }
             crate::openapi_generator::extract_default_value_from_function(func)
-                .map(|value| (strip_raw_prefix_owned(func.sig.ident.to_string()), value))
+                .map(|value| (name, value))
         })
         .collect()
 }

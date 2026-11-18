@@ -208,6 +208,10 @@ const SQL_FUNCTION_NAMES: &[&str] = &[
 /// (`now ()`), and a call with arguments must name one of
 /// [`SQL_FUNCTION_NAMES`] (R20-SM3-02, round 20: `"Draft(WIP)"` used to be
 /// taken as a function, so the column's literal default was dropped).
+///
+/// An EMPTY call (`Draft()`, `my_default()`) is a function for ANY name: the
+/// closed list guards only calls with arguments, so a user-defined
+/// no-argument SQL function is accepted (R23-SM3-03, deliberate).
 pub fn is_sql_function_default(value: &str) -> bool {
     let value = value.trim();
     let Some((name, args)) = value.split_once('(') else {
@@ -549,6 +553,12 @@ mod tests {
     #[case("current_setting('app.tenant')", true)]
     #[case("txid_current()", true)]
     #[case("Draft(wip)", false)]
+    // R23-SM3-03: an EMPTY call is taken as a function whatever its name, on
+    // purpose: a user-defined no-argument SQL function (`my_default()`) has no
+    // closed list to be checked against, and `Draft()` is not a text value a
+    // column default would plausibly hold. Pinned here so it stays a decision.
+    #[case("Draft()", true)]
+    #[case("my_default()", true)]
     fn test_is_sql_function_default(#[case] value: &str, #[case] expected: bool) {
         assert_eq!(is_sql_function_default(value), expected);
     }
