@@ -163,6 +163,8 @@ class VesperaBridgeReactiveAutoConfigurationTest {
 
     @Test
     void autoconfiguredProxyServesTheUrlSpaceEndToEnd() {
+        org.junit.jupiter.api.Assumptions.assumeFalse(VesperaBridge.isInitialized(),
+                "the 503 answer is only given while the native library is not loaded");
         reactive.withUserConfiguration(WebFluxConfig.class)
                 .withPropertyValues("vespera.bridge.exclude-patterns=/static/**")
                 .run(ctx -> {
@@ -179,6 +181,8 @@ class VesperaBridgeReactiveAutoConfigurationTest {
 
     @Test
     void metricsObserverIsWiredIntoTheReactiveProxy() {
+        org.junit.jupiter.api.Assumptions.assumeFalse(VesperaBridge.isInitialized(),
+                "the 503 answer is only given while the native library is not loaded");
         List<DispatchEvent> events = new java.util.concurrent.CopyOnWriteArrayList<>();
         reactive.withUserConfiguration(WebFluxConfig.class)
                 .withBean(DispatchObserver.class, () -> events::add)

@@ -89,10 +89,20 @@ final class ReactiveFormBodySupport {
                 })
                 .defaultIfEmpty(body)
                 // reactor-netty rejects the second read of a body that a filter drained
-                // without parsing it as a form (IllegalStateException): no form is cached,
-                // so there is nothing to recover. Any other failure is a real read or
-                // parse error and propagates instead of forwarding a truncated body.
-                .onErrorResume(IllegalStateException.class, noCachedForm -> Mono.just(body));
+                // without parsing it as a form: no form is cached, so there is nothing to
+                // recover. Any other failure is a real read or parse error and propagates
+                // instead of forwarding a truncated body.
+                .onErrorResume(ReactiveFormBodySupport::isSecondReadRejection,
+                        noCachedForm -> Mono.just(body));
+    }
+
+    /** The message of reactor-netty's second-read rejection (see {@link #secondMultipartRead}). */
+    private static final String SECOND_READ_REJECTED = "Rejecting additional inbound receiver";
+
+    private static boolean isSecondReadRejection(Throwable failure) {
+        return failure instanceof IllegalStateException
+                && failure.getMessage() != null
+                && failure.getMessage().contains(SECOND_READ_REJECTED);
     }
 
     /** Body of the proxy's {@code 500} for a consumed multipart body (WebFlux). */

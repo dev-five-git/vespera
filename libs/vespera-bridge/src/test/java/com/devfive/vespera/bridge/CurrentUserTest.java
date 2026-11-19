@@ -1,6 +1,7 @@
 package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -277,6 +278,24 @@ class CurrentUserTest {
         }
         CurrentUser.resetCache();
         assertEquals(fileOwner, VesperaNativeLoader.currentUser(dir));
+    }
+
+    @Test
+    void aTmpdirAnotherUserOwnsIsNotTrustedEvenWhenNoOneElseCanWriteIt() throws Exception {
+        assumeTrue(posix(), "POSIX file permissions required");
+        Path owned = Files.createTempDirectory(dir, "owned-");
+        try {
+            Files.setPosixFilePermissions(owned, PosixFilePermissions.fromString("rwxr-xr-x"));
+            UserPrincipal owner = Files.getOwner(owned);
+            // Owned by this process: trusted.
+            assertTrue(CurrentUser.trustedTmpdir(owned, owner));
+            // Owned by mallory at 0755: the owner can rename the probe before it is read.
+            assertFalse(CurrentUser.trustedTmpdir(owned, MALLORY));
+            // The process identity is unknown: nothing can be verified.
+            assertFalse(CurrentUser.trustedTmpdir(owned, null));
+        } finally {
+            Files.deleteIfExists(owned);
+        }
     }
 
     @Test

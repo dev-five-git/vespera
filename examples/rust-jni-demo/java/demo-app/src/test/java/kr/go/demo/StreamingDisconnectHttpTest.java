@@ -51,6 +51,8 @@ class StreamingDisconnectHttpTest extends AbstractVesperaHttpIntegrationTest {
     void clientDisconnectDropsTheRustBody(DispatchMode mode) throws Exception {
         String key = "http-disconnect-" + mode + "-" + System.nanoTime();
         try (Socket socket = new Socket("localhost", port)) {
+            // A stalled server must fail the test, not block readNBytes forever.
+            socket.setSoTimeout(30_000);
             OutputStream out = socket.getOutputStream();
             out.write(("GET /diag/drip/" + key + "/10000/20 HTTP/1.1\r\n"
                     + "Host: localhost\r\nX-Mode: " + mode + "\r\n\r\n")

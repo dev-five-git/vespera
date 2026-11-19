@@ -48,7 +48,7 @@ class VesperaNativeLoaderTest {
      * the dead copy and its directory.
      */
     @Test
-    void failedLoadDeletesTheCopyUnlessAnotherClassLoaderHoldsIt() {
+    void aPrivateCopyIsDeletedAfterAFailedLoadUnlessAnotherClassLoaderHoldsIt() {
         Path library = Path.of("cache", "abc", "libx.so");
         List<Path> deleted = new ArrayList<>();
         VesperaNativeLoader.TempFileDeleter deleter = deleted::add;
@@ -60,7 +60,7 @@ class VesperaNativeLoaderTest {
                             "Native Library " + path + " already loaded in another classloader");
                 }, deleter));
         assertTrue(shared.getMessage().contains("another classloader"));
-        assertTrue(deleted.isEmpty(), "shared verified copy kept: " + deleted);
+        assertTrue(deleted.isEmpty(), "private copy held by another class loader kept: " + deleted);
 
         assertThrows(UnsatisfiedLinkError.class,
                 () -> VesperaNativeLoader.loadExtracted(privateCopy, path -> {

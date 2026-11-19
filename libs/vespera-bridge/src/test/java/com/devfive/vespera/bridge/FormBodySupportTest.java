@@ -155,35 +155,29 @@ class FormBodySupportTest {
         expected.put("a b", 2);
         expected.put("c", 1);
         expected.put("bad%zz", 1);
-        assertEquals(
-                expected,
-                FormBodySupport.queryParameterCounts(
-                        "a+b=1&&a%20b=2&c&bad%zz=1", StandardCharsets.UTF_8));
-        assertTrue(FormBodySupport.queryParameterCounts(null, StandardCharsets.UTF_8).isEmpty());
-        assertTrue(FormBodySupport.queryParameterCounts("", StandardCharsets.UTF_8).isEmpty());
+        assertEquals(expected, FormBodySupport.queryParameterCounts("a+b=1&&a%20b=2&c&bad%zz=1"));
+        assertTrue(FormBodySupport.queryParameterCounts(null).isEmpty());
+        assertTrue(FormBodySupport.queryParameterCounts("").isEmpty());
     }
 
     @Test
-    void queryNamesAreDecodedWithTheCharsetTheContainerKeysItsParameterMapWith() {
-        // %C3%A9 is "é" in UTF-8 but "Ã©" in ISO-8859-1 (the POST default here).
-        assertEquals(
-                Map.of("Ã©", 1),
-                FormBodySupport.queryParameterCounts("%C3%A9=1", StandardCharsets.ISO_8859_1));
-        assertEquals(
-                Map.of("é", 1),
-                FormBodySupport.queryParameterCounts("%C3%A9=1", StandardCharsets.UTF_8));
+    void queryNamesAreDecodedAsUtf8LikeTheContainersParameterKeys() {
+        // %C3%A9 is "é" in UTF-8 (the container's URI charset) whatever the body charset is.
+        assertEquals(Map.of("é", 1), FormBodySupport.queryParameterCounts("%C3%A9=1"));
     }
 
     @Test
-    void aNonAsciiQueryNameIsNotCopiedIntoTheRebuiltBody() {
-        // A POST with no declared charset: the container keys the query parameter as "Ã©",
-        // so the query value must be skipped, not re-emitted as a body field.
+    void aNonAsciiQueryNameOfAConsumedPostWithoutACharsetIsNotCopiedIntoTheBody() {
+        // A POST that declares no charset: the body parameters decode as ISO-8859-1, but the
+        // container keys the query parameter "é" (UTF-8 URI decoding). Its query value must be
+        // skipped, not re-emitted as a body field (the mismatch made it "%E9=1&x=y").
         MockHttpServletRequest req = form("POST");
         req.setQueryString("%C3%A9=1");
-        req.addParameter("Ã©", "1");
+        req.addParameter("é", "1");
         req.addParameter("x", "y");
+        HttpServletRequest request = consumed(req, 3);
 
-        assertEquals("x=y", text(FormBodySupport.rebuildFromParameters(req)));
+        assertEquals("x=y", text(FormBodySupport.recoverConsumedBody(request, new byte[0], 3)));
     }
 
     @Test

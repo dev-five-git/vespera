@@ -62,8 +62,7 @@ final class FormBodySupport {
     /** Re-encode the body (non-query) parameters as a form-urlencoded body. */
     static byte[] rebuildFromParameters(HttpServletRequest request) {
         Charset charset = requestCharset(request);
-        Map<String, Integer> queryCounts =
-                queryParameterCounts(request.getQueryString(), charset);
+        Map<String, Integer> queryCounts = queryParameterCounts(request.getQueryString());
         StringBuilder out = new StringBuilder();
         for (Map.Entry<String, String[]> entry : request.getParameterMap().entrySet()) {
             String name = entry.getKey();
@@ -99,11 +98,14 @@ final class FormBodySupport {
     }
 
     /**
-     * How many times each parameter name occurs in the query string, decoded
-     * with {@code charset} (the request's charset, which the container used for
-     * its parameter-map keys, so a non-ASCII name matches its key).
+     * How many times each parameter name occurs in the query string. Names are
+     * decoded as UTF-8: the container decodes the query string with its URI
+     * encoding (UTF-8 under Spring Boot's default), not with the request body's
+     * charset, and the servlet API does not expose the URI encoding. So a
+     * non-ASCII name matches its parameter-map key even on a POST whose body
+     * declares no charset ({@link #requestCharset} is ISO-8859-1 there).
      */
-    static Map<String, Integer> queryParameterCounts(String query, Charset charset) {
+    static Map<String, Integer> queryParameterCounts(String query) {
         Map<String, Integer> counts = new HashMap<>();
         if (query == null || query.isEmpty()) {
             return counts;
@@ -114,14 +116,14 @@ final class FormBodySupport {
             }
             int eq = pair.indexOf('=');
             String rawName = eq < 0 ? pair : pair.substring(0, eq);
-            counts.merge(decodeName(rawName, charset), 1, Integer::sum);
+            counts.merge(decodeName(rawName), 1, Integer::sum);
         }
         return counts;
     }
 
-    private static String decodeName(String rawName, Charset charset) {
+    private static String decodeName(String rawName) {
         try {
-            return URLDecoder.decode(rawName, charset);
+            return URLDecoder.decode(rawName, StandardCharsets.UTF_8);
         } catch (IllegalArgumentException malformed) {
             return rawName;
         }

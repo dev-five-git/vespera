@@ -25,6 +25,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.SpringVersion;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -444,10 +445,22 @@ class VesperaReactiveProxyHandlerTest {
                 .header(HttpHeaders.ORIGIN, "https://a.example")
                 .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "PUT"));
         // Spring's own answer: no CORS config, so no Allow-Origin header. The status is
-        // Framework-specific (403 on 6.2 under testBoot3, 200 on 7), never Rust's and never a 500.
-        assertTrue(List.of(200, 403).contains(preflight.status()), "status " + preflight.status());
+        // pinned per Framework major (403 on 6.2 under testBoot3, 200 on 7), never Rust's.
+        assertEquals(springPreflightStatus(), preflight.status(), "Spring " + SpringVersion.getVersion());
         assertNull(preflight.header(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
         assertTrue(transport.requests.isEmpty(), "DispatcherHandler never runs a handler for a preflight");
+    }
+
+    /** The status Spring's own CORS-less preflight answer has on the Framework under test. */
+    private static int springPreflightStatus() {
+        String version = SpringVersion.getVersion();
+        if (version.startsWith("6.")) {
+            return 403;
+        }
+        if (version.startsWith("7.")) {
+            return 200;
+        }
+        throw new AssertionError("no pinned preflight status for Spring " + version);
     }
 
     @Test

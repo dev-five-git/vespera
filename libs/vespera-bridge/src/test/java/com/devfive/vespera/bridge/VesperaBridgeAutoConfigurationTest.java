@@ -417,7 +417,9 @@ class VesperaBridgeAutoConfigurationTest {
     }
 
     @Test
-    void defaultResolverFactoryAcceptsBidirectionalValueWhenInvokedDirectly() {
+    void defaultResolverFactoryIgnoresTheOptOutValueAndReturnsTheSmartResolver() {
+        // The opt-out is a separate bean (bidirectionalStreamingPropertyOptsOutToStreamingResolver);
+        // this factory answers the smart resolver whatever the property holds.
         VesperaBridgeProperties properties = new VesperaBridgeProperties();
         properties.setDispatchMode("bidirectional-streaming");
 

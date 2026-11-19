@@ -46,6 +46,20 @@ class ReactiveFormBodySupportTest {
     }
 
     @Test
+    void anIllegalStateExceptionThatIsNotTheSecondReadRejectionPropagates() {
+        // Only reactor-netty's rejection means "no cached form"; any other
+        // IllegalStateException is a real failure and must not forward the drained body.
+        IllegalStateException boom = new IllegalStateException("boom");
+        ServerWebExchange exchange = formReadFails(boom);
+
+        RuntimeException thrown = assertThrows(
+                RuntimeException.class,
+                () -> ReactiveFormBodySupport.recoverConsumedBody(exchange, DRAINED, 7).block());
+
+        assertSame(boom, Exceptions.unwrap(thrown));
+    }
+
+    @Test
     void aFormReadFailureOtherThanAConsumedBodyPropagates() {
         // A read error is not "nothing to recover": forwarding the truncated body would
         // hand Rust a silently shortened form, so the failure must reach the caller.

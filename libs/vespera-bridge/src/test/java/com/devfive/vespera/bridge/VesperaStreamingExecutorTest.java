@@ -2,6 +2,7 @@ package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -420,7 +421,16 @@ class VesperaStreamingExecutorTest {
                 1, 1, TimeUnit.SECONDS.toNanos(60), factory)) {
             AtomicInteger ran = new AtomicInteger();
             VesperaStreamingExecutor.Reservation first = executor.tryReserve();
-            Thread submitter = new Thread(() -> first.executor().execute(ran::incrementAndGet));
+            // The submitter's own failure must not vanish with the thread: only a
+            // rejection caused by the thread-start OOM may escape execute().
+            AtomicReference<Throwable> submitFailure = new AtomicReference<>();
+            Thread submitter = new Thread(() -> {
+                try {
+                    first.executor().execute(ran::incrementAndGet);
+                } catch (Throwable failure) {
+                    submitFailure.set(failure);
+                }
+            });
             submitter.start();
             awaitCondition(() -> executor.queuedTaskCount() == 1, "the first task queued");
             VesperaStreamingExecutor.Reservation second = executor.tryReserve();
@@ -429,6 +439,11 @@ class VesperaStreamingExecutorTest {
             secondQueued.countDown();
             submitter.join(5000);
             assertFalse(submitter.isAlive());
+            Throwable escaped = submitFailure.get();
+            if (escaped != null) {
+                assertInstanceOf(RejectedExecutionException.class, escaped);
+                assertInstanceOf(OutOfMemoryError.class, escaped.getCause(), escaped.toString());
+            }
 
             RejectedExecutionException firstFailure =
                     first.rejection().toCompletableFuture().get(5, TimeUnit.SECONDS);
