@@ -37,7 +37,12 @@ use crate::{
 /// tell a child's catch-all from a plain parameter without this. A spec that
 /// has the key (even an empty map) is exact; an older one lacks it and is read
 /// leniently, as before.
-pub(super) const CATCH_ALL_KEY: &str = "x-vespera-catch-all";
+///
+/// The name deliberately does not start with `x-`: the typed `OpenApi` keeps
+/// only `x-*` keys (`vespera_core::extensions`), so a typed reader drops this
+/// key and a merge can never copy it into a user-visible document. Only the raw
+/// reader ([`catch_all_markers`]) sees it.
+pub(super) const CATCH_ALL_KEY: &str = "vespera-catch-all";
 
 /// The catch-all paths of `routes` for [`CATCH_ALL_KEY`], keyed by their
 /// OpenAPI template.
@@ -419,17 +424,33 @@ mod tests {
         assert_eq!(axum_path("/files/{other}", &markers), "/files/{other}");
     }
 
+    /// The marker reaches a typed reader's output never: a spec read as
+    /// `OpenApi` and written back (what a merge does, and what a user-visible
+    /// document is serialized from) has no catch-all key, while the raw reader
+    /// still sees it.
+    #[test]
+    fn catch_all_marker_never_reaches_the_typed_document() {
+        let exported = format!(
+            r#"{{"openapi":"3.1.0","info":{{"title":"c","version":"1"}},"paths":{{}},"{CATCH_ALL_KEY}":{{"/f/{{rest}}":"rest"}}}}"#
+        );
+        assert!(catch_all_markers(&exported).is_some());
+        let typed: vespera_core::openapi::OpenApi = serde_json::from_str(&exported).unwrap();
+        let written = serde_json::to_string(&typed).unwrap();
+        assert!(!written.contains(CATCH_ALL_KEY), "{written}");
+        assert!(!written.contains("x-vespera"), "{written}");
+    }
+
     /// A spec with the marker key is exact (even with no entries); one without
     /// it is read leniently.
     #[test]
     fn catch_all_markers_distinguish_marked_and_older_specs() {
         assert_eq!(catch_all_markers(r#"{"openapi":"3.1.0"}"#), None);
         assert_eq!(
-            catch_all_markers(r#"{"x-vespera-catch-all":{}}"#),
+            catch_all_markers(r#"{"vespera-catch-all":{}}"#),
             Some(BTreeMap::new())
         );
         assert_eq!(
-            catch_all_markers(r#"{"x-vespera-catch-all":{"/f/{rest}":"rest"}}"#),
+            catch_all_markers(r#"{"vespera-catch-all":{"/f/{rest}":"rest"}}"#),
             Some(BTreeMap::from([(
                 "/f/{rest}".to_string(),
                 "rest".to_string()
