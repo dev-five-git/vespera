@@ -59,6 +59,51 @@ class ReactiveFormBodySupportTest {
         assertSame(boom, Exceptions.unwrap(thrown));
     }
 
+    /** A multipart exchange; the body read itself is not exercised by these tests. */
+    private static ServerWebExchange multipartExchange() {
+        return MockServerWebExchange.from(
+                MockServerHttpRequest.post("/upload")
+                        .contentType(MediaType.MULTIPART_FORM_DATA)
+                        .body("--x--"));
+    }
+
+    @Test
+    void aMultipartSecondReadRejectionIsTheConsumedBody() {
+        // reactor-netty rejects the second read of a multipart body a filter drained:
+        // that is the consumed-body case, answered as an empty body (the 500 comes later).
+        byte[] body = ReactiveFormBodySupport.secondMultipartRead(
+                multipartExchange(), new IllegalStateException("Rejecting additional inbound receiver"))
+                .block();
+
+        assertArrayEquals(VesperaWireCodec.EMPTY_BODY, body);
+    }
+
+    @Test
+    void anOtherIllegalStateExceptionOnAMultipartReadPropagates() {
+        // Any other IllegalStateException on a multipart request is a real read failure:
+        // it must not be turned into an empty body (and so into a misleading consumed-body 500).
+        IllegalStateException boom = new IllegalStateException("boom");
+
+        RuntimeException thrown = assertThrows(
+                RuntimeException.class,
+                () -> ReactiveFormBodySupport.secondMultipartRead(multipartExchange(), boom).block());
+
+        assertSame(boom, Exceptions.unwrap(thrown));
+    }
+
+    @Test
+    void aSecondReadRejectionOnANonMultipartRequestPropagates() {
+        // The rejection only means "consumed multipart body" for a multipart request.
+        IllegalStateException rejected = new IllegalStateException("Rejecting additional inbound receiver");
+        ServerWebExchange form = formReadFails(rejected);
+
+        RuntimeException thrown = assertThrows(
+                RuntimeException.class,
+                () -> ReactiveFormBodySupport.secondMultipartRead(form, rejected).block());
+
+        assertSame(rejected, Exceptions.unwrap(thrown));
+    }
+
     @Test
     void aFormReadFailureOtherThanAConsumedBodyPropagates() {
         // A read error is not "nothing to recover": forwarding the truncated body would

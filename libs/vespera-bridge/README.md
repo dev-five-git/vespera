@@ -468,7 +468,7 @@ Once `max-threads` streams run and `max-queued` more wait, a further explicitly 
 - `HEAD` is never streamed.
 - A form body that a filter already consumed through `exchange.getFormData()` is rebuilt from the cached form (see **Form bodies read by a `WebFilter`** above), so interleaved repeated names arrive grouped per name.
 - A path that a user `@Controller` owns for another HTTP method answers `405` from Spring rather than falling through to Rust.
-- The springdoc integration is servlet-only.
+- The springdoc document integration (`/v3/api-docs` documents, `group` / `merge` modes) is servlet-only; the Swagger UI path excludes also apply on WebFlux (see *springdoc-openapi (Swagger UI)* below).
 - `VesperaClient.send()` blocks. From reactive code, use `sendAsync()` (`Mono.fromFuture(...)`).
 
 ## Multi-app routing
@@ -817,12 +817,13 @@ garbage-collected.
 **Automatic mitigation (since 0.2.1):** `dispatchDirectPooled` detects
 the calling thread via `Thread.isVirtual()` (resolved reflectively so
 the library still targets Java 17) and, when it is a virtual thread,
-**routes the request to the GC-managed heap `dispatchBytes` path
-instead of the pooled direct buffer** — no per-vthread off-heap
-accumulation, no configuration required.  The DIRECT fast path keeps
-its pooling benefit on platform threads (Tomcat's default request
-pool); virtual-thread deployments transparently fall back to the heap
-path at a small per-call allocation cost.
+**routes the request to the poll-first `ParkingDispatch.park` path
+instead of the pooled direct buffer** (the virtual thread parks on a
+future instead of pinning its carrier, see *Carrier pinning* below) —
+no per-vthread off-heap accumulation, no configuration required.  The
+DIRECT fast path keeps its pooling benefit on platform threads (Tomcat's
+default request pool); virtual-thread deployments transparently fall
+back to the heap path at a small per-call allocation cost.
 
 **Carrier pinning:** a virtual thread blocked inside a native call is
 pinned to its carrier.  On a virtual thread the proxy's `SYNC` path (the

@@ -151,10 +151,14 @@ final class ReactiveFormBodySupport {
      * reactor-netty refuses a second read of a body a filter already drained
      * ({@code IllegalStateException: Rejecting additional inbound receiver}):
      * for a multipart request that is the consumed body
-     * {@link #rejectConsumedMultipart} answers; any other failure propagates.
+     * {@link #rejectConsumedMultipart} answers; any other failure (another
+     * {@code IllegalStateException}, or the rejection on a non-multipart
+     * request) propagates.
      */
     static Mono<byte[]> secondMultipartRead(ServerWebExchange exchange, IllegalStateException failure) {
-        return isMultipart(exchange) ? Mono.just(VesperaWireCodec.EMPTY_BODY) : Mono.error(failure);
+        return isSecondReadRejection(failure) && isMultipart(exchange)
+                ? Mono.just(VesperaWireCodec.EMPTY_BODY)
+                : Mono.error(failure);
     }
 
     private static boolean isMultipart(ServerWebExchange exchange) {

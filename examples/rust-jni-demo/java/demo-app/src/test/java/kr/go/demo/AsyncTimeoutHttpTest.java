@@ -78,6 +78,11 @@ class AsyncTimeoutHttpTest extends AbstractVesperaHttpIntegrationTest {
         return client.send(request, HttpResponse.BodyHandlers.ofString());
     }
 
+    /** The process-wide count of ASYNC dispatches holding an in-flight slot. */
+    private long asyncInFlight(String requestId) throws Exception {
+        return Long.parseLong(get("/diag/async-in-flight", requestId).body());
+    }
+
     private List<DispatchEvent> eventsFor(String requestId) {
         return observer.events.stream().filter(e -> requestId.equals(e.requestId())).toList();
     }
@@ -87,6 +92,9 @@ class AsyncTimeoutHttpTest extends AbstractVesperaHttpIntegrationTest {
         String key = "async-timeout-" + System.nanoTime();
         String requestId = key;
 
+        // The in-flight counter is process-wide: read the baseline before the
+        // request and wait for the slot to return to it after the cancel.
+        long baseline = asyncInFlight(key + "-baseline");
         HttpResponse<String> response = get("/diag/sleep/" + key + "/" + HANDLER_MILLIS, requestId);
         assertEquals(503, response.statusCode(), response.body());
 
@@ -98,6 +106,18 @@ class AsyncTimeoutHttpTest extends AbstractVesperaHttpIntegrationTest {
                 throw new AssertionError("the timed-out handler was not cancelled");
             }
             Thread.sleep(50);
+        }
+        // The cancelled dispatch releases its in-flight slot once a Tokio
+        // worker drops the task, which can lag the handler's drop probe.
+        long slotDeadline = System.nanoTime() + 10_000_000_000L;
+        long inFlight = asyncInFlight(key + "-slot");
+        while (inFlight != baseline) {
+            if (System.nanoTime() > slotDeadline) {
+                throw new AssertionError("the in-flight slot was not released: " + inFlight
+                        + " in flight, expected " + baseline);
+            }
+            Thread.sleep(10);
+            inFlight = asyncInFlight(key + "-slot");
         }
         // Outlive the original handler delay: it must never finish.
         Thread.sleep(HANDLER_MILLIS);
