@@ -8,20 +8,74 @@
 //! 1. `use` aliases in the `vespera!` call-site file are expanded
 //!    (`use child::ChildApp as Admin;` → `merge = [Admin]` is `child::ChildApp`),
 //!    so the export name — not the alias — selects the file;
-//! 2. the first segment names the crate (`crate` / `self` / `super` / a local
-//!    module → the current crate);
+//! 2. `crate` / `self` / `super` name the current crate; any other first
+//!    segment is tried as the crate name that exported the app first, then the
+//!    current crate. A local module that shares its name with an exporting
+//!    crate's directory therefore resolves to that directory's file, and the
+//!    key check in step 4 reports the mismatch as a compile error;
 //! 3. a renamed dependency (`[dependencies] alias = { package = .. }`) falls
-//!    back to the only crate that exported that app name.
+//!    back to the only crate that exported that app name;
+//! 4. every resolved file is checked against the merged type (below).
 //!
 //! Every resolved file carries the key `<crate>/<App>`; the parent asserts at
 //! compile time that the merged type's `__VESPERA_EXPORT_KEY` matches, so a
 //! wrong guess is a compile error instead of a silently mismatched spec.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
 };
+
+use crate::{
+    metadata::RouteMetadata, openapi_generator::path_shape, parser::openapi_path_template,
+};
+
+/// Top-level key of an exported spec that lists its catch-all paths, as
+/// OpenAPI template → the name of the catch-all parameter. The exported spec
+/// drops the `*` of `{*rest}` (its template is `{rest}`), so a merge could not
+/// tell a child's catch-all from a plain parameter without this. A spec that
+/// has the key (even an empty map) is exact; an older one lacks it and is read
+/// leniently, as before.
+pub(super) const CATCH_ALL_KEY: &str = "x-vespera-catch-all";
+
+/// The catch-all paths of `routes` for [`CATCH_ALL_KEY`], keyed by their
+/// OpenAPI template.
+pub(super) fn catch_all_templates(routes: &[RouteMetadata]) -> BTreeMap<String, String> {
+    routes
+        .iter()
+        .filter_map(|route| {
+            let (shape, mut names) = path_shape(&route.path);
+            if !shape.ends_with("{*}") {
+                return None;
+            }
+            names
+                .pop()
+                .map(|name| (openapi_path_template(&route.path), name))
+        })
+        .collect()
+}
+
+/// The [`CATCH_ALL_KEY`] markers of an exported spec's `content`: `None` when
+/// the spec predates the marker (its paths are then read leniently).
+pub(super) fn catch_all_markers(content: &str) -> Option<BTreeMap<String, String>> {
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+    let marked = value.get(CATCH_ALL_KEY)?;
+    Some(serde_json::from_value(marked.clone()).unwrap_or_default())
+}
+
+/// The axum path a child's OpenAPI `template` stands for: a path-final
+/// parameter that `markers` names a catch-all gets its `*` back.
+pub(super) fn axum_path(template: &str, markers: &BTreeMap<String, String>) -> String {
+    markers
+        .get(template)
+        .and_then(|name| {
+            template
+                .strip_suffix(&format!("{{{name}}}"))
+                .map(|base| format!("{base}{{*{name}}}"))
+        })
+        .unwrap_or_else(|| template.to_owned())
+}
 
 /// `target/vespera/export` — every crate's exported specs live below it.
 pub(super) fn export_root(vespera_dir: &Path) -> PathBuf {
@@ -322,6 +376,65 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "{}").unwrap();
         path
+    }
+
+    fn route_at(path: &str) -> RouteMetadata {
+        serde_json::from_value(serde_json::json!({
+            "method": "get",
+            "path": path,
+            "function_name": "handler",
+            "module_path": "routes::x",
+            "file_path": "src/routes/x.rs",
+        }))
+        .unwrap()
+    }
+
+    /// Only a path-final catch-all is marked, under its OpenAPI template (the
+    /// `*` dropped); a plain parameter or a static path is not.
+    #[test]
+    fn catch_all_templates_list_the_final_catch_alls() {
+        let routes = [
+            route_at("/files/{*rest}"),
+            route_at("/users/{id}"),
+            route_at("/a/{x}/{*tail}"),
+            route_at("/static"),
+        ];
+        let templates = catch_all_templates(&routes);
+        assert_eq!(
+            templates,
+            BTreeMap::from([
+                ("/files/{rest}".to_string(), "rest".to_string()),
+                ("/a/{x}/{tail}".to_string(), "tail".to_string()),
+            ])
+        );
+    }
+
+    /// The marked template maps back to its axum catch-all; anything else is
+    /// unchanged, and a marker without a matching final parameter is ignored.
+    #[test]
+    fn axum_path_restores_the_marked_catch_all_star() {
+        let markers = BTreeMap::from([("/files/{rest}".to_string(), "rest".to_string())]);
+        assert_eq!(axum_path("/files/{rest}", &markers), "/files/{*rest}");
+        assert_eq!(axum_path("/users/{id}", &markers), "/users/{id}");
+        assert_eq!(axum_path("/files/{other}", &markers), "/files/{other}");
+    }
+
+    /// A spec with the marker key is exact (even with no entries); one without
+    /// it is read leniently.
+    #[test]
+    fn catch_all_markers_distinguish_marked_and_older_specs() {
+        assert_eq!(catch_all_markers(r#"{"openapi":"3.1.0"}"#), None);
+        assert_eq!(
+            catch_all_markers(r#"{"x-vespera-catch-all":{}}"#),
+            Some(BTreeMap::new())
+        );
+        assert_eq!(
+            catch_all_markers(r#"{"x-vespera-catch-all":{"/f/{rest}":"rest"}}"#),
+            Some(BTreeMap::from([(
+                "/f/{rest}".to_string(),
+                "rest".to_string()
+            )]))
+        );
     }
 
     fn resolve(path: &str, uses: &str, vespera_dir: &Path) -> Option<(String, String)> {

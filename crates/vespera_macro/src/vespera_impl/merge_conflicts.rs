@@ -16,6 +16,7 @@ use syn::spanned::Spanned;
 
 use super::{
     cache::{MergeSpecCache, MergeSpecRead},
+    merge_lookup::{axum_path, catch_all_markers},
     openapi_io::display_merge_path,
 };
 use crate::{
@@ -83,21 +84,29 @@ pub(super) fn check_merge_route_conflicts(
             continue;
         };
         let origin = format!("merged app `{}`", display_merge_path(merge_path));
+        // A spec with the catch-all marker says exactly which path-final
+        // parameters are catch-alls; an older one is claimed leniently.
+        let markers = catch_all_markers(content);
         for (path, item) in &spec.paths {
             for (method, _) in item.operations() {
-                claims
-                    .claim_template(&method.to_string(), path, &origin)
-                    .map_err(|conflict| {
-                        syn::Error::new(
-                            merge_path.span(),
-                            format!(
-                                "vespera! macro: {} — axum panics when merging overlapping \
-                                 routes; remove one or give the child app a distinct \
-                                 `export_app!(..., prefix = \"...\")`",
-                                describe(&conflict, &format!("{method} {path}"), &origin)
-                            ),
-                        )
-                    })?;
+                let method = method.to_string();
+                let claimed = match &markers {
+                    Some(catch_alls) => {
+                        claims.claim(&method, &axum_path(path, catch_alls), &origin)
+                    }
+                    None => claims.claim_template(&method, path, &origin),
+                };
+                claimed.map_err(|conflict| {
+                    syn::Error::new(
+                        merge_path.span(),
+                        format!(
+                            "vespera! macro: {} — axum panics when merging overlapping \
+                             routes; remove one or give the child app a distinct \
+                             `export_app!(..., prefix = \"...\")`",
+                            describe(&conflict, &format!("{method} {path}"), &origin)
+                        ),
+                    )
+                })?;
             }
         }
     }
@@ -337,6 +346,62 @@ mod tests {
             &[("FilesApp", spec(&[("post", "/files/{rest}")]))],
         )
         .unwrap();
+    }
+
+    /// A spec of the same shape with the catch-all marker (`catch_alls`: the
+    /// template → catch-all name pairs it lists).
+    fn spec_with_catch_alls(paths: &[(&str, &str)], catch_alls: &[(&str, &str)]) -> String {
+        let mut doc: serde_json::Value = serde_json::from_str(&spec(paths)).unwrap();
+        doc[super::super::merge_lookup::CATCH_ALL_KEY] = catch_alls
+            .iter()
+            .map(|(template, name)| (template.to_string(), serde_json::json!(name)))
+            .collect::<serde_json::Map<_, _>>()
+            .into();
+        doc.to_string()
+    }
+
+    /// With the marker a child's plain `{rest}` is a parameter: next to the
+    /// parent's `{*rest}` it is the conflict axum would panic on at merge.
+    #[test]
+    fn marked_plain_child_param_conflicts_with_parent_catch_all() {
+        let err = run(
+            &[("get", "/files/{*rest}")],
+            &[(
+                "FilesApp",
+                spec_with_catch_alls(&[("post", "/files/{rest}")], &[]),
+            )],
+        )
+        .unwrap_err();
+        assert!(err.contains("catch-all"), "{err}");
+    }
+
+    /// The marked catch-all of a child meets the parent's catch-all: no
+    /// conflict (the same position, the same kind, the same name).
+    #[test]
+    fn marked_child_catch_all_matches_parent_catch_all() {
+        run(
+            &[("get", "/files/{*rest}")],
+            &[(
+                "FilesApp",
+                spec_with_catch_alls(&[("post", "/files/{rest}")], &[("/files/{rest}", "rest")]),
+            )],
+        )
+        .unwrap();
+    }
+
+    /// A marked child catch-all next to the parent's plain `{id}` is the
+    /// conflict axum panics on, which the unmarked (lenient) read let through.
+    #[test]
+    fn marked_child_catch_all_conflicts_with_parent_param() {
+        let err = run(
+            &[("get", "/files/{id}")],
+            &[(
+                "FilesApp",
+                spec_with_catch_alls(&[("post", "/files/{rest}")], &[("/files/{rest}", "rest")]),
+            )],
+        )
+        .unwrap_err();
+        assert!(err.contains("catch-all"), "{err}");
     }
 
     #[test]

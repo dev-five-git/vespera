@@ -209,8 +209,13 @@ fn check_extractors(metadata: &CollectedMetadata, file_cache: &dyn AstLookup) ->
 /// but never documented (`collector::test_scope::documented_view`), so a
 /// non-`Schema` extractor type cannot make the spec lie about it.
 fn is_test_only(metadata: &CollectedMetadata, route: &crate::metadata::RouteMetadata) -> bool {
+    // The same predicate `documented_view` uses: a `cfg(test)` twin of another
+    // method (`#[cfg(test)] #[route(get)] fn list` beside a production
+    // `#[route(post)] fn list`) does not make the production route test-only.
     metadata.test_only_routes.iter().any(|test_only| {
-        test_only.file_path == route.file_path && test_only.function_name == route.function_name
+        test_only.file_path == route.file_path
+            && test_only.function_name == route.function_name
+            && (test_only.method.is_empty() || test_only.method.eq_ignore_ascii_case(&route.method))
     })
 }
 

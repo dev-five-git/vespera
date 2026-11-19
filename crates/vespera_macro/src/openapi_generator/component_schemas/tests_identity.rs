@@ -109,3 +109,49 @@ pub fn get_model_user() -> User { User { role: "y".to_string() } }
 
     assert_eq!(property_default(user_schema, "role"), Some(&json!("admin")));
 }
+
+/// A struct inside `mod v2` whose `#[serde(default = "default_limit")]` names
+/// a function of its own module (50) while the file's top level has a
+/// same-named one (10). The default is the module's: a top-level lookup would
+/// document 10, while serde fills in 50 at runtime.
+#[test]
+fn serde_default_fn_resolves_in_the_structs_inline_module() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let content = r#"
+fn default_limit() -> u32 { 10 }
+
+pub fn get_items() -> v2::Query { v2::Query { limit: 1 } }
+
+mod v2 {
+    fn default_limit() -> u32 { 50 }
+
+    pub struct Query {
+        #[serde(default = "default_limit")]
+        pub limit: u32,
+    }
+}
+"#;
+    let file = create_temp_file(&temp_dir, "items.rs", content);
+    let line = content
+        .lines()
+        .position(|text| text.contains("pub struct Query"))
+        .expect("struct line")
+        + 1;
+
+    let mut metadata = CollectedMetadata::new();
+    metadata.structs.push(
+        struct_meta(
+            "Query",
+            r#"struct Query { #[serde(default = "default_limit")] limit: u32 }"#,
+        )
+        .with_source_identity(format!("{}::Query@{line}:5", file.display())),
+    );
+    metadata
+        .routes
+        .push(route_meta("/items", "get_items", &file.to_string_lossy()));
+
+    let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
+    let query_schema = schemas(&doc).get("Query").expect("Query schema");
+
+    assert_eq!(property_default(query_schema, "limit"), Some(&json!(50)));
+}

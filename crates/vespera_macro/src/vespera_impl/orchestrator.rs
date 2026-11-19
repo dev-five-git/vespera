@@ -306,7 +306,25 @@ fn namespace_and_serialize_export_openapi(
 ) -> syn::Result<String> {
     let schema_namespace = schema_namespace_from_prefix(prefix);
     namespace_export_schemas(openapi, metadata, &schema_namespace)?;
-    serde_json::to_string(openapi).map_err(|error| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to serialize OpenAPI spec to JSON. Error: {error}. Check that all schema types are serializable.")))
+    let serialize_error = |error: serde_json::Error| {
+        syn::Error::new(
+            Span::call_site(),
+            format!(
+                "export_app! macro: failed to serialize OpenAPI spec to JSON. Error: {error}. Check that all schema types are serializable."
+            ),
+        )
+    };
+    // The catch-all marker (`merge_lookup::CATCH_ALL_KEY`) rides along with the
+    // document; typed readers ignore it.
+    let mut value = serde_json::to_value(openapi).map_err(serialize_error)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            super::merge_lookup::CATCH_ALL_KEY.to_owned(),
+            serde_json::to_value(super::merge_lookup::catch_all_templates(&metadata.routes))
+                .map_err(serialize_error)?,
+        );
+    }
+    serde_json::to_string(&value).map_err(serialize_error)
 }
 
 fn finish_export_metadata(

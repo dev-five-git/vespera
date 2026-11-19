@@ -91,8 +91,11 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
         fields_named.named.iter().zip(field_constraints).collect();
 
     // A rule on a serde-skipped field is never checked (see `field_blocks`), but
-    // the impl is still emitted for it: `Validated<Json<S>>` needs a `Validate`
-    // impl for every payload type, and an empty one is what keeps it compiling.
+    // the impl is still emitted when such a rule exists: its body is empty (the
+    // skipped field's bindings are `allow(unused_variables)`), and that impl is
+    // what lets `Validated<Json<S>>` accept the struct. A struct with no runtime
+    // rule at all gets no impl (below), so `Validated` rejects it at compile
+    // time (`crates/vespera/tests/ui/validated_payload_without_validate.rs`).
     if per_field.iter().all(|(_, c)| !c.has_runtime_rule()) {
         // No field requested a runtime rule — skip Validate emission.
         // OpenAPI annotation-only constraints (example / read_only /

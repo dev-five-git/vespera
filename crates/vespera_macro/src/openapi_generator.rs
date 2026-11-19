@@ -36,7 +36,7 @@ pub use defaults::{
 };
 use paths::build_path_items;
 pub use paths::{check_duplicate_routes, find_duplicate_operation_id};
-pub use route_claims::{RouteClaims, RouteConflict};
+pub use route_claims::{RouteClaims, RouteConflict, path_shape};
 
 /// Run `f` with the `$ref` resolution context the component schemas are
 /// built with for `metadata` (every schema name, the `#[schema(name = ..)]`

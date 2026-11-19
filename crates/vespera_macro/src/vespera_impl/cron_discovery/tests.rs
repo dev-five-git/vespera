@@ -661,6 +661,8 @@ fn crate_without_a_root_file_contributes_nothing() {
 #[case::vespera_group("use ::vespera::{cron, axum};", &[("", "bare", "1 * * * * *"), ("", "spelled", "2 * * * * *")])]
 #[case::foreign_glob("use other::*;", &[("", "spelled", "2 * * * * *")])]
 #[case::foreign_glob_of_module("use other::prelude::*;", &[("", "spelled", "2 * * * * *")])]
+#[case::vespera_cron_import_beats_foreign_glob("use other::*; use vespera::cron;", &[("", "bare", "1 * * * * *"), ("", "spelled", "2 * * * * *")])]
+#[case::foreign_cron_import_beats_vespera_glob("use vespera::*; use other::cron;", &[("", "spelled", "2 * * * * *")])]
 #[case::vespera_glob("use vespera::*;", &[("", "bare", "1 * * * * *"), ("", "spelled", "2 * * * * *")])]
 #[case::crate_glob("use crate::prelude::*;", &[("", "bare", "1 * * * * *"), ("", "spelled", "2 * * * * *")])]
 #[case::other_cron_name("use other::cron as tick;", &[("", "bare", "1 * * * * *"), ("", "spelled", "2 * * * * *")])]

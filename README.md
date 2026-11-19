@@ -778,7 +778,7 @@ with `/` and they must not share a path (both are compile errors).
 | `path` | Route suffix appended to the file-based path |
 | `tags` | OpenAPI operation tags, e.g. `tags = ["users"]` |
 | `operation_id` | OpenAPI operationId override, e.g. `operation_id = "getUser"`; defaults to the Rust function name |
-| `summary` | OpenAPI operation summary, e.g. `summary = "Get a user"`; otherwise the first paragraph of the doc comment |
+| `summary` | OpenAPI operation summary, e.g. `summary = "Get a user"`; otherwise the first paragraph of the doc comment (none when `description` is given: the doc comment is then ignored) |
 | `description` | OpenAPI operation description; otherwise the doc comment after its first paragraph (the whole doc comment when `summary` is given) |
 | `status` | Success-response status override (must be `2xx`), e.g. `status = 204`; re-keys the inferred `200` response (no body for `204`/`205`) |
 | `error_status` | Extra error status codes to include in OpenAPI responses; declaring any makes the explicit error set authoritative (see below) |

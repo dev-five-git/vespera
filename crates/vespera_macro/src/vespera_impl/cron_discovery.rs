@@ -660,31 +660,53 @@ fn is_cron_path(path: &syn::Path) -> bool {
 
 /// Whether `items` import a `cron` from another crate (`use other::cron;`,
 /// `use other::{cron};`, `use other::job as cron;`) — then a bare `#[cron]`
-/// there is that crate's attribute.  Imports rooted at `vespera`, `crate`,
-/// `self` or `super` and globs keep it vespera's.
+/// there is that crate's attribute.  An explicit `cron` import shadows a
+/// glob, so it decides: vespera's when it is rooted at `vespera`, `crate`,
+/// `self` or `super`, whatever the globs bring in.  Only without any explicit
+/// `cron` import does a foreign glob (`use other::*;`) make the bare form
+/// foreign.
 fn imports_foreign_cron(items: &[syn::Item]) -> bool {
-    fn imports(tree: &syn::UseTree, root: Option<&syn::Ident>) -> bool {
-        let foreign = || {
-            root.is_some_and(|root| {
-                !matches!(
-                    root.to_string().as_str(),
-                    "vespera" | "crate" | "self" | "super"
-                )
-            })
-        };
+    #[derive(Default)]
+    struct CronImports {
+        explicit_foreign: bool,
+        explicit_vespera: bool,
+        foreign_glob: bool,
+    }
+    fn collect(tree: &syn::UseTree, root: Option<&syn::Ident>, out: &mut CronImports) {
+        let foreign = root.is_some_and(|root| {
+            !matches!(
+                root.to_string().as_str(),
+                "vespera" | "crate" | "self" | "super"
+            )
+        });
         match tree {
-            syn::UseTree::Path(path) => imports(&path.tree, root.or(Some(&path.ident))),
-            syn::UseTree::Name(name) => name.ident == "cron" && foreign(),
-            syn::UseTree::Rename(rename) => rename.rename == "cron" && foreign(),
-            syn::UseTree::Group(group) => group.items.iter().any(|tree| imports(tree, root)),
+            syn::UseTree::Path(path) => collect(&path.tree, root.or(Some(&path.ident)), out),
+            syn::UseTree::Name(name) if name.ident == "cron" => {
+                out.explicit_foreign |= foreign;
+                out.explicit_vespera |= root.is_some() && !foreign;
+            }
+            syn::UseTree::Rename(rename) if rename.rename == "cron" => {
+                out.explicit_foreign |= foreign;
+                out.explicit_vespera |= root.is_some() && !foreign;
+            }
+            syn::UseTree::Group(group) => {
+                for tree in &group.items {
+                    collect(tree, root, out);
+                }
+            }
             // A glob may bring in another crate's `cron`; only vespera's (or
             // this crate's own) globs leave the bare form vespera's.
-            syn::UseTree::Glob(_) => foreign(),
+            syn::UseTree::Glob(_) => out.foreign_glob |= foreign,
+            _ => {}
         }
     }
-    items
-        .iter()
-        .any(|item| matches!(item, syn::Item::Use(item) if imports(&item.tree, None)))
+    let mut imports = CronImports::default();
+    for item in items {
+        if let syn::Item::Use(item) = item {
+            collect(&item.tree, None, &mut imports);
+        }
+    }
+    imports.explicit_foreign || (!imports.explicit_vespera && imports.foreign_glob)
 }
 
 /// The value of a `#[path = "…"]` attribute.
