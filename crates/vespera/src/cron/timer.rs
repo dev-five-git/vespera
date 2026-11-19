@@ -58,6 +58,21 @@ struct Timer {
     changed: Condvar,
 }
 
+/// A sleep's entry in the timer queue.  Dropping it removes the entry, so a
+/// sleep dropped early, or one that resolves while the thread is down (and
+/// so never fired), does not stay queued until its deadline.
+struct Registration {
+    timer: &'static Timer,
+    key: (Instant, u64),
+    slot: Arc<Slot>,
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        self.timer.remove(self.key);
+    }
+}
+
 impl Timer {
     /// Start the timer thread through `spawn` unless it already runs.
     /// Returns whether the thread runs.  A failed start is not cached:
@@ -88,15 +103,29 @@ impl Timer {
         }
     }
 
-    fn register(&self, deadline: Instant) -> Arc<Slot> {
+    fn register(&'static self, deadline: Instant) -> Registration {
         let slot = Arc::new(Slot::default());
         let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
         let seq = queue.next_seq;
         queue.next_seq += 1;
-        queue.entries.insert((deadline, seq), Arc::clone(&slot));
+        let key = (deadline, seq);
+        queue.entries.insert(key, Arc::clone(&slot));
         drop(queue);
         self.changed.notify_one();
-        slot
+        Registration {
+            timer: self,
+            key,
+            slot,
+        }
+    }
+
+    /// Forget the entry `key` if the timer has not fired it yet.
+    fn remove(&self, key: (Instant, u64)) {
+        self.queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entries
+            .remove(&key);
     }
 
     /// Fire every sleep whose deadline passed, then wait for the next one
@@ -160,7 +189,8 @@ pub(super) fn sleep(duration: Duration) -> impl Future<Output = ()> {
 /// it then.  Each poll retries the start, and while it still fails the future
 /// waits in short blocking slices and resolves at its deadline regardless of
 /// the thread, so a process at its thread limit never parks a job forever.
-/// Once the thread runs, the registered slot fires as usual.
+/// Once the thread runs, the registered slot fires as usual.  However the
+/// sleep ends, its queue entry is removed when the future is dropped.
 ///
 /// Cost while the thread is down: each poll blocks the polling thread for up
 /// to `RETRY_SLICE` before returning `Pending` and waking itself, so a
@@ -174,8 +204,9 @@ fn sleep_with(
     duration: Duration,
 ) -> impl Future<Output = ()> {
     let deadline = Instant::now() + duration;
-    let slot = timer.register(deadline);
+    let registration = timer.register(deadline);
     poll_fn(move |cx| {
+        let slot = &registration.slot;
         if slot.fired.load(Ordering::SeqCst) {
             return Poll::Ready(());
         }
@@ -245,7 +276,8 @@ mod tests {
             attempts += 1;
             Err(std::io::Error::other("no threads left"))
         }));
-        let slot = timer.register(Instant::now());
+        let registration = timer.register(Instant::now());
+        let slot = &registration.slot;
         assert!(timer.ensure_running(|timer| {
             attempts += 1;
             std::thread::Builder::new()
@@ -292,5 +324,38 @@ mod tests {
         }
         assert!(timer.queue.lock().unwrap().start_reported);
         assert!(!timer.queue.lock().unwrap().running);
+    }
+
+    /// Sleeps that resolve while the thread is down leave no entry behind, so
+    /// an outage does not accumulate one per sleep.
+    #[test]
+    fn sleeps_resolved_while_the_thread_is_down_leave_no_entry() {
+        let timer: &'static Timer = Box::leak(Box::default());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        for _ in 0..5 {
+            runtime.block_on(sleep_with(
+                timer,
+                |_| Err(std::io::Error::other("no threads left")),
+                Duration::ZERO,
+            ));
+        }
+        assert!(timer.queue.lock().unwrap().entries.is_empty());
+    }
+
+    /// A sleep dropped before its deadline removes its entry at once, not at
+    /// the deadline.
+    #[test]
+    fn a_dropped_sleep_removes_its_entry() {
+        let timer: &'static Timer = Box::leak(Box::default());
+        let pending = sleep_with(
+            timer,
+            |_| Err(std::io::Error::other("no threads left")),
+            Duration::from_secs(3600),
+        );
+        assert_eq!(timer.queue.lock().unwrap().entries.len(), 1);
+        drop(pending);
+        assert!(timer.queue.lock().unwrap().entries.is_empty());
     }
 }

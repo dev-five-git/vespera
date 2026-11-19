@@ -441,22 +441,21 @@ class StreamingClosureStressTest {
     }
 
     /**
-     * Push failed-flag: a hostile/broken {@code OutputStream} that throws
-     * on every write must not hang or SIGSEGV the JVM.  The Rust push
-     * closure latches a {@code failed} flag on the first write failure and
-     * turns subsequent frames into a no-op instead of repeatedly crossing
-     * JNI into the broken sink.
+     * Push failed-flag, nothing delivered: a hostile/broken {@code OutputStream}
+     * that throws on every write must not hang or SIGSEGV the JVM.  The Rust
+     * push closure latches a {@code failed} flag on the first write failure and
+     * turns subsequent frames into a no-op instead of repeatedly crossing JNI
+     * into the broken sink.
      *
-     * <p>Because the failure happened <em>after</em> body bytes were handed
-     * to the sink, the response is truncated: {@code dispatchStreaming}
-     * throws {@link IOException} (abort the transport) instead of returning
-     * a header — vespera never reports a truncated body as a clean success.
-     * The Rust side locks the same contract in
-     * {@code sink_stop_after_first_chunk_is_reported_as_truncation}.
+     * <p>The first write was refused, so no body byte reached the sink and the
+     * response is not truncated: {@code dispatchStreaming} returns normally with
+     * a {@code 500} error header (the body is not written), so the caller can
+     * still answer with a clean error.  Only a failure after an accepted chunk
+     * throws; see {@link #responseStreaming_outputStreamFailsAfterFirstChunk_throwsAborted}.
      */
     @Test
     @Order(5)
-    void responseStreaming_outputStreamThrows_doesNotHangOrCrash() {
+    void responseStreaming_outputStreamThrows_doesNotHangOrCrash() throws IOException {
         byte[] payload = randomPayload(new Random(SEED));
         byte[] wireRequest = VesperaBridge.encodeRequest(
                 "POST", "/echo/stream", null, ECHO_HEADERS, payload);
@@ -473,9 +472,49 @@ class StreamingClosureStressTest {
             }
         };
 
+        byte[] header = VesperaBridge.dispatchStreaming(wireRequest, throwing);
+        assertNotNull(header, "a refused first chunk must return the error header, not null");
+        VesperaBridge.DecodedResponse resp = VesperaBridge.decodeResponse(header);
+        assertEquals(500, resp.status(),
+                "nothing reached the sink, so the response is a 500 error header");
+    }
+
+    /**
+     * Push failed-flag, truncated: the sink accepts the first chunk and throws
+     * on every later write.  Body bytes were already delivered, so the response
+     * is truncated and {@code dispatchStreaming} throws {@link IOException}
+     * (abort the transport) instead of returning a header; vespera never
+     * reports a truncated body as a clean success.  {@code /diag/drip} sends
+     * three 1 KiB chunks 30 ms apart, each its own push, so the second one is
+     * the failing write (an echoed body can reach the sink in one write).  The
+     * Rust side locks the same contract in
+     * {@code sink_stop_after_first_chunk_is_reported_as_truncation}.
+     */
+    @Test
+    @Order(6)
+    void responseStreaming_outputStreamFailsAfterFirstChunk_throwsAborted() {
+        byte[] wireRequest = VesperaBridge.encodeRequest(
+                "GET", "/diag/drip/stress-sink-truncation/3/30", null, Map.of(), new byte[0]);
+
+        OutputStream failsAfterFirst = new OutputStream() {
+            private int writes;
+
+            @Override
+            public void write(int b) throws IOException {
+                write(new byte[] {(byte) b}, 0, 1);
+            }
+
+            @Override
+            public void write(byte[] b, int off, int len) throws IOException {
+                if (writes++ > 0) {
+                    throw new IOException("sink closed");
+                }
+            }
+        };
+
         IOException aborted = assertThrows(IOException.class,
-                () -> VesperaBridge.dispatchStreaming(wireRequest, throwing),
-                "a sink that stops mid-body truncates the response, so the "
+                () -> VesperaBridge.dispatchStreaming(wireRequest, failsAfterFirst),
+                "a sink that fails after an accepted chunk truncates the response, so the "
                         + "dispatch must abort instead of reporting a header");
         assertTrue(aborted.getMessage().contains("aborted"), aborted.getMessage());
     }

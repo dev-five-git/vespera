@@ -296,7 +296,7 @@ All share the same wire format, registered router, and panic-safe `catch_unwind`
 |---|---|---|
 | `vespera.limits.maxRequestBytes` / `VESPERA_MAX_REQUEST_BYTES` | 64 MiB (0 = unlimited) | buffered request size (wire header + body) cap → `413` |
 | `vespera.limits.maxStreamingRequestBytes` / `VESPERA_MAX_STREAMING_REQUEST_BYTES` | 0 = unlimited | streamed request body cap → `413` |
-| `vespera.limits.maxBufferedResponseBytes` / `VESPERA_MAX_BUFFERED_RESPONSE_BYTES` | 256 MiB | buffered response cap → `500` (grown with `try_reserve`; 422 hoist reads ≤ 64 KiB+1) |
+| `vespera.limits.maxBufferedResponseBytes` / `VESPERA_MAX_BUFFERED_RESPONSE_BYTES` | 256 MiB | buffered response cap → `500` (grown with `try_reserve`; 422 hoist prefetch reads whole frames until the total exceeds 64 KiB, overshooting by at most one frame) |
 | `vespera.dispatch.timeoutMillis` / `VESPERA_DISPATCH_TIMEOUT_MS` | 0 = disabled | deadline → `504`: buffered/direct bound the whole dispatch; streaming modes bound only time-to-first-header (no total deadline once the header is committed) |
 | `vespera.async.maxInFlight` / `VESPERA_ASYNC_MAX_IN_FLIGHT` | 4096 (0 = unlimited) | `dispatchAsync` + C `vespera_dispatch_async` concurrency (one shared counter, `vespera_inprocess::runtime::in_flight`) → `503` |
 | `vespera.streaming.maxRequestProducers` / `VESPERA_MAX_STREAMING_REQUEST_PRODUCERS` | 256 (0 = unlimited) | concurrent bidirectional upload producers on the blocking pool; extra uploads wait for a slot |

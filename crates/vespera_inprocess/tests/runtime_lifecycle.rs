@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use vespera_inprocess::runtime::{
     RUNTIME_SHUT_DOWN_MSG, block_on_shared_runtime, host_loaded, mark_host_loaded,
-    on_shared_runtime, runtime, runtime_max_blocking_threads, runtime_shut_down,
+    on_shared_runtime, runtime, runtime_built, runtime_max_blocking_threads, runtime_shut_down,
     runtime_unavailable_wire, runtime_worker_threads, set_runtime_max_blocking_threads,
     set_runtime_worker_threads, shutdown_runtime, start_runtime_for_hooks,
 };
@@ -25,14 +25,22 @@ fn lifecycle_from_lazy_build_to_shutdown() {
     // The blocking-pool cap is left unset here: building the runtime must
     // fix it (asserted below), which a knob set beforehand could not show.
 
-    // Hooks registered before the runtime exists wait for it ...
+    // Hooks registered before the runtime exists wait for it, and nothing
+    // here builds it: the runtime stays lazy until a dispatch or a pending
+    // hook asks for it.
     assert!(!start_runtime_for_hooks());
+    assert!(!runtime_built());
     let (tx, rx) = mpsc::channel::<&str>();
     let early = tx.clone();
     on_shared_runtime(Box::new(move |_| early.send("early").unwrap()));
     on_shared_runtime(Box::new(|_| panic!("a panicking hook is contained")));
     assert!(rx.try_recv().is_err());
+    assert!(
+        !runtime_built(),
+        "registering a hook must not build the runtime"
+    );
     assert!(start_runtime_for_hooks());
+    assert!(runtime_built());
     assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok("early"));
     // ... and run at once afterwards.
     on_shared_runtime(Box::new(move |_| tx.send("late").unwrap()));

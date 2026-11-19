@@ -1,10 +1,12 @@
 //! 422 validation-error hoisting, split out of `wire.rs` (1000-line cap):
-//! the strict typed fast path plus the lenient `serde_json::Value` fallback.
+//! the strict typed fast path plus the lenient raw-JSON fallback.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use bytes::Bytes;
 use serde::Deserialize;
+use serde_json::value::RawValue;
 
 use super::ValidationErrorItem;
 
@@ -57,8 +59,8 @@ fn body_is_json(headers: &http::HeaderMap) -> bool {
 /// This is the **fast strict path**: the common, framework-generated envelope
 /// has all-string fields, so the plain derive parses it with no per-field
 /// visitor overhead.  A body with a wrong-typed field (`"code": 123`) fails
-/// this strict parse and is retried via the inline `serde_json::Value`
-/// fallback walk in [`try_hoist_validation_errors`], so the hoist stays
+/// this strict parse and is retried via the lenient raw-JSON fallback walk
+/// ([`hoist_from_raw`]), so the hoist stays
 /// genuinely best-effort without taxing the common case.
 ///
 /// Unknown values go through [`SkippedValue`]: it skips the value without
@@ -253,24 +255,63 @@ fn hoist_items<'a>(
         .collect()
 }
 
-/// Lenient `serde_json::Value` walk over a 422 body: parse the DOM, read the
+/// Lenient fallback walk over a 422 body, used by [`try_hoist_validation_errors`]
+/// when the strict parse aborts.  It works on raw JSON, not a
+/// `serde_json::Value` DOM, so an out-of-range number (`1e400`) in any value is
+/// accepted (`RawValue` converts no number), exactly as the strict path accepts
+/// it.  The selection rules are those of the `Value` walk
+/// ([`hoist_from_value`]): the last occurrence of a repeated key wins, a
+/// non-array `errors` or a non-object element hoists nothing, and a known field
+/// hoists only as a JSON string (a wrong type reads as absent).  A lone
+/// surrogate anywhere in the body rejects it, as the `Value` parse does.
+///
+/// `None` means the body isn't a JSON object with an `errors` array at all;
+/// `Some(vec![])` means it is, but nothing in it was hoistable.  Callers apply
+/// the empty→`None` collapse themselves.
+fn hoist_from_raw(body_bytes: &Bytes) -> Option<Vec<ValidationErrorItem<'_>>> {
+    if !surrogates_paired(body_bytes) {
+        return None;
+    }
+    let envelope: BTreeMap<String, &RawValue> = serde_json::from_slice(body_bytes).ok()?;
+    let elements: Vec<&RawValue> = serde_json::from_str(envelope.get("errors")?.get()).ok()?;
+    Some(hoist_items(elements.into_iter().map(raw_error_fields)))
+}
+
+/// One raw error's hoistable `(path, code, message)`, each owned.
+type RawErrorFields = (
+    Option<Cow<'static, str>>,
+    Option<Cow<'static, str>>,
+    Option<Cow<'static, str>>,
+);
+
+/// `(path, code, message)` of one raw error.  A non-object element has none of
+/// them, so it is skipped by [`hoist_items`] like a missing `path`.
+fn raw_error_fields(element: &RawValue) -> RawErrorFields {
+    let Ok(fields) = serde_json::from_str::<BTreeMap<String, &RawValue>>(element.get()) else {
+        return (None, None, None);
+    };
+    let text = |key: &str| {
+        fields
+            .get(key)
+            .and_then(|raw| serde_json::from_str::<String>(raw.get()).ok())
+            .map(Cow::Owned)
+    };
+    (text("path"), text("code"), text("message"))
+}
+
+/// Bench-only `serde_json::Value` walk over a 422 body: parse the DOM, read the
 /// `errors` key, coerce it to an array, and extract `path`/`code`/`message`
 /// with `as_str` (wrong types → `None`), SKIPPING any element lacking a usable
-/// `path` (non-objects: `Value::get` returns `None`).  This keeps every
-/// still-valid error instead of discarding the whole array when one entry is
-/// malformed — the bug a typed `Vec<Struct>` fallback had, since one bad
-/// element failed the entire `Vec` deserialize.
+/// `path` (non-objects: `Value::get` returns `None`).  This is the DOM reference
+/// that [`try_hoist_validation_errors_value_old`] measures against the typed
+/// path.  It rejects an out-of-range number anywhere in the body, which
+/// production's fallback ([`hoist_from_raw`]) accepts; otherwise both select the
+/// same errors.
 ///
 /// `None` means the body isn't a JSON document with an `errors` array at all;
 /// `Some(vec![])` means it is, but nothing in it was hoistable.  Callers apply
 /// the empty→`None` collapse themselves.
-///
-/// Shared verbatim by the production fallback in
-/// [`try_hoist_validation_errors`] and the bench-only
-/// `try_hoist_validation_errors_value_old` twin, so both arms stay
-/// accept-identical and the hoisted envelope stays byte-identical.  Only the
-/// walk is shared — never the strict fast-path dispatch above it, which the
-/// `value_old` twin must keep paying the `Value` DOM without.
+#[cfg(any(test, feature = "bench-support"))]
 fn hoist_from_value<'a>(body_bytes: &Bytes) -> Option<Vec<ValidationErrorItem<'a>>> {
     let parsed: serde_json::Value = serde_json::from_slice(body_bytes).ok()?;
     let errors = parsed.get("errors")?.as_array()?;
@@ -292,11 +333,10 @@ fn hoist_from_value<'a>(body_bytes: &Bytes) -> Option<Vec<ValidationErrorItem<'a
 /// - body bytes that don't parse as the `{"errors":[...]}` envelope
 /// - an envelope whose hoistable errors (those carrying a `path`) are empty
 ///
-/// Both paths reject the same lone surrogates.  They differ on one number
-/// rule: the strict path accepts an out-of-range number (`1e400`) in an
-/// unknown value, while the `serde_json::Value` fallback (used only when a
-/// known field has the wrong type) rejects it, so such a body hoists only
-/// when the strict path succeeds.
+/// The strict path and the lenient fallback ([`hoist_from_raw`], used when a
+/// known field has the wrong type or an element is not an object) reject the
+/// same lone surrogates and accept the same out-of-range numbers (`1e400`) in
+/// unknown values, so the hoist does not depend on an unrelated value's shape.
 ///
 /// This is intentionally lenient — a malformed 422 body must never
 /// degrade to a 5xx; the original body is still surfaced verbatim.
@@ -328,12 +368,11 @@ pub(super) fn try_hoist_validation_errors<'a>(
     } else {
         // The strict typed parse aborted — either a wrong-typed field
         // (`"code": 123`) OR a non-object array element (`null`, a bare
-        // string). Retry through the lenient [`hoist_from_value`] walk, which
+        // string). Retry through the lenient [`hoist_from_raw`] walk, which
         // keeps every still-valid error. Cold (only a hand-crafted 422 body
-        // reaches here) and size-capped at `MAX_HOIST_BODY_BYTES`, so the
-        // `Value` DOM here is negligible and never touches the common
-        // all-string fast path.
-        hoist_from_value(body_bytes)?
+        // reaches here) and size-capped at `MAX_HOIST_BODY_BYTES`, so it never
+        // touches the common all-string fast path.
+        hoist_from_raw(body_bytes)?
     };
     if items.is_empty() { None } else { Some(items) }
 }
@@ -556,11 +595,14 @@ mod tests {
 
     /// Regression (round 24): an out-of-range number in an unknown value is
     /// accepted by the strict path (as `IgnoredAny` accepted it before round
-    /// 23), so the envelope still hoists.  The `Value` walk rejects `1e400`,
-    /// which is why this case must not depend on the fallback.
+    /// 23), so the envelope still hoists.  The fallback cases (a wrong-typed
+    /// known field, which the strict parse aborts on) must accept it too, so
+    /// the hoist does not depend on an unrelated value's shape (round 25).
     #[rstest::rstest]
     #[case::top_level_unknown(br#"{"errors":[{"path":"email","message":"bad"}],"debug":1e400}"#.as_slice())]
     #[case::nested_unknown(br#"{"errors":[{"path":"email","extra":[-1e400,2]}]}"#.as_slice())]
+    #[case::fallback_top_level_unknown(br#"{"errors":[{"path":"email","code":123}],"debug":1e400}"#.as_slice())]
+    #[case::fallback_nested_unknown(br#"{"errors":[{"path":"email","code":123,"extra":[-1e400]}]}"#.as_slice())]
     fn hoisting_accepts_out_of_range_numbers_in_unknown_values(#[case] body: &'static [u8]) {
         let body = Bytes::from_static(body);
         let items = try_hoist_validation_errors(&json_headers(), &body)

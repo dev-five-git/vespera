@@ -388,6 +388,27 @@ where
     }
 }
 
+/// Latch `delivered` once the sink accepted a chunk.  A chunk the Java
+/// stream refused reached nothing, so it does not count as delivered: a
+/// failure before any byte is a clean error response, not an abort.
+fn record_delivery(
+    delivered: &std::cell::Cell<bool>,
+    flow: std::ops::ControlFlow<()>,
+) -> std::ops::ControlFlow<()> {
+    if flow.is_continue() {
+        delivered.set(true);
+    }
+    flow
+}
+
+/// Whether a dispatch that ended `outcome` must throw
+/// `VesperaStreamAbortedException`: only a truncation after at least one
+/// delivered chunk.  Otherwise the header (an error wire when truncated)
+/// is returned.
+fn stream_aborts(outcome: vespera_inprocess::StreamOutcome, delivered: bool) -> bool {
+    outcome.is_truncated() && delivered
+}
+
 #[path = "jni_impl_support.rs"]
 pub mod support;
 use support::{AbortReason, setup_full_stream, setup_stream, throw_streaming_abort, track_pull};
@@ -512,16 +533,16 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                         input,
                         // This variant emits no flush hints: every call
                         // carries body bytes.
-                        |chunk: &[u8]| {
-                            delivered.set(true);
-                            push(chunk)
-                        },
+                        |chunk: &[u8]| record_delivery(delivered, push(chunk)),
                     ),
                 );
                 mark_streaming_buffer_reusable(push_buf_lease);
                 match dispatched {
                     None => wire_byte_array(env, &runtime_unavailable_wire()),
-                    Some((_, outcome)) if outcome.is_truncated() => {
+                    // The header is the `5xx` error wire when the stream was
+                    // truncated, so a truncation before any byte reached Java
+                    // returns it like every other pre-stream failure.
+                    Some((_, outcome)) if stream_aborts(outcome, delivered.get()) => {
                         throw_streaming_abort(env, AbortReason::BodyAborted);
                         Ok(JObject::null())
                     }
@@ -648,8 +669,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                             if chunk.is_empty() {
                                 return std::ops::ControlFlow::Continue(());
                             }
-                            delivered.set(true);
-                            push(chunk)
+                            record_delivery(delivered, push(chunk))
                         },
                         |h: &[u8]| captured_header.extend_from_slice(h),
                         // Close the InputStream once the response is fully

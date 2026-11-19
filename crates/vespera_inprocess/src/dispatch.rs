@@ -481,8 +481,9 @@ async fn dispatch_from_bytes_inner(input: Vec<u8>) -> Vec<u8> {
 ///   keeps peak memory at ~one body (the growing `Vec`) instead of
 ///   body-plus-collected.
 ///
-/// `status == 422` first prefetches at most `MAX_HOIST_BODY_BYTES + 1` bytes
-/// ([`prefetch_422_body`]): a small body is materialised via [`to_wire_bytes`]
+/// `status == 422` first prefetches whole frames until the total exceeds
+/// `MAX_HOIST_BODY_BYTES` (overshooting by at most one frame,
+/// [`prefetch_422_body`]): a small body is materialised via [`to_wire_bytes`]
 /// so `validation_errors` hoisting is preserved byte-for-byte, while an
 /// oversized 422 continues through the ordinary (non-hoisting) drain below —
 /// a huge 422 body is never collected just to be skipped by the hoist.  A

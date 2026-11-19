@@ -2,9 +2,12 @@
 //! dispatches find no runtime and answer `503`, and a second shutdown is a
 //! no-op.  Runs in a CHILD process because the runtime is process-global.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use axum::routing::get;
+use vespera_inprocess::runtime::runtime_built;
 
 use super::{
     RUNTIME_SHUT_DOWN_MSG, block_on_shared_runtime, on_shared_runtime, panic_wire, runtime,
@@ -40,27 +43,46 @@ fn panic_wire_flags_the_metadata() {
     assert_eq!(body, b"panic in Rust engine");
 }
 
+const CHILD_ENV: &str = "VESPERA_JNI_SHUTDOWN_TEST_CHILD";
+
+/// Whether this process is the isolated child.  The parent re-runs `test`
+/// in a child process (with [`CHILD_ENV`] set) and asserts it passed.
+fn in_isolated_child(test: &str) -> bool {
+    if std::env::var_os(CHILD_ENV).is_some() {
+        return true;
+    }
+    let output =
+        std::process::Command::new(std::env::current_exe().expect("current unit-test executable"))
+            .args(["--exact", test, "--nocapture"])
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("run isolated shutdown child test");
+    assert!(
+        output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "isolated shutdown test failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    false
+}
+
+/// A hook registered after shutdown never runs.  A flag, not a panic: the
+/// hook runs on the caller's thread when it is (wrongly) flushed, and a
+/// panicking hook is caught and only logged.
+fn hook_registered_after_shutdown_never_runs() {
+    let ran_after_shutdown = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&ran_after_shutdown);
+    on_shared_runtime(Box::new(move |_| seen.store(true, Ordering::SeqCst)));
+    assert!(!start_runtime_for_hooks());
+    assert!(
+        !ran_after_shutdown.load(Ordering::SeqCst),
+        "a hook registered after shutdown never runs"
+    );
+}
+
 #[test]
 fn shutdown_makes_later_dispatches_answer_503() {
-    const CHILD_ENV: &str = "VESPERA_JNI_SHUTDOWN_TEST_CHILD";
-    if std::env::var_os(CHILD_ENV).is_none() {
-        let output = std::process::Command::new(
-            std::env::current_exe().expect("current unit-test executable"),
-        )
-        .args([
-            "--exact",
-            "jni_impl::shutdown_tests::shutdown_makes_later_dispatches_answer_503",
-            "--nocapture",
-        ])
-        .env(CHILD_ENV, "1")
-        .output()
-        .expect("run isolated shutdown child test");
-        assert!(
-            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
-            "isolated shutdown test failed:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+    if !in_isolated_child("jni_impl::shutdown_tests::shutdown_makes_later_dispatches_answer_503") {
         return;
     }
 
@@ -82,8 +104,12 @@ fn shutdown_makes_later_dispatches_answer_503() {
                 }),
             )
     });
-    // Nothing waits for the runtime yet: it stays lazy.
+    // Nothing waits for the runtime yet, so nothing builds it: it stays lazy.
     assert!(!start_runtime_for_hooks());
+    assert!(
+        !runtime_built(),
+        "no hook is pending, so the runtime is not built"
+    );
     // A hook registered before the runtime exists runs once it is built.
     let (hook_tx, hook_rx) = std::sync::mpsc::channel();
     let hook_tx_later = hook_tx.clone();
@@ -91,7 +117,12 @@ fn shutdown_makes_later_dispatches_answer_503() {
         drop(handle.spawn(async move { hook_tx.send("early").unwrap() }));
     }));
     on_shared_runtime(Box::new(|_| panic!("a panicking hook is contained")));
+    assert!(
+        !runtime_built(),
+        "a hook registration does not build the runtime"
+    );
     assert!(start_runtime_for_hooks());
+    assert!(runtime_built());
     assert_eq!(hook_rx.recv_timeout(Duration::from_secs(5)), Ok("early"));
     // ... and one registered afterwards runs at once.
     on_shared_runtime(Box::new(move |handle| {
@@ -134,8 +165,7 @@ fn shutdown_makes_later_dispatches_answer_503() {
     assert!(header.contains(r#""status":200"#), "{header}");
     assert_eq!(body, b"slow");
     assert!(runtime().is_none());
-    on_shared_runtime(Box::new(|_| panic!("never runs after shutdown")));
-    assert!(!start_runtime_for_hooks());
+    hook_registered_after_shutdown_never_runs();
     // A real dispatch after the shutdown never runs: no runtime, no lease.
     assert!(
         block_on_shared_runtime(vespera_inprocess::dispatch_from_bytes_async(request())).is_none()

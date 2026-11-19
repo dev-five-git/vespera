@@ -498,19 +498,18 @@ public class VesperaBridge {
      *
      * <p>Failure modes that happen <strong>before</strong> any body byte
      * was written (malformed wire, panic in Rust, no app registered, a
-     * deadline before the header, or a body error before the first chunk)
-     * return a regular
-     * {@code error_wire(...)} response (header + small plain-text body) and
-     * the {@code outputStream} is <strong>not</strong> written to.  A
-     * {@code 422}'s validation errors are hoisted into the returned header.
+     * deadline before the header, or a body or first-chunk sink error) return
+     * a regular {@code error_wire(...)} response (header + small plain-text
+     * body) and the {@code outputStream} is <strong>not</strong> written to.
+     * A {@code 422}'s validation errors are hoisted into the returned header.
      *
      * @param wireRequest  length-prefixed binary wire request
      * @param outputStream sink for response body chunks
      * @return wire-format header bytes (body lives on the OutputStream)
      * @throws IOException when the response failed <strong>after</strong>
-     *         body bytes were written (body-stream error, the
-     *         {@code outputStream} throwing): the written body is truncated
-     *         and the transport must be aborted
+     *         body bytes were written (body-stream error, or the
+     *         {@code outputStream} throwing after an accepted chunk): the
+     *         written body is truncated and the transport must be aborted
      */
     public static native byte[] dispatchStreaming(byte[] wireRequest, OutputStream outputStream)
             throws IOException;
