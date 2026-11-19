@@ -16,8 +16,8 @@ mod model {
     }
 }
 
-schema_type!(RenamedKey from Seeded, omit_default, ignore, rename = [("id", "key")]);
+schema_type!(RenamedKey from model::Seeded, omit_default, ignore, rename = [("id", "key")]);
 
-schema_type!(TwiceRenamed from Seeded, ignore, rename = [("name", "a"), ("name", "b")]);
+schema_type!(TwiceRenamed from model::Seeded, ignore, rename = [("name", "a"), ("name", "b")]);
 
 fn main() {}

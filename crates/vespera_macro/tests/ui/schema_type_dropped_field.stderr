@@ -1,11 +1,11 @@
 error: `rename` names field `id`, which this type does not include: `omit_default` drops it (a SeaORM default / primary key)
-  --> tests/ui/schema_type_dropped_field.rs:19:71
+  --> tests/ui/schema_type_dropped_field.rs:19:78
    |
-19 | schema_type!(RenamedKey from Seeded, omit_default, ignore, rename = [("id", "key")]);
-   |                                                                       ^^^^
+19 | schema_type!(RenamedKey from model::Seeded, omit_default, ignore, rename = [("id", "key")]);
+   |                                                                              ^^^^
 
 error: `rename` lists source field `name` more than once
-  --> tests/ui/schema_type_dropped_field.rs:21:74
+  --> tests/ui/schema_type_dropped_field.rs:21:81
    |
-21 | schema_type!(TwiceRenamed from Seeded, ignore, rename = [("name", "a"), ("name", "b")]);
-   |                                                                          ^^^^^^
+21 | schema_type!(TwiceRenamed from model::Seeded, ignore, rename = [("name", "a"), ("name", "b")]);
+   |                                                                                 ^^^^^^
