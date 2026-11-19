@@ -784,7 +784,7 @@ mod tests {
             &[],
         )
         .expect_err("should flag aliased non-Schema import");
-        assert!(err.to_string().contains('B'), "{err}");
+        assert!(err.to_string().contains("`Query<B>`"), "{err}");
     }
 
     #[test]

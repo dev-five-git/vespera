@@ -185,7 +185,7 @@ pub(super) fn newtype_source(struct_item: &syn::ItemStruct) -> Option<Type> {
     let constraints = extract_schema_constraints(&field.attrs);
     if flags.skip
         || flags.skip_deserializing
-        || constraints.is_any()
+        || constraints.any_decides()
         || extract_field_codec(&field.attrs).custom_for(SerdeSide::Deserialize)
     {
         return None;

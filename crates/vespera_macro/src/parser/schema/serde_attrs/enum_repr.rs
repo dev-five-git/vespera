@@ -265,7 +265,8 @@ mod tests {
     }
 
     // `extract_tag` / `extract_content` have no raw-token fallback: the
-    // structured walk matches a qualified key by its last segment.
+    // structured walk matches a qualified key by its last segment, and the
+    // malformed-value tests below pin what that walk returns.
 
     /// A qualified `tag` key is matched by its last segment.
     #[test]
@@ -466,7 +467,7 @@ mod tests {
     #[case(r#"qualified::tag = "type""#, Some("type"))]
     #[case("qualified::tag = value", None)]
     #[case("qualified::tag", None)]
-    fn malformed_tag_fallback_is_exact(#[case] tokens: &str, #[case] expected: Option<&str>) {
+    fn malformed_tag_is_exact(#[case] tokens: &str, #[case] expected: Option<&str>) {
         let attr = create_enum_attr_with_raw_tokens(tokens.parse().unwrap());
         assert_eq!(extract_tag(&[attr]).as_deref(), expected);
     }
@@ -475,7 +476,7 @@ mod tests {
     #[case(r#"qualified::content = "data""#, Some("data"))]
     #[case("qualified::content = value", None)]
     #[case("qualified::content", None)]
-    fn malformed_content_fallback_is_exact(#[case] tokens: &str, #[case] expected: Option<&str>) {
+    fn malformed_content_is_exact(#[case] tokens: &str, #[case] expected: Option<&str>) {
         let attr = create_enum_attr_with_raw_tokens(tokens.parse().unwrap());
         assert_eq!(extract_content(&[attr]).as_deref(), expected);
     }

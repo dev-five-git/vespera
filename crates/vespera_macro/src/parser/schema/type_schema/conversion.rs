@@ -669,9 +669,11 @@ fn parse_type_impl(
                         let const_exprs = const_argument_exprs(parsed.generics_mut(), args);
 
                         // Substitute generic parameters with concrete types in
-                        // all fields. A lifetime-only definition (`Borrowed<'a>`)
-                        // has no type to substitute: it is its own component.
-                        if !generic_params.is_empty()
+                        // all fields. A definition with neither a type nor a
+                        // const argument (`Borrowed<'a>`) has nothing to
+                        // substitute: it is its own component. A const-only
+                        // definition (`Matrix<3>`) is inlined with its lengths.
+                        if (!generic_params.is_empty() || !const_exprs.is_empty())
                             && generic_params.len() == concrete_types.len()
                         {
                             // (named AND tuple fields — tuple structs now map

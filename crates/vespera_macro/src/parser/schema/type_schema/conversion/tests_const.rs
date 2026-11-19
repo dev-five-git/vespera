@@ -66,6 +66,86 @@ fn recursive_const_instances_get_distinct_components() {
     assert!(keys.iter().all(|key| !key.contains("_Const.N")), "{keys:?}");
 }
 
+/// Round 30: a const argument of a NESTED type argument is part of the name
+/// too. `Tree<Buf<u8, 4>>` and `Tree<Buf<u8, 8>>` are distinct recursive
+/// components, and each one's `value` keeps its own array length (before the
+/// fix both were named `Tree_Buf_u8`, so the second reused the first).
+#[test]
+fn nested_const_arguments_get_distinct_recursive_components() {
+    take_materialized();
+    let known: HashSet<String> = ["Tree", "Buf"].into_iter().map(String::from).collect();
+    let defs = HashMap::from([
+        (
+            "Buf".to_string(),
+            "struct Buf<T, const N: usize> { data: [T; N] }".to_string(),
+        ),
+        (
+            "Tree".to_string(),
+            "struct Tree<T> { value: T, children: Vec<Tree<T>> }".to_string(),
+        ),
+    ]);
+    let reference_of = |src: &str| {
+        let ty: Type = syn::parse_str(src).unwrap();
+        reference(parse_type_to_schema_ref(&ty, &known, &defs))
+    };
+    let four = reference_of("Tree<Buf<u8, 4>>");
+    let eight = reference_of("Tree<Buf<u8, 8>>");
+    assert_ne!(four, eight);
+    let materialized = take_materialized();
+    for (path, len) in [(four, 4), (eight, 8)] {
+        let name = path.trim_start_matches("#/components/schemas/");
+        let component = &materialized[name];
+        let properties = component.properties.as_ref().expect("the tree's fields");
+        let SchemaRef::Inline(value) = &properties["value"] else {
+            panic!("the buffer is inline");
+        };
+        let value_properties = value.properties.as_ref().expect("the buffer's fields");
+        let SchemaRef::Inline(data) = &value_properties["data"] else {
+            panic!("the array is inline");
+        };
+        assert_eq!(data.min_items, Some(len), "{name}");
+        assert_eq!(data.max_items, Some(len), "{name}");
+    }
+}
+
+/// Round 30: a definition with only const parameters (`Matrix<const N>`) has
+/// no type to substitute, but its `Matrix<3>` argument is concrete: it inlines
+/// with the length pinned, as a definition with a type parameter does.
+#[test]
+fn const_only_definition_inlines_with_its_length() {
+    let known: HashSet<String> = ["Matrix"].into_iter().map(String::from).collect();
+    let defs = HashMap::from([(
+        "Matrix".to_string(),
+        "struct Matrix<const N: usize> { data: [f32; N] }".to_string(),
+    )]);
+    let schema = inline_schema("Matrix<3>", &known, &defs);
+    let properties = schema.properties.expect("the struct's fields");
+    let SchemaRef::Inline(data) = &properties["data"] else {
+        panic!("the array is inline");
+    };
+    assert_eq!(data.min_items, Some(3));
+    assert_eq!(data.max_items, Some(3));
+}
+
+/// Round 30: a const parameter named in an attribute type (`value_type =
+/// [T; N]`) is pinned by the instantiation like one named in a field type, so
+/// the documented array has the argument's fixed length.
+#[test]
+fn const_arguments_pin_lengths_in_attribute_types() {
+    let known: HashSet<String> = ["Buf"].into_iter().map(String::from).collect();
+    let defs = HashMap::from([(
+        "Buf".to_string(),
+        "struct Buf<T, const N: usize> { #[schema(value_type = [T; N])] data: Vec<T> }".to_string(),
+    )]);
+    let schema = inline_schema("Buf<u8, 4>", &known, &defs);
+    let properties = schema.properties.expect("the struct's fields");
+    let SchemaRef::Inline(data) = &properties["data"] else {
+        panic!("the array is inline");
+    };
+    assert_eq!(data.min_items, Some(4));
+    assert_eq!(data.max_items, Some(4));
+}
+
 /// Round 29: a const argument written as a bare identifier (`Buf<u8, LEN>`,
 /// parsed as a type) pairs with its const parameter, so the type parameter
 /// still takes `u8` and the vector's items are integers, as with `Buf<u8, 4>`.

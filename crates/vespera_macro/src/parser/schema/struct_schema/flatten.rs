@@ -19,9 +19,16 @@
 //!   (`FlatMapAccess`) WITHOUT taking it: it types the outer object's
 //!   unlisted keys AND every key of a flattened member declared after it
 //!   (that member takes its keys only later), so in the request view those
-//!   members' properties must satisfy the map's value schema too;
+//!   members' properties must satisfy the map's value schema too. The one
+//!   exception is an opaque member that keeps the object open (see the
+//!   `allOf` paragraph below): the map's value schema is then not emitted at
+//!   all, because JSON Schema `additionalProperties` cannot see the keys that
+//!   member evaluates. The object stays open (nothing is rejected), but the
+//!   value type of the unlisted keys is not documented;
 //! - a flattened `Option<T>` is `None` whenever `T` fails, so it never makes
-//!   a key required, and in the request view its keys reject nothing;
+//!   a key required; in the request view its keys reject nothing, except
+//!   when the outer `deny_unknown_fields` is set and `T` leaves its keys
+//!   (its properties are then `{not: {}}`, see [`request_member`]);
 //! - a flattened unit struct reads nothing;
 //! - a flattened externally tagged enum takes the FIRST buffered key naming
 //!   a variant (`FlatMapDeserializer::deserialize_enum`) and leaves any
@@ -41,9 +48,13 @@
 //! which stays a `$ref` `allOf` member so its component is reused (see
 //! `assemble`). Only members whose keys cannot be known (a flattened enum, an
 //! unresolvable type) stay `allOf` members — and they keep the merged object
-//! open. Such a member's resolved schema is inlined with every object inside
-//! it reopened (see `embedded`: closed branches, map variants, `$ref`
-//! branches): it never sees the outer keys, so it must not reject them. A
+//! open, except in the request view of a `deny_unknown_fields` object when
+//! the member leaves its keys (serde rejects them, so they do not open it;
+//! see the bullets above). Keeping the object open also drops the flattened
+//! map's value schema (see the map bullet). Such a member's resolved schema
+//! is inlined with every object inside it reopened (see `embedded`: closed
+//! branches, map variants, `$ref` branches): it never sees the outer keys, so
+//! it must not reject them. A
 //! newtype / transparent wrapper (`allOf: [$ref]`) and a recursive generic
 //! instance (its materialised component) are merged like the struct or
 //! flattened like the enum they name.
@@ -123,7 +134,7 @@ pub(super) fn flatten_part(
     let optional = optional || omittable;
     // `#[schema(value_type = T)]` documents a custom codec's wire shape,
     // exactly as on a field that is not flattened.
-    let custom = constraints.is_any()
+    let custom = constraints.any_decides()
         || (constraints.value_type.is_none() && codec_applies(&field.attrs, side));
     let leaves = !custom && leaves_keys(ty, struct_definitions, WRAPPER_DEPTH);
     let schema = if custom {

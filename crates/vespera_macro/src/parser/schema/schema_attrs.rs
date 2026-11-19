@@ -91,7 +91,8 @@ pub struct SchemaConstraints {
     /// "every-custom-type-must-derive-Schema" checking when the field
     /// is intentionally arbitrary / opaque JSON.  Bare form
     /// `#[schema(any)]` sets it to `true`; an explicit
-    /// `#[schema(any = false)]` is also accepted.
+    /// `#[schema(any = false)]` is also accepted. A `value_type` on the same
+    /// field wins over it (see [`SchemaConstraints::any_decides`]).
     pub any: Option<bool>,
 
     /// `#[schema(value_type = T)]`: document the field (or, on a container,
@@ -159,6 +160,16 @@ impl SchemaConstraints {
     #[must_use]
     pub fn is_any(&self) -> bool {
         self.any == Some(true)
+    }
+
+    /// `true` when `#[schema(any)]` decides the field's schema: it is set and
+    /// no `value_type` overrides it. The `value_type` wins over `any` (the
+    /// module doc of `wire_override`), so every check that `any` suppresses
+    /// (the emitted schema, the garde rules, the leaf assertion, the
+    /// parameter, the flattened member) asks this instead of [`Self::is_any`].
+    #[must_use]
+    pub fn any_decides(&self) -> bool {
+        self.is_any() && self.value_type.is_none()
     }
 
     /// `true` when at least one constraint produces a `garde` runtime rule

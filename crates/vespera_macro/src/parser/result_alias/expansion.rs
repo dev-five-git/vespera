@@ -130,14 +130,7 @@ fn expand_alias(
     }
     let segment = last_path_segment(ty)?;
     let mut args: Vec<Type> = match &segment.arguments {
-        syn::PathArguments::AngleBracketed(args) => args
-            .args
-            .iter()
-            .filter_map(|arg| match arg {
-                syn::GenericArgument::Type(ty) => Some(ty.clone()),
-                _ => None,
-            })
-            .collect(),
+        syn::PathArguments::AngleBracketed(args) => type_arguments(&alias.generics, args),
         // `None` (and the `Fn(..)` sugar, which never reaches a return type).
         _ => Vec::new(),
     };
@@ -194,4 +187,32 @@ fn expand_alias(
     );
     let concrete: Vec<&Type> = values.iter().collect();
     Some(substitute_type(&body, &names, &concrete))
+}
+
+/// The type arguments of a use site that fill the type parameters of an
+/// alias with `generics` (`Page<LIMIT, User>` for `type Page<const MAX:
+/// usize, T>`: `[User]`). Lifetimes are skipped on both sides and the rest
+/// are paired by position, as rustc pairs them. An argument paired with a
+/// const parameter is a value even when it parses as a type (a bare
+/// identifier such as `LIMIT`), so it is not a type argument. This mirrors
+/// `type_argument_types` in `schema/type_schema/conversion/schema_def.rs`.
+fn type_arguments(
+    generics: &syn::Generics,
+    args: &syn::AngleBracketedGenericArguments,
+) -> Vec<Type> {
+    let mut params = generics
+        .params
+        .iter()
+        .filter(|param| !matches!(param, syn::GenericParam::Lifetime(_)));
+    args.args
+        .iter()
+        .filter(|arg| !matches!(arg, syn::GenericArgument::Lifetime(_)))
+        .filter_map(|arg| {
+            let param = params.next();
+            let syn::GenericArgument::Type(ty) = arg else {
+                return None;
+            };
+            (!matches!(param, Some(syn::GenericParam::Const(_)))).then(|| ty.clone())
+        })
+        .collect()
 }
