@@ -322,8 +322,7 @@ mod tests {
         )]);
         let input: SchemaTypeInput = syn::parse_str("Dto from entity::user::Model").unwrap();
         let err = resolve_source(&input, "Model", &storage)
-            .err()
-            .expect("an external-crate source must be an error");
+            .expect_err("an external-crate source must be an error");
         assert!(err.to_string().contains("another crate"), "{err}");
     }
 }

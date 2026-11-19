@@ -72,13 +72,13 @@ fn stale_entry_of_a_changed_file(#[case] first_file_after: Option<&str>, #[case]
 /// reading the stale definition. The other module's variant still resolves.
 #[test]
 fn variant_of_a_deleted_item_is_no_longer_a_variant() {
+    const SOURCE: &str = "pub struct VariantGone { pub limit: u32 }\n";
     let dir = tempfile::TempDir::new().unwrap();
     let src = dir.path().join("src");
     std::fs::create_dir_all(&src).unwrap();
     std::fs::write(src.join("lib.rs"), "pub mod first;\npub mod second;\n").unwrap();
     let first = src.join("first.rs");
     let second = src.join("second.rs");
-    const SOURCE: &str = "pub struct VariantGone { pub limit: u32 }\n";
     std::fs::write(&first, SOURCE).unwrap();
     std::fs::write(&second, SOURCE).unwrap();
     let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
