@@ -321,6 +321,175 @@ fn file_also_loaded_by_an_ungated_path_is_production() {
     assert!(!scope.file_test_only(&src.join("shared.rs")));
 }
 
+/// Only the target of an ungated `#[path]` module is loaded in every build;
+/// its own `#[cfg(test)]` child stays test-only (round-30 L1, a regression of
+/// round 29, which classified every file under the target's directory as
+/// loaded).
+#[test]
+fn test_gated_child_of_an_ungated_path_module_is_test_only() {
+    let krate = crate_with(&[
+        ("lib.rs", "#[path = \"support.rs\"]\nmod support;\n"),
+        (
+            "support.rs",
+            "#[cfg(test)]\nmod fixtures;\npub struct Kept {}\n",
+        ),
+        ("support/fixtures.rs", "pub struct Fixture {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(scope.file_test_only(&src.join("support/fixtures.rs")));
+    assert!(!scope.file_test_only(&src.join("support.rs")));
+}
+
+/// The same for a non-mod-rs target: the children of `beside/support.rs` sit
+/// beside it (`beside/child.rs`, as rustc resolves them), so a test-gated
+/// child is test-only, and a sibling of the target that is no child is not.
+#[test]
+fn test_gated_child_of_an_ungated_path_module_beside_its_file_is_test_only() {
+    let krate = crate_with(&[
+        ("lib.rs", "#[path = \"beside/support.rs\"]\nmod support;\n"),
+        ("beside/support.rs", "#[cfg(test)]\nmod child;\n"),
+        ("beside/child.rs", "pub struct Fixture {}"),
+        ("beside/other.rs", "pub struct Kept {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(scope.file_test_only(&src.join("beside/child.rs")));
+    assert!(!scope.file_test_only(&src.join("beside/other.rs")));
+}
+
+/// A test-gated `#[path]` module whose target is not `mod.rs` gates the
+/// children declared in that target, which sit beside it (`beside/child.rs`),
+/// not in a directory named after it.
+#[test]
+fn path_attributed_test_module_gates_children_beside_a_non_mod_rs_file() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "#[cfg(test)]\n#[path = \"beside/support.rs\"]\nmod support;\n",
+        ),
+        ("beside/support.rs", "mod child;"),
+        ("beside/child.rs", "pub struct Fixture {}"),
+        ("beside/support/child.rs", "pub struct Kept {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(scope.file_test_only(&src.join("beside/child.rs")));
+    assert!(!scope.file_test_only(&src.join("beside/support/child.rs")));
+}
+
+/// An ungated `#[path]` declared in a non-root file without any `cfg`/`test`
+/// text still loads its file in every build (round-30 L2): `api/mod.rs`
+/// loads `shared.rs`, which `lib.rs` gates by name.
+#[test]
+fn ungated_path_declaration_in_a_non_root_file_keeps_the_file_production() {
+    let krate = crate_with(&[
+        ("lib.rs", "#[cfg(test)]\nmod shared;\npub mod api;\n"),
+        (
+            "api/mod.rs",
+            "#[path = \"../shared.rs\"]\npub mod shared_prod;\n",
+        ),
+        ("shared.rs", "pub struct Kept {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(!scope.file_test_only(&src.join("shared.rs")));
+}
+
+/// The inline block of an ungated `#[path]` target nests its children
+/// beside the target too (`beside/inner/deep.rs`, as rustc resolves a path
+/// inside an inline module of a path-loaded file); a test-gated one is
+/// test-only.
+#[test]
+fn test_gated_path_inside_an_inline_block_of_an_ungated_path_target() {
+    let krate = crate_with(&[
+        ("lib.rs", "#[path = \"beside/support.rs\"]\nmod support;\n"),
+        (
+            "beside/support.rs",
+            "mod inner {\n    #[cfg(test)]\n    #[path = \"deep.rs\"]\n    mod probe;\n}\n",
+        ),
+        ("beside/inner/deep.rs", "pub struct Fixture {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(scope.file_test_only(&src.join("beside/inner/deep.rs")));
+}
+
+/// An ungated `#[path]` declared in a file only test builds load is loaded
+/// only by them (round-30 L2 records it, so the declarer's own gate must
+/// count): `lib.rs` gates `fixtures`, and `fixtures.rs` names `shared.rs`.
+#[test]
+fn ungated_path_declared_in_a_test_only_file_stays_test_only() {
+    let krate = crate_with(&[
+        ("lib.rs", "#[cfg(test)]\nmod fixtures;\n"),
+        (
+            "fixtures.rs",
+            "#[path = \"shared.rs\"]\npub mod shared_prod;\n",
+        ),
+        ("shared.rs", "pub struct Fixture {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(scope.file_test_only(&src.join("shared.rs")));
+}
+
+/// An ungated `mod` of a production file loads a file the crate otherwise
+/// gates by `#[path]` (`routes/mod.rs` declares `pub mod probe;` ungated, next
+/// to `#[cfg(test)] #[path = "routes/probe.rs"] mod probe_mod;` in `lib.rs`):
+/// every build loads `probe.rs`, so it is production.
+#[test]
+fn ungated_mod_of_a_production_file_loads_a_path_gated_file() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "#[cfg(test)]\n#[path = \"routes/probe.rs\"]\nmod probe_mod;\npub mod routes;\n",
+        ),
+        ("routes/mod.rs", "pub mod probe;\n"),
+        ("routes/probe.rs", "pub struct Kept {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(!scope.file_test_only(&src.join("routes/probe.rs")));
+}
+
+/// Two `#[path]`s naming each other (`a.rs` declares `b.rs`, which declares
+/// `a.rs` again) terminate. A cycle has no build's module tree, so it counts
+/// as loaded: the files stay production, the conservative answer for a
+/// document.
+#[test]
+fn path_cycle_terminates_and_stays_production() {
+    let krate = crate_with(&[
+        ("lib.rs", "#[cfg(test)]\n#[path = \"a.rs\"]\nmod a;\n"),
+        ("a.rs", "#[path = \"b.rs\"]\npub mod b;\n"),
+        ("b.rs", "#[path = \"a.rs\"]\npub mod a_again;\n"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(!scope.file_test_only(&src.join("b.rs")));
+}
+
+/// An inline `#[path]` inside a path-loaded non-mod-rs file resolves beside
+/// that file's directory, as rustc does: `beside/support.rs` declares
+/// `mod inner { #[cfg(test)] #[path = "keep.rs"] mod probe; }`, so the file is
+/// `beside/inner/keep.rs`. The stem rule (`beside/support/inner/keep.rs`, the
+/// directory named after the file) classified the other file instead.
+#[test]
+fn inline_path_of_a_path_loaded_file_resolves_beside_it_not_under_its_stem() {
+    let krate = crate_with(&[
+        ("lib.rs", "#[path = \"beside/support.rs\"]\nmod support;\n"),
+        (
+            "beside/support.rs",
+            "mod inner {\n    #[cfg(test)]\n    #[path = \"keep.rs\"]\n    mod probe;\n}\n",
+        ),
+        ("beside/inner/keep.rs", "pub struct Fixture {}"),
+        ("beside/support/inner/keep.rs", "pub struct Kept {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(scope.file_test_only(&src.join("beside/inner/keep.rs")));
+    assert!(!scope.file_test_only(&src.join("beside/support/inner/keep.rs")));
+}
+
 fn schema(name: &str, identity: Option<String>) -> StructMetadata {
     let mut schema = StructMetadata::new(name.to_string(), format!("struct {name} {{}}"));
     schema.source_identity = identity;

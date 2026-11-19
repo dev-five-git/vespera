@@ -28,6 +28,8 @@ use syn::{Item, punctuated::Punctuated};
 use super::module_scope::sibling_rs_file;
 use crate::{metadata::CollectedMetadata, schema_macro::file_cache};
 
+mod path_tree;
+
 /// Whether the `#[cfg(..)]` predicate `predicate` (token text) can only hold
 /// in a `cfg(test)` build.
 pub fn is_test_only_predicate(predicate: &str) -> bool {
@@ -125,12 +127,6 @@ fn attrs_test_harness(attrs: &[syn::Attribute]) -> bool {
     })
 }
 
-/// Whether `content` could hold a test-only `#[cfg(..)]` — a cheap text
-/// filter that spares the parse of (almost) every file.
-fn may_gate_tests(content: &str) -> bool {
-    content.contains("cfg") && content.contains("test")
-}
-
 /// Test-only classification for one crate, memoizing each declaring file's
 /// test-gated `mod` names.
 pub struct TestScope {
@@ -145,6 +141,12 @@ pub struct TestScope {
     /// The files the `#[path]` modules of `src/` name, found by one scan of
     /// the crate (`None` until a file needs it).
     path_targets: Option<PathTargets>,
+    /// The module tree of each `#[path]` target, by how the walk may reach
+    /// into it (see [`path_tree`]).
+    path_trees: HashMap<(PathBuf, path_tree::Reach), std::rc::Rc<HashSet<PathBuf>>>,
+    /// Declaring files whose own test-only classification is in progress
+    /// (see `loads_in_every_build`).
+    resolving: HashSet<PathBuf>,
 }
 
 /// The files named by `#[path]` modules of a crate, by whether every build
@@ -152,7 +154,8 @@ pub struct TestScope {
 #[derive(Default)]
 struct PathTargets {
     gated: Vec<PathBuf>,
-    open: Vec<PathBuf>,
+    /// Each ungated target with the file declaring it.
+    open: Vec<(PathBuf, PathBuf)>,
 }
 
 impl TestScope {
@@ -163,6 +166,8 @@ impl TestScope {
             canonical_src_dir: src_dir.and_then(file_cache::canonicalize_cached),
             gated_mods: HashMap::new(),
             path_targets: None,
+            path_trees: HashMap::new(),
+            resolving: HashSet::new(),
         }
     }
 
@@ -227,12 +232,29 @@ impl TestScope {
     /// Whether one of `declarers` declares ungated one of the `gated` chains
     /// of the same name (the module at the gated depth, not a deeper one).
     fn ungated_twin_loads(&mut self, declarers: &[PathBuf], gated: &[String]) -> bool {
-        let mut loads = false;
         for declarer in declarers {
             let mods = self.gated_mods_of(declarer);
-            loads |= mods.open_chains.iter().any(|open| gated.contains(open));
+            if mods.open_chains.iter().any(|open| gated.contains(open))
+                && self.loads_in_every_build(declarer)
+            {
+                return true;
+            }
         }
-        loads
+        false
+    }
+
+    /// Whether the `mod` declarations of `declarer` load their files in every
+    /// build: the declarer itself is not test-only. A declaration in a
+    /// test-only file (`#[cfg(test)] mod routes;` whose `routes.rs` declares
+    /// `mod helpers;`) is test-only with it. A declarer whose own
+    /// classification is in progress (a `#[path]` cycle) counts as loaded.
+    fn loads_in_every_build(&mut self, declarer: &Path) -> bool {
+        if !self.resolving.insert(declarer.to_path_buf()) {
+            return true;
+        }
+        let test_only = self.file_test_only(declarer);
+        self.resolving.remove(declarer);
+        !test_only
     }
 
     /// Whether a test-gated `#[path = ".."]` module names `file` and no
@@ -242,28 +264,54 @@ impl TestScope {
     /// by the directory of a non-`mod.rs` module's own file, whose child
     /// modules sit beside it).
     fn file_path_gated(&mut self, file: &Path, src_dir: &Path, segments: &[String]) -> bool {
-        let gated = self.path_loads(file, |targets| &targets.gated);
+        let targets = self.path_targets();
+        let all: Vec<PathBuf> = targets
+            .gated
+            .iter()
+            .cloned()
+            .chain(targets.open.iter().map(|(_, target)| target.clone()))
+            .collect();
+        let gated = self.tree_holds(file, &all, path_tree::Reach::Any);
         gated && !self.open_path_loads(file) && !self.open_chain_loads(src_dir, segments)
     }
 
-    /// Whether an ungated `#[path]` module names `file` (or a module file
-    /// under it), so every build loads it.
+    /// Whether an ungated `#[path]` module of a file that is loaded in every
+    /// build names `file`, or a file its module tree loads through ungated
+    /// `mod`s only, so every build loads it.
     fn open_path_loads(&mut self, file: &Path) -> bool {
-        self.path_loads(file, |targets| &targets.open)
+        let open = self.path_targets().open.clone();
+        open.iter().any(|(declarer, target)| {
+            self.tree_holds(
+                file,
+                std::slice::from_ref(target),
+                path_tree::Reach::OpenOnly,
+            ) && self.loads_in_every_build(declarer)
+        })
     }
 
-    /// Whether one of the `#[path]` targets `select` picks names `file`.
-    /// The file and the targets are compared in one spelling (canonical when
-    /// the filesystem has it): `file` may come from the canonical fallback,
-    /// and a target is written under the lexical `src/`, which can name the
-    /// same file through a symlinked alias of the crate.
-    fn path_loads(&mut self, file: &Path, select: fn(&PathTargets) -> &Vec<PathBuf>) -> bool {
+    /// Whether the module tree of one of `targets` (walked as `reach` allows)
+    /// holds `file`. The file and the trees are compared in one spelling
+    /// (canonical when the filesystem has it): `file` may come from the
+    /// canonical fallback, and a target is written under the lexical `src/`,
+    /// which can name the same file through a symlinked alias of the crate.
+    fn tree_holds(&mut self, file: &Path, targets: &[PathBuf], reach: path_tree::Reach) -> bool {
         same_spelling_key(file).is_some_and(|file| {
-            select(self.path_targets()).iter().any(|target| {
-                same_spelling_key(target)
-                    .is_some_and(|target| file == target || file.starts_with(child_dir(&target)))
-            })
+            targets
+                .iter()
+                .any(|target| self.path_tree(target, reach).contains(&file))
         })
+    }
+
+    /// The module tree of the `#[path]` target `target` (memoized per reach).
+    fn path_tree(
+        &mut self,
+        target: &Path,
+        reach: path_tree::Reach,
+    ) -> std::rc::Rc<HashSet<PathBuf>> {
+        self.path_trees
+            .entry((target.to_path_buf(), reach))
+            .or_insert_with(|| std::rc::Rc::new(path_tree::tree_of(target, reach)))
+            .clone()
     }
 
     /// Whether an ungated `mod` declaration on the module chain of `segments`
@@ -273,13 +321,15 @@ impl TestScope {
         for (depth, segment) in segments.iter().enumerate() {
             let declarers = declarers_at(src_dir, &parent, depth);
             let rest = &segments[depth..];
-            if declarers.iter().any(|declarer| {
-                self.gated_mods_of(declarer)
+            for declarer in &declarers {
+                let open = self
+                    .gated_mods_of(declarer)
                     .open_chains
                     .iter()
-                    .any(|open| chain_is(rest, open))
-            }) {
-                return true;
+                    .any(|open| chain_is(rest, open));
+                if open && self.loads_in_every_build(declarer) {
+                    return true;
+                }
             }
             parent.push(segment);
         }
@@ -290,16 +340,20 @@ impl TestScope {
     /// the crate (memoized per scope).
     fn path_targets(&mut self) -> &PathTargets {
         if self.path_targets.is_none() {
-            let files: Vec<PathBuf> = self
+            // Every `#[path]` of the crate's module tree, resolved by the one
+            // rustc-rule resolver (`path_tree`), not by a per-file guess.
+            let decls = self
                 .src_dir
                 .as_deref()
-                .map(|dir| file_cache::list_rs_files(dir).to_vec())
+                .map(path_tree::path_declarations)
                 .unwrap_or_default();
             let mut targets = PathTargets::default();
-            for file in &files {
-                let gated = self.gated_mods_of(file);
-                targets.gated.extend(gated.path_targets.iter().cloned());
-                targets.open.extend(gated.open_path_targets.iter().cloned());
+            for decl in decls {
+                if decl.gated {
+                    targets.gated.push(decl.target);
+                } else {
+                    targets.open.push((decl.declarer, decl.target));
+                }
             }
             self.path_targets = Some(targets);
         }
@@ -311,29 +365,15 @@ impl TestScope {
         if let Some(gated) = self.gated_mods.get(declarer) {
             return gated.clone();
         }
-        let dir = declarer.parent().map(Path::to_path_buf).unwrap_or_default();
-        let is_crate_root = matches!(
-            declarer.file_name().and_then(|name| name.to_str()),
-            Some("lib.rs" | "main.rs")
-        ) && self.src_dir.as_deref() == Some(dir.as_path());
-        // rustc resolves a `#[path]` inside an inline module relative to the
-        // inline module's directory: for a non-mod-rs declarer (`routes.rs`)
-        // that directory is named after the file (`routes/<inline>/`).
-        let inline_dir = if mod_rs(declarer) {
-            dir.clone()
-        } else {
-            declarer
-                .file_stem()
-                .map_or_else(|| dir.clone(), |stem| dir.join(stem))
-        };
         let gated = file_cache::derived(declarer, |content| {
             let mut gated = GatedMods::default();
-            // A crate root is loaded by every build, so its ungated `mod`s are
-            // always recorded; other files only when they may gate a test.
-            if (may_gate_tests(content) || is_crate_root)
+            // Every declarer's `mod`s load their files in some build (ungated
+            // ones in every build), whatever cfg text the file holds, so each
+            // file that declares any `mod` is read.
+            if content.contains("mod")
                 && let Ok(ast) = syn::parse_file(content)
             {
-                gated_mod_paths(&ast.items, "", &dir, &inline_dir, false, &mut gated);
+                gated_mod_paths(&ast.items, "", false, &mut gated);
             }
             gated
         })
@@ -344,18 +384,15 @@ impl TestScope {
     }
 }
 
-/// A declarer's test-gated `mod`s: the `::`-joined chain paths (relative to
-/// the declarer: `b` for `#[cfg(test)] mod b;`, `a::b` inside an inline
-/// `mod a { .. }`) of those loaded by their own name, and the files of those
-/// given a `#[path]`.
+/// A declarer's `mod`s loaded by their own name: the `::`-joined chain paths
+/// (relative to the declarer: `b` for `#[cfg(test)] mod b;`, `a::b` inside an
+/// inline `mod a { .. }`), split by whether a test-only `cfg` gates them. A
+/// `#[path]` module is not here: `path_tree` resolves its file.
 #[derive(Clone, Default)]
 struct GatedMods {
     chains: HashSet<String>,
-    path_targets: Vec<PathBuf>,
-    /// The ungated `mod`s loaded by their own name (`::`-joined as `chains`)
-    /// and the files of the ungated ones given a `#[path]`.
+    /// The ungated `mod`s loaded by their own name (`::`-joined as `chains`).
     open_chains: HashSet<String>,
-    open_path_targets: Vec<PathBuf>,
 }
 
 /// The `#[path = ".."]` value of `attrs`.
@@ -379,25 +416,12 @@ fn string_literal(expr: &syn::Expr) -> Option<String> {
     Some(value.value())
 }
 
-/// Collect the test-gated `mod`s among `items` (prefixed by `prefix`; `dir`
-/// is the directory their out-of-line files are loaded from), recursing into
-/// every inline module. A gated inline module gates everything it nests: its
-/// own name goes in as a chain, and the `#[path]` modules nested in it are
-/// gated too (they name files only test builds load). A gated `#[path]`
-/// module names its file directly, relative to `dir` (rustc resolves it from
-/// the declaring file's directory). `inline_dir` is where the inline modules
-/// of `items` nest: `dir` itself for a mod-rs declarer, `dir/<file stem>` for
-/// any other, so a `#[path]` inside `mod v2 { .. }` of `routes.rs` resolves
-/// under `routes/v2/`. `within_gated` says `items` already sit in a gated
-/// inline module.
-fn gated_mod_paths(
-    items: &[Item],
-    prefix: &str,
-    dir: &Path,
-    inline_dir: &Path,
-    within_gated: bool,
-    out: &mut GatedMods,
-) {
+/// Collect the `mod`s loaded by their own name among `items` (prefixed by
+/// `prefix`), recursing into every inline module. A gated inline module gates
+/// everything it nests: its own name goes in as a chain. `within_gated` says
+/// `items` already sit in a gated inline module. A `#[path]` module is skipped:
+/// `path_tree` resolves its file with the directory rules.
+fn gated_mod_paths(items: &[Item], prefix: &str, within_gated: bool, out: &mut GatedMods) {
     for item in items {
         let Item::Mod(module) = item else { continue };
         let name = syn::ext::IdentExt::unraw(&module.ident).to_string();
@@ -405,50 +429,19 @@ fn gated_mod_paths(
         let gated = within_gated || attrs_test_only(&module.attrs);
         match &module.content {
             Some((_, content)) => {
-                // Everything nested inside an inline module lives under it.
-                let nested = inline_dir.join(&name);
                 if gated {
                     out.chains.insert(path.clone());
                 }
-                gated_mod_paths(content, &format!("{path}::"), &nested, &nested, gated, out);
+                gated_mod_paths(content, &format!("{path}::"), gated, out);
             }
-            None if gated => match path_attr(&module.attrs) {
-                Some(target) => out.path_targets.extend(lexical(&dir.join(target))),
-                None => {
-                    out.chains.insert(path);
-                }
-            },
+            None if path_attr(&module.attrs).is_some() => {}
+            None if gated => {
+                out.chains.insert(path);
+            }
             None => {
-                // An ungated out-of-line module: every build loads its file.
-                match path_attr(&module.attrs) {
-                    Some(target) => out.open_path_targets.extend(lexical(&dir.join(target))),
-                    None => {
-                        out.open_chains.insert(path);
-                    }
-                }
+                out.open_chains.insert(path);
             }
         }
-    }
-}
-
-/// Whether `declarer` is a mod-rs file (`lib.rs`, `main.rs`, `mod.rs`): its
-/// inline modules nest under its own directory, any other file's under a
-/// directory named after the file.
-fn mod_rs(declarer: &Path) -> bool {
-    matches!(
-        declarer.file_stem().and_then(|stem| stem.to_str()),
-        Some("lib" | "main" | "mod")
-    )
-}
-
-/// The directory whose files are the child modules of a `#[path]` target:
-/// a `mod.rs` (or crate root) owns its directory, any other file owns the
-/// directory named after it (`helpers.rs` -> `helpers/`).
-fn child_dir(target: &Path) -> PathBuf {
-    if mod_rs(target) {
-        target.parent().unwrap_or(target).to_path_buf()
-    } else {
-        target.with_extension("")
     }
 }
 
