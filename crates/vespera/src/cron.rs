@@ -448,7 +448,7 @@ fn panic_message(payload: &(dyn Any + Send)) -> &str {
 /// thread in production); `false` when it could not be started.
 fn spawn_scheduler_thread(
     jobs: Vec<CronJob>,
-    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
+    spawn: fn(Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
 ) -> bool {
     match spawn(Box::new(move || run_scheduler_thread(jobs))) {
         Ok(()) => true,
