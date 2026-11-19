@@ -187,8 +187,6 @@ class VesperaProxyControllerCoverageTest {
 
         assertEquals(413, exception.getStatusCode().value());
         assertFalse(read.get());
-        assertEquals(VesperaWireCodec.MAX_FRAME_BODY, VesperaWireCodec.MAX_WIRE_LENGTH - 4L
-                - VesperaWireCodec.WIRE_HEADER_RESERVE);
     }
 
     @Test

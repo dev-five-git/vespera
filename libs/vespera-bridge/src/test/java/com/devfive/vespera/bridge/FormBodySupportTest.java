@@ -155,9 +155,35 @@ class FormBodySupportTest {
         expected.put("a b", 2);
         expected.put("c", 1);
         expected.put("bad%zz", 1);
-        assertEquals(expected, FormBodySupport.queryParameterCounts("a+b=1&&a%20b=2&c&bad%zz=1"));
-        assertTrue(FormBodySupport.queryParameterCounts(null).isEmpty());
-        assertTrue(FormBodySupport.queryParameterCounts("").isEmpty());
+        assertEquals(
+                expected,
+                FormBodySupport.queryParameterCounts(
+                        "a+b=1&&a%20b=2&c&bad%zz=1", StandardCharsets.UTF_8));
+        assertTrue(FormBodySupport.queryParameterCounts(null, StandardCharsets.UTF_8).isEmpty());
+        assertTrue(FormBodySupport.queryParameterCounts("", StandardCharsets.UTF_8).isEmpty());
+    }
+
+    @Test
+    void queryNamesAreDecodedWithTheCharsetTheContainerKeysItsParameterMapWith() {
+        // %C3%A9 is "é" in UTF-8 but "Ã©" in ISO-8859-1 (the POST default here).
+        assertEquals(
+                Map.of("Ã©", 1),
+                FormBodySupport.queryParameterCounts("%C3%A9=1", StandardCharsets.ISO_8859_1));
+        assertEquals(
+                Map.of("é", 1),
+                FormBodySupport.queryParameterCounts("%C3%A9=1", StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void aNonAsciiQueryNameIsNotCopiedIntoTheRebuiltBody() {
+        // A POST with no declared charset: the container keys the query parameter as "Ã©",
+        // so the query value must be skipped, not re-emitted as a body field.
+        MockHttpServletRequest req = form("POST");
+        req.setQueryString("%C3%A9=1");
+        req.addParameter("Ã©", "1");
+        req.addParameter("x", "y");
+
+        assertEquals("x=y", text(FormBodySupport.rebuildFromParameters(req)));
     }
 
     @Test

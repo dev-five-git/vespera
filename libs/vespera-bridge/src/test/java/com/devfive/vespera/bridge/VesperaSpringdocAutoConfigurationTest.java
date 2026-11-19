@@ -175,9 +175,13 @@ class VesperaSpringdocAutoConfigurationTest {
     void disabledIntegrationRegistersNothing() throws Exception {
         try (ConfigurableApplicationContext ctx = start("--vespera.bridge.springdoc.enabled=false")) {
             assertEquals(0, ctx.getBeanNamesForType(VesperaOpenApiDocsController.class).length);
-            String docs = get(ctx, "/v3/api-docs").body();
-            assertFalse(docs.contains("/rust/items"), docs);
-            assertFalse(docs.contains("/**"), docs);
+            // springdoc's own /v3/api-docs still serves the Java controllers; only the Vespera
+            // integration is off, so the Rust paths are absent and nothing is proxied.
+            HttpResponse<String> docs = get(ctx, "/v3/api-docs");
+            assertEquals(200, docs.statusCode(), docs.body());
+            assertTrue(docs.body().contains("/java/hello"), docs.body());
+            assertFalse(docs.body().contains("/rust/items"), docs.body());
+            assertFalse(docs.body().contains("/**"), docs.body());
         }
     }
 }

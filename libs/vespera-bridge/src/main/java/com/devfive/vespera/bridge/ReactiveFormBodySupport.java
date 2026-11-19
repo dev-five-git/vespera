@@ -88,8 +88,11 @@ final class ReactiveFormBodySupport {
                     return rebuilt.length > body.length ? rebuilt : body;
                 })
                 .defaultIfEmpty(body)
-                // Nothing to recover (e.g. the body was never read as a form).
-                .onErrorReturn(body);
+                // reactor-netty rejects the second read of a body that a filter drained
+                // without parsing it as a form (IllegalStateException): no form is cached,
+                // so there is nothing to recover. Any other failure is a real read or
+                // parse error and propagates instead of forwarding a truncated body.
+                .onErrorResume(IllegalStateException.class, noCachedForm -> Mono.just(body));
     }
 
     /** Body of the proxy's {@code 500} for a consumed multipart body (WebFlux). */

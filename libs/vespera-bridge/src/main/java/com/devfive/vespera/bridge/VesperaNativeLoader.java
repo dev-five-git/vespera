@@ -227,28 +227,25 @@ final class VesperaNativeLoader {
     }
 
     /**
-     * {@code System.load} the verified extracted copy. A copy that cannot be
-     * loaded here is deleted — its bytes match the bundled resource, so it is
-     * dead weight — except when the JVM refused it only because another class
-     * loader already holds it ("already loaded in another classloader"): that
-     * copy is fine and shared with the class loader using it (a second web app
-     * or a redeploy), so deleting it would break whoever extracts it next.
+     * {@code System.load} the verified extracted copy. A private copy that
+     * cannot be loaded here is deleted with its temp directory: its bytes match
+     * the bundled resource, so it is dead weight. A copy in the shared
+     * content-addressed directory is never deleted, whatever the failure: a
+     * concurrent JVM may have verified the same file and be loading it now, and
+     * would then fail with "cannot open shared object" instead of its own load
+     * error. The shared copy is re-verified (and re-extracted if corrupt) on the
+     * next start. A load refused only because another class loader already holds
+     * the library ("already loaded in another classloader") keeps its copy too.
      */
     static void loadExtracted(Extracted copy, NativeLibraryLoader systemLoad, TempFileDeleter deleter) {
         Path library = copy.library();
         try {
             systemLoad.load(library.toAbsolutePath().toString());
         } catch (UnsatisfiedLinkError loadFailure) {
-            if (!loadedByAnotherClassLoader(loadFailure)) {
+            if (!copy.reusable() && !loadedByAnotherClassLoader(loadFailure)) {
+                // Only this JVM's private temp directory is removed with the copy.
                 deleteAfterFailedLoad(library, deleter);
-                // Only this JVM's private temp directory is removed with the
-                // copy. The shared content-addressed directory is never
-                // deleted: a concurrent JVM that has passed prepareDir but not
-                // yet created its temp file would then fail with
-                // NoSuchFileException instead of reporting its own load error.
-                if (!copy.reusable()) {
-                    deleteAfterFailedLoad(library.getParent(), deleter);
-                }
+                deleteAfterFailedLoad(library.getParent(), deleter);
             }
             throw loadFailure;
         }

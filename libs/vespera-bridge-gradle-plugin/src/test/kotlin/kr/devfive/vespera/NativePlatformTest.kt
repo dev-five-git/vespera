@@ -221,6 +221,18 @@ class NativePlatformTest {
         assertEquals(os, NativePlatform.osOfPlatformKey(key))
     }
 
+    @ParameterizedTest
+    @CsvSource("linux-musl", "linux-gnu", "linux-sparc", "linux-sparcv9", "macos-foo", "windows-libc")
+    fun rejectsASegmentThatIsNoArchAtAll(key: String) {
+        val rejected = assertThrows<IllegalArgumentException> { NativePlatform.osOfPlatformKey(key) }
+        assertTrue(rejected.message!!.startsWith("vespera.targets key '$key'"), rejected.message)
+        assertTrue(rejected.message!!.contains("is not one the bridge loader looks up"), rejected.message)
+        val named = assertThrows<IllegalArgumentException> {
+            NativePlatform.osOfPlatformKey(key, "vespera.nativeJarPlatforms entry")
+        }
+        assertTrue(named.message!!.startsWith("vespera.nativeJarPlatforms entry '$key'"), named.message)
+    }
+
     @Test
     fun rejectsMuslMisconfigurations() {
         assertThrows<IllegalArgumentException> {

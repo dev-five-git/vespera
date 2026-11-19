@@ -500,20 +500,22 @@ public class VesperaProxyController {
      * one exact allocation; an unknown length is read with a bounded
      * {@code readNBytes(MAX_FIXED_BODY + 1)} and answered {@code 413} above
      * it (the message then names this bound, as the effective cap); a known
-     * length above it is read up to the single-array ceiling
-     * ({@link #MAX_BUFFERED_BODY}), stopping at the actual
-     * {@code Content-Length}.  With a positive cap every read is bounded by
-     * that cap instead.
+     * length above it is read up to the frame bound
+     * ({@link VesperaWireCodec#MAX_FRAME_BODY}), stopping at the actual
+     * {@code Content-Length}, and a declared length above the frame bound is
+     * answered {@code 413} before any read.  With a positive cap every read is
+     * bounded by that cap instead.
      */
     private static final int MAX_FIXED_BODY = 64 * 1024 * 1024;
 
     /**
      * Largest body that can be materialised into a single Java {@code byte[]}
      * (the JVM array-length ceiling is just under {@link Integer#MAX_VALUE}).
-     * A buffered request whose length provably exceeds this can never be read
-     * via {@code readAllBytes}/{@code readNBytes}, so it is rejected with 413
-     * rather than allowed to attempt an impossible allocation; such requests
-     * must go through {@code BIDIRECTIONAL_STREAMING}.
+     * A buffered request body is limited further, to {@link
+     * VesperaWireCodec#MAX_FRAME_BODY} (the bound that leaves room for the wire
+     * header); a request above that is rejected with 413 rather than read, and
+     * such requests must go through {@code BIDIRECTIONAL_STREAMING}.
+     * This ceiling only bounds the known-length reads of a cap-less request.
      */
     private static final long MAX_BUFFERED_BODY = Integer.MAX_VALUE - 8L;
 
@@ -597,18 +599,32 @@ public class VesperaProxyController {
 
     static byte[] readBufferedBody(InputStream in, long contentLength, long cap)
             throws IOException {
+        return readBufferedBody(in, contentLength, cap, VesperaWireCodec.MAX_FRAME_BODY);
+    }
+
+    /**
+     * {@link #readBufferedBody(InputStream, long, long)} with the frame bound as a
+     * parameter (tests pass a small one; production passes
+     * {@link VesperaWireCodec#MAX_FRAME_BODY}).
+     */
+    static byte[] readBufferedBody(InputStream in, long contentLength, long cap, long frameBound)
+            throws IOException {
         if (cap > 0 && contentLength <= 0) {
+            // An undeclared body is read one byte past the lower of the cap and the frame
+            // bound, so an over-long one is detected exactly and never buffered to the
+            // ~2 GiB array ceiling only to fail when its wire frame is encoded.
             long cappedPlusOne = cap == Long.MAX_VALUE ? Long.MAX_VALUE : cap + 1;
-            long effectiveLimit = Math.min(cappedPlusOne, MAX_BUFFERED_BODY);
-            int readLimit = (int) effectiveLimit;
-            byte[] body = in.readNBytes(readLimit);
+            long effectiveLimit = Math.min(cappedPlusOne, frameBound + 1);
+            byte[] body = in.readNBytes((int) effectiveLimit);
             if ((long) body.length > cap) {
                 // The read stopped one byte past the cap: the real size of an
                 // undeclared body is unknown, so never report the read limit
                 // as the client's size.
                 throw undeclaredPayloadTooLarge(cap);
             }
-            rejectAtBufferedBodyLimit(body.length, cap);
+            if ((long) body.length > frameBound) {
+                throw undeclaredAboveFrameBound(cap, frameBound);
+            }
             return body;
         }
         if (contentLength > 0 && (cap > 0 || contentLength <= MAX_FIXED_BODY)) {
@@ -679,6 +695,20 @@ public class VesperaProxyController {
                 CONTENT_TOO_LARGE,
                 "buffered request body exceeds vespera.bridge.max-buffered-request-bytes="
                         + capBytes + " (more than " + capBytes + " bytes, length not declared)");
+    }
+
+    /**
+     * {@code 413} for an undeclared body longer than the frame bound, which the
+     * cap ({@code capBytes}, unlimited when {@code <= 0} or above the bound) does
+     * not limit: names the built-in bound, never the cap as the limit.
+     */
+    static ResponseStatusException undeclaredAboveFrameBound(long capBytes, long frameBound) {
+        return new ResponseStatusException(
+                CONTENT_TOO_LARGE,
+                "buffered request body of unknown length exceeds the built-in " + frameBound
+                        + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes="
+                        + capBytes + "; more than " + frameBound
+                        + " bytes, length not declared); use BIDIRECTIONAL_STREAMING");
     }
 
     /**

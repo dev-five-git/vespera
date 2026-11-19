@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -409,6 +410,30 @@ class ProxyControllerBodyHeaderTest {
                 () -> VesperaProxyController.readBody(req, RequestShape.from(req), 4));
 
         assertEquals(413, e.getStatusCode().value());
+    }
+
+    @Test
+    void undeclaredBodyIsRefusedAtTheFrameBoundEvenUnderALargerCap() throws IOException {
+        // The frame bound is a parameter here (production: VesperaWireCodec.MAX_FRAME_BODY,
+        // too large to allocate in a unit test). The stream never ends: the read must stop
+        // one byte past the bound, not run on toward the single-array ceiling.
+        byte[] atBound = new byte[16];
+        assertEquals(16, VesperaProxyController.readBufferedBody(
+                new ByteArrayInputStream(atBound), -1, 100, 16).length);
+
+        InputStream endless = new InputStream() {
+            @Override
+            public int read() {
+                return 0;
+            }
+        };
+        ResponseStatusException e = assertThrows(
+                ResponseStatusException.class,
+                () -> VesperaProxyController.readBufferedBody(endless, -1, 100, 16));
+
+        assertEquals(413, e.getStatusCode().value());
+        assertTrue(e.getReason().contains("built-in 16-byte single-array bound"), e.getReason());
+        assertTrue(e.getReason().contains("max-buffered-request-bytes=100"), e.getReason());
     }
 
     @Test

@@ -168,11 +168,26 @@ class NativeImageMetadataTest {
                 }
             } else if (c == '"') {
                 inString = true;
+            } else if (c == '\'' && charLiteralEnd(line, i) > 0) {
+                // A char literal such as '"' or '\'' must not open a string.
+                i = charLiteralEnd(line, i);
             } else if (c == '/' && i + 1 < line.length() && line.charAt(i + 1) == '/') {
                 return i;
             }
         }
         return -1;
+    }
+
+    /**
+     * Index of the quote closing the char literal that opens at {@code open}, or
+     * {@code -1} when the quote starts a lifetime ({@code 'a}) instead.
+     */
+    private static int charLiteralEnd(String line, int open) {
+        if (open + 1 < line.length() && line.charAt(open + 1) == '\\') {
+            // Escapes (newline, quote, unicode-escape form): the closing quote follows the escape.
+            return line.indexOf('\'', open + 3);
+        }
+        return open + 2 < line.length() && line.charAt(open + 2) == '\'' ? open + 2 : -1;
     }
 
     /** JNI class names of every {@code throw_new} site, literal or through a {@code &JNIStr} const. */
@@ -339,6 +354,18 @@ class NativeImageMetadataTest {
         assertEquals(List.of(), parameterTypes("()V"));
         assertEquals(List.of("java.lang.String[][]", "long"), parameterTypes("([[Ljava/lang/String;J)V"));
         assertEquals("let x = \"a//b\"; \n", stripLineComments("let x = \"a//b\"; // c"));
+    }
+
+    @Test
+    void charLiteralsDoNotOpenAStringAndLifetimesAreNotCharLiterals() {
+        // '"' is a char, so the "http://x" string after it is closed where it really closes,
+        // and the lookup on that line survives (the old scanner cut it at "http://).
+        assertEquals(
+                "let c = '\"'; let u = \"http://x\"; f(); \n",
+                stripLineComments("let c = '\"'; let u = \"http://x\"; f(); // tail"));
+        assertEquals("let q = '\\''; g(); \n", stripLineComments("let q = '\\''; g(); // tail"));
+        assertEquals("let u = '\\u{1F600}'; \n", stripLineComments("let u = '\\u{1F600}'; // tail"));
+        assertEquals("fn f<'a>(x: &'a str) { \n", stripLineComments("fn f<'a>(x: &'a str) { // c"));
     }
 
     @Test
