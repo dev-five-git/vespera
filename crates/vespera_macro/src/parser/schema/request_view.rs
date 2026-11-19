@@ -346,9 +346,10 @@ fn field_codec_differs(field: &syn::Field) -> bool {
 /// `value_type` overrides it and the response and request views document
 /// different types (see `wire_override::codec_wire`).
 fn codec_differs(field: &syn::Field) -> bool {
-    extract_schema_constraints(&field.attrs)
-        .value_type
-        .is_none()
+    // `#[schema(any)]` documents `{}` on both sides, whatever the codec.
+    let constraints = extract_schema_constraints(&field.attrs);
+    constraints.value_type.is_none()
+        && !constraints.is_any()
         && documented_tokens(field, SerdeSide::Serialize)
             != documented_tokens(field, SerdeSide::Deserialize)
 }

@@ -764,19 +764,36 @@ fn opaque_and_raw_bodies(
     assert_eq!(media_shape(&responses, status), expected);
 }
 
-/// A user struct named like an axum wrapper (`Body`, `Redirect`, `NoContent`)
-/// is that struct: its JSON body is documented under `200`, and it is not
-/// taken for the opaque / no-body wrapper of the same name.
+/// A user struct named like an axum wrapper (`Body`, `Redirect`, `NoContent`,
+/// and the byte / text / event-stream wrappers `Bytes`, `BytesMut`, `Html`,
+/// `Sse`) is that struct: its JSON body is documented under `200`, and it is
+/// not taken for the wrapper of the same name (opaque, binary, HTML, SSE).
 #[rstest]
 #[case::body("-> Body")]
 #[case::redirect("-> Redirect")]
 #[case::no_content("-> NoContent")]
+#[case::bytes("-> Bytes")]
+#[case::bytes_mut("-> BytesMut")]
+#[case::html("-> Html")]
+#[case::sse("-> Sse")]
 fn user_types_named_like_axum_wrappers_are_documented(#[case] return_type: &str) {
-    let known_schemas: HashSet<&str> = HashSet::from(["Body", "Redirect", "NoContent"]);
+    let known_schemas: HashSet<&str> = HashSet::from([
+        "Body",
+        "Redirect",
+        "NoContent",
+        "Bytes",
+        "BytesMut",
+        "Html",
+        "Sse",
+    ]);
     let struct_definitions: HashMap<&str, &str> = HashMap::from([
         ("Body", "pub struct Body { pub id: u32 }"),
         ("Redirect", "pub struct Redirect { pub to: String }"),
         ("NoContent", "pub struct NoContent { pub n: u8 }"),
+        ("Bytes", "pub struct Bytes { pub len: u32 }"),
+        ("BytesMut", "pub struct BytesMut { pub len: u32 }"),
+        ("Html", "pub struct Html { pub title: String }"),
+        ("Sse", "pub struct Sse { pub seq: u64 }"),
     ]);
     let responses = parse_return_type(
         &parse_return_type_str(return_type),

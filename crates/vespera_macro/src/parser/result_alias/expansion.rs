@@ -3,9 +3,13 @@
 
 use super::{
     Cow, DefinitionKey, MAX_ALIAS_DEPTH, NextScope, Path, ReturnType, Scope, Type, alias_candidate,
-    alias_qualifier, apply_alias, definition_key, find_alias, fn_module, is_external_path,
-    source_key,
+    alias_qualifier, definition_key, find_alias, fn_module, is_external_path, source_key,
 };
+use crate::{parser::schema::substitute_type, schema_macro::type_utils::last_path_segment};
+
+/// The prefix of the placeholder idents an alias body's parameters stand for
+/// while the body is expanded (see [`expand_alias`]).
+const PARAM_PREFIX: &str = "__vespera_alias_param_";
 
 /// Expand the return type of `sig` in place through the aliases found in
 /// `same_file` (the handler's file) and (if given) the crate source
@@ -15,9 +19,10 @@ use super::{
 /// built from: the elements of a tuple and the arguments of a `Result`
 /// (`Result<Created<User>, AppError>` with `type Created<T> = (StatusCode,
 /// Json<T>)` documents the `Json<User>` body). Each nested position is looked
-/// up in the scope of the alias its enclosing type came from, so the names of
-/// an alias defined in another file resolve there. The nesting is bounded by
-/// [`MAX_ALIAS_DEPTH`], so a cyclic alias cannot recurse forever.
+/// up in the scope its type is written in, so the names of an alias defined
+/// in another file resolve there. The nesting is bounded by
+/// [`MAX_ALIAS_DEPTH`], and an alias that is already being expanded is not
+/// applied again, so a cyclic alias cannot recurse forever.
 ///
 /// Returns `true` when the return type changed.
 pub fn expand_return_type_alias(
@@ -38,31 +43,33 @@ pub fn expand_return_type_alias(
             path: same_path.map(source_key),
         })
     });
-    expand_position(ty, handler_scope.as_ref(), src_dir, 0);
+    expand_position(ty, handler_scope.as_ref(), src_dir, 0, &[]);
     quote::quote!(#ty).to_string() != before
 }
 
-/// Expands `ty`, written in `scope` (`None`: no file known), through its alias
-/// chain, then the response positions nested in the result (tuple elements,
-/// `Result` arguments), `depth` levels deep.
+/// Expands `ty`, written in `scope` (`None`: no file known): through the
+/// alias it names when one applies ([`expand_alias`]), else the response
+/// positions nested in it (tuple elements, `Result` arguments). `depth`
+/// levels deep at most. `active` are the alias definitions being expanded
+/// around `ty`.
 fn expand_position(
     ty: &mut Type,
     scope: Option<&NextScope<'_>>,
     src_dir: Option<&Path>,
     depth: usize,
+    active: &[DefinitionKey],
 ) {
     if depth >= MAX_ALIAS_DEPTH {
         return;
     }
-    // The scope the chain ends in: where the last alias applied is defined,
-    // which is where its body's nested names are written.
-    let mut scope = scope.cloned();
-    expand_alias_chain(ty, &mut scope, src_dir);
-    let scope = scope.as_ref();
+    if let Some(expanded) = expand_alias(ty, scope, src_dir, depth, active) {
+        *ty = expanded;
+        return;
+    }
     match ty {
         Type::Tuple(tuple) => {
             for elem in &mut tuple.elems {
-                expand_position(elem, scope, src_dir, depth + 1);
+                expand_position(elem, scope, src_dir, depth + 1, active);
             }
         }
         Type::Path(type_path) => {
@@ -72,7 +79,7 @@ fn expand_position(
             {
                 for arg in &mut args.args {
                     if let syn::GenericArgument::Type(inner) = arg {
-                        expand_position(inner, scope, src_dir, depth + 1);
+                        expand_position(inner, scope, src_dir, depth + 1, active);
                     }
                 }
             }
@@ -81,39 +88,110 @@ fn expand_position(
     }
 }
 
-/// Follows the alias chain of `ty` in place (see the module docs). `scope` is
-/// the scope `ty` is written in; each alias applied replaces it with the scope
-/// that alias is defined in, where its body is written.
-fn expand_alias_chain(ty: &mut Type, scope: &mut Option<NextScope<'_>>, src_dir: Option<&Path>) {
-    // Keyed by the resolved definition, not the ident: `type Result<T> =
-    // crate::error::Result<Json<T>>;` names another module's `Result`.
-    let mut seen: Vec<DefinitionKey> = Vec::new();
-    while seen.len() < MAX_ALIAS_DEPTH {
-        let Some(name) = alias_candidate(ty) else {
-            break;
-        };
-        // An alias found under `src/` names its file, parsed only now that
-        // the alias body turned out to be another alias candidate.
-        let here = scope.clone().and_then(NextScope::materialize);
-        if matches!(&*ty, Type::Path(path) if is_external_path(&path.path, here.as_ref())) {
-            break;
-        }
-        let qualifier = alias_qualifier(ty);
-        let Some((alias, alias_scope)) =
-            find_alias(&name, qualifier.as_ref(), here.as_ref(), src_dir)
-        else {
-            break;
-        };
-        let key = definition_key(&alias, &alias_scope);
-        if seen.contains(&key) {
-            break;
-        }
-        let Some(next) = apply_alias(&alias, ty) else {
-            break;
-        };
-        *ty = next;
-        seen.push(key);
-        // The alias body names types where the alias is defined.
-        *scope = Some(alias_scope);
+/// `ty` (written in `scope`) with the alias it names applied and fully
+/// expanded, or `None` when no alias applies to it.
+///
+/// Every name is resolved where it is written, so no part is looked up in the
+/// wrong module:
+///
+/// - the use-site arguments (`Created<User>` in `Api<Created<User>>`) are
+///   expanded in `scope`, before they are substituted;
+/// - the alias body is expanded in the scope the alias is defined in, while
+///   its own parameters are still placeholders (`__vespera_alias_param_N`),
+///   which no lookup matches;
+/// - only then are the placeholders replaced by the expanded arguments. The
+///   result is not expanded again, so an argument's names never meet the
+///   body's scope.
+///
+/// An alias already in `active` (its body is being expanded around `ty`) is
+/// not applied again: a cycle stops where it closes.
+fn expand_alias(
+    ty: &Type,
+    scope: Option<&NextScope<'_>>,
+    src_dir: Option<&Path>,
+    depth: usize,
+    active: &[DefinitionKey],
+) -> Option<Type> {
+    let name = alias_candidate(ty)?;
+    if name.starts_with(PARAM_PREFIX) || depth + 1 >= MAX_ALIAS_DEPTH {
+        return None;
     }
+    // An alias found under `src/` names its file, parsed only now that the
+    // type turned out to be an alias candidate.
+    let here = scope.cloned().and_then(NextScope::materialize);
+    if matches!(ty, Type::Path(path) if is_external_path(&path.path, here.as_ref())) {
+        return None;
+    }
+    let qualifier = alias_qualifier(ty);
+    let (alias, alias_scope) = find_alias(&name, qualifier.as_ref(), here.as_ref(), src_dir)?;
+    let key = definition_key(&alias, &alias_scope);
+    if active.contains(&key) {
+        return None;
+    }
+    let segment = last_path_segment(ty)?;
+    let mut args: Vec<Type> = match &segment.arguments {
+        syn::PathArguments::AngleBracketed(args) => args
+            .args
+            .iter()
+            .filter_map(|arg| match arg {
+                syn::GenericArgument::Type(ty) => Some(ty.clone()),
+                _ => None,
+            })
+            .collect(),
+        // `None` (and the `Fn(..)` sugar, which never reaches a return type).
+        _ => Vec::new(),
+    };
+    let params: Vec<&syn::TypeParam> = alias.generics.type_params().collect();
+    if args.len() > params.len() {
+        return None;
+    }
+    let param_names: Vec<String> = params.iter().map(|param| param.ident.to_string()).collect();
+    let names: Vec<String> = (0..params.len())
+        .map(|index| format!("{PARAM_PREFIX}{index}"))
+        .collect();
+    let placeholders: Vec<Type> = names
+        .iter()
+        .map(|name| syn::parse_str(name).ok())
+        .collect::<Option<Vec<Type>>>()?;
+    let placeholder_refs: Vec<&Type> = placeholders.iter().collect();
+    // The use-site arguments are not inside this alias's body: they expand
+    // under the caller's active set.
+    for arg in &mut args {
+        expand_position(arg, scope, src_dir, depth + 1, active);
+    }
+    let mut body_active = active.to_vec();
+    body_active.push(key);
+    let mut values: Vec<Type> = Vec::with_capacity(params.len());
+    for (index, param) in params.iter().enumerate() {
+        let value = if let Some(arg) = args.get(index) {
+            arg.clone()
+        } else {
+            // A default may name earlier parameters (`type R<T, E =
+            // Wrapper<T>>`): it is written in the alias's scope, so it is
+            // expanded there while those are still placeholders.
+            let default = &param.default.as_ref()?.1;
+            let mut default =
+                substitute_type(default, &param_names[..index], &placeholder_refs[..index]);
+            expand_position(
+                &mut default,
+                Some(&alias_scope),
+                src_dir,
+                depth + 1,
+                &body_active,
+            );
+            let earlier: Vec<&Type> = values.iter().collect();
+            substitute_type(&default, &names[..index], &earlier)
+        };
+        values.push(value);
+    }
+    let mut body = substitute_type(&alias.ty, &param_names, &placeholder_refs);
+    expand_position(
+        &mut body,
+        Some(&alias_scope),
+        src_dir,
+        depth + 1,
+        &body_active,
+    );
+    let concrete: Vec<&Type> = values.iter().collect();
+    Some(substitute_type(&body, &names, &concrete))
 }

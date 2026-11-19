@@ -1,0 +1,18 @@
+---
+source: crates/vespera_macro/src/parser/parameters/tests_shapes.rs
+expression: "render(func_src, path_params)"
+---
+fn f(q: Query<SizedBuf<4, u32>>) {}
+[
+  {
+    "name": "data",
+    "in": "query",
+    "required": true,
+    "schema": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0,
+      "maximum": 4294967295
+    }
+  }
+]

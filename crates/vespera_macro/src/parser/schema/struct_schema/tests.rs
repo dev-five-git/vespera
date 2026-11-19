@@ -268,7 +268,9 @@ fn test_parse_struct_to_schema_skip_takes_precedence_over_skip_serializing_if() 
 }
 
 // Test struct with default and skip_serializing_if
-// Required is determined solely by nullability (Option<T>), not by defaults.
+// This is the response view: a field is optional only through its
+// `skip_serializing_if`. A plain `Option<T>` is required there (serde writes
+// `null`); in the request view `Option<T>` and `#[serde(default)]` are optional.
 #[test]
 fn test_parse_struct_to_schema_with_default_fields() {
     let struct_item: syn::ItemStruct = syn::parse_str(
@@ -297,7 +299,7 @@ fn test_parse_struct_to_schema_with_default_fields() {
     assert!(required.contains(&"required_field".to_string()));
     // Non-nullable fields are always required, even with #[serde(default)]
     assert!(required.contains(&"with_default".to_string()));
-    // Option<T> fields are not required (nullable)
+    // `maybe_skip` is optional only because of its `skip_serializing_if`.
     assert!(!required.contains(&"maybe_skip".to_string()));
 }
 

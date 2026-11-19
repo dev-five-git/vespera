@@ -38,6 +38,7 @@ use super::{
     schema_attrs::{SchemaConstraints, extract_schema_constraints},
     serde_attrs::{
         SerdeSide, extract_codec_module, extract_container_conversion, extract_field_codec,
+        extract_serde_skip_flags,
     },
     type_schema::parse_type_to_schema_ref,
 };
@@ -212,6 +213,11 @@ pub fn derive_codec_error(input: &syn::DeriveInput) -> Option<syn::Error> {
     }
     let first_error = |fields: &syn::Fields, prefix: &str| {
         fields.iter().enumerate().find_map(|(index, field)| {
+            // Serde skips a field on both sides: its codec is never run, so
+            // it needs no wire shape.
+            if extract_serde_skip_flags(&field.attrs).fully_skipped() {
+                return None;
+            }
             let name = field
                 .ident
                 .as_ref()
@@ -409,6 +415,15 @@ mod tests {
         Some("`Pair::1` uses")
     )]
     #[case::enum_clean("enum E { A { x: u8 }, B(String) }", None)]
+    // Round 24: a field serde skips on both sides has no wire shape to need.
+    #[case::fully_skipped_field(
+        "struct S { id: u8, #[serde(skip, with = \"hex\")] key: Vec<u8> }",
+        None
+    )]
+    #[case::skip_serializing_only_still_errors(
+        "struct S { #[serde(skip_serializing, with = \"hex\")] key: Vec<u8> }",
+        Some("`key` uses")
+    )]
     #[case::union_ignored("union U { a: u8 }", None)]
     #[case::container_value_type(
         "#[schema(value_type = i64)] struct S(#[serde(with = \"hex\")] Vec<u8>);",

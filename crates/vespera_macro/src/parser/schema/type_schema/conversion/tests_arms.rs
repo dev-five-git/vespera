@@ -64,8 +64,9 @@ fn is_builtin_openapi_type_matches_conversion_arms() {
         .into_iter()
         .filter_map(|lit| lit.strip_prefix('b').map(str::to_string))
         .collect();
+    // Patterns only: a string in an arm body (`"int8"`) is not a leaf arm.
     let mut leaf_arms = Vec::new();
-    literals(
+    arm_patterns(
         match_arms_after(block("parse_type_impl"), "primitive_result").unwrap(),
         &mut leaf_arms,
     );

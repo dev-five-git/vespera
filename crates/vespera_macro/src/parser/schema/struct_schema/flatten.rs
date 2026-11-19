@@ -36,8 +36,10 @@
 //! schema object, so composing members with `allOf` gets these semantics
 //! wrong (an outer `{"id": 1}` would be checked against a flattened map's
 //! value schema, and a `deny_unknown_fields` member would reject every outer
-//! key). Members whose keys are known are therefore MERGED into one object;
-//! only members whose keys cannot be known (a flattened enum, an
+//! key). Members whose keys are known are therefore MERGED into one object,
+//! except a plain struct member with no flattened map and no closed sibling,
+//! which stays a `$ref` `allOf` member so its component is reused (see
+//! `assemble`). Only members whose keys cannot be known (a flattened enum, an
 //! unresolvable type) stay `allOf` members — and they keep the merged object
 //! open. Such a member's resolved schema is inlined with every object inside
 //! it reopened (see `embedded`: closed branches, map variants, `$ref`

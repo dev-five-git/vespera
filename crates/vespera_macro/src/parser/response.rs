@@ -283,11 +283,11 @@ fn body_content_type(ty: &Type, shadows: Shadows<'_>) -> Option<&'static str> {
         None
     } else if is_string_like(ty) {
         Some(TEXT_PLAIN)
-    } else if last_ident_is(ty, "Html") {
+    } else if last_ident_is(ty, "Html") && !shadows.names_user_type(ty) {
         Some(TEXT_HTML)
-    } else if last_ident_is(ty, "Sse") {
+    } else if last_ident_is(ty, "Sse") && !shadows.names_user_type(ty) {
         Some(EVENT_STREAM)
-    } else if is_bytes_like(ty) {
+    } else if is_bytes_like(ty) && !shadows.names_user_type(ty) {
         Some(OCTET_STREAM)
     } else {
         Some("application/json")

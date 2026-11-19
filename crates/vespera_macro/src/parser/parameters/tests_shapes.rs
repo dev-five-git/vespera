@@ -21,6 +21,12 @@ const DEFINITIONS: &[(&str, &str)] = &[
     ),
     ("RepoKey", "pub struct RepoKey { pub repo: i32 }"),
     ("Keyed", "pub struct Keyed<K> { pub key: K }"),
+    // Round 24: a const parameter ahead of a type parameter. A bare-path const
+    // argument (`SIZE`) is syn's type argument, and must not take `T`'s slot.
+    (
+        "SizedBuf",
+        "pub struct SizedBuf<const N: usize, T> { pub data: T }",
+    ),
     // `#[serde(transparent)]` reads its ONE field that is neither
     // `PhantomData` nor skipped / defaulted on the deserialize side.
     (
@@ -146,6 +152,17 @@ fn render(func_src: &str, path_params: &[&str]) -> String {
 )]
 #[case::query_generic_missing_argument("query_generic_missing_argument", "fn f(q: Query<Paged>) {}", &[])]
 #[case::path_generic("path_generic", "fn f(p: Path<Keyed<i64>>) {}", &["key"])]
+// Round 24: a bare-path const argument does not shift the type arguments.
+#[case::query_const_bare_argument(
+    "query_const_bare_argument",
+    "fn f(q: Query<SizedBuf<SIZE, u32>>) {}",
+    &[]
+)]
+#[case::query_const_literal_argument(
+    "query_const_literal_argument",
+    "fn f(q: Query<SizedBuf<4, u32>>) {}",
+    &[]
+)]
 // L8: `Path<Vec<(String, V)>>` is one `(name, value)` pair per segment.
 #[case::path_pairs("path_pairs", "fn f(p: Path<Vec<(String, u32)>>) {}", &["a", "b"])]
 // L9: struct fields matched by alias and through `flatten`; skipped fields

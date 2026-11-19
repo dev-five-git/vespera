@@ -604,6 +604,20 @@ fn user_schema_named_like_builtin_keeps_ref(#[case] ident: &str, #[case] ty_src:
     assert_eq!(reference.ref_path, format!("#/components/schemas/{ident}"));
 }
 
+/// Round 24: a user generic named like a std wrapper keeps its `$ref` with
+/// arguments too: `Result<User, ApiError>` of a user `Result<T, E>` is not
+/// serde's externally tagged `Result` shape (`oneOf` of `Ok` / `Err`).
+#[test]
+fn user_generic_named_like_result_with_two_arguments_keeps_ref() {
+    let known: HashSet<String> = HashSet::from(["Result".to_string()]);
+    let ty: Type = syn::parse_str("Result<User, ApiError>").unwrap();
+    let schema_ref = parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions());
+    let SchemaRef::Ref(reference) = schema_ref else {
+        panic!("expected $ref for the user `Result`, got {schema_ref:?}");
+    };
+    assert_eq!(reference.ref_path, "#/components/schemas/Result");
+}
+
 /// Qualified with the external crate, the builtin mapping still applies even
 /// when a same-named user schema exists.
 #[rstest::rstest]

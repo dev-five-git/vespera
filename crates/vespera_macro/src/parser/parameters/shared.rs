@@ -106,22 +106,12 @@ pub(super) fn struct_definition_keyed(
     if names.is_empty() {
         return Some((key, struct_item));
     }
-    let args: Vec<&Type> = match &segment.arguments {
-        syn::PathArguments::AngleBracketed(args) => args
-            .args
-            .iter()
-            .filter_map(|arg| match arg {
-                syn::GenericArgument::Type(ty) => Some(ty),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
+    let args = type_param_arguments(&struct_item.generics, &segment.arguments);
     // Each parameter: its argument, else its default (which may name earlier
     // parameters, already concrete), else itself (left unresolved).
     let mut concrete: Vec<Type> = Vec::with_capacity(names.len());
     for (index, param) in struct_item.generics.type_params().enumerate() {
-        let ty = args.get(index).map_or_else(
+        let ty = args.get(index).copied().flatten().map_or_else(
             || {
                 param.default.as_ref().map_or_else(
                     || {
@@ -134,7 +124,7 @@ pub(super) fn struct_definition_keyed(
                     },
                 )
             },
-            |arg| (*arg).clone(),
+            Type::clone,
         );
         concrete.push(ty);
     }
@@ -143,6 +133,41 @@ pub(super) fn struct_definition_keyed(
         field.ty = substitute_type(&field.ty, &names, &concrete);
     }
     Some((key, struct_item))
+}
+
+/// The use-site argument of each type parameter of `generics`, in declaration
+/// order (`None` where the use site omits it). Arguments are matched to
+/// parameters by position over the non-lifetime parameters, so a const
+/// parameter takes its argument's slot even when that argument is written as
+/// a bare path (`Buf<SIZE, u32>`: syn reads `SIZE` as a type argument).
+fn type_param_arguments<'a>(
+    generics: &syn::Generics,
+    arguments: &'a syn::PathArguments,
+) -> Vec<Option<&'a Type>> {
+    let given: Vec<&syn::GenericArgument> = match arguments {
+        syn::PathArguments::AngleBracketed(args) => args
+            .args
+            .iter()
+            .filter(|arg| !matches!(arg, syn::GenericArgument::Lifetime(_)))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut given = given.into_iter();
+    let mut types = Vec::new();
+    for param in generics
+        .params
+        .iter()
+        .filter(|param| !matches!(param, syn::GenericParam::Lifetime(_)))
+    {
+        let arg = given.next();
+        if let syn::GenericParam::Type(_) = param {
+            types.push(match arg {
+                Some(syn::GenericArgument::Type(ty)) => Some(ty),
+                _ => None,
+            });
+        }
+    }
+    types
 }
 
 /// The type a syntactic newtype struct (`struct Ids(TwoIds);`) is read as:
