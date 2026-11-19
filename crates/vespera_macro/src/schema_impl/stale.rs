@@ -8,7 +8,9 @@
 //!
 //! Each registration remembers its file's fingerprint; a conflicting stored
 //! entry is stale when that file has changed since AND no longer holds an
-//! item of that name (or is gone). An unchanged file — every file of a
+//! item of that name (or is gone). A file that no longer parses mid-edit is
+//! not "gone": it may still hold the item, so it keeps the strict error and
+//! the variant. An unchanged file — every file of a
 //! `cargo build` — keeps the strict duplicate-name error.
 
 use std::{
@@ -18,7 +20,9 @@ use std::{
 };
 
 use crate::metadata::StructMetadata;
-use crate::schema_macro::file_cache::{FileFingerprint, get_file_fingerprint, get_parsed_file};
+use crate::schema_macro::file_cache::{
+    FileFingerprint, get_file_content, get_file_fingerprint, get_parsed_file,
+};
 
 /// Source identity → its file's fingerprint when it was registered.
 static FINGERPRINTS: LazyLock<Mutex<HashMap<String, Option<FileFingerprint>>>> =
@@ -59,8 +63,14 @@ pub(super) fn left_its_file(existing: &StructMetadata) -> bool {
         .copied();
     let path = Path::new(file);
     match recorded {
-        Some(fingerprint) if fingerprint != get_file_fingerprint(path) => get_parsed_file(path)
-            .is_none_or(|parsed| super::count_items_named(&parsed.items, ident) == 0),
+        Some(fingerprint) if fingerprint != get_file_fingerprint(path) => {
+            match get_parsed_file(path) {
+                Some(parsed) => super::count_items_named(&parsed.items, ident) == 0,
+                // Unparseable mid-edit but present: the item may still be in it
+                // (R26-SM-L1), so only a file that is gone counts as left.
+                None => get_file_content(path).is_none(),
+            }
+        }
         _ => false,
     }
 }
