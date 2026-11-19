@@ -353,7 +353,7 @@ class ProxyOperabilityTest {
                         learned++;
                     }
                 }
-                assertTrue(learned <= 1, "round " + round + ": " + learned + " names learned past the cap");
+                assertEquals(1, learned, "round " + round + ": " + learned + " names learned for one free slot");
             } finally {
                 pool.shutdownNow();
             }
