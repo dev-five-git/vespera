@@ -101,7 +101,8 @@ pub fn cap_and_split(input: Vec<u8>) -> Result<(Bytes, Bytes), Vec<u8>> {
 /// [`WireRequestHeader`] borrows from it, so the caller MUST keep it alive
 /// for as long as the header is used.  On failure the `Err` carries the
 /// exact wire error bytes to deliver in the caller's shape (`400` for a
-/// parse error or version mismatch, `400`/`404` from app resolution).
+/// parse error or version mismatch, `431` for a header with more than
+/// [`crate::MAX_REQUEST_HEADERS`] entries, `400`/`404` from app resolution).
 #[inline]
 pub fn parse_validate_resolve(
     header_bytes: &[u8],
@@ -393,13 +394,15 @@ pub async fn dispatch_owned(router: Router, envelope: RequestEnvelope) -> Respon
 /// (See the crate docs for the optional request fields, the Latin-1
 /// header-value mapping and `validation_errors` hoisting.)
 ///
-/// All failure modes return a valid wire-format response (length-
+/// The failure modes below return a valid wire-format response (length-
 /// prefixed) so the caller's decoder never has to special-case
 /// errors.  Specifically:
 ///
 /// * input shorter than 4 bytes → 400 with explanatory body
 /// * `header_len` exceeds input → 400
-/// * header JSON parse failure (incl. an invalid `principal`) → 400
+/// * header JSON parse failure (incl. an invalid `principal`) → 400, or
+///   431 when the header carries more than [`crate::MAX_REQUEST_HEADERS`]
+///   headers
 /// * wire version mismatch → 400
 /// * invalid app name → 400
 /// * malformed path / query or header name / value → 400

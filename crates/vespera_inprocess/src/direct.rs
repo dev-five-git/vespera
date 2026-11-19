@@ -138,8 +138,10 @@ impl PendingDirectResponse {
     }
 
     /// Size of the complete wire response in bytes: exact when
-    /// [`Self::is_exact`], otherwise a strict lower bound (the bytes known so
-    /// far plus one).  Saturates at `usize::MAX`.
+    /// [`Self::is_exact`].  Otherwise the bytes known so far plus one: a size
+    /// to retry with, not a bound, since the body may end right after the
+    /// last frame read, so the final response can be one byte shorter.
+    /// Saturates at `usize::MAX`.
     #[must_use]
     pub fn required_bytes(&self) -> usize {
         let known = self.header.len().saturating_add(self.prefix.len());
