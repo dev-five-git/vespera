@@ -98,6 +98,85 @@ pub(super) fn ref_override_of(def: &str) -> Option<(String, bool)> {
     )
 }
 
+/// The expression each const parameter of `generics` takes from `args`
+/// (`Buf<u8, 4>` gives `N` = `4`). The non-lifetime parameters and arguments
+/// are paired by position, as rustc pairs them; a bare identifier argument
+/// (`Buf<u8, LEN>`, parsed as a type) is the path expression it spells.
+pub(super) fn const_argument_exprs(
+    generics: &syn::Generics,
+    args: &syn::AngleBracketedGenericArguments,
+) -> Vec<(String, syn::Expr)> {
+    let params = generics
+        .params
+        .iter()
+        .filter(|param| !matches!(param, syn::GenericParam::Lifetime(_)));
+    let given = args
+        .args
+        .iter()
+        .filter(|arg| !matches!(arg, syn::GenericArgument::Lifetime(_)));
+    params
+        .zip(given)
+        .filter_map(|(param, arg)| {
+            let syn::GenericParam::Const(param) = param else {
+                return None;
+            };
+            let expr = match arg {
+                syn::GenericArgument::Const(expr) => expr.clone(),
+                syn::GenericArgument::Type(syn::Type::Path(syn::TypePath {
+                    qself: None,
+                    path,
+                    ..
+                })) => syn::Expr::Path(syn::ExprPath {
+                    attrs: Vec::new(),
+                    qself: None,
+                    path: path.clone(),
+                }),
+                _ => return None,
+            };
+            Some((param.ident.to_string(), expr))
+        })
+        .collect()
+}
+
+/// Replaces a path expression naming a const parameter by the expression the
+/// instantiation gives it.
+struct ConstArgs<'a> {
+    consts: &'a [(String, syn::Expr)],
+}
+
+impl syn::visit_mut::VisitMut for ConstArgs<'_> {
+    fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
+        if let syn::Expr::Path(path) = expr
+            && path.qself.is_none()
+            && let Some((_, value)) = self
+                .consts
+                .iter()
+                .find(|(name, _)| path.path.is_ident(name.as_str()))
+        {
+            *expr = value.clone();
+        } else {
+            syn::visit_mut::visit_expr_mut(self, expr);
+        }
+    }
+
+    /// A const parameter written as a generic argument (`Buf<T, N>`, parsed as
+    /// a type) becomes the const argument it stands for.
+    fn visit_generic_argument_mut(&mut self, arg: &mut syn::GenericArgument) {
+        if let syn::GenericArgument::Type(syn::Type::Path(syn::TypePath {
+            qself: None, path, ..
+        })) = arg
+            && let Some((_, value)) = self
+                .consts
+                .iter()
+                .find(|(name, _)| path.is_ident(name.as_str()))
+        {
+            *arg = syn::GenericArgument::Const(value.clone());
+        } else {
+            syn::visit_mut::visit_generic_argument_mut(self, arg);
+        }
+    }
+}
+
 /// A known schema's parsed definition.
 pub(super) enum SchemaDef {
     Struct(syn::ItemStruct),
@@ -149,6 +228,25 @@ impl SchemaDef {
             {
                 list.tokens = substitute_tokens(list.tokens.clone(), params, concrete);
             }
+        }
+    }
+
+    /// Replace the const parameters `consts` (see [`const_argument_exprs`]) by
+    /// their argument expressions in every field type, so an array length
+    /// `[T; N]` becomes the literal the instantiation gives (`[T; 4]`, which
+    /// pins `minItems` / `maxItems`).
+    pub(super) fn substitute_consts(&mut self, consts: &[(String, syn::Expr)]) {
+        let fields: Vec<&mut syn::Field> = match self {
+            Self::Struct(item) => item.fields.iter_mut().collect(),
+            Self::Enum(item) => item
+                .variants
+                .iter_mut()
+                .flat_map(|variant| variant.fields.iter_mut())
+                .collect(),
+        };
+        let mut visitor = ConstArgs { consts };
+        for field in fields {
+            syn::visit_mut::VisitMut::visit_type_mut(&mut visitor, &mut field.ty);
         }
     }
 }
@@ -307,5 +405,83 @@ mod tests {
             SchemaDef::Enum(item) => quote::ToTokens::into_token_stream(item),
         };
         assert_eq!(tokens.to_string(), expected);
+    }
+
+    /// The `(parameter, argument)` pairs of `params` (a generic list) and the
+    /// `args` (an argument list) as printed expressions.
+    fn const_pairs(params: &str, args: &str) -> Vec<(String, String)> {
+        let item: syn::ItemStruct = syn::parse_str(&format!("struct X{params} {{}}")).unwrap();
+        let path: syn::TypePath = syn::parse_str(&format!("X{args}")).unwrap();
+        let syn::PathArguments::AngleBracketed(args) =
+            path.path.segments.last().unwrap().arguments.clone()
+        else {
+            panic!("no generic arguments");
+        };
+        const_argument_exprs(&item.generics, &args)
+            .into_iter()
+            .map(|(name, expr)| (name, quote::ToTokens::to_token_stream(&expr).to_string()))
+            .collect()
+    }
+
+    /// Const parameters pair with arguments by position, lifetimes skipped on
+    /// both sides; a type parameter's slot or a non-value argument names
+    /// nothing, and a missing argument leaves its parameter alone.
+    #[rstest]
+    #[case::positional("<'a, T, const N: usize>", "<'static, u8, 4>", &[("N", "4")])]
+    #[case::no_lifetime_given("<'a, T, const N: usize>", "<u8, 4>", &[("N", "4")])]
+    #[case::path_argument("<T, const N: usize>", "<u8, LEN>", &[("N", "LEN")])]
+    #[case::block_argument("<T, const N: usize>", "<u8, { 2 * 2 }>", &[("N", "{ 2 * 2 }")])]
+    #[case::non_value_argument("<T, const N: usize>", "<u8, [u8; 2]>", &[])]
+    #[case::type_parameter_slot("<const N: usize, T>", "<4, u8>", &[("N", "4")])]
+    #[case::missing_argument("<T, const N: usize>", "<u8>", &[])]
+    fn const_arguments_pair_by_position(
+        #[case] params: &str,
+        #[case] args: &str,
+        #[case] expected: &[(&str, &str)],
+    ) {
+        let expected: Vec<(String, String)> = expected
+            .iter()
+            .map(|(name, expr)| ((*name).to_string(), (*expr).to_string()))
+            .collect();
+        assert_eq!(const_pairs(params, args), expected);
+    }
+
+    /// A const parameter's uses in field types (array lengths, also inside
+    /// other types, of structs and of every enum variant) become its argument;
+    /// other names stay.
+    #[test]
+    fn const_arguments_replace_array_lengths() {
+        let mut def = parse_schema_def(
+            "struct W<T, const N: usize> { a: [T; N], b: Vec<[u8; N]>, c: [u8; M] }",
+        )
+        .unwrap();
+        let u8_ty: Type = syn::parse_quote!(u8);
+        let four: syn::Expr = syn::parse_quote!(4);
+        def.substitute(&["T".to_string()], &[&u8_ty]);
+        def.substitute_consts(&[("N".to_string(), four)]);
+        let SchemaDef::Struct(item) = &def else {
+            panic!("a struct");
+        };
+        let types: Vec<String> = item
+            .fields
+            .iter()
+            .map(|field| quote::ToTokens::to_token_stream(&field.ty).to_string())
+            .collect();
+        assert_eq!(types, ["[u8 ; 4]", "Vec < [u8 ; 4] >", "[u8 ; M]"]);
+
+        let mut def =
+            parse_schema_def("enum E<const N: usize> { A([u8; N]), B { x: [u8; N] } }").unwrap();
+        let two: syn::Expr = syn::parse_quote!(2);
+        def.substitute_consts(&[("N".to_string(), two)]);
+        let SchemaDef::Enum(item) = &def else {
+            panic!("an enum");
+        };
+        let lengths: Vec<String> = item
+            .variants
+            .iter()
+            .flat_map(|variant| variant.fields.iter())
+            .map(|field| quote::ToTokens::to_token_stream(&field.ty).to_string())
+            .collect();
+        assert_eq!(lengths, ["[u8 ; 2]", "[u8 ; 2]"]);
     }
 }

@@ -30,7 +30,9 @@ use super::super::{
 };
 
 mod schema_def;
-use schema_def::{SchemaDef, parse_schema_def, ref_override_of, schema_name_of};
+use schema_def::{
+    SchemaDef, const_argument_exprs, parse_schema_def, ref_override_of, schema_name_of,
+};
 mod json_paths;
 use json_paths::{is_json_value_path, is_serde_json_map_path};
 mod tuple_schema;
@@ -670,6 +672,9 @@ fn parse_type_impl(
                             concrete_owned.push(filled);
                         }
                         let concrete_types: Vec<&Type> = concrete_owned.iter().collect();
+                        // Const parameters take their argument's expression
+                        // (`Buf<u8, 4>` pins `[T; N]` to 4).
+                        let const_exprs = const_argument_exprs(parsed.generics_mut(), args);
 
                         // Substitute generic parameters with concrete types in
                         // all fields. A lifetime-only definition (`Borrowed<'a>`)
@@ -682,6 +687,7 @@ fn parse_type_impl(
                             // variant's fields for an enum) and in the types
                             // its attributes name (`value_type`, `into`).
                             parsed.substitute(&generic_params, &concrete_types);
+                            parsed.substitute_consts(&const_exprs);
 
                             // Remove generics from the definition (it's now concrete)
                             let generics = parsed.generics_mut();
@@ -706,6 +712,10 @@ fn parse_type_impl(
                                 &base,
                                 concrete_types.iter().copied(),
                                 &scoped,
+                            );
+                            super::generic_instances::push_const_segments(
+                                &mut name,
+                                const_exprs.iter().map(|(_, expr)| expr),
                             );
                             // A request-view instantiation differs from the
                             // response one when it names an input type: `.Input`
@@ -973,5 +983,7 @@ fn non_zero_unsigned(format: Option<&str>, maximum: Option<f64>) -> SchemaRef {
 mod tests;
 #[cfg(test)]
 mod tests_arms;
+#[cfg(test)]
+mod tests_const;
 #[cfg(test)]
 mod tests_instances;
