@@ -6,11 +6,14 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.InvalidMediaTypeException;
 import org.springframework.http.MediaType;
+import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.http.server.reactive.ServerHttpRequestDecorator;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
+import java.lang.reflect.Method;
 import java.net.URLEncoder;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -127,7 +130,7 @@ final class ReactiveFormBodySupport {
     static byte[] rejectConsumedMultipart(ServerWebExchange exchange, byte[] body, long contentLength) {
         boolean shortRead = contentLength != 0
                 && (body.length == 0 || (contentLength > 0 && body.length < contentLength));
-        if (!shortRead || !isMultipart(exchange)) {
+        if (!shortRead || !isMultipart(exchange) || framedBodyless(exchange, contentLength)) {
             return body;
         }
         String hint = "{} {}: multipart body was already consumed (exchange.getMultipartData()) before the "
@@ -157,6 +160,47 @@ final class ReactiveFormBodySupport {
     private static boolean isMultipart(ServerWebExchange exchange) {
         String contentType = exchange.getRequest().getHeaders().getFirst(HttpHeaders.CONTENT_TYPE);
         return contentType != null && contentType.strip().regionMatches(true, 0, "multipart/", 0, 10);
+    }
+
+    /**
+     * The WebFlux twin of {@link MultipartBodySupport#framedBodyless}: no
+     * {@code Content-Length} and no {@code Transfer-Encoding} on an HTTP/1.x
+     * request means no body (RFC 9112 6.3), so an empty body is forwarded.
+     * ServerHttpRequest does not expose the protocol, so it is read from the
+     * native request (reactor-netty's {@code version()}, reflectively, so the
+     * bridge keeps no reactor-netty compile dependency); an unknown protocol
+     * keeps the 500, as HTTP/2 does.
+     */
+    private static boolean framedBodyless(ServerWebExchange exchange, long contentLength) {
+        if (contentLength >= 0 || exchange.getRequest().getHeaders().getFirst(HttpHeaders.TRANSFER_ENCODING) != null) {
+            return false;
+        }
+        return reactorHttpVersion(exchange.getRequest()).startsWith("HTTP/1.");
+    }
+
+    /**
+     * The protocol text reactor-netty reports for {@code request} (for example
+     * {@code HTTP/1.1}), or {@code ""} when it cannot be read: the decorators are
+     * unwrapped to the reactor request, whose {@code getNativeRequest()} and the
+     * native {@code version()} are called reflectively.
+     */
+    private static String reactorHttpVersion(ServerHttpRequest request) {
+        try {
+            ServerHttpRequest inner = request;
+            while (inner instanceof ServerHttpRequestDecorator decorator) {
+                inner = decorator.getDelegate();
+            }
+            Object nativeRequest = invokeNoArg(inner, "getNativeRequest");
+            return nativeRequest == null ? "" : String.valueOf(invokeNoArg(nativeRequest, "version"));
+        } catch (ReflectiveOperationException | RuntimeException unknown) {
+            return "";
+        }
+    }
+
+    private static Object invokeNoArg(Object target, String name) throws ReflectiveOperationException {
+        Method method = target.getClass().getMethod(name);
+        method.setAccessible(true);
+        return method.invoke(target);
     }
 
     /** Re-encode {@code form} as an {@code application/x-www-form-urlencoded} body. */

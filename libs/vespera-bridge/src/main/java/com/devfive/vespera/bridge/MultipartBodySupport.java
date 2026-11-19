@@ -56,7 +56,8 @@ final class MultipartBodySupport {
      * {@code Content-Length}).
      */
     static void rejectIfConsumed(HttpServletRequest request, RequestShape shape, byte[] body) {
-        if (shape.definitelyBodyless || shape.contentLength == 0 || !isMultipart(request)) {
+        if (shape.definitelyBodyless || shape.contentLength == 0 || !isMultipart(request)
+                || framedBodyless(request, shape)) {
             return;
         }
         boolean shortRead = body.length == 0
@@ -74,7 +75,7 @@ final class MultipartBodySupport {
      */
     static void rejectIfConsumed(HttpServletRequest request, RequestShape shape, InputStream in) {
         if (shape.definitelyBodyless || shape.contentLength == 0 || !isMultipart(request)
-                || !(in instanceof ServletInputStream servlet)) {
+                || framedBodyless(request, shape) || !(in instanceof ServletInputStream servlet)) {
             return;
         }
         boolean finished;
@@ -87,6 +88,23 @@ final class MultipartBodySupport {
         if (finished) {
             throw consumed(request);
         }
+    }
+
+    /**
+     * A request with neither {@code Content-Length} nor {@code Transfer-Encoding}
+     * has no body under HTTP/1.x framing, for every method (RFC 9112 6.3). An
+     * empty body is then the real one and is forwarded as-is: a body the
+     * container could have consumed must exist first, and the framing rules out
+     * one. Only HTTP/1.x qualifies. HTTP/2 ends a body with END_STREAM, which
+     * looks the same as a stream a container already drained, so that case keeps
+     * the 500.
+     */
+    static boolean framedBodyless(HttpServletRequest request, RequestShape shape) {
+        if (shape.contentLength >= 0 || shape.transferEncodingPresent) {
+            return false;
+        }
+        String protocol = request.getProtocol();
+        return protocol != null && protocol.regionMatches(true, 0, "HTTP/1.", 0, 7);
     }
 
     private static ResponseStatusException consumed(HttpServletRequest request) {

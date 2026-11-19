@@ -223,8 +223,8 @@ public class VesperaBridge {
      * Gracefully shut the Rust runtime down, waiting up to {@code timeout} for
      * in-flight tasks. <strong>Irreversible for the JVM</strong> (a native
      * library cannot be reloaded in-process): later dispatches answer
-     * {@code 503}. Returns {@code false} when not initialised, already shut
-     * down, or the native library predates the hook.
+     * {@code 503}. Returns {@code false} when never loaded, already shut down, or
+     * predating the hook; a failed pending configuration still counts as loaded.
      */
     public static synchronized boolean shutdown(Duration timeout) {
         Objects.requireNonNull(timeout, "timeout");

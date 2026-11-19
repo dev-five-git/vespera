@@ -471,7 +471,8 @@ class VesperaReactiveProxyHandlerTest {
         Result preflight = call(client(handler()).options().uri("/users")
                 .header(HttpHeaders.ORIGIN, "https://a.example")
                 .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, ""));
-        assertNotEquals(500, preflight.status());
+        // The status is the fake Rust response's (responseWire(200, ...)), relayed as is.
+        assertEquals(200, preflight.status());
         assertEquals(1, transport.requests.size(), "answered by the proxy, not an error");
     }
 
@@ -702,8 +703,10 @@ class VesperaReactiveProxyHandlerTest {
         assertEquals("ok", result.body());
         assertEquals(1, transport.futures.size());
         assertEquals(DispatchMode.ASYNC.name(), awaitEvent().mode().name());
-        assertEquals(503, call(client(handler).get().uri("/events")
-                .header(HttpHeaders.ACCEPT, "text/event-stream")).status(), "an explicit stream still 503s");
+        Result explicit = call(client(handler).get().uri("/events")
+                .header(HttpHeaders.ACCEPT, "text/event-stream"));
+        assertEquals(503, explicit.status(), "an explicit stream still 503s");
+        assertEquals(1, transport.requests.size(), "the refused explicit stream never reached Rust");
     }
 
     /**
@@ -726,6 +729,7 @@ class VesperaReactiveProxyHandlerTest {
                     .header(HttpHeaders.ACCEPT, "text/event-stream"));
             assertEquals(503, explicit.status());
             assertTrue(explicit.body().contains(ProxyErrors.STREAMING_SATURATED), explicit.body());
+            assertTrue(transport.requests.isEmpty(), "a refused stream never reached Rust");
             assertEquals(0, streaming.inUse());
             assertEquals(503, awaitEvent().status());
             events.clear();

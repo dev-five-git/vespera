@@ -219,9 +219,26 @@ class NativePlatformTest {
     @CsvSource(
         "linux-arm, linux", "linux-riscv64, linux", "linux-x86-musl, linux", "macos-x86_64, macos",
         "linux-loongarch64, linux", "linux-ppc64, linux", "linux-sparc, linux", "linux-sparcv9, linux",
+        "linux-ppc64le, linux", "linux-s390x, linux", "linux-mips64el, linux", "windows-x86, windows",
     )
     fun acceptsAnyArchTheLoaderLooksUp(key: String, os: String) {
         assertEquals(os, NativePlatform.osOfPlatformKey(key))
+    }
+
+    @ParameterizedTest
+    @CsvSource(
+        "windows-x64, x64", "linux-unknown, unknown", "linux-x86_32, x86_32",
+        "macos-powerpc, powerpc", "linux-foo_bar, foo_bar",
+    )
+    fun rejectsAnArchOutsideTheLoaderAllowlist(key: String, arch: String) {
+        val rejected = assertThrows<IllegalArgumentException> { NativePlatform.osOfPlatformKey(key) }
+        assertTrue(rejected.message!!.startsWith("vespera.targets key '$key'"), rejected.message)
+        assertTrue(rejected.message!!.contains("arch '$arch' is not one the bridge loader looks up"), rejected.message)
+        assertTrue(rejected.message!!.contains("(allowed: aarch64, arm, loongarch64"), rejected.message)
+        val named = assertThrows<IllegalArgumentException> {
+            NativePlatform.osOfPlatformKey(key, "vespera.nativeJarPlatforms entry")
+        }
+        assertTrue(named.message!!.startsWith("vespera.nativeJarPlatforms entry '$key'"), named.message)
     }
 
     @ParameterizedTest

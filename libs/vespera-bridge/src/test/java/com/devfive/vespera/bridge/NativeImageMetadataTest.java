@@ -404,7 +404,9 @@ class NativeImageMetadataTest {
         // the registered `java.*` declaration, so (name, sig) must be
         // registered on some class.
         JsonNode jni = metadata("jni-config.json");
-        for (String[] call : matches(CALL_METHOD, rustSources())) {
+        List<String[]> calls = matches(CALL_METHOD, rustSources());
+        assertFalse(calls.isEmpty(), "found no call_method(..) fallbacks — extraction is stale");
+        for (String[] call : calls) {
             List<String> params = parameterTypes(call[1]);
             boolean registered = false;
             for (JsonNode entry : jni) {
@@ -434,7 +436,9 @@ class NativeImageMetadataTest {
     @Test
     void everyJniClassLiteralIsRegistered() throws IOException {
         JsonNode jni = metadata("jni-config.json");
-        for (String[] literal : matches(CLASS_LITERAL, rustSources())) {
+        List<String[]> literals = matches(CLASS_LITERAL, rustSources());
+        assertFalse(literals.isEmpty(), "found no jni_str!(\"pkg/Class\") literals — extraction is stale");
+        for (String[] literal : literals) {
             String type = binaryName(literal[0]);
             assertNotNull(jniEntry(jni, type), "jni-config.json does not register " + type);
         }

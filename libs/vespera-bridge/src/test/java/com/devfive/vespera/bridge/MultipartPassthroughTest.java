@@ -13,6 +13,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -288,7 +289,76 @@ class MultipartPassthroughTest {
         }
     }
 
+    /**
+     * HTTP/1.1 with neither Content-Length nor Transfer-Encoding: the framing
+     * says the body is empty, so it is forwarded (native call reached, 503 here
+     * because no cdylib is loaded) and never answered as a consumed body.
+     */
+    @ParameterizedTest
+    @EnumSource(value = DispatchMode.class, names = {"SYNC", "DIRECT", "STREAMING", "BIDIRECTIONAL_STREAMING"})
+    void aBodylessHttp1MultipartPostIsForwardedInsteadOfRejectedAsConsumed(DispatchMode mode) throws Exception {
+        Field loaded = VesperaBridge.class.getDeclaredField("loaded");
+        loaded.setAccessible(true);
+        boolean previous = loaded.getBoolean(null);
+        try (ConfigurableApplicationContext ctx = start(RealApp.class)) {
+            loaded.setBoolean(null, true);
+            String raw = rawPost(ctx, "/rust/upload", "x-test-mode", mode.name());
+            assertTrue(raw.startsWith("HTTP/1.1 503 "), raw);
+            assertFalse(raw.contains(MultipartBodySupport.CONSUMED_MSG), raw);
+        } finally {
+            loaded.setBoolean(null, previous);
+        }
+    }
+
+    /** Sends a POST with exactly the given headers (no framing headers unless passed) and returns the raw response. */
+    private static String rawPost(ConfigurableApplicationContext ctx, String path, String... headers)
+            throws IOException {
+        int port = Integer.parseInt(ctx.getEnvironment().getProperty("local.server.port"));
+        StringBuilder head = new StringBuilder("POST ").append(path).append(" HTTP/1.1\r\n")
+                .append("Host: 127.0.0.1\r\n")
+                .append("Content-Type: ").append(CONTENT_TYPE).append("\r\n")
+                .append("Connection: close\r\n");
+        for (int i = 0; i < headers.length; i += 2) {
+            head.append(headers[i]).append(": ").append(headers[i + 1]).append("\r\n");
+        }
+        head.append("\r\n");
+        try (Socket socket = new Socket("127.0.0.1", port)) {
+            socket.setSoTimeout(10_000);
+            socket.getOutputStream().write(head.toString().getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().flush();
+            return new String(socket.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
     // ── unit level ──────────────────────────────────────────────────────
+
+    @Test
+    void aBodylessMultipartRequestIsForwardedOnlyOverHttp1() throws Exception {
+        org.springframework.mock.web.MockHttpServletRequest http1 =
+                new org.springframework.mock.web.MockHttpServletRequest("POST", "/x");
+        http1.setContentType(CONTENT_TYPE);
+        RequestShape shape = RequestShape.capture(http1);
+        assertTrue(MultipartBodySupport.framedBodyless(http1, shape));
+        MultipartBodySupport.rejectIfConsumed(http1, shape, new byte[0]);
+        MultipartBodySupport.rejectIfConsumed(http1, shape, http1.getInputStream());
+
+        org.springframework.mock.web.MockHttpServletRequest chunked =
+                new org.springframework.mock.web.MockHttpServletRequest("POST", "/x");
+        chunked.setContentType(CONTENT_TYPE);
+        chunked.addHeader("Transfer-Encoding", "chunked");
+        org.junit.jupiter.api.Assertions.assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                () -> MultipartBodySupport.rejectIfConsumed(chunked, RequestShape.capture(chunked), new byte[0]));
+
+        // HTTP/2 ends a body with END_STREAM, indistinguishable from a drained stream: keeps the 500.
+        org.springframework.mock.web.MockHttpServletRequest http2 =
+                new org.springframework.mock.web.MockHttpServletRequest("POST", "/x");
+        http2.setProtocol("HTTP/2.0");
+        http2.setContentType(CONTENT_TYPE);
+        RequestShape http2Shape = RequestShape.capture(http2);
+        assertFalse(MultipartBodySupport.framedBodyless(http2, http2Shape));
+        org.junit.jupiter.api.Assertions.assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                () -> MultipartBodySupport.rejectIfConsumed(http2, http2Shape, new byte[0]));
+    }
 
     @Test
     void decoratorDelegatesUnlessTheRequestIsProxied() {

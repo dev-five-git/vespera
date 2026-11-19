@@ -10,6 +10,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.SpringVersion;
 import org.springframework.http.HttpHeaders;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.mock.web.MockServletContext;
@@ -81,6 +82,21 @@ class PreflightRoutingTest {
                 () -> new VesperaPreflightHandlerMapping(proxy, patterns));
         ctx.refresh();
         return MockMvcBuilders.webAppContextSetup(ctx).build();
+    }
+
+    /**
+     * Spring's own status for an unmapped CORS preflight, pinned per Framework
+     * major (6.2 answers 403, 7 answers 200), as the reactive preflight test does.
+     */
+    private static int springUnmappedPreflightStatus() {
+        String version = SpringVersion.getVersion();
+        if (version.startsWith("6.")) {
+            return 403;
+        }
+        if (version.startsWith("7.")) {
+            return 200;
+        }
+        throw new AssertionError("no pinned unmapped preflight status for Spring " + version);
     }
 
     private static MockHttpServletResponse preflight(MockMvc mvc, String path, String origin, String method)
@@ -164,7 +180,11 @@ class PreflightRoutingTest {
     @Test
     void preflightOutsideTheProxiedSpaceIsLeftToSpring() throws Exception {
         MockMvc mvc = mvc(new ProxyPathPatterns(List.of("/api/**"), List.of()));
-        preflight(mvc, "/other", "https://a.example", "GET");
+        MockHttpServletResponse unmapped = preflight(mvc, "/other", "https://a.example", "GET");
+        // Spring answers an unmapped preflight itself (no handler, no CORS config): its status
+        // and no Allow-Origin, never a proxied Rust answer.
+        assertEquals(springUnmappedPreflightStatus(), unmapped.getStatus(), "Spring " + SpringVersion.getVersion());
+        assertNull(unmapped.getHeader(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
         assertTrue(events.isEmpty());
     }
 }
