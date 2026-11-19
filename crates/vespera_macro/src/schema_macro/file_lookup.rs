@@ -4,6 +4,7 @@ mod fk;
 mod lookup;
 
 pub use fk::find_fk_column_from_target_entity;
+pub use lookup::LookupError;
 pub use lookup::is_extern_crate;
 pub use lookup::{
     call_site_definition, call_site_module, collect_rs_files_recursive,

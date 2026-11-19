@@ -231,12 +231,31 @@ fn unraw(ident: &syn::Ident) -> String {
     crate::parser::strip_raw_prefix_owned(ident.to_string())
 }
 
-/// Whether a SQL-default type named `Date`, `Time` or `Uuid` is the chrono /
-/// uuid / SeaORM type the default expression is written for, rather than one
-/// of the source module's own items (`enum Time`): the expression would not
-/// type-check there (R24-SM1-L2). The bare names are judged through the
-/// module's scope; a name the scope cannot pin down (a glob import) is
-/// trusted, as every other default name is.
+/// The SQL-default type names whose default expression is a chrono or uuid
+/// value (see [`sql_function_default_for_type`]); a user type of one of these
+/// names must not get that expression.
+const CHRONO_OR_UUID_DEFAULT_NAMES: &[&str] = &[
+    "DateTimeWithTimeZone",
+    "DateTimeUtc",
+    "DateTimeLocal",
+    "DateTime",
+    "NaiveDateTime",
+    "NaiveDate",
+    "Date",
+    "NaiveTime",
+    "Time",
+    "Uuid",
+];
+
+/// Whether a SQL-default type named like a chrono / uuid type (`Date`,
+/// `DateTime`, `Uuid`, ...) is the chrono / uuid / SeaORM type the default
+/// expression is written for, rather than one of the source module's own
+/// items (`enum Time`): the expression would not type-check there
+/// (R24-SM1-L2, R25-SM1-L2). The path is judged through the module's scope
+/// (R25-SM1-L1: `prelude::Date` after `use sea_orm::prelude;`); a bare name
+/// the scope cannot pin down (a glob or prelude name) is trusted, as every
+/// other default name is. A multi-segment path with an unknown root is
+/// judged by its literal root, as before.
 pub(super) fn default_alias_is_external(type_path: &syn::TypePath, module: &[String]) -> bool {
     let segments: Vec<String> = type_path
         .path
@@ -245,7 +264,7 @@ pub(super) fn default_alias_is_external(type_path: &syn::TypePath, module: &[Str
         .map(|segment| segment.ident.to_string())
         .collect();
     let name = segments.last().cloned().unwrap_or_default();
-    if !matches!(name.as_str(), "Date" | "Time" | "Uuid") {
+    if !CHRONO_OR_UUID_DEFAULT_NAMES.contains(&name.as_str()) {
         return true;
     }
     let external = |path: &[String]| {
@@ -254,11 +273,11 @@ pub(super) fn default_alias_is_external(type_path: &syn::TypePath, module: &[Str
             Some("chrono" | "uuid" | "sea_orm")
         )
     };
-    if segments.len() > 1 {
-        return external(segments.as_slice());
-    }
     match crate::schema_macro::module_scope::resolve_name(&segments, module) {
         crate::schema_macro::module_scope::Resolved::Path(path) => external(&path),
+        crate::schema_macro::module_scope::Resolved::Unknown if segments.len() > 1 => {
+            external(&segments)
+        }
         crate::schema_macro::module_scope::Resolved::Unknown => true,
     }
 }

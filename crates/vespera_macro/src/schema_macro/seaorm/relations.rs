@@ -32,11 +32,16 @@ pub struct RelationFieldInfo {
 }
 
 /// Check if a field in the struct is optional (`Option<T>`). A raw field
-/// (`r#ref`) is named by its column (`ref`).
+/// (`r#ref`) is named by its column (`ref`). A `#[cfg]` twin the static check
+/// removes is not the field: the active one decides (R25-SM4-L2).
 pub fn is_field_optional_in_struct(struct_item: &syn::ItemStruct, field_name: &str) -> bool {
     let field_name = field_name.strip_prefix("r#").unwrap_or(field_name);
     if let syn::Fields::Named(fields_named) = &struct_item.fields {
-        for field in &fields_named.named {
+        let active = fields_named
+            .named
+            .iter()
+            .filter(|field| !crate::schema_macro::cfg_eval::statically_inactive(&field.attrs));
+        for field in active {
             if let Some(ident) = &field.ident
                 && syn::ext::IdentExt::unraw(ident) == field_name
             {
@@ -324,6 +329,20 @@ mod tests {
         let struct_item = make_test_struct("struct Model { id: i32, r#ref: Option<i32> }");
         assert!(is_field_optional_in_struct(&struct_item, "ref"));
         assert!(is_field_optional_in_struct(&struct_item, "r#ref"));
+    }
+
+    /// R25-SM4-L2: the `#[cfg]`-disabled twin of an FK column is not the
+    /// field, so the active twin's optionality (required here) decides.
+    #[test]
+    fn test_is_field_optional_in_struct_ignores_a_disabled_twin() {
+        let struct_item = make_test_struct(
+            "struct Model { #[cfg(any())] user_id: Option<i32>, #[cfg(all())] user_id: i32 }",
+        );
+        assert!(!is_field_optional_in_struct(&struct_item, "user_id"));
+        let struct_item = make_test_struct(
+            "struct Model { #[cfg(all())] user_id: Option<i32>, #[cfg(any())] user_id: i32 }",
+        );
+        assert!(is_field_optional_in_struct(&struct_item, "user_id"));
     }
 
     #[test]

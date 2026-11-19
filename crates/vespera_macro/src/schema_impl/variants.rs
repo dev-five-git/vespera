@@ -106,16 +106,19 @@ pub(super) fn converge(name: &str, metadata: &StructMetadata) -> bool {
 }
 
 /// The variant of `name` defined in `module`, when same-named items of
-/// several modules were registered.
+/// several modules were registered. A variant whose item has left its file
+/// (deleted or moved since it was registered, R25-SM0-L1) is no longer one:
+/// a clean build reports the missing derive for it, so the IDE must too.
 pub fn in_module(name: &str, module: &[String]) -> Option<StructMetadata> {
-    VARIANTS
+    let found = VARIANTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&super::current_crate_key())?
         .get(name)?
         .iter()
         .find(|(defined_in, _)| defined_in == module)
-        .map(|(_, metadata)| metadata.clone())
+        .map(|(_, metadata)| metadata.clone())?;
+    (!super::stale::left_its_file(&found)).then_some(found)
 }
 
 #[cfg(test)]

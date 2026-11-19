@@ -275,11 +275,15 @@ impl HasAttrs for syn::ImplItemFn {
     }
 }
 
-/// The items of the inline module `chain` below `items`.
+/// The items of the inline module `chain` below `items`. A `#[cfg]`-disabled
+/// twin module of the same name is skipped, as the module chain is (R25-SM0-M1):
+/// the struct is resolved in the active twin, so its function must be too.
 fn inline_module_items(items: Vec<syn::Item>, chain: &[String]) -> Option<Vec<syn::Item>> {
     chain.iter().try_fold(items, |items, segment| {
         items.into_iter().find_map(|item| match item {
-            syn::Item::Mod(module) if ident_name(&module.ident) == *segment => {
+            syn::Item::Mod(module)
+                if ident_name(&module.ident) == *segment && !statically_inactive(&module.attrs) =>
+            {
                 module.content.map(|(_, inner)| inner)
             }
             _ => None,
