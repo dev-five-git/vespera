@@ -78,6 +78,10 @@ fn lifecycle_from_lazy_build_to_shutdown() {
     holder.join().unwrap();
 
     assert!(runtime_shut_down());
+    assert!(
+        !runtime_built(),
+        "a shut-down runtime is no longer built (the probe must agree with runtime())"
+    );
     assert!(runtime().is_none());
     assert!(block_on_shared_runtime(async {}).is_none());
     assert!(runtime_unavailable_wire().ends_with(RUNTIME_SHUT_DOWN_MSG.as_bytes()));

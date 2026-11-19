@@ -431,7 +431,7 @@ where
             _ => return None,
         };
         Some(EnvelopeEntry {
-            message: kind.to_string(),
+            message: bounded_message(kind.to_string()),
             path,
         })
     }
@@ -446,6 +446,23 @@ where
 struct EnvelopeEntry {
     message: String,
     path: String,
+}
+
+/// Longest envelope message kept verbatim (in characters).  axum (`Cannot
+/// parse \`<value>\``) and serde (`invalid type: string "<value>"`) echo the
+/// client's value inside the message, so a huge segment would otherwise make
+/// the `422` body arbitrarily large (and past the wire hoist cap).  Multipart
+/// bounds its reflected values the same way (`MAX_REFLECTED_VALUE_CHARS`).
+const MAX_ENVELOPE_MESSAGE_CHARS: usize = 256;
+
+/// `message` cut to [`MAX_ENVELOPE_MESSAGE_CHARS`] characters on a `char`
+/// boundary, with a marker when shortened.  A short message is returned
+/// unchanged.
+fn bounded_message(message: String) -> String {
+    match message.char_indices().nth(MAX_ENVELOPE_MESSAGE_CHARS) {
+        None => message,
+        Some((byte_idx, _)) => format!("{}... (truncated)", &message[..byte_idx]),
+    }
 }
 
 impl Serialize for EnvelopeEntry {
@@ -485,7 +502,10 @@ fn serde_error_entry(error: &dyn std::error::Error, fallback: String) -> Envelop
             }
             path.push_str(field);
         }
-        EnvelopeEntry { message, path }
+        EnvelopeEntry {
+            message: bounded_message(message),
+            path,
+        }
     };
     let mut source = error.source();
     while let Some(current) = source {
@@ -498,7 +518,7 @@ fn serde_error_entry(error: &dyn std::error::Error, fallback: String) -> Envelop
         source = current.source();
     }
     EnvelopeEntry {
-        message: fallback,
+        message: bounded_message(fallback),
         path: String::new(),
     }
 }
@@ -680,5 +700,31 @@ mod tests {
             text.find(r#""message""#) < text.find(r#""path""#),
             "fallback field order drifted: {text}"
         );
+    }
+
+    /// Short messages pass through untouched, up to exactly the bound; one
+    /// character more is cut and marked, on a character boundary.
+    #[test]
+    fn envelope_messages_are_bounded_at_the_character_limit() {
+        let at_limit = "é".repeat(super::MAX_ENVELOPE_MESSAGE_CHARS);
+        assert_eq!(super::bounded_message(at_limit.clone()), at_limit);
+
+        let over = format!("{at_limit}x");
+        let bounded = super::bounded_message(over);
+        assert_eq!(bounded, format!("{at_limit}... (truncated)"));
+    }
+
+    /// A reflected value far past the bound (axum echoes the whole segment)
+    /// is cut, so the envelope message stays small.
+    #[test]
+    fn an_oversized_reflected_value_is_cut_in_the_envelope() {
+        let value = "a".repeat(70_000);
+        let bounded = super::bounded_message(format!("Cannot parse `{value}` to a `u32`"));
+        assert!(
+            bounded.len() < 512,
+            "bounded message is {} bytes",
+            bounded.len()
+        );
+        assert!(bounded.ends_with("... (truncated)"));
     }
 }

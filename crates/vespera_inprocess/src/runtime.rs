@@ -244,11 +244,15 @@ pub fn runtime_shut_down() -> bool {
 }
 
 /// Whether the shared runtime is built right now.  A probe for tests that
-/// pin laziness; it never builds the runtime itself.
+/// pin laziness; it never builds the runtime itself.  `false` again once
+/// [`shutdown_runtime`] has taken the runtime out to stop it.
 #[doc(hidden)]
 #[must_use]
 pub fn runtime_built() -> bool {
-    matches!(RUNTIME.get(), Some(Some(_)))
+    RUNTIME
+        .get()
+        .and_then(Option::as_ref)
+        .is_some_and(|shared| shared.runtime.lock().is_ok_and(|runtime| runtime.is_some()))
 }
 
 /// Wire response for a dispatch that found no runtime: `503` after

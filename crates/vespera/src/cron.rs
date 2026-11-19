@@ -163,31 +163,49 @@ pub fn start_once(guard: &'static Once, jobs: impl IntoIterator<Item = CronJob>)
 /// segment of `module_path`, the `module_path!()` of the `vespera!` call
 /// site) plus its [`CronJob::with_name`] name (`module::function`); a job
 /// already started by another invocation of the same crate is skipped.
+///
+/// A job is claimed only while its start succeeds: when no scheduler thread
+/// can be spawned the claims are released, so a later call retries them.
+/// The `guard` is no longer the dedup mechanism (the per-job claims are), so
+/// it is accepted for the generated code's `static` but not used.
 #[doc(hidden)]
 pub fn start_once_for_crate(
-    guard: &'static Once,
+    _guard: &'static Once,
     module_path: &'static str,
     jobs: impl IntoIterator<Item = CronJob>,
 ) {
-    guard.call_once(|| {
-        let krate = module_path.split("::").next().unwrap_or(module_path);
-        start_jobs(claim_jobs(&STARTED_JOBS, krate, jobs.into_iter().collect()));
-    });
+    let krate = module_path.split("::").next().unwrap_or(module_path);
+    start_crate_jobs(&STARTED_JOBS, krate, jobs.into_iter().collect(), start_jobs);
 }
 
 /// `(crate, job name)` of every job [`start_once_for_crate`] started.
 static STARTED_JOBS: Mutex<BTreeSet<(&'static str, &'static str)>> = Mutex::new(BTreeSet::new());
 
-/// The `jobs` of `krate` not yet recorded in `started`, recording them.
-fn claim_jobs(
+/// Claims the `jobs` of `krate` not yet recorded in `started` and starts them
+/// through `start`.  The lock is held across `start`, so a concurrent call
+/// cannot skip jobs that are still being started.  When `start` reports
+/// failure the new claims are released, so a later call retries them.
+fn start_crate_jobs(
     started: &Mutex<BTreeSet<(&'static str, &'static str)>>,
     krate: &'static str,
     jobs: Vec<CronJob>,
-) -> Vec<CronJob> {
+    start: impl FnOnce(Vec<CronJob>) -> bool,
+) {
     let mut started = started.lock().unwrap_or_else(PoisonError::into_inner);
-    jobs.into_iter()
+    let claimed: Vec<CronJob> = jobs
+        .into_iter()
         .filter(|job| started.insert((krate, job.name)))
-        .collect()
+        .collect();
+    if claimed.is_empty() {
+        return;
+    }
+    let names: Vec<(&'static str, &'static str)> =
+        claimed.iter().map(|job| (krate, job.name)).collect();
+    if !start(claimed) {
+        for name in &names {
+            started.remove(name);
+        }
+    }
 }
 
 /// Spawn one scheduling task per job.
@@ -205,13 +223,14 @@ pub fn start(jobs: impl IntoIterator<Item = CronJob>) {
 }
 
 /// The non-generic body of [`start`]: one copy of the code (and of its
-/// coverage counters) however many iterator types call it.
-fn start_jobs(jobs: Vec<CronJob>) {
+/// coverage counters) however many iterator types call it.  `false` only
+/// when the dedicated scheduler thread could not be spawned.
+fn start_jobs(jobs: Vec<CronJob>) -> bool {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         for job in jobs {
             handle.spawn(run_job(job, &CONTROLLER));
         }
-        return;
+        return true;
     }
     #[cfg(any(feature = "jni", feature = "ffi"))]
     if vespera_inprocess::runtime::host_loaded() {
@@ -220,9 +239,9 @@ fn start_jobs(jobs: Vec<CronJob>) {
                 handle.spawn(run_job(job, &CONTROLLER));
             }
         }));
-        return;
+        return true;
     }
-    spawn_scheduler_thread(jobs);
+    spawn_scheduler_thread(jobs, spawn_os_thread)
 }
 
 /// Stop scheduling new cron runs, process-wide and for good.
@@ -425,15 +444,27 @@ fn panic_message(payload: &(dyn Any + Send)) -> &str {
 }
 
 /// Run `jobs` on a detached background thread that owns a current-thread
-/// runtime for the rest of the process.
-fn spawn_scheduler_thread(jobs: Vec<CronJob>) {
+/// runtime for the rest of the process.  `spawn` starts the thread (the OS
+/// thread in production); `false` when it could not be started.
+fn spawn_scheduler_thread(
+    jobs: Vec<CronJob>,
+    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
+) -> bool {
+    match spawn(Box::new(move || run_scheduler_thread(jobs))) {
+        Ok(()) => true,
+        Err(error) => {
+            cron_diag!(error, "failed to start the cron scheduler thread: {error}");
+            false
+        }
+    }
+}
+
+/// The production spawner: a named OS thread.
+fn spawn_os_thread(run: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
     std::thread::Builder::new()
         .name("vespera-cron".to_owned())
-        .spawn(move || run_scheduler_thread(jobs))
-        .map_or_else(
-            |error| cron_diag!(error, "failed to start the cron scheduler thread: {error}"),
-            drop,
-        );
+        .spawn(run)
+        .map(drop)
 }
 
 fn run_scheduler_thread(jobs: Vec<CronJob>) {

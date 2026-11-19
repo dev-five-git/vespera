@@ -287,10 +287,10 @@ impl TypedMultipartError {
     /// identical to `Validated<T>`'s envelope so JNI hoisting and clients
     /// treat both uniformly.
     ///
-    /// The message streams through [`MultipartMessage`]: `Other` (the only
-    /// `500`, whose source can leak temp-file paths / OS text) yields a stable
-    /// generic string; every other (client-caused) variant streams its own
-    /// `Display` with NO intermediate `String`. `path` is the offending field
+    /// The message streams through [`MultipartMessage`]: `Other` (whose source
+    /// can leak temp-file paths / OS text) yields a stable generic string;
+    /// every other variant streams its own `Display` with NO intermediate
+    /// `String`. `path` is the offending field
     /// name when known, else empty. Infallible in practice; the fallback keeps
     /// this request-time path panic-free instead of unwinding in a handler.
     ///
@@ -311,9 +311,10 @@ impl TypedMultipartError {
     }
 }
 
-/// Stable, source-free public message for the only `500` variant (`Other`),
-/// whose wrapped `source` can leak temp-file paths / OS error text. Every
-/// other variant is client-caused and safe to expose verbatim.
+/// Stable, source-free public message for `Other`, whose wrapped `source` can
+/// leak temp-file paths / OS error text. Every other variant's `Display` is
+/// safe to expose verbatim: the `InvalidRequestBody` sources are generic
+/// (axum's `MultipartError` text never carries the body's contents).
 const MULTIPART_INTERNAL_ERROR_MSG: &str = "internal error while processing multipart request";
 
 /// Streams a multipart error's public message straight into the serializer
@@ -360,6 +361,9 @@ impl IntoResponse for TypedMultipartError {
             // limit), an unsupported media type as `415`, etc. — instead of
             // collapsing every transport-level failure to a generic `400`.
             Self::InvalidRequest { source } => source.status(),
+            // axum maps a non-limit body read failure (`StreamReadFailed`, e.g.
+            // a client that aborted the upload) to `500` too; it is reported as
+            // axum's status rather than rewritten here.
             Self::InvalidRequestBody { source } => source.status(),
             Self::MissingField { .. }
             | Self::DuplicateField { .. }

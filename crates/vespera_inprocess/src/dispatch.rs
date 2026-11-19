@@ -692,12 +692,14 @@ async fn dispatch_into_borrowed_inner(input: &[u8], out: &mut [u8]) -> DirectWri
 /// [`PendingDirectResponse::stream`](crate::PendingDirectResponse::stream)
 /// without re-running the handler.
 ///
-/// Nothing past `out` is drained: the response body stops being read the
-/// moment a frame does not fit (or up front, when its exact size hint
-/// already exceeds `out`), so an unbounded body never blocks or buffers
-/// here.  A `text/event-stream` response is returned pending immediately
+/// Past the `out` check nothing is drained: the response body stops being
+/// read the moment a frame does not fit (or up front, when its exact size
+/// hint already exceeds `out`), so an unbounded body never blocks or buffers
+/// here.  The one exception is a non-event-stream `422`, which first reads up
+/// to the 64 KiB hoist bound (`validation_errors` hoisting) before `out` is
+/// checked.  A `text/event-stream` response is returned pending immediately
 /// ([`PendingDirectResponse::prefers_streaming`](crate::PendingDirectResponse::prefers_streaming))
-/// because it may never end.  A configured [`crate::dispatch_timeout`]
+/// because it may never end, and skips that prefetch.  A configured [`crate::dispatch_timeout`]
 /// bounds the call (expiry → `504` wire, written into `out`).  The body
 /// bytes this call and [`PendingDirectResponse::write_into`](crate::PendingDirectResponse::write_into)
 /// write are held to [`crate::max_buffered_response_bytes`] like the

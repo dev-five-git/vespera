@@ -449,7 +449,12 @@ fn dispatch_full_streaming_with_header_body(env: &mut jni::Env<'_>, args: &FullH
     // array in flight, so the pull lease is only reused once it is dropped.
     let (pull, pull_token) = track_pull(make_pull_closure(pull_jvm, pull_global, pull_buf));
     let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut push = make_push_closure(push_jvm, push_global, push_buf);
+        let mut push = make_push_closure(
+            push_jvm,
+            push_global,
+            push_buf,
+            Arc::new(AtomicBool::new(false)),
+        );
         runtime.block_on(
             vespera_inprocess::dispatch_bidirectional_streaming_with_header_closing(
                 header_input,
@@ -543,7 +548,12 @@ fn dispatch_streaming_with_header_body(env: &mut jni::Env<'_>, args: &StreamHead
     let flags_for_push = Arc::clone(args.flags);
     let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let jvm_for_cb = jvm.clone();
-        let mut push = make_push_closure(jvm, stream_global, push_buf);
+        let mut push = make_push_closure(
+            jvm,
+            stream_global,
+            push_buf,
+            Arc::new(AtomicBool::new(false)),
+        );
         runtime.block_on(vespera_inprocess::dispatch_streaming_with_header_async(
             input,
             make_header_callback(jvm_for_cb, header_global, flags_for_cb),
@@ -696,7 +706,12 @@ fn stream_stashed_body(env: &mut jni::Env<'_>, args: &StashStreamArgs<'_, '_>) {
     let flags_for_push = Arc::clone(args.flags);
     let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let jvm_for_cb = jvm.clone();
-        let mut push = make_push_closure(jvm, stream_global, push_buf);
+        let mut push = make_push_closure(
+            jvm,
+            stream_global,
+            push_buf,
+            Arc::new(AtomicBool::new(false)),
+        );
         runtime.block_on(pending.stream(
             make_header_callback(jvm_for_cb, header_global, flags_for_cb),
             move |chunk: &[u8]| push_unless_header_failed(&flags_for_push.failed, &mut push, chunk),

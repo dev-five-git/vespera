@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use jni::EnvUnowned;
 use jni::errors::ThrowRuntimeExAndDefault;
@@ -358,10 +359,11 @@ where
 /// (`dispatchStreaming`, `dispatchFullStreaming`), which return the response
 /// header only after the body went to the Java `OutputStream`.
 ///
-/// `body` flips the `delivered` flag it is handed as soon as a response body
-/// byte was handed to Java.  A panic before that is a clean `500` panic wire
-/// (nothing was written); a panic after it would put a `500` header behind a
-/// partially written body, so it throws the documented
+/// `body` is handed the `delivered` flag and passes it to
+/// [`make_push_closure`], which sets it as soon as the Java stream accepts
+/// any segment of a response body chunk.  A panic before that is a clean
+/// `500` panic wire (nothing was written); a panic after it would put a
+/// `500` header behind a partially written body, so it throws the documented
 /// [`VesperaStreamAbortedException`](support::AbortReason::Panicked)
 /// (`IOException`, `panicked()`) instead — the same "mid-body failure →
 /// `IOException`" contract as a body error or a failed write.
@@ -370,17 +372,15 @@ fn catch_streaming_byte_array<'local, F>(
     body: F,
 ) -> jni::errors::Result<JObject<'local>>
 where
-    F: FnOnce(
-        &mut jni::Env<'local>,
-        &std::cell::Cell<bool>,
-    ) -> jni::errors::Result<JObject<'local>>,
+    F: FnOnce(&mut jni::Env<'local>, Arc<AtomicBool>) -> jni::errors::Result<JObject<'local>>,
 {
-    let delivered = std::cell::Cell::new(false);
-    let panic_result =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(env, &delivered)));
+    let delivered = Arc::new(AtomicBool::new(false));
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        body(env, Arc::clone(&delivered))
+    }));
     match panic_result {
         Ok(response) => response,
-        Err(_) if delivered.get() => {
+        Err(_) if delivered.load(Ordering::Acquire) => {
             throw_streaming_abort(env, AbortReason::Panicked);
             Ok(JObject::null())
         }
@@ -388,23 +388,10 @@ where
     }
 }
 
-/// Latch `delivered` once the sink accepted a chunk.  A chunk the Java
-/// stream refused reached nothing, so it does not count as delivered: a
-/// failure before any byte is a clean error response, not an abort.
-fn record_delivery(
-    delivered: &std::cell::Cell<bool>,
-    flow: std::ops::ControlFlow<()>,
-) -> std::ops::ControlFlow<()> {
-    if flow.is_continue() {
-        delivered.set(true);
-    }
-    flow
-}
-
 /// Whether a dispatch that ended `outcome` must throw
 /// `VesperaStreamAbortedException`: only a truncation after at least one
-/// delivered chunk.  Otherwise the header (an error wire when truncated)
-/// is returned.
+/// byte reached Java (`delivered`).  Otherwise the header (an error wire
+/// when truncated) is returned.
 fn stream_aborts(outcome: vespera_inprocess::StreamOutcome, delivered: bool) -> bool {
     outcome.is_truncated() && delivered
 }
@@ -527,14 +514,11 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                     return streaming_setup_failed_array(env);
                 };
 
-                let mut push = make_push_closure(jvm, stream_global, push_buf);
+                let push = make_push_closure(jvm, stream_global, push_buf, delivered.clone());
                 let dispatched = block_on_shared_runtime(
-                    vespera_inprocess::dispatch_streaming_with_outcome_async(
-                        input,
-                        // This variant emits no flush hints: every call
-                        // carries body bytes.
-                        |chunk: &[u8]| record_delivery(delivered, push(chunk)),
-                    ),
+                    // This variant emits no flush hints: every call
+                    // carries body bytes.
+                    vespera_inprocess::dispatch_streaming_with_outcome_async(input, push),
                 );
                 mark_streaming_buffer_reusable(push_buf_lease);
                 match dispatched {
@@ -542,7 +526,9 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                     // The header is the `5xx` error wire when the stream was
                     // truncated, so a truncation before any byte reached Java
                     // returns it like every other pre-stream failure.
-                    Some((_, outcome)) if stream_aborts(outcome, delivered.get()) => {
+                    Some((_, outcome))
+                        if stream_aborts(outcome, delivered.load(Ordering::Acquire)) =>
+                    {
                         throw_streaming_abort(env, AbortReason::BodyAborted);
                         Ok(JObject::null())
                     }
@@ -651,7 +637,8 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                 // flight and its lease must not be reused.
                 let (pull, pull_token) =
                     track_pull(make_pull_closure(pull_jvm, pull_global, pull_buf));
-                let mut push = make_push_closure(push_jvm, push_global, push_buf);
+                let mut push =
+                    make_push_closure(push_jvm, push_global, push_buf, delivered.clone());
                 let mut captured_header: Vec<u8> = Vec::new();
                 let outcome = block_on_shared_runtime(
                     vespera_inprocess::dispatch_bidirectional_streaming_with_header_closing(
@@ -669,7 +656,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                             if chunk.is_empty() {
                                 return std::ops::ControlFlow::Continue(());
                             }
-                            record_delivery(delivered, push(chunk))
+                            push(chunk)
                         },
                         |h: &[u8]| captured_header.extend_from_slice(h),
                         // Close the InputStream once the response is fully
@@ -692,7 +679,9 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                     }
                     // Failed before any response byte reached Java: a clean
                     // error response is still possible.
-                    Some(failed) if !delivered.get() => wire_byte_array(env, &failed.error_wire()),
+                    Some(failed) if !delivered.load(Ordering::Acquire) => {
+                        wire_byte_array(env, &failed.error_wire())
+                    }
                     Some(_) => {
                         throw_streaming_abort(env, AbortReason::BodyAborted);
                         Ok(JObject::null())
