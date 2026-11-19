@@ -311,9 +311,9 @@ fn parse_type_impl(
                             )
                         {
                             return SchemaRef::Inline(Box::new(match target {
-                                EntityTarget::Component(name) => Schema::nullable_reference(
-                                    format!("#/components/schemas/{name}"),
-                                ),
+                                EntityTarget::Component(name) => {
+                                    Schema::nullable_reference(Reference::schema(&name).ref_path)
+                                }
                                 EntityTarget::Unknown => Schema::default(),
                             }));
                         }
@@ -336,9 +336,9 @@ fn parse_type_impl(
                         // Fallback: array of generic objects (any items for an
                         // entity without a known component).
                         let items = match target {
-                            Some(EntityTarget::Component(name)) => SchemaRef::Ref(Reference::new(
-                                format!("#/components/schemas/{name}"),
-                            )),
+                            Some(EntityTarget::Component(name)) => {
+                                SchemaRef::Ref(Reference::schema(&name))
+                            }
                             Some(EntityTarget::Unknown) => SchemaRef::Inline(Box::default()),
                             None => SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object))),
                         };
@@ -605,7 +605,7 @@ fn parse_type_impl(
 
                 if let Some((schema_name, nullable)) = ref_override {
                     return SchemaRef::Inline(Box::new(Schema {
-                        ref_path: Some(format!("#/components/schemas/{schema_name}")),
+                        ref_path: Some(Reference::schema(&schema_name).ref_path),
                         schema_type: None,
                         nullable: nullable.then_some(true),
                         ..Schema::new(SchemaType::Object)

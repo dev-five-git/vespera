@@ -7,7 +7,10 @@ mod serde_impls;
 pub use components::{
     Components, OAuthFlow, OAuthFlows, SecurityRequirement, SecurityScheme, SecuritySchemeType,
 };
-pub use schema_ref::{AdditionalProperties, Reference, SchemaRef};
+pub use schema_ref::{
+    AdditionalProperties, Reference, SchemaRef, escape_schema_name, schema_name_of_ref,
+    unescape_schema_name,
+};
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

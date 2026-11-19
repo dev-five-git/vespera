@@ -426,6 +426,107 @@ pub struct Reference {
     pub ref_path: String,
 }
 
+/// Prefix of a component schema `$ref` (`#/components/schemas/<name>`).
+const SCHEMA_REF_PREFIX: &str = "#/components/schemas/";
+
+const HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+
+/// Encode a component name as the segment that follows
+/// `#/components/schemas/` in a `$ref`.
+///
+/// The name is a JSON Pointer token (`~` becomes `~0`, `/` becomes `~1`)
+/// and every byte outside the RFC 3986 unreserved set is then
+/// percent-encoded, so a name such as `Pet/Dog` or `My Dto` yields a
+/// `$ref` that resolves to the component stored under that name.
+#[must_use]
+pub fn escape_schema_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for byte in name.bytes() {
+        match byte {
+            b'~' => out.push_str("~0"),
+            b'/' => out.push_str("~1"),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' => {
+                out.push(char::from(byte));
+            }
+            _ => {
+                out.push('%');
+                out.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+                out.push(char::from(HEX_DIGITS[usize::from(byte & 0x0F)]));
+            }
+        }
+    }
+    out
+}
+
+/// Inverse of [`escape_schema_name`]: percent-decode, then undo the JSON
+/// Pointer escaping. Input that was not produced by it (a `%` not followed
+/// by two hex digits, a lone `~`) is kept as written.
+#[must_use]
+pub fn unescape_schema_name(segment: &str) -> String {
+    let percent_decoded = percent_decode(segment.as_bytes());
+    let mut out = Vec::with_capacity(percent_decoded.len());
+    let mut rest = percent_decoded.as_slice();
+    while let Some((&byte, tail)) = rest.split_first() {
+        rest = match (byte, tail.first()) {
+            (b'~', Some(b'1')) => {
+                out.push(b'/');
+                &tail[1..]
+            }
+            (b'~', Some(b'0')) => {
+                out.push(b'~');
+                &tail[1..]
+            }
+            _ => {
+                out.push(byte);
+                tail
+            }
+        };
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Percent-decode `bytes`; a `%` not followed by two hex digits stays as is.
+fn percent_decode(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut rest = bytes;
+    while let Some((&byte, tail)) = rest.split_first() {
+        rest = if let (b'%', Some(value)) = (byte, hex_pair(tail)) {
+            out.push(value);
+            &tail[2..]
+        } else {
+            out.push(byte);
+            tail
+        };
+    }
+    out
+}
+
+/// The byte two leading ASCII hex digits of `bytes` encode.
+fn hex_pair(bytes: &[u8]) -> Option<u8> {
+    match bytes {
+        [high, low, ..] => Some((hex_value(*high)? << 4) | hex_value(*low)?),
+        _ => None,
+    }
+}
+
+const fn hex_value(digit: u8) -> Option<u8> {
+    match digit {
+        b'0'..=b'9' => Some(digit - b'0'),
+        b'a'..=b'f' => Some(digit - b'a' + 10),
+        b'A'..=b'F' => Some(digit - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// The component name a `$ref` points at, when `ref_path` is a
+/// `#/components/schemas/` reference (decoded with [`unescape_schema_name`]).
+#[must_use]
+pub fn schema_name_of_ref(ref_path: &str) -> Option<String> {
+    ref_path
+        .strip_prefix(SCHEMA_REF_PREFIX)
+        .map(unescape_schema_name)
+}
+
 impl Reference {
     /// Create a new reference
     #[must_use]
@@ -433,15 +534,15 @@ impl Reference {
         Self { ref_path }
     }
 
-    /// Create a component schema reference
+    /// Create a component schema reference. The name is escaped with
+    /// [`escape_schema_name`], so it always resolves to the component of
+    /// that exact name.
     #[must_use]
     pub fn schema(name: &str) -> Self {
-        // Build with an exact-capacity push instead of `format!` — same
-        // string, no formatting machinery and no reallocation.
-        const PREFIX: &str = "#/components/schemas/";
-        let mut ref_path = String::with_capacity(PREFIX.len() + name.len());
-        ref_path.push_str(PREFIX);
-        ref_path.push_str(name);
+        let escaped = escape_schema_name(name);
+        let mut ref_path = String::with_capacity(SCHEMA_REF_PREFIX.len() + escaped.len());
+        ref_path.push_str(SCHEMA_REF_PREFIX);
+        ref_path.push_str(&escaped);
         Self::new(ref_path)
     }
 }
@@ -607,5 +708,63 @@ mod tests {
             }
             SchemaRef::Ref(_) => panic!("an object with inline fields must deserialize inline"),
         }
+    }
+}
+
+#[cfg(test)]
+mod escape_tests {
+    use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case::plain("User", "User")]
+    #[case::dotted_and_dashed("Tree_i32.Input-v2", "Tree_i32.Input-v2")]
+    #[case::slash("Pet/Dog", "Pet~1Dog")]
+    #[case::tilde("A~B", "A~0B")]
+    #[case::tilde_then_one("a~1b", "a~01b")]
+    #[case::space("My Dto", "My%20Dto")]
+    #[case::percent("50%", "50%25")]
+    #[case::non_ascii("사용자", "%EC%82%AC%EC%9A%A9%EC%9E%90")]
+    fn escape_applies_pointer_then_percent_encoding(#[case] name: &str, #[case] escaped: &str) {
+        assert_eq!(escape_schema_name(name), escaped);
+        assert_eq!(unescape_schema_name(escaped), name);
+    }
+
+    #[rstest]
+    #[case::hex_lower("a%2fb", "a/b")]
+    #[case::bad_hex("100%zz", "100%zz")]
+    #[case::sign_is_not_hex("%+1", "%+1")]
+    #[case::truncated_percent("end%2", "end%2")]
+    #[case::lone_tilde("x~y", "x~y")]
+    #[case::trailing_tilde("end~", "end~")]
+    #[case::invalid_utf8_is_lossy("%FF", "\u{FFFD}")]
+    fn unescape_keeps_input_that_is_not_an_escape(#[case] segment: &str, #[case] name: &str) {
+        assert_eq!(unescape_schema_name(segment), name);
+    }
+
+    #[test]
+    fn schema_reference_escapes_the_component_name() {
+        assert_eq!(
+            Reference::schema("Pet/Dog").ref_path,
+            "#/components/schemas/Pet~1Dog"
+        );
+        assert_eq!(
+            Reference::schema("My Dto").ref_path,
+            "#/components/schemas/My%20Dto"
+        );
+        assert_eq!(
+            Reference::schema("User").ref_path,
+            "#/components/schemas/User"
+        );
+    }
+
+    #[test]
+    fn schema_name_of_ref_round_trips_the_escaped_name() {
+        let reference = Reference::schema("Pet/Dog~v2");
+        assert_eq!(
+            schema_name_of_ref(&reference.ref_path).as_deref(),
+            Some("Pet/Dog~v2")
+        );
+        assert_eq!(schema_name_of_ref("#/components/pathItems/Pet"), None);
     }
 }

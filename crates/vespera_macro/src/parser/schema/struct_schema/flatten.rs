@@ -489,10 +489,10 @@ pub(in crate::parser::schema) fn resolve_reference(
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Option<Schema> {
-    let name = reference.ref_path.strip_prefix("#/components/schemas/")?;
-    let source = request_view::component_of_input(name).unwrap_or_else(|| name.to_string());
+    let name = vespera_core::schema::schema_name_of_ref(&reference.ref_path)?;
+    let source = request_view::component_of_input(&name).unwrap_or_else(|| name.clone());
     resolve_name(&source, known_schemas, struct_definitions)
-        .or_else(|| generic_instances::materialized(name))
+        .or_else(|| generic_instances::materialized(&name))
 }
 
 /// Merge `parts` into `target`; `optional` parts (a flattened `Option`)
