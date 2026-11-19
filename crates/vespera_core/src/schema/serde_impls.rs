@@ -153,57 +153,54 @@ fn parse_type_name(value: &str) -> Option<SchemaType> {
 /// "did not match any variant").
 struct SchemaTypeName(SchemaType);
 
+struct NameVisitor;
+
+impl serde::de::Visitor<'_> for NameVisitor {
+    type Value = SchemaTypeName;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a JSON Schema type name")
+    }
+
+    fn visit_str<E: DeError>(self, value: &str) -> Result<Self::Value, E> {
+        parse_type_name(value)
+            .map(SchemaTypeName)
+            .ok_or_else(|| E::invalid_value(serde::de::Unexpected::Str(value), &self))
+    }
+}
+
 impl<'de> Deserialize<'de> for SchemaTypeName {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct NameVisitor;
-
-        impl serde::de::Visitor<'_> for NameVisitor {
-            type Value = SchemaTypeName;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a JSON Schema type name")
-            }
-
-            fn visit_str<E: DeError>(self, value: &str) -> Result<Self::Value, E> {
-                parse_type_name(value)
-                    .map(SchemaTypeName)
-                    .ok_or_else(|| E::invalid_value(serde::de::Unexpected::Str(value), &self))
-            }
-        }
-
         deserializer.deserialize_any(NameVisitor)
+    }
+}
+
+struct WireVisitor;
+
+impl<'de> serde::de::Visitor<'de> for WireVisitor {
+    type Value = SchemaTypeWire;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a JSON Schema type name or an array of type names")
+    }
+
+    fn visit_str<E: DeError>(self, value: &str) -> Result<Self::Value, E> {
+        parse_type_name(value)
+            .map(SchemaTypeWire::Single)
+            .ok_or_else(|| E::invalid_value(serde::de::Unexpected::Str(value), &self))
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut types = Vec::new();
+        while let Some(name) = seq.next_element::<SchemaTypeName>()? {
+            types.push(name.0);
+        }
+        Ok(SchemaTypeWire::Multiple(types))
     }
 }
 
 impl<'de> Deserialize<'de> for SchemaTypeWire {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct WireVisitor;
-
-        impl<'de> serde::de::Visitor<'de> for WireVisitor {
-            type Value = SchemaTypeWire;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a JSON Schema type name or an array of type names")
-            }
-
-            fn visit_str<E: DeError>(self, value: &str) -> Result<Self::Value, E> {
-                parse_type_name(value)
-                    .map(SchemaTypeWire::Single)
-                    .ok_or_else(|| E::invalid_value(serde::de::Unexpected::Str(value), &self))
-            }
-
-            fn visit_seq<A: serde::de::SeqAccess<'de>>(
-                self,
-                mut seq: A,
-            ) -> Result<Self::Value, A::Error> {
-                let mut types = Vec::new();
-                while let Some(name) = seq.next_element::<SchemaTypeName>()? {
-                    types.push(name.0);
-                }
-                Ok(SchemaTypeWire::Multiple(types))
-            }
-        }
-
         deserializer.deserialize_any(WireVisitor)
     }
 }
