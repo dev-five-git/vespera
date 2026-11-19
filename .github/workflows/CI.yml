@@ -284,7 +284,7 @@ jobs:
         with:
           min-wrapper-count: 3
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -441,7 +441,7 @@ jobs:
           cargo fmt
           cargo tarpaulin --out Lcov Stdout --engine llvm --fail-under 100
       - name: Upload to codecov.io
-        uses: codecov/codecov-action@f9fe539f5290016afa014f8ef31597d3a61c2dea # v7
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           # The 100% gate above is the coverage check; a Codecov outage must
@@ -599,7 +599,7 @@ jobs:
       - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
           min-wrapper-count: 3
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -861,7 +861,7 @@ jobs:
       - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
           min-wrapper-count: 3
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: 'temurin'
           # JDK 17 is always installed for the bridge/plugin Gradle
