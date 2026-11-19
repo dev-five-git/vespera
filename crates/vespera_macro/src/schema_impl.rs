@@ -96,6 +96,11 @@ fn with_current_crate_bucket<R>(f: impl FnOnce(&mut HashMap<String, StructMetada
 /// caller can raise a spanned compile error. Re-registration from the same
 /// source identity replaces the previous metadata, which keeps long-lived
 /// proc-macro servers correct across IDE edits.
+///
+/// Accepted without an error even though the item differs (R28-SM0-L2): an
+/// identical definition (same-named items of different modules, kept as
+/// variants, see `variants`), and a stored item that moved within its file or
+/// left it (an IDE rename / move). The stored item is then replaced.
 pub fn register_schema(name: String, metadata: StructMetadata) -> Result<(), ()> {
     stale::record(metadata.source_identity.as_deref());
     with_current_crate_bucket(|bucket| {
@@ -383,13 +388,35 @@ pub fn named_type_metadata(name: &str, ident: &syn::Ident, definition: String) -
         .fold(metadata, StructMetadata::with_source_identity)
 }
 
-/// Overwrite-insert a schema for the current crate — the
-/// `schema_type!(.., ignore)` pre-registration path, which has no
-/// duplicate-name semantics.
-pub fn insert_schema(name: String, metadata: StructMetadata) {
-    with_current_crate_bucket(|bucket| {
-        bucket.insert(name, metadata);
-    });
+/// The spanned `compile_error!` for a conflicting `Schema` name. The
+/// `#[derive(Schema)]` and the `schema_type!(.., ignore)` pre-registration
+/// share it, so either expansion order reports the same error.
+#[must_use]
+pub fn duplicate_name_error(name: &str, span: proc_macro2::Span) -> syn::Error {
+    syn::Error::new(
+        span,
+        format!(
+            "duplicate vespera Schema name `{name}` -- two different struct \
+             definitions both register under the same OpenAPI schema name. \
+             The later definition would silently overwrite the earlier one \
+             in the generated `openapi.json`. Rename one of the structs, or \
+             annotate one with `#[schema(name = \"OtherName\")]` to give \
+             them distinct OpenAPI names."
+        ),
+    )
+}
+
+/// Register the `schema_type!(.., ignore)` pre-registration (R28-MR2-1). The
+/// emitted struct carries no `#[derive(Schema)]`, so this is its only
+/// registration, and it follows the derive's duplicate-name rule: a different
+/// definition already under the name is a [`duplicate_name_error`], an
+/// identical one stays a no-op.
+pub fn register_ignored_schema(
+    metadata: StructMetadata,
+    span: proc_macro2::Span,
+) -> syn::Result<()> {
+    let name = metadata.name.clone();
+    register_schema(name.clone(), metadata).map_err(|()| duplicate_name_error(&name, span))
 }
 
 /// Snapshot of the current crate's registered schemas — a cheap `Arc` clone of
@@ -839,6 +866,9 @@ mod tests;
 
 #[cfg(test)]
 mod tests_identity;
+
+#[cfg(test)]
+mod tests_ignored;
 
 #[cfg(test)]
 mod tests_wire_override;

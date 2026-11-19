@@ -358,6 +358,15 @@ pub(super) fn remove_current_crate_schema(key: &str) {
     }
 }
 
+/// Overwrite-insert a schema for the current crate: the unconditional
+/// storage write the duplicate-name rule is tested against (no production
+/// caller; `register_schema` is the production path).
+fn insert_schema(name: String, metadata: StructMetadata) {
+    with_current_crate_bucket(|bucket| {
+        bucket.insert(name, metadata);
+    });
+}
+
 #[test]
 fn test_schema_storage_insert_and_get() {
     let key = "__test_coverage_type__".to_string();

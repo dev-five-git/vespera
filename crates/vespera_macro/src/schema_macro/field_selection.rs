@@ -2,11 +2,16 @@
 //! `schema_type!` so both macros read a name the same way.
 //!
 //! A name selects the field whose Rust identifier it is; `#[cfg]` twins share
-//! one identifier and are selected together. Only when no field of the source
-//! has that identifier does the name select the fields whose serde JSON name
-//! it is: the serialize-side name the generated schema documents. A field a
-//! statically false `#[cfg]` removes is no candidate, and a JSON name shared
-//! by fields with different Rust identifiers is ambiguous (refused).
+//! one identifier and are selected together. Only when no serialized field
+//! (one not `#[serde(skip)]` / `skip_serializing`) has that identifier does the
+//! name select the serialized fields whose serde JSON name it is: the
+//! serialize-side name the generated schema documents. So a serde-skipped
+//! field's identifier does not shadow a serialized field's JSON name
+//! (R28-SM4-M1: a skipped `id` plus `rename = "id"` on another field selects
+//! that field for `omit = ["id"]`, pinned by the `schema!` and `schema_type!`
+//! tests). A field a statically false `#[cfg]` removes is no candidate, and a
+//! JSON name shared by fields with different Rust identifiers is ambiguous
+//! (refused).
 
 use std::collections::BTreeSet;
 use std::collections::HashSet;

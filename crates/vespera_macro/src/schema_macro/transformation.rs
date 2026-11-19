@@ -1,7 +1,8 @@
 //! Field transformation logic for `schema_type`! macro.
 //!
-//! This module contains functions for building filter sets, rename maps,
-//! and extracting/filtering attributes from source structs.
+//! This module contains functions for building the partial and rename maps,
+//! rebuilding serde attributes, and deciding whether `omit` / `pick` skip a
+//! field (R28-SM4-L3: there are no filter-set builders any more).
 //!
 //! # Overview
 //!
@@ -10,7 +11,7 @@
 //! - Construct rename maps for field renaming
 //! - Track which fields should be made optional (partial)
 //! - Apply serde rename strategies (camelCase, `snake_case`, etc.)
-//! - Filter and transform field lists based on configuration
+//! - Decide per field whether `omit` / `pick` keep it
 //!
 //! # Key Functions
 //!
@@ -18,7 +19,6 @@
 //!   the names are resolved by `validation::resolve_filter_names`)
 //! - [`build_partial_config`] - Determine optional field configuration
 //! - [`build_rename_map`] - Create field name mapping for renames
-//! - [`filter_fields`] - Apply pick/omit filters to field list
 //! - [`container_serde_attrs`] / [`field_serde_attrs`] - Rebuild serde attributes for the generated struct
 //!
 //! # Example

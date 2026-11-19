@@ -196,10 +196,13 @@ pub(super) fn unresolved_at_call_site(
         }
         match resolve_name(&[name.to_string()], &call_site) {
             Resolved::Unknown => true,
+            // The DTO module must resolve the name to the same item. `Unknown`
+            // there (a non-crate glob such as `sea_orm::prelude::*`) is a
+            // difference too: the proxy would name the call-site item (R28-SM3-01).
             Resolved::Path(here) => dto_module.is_some_and(|module| {
-                matches!(
+                !matches!(
                     resolve_name(&[name.to_string()], module),
-                    Resolved::Path(there) if there != here
+                    Resolved::Path(there) if there == here
                 )
             }),
         }
@@ -310,6 +313,38 @@ mod tests {
         );
         assert_eq!(
             unresolved_at_call_site(&dto, Some(&dto_in(&["crate", "b"]))),
+            None
+        );
+    }
+
+    /// R28-SM3-01: a DTO module that names the type only through a non-crate
+    /// glob (`use sea_orm::entity::prelude::*;`, which `resolve_name` never
+    /// pins) does not resolve it to the call site's item, so the copied name is
+    /// refused. Resolved on both sides to the same item it is not.
+    #[test]
+    fn dto_side_glob_name_is_refused_when_the_call_site_resolves_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        for (file, text) in [
+            ("lib.rs", "pub mod user;\npub mod routes;\npub mod types;"),
+            ("user.rs", "use sea_orm::entity::prelude::*;"),
+            ("routes.rs", "use crate::types::Uuid;"),
+            ("types.rs", "pub struct Uuid;"),
+        ] {
+            std::fs::write(src.join(file), text).unwrap();
+        }
+        let _env = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        bump_epoch();
+        let _call = set_test_call_site_module("crate::routes");
+        let dto: syn::ItemStruct = syn::parse_str("struct D { id: Uuid }").unwrap();
+        let dto_in = |module: &[&str]| module.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            unresolved_at_call_site(&dto, Some(&dto_in(&["crate", "user"]))),
+            Some("Uuid".to_string())
+        );
+        assert_eq!(
+            unresolved_at_call_site(&dto, Some(&dto_in(&["crate", "routes"]))),
             None
         );
     }

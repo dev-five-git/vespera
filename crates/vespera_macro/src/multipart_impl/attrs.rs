@@ -64,6 +64,7 @@ fn as_lit_str(expr: Option<&syn::Expr>) -> Option<&syn::LitStr> {
 /// are spanned errors.
 pub(super) fn parse_form_data(attrs: &[syn::Attribute]) -> syn::Result<FormDataAttrs> {
     let mut out = FormDataAttrs::default();
+    let mut seen_default = false;
     for attr in attrs
         .iter()
         .filter(|attr| attr.path().is_ident("form_data"))
@@ -101,7 +102,14 @@ pub(super) fn parse_form_data(attrs: &[syn::Attribute]) -> syn::Result<FormDataA
                     out.limit = Some(lit.clone());
                 }
             } else if meta.path.is_ident("default") {
-                out.default |= flag_value(&meta)?;
+                // Every value is validated; only the first occurrence is kept
+                // (R28-SM0-L1: a later bare `default` used to OR over
+                // `default = false`).
+                let value = flag_value(&meta)?;
+                if !seen_default {
+                    seen_default = true;
+                    out.default = value;
+                }
             } else {
                 skip_value(&meta)?;
             }
@@ -373,6 +381,12 @@ mod tests {
     // L10 (round 12): `default = false` used to read as `default`.
     #[case::explicit_true("#[form_data(default = true)] pub x: i32", true)]
     #[case::explicit_false("#[form_data(default = false)] pub x: i32", false)]
+    // R28-SM0-L1: the first occurrence wins, like `field_name` / `limit`.
+    #[case::first_false_wins(
+        "#[form_data(default = false)] #[form_data(default)] pub x: i32",
+        false
+    )]
+    #[case::first_true_wins("#[form_data(default)] #[form_data(default = false)] pub x: i32", true)]
     fn test_form_data_default(#[case] code: &str, #[case] expected: bool) {
         assert_eq!(form_data(code).default, expected);
     }

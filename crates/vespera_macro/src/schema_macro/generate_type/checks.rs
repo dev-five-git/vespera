@@ -4,6 +4,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::parser::strip_raw_prefix_owned;
+
 use super::super::from_model::FieldMapping;
 use super::super::input::SchemaTypeInput;
 use super::super::validation::{
@@ -25,6 +27,23 @@ pub(super) struct Emitted<'a> {
     pub picked: &'a HashSet<String>,
 }
 
+/// The dropped names that no emitted field carries. A `#[cfg]` twin dropped by
+/// `omit_default` leaves its sibling twin emitted, so the name is not dropped
+/// (R28-SM2-L1: `rename` / `pick` / `partial` used to reject it).
+fn names_not_emitted(emitted: &Emitted<'_>) -> HashMap<String, &'static str> {
+    let emitted_names: HashSet<String> = emitted
+        .field_mappings
+        .iter()
+        .map(|mapping| strip_raw_prefix_owned(mapping.source_ident.to_string()))
+        .collect();
+    emitted
+        .dropped
+        .iter()
+        .filter(|(name, _)| !emitted_names.contains(name.as_str()))
+        .map(|(name, reason)| (name.clone(), *reason))
+        .collect()
+}
+
 pub(super) fn check_emitted(
     input: &SchemaTypeInput,
     partial_fields: Option<&Vec<String>>,
@@ -32,6 +51,7 @@ pub(super) fn check_emitted(
     at: &SpannedSource<'_>,
     source_type_name: &str,
 ) -> syn::Result<()> {
+    let dropped = names_not_emitted(emitted);
     let mut picked: Vec<&str> = emitted.picked.iter().map(String::as_str).collect();
     picked.sort_unstable();
     for (param, names) in [
@@ -54,7 +74,7 @@ pub(super) fn check_emitted(
         ),
         ("pick", picked),
     ] {
-        validate_emitted(param, names, emitted.dropped, at)?;
+        validate_emitted(param, names, &dropped, at)?;
     }
     // `partial` never wraps an (included) relation, whose shape comes from the
     // relation conversion; naming one used to be silently ignored.
