@@ -291,6 +291,22 @@ fn file_also_loaded_by_an_ungated_chain_declaration_is_production() {
 
 /// An ungated `#[path]` module loads its file in every build, even beside a
 /// gated `#[path]` module of the same file.
+/// A file an ungated `#[path]` module loads stays production when a
+/// test-gated `mod` of the same name also exists (round-29 macrorest-1 M1).
+#[test]
+fn ungated_path_module_keeps_a_file_beside_a_gated_twin_production() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "#[cfg(test)] mod helpers; #[path = \"helpers.rs\"] mod helpers_prod;",
+        ),
+        ("helpers.rs", "pub struct Kept {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(!scope.file_test_only(&src.join("helpers.rs")));
+}
+
 #[test]
 fn file_also_loaded_by_an_ungated_path_is_production() {
     let krate = crate_with(&[
@@ -751,6 +767,14 @@ fn cfg_attr_schema_derive_under_test_is_test_only() {
     false
 )]
 #[case::other_predicate("#[cfg_attr(feature = \"x\", derive(Schema))] struct S;", false)]
+#[case::test_beside_docs_derive(
+    "#[cfg_attr(test, derive(Schema))] #[cfg_attr(feature = \"docs\", derive(Schema))] struct S;",
+    false
+)]
+#[case::test_beside_not_test_derive(
+    "#[cfg_attr(test, derive(Schema))] #[cfg_attr(not(test), derive(Schema))] struct S;",
+    false
+)]
 #[case::other_derive("#[cfg_attr(test, derive(Debug))] struct S;", false)]
 #[case::other_attribute("#[cfg_attr(test, allow(dead_code))] struct S;", false)]
 #[case::bare_attribute("#[inline] #[cfg_attr(test, derive(Schema))] struct S;", true)]

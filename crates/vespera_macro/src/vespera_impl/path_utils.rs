@@ -162,12 +162,11 @@ thread_local! {
 /// 1. `VESPERA_TARGET_DIR` (relative: against the workspace root) — an
 ///    explicit override, e.g. for builds outside cargo;
 /// 2. the target directory of the running compilation, read off rustc's
-///    `--out-dir <target>/<profile>/deps` — the only answer that is right for
-///    every crate in the build: a registry / git dependency has no workspace
-///    of its own (its `export_app!` spec would land in its source directory,
-///    where the parent never looks), and a relative `CARGO_TARGET_DIR` is
-///    relative to wherever cargo was started;
-/// 3. `CARGO_TARGET_DIR` (relative: against the workspace root);
+///    `--out-dir <target>/<profile>/deps` (an absolute path only) — the only
+///    answer that is right for every crate in the build: a registry / git
+///    dependency has no workspace of its own (its `export_app!` spec would
+///    land in its source directory, where the parent never looks);
+/// 3. `CARGO_TARGET_DIR` (relative: joined onto the workspace root);
 /// 4. `<workspace root>/target` (rust-analyzer and other non-cargo hosts).
 pub fn find_target_dir(manifest_path: &Path) -> PathBuf {
     let workspace_root = || find_workspace_root(manifest_path);

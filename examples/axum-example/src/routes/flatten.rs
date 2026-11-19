@@ -105,11 +105,12 @@ pub async fn list_users(Json(req): Json<UserListRequest>) -> Json<UserListRespon
     })
 }
 
-/// Whether the page starting at `page` of `per_page` items leaves users out
-/// of the 100 (`total`). The document puts no minimum on either value, so a
-/// page or size below 1 is read as 1 (`page` is 1-indexed) rather than
-/// reporting more results for a page that does not exist. Widened: two
-/// client-supplied `i32`s may overflow their product.
+/// Whether the page starting at `page` of `per_page` items ends before the
+/// last of the 100 users (`total`), so users remain (`has_more`). The
+/// document puts no minimum on either value, so a page or size below 1 is
+/// read as 1 (`page` is 1-indexed) rather than reporting more results for a
+/// page that does not exist. Widened: two client-supplied `i32`s may
+/// overflow their product.
 fn has_more(page: i32, per_page: i32) -> bool {
     i64::from(page.max(1)) * i64::from(per_page.max(1)) < 100
 }
@@ -119,8 +120,9 @@ mod tests {
     use super::has_more;
 
     /// Values below 1 are read as 1: page 0 is the first page, and a size of
-    /// 0 is a size of 1 (`has_more(0, 200)` is the first page of 200 items,
-    /// which leaves users out, not "page 0" of an unbounded list).
+    /// 0 is a size of 1. `has_more(0, 200)` is the first page of 200 items,
+    /// which covers every user, so nothing is left out (`has_more` is false),
+    /// rather than a "page 0" of an unbounded list.
     #[test]
     fn values_below_one_are_read_as_one() {
         assert_eq!(has_more(0, 20), has_more(1, 20));

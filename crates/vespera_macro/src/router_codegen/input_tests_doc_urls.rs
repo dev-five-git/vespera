@@ -30,3 +30,26 @@ fn test_validate_doc_urls_accepts_plain_paths(#[case] url: &str) {
         "{url}"
     );
 }
+
+/// A documentation route is an ASCII request-target: a raw non-ASCII
+/// character or a malformed escape is a compile error (round-29 macrorest-4
+/// L-2), the percent-encoded spelling is accepted.
+#[rstest]
+#[case::non_ascii("/문서")]
+#[case::bad_escape("/docs%zz")]
+fn test_validate_doc_urls_rejects_non_ascii_paths(#[case] url: &str) {
+    let lit = LitStr::new(url, Span::call_site());
+    let error = validate_doc_urls(&[("docs_url", Some(&lit))]).expect_err(url);
+    assert!(
+        error
+            .to_string()
+            .contains("must be ASCII URL path characters"),
+        "{url}: {error}"
+    );
+}
+
+#[test]
+fn test_validate_doc_urls_accepts_percent_encoded_paths() {
+    let lit = LitStr::new("/%EB%AC%B8%EC%84%9C", Span::call_site());
+    assert!(validate_doc_urls(&[("docs_url", Some(&lit))]).is_ok());
+}

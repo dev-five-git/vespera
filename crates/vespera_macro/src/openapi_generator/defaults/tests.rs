@@ -258,6 +258,10 @@ fn extract_default_value_from_function_rejects_non_tail_values(#[case] src: &str
 #[case::tail("fn d() -> u32 { let _x = 1; 3 }", Value::Number(3.into()))]
 #[case::semicolon_tail("fn d() -> u32 { 3; }", Value::Number(3.into()))]
 #[case::tail_return("fn d() -> u32 { return 3; }", Value::Number(3.into()))]
+#[case::u64_beyond_i64(
+    "fn d() -> u64 { 12345678901234567890 }",
+    Value::Number(12_345_678_901_234_567_890_u64.into())
+)]
 fn extract_default_value_from_function_reads_the_tail(#[case] src: &str, #[case] expected: Value) {
     let func = parse_fn(src);
     assert_eq!(extract_default_value_from_function(&func), Some(expected));

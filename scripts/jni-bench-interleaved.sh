@@ -27,7 +27,8 @@
 #      BENCH_WARMUP_MS (1500) BENCH_BLOCK_MS (20) BENCH_BLOCKS (40)
 #      REGRESS_MEAN (0.30) REGRESS_LOWER (0.20)
 #      GITHUB_STEP_SUMMARY (markdown report appended when set)
-# Needs: git, cargo, a JDK 17+, bun. Exit 1 when any mode regresses.
+# Needs: git, cargo, a JDK 17+, bun. Exit 1 when any mode regresses, 2 on
+# unusable results (a mode missing on the head or not paired in every round).
 set -euo pipefail
 
 if [ "$#" -lt 1 ]; then

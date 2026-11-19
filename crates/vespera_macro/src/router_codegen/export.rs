@@ -114,6 +114,12 @@ fn normalize_prefix(prefix: &LitStr) -> syn::Result<LitStr> {
             "export_app! macro: `prefix` must be a static path: `:`, `*`, `{` and `}` are axum route-parameter syntax",
         ));
     }
+    if !super::path_segments::is_ascii_path(normalized) {
+        return Err(syn::Error::new(
+            prefix.span(),
+            "export_app! macro: `prefix` must be ASCII URL path characters (percent-encode any other byte)",
+        ));
+    }
     if !normalized.is_empty() && schema_namespace_from_prefix(normalized).is_empty() {
         return Err(syn::Error::new(
             prefix.span(),
@@ -451,7 +457,8 @@ mod tests {
     #[case("/api\\..\\x", "must not contain `.` or `..` path segments")]
     #[case("/api\\users", "must not contain `.` or `..` path segments")]
     #[case("/---", "must contain at least one ASCII alphanumeric character")]
-    #[case("/카탈로그", "must contain at least one ASCII alphanumeric character")]
+    #[case("/카탈로그", "must be ASCII URL path characters")]
+    #[case("/api%zz", "must be ASCII URL path characters")]
     #[case("/api/{tenant}", "must be a static path")]
     #[case("/api/*rest", "must be a static path")]
     #[case("/api/:id", "must be a static path")]
@@ -471,7 +478,7 @@ mod tests {
     #[case("/api/media-library", "MediaLibrary")]
     #[case("/api/v1/user_profile", "V1UserProfile")]
     #[case("/api/-media--library-", "MediaLibrary")]
-    #[case("/카탈로그-v2/éte", "V2Te")]
+    #[case("/catalog-v2/ete%C3%A9", "CatalogV2EteC3A9")]
     #[case("/api/_", "Api")]
     #[case("/api/-/--", "Api")]
     fn schema_namespace_covers_empty_api_and_composite_prefixes(

@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { describe, expect, it } from 'bun:test'
 
 import {
@@ -158,5 +162,54 @@ describe('parseThreshold', () => {
     ['Infinity', undefined],
   ])('%p -> %p', (raw, expected) => {
     expect(parseThreshold(raw, 0.3)).toBe(expected)
+  })
+})
+
+/** Runs the gate's CLI over a results dir with the given (base, head) rounds. */
+function runGate(sides: { base: string[]; head: string[] }): number {
+  const dir = mkdtempSync(join(tmpdir(), 'jni-bench-compare-'))
+  try {
+    sides.base.forEach((text, i) =>
+      writeFileSync(join(dir, `base-${i + 1}.txt`), text),
+    )
+    sides.head.forEach((text, i) =>
+      writeFileSync(join(dir, `head-${i + 1}.txt`), text),
+    )
+    const script = join(import.meta.dir, 'jni-bench-compare.ts')
+    const run = Bun.spawnSync([process.execPath, script, dir], {
+      env: { ...process.env, REGRESS_MEAN: '0.3', REGRESS_LOWER: '0.2' },
+      stdout: 'ignore',
+      stderr: 'ignore',
+    })
+    return run.exitCode
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+describe('gate exit codes', () => {
+  // Round 29 macrorest-8 S2: unusable results exit 2, a measured regression 1.
+  it('exits 2 when a base mode is missing on the head', () => {
+    const both = 'direct_get 1000\nsync_get 1000\n'
+    const base = [both, both]
+    const head = ['sync_get 1000\n', 'sync_get 1000\n']
+    expect(runGate({ base, head })).toBe(2)
+  })
+
+  it('exits 2 when a mode is not paired in every round', () => {
+    const base = ['sync_get 1000\n', 'sync_get 1000\n']
+    const head = ['sync_get 1000\n']
+    expect(runGate({ base, head })).toBe(2)
+  })
+
+  it('exits 1 when every round regresses past the gate', () => {
+    const base = ['sync_get 1000\n', 'sync_get 1000\n']
+    const head = ['sync_get 2000\n', 'sync_get 2000\n']
+    expect(runGate({ base, head })).toBe(1)
+  })
+
+  it('exits 0 when nothing regresses', () => {
+    const base = ['sync_get 1000\n', 'sync_get 1000\n']
+    expect(runGate({ base, head: base })).toBe(0)
   })
 })

@@ -74,7 +74,8 @@ while [ $((hi - lo)) -gt 1 ]; do
   mid=$(((lo + hi) / 2))
   candidate=${versions[$mid]}
   echo "==> probing $crate $candidate (good<=${versions[$lo]}, bad>=${versions[$hi]})"
-  cargo update --manifest-path "$root/Cargo.toml" -p "$crate" --precise "$candidate"
+  cargo update --manifest-path "$root/Cargo.toml" -p "$crate" --precise "$candidate" ||
+    { echo "cargo update to $candidate failed; widen the version requirement." >&2; exit 2; }
   if (cd "$root" && "$@"); then lo=$mid; else hi=$mid; fi
 done
 echo "RESULT: last good $crate ${versions[$lo]}; first bad $crate ${versions[$hi]}"

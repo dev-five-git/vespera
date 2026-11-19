@@ -153,7 +153,8 @@ fn gated_route_statements(
                     #[cfg(all(#(#predicates),*))]
                     let __vespera_router = __vespera_router.route(#args);
                 },
-                Err(error) => error,
+                // The error is compiled in only with the route's module.
+                Err(error) => quote!(#[cfg(all(#(#predicates),*))] #error),
             }
         })
         .collect()

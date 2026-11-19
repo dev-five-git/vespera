@@ -126,6 +126,67 @@ mod tests {
         SchemaMergeGuard::new(&parent).expect("one definition should be accepted");
     }
 
+    /// `/api/users` and `/users` both derive the `Users` namespace (the `api`
+    /// segment is dropped), so their `ExampleItem` components collide as
+    /// `UsersExampleItem`. Different bodies are a spanned error naming both
+    /// apps and the component; the same body from both is deduplicated.
+    #[test]
+    fn colliding_export_namespaces_with_different_bodies_are_rejected() {
+        use crate::router_codegen::{namespace_export_schemas, schema_namespace_from_prefix};
+
+        let namespaced = |prefix: &str, body: serde_json::Value| {
+            let mut doc = document(&body);
+            namespace_export_schemas(
+                &mut doc,
+                &CollectedMetadata::new(),
+                &schema_namespace_from_prefix(prefix),
+            )
+            .unwrap();
+            doc
+        };
+        let id_body =
+            serde_json::json!({ "type": "object", "properties": { "id": { "type": "integer" } } });
+        let email_body = serde_json::json!({ "type": "object", "properties": { "email": { "type": "string" } } });
+        let empty: OpenApi = serde_json::from_value(serde_json::json!({
+            "openapi": "3.1.0",
+            "info": { "title": "test", "version": "1.0.0" },
+            "paths": {}
+        }))
+        .unwrap();
+        let mut guard = SchemaMergeGuard::new(&empty).unwrap();
+        guard
+            .check_child(
+                &namespaced("/api/users", id_body),
+                "merged app `users_api`",
+                Span::call_site(),
+            )
+            .unwrap();
+
+        let error = guard
+            .check_child(
+                &namespaced("/users", email_body),
+                "merged app `users`",
+                Span::call_site(),
+            )
+            .expect_err("two namespaces with one name and different bodies must fail")
+            .to_string();
+
+        assert!(error.contains("'UsersExampleItem'"), "{error}");
+        assert!(error.contains("merged app `users_api`"), "{error}");
+        assert!(error.contains("merged app `users`"), "{error}");
+
+        let mut same = SchemaMergeGuard::new(&empty).unwrap();
+        let shared = serde_json::json!({ "type": "string" });
+        same.check_child(
+            &namespaced("/api/users", shared.clone()),
+            "a",
+            Span::call_site(),
+        )
+        .unwrap();
+        same.check_child(&namespaced("/users", shared), "b", Span::call_site())
+            .expect("identical namespaced definitions deduplicate");
+    }
+
     #[test]
     fn child_to_child_conflict_reports_the_first_child() {
         let empty: OpenApi = serde_json::from_value(serde_json::json!({

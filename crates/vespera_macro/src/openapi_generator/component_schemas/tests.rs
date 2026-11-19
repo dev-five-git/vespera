@@ -629,6 +629,35 @@ fn ambiguous_alias_is_rejected_only_when_used(
     }
 }
 
+/// A `cfg(test)` route's signature is not in the document, so the ambiguous
+/// alias it names is no error for the document (round-29 macrorest-5 L2); a
+/// documented route of the same name and method still makes it one.
+#[test]
+fn ambiguous_alias_used_only_by_a_test_only_route_is_not_rejected() {
+    let mut metadata = CollectedMetadata::new();
+    metadata.structs = vec![
+        renamed("A", "Foo", "struct Foo { a: i32 }"),
+        renamed("B", "Foo", "struct Foo { b: i32 }"),
+    ];
+    metadata
+        .test_only_routes
+        .push(crate::metadata::TestOnlyRoute {
+            file_path: "h.rs".to_string(),
+            function_name: "h".to_string(),
+            method: "get".to_string(),
+        });
+    let storage = [crate::route_impl::StoredRouteInfo {
+        fn_sig_str: "async fn h(Json(body): Json<Foo>) -> String".to_string(),
+        fn_name: "h".to_string(),
+        method: Some("get".to_string()),
+        ..Default::default()
+    }];
+    assert!(check_ambiguous_aliases(&metadata, &HashMap::new(), &storage).is_ok());
+
+    metadata.routes.push(route_meta("/h", "h", "h.rs"));
+    assert!(check_ambiguous_aliases(&metadata, &HashMap::new(), &storage).is_err());
+}
+
 /// A route found only through the file cache contributes its signature.
 #[test]
 fn ambiguous_alias_used_by_a_parsed_route_file() {

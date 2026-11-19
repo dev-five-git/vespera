@@ -580,10 +580,12 @@ fn int_literal_value(int: &syn::LitInt) -> Option<serde_json::Value> {
             .ok()
             .and_then(serde_json::Number::from_f64)
             .map(serde_json::Value::Number),
+        // Past `i64::MAX` a positive literal is a `u64`, as in the string path.
         _ => int
             .base10_parse::<i64>()
-            .ok()
-            .map(|v| serde_json::Value::Number(v.into())),
+            .map(serde_json::Value::from)
+            .or_else(|_| int.base10_parse::<u64>().map(serde_json::Value::from))
+            .ok(),
     }
 }
 
