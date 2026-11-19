@@ -176,3 +176,31 @@ fn stream_abort_messages_match_the_java_contract() {
         "com/devfive/vespera/bridge/VesperaStreamAbortedException"
     );
 }
+
+/// A chunk the Java stream refused was never delivered, so the dispatch may
+/// still answer with its error header; an accepted chunk latches the flag.
+#[test]
+fn a_refused_chunk_is_not_counted_as_delivered() {
+    use std::cell::Cell;
+    use std::ops::ControlFlow;
+
+    let delivered = Cell::new(false);
+    assert!(super::record_delivery(&delivered, ControlFlow::Break(())).is_break());
+    assert!(!delivered.get(), "a refused chunk reached nothing");
+    assert!(super::record_delivery(&delivered, ControlFlow::Continue(())).is_continue());
+    assert!(delivered.get());
+}
+
+/// Only a truncation after a delivered chunk throws; a truncation before any
+/// byte reached Java is answered by the header, and a complete stream never
+/// throws.
+#[test]
+fn only_a_truncation_after_delivery_aborts() {
+    use vespera_inprocess::StreamOutcome;
+
+    assert!(!super::stream_aborts(StreamOutcome::Complete, true));
+    assert!(!super::stream_aborts(StreamOutcome::SinkStopped, false));
+    assert!(!super::stream_aborts(StreamOutcome::BodyError, false));
+    assert!(super::stream_aborts(StreamOutcome::SinkStopped, true));
+    assert!(super::stream_aborts(StreamOutcome::BodyError, true));
+}

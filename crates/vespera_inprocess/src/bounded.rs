@@ -225,9 +225,12 @@ pub enum Prefetched422 {
     Failed,
 }
 
-/// Read at most `MAX_HOIST_BODY_BYTES + 1` bytes of a `422` body so its
-/// `validation_errors` can be hoisted, **without** materialising an
-/// arbitrarily large 422 body (the hoist would skip such a body anyway).
+/// Read whole frames of a `422` body until the running total exceeds
+/// `MAX_HOIST_BODY_BYTES`, so its `validation_errors` can be hoisted, **without**
+/// materialising an arbitrarily large 422 body (the hoist would skip such a body
+/// anyway).  Frames are read whole and the bound is checked after each one, so
+/// the prefetch overshoots by at most one frame: a single large frame is read
+/// in full before the check, though it is already materialised by the producer.
 ///
 /// The common single-frame body (axum `Json` / `String`) is returned
 /// zero-copy; only a multi-frame small body is concatenated.

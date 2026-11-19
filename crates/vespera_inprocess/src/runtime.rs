@@ -243,6 +243,14 @@ pub fn runtime_shut_down() -> bool {
     GATE.is_closed()
 }
 
+/// Whether the shared runtime is built right now.  A probe for tests that
+/// pin laziness; it never builds the runtime itself.
+#[doc(hidden)]
+#[must_use]
+pub fn runtime_built() -> bool {
+    matches!(RUNTIME.get(), Some(Some(_)))
+}
+
 /// Wire response for a dispatch that found no runtime: `503` after
 /// [`shutdown_runtime`], `500` when the runtime could not be built.
 #[must_use]
