@@ -256,8 +256,7 @@ pub fn compute_input_names(sources: &[ViewSource<'_>], taken: &BTreeSet<String>)
                 .and_then(|(_, bare)| component_of.get(bare))
         })
     };
-    let items: Vec<&syn::Item> = sources.iter().map(|source| source.item).collect();
-    let flat = FlatKinds::of(&items);
+    let flat = FlatKinds::of(sources);
     let mut differs: BTreeSet<&str> = sources
         .iter()
         .filter(|source| directly_differs(source.item, &flat))
@@ -449,50 +448,102 @@ enum FlatKind {
     Leaves { known_keys: bool },
 }
 
-/// The [`FlatKind`] of every type among the documented items whose
-/// flattened form reads every buffered key or leaves its keys behind —
-/// directly, through a flattened member (a struct flattening a map reads
-/// every key), or through a newtype / transparent wrapper (transitively).
+/// The [`FlatKind`] of every documented item whose flattened form reads every
+/// buffered key or leaves its keys behind — directly, through a flattened
+/// member (a struct flattening a map reads every key), or through a newtype /
+/// transparent wrapper (transitively).
+///
+/// Items are indexed by their position among the sources. A type path names
+/// an item the way `definition_key` resolves a type: its scoped key when one
+/// item claims it, else its bare ident. A key or ident claimed by several
+/// items names none of them, so two documented types sharing a Rust ident
+/// never trade kinds.
 struct FlatKinds {
-    /// Kind of every item that reads its flattened keys in one of these ways.
-    kinds: BTreeMap<String, FlatKind>,
-    /// Generic newtypes over one of their own type parameters (`struct
-    /// W<T>(T)`), with that parameter's position: `W<X>` reads like `X`.
-    param_of: BTreeMap<String, usize>,
+    /// Kind of each item (by source index) that reads its flattened keys in
+    /// one of these ways.
+    kinds: Vec<Option<FlatKind>>,
+    /// Generic newtypes over one of their own type parameters (by source
+    /// index), with that parameter's position: `W<X>` reads like `X`.
+    param_of: BTreeMap<usize, usize>,
+    /// Item index claimed by each scoped key (`b::Foo`, `crate::b::Foo`);
+    /// `None` when several items claim it.
+    scoped: BTreeMap<String, Option<usize>>,
+    /// Item index claimed by each bare Rust ident; `None` when several items
+    /// declare it.
+    bare: BTreeMap<String, Option<usize>>,
+}
+
+/// Record that the item at `index` claims `key`; a second claimant by another
+/// item makes the key ambiguous.
+fn claim(claims: &mut BTreeMap<String, Option<usize>>, key: &str, index: usize) {
+    claims
+        .entry(key.to_string())
+        .and_modify(|claimed| {
+            if *claimed != Some(index) {
+                *claimed = None;
+            }
+        })
+        .or_insert(Some(index));
+}
+
+/// The Rust ident of a struct or enum (the only items that read keys).
+fn item_ident(item: &syn::Item) -> Option<String> {
+    match item {
+        syn::Item::Struct(item) => Some(item.ident.to_string()),
+        syn::Item::Enum(item) => Some(item.ident.to_string()),
+        _ => None,
+    }
 }
 
 impl FlatKinds {
-    fn of(items: &[&syn::Item]) -> Self {
-        let mut kinds = Self {
-            kinds: BTreeMap::new(),
+    fn of(sources: &[ViewSource<'_>]) -> Self {
+        let mut flat = Self {
+            kinds: vec![None; sources.len()],
             param_of: BTreeMap::new(),
+            scoped: BTreeMap::new(),
+            bare: BTreeMap::new(),
         };
-        for item in items {
-            if let syn::Item::Struct(definition) = item
-                && let FlatRead::Through(ty) = flat_read(item)
-                && let Some(index) = type_param_index(ty, &definition.generics)
+        for (index, source) in sources.iter().enumerate() {
+            for key in &source.scoped_keys {
+                claim(&mut flat.scoped, key, index);
+            }
+            if let Some(ident) = item_ident(source.item) {
+                claim(&mut flat.bare, &ident, index);
+            }
+            if let syn::Item::Struct(definition) = source.item
+                && let FlatRead::Through(ty) = flat_read(source.item)
+                && let Some(position) = type_param_index(ty, &definition.generics)
             {
-                kinds.param_of.insert(definition.ident.to_string(), index);
+                flat.param_of.insert(index, position);
             }
         }
         loop {
             let mut changed = false;
-            for item in items {
-                let ident = match item {
-                    syn::Item::Struct(item) => &item.ident,
-                    syn::Item::Enum(item) => &item.ident,
-                    _ => continue,
+            for (index, source) in sources.iter().enumerate() {
+                let Some(kind) = flat.item_kind(source.item) else {
+                    continue;
                 };
-                if let Some(kind) = kinds.item_kind(item)
-                    && kinds.kinds.insert(ident.to_string(), kind) != Some(kind)
-                {
+                // Monotone: a kind, once found, only ever grows to `Map`, so a
+                // cycle or a collision cannot make the fixpoint oscillate.
+                let slot = &mut flat.kinds[index];
+                if slot.is_none() || (kind == FlatKind::Map && *slot != Some(FlatKind::Map)) {
+                    *slot = Some(kind);
                     changed = true;
                 }
             }
             if !changed {
-                return kinds;
+                return flat;
             }
         }
+    }
+
+    /// The item a type path names (see the type docs).
+    fn resolve(&self, path: &syn::Path) -> Option<usize> {
+        let scoped = lookup_key(path).and_then(|key| self.scoped.get(&key).copied().flatten());
+        scoped.or_else(|| {
+            let ident = path.segments.last()?.ident.to_string();
+            self.bare.get(&ident).copied().flatten()
+        })
     }
 
     /// An item's kind: a struct is a map when any flattened member reads
@@ -531,10 +582,10 @@ impl FlatKinds {
         let syn::Type::Path(path) = ty else {
             return None;
         };
-        let segment = path.path.segments.last()?;
-        let ident = segment.ident.to_string();
-        if let Some(&index) = self.param_of.get(&ident) {
+        let index = self.resolve(&path.path)?;
+        if let Some(&position) = self.param_of.get(&index) {
             // `W<X>` over its own parameter reads what `X` reads.
+            let segment = path.path.segments.last()?;
             let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
                 return None;
             };
@@ -548,10 +599,10 @@ impl FlatKinds {
                         None
                     }
                 })
-                .nth(index)?;
+                .nth(position)?;
             return self.type_kind(argument);
         }
-        self.kinds.get(&ident).copied()
+        self.kinds.get(index).copied().flatten()
     }
 }
 

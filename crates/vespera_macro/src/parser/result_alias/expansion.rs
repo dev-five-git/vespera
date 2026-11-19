@@ -119,7 +119,7 @@ fn expand_alias(
     // An alias found under `src/` names its file, parsed only now that the
     // type turned out to be an alias candidate.
     let here = scope.cloned().and_then(NextScope::materialize);
-    if matches!(ty, Type::Path(path) if is_external_path(&path.path, here.as_ref())) {
+    if matches!(ty, Type::Path(path) if is_external_path(&path.path, here.as_ref(), src_dir)) {
         return None;
     }
     let qualifier = alias_qualifier(ty);

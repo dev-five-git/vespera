@@ -13,6 +13,30 @@ fn names(sources: &[(&str, Option<&str>, &str)], taken: &[&str]) -> Vec<(String,
     scoped_names(&sources, taken)
 }
 
+/// `ViewSource`s over `items`, without component names or scoped keys.
+fn sources_of(items: &[syn::Item]) -> Vec<ViewSource<'_>> {
+    items
+        .iter()
+        .map(|item| ViewSource {
+            name: "",
+            rust_ident: None,
+            scoped_keys: Vec::new(),
+            item,
+        })
+        .collect()
+}
+
+/// The [`FlatKind`] of each of `items` that has one, by Rust ident (the test
+/// items declare distinct idents).
+fn kinds_by_ident(items: &[syn::Item]) -> BTreeMap<String, FlatKind> {
+    let flat = FlatKinds::of(&sources_of(items));
+    items
+        .iter()
+        .zip(&flat.kinds)
+        .filter_map(|(item, kind)| Some((item_ident(item)?, (*kind)?)))
+        .collect()
+}
+
 /// `names` with a `module::Ident` key per source.
 fn scoped_names(
     sources: &[(&str, Option<&str>, Option<&str>, &str)],
@@ -309,18 +333,16 @@ fn scoped_names(
     true
 )]
 fn direct_differences(#[case] src: &str, #[case] expected: bool) {
-    let flat = FlatKinds {
-        param_of: BTreeMap::new(),
-        kinds: BTreeMap::from([
-            ("HasMap".to_string(), FlatKind::Map),
-            ("Attrs".to_string(), FlatKind::Map),
-            ("Leaving".to_string(), FlatKind::Leaves { known_keys: true }),
-            (
-                "LeavingEnum".to_string(),
-                FlatKind::Leaves { known_keys: false },
-            ),
-        ]),
-    };
+    let items: Vec<syn::Item> = [
+        "struct HasMap { #[serde(flatten)] m: HashMap<String, u8> }",
+        "struct Attrs { #[serde(flatten)] m: BTreeMap<String, String> }",
+        "struct Leaving { #[serde(flatten)] p: Page }",
+        r#"#[serde(tag = "t")] enum LeavingEnum { A }"#,
+    ]
+    .iter()
+    .map(|src| syn::parse_str(src).unwrap())
+    .collect();
+    let flat = FlatKinds::of(&sources_of(&items));
     assert_eq!(
         directly_differs(&syn::parse_str(src).unwrap(), &flat),
         expected
@@ -346,8 +368,7 @@ fn generic_newtype_reads_like_its_argument() {
     .iter()
     .map(|src| syn::parse_str(src).unwrap())
     .collect();
-    let items: Vec<&syn::Item> = items.iter().collect();
-    let kinds = FlatKinds::of(&items).kinds;
+    let kinds = kinds_by_ident(&items);
     assert_eq!(kinds.get("Holds"), Some(&FlatKind::Map));
     // `Page` is no map: `Keeps` only leaves its own keys (a struct flattening one).
     assert_eq!(
@@ -382,10 +403,9 @@ fn flat_kinds_are_transitive() {
     .iter()
     .map(|src| syn::parse_str(src).unwrap())
     .collect();
-    let items: Vec<&syn::Item> = items.iter().collect();
     let leaves = |known_keys| FlatKind::Leaves { known_keys };
     assert_eq!(
-        FlatKinds::of(&items).kinds,
+        kinds_by_ident(&items),
         BTreeMap::from([
             ("Boxed".to_string(), FlatKind::Map),
             ("Clear".to_string(), FlatKind::Map),
@@ -416,8 +436,7 @@ fn skipped_flattened_map_reads_no_keys() {
     .iter()
     .map(|src| syn::parse_str(src).unwrap())
     .collect();
-    let items: Vec<&syn::Item> = items.iter().collect();
-    let kinds = FlatKinds::of(&items).kinds;
+    let kinds = kinds_by_ident(&items);
     assert!(!kinds.contains_key("Skips"), "{kinds:?}");
     assert!(!kinds.contains_key("SkipsDe"), "{kinds:?}");
     // `Wraps` leaves the keys it reads in the buffer, as any flattened struct
@@ -683,14 +702,84 @@ fn current_side_follows_the_view() {
     assert_eq!(with_request_view(current_side), SerdeSide::Deserialize);
 }
 
+/// Two documented types share the Rust ident `Foo` (both renamed, so both are
+/// documented) and classify differently. The fixpoint must terminate, each
+/// module-qualified reference reads its own `Foo`, and the bare ident (claimed
+/// twice) names neither.
+#[test]
+fn same_ident_types_keep_their_own_kinds() {
+    let a: syn::Item =
+        syn::parse_str("struct Foo { #[serde(flatten)] page: Page, id: u8 }").unwrap();
+    let b: syn::Item = syn::parse_str(r#"#[serde(tag = "kind")] enum Foo { X, Y }"#).unwrap();
+    let sources = [
+        ViewSource {
+            name: "A",
+            rust_ident: Some("Foo"),
+            scoped_keys: vec!["a::Foo", "crate::a::Foo"],
+            item: &a,
+        },
+        ViewSource {
+            name: "B",
+            rust_ident: Some("Foo"),
+            scoped_keys: vec!["b::Foo", "crate::b::Foo"],
+            item: &b,
+        },
+    ];
+    let flat = FlatKinds::of(&sources);
+    assert_eq!(
+        flat.kinds,
+        vec![
+            Some(FlatKind::Leaves { known_keys: true }),
+            Some(FlatKind::Leaves { known_keys: false }),
+        ]
+    );
+    let kind = |ty: &str| flat.type_kind(&syn::parse_str(ty).unwrap());
+    assert_eq!(kind("a::Foo"), Some(FlatKind::Leaves { known_keys: true }));
+    assert_eq!(
+        kind("crate::b::Foo"),
+        Some(FlatKind::Leaves { known_keys: false })
+    );
+    assert_eq!(kind("Foo"), None);
+}
+
+/// A module-qualified flattened type resolves through its scoped key, so a
+/// same-named type in another module (here one flattening a map) does not
+/// lend its kind to it.
+#[test]
+fn qualified_flattened_type_reads_its_own_module() {
+    let a: syn::Item =
+        syn::parse_str("struct Meta { #[serde(flatten)] m: HashMap<String, u8> }").unwrap();
+    let b: syn::Item = syn::parse_str("struct Meta { id: u8 }").unwrap();
+    let outer: syn::Item = syn::parse_str(
+        "#[serde(deny_unknown_fields)] struct Outer { #[serde(flatten)] meta: b::Meta, id: u8 }",
+    )
+    .unwrap();
+    let sources = [
+        ViewSource {
+            name: "A",
+            rust_ident: Some("Meta"),
+            scoped_keys: vec!["a::Meta", "crate::a::Meta"],
+            item: &a,
+        },
+        ViewSource {
+            name: "B",
+            rust_ident: Some("Meta"),
+            scoped_keys: vec!["b::Meta", "crate::b::Meta"],
+            item: &b,
+        },
+    ];
+    let flat = FlatKinds::of(&sources);
+    let kind = |ty: &str| flat.type_kind(&syn::parse_str(ty).unwrap());
+    assert_eq!(kind("a::Meta"), Some(FlatKind::Map));
+    assert_eq!(kind("b::Meta"), None);
+    assert!(!directly_differs(&outer, &flat));
+}
+
 #[test]
 fn non_type_items_reference_nothing() {
     let item: syn::Item = syn::parse_str("fn f() {}").unwrap();
     assert!(referenced_idents(&item).is_empty());
-    let flat = FlatKinds {
-        kinds: BTreeMap::new(),
-        param_of: BTreeMap::new(),
-    };
+    let flat = FlatKinds::of(&[]);
     assert!(!directly_differs(&item, &flat));
 }
 

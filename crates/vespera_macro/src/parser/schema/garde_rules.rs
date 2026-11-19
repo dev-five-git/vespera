@@ -22,7 +22,8 @@
 //! | `inner(...)` on `Vec<T>` / `[T; N]` / `Box<[T]>` / `&[T]` | the rules land on `items`; on `Option<T>` on the value itself |
 //!
 //! The first pattern occupies `pattern`; further ones are ANDed via `allOf`
-//! members. Rules on an `Option<T>` field constrain the non-null value
+//! members. The same holds for formats: the first occupies `format` (`ip`:
+//! `anyOf`), every further one is an `allOf` member. Rules on an `Option<T>` field constrain the non-null value
 //! (garde skips `None`; the keywords above ignore `null`).
 //!
 //! **Skipped** (no deterministic equivalent): `alphanumeric` (Unicode
@@ -104,7 +105,8 @@ pub struct GardeRules {
     length: Vec<LengthRule>,
     minimum: Option<f64>,
     maximum: Option<f64>,
-    format: Option<FormatRule>,
+    /// Every format rule: garde applies each one, so each is documented.
+    formats: Vec<FormatRule>,
     patterns: Vec<String>,
     inner: Option<Box<Self>>,
 }
@@ -135,15 +137,15 @@ fn parse_rule(rules: &mut GardeRules, meta: &ParseNestedMeta<'_>) -> syn::Result
     } else if path.is_ident("range") {
         meta.parse_nested_meta(|arg| parse_range_arg(rules, &arg))?;
     } else if path.is_ident("email") {
-        rules.format = Some(FormatRule::Email);
+        rules.formats.push(FormatRule::Email);
     } else if path.is_ident("url") {
-        rules.format = Some(FormatRule::Url);
+        rules.formats.push(FormatRule::Url);
     } else if path.is_ident("ip") {
-        rules.format = Some(FormatRule::Ip);
+        rules.formats.push(FormatRule::Ip);
     } else if path.is_ident("ipv4") {
-        rules.format = Some(FormatRule::Ipv4);
+        rules.formats.push(FormatRule::Ipv4);
     } else if path.is_ident("ipv6") {
-        rules.format = Some(FormatRule::Ipv6);
+        rules.formats.push(FormatRule::Ipv6);
     } else if path.is_ident("ascii") {
         rules.patterns.push(ASCII_PATTERN.to_owned());
     } else if path.is_ident("pattern") {
@@ -323,18 +325,24 @@ fn apply_string_rules(schema: &mut Schema, rules: &GardeRules, explicit: &Schema
         tighten(&mut schema.max_length, explicit.max_length, max, false);
     }
 
-    if let Some(format) = rules.format
-        && schema.format.is_none()
-        && explicit.format.is_none()
-    {
-        match format {
+    // The first format rule documents the schema's `format` (`ip`: `anyOf`),
+    // the others are `allOf` members: a value must pass every one of them.
+    let formats: &[FormatRule] = if schema.format.is_none() && explicit.format.is_none() {
+        &rules.formats
+    } else {
+        &[]
+    };
+    if let Some((first, rest)) = formats.split_first() {
+        match first {
             FormatRule::Email => schema.format = Some("email".to_owned()),
             FormatRule::Url => schema.format = Some("uri".to_owned()),
             FormatRule::Ipv4 => schema.format = Some("ipv4".to_owned()),
             FormatRule::Ipv6 => schema.format = Some("ipv6".to_owned()),
-            FormatRule::Ip => {
-                schema.any_of = Some(vec![format_only("ipv4"), format_only("ipv6")]);
-            }
+            FormatRule::Ip => schema.any_of = Some(ip_alternatives()),
+        }
+        if !rest.is_empty() {
+            let members = rest.iter().map(|format| format_member(*format));
+            schema.all_of.get_or_insert_with(Vec::new).extend(members);
         }
     }
 
@@ -353,6 +361,25 @@ fn apply_string_rules(schema: &mut Schema, rules: &GardeRules, explicit: &Schema
     if !extra.is_empty() {
         schema.all_of.get_or_insert_with(Vec::new).extend(extra);
     }
+}
+
+/// One format rule as an `allOf` member (a later format rule on the field).
+fn format_member(format: FormatRule) -> SchemaRef {
+    match format {
+        FormatRule::Email => format_only("email"),
+        FormatRule::Url => format_only("uri"),
+        FormatRule::Ipv4 => format_only("ipv4"),
+        FormatRule::Ipv6 => format_only("ipv6"),
+        FormatRule::Ip => SchemaRef::Inline(Box::new(Schema {
+            any_of: Some(ip_alternatives()),
+            ..Schema::default()
+        })),
+    }
+}
+
+/// The two address formats `ip` accepts.
+fn ip_alternatives() -> Vec<SchemaRef> {
+    vec![format_only("ipv4"), format_only("ipv6")]
 }
 
 fn format_only(format: &str) -> SchemaRef {

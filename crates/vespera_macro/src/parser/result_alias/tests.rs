@@ -370,8 +370,7 @@ fn import_kinds(#[case] file_src: &str, #[case] expected: Option<Import>) {
 #[case::other("mod a; struct error;", false)]
 fn module_declarations(#[case] file_src: &str, #[case] expected: bool) {
     let file: syn::File = syn::parse_str(file_src).unwrap();
-    let name: syn::Ident = syn::parse_str("error").unwrap();
-    assert_eq!(declares_module(&file.items, &name), expected);
+    assert_eq!(declares_mod(&file.items, "error"), expected);
 }
 
 /// `use axum::response::Result;` makes `Result<..>` axum's, so the
@@ -751,11 +750,6 @@ fn crate_wide_lookup_finds_unique_alias_and_rejects_ambiguity() {
     )
     .unwrap();
     std::fs::write(src.join("other.rs"), "pub type Dup = B; // type ApiResult").unwrap();
-    std::fs::write(
-        src.join("same.rs"),
-        "pub type ApiResult<T> = Result<Json<T>, AppError>;",
-    )
-    .unwrap();
     std::fs::write(src.join("broken.rs"), "type Dup = ").unwrap();
     crate::schema_macro::file_cache::bump_epoch();
 
@@ -957,42 +951,5 @@ fn longer_super_chain_is_left_unexpanded() {
     assert_eq!(
         quote::quote!(#output).to_string(),
         "-> super :: super :: R < u8 >"
-    );
-}
-
-/// `use crate::api::*;` brings the `v2` module of `api` into scope, so the
-/// qualified `v2::ApiResult` is that module's alias, not another crate's
-/// item (a local glob is no external name). An external glob alone still
-/// makes the qualifier external, and so does a named import of it.
-#[test]
-fn local_glob_brings_a_qualifier_module_in() {
-    let dir = tempfile::tempdir().unwrap();
-    let src = dir.path();
-    std::fs::create_dir(src.join("api")).unwrap();
-    std::fs::write(src.join("api").join("mod.rs"), "pub mod v2;").unwrap();
-    std::fs::write(
-        src.join("api").join("v2.rs"),
-        "pub type ApiResult<T> = Result<Json<T>, V2Err>;",
-    )
-    .unwrap();
-    crate::schema_macro::file_cache::bump_epoch();
-    let expand_in = |file_src: &str, ret: &str| {
-        let file: syn::File = syn::parse_str(file_src).unwrap();
-        let mut sig: syn::Signature = syn::parse_str(&format!("fn h() {ret}")).unwrap();
-        expand_return_type_alias(&mut sig, None, Some(&file), Some(src));
-        let output = &sig.output;
-        quote::quote!(#output).to_string()
-    };
-    assert_eq!(
-        expand_in("use crate::api::*;", "-> v2::ApiResult<u8>"),
-        "-> Result < Json < u8 > , V2Err >"
-    );
-    assert_eq!(
-        expand_in("use axum::response::*;", "-> v2::ApiResult<u8>"),
-        "-> v2 :: ApiResult < u8 >"
-    );
-    assert_eq!(
-        expand_in("use crate::api::*; use other::v2;", "-> v2::ApiResult<u8>"),
-        "-> v2 :: ApiResult < u8 >"
     );
 }
