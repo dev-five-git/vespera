@@ -19,7 +19,10 @@ fn page_count_default(source: &str, chain: &[&str]) -> Option<serde_json::Value>
         items = items
             .into_iter()
             .find_map(|item| match item {
-                syn::Item::Mod(module) if module.ident == segment => {
+                syn::Item::Mod(module)
+                    if module.ident == segment
+                        && !crate::schema_macro::cfg_eval::statically_inactive(&module.attrs) =>
+                {
                     module.content.map(|(_, inner)| inner)
                 }
                 _ => None,
@@ -50,6 +53,15 @@ fn page_count_default(source: &str, chain: &[&str]) -> Option<serde_json::Value>
 )]
 #[case::inline_module_disabled_twin_first(
     "mod inner {\n#[cfg(any())]\nfn limit() -> i64 { 100 }\nfn limit() -> i64 { 10 }\n\
+     pub struct Page { #[serde(default = \"limit\")] count: i64 }\n}",
+    &["inner"],
+    Some(serde_json::json!(10))
+)]
+/// R25-SM0-M1: a `#[cfg]`-disabled twin MODULE (not a fn) comes first; the
+/// function must come from the active `mod inner`, not the disabled one.
+#[case::inline_module_disabled_twin_module_first(
+    "#[cfg(any())]\nmod inner { pub fn limit() -> i64 { 100 } }\n\
+     #[cfg(all())]\nmod inner {\nfn limit() -> i64 { 10 }\n\
      pub struct Page { #[serde(default = \"limit\")] count: i64 }\n}",
     &["inner"],
     Some(serde_json::json!(10))

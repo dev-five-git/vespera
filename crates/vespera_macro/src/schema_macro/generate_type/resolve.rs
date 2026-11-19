@@ -5,8 +5,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use super::super::file_lookup::{
-    call_site_definition, call_site_module, find_struct_from_path_detailed, reexported_module,
-    requested_module_path, storage_module_path,
+    LookupError, call_site_definition, call_site_module, find_struct_from_path_detailed,
+    reexported_module, requested_module_path, storage_module_path,
 };
 use super::super::input::SchemaTypeInput;
 use super::super::module_scope::{Resolved, module_scope, resolve_name};
@@ -106,7 +106,9 @@ fn resolve_found<'a>(
                 (Ok((found, module_path)), _) => Ok((Cow::Owned(found), Some(module_path))),
                 // An entry whose module is unknown stands in when the file
                 // lookup finds nothing (the fallback the doc above describes).
-                (Err(_), Some(stored)) if storage_module.is_none() => {
+                (Err(err), Some(stored))
+                    if storage_module.is_none() && lookup_failure_falls_back(&err) =>
+                {
                     Ok((Cow::Borrowed(stored), requested))
                 }
                 (Err(err), _) => Err(with_module_note(
@@ -118,6 +120,20 @@ fn resolve_found<'a>(
             }
         }
     }
+}
+
+/// Whether a failed file lookup leaves an entry of unknown module standing in
+/// for the source: only when no file of the requested module could be found
+/// (or no manifest dir exists to look in). A path through another crate
+/// (`LookupError::ExternalCrate`) is an error: a same-named local entry is
+/// not that crate's item (R25-SM2-01).
+fn lookup_failure_falls_back(err: &LookupError) -> bool {
+    matches!(
+        err,
+        LookupError::NotFound { .. }
+            | LookupError::BareNotFound { .. }
+            | LookupError::MissingManifestDir
+    )
 }
 
 /// A bare source name must be in scope at the call site (R24-SM2-F1): the
@@ -283,5 +299,30 @@ mod tests {
         let (found, module) = resolve_source(&input, "User", &storage).unwrap();
         assert!(found.definition.contains("legacy"), "{}", found.definition);
         assert_eq!(module, Some(path(&["crate", "nowhere"])));
+    }
+
+    /// R25-SM2-01: a source path through another crate (`entity::user::Model`,
+    /// `entity` an `--extern` crate) is refused, not replaced by an entry of
+    /// unknown module that happens to share the name.
+    #[test]
+    fn extern_crate_source_is_not_replaced_by_a_same_named_entry() {
+        let dir = crate_with(&[("src/lib.rs", "pub struct Model;\n")]);
+        let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        let _args = crate::env_access::test_env::set_var(
+            crate::env_access::COMPILER_ARGS_KEY,
+            "rustc\n--crate-name\napp\n--extern\nentity=/deps/libentity.rlib",
+        );
+        bump_epoch();
+        let storage = HashMap::from([(
+            "Model".to_string(),
+            StructMetadata::new(
+                "Model".to_string(),
+                "pub struct Model { pub id: i32 }".to_string(),
+            ),
+        )]);
+        let input: SchemaTypeInput = syn::parse_str("Dto from entity::user::Model").unwrap();
+        let err = resolve_source(&input, "Model", &storage)
+            .expect_err("an external-crate source must be an error");
+        assert!(err.to_string().contains("another crate"), "{err}");
     }
 }

@@ -22,8 +22,8 @@ use super::SchemaInput;
 use crate::{
     metadata::StructMetadata,
     parser::{
-        extract_field_rename, extract_rename_all, extract_skip, parse_struct_to_schema,
-        rename_field, strip_raw_prefix_owned,
+        extract_field_rename, extract_rename_all, parse_struct_to_schema, rename_field,
+        strip_raw_prefix_owned,
     },
 };
 
@@ -116,7 +116,9 @@ fn field_names(field: &syn::Field, rename_all: Option<&str>) -> (String, String)
     (rust, json)
 }
 
-/// The fields of `struct_item` its schema carries, in declaration order.
+/// The fields of `struct_item` its schema carries, in declaration order. The
+/// schema is the serialize view: a `skip` or `skip_serializing` field is not
+/// in it, whatever its `skip_deserializing` (R25-SM1-L3).
 fn emitted_fields(struct_item: &syn::ItemStruct) -> Vec<EmittedField> {
     let syn::Fields::Named(fields_named) = &struct_item.fields else {
         return Vec::new();
@@ -125,7 +127,10 @@ fn emitted_fields(struct_item: &syn::ItemStruct) -> Vec<EmittedField> {
     fields_named
         .named
         .iter()
-        .filter(|field| !extract_skip(&field.attrs))
+        .filter(|field| {
+            let flags = crate::parser::schema::extract_serde_skip_flags(&field.attrs);
+            !(flags.skip || flags.skip_serializing)
+        })
         .map(|field| {
             let (rust, json) = field_names(field, rename_all.as_deref());
             EmittedField { rust, json }
@@ -575,9 +580,17 @@ mod tests {
             "field `hidden` does not exist in the schema of `S`. Available fields: [\"user_name\"]"
         )
     )]
+    // R25-SM1-L3: a `skip_serializing`-only field is not in the serialize-side
+    // schema either, so picking it is refused like a skipped field.
+    #[case::skip_serializing_pick(
+        r#"S, pick = ["secret"]"#,
+        Some(
+            "field `secret` does not exist in the schema of `S`. Available fields: [\"user_name\"]"
+        )
+    )]
     fn validates_filter_names(#[case] input: &str, #[case] expected: Option<&str>) {
         let item = parse(
-            r#"#[serde(rename_all = "camelCase")] pub struct S { pub user_name: String, #[serde(skip)] pub hidden: i32 }"#,
+            r#"#[serde(rename_all = "camelCase")] pub struct S { pub user_name: String, #[serde(skip)] pub hidden: i32, #[serde(skip_serializing)] pub secret: String }"#,
         );
         let input: SchemaInput = syn::parse_str(input).unwrap();
         let result = validate_filter_names(&item, &input, "S");

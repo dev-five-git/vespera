@@ -8,7 +8,8 @@ fn default_alias_is_judged_through_the_module_scope() {
     std::fs::create_dir_all(temp.path().join("src")).unwrap();
     std::fs::write(
         temp.path().join("src/lib.rs"),
-        "pub enum Time { A }\nuse chrono::NaiveDate as Date;\n",
+        "pub enum Time { A }\nuse chrono::NaiveDate as Date;\nuse sea_orm::prelude;\n\
+         use crate::types as t;\npub struct DateTime(pub i64);\npub struct NaiveTime;\n",
     )
     .unwrap();
     let _env = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
@@ -27,4 +28,13 @@ fn default_alias_is_judged_through_the_module_scope() {
     assert!(judge("uuid::Uuid"));
     // Other names are never judged.
     assert!(judge("NaiveDate"));
+    // R25-SM1-L1: a multi-segment path is judged through the module's
+    // imports too, not by its literal root.
+    assert!(judge("prelude::Date"));
+    assert!(!judge("t::Date"));
+    // A multi-segment path with an unknown root keeps its literal root.
+    assert!(!judge("other::Date"));
+    // R25-SM1-L2: a user type named like a chrono type is not judged as one.
+    assert!(!judge("DateTime"));
+    assert!(!judge("NaiveTime"));
 }

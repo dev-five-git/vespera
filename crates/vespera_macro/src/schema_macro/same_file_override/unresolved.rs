@@ -17,15 +17,69 @@ struct Types<'a> {
 }
 
 impl<'ast> syn::visit::Visit<'ast> for Types<'_> {
+    /// A type path is judged by its root: a single name is the type itself, a
+    /// multi-segment one (`enums::Status`) names a module the call site must
+    /// resolve too (R25-SM3-02). A crate the compiler links is no module of
+    /// the DTO's file, so its root is not judged.
     fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
-        if self.found.is_none() && ty.qself.is_none() && ty.path.segments.len() == 1 {
-            let name = ty.path.segments[0].ident.to_string();
-            if (self.unresolved)(&name) {
+        if self.found.is_none()
+            && ty.qself.is_none()
+            && let Some(root) = ty.path.segments.first()
+        {
+            let name = root.ident.to_string();
+            let judged = ty.path.segments.len() == 1
+                || !crate::schema_macro::file_lookup::is_extern_crate(&name);
+            if judged && (self.unresolved)(&name) {
                 self.found = Some(name);
             }
         }
         syn::visit::visit_type_path(self, ty);
     }
+}
+
+/// A root or prelude name every module resolves the way the std library does,
+/// with no import at the call site (R25-SM3-01): the std crates and the
+/// `std` prelude's traits and functions a serde path names (`Default::default`).
+fn is_std_resolved(name: &str) -> bool {
+    matches!(
+        name,
+        "std"
+            | "core"
+            | "alloc"
+            | "Default"
+            | "Clone"
+            | "Copy"
+            | "Drop"
+            | "From"
+            | "Into"
+            | "TryFrom"
+            | "TryInto"
+            | "AsRef"
+            | "AsMut"
+            | "Iterator"
+            | "IntoIterator"
+            | "Extend"
+            | "FromIterator"
+            | "ToOwned"
+            | "ToString"
+            | "PartialEq"
+            | "PartialOrd"
+            | "Eq"
+            | "Ord"
+            | "Send"
+            | "Sync"
+            | "Sized"
+            | "Unpin"
+            | "Fn"
+            | "FnMut"
+            | "FnOnce"
+            | "drop"
+            | "String"
+            | "Some"
+            | "None"
+            | "Ok"
+            | "Err"
+    )
 }
 
 /// The `Meta` items of a comma-separated list (`tokens` of a `serde(..)`).
@@ -127,8 +181,9 @@ fn type_is_unresolved(text: &str, unresolved: Judge) -> Option<String> {
 /// DTO's own module (`None`: unknown, so only unresolved names are judged); a
 /// name that resolves to another item there than at the call site is refused
 /// too, since the proxy would name the call-site item (R24-SM3-02).
-/// Multi-segment type paths are not judged (their roots cannot be told apart
-/// from the stored definition alone).
+/// A multi-segment type path is judged by its root, as a serde path is
+/// (R25-SM3-02); a root the compiler links (an `--extern` crate) and the std
+/// crates and prelude names are never judged (R25-SM3-01).
 pub(super) fn unresolved_at_call_site(
     dto: &syn::ItemStruct,
     dto_module: Option<&[String]>,
@@ -136,7 +191,7 @@ pub(super) fn unresolved_at_call_site(
     use crate::schema_macro::module_scope::{Resolved, resolve_name};
     let call_site = crate::schema_macro::call_site_module().unwrap_or_default();
     let unresolved = |name: &str| {
-        if crate::schema_macro::type_utils::is_prelude_name(name) {
+        if crate::schema_macro::type_utils::is_prelude_name(name) || is_std_resolved(name) {
             return false;
         }
         match resolve_name(&[name.to_string()], &call_site) {
@@ -201,8 +256,22 @@ mod tests {
     #[case::container_from("#[serde(from = \"Wire\")] struct D { id: i32 }", Some("Wire"))]
     // A `Self::` root is a prelude-like name the call site always has.
     #[case::self_root("struct D { #[serde(with = \"Self::codec\")] id: i32 }", None)]
-    // A multi-segment type is not judged (its root is not told apart).
-    #[case::multi_segment_from("#[serde(try_from = \"codec::Wire\")] struct D { id: i32 }", None)]
+    // R25-SM3-02: a multi-segment type is judged by its root.
+    #[case::multi_segment_from(
+        "#[serde(try_from = \"codec::Wire\")] struct D { id: i32 }",
+        Some("codec")
+    )]
+    #[case::multi_segment_field_type("struct D { status: enums::Status }", Some("enums"))]
+    // R25-SM3-01: the std crates and prelude names resolve everywhere.
+    #[case::std_root_default(
+        "struct D { #[serde(skip_serializing_if = \"std::option::Option::is_none\")] id: Option<i32> }",
+        None
+    )]
+    #[case::std_prelude_default(
+        "struct D { #[serde(default = \"Default::default\")] id: i32 }",
+        None
+    )]
+    #[case::std_field_type("struct D { id: std::option::Option<i32> }", None)]
     // A serde value that is no string literal is no copied path.
     #[case::non_string_value("struct D { #[serde(with = codec)] id: i32 }", None)]
     fn copied_serde_paths_are_judged(#[case] source: &str, #[case] expected: Option<&str>) {

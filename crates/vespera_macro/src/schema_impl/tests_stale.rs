@@ -65,3 +65,37 @@ fn stale_entry_of_a_changed_file(#[case] first_file_after: Option<&str>, #[case]
     );
     remove(&key);
 }
+
+/// R25-SM0-L1: a variant of a same-named item whose item was deleted from its
+/// file (the file changed since the registration) is no longer a variant, so
+/// `schema!` raises the missing-derive error a clean build raises instead of
+/// reading the stale definition. The other module's variant still resolves.
+#[test]
+fn variant_of_a_deleted_item_is_no_longer_a_variant() {
+    const SOURCE: &str = "pub struct VariantGone { pub limit: u32 }\n";
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod first;\npub mod second;\n").unwrap();
+    let first = src.join("first.rs");
+    let second = src.join("second.rs");
+    std::fs::write(&first, SOURCE).unwrap();
+    std::fs::write(&second, SOURCE).unwrap();
+    let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    bump_epoch();
+
+    let metadata = |file: &Path| {
+        StructMetadata::new("VariantGone".to_string(), SOURCE.trim().to_string())
+            .with_source_identity(format!("{}::VariantGone@1:11", file.display()))
+    };
+    let first_module = ["crate", "first"].map(String::from);
+    let second_module = ["crate", "second"].map(String::from);
+    assert!(register_schema("VariantGone".to_string(), metadata(&first)).is_ok());
+    assert!(register_schema("VariantGone".to_string(), metadata(&second)).is_ok());
+    assert!(variants::in_module("VariantGone", &second_module).is_some());
+
+    std::fs::write(&second, "// VariantGone was deleted\n").unwrap();
+    bump_epoch();
+    assert!(variants::in_module("VariantGone", &second_module).is_none());
+    assert!(variants::in_module("VariantGone", &first_module).is_some());
+}

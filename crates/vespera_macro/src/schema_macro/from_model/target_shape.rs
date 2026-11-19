@@ -124,8 +124,10 @@ fn compute_target_shape(
             // An un-picked HasMany is dropped by `generate_type` before its
             // readability is looked at.
             Some(SeaOrmRelationKind::HasMany) if !pick.contains(&name) => {}
+            // A relation `generate_type` cannot convert is dropped, so it is
+            // no relation the DTO loads (R25-SM2-02): only a converted one
+            // makes the shape `FromModel`.
             Some(_) => {
-                has_relation = true;
                 if let Some(ident) = field.ident.clone()
                     && let Some((_, rel)) = convert_relation_type_to_schema_with_info(
                         &field.ty,
@@ -135,6 +137,7 @@ fn compute_target_shape(
                         ident,
                     )
                 {
+                    has_relation = true;
                     relations.push(rel);
                 }
             }
@@ -267,6 +270,13 @@ mod tests {
     // ... and so is an `omit_default` primary key (private, so unreadable).
     #[case::omit_default_private_primary_key(
         "pub struct Model { #[sea_orm(primary_key)] id: i32, pub name: String }",
+        "crate::legacy::Model",
+        TargetShape::From
+    )]
+    // R25-SM2-02: a relation `generate_type` cannot convert (a non-path
+    // target) is dropped with no `from_model` load, so the shape is `From`.
+    #[case::unconvertible_relation_is_dropped(
+        "#[sea_orm(table_name = \"memos\")]\npub struct Model { pub id: i32, pub profile: HasOne<&'static str> }",
         "crate::legacy::Model",
         TargetShape::From
     )]

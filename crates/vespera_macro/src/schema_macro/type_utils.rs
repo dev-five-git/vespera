@@ -465,9 +465,16 @@ impl TypeResolver<'_> {
             .scope
             .is_some_and(|scope| external_globs(scope).count() > 1);
         // The chrono names of [`CHRONO_ONLY_NAMES`] have no other meaning a
-        // glob could give them: several globs do not make them ambiguous, so
-        // they keep their chrono alias (R24-SM4-L1).
+        // glob could give them, so several chrono-family globs do not make
+        // them ambiguous: they keep their chrono alias (R24-SM4-L1). Any other
+        // external glob may export its own type of that name, so with one of
+        // those the explicit-import error applies (R25-SM4-L1).
+        let chrono_family_globs = self.scope.is_some_and(|scope| {
+            external_globs(scope)
+                .all(|glob| matches!(first_named(glob), Some("chrono" | "vespera" | "sea_orm")))
+        });
         let chrono_only = several_external_globs
+            && chrono_family_globs
             && segment.arguments.is_none()
             && CHRONO_ONLY_NAMES.contains(&name.as_str());
         // A name the source module neither defines nor imports, nor a std
