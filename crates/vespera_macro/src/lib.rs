@@ -308,8 +308,9 @@ pub fn schema(input: TokenStream) -> TokenStream {
 ///   identifier of a serialized field first, else the serde JSON name of a
 ///   serialized field; a name that selects no field, only a serde-skipped
 ///   field, or a JSON name shared by two fields is a compile error.
-///   `rename`, `partial` and `relation_adapters` take Rust identifiers only,
-///   of fields a `cfg` keeps; `add` names new fields.)
+///   `rename`, `partial` and `relation_adapters` take Rust identifiers only;
+///   a name of a field a `cfg` removes in this build is accepted and has no
+///   effect there. `add` names new fields.)
 /// - `clone = bool`: Whether to derive Clone (default: true)
 /// - `partial`: Make all fields `Option<T>` (fields already `Option<T>` are unchanged)
 /// - `partial = [...]`: Make only listed fields `Option<T>`

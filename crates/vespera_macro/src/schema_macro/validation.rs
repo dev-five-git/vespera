@@ -93,6 +93,12 @@ fn sorted_source_fields(source_field_names: &HashSet<String>) -> Vec<&str> {
         .collect()
 }
 
+/// Checks that each `rename` / `partial` / `relation_adapters` name is a
+/// source field name ([`extract_source_field_names`]). A name of a field a
+/// `#[cfg]` (or `feature`) removes in this build is accepted on purpose: the
+/// DTO may rename or patch a feature-gated field, and the entry only takes
+/// effect in the builds that keep the field (R28-SM4-L2, decided). `pick` /
+/// `omit` refuse such a name instead.
 fn validate_fields_exist<'a>(
     kind: &str,
     fields: impl IntoIterator<Item = &'a str>,
@@ -152,7 +158,7 @@ pub fn resolve_filter_names(
                     name,
                     format!(
                         "field `{name}` does not exist in type `{source_type_name}`. Available fields: {:?}",
-                        sorted_source_fields(&extract_source_field_names(source))
+                        sorted_source_fields(&listed_source_field_names(source))
                     ),
                 ));
             }
@@ -414,13 +420,33 @@ pub fn validate_emitted<'a>(
     Ok(())
 }
 
-/// Extracts the field names of a struct's named fields that its `#[cfg]`
-/// predicates keep (a field a statically false `cfg` removes is no candidate,
-/// the way `pick` / `omit` read it: R28-SM4-L1 / L2). `rename`, `partial`,
-/// `relation_adapters` and the "Available fields" listing use this set.
+/// Extracts all field names from a struct's named fields.
+///
+/// This is the set `rename` / `partial` / `relation_adapters` validate against:
+/// a field a `#[cfg]` removes in this build is still a name, and naming it is
+/// accepted (it has no effect in that build). `pick` / `omit` are the ones that
+/// refuse such a name (`field_selection`).
 ///
 /// Returns an empty set for tuple or unit structs.
 pub fn extract_source_field_names(parsed_struct: &syn::ItemStruct) -> HashSet<String> {
+    use crate::parser::strip_raw_prefix_owned;
+
+    if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
+        fields_named
+            .named
+            .iter()
+            .filter_map(|f| f.ident.as_ref())
+            .map(|i| strip_raw_prefix_owned(i.to_string()))
+            .collect()
+    } else {
+        HashSet::new()
+    }
+}
+
+/// The field names the "Available fields" listing shows: the named fields a
+/// statically false `#[cfg]` (or `feature` predicate) removes are left out
+/// (R28-SM4-L1). Only the listing; validation uses [`extract_source_field_names`].
+fn listed_source_field_names(parsed_struct: &syn::ItemStruct) -> HashSet<String> {
     use crate::parser::strip_raw_prefix_owned;
 
     if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
@@ -665,17 +691,12 @@ mod tests {
         assert_eq!(names.len(), 1);
     }
 
-    /// R28-SM4-L1 / L2: a field a statically false `cfg` removes is not a
-    /// candidate, so the "Available fields" listing omits it and `rename` /
-    /// `partial` / adapters refuse it like `pick` / `omit` do.
+    /// R28-SM4-L1: the "Available fields" listing omits a field a statically
+    /// false `cfg` removes.
     #[test]
-    fn cfg_disabled_fields_are_no_candidates() {
+    fn cfg_disabled_fields_are_left_out_of_the_listing() {
         let struct_def: syn::ItemStruct =
             syn::parse_str("pub struct S { #[cfg(any())] gone: i32, id: i32 }").unwrap();
-        assert_eq!(
-            extract_source_field_names(&struct_def),
-            HashSet::from(["id".to_string()])
-        );
         let ty: syn::Type = syn::parse2(quote!(S)).unwrap();
         let omit = Some(vec!["nope".to_string()]);
         let err = resolve_filter_names("omit", omit.as_ref(), &struct_def, "S", &ty)
@@ -683,12 +704,26 @@ mod tests {
             .to_string();
         assert!(err.contains("\"id\""), "{err}");
         assert!(!err.contains("gone"), "{err}");
-        let rename = Some(vec![("gone".to_string(), "x".to_string())]);
+    }
+
+    /// R28-SM4-L2 (decided: accepted). A `rename` / `partial` / adapter name of
+    /// a `#[cfg(feature = "x")]` field is accepted with the feature off: a DTO
+    /// may rename a feature-gated field, and the rename has no effect in that
+    /// build. `pick` / `omit` still refuse it (`field_selection`).
+    #[test]
+    fn cfg_removed_field_name_is_accepted_by_rename_and_partial() {
+        let _args = crate::env_access::test_env::set_var(
+            crate::env_access::COMPILER_ARGS_KEY,
+            "rustc\n--crate-name\napp",
+        );
+        let struct_def: syn::ItemStruct =
+            syn::parse_str("pub struct S { #[cfg(feature = \"x\")] gated: i32, id: i32 }").unwrap();
+        let ty: syn::Type = syn::parse2(quote!(S)).unwrap();
         let fields = extract_source_field_names(&struct_def);
-        let err = validate_rename_fields(rename.as_ref(), &fields, &ty, "S")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("does not exist"), "{err}");
+        let rename = Some(vec![("gated".to_string(), "other".to_string())]);
+        assert!(validate_rename_fields(rename.as_ref(), &fields, &ty, "S").is_ok());
+        let partial = Some(vec!["gated".to_string()]);
+        assert!(validate_partial_fields(partial.as_ref(), &fields, &ty, "S").is_ok());
     }
 
     /// A `rename` target / `add` name equal to another generated field is a
