@@ -177,7 +177,8 @@ fn transitive_cycles_are_circular() {
         .len(),
         0
     );
-    // A model that does not parse ends the walk.
+    // A model that does not parse ends the walk: no circular field, while
+    // the same file made valid (`h -> a`, a real back-reference) is circular.
     std::fs::write(models.join("h.rs"), "pub struct Model { broken").unwrap();
     assert_eq!(
         analysis(
@@ -186,6 +187,20 @@ fn transitive_cycles_are_circular() {
         )
         .len(),
         0
+    );
+    std::fs::write(
+        models.join("h.rs"),
+        "pub struct Model { pub id: i32, pub next: BelongsTo<super::a::Entity> }",
+    )
+    .unwrap();
+    // The file metadata is cached per epoch: the rewrite is seen only after a bump.
+    crate::schema_macro::file_cache::bump_epoch();
+    assert_eq!(
+        analysis(
+            "d",
+            "pub struct Model { pub id: i32, pub next: BelongsTo<super::h::Entity> }"
+        ),
+        ["next"]
     );
 }
 

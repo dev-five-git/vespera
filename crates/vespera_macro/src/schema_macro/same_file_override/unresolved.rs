@@ -241,9 +241,7 @@ pub(super) fn unresolved_at_call_site(
 /// types, serde paths and readability are not the call site's concern
 /// (R30-SM3-L4).
 fn compiled_out(field: &syn::Field) -> bool {
-    crate::schema_macro::cfg_eval::statically_inactive(
-        &crate::schema_macro::field_attrs::field_cfgs(&field.attrs),
-    )
+    crate::schema_macro::cfg_eval::compiled_out(&field.attrs)
 }
 
 /// `pub` or `pub(crate)`: readable from every module of the crate, so the one

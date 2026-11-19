@@ -14,6 +14,8 @@ use quote::ToTokens;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 
+use super::field_attrs::field_cfgs;
+
 /// One cfg predicate: a `true` / `false` literal (stable since Rust 1.88,
 /// which syn cannot parse as a `Meta`) or a `Meta` (`feature = ".."`,
 /// `all(..)`, `unix`, ...).
@@ -55,6 +57,15 @@ pub fn statically_inactive(attrs: &[syn::Attribute]) -> bool {
                 eval(&predicate, features.as_ref().as_deref()) == Some(false)
             })
     })
+}
+
+/// Whether the compiler drops the item or field carrying `attrs`: a statically
+/// false `#[cfg]`, or a `cfg_attr(p, cfg(q))` whose `cfg(q)` is statically
+/// false (rustc keeps it under `cfg(any(not(p), q))`, see
+/// [`field_cfgs`]). Every per-item / per-field "which twin is live" check uses
+/// this, so a twin disabled through `cfg_attr` is never the one read.
+pub fn compiled_out(attrs: &[syn::Attribute]) -> bool {
+    statically_inactive(&field_cfgs(attrs))
 }
 
 /// Whether `predicate` is known to hold (`all()`, `true`, an enabled
@@ -173,6 +184,19 @@ mod tests {
             predicate.replace(' ', "")
         );
         assert_eq!(eval(&parsed, Some(&["pg".to_string()])), expected);
+    }
+
+    #[rstest]
+    #[case::cfg_false("#[cfg(any())]", true)]
+    #[case::cfg_true("#[cfg(all())]", false)]
+    #[case::cfg_attr_false("#[cfg_attr(all(), cfg(any()))]", true)]
+    #[case::cfg_attr_true("#[cfg_attr(all(), cfg(all()))]", false)]
+    #[case::cfg_attr_unknown_predicate("#[cfg_attr(unix, cfg(any()))]", false)]
+    #[case::cfg_attr_without_cfg("#[cfg_attr(all(), derive(Debug))]", false)]
+    #[case::cfg_attr_false_among_active("#[cfg(all())] #[cfg_attr(all(), cfg(any()))]", true)]
+    fn compiled_out_includes_cfg_attr_cfgs(#[case] attrs: &str, #[case] expected: bool) {
+        let attrs = syn::parse::Parser::parse_str(syn::Attribute::parse_outer, attrs).unwrap();
+        assert_eq!(compiled_out(&attrs), expected);
     }
 
     #[test]

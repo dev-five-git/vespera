@@ -276,7 +276,7 @@ pub fn primary_key_count(fields: &syn::Fields) -> usize {
         .iter()
         .filter(|field| {
             is_sea_orm_primary_key(&field.attrs)
-                && !crate::schema_macro::cfg_eval::statically_inactive(&field.attrs)
+                && !crate::schema_macro::cfg_eval::compiled_out(&field.attrs)
         })
         .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
         .collect();
@@ -771,6 +771,19 @@ mod tests {
     #[case::cfg_twin_counts_once(
         "pub struct M { #[cfg(unix)] #[sea_orm(primary_key)] pub id: i32, #[cfg(not(unix))] #[sea_orm(primary_key)] pub id: i32 }",
         1
+    )]
+    // R31-SM4-L1: a key removed through `cfg_attr(p, cfg(q))` is not counted.
+    #[case::cfg_attr_inactive_key_not_counted(
+        "pub struct M { #[sea_orm(primary_key)] pub id: i32, #[cfg_attr(all(), cfg(any()))] #[sea_orm(primary_key)] pub legacy_id: i32 }",
+        1
+    )]
+    #[case::cfg_attr_active_key_counted(
+        "pub struct M { #[sea_orm(primary_key)] pub id: i32, #[cfg_attr(all(), cfg(all()))] #[sea_orm(primary_key)] pub legacy_id: i32 }",
+        2
+    )]
+    #[case::cfg_attr_only_key_removed(
+        "pub struct M { #[cfg_attr(all(), cfg(any()))] #[sea_orm(primary_key)] pub id: i32 }",
+        0
     )]
     #[case::tuple_field_counts_none("pub struct M(#[sea_orm(primary_key)] pub i32);", 0)]
     fn primary_key_count_skips_statically_inactive_keys(

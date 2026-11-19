@@ -174,9 +174,10 @@ pub(in crate::schema_macro) fn source_field_named<'a>(
 /// model, so its single `#[sea_orm(primary_key)]` field (R21-SM2-M1, round 21).
 /// `id` when the source declares no single primary key, as before.
 fn source_key_column(source_fields: &syn::Fields) -> String {
-    let mut keys = source_fields
-        .iter()
-        .filter(|field| is_sea_orm_primary_key(&field.attrs));
+    let mut keys = source_fields.iter().filter(|field| {
+        is_sea_orm_primary_key(&field.attrs)
+            && !crate::schema_macro::cfg_eval::compiled_out(&field.attrs)
+    });
     match (keys.next(), keys.next()) {
         (Some(key), None) => key
             .ident
@@ -355,6 +356,16 @@ mod tests {
     #[case::two_keys_fall_back_to_id(
         "#[sea_orm(primary_key)] pub a: i32, #[sea_orm(primary_key)] pub b: i32",
         "id"
+    )]
+    // R31-SM2-02 (round 31): a key a `cfg` or `cfg_attr(p, cfg(q))` removes is
+    // no key in that build, so the active one is the source key.
+    #[case::cfg_removed_key_is_not_a_key(
+        "#[cfg(any())] #[sea_orm(primary_key)] pub legacy: i32, #[sea_orm(primary_key)] pub user_id: i32, pub name: String",
+        "user_id"
+    )]
+    #[case::cfg_attr_removed_key_is_not_a_key(
+        "#[cfg_attr(all(), cfg(any()))] #[sea_orm(primary_key)] pub legacy: i32, #[sea_orm(primary_key)] pub user_id: i32, pub name: String",
+        "user_id"
     )]
     fn load_without_to_reads_the_source_key(#[case] body: &str, #[case] expected: &str) {
         let fields = source_fields(body);

@@ -82,6 +82,11 @@ fn compute_target_shape(
         let syn::Item::Macro(item) = item else {
             return None;
         };
+        // A `#[cfg]` twin the build drops is not the invocation the DTO came from
+        // (R31-SM2-01): the other item scans of this crate skip it too.
+        if crate::schema_macro::cfg_eval::compiled_out(&item.attrs) {
+            return None;
+        }
         (item.mac.path.segments.last()?.ident == "schema_type")
             .then(|| syn::parse2::<SchemaTypeInput>(item.mac.tokens.clone()).ok())?
             .filter(|input| input.new_type == schema_name)
@@ -343,5 +348,31 @@ mod tests {
         let source: syn::Type = syn::parse_str(source).unwrap();
         let module: Vec<String> = ["crate", "models", "user"].map(String::from).to_vec();
         assert!(source_of(&source, &module, USER_MODEL).is_none());
+    }
+
+    /// R31-SM2-01 (round 31): a `schema_type!` the build drops is not the
+    /// invocation the `Schema` came from. The removed twin (a `From`-only DTO)
+    /// comes first; the live one (`from_model`) must still decide the shape.
+    #[rstest]
+    #[case::cfg_removed_twin_first("#[cfg(any())]")]
+    #[case::cfg_attr_removed_twin_first("#[cfg_attr(all(), cfg(any()))]")]
+    fn removed_schema_type_twin_is_not_the_invocation(#[case] twin_attr: &str) {
+        let dir = tempfile::TempDir::new().unwrap();
+        write_crate(dir.path(), "pub struct Model { pub id: i32 }", "Model", "");
+        let user = dir.path().join("src").join("models").join("user.rs");
+        let live = std::fs::read_to_string(&user).unwrap();
+        std::fs::write(
+            &user,
+            format!(
+                "{twin_attr}\nvespera::schema_type!(Schema from crate::legacy::Model);\n{live}"
+            ),
+        )
+        .unwrap();
+        let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        let module: Vec<String> = ["crate", "models", "user"].map(String::from).to_vec();
+        assert_eq!(
+            compute_target_shape(&module, "Schema", USER_MODEL),
+            Some(TargetShape::FromModel)
+        );
     }
 }

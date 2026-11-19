@@ -33,14 +33,15 @@ pub struct RelationFieldInfo {
 
 /// Check if a field in the struct is optional (`Option<T>`). A raw field
 /// (`r#ref`) is named by its column (`ref`). A `#[cfg]` twin the static check
-/// removes is not the field: the active one decides (R25-SM4-L2).
+/// removes (`cfg`, or `cfg_attr(p, cfg(q))`) is not the field: the active one
+/// decides (R25-SM4-L2, R31-SM4-L1).
 pub fn is_field_optional_in_struct(struct_item: &syn::ItemStruct, field_name: &str) -> bool {
     let field_name = field_name.strip_prefix("r#").unwrap_or(field_name);
     if let syn::Fields::Named(fields_named) = &struct_item.fields {
         let active = fields_named
             .named
             .iter()
-            .filter(|field| !crate::schema_macro::cfg_eval::statically_inactive(&field.attrs));
+            .filter(|field| !crate::schema_macro::cfg_eval::compiled_out(&field.attrs));
         for field in active {
             if let Some(ident) = &field.ident
                 && syn::ext::IdentExt::unraw(ident) == field_name
@@ -343,6 +344,32 @@ mod tests {
             "struct Model { #[cfg(all())] user_id: Option<i32>, #[cfg(any())] user_id: i32 }",
         );
         assert!(is_field_optional_in_struct(&struct_item, "user_id"));
+    }
+
+    /// R31-SM4-L1: a twin the compiler drops through `cfg_attr(p, cfg(q))` is
+    /// not the field either, in either declaration order.
+    #[rstest::rstest]
+    #[case::disabled_option_twin_first(
+        "struct Model { #[cfg_attr(all(), cfg(any()))] user_id: Option<i32>, user_id: i32 }",
+        false
+    )]
+    #[case::disabled_required_twin_first(
+        "struct Model { #[cfg_attr(all(), cfg(any()))] user_id: i32, user_id: Option<i32> }",
+        true
+    )]
+    #[case::active_option_twin_wins(
+        "struct Model { #[cfg_attr(all(), cfg(all()))] user_id: Option<i32>, #[cfg_attr(all(), cfg(any()))] user_id: i32 }",
+        true
+    )]
+    fn test_is_field_optional_in_struct_ignores_a_cfg_attr_disabled_twin(
+        #[case] source: &str,
+        #[case] optional: bool,
+    ) {
+        let struct_item = make_test_struct(source);
+        assert_eq!(
+            is_field_optional_in_struct(&struct_item, "user_id"),
+            optional
+        );
     }
 
     #[test]
