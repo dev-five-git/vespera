@@ -391,13 +391,14 @@ mod tests {
                 "#,
         )
         .unwrap();
-        if let syn::Fields::Named(fields) = &item.fields {
-            let attrs = &fields.named.first().unwrap().attrs;
-            let rename = extract_field_rename(attrs);
-            let default = extract_default(attrs);
-            assert_eq!(rename.as_deref(), Some("customName"));
-            assert_eq!(default, Some(None));
-        }
+        let syn::Fields::Named(fields) = &item.fields else {
+            unreachable!("test input must contain named fields");
+        };
+        let attrs = &fields.named.first().unwrap().attrs;
+        let rename = extract_field_rename(attrs);
+        let default = extract_default(attrs);
+        assert_eq!(rename.as_deref(), Some("customName"));
+        assert_eq!(default, Some(None));
     }
 
     /// Test extract_rename_all with programmatic tokens
@@ -691,11 +692,12 @@ mod tests {
     fn test_extract_field_rename_form_data_fallback() {
         let struct_src = r#"struct Foo { #[form_data(field_name = "my_file")] field: i32 }"#;
         let item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
-        if let syn::Fields::Named(fields) = &item.fields {
-            let field = fields.named.first().unwrap();
-            let result = extract_field_rename(&field.attrs);
-            assert_eq!(result.as_deref(), Some("my_file"));
-        }
+        let syn::Fields::Named(fields) = &item.fields else {
+            unreachable!("test input must contain named fields");
+        };
+        let field = fields.named.first().unwrap();
+        let result = extract_field_rename(&field.attrs);
+        assert_eq!(result.as_deref(), Some("my_file"));
     }
 
     /// Test serde rename takes priority over form_data field_name
@@ -703,11 +705,12 @@ mod tests {
     fn test_extract_field_rename_serde_over_form_data() {
         let struct_src = r#"struct Foo { #[serde(rename = "serde_name")] #[form_data(field_name = "form_name")] field: i32 }"#;
         let item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
-        if let syn::Fields::Named(fields) = &item.fields {
-            let field = fields.named.first().unwrap();
-            let result = extract_field_rename(&field.attrs);
-            assert_eq!(result.as_deref(), Some("serde_name"));
-        }
+        let syn::Fields::Named(fields) = &item.fields else {
+            unreachable!("test input must contain named fields");
+        };
+        let field = fields.named.first().unwrap();
+        let result = extract_field_rename(&field.attrs);
+        assert_eq!(result.as_deref(), Some("serde_name"));
     }
 
     /// Test extract_field_rename with form_data but no field_name key
@@ -715,11 +718,12 @@ mod tests {
     fn test_extract_field_rename_form_data_no_field_name() {
         let struct_src = r#"struct Foo { #[form_data(limit = "10MiB")] field: i32 }"#;
         let item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
-        if let syn::Fields::Named(fields) = &item.fields {
-            let field = fields.named.first().unwrap();
-            let result = extract_field_rename(&field.attrs);
-            assert_eq!(result, None);
-        }
+        let syn::Fields::Named(fields) = &item.fields else {
+            unreachable!("test input must contain named fields");
+        };
+        let field = fields.named.first().unwrap();
+        let result = extract_field_rename(&field.attrs);
+        assert_eq!(result, None);
     }
 
     /// Test extract_rename_all falls back to #[try_from_multipart(rename_all = "...")]

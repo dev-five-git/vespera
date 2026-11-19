@@ -565,11 +565,12 @@ mod tests {
         // Parse field from struct context
         let struct_src = format!("struct Foo {{ {field_src} }}");
         let item: syn::ItemStruct = syn::parse_str(&struct_src).unwrap();
-        if let syn::Fields::Named(fields) = &item.fields {
-            let field = fields.named.first().unwrap();
-            let result = extract_field_rename(&field.attrs);
-            assert_eq!(result.as_deref(), expected, "Failed for: {field_src}");
-        }
+        let syn::Fields::Named(fields) = &item.fields else {
+            unreachable!("test input must contain named fields");
+        };
+        let field = fields.named.first().unwrap();
+        let result = extract_field_rename(&field.attrs);
+        assert_eq!(result.as_deref(), expected, "Failed for: {field_src}");
     }
 
     // Tests for extract_skip function
@@ -596,11 +597,12 @@ mod tests {
     fn test_extract_skip(#[case] field_src: &str, #[case] expected: bool) {
         let struct_src = format!("struct Foo {{ {field_src} }}");
         let item: syn::ItemStruct = syn::parse_str(&struct_src).unwrap();
-        if let syn::Fields::Named(fields) = &item.fields {
-            let field = fields.named.first().unwrap();
-            let result = extract_skip(&field.attrs);
-            assert_eq!(result, expected, "Failed for: {field_src}");
-        }
+        let syn::Fields::Named(fields) = &item.fields else {
+            unreachable!("test input must contain named fields");
+        };
+        let field = fields.named.first().unwrap();
+        let result = extract_skip(&field.attrs);
+        assert_eq!(result, expected, "Failed for: {field_src}");
     }
 
     #[test]
@@ -633,11 +635,12 @@ mod tests {
     fn test_extract_flatten(#[case] field_src: &str, #[case] expected: bool) {
         let struct_src = format!("struct Foo {{ {field_src} }}");
         let item: syn::ItemStruct = syn::parse_str(&struct_src).unwrap();
-        if let syn::Fields::Named(fields) = &item.fields {
-            let field = fields.named.first().unwrap();
-            let result = extract_flatten(&field.attrs);
-            assert_eq!(result, expected, "Failed for: {field_src}");
-        }
+        let syn::Fields::Named(fields) = &item.fields else {
+            unreachable!("test input must contain named fields");
+        };
+        let field = fields.named.first().unwrap();
+        let result = extract_flatten(&field.attrs);
+        assert_eq!(result, expected, "Failed for: {field_src}");
     }
 
     // Tests for extract_default function
@@ -674,12 +677,13 @@ mod tests {
     ) {
         let struct_src = format!("struct Foo {{ {field_src} }}");
         let item: syn::ItemStruct = syn::parse_str(&struct_src).unwrap();
-        if let syn::Fields::Named(fields) = &item.fields {
-            let field = fields.named.first().unwrap();
-            let result = extract_default(&field.attrs);
-            let expected_owned = expected.map(|o| o.map(std::string::ToString::to_string));
-            assert_eq!(result, expected_owned, "Failed for: {field_src}");
-        }
+        let syn::Fields::Named(fields) = &item.fields else {
+            unreachable!("test input must contain named fields");
+        };
+        let field = fields.named.first().unwrap();
+        let result = extract_default(&field.attrs);
+        let expected_owned = expected.map(|o| o.map(std::string::ToString::to_string));
+        assert_eq!(result, expected_owned, "Failed for: {field_src}");
     }
 
     #[test]

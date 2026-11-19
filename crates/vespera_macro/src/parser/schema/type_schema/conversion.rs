@@ -55,7 +55,7 @@ use tuple_schema::tuple_array_schema;
 ///    `T: ::vespera::Schema` assertion (only NON-builtin leaves do).
 ///
 /// Adding a new builtin to the match arms below MUST also add it here, and
-/// vice-versa — the [`tests::is_builtin_openapi_type_matches_conversion_arms`]
+/// vice-versa — the [`tests_arms::is_builtin_openapi_type_matches_conversion_arms`]
 /// test pins the two lists in sync.
 #[must_use]
 pub const fn is_builtin_openapi_type(ident: &str) -> bool {

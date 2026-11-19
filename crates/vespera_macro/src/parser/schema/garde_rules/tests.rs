@@ -362,3 +362,33 @@ fn escape_regex_escapes_every_syntax_character() {
 fn ecma_compatible_patterns(#[case] pattern: &str, #[case] expected: bool) {
     assert_eq!(is_ecma_compatible(pattern), expected, "{pattern}");
 }
+
+/// Every format rule garde applies is documented: the first one is the
+/// schema's `format` (`ip`: `anyOf`), each further one an `allOf` member.
+#[rstest]
+#[case::email_then_url(
+    "#[garde(email, url)] value: String",
+    serde_json::json!({"type": "string", "format": "email", "allOf": [{"format": "uri"}]})
+)]
+#[case::url_then_email_ipv6(
+    "#[garde(url, email, ipv6)] value: String",
+    serde_json::json!({"type": "string", "format": "uri", "allOf": [
+        {"format": "email"},
+        {"format": "ipv6"}
+    ]})
+)]
+#[case::every_kind_as_member(
+    "#[garde(ipv6, ip, ipv4, url)] value: String",
+    serde_json::json!({"type": "string", "format": "ipv6", "allOf": [
+        {"anyOf": [{"format": "ipv4"}, {"format": "ipv6"}]},
+        {"format": "ipv4"},
+        {"format": "uri"}
+    ]})
+)]
+fn repeated_format_rules_are_all_documented(
+    #[case] field_src: &str,
+    #[case] expected: serde_json::Value,
+) {
+    let property: serde_json::Value = serde_json::from_str(&field_json(field_src)).unwrap();
+    assert_eq!(property, expected);
+}

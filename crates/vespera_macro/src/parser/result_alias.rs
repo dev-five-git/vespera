@@ -173,7 +173,9 @@ fn fn_module(items: &[syn::Item], name: &syn::Ident) -> Option<Vec<String>> {
 }
 
 mod expansion;
+mod imports;
 pub use expansion::expand_return_type_alias;
+use imports::{declares_mod, glob_declares_module, imported_nominal};
 
 /// Identifies one alias definition: its tokens, its file (`None` for the
 /// handler's own, already parsed file) and the inline module path inside it.
@@ -479,7 +481,7 @@ fn find_alias<'a>(
     // re-declaration) is fine; two different definitions are ambiguous
     // without name resolution.
     definitions
-        .all(|(other, ..)| same_definition(&alias, &other))
+        .all(|(other, other_scope, ..)| same_definition(&alias, &alias_scope, &other, &other_scope))
         .then_some((alias, alias_scope))
 }
 
@@ -498,7 +500,7 @@ fn is_own_alias(
         (Some(own_path), NextScope::File(path, module)) => {
             *module == scope.module && source_key(path) == *own_path
         }
-        (None, _) => own.is_some_and(|own| same_definition(own, alias)),
+        (None, _) => own.is_some_and(|own| same_tokens(own, alias)),
     }
 }
 
@@ -659,8 +661,9 @@ fn glob_parents(items: &[syn::Item]) -> Vec<Qualifier> {
                 }
             }
             syn::UseTree::Glob(_) => {
-                let local =
-                    root.is_some_and(|root| is_local_root(root) || declares_module(items, root));
+                let local = root.is_some_and(|root| {
+                    is_local_root(root) || declares_mod(items, &root.to_string())
+                });
                 if let Some(parent) = parent.filter(|_| local) {
                     out.extend(import_qualifier(parent, nested));
                 }
@@ -728,78 +731,6 @@ fn renames_to(items: &[syn::Item], name: &str) -> bool {
     })
 }
 
-/// Whether the module a `use` imports `name` from ([`import_parent`])
-/// declares a struct / enum / union `name`: a named module (see
-/// [`nominal_in_module`]), the crate root (the top level of `lib.rs` /
-/// `main.rs` under `src_dir`), or the parent module (the inline parent in
-/// the handler's file; for a file module, any file's top level — the parent
-/// file is not known).
-fn imported_nominal(
-    name: &str,
-    parent: &Qualifier,
-    scope: &Scope<'_>,
-    src_dir: Option<&Path>,
-) -> bool {
-    let top_level = |root_only: bool| {
-        src_dir.is_some_and(|src_dir| {
-            file_cache::list_rs_files(src_dir).iter().any(|path| {
-                (!root_only || file_module(path, src_dir).is_none())
-                    && parsed_with(path, name)
-                        .is_some_and(|file| declares_nominal(&file.items, name))
-            })
-        })
-    };
-    match parent {
-        Qualifier::Module(module) => nominal_in_module(name, module, scope, src_dir),
-        Qualifier::CrateRoot => top_level(true),
-        Qualifier::Unresolved => false,
-        Qualifier::Super => match scope.module.split_last() {
-            Some((_, parent)) => {
-                let parent = Scope {
-                    file: scope.file.clone(),
-                    module: parent.to_vec(),
-                    path: scope.path.clone(),
-                };
-                declares_nominal(parent.items(), name)
-            }
-            None => top_level(false),
-        },
-    }
-}
-
-/// Whether a module named `module` (an inline `mod` of the handler's file,
-/// or a file / inline module under `src_dir`) declares a struct / enum /
-/// union `name`.
-fn nominal_in_module(name: &str, module: &str, scope: &Scope<'_>, src_dir: Option<&Path>) -> bool {
-    fn walk(items: &[syn::Item], own: Option<&str>, name: &str, module: &str) -> bool {
-        (own == Some(module) && declares_nominal(items, name))
-            || items.iter().any(|item| match item {
-                syn::Item::Mod(syn::ItemMod {
-                    attrs,
-                    ident,
-                    content: Some((_, inner)),
-                    ..
-                }) if !attrs_test_only(attrs) => {
-                    walk(inner, Some(&ident.to_string()), name, module)
-                }
-                _ => false,
-            })
-    }
-    walk(&scope.file.items, None, name, module)
-        || src_dir.is_some_and(|src_dir| {
-            file_cache::list_rs_files(src_dir).iter().any(|path| {
-                parsed_with(path, name).is_some_and(|file| {
-                    walk(
-                        &file.items,
-                        file_module(path, src_dir).as_deref(),
-                        name,
-                        module,
-                    )
-                })
-            })
-        })
-}
-
 /// `crate` / `self` / `super`: a path root inside the current crate.
 fn is_local_root(ident: &syn::Ident) -> bool {
     ident == "crate" || ident == "self" || ident == "super"
@@ -812,26 +743,22 @@ fn is_local_root(ident: &syn::Ident) -> bool {
 /// (`use crate::error;`), or a module a local glob (`use crate::api::*;`)
 /// may bring in (`v2::ApiResult` with `api::v2`) stays a candidate; without
 /// the file, any other qualified path counts as external. The glob test is
-/// a name the scope does not import at all, so an external `use` of the
-/// qualifier still wins.
-fn is_external_path(path: &syn::Path, scope: Option<&Scope<'_>>) -> bool {
+/// a name the scope does not import at all, and a local glob only counts when
+/// one of its modules really declares `mod <first>` ([`glob_declares_module`]):
+/// an un-imported `axum::` under `use crate::models::*;` stays external. An
+/// external `use` of the qualifier still wins.
+fn is_external_path(path: &syn::Path, scope: Option<&Scope<'_>>, src_dir: Option<&Path>) -> bool {
     let first = &path.segments[0].ident;
+    let first_name = first.to_string();
     path.segments.len() > 1
         && !is_local_root(first)
         && !scope.is_some_and(|scope| {
             let items = scope.items();
-            let named = import_kind(items, &first.to_string());
-            declares_module(items, first)
+            let named = import_kind(items, &first_name);
+            declares_mod(items, &first_name)
                 || named == Some(Import::Local)
-                || (named.is_none() && !glob_parents(items).is_empty())
+                || (named.is_none() && glob_declares_module(&first_name, scope, src_dir))
         })
-}
-
-/// Whether `items` declare `mod <name>` (inline or file module).
-fn declares_module(items: &[syn::Item], name: &syn::Ident) -> bool {
-    items
-        .iter()
-        .any(|item| matches!(item, syn::Item::Mod(module) if module.ident == *name))
 }
 
 /// Where a `use` brings a name from.
@@ -854,7 +781,7 @@ fn import_kind(items: &[syn::Item], name: &str) -> Option<Import> {
     for item in items {
         if let syn::Item::Use(item_use) = item {
             let root = item_use.leading_colon.is_some().then_some(None);
-            let local_module = |ident: &syn::Ident| declares_module(items, ident);
+            let local_module = |ident: &syn::Ident| declares_mod(items, &ident.to_string());
             use_tree_imports(&item_use.tree, root, &local_module, &mut imports);
         }
     }
@@ -946,7 +873,35 @@ fn parse_items(path: &Path) -> Option<syn::File> {
     file_cache::get_shallow_parsed_file(path)
 }
 
-fn same_definition(a: &syn::ItemType, b: &syn::ItemType) -> bool {
+/// Whether two definitions of an alias name are the same one: the same
+/// tokens, defined in the same module. The same alias seen twice (the
+/// handler's file is under `src/` too) qualifies; the same tokens in two
+/// modules do not, since the names in the body resolve per module. A scope
+/// whose file is unknown matches by module alone.
+fn same_definition(
+    alias: &syn::ItemType,
+    alias_scope: &NextScope<'_>,
+    other: &syn::ItemType,
+    other_scope: &NextScope<'_>,
+) -> bool {
+    let (path, module) = defining_module(alias_scope);
+    let (other_path, other_module) = defining_module(other_scope);
+    same_tokens(alias, other)
+        && module == other_module
+        && (path.is_none() || other_path.is_none() || path == other_path)
+}
+
+/// The file (by [`source_key`], `None` when unknown) and inline module path a
+/// definition's scope names.
+fn defining_module<'s>(scope: &'s NextScope<'_>) -> (Option<String>, &'s [String]) {
+    match scope {
+        NextScope::Ready(scope) => (scope.path.clone(), &scope.module),
+        NextScope::File(path, module) => (Some(source_key(path)), module),
+    }
+}
+
+/// Whether two aliases have the same generics and body tokens.
+fn same_tokens(a: &syn::ItemType, b: &syn::ItemType) -> bool {
     let tokens = |alias: &syn::ItemType| {
         let generics = &alias.generics;
         let ty = &alias.ty;
@@ -960,3 +915,6 @@ mod tests;
 
 #[cfg(test)]
 mod tests_gate;
+
+#[cfg(test)]
+mod tests_glob;
