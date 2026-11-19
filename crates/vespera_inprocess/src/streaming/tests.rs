@@ -534,6 +534,70 @@ async fn body_polled_after_the_dispatch_finished_never_reads_the_source() {
     assert_eq!(hook_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
+/// A dispatch that already finished fails its unread body at once, even while
+/// every producer slot is held by another upload: the body must not queue
+/// behind a slot that may never free (its source is dropped unread).
+#[tokio::test]
+async fn a_finished_dispatch_does_not_wait_for_a_producer_slot() {
+    let pulls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let pulls_in_source = Arc::clone(&pulls);
+    let inline = InlineState::new(false);
+    let mut body = ChannelBody::new(
+        move || {
+            pulls_in_source.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            crate::RequestChunk::End
+        },
+        Arc::new(Mutex::new(None)),
+        0,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        Arc::clone(&inline),
+    );
+    // Every slot is held by another upload.
+    body.slots = Some(Arc::new(tokio::sync::Semaphore::new(0)));
+    inline.finish();
+    let polled = tokio::time::timeout(std::time::Duration::from_secs(5), body.frame()).await;
+    assert!(
+        matches!(polled, Ok(Some(Err(_)))),
+        "fails at once: {polled:?}"
+    );
+    assert!(body.permit_wait.is_none(), "no slot was queued for");
+    assert_eq!(pulls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+/// A dispatch that finishes while its body waits for a producer slot fails
+/// the body once a slot frees: the producer never starts and the source is
+/// never read (the start is refused under the producer-handle lock).
+#[tokio::test]
+async fn a_dispatch_finished_while_waiting_never_starts_the_producer() {
+    let pulls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let pulls_in_source = Arc::clone(&pulls);
+    let producer_handle: RequestProducerHandle = Arc::new(Mutex::new(None));
+    let inline = InlineState::new(false);
+    let mut body = ChannelBody::new(
+        move || {
+            pulls_in_source.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            crate::RequestChunk::End
+        },
+        Arc::clone(&producer_handle),
+        0,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        Arc::clone(&inline),
+    );
+    let slots = Arc::new(tokio::sync::Semaphore::new(0));
+    body.slots = Some(Arc::clone(&slots));
+    let waiting =
+        std::future::poll_fn(|cx| Poll::Ready(body.poll_start_producer(cx).is_pending())).await;
+    assert!(waiting, "no slot: the body waits");
+    inline.finish();
+    slots.add_permits(1);
+    let aborted = std::future::poll_fn(|cx| Poll::Ready(body.poll_start_producer(cx))).await;
+    assert!(matches!(aborted, Poll::Ready(Err(_))), "{aborted:?}");
+    assert!(producer_handle.lock().unwrap().is_none(), "no producer");
+    assert!(body.permit_wait.is_none(), "the slot wait is dropped");
+    assert_eq!(pulls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(slots.available_permits(), 1, "the freed slot was returned");
+}
+
 #[rstest::rstest]
 #[case::unlimited(0, tokio::sync::Semaphore::MAX_PERMITS)]
 #[case::capped(8, 8)]

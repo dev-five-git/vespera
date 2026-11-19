@@ -313,10 +313,11 @@ impl Drop for AsyncCompletion {
     }
 }
 
-/// ALWAYS-COMPLETE CONTRACT: the Java `CompletableFuture` must resolve on
-/// every path or `dispatchAsync` callers hang forever.  The cached-daemon
-/// completion can fail BEFORE it reaches Java (daemon attach during VM
-/// shutdown, or an OOM allocating the response `byte[]`); only then is a
+/// ALWAYS-COMPLETE CONTRACT: the Java `CompletableFuture` must resolve or
+/// `dispatchAsync` callers hang forever, unless the VM refuses this thread's
+/// attachment (VM shutdown), which no retry can fix.  The cached-daemon
+/// completion can fail BEFORE it reaches Java (an OOM allocating the response
+/// `byte[]`, or a daemon attach that the VM still allows); only then is a
 /// second, tiny-payload attempt worth making — it is far less likely to OOM,
 /// so the future still resolves with an error rather than never.  A
 /// `complete()` that WAS invoked (whether it resolved the future or threw)

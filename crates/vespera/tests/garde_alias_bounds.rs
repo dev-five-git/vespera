@@ -70,6 +70,23 @@ fn integer_bounds_on_float_aliases_compile_and_apply() {
     assert!(!valid(1.0, 0.0, 4), "4 > maximum 3");
 }
 
+#[derive(Schema, serde::Deserialize)]
+#[allow(dead_code)]
+struct F32Literal {
+    #[schema(value_type = f32, minimum = 16777217)]
+    big: f32Alias,
+}
+
+/// `16777217` is not an `f32`: the nearest one, `16777216`, lies below the
+/// documented minimum, so it must be rejected (the rounded literal used to
+/// admit it).
+#[test]
+fn an_f32_literal_bound_past_the_mantissa_rejects_the_rounded_neighbour() {
+    let valid = |big| F32Literal { big }.validate().is_ok();
+    assert!(!valid(16_777_216.0), "16777216 < minimum 16777217");
+    assert!(valid(16_777_218.0));
+}
+
 type Small = u8;
 
 #[derive(Schema, serde::Deserialize)]

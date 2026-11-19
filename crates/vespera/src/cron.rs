@@ -165,7 +165,8 @@ pub fn start_once(guard: &'static Once, jobs: impl IntoIterator<Item = CronJob>)
 /// already started by another invocation of the same crate is skipped.
 ///
 /// A job is claimed only while its start succeeds: when no scheduler thread
-/// can be spawned the claims are released, so a later call retries them.
+/// can be started (its runtime cannot be built, or the OS refuses the thread)
+/// the claims are released, so a later call retries them.
 /// The `guard` is no longer the dedup mechanism (the per-job claims are), so
 /// it is accepted for the generated code's `static` but not used.
 #[doc(hidden)]
@@ -224,7 +225,8 @@ pub fn start(jobs: impl IntoIterator<Item = CronJob>) {
 
 /// The non-generic body of [`start`]: one copy of the code (and of its
 /// coverage counters) however many iterator types call it.  `false` only
-/// when the dedicated scheduler thread could not be spawned.
+/// when the dedicated scheduler thread could not be started: its runtime
+/// could not be built, or the OS refused the thread.
 fn start_jobs(jobs: Vec<CronJob>) -> bool {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         for job in jobs {
@@ -241,7 +243,7 @@ fn start_jobs(jobs: Vec<CronJob>) -> bool {
         }));
         return true;
     }
-    spawn_scheduler_thread(jobs, spawn_os_thread)
+    spawn_scheduler_thread(jobs, build_scheduler_runtime, spawn_os_thread)
 }
 
 /// Stop scheduling new cron runs, process-wide and for good.
@@ -444,13 +446,24 @@ fn panic_message(payload: &(dyn Any + Send)) -> &str {
 }
 
 /// Run `jobs` on a detached background thread that owns a current-thread
-/// runtime for the rest of the process.  `spawn` starts the thread (the OS
-/// thread in production); `false` when it could not be started.
+/// runtime for the rest of the process.  The runtime is built here, on the
+/// caller's side, so a build failure is a failed start (`false`, and the
+/// caller releases the claims) instead of a panic on the new thread.  `spawn`
+/// starts the thread (the OS thread in production); `false` when it could not
+/// be started.
 fn spawn_scheduler_thread(
     jobs: Vec<CronJob>,
+    build: fn() -> std::io::Result<tokio::runtime::Runtime>,
     spawn: fn(Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
 ) -> bool {
-    match spawn(Box::new(move || run_scheduler_thread(jobs))) {
+    let runtime = match build() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            cron_diag!(error, "failed to build the cron scheduler runtime: {error}");
+            return false;
+        }
+    };
+    match spawn(Box::new(move || run_scheduler_thread(&runtime, jobs))) {
         Ok(()) => true,
         Err(error) => {
             cron_diag!(error, "failed to start the cron scheduler thread: {error}");
@@ -467,14 +480,16 @@ fn spawn_os_thread(run: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
         .map(drop)
 }
 
-fn run_scheduler_thread(jobs: Vec<CronJob>) {
-    // `enable_all`, not just timers: jobs on this thread commonly reach a
-    // database or HTTP client, which panic ("IO is disabled") on a runtime
-    // without the I/O driver.
-    let runtime = tokio::runtime::Builder::new_current_thread()
+/// The scheduler thread's runtime.  `enable_all`, not just timers: jobs on
+/// this thread commonly reach a database or HTTP client, which panic ("IO is
+/// disabled") on a runtime without the I/O driver.
+fn build_scheduler_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("vespera: cron scheduler runtime");
+}
+
+fn run_scheduler_thread(runtime: &tokio::runtime::Runtime, jobs: Vec<CronJob>) {
     runtime.block_on(async move {
         let schedulers: Vec<_> = jobs
             .into_iter()

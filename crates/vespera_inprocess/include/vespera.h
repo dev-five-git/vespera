@@ -128,7 +128,11 @@ int vespera_dispatch(const uint8_t *request, size_t request_len, uint8_t **respo
  * `out_capacity` below VESPERA_MIN_OUT_BYTES (out == NULL with
  * out_capacity == 0 included) is answered with VESPERA_OVERFLOW and
  * *written = exactly VESPERA_MIN_OUT_BYTES WITHOUT running the handler —
- * start with at least VESPERA_MIN_OUT_BYTES.  Every call that dispatches
+ * start with at least VESPERA_MIN_OUT_BYTES.  This size rule takes
+ * precedence over the request checks below: a sub-minimum `out_capacity`
+ * is answered before the request is examined, so a NULL `request` with a
+ * non-zero `request_len` is not reported as a 400 until the capacity is
+ * at least VESPERA_MIN_OUT_BYTES.  Every call that dispatches
  * runs the handler, so a retry after an overflow runs it again (and its
  * response, hence its size, may differ): send non-idempotent requests
  * through vespera_dispatch instead.  VESPERA_ERR_INVALID_ARGUMENT:

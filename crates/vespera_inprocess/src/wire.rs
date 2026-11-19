@@ -374,8 +374,10 @@ pub fn write_wire_header_into_vec(
 
 /// One entry in the wire header's `validation_errors` array.  Fields
 /// are best-effort: missing values in the source body become `None`. String
-/// fields borrow from the 422 body (owned only when the JSON string held an
-/// escape), so hoisting allocates nothing per error in the common case.
+/// fields borrow from the 422 body on the strict parse path (every field a
+/// plain, escape-free string), so hoisting allocates nothing per error in
+/// that common case; the lenient fallback (an escape, a wrong-typed field, a
+/// duplicate key, a non-object element) owns every field.
 /// The `Serialize` derive is **bench-only** — production serializes these
 /// fields with the hand-rolled `header_write` writer, never via serde.
 #[derive(Debug)]

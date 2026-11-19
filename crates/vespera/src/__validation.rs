@@ -48,7 +48,9 @@ impl<T: garde::Validate + ?Sized> AssertValidate for T {}
 /// An integer type rounds inward — `minimum = 0.5` on a `u32` is `1`, never a
 /// truncated `0` that would accept a value the document's `minimum: 0.5`
 /// excludes — saturating at the type's range (a bound no value reaches is
-/// caught first by [`range_unsatisfiable`]); a float type keeps the value.
+/// caught first by [`range_unsatisfiable`]); a float type keeps the value,
+/// except that an `f32` steps the nearest `f32` to the inside of the bound
+/// when it rounds across it.
 ///
 /// [`RangeBound::exact`] carries an integer-literal bound: an integer target
 /// takes the literal in its own type (so an out-of-range literal is still the
@@ -187,6 +189,21 @@ impl RangeBound for f64 {
     }
 }
 
+/// Steps the nearest `f32` `value` to the inside of the documented `f64`
+/// `bound`: a lower bound is never undershot, an upper bound never overshot.
+/// Without the step a bound such as `16777217` or `0.099_999_997_01` rounds to
+/// the wrong side of the document, the same error the integer impls avoid by
+/// rounding inward.
+fn inward_f32(value: f32, bound: f64, lower: bool) -> f32 {
+    if lower && f64::from(value) < bound {
+        value.next_up()
+    } else if !lower && f64::from(value) > bound {
+        value.next_down()
+    } else {
+        value
+    }
+}
+
 impl RangeBound for f32 {
     type Literal = i128;
     fn admits_min(_bound: f64) -> bool {
@@ -199,16 +216,26 @@ impl RangeBound for f32 {
     fn exact(literal: i128) -> Self {
         literal as Self
     }
-    fn exact_within(literal: i128, _bound: f64, _lower: bool) -> Self {
-        Self::exact(literal)
+    // The looser of the literal and the documented `bound`, as for the
+    // integer impls, rounded to the nearest `f32` and then stepped inward
+    // against that value.
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    fn exact_within(literal: i128, bound: f64, lower: bool) -> Self {
+        let literal = literal as f64;
+        let looser = if lower {
+            literal.min(bound)
+        } else {
+            literal.max(bound)
+        };
+        inward_f32(looser as Self, looser, lower)
     }
     #[allow(clippy::cast_possible_truncation)]
     fn min(bound: f64) -> Self {
-        bound as Self
+        inward_f32(bound as Self, bound, true)
     }
     #[allow(clippy::cast_possible_truncation)]
     fn max(bound: f64) -> Self {
-        bound as Self
+        inward_f32(bound as Self, bound, false)
     }
 }
 
@@ -262,6 +289,36 @@ mod tests {
         assert!(super::non_finite(&f64::MAX).is_none() && super::non_finite(&u8::MAX).is_none());
         assert!((<f64 as RangeBound>::exact(-3) + 3.0).abs() < f64::EPSILON);
         assert!((<f32 as RangeBound>::exact(100) - 100.0).abs() < f32::EPSILON);
+    }
+
+    /// An `f32` bound never lands on the outside of the documented `f64`
+    /// bound: the nearest `f32` steps to the inward neighbour when it rounds
+    /// across the bound (`16777217` and `0.099_999_997_01` are not `f32` values).
+    #[test]
+    fn f32_bounds_round_inward() {
+        // 16777216 is the nearest f32 to the minimum 16777217: below it, so
+        // the bound steps up to 16777218. The maximum keeps 16777216.
+        assert_eq!(
+            <f32 as RangeBound>::exact_within(16_777_217, 16_777_217.0, true),
+            16_777_218.0
+        );
+        assert_eq!(
+            <f32 as RangeBound>::exact_within(16_777_217, 16_777_217.0, false),
+            16_777_216.0
+        );
+        assert_eq!(<f32 as RangeBound>::min(16_777_217.0), 16_777_218.0);
+        // 0.09999999404 is the nearest f32 to the minimum 0.099_999_997_01, below
+        // it, so the bound steps up to 0.1f32 (0.100000001490116).
+        let minimum = <f32 as RangeBound>::min(0.099_999_997_01);
+        assert_eq!(minimum, f32::from_bits(0x3DCC_CCCD));
+        assert!(f64::from(minimum) >= 0.099_999_997_01);
+        // Above the maximum 0.100_000_000_1, 0.1f32 steps down to 0.09999999404.
+        let maximum = <f32 as RangeBound>::max(0.100_000_000_1);
+        assert_eq!(maximum, f32::from_bits(0x3DCC_CCCC));
+        assert!(f64::from(maximum) <= 0.100_000_000_1);
+        // A bound that is exact in f32 is kept as it is.
+        assert_eq!(<f32 as RangeBound>::max(2.5), 2.5);
+        assert_eq!(<f32 as RangeBound>::exact_within(7, 7.0, true), 7.0);
     }
 
     /// An integer-literal bound keeps the literal, unless the documented

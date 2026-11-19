@@ -72,9 +72,10 @@ fn body_is_json(headers: &http::HeaderMap) -> bool {
 ///
 /// Both `Deserialize` impls are hand-written **map-only** visitors: a derive
 /// would also accept a JSON array through `visit_seq` (positional
-/// `[path, code, message]` / `[errors]`), hoisting fields the lenient `Value`
-/// walk never sees.  An array now fails the strict parse and falls through to
-/// [`hoist_from_value`], which skips it — the two paths stay accept-identical.
+/// `[path, code, message]` / `[errors]`), hoisting fields the lenient walk
+/// never sees.  An array now fails the strict parse and falls through to
+/// [`hoist_from_raw`], which skips it.  The bench-only `hoist_from_value`
+/// twin skips it the same way, so the two paths stay accept-identical.
 struct HoistEnvelope<'a> {
     errors: Vec<HoistErrorIn<'a>>,
 }
