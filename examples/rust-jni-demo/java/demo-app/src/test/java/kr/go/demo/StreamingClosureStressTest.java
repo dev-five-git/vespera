@@ -455,7 +455,7 @@ class StreamingClosureStressTest {
      */
     @Test
     @Order(5)
-    void responseStreaming_outputStreamThrows_doesNotHangOrCrash() {
+    void responseStreaming_outputStreamThrows_doesNotHangOrCrash() throws IOException {
         byte[] payload = randomPayload(new Random(SEED));
         byte[] wireRequest = VesperaBridge.encodeRequest(
                 "POST", "/echo/stream", null, ECHO_HEADERS, payload);
