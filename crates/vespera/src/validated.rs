@@ -434,7 +434,7 @@ where
             _ => return None,
         };
         Some(EnvelopeEntry {
-            message: bounded_message(kind.to_string()),
+            message: bounded_text(kind.to_string()),
             path,
         })
     }
@@ -451,20 +451,20 @@ struct EnvelopeEntry {
     path: String,
 }
 
-/// Longest envelope message kept verbatim (in characters).  axum (`Cannot
-/// parse \`<value>\``) and serde (`invalid type: string "<value>"`) echo the
-/// client's value inside the message, so a huge segment would otherwise make
-/// the `422` body arbitrarily large (and past the wire hoist cap).  Multipart
-/// bounds its reflected values the same way (`MAX_REFLECTED_VALUE_CHARS`).
+/// Longest envelope `message` or `path` kept verbatim (in characters).  axum
+/// (`Cannot parse \`<value>\``) and serde (`invalid type: string "<value>"`)
+/// echo the client's value inside the message, and serde_path_to_error records
+/// map keys in the path, so a huge segment would otherwise make the `422` body
+/// arbitrarily large (and past the wire hoist cap).  Multipart bounds its
+/// reflected values the same way (`MAX_REFLECTED_VALUE_CHARS`).
 const MAX_ENVELOPE_MESSAGE_CHARS: usize = 256;
 
-/// `message` cut to [`MAX_ENVELOPE_MESSAGE_CHARS`] characters on a `char`
-/// boundary, with a marker when shortened.  A short message is returned
-/// unchanged.
-fn bounded_message(message: String) -> String {
-    match message.char_indices().nth(MAX_ENVELOPE_MESSAGE_CHARS) {
-        None => message,
-        Some((byte_idx, _)) => format!("{}... (truncated)", &message[..byte_idx]),
+/// `text` cut to [`MAX_ENVELOPE_MESSAGE_CHARS`] characters on a `char`
+/// boundary, with a marker when shortened.  Short text is returned unchanged.
+fn bounded_text(text: String) -> String {
+    match text.char_indices().nth(MAX_ENVELOPE_MESSAGE_CHARS) {
+        None => text,
+        Some((byte_idx, _)) => format!("{}... (truncated)", &text[..byte_idx]),
     }
 }
 
@@ -506,8 +506,8 @@ fn serde_error_entry(error: &dyn std::error::Error, fallback: String) -> Envelop
             path.push_str(field);
         }
         EnvelopeEntry {
-            message: bounded_message(message),
-            path,
+            message: bounded_text(message),
+            path: bounded_text(path),
         }
     };
     let mut source = error.source();
@@ -521,7 +521,7 @@ fn serde_error_entry(error: &dyn std::error::Error, fallback: String) -> Envelop
         source = current.source();
     }
     EnvelopeEntry {
-        message: bounded_message(fallback),
+        message: bounded_text(fallback),
         path: String::new(),
     }
 }
@@ -710,10 +710,10 @@ mod tests {
     #[test]
     fn envelope_messages_are_bounded_at_the_character_limit() {
         let at_limit = "é".repeat(super::MAX_ENVELOPE_MESSAGE_CHARS);
-        assert_eq!(super::bounded_message(at_limit.clone()), at_limit);
+        assert_eq!(super::bounded_text(at_limit.clone()), at_limit);
 
         let over = format!("{at_limit}x");
-        let bounded = super::bounded_message(over);
+        let bounded = super::bounded_text(over);
         assert_eq!(bounded, format!("{at_limit}... (truncated)"));
     }
 
@@ -722,12 +722,46 @@ mod tests {
     #[test]
     fn an_oversized_reflected_value_is_cut_in_the_envelope() {
         let value = "a".repeat(70_000);
-        let bounded = super::bounded_message(format!("Cannot parse `{value}` to a `u32`"));
+        let bounded = super::bounded_text(format!("Cannot parse `{value}` to a `u32`"));
         assert!(
             bounded.len() < 512,
             "bounded message is {} bytes",
             bounded.len()
         );
         assert!(bounded.ends_with("... (truncated)"));
+    }
+
+    /// Wraps a path error the way axum's rejections do: `serde_error_entry`
+    /// finds the `serde_path_to_error` error by walking the source chain.
+    #[derive(Debug)]
+    struct Wrapped(serde_path_to_error::Error<serde_json::Error>);
+
+    impl std::fmt::Display for Wrapped {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "wrapped: {}", self.0)
+        }
+    }
+
+    impl std::error::Error for Wrapped {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    /// serde_path_to_error records a map key verbatim in the path, so an
+    /// oversized key used to be echoed whole in the envelope `path`.
+    #[test]
+    fn an_oversized_map_key_is_cut_in_the_envelope_path() {
+        let key = "k".repeat(70_000);
+        let body = format!(r#"{{"{key}":"not-a-number"}}"#);
+        let mut de = serde_json::Deserializer::from_str(&body);
+        let error =
+            serde_path_to_error::deserialize::<_, std::collections::BTreeMap<String, u32>>(&mut de)
+                .expect_err("a string value must not deserialize as u32");
+        let wrapped = Wrapped(error);
+        assert!(wrapped.to_string().contains("invalid type"), "{wrapped}");
+        let entry = serde_error_entry(&wrapped, String::new());
+        assert!(entry.path.len() < 512, "path is {} bytes", entry.path.len());
+        assert!(entry.path.ends_with("... (truncated)"));
     }
 }

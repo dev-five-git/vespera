@@ -50,6 +50,17 @@ class StreamAbortHandlingTest {
     }
 
     @Test
+    void panicAfterAFailedHeaderCallbackIsStillRecognised() {
+        // The header-failed text is kept, but the panic bit must reach Java.
+        String message = VesperaStreamAbortedException.HEADER_CALLBACK_PANIC_MESSAGE;
+        assertTrue(message.startsWith("vespera: response header callback failed before body streaming"));
+        assertTrue(new VesperaStreamAbortedException(message).panicked());
+        assertTrue(VesperaStreamAbortedException.isPanic(new IOException(message)));
+        assertFalse(new VesperaStreamAbortedException(
+                "vespera: response header callback failed before body streaming").panicked());
+    }
+
+    @Test
     void uncommittedPanicIsReplacedByAPanicked500() throws IOException {
         MockHttpServletResponse servlet = new MockHttpServletResponse();
         ProxyServletResponse response = appliedRustHeader(servlet);

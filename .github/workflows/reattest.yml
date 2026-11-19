@@ -38,13 +38,20 @@ permissions:
 jobs:
   collect:
     name: collect published artifacts
-    # Attestations carry the source ref; only ever sign from main.
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 75
     outputs:
       attest: ${{ steps.release.outputs.any }}
     steps:
+      # Attestations carry the source ref; only ever sign from main. A run
+      # from another ref fails here (a skipped job would leave the run green
+      # with nothing re-attested).
+      - name: Require the main ref
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          [[ $REF == refs/heads/main ]] || {
+            echo "::error::re-attest must be dispatched from main, got '$REF'"; exit 1; }
       - name: Validate the version
         env:
           VERSION: ${{ inputs.version }}
