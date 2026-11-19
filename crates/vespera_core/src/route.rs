@@ -2,7 +2,8 @@
 //!
 //! # Reference Objects
 //!
-//! Only schema positions ([`SchemaRef`]) accept an OpenAPI Reference Object
+//! Only schema positions ([`SchemaRef`]) and Path Item objects
+//! ([`PathItem::ref_path`]) accept an OpenAPI Reference Object
 //! (`{"$ref": ...}`). [`Parameter`], [`RequestBody`], [`Response`],
 //! [`Header`] and [`Example`] are always inline: vespera never emits a
 //! reference there, and a document that does (e.g. an external spec with
@@ -259,10 +260,10 @@ fn present_value<'de, D: serde::Deserializer<'de>>(
     serde_json::Value::deserialize(deserializer).map(Some)
 }
 
-/// `Serialize` / `Deserialize` for an inline-only type whose fields are all
-/// optional (`remote = "Self"` derives the inherent twins used here): a
-/// Reference Object would otherwise deserialize as an empty object, losing
-/// the reference silently, so its `$ref` key is rejected.
+/// `Serialize` / `Deserialize` for an inline-only type (`remote = "Self"`
+/// derives the inherent twins used here). A Reference Object is refused by
+/// name: it must not be read as the type's own fields, nor reported as a
+/// missing required field.
 macro_rules! inline_only_serde {
     ($ty:ident) => {
         impl Serialize for $ty {

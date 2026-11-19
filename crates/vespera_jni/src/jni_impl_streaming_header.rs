@@ -13,9 +13,9 @@ use crate::jni_impl::{
     streaming_buffer::{PullPushBuffers, mark_streaming_buffer_reusable, release_pull_lease},
     streaming_setup_failed_wire,
     support::{
-        AbortReason, FullStreamHeaderSetup, PanicHeaderAction, panic_post_header_action,
-        push_unless_header_failed, setup_full_stream_with_header, setup_stream_with_header,
-        throw_streaming_abort, track_pull,
+        AbortReason, FullStreamHeaderSetup, PanicHeaderAction, header_failure_reason,
+        panic_post_header_action, push_unless_header_failed, setup_full_stream_with_header,
+        setup_stream_with_header, throw_streaming_abort, track_pull,
     },
 };
 use crate::streaming_closures::{
@@ -230,7 +230,7 @@ fn notify_local_wire(
     let delivered = call_header_consumer_local(env, header_consumer, header).is_ok();
     flags.record_header_callback_result(delivered);
     if !delivered {
-        throw_streaming_abort(env, AbortReason::HeaderCallbackFailed);
+        throw_streaming_abort(env, header_failure_reason(wire));
         return;
     }
     if !body.is_empty()

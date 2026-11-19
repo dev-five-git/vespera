@@ -565,7 +565,12 @@ impl OpenApi {
     /// requirement does not start applying to them. A path item or webhook
     /// of `other` that is a `$ref` to `other`'s `components.pathItems` is
     /// inlined for this push-down (a reference `other` cannot resolve is
-    /// kept, and its operations are not reached). When `other` and `self`
+    /// kept, and its operations are not reached). A kept reference whose
+    /// target name `other` does not define is adopted by name: when `self`
+    /// defines a `components.pathItems` entry of that name, the adopted
+    /// reference then resolves to `self`'s entry, which the document cannot
+    /// tell apart from one `other` meant. Inlining is impossible (the target
+    /// is unknown), so this is the chosen behaviour. When `other` and `self`
     /// share a `components.pathItems` name, every such reference is inlined
     /// (also when it is adopted as a new path or webhook), so it cannot
     /// resolve to `self`'s component of that name. On a shared path, each

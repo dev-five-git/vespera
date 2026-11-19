@@ -18,7 +18,7 @@ use std::{
     future::Future,
     ops::Deref,
     sync::{
-        Mutex, OnceLock,
+        Mutex, MutexGuard, OnceLock, PoisonError,
         atomic::{AtomicBool, Ordering, fence},
     },
     time::{Duration, Instant},
@@ -309,6 +309,9 @@ pub fn shutdown_runtime(timeout: Duration) -> bool {
 /// drop state that only makes sense while the runtime lives (the JNI DIRECT
 /// overflow stash).
 pub fn shutdown_runtime_then(timeout: Duration, cleanup: fn()) -> bool {
+    // Refuse hooks before anything else: once the queue is closed no hook can
+    // be queued or flushed, so none is accepted after the drain starts.
+    lock_hooks().close();
     if !GATE.close() {
         return false;
     }
@@ -341,7 +344,10 @@ fn finish_shutdown(timeout: Duration, cleanup: fn()) {
         runtime.shutdown_timeout(deadline.saturating_duration_since(Instant::now()));
     }
     cleanup();
-    drop(HOOKS.lock().map(|mut hooks| std::mem::take(&mut *hooks)));
+    // Hooks still queued (the runtime never built) are dropped here, outside
+    // the lock.
+    let stranded = std::mem::take(&mut lock_hooks().pending);
+    drop(stranded);
 }
 
 /// `now + timeout`, saturating to a far-future instant when the sum is not
@@ -369,7 +375,49 @@ fn drain_in_flight(deadline: Instant) -> bool {
 /// Work deferred until the shared runtime exists (see [`on_shared_runtime`]).
 pub type RuntimeHook = Box<dyn FnOnce(&tokio::runtime::Handle) + Send>;
 
-static HOOKS: Mutex<Vec<RuntimeHook>> = Mutex::new(Vec::new());
+/// The hooks waiting for the runtime plus the closed bit, under ONE lock: a
+/// hook is queued only while the queue is open, and shutdown closes it before
+/// draining, so a hook can never land after the drain (and never be flushed
+/// onto a closed runtime).
+#[derive(Default)]
+struct HookQueue {
+    closed: bool,
+    pending: Vec<RuntimeHook>,
+}
+
+impl HookQueue {
+    /// Queue `hook` unless the queue is closed; reports whether it was queued.
+    fn push(&mut self, hook: RuntimeHook) -> bool {
+        if self.closed {
+            return false;
+        }
+        self.pending.push(hook);
+        true
+    }
+
+    /// The queued hooks, or none once the queue is closed (they are then
+    /// dropped by `finish_shutdown`, never run).
+    fn take_open(&mut self) -> Vec<RuntimeHook> {
+        if self.closed {
+            return Vec::new();
+        }
+        std::mem::take(&mut self.pending)
+    }
+
+    fn close(&mut self) {
+        self.closed = true;
+    }
+}
+
+static HOOKS: Mutex<HookQueue> = Mutex::new(HookQueue {
+    closed: false,
+    pending: Vec::new(),
+});
+
+fn lock_hooks() -> MutexGuard<'static, HookQueue> {
+    HOOKS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 static HOOKS_PENDING: AtomicBool = AtomicBool::new(false);
 static HOST_LOADED: AtomicBool = AtomicBool::new(false);
 
@@ -390,11 +438,7 @@ pub fn on_shared_runtime(hook: RuntimeHook) {
 /// must release it.
 #[must_use]
 pub fn try_on_shared_runtime(hook: RuntimeHook) -> bool {
-    let accepted = !GATE.is_closed()
-        && HOOKS.lock().is_ok_and(|mut hooks| {
-            hooks.push(hook);
-            true
-        });
+    let accepted = lock_hooks().push(hook);
     if accepted {
         HOOKS_PENDING.store(true, Ordering::SeqCst);
         // Pairs with the builder's fence in `runtime()` (store-buffer pattern).
@@ -415,10 +459,7 @@ fn flush_hooks(handle: &tokio::runtime::Handle) {
     // A racing flush that already took the hooks finds the flag cleared.
     let pending = HOOKS_PENDING.swap(false, Ordering::SeqCst);
     let hooks = if pending {
-        HOOKS
-            .lock()
-            .map(|mut hooks| std::mem::take(&mut *hooks))
-            .unwrap_or_default()
+        lock_hooks().take_open()
     } else {
         Vec::new()
     };
@@ -454,6 +495,25 @@ mod tests {
         assert!(!drain_in_flight(Instant::now() + Duration::from_millis(5)));
         drop(claim);
         assert!(drain_in_flight(Instant::now()));
+    }
+
+    /// Round 31: the closed check and the push are one step under the queue
+    /// lock, so a hook offered after the close is refused, never queued.  The
+    /// test drives the locked queue directly; no interleaving is needed.
+    #[test]
+    fn a_closed_hook_queue_refuses_pushes_and_flushes_nothing() {
+        let mut queue = HookQueue::default();
+        assert!(queue.push(Box::new(|_| {})));
+        assert_eq!(queue.take_open().len(), 1);
+
+        assert!(queue.push(Box::new(|_| {})));
+        queue.close();
+        assert!(
+            !queue.push(Box::new(|_| {})),
+            "a closed queue refuses hooks"
+        );
+        assert!(queue.take_open().is_empty(), "nothing flushes once closed");
+        assert_eq!(queue.pending.len(), 1, "queued hooks wait to be dropped");
     }
 
     #[test]

@@ -47,8 +47,9 @@ struct Queue {
     /// Whether the timer thread has been started.  A failed start leaves it
     /// `false`, so the next [`Timer::ensure_running`] retries it.
     running: bool,
-    /// Whether the failed start of the current outage was already logged, so
-    /// every poll of a waiting sleep does not write another diagnostic.
+    /// Whether a failed start was already logged.  It stays set until the
+    /// thread starts, so every poll of a waiting sleep does not write another
+    /// diagnostic.
     start_reported: bool,
 }
 
@@ -197,7 +198,7 @@ pub(super) fn sleep(duration: Duration) -> impl Future<Output = ()> {
 /// current-thread runtime serving a waiting job runs its other tasks only
 /// between slices.  No Tokio timer is used, because that would need a probe
 /// for the runtime's time driver, which Tokio does not offer.  The failed
-/// start is logged once per outage, not on every poll.
+/// start is logged once, until the thread starts, not on every poll.
 fn sleep_with(
     timer: &'static Timer,
     spawn: fn(&'static Timer) -> std::io::Result<()>,
@@ -313,10 +314,10 @@ mod tests {
         assert!(!timer.queue.lock().unwrap().running);
     }
 
-    /// Repeated failed starts within one outage latch the diagnostic: the
-    /// flag is set by the first one and stays set (no per-poll log line).
+    /// Repeated failed starts latch the diagnostic: the flag is set by the
+    /// first one and stays set until the thread starts (no per-poll log line).
     #[test]
-    fn a_failed_start_latches_its_diagnostic_for_the_outage() {
+    fn a_failed_start_latches_its_diagnostic_until_the_thread_starts() {
         let timer: &'static Timer = Box::leak(Box::default());
         assert!(!timer.queue.lock().unwrap().start_reported);
         for _ in 0..3 {
