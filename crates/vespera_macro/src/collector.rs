@@ -133,7 +133,9 @@ fn stored_test_only_routes(
 }
 
 /// Fast path: push one file's routes straight from its `ROUTE_STORAGE`
-/// entries, skipping `syn::parse_file()` entirely.
+/// entries, without parsing the route file for route discovery. The test-scope
+/// decision below reads the file cache's parse (`file_cache::derived`), so the
+/// file is parsed at most once per content version.
 ///
 /// `module_path` / `file_path` are the per-file invariants; the last route
 /// MOVES them out via [`take_or_clone`], every earlier route clones.
@@ -265,8 +267,8 @@ fn push_parsed_routes(
 /// from this scan).
 ///
 /// When `route_storage` contains entries with `file_path`, files covered by
-/// `ROUTE_STORAGE` skip expensive `syn::parse_file()` — route metadata is built
-/// directly from the stored data. Default values for `serde(default = "fn")`
+/// `ROUTE_STORAGE` skip route discovery parsing — route metadata is built
+/// directly from the stored data (test-scope checks reuse the file cache). Default values for `serde(default = "fn")`
 /// are already extracted by `#[derive(Schema)]` into `SCHEMA_STORAGE.field_defaults`.
 ///
 /// Returns the metadata AND the parsed file ASTs, so downstream consumers
@@ -367,7 +369,8 @@ pub fn collect_metadata_from_files<'a>(
 
         let base_path = format!("/{}", segments.join("/"));
 
-        // Fast path: ROUTE_STORAGE has entries for this file — skip syn::parse_file()
+        // Fast path: ROUTE_STORAGE has entries for this file, so its routes come
+        // from storage; the test-scope check below reuses the file cache's parse
         //
         // Per-file invariants (`module_path`, `file_path`) are CLONED for
         // every non-last route but MOVED into the last route's push —

@@ -29,7 +29,9 @@ use crate::{
     route_impl::StoredRouteInfo,
 };
 
-type FnIndex<'a> = HashMap<String, HashMap<String, &'a syn::ItemFn>>;
+/// Per route file (normalized path): its top-level functions by name, where a
+/// name declared more than once is `None` (ambiguous, see `function_index_by_name`).
+type FnIndex<'a> = HashMap<String, HashMap<String, Option<&'a syn::ItemFn>>>;
 type StorageFnSigs<'a> = HashMap<(Option<String>, &'a str), Option<&'a str>>;
 
 /// An AST-backed route job: route index, metadata, signature, and the AST of
@@ -93,18 +95,10 @@ pub(super) fn build_path_items(
     let fn_index: FnIndex<'_> = file_cache
         .iter()
         .map(|(path, ast)| {
-            let fns: HashMap<String, &syn::ItemFn> = ast
-                .items
-                .iter()
-                .filter_map(|item| {
-                    if let syn::Item::Fn(fn_item) = item {
-                        Some((fn_item.sig.ident.to_string(), fn_item))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            (normalize_path_key(path, &cwd), fns)
+            (
+                normalize_path_key(path, &cwd),
+                super::defaults::function_index_by_name(ast),
+            )
         })
         .collect();
     let file_by_key: HashMap<String, &syn::File> = file_cache
@@ -148,7 +142,7 @@ pub(super) fn build_path_items(
             .0
             .as_ref()
             .and_then(|norm_key| fn_index.get(norm_key))
-            .and_then(|fns| fns.get(&route_meta.function_name));
+            .and_then(|fns| fns.get(&route_meta.function_name).copied().flatten());
         if let Some(fn_sig_str) = storage_fn_sigs.get(&storage_key).copied().flatten() {
             parallel_jobs.push((idx, route_meta, fn_sig_str));
         } else if let Some(fn_item) = own_ast
@@ -463,7 +457,7 @@ fn build_storage_fn_sigs<'a>(
         let already_in_ast = norm_fp
             .as_ref()
             .and_then(|fp| fn_index.get(fp))
-            .is_some_and(|fns| fns.contains_key(&s.fn_name));
+            .is_some_and(|fns| fns.get(&s.fn_name).is_some_and(Option::is_some));
         if already_in_ast {
             continue;
         }

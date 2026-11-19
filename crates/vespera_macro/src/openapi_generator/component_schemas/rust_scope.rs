@@ -7,7 +7,7 @@
 
 use std::{
     borrow::Cow,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
 };
 
 /// The crate-relative module path and Rust ident of the type a derive source
@@ -42,7 +42,19 @@ fn is_crate_root_dir(dir: &Path) -> bool {
 /// the root naming nothing. The root is the nearest ancestor that is a crate
 /// root by [`is_crate_root_dir`] and holds a `lib.rs` or `main.rs`.
 fn file_modules(file: &Path) -> Option<Vec<String>> {
-    file_modules_from(file, &std::env::current_dir().ok()?)
+    file_modules_with(file, || std::env::current_dir().ok())
+}
+
+/// [`file_modules`] with the working directory supplied lazily: it is read
+/// only for a relative file, so an absolute path never depends on the cwd (a
+/// cwd that cannot be read only makes a relative file unresolvable).
+fn file_modules_with(file: &Path, cwd: impl FnOnce() -> Option<PathBuf>) -> Option<Vec<String>> {
+    let cwd = if file.is_relative() {
+        cwd()?
+    } else {
+        PathBuf::new()
+    };
+    file_modules_from(file, &cwd)
 }
 
 /// [`file_modules`] with the directory a relative file name is anchored to.
@@ -306,6 +318,37 @@ mod tests {
             file_modules_from(Path::new("../models.rs"), dir.path()),
             None
         );
+    }
+
+    /// An absolute source file resolves without reading the working directory
+    /// (a deleted or unreadable cwd must not hide `#[derive(Schema)]` modules).
+    #[test]
+    fn absolute_file_modules_never_read_the_working_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("api")).unwrap();
+        fs::write(src.join("lib.rs"), "").unwrap();
+        let file = src.join("api").join("user.rs");
+        fs::write(&file, "").unwrap();
+        assert!(file.is_absolute());
+        assert_eq!(
+            file_modules_with(&file, || panic!("cwd read for an absolute file")),
+            Some(vec!["api".to_string(), "user".to_string()])
+        );
+    }
+
+    /// A relative file is anchored to the working directory it is handed, and
+    /// an unreadable one leaves it unresolvable.
+    #[test]
+    fn relative_file_modules_are_anchored_to_the_working_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"), "").unwrap();
+        fs::write(dir.path().join("lib.rs"), "").unwrap();
+        assert_eq!(
+            file_modules_with(Path::new("models.rs"), || Some(dir.path().to_path_buf())),
+            Some(vec!["models".to_string()])
+        );
+        assert_eq!(file_modules_with(Path::new("models.rs"), || None), None);
     }
 
     #[test]

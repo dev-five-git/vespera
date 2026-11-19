@@ -32,7 +32,7 @@ describe('pairedChanges', () => {
   it('pairs round i with round i and skips incomplete rounds', () => {
     expect(
       pairedChanges([100, 200, undefined, 100], [110, 100, 50, 150]),
-    ).toEqual([0.10000000000000009, -0.5, 0.5])
+    ).toEqual([0.1, -0.5, 0.5])
   })
 })
 
@@ -49,15 +49,29 @@ describe('isRegression', () => {
       [0.21, 0.25, 0.28, 0.22, 0.4],
       false,
     ],
-    [
-      'median exactly at the limit does not fail',
-      [0.3, 0.3, 0.3, 0.3, 0.3],
-      false,
-    ],
     ['improvement', [-0.2, -0.1, -0.3, -0.15, -0.05], false],
     ['no data', [], false],
   ])('%s', (_name, changes, expected) => {
     expect(isRegression(changes, T)).toBe(expected)
+  })
+})
+
+describe('boundary at the limit', () => {
+  it('a head exactly +30% slower in every round does not fail', () => {
+    const changes = pairedChanges(
+      [1000, 1000, 1000, 1000, 1000],
+      [1300, 1300, 1300, 1300, 1300],
+    )
+    expect(changes).toEqual([0.3, 0.3, 0.3, 0.3, 0.3])
+    expect(isRegression(changes, T)).toBe(false)
+  })
+
+  it('a head just above +30% still fails', () => {
+    const changes = pairedChanges(
+      [1000, 1000, 1000, 1000, 1000],
+      [1301, 1301, 1301, 1301, 1301],
+    )
+    expect(isRegression(changes, T)).toBe(true)
   })
 })
 

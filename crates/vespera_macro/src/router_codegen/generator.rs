@@ -23,9 +23,12 @@ fn segment_ident(name: &str) -> Option<syn::Ident> {
     if EDITION_RESERVED.contains(&name) {
         return Some(syn::Ident::new_raw(name, Span::call_site()));
     }
+    // `parse_str` skips surrounding whitespace, so `users ` would parse as
+    // `users`: keep the ident only when it spells the whole name.
     let mut ident = syn::parse_str::<syn::Ident>(name)
         .or_else(|_| syn::parse_str::<syn::Ident>(&format!("r#{name}")))
-        .ok()?;
+        .ok()
+        .filter(|ident| ident.to_string().trim_start_matches("r#") == name)?;
     ident.set_span(Span::call_site());
     Some(ident)
 }

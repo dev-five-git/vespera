@@ -114,21 +114,46 @@ fn prune_superseded_older_than(keep: &Path, stem: &str, age: Duration) {
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
-        let is_sibling = name
-            .strip_prefix(&prefix)
-            .and_then(|rest| rest.strip_suffix(".json"))
-            .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit()));
-        let stale = entry
-            .metadata()
-            .and_then(|meta| meta.modified())
-            .is_ok_and(|modified| {
-                let superseded_at = selected_at.map_or(modified, |selected| selected.max(modified));
-                now.duration_since(superseded_at).unwrap_or_default() >= age
-            });
-        if is_sibling && stale && path != keep {
+        let modified = entry.metadata().and_then(|meta| meta.modified()).ok();
+        let stale = if is_temp_leftover(&name, stem) {
+            // An interrupted write's temp file is superseded by nothing: only
+            // its own age counts, so a live writer's temp file stays.
+            modified.is_some_and(|modified| now.duration_since(modified).unwrap_or_default() >= age)
+        } else {
+            let is_sibling = name
+                .strip_prefix(&prefix)
+                .and_then(|rest| rest.strip_suffix(".json"))
+                .is_some_and(|hash| {
+                    hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+                });
+            is_sibling
+                && modified.is_some_and(|modified| {
+                    let superseded_at =
+                        selected_at.map_or(modified, |selected| selected.max(modified));
+                    now.duration_since(superseded_at).unwrap_or_default() >= age
+                })
+        };
+        if stale && path != keep {
             let _ = std::fs::remove_file(path);
         }
     }
+}
+
+/// Whether `name` is a temp file of `write_atomic` for a `<stem>-<16 hex>.json`
+/// sidecar (`.<stem>-<16 hex>.json.<pid>-<n>.tmp`), left behind when the
+/// process died between the write and the rename.
+fn is_temp_leftover(name: &str, stem: &str) -> bool {
+    let Some(rest) = name
+        .strip_prefix('.')
+        .and_then(|rest| rest.strip_prefix(stem))
+        .and_then(|rest| rest.strip_prefix('-'))
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    rest.get(..16)
+        .is_some_and(|hash| hash.bytes().all(|b| b.is_ascii_hexdigit()))
+        && rest[16..].starts_with(".json.")
 }
 
 #[cfg(test)]
@@ -209,6 +234,32 @@ mod tests {
         // A missing directory / root path is a no-op.
         prune_superseded(&dir.join("missing").join("x.json"), "x");
         prune_superseded(Path::new("/"), "x");
+    }
+
+    /// A temp file a process left behind (killed between the write and the
+    /// rename) is pruned once it is older than the age; a fresh one (a live
+    /// writer) and a temp file of another stem are not this stem's leftovers.
+    #[test]
+    fn prune_removes_old_interrupted_temp_files_only() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let keep = content_addressed(dir, "vespera_spec-app", 1);
+        fs::write(&keep, "{}").unwrap();
+        let leftover = dir.join(".vespera_spec-app-0000000000000002.json.123-4.tmp");
+        let live = dir.join(".vespera_spec-app-0000000000000003.json.123-5.tmp");
+        let other = dir.join(".vespera_spec-app-x-0000000000000004.json.1-1.tmp");
+        for path in [&leftover, &live, &other] {
+            fs::write(path, "{}").unwrap();
+        }
+        for path in [&leftover, &other] {
+            set_age(path, Duration::from_secs(60 * 60));
+        }
+
+        prune_superseded_older_than(&keep, "vespera_spec-app", Duration::from_secs(600));
+        assert!(keep.exists());
+        assert!(!leftover.exists());
+        assert!(live.exists());
+        assert!(other.exists());
     }
 
     fn set_age(path: &Path, ago: Duration) {

@@ -146,6 +146,57 @@ fn find_function_in_file_cases(#[case] needle: &str, #[case] expected: bool) {
     assert_eq!(find_function_in_file(&file, needle).is_some(), expected);
 }
 
+/// A name declared twice (`#[cfg]` twins) is ambiguous in every lookup: the
+/// file does not say which twin the build keeps, so nothing is documented.
+#[test]
+fn cfg_twin_functions_are_ambiguous() {
+    let file: syn::File = syn::parse_str(
+        r"
+        #[cfg(test)]
+        fn limit() -> u32 { 1 }
+        fn limit() -> u32 { 20 }
+        fn once() -> u32 { 3 }
+        ",
+    )
+    .unwrap();
+    assert!(find_function_in_file(&file, "limit").is_none());
+    assert!(find_function_in_file(&file, "once").is_some());
+}
+
+#[test]
+fn process_default_functions_omits_a_cfg_twin_default() {
+    let file_ast: syn::File = syn::parse_str(
+        r"
+        #[cfg(test)]
+        fn default_limit() -> u32 { 1 }
+        fn default_limit() -> u32 { 20 }
+        ",
+    )
+    .unwrap();
+    let struct_item: syn::ItemStruct = syn::parse_str(
+        r#"
+        pub struct Test {
+            #[serde(default = "default_limit")]
+            pub limit: u32,
+        }
+        "#,
+    )
+    .unwrap();
+    let mut schema = Schema::object();
+    schema.properties.get_or_insert_with(BTreeMap::new).insert(
+        "limit".to_string(),
+        SchemaRef::Inline(Box::new(Schema::integer())),
+    );
+
+    process_default_functions(&struct_item, Some(&file_ast), &mut schema, &BTreeMap::new());
+
+    let properties = schema.properties.as_ref().unwrap();
+    let SchemaRef::Inline(limit) = &properties["limit"] else {
+        panic!("inline schema expected");
+    };
+    assert_eq!(limit.default, None);
+}
+
 // ---------- extract_default_value_from_function ----------
 
 #[test]

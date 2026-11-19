@@ -63,6 +63,9 @@ fn pretty(metadata: &CollectedMetadata) -> String {
 #[case::hyphen("my-file", None)]
 #[case::leading_digit("2fa", None)]
 #[case::path_keyword("self", None)]
+#[case::trailing_space("users ", None)]
+#[case::leading_space(" users", None)]
+#[case::keyword_with_space("type ", None)]
 fn segment_idents(#[case] name: &str, #[case] expected: Option<&str>) {
     let ident = segment_ident(name).map(|ident| ident.to_string());
     assert_eq!(ident.as_deref(), expected);
