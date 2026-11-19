@@ -148,7 +148,9 @@ pub(super) fn generate_sea_orm_default_attrs_in(
         _ => {
             let Some((default_expr, schema_default_str)) =
                 sql_function_default_for_type(original_ty)
-                    .filter(|_| default_alias_is_external(original_ty, source_module))
+                    .filter(|_| {
+                        matches!(original_ty, syn::Type::Path(path) if default_alias_is_external(path, source_module))
+                    })
             else {
                 return (quote! {}, quote! {});
             };
@@ -235,19 +237,14 @@ fn unraw(ident: &syn::Ident) -> String {
 /// type-check there (R24-SM1-L2). The bare names are judged through the
 /// module's scope; a name the scope cannot pin down (a glob import) is
 /// trusted, as every other default name is.
-pub(super) fn default_alias_is_external(original_ty: &syn::Type, module: &[String]) -> bool {
-    let syn::Type::Path(type_path) = original_ty else {
-        return true;
-    };
+pub(super) fn default_alias_is_external(type_path: &syn::TypePath, module: &[String]) -> bool {
     let segments: Vec<String> = type_path
         .path
         .segments
         .iter()
         .map(|segment| segment.ident.to_string())
         .collect();
-    let Some(name) = segments.last() else {
-        return true;
-    };
+    let name = segments.last().cloned().unwrap_or_default();
     if !matches!(name.as_str(), "Date" | "Time" | "Uuid") {
         return true;
     }

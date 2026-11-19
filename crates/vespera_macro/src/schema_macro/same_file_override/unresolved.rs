@@ -203,6 +203,8 @@ mod tests {
     #[case::self_root("struct D { #[serde(with = \"Self::codec\")] id: i32 }", None)]
     // A multi-segment type is not judged (its root is not told apart).
     #[case::multi_segment_from("#[serde(try_from = \"codec::Wire\")] struct D { id: i32 }", None)]
+    // A serde value that is no string literal is no copied path.
+    #[case::non_string_value("struct D { #[serde(with = codec)] id: i32 }", None)]
     fn copied_serde_paths_are_judged(#[case] source: &str, #[case] expected: Option<&str>) {
         let _call = set_test_call_site_module("crate::b");
         let dto: syn::ItemStruct = syn::parse_str(source).unwrap();
