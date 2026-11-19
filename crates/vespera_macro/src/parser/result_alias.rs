@@ -808,17 +808,22 @@ fn is_local_root(ident: &syn::Ident) -> bool {
 /// Whether the return type `ty` is a qualified path into another crate
 /// (`axum::response::Result<..>`): never one of this crate's aliases. A
 /// path whose first segment is `crate` / `self` / `super`, a module the
-/// scope declares (`mod error;`) or a name it imports from this crate
-/// (`use crate::error;`) stays a candidate; without the file, any other
-/// qualified path counts as external.
+/// scope declares (`mod error;`), a name it imports from this crate
+/// (`use crate::error;`), or a module a local glob (`use crate::api::*;`)
+/// may bring in (`v2::ApiResult` with `api::v2`) stays a candidate; without
+/// the file, any other qualified path counts as external. The glob test is
+/// a name the scope does not import at all, so an external `use` of the
+/// qualifier still wins.
 fn is_external_path(path: &syn::Path, scope: Option<&Scope<'_>>) -> bool {
     let first = &path.segments[0].ident;
     path.segments.len() > 1
         && !is_local_root(first)
         && !scope.is_some_and(|scope| {
             let items = scope.items();
+            let named = import_kind(items, &first.to_string());
             declares_module(items, first)
-                || import_kind(items, &first.to_string()) == Some(Import::Local)
+                || named == Some(Import::Local)
+                || (named.is_none() && !glob_parents(items).is_empty())
         })
 }
 

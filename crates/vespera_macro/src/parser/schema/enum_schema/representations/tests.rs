@@ -736,6 +736,8 @@ fn internally_tagged_without_listed_variants_accepts_nothing() {
 #[case::internal(r#"#[serde(tag = "type")] enum Never {}"#, false)]
 #[case::adjacent(r#"#[serde(tag = "type", content = "data")] enum Never {}"#, false)]
 #[case::untagged("#[serde(untagged)] enum Never {}", false)]
+#[case::serde_repr_serialize("#[derive(Serialize_repr)] #[repr(u8)] enum Never {}", false)]
+#[case::serde_repr_deserialize("#[derive(Deserialize_repr)] #[repr(u8)] enum Never {}", true)]
 #[case::all_skipped("enum E { #[serde(skip)] A, #[serde(skip_serializing)] B(u8) }", false)]
 #[case::request_all_skipped(
     r#"#[serde(tag = "t")] enum E { #[serde(skip_deserializing)] A { x: u8 } }"#,

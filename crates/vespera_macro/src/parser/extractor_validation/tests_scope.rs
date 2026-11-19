@@ -194,3 +194,63 @@ fn test_only_twin_must_match_the_route_method(#[case] twin_method: &str, #[case]
     let src = "pub struct Probe { pub a: i32 } pub fn handler(Json(p): Json<Probe>) {}";
     assert_eq!(check_with(&metadata, src).is_ok(), ok);
 }
+
+/// The handler of a route is the same-named fn of its own method that is not
+/// test-only, whatever order the twins come in. Here the `cfg(test)` GET twin
+/// comes first and takes a non-`Schema` `Query<Fixture>`; the production POST
+/// fn takes a `Schema` `Json<Body>` and must be checked against its own
+/// signature (the first-match lookup checked the twin and rejected valid code).
+#[test]
+fn production_twin_is_checked_not_the_cfg_test_twin() {
+    let mut metadata = CollectedMetadata::new();
+    metadata.routes.push(handler_route("post"));
+    metadata.structs.push(crate::metadata::StructMetadata::new(
+        "Body".to_string(),
+        String::new(),
+    ));
+    let src = "pub struct Fixture { pub a: i32 } pub struct Body { pub a: i32 } \
+               #[cfg(test)] #[route(get)] pub fn handler(Query(q): Query<Fixture>) {} \
+               #[route(post)] pub fn handler(Json(b): Json<Body>) {}";
+    assert!(check_with(&metadata, src).is_ok());
+}
+
+/// The mirror case: the `cfg(test)` GET twin with a `Schema` extractor comes
+/// first, and the production POST fn with a non-`Schema` `Json<Local>` must
+/// still be flagged.
+#[test]
+fn production_twin_non_schema_extractor_is_flagged() {
+    let mut metadata = CollectedMetadata::new();
+    metadata.routes.push(handler_route("post"));
+    metadata.structs.push(crate::metadata::StructMetadata::new(
+        "Body".to_string(),
+        String::new(),
+    ));
+    let src = "pub struct Local { pub a: i32 } pub struct Body { pub a: i32 } \
+               #[cfg(test)] #[route(get)] pub fn handler(Json(b): Json<Body>) {} \
+               #[route(post)] pub fn handler(Json(l): Json<Local>) {}";
+    let message = check_with(&metadata, src)
+        .expect_err("POST handler")
+        .to_string();
+    assert!(message.contains("`Json<Local>`"), "{message}");
+}
+
+/// A bare `#[route]` is a GET, `#[vespera::route(..)]` counts too, and a fn
+/// routed to another method is not this route's handler.
+#[rstest]
+#[case::bare_is_get("#[route] pub fn handler(Json(l): Json<Local>) {}", "get", true)]
+#[case::qualified_post(
+    "#[vespera::route(post)] pub fn handler(Json(l): Json<Local>) {}",
+    "post",
+    true
+)]
+#[case::other_method_ignored("#[route(put)] pub fn handler(Json(l): Json<Local>) {}", "get", false)]
+fn route_attribute_spellings_pick_the_handler(
+    #[case] handler: &str,
+    #[case] method: &str,
+    #[case] checked: bool,
+) {
+    let mut metadata = CollectedMetadata::new();
+    metadata.routes.push(handler_route(method));
+    let src = format!("pub struct Local {{ pub a: i32 }} {handler}");
+    assert_eq!(check_with(&metadata, &src).is_err(), checked, "{handler}");
+}

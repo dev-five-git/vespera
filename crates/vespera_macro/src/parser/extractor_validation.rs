@@ -25,9 +25,10 @@
 use std::collections::{HashMap, HashSet};
 
 use proc_macro2::Span;
-use syn::Type;
+use syn::{Type, punctuated::Punctuated};
 
 use super::extractors::request_extractor;
+use crate::collector::test_scope::attrs_test_only;
 use crate::metadata::CollectedMetadata;
 use crate::schema_macro::type_utils::option_inner;
 
@@ -163,10 +164,7 @@ fn check_extractors(metadata: &CollectedMetadata, file_cache: &dyn AstLookup) ->
                 (local_types, imported_route_types)
             });
 
-        let Some(fn_item) = ast.items.iter().find_map(|item| match item {
-            syn::Item::Fn(f) if f.sig.ident == route.function_name => Some(f),
-            _ => None,
-        }) else {
+        let Some(fn_item) = handler_fn(ast, route) else {
             continue;
         };
 
@@ -217,6 +215,64 @@ fn is_test_only(metadata: &CollectedMetadata, route: &crate::metadata::RouteMeta
             && test_only.function_name == route.function_name
             && (test_only.method.is_empty() || test_only.method.eq_ignore_ascii_case(&route.method))
     })
+}
+
+/// The HTTP methods a `#[route(..)]` argument can name (the collector's list).
+const ROUTE_METHODS: [&str; 7] = ["get", "post", "put", "patch", "delete", "head", "options"];
+
+/// The top-level fn `route` is registered from: among the same-named fns of
+/// `ast`, the one not gated by a test-only `cfg` whose `#[route(<method>)]`
+/// is the route's method. A `#[cfg(test)]` twin, or a same-named fn of
+/// another method, is never the handler, so its extractors are not checked
+/// against the route. `None` when no such fn exists (nothing to check).
+fn handler_fn<'a>(
+    ast: &'a syn::File,
+    route: &crate::metadata::RouteMetadata,
+) -> Option<&'a syn::ItemFn> {
+    ast.items.iter().find_map(|item| match item {
+        syn::Item::Fn(f)
+            if f.sig.ident == route.function_name
+                && !attrs_test_only(&f.attrs)
+                && is_handler_of(f, &route.method) =>
+        {
+            Some(f)
+        }
+        _ => None,
+    })
+}
+
+/// Whether `f` can be the handler of a `method` route: its `#[route(..)]`
+/// names that method (a bare `#[route]` is a GET). A fn with no `#[route]`
+/// attribute at all matches any method, since nothing tells it apart.
+fn is_handler_of(f: &syn::ItemFn, method: &str) -> bool {
+    let mut declared = f
+        .attrs
+        .iter()
+        .filter(|attr| crate::route::check_route_by_meta(&attr.meta))
+        .peekable();
+    if declared.peek().is_none() {
+        return true;
+    }
+    declared.any(|attr| route_attr_method(attr).eq_ignore_ascii_case(method))
+}
+
+/// The method a `#[route(..)]` attribute names, lower case (`get` for a bare
+/// `#[route]`, as the collector reads it). Both spellings count.
+fn route_attr_method(attr: &syn::Attribute) -> String {
+    attr.meta
+        .require_list()
+        .ok()
+        .and_then(|list| {
+            list.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+                .ok()
+        })
+        .into_iter()
+        .flatten()
+        .find_map(|meta| {
+            let method = meta.path().get_ident()?.to_string().to_ascii_lowercase();
+            ROUTE_METHODS.contains(&method.as_str()).then_some(method)
+        })
+        .unwrap_or_else(|| "get".to_owned())
 }
 
 /// If `ty` is one of the request/query extractors, return its name and the

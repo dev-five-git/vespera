@@ -135,8 +135,12 @@ fn is_reserved_header_name(name: &str) -> bool {
         .any(|reserved| name.eq_ignore_ascii_case(reserved))
 }
 
-/// `XRequestId` → `x-request-id`, `HTTPVersion` → `http-version`,
-/// `Api_Key` → `api-key`.
+/// `XRequestId` → `x-request-id`, `XAPIKey` → `x-api-key`,
+/// `HTTPVersion` → `http-version`, `Api_Key` → `api-key`.
+///
+/// A leading `X` is the conventional `X-` header prefix, so it always ends
+/// its own word. Other single leading letters (`IPAddress` → `ip-address`)
+/// are read as part of an acronym: a type name alone cannot tell them apart.
 fn kebab_case_type_name(ident: &str) -> String {
     let chars: Vec<char> = ident.chars().collect();
     let mut out = String::with_capacity(ident.len() + 4);
@@ -148,7 +152,9 @@ fn kebab_case_type_name(ident: &str) -> String {
         if c.is_ascii_uppercase() && i > 0 {
             let prev = chars[i - 1];
             let next_is_lower = chars.get(i + 1).is_some_and(char::is_ascii_lowercase);
-            if prev.is_ascii_lowercase()
+            let x_prefix = i == 1 && chars[0] == 'X';
+            if x_prefix
+                || prev.is_ascii_lowercase()
                 || prev.is_ascii_digit()
                 || (prev.is_ascii_uppercase() && next_is_lower)
             {
@@ -261,6 +267,10 @@ mod tests {
     #[case::custom_qualified("TypedHeader<my_headers::TenantId>", Some("tenant-id"))]
     #[case::custom_acronym("TypedHeader<HTTPVersion2Hint>", Some("http-version2-hint"))]
     #[case::custom_snake("TypedHeader<Api_Key>", Some("api-key"))]
+    #[case::custom_x_acronym("TypedHeader<XAPIKey>", Some("x-api-key"))]
+    #[case::custom_x_http("TypedHeader<XHTTPMethod>", Some("x-http-method"))]
+    #[case::custom_leading_acronym("TypedHeader<HTTPVersion>", Some("http-version"))]
+    #[case::custom_ip_acronym("TypedHeader<IPAddress>", Some("ip-address"))]
     #[case::cookie("TypedHeader<Cookie>", Some("Cookie"))]
     #[case::authorization("TypedHeader<Authorization<Bearer>>", None)]
     #[case::content_type("TypedHeader<ContentType>", None)]

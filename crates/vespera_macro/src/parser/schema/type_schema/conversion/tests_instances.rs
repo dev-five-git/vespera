@@ -193,6 +193,7 @@ fn serde_json_map_is_an_object_of_any_members() {
         "serde_json::Map<String, serde_json::Value>",
         "vespera::serde_json::Map<String, u8>",
         "::serde_json::Map",
+        "serde_json::map::Map<String, u8>",
     ] {
         let ty: Type = syn::parse_str(src).unwrap();
         let schema = serde_json::to_value(parse_type_to_schema_ref(&ty, &known, &defs)).unwrap();

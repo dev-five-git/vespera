@@ -3,16 +3,17 @@
 
 use std::{borrow::Borrow, collections::HashSet, hash::Hash};
 
-/// `Map` through a `serde_json` segment (`serde_json::Map`,
-/// `vespera::serde_json::Map`, `::serde_json::Map`): the object type.
+/// `Map` through a `serde_json` segment anywhere before it (`serde_json::Map`,
+/// `vespera::serde_json::Map`, `::serde_json::Map`, and the `serde_json::map::Map`
+/// module path): the object type.
 pub(super) fn is_serde_json_map_path(path: &syn::Path) -> bool {
     path.segments.last().is_some_and(|last| last.ident == "Map")
         && path
             .segments
             .iter()
             .rev()
-            .nth(1)
-            .is_some_and(|parent| parent.ident == "serde_json")
+            .skip(1)
+            .any(|segment| segment.ident == "serde_json")
 }
 
 /// `serde_json::Value` under any of its names:

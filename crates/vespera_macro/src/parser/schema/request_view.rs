@@ -390,12 +390,17 @@ pub(in crate::parser::schema) enum FlatRead<'a> {
     Through(&'a syn::Type),
 }
 
+/// Whether serde reads `field` on input: a field skipped there (`skip`, or
+/// `skip_deserializing`) takes no keys from the buffer, so a flattened one
+/// neither makes its struct a map nor leaves keys for a later map.
+fn reads_on_input(field: &syn::Field) -> bool {
+    let skip = extract_serde_skip_flags(&field.attrs);
+    !skip.skip && !skip.skip_deserializing
+}
+
 /// How serde reads `item` when it is flattened (see [`FlatRead`]).
 pub(in crate::parser::schema) fn flat_read(item: &syn::Item) -> FlatRead<'_> {
-    let read = |field: &&syn::Field| {
-        let skip = extract_serde_skip_flags(&field.attrs);
-        !skip.skip && !skip.skip_deserializing
-    };
+    let read = |field: &&syn::Field| reads_on_input(field);
     match item {
         syn::Item::Struct(item) => {
             let transparent = extract_transparent(&item.attrs);
@@ -498,7 +503,7 @@ impl FlatKinds {
             && fields
                 .named
                 .iter()
-                .filter(|field| extract_flatten(&field.attrs))
+                .filter(|field| extract_flatten(&field.attrs) && reads_on_input(field))
                 .any(|field| self.field_kind(field) == Some(FlatKind::Map))
         {
             return Some(FlatKind::Map);
@@ -614,7 +619,10 @@ fn flatten_differs(
     flat: &FlatKinds,
 ) -> bool {
     let mut kinds = Vec::new();
-    for field in fields.iter().filter(|field| extract_flatten(&field.attrs)) {
+    // A member skipped on both sides is not in either view (serde ignores it).
+    for field in fields.iter().filter(|field| {
+        extract_flatten(&field.attrs) && !extract_serde_skip_flags(&field.attrs).fully_skipped()
+    }) {
         let constraints = extract_schema_constraints(&field.attrs);
         let (ty, optional) = flattened_member(field, &constraints);
         if optional || is_type_param(peel(ty), generics) {

@@ -189,7 +189,10 @@ fn derive_lists_serialize(attr: &syn::Attribute) -> bool {
 /// Whether a `#[cfg_attr(predicate, derive(..), ..)]` lists `Serialize` while
 /// its predicate is not known to be false. An undecidable predicate (`unix`,
 /// `test`, a feature outside rustc) counts as active: the derive may be
-/// compiled in, and a `form_data` rename is then the one serde would use.
+/// compiled in. The active reading is the conservative one for the response
+/// view: where the derive is compiled in, serde writes the Rust (or serde
+/// renamed) field name, never a `form_data` rename, so that name is what
+/// the response documents on this path (see `extract_field_rename_owned`).
 fn cfg_attr_derives_serialize(attr: &syn::Attribute) -> bool {
     let parsed = attr.parse_args_with(|input: syn::parse::ParseStream<'_>| {
         let predicate: Predicate = input.parse()?;
