@@ -5,6 +5,8 @@ use syn::{
     parse::{Parse, ParseStream},
 };
 
+use vespera_core::schema::{escape_schema_name, unescape_schema_name};
+
 use crate::metadata::CollectedMetadata;
 
 /// Input for `export_app`! macro
@@ -285,14 +287,17 @@ fn rewrite_refs(value: &mut serde_json::Value, renames: &BTreeMap<String, String
                 && let Some(serde_json::Value::String(reference)) = object.get_mut("$ref")
                 && let Some(target) = reference.strip_prefix("#/components/schemas/")
             {
-                let (name, suffix) = target
+                // The name segment is escaped (`/` never appears raw in it), so
+                // the first `/` still starts the suffix (`/properties/...`).
+                let (segment, suffix) = target
                     .split_once('/')
                     .map_or((target, ""), |(name, suffix)| (name, suffix));
-                if let Some(new_name) = renames.get(name) {
+                if let Some(new_name) = renames.get(&unescape_schema_name(segment)) {
+                    let escaped = escape_schema_name(new_name);
                     *reference = if suffix.is_empty() {
-                        format!("#/components/schemas/{new_name}")
+                        format!("#/components/schemas/{escaped}")
                     } else {
-                        format!("#/components/schemas/{new_name}/{suffix}")
+                        format!("#/components/schemas/{escaped}/{suffix}")
                     };
                 }
             }

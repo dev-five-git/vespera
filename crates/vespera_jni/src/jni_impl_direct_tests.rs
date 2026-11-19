@@ -11,7 +11,7 @@ use super::{
 // satisfying `write_response_to_out`'s `# Safety` contract.
 
 #[test]
-fn undersized_out_asks_for_the_minimum_without_dispatching() {
+fn undersized_out_code_is_the_minimum_overflow() {
     let min = vespera_inprocess::MIN_DIRECT_OUT_BYTES;
     assert_eq!(undersized_out_code(0), Some(-jint::try_from(min).unwrap()));
     assert_eq!(

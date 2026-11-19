@@ -65,7 +65,7 @@
 //! Field constraints in `#[schema(...)]` are emitted into the OpenAPI document
 //! **and** compiled into a runtime validator, which the [`Validated`]
 //! extractor runs before your handler (failures become
-//! `422 Unprocessable Entity` with an `{"errors":[{"path","message"}]}` body).
+//! `422 Unprocessable Entity` with an `{"errors":[{"message","path"}]}` body).
 //! No extra dependency is needed — see [`Validated`] for details.
 //!
 //! # Cargo features

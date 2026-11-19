@@ -77,7 +77,7 @@ fn parse_struct_body(
 
     if let Some((schema_name, nullable)) = extract_schema_ref_override(&struct_item.attrs) {
         return Schema {
-            ref_path: Some(format!("#/components/schemas/{schema_name}")),
+            ref_path: Some(vespera_core::schema::Reference::schema(&schema_name).ref_path),
             nullable: nullable.then_some(true),
             description: struct_description,
             ..Default::default()
@@ -770,6 +770,9 @@ mod tests_serde_fidelity;
 
 #[cfg(test)]
 mod tests_transparent;
+
+#[cfg(test)]
+mod tests_ref_escape;
 
 #[cfg(test)]
 mod tests_option_output;

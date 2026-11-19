@@ -554,18 +554,6 @@ impl Schema {
     where
         S: serde::Serializer,
     {
-        // A nullable `$ref` with a sibling `oneOf` / `allOf` / `not` is
-        // wrapped too: `anyOf: [{$ref}, {type: null}]` next to the keyword
-        // would still reject `null`.  (With an explicit `any_of` it is the
-        // error below — there is no slot left for the null branch.)
-        if nullable
-            && self.composition_rejects_null()
-            && !(self.ref_path.is_some() && self.any_of.is_some())
-        {
-            let mut out = serializer.serialize_struct("Schema", 1)?;
-            out.serialize_field("anyOf", &NullableComposition(self))?;
-            return out.end();
-        }
         let nullable_ref = nullable && self.ref_path.is_some();
         if nullable_ref && self.any_of.is_some() {
             return Err(serde::ser::Error::custom(
@@ -578,10 +566,24 @@ impl Schema {
         // own `Schema::nullable_reference` always leaves `schema_type` None, so
         // this only fires for a hand-built `Schema` that mixed the two — reject
         // it like the `any_of` case above instead of serializing broken OpenAPI.
+        // It runs before the composition wrapper below, so a nullable `$ref`
+        // with a `oneOf` / `allOf` / `not` sibling is rejected the same way.
         if nullable_ref && self.schema_type.is_some() {
             return Err(serde::ser::Error::custom(
                 "invalid Schema: nullable `$ref` serializes through anyOf and cannot also carry an explicit type; build it via Schema::nullable_reference",
             ));
+        }
+        // A nullable `$ref` with a sibling `oneOf` / `allOf` / `not` is
+        // wrapped too: `anyOf: [{$ref}, {type: null}]` next to the keyword
+        // would still reject `null`.  (With an explicit `any_of` it is the
+        // error above — there is no slot left for the null branch.)
+        if nullable
+            && self.composition_rejects_null()
+            && !(self.ref_path.is_some() && self.any_of.is_some())
+        {
+            let mut out = serializer.serialize_struct("Schema", 1)?;
+            out.serialize_field("anyOf", &NullableComposition(self))?;
+            return out.end();
         }
         let mut out = serializer.serialize_struct("Schema", 43)?;
         if let Some(ref_path) = &self.ref_path {

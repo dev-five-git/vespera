@@ -5,6 +5,8 @@ use std::{
     path::Path,
 };
 
+use vespera_core::schema::schema_name_of_ref;
+
 use crate::{
     metadata::CollectedMetadata,
     openapi_generator::{defaults::process_default_functions_for, paths::parallel_filter_map},
@@ -251,11 +253,9 @@ fn collect_component_refs(value: &serde_json::Value, out: &mut Vec<String>) {
         serde_json::Value::Object(map) => {
             for (key, child) in map {
                 if key == "$ref"
-                    && let Some(name) = child
-                        .as_str()
-                        .and_then(|r| r.strip_prefix("#/components/schemas/"))
+                    && let Some(name) = child.as_str().and_then(schema_name_of_ref)
                 {
-                    out.push(name.to_string());
+                    out.push(name);
                 }
                 collect_component_refs(child, out);
             }
@@ -807,13 +807,13 @@ fn check_internally_tagged(
         // wire type.
         let target = match payload {
             SchemaRef::Ref(reference) => {
-                let Some(target) = reference.ref_path.strip_prefix("#/components/schemas/") else {
+                let Some(target) = schema_name_of_ref(&reference.ref_path) else {
                     continue;
                 };
-                if !schemas.get(target).is_some_and(non_object) {
+                if !schemas.get(target.as_str()).is_some_and(non_object) {
                     continue;
                 }
-                target.to_string()
+                target
             }
             SchemaRef::Inline(inline) if non_object(inline) => {
                 let ty = format!("{:?}", inline.schema_type.unwrap_or(SchemaType::Null));

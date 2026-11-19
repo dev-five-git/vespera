@@ -511,6 +511,26 @@ fn nullable_reference_with_explicit_type_returns_clean_serialization_error() {
 }
 
 #[test]
+fn nullable_reference_with_explicit_type_and_composition_is_rejected_too() {
+    // The explicit-type guard must not depend on the composition wrapper:
+    // a nullable `$ref` with a `oneOf` sibling takes the `anyOf` wrapper
+    // path, and must fail with the same error as the plain case above.
+    let schema = Schema {
+        schema_type: Some(SchemaType::Object),
+        one_of: Some(vec![SchemaRef::Inline(Box::new(Schema::string()))]),
+        ..Schema::nullable_reference("#/components/schemas/User".to_owned())
+    };
+
+    let err = serde_json::to_string(&schema).unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("cannot also carry an explicit type"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
 fn nullable_primitive_emits_type_array_with_null() {
     let schema = Schema {
         nullable: Some(true),

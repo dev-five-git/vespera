@@ -4,7 +4,7 @@ use quote::ToTokens;
 use syn::Type;
 use vespera_core::{
     route::{Parameter, ParameterLocation, ParameterStyle},
-    schema::{Schema, SchemaRef, SchemaType},
+    schema::{Schema, SchemaRef, SchemaType, schema_name_of_ref},
 };
 
 use super::shared::{
@@ -266,9 +266,9 @@ fn collect_query_struct_parameters(
         );
 
         if let SchemaRef::Ref(ref_ref) = &field_schema
-            && let Some(type_name) = ref_ref.ref_path.strip_prefix("#/components/schemas/")
+            && let Some(type_name) = schema_name_of_ref(&ref_ref.ref_path)
             // A request-view `$ref` names the `Input` component.
-            && let type_name = component_of_input(type_name).unwrap_or_else(|| type_name.to_string())
+            && let type_name = component_of_input(&type_name).unwrap_or(type_name)
             && let Some(struct_def) = struct_definitions.get(type_name.as_str())
             && let Ok(nested_struct_item) = syn::parse_str::<syn::ItemStruct>(struct_def)
         {
