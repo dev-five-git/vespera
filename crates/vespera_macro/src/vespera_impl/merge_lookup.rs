@@ -294,20 +294,17 @@ pub(super) fn resolve_export(
     {
         return Some(resolved);
     }
-    let krate = if local {
-        current
-    } else {
-        // Renamed dependency (only an extern crate can be left): the unique
-        // exporter other than the current crate. The current crate is the
-        // fallback when no other exporter, or several, exist.
-        let others: Vec<String> = exporters_of(vespera_dir, &app)
-            .into_iter()
-            .filter(|krate| *krate != current)
-            .collect();
-        match others.as_slice() {
-            [only] => only.clone(),
-            _ => current,
-        }
+    // Renamed dependency (only an extern crate can be left): the unique
+    // exporter other than the current crate. A local path never looks
+    // elsewhere; the current crate is the fallback when no other exporter, or
+    // several, exist.
+    let others: Vec<String> = exporters_of(vespera_dir, &app)
+        .into_iter()
+        .filter(|krate| !local && *krate != current)
+        .collect();
+    let krate = match others.as_slice() {
+        [only] => only.clone(),
+        _ => current,
     };
     Some(ResolvedExport {
         spec_file: export_spec_path(vespera_dir, &krate, &app),
