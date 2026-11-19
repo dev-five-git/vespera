@@ -421,20 +421,27 @@ pub fn find_function_in_file<'a>(
     find_function_in_index(&index, function_name)
 }
 
-fn function_index_by_name(file_ast: &syn::File) -> HashMap<String, &syn::ItemFn> {
-    let mut functions = HashMap::new();
+/// The top-level functions of `file_ast` by name. A name declared more than
+/// once (`#[cfg]`-gated twins) is ambiguous: this file does not say which
+/// twin the build keeps, so it maps to `None` and callers treat it as
+/// unresolved. Route signatures (`paths.rs`) use the same index and rule.
+pub(super) fn function_index_by_name(
+    file_ast: &syn::File,
+) -> HashMap<String, Option<&syn::ItemFn>> {
+    let mut functions: HashMap<String, Option<&syn::ItemFn>> = HashMap::new();
     for item in &file_ast.items {
         if let syn::Item::Fn(fn_item) = item {
             functions
                 .entry(fn_item.sig.ident.to_string())
-                .or_insert(fn_item);
+                .and_modify(|slot| *slot = None)
+                .or_insert(Some(fn_item));
         }
     }
     functions
 }
 
 fn find_function_in_index<'a>(
-    function_index: &HashMap<String, &'a syn::ItemFn>,
+    function_index: &HashMap<String, Option<&'a syn::ItemFn>>,
     function_name: &str,
 ) -> Option<&'a syn::ItemFn> {
     // The index holds only this file's top-level functions. A qualified path
@@ -443,7 +450,7 @@ fn find_function_in_index<'a>(
     if function_name.contains("::") {
         return None;
     }
-    function_index.get(function_name).copied()
+    function_index.get(function_name).copied().flatten()
 }
 
 /// Extract default value from function body

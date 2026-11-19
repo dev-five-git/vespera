@@ -10,9 +10,11 @@
 //! ## Limitations (v1)
 //!
 //! - **Enums**: no `Validate` impl is emitted.
-//! - **Generic / lifetime-parameterised structs**: if the struct
-//!   carries any constraints and also any generic parameter, the macro
-//!   emits a `compile_error!` rather than guessing at trait bounds.
+//! - **Generic / lifetime-parameterised structs**: if the struct has a
+//!   runtime validation rule that serde reads and also any generic parameter,
+//!   the macro emits a `compile_error!` rather than guessing at trait bounds.
+//!   A rule only on a serde-skipped field gets an empty impl, and
+//!   annotation-only constraints never error.
 //! - **Tuple / unit structs**: no `Validate` impl is emitted.
 //! - **`format = "uuid"`**: produces an OpenAPI annotation only; garde
 //!   has no built-in UUID validator, and we don't synthesise one.

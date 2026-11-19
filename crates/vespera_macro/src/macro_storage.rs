@@ -6,7 +6,7 @@
 //! proc-macro server (one process, many crates) never leaks crate A's entries
 //! into crate B. The bookkeeping around that map — poison-tolerant locking,
 //! copy-on-write bucket mutation, and replace-insert keyed by
-//! `(fn_name, file_path)` — is identical for both, and lives here once.
+//! `(fn_name, file_path, scope)` — is identical for both, and lives here once.
 //!
 //! # Key items
 //!

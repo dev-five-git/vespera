@@ -78,7 +78,9 @@ pub struct OpenApiSecurity {
 
 /// Generate `OpenAPI` document from collected metadata.
 ///
-/// When `file_cache` is provided (from collector), skips file I/O entirely.
+/// When `file_cache` is provided (from collector), the route files are not
+/// parsed again (`build_file_cache`); struct source files are still read for
+/// module scoping.
 /// When `None`, falls back to reading files from disk (used in tests).
 #[cfg(test)]
 pub fn generate_openapi_doc_with_metadata(

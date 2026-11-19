@@ -678,20 +678,25 @@ jobs:
           if ! git fetch --depth 1 origin changepacks/main 2>/dev/null; then
             echo "no version PR branch"; exit 0
           fi
-          # The write token must never run code from the changepacks/main tree.
           # The sync script and the modules it imports are copied from this
-          # (main) checkout first; the copy rewrites the branch checkout through
-          # VERSION_SYNC_ROOT.
+          # (main) checkout first, so the code that runs is main's; the copy
+          # rewrites the branch checkout through VERSION_SYNC_ROOT.
           trusted="$RUNNER_TEMP/version-sync"
           mkdir -p "$trusted/scripts" "$trusted/apps/landing/src/constants"
           cp scripts/sync-landing-versions.ts scripts/check-version-alignment.ts "$trusted/scripts/"
           cp apps/landing/src/constants/index.ts "$trusted/apps/landing/src/constants/"
           git checkout -B changepacks/main FETCH_HEAD
+          # GH_TOKEN (the write token) is removed from the environment of
+          # cargo and bun, which read configuration from the checkout
+          # (`.cargo/config.toml`, bun config) and so run tree-controlled
+          # settings. The copy above covers only the sync script and its
+          # imports. git and gh keep the token: gh needs it, and git pushes
+          # with the checkout's own credentials.
           # cargo update only resolves the manifests and Cargo.lock: it runs no
           # build.rs, proc macro or workspace code (verified with a path
           # dependency carrying a build script and a proc-macro crate).
-          cargo update --workspace
-          VERSION_SYNC_ROOT="$PWD" bun "$trusted/scripts/sync-landing-versions.ts"
+          env -u GH_TOKEN cargo update --workspace
+          env -u GH_TOKEN VERSION_SYNC_ROOT="$PWD" bun "$trusted/scripts/sync-landing-versions.ts"
           if ! git diff --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

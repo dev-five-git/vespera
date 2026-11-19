@@ -57,7 +57,10 @@ export function pairedChanges(
     const b = base[i]
     const h = head[i]
     if (b === undefined || h === undefined || !(b > 0)) continue
-    out.push(h / b - 1)
+    // Rounded to 1e-6 like bench-interleaved.sh (printf %.6f): an exact +30%
+    // (1300 / 1000) is 0.30000000000000004 in floating point, which would
+    // compare above the 0.3 limit.
+    out.push(Math.round((h / b - 1) * 1e6) / 1e6)
   }
   return out
 }

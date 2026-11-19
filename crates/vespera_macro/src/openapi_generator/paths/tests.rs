@@ -9,6 +9,8 @@ use crate::{
     route_impl::StoredRouteInfo,
 };
 
+mod tests_twins;
+
 fn create_temp_file(dir: &TempDir, filename: &str, content: &str) -> PathBuf {
     let file_path = dir.path().join(filename);
     fs::write(&file_path, content).expect("Failed to write temp file");

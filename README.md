@@ -1184,8 +1184,9 @@ pub async fn hourly_report() {
 3. A background scheduler spawns via `tokio::spawn` when the app starts (once
    per process, however often the router is built)
 4. A job whose expression never fires again (for example a fixed year that has
-   passed) stops with a WARN naming the job and its expression; the other jobs
-   keep running
+   passed) stops, logging a `vespera:` line to stderr that names the job and
+   its expression (a WARN event on target `vespera::cron` with the `tracing`
+   feature); the other jobs keep running
 
 ```rust
 // No cron-specific config — just works
