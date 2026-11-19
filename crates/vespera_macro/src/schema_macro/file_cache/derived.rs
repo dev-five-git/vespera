@@ -97,15 +97,72 @@ pub fn canonicalize_cached(path: &Path) -> Option<PathBuf> {
     canonical
 }
 
-/// Restores proc-macro2's normal mode even if parsing panics (declared
-/// outside the generic [`with_fallback_parse`]: one non-generic `Drop`
-/// impl).
-struct Unforce;
+/// proc-macro2's fallback forcing is one process-wide switch, neither
+/// per-thread nor counted: a plain `unforce` by a nested holder would release
+/// a force an enclosing scope still needs (R24-SM1-M1). [`ForceDepth`] counts
+/// the holders and calls the switch only on the first hold and the last drop.
+pub struct ForceDepth {
+    depth: std::sync::Mutex<usize>,
+}
 
-impl Drop for Unforce {
+impl ForceDepth {
+    /// No holder.
+    pub const fn new() -> Self {
+        Self {
+            depth: std::sync::Mutex::new(0),
+        }
+    }
+
+    /// Hold the fallback forced until the guard drops: `set(true)` runs when
+    /// the first holder arrives, `set(false)` when the last one leaves.
+    pub fn hold(&self, set: fn(bool)) -> ForceHold<'_> {
+        let mut depth = self.lock();
+        if *depth == 0 {
+            set(true);
+        }
+        *depth += 1;
+        ForceHold { owner: self, set }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, usize> {
+        self.depth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// One hold of a [`ForceDepth`]; releases it on drop, also while unwinding.
+pub struct ForceHold<'a> {
+    owner: &'a ForceDepth,
+    set: fn(bool),
+}
+
+impl Drop for ForceHold<'_> {
     fn drop(&mut self) {
+        let mut depth = self.owner.lock();
+        *depth -= 1;
+        if *depth == 0 {
+            (self.set)(false);
+        }
+    }
+}
+
+/// The process-wide holds of [`force_fallback`].
+static FALLBACK_FORCE: ForceDepth = ForceDepth::new();
+
+fn set_fallback(forced: bool) {
+    if forced {
+        proc_macro2::fallback::force();
+    } else {
         proc_macro2::fallback::unforce();
     }
+}
+
+/// Force proc-macro2's fallback implementation (spans carry real positions)
+/// until the returned guard drops. Holds nest across threads: a worker's hold
+/// never releases the force of the thread that started the parallel section.
+pub fn force_fallback() -> ForceHold<'static> {
+    FALLBACK_FORCE.hold(set_fallback)
 }
 
 /// Parse `content` with proc-macro2's fallback implementation forced, so
@@ -114,14 +171,35 @@ impl Drop for Unforce {
 /// file to `read`.  Nothing parsed here may leave `read`: only plain data
 /// does, so no fallback token is ever mixed with compiler tokens.
 pub fn with_fallback_parse<T>(content: &str, read: impl FnOnce(&syn::File) -> T) -> Option<T> {
-    proc_macro2::fallback::force();
-    let _unforce = Unforce;
+    let _forced = force_fallback();
     syn::parse_file(content).ok().map(|file| read(&file))
 }
 
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+
+    thread_local! {
+        static CALLS: std::cell::RefCell<Vec<bool>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn record(forced: bool) {
+        CALLS.with(|calls| calls.borrow_mut().push(forced));
+    }
+
+    #[test]
+    fn nested_holds_release_the_force_with_the_outermost() {
+        let depth = ForceDepth::new();
+        let outer = depth.hold(record);
+        let inner = depth.hold(record);
+        drop(inner);
+        CALLS.with(|calls| assert_eq!(*calls.borrow(), [true]));
+        drop(outer);
+        CALLS.with(|calls| assert_eq!(*calls.borrow(), [true, false]));
+        // A later hold switches the mode on again.
+        drop(depth.hold(record));
+        CALLS.with(|calls| assert_eq!(*calls.borrow(), [true, false, true, false]));
+    }
 
     use super::*;
 

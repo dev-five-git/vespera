@@ -10,7 +10,7 @@ use crate::parser::{SerdeSide, extract_default, extract_field_rename_for, rename
 /// an unrelated `key = value` before the one asked for never hides it.
 #[derive(Default)]
 pub(super) struct FormDataAttrs {
-    /// `field_name = "..."` (a non-string value is ignored).
+    /// `field_name = "..."` (a non-string value is a spanned error).
     pub(super) field_name: Option<String>,
     /// `limit = "..."`, validated: `"unlimited"` or a byte size.
     pub(super) limit: Option<syn::LitStr>,
@@ -60,7 +60,8 @@ fn as_lit_str(expr: Option<&syn::Expr>) -> Option<&syn::LitStr> {
 }
 
 /// Parse every `#[form_data(...)]` on a field. The first occurrence of a key
-/// wins; malformed syntax and an invalid `limit` are spanned errors.
+/// wins; malformed syntax, a non-string `field_name` and an invalid `limit`
+/// are spanned errors.
 pub(super) fn parse_form_data(attrs: &[syn::Attribute]) -> syn::Result<FormDataAttrs> {
     let mut out = FormDataAttrs::default();
     for attr in attrs
@@ -70,8 +71,18 @@ pub(super) fn parse_form_data(attrs: &[syn::Attribute]) -> syn::Result<FormDataA
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("field_name") {
                 let expr = value_expr(&meta)?;
+                // A non-string name (`field_name = upload_name`) would read the
+                // part under the serde name, silently: it is an error instead.
+                let Some(lit) = as_lit_str(expr.as_ref()) else {
+                    let span_tokens =
+                        expr.map_or_else(|| meta.path.to_token_stream(), |e| e.to_token_stream());
+                    return Err(syn::Error::new_spanned(
+                        span_tokens,
+                        "expected `field_name = \"<name>\"`, e.g. `field_name = \"upload\"`",
+                    ));
+                };
                 if out.field_name.is_none() {
-                    out.field_name = as_lit_str(expr.as_ref()).map(syn::LitStr::value);
+                    out.field_name = Some(lit.value());
                 }
             } else if meta.path.is_ident("limit") {
                 let expr = value_expr(&meta)?;
@@ -268,8 +279,6 @@ mod tests {
         r#"#[form_data(field_name = "a")] #[form_data(field_name = "b")] pub x: String"#,
         Some("a")
     )]
-    #[case::non_string(r"#[form_data(field_name = 42)] pub x: String", None)]
-    #[case::valueless(r"#[form_data(field_name)] pub x: String", None)]
     #[case::unknown_list_key(
         r#"#[form_data(other(a = 1), field_name = "y")] pub x: String"#,
         Some("y")
@@ -278,17 +287,20 @@ mod tests {
         assert_eq!(form_data(code).field_name.as_deref(), expected);
     }
 
+    /// R24-SM0-L4: a non-string or valueless `field_name` is a spanned error
+    /// (it used to be ignored, reading the part under the serde name).
     #[rstest]
-    #[case::malformed_field_name(
-        r#"#[form_data(field_name = 42)] #[serde(rename = "wire_name")] pub rust_name: String"#,
-        None,
-        "wire_name"
-    )]
-    #[case::valueless_field_name(
-        r"#[form_data(field_name)] pub rust_name: String",
-        None,
-        "rust_name"
-    )]
+    #[case::non_string(r"#[form_data(field_name = 42)] pub x: String")]
+    #[case::path_value(r"#[form_data(field_name = upload_name)] pub x: String")]
+    #[case::valueless(r"#[form_data(field_name)] pub x: String")]
+    fn malformed_field_name_is_a_spanned_error(#[case] code: &str) {
+        let err = parse_form_data(&parse_attrs(code))
+            .err()
+            .expect("a non-string field_name is an error");
+        assert!(err.to_string().contains("field_name"), "{err}");
+    }
+
+    #[rstest]
     #[case::plain("pub my_field: String", None, "my_field")]
     #[case::rename_all("pub my_field: String", Some("camelCase"), "myField")]
     #[case::serde_rename(

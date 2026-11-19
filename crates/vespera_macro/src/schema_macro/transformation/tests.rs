@@ -134,6 +134,40 @@ fn test_determine_rename_all_default() {
     assert_eq!(result, "camelCase");
 }
 
+/// R24-SM4-M1: a non-multipart DTO takes serde's own `rename_all` only; the
+/// source's `try_from_multipart(rename_all)` (form field names, read by the
+/// source's Multipart derive) applies to the multipart DTO alone.
+#[rstest]
+#[case::non_multipart(false, "camelCase", None)]
+#[case::multipart(true, "PascalCase", Some("PascalCase"))]
+fn try_from_multipart_rename_all_reaches_only_the_multipart_dto(
+    #[case] multipart: bool,
+    #[case] effective: &str,
+    #[case] attr_rule: Option<&str>,
+) {
+    let attrs: Vec<syn::Attribute> = vec![syn::parse_quote! {
+        #[try_from_multipart(rename_all = "PascalCase")]
+    }];
+    let renaming = dto_renaming(None, multipart, &attrs, SerdeSide::Serialize);
+    assert_eq!(renaming.effective, effective);
+    assert_eq!(
+        renaming.rename_all.serialize.as_deref(),
+        Some(attr_rule.unwrap_or("camelCase"))
+    );
+}
+
+/// The serde-only view keeps every other attribute.
+#[test]
+fn serde_only_attrs_drops_only_the_multipart_fallback() {
+    let attrs: Vec<syn::Attribute> = vec![
+        syn::parse_quote!(#[try_from_multipart(strict)]),
+        syn::parse_quote!(#[serde(rename_all = "snake_case")]),
+    ];
+    let kept = serde_only_attrs(&attrs);
+    assert_eq!(kept.len(), 1);
+    assert!(kept[0].path().is_ident("serde"));
+}
+
 fn render(attrs: &[TokenStream]) -> String {
     attrs
         .iter()

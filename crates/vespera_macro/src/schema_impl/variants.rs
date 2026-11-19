@@ -348,15 +348,14 @@ mod tests {
                 syn::parse_str("PageDto from Page").unwrap();
             let storage = super::super::current_crate_schemas();
             crate::schema_macro::generate_schema_type_code(&input, &storage)
-                .unwrap()
-                .0
-                .to_string()
+                .map(|(tokens, _)| tokens.to_string())
         };
-        let output = generate("crate::api");
+        let output = generate("crate::api").unwrap();
         assert!(output.contains("\"crate::first::limit\""), "{output}");
         assert!(!output.contains("crate::second"), "{output}");
-        // A call site the name does not resolve in: its own module, which
-        // has no variant (the storage's last).
-        assert!(generate("crate").contains("\"crate::second::limit\""));
+        // A call site the name does not import: the bare name is refused with
+        // the path to write (R24-SM2-F1), not read from the storage's last variant.
+        let error = generate("crate").unwrap_err().to_string();
+        assert!(error.contains("crate::second::Page"), "{error}");
     }
 }

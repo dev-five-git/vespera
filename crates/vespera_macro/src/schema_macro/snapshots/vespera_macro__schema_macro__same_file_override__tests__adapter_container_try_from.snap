@@ -28,9 +28,9 @@ impl<'de> serde::Deserialize<'de> for __VesperaArticleResponseUserRelation {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = <Option<UserWire> as serde::Deserialize>::deserialize(deserializer)?;
+        let value = <Option<String> as serde::Deserialize>::deserialize(deserializer)?;
         value
-            .map(<UserInArticle as ::core::convert::TryFrom<UserWire>>::try_from)
+            .map(<UserInArticle as ::core::convert::TryFrom<String>>::try_from)
             .transpose()
             .map(Self)
             .map_err(serde::de::Error::custom)

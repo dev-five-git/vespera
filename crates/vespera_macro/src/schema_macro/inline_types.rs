@@ -14,7 +14,7 @@ use super::{
     file_lookup::{call_site_module, find_model_from_schema_path},
     generate_type::assignments::readable_from,
     seaorm::{RelationFieldInfo, convert_type_with_chrono},
-    transformation::{RenameAll, reroot_serde_paths},
+    transformation::{RenameAll, reroot_serde_paths, serde_only_attrs},
     type_utils::{is_seaorm_relation_type, snake_to_pascal_case},
 };
 use crate::parser::{extract_rename_all, extract_skip};
@@ -184,9 +184,11 @@ fn generate_inline_type_core(
     // The model's rename_all (or camelCase), both sides: a split
     // `rename_all(serialize = .., deserialize = ..)` used to collapse to the
     // serialize side, so the inline type read the wrong keys.
-    let effective =
-        extract_rename_all(&parsed_model.attrs).unwrap_or_else(|| "camelCase".to_string());
-    let rename_all = RenameAll::new(None, &parsed_model.attrs, &effective);
+    // The inline type derives serde, which never reads the model's
+    // `try_from_multipart(rename_all)` fallback (R24-SM4-M1): serde's own rule.
+    let serde_attrs = serde_only_attrs(&parsed_model.attrs);
+    let effective = extract_rename_all(&serde_attrs).unwrap_or_else(|| "camelCase".to_string());
+    let rename_all = RenameAll::new(None, &serde_attrs, &effective);
 
     // Generate inline type name: {SchemaName}_{Field}
     // Use custom schema name if provided, otherwise use the Rust struct name

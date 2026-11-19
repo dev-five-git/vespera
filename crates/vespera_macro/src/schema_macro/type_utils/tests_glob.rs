@@ -110,6 +110,32 @@ fn name_from_two_external_globs_asks_for_an_explicit_import() {
     );
 }
 
+/// R24-SM4-L1: a chrono-only name (`NaiveDate`) stays the chrono alias with two
+/// external globs (valid input used to be a hard error); the globs cannot
+/// give it another meaning.
+#[test]
+fn chrono_only_name_from_two_external_globs_keeps_its_alias() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(src.join("models")).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod models;").unwrap();
+    std::fs::write(src.join("models.rs"), "pub mod dated;").unwrap();
+    std::fs::write(
+        src.join("models").join("dated.rs"),
+        "use toml::*;\nuse my_domain::*;\npub struct Holder { pub d: u8 }",
+    )
+    .unwrap();
+    let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    crate::schema_macro::file_cache::bump_epoch();
+    let module = ["crate", "models", "dated"].map(String::from);
+    let ty: syn::Type = syn::parse_str("NaiveDate").unwrap();
+    let output = resolve_type_with_params(&ty, &module, &[]).to_string();
+    assert!(
+        output.contains("chrono :: NaiveDate") && !output.contains("compile_error"),
+        "{output}"
+    );
+}
+
 /// R23-SM4-L1: a name that a SeaORM alias also knows (`Utc`) is not exempt
 /// from the several-external-globs error: the alias is no reason to pick one
 /// of the globs silently (it used to emit `std :: collections :: Utc`).

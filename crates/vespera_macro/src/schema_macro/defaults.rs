@@ -39,6 +39,9 @@ use crate::parser::extract_default;
 ///   `#[schema(default)]` marker is emitted: serde applies the field's own
 ///   default, not the SeaORM one)
 /// - For literal defaults: the field type doesn't implement `FromStr`
+///
+/// The field's defaults with no source module (a bare name is then trusted).
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn generate_sea_orm_default_attrs(
     original_attrs: &[syn::Attribute],
@@ -48,6 +51,34 @@ pub(super) fn generate_sea_orm_default_attrs(
     field_ty: &dyn quote::ToTokens,
     is_optional_or_partial: bool,
     primary_key_count: usize,
+    default_functions: &mut Vec<TokenStream>,
+) -> (TokenStream, TokenStream) {
+    generate_sea_orm_default_attrs_in(
+        original_attrs,
+        struct_name,
+        field_name,
+        original_ty,
+        field_ty,
+        is_optional_or_partial,
+        primary_key_count,
+        &[],
+        default_functions,
+    )
+}
+
+/// [`generate_sea_orm_default_attrs`] for a field of the source module
+/// `source_module`: a bare `Date` / `Time` / `Uuid` is judged there
+/// ([`default_alias_is_external`]).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn generate_sea_orm_default_attrs_in(
+    original_attrs: &[syn::Attribute],
+    struct_name: &syn::Ident,
+    field_name: &str,
+    original_ty: &syn::Type,
+    field_ty: &dyn quote::ToTokens,
+    is_optional_or_partial: bool,
+    primary_key_count: usize,
+    source_module: &[String],
     default_functions: &mut Vec<TokenStream>,
 ) -> (TokenStream, TokenStream) {
     // Don't generate defaults for optional/partial fields
@@ -117,6 +148,7 @@ pub(super) fn generate_sea_orm_default_attrs(
         _ => {
             let Some((default_expr, schema_default_str)) =
                 sql_function_default_for_type(original_ty)
+                    .filter(|_| default_alias_is_external(original_ty, source_module))
             else {
                 return (quote! {}, quote! {});
             };
@@ -195,6 +227,43 @@ fn gate_attrs(attrs: TokenStream, predicates: &[Predicate]) -> TokenStream {
 /// `ident` without a raw `r#` prefix (it goes into generated fn names).
 fn unraw(ident: &syn::Ident) -> String {
     crate::parser::strip_raw_prefix_owned(ident.to_string())
+}
+
+/// Whether a SQL-default type named `Date`, `Time` or `Uuid` is the chrono /
+/// uuid / SeaORM type the default expression is written for, rather than one
+/// of the source module's own items (`enum Time`): the expression would not
+/// type-check there (R24-SM1-L2). The bare names are judged through the
+/// module's scope; a name the scope cannot pin down (a glob import) is
+/// trusted, as every other default name is.
+pub(super) fn default_alias_is_external(original_ty: &syn::Type, module: &[String]) -> bool {
+    let syn::Type::Path(type_path) = original_ty else {
+        return true;
+    };
+    let segments: Vec<String> = type_path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    let Some(name) = segments.last() else {
+        return true;
+    };
+    if !matches!(name.as_str(), "Date" | "Time" | "Uuid") {
+        return true;
+    }
+    let external = |path: &[String]| {
+        matches!(
+            path.first().map(String::as_str),
+            Some("chrono" | "uuid" | "sea_orm")
+        )
+    };
+    if segments.len() > 1 {
+        return external(segments.as_slice());
+    }
+    match crate::schema_macro::module_scope::resolve_name(&segments, module) {
+        crate::schema_macro::module_scope::Resolved::Path(path) => external(&path),
+        crate::schema_macro::module_scope::Resolved::Unknown => true,
+    }
 }
 
 /// Return a type-appropriate (Rust default expression, OpenAPI default string) pair
@@ -376,3 +445,5 @@ fn pointer_width_guard(value: &str, ty: &syn::Type) -> TokenStream {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_alias;

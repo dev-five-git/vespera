@@ -332,7 +332,10 @@ fn explicit_adapter_struct(
     // name only the DTO's own module resolves would not compile here
     // (R23-SM3-02).
     if same_file_definition(&dto_name).is_none()
-        && let Some(name) = unresolved_at_call_site(&dto_struct)
+        && let Some(name) = unresolved_at_call_site(
+            &dto_struct,
+            super::file_lookup::storage_module_path(&dto_meta).as_deref(),
+        )
     {
         return Err(syn::Error::new_spanned(
             adapter_name,
@@ -710,11 +713,11 @@ mod tests {
     )]
     #[case::container_from(
         "adapter_container_from",
-        "#[serde(from = \"UserWire\", into = \"UserWire\", rename_all = \"camelCase\")] struct UserInArticle { id: i32 }"
+        "#[serde(from = \"String\", into = \"String\", rename_all = \"camelCase\")] struct UserInArticle { id: i32 }"
     )]
     #[case::container_try_from(
         "adapter_container_try_from",
-        "#[serde(try_from = \"UserWire\")] struct UserInArticle { id: i32 }"
+        "#[serde(try_from = \"String\")] struct UserInArticle { id: i32 }"
     )]
     #[case::container_default(
         "adapter_container_default",
@@ -722,13 +725,13 @@ mod tests {
     )]
     #[case::container_default_path(
         "adapter_container_default_path",
-        "#[serde(default = \"users::fallback\")] struct UserInArticle { id: i32 }"
+        "#[serde(default = \"Self::fallback\")] struct UserInArticle { id: i32 }"
     )]
     // L13 (round 12): `cfg_attr` serde items reach the proxy (a cfg-gated
     // conversion key is dropped, non-serde items and unparseable ones too).
     #[case::cfg_attr_serde(
         "adapter_cfg_attr_serde",
-        "#[cfg_attr(feature = \"x\", serde(rename_all = \"camelCase\", from = \"W\"), schema(name = \"Q\"))] #[cfg_attr(all(), serde(default))] #[cfg_attr(feature)] struct UserInArticle { #[cfg_attr(feature = \"x\", serde(rename = \"uid\"), garde(skip))] user_id: i32, #[cfg_attr(all(), serde, schema(minimum = 1))] other: i32 }"
+        "#[cfg_attr(feature = \"x\", serde(rename_all = \"camelCase\", from = \"String\"), schema(name = \"Q\"))] #[cfg_attr(all(), serde(default))] #[cfg_attr(feature)] struct UserInArticle { #[cfg_attr(feature = \"x\", serde(rename = \"uid\"), garde(skip))] user_id: i32, #[cfg_attr(all(), serde, schema(minimum = 1))] other: i32 }"
     )]
     // L11 (round 16): a `cfg_attr(p, cfg(q))` field gates its assignments
     // and its proxy field (both were unconditional: E0560).

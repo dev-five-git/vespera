@@ -82,15 +82,8 @@ fn get_inline_modules(file: &Path, line: usize) -> Option<Vec<String>> {
 /// (compiler spans of re-parsed text all point at the call site); the names
 /// are extracted before normal mode is restored.
 fn inline_modules(content: &str, line: usize) -> Option<Vec<String>> {
-    /// Restores proc-macro2's normal mode even if parsing panics.
-    struct Unforce;
-    impl Drop for Unforce {
-        fn drop(&mut self) {
-            proc_macro2::fallback::unforce();
-        }
-    }
-    proc_macro2::fallback::force();
-    let _unforce = Unforce;
+    // A counted hold: a nested force of a parallel section stays in place.
+    let _forced = crate::schema_macro::file_cache::force_fallback();
     let file = syn::parse_file(content).ok()?;
     Some(nested(&file.items, line))
 }
