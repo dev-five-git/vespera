@@ -95,7 +95,9 @@ function replaceCapture(
 }
 
 function main(): number {
-  const root = join(import.meta.dir, '..')
+  // VERSION_SYNC_ROOT lets CI run this file from a trusted copy against the
+  // checkout it rewrites (see the changepacks job in .github/workflows/CI.yml).
+  const root = process.env.VERSION_SYNC_ROOT ?? join(import.meta.dir, '..')
   const workspace = readFileSync(join(root, 'Cargo.toml'), 'utf8').match(
     /\[workspace\.package\][^[]*?\nversion\s*=\s*"([^"]+)"/,
   )?.[1]
