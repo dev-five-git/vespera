@@ -5207,7 +5207,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
       },
       "GardeProfile": {
         "type": "object",
-        "description": "Profile validated by garde's own derive — `#[derive(Schema)]` documents\nevery `#[garde(...)]` rule with a JSON Schema equivalent, so the\nconstraints in `openapi.json` match the `422` this route answers.",
+        "description": "Profile validated by garde's own derive — `#[derive(Schema)]` documents\nevery `#[garde(...)]` rule with a JSON Schema equivalent (`alphanumeric`\nexcepted, see `nickname`), so the constraints in `openapi.json` match the\n`422` this route answers.",
         "properties": {
           "age": {
             "type": "integer",
@@ -5292,7 +5292,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
       },
       "GardeProfileInput": {
         "type": "object",
-        "description": "Profile validated by garde's own derive — `#[derive(Schema)]` documents\nevery `#[garde(...)]` rule with a JSON Schema equivalent, so the\nconstraints in `openapi.json` match the `422` this route answers.",
+        "description": "Profile validated by garde's own derive — `#[derive(Schema)]` documents\nevery `#[garde(...)]` rule with a JSON Schema equivalent (`alphanumeric`\nexcepted, see `nickname`), so the constraints in `openapi.json` match the\n`422` this route answers.",
         "properties": {
           "age": {
             "type": "integer",
