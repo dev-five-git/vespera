@@ -280,29 +280,81 @@ pub(super) fn resolve_export(
         .cloned();
     // A crate the path names (`child::App`) that exported the app wins.
     let is_bare = named.is_none();
+    // A first segment the crate declares itself (`mod routes`, `use .. as
+    // routes`, an item) is a local path: the current crate's own export.
+    let local = named
+        .as_ref()
+        .is_some_and(|first| crate_root_names().contains(first));
     if let Some(resolved) = named.and_then(|krate| export_in(vespera_dir, krate, &app)) {
         return Some(resolved);
     }
     // A bare name is the current crate's own export.
-    if is_bare && let Some(resolved) = export_in(vespera_dir, current.clone(), &app) {
+    if (is_bare || local)
+        && let Some(resolved) = export_in(vespera_dir, current.clone(), &app)
+    {
         return Some(resolved);
     }
-    // Renamed dependency (or a module path the call site cannot tell apart
-    // from one): the unique exporter other than the current crate. The current
-    // crate is the fallback when no other exporter, or several, exist.
-    let others: Vec<String> = exporters_of(vespera_dir, &app)
-        .into_iter()
-        .filter(|krate| *krate != current)
-        .collect();
-    let krate = match others.as_slice() {
-        [only] => only.clone(),
-        _ => current,
+    let krate = if local {
+        current
+    } else {
+        // Renamed dependency (only an extern crate can be left): the unique
+        // exporter other than the current crate. The current crate is the
+        // fallback when no other exporter, or several, exist.
+        let others: Vec<String> = exporters_of(vespera_dir, &app)
+            .into_iter()
+            .filter(|krate| *krate != current)
+            .collect();
+        match others.as_slice() {
+            [only] => only.clone(),
+            _ => current,
+        }
     };
     Some(ResolvedExport {
         spec_file: export_spec_path(vespera_dir, &krate, &app),
         krate,
         app,
     })
+}
+
+/// The names the current crate declares at its root, read from `src/lib.rs`
+/// and `src/main.rs` under `CARGO_MANIFEST_DIR`: `mod`s, items, and the local
+/// names of its `use` items (`use .. as name`). Empty outside cargo.
+fn crate_root_names() -> HashSet<String> {
+    let Some(manifest) = crate::env_access::var_os("CARGO_MANIFEST_DIR") else {
+        return HashSet::new();
+    };
+    let mut names = HashSet::new();
+    for root in ["src/lib.rs", "src/main.rs"] {
+        let path = Path::new(&manifest).join(root);
+        let Some(file) = crate::schema_macro::file_cache::get_parsed_file(&path) else {
+            continue;
+        };
+        names.extend(use_bindings(Some(&path)).into_iter().map(|(name, _)| name));
+        names.extend(file.items.iter().filter_map(declared_name));
+    }
+    names
+}
+
+/// The name a top-level item declares (`None` for impls, macros, ...).
+fn declared_name(item: &syn::Item) -> Option<String> {
+    match item {
+        syn::Item::Mod(item) => Some(item.ident.to_string()),
+        syn::Item::Fn(item) => Some(item.sig.ident.to_string()),
+        syn::Item::Struct(item) => Some(item.ident.to_string()),
+        syn::Item::Enum(item) => Some(item.ident.to_string()),
+        syn::Item::Union(item) => Some(item.ident.to_string()),
+        syn::Item::Trait(item) => Some(item.ident.to_string()),
+        syn::Item::Type(item) => Some(item.ident.to_string()),
+        syn::Item::Const(item) => Some(item.ident.to_string()),
+        syn::Item::Static(item) => Some(item.ident.to_string()),
+        syn::Item::ExternCrate(item) => Some(
+            item.rename
+                .as_ref()
+                .map_or(&item.ident, |(_, name)| name)
+                .to_string(),
+        ),
+        _ => None,
+    }
 }
 
 /// Every crate directory under [`export_root`] holding `app`'s spec, sorted.
@@ -597,6 +649,82 @@ mod tests {
             resolve("dep::SharedApp", "", dir),
             Some(pair("parent", "SharedApp"))
         );
+    }
+
+    /// A first segment the current crate declares (`routes::SharedApp` with
+    /// `mod routes` at the root) keeps the current crate, even when a renamed
+    /// dependency exports the same app name. Without that declaration the
+    /// segment is an extern crate and the other exporter wins.
+    #[test]
+    fn local_module_path_keeps_the_current_crate_over_a_renamed_dependency() {
+        let temp = TempDir::new().unwrap();
+        let _crate = crate::env_access::test_env::set_var("CARGO_CRATE_NAME", "parent");
+        let manifest = TempDir::new().unwrap();
+        fs::create_dir_all(manifest.path().join("src")).unwrap();
+        fs::write(
+            manifest.path().join("src").join("lib.rs"),
+            "pub mod routes {}
+mod inner {}
+",
+        )
+        .unwrap();
+        let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", manifest.path());
+        let dir = temp.path();
+        publish(dir, "parent", "SharedApp");
+        publish(dir, "child", "SharedApp");
+        assert_eq!(
+            resolve("routes::SharedApp", "", dir),
+            Some(pair("parent", "SharedApp"))
+        );
+        assert_eq!(
+            resolve("inner::SharedApp", "", dir),
+            Some(pair("parent", "SharedApp"))
+        );
+        assert_eq!(
+            resolve("dep::SharedApp", "", dir),
+            Some(pair("child", "SharedApp"))
+        );
+    }
+
+    /// Every top-level declaration kind and `use .. as` name of the crate root
+    /// counts as a local name; impls and macros do not.
+    #[test]
+    fn crate_root_names_cover_every_declaration_kind() {
+        let manifest = TempDir::new().unwrap();
+        fs::create_dir_all(manifest.path().join("src")).unwrap();
+        fs::write(
+            manifest.path().join("src").join("lib.rs"),
+            "mod a {}
+pub fn b() {}
+pub struct C;
+pub enum D { X }
+             pub union E { x: u8 }
+pub trait F {}
+pub type G = u8;
+             pub const H: u8 = 0;
+pub static I: u8 = 0;
+extern crate core as J;
+             use other::Thing as K;
+impl C {}
+",
+        )
+        .unwrap();
+        let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", manifest.path());
+        let names = crate_root_names();
+        for expected in ["a", "b", "C", "D", "E", "F", "G", "H", "I", "J", "K"] {
+            assert!(
+                names.contains(expected),
+                "{expected} missing from {names:?}"
+            );
+        }
+        assert!(!names.contains("Thing"));
+    }
+
+    /// Outside cargo there is no crate root to read, so no segment is local.
+    #[test]
+    fn crate_root_names_are_empty_without_a_manifest_dir() {
+        let _manifest = crate::env_access::test_env::remove_var("CARGO_MANIFEST_DIR");
+        assert!(crate_root_names().is_empty());
     }
 
     /// Found exports get a key assertion; missing ones (reported elsewhere)
