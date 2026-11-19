@@ -30,7 +30,7 @@ struct __VesperaArticleResponseUserProxy {
 }
 impl ::core::default::Default for __VesperaArticleResponseUserProxy {
     fn default() -> Self {
-        let dto: UserInArticle = users::fallback();
+        let dto: UserInArticle = UserInArticle::fallback();
         Self { id: dto.id }
     }
 }

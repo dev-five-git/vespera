@@ -59,11 +59,15 @@ impl CrateLayout {
         // is `crate::bin`), so the rule only applies to `src`.
         // Only a test, example or bench target directory (or one below it)
         // is excluded: the crate's `src` and a plain layout dir keep the rule.
+        // The parent counts only for a target's sub-layout (`tests/multi-part`):
+        // a library's `src` lives in the manifest directory, whose own name
+        // (a crate checked out as `tests/`) says nothing about the target.
         let in_target = |dir: Option<&std::ffi::OsStr>| {
             dir.is_some_and(|name| matches!(name.to_str(), Some("tests" | "examples" | "benches")))
         };
+        let library_src = self.module_dir.file_name() == Some(std::ffi::OsStr::new("src"));
         let root_rules = !in_target(self.module_dir.file_name())
-            && !in_target(self.module_dir.parent().and_then(Path::file_name));
+            && (library_src || !in_target(self.module_dir.parent().and_then(Path::file_name)));
         let is_root = root_rules
             && match names.as_slice() {
                 [file] => *file == "main.rs" || *file == "lib.rs",
@@ -374,6 +378,20 @@ mod tests {
             &layout_for(&manifest, None).module_dir,
             &manifest.join("src")
         ));
+    }
+
+    /// A crate checked out in a directory named like a target (`tests/`) keeps
+    /// its binary roots: the manifest's own name decides nothing (R24-SM1-L1).
+    #[test]
+    fn crate_named_like_a_target_keeps_its_bin_roots() {
+        let outer = TempDir::new().unwrap();
+        let manifest = outer.path().join("tests");
+        std::fs::create_dir_all(manifest.join("src/bin")).unwrap();
+        std::fs::write(manifest.join("src/lib.rs"), "").unwrap();
+        let other = manifest.join("src/bin/other.rs");
+        std::fs::write(&other, "").unwrap();
+        let layout = layout_for(&manifest, None);
+        assert_eq!(layout.module_path_of(&other), ["crate"]);
     }
 
     /// A cwd-relative call-site path (what rustc reports for workspace

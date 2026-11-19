@@ -5,10 +5,11 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use super::super::file_lookup::{
-    call_site_definition, find_struct_from_path_detailed, reexported_module, requested_module_path,
-    storage_module_path,
+    call_site_definition, call_site_module, find_struct_from_path_detailed, reexported_module,
+    requested_module_path, storage_module_path,
 };
 use super::super::input::SchemaTypeInput;
+use super::super::module_scope::{Resolved, module_scope, resolve_name};
 use crate::metadata::StructMetadata;
 
 /// The source struct and the module it is defined in.
@@ -23,6 +24,25 @@ use crate::metadata::StructMetadata;
 /// serde path against it), so relative relation paths like
 /// `super::user::Entity` resolve correctly.
 pub(super) fn resolve_source<'a>(
+    input: &SchemaTypeInput,
+    source_type_name: &str,
+    schema_storage: &'a HashMap<String, StructMetadata>,
+) -> syn::Result<(Cow<'a, StructMetadata>, Option<Vec<String>>)> {
+    let resolved = resolve_found(input, source_type_name, schema_storage)?;
+    if let (Ok(None), Some(defined_in)) = (requested_module_path(&input.source_type), &resolved.1) {
+        let call_site = call_site_module();
+        ensure_bare_name_in_scope(
+            &input.source_type,
+            source_type_name,
+            defined_in,
+            call_site.as_deref(),
+        )?;
+    }
+    Ok(resolved)
+}
+
+/// [`resolve_source`] before the bare-name scope check.
+fn resolve_found<'a>(
     input: &SchemaTypeInput,
     source_type_name: &str,
     schema_storage: &'a HashMap<String, StructMetadata>,
@@ -64,7 +84,10 @@ pub(super) fn resolve_source<'a>(
                 requested == defined_in
                     || reexported_module(requested, source_type_name).as_ref() == Some(defined_in)
             }
-            _ => true,
+            // A qualified path with an entry of unknown module (outside `src/`)
+            // is no proof of the requested item: the file lookup decides.
+            (Some(_), None) => false,
+            (None, _) => true,
         };
     match storage_hit {
         Some(found) if storage_trusted => {
@@ -75,20 +98,55 @@ pub(super) fn resolve_source<'a>(
         _ => {
             // A same-named schema of ANOTHER module is never a fallback
             // (it used to be used silently).
-            let (found, module_path) = local
-                .map_or_else(
-                    || find_struct_from_path_detailed(&input.source_type, schema_name_hint),
-                    Ok,
-                )
-                .map_err(|err| {
-                    with_module_note(
-                        err.to_syn_error(&input.source_type),
-                        &input.source_type,
-                        source_type_name,
-                        storage_module.as_deref(),
-                    )
-                })?;
-            Ok((Cow::Owned(found), Some(module_path)))
+            let lookup: Result<(StructMetadata, Vec<String>), _> = local.map_or_else(
+                || find_struct_from_path_detailed(&input.source_type, schema_name_hint),
+                Ok,
+            );
+            match (lookup, storage_hit) {
+                (Ok((found, module_path)), _) => Ok((Cow::Owned(found), Some(module_path))),
+                // An entry whose module is unknown stands in when the file
+                // lookup finds nothing (the fallback the doc above describes).
+                (Err(_), Some(stored)) if storage_module.is_none() => {
+                    Ok((Cow::Borrowed(stored), requested))
+                }
+                (Err(err), _) => Err(with_module_note(
+                    err.to_syn_error(&input.source_type),
+                    &input.source_type,
+                    source_type_name,
+                    storage_module.as_deref(),
+                )),
+            }
+        }
+    }
+}
+
+/// A bare source name must be in scope at the call site (R24-SM2-F1): the
+/// generated `impl From<Name>` and the other uses of the source type name it
+/// as written. A struct of another module that the call site does not import
+/// (or of an inline module) cannot be named there, so the call asks for a
+/// path instead. Judged only when the call-site module is located.
+fn ensure_bare_name_in_scope(
+    source_type: &syn::Type,
+    name: &str,
+    defined_in: &[String],
+    call_site: Option<&[String]>,
+) -> syn::Result<()> {
+    let Some(call_site) = call_site else {
+        return Ok(());
+    };
+    if call_site == defined_in || module_scope(call_site).is_none() {
+        return Ok(());
+    }
+    match resolve_name(&[name.to_string()], call_site) {
+        Resolved::Path(_) => Ok(()),
+        Resolved::Unknown => {
+            let path = defined_in.join("::");
+            Err(syn::Error::new_spanned(
+                source_type,
+                format!(
+                    "schema_type!: `{name}` is defined in `{path}`, which this module does not import; name it with its full path (`{path}::{name}`) or import it"
+                ),
+            ))
         }
     }
 }
@@ -110,4 +168,120 @@ fn with_module_note(
         ));
     }
     error
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::metadata::StructMetadata;
+    use crate::schema_macro::file_cache::bump_epoch;
+    use crate::schema_macro::input::SchemaTypeInput;
+
+    /// A temp crate holding `files` (paths relative to its root).
+    fn crate_with(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        for (path, content) in files {
+            let full = dir.path().join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, content).unwrap();
+        }
+        dir
+    }
+
+    fn path(segments: &[&str]) -> Vec<String> {
+        segments.iter().map(ToString::to_string).collect()
+    }
+
+    /// R24-SM2-F1: a bare source name the call site cannot name is refused
+    /// (an inline module's struct, or one of another module the call site
+    /// does not import); an import, a local definition or an unlocated call
+    /// site are not.
+    #[rstest::rstest]
+    #[case::not_imported(
+        "pub mod user { pub mod entity { pub struct Model; } }",
+        &["crate", "user", "entity"],
+        &["crate"],
+        true
+    )]
+    #[case::imported(
+        "pub mod user { pub mod entity { pub struct Model; } }\nuse user::entity::Model;",
+        &["crate", "user", "entity"],
+        &["crate"],
+        false
+    )]
+    #[case::same_module("pub struct Model;", &["crate"], &["crate"], false)]
+    #[case::unlocated_call_site(
+        "pub mod user { pub mod entity { pub struct Model; } }",
+        &["crate", "user", "entity"],
+        &["crate", "gone"],
+        false
+    )]
+    fn bare_source_names_must_be_in_scope(
+        #[case] lib: &str,
+        #[case] defined_in: &[&str],
+        #[case] call_site: &[&str],
+        #[case] refused: bool,
+    ) {
+        let dir = crate_with(&[("src/lib.rs", lib)]);
+        let _env = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        bump_epoch();
+        let source: syn::Type = syn::parse_str("Model").unwrap();
+        let result =
+            ensure_bare_name_in_scope(&source, "Model", &path(defined_in), Some(&path(call_site)));
+        assert_eq!(result.is_err(), refused, "{result:?}");
+        if let Err(error) = result {
+            assert!(
+                error.to_string().contains("crate::user::entity::Model"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_call_site_judges_nothing() {
+        let source: syn::Type = syn::parse_str("Model").unwrap();
+        assert!(ensure_bare_name_in_scope(&source, "Model", &path(&["crate", "a"]), None).is_ok());
+    }
+
+    /// R24-SM2-F2: a stored entry of unknown module (outside `src/`) is no
+    /// proof for a qualified path: the file lookup's `User` wins.
+    #[test]
+    fn unknown_storage_module_does_not_override_the_file_lookup() {
+        let dir = crate_with(&[
+            ("src/lib.rs", "pub mod models;"),
+            ("src/models/mod.rs", "pub mod user;"),
+            ("src/models/user.rs", "pub struct User { pub id: i32 }"),
+        ]);
+        let _env = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        bump_epoch();
+        let legacy = StructMetadata::new(
+            "User".to_string(),
+            "pub struct User { pub legacy: String }".to_string(),
+        );
+        let storage = HashMap::from([("User".to_string(), legacy)]);
+        let input: SchemaTypeInput =
+            syn::parse_str("UserDto from crate::models::user::User").unwrap();
+        let (found, module) = resolve_source(&input, "User", &storage).unwrap();
+        assert!(found.definition.contains("id"), "{}", found.definition);
+        assert_eq!(module, Some(path(&["crate", "models", "user"])));
+    }
+
+    /// R24-SM2-F2: the same entry stands in when the file lookup finds nothing.
+    #[test]
+    fn unknown_storage_module_is_the_fallback_when_the_lookup_fails() {
+        let dir = crate_with(&[("src/lib.rs", "")]);
+        let _env = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        bump_epoch();
+        let legacy = StructMetadata::new(
+            "User".to_string(),
+            "pub struct User { pub legacy: String }".to_string(),
+        );
+        let storage = HashMap::from([("User".to_string(), legacy)]);
+        let input: SchemaTypeInput = syn::parse_str("UserDto from crate::nowhere::User").unwrap();
+        let (found, module) = resolve_source(&input, "User", &storage).unwrap();
+        assert!(found.definition.contains("legacy"), "{}", found.definition);
+        assert_eq!(module, Some(path(&["crate", "nowhere"])));
+    }
 }

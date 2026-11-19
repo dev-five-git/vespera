@@ -461,6 +461,15 @@ impl TypeResolver<'_> {
         let sea_orm_prelude_name = sea_orm_glob.is_some()
             && segment.arguments.is_none()
             && SEA_ORM_PRELUDE_NAMES.contains(&name.as_str());
+        let several_external_globs = self
+            .scope
+            .is_some_and(|scope| external_globs(scope).count() > 1);
+        // The chrono names of [`CHRONO_ONLY_NAMES`] have no other meaning a
+        // glob could give them: several globs do not make them ambiguous, so
+        // they keep their chrono alias (R24-SM4-L1).
+        let chrono_only = several_external_globs
+            && segment.arguments.is_none()
+            && CHRONO_ONLY_NAMES.contains(&name.as_str());
         // A name the source module neither defines nor imports, nor a std
         // prelude name, comes from one of its external glob imports (it
         // compiled there): emitted through that glob, not as a bare alias
@@ -468,16 +477,14 @@ impl TypeResolver<'_> {
         if let Some(glob) = self.scope.and_then(external_glob)
             && !is_prelude_name(&name)
             && !sea_orm_prelude_name
+            && !chrono_only
         {
             // Several external globs and no other meaning for the name: which
             // one supplies it would be a guess, so the user imports it
             // explicitly (R22-SM4-L1). A name a SeaORM alias also knows (`Utc`,
             // `Local`) takes the same path: its alias meaning is no reason to
             // pick one of the globs silently (R23-SM4-L1).
-            if self
-                .scope
-                .is_some_and(|scope| external_globs(scope).count() > 1)
-            {
+            if several_external_globs {
                 return syn::Error::new(
                     ident.span(),
                     format!(
@@ -599,6 +606,10 @@ const SEA_ORM_PATH_ALIASES: &[&str] = &[
 
 /// The crates whose paths may spell one of [`SEA_ORM_PATH_ALIASES`].
 const ALIAS_CRATES: &[&str] = &["sea_orm", "vespera", "axum_typed_multipart", "tempfile"];
+
+/// chrono names the bare alias maps to `vespera::chrono` whatever the globs
+/// import: no other crate's common type carries them (R24-SM4-L1).
+const CHRONO_ONLY_NAMES: &[&str] = &["NaiveDate", "NaiveDateTime", "NaiveTime", "FixedOffset"];
 
 /// The names sea-orm's `prelude` exports that a bare SeaORM-glob name can
 /// resolve to (the aliases above, `Uuid`, `Decimal`, ..). `Date` / `Time` /

@@ -101,8 +101,8 @@ pub(super) fn with_multipart_vec_defaults(
     })
 }
 
-/// The error for an input whose source declaration cannot be picked out: the
-/// toolchain reports no position for it (`0:0`, see `ident_position`), and
+/// The error for an input whose source declaration cannot be picked out: its
+/// span reports no line (`ident_position` is `None`, see there), and
 /// its file holds other same-named declarations whose serde / Multipart
 /// derives differ (R23-SM1). Copying one candidate's derives would silently
 /// give the wrong wire shape, so the derive refuses instead. Same-named items
@@ -172,11 +172,14 @@ fn source_derives(
         .iter()
         .position(|declaration| Some(declaration.position) == position)
         .or_else(|| (found.len() == 1 || (position.is_none() && agree)).then_some(0))?;
+    // `agree` holds vacuously for no candidate at all: `get` keeps that case
+    // a `None` instead of an index panic (R24-SM0-L1).
+    let declaration = found.get(index)?;
     Some(
         names
             .iter()
             .copied()
-            .filter(|name| found[index].derives.contains(name))
+            .filter(|name| declaration.derives.contains(name))
             .collect(),
     )
 }
@@ -498,6 +501,19 @@ mod tests {
         assert!(ambiguous_declaration(&input, Some(&path)).is_none());
         let copied = with_serde_repr_derives(&input, Some(&path)).expect("copied");
         assert!(derives(&copied.attrs, "Serialize_repr"));
+    }
+
+    /// R24-SM0-L1: a positionless input the file never declares finds no
+    /// candidate, so nothing is borrowed (the empty candidate list used to be
+    /// indexed, a proc-macro panic).
+    #[test]
+    fn positionless_input_missing_from_the_file_adds_nothing() {
+        let _positions = crate::schema_impl::hide_positions();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        std::fs::write(&path, "#[derive(Serialize_repr)] enum Other { A }").unwrap();
+        let input: syn::DeriveInput = syn::parse_str("#[repr(u8)] enum Missing { A }").unwrap();
+        assert!(with_serde_repr_derives(&input, Some(&path)).is_none());
     }
 
     /// R23-SM1: the same ambiguity WITH derives that differ is a compile error

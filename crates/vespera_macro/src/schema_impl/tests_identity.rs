@@ -151,8 +151,8 @@ fn count_items_named_descends_into_nested_items(#[case] source: &str, #[case] ex
     assert_eq!(count_items_named(&parsed.items, "X"), expected);
 }
 
-/// R23-SM1: a toolchain reports no position for the derive's input (`0:0`),
-/// so the identity falls back to the item's own tokens. Two same-named
+/// R23-SM1: a span without a line (no position reported) for the derive's
+/// input, so the identity falls back to the item's own tokens. Two same-named
 /// structs of one file with different bodies then keep distinct identities,
 /// and the second registration is a duplicate instead of a silent replacement.
 #[test]

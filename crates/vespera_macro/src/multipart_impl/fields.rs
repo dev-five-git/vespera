@@ -42,6 +42,47 @@ pub(super) enum DefaultKind {
     Container,
 }
 
+/// Claims the multipart part name `wire` for `ident` (`is_alias`: a
+/// `serde(alias)`). An empty name is an error: it is read as the nameless part
+/// (the parser's fallback arm), so the field's own arm could never match it
+/// (R24-SM0-L3). A name another field already claimed is a collision.
+fn claim_wire_name<'a>(
+    wire: &str,
+    ident: &'a syn::Ident,
+    is_alias: bool,
+    wire_names: &mut std::collections::HashMap<String, (&'a syn::Ident, bool)>,
+    errors: &mut Vec<syn::Error>,
+) {
+    if wire.is_empty() {
+        errors.push(syn::Error::new(
+            ident.span(),
+            format!(
+                "Multipart: field `{ident}` has an empty multipart field name; give it a \
+                 name with `#[form_data(field_name = \"...\")]`, `#[serde(rename = \"...\")]` \
+                 or `#[serde(alias = \"...\")]`"
+            ),
+        ));
+        return;
+    }
+    if let Some((first, first_alias)) = wire_names.insert(wire.to_string(), (ident, is_alias)) {
+        // Changing an alias resolves only a collision an alias is part of; two
+        // primary names need one of them renamed.
+        let fixes = if is_alias || first_alias {
+            "`#[form_data(field_name = \"...\")]`, `#[serde(rename = \"...\")]` or \
+             `#[serde(alias = \"...\")]`"
+        } else {
+            "`#[form_data(field_name = \"...\")]` or `#[serde(rename = \"...\")]`"
+        };
+        errors.push(syn::Error::new(
+            ident.span(),
+            format!(
+                "Multipart: fields `{first}` and `{ident}` both read the multipart field \
+                 \"{wire}\" — give one a distinct {fixes}"
+            ),
+        ));
+    }
+}
+
 /// Process all named fields into codegen fragments.
 pub(super) fn process_fields<'a>(
     fields: impl Iterator<Item = &'a syn::Field>,
@@ -119,24 +160,7 @@ pub(super) fn process_fields<'a>(
             .collect();
         let wires = std::iter::once((&field_name, false)).chain(aliases.iter().map(|a| (a, true)));
         for (wire, is_alias) in wires {
-            let ident = field_ident;
-            if let Some((first, first_alias)) = wire_names.insert(wire.clone(), (ident, is_alias)) {
-                // Changing an alias resolves only a collision an alias is
-                // part of; two primary names need one of them renamed.
-                let fixes = if is_alias || first_alias {
-                    "`#[form_data(field_name = \"...\")]`, `#[serde(rename = \"...\")]` or \
-                     `#[serde(alias = \"...\")]`"
-                } else {
-                    "`#[form_data(field_name = \"...\")]` or `#[serde(rename = \"...\")]`"
-                };
-                cg.errors.push(syn::Error::new(
-                    ident.span(),
-                    format!(
-                        "Multipart: fields `{first}` and `{ident}` both read the multipart field \
-                         \"{wire}\" — give one a distinct {fixes}"
-                    ),
-                ));
-            }
+            claim_wire_name(wire, field_ident, is_alias, &mut wire_names, &mut cg.errors);
         }
         let limit_tokens = extract_limit_tokens(form.limit.as_ref());
 
@@ -547,6 +571,32 @@ mod tests {
                 .starts_with("\"file\" | \"doc\" =>"),
             "{}",
             cg.assignments[0]
+        );
+    }
+
+    /// R24-SM0-L3: an empty part name (`field_name = ""`, an empty `rename`,
+    /// an empty alias) is a spanned error: the empty name is read as the
+    /// nameless part, so the field could never be matched.
+    #[rstest::rstest]
+    #[case::form_data(r#"struct T { #[form_data(field_name = "")] pub file: String }"#)]
+    #[case::serde_rename(r#"struct T { #[serde(rename = "")] pub file: String }"#)]
+    #[case::serde_alias(r#"struct T { #[serde(alias = "")] pub file: String }"#)]
+    fn empty_multipart_field_name_is_an_error(#[case] src: &str) {
+        let input = parse_fields_from(src);
+        let cg = process_fields(
+            get_named_fields(&input).iter(),
+            None,
+            false,
+            false,
+            &HashSet::new(),
+        );
+        assert_eq!(cg.errors.len(), 1);
+        assert!(
+            cg.errors[0]
+                .to_string()
+                .contains("empty multipart field name"),
+            "{}",
+            cg.errors[0]
         );
     }
 

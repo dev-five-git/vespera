@@ -135,10 +135,12 @@ pub fn register_schema(name: String, metadata: StructMetadata) -> Result<(), ()>
 
 /// The `(line, column)` of an item's ident, when its span reports one.
 ///
-/// A compiler span reports `0:0` on a stable toolchain (`Span::start` needs the
-/// nightly-only `proc_macro_span`), so a derive's input has no position there
-/// and `None` is the answer (R23-SM1). Re-parsed text (the fallback parser)
-/// always carries real positions.
+/// On rustc 1.88+ (the crate's MSRV) proc-macro2 enables real `Span::start`,
+/// so a derive's input reports its position there. `None` is the answer for a
+/// span without a line (line 0: a dummy span, or a toolchain older than 1.88,
+/// where `Span::start` is a dummy), which is why the identity keeps a token
+/// fallback (R23-SM1). Re-parsed text (the fallback parser) always carries real
+/// positions.
 fn ident_position(ident: &syn::Ident) -> Option<(usize, usize)> {
     #[cfg(test)]
     if HIDE_POSITIONS.with(std::cell::Cell::get) {
@@ -149,13 +151,14 @@ fn ident_position(ident: &syn::Ident) -> Option<(usize, usize)> {
 }
 
 // Test seam: unit tests parse with a fallback parser that always reports real
-// positions, so the stable toolchain's `0:0` is simulated here instead.
+// positions, so a span without a line (what a pre-1.88 toolchain reports) is
+// simulated here instead.
 #[cfg(test)]
 thread_local! {
     static HIDE_POSITIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Hides item positions (as a stable toolchain does) until dropped.
+/// Hides item positions (as a span without a line does) until dropped.
 #[cfg(test)]
 pub struct PositionsHidden;
 
@@ -176,7 +179,7 @@ pub fn hide_positions() -> PositionsHidden {
 /// The disambiguating part of an item's source identity: its `line:column`
 /// when the span reports one, else a hash of the item's own tokens (R23-SM1).
 /// Two same-named items of one file with different bodies then keep distinct
-/// identities on a stable toolchain, where every position is `0:0`.
+/// identities where no position is reported (a span without a line).
 fn source_suffix(ident: &syn::Ident, item_tokens: &str) -> String {
     use std::hash::{DefaultHasher, Hash, Hasher};
     if let Some((line, column)) = ident_position(ident) {
@@ -670,8 +673,8 @@ fn form_data_default_wins(field: &syn::Field) -> bool {
 /// Without the call-site file no default function can be looked up, so the
 /// default check is skipped (the default is then left undocumented).
 /// Same-named items of this file that derive different serde / Multipart sets
-/// cannot be told apart without a reported position (R23-SM1): an error beats
-/// copying one of their derive sets onto the other.
+/// cannot be told apart without a reported position (a span without a line,
+/// R23-SM1): an error beats copying one of their derive sets onto the other.
 fn check_derive_input(
     input: &syn::DeriveInput,
     field_defaults: &BTreeMap<String, serde_json::Value>,

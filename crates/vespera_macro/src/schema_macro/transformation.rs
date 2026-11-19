@@ -705,6 +705,17 @@ pub struct DtoRenaming {
     pub raw_names: bool,
 }
 
+/// The source's attributes without its `#[try_from_multipart(..)]` items: the
+/// serde view of the container (`extract_rename_all_for` then reads serde's
+/// own `rename_all` only).
+pub fn serde_only_attrs(attrs: &[syn::Attribute]) -> Vec<syn::Attribute> {
+    attrs
+        .iter()
+        .filter(|attr| !attr.path().is_ident("try_from_multipart"))
+        .cloned()
+        .collect()
+}
+
 /// The [`DtoRenaming`] of a DTO built from a source with `source_attrs`.
 pub fn dto_renaming(
     input_rename_all: Option<&String>,
@@ -712,6 +723,15 @@ pub fn dto_renaming(
     source_attrs: &[syn::Attribute],
     side: SerdeSide,
 ) -> DtoRenaming {
+    // A non-multipart DTO is read by serde, which never reads the source's
+    // `try_from_multipart(rename_all)` (it names form fields): only serde's own
+    // rule applies to it (R24-SM4-M1).
+    let source_attrs: std::borrow::Cow<'_, [syn::Attribute]> = if multipart {
+        std::borrow::Cow::Borrowed(source_attrs)
+    } else {
+        std::borrow::Cow::Owned(serde_only_attrs(source_attrs))
+    };
+    let source_attrs = &source_attrs[..];
     let raw_names = multipart
         && input_rename_all.is_none()
         && extract_rename_all_for(source_attrs, SerdeSide::Deserialize).is_none();

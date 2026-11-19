@@ -659,8 +659,11 @@ fn test_process_derive_schema_ref_override_excludes_openapi() {
     );
 }
 
+/// R24-SM0-L5: every `#[schema]` attribute is still read (no early stop); the
+/// first `name` wins over a later one, and a later malformed attribute is
+/// still reported.
 #[test]
-fn schema_attribute_summary_stops_after_name_and_ref_are_found() {
+fn schema_attribute_summary_first_name_wins_across_attributes() {
     let input: syn::DeriveInput = syn::parse_quote! {
         #[schema(name = "ExternalUser", ref = "components.schemas.User")]
         #[schema(name = "Ignored")]
@@ -671,6 +674,13 @@ fn schema_attribute_summary_stops_after_name_and_ref_are_found() {
 
     assert_eq!(summary.name.as_deref(), Some("ExternalUser"));
     assert!(summary.has_ref_override);
+
+    let malformed: syn::DeriveInput = syn::parse_quote! {
+        #[schema(name = "ExternalUser")]
+        #[schema(name = Foo)]
+        struct User { id: i32 }
+    };
+    assert!(collect_schema_attribute_summary(&malformed.attrs).is_err());
 }
 
 /// Malformed container `#[schema(...)]` attributes are compile errors

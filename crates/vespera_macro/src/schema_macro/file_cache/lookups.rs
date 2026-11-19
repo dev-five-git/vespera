@@ -167,10 +167,14 @@ fn crate_fingerprint(
     cache: &mut FileCache,
     layout: crate::schema_macro::crate_layout::CrateLayout,
 ) -> u64 {
+    // The memo keeps the inputs of its computation (R24-SM1-L3): a hit must
+    // report the listing and files the fingerprint covers to the enclosing
+    // tracked computation, as the miss did.
     type Memo = Option<(
         (u64, usize),
         crate::schema_macro::crate_layout::CrateLayout,
         u64,
+        tracked::Deps,
     )>;
     thread_local! {
         static MEMO: std::cell::RefCell<Memo> = const { std::cell::RefCell::new(None) };
@@ -179,31 +183,34 @@ fn crate_fingerprint(
     let hit = MEMO.with(|memo| {
         memo.borrow()
             .as_ref()
-            .filter(|(memo_at, memo_layout, _)| *memo_at == at && *memo_layout == layout)
-            .map(|(_, _, fingerprint)| *fingerprint)
+            .filter(|(memo_at, memo_layout, _, _)| *memo_at == at && *memo_layout == layout)
+            .map(|(_, _, fingerprint, deps)| (*fingerprint, deps.clone()))
     });
-    if let Some(fingerprint) = hit {
+    if let Some((fingerprint, deps)) = hit {
+        tracked::replay(&deps);
         return fingerprint;
     }
-    let mut hasher = DefaultHasher::new();
-    let src_dir = &layout.module_dir;
-    src_dir.hash(&mut hasher);
+    let (fingerprint, deps) = tracked::tracked(|| {
+        let mut hasher = DefaultHasher::new();
+        let src_dir = &layout.module_dir;
+        src_dir.hash(&mut hasher);
 
-    // Every source file of the crate: a qualified path is resolved through
-    // its module's own file AND, failing that, the module tree from the
-    // crate root (`mod` declarations, `#[path]`, inline modules), so an
-    // edit to any of those files can change the answer (the module's two
-    // candidate files alone left a long-lived rust-analyzer stale).
-    let files = ensure_file_list(cache, src_dir);
-    let outside = out_of_tree_files(cache, src_dir);
-    for path in files.iter().chain(&layout.roots).chain(&outside) {
-        fingerprint_path(cache, path, &mut hasher);
-    }
-    let fingerprint = hasher.finish();
+        // Every source file of the crate: a qualified path is resolved through
+        // its module's own file AND, failing that, the module tree from the
+        // crate root (`mod` declarations, `#[path]`, inline modules), so an
+        // edit to any of those files can change the answer (the module's two
+        // candidate files alone left a long-lived rust-analyzer stale).
+        let files = ensure_file_list(cache, src_dir);
+        let outside = out_of_tree_files(cache, src_dir);
+        for path in files.iter().chain(&layout.roots).chain(&outside) {
+            fingerprint_path(cache, path, &mut hasher);
+        }
+        hasher.finish()
+    });
     // Keyed by the probe count AFTER hashing: the first hash of an epoch
     // probes the source files itself.
     let at = (cache.epoch, cache.mtime_epoch_cache.len());
-    MEMO.with(|memo| *memo.borrow_mut() = Some((at, layout, fingerprint)));
+    MEMO.with(|memo| *memo.borrow_mut() = Some((at, layout, fingerprint, deps)));
     fingerprint
 }
 

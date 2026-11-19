@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::defaults::{gate_sea_orm_defaults, generate_sea_orm_default_attrs};
+use super::defaults::{gate_sea_orm_defaults, generate_sea_orm_default_attrs_in};
 use super::field_attrs::carried_field_attrs;
 use super::file_cache;
 use super::file_lookup::call_site_module;
@@ -644,7 +644,7 @@ pub fn generate_schema_type_code(
                 // Generate serde default + schema(default) from sea_orm(default_value) or primary_key
                 // Handles literal defaults, SQL function defaults, and implicit auto-increment
                 let mut field_defaults = Vec::new();
-                let generated = generate_sea_orm_default_attrs(
+                let generated = generate_sea_orm_default_attrs_in(
                     &field.attrs,
                     new_type_name,
                     &helper_key,
@@ -652,6 +652,7 @@ pub fn generate_schema_type_code(
                     &field_ty,
                     should_wrap_option || is_option_type(original_ty),
                     pk_count,
+                    &source_module_path,
                     &mut field_defaults,
                 );
                 default_functions.extend(

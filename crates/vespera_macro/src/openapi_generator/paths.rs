@@ -497,9 +497,13 @@ pub(super) type OperationBuilder<'a> = dyn Fn(
     + Sync
     + 'a;
 
-/// RAII restore for [`proc_macro2::fallback::force`] — releases the
-/// forced fallback mode even when a worker panics.
-struct FallbackGuard;
+/// RAII hold on proc-macro2's fallback mode for a parallel section. The hold
+/// is counted process-wide (`file_cache::force_fallback`), so a worker's own
+/// nested hold never releases the force this section still needs; the force
+/// is released even when a worker panics.
+struct FallbackGuard {
+    _hold: crate::schema_macro::file_cache::ForceHold<'static>,
+}
 
 #[cfg(test)]
 thread_local! {
@@ -508,10 +512,10 @@ thread_local! {
 
 impl FallbackGuard {
     fn force() -> Self {
-        proc_macro2::fallback::force();
+        let hold = crate::schema_macro::file_cache::force_fallback();
         #[cfg(test)]
         FALLBACK_FORCED.with(|forced| forced.set(true));
-        Self
+        Self { _hold: hold }
     }
 
     #[cfg(test)]
@@ -520,10 +524,9 @@ impl FallbackGuard {
     }
 }
 
+#[cfg(test)]
 impl Drop for FallbackGuard {
     fn drop(&mut self) {
-        proc_macro2::fallback::unforce();
-        #[cfg(test)]
         FALLBACK_FORCED.with(|forced| forced.set(false));
     }
 }

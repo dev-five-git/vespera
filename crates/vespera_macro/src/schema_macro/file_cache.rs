@@ -82,7 +82,7 @@ mod derived;
 mod lookups;
 #[cfg(test)]
 pub use derived::derived_computes;
-pub use derived::{canonicalize_cached, derived, with_fallback_parse};
+pub use derived::{ForceHold, canonicalize_cached, derived, force_fallback, with_fallback_parse};
 /// A file parse that skips the bodies of top-level functions.
 mod shallow;
 /// Results read off several files, reused while none of them changed.

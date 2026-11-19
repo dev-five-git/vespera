@@ -228,3 +228,39 @@ fn circular_analysis_is_evicted_on_epoch_bump() {
     bump_epoch();
     FILE_CACHE.with(|cache| assert!(cache.borrow().circular_analysis.is_empty()));
 }
+
+/// R24-SM1-L3: a crate fingerprint served from the memo still reports the
+/// crate listing to the enclosing tracked computation. The memo hit used to
+/// return before the listing was recorded, so a file created in `src/` after
+/// the computation left its dependencies looking valid.
+#[test]
+fn crate_fingerprint_memo_hit_reports_the_crate_listing() {
+    use crate::schema_macro::file_cache::tracked;
+    let temp = TempDir::new().unwrap();
+    let models = temp.path().join("src/models");
+    std::fs::create_dir_all(&models).unwrap();
+    std::fs::write(temp.path().join("src/lib.rs"), "pub mod models;").unwrap();
+    std::fs::write(models.join("mod.rs"), "pub mod user;").unwrap();
+    std::fs::write(models.join("user.rs"), "pub struct Model { pub id: i32 }").unwrap();
+    let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
+
+    bump_epoch();
+    let layout = crate::schema_macro::crate_layout::layout_for(temp.path(), None);
+    let fingerprint = |layout: &crate::schema_macro::crate_layout::CrateLayout| {
+        FILE_CACHE.with(|cache| crate_fingerprint(&mut cache.borrow_mut(), layout.clone()))
+    };
+    // Outside any tracked computation: computes and memoizes the fingerprint.
+    let first = fingerprint(&layout);
+    // Same epoch, same probes: the memo answers, and its inputs are reported.
+    let (second, deps) = tracked::tracked(|| fingerprint(&layout));
+    assert_eq!(first, second);
+    assert!(deps.still_valid());
+
+    std::fs::write(temp.path().join("src/extra.rs"), "").unwrap();
+    // Fingerprints are read once per epoch: the next epoch sees the new file.
+    bump_epoch();
+    assert!(
+        !deps.still_valid(),
+        "a file created in src/ must invalidate the memo-hit computation"
+    );
+}

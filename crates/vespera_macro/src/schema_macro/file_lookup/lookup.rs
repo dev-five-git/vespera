@@ -230,7 +230,7 @@ pub(super) fn find_struct_with_call_site(
 
 /// Whether `name` is a crate the compiler links (`--extern name=..`,
 /// options like `priv:` stripped); never outside rustc.
-fn is_extern_crate(name: &str) -> bool {
+pub fn is_extern_crate(name: &str) -> bool {
     crate::env_access::compiler_args().windows(2).any(|pair| {
         pair[0] == "--extern" && {
             let spec = pair[1].split('=').next().unwrap_or_default();
