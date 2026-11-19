@@ -65,3 +65,77 @@ fn recursive_const_instances_get_distinct_components() {
     assert!(keys.iter().any(|key| key.contains("_Const.4")), "{keys:?}");
     assert!(keys.iter().all(|key| !key.contains("_Const.N")), "{keys:?}");
 }
+
+/// Round 29: a const argument written as a bare identifier (`Buf<u8, LEN>`,
+/// parsed as a type) pairs with its const parameter, so the type parameter
+/// still takes `u8` and the vector's items are integers, as with `Buf<u8, 4>`.
+#[rstest]
+#[case::bare_identifier("Buf<u8, LEN>")]
+#[case::literal("Buf<u8, 4>")]
+fn bare_identifier_const_argument_keeps_type_substitution(#[case] src: &str) {
+    let known: HashSet<String> = ["Buf"].into_iter().map(String::from).collect();
+    let defs = HashMap::from([(
+        "Buf".to_string(),
+        "struct Buf<T, const N: usize> { items: Vec<T>, data: [T; N] }".to_string(),
+    )]);
+    let schema = inline_schema(src, &known, &defs);
+    let properties = schema.properties.expect("the struct's fields");
+    let SchemaRef::Inline(items) = &properties["items"] else {
+        panic!("the vector is inline");
+    };
+    let Some(SchemaRef::Inline(item)) = &items.items else {
+        panic!("the vector's items are inline");
+    };
+    assert_eq!(item.schema_type, Some(SchemaType::Integer));
+}
+
+/// Round 29: a const parameter left out takes its declared default
+/// (`const N: usize = 4`), as a type parameter left out takes its default.
+#[test]
+fn missing_const_argument_takes_the_declared_default() {
+    let known: HashSet<String> = ["Buf"].into_iter().map(String::from).collect();
+    let defs = HashMap::from([(
+        "Buf".to_string(),
+        "struct Buf<T, const N: usize = 4> { data: [T; N] }".to_string(),
+    )]);
+    let schema = inline_schema("Buf<u8>", &known, &defs);
+    let properties = schema.properties.expect("the struct's fields");
+    let SchemaRef::Inline(data) = &properties["data"] else {
+        panic!("the array is inline");
+    };
+    assert_eq!(data.min_items, Some(4));
+    assert_eq!(data.max_items, Some(4));
+}
+
+/// Round 29: const substitution runs before the type arguments are placed, so
+/// a concrete type argument spelled like a const parameter (`Buf<N, 4>` with a
+/// user type `N`) stays that type: `Vec<N>` is a `$ref` to it, and `[N; 4]`
+/// still pins four elements.
+#[test]
+fn const_substitution_keeps_a_type_argument_named_like_a_const() {
+    let known: HashSet<String> = ["Buf", "N"].into_iter().map(String::from).collect();
+    let defs = HashMap::from([
+        (
+            "Buf".to_string(),
+            "struct Buf<T, const N: usize> { items: Vec<T>, data: [T; N] }".to_string(),
+        ),
+        ("N".to_string(), "struct N { x: u8 }".to_string()),
+    ]);
+    let schema = inline_schema("Buf<N, 4>", &known, &defs);
+    let properties = schema.properties.expect("the struct's fields");
+    let SchemaRef::Inline(items) = &properties["items"] else {
+        panic!("the vector is inline");
+    };
+    assert_eq!(
+        reference(items.items.clone().expect("the vector's items")),
+        Reference::schema("N").ref_path
+    );
+    let SchemaRef::Inline(data) = &properties["data"] else {
+        panic!("the array is inline");
+    };
+    assert_eq!(data.min_items, Some(4));
+    assert_eq!(
+        reference(data.items.clone().expect("the array's items")),
+        Reference::schema("N").ref_path
+    );
+}

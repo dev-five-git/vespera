@@ -101,39 +101,65 @@ pub(super) fn ref_override_of(def: &str) -> Option<(String, bool)> {
 /// The expression each const parameter of `generics` takes from `args`
 /// (`Buf<u8, 4>` gives `N` = `4`). The non-lifetime parameters and arguments
 /// are paired by position, as rustc pairs them; a bare identifier argument
-/// (`Buf<u8, LEN>`, parsed as a type) is the path expression it spells.
+/// (`Buf<u8, LEN>`, parsed as a type) is the path expression it spells. A
+/// parameter with no argument takes its declared default (`const N: usize =
+/// 4`), if it has one.
 pub(super) fn const_argument_exprs(
     generics: &syn::Generics,
     args: &syn::AngleBracketedGenericArguments,
 ) -> Vec<(String, syn::Expr)> {
-    let params = generics
-        .params
-        .iter()
-        .filter(|param| !matches!(param, syn::GenericParam::Lifetime(_)));
-    let given = args
+    let mut given = args
         .args
         .iter()
         .filter(|arg| !matches!(arg, syn::GenericArgument::Lifetime(_)));
-    params
-        .zip(given)
-        .filter_map(|(param, arg)| {
+    generics
+        .params
+        .iter()
+        .filter(|param| !matches!(param, syn::GenericParam::Lifetime(_)))
+        .filter_map(|param| {
+            let arg = given.next();
             let syn::GenericParam::Const(param) = param else {
                 return None;
             };
             let expr = match arg {
-                syn::GenericArgument::Const(expr) => expr.clone(),
-                syn::GenericArgument::Type(syn::Type::Path(syn::TypePath {
+                None => param.default.as_ref()?.1.clone(),
+                Some(syn::GenericArgument::Const(expr)) => expr.clone(),
+                Some(syn::GenericArgument::Type(syn::Type::Path(syn::TypePath {
                     qself: None,
                     path,
                     ..
-                })) => syn::Expr::Path(syn::ExprPath {
+                }))) => syn::Expr::Path(syn::ExprPath {
                     attrs: Vec::new(),
                     qself: None,
                     path: path.clone(),
                 }),
-                _ => return None,
+                Some(_) => return None,
             };
             Some((param.ident.to_string(), expr))
+        })
+        .collect()
+}
+
+/// The type arguments of `args` (`Buf<u8, LEN>`: `u8`). An argument paired
+/// with a const parameter of `generics` is a value even when it parses as a
+/// type (a bare identifier), so it is not one.
+pub(super) fn type_argument_types(
+    generics: &syn::Generics,
+    args: &syn::AngleBracketedGenericArguments,
+) -> Vec<Type> {
+    let mut params = generics
+        .params
+        .iter()
+        .filter(|param| !matches!(param, syn::GenericParam::Lifetime(_)));
+    args.args
+        .iter()
+        .filter(|arg| !matches!(arg, syn::GenericArgument::Lifetime(_)))
+        .filter_map(|arg| {
+            let param = params.next();
+            let syn::GenericArgument::Type(ty) = arg else {
+                return None;
+            };
+            (!matches!(param, Some(syn::GenericParam::Const(_)))).then(|| ty.clone())
         })
         .collect()
 }
@@ -407,9 +433,12 @@ mod tests {
         assert_eq!(tokens.to_string(), expected);
     }
 
-    /// The `(parameter, argument)` pairs of `params` (a generic list) and the
-    /// `args` (an argument list) as printed expressions.
-    fn const_pairs(params: &str, args: &str) -> Vec<(String, String)> {
+    /// The generic parameters of `struct X{params}` and the arguments of
+    /// `X{args}`.
+    fn generics_and_args(
+        params: &str,
+        args: &str,
+    ) -> (syn::Generics, syn::AngleBracketedGenericArguments) {
         let item: syn::ItemStruct = syn::parse_str(&format!("struct X{params} {{}}")).unwrap();
         let path: syn::TypePath = syn::parse_str(&format!("X{args}")).unwrap();
         let syn::PathArguments::AngleBracketed(args) =
@@ -417,7 +446,14 @@ mod tests {
         else {
             panic!("no generic arguments");
         };
-        const_argument_exprs(&item.generics, &args)
+        (item.generics, args)
+    }
+
+    /// The `(parameter, argument)` pairs of `params` (a generic list) and the
+    /// `args` (an argument list) as printed expressions.
+    fn const_pairs(params: &str, args: &str) -> Vec<(String, String)> {
+        let (generics, args) = generics_and_args(params, args);
+        const_argument_exprs(&generics, &args)
             .into_iter()
             .map(|(name, expr)| (name, quote::ToTokens::to_token_stream(&expr).to_string()))
             .collect()
@@ -425,7 +461,7 @@ mod tests {
 
     /// Const parameters pair with arguments by position, lifetimes skipped on
     /// both sides; a type parameter's slot or a non-value argument names
-    /// nothing, and a missing argument leaves its parameter alone.
+    /// nothing, and a missing argument takes the parameter's default, if any.
     #[rstest]
     #[case::positional("<'a, T, const N: usize>", "<'static, u8, 4>", &[("N", "4")])]
     #[case::no_lifetime_given("<'a, T, const N: usize>", "<u8, 4>", &[("N", "4")])]
@@ -434,6 +470,13 @@ mod tests {
     #[case::non_value_argument("<T, const N: usize>", "<u8, [u8; 2]>", &[])]
     #[case::type_parameter_slot("<const N: usize, T>", "<4, u8>", &[("N", "4")])]
     #[case::missing_argument("<T, const N: usize>", "<u8>", &[])]
+    #[case::missing_argument_takes_default("<T, const N: usize = 4>", "<u8>", &[("N", "4")])]
+    #[case::given_argument_beats_default("<T, const N: usize = 4>", "<u8, 2>", &[("N", "2")])]
+    #[case::default_after_type_slots(
+        "<T, const N: usize, const M: usize = 3>",
+        "<u8, 2>",
+        &[("N", "2"), ("M", "3")]
+    )]
     fn const_arguments_pair_by_position(
         #[case] params: &str,
         #[case] args: &str,
@@ -444,6 +487,26 @@ mod tests {
             .map(|(name, expr)| ((*name).to_string(), (*expr).to_string()))
             .collect();
         assert_eq!(const_pairs(params, args), expected);
+    }
+
+    /// Type arguments are the ones paired with a type parameter (or with no
+    /// parameter at all): a bare identifier in a const slot is not a type.
+    #[rstest]
+    #[case::bare_identifier_in_const_slot("<T, const N: usize>", "<u8, LEN>", &["u8"])]
+    #[case::const_slot_before_type("<const N: usize, T>", "<LEN, u8>", &["u8"])]
+    #[case::lifetimes_skipped("<'a, T, const N: usize>", "<'static, u8, 4>", &["u8"])]
+    #[case::extra_argument_kept("<T>", "<u8, u16>", &["u8", "u16"])]
+    fn type_arguments_skip_const_slots(
+        #[case] params: &str,
+        #[case] args: &str,
+        #[case] expected: &[&str],
+    ) {
+        let (generics, args) = generics_and_args(params, args);
+        let printed: Vec<String> = type_argument_types(&generics, &args)
+            .iter()
+            .map(|ty| quote::ToTokens::to_token_stream(ty).to_string())
+            .collect();
+        assert_eq!(printed, expected);
     }
 
     /// A const parameter's uses in field types (array lengths, also inside
