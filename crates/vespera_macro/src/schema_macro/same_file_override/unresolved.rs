@@ -213,7 +213,8 @@ pub(super) fn unresolved_at_call_site(
         unresolved: &unresolved,
         found: None,
     };
-    for field in &dto.fields {
+    let live_fields = || dto.fields.iter().filter(|field| !compiled_out(field));
+    for field in live_fields() {
         syn::visit::Visit::visit_type(&mut types, &field.ty);
     }
     let serde_check = |attrs: &[syn::Attribute]| {
@@ -229,11 +230,48 @@ pub(super) fn unresolved_at_call_site(
                 _ => None,
             })
     };
-    types.found.or_else(|| serde_check(&dto.attrs)).or_else(|| {
-        dto.fields
-            .iter()
-            .find_map(|field| serde_check(&field.attrs))
-    })
+    types
+        .found
+        .or_else(|| serde_check(&dto.attrs))
+        .or_else(|| live_fields().find_map(|field| serde_check(&field.attrs)))
+}
+
+/// Whether the compiler drops `field` under its statically false `cfg`s
+/// (`cfg_attr(p, cfg(q))` included): the expansion never names it, so its
+/// types, serde paths and readability are not the call site's concern
+/// (R30-SM3-L4).
+fn compiled_out(field: &syn::Field) -> bool {
+    crate::schema_macro::cfg_eval::statically_inactive(
+        &crate::schema_macro::field_attrs::field_cfgs(&field.attrs),
+    )
+}
+
+/// `pub` or `pub(crate)`: readable from every module of the crate, so the one
+/// visibility known readable without the DTO's module (R30-SM3-L3).
+fn public_or_crate(vis: &syn::Visibility) -> bool {
+    match vis {
+        syn::Visibility::Public(_) => true,
+        syn::Visibility::Restricted(restricted) => restricted.path.is_ident("crate"),
+        syn::Visibility::Inherited => false,
+    }
+}
+
+/// Whether the wrapper's bare adapter name `adapter` resolves at the call site
+/// to some other item than the stored one at `stored` (its defining module,
+/// followed through re-exports). The wrapper writes the adapter by that bare
+/// name, so a different same-named struct there would be the one used
+/// (R30-SM3-L2, the R24-SM3-02 rule). A name the call site does not pin
+/// (unknown, or only glob-imported) is left to rustc.
+fn adapter_names_other_item(adapter: &str, stored: &[String]) -> bool {
+    use crate::schema_macro::module_scope::{Resolved, resolve_name};
+    let call_site = crate::schema_macro::call_site_module().unwrap_or_default();
+    let Resolved::Path(mut path) = resolve_name(&[adapter.to_string()], &call_site) else {
+        return false;
+    };
+    let defined = path.pop().unwrap_or_default();
+    let (module, name) =
+        crate::schema_macro::reexported_item(&path, &defined).unwrap_or((path, defined));
+    module != stored || name != adapter
 }
 
 /// Refuses a storage-fallback adapter DTO the call site cannot use: a name it
@@ -248,6 +286,14 @@ pub(super) fn check_storage_fallback(
     dto: &syn::ItemStruct,
     dto_module: Option<&[String]>,
 ) -> syn::Result<()> {
+    if dto_module.is_some_and(|stored| adapter_names_other_item(dto_name, stored)) {
+        return Err(syn::Error::new_spanned(
+            adapter_name,
+            format!(
+                "schema_type!: relation field `{field_name}` adapter `{dto_name}` is declared in another module, but `{dto_name}` at the call site names another item; import the declared `{dto_name}` here, or declare the adapter in this file"
+            ),
+        ));
+    }
     if let Some(name) = unresolved_at_call_site(dto, dto_module) {
         return Err(syn::Error::new_spanned(
             adapter_name,
@@ -257,11 +303,20 @@ pub(super) fn check_storage_fallback(
         ));
     }
     let call_site = crate::schema_macro::call_site_module();
-    let module = dto_module.unwrap_or_default();
+    // Without the DTO's module nothing but `pub` / `pub(crate)` is known to be
+    // readable: an inherited field must not pass as readable everywhere
+    // (R30-SM3-L3).
+    let readable = |field: &syn::Field| {
+        dto_module.map_or_else(
+            || public_or_crate(&field.vis),
+            |module| readable_from(&field.vis, module, call_site.as_deref()),
+        )
+    };
     let private = dto
         .fields
         .iter()
-        .find(|field| !readable_from(&field.vis, module, call_site.as_deref()))
+        .filter(|field| !compiled_out(field))
+        .find(|field| !readable(field))
         .and_then(|field| field.ident.as_ref());
     if let Some(ident) = private {
         return Err(syn::Error::new_spanned(
@@ -293,6 +348,12 @@ mod tests {
     #[case::public_field("struct D { pub id: i32 }", "crate::routes", None)]
     #[case::crate_visible_field("struct D { pub(crate) id: i32 }", "crate::routes", None)]
     #[case::same_module("struct D { id: i32 }", "crate::models::card", None)]
+    // R30-SM3-L4: a field compiled out at the call site is never named.
+    #[case::cfg_off_private_field(
+        "struct D { pub id: i32, #[cfg(false)] name: String }",
+        "crate::routes",
+        None
+    )]
     fn storage_fallback_fields_must_be_readable_at_the_call_site(
         #[case] src: &str,
         #[case] call_site: &str,
@@ -352,6 +413,12 @@ mod tests {
     #[case::decimal_is_judged("struct D { total: Decimal }", Some("Decimal"))]
     // A serde value that is no string literal is no copied path.
     #[case::non_string_value("struct D { #[serde(with = codec)] id: i32 }", None)]
+    // R30-SM3-L4: a compiled-out field's type and serde path are not copied.
+    #[case::cfg_off_field_type("struct D { #[cfg(false)] total: Decimal }", None)]
+    #[case::cfg_off_serde_path(
+        "struct D { #[cfg(false)] #[serde(with = \"codec::parse\")] id: i32 }",
+        None
+    )]
     fn copied_serde_paths_are_judged(#[case] source: &str, #[case] expected: Option<&str>) {
         let _call = set_test_call_site_module("crate::b");
         let dto: syn::ItemStruct = syn::parse_str(source).unwrap();
@@ -422,5 +489,64 @@ mod tests {
             unresolved_at_call_site(&dto, Some(&dto_in(&["crate", "routes"]))),
             None
         );
+    }
+
+    /// R30-SM3-L2: the wrapper writes the adapter by its bare name, so a call
+    /// site whose `Owner` is another item is refused. The stored item (also
+    /// through an import of it) and a name the call site does not pin pass.
+    #[rstest::rstest]
+    #[case::other_module_item("use crate::api::Owner;", true)]
+    #[case::stored_item("use crate::models::card::Owner;", false)]
+    #[case::unpinned_name("", false)]
+    fn adapter_name_must_name_the_stored_item(#[case] import: &str, #[case] refused: bool) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        for (file, text) in [
+            ("lib.rs", "pub mod api;\npub mod models;\npub mod routes;\n"),
+            ("api.rs", "pub struct Owner { pub id: i32 }\n"),
+            ("models.rs", "pub mod card;\n"),
+            ("models/card.rs", "pub struct Owner { pub id: i32 }\n"),
+            ("routes.rs", import),
+        ] {
+            let path = src.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        let _env = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        bump_epoch();
+        let _call = set_test_call_site_module("crate::routes");
+        let dto: syn::ItemStruct = syn::parse_str("struct Owner { pub id: i32 }").unwrap();
+        let adapter = syn::Ident::new("Owner", proc_macro2::Span::call_site());
+        let module = ["crate", "models", "card"].map(String::from);
+        let result = check_storage_fallback("owner", &adapter, "Owner", &dto, Some(&module));
+        assert_eq!(result.is_err(), refused, "{result:?}");
+        if refused {
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("names another item"), "{error}");
+        }
+    }
+
+    /// R30-SM3-L3: with the DTO's module unknown, only `pub` / `pub(crate)`
+    /// fields are readable; an inherited or `pub(super)` one is refused.
+    #[rstest::rstest]
+    #[case::inherited("struct D { id: i32 }", Some("id"))]
+    #[case::pub_super("struct D { pub(super) id: i32 }", Some("id"))]
+    #[case::public("struct D { pub id: i32 }", None)]
+    #[case::crate_visible("struct D { pub(crate) id: i32 }", None)]
+    fn unknown_dto_module_admits_only_public_fields(
+        #[case] src: &str,
+        #[case] refused: Option<&str>,
+    ) {
+        let _call = set_test_call_site_module("crate::routes");
+        let dto: syn::ItemStruct = syn::parse_str(src).unwrap();
+        let adapter = syn::Ident::new("D", proc_macro2::Span::call_site());
+        let result = check_storage_fallback("owner", &adapter, "D", &dto, None);
+        match refused {
+            Some(field) => {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains(&format!("field `{field}`")), "{error}");
+            }
+            None => assert!(result.is_ok()),
+        }
     }
 }

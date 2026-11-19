@@ -180,6 +180,22 @@ pub(super) fn generate_sea_orm_default_attrs_in(
     }
 }
 
+/// A field's generated default fns, `#[allow(dead_code)]` where its serde
+/// default is `cfg_attr`-gated: in the build where that override applies,
+/// nothing references the fn (R30-SMB1-L1), and the consumer crate would warn.
+pub(super) fn allow_unused_default_fns(
+    functions: Vec<TokenStream>,
+    carried: &CarriedAttrs,
+) -> Vec<TokenStream> {
+    if carried.cfg_serde_default_predicates().is_empty() {
+        return functions;
+    }
+    functions
+        .into_iter()
+        .map(|function| quote! { #[allow(dead_code)] #function })
+        .collect()
+}
+
 /// Gates the SeaORM-derived `(serde, schema)` defaults on the field's
 /// `cfg_attr` overrides. Where a `cfg_attr(P, serde(default ..))` holds,
 /// serde applies the field's own default (the generated `default = ".."`
@@ -463,3 +479,5 @@ fn pointer_width_guard(value: &str, ty: &syn::Type) -> TokenStream {
 mod tests;
 #[cfg(test)]
 mod tests_alias;
+#[cfg(test)]
+mod tests_allow;

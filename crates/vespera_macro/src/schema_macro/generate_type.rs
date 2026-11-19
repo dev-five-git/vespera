@@ -655,7 +655,7 @@ pub fn generate_schema_type_code(
                     &mut field_defaults,
                 );
                 default_functions.extend(
-                    field_defaults
+                    super::defaults::allow_unused_default_fns(field_defaults, &carried)
                         .into_iter()
                         .map(|function| assignments::gate_items(&field_cfg, function)),
                 );

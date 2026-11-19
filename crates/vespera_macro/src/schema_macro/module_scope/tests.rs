@@ -278,6 +278,9 @@ pub mod kinds { pub enum Kind { A } }
 // R29-SM3-L1: a private `use` of the module is reached through its target.
 #[case::self_private_import("self::Status", "crate :: models :: enums :: Status")]
 #[case::self_import_multi_segment("self::enums::Other", "crate :: models :: enums :: Other")]
+// R30-SM3-L1: the module's own glob import (`use crate::shared::*;`) names it.
+#[case::self_glob_import("self::Shared", "crate :: shared :: Shared")]
+#[case::self_glob_import_multi_segment("self::sub::Sub", "crate :: shared :: sub :: Sub")]
 #[case::crate_glob("Shared", "crate :: shared :: Shared")]
 #[case::crate_glob_reexport("Deep", "crate :: deep :: Deep")]
 #[case::imported_json_is_not_serde_json("Json", "other_crate :: Json")]

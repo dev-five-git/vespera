@@ -98,10 +98,11 @@ fn requested_variant(
     }
     let defined_in = storage_module_path(stored);
     let other_crate = module.first().map(String::as_str) != Some("crate");
-    // A bare name the call site imports explicitly (`use crate::a::Page;`) is
-    // named as much as a qualified path is: the stored `Page` of another
-    // module is not it (R20-SM3-03, round 20). A glob import stays lenient.
-    let named_module = qualified || explicitly_imported(&name);
+    // A bare name the call site imports explicitly (`use crate::a::Page;`) or
+    // defines in its own module (`pub struct Page` without a derive) is named
+    // as much as a qualified path is: the stored `Page` of another module is
+    // not it (R20-SM3-03, round 20; R30-SM3-M1). A glob import stays lenient.
+    let named_module = qualified || explicitly_named_at_call_site(&name);
     if other_crate
         || (named_module
             && defined_in
@@ -142,11 +143,11 @@ fn bare_name_module(ty: &syn::Type) -> Option<Vec<String>> {
 }
 
 /// Whether the call site's module imports `name` with an explicit `use`
-/// (glob imports are not in `ModuleScope::imports`).
-fn explicitly_imported(name: &str) -> bool {
+/// (glob imports are not in `ModuleScope::imports`) or defines it itself.
+fn explicitly_named_at_call_site(name: &str) -> bool {
     file_lookup::call_site_module()
         .and_then(|call_site| module_scope::module_scope(&call_site))
-        .is_some_and(|scope| scope.imports.contains_key(name))
+        .is_some_and(|scope| scope.imports.contains_key(name) || scope.locals.contains(name))
 }
 
 /// Generate schema code from a struct with optional field filtering
@@ -560,11 +561,11 @@ mod tests {
             ),
             create_test_struct_metadata(
                 "UserInArticle",
-                "struct UserInArticle { id: i32, name: String }",
+                "struct UserInArticle { pub id: i32, pub name: String }",
             ),
             create_test_struct_metadata(
                 "CategoryInArticle",
-                "struct CategoryInArticle { id: i64, name: String }",
+                "struct CategoryInArticle { pub id: i64, pub name: String }",
             ),
         ]);
 
@@ -612,7 +613,7 @@ mod tests {
         let storage = to_storage(vec![create_test_struct_metadata(
             "UserInArticle",
             r#"#[serde(rename_all = "camelCase")]
-            struct UserInArticle { id: i32, #[serde(default)] display_name: String }"#,
+            struct UserInArticle { pub id: i32, #[serde(default)] pub display_name: String }"#,
         )]);
         let new_type_name = syn::Ident::new("ArticleResponse", proc_macro2::Span::call_site());
         let adapter_name = syn::Ident::new("UserInArticle", proc_macro2::Span::call_site());
