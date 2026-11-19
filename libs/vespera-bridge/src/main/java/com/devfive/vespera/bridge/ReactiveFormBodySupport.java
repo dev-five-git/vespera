@@ -55,6 +55,20 @@ final class ReactiveFormBodySupport {
     }
 
     /**
+     * The form's {@code charset} parameter, or UTF-8 when it is absent or names a charset the
+     * JVM does not know. The servlet twin ({@code FormBodySupport.requestCharset}) falls back the
+     * same way; {@code MediaType.getCharset()} throws on an unknown name, which would otherwise
+     * end the request as a generic {@code 500}.
+     */
+    static Charset formCharset(MediaType form) {
+        try {
+            return form.getCharset() != null ? form.getCharset() : StandardCharsets.UTF_8;
+        } catch (IllegalArgumentException unsupported) {
+            return StandardCharsets.UTF_8;
+        }
+    }
+
+    /**
      * {@code body}, or — for a form body that came back short (empty, or
      * shorter than the declared {@code contentLength}; {@code -1} = unknown,
      * {@code 0} = declared empty, never recovered) — the body rebuilt
@@ -67,7 +81,7 @@ final class ReactiveFormBodySupport {
         if (form == null) {
             return Mono.just(body);
         }
-        Charset charset = form.getCharset() != null ? form.getCharset() : StandardCharsets.UTF_8;
+        Charset charset = formCharset(form);
         return exchange.getFormData()
                 .map(data -> {
                     byte[] rebuilt = encode(data, charset);

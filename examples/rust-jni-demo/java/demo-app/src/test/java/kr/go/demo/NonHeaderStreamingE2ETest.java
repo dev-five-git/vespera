@@ -43,8 +43,9 @@ class NonHeaderStreamingE2ETest {
      * <ol>
      *   <li>the {@code vespera.streaming.chunkBytes} system property (which
      *       the build forwards into this JVM), parsed like
-     *       {@code VesperaNativeConfig.longProperty} ({@code Long.decode}, so
-     *       {@code 0x100000} counts); a malformed value or one {@code <= 0}
+     *       {@code VesperaNativeConfig.longProperty} (decimal, or {@code 0x} /
+     *       {@code #} hex, so {@code 0x100000} counts and a leading zero is
+     *       decimal: see {@link #parseBridgeInteger}); a malformed value or one {@code <= 0}
      *       is never forwarded ({@code configureStreaming0} leaves the
      *       setting untouched), so it falls through to</li>
      *   <li>the {@code VESPERA_STREAMING_CHUNK_BYTES} environment variable the
@@ -84,6 +85,34 @@ class NonHeaderStreamingE2ETest {
         return (int) Math.max(4 * 1024, Math.min(8L * 1024 * 1024, chunkBytes));
     }
 
+    /**
+     * The bridge's rule for an integer system property
+     * ({@code VesperaNativeConfig.parseIntegerProperty}): an optional sign, then
+     * {@code 0x} / {@code 0X} / {@code #} hexadecimal, else decimal. A leading zero
+     * is decimal, unlike {@code Long.decode}, which reads {@code 01000000} as octal
+     * and rejects {@code 0524288}. Malformed input throws NumberFormatException.
+     */
+    static long parseBridgeInteger(String text) {
+        String sign = "";
+        String digits = text;
+        if (digits.startsWith("-") || digits.startsWith("+")) {
+            sign = digits.substring(0, 1);
+            digits = digits.substring(1);
+        }
+        int radix = 10;
+        if (digits.startsWith("0x") || digits.startsWith("0X")) {
+            radix = 16;
+            digits = digits.substring(2);
+        } else if (digits.startsWith("#")) {
+            radix = 16;
+            digits = digits.substring(1);
+        }
+        if (digits.startsWith("-") || digits.startsWith("+")) {
+            throw new NumberFormatException("sign after the radix prefix: " + text);
+        }
+        return Long.parseLong(sign + digits, radix);
+    }
+
     /** What the bridge forwards to {@code configureStreaming0} ({@code <= 0} = nothing). */
     private static long forwardedChunkBytes(String property) {
         if (property == null) {
@@ -91,7 +120,7 @@ class NonHeaderStreamingE2ETest {
         }
         try {
             // Saturated to an int like VesperaNativeConfig.toInt.
-            return Math.min(Integer.MAX_VALUE, Long.decode(property.trim()));
+            return Math.min(Integer.MAX_VALUE, parseBridgeInteger(property.trim()));
         } catch (NumberFormatException malformed) {
             return 0;
         }
@@ -118,8 +147,13 @@ class NonHeaderStreamingE2ETest {
         assertEquals(1024, panicChunksPastOneStreamingChunk("524288", "8388608"));
         assertEquals(16384, panicChunksPastOneStreamingChunk(null, " 99999999 "));
         assertEquals(512, panicChunksPastOneStreamingChunk(null, "big"));
-        // The bridge reads the property with Long.decode: hex counts.
+        // The bridge reads the property as decimal or 0x/#-hex: hex counts.
         assertEquals(2048, panicChunksPastOneStreamingChunk("0x100000", null));
+        // A leading zero is decimal in the bridge (Long.decode would read 01000000 as octal,
+        // and reject 0524288 outright).
+        assertEquals(1953, panicChunksPastOneStreamingChunk("01000000", null));
+        assertEquals(1000000, effectiveStreamingChunkBytes("01000000", null));
+        assertEquals(1024, panicChunksPastOneStreamingChunk("0524288", null));
         // A property that is never forwarded (<= 0 or malformed) leaves the env var in charge.
         assertEquals(16384, panicChunksPastOneStreamingChunk("0", "8388608"));
         assertEquals(16384, panicChunksPastOneStreamingChunk("-1", "8388608"));

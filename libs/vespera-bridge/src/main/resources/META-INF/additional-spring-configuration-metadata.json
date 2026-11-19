@@ -5,7 +5,7 @@
       "type": "com.devfive.vespera.bridge.VesperaBridgeProperties$Native",
       "sourceType": "com.devfive.vespera.bridge.VesperaBridgeProperties",
       "sourceMethod": "getNative()",
-      "description": "Rust-side runtime knobs forwarded to the VesperaBridge configure* methods during context startup, before the first native dispatch. Unset values keep the native default (or the vespera.limits.* / vespera.dispatch.* / vespera.async.* / vespera.runtime.* / vespera.streaming.* / vespera.request.* system properties and their VESPERA_* environment variables)."
+      "description": "Rust-side runtime knobs forwarded to the VesperaBridge configure* methods during context startup, before the first native dispatch. Unset values keep the native default (or the vespera.limits.* / vespera.dispatch.* / vespera.async.* / vespera.runtime.* / vespera.streaming.* / vespera.request.* system properties and their VESPERA_* environment variables). A negative value is rejected at binding time (IllegalArgumentException); 0 keeps its documented meaning (unlimited, disabled or the runtime default)."
     },
     {
       "name": "vespera.bridge.reactive-streaming",

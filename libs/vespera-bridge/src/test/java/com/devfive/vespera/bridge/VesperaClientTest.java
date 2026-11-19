@@ -328,6 +328,9 @@ class VesperaClientTest {
         assertNull(r.header("x-missing"));
         assertEquals("{\"errors\":[]}", r.bodyString());
         assertTrue(r.toString().contains("status=422"));
+        // Header names only: the cookie values stay out of a logged response.
+        assertTrue(r.toString().contains("set-cookie"), r.toString());
+        assertFalse(r.toString().contains("a=1"), r.toString());
     }
 
     @Test
@@ -356,6 +359,19 @@ class VesperaClientTest {
         transport.failure = new VesperaClientException("not initialized");
         assertThrows(VesperaClientException.class, () -> client.get("/x").send());
         assertTrue(client.get("/x").sendAsync().isCompletedExceptionally());
+    }
+
+    /** An encode failure completes the future exceptionally, like a transport failure: the call never throws. */
+    @Test
+    void sendAsyncCompletesExceptionallyWhenTheHeaderEncodeFails() {
+        VesperaRequest oversized = client.get("/x").header("x-big", "x".repeat(65 * 1024 * 1024));
+        CompletableFuture<VesperaResponse> plain = oversized.sendAsync();
+        CompletableFuture<VesperaResponse> viaExecutor = oversized.sendAsync(Runnable::run);
+        for (CompletableFuture<VesperaResponse> f : List.of(plain, viaExecutor)) {
+            CompletionException failed = assertThrows(CompletionException.class, f::join);
+            assertInstanceOf(IllegalArgumentException.class, failed.getCause());
+        }
+        assertTrue(transport.requests.isEmpty(), "nothing was dispatched");
     }
 
     @Test

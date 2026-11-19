@@ -185,6 +185,12 @@ class VesperaBridgeReactiveAutoConfigurationTest {
                 .run(ctx -> {
                     assertEquals(503, ReactiveTestSupport.call(
                             WebTestClient.bindToApplicationContext(ctx).build().get().uri("/users")).status());
+                    // The observer runs after the response hand-off (VesperaReactiveProxyHandler.fail),
+                    // so the client can be done before the event is recorded: wait, bounded.
+                    long deadline = System.nanoTime() + 5_000_000_000L;
+                    while (events.isEmpty() && System.nanoTime() < deadline) {
+                        Thread.sleep(5);
+                    }
                     assertEquals(1, events.size());
                     assertEquals(503, events.get(0).status());
                 });

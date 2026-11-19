@@ -51,17 +51,17 @@ final class BridgeInputChecks {
         }
     }
 
-    /** Caller-side checks shared by the direct-buffer natives. */
+    /**
+     * Caller-side checks shared by the direct-buffer natives. A read-only
+     * {@code in} is accepted: the native side only reads the request, through a
+     * borrowed slice. A read-only {@code out} is rejected: the native side writes it.
+     */
     static void requireDirectBuffers(ByteBuffer in, int inLen, ByteBuffer out) {
         Objects.requireNonNull(in, "in");
         Objects.requireNonNull(out, "out");
         if (!in.isDirect() || !out.isDirect()) {
             throw new IllegalArgumentException(
                     "dispatchDirect requires direct ByteBuffers (use ByteBuffer.allocateDirect)");
-        }
-        if (in.isReadOnly()) {
-            throw new IllegalArgumentException(
-                    "dispatchDirect requires a writable in ByteBuffer (got a read-only buffer)");
         }
         // SEC-2: the native side writes the wire response straight into
         // `out` via a `&mut [u8]`; a read-only direct buffer (e.g. a

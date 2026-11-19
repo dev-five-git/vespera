@@ -42,10 +42,11 @@ import org.springframework.web.multipart.support.StandardServletMultipartResolve
 /**
  * Multipart uploads through the servlet proxy on a real Tomcat with Spring
  * Boot's multipart autoconfiguration (StandardServletMultipartResolver,
- * {@code max-file-size} 1 MB): the raw body and boundary reach the proxy's
- * dispatch for every mode, Spring controllers keep normal multipart handling,
- * and a body consumed before the proxy is answered {@code 500}, never
- * forwarded empty.
+ * {@code max-file-size} 1 MB): the raw body and boundary survive the proxy's
+ * body acquisition for every mode (checked through the {@link CapturingProxy}
+ * stand-in, which does not run the native dispatch), Spring controllers keep
+ * normal multipart handling, and a body consumed before the proxy is answered
+ * {@code 500}, never forwarded empty (checked on the real proxy path).
  */
 @ExtendWith(NativeConfigReset.class)
 class MultipartPassthroughTest {
@@ -193,7 +194,7 @@ class MultipartPassthroughTest {
 
     @ParameterizedTest
     @EnumSource(DispatchMode.class)
-    void proxiedMultipartBodyReachesEveryDispatchModeVerbatim(DispatchMode mode) throws Exception {
+    void bodyAcquisitionKeepsMultipartBytesVerbatimForEveryMode(DispatchMode mode) throws Exception {
         byte[] small = multipartBody("small.bin", randomBytes(4096));
         // Over Spring Boot's default spring.servlet.multipart.max-file-size (1 MB).
         byte[] large = multipartBody("large.bin", randomBytes(1_572_864));

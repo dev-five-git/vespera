@@ -296,7 +296,9 @@ public class VesperaBridge {
      * Configure the shared Tokio runtime (same pending-config pattern and
      * precedence as {@link #configureStreaming}).  Must take effect before the
      * runtime starts (first dispatch); values {@code <= 0} leave a setting
-     * untouched.
+     * untouched.  (Spring rejects a negative {@code vespera.bridge.native.*}
+     * value at binding time; this method keeps the sentinel meaning for
+     * programmatic callers.)
      *
      * @param workerThreads      worker threads (clamped 1–1024; default:
      *                           logical CPUs)
@@ -760,8 +762,9 @@ public class VesperaBridge {
      * @param inLen number of valid request bytes in {@code in}
      * @param out   direct buffer that receives the wire response
      * @return bytes written, or the negative protocol codes above
-     * @throws IllegalArgumentException if either buffer is not direct, read-only,
-     *         {@code inLen} is negative, or exceeds {@code in.capacity()}
+     * @throws IllegalArgumentException if either buffer is not direct, {@code out}
+     *         is read-only, {@code inLen} is negative, or exceeds {@code in.capacity()}
+     *         (a read-only {@code in} is fine: the request is only read)
      */
     public static int dispatchDirect(ByteBuffer in, int inLen, ByteBuffer out) {
         BridgeInputChecks.requireDirectBuffers(in, inLen, out);

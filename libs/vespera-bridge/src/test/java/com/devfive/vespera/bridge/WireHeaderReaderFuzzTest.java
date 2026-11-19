@@ -1,6 +1,7 @@
 package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import java.nio.ByteBuffer;
@@ -60,6 +61,25 @@ class WireHeaderReaderFuzzTest {
     private record Ok(int status, List<String> headers) implements Outcome {}
 
     private record Rejected() implements Outcome {}
+
+    /**
+     * The seeds are valid headers, so each must decode on every backing. Without this a reader
+     * that rejects every input would still agree with itself across backings and both fuzz
+     * tests would pass.
+     */
+    @Test
+    void everySeedDecodesOnEveryBacking() {
+        for (String seed : SEEDS) {
+            byte[] input = seed.getBytes(StandardCharsets.UTF_8);
+            check(-1, input);
+            assertInstanceOf(Ok.class,
+                    applyOutcome(-1, input, () -> applyArray(input, 0, input.length)),
+                    () -> "seed rejected by apply: " + hex(input));
+            assertInstanceOf(Ok.class,
+                    applyOutcome(-1, input, () -> decoded(WireHeaderReader.decode(input, 0, input.length))),
+                    () -> "seed rejected by decode: " + hex(input));
+        }
+    }
 
     @Test
     void mutatedHeadersNeverThrowUnexpectedly() {

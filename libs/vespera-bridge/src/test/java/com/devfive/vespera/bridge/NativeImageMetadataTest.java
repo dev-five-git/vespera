@@ -226,9 +226,50 @@ class NativeImageMetadataTest {
         if (entry == null) {
             return false;
         }
-        // Registering all public members covers the (public java.*) members.
-        return entry.path(name.equals("<init>") ? "allPublicConstructors" : "allPublicMethods").asBoolean()
-                || hasExplicitMethod(entry, name, parameterTypes);
+        // An explicit entry covers the member. The all-public flag covers it only when the
+        // member really is public: a non-public target of a class that registers
+        // allPublicMethods would otherwise pass, and ship unregistered.
+        return hasExplicitMethod(entry, name, parameterTypes)
+                || (entry.path(name.equals("<init>") ? "allPublicConstructors" : "allPublicMethods").asBoolean()
+                        && isPublicMember(entry.path("name").asText(), name, parameterTypes));
+    }
+
+    /** Whether the class {@code className} has {@code name} as a public member (reflection). */
+    private static boolean isPublicMember(String className, String name, List<String> parameterTypes) {
+        try {
+            Class<?> type = Class.forName(className, false, NativeImageMetadataTest.class.getClassLoader());
+            Class<?>[] params = new Class<?>[parameterTypes.size()];
+            for (int i = 0; i < params.length; i++) {
+                params[i] = classNamed(parameterTypes.get(i));
+            }
+            if (name.equals("<init>")) {
+                type.getConstructor(params);
+            } else {
+                type.getMethod(name, params);
+            }
+            return true;
+        } catch (ReflectiveOperationException | LinkageError absent) {
+            return false;
+        }
+    }
+
+    /** A class named in config spelling ({@code byte[]}, {@code java.lang.String}). */
+    private static Class<?> classNamed(String name) throws ClassNotFoundException {
+        if (name.endsWith("[]")) {
+            return java.lang.reflect.Array.newInstance(
+                    classNamed(name.substring(0, name.length() - 2)), 0).getClass();
+        }
+        return switch (name) {
+            case "boolean" -> boolean.class;
+            case "byte" -> byte.class;
+            case "char" -> char.class;
+            case "short" -> short.class;
+            case "int" -> int.class;
+            case "long" -> long.class;
+            case "float" -> float.class;
+            case "double" -> double.class;
+            default -> Class.forName(name, false, NativeImageMetadataTest.class.getClassLoader());
+        };
     }
 
     private static boolean hasExplicitMethod(JsonNode entry, String name, List<String> parameterTypes) {
@@ -456,6 +497,27 @@ class NativeImageMetadataTest {
                     && hasMethod(entry, "isVirtual", List.of());
         }
         assertTrue(found, "reflect-config.json lacks java.lang.Thread#isVirtual()");
+    }
+
+    /** A class whose only non-public member is {@link #poke()}; registered in the probe entry below. */
+    static class Hidden {
+        void poke() {
+        }
+
+        public void open() {
+        }
+    }
+
+    @Test
+    void theAllPublicFlagOnlyCoversPublicMembers() throws IOException {
+        // The flag alone must not cover a package-private member (a future JNI lookup on one
+        // would otherwise pass this check and fail only inside a native image).
+        JsonNode entry = new ObjectMapper().readTree(
+                "{\"name\":\"" + Hidden.class.getName() + "\",\"allPublicMethods\":true}");
+        assertTrue(hasMethod(entry, "open", List.of()), "a public member of an allPublicMethods class");
+        assertFalse(hasMethod(entry, "poke", List.of()),
+                "a package-private member is not covered by allPublicMethods");
+        assertFalse(hasMethod(entry, "missing", List.of()));
     }
 
     // ── Spring AOT ──────────────────────────────────────────────────────
