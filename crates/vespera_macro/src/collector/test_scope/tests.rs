@@ -638,3 +638,26 @@ fn documented_view_keeps_production_twin_of_another_method() {
     let methods: Vec<&str> = view.routes.iter().map(|r| r.method.as_str()).collect();
     assert_eq!(methods, ["post"]);
 }
+
+/// A declarer with no `cfg`/`test` text still declares its modules in every
+/// build: `main.rs` (a bin next to a lib that gates `fixtures`) loads
+/// `fixtures.rs` and `shared.rs` ungated, so neither is test-only.
+#[test]
+fn ungated_declaration_in_a_file_without_cfg_text_keeps_the_file_production() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "pub mod routes; #[cfg(test)] mod fixtures; #[cfg(test)] #[path = \"shared.rs\"] mod t;",
+        ),
+        (
+            "main.rs",
+            "mod fixtures; #[path = \"shared.rs\"] mod shared_m; fn main() {}",
+        ),
+        ("fixtures.rs", ""),
+        ("shared.rs", ""),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(!scope.file_test_only(&src.join("fixtures.rs")));
+    assert!(!scope.file_test_only(&src.join("shared.rs")));
+}

@@ -49,35 +49,83 @@ pub(super) fn cfg_predicates(attrs: &[syn::Attribute]) -> Vec<String> {
 /// Each declarer's `mod` list is read once per file version (`file_cache::
 /// derived`), not once per route file below it.
 pub(super) fn module_cfg_predicates(folder_path: &Path, segments: &[String]) -> Vec<String> {
-    /// A declarer's top-level `mod`s: unraw name, cfg predicates (`None`
-    /// when the file does not parse).
-    struct Declared(Option<Vec<(String, Vec<String>)>>);
     let mut parent = folder_path.to_path_buf();
     let mut predicates = Vec::new();
     for segment in segments {
         for declarer in [parent.join("mod.rs"), sibling_rs_file(&parent)] {
-            let declared = file_cache::derived(&declarer, |content| {
-                Declared(syn::parse_file(content).ok().map(|file| {
-                    file.items
-                        .iter()
-                        .filter_map(|item| match item {
-                            Item::Mod(module) => {
-                                Some((declared_segment(module), cfg_predicates(&module.attrs)))
-                            }
-                            _ => None,
-                        })
-                        .collect()
-                }))
-            });
-            for (name, cfgs) in declared.iter().filter_map(|d| d.0.as_ref()).flatten() {
-                if name == segment {
-                    predicates.extend(cfgs.iter().cloned());
-                }
+            for module in declared_mods(&declarer)
+                .iter()
+                .filter(|module| &module.segment == segment)
+            {
+                predicates.extend(module.cfgs.iter().cloned());
             }
         }
         parent.push(segment);
     }
     predicates
+}
+
+/// The Rust module path of a route file, as its `mod` declarations name the
+/// modules: a `#[path]` module is named by its declaration (`mod admin` with
+/// `#[path = "admin_impl.rs"]` is `routes::admin`, though the file is
+/// `admin_impl`), so the call path the router emits resolves. A segment no
+/// declarer names keeps the file's own name.
+pub(super) fn declared_module_segments(folder_path: &Path, segments: &[String]) -> Vec<String> {
+    let mut parent = folder_path.to_path_buf();
+    let mut names = Vec::with_capacity(segments.len());
+    for segment in segments {
+        let declared = [parent.join("mod.rs"), sibling_rs_file(&parent)]
+            .iter()
+            .find_map(|declarer| {
+                declared_mods(declarer)
+                    .into_iter()
+                    .find(|module| &module.segment == segment)
+            });
+        names.push(declared.map_or_else(|| segment.clone(), |module| module.name));
+        parent.push(segment);
+    }
+    names
+}
+
+/// One `mod` a declarer makes: the route-file segment it loads, its Rust
+/// name and its `#[cfg(..)]` predicates.
+#[derive(Clone)]
+struct DeclaredMod {
+    segment: String,
+    name: String,
+    cfgs: Vec<String>,
+}
+
+/// A declarer's top-level `mod`s (none when the file does not parse).
+#[derive(Clone, Default)]
+struct Declared(Vec<DeclaredMod>);
+
+/// The top-level `mod`s of `declarer`, read once per file version
+/// (`file_cache::derived`).
+fn declared_mods(declarer: &Path) -> Vec<DeclaredMod> {
+    file_cache::derived(declarer, |content| {
+        Declared(
+            syn::parse_file(content)
+                .map(|file| {
+                    file.items
+                        .iter()
+                        .filter_map(|item| match item {
+                            Item::Mod(module) => Some(DeclaredMod {
+                                segment: declared_segment(module),
+                                name: crate::parser::strip_raw_prefix_owned(
+                                    module.ident.to_string(),
+                                ),
+                                cfgs: cfg_predicates(&module.attrs),
+                            }),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        )
+    })
+    .map(|declared| declared.0.clone())
+    .unwrap_or_default()
 }
 
 /// The route-file segment a `mod` declaration loads. A `#[path = ".."]`
@@ -207,14 +255,31 @@ pub(super) fn stored_routes_inline_module(
     if stored_names.is_empty() {
         return None;
     }
-    stored_inline_mod_route(file, &stored_names)
+    // The stored entries that record an inline module: such a handler is
+    // compiled inside one, whatever top-level handler shares its name.
+    let inline_stored: Vec<&str> = stored_routes
+        .iter()
+        .filter(|stored| {
+            stored
+                .inline_module
+                .as_deref()
+                .is_some_and(|m| !m.is_empty())
+        })
+        .map(|stored| stored.fn_name.as_str())
+        .collect();
+    stored_inline_mod_route(file, &stored_names, &inline_stored)
 }
 
 /// Whether the fast-path `file` declares one of its stored handlers inside an
 /// inline module. Only files whose text contains an inline `mod` are parsed.
+///
+/// A name is an inline handler when a stored entry records an inline module
+/// for it (`inline_stored`); otherwise a top-level handler of the same name
+/// means the stored entry is that one, and the inline twin is not stored.
 pub(super) fn stored_inline_mod_route(
     file: &Path,
     stored_names: &[&str],
+    inline_stored: &[&str],
 ) -> Option<(String, String)> {
     let content = file_cache::get_file_content(file)?;
     if !content.contains("mod ") || !content.contains("#[") {
@@ -226,7 +291,10 @@ pub(super) fn stored_inline_mod_route(
     routes
         .inline
         .iter()
-        .find(|(_, name)| stored_names.contains(&name.as_str()) && !routes.top_level.contains(name))
+        .find(|(_, name)| {
+            stored_names.contains(&name.as_str())
+                && (inline_stored.contains(&name.as_str()) || !routes.top_level.contains(name))
+        })
         .cloned()
 }
 
@@ -327,6 +395,24 @@ mod tests {
         assert_eq!(module_cfg_predicates(dir.path(), &segments), expected);
     }
 
+    /// The call path names a `#[path]` module by its declaration; a file no
+    /// declaration names keeps its own name.
+    #[rstest]
+    #[case::path_module(&["admin_impl"], &["admin"])]
+    #[case::own_name(&["users"], &["users"])]
+    #[case::undeclared(&["stray"], &["stray"])]
+    fn declared_module_names(#[case] segments: &[&str], #[case] expected: &[&str]) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mod.rs"),
+            "#[path = \"admin_impl.rs\"] pub mod admin; pub mod users;",
+        )
+        .unwrap();
+        file_cache::bump_epoch();
+        let segments: Vec<String> = segments.iter().map(ToString::to_string).collect();
+        assert_eq!(declared_module_segments(dir.path(), &segments), expected);
+    }
+
     #[test]
     fn folder_with_dot_declared_in_sibling_file_with_full_name() {
         // `api.v2` is declared by `api.v2.rs`; `with_extension` would look
@@ -404,15 +490,21 @@ mod tests {
         file_cache::bump_epoch();
 
         // `list` is also a top-level route: the stored entry is that one.
-        assert_eq!(stored_inline_mod_route(&file, &["list"]), None);
+        assert_eq!(stored_inline_mod_route(&file, &["list"], &[]), None);
         // `probe` is stored, so the gated test module was compiled.
         assert_eq!(
-            stored_inline_mod_route(&file, &["list", "probe"]),
+            stored_inline_mod_route(&file, &["list", "probe"], &[]),
             Some(("tests".to_string(), "probe".to_string()))
         );
-        assert_eq!(stored_inline_mod_route(&plain, &["list"]), None);
+        // A stored entry that records the inline module of `list` settles it
+        // even though a top-level `list` exists (rust-analyzer path).
         assert_eq!(
-            stored_inline_mod_route(&dir.path().join("missing.rs"), &["list"]),
+            stored_inline_mod_route(&file, &["list"], &["list"]),
+            Some(("v2".to_string(), "list".to_string()))
+        );
+        assert_eq!(stored_inline_mod_route(&plain, &["list"], &[]), None);
+        assert_eq!(
+            stored_inline_mod_route(&dir.path().join("missing.rs"), &["list"], &[]),
             None
         );
         // A first hit shadowed by a top-level handler never hides a later one.
@@ -424,7 +516,7 @@ mod tests {
         .unwrap();
         file_cache::bump_epoch();
         assert_eq!(
-            stored_inline_mod_route(&shadowed, &["list", "create"]),
+            stored_inline_mod_route(&shadowed, &["list", "create"], &[]),
             Some(("b".to_string(), "create".to_string()))
         );
         // rust-analyzer still stores `moved` in `mod old` after it moved to

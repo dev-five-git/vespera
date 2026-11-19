@@ -172,9 +172,11 @@ fn stored_jobs(
                         .is_some_and(|tree| tree.is_ambiguous(&normalized, inline, &s.fn_name))
                     {
                         return Err(format!(
-                            "vespera! macro: cron job `{}` is declared in '{}', a file that more \
-                             than one module includes (`#[path]`), so its module path cannot be \
-                             told apart. Give the job a file of its own.",
+                            "vespera! macro: cron job `{}` is declared in '{}', which is reached \
+                             under more than one module path (a file more than one module \
+                             includes with `#[path]`, or same-named jobs in sibling inline \
+                             modules), so its module path cannot be told apart. Give the job a \
+                             file of its own or a name no sibling module uses.",
                             s.fn_name, normalized
                         ));
                     }
@@ -352,8 +354,10 @@ struct ModuleTree {
     /// so same-named jobs in different inline modules of one file stay apart.
     scoped_cron_fns: HashMap<(String, String, String), String>,
     /// (canonical file, function name) of a cron function reached under two
-    /// different module paths (a file that two `mod` declarations include
-    /// with `#[path]`): a stored job of it cannot name one module.
+    /// different module paths: a file that two `mod` declarations include
+    /// with `#[path]`, or a same-named job in two sibling inline modules.
+    /// A stored job of it that does not record its inline module cannot name
+    /// one module.
     ambiguous_cron_fns: HashSet<(String, String)>,
     /// The same, keyed like `scoped_cron_fns`.
     ambiguous_scoped_cron_fns: HashSet<(String, String, String)>,

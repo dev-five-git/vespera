@@ -355,9 +355,12 @@ pub fn collect_metadata_from_files<'a>(
             })?;
 
         // The route dir's own `mod.rs` has no segments: its module is the
-        // route dir itself (`routes`, never `routes::`).
+        // route dir itself (`routes`, never `routes::`). The call path names
+        // the modules as declared (a `#[path]` module is not named after its
+        // file).
+        let declared = module_scope::declared_module_segments(folder_path, &segments);
         let mut module_path = std::iter::once(folder_module.as_str())
-            .chain(segments.iter().map(String::as_str))
+            .chain(declared.iter().map(String::as_str))
             .filter(|segment| !segment.is_empty())
             .collect::<Vec<_>>()
             .join("::");

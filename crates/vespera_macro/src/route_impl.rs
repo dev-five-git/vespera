@@ -137,11 +137,23 @@ pub fn current_crate_routes() -> Arc<Vec<StoredRouteInfo>> {
     crate::macro_storage::current_crate_items(&ROUTE_STORAGE)
 }
 
+/// An HTTP status code literal of `#[route]` (`error_status` / `responses`):
+/// an integer in `100..=599`, the range an OpenAPI response key can name.
+/// Anything else (`0`, `999`, `70_000`) is a compile error with `message`.
+fn status_code_literal(elem: &syn::Expr, lit_int: &syn::LitInt, message: &str) -> syn::Result<u16> {
+    lit_int
+        .base10_parse::<u16>()
+        .ok()
+        .filter(|code| (100..=599).contains(code))
+        .ok_or_else(|| syn::Error::new_spanned(elem, message))
+}
+
 /// Extract the `u16` error status codes of `error_status = [...]`.
 ///
-/// Every entry must be an integer literal that fits `u16`. A dropped entry
-/// (a named constant, an out-of-range status) would leave its response
-/// undocumented with no diagnostic, so it is a compile error instead.
+/// Every entry must be an integer literal that names an HTTP status code
+/// (`100..=599`). A dropped entry (a named constant, an out-of-range status)
+/// would leave its response undocumented with no diagnostic, so it is a
+/// compile error instead.
 fn extract_error_status_codes(arr: &syn::ExprArray) -> syn::Result<Option<Vec<u16>>> {
     let codes = arr
         .elems
@@ -150,9 +162,11 @@ fn extract_error_status_codes(arr: &syn::ExprArray) -> syn::Result<Option<Vec<u1
             syn::Expr::Lit(syn::ExprLit {
                 lit: syn::Lit::Int(lit_int),
                 ..
-            }) => lit_int.base10_parse::<u16>().map_err(|_| {
-                syn::Error::new_spanned(elem, "#[route] `error_status` entries must be HTTP status codes (`u16` literals)")
-            }),
+            }) => status_code_literal(
+                elem,
+                lit_int,
+                "#[route] `error_status` entries must be HTTP status codes (integer literals in 100..=599)",
+            ),
             _ => Err(syn::Error::new_spanned(
                 elem,
                 "#[route] `error_status` entries must be integer literals, e.g. `error_status = [400, 404]`",
@@ -224,10 +238,22 @@ fn parse_example_string(lit: &syn::LitStr) -> serde_json::Value {
 /// Every entry must be a `(status literal, schema path)` tuple: a malformed
 /// entry is a compile error, not a response the document silently lacks.
 fn extract_typed_responses(arr: &syn::ExprArray) -> syn::Result<Option<Vec<(u16, String)>>> {
+    // A status listed twice would keep only the last schema: a compile error,
+    // not a documented response that silently disappears.
+    let mut seen = std::collections::HashSet::new();
     let responses = arr
         .elems
         .iter()
-        .map(typed_response_entry)
+        .map(|elem| {
+            let (status, schema) = typed_response_entry(elem)?;
+            if !seen.insert(status) {
+                return Err(syn::Error::new_spanned(
+                    elem,
+                    format!("#[route] `responses` lists status {status} more than once"),
+                ));
+            }
+            Ok((status, schema))
+        })
         .collect::<syn::Result<Vec<(u16, String)>>>()?;
     Ok((!responses.is_empty()).then_some(responses))
 }
@@ -238,13 +264,19 @@ fn typed_response_entry(elem: &syn::Expr) -> syn::Result<(u16, String)> {
     let syn::Expr::Tuple(tuple) = elem else {
         return Err(syn::Error::new_spanned(elem, EXPECTED));
     };
+    // The arity is part of the shape: a third element would be dropped.
+    if tuple.elems.len() != 2 {
+        return Err(syn::Error::new_spanned(elem, EXPECTED));
+    }
     let status = match tuple.elems.first() {
         Some(syn::Expr::Lit(syn::ExprLit {
             lit: syn::Lit::Int(lit_int),
             ..
-        })) => lit_int
-            .base10_parse::<u16>()
-            .map_err(|_| syn::Error::new_spanned(elem, EXPECTED))?,
+        })) => status_code_literal(
+            elem,
+            lit_int,
+            "#[route] `responses` status codes must be integer literals in 100..=599",
+        )?,
         _ => return Err(syn::Error::new_spanned(elem, EXPECTED)),
     };
     let schema_name = match tuple.elems.get(1) {

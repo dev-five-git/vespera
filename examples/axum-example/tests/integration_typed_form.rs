@@ -157,6 +157,29 @@ async fn test_typed_form_patch_file_upload() {
 }
 
 #[tokio::test]
+async fn test_typed_form_patch_file_upload_honours_is_active() {
+    let app = create_app().await;
+    let server = TestServer::new(app);
+
+    // Sent explicitly: the PATCH answers the field it was given, not a fixed value.
+    let form = MultipartForm::new().add_text("isActive", "false");
+
+    let response = server.patch("/typed-form/12").multipart(form).await;
+
+    response.assert_status_ok();
+    let result: serde_json::Value = response.json();
+    assert_eq!(result["id"], 12);
+    assert_eq!(result["isActive"], false);
+
+    // Absent: the same default PUT uses.
+    let form = MultipartForm::new().add_text("name", "Still Active");
+    let response = server.patch("/typed-form/12").multipart(form).await;
+    response.assert_status_ok();
+    let result: serde_json::Value = response.json();
+    assert_eq!(result["isActive"], true);
+}
+
+#[tokio::test]
 async fn test_typed_form_patch_file_upload_with_thumbnail() {
     let app = create_app().await;
     let server = TestServer::new(app);

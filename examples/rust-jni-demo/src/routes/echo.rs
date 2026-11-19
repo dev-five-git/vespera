@@ -7,8 +7,8 @@
 //! from the Java side.
 
 use vespera::axum::body::Bytes;
-use vespera::axum::http::HeaderMap;
 use vespera::axum::http::header;
+use vespera::axum::http::{HeaderMap, HeaderValue};
 use vespera::axum::response::{IntoResponse, Response};
 
 /// The media types `/echo` reflects.  Any other request `Content-Type`
@@ -70,10 +70,23 @@ pub async fn echo(headers: HeaderMap, body: Bytes) -> Response {
 /// [`vespera::axum::body::Body`], so multi-GiB bidirectional streams
 /// can be exercised end-to-end — used by the JNI streaming throughput
 /// benchmark (`StreamingThroughputBenchTest`).
+///
+/// The body is attacker-chosen, so it is answered like `/echo` does for a
+/// non-allowlisted type: `application/octet-stream` with `nosniff`.
 #[allow(clippy::unused_async)]
 #[vespera::route(post, path = "/stream", tags = ["echo"])]
 pub async fn echo_stream(body: vespera::axum::body::Body) -> Response {
-    Response::new(body)
+    let mut response = Response::new(body);
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    response
 }
 
 /// Always panics — exercises the JNI "header callback exactly once"
@@ -112,6 +125,20 @@ mod tests {
         for (raw, expected) in cases {
             assert_eq!(reflected_content_type(raw), expected, "raw = {raw:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn echo_stream_answers_as_octet_stream_with_nosniff() {
+        let response =
+            echo_stream(vespera::axum::body::Body::from("<script>alert(1)</script>")).await;
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE),
+            Some(&HeaderValue::from_static("application/octet-stream"))
+        );
+        assert_eq!(
+            response.headers().get(header::X_CONTENT_TYPE_OPTIONS),
+            Some(&HeaderValue::from_static("nosniff"))
+        );
     }
 
     #[tokio::test]

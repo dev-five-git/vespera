@@ -869,3 +869,32 @@ fn stored_inline_module_scope_is_authoritative(
         assert_eq!(result.unwrap().0.routes.len(), 1);
     }
 }
+
+/// A route file loaded by `#[path]` under another module name: its routes
+/// are called through the declared module (`routes::admin`), because the
+/// generated call path must resolve; the file's name is only its URL base.
+#[test]
+fn path_loaded_route_file_is_called_through_its_declared_module() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    create_temp_file(
+        &temp_dir,
+        "mod.rs",
+        "#[path = \"admin_impl.rs\"]\npub mod admin;\n",
+    );
+    create_temp_file(
+        &temp_dir,
+        "admin_impl.rs",
+        "#[route(get)] pub async fn panel() {}\n",
+    );
+    crate::schema_macro::file_cache::bump_epoch();
+
+    let (metadata, _) = collect_metadata(temp_dir.path(), "routes", &[]).unwrap();
+
+    let modules: Vec<&str> = metadata
+        .routes
+        .iter()
+        .map(|route| route.module_path.as_str())
+        .collect();
+    assert_eq!(modules, ["routes::admin"]);
+    assert_eq!(metadata.routes[0].path, "/admin-impl");
+}

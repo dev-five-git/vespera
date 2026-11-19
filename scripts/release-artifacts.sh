@@ -84,7 +84,6 @@ trap cleanup EXIT
 # output shape: fail loudly instead of reading it as "nothing was published"
 # (that would skip the attestation of a real release with a green job). jq runs
 # outside a process substitution here, so its own failure is not lost either.
-published=${published:-[]}
 if ! jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' \
   >/dev/null 2>&1 <<<"$published"; then
   echo "::error::the changepacks output is not a JSON array of project paths: $published" >&2
@@ -274,13 +273,15 @@ if [ -z "$registry_version" ]; then
   fi
 else
   # The copy on Maven Central, if actions/attest can take it (it needs a
-  # `serialNumber`); otherwise the regenerated one is attested.
+  # `serialNumber`). It is fetched with the same wait as the JAR: a regenerated
+  # SBOM is a different document (fresh serial number), so when the published
+  # one is missing the bridge has no SBOM and `record` fails it below.
   f="$bridge_published_sbom/vespera-bridge-$registry_version-cyclonedx.json"
-  if ! curl_get "https://repo1.maven.org/maven2/kr/devfive/vespera-bridge/$registry_version/$(basename "$f")" "$f" ||
+  if ! registry_get "https://repo1.maven.org/maven2/kr/devfive/vespera-bridge/$registry_version/$(basename "$f")" "$f" ||
     ! jq -e --arg v "$registry_version" '.bomFormat == "CycloneDX" and
       (.serialNumber | type == "string" and test("^urn:uuid:[0-9a-f-]{36}$")) and
       .metadata.component.version == $v' "$f" >/dev/null; then
-    echo "::warning::not using the Maven Central vespera-bridge SBOM; attesting a regenerated one"
+    echo "::warning::the Maven Central vespera-bridge SBOM is missing or invalid; the bridge is not attested"
     rm -f "$f"
   fi
 fi
@@ -348,6 +349,10 @@ for p in "${paths[@]}"; do
       fi
       sbom="$out/sbom-all/$lib-$version-cyclonedx.json"
       if [ -f "$bridge_published_sbom/$lib-$version-cyclonedx.json" ]; then
+        sbom="$bridge_published_sbom/$lib-$version-cyclonedx.json"
+      elif [ -n "$registry_version" ] && [ "$lib" = vespera-bridge ]; then
+        # The bridge's Maven Central SBOM is the one that must be attested; its
+        # absence is reported by `record` (the plugin's SBOM is never published).
         sbom="$bridge_published_sbom/$lib-$version-cyclonedx.json"
       fi
       before=$collected

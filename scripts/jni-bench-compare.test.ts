@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 
 import {
   evaluate,
+  incompleteModes,
   isRegression,
   median,
   missingOnHead,
@@ -103,6 +104,42 @@ describe('evaluate', () => {
     expect(missingOnHead(head, base)).toEqual([])
     // a head that produced no rounds at all reports every base mode
     expect(missingOnHead(base, [])).toEqual(['direct_get', 'sync_get'])
+  })
+})
+
+describe('incompleteModes', () => {
+  const round = (sync: number, direct: number) =>
+    new Map([
+      ['sync_get', sync],
+      ['direct_get', direct],
+    ])
+
+  it('flags a base mode that the head reports in fewer rounds', () => {
+    const base = Array.from({ length: 5 }, () => round(1000, 1000))
+    // `direct_get` only in head round 1: a single-sample gate would be silent.
+    const head = [
+      new Map([
+        ['sync_get', 1350],
+        ['direct_get', 1350],
+      ]),
+      ...Array.from({ length: 4 }, () => new Map([['sync_get', 1350]])),
+    ]
+    expect(incompleteModes(base, head)).toEqual(['direct_get'])
+    // the same mode in every round is complete, and so is a head-only mode
+    const full = Array.from({ length: 5 }, () =>
+      new Map([
+        ['sync_get', 1350],
+        ['direct_get', 1350],
+        ['new_mode', 1],
+      ]),
+    )
+    expect(incompleteModes(base, full)).toEqual([])
+  })
+
+  it('flags a round missing on one side for every base mode', () => {
+    const base = Array.from({ length: 5 }, () => round(1000, 1000))
+    const head = Array.from({ length: 3 }, () => round(1000, 1000))
+    expect(incompleteModes(base, head)).toEqual(['direct_get', 'sync_get'])
   })
 })
 
