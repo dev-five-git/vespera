@@ -126,12 +126,14 @@ describe('incompleteModes', () => {
     ]
     expect(incompleteModes(base, head)).toEqual(['direct_get'])
     // the same mode in every round is complete, and so is a head-only mode
-    const full = Array.from({ length: 5 }, () =>
-      new Map([
-        ['sync_get', 1350],
-        ['direct_get', 1350],
-        ['new_mode', 1],
-      ]),
+    const full = Array.from(
+      { length: 5 },
+      () =>
+        new Map([
+          ['sync_get', 1350],
+          ['direct_get', 1350],
+          ['new_mode', 1],
+        ]),
     )
     expect(incompleteModes(base, full)).toEqual([])
   })
