@@ -16,7 +16,8 @@
 //! 2. **Per-field leaf-type assertions** — for each field whose leaf
 //!    type is NOT a recognized OpenAPI builtin (per
 //!    [`is_builtin_openapi_type`]), NOT `serde_json::Value`, NOT a
-//!    generic type parameter of the current struct, and NOT marked
+//!    generic type parameter of the current struct, NOT `PhantomData` (std's;
+//!    see the exemptions of `emit_field_assertions`), and NOT marked
 //!    with `#[schema(any)]`, this module emits a const block:
 //!
 //!    ```ignore
@@ -102,6 +103,9 @@ fn emit_marker_impl(input: &syn::DeriveInput) -> TokenStream {
 ///   its Rust type is never consulted.
 /// - Leaf path's last segment is a builtin OpenAPI ident
 ///   (per [`is_builtin_openapi_type`]).
+/// - Leaf's last segment is `PhantomData` and the path is not a user-module
+///   path: std's `PhantomData` has no `Schema` impl and serde writes it as a
+///   unit.
 /// - Leaf is `serde_json::Value` (bare `Value`, SeaORM's `JsonValue`, OR
 ///   any path containing a `serde_json` segment ending in `Value`).
 /// - Leaf type's path references any generic parameter of the parent

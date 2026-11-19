@@ -14,7 +14,8 @@
  *   FAIL  iff  median(c_i) > REGRESS_MEAN  (default +30%)
  *         AND  min(c_i)    > REGRESS_LOWER (default +20%)
  * The min of N paired samples is the distribution-free lower confidence limit
- * of the median (sign test, 93.75% for N = 5): a regression must show up in
+ * of the median (one-sided sign test: P(all N changes above the median) =
+ * 1/2^N, so one-sided 96.875% for N = 5): a regression must show up in
  * EVERY round, so one noisy round cannot trip the gate.
  *
  * Prints a markdown report (also appended to `$GITHUB_STEP_SUMMARY` when set)

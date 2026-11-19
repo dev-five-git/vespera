@@ -979,3 +979,7 @@ mod server_url_tests;
 #[cfg(test)]
 #[path = "input_tests_doc_urls.rs"]
 mod doc_url_tests;
+
+#[cfg(test)]
+#[path = "input_tests_security.rs"]
+mod security_tests;

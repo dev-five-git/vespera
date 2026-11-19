@@ -707,6 +707,43 @@ fn foreign_cron_attributes_are_not_claimed(
     assert_eq!(summary(&jobs), rows(expected));
 }
 
+/// A bare `#[cron]` inherited through a `super::*` glob is the foreign crate's
+/// when the enclosing module imports that `cron` (round-28 macrorest-5 R28-M5-01),
+/// at any depth and in a file module, unless the child imports vespera's own.
+#[rstest]
+#[case::inline_child("use other::cron; pub mod jobs { use super::*; #[cron(\"2 * * * * *\")] pub async fn tick() {} }", &[("", "root", "1 * * * * *")])]
+#[case::nested_inline_child("use other::cron; pub mod a { use super::*; pub mod b { use super::*; #[cron(\"3 * * * * *\")] pub async fn deep() {} } } ", &[("", "root", "1 * * * * *")])]
+#[case::child_vespera_import_wins("use other::cron; pub mod jobs { use super::*; use vespera::cron; #[cron(\"2 * * * * *\")] pub async fn tick() {} }", &[("", "root", "1 * * * * *"), ("jobs", "tick", "2 * * * * *")])]
+#[case::vespera_root_inherits_nothing("use vespera::cron; pub mod jobs { use super::*; #[cron(\"2 * * * * *\")] pub async fn tick() {} }", &[("", "root", "1 * * * * *"), ("jobs", "tick", "2 * * * * *")])]
+fn inherited_foreign_cron_through_a_glob_is_not_claimed(
+    #[case] source: &str,
+    #[case] expected: &[(&str, &str, &str)],
+) {
+    let source = format!("{source} #[vespera::cron(\"1 * * * * *\")] pub async fn root() {{}}");
+    let krate = crate_with(&[("lib.rs", &source)]);
+    let src = krate.path().join("src");
+    let jobs = discover(&[], Some(&src), None);
+    assert_eq!(summary(&jobs), rows(expected));
+}
+
+/// The same inheritance across a file module (`mod jobs;` with `use super::*;`).
+#[test]
+fn inherited_foreign_cron_reaches_a_file_module() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "use other::cron; mod jobs; #[vespera::cron(\"1 * * * * *\")] pub async fn root() {}",
+        ),
+        (
+            "jobs.rs",
+            "use super::*; #[cron(\"2 * * * * *\")] pub async fn tick() {}",
+        ),
+    ]);
+    let src = krate.path().join("src");
+    let jobs = discover(&[], Some(&src), None);
+    assert_eq!(summary(&jobs), rows(&[("", "root", "1 * * * * *")]));
+}
+
 fn rows(rows: &[(&str, &str, &str)]) -> Vec<(String, String, String)> {
     let mut rows: Vec<_> = rows
         .iter()

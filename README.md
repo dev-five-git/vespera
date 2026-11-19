@@ -183,11 +183,14 @@ pub async fn update_user(...) -> ... { ... }
 #[vespera::route(get, path = "/me", tags = ["users"], security = ["bearerAuth"])]
 pub async fn current_user(...) -> ... { ... }
 
-// Declare headers consumed by custom extractors so they appear in OpenAPI
+// Declare headers consumed by custom extractors so they appear in OpenAPI.
+// Authentication belongs in `security = [...]` (OpenAPI tools ignore an
+// `Authorization` header parameter), so this example uses a custom header.
 #[vespera::route(
     get,
+    security = ["bearerAuth"],
     headers = [
-        { name = "Authorization", required = true, description = "Bearer token" },
+        { name = "X-Api-Key", required = true, description = "Tenant API key" },
         { name = "X-Trace-Id" }
     ]
 )]
@@ -784,7 +787,7 @@ with `/` and they must not share a path (both are compile errors).
 | `error_status` | Extra error status codes to include in OpenAPI responses; declaring any makes the explicit error set authoritative (see below) |
 | `responses` | Typed error responses, e.g. `responses = [(404, NotFoundError), (400, crate::errors::BadRequestError)]`; declaring any makes the explicit error set authoritative (see below) |
 | `security` | Per-operation security requirements, e.g. `security = ["bearerAuth"]` or with OAuth2 scopes `security = [("oauth2", ["read:users"])]` (an inner `[...]` is an AND group); `security = []` emits explicit no auth |
-| `headers` | Header parameters consumed by custom extractors, e.g. `headers = [{ name = "Authorization", required = true, description = "Bearer token" }]`; `required` defaults to `false` |
+| `headers` | Header parameters consumed by custom extractors, e.g. `headers = [{ name = "X-Api-Key", required = true, description = "Tenant API key" }]`; `required` defaults to `false`. Document `Authorization` through `security = [...]` instead: OpenAPI tools ignore an `Authorization` header parameter |
 | `request_example` | Operation-level request body example as a JSON string; invalid JSON is emitted as a JSON string value |
 | `response_example` | Operation-level `200` response example as a JSON string; invalid JSON is emitted as a JSON string value |
 | `deprecated` | Bare flag marking the OpenAPI operation as deprecated |

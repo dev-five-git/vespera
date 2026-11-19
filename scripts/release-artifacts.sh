@@ -291,7 +291,11 @@ fi
 if ! bash "$root/scripts/sbom.sh" "$out/sbom-all" "$src"; then
   fail "scripts/sbom.sh failed for at least one package (see above); packages without an SBOM are not attested"
 fi
-metadata=$(cargo metadata --manifest-path "$src/Cargo.toml" --no-deps --format-version 1)
+if ! metadata=$(cargo metadata --manifest-path "$src/Cargo.toml" --no-deps --format-version 1); then
+  # Only the crates need it; the JARs and SBOMs of the other packages go on.
+  fail "cargo metadata failed at the released commit; the crate packages are not attested"
+  metadata=
+fi
 
 record() { # <path> <version> <id> <artifact> <sbom>
   if [ ! -f "$5" ]; then
@@ -314,6 +318,7 @@ for p in "${paths[@]}"; do
       crate=${p#crates/}; crate=${crate%/Cargo.toml}
       # Skipped (and reported) above when it could not be verified.
       [ -n "${crate_file[$crate]:-}" ] || continue
+      [ -n "$metadata" ] || continue
       version=$(jq -r --arg n "$crate" '.packages[] | select(.name == $n) | .version' <<<"$metadata" | tr -d '\r')
       if [ "$version" != "${crate_version[$crate]}" ]; then
         fail "$crate: the released commit has version '$version', the published tarball ${crate_version[$crate]}; not attesting it"

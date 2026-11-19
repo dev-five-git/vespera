@@ -715,25 +715,29 @@ const fn integer_range(kind: &str) -> Option<(i128, u128)> {
     })
 }
 
-/// Render one `range` bound in the field's own type.
-///
-/// Integer fields get a range-checked, suffixed integer literal (a bound the
-/// type cannot hold is a compile error rather than a wrapping `as` cast);
-/// float fields keep the declared value; unknown types (an alias) convert
-/// every bound through `vespera::__validation::RangeBound`, which rounds a
-/// fractional bound inward for an integer target and keeps it for a float
-/// one, and takes an integer literal in the target's own type.
 /// The bound of a direct float field (`f32` / `f64`) as an `Option` value.
-/// `f64` takes the documented bound as is. `f32` rounds it INWARD: the nearest
-/// `f32` may lie past the bound (`16777217.0` rounds to `16777216.0`, which
-/// would admit a value the schema forbids), so a minimum steps up and a
-/// maximum steps down when the rounded value overshoots. `f32::next_up` /
-/// `next_down` are stable from Rust 1.86 (MSRV 1.88).
+/// `f64` takes the documented bound as is. `f32` keeps the nearest `f32` when
+/// its shortest decimal is the written bound (`0.1` stays `0.1f32`). Only a
+/// bound the `f32` cannot hold exactly rounds INWARD: the nearest `f32` may lie
+/// past it (`16777217.0` rounds to `16777216.0`, which would admit a value the
+/// schema forbids), so a minimum steps up and a maximum steps down when the
+/// rounded value overshoots. `f32::next_up` / `next_down` are stable from Rust
+/// 1.86 (MSRV 1.88).
 #[cfg(feature = "validation")]
 fn float_some(kind: &str, v: f64, bound: Bound) -> TokenStream {
     if kind != "f32" {
         let ty_ident = syn::Ident::new(kind, Span::call_site());
         return quote! { ::std::option::Option::Some(#v as #ty_ident) };
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let nearest = v as f32;
+    #[allow(clippy::float_cmp)]
+    let round_trips = format!("{nearest}").parse::<f64>() == Ok(v);
+    if round_trips {
+        let literal: TokenStream = format!("{nearest}f32")
+            .parse()
+            .expect("a float literal with an f32 suffix is a valid token stream");
+        return quote! { ::std::option::Option::Some(#literal) };
     }
     let inward = match bound {
         Bound::Min => {
@@ -746,6 +750,14 @@ fn float_some(kind: &str, v: f64, bound: Bound) -> TokenStream {
     quote! { ::std::option::Option::Some({ let __garde_bound = #v as f32; #inward }) }
 }
 
+/// Render one `range` bound in the field's own type.
+///
+/// Integer fields get a range-checked, suffixed integer literal (a bound the
+/// type cannot hold is a compile error rather than a wrapping `as` cast);
+/// float fields keep the declared value (see `float_some`); unknown types (an
+/// alias) convert every bound through `vespera::__validation::RangeBound`,
+/// which rounds a fractional bound inward for an integer target and keeps it
+/// for a float one, and takes an integer literal in the target's own type.
 #[cfg(feature = "validation")]
 fn numeric_some(
     value: Option<f64>,
@@ -822,18 +834,21 @@ fn numeric_some(
     // bound compares in the float domain; the upper one compares as `u128`
     // (`as` saturates, hence the explicit 2^128 guard).
     // `f64` cannot hold `u64::MAX` / `i64::MAX`: those round up to 2^64 /
-    // 2^63 (`type_max as f64`), so a float bound that rounds to the type's
-    // maximum is that maximum (emitted as the exact integer, never 2^64).
-    // Exact equality on purpose: a value above the rounded maximum (2^65 on
-    // `u64`) is not the maximum.
+    // 2^63 (`type_max as f64`), so a float MAXIMUM that rounds to the type's
+    // maximum is that maximum (emitted as the exact integer, never 2^64). A
+    // float MINIMUM that rounds there is unsatisfiable (`minimum = 2^64` admits
+    // no `u64`), so it keeps the "does not fit" error. On `u128` the maximum
+    // 2^128 is `u128::MAX` (every value satisfies it) and the minimum 2^128 is
+    // an error, the same rule. Exact equality on purpose: a value above the
+    // rounded maximum (2^65 on `u64`) is not the maximum.
     #[allow(clippy::float_cmp, clippy::cast_precision_loss)]
-    let at_max = rounded == type_max as f64;
+    let at_max = matches!(bound, Bound::Max) && rounded == type_max as f64;
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    let fits = rounded < 340_282_366_920_938_463_463_374_607_431_768_211_456.0
+    let fits = (rounded < 340_282_366_920_938_463_463_374_607_431_768_211_456.0 || at_max)
         && rounded >= type_min as f64
         && (rounded < 0.0 || at_max || rounded as u128 <= type_max);
     if !fits {

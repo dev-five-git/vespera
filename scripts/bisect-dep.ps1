@@ -18,6 +18,9 @@
     candidate (widen it temporarily to cross a 0.x minor / major boundary).
   - Cargo.lock is backed up first and ALWAYS restored on exit.
   - -Good must really be good and -Bad really bad; they are not re-verified.
+  - -Command is ONE command (a native command or a script path). PowerShell's
+    `-Command` reports only its last statement's status, so `a; b` would hide a
+    failing `a`; such probes are rejected. Chain steps in a script file instead.
 
 .EXAMPLE
   ./scripts/bisect-dep.ps1 -Crate hyper -Good 1.8.0 -Bad 1.12.0 `
@@ -35,6 +38,11 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+# One command only: `powershell -Command` exits with its last statement's
+# status, so a multi-statement probe would hide an earlier failure.
+if ($Command -match '[;|\r\n]|&&') {
+    throw "-Command must be a single command (no ';', '|', '&&' or newlines): the probe's exit code is its last statement's. Put multi-step probes in a script file."
+}
 $root = Split-Path -Parent $PSScriptRoot
 $lock = Join-Path $root 'Cargo.lock'
 $backup = "$lock.bisect-backup"
