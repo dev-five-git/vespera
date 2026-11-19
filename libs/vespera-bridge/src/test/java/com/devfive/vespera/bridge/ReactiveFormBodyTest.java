@@ -1,8 +1,11 @@
 package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.devfive.vespera.bridge.ReactiveTestSupport.FakeTransport;
+import java.io.IOException;
+import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -104,6 +107,32 @@ class ReactiveFormBodyTest {
         start(false);
         post(MULTIPART, MULTIPART_BODY);
         assertEquals(MULTIPART_BODY, transport.lastBody());
+    }
+
+    /**
+     * HTTP/1.1 with neither Content-Length nor Transfer-Encoding: the framing
+     * says the body is empty (RFC 9112 6.3), so the empty body is forwarded and
+     * Rust answers. It is not reported as a consumed multipart body (500).
+     */
+    @Test
+    void aBodylessHttp1MultipartPostIsForwardedEmpty() throws Exception {
+        start(false);
+        String raw = rawPostWithoutFraming("/form?q=1", MULTIPART);
+        assertTrue(raw.startsWith("HTTP/1.1 200 "), raw);
+        assertEquals(1, transport.requests.size(), "forwarded to Rust");
+        assertEquals("", transport.lastBody());
+    }
+
+    /** Writes a POST with exactly these headers (no Content-Length, no Transfer-Encoding) and no body. */
+    private String rawPostWithoutFraming(String target, String contentType) throws IOException {
+        try (Socket socket = new Socket("127.0.0.1", server.port())) {
+            socket.setSoTimeout(10_000);
+            String head = "POST " + target + " HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: " + contentType
+                    + "\r\nConnection: close\r\n\r\n";
+            socket.getOutputStream().write(head.getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().flush();
+            return new String(socket.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        }
     }
 
     @Test

@@ -204,23 +204,37 @@ internal object NativePlatform {
         }
         // An ABI or libc word (`linux-musl`, `linux-gnu`) passes the alias check above
         // unchanged, and nativeJarPlatforms would package a library under a folder the
-        // bridge never reads. Any other segment is a JVM `os.arch` that the loader looks up
-        // verbatim (`loongarch64`, `ppc64`, `sparc`), so it is accepted.
+        // bridge never reads. Name those first for a clearer message.
         require(arch !in ABI_SEGMENTS) {
             "$property '$key': arch '$arch' is an ABI or libc name, not a CPU arch " +
                 "(the -musl suffix selects musl, e.g. 'linux-x86_64-musl')."
+        }
+        // Any other segment must be a JVM `os.arch` the bridge loader looks up verbatim.
+        // The explicit allowlist keeps spellings no JVM reports (`x64`, `unknown`) out.
+        require(arch in LOADER_ARCHES) {
+            "$property '$key': arch '$arch' is not one the bridge loader looks up " +
+                "(allowed: ${LOADER_ARCHES.sorted().joinToString()})."
         }
         return key.substringBefore('-')
     }
 
     /**
-     * Rust target ABI and libc words that are never a JVM `os.arch`. The key
-     * regex already limits a segment to `[a-z0-9_]+`, so this list is the only
-     * extra check the arch segment needs.
+     * Rust target ABI and libc words that are never a JVM `os.arch`.
      */
     private val ABI_SEGMENTS = setOf(
         "musl", "gnu", "gnux32", "gnueabi", "gnueabihf", "musleabi", "musleabihf",
         "msvc", "android", "androideabi", "eabi", "eabihf", "uclibc", "libc",
+    )
+
+    /**
+     * The JVM `os.arch` values the bridge loader can look up (after
+     * [loaderArch]'s aliases): the names `NativePlatformDetector` probes plus the
+     * other JVM arches a Linux, Windows or macOS JVM reports. Keep it in step with
+     * `NativePlatformDetector` and `BundledNativeIndex`.
+     */
+    private val LOADER_ARCHES = setOf(
+        "x86_64", "aarch64", "x86", "arm", "riscv64", "ppc64le", "ppc64", "s390x",
+        "loongarch64", "sparc", "sparcv9", "mips64el", "mips64", "mipsel", "mips",
     )
 
     /**
