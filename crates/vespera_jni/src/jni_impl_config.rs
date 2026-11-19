@@ -306,8 +306,13 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_nativeVersi
     _class: JClass<'local>,
 ) -> jbyteArray {
     super::guard_byte_array_symbol(&mut unowned_env, |env| {
-        super::byte_array_or_empty(env, NATIVE_VERSION.as_bytes())
+        super::byte_array_or_empty(env, native_version_bytes())
     })
+}
+
+/// The bytes `nativeVersion0` returns: the UTF-8 of [`NATIVE_VERSION`].
+fn native_version_bytes() -> &'static [u8] {
+    NATIVE_VERSION.as_bytes()
 }
 
 #[cfg(test)]
@@ -358,9 +363,11 @@ mod tests {
         assert_eq!(guarded_configure(|| panic!("boom")), JNI_FALSE);
     }
 
+    /// Checks the bytes the `nativeVersion0` body hands to Java (via the
+    /// helper it calls), not just the constant.
     #[test]
-    fn native_version_is_the_crate_version() {
-        assert_eq!(NATIVE_VERSION, env!("CARGO_PKG_VERSION"));
+    fn native_version_bytes_are_the_crate_version() {
+        assert_eq!(native_version_bytes(), env!("CARGO_PKG_VERSION").as_bytes());
         assert_eq!(NATIVE_VERSION.split('.').count(), 3, "{NATIVE_VERSION}");
     }
 }

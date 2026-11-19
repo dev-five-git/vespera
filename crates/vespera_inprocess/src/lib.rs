@@ -134,6 +134,8 @@ mod registry;
 #[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub mod runtime;
 mod streaming;
+#[cfg(test)]
+mod test_child;
 mod wire;
 
 #[doc(hidden)]

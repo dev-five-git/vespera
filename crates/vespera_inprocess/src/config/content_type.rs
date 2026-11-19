@@ -88,23 +88,11 @@ mod tests {
     fn setter_is_first_wins_and_wins_over_the_env_var() {
         const CHILD_ENV: &str = "VESPERA_CONTENT_TYPE_SETTER_TEST_CHILD";
         if std::env::var_os(CHILD_ENV).is_none() {
-            let output = std::process::Command::new(
-                std::env::current_exe().expect("current unit-test executable"),
-            )
-            .args([
-                "--exact",
+            crate::test_child::run_isolated(
                 "config::content_type::tests::setter_is_first_wins_and_wins_over_the_env_var",
-                "--nocapture",
-            ])
-            .env(CHILD_ENV, "1")
-            .env("VESPERA_DEFAULT_JSON_CONTENT_TYPE", "true")
-            .output()
-            .expect("run isolated content-type child test");
-            assert!(
-                output.status.success(),
-                "isolated content-type test failed:\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
+                CHILD_ENV,
+                &[("VESPERA_DEFAULT_JSON_CONTENT_TYPE", "true")],
+                &[],
             );
             return;
         }
@@ -121,23 +109,11 @@ mod tests {
     fn env_var_is_read_when_no_setter_ran() {
         const CHILD_ENV: &str = "VESPERA_CONTENT_TYPE_ENV_TEST_CHILD";
         if std::env::var_os(CHILD_ENV).is_none() {
-            let output = std::process::Command::new(
-                std::env::current_exe().expect("current unit-test executable"),
-            )
-            .args([
-                "--exact",
+            crate::test_child::run_isolated(
                 "config::content_type::tests::env_var_is_read_when_no_setter_ran",
-                "--nocapture",
-            ])
-            .env(CHILD_ENV, "1")
-            .env("VESPERA_DEFAULT_JSON_CONTENT_TYPE", " Off ")
-            .output()
-            .expect("run isolated content-type env child test");
-            assert!(
-                output.status.success(),
-                "isolated content-type env test failed:\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
+                CHILD_ENV,
+                &[("VESPERA_DEFAULT_JSON_CONTENT_TYPE", " Off ")],
+                &[],
             );
             return;
         }

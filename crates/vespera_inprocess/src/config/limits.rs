@@ -204,22 +204,11 @@ mod tests {
     fn limit_setters_are_first_wins_and_feed_getters() {
         const CHILD_ENV: &str = "VESPERA_LIMITS_SETTER_TEST_CHILD";
         if std::env::var_os(CHILD_ENV).is_none() {
-            let output = std::process::Command::new(
-                std::env::current_exe().expect("current unit-test executable"),
-            )
-            .args([
-                "--exact",
+            crate::test_child::run_isolated(
                 "config::limits::tests::limit_setters_are_first_wins_and_feed_getters",
-                "--nocapture",
-            ])
-            .env(CHILD_ENV, "1")
-            .output()
-            .expect("run isolated limits child test");
-            assert!(
-                output.status.success(),
-                "isolated limits test failed:\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
+                CHILD_ENV,
+                &[],
+                &[],
             );
             return;
         }
@@ -280,35 +269,13 @@ mod tests {
         );
     }
 
-    /// Re-run `test` in a child test process (the getters are process-global
-    /// `OnceLock`s) with `set` env vars applied and `removed` env vars cleared.
-    fn run_in_child(test: &str, marker: &str, set: &[(&str, &str)], removed: &[&str]) {
-        let mut cmd = std::process::Command::new(
-            std::env::current_exe().expect("current unit-test executable"),
-        );
-        cmd.args(["--exact", test, "--nocapture"]).env(marker, "1");
-        for (key, value) in set {
-            cmd.env(key, value);
-        }
-        for key in removed {
-            cmd.env_remove(key);
-        }
-        let output = cmd.output().expect("run isolated limits child test");
-        assert!(
-            output.status.success(),
-            "isolated limits test failed:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
     /// The call-site env var names feed the getters (not only the parser).
     #[test]
     #[cfg_attr(miri, ignore = "re-executes the test binary as a child process")]
     fn env_overrides_reach_the_getters() {
         const CHILD_ENV: &str = "VESPERA_LIMITS_ENV_OVERRIDE_CHILD";
         if std::env::var_os(CHILD_ENV).is_none() {
-            run_in_child(
+            crate::test_child::run_isolated(
                 "config::limits::tests::env_overrides_reach_the_getters",
                 CHILD_ENV,
                 &[
@@ -330,7 +297,7 @@ mod tests {
     fn absent_env_resolves_getters_to_documented_defaults() {
         const CHILD_ENV: &str = "VESPERA_LIMITS_DEFAULT_CHILD";
         if std::env::var_os(CHILD_ENV).is_none() {
-            run_in_child(
+            crate::test_child::run_isolated(
                 "config::limits::tests::absent_env_resolves_getters_to_documented_defaults",
                 CHILD_ENV,
                 &[],

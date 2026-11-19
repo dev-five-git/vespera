@@ -6,6 +6,7 @@
 //! `jni_impl.rs` to keep that file within the project's 1000-line source
 //! cap.  Semantics are unchanged.
 
+use std::cell::Cell;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -23,8 +24,41 @@ use super::{
 };
 use crate::streaming_closures::{CompleteAttempt, complete_future, complete_future_local};
 
+thread_local! {
+    /// Whether this thread is inside a `Handle::spawn` call (see [`SpawnScope`]).
+    static IN_SPAWN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Marks the `Handle::spawn` call on this thread: a panic unwinding out of
+/// the spawn drops the task (and its [`AsyncCompletion`]) before the caller
+/// can answer, so that drop must stay silent (see `AsyncCompletion::drop`).
+struct SpawnScope;
+
+impl SpawnScope {
+    fn enter() -> Self {
+        IN_SPAWN.set(true);
+        Self
+    }
+}
+
+impl Drop for SpawnScope {
+    fn drop(&mut self) {
+        IN_SPAWN.set(false);
+    }
+}
+
+/// Whether dropping an [`AsyncCompletion`] leaves the completion to the
+/// caller: a panic is unwinding out of `Handle::spawn` on this thread, and
+/// the caller then answers the panic wire through its local future ref.  Any
+/// other drop (the runtime dropping a spawned task, even a spawn that drops
+/// it without a panic) still completes the future with `503`.
+fn leaves_completion_to_caller(in_spawn: bool, panicking: bool) -> bool {
+    in_spawn && panicking
+}
+
 /// The wire completing a dispatch that was not spawned: the runtime-unavailable
-/// `503` when there is no runtime (`Ok(false)`), and the panic `500`
+/// wire when there is no runtime (`Ok(false)`: `503` after `shutdown_runtime`,
+/// `500` when the runtime could not be built), and the panic `500`
 /// (`"panicked":"true"`) when scheduling itself panicked, so the host counts
 /// it as a panic like every other Rust panic on this path.
 fn unscheduled_wire(outcome: &std::thread::Result<bool>) -> Vec<u8> {
@@ -248,6 +282,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_AsyncDispatch_dispatch0<'
                 std::panic::AssertUnwindSafe(vespera_inprocess::dispatch_from_bytes_async(input))
                     .catch_unwind(),
             );
+            let _spawning = SpawnScope::enter();
             runtime.handle().spawn(async move {
                 // The in-flight permit is released with the task on every
                 // path (including runtime shutdown and cancellation) and,
@@ -330,6 +365,12 @@ impl AsyncCompletion {
 
 impl Drop for AsyncCompletion {
     fn drop(&mut self) {
+        // A panic unwinding out of `spawn` drops this completion before the
+        // caller returns: the caller then completes the future with the panic
+        // wire, so answering `503` here would shadow it.
+        if leaves_completion_to_caller(IN_SPAWN.get(), std::thread::panicking()) {
+            return;
+        }
         if let Some(future) = self.future.take() {
             let wire = vespera_inprocess::error_wire(503, RUNTIME_SHUT_DOWN_MSG);
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -375,9 +416,11 @@ fn complete_async_future(
 mod tests {
     use std::cell::RefCell;
 
+    use rstest::rstest;
+
     use super::{
-        ASYNC_COMPLETION_FAILED_MSG, complete_with_fallback, panic_wire, runtime_unavailable_wire,
-        unscheduled_wire,
+        ASYNC_COMPLETION_FAILED_MSG, IN_SPAWN, SpawnScope, complete_with_fallback,
+        leaves_completion_to_caller, panic_wire, runtime_unavailable_wire, unscheduled_wire,
     };
     use crate::streaming_closures::CompleteAttempt;
 
@@ -448,9 +491,48 @@ mod tests {
         assert!(header.contains(r#""panicked":"true""#), "{header}");
     }
 
-    /// No runtime (shut down) keeps the runtime-unavailable `503`.
+    /// A missing runtime answers the runtime-unavailable wire, and its status
+    /// is pinned: `503` once the runtime is shut down, `500` before (the
+    /// runtime could not be built).  Unit tests never shut the runtime down.
     #[test]
     fn a_missing_runtime_answers_the_unavailable_wire() {
-        assert_eq!(unscheduled_wire(&Ok(false)), runtime_unavailable_wire());
+        let wire = unscheduled_wire(&Ok(false));
+        assert_eq!(wire, runtime_unavailable_wire());
+        let expected = if vespera_inprocess::runtime::runtime_shut_down() {
+            503
+        } else {
+            500
+        };
+        let len = u32::from_be_bytes(wire[..4].try_into().unwrap()) as usize;
+        let header = std::str::from_utf8(&wire[4..4 + len]).unwrap();
+        assert!(
+            header.contains(&format!(r#""status":{expected}"#)),
+            "{header}"
+        );
+    }
+
+    /// Only a panic unwinding out of `Handle::spawn` leaves the completion to
+    /// the caller; every other drop still completes the future with `503`.
+    #[rstest]
+    #[case::unwinding_out_of_spawn(true, true, true)]
+    #[case::spawn_dropped_it_without_a_panic(true, false, false)]
+    #[case::panic_outside_spawn(false, true, false)]
+    #[case::ordinary_drop(false, false, false)]
+    fn only_a_panic_out_of_spawn_is_left_to_the_caller(
+        #[case] in_spawn: bool,
+        #[case] panicking: bool,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(leaves_completion_to_caller(in_spawn, panicking), expected);
+    }
+
+    /// The scope flag is set for exactly the duration of the spawn call.
+    #[test]
+    fn spawn_scope_flags_the_thread_only_while_held() {
+        assert!(!IN_SPAWN.get());
+        let scope = SpawnScope::enter();
+        assert!(IN_SPAWN.get());
+        drop(scope);
+        assert!(!IN_SPAWN.get());
     }
 }
