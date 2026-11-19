@@ -6,13 +6,12 @@
 //! (`{"$ref": ...}`). [`Parameter`], [`RequestBody`], [`Response`],
 //! [`Header`] and [`Example`] are always inline: vespera never emits a
 //! reference there, and a document that does (e.g. an external spec with
-//! `"200": {"$ref": "#/components/responses/Ok"}`) fails to deserialize
-//! (`missing field ...` for the types with a required field; [`Header`] and
-//! [`Example`], whose fields are all optional, reject the `$ref` key itself
-//! instead of reading the reference as an empty object). Inline those
-//! references before loading such a
-//! document into [`crate::openapi::OpenApi`]. Accepting them would need a
-//! `RefOr<T>` in every such field, a breaking change of these public types.
+//! `"200": {"$ref": "#/components/responses/Ok"}`) is rejected when it is
+//! deserialized, with or without siblings such as `description`: the `$ref`
+//! key is refused rather than silently dropped or read as an empty object.
+//! Inline those references before loading such a document into
+//! [`crate::openapi::OpenApi`]. Accepting them would need a `RefOr<T>` in
+//! every such field, a breaking change of these public types.
 //! ([`Link`] is raw JSON, so a referenced link round-trips.)
 
 use serde::{Deserialize, Serialize};
@@ -116,7 +115,7 @@ pub enum ParameterStyle {
 
 /// Parameter definition (inline only, see [Reference Objects](self#reference-objects))
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", remote = "Self")]
 pub struct Parameter {
     /// Parameter name
     pub name: String,
@@ -165,7 +164,7 @@ pub struct Parameter {
 
 /// Request body definition (inline only, see [Reference Objects](self#reference-objects))
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", remote = "Self")]
 pub struct RequestBody {
     /// Request body description
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -292,6 +291,9 @@ macro_rules! inline_only_serde {
 
 inline_only_serde!(Example);
 inline_only_serde!(Header);
+inline_only_serde!(Parameter);
+inline_only_serde!(RequestBody);
+inline_only_serde!(Response);
 
 /// A Link Object (or a Reference Object to one), kept as raw JSON:
 /// vespera never generates links, it only preserves them on round trip.
@@ -299,7 +301,7 @@ pub type Link = serde_json::Value;
 
 /// Response definition (inline only, see [Reference Objects](self#reference-objects))
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", remote = "Self")]
 pub struct Response {
     /// Response description
     pub description: String,
@@ -908,7 +910,7 @@ mod tests {
     }
 
     /// The documented limitation (module docs, "Reference Objects"): a
-    /// Reference Object outside a schema position does not deserialize.
+    /// Reference Object outside a schema position is rejected, not dropped.
     #[test]
     fn reference_object_outside_a_schema_is_rejected() {
         let error = serde_json::from_value::<Operation>(serde_json::json!({
@@ -916,25 +918,40 @@ mod tests {
         }))
         .unwrap_err();
         assert!(
-            error.to_string().contains("missing field `description`"),
+            error
+                .to_string()
+                .contains("a Reference Object (`$ref`) is not supported as a Response Object"),
             "{error}"
         );
     }
 
-    /// `Header` / `Example` have no required field, so without the `$ref`
-    /// guard a reference would silently become `{}`.
+    /// The deserialization error text for `value` as `T` (empty when it
+    /// parses), so one case table can cover every inline-only type.
+    fn rejection<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> String {
+        serde_json::from_value::<T>(value)
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default()
+    }
+
+    /// Every inline-only type refuses a `$ref` key, bare or with a
+    /// `description` sibling that would satisfy its required field. Without
+    /// the guard a `Response` reference with `description` silently lost the
+    /// reference, and `Header` / `Example` (all fields optional) became `{}`.
     #[rstest]
-    #[case::header(serde_json::json!({"headers": {"X-Rate": {"$ref": "#/components/headers/Rate"}}}), "Header")]
-    #[case::example(serde_json::json!({"content": {"application/json": {"examples": {"ok": {"$ref": "#/components/examples/Ok"}}}}}), "Example")]
-    #[case::header_example(serde_json::json!({"headers": {"X-Rate": {"examples": {"ok": {"$ref": "#/components/examples/Ok"}}}}}), "Example")]
-    fn reference_object_in_an_all_optional_position_is_rejected(
-        #[case] mut response: serde_json::Value,
+    #[case::header(rejection::<Header>, serde_json::json!({"$ref": "#/components/headers/Rate"}), "Header")]
+    #[case::example(rejection::<Example>, serde_json::json!({"$ref": "#/components/examples/Ok", "summary": "s"}), "Example")]
+    #[case::response(rejection::<Response>, serde_json::json!({"$ref": "#/components/responses/Ok"}), "Response")]
+    #[case::response_with_description(rejection::<Response>, serde_json::json!({"$ref": "#/components/responses/Ok", "description": "Override"}), "Response")]
+    #[case::request_body(rejection::<RequestBody>, serde_json::json!({"$ref": "#/components/requestBodies/Body", "content": {}}), "RequestBody")]
+    #[case::parameter(rejection::<Parameter>, serde_json::json!({"$ref": "#/components/parameters/Id"}), "Parameter")]
+    #[case::parameter_with_fields(rejection::<Parameter>, serde_json::json!({"$ref": "#/components/parameters/Id", "name": "id", "in": "path"}), "Parameter")]
+    fn reference_object_in_an_inline_only_position_is_rejected(
+        #[case] reject: fn(serde_json::Value) -> String,
+        #[case] value: serde_json::Value,
         #[case] what: &str,
     ) {
-        response["description"] = "ok".into();
-        let error = serde_json::from_value::<Response>(response)
-            .unwrap_err()
-            .to_string();
+        let error = reject(value);
         assert!(
             error.contains(&format!(
                 "a Reference Object (`$ref`) is not supported as a {what} Object"

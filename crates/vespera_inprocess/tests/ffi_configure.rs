@@ -128,8 +128,20 @@ unsafe extern "C" fn chain_fast(user_data: *mut c_void, response: *mut u8, len: 
     }
 }
 
+/// Prefix of the refusal text `chain_fast` sends down the wire channel.
+const REFUSED_PREFIX: &[u8] = b"nested dispatch refused with code ";
+
+/// The next wire response. A refusal arrives as text on the same channel, so
+/// it is named here (test body, where a failed assertion is safe) instead of
+/// being misread as a length prefix by `parse`.
 fn recv(rx: &mpsc::Receiver<Vec<u8>>) -> (u64, Vec<u8>) {
-    parse(&rx.recv_timeout(Duration::from_secs(10)).unwrap())
+    let wire = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(
+        !wire.starts_with(REFUSED_PREFIX),
+        "{}",
+        String::from_utf8_lossy(&wire)
+    );
+    parse(&wire)
 }
 
 fn dispatch(req: &[u8]) -> (u64, Vec<u8>) {

@@ -29,12 +29,24 @@ public final class VesperaStreamAbortedException extends IOException {
     public static final String PANIC_MESSAGE =
             "vespera: panic in Rust engine after the response header was produced";
 
+    /**
+     * Message for a header-callback failure whose dispatch then panicked
+     * (kept in sync with {@code AbortReason::HeaderCallbackFailedAndPanicked}):
+     * the header-failed text, with {@link #panicked()} still set.
+     */
+    public static final String HEADER_CALLBACK_PANIC_MESSAGE =
+            "vespera: response header callback failed before body streaming, and the Rust engine panicked";
+
     private final boolean panicked;
 
     /** Called from native code with one of the abort messages. */
     public VesperaStreamAbortedException(String message) {
         super(message);
-        this.panicked = PANIC_MESSAGE.equals(message);
+        this.panicked = isPanicMessage(message);
+    }
+
+    private static boolean isPanicMessage(String message) {
+        return PANIC_MESSAGE.equals(message) || HEADER_CALLBACK_PANIC_MESSAGE.equals(message);
     }
 
     /** {@code true} when the abort was caused by a caught Rust panic. */
@@ -51,6 +63,6 @@ public final class VesperaStreamAbortedException extends IOException {
     static boolean isPanic(IOException failure) {
         return failure instanceof VesperaStreamAbortedException aborted
                 ? aborted.panicked()
-                : PANIC_MESSAGE.equals(failure.getMessage());
+                : isPanicMessage(failure.getMessage());
     }
 }

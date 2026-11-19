@@ -37,45 +37,57 @@ fn request() -> Vec<u8> {
     wire
 }
 
+/// The body of a wire response (test-body helper, never run in a callback).
 fn body(wire: &[u8]) -> String {
     let len = u32::from_be_bytes(wire[..4].try_into().unwrap()) as usize;
     String::from_utf8(wire[4 + len..].to_vec()).unwrap()
 }
 
-/// What the first callback saw: its own body, the in-flight count, and the
-/// body of the dispatch it chained.
-type Seen = (String, usize, String);
+/// What the dropped callback saw, as RAW wire bytes: its own response, the
+/// in-flight count, and the chained dispatch's wire (or why it was refused).
+type Seen = (Vec<u8>, usize, Result<Vec<u8>, String>);
+
+/// Context leaked by the test and reclaimed by [`on_dropped`].
+struct Dropped {
+    sender: mpsc::Sender<Seen>,
+    chained: Vec<u8>,
+}
+
+// An `extern "C"` callback cannot unwind: a panic here would abort the whole
+// test binary instead of failing one test. So the callbacks neither unwrap
+// nor assert; they forward raw bytes and the test body decodes and asserts.
 
 unsafe extern "C" fn on_chained(user_data: *mut c_void, response: *mut u8, len: usize) {
-    // SAFETY: boxed slot leaked by `on_dropped`; the response is freed once.
+    // SAFETY: boxed sender leaked by `on_dropped`; the response is freed once.
     unsafe {
-        let slot = Box::from_raw(user_data.cast::<mpsc::Sender<String>>());
-        let _ = slot.send(body(std::slice::from_raw_parts(response, len)));
+        let slot = Box::from_raw(user_data.cast::<mpsc::Sender<Vec<u8>>>());
+        let _ = slot.send(std::slice::from_raw_parts(response, len).to_vec());
         vespera_free(response, len);
     }
 }
 
-// An `extern "C"` callback cannot unwind: a failed assertion here would abort
-// the whole test binary instead of failing the test. Every observed value is
-// therefore sent through the channel and asserted by the test body.
 unsafe extern "C" fn on_dropped(user_data: *mut c_void, response: *mut u8, len: usize) {
-    // SAFETY: boxed sender leaked by the test; the response is freed once.
+    // SAFETY: boxed context leaked by the test; reclaimed exactly once here.
     unsafe {
-        let sender = Box::from_raw(user_data.cast::<mpsc::Sender<Seen>>());
-        let own = body(std::slice::from_raw_parts(response, len));
+        let ctx = Box::from_raw(user_data.cast::<Dropped>());
+        let own = std::slice::from_raw_parts(response, len).to_vec();
         vespera_free(response, len);
         let in_flight = async_in_flight();
-        let (tx, rx) = mpsc::channel::<String>();
-        let req = request();
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
         let chained_data = Box::into_raw(Box::new(tx)).cast::<c_void>();
-        let code = vespera_dispatch_async(req.as_ptr(), req.len(), Some(on_chained), chained_data);
+        let code = vespera_dispatch_async(
+            ctx.chained.as_ptr(),
+            ctx.chained.len(),
+            Some(on_chained),
+            chained_data,
+        );
         let chained = if code == VESPERA_OK {
             rx.recv_timeout(Duration::from_secs(5))
-                .unwrap_or_else(|error| format!("no chained answer: {error}"))
+                .map_err(|error| format!("no chained answer: {error}"))
         } else {
-            format!("chained dispatch refused with code {code}")
+            Err(format!("chained dispatch refused with code {code}"))
         };
-        let _ = sender.send((own, in_flight, chained));
+        let _ = ctx.sender.send((own, in_flight, chained));
     }
 }
 
@@ -85,8 +97,12 @@ fn a_dropped_async_dispatch_frees_its_slot_before_the_callback() {
     assert_eq!(vespera_init(), VESPERA_OK);
     let (tx, rx) = mpsc::channel::<Seen>();
     let req = request();
-    let user_data = Box::into_raw(Box::new(tx)).cast::<c_void>();
-    // SAFETY: live request; the boxed sender is reclaimed by the callback.
+    let ctx = Box::new(Dropped {
+        sender: tx,
+        chained: request(),
+    });
+    let user_data = Box::into_raw(ctx).cast::<c_void>();
+    // SAFETY: live request; the boxed context is reclaimed by the callback.
     let code =
         unsafe { vespera_dispatch_async(req.as_ptr(), req.len(), Some(on_dropped), user_data) };
     assert_eq!(code, VESPERA_OK);
@@ -94,7 +110,8 @@ fn a_dropped_async_dispatch_frees_its_slot_before_the_callback() {
 
     assert_eq!(vespera_shutdown(50), VESPERA_OK);
     let (own, in_flight, chained) = rx.recv_timeout(Duration::from_secs(10)).unwrap();
-    assert_eq!(own, ASYNC_DROPPED_MSG);
+    assert_eq!(body(&own), ASYNC_DROPPED_MSG);
     assert_eq!(in_flight, 0, "the slot is released before the callback");
+    let chained = chained.map_or_else(|error| error, |wire| body(&wire));
     assert_eq!(chained, RUNTIME_SHUT_DOWN_MSG);
 }

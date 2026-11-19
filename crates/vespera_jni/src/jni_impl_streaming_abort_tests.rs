@@ -139,10 +139,12 @@ fn pull_token_reports_whether_the_pull_closure_is_still_alive() {
 }
 
 #[test]
-fn stream_abort_reason_prefers_a_failed_header_callback() {
+fn stream_abort_reason_keeps_a_failed_header_callback_and_its_panic() {
+    // A failed header callback keeps its message; a panic on the same
+    // dispatch still reaches Java through the panic-carrying variant.
     assert_eq!(
         AbortReason::from_flags(true, true),
-        AbortReason::HeaderCallbackFailed
+        AbortReason::HeaderCallbackFailedAndPanicked
     );
     assert_eq!(
         AbortReason::from_flags(true, false),
@@ -170,6 +172,14 @@ fn stream_abort_messages_match_the_java_contract() {
     assert_eq!(
         AbortReason::HeaderCallbackFailed.message().to_str(),
         "vespera: response header callback failed before body streaming"
+    );
+    // The panic bit travels in the message, so Java's `panicked()` (message
+    // match) is true here too while the header-failed text is kept.
+    assert_eq!(
+        AbortReason::HeaderCallbackFailedAndPanicked
+            .message()
+            .to_str(),
+        "vespera: response header callback failed before body streaming, and the Rust engine panicked"
     );
     assert_eq!(
         STREAM_ABORTED_CLASS.to_str(),

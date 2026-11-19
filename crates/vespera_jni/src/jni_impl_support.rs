@@ -31,6 +31,9 @@ pub const STREAM_ABORTED_CLASS: &JNIStr =
 pub enum AbortReason {
     /// The header consumer threw: the header was not (fully) applied.
     HeaderCallbackFailed,
+    /// The header consumer threw AND a Rust panic then unwound out of the
+    /// dispatch: the header-failed message, with the panic bit carried to Java.
+    HeaderCallbackFailedAndPanicked,
     /// The response body errored or the chunk sink stopped after the header.
     BodyAborted,
     /// A Rust panic unwound out of the dispatch after the header was delivered.
@@ -39,27 +42,33 @@ pub enum AbortReason {
 
 impl AbortReason {
     /// The reason for a dispatch whose header consumer threw (`header_failed`)
-    /// or that panicked after the header was delivered (`panicked`).  A failed
-    /// header callback wins: it is the first failure on that path.
+    /// and / or that panicked after the header was delivered (`panicked`).  A
+    /// failed header callback keeps its message, but a panic on the same
+    /// dispatch is still reported (Java's `panicked()` must not be lost).
     #[must_use]
     pub const fn from_flags(header_failed: bool, panicked: bool) -> Self {
-        if header_failed {
-            Self::HeaderCallbackFailed
-        } else if panicked {
-            Self::Panicked
-        } else {
-            Self::BodyAborted
+        match (header_failed, panicked) {
+            (true, true) => Self::HeaderCallbackFailedAndPanicked,
+            (true, false) => Self::HeaderCallbackFailed,
+            (false, true) => Self::Panicked,
+            (false, false) => Self::BodyAborted,
         }
     }
 
-    /// The exception message.  The [`Self::Panicked`] text is matched
-    /// verbatim by `VesperaStreamAbortedException.PANIC_MESSAGE` on the Java
-    /// side — keep the two in sync.
+    /// The exception message.  The [`Self::Panicked`] text and the
+    /// [`Self::HeaderCallbackFailedAndPanicked`] text are matched verbatim by
+    /// `VesperaStreamAbortedException` on the Java side (`PANIC_MESSAGE`,
+    /// `HEADER_CALLBACK_PANIC_MESSAGE`) — keep them in sync.
     #[must_use]
     pub fn message(self) -> &'static JNIStr {
         match self {
             Self::HeaderCallbackFailed => {
                 jni::jni_str!("vespera: response header callback failed before body streaming")
+            }
+            Self::HeaderCallbackFailedAndPanicked => {
+                jni::jni_str!(
+                    "vespera: response header callback failed before body streaming, and the Rust engine panicked"
+                )
             }
             Self::BodyAborted => {
                 jni::jni_str!(
