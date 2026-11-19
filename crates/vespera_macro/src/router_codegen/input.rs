@@ -323,6 +323,16 @@ fn validate_doc_urls(urls: &[(&str, Option<&LitStr>)]) -> syn::Result<()> {
                 ),
             ));
         }
+        // A request-target is ASCII: a raw non-ASCII character never matches
+        // the percent-encoded bytes a client sends.
+        if !super::path_segments::is_ascii_path(&value) {
+            return Err(syn::Error::new(
+                lit.span(),
+                format!(
+                    "vespera! macro: {key} must be ASCII URL path characters (percent-encode any other byte), got \"{value}\""
+                ),
+            ));
+        }
         if let Some((other, _)) = seen.iter().find(|(_, v)| *v == value) {
             return Err(syn::Error::new(
                 lit.span(),

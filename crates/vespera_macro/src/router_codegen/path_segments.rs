@@ -20,6 +20,25 @@ pub(super) fn resolved_by_clients(path: &str) -> bool {
     path.contains('\\') || path.split('/').any(is_dot_segment)
 }
 
+/// Whether `path` is an RFC 3986 path of ASCII `pchar`s (unreserved,
+/// sub-delims, `:` and `@`) and `/` separators, with `%XX` escapes allowed.
+/// A request-target is ASCII: a raw non-ASCII character would never match
+/// what a client sends (its percent-encoded bytes), so such a route is
+/// unreachable.
+pub(super) fn is_ascii_path(path: &str) -> bool {
+    let mut bytes = path.bytes();
+    while let Some(byte) = bytes.next() {
+        let allowed = match byte {
+            b'%' => (0..2).all(|_| bytes.next().is_some_and(|hex| hex.is_ascii_hexdigit())),
+            _ => byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:@/".contains(&byte),
+        };
+        if !allowed {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
@@ -52,6 +71,24 @@ mod tests {
     #[case::dot_inside_name("/api/v1.2/docs")]
     fn plain_paths_are_not_resolved_by_clients(#[case] path: &str) {
         assert!(!resolved_by_clients(path), "{path}");
+    }
+
+    #[rstest]
+    #[case::plain("/api/docs-v1.2_~x")]
+    #[case::sub_delims_and_at("/a!$&'()*+,;=:@b")]
+    #[case::escapes("/caf%C3%A9/%2e")]
+    fn ascii_path_characters_are_accepted(#[case] path: &str) {
+        assert!(is_ascii_path(path), "{path}");
+    }
+
+    #[rstest]
+    #[case::non_ascii("/카탈로그")]
+    #[case::space("/a b")]
+    #[case::bad_escape("/a%zz")]
+    #[case::truncated_escape("/a%2")]
+    #[case::bracket("/a[b]")]
+    fn non_ascii_or_malformed_paths_are_rejected(#[case] path: &str) {
+        assert!(!is_ascii_path(path), "{path}");
     }
 
     #[rstest]

@@ -20,6 +20,10 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 if (-not $Out) { $Out = Join-Path $repo ("target\stress-app\" + $(if ($Control) { "c" } else { "r" }) + $Routes) }
+# .NET file APIs (WriteAllText) resolve a relative path against the process
+# directory, which `Set-Location` does not change: resolve it once, against
+# the PowerShell location, so every later use names the same directory.
+$Out = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Out)
 $repoFwd = $repo -replace '\\', '/'
 New-Item -ItemType Directory -Force -Path "$Out\src\routes", "$Out\src\models" | Out-Null
 

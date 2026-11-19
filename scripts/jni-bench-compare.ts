@@ -19,7 +19,8 @@
  * EVERY round, so one noisy round cannot trip the gate.
  *
  * Prints a markdown report (also appended to `$GITHUB_STEP_SUMMARY` when set)
- * and exits 1 when any mode regresses, 2 on unusable input.
+ * and exits 1 when any mode regresses, 2 on unusable input (no results, a
+ * base mode missing on the head, or a mode not paired in every round).
  */
 import { appendFileSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -245,7 +246,8 @@ function main(): number {
       `::error::JNI bench mode ${mode} is not paired in every round; it cannot be gated on every round`,
     )
   }
-  if (missing.length > 0 || incomplete.length > 0) return 1
+  // Unusable input, not a measured regression: the same exit code as above.
+  if (missing.length > 0 || incomplete.length > 0) return 2
   for (const v of verdicts.filter((x) => x.regressed)) {
     console.error(
       `::error::JNI performance regression: ${v.mode} median ${pct(v.median)} with every paired round > ${pct(t.lower)}`,

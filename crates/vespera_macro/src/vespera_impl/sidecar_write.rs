@@ -81,25 +81,27 @@ pub(super) fn prune_superseded(keep: &Path, stem: &str) {
 }
 
 /// The `<stem>.selected` marker: it names the file `stem` last selected, and
-/// its mtime is when the selection last moved there.
-fn record_selection(dir: &Path, stem: &str, keep: &Path) -> PathBuf {
+/// its mtime is when the selection last moved there. `None` when the marker
+/// could not be brought up to date: its old mtime would then date the
+/// supersession too early, so the caller prunes nothing this round.
+fn record_selection(dir: &Path, stem: &str, keep: &Path) -> Option<PathBuf> {
     let marker = dir.join(format!("{stem}.selected"));
     let name = keep
         .file_name()
         .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
     // Rewritten only when the selection moves: a kept file reselected without
     // a rewrite keeps the time it was superseded from, not the reselection.
-    if !std::fs::read_to_string(&marker).is_ok_and(|current| current == name) {
-        let _ = std::fs::write(&marker, name);
-    }
-    marker
+    let current = std::fs::read_to_string(&marker).is_ok_and(|current| current == name);
+    (current || std::fs::write(&marker, name).is_ok()).then_some(marker)
 }
 
 fn prune_superseded_older_than(keep: &Path, stem: &str, age: Duration) {
     let Some(dir) = keep.parent() else {
         return;
     };
-    let marker = record_selection(dir, stem, keep);
+    let Some(marker) = record_selection(dir, stem, keep) else {
+        return;
+    };
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -164,6 +166,24 @@ mod tests {
         fs::write(dir_target.join("inner"), "").unwrap();
         assert!(write_atomic(&dir_target, "x").is_err());
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
+    }
+
+    /// A selection whose marker cannot be written (here the marker path is a
+    /// directory) prunes nothing this round: the superseded file is old, but
+    /// the supersession time is unknown.
+    #[test]
+    fn failed_marker_write_skips_the_prune() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let keep = content_addressed(dir, "vespera_spec-app", 1);
+        let old = content_addressed(dir, "vespera_spec-app", 2);
+        fs::write(&keep, "{}").unwrap();
+        fs::write(&old, "{}").unwrap();
+        set_age(&old, Duration::from_secs(60 * 60));
+        fs::create_dir(dir.join("vespera_spec-app.selected")).unwrap();
+
+        prune_superseded_older_than(&keep, "vespera_spec-app", Duration::ZERO);
+        assert!(old.exists());
     }
 
     #[test]

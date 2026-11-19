@@ -5,8 +5,9 @@
 //! under a caller-chosen key how often it finished — and, when dropped before
 //! finishing, `"<key>:dropped"` — so a test can prove the handler ran exactly
 //! once, or was cancelled. Sizes and delays are clamped, and at most
-//! [`MAX_TRACKED_KEYS`] distinct keys are recorded, so the routes stay
-//! harmless on the standalone server.
+//! [`MAX_TRACKED_KEYS`] distinct keys of at most [`MAX_KEY_BYTES`] bytes each
+//! (suffix included) are recorded, so the map's memory stays bounded on the
+//! standalone server.
 
 use std::{
     collections::HashMap,
@@ -49,6 +50,11 @@ pub const MAX_DRIP_CHUNKS: u64 = 10_000;
 /// grow the map without bound; a key past the cap is simply not counted.
 pub const MAX_TRACKED_KEYS: usize = 4096;
 
+/// Longest recorded key, suffix (`:started` / `:dropped`) included. The
+/// count cap alone would let a few hundred KiB keys fill the map with
+/// gigabytes, so a longer key is not counted either.
+pub const MAX_KEY_BYTES: usize = 128;
+
 static RUNS: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(Mutex::default);
 
 fn record(key: String) {
@@ -56,10 +62,10 @@ fn record(key: String) {
     record_capped(&mut runs, key, MAX_TRACKED_KEYS);
 }
 
-/// Counts a run of `key`, unless `key` is new and `runs` already holds `cap`
-/// keys.
+/// Counts a run of `key`, unless `key` is longer than [`MAX_KEY_BYTES`], or
+/// it is new and `runs` already holds `cap` keys.
 fn record_capped(runs: &mut HashMap<String, u64>, key: String, cap: usize) {
-    if !runs.contains_key(&key) && runs.len() >= cap {
+    if key.len() > MAX_KEY_BYTES || (!runs.contains_key(&key) && runs.len() >= cap) {
         return;
     }
     *runs.entry(key).or_default() += 1;
@@ -234,6 +240,17 @@ mod tests {
         assert_eq!(runs.get("b"), Some(&1));
         assert_eq!(runs.get("c"), None);
         assert_eq!(runs.len(), 2);
+    }
+
+    /// A key past [`MAX_KEY_BYTES`] is not counted, while one at the limit is.
+    #[test]
+    fn keys_past_the_length_limit_are_not_tracked() {
+        let mut runs = HashMap::new();
+        let longest = "k".repeat(MAX_KEY_BYTES);
+        record_capped(&mut runs, longest.clone(), 8);
+        record_capped(&mut runs, format!("{longest}x"), 8);
+        assert_eq!(runs.get(&longest), Some(&1));
+        assert_eq!(runs.len(), 1);
     }
 
     /// A consumer that takes every chunk of a known length and then drops

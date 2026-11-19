@@ -65,8 +65,9 @@ pub(super) fn catch_all_templates(routes: &[RouteMetadata]) -> BTreeMap<String, 
 /// the spec predates the marker (its paths are then read leniently).
 pub(super) fn catch_all_markers(content: &str) -> Option<BTreeMap<String, String>> {
     let value: serde_json::Value = serde_json::from_str(content).ok()?;
-    let marked = value.get(CATCH_ALL_KEY)?;
-    Some(serde_json::from_value(marked.clone()).unwrap_or_default())
+    // A present but malformed marker reads leniently like an absent one: an
+    // empty map would claim that no path-final parameter is a catch-all.
+    serde_json::from_value(value.get(CATCH_ALL_KEY)?.clone()).ok()
 }
 
 /// The axum path a child's OpenAPI `template` stands for: a path-final
@@ -445,6 +446,12 @@ mod tests {
     #[test]
     fn catch_all_markers_distinguish_marked_and_older_specs() {
         assert_eq!(catch_all_markers(r#"{"openapi":"3.1.0"}"#), None);
+        // Present but undeserializable: lenient, not an empty (exact) map.
+        assert_eq!(catch_all_markers(r#"{"vespera-catch-all":5}"#), None);
+        assert_eq!(
+            catch_all_markers(r#"{"vespera-catch-all":{"/f/{rest}":5}}"#),
+            None
+        );
         assert_eq!(
             catch_all_markers(r#"{"vespera-catch-all":{}}"#),
             Some(BTreeMap::new())

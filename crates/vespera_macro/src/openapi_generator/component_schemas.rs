@@ -406,6 +406,28 @@ fn rust_ident_aliases(metadata: &CollectedMetadata) -> BTreeMap<&str, BTreeMap<&
 /// or another schema uses it:
 /// the macro sees only the bare ident, so it cannot tell which `Foo` is meant.
 /// A schema actually NAMED like the ident wins, so it is never ambiguous.
+/// Whether the document describes the stored route `stored`. A `cfg(test)`
+/// route is mounted only in test builds and is left out of the document, so
+/// its signature cannot make an alias ambiguous for it (round-29
+/// macrorest-5 L2). Stored entries carry no file, so a documented route of
+/// the same name and method keeps the entry.
+fn documented_stored_route(
+    metadata: &CollectedMetadata,
+    stored: &crate::route_impl::StoredRouteInfo,
+) -> bool {
+    let name = stored.fn_name.trim_start_matches("r#");
+    let method = stored.method.as_deref().unwrap_or("get");
+    let documented = metadata.routes.iter().any(|route| {
+        route.function_name.trim_start_matches("r#") == name
+            && route.method.eq_ignore_ascii_case(method)
+    });
+    let test_only = metadata.test_only_routes.iter().any(|test_only| {
+        test_only.function_name.trim_start_matches("r#") == name
+            && (test_only.method.is_empty() || test_only.method.eq_ignore_ascii_case(method))
+    });
+    documented || !test_only
+}
+
 pub(super) fn check_ambiguous_aliases(
     metadata: &CollectedMetadata,
     file_cache: &HashMap<String, syn::File>,
@@ -441,6 +463,7 @@ pub(super) fn check_ambiguous_aliases(
         .map(|(_, path)| format!("fn __vespera_response() -> {path}"));
     let sources: Vec<String> = route_storage
         .iter()
+        .filter(|route| documented_stored_route(metadata, route))
         .map(|route| route.fn_sig_str.clone())
         .chain(route_fns)
         .chain(typed_responses)

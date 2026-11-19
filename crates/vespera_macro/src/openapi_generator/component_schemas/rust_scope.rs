@@ -55,10 +55,11 @@ fn file_modules(file: &Path) -> Option<Vec<String>> {
     }
     // Cargo's binary targets (`src/bin/*.rs`, under a `src` root) and its
     // example / test / bench targets (beside `src`) are crates of their own,
-    // not modules of the library: they have no module path here.
+    // not modules of the library: they have no module path here. A crate
+    // root that declares `mod bin;` makes `src/bin/` a module of the crate.
     let root_is_src = root.file_name().is_some_and(|name| name == "src");
     let target_crate = match modules.first().map(String::as_str) {
-        Some("bin") => root_is_src,
+        Some("bin") => root_is_src && !root_declares_bin(root),
         Some("examples" | "tests" | "benches") => !root_is_src,
         _ => false,
     };
@@ -72,6 +73,24 @@ fn file_modules(file: &Path) -> Option<Vec<String>> {
         stem => modules.push(stem.to_owned()),
     }
     Some(modules)
+}
+
+/// Whether the crate root (`lib.rs`, else `main.rs`) of `root` declares a
+/// top-level `mod bin;`: its `src/bin/` files are then modules of the crate.
+fn root_declares_bin(root: &Path) -> bool {
+    let lib = root.join("lib.rs");
+    let crate_root = if lib.is_file() {
+        lib
+    } else {
+        root.join("main.rs")
+    };
+    crate::schema_macro::file_cache::get_file_content(&crate_root)
+        .and_then(|content| syn::parse_file(&content).ok())
+        .is_some_and(|file| {
+            file.items
+                .iter()
+                .any(|item| matches!(item, syn::Item::Mod(module) if module.ident == "bin"))
+        })
 }
 
 fn get_inline_modules(file: &Path, line: usize) -> Option<Vec<String>> {
@@ -236,6 +255,20 @@ mod tests {
         let helper = src.join("tests").join("helper.rs");
         fs::write(&helper, "").unwrap();
         assert_eq!(file_modules(&helper).unwrap(), ["tests", "helper"]);
+    }
+
+    /// A crate root declaring `mod bin;` makes `src/bin/` a module of the
+    /// library (`bin::tool`), not a cargo binary target of its own.
+    #[test]
+    fn src_bin_is_a_module_when_the_root_declares_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("bin")).unwrap();
+        fs::write(dir.path().join("Cargo.toml"), "").unwrap();
+        fs::write(src.join("lib.rs"), "pub mod bin;").unwrap();
+        let file = src.join("bin").join("tool.rs");
+        fs::write(&file, "").unwrap();
+        assert_eq!(file_modules(&file).unwrap(), ["bin", "tool"]);
     }
 
     #[test]

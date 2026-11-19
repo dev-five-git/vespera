@@ -210,6 +210,22 @@ fn unaddressable_handlers_are_compile_errors(
     assert!(code.contains(message), "{code}");
 }
 
+/// An unsupported method on a `#[cfg]`-gated route is a `compile_error!`
+/// under that route's own `#[cfg]` (round-29 macrorest-4 L-1): with the
+/// module compiled out the error is compiled out with it.
+#[test]
+fn gated_unsupported_method_error_carries_the_route_cfg() {
+    let mut metadata = CollectedMetadata::new();
+    metadata
+        .cfg_routes
+        .push(cfg_route(&["unix"], "connect", "/t", "routes::t", "t"));
+    let code = generate_router_code(&metadata, None, None, None, None, &[], &[]).to_string();
+    assert!(
+        code.contains("[cfg (all (unix))] :: core :: compile_error"),
+        "{code}"
+    );
+}
+
 /// A documented route's error between two valid routes is a statement ahead
 /// of the chain, which keeps the valid routes.
 #[test]

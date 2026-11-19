@@ -85,10 +85,14 @@ fn schema_derive_test_only(attrs: &[syn::Attribute]) -> bool {
         };
         let mut parts = parts.iter();
         let predicate_is_test = parts.next().is_some_and(meta_test_only);
-        gated |= predicate_is_test
-            && parts.any(|part| {
-                part.path().is_ident("derive") && derive_names_schema(part.require_list().ok())
-            });
+        let derives_schema = parts.any(|part| {
+            part.path().is_ident("derive") && derive_names_schema(part.require_list().ok())
+        });
+        // A derive that some non-test build also reaches keeps the schema.
+        if derives_schema && !predicate_is_test {
+            return false;
+        }
+        gated |= derives_schema;
     }
     gated
 }
@@ -210,8 +214,10 @@ impl TestScope {
                 // The first gated link decides: a same-named ungated
                 // declaration of that link loads the file in every build, so
                 // a gated twin next to it does not make it test-only. A
-                // deeper ungated declaration cannot cancel this link.
-                return !self.ungated_twin_loads(&declarers, &gated_here);
+                // deeper ungated declaration cannot cancel this link, and an
+                // ungated `#[path]` module naming the file loads it as well.
+                return !self.ungated_twin_loads(&declarers, &gated_here)
+                    && !self.open_path_loads(file);
             }
             parent.push(segment);
         }
@@ -236,21 +242,27 @@ impl TestScope {
     /// by the directory of a non-`mod.rs` module's own file, whose child
     /// modules sit beside it).
     fn file_path_gated(&mut self, file: &Path, src_dir: &Path, segments: &[String]) -> bool {
-        // The file and the `#[path]` targets are compared in one spelling
-        // (canonical when the filesystem has it): `file` may come from the
-        // canonical fallback, and a target is written under the lexical `src/`,
-        // which can name the same file through a symlinked alias of the crate.
+        let gated = self.path_loads(file, |targets| &targets.gated);
+        gated && !self.open_path_loads(file) && !self.open_chain_loads(src_dir, segments)
+    }
+
+    /// Whether an ungated `#[path]` module names `file` (or a module file
+    /// under it), so every build loads it.
+    fn open_path_loads(&mut self, file: &Path) -> bool {
+        self.path_loads(file, |targets| &targets.open)
+    }
+
+    /// Whether one of the `#[path]` targets `select` picks names `file`.
+    /// The file and the targets are compared in one spelling (canonical when
+    /// the filesystem has it): `file` may come from the canonical fallback,
+    /// and a target is written under the lexical `src/`, which can name the
+    /// same file through a symlinked alias of the crate.
+    fn path_loads(&mut self, file: &Path, select: fn(&PathTargets) -> &Vec<PathBuf>) -> bool {
         same_spelling_key(file).is_some_and(|file| {
-            let loads = |targets: &[PathBuf]| {
-                targets
-                    .iter()
-                    .filter_map(|target| same_spelling_key(target))
-                    .any(|target| file == target || file.starts_with(child_dir(&target)))
-            };
-            let targets = self.path_targets();
-            let gated = loads(&targets.gated);
-            let open = loads(&targets.open);
-            gated && !open && !self.open_chain_loads(src_dir, segments)
+            select(self.path_targets()).iter().any(|target| {
+                same_spelling_key(target)
+                    .is_some_and(|target| file == target || file.starts_with(child_dir(&target)))
+            })
         })
     }
 
