@@ -73,6 +73,16 @@ pub fn instance_name_with<'a>(
     name
 }
 
+/// Appends the const arguments of an instantiation (in parameter order) to
+/// `name`, spelled as an array length is with a `_Const.` marker: `Buf<u8, 4>`
+/// and `Buf<u8, 8>` never share a component name.
+pub fn push_const_segments<'a>(name: &mut String, consts: impl IntoIterator<Item = &'a syn::Expr>) {
+    for expr in consts {
+        name.push_str("_Const.");
+        push_array_len(name, expr);
+    }
+}
+
 /// `name` (an identifier or a component name) spelled without `_`, so it
 /// never reads as a separator: `_` → `-`, and the `-` / `.` a
 /// `#[schema(name)]` may hold → `.h` / `.d` (a `.` always starts an escape,

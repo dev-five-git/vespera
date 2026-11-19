@@ -618,9 +618,6 @@ fn declares_nominal(items: &[syn::Item], name: &str) -> bool {
     })
 }
 
-/// The module each glob of this crate among `items` imports from (`crate::
-/// models::*` → `models`, `super::*` → the parent, `crate::*` → the root).
-/// A glob of another crate, or of `self`, names no module of this crate.
 /// The [`Qualifier`] of an import whose immediate parent segment is `parent`.
 /// `nested` means that segment is itself preceded by another path segment, so
 /// a `crate` / `super` there is one step of a chain (`super::super::X`): no
@@ -637,6 +634,9 @@ fn import_qualifier(parent: &syn::Ident, nested: bool) -> Option<Qualifier> {
     }
 }
 
+/// The module each glob of this crate among `items` imports from (`crate::
+/// models::*` → `models`, `super::*` → the parent, `crate::*` → the root).
+/// A glob of another crate, or of `self`, names no module of this crate.
 fn glob_parents(items: &[syn::Item]) -> Vec<Qualifier> {
     fn walk(
         tree: &syn::UseTree,
@@ -837,15 +837,6 @@ fn use_tree_imports(
     }
 }
 
-/// The parsed file at `path`, when its text contains `needle` (a name a
-/// struct / enum / alias lookup needs). Files without it are skipped without
-/// parsing.
-fn parsed_with(path: &Path, needle: &str) -> Option<syn::File> {
-    file_cache::get_file_content(path)
-        .filter(|content| content.contains(needle))
-        .and_then(|_| parse_items(path))
-}
-
 /// The parsed file at `path`, when it may declare a `type` named `name` (see
 /// [`declares_type_named`]). Files that do not are skipped without parsing.
 fn parsed_declaring_type(path: &Path, name: &str) -> Option<syn::File> {
@@ -918,3 +909,6 @@ mod tests_gate;
 
 #[cfg(test)]
 mod tests_glob;
+
+#[cfg(test)]
+mod tests_reexport;

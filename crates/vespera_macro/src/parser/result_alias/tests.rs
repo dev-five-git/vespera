@@ -924,7 +924,9 @@ fn use_site_argument_resolves_in_the_handler_scope_not_the_body_scope() {
     );
 }
 
-/// in one (and the alias lookup stops before it could matter).
+/// An unresolved `super::super::` qualifier names no declared struct, so the
+/// nominal lookup answers false for it; the alias lookup stops before a
+/// same-named alias could be picked.
 #[test]
 fn unresolved_chain_names_no_declared_struct() {
     let scope = Scope {

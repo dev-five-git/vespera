@@ -77,9 +77,12 @@ pub const CODEC_TABLE: &[(&str, &str)] = &[
 ];
 
 /// The table entry for a codec module path. The whole path must name the
-/// entry, except for the `vespera::` prefix: `vespera` re-exports the table's
-/// crates, so `vespera::chrono::serde::ts_seconds` is `chrono::serde::ts_seconds`.
-/// A longer path that only ends in an entry (a crate-local
+/// entry, except for the `vespera::` prefix: `vespera` re-exports `chrono`, so
+/// `vespera::chrono::serde::ts_seconds` is `chrono::serde::ts_seconds`. The
+/// prefix is stripped for every entry, but only `chrono` (among the table's
+/// crates) is re-exported: a `vespera::time::...` or `vespera::serde_bytes`
+/// spelling does not compile in user code, so its output is never seen. A
+/// longer path that only ends in an entry (a crate-local
 /// `crate::hex::serde_bytes`) is a different module and stays unknown.
 fn table_wire(module: &[String]) -> Option<&'static str> {
     let path = match module {
@@ -552,8 +555,6 @@ mod tests {
         "::vespera::chrono::serde::ts_seconds_option",
         "Option < i64 >"
     )]
-    #[case::re_export_time("vespera::time::serde::rfc3339", "DateTime < Utc >")]
-    #[case::re_export_serde_bytes("vespera::serde_bytes", "Vec < u8 >")]
     fn re_exported_codec_modules_match_the_table(#[case] module: &str, #[case] expected: &str) {
         let src = format!("#[serde(with = \"{module}\")] x: u8");
         assert_eq!(
