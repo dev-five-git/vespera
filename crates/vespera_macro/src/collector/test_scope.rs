@@ -179,19 +179,18 @@ impl TestScope {
         // (canonical when the filesystem has it): `file` may come from the
         // canonical fallback, and a target is written under the lexical `src/`,
         // which can name the same file through a symlinked alias of the crate.
-        let Some(file) = same_spelling_key(file) else {
-            return false;
-        };
-        let loads = |targets: &[PathBuf]| {
-            targets
-                .iter()
-                .filter_map(|target| same_spelling_key(target))
-                .any(|target| file == target || file.starts_with(child_dir(&target)))
-        };
-        let targets = self.path_targets();
-        let gated = loads(&targets.gated);
-        let open = loads(&targets.open);
-        gated && !open && !self.open_chain_loads(src_dir, segments)
+        same_spelling_key(file).is_some_and(|file| {
+            let loads = |targets: &[PathBuf]| {
+                targets
+                    .iter()
+                    .filter_map(|target| same_spelling_key(target))
+                    .any(|target| file == target || file.starts_with(child_dir(&target)))
+            };
+            let targets = self.path_targets();
+            let gated = loads(&targets.gated);
+            let open = loads(&targets.open);
+            gated && !open && !self.open_chain_loads(src_dir, segments)
+        })
     }
 
     /// Whether an ungated `mod` declaration on the module chain of `segments`
