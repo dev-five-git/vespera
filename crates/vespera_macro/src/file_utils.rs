@@ -478,11 +478,16 @@ mod tests {
         fs::write(routes.join("v1").join("items.rs"), "").unwrap();
         fs::write(shared.join("users.rs"), "").unwrap();
         fs::write(temp_dir.path().join("health.rs"), "").unwrap();
-        // Creating links needs privileges on Windows (Developer Mode); the
-        // walk itself is platform-neutral, so skip where it is refused. The
-        // skip is announced: a silent return would pass without checking
-        // anything.
+        // Creating links needs privileges on Windows (Developer Mode). Where
+        // they are refused the walk goes unchecked, so CI fails rather than
+        // pass without checking anything; a local run without the privilege
+        // skips the test and says so (libtest hides a passing test's stderr
+        // unless it is run with `--nocapture`).
         if let Err(error) = link(&shared, &routes.join("admin"), true) {
+            assert!(
+                crate::env_access::var_os("CI").is_none(),
+                "cannot create directory links in CI, the symlink walk went unchecked: {error}"
+            );
             eprintln!("skipping symlink walk test: cannot create directory links: {error}");
             return;
         }

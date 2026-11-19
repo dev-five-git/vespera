@@ -23,7 +23,7 @@ fn test_only_predicates(#[case] predicate: &str, #[case] expected: bool) {
 }
 
 /// `src/` of a fresh crate with `files` (relative to `src/`).
-fn crate_with(files: &[(&str, &str)]) -> TempDir {
+pub(super) fn crate_with(files: &[(&str, &str)]) -> TempDir {
     let dir = TempDir::new().unwrap();
     for (relative, content) in files {
         let path = dir.path().join("src").join(relative);
@@ -324,7 +324,9 @@ fn file_also_loaded_by_an_ungated_path_is_production() {
 /// Only the target of an ungated `#[path]` module is loaded in every build;
 /// its own `#[cfg(test)]` child stays test-only (round-30 L1, a regression of
 /// round 29, which classified every file under the target's directory as
-/// loaded).
+/// loaded). The child of `support.rs` is `src/fixtures.rs` (a `#[path]` file
+/// owns its own directory, so `src/support/fixtures.rs` is compiled by no
+/// build).
 #[test]
 fn test_gated_child_of_an_ungated_path_module_is_test_only() {
     let krate = crate_with(&[
@@ -333,11 +335,11 @@ fn test_gated_child_of_an_ungated_path_module_is_test_only() {
             "support.rs",
             "#[cfg(test)]\nmod fixtures;\npub struct Kept {}\n",
         ),
-        ("support/fixtures.rs", "pub struct Fixture {}"),
+        ("fixtures.rs", "pub struct Fixture {}"),
     ]);
     let src = krate.path().join("src");
     let mut scope = TestScope::new(Some(&src));
-    assert!(scope.file_test_only(&src.join("support/fixtures.rs")));
+    assert!(scope.file_test_only(&src.join("fixtures.rs")));
     assert!(!scope.file_test_only(&src.join("support.rs")));
 }
 
