@@ -755,6 +755,10 @@ fn cfg_attr_schema_derive_under_test_is_test_only() {
 #[case::other_attribute("#[cfg_attr(test, allow(dead_code))] struct S;", false)]
 #[case::bare_attribute("#[inline] #[cfg_attr(test, derive(Schema))] struct S;", true)]
 #[case::unparseable_cfg_attr("#[cfg_attr(= 1)] struct S;", false)]
+#[case::other_list_attribute(
+    "#[serde(rename_all = \"camelCase\")] #[cfg_attr(test, derive(Schema))] struct S;",
+    true
+)]
 fn schema_derive_under_a_test_only_cfg_attr(#[case] source: &str, #[case] expected: bool) {
     let item: syn::ItemStruct = syn::parse_str(source).unwrap();
     assert_eq!(schema_derive_test_only(&item.attrs), expected);
