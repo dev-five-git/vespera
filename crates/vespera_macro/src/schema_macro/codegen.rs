@@ -12,20 +12,15 @@
 //! (required-by-nullability, doc descriptions, `flatten`/`transparent`
 //! composition, field constraints, and `$ref` references).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use proc_macro2::TokenStream;
 use quote::quote;
 use vespera_core::schema::Schema;
 
 use super::SchemaInput;
-use crate::{
-    metadata::StructMetadata,
-    parser::{
-        extract_field_rename, extract_rename_all, parse_struct_to_schema, rename_field,
-        strip_raw_prefix_owned,
-    },
-};
+use super::field_selection::{Refusal, SourceField, resolve_name, select, source_fields};
+use crate::{metadata::StructMetadata, parser::parse_struct_to_schema};
 
 /// Generate a `schema!` expression: a runtime [`Schema`] identical to the
 /// OpenAPI component schema for `struct_item`, after applying `pick`/`omit`.
@@ -100,94 +95,43 @@ fn build_filtered_schema(
     })
 }
 
-/// One field the schema carries (not `#[serde(skip)]`ped).
-struct EmittedField {
-    /// Position among the struct's named fields (the filter edits that list).
-    index: usize,
-    rust: String,
-    json: String,
-}
-
-/// A field's Rust identifier (unraw) and its JSON name.
-fn field_names(field: &syn::Field, rename_all: Option<&str>) -> (String, String) {
-    let rust = field.ident.as_ref().map_or_else(
-        || "unknown".to_string(),
-        |i| strip_raw_prefix_owned(i.to_string()),
-    );
-    let json =
-        extract_field_rename(&field.attrs).unwrap_or_else(|| rename_field(&rust, rename_all));
-    (rust, json)
-}
-
 /// The fields of `struct_item` its schema carries, in declaration order. The
 /// schema is the serialize view: a `skip` or `skip_serializing` field is not
-/// in it, whatever its `skip_deserializing` (R25-SM1-L3).
-fn emitted_fields(struct_item: &syn::ItemStruct) -> Vec<EmittedField> {
-    let syn::Fields::Named(fields_named) = &struct_item.fields else {
-        return Vec::new();
-    };
-    let rename_all = extract_rename_all(&struct_item.attrs);
-    fields_named
-        .named
-        .iter()
-        .enumerate()
-        .filter(|(_, field)| {
-            let flags = crate::parser::schema::extract_serde_skip_flags(&field.attrs);
-            !(flags.skip || flags.skip_serializing)
-        })
-        .map(|(index, field)| {
-            let (rust, json) = field_names(field, rename_all.as_deref());
-            EmittedField { index, rust, json }
-        })
+/// in it, whatever its `skip_deserializing` (R25-SM1-L3), and a field a
+/// statically false `#[cfg]` removes is in no build (M1, round 27).
+fn emitted_fields(struct_item: &syn::ItemStruct) -> Vec<SourceField> {
+    source_fields(struct_item)
+        .into_iter()
+        .filter(|field| field.serialized)
         .collect()
-}
-
-/// The emitted fields a `pick` / `omit` name selects. A name selects every
-/// field whose Rust identifier it is (`cfg` twins share one identifier); only
-/// when no field has that identifier does it select the fields whose serde
-/// JSON name it is. So `#[serde(rename = "b")] a` next to `b` is selected by
-/// `pick = ["b"]` through `b` alone (R26-SM1-L1).
-fn selected_fields<'a>(fields: &'a [EmittedField], name: &str) -> Vec<&'a EmittedField> {
-    let by_rust: Vec<&EmittedField> = fields.iter().filter(|f| f.rust == name).collect();
-    if by_rust.is_empty() {
-        fields.iter().filter(|f| f.json == name).collect()
-    } else {
-        by_rust
-    }
 }
 
 /// Validates that every `omit` / `pick` name is a field `ty`'s schema
 /// carries (Rust identifier or serde JSON name): a typo used to filter
 /// nothing (`omit`) or everything (`pick`) without a diagnostic. A JSON name
 /// shared by fields with different Rust identifiers is refused as ambiguous
-/// (see [`selected_fields`]).
+/// (see [`resolve_name`]).
 pub fn validate_filter_names(
     struct_item: &syn::ItemStruct,
     input: &SchemaInput,
     type_name: &str,
 ) -> Result<(), syn::Error> {
-    let fields = emitted_fields(struct_item);
     for (param, names) in [("omit", &input.omit), ("pick", &input.pick)] {
         for name in names.iter().flatten() {
-            // One Rust identifier (a `cfg` twin pair counts once) is one field;
-            // a JSON name shared by fields with different identifiers is
-            // ambiguous and refused, since it would select them all.
-            let owners: BTreeSet<&str> = selected_fields(&fields, name)
-                .into_iter()
-                .map(|f| f.rust.as_str())
-                .collect();
-            if owners.len() == 1 {
-                continue;
-            }
-            let message = if owners.is_empty() {
-                let available: Vec<&str> = fields.iter().map(|f| f.rust.as_str()).collect();
-                format!(
-                    "field `{name}` does not exist in the schema of `{type_name}`. Available fields: {available:?}"
-                )
-            } else {
-                format!(
+            let message = match resolve_name(struct_item, name) {
+                Ok(_) => continue,
+                Err(Refusal::Missing { .. }) => {
+                    let available: Vec<String> = emitted_fields(struct_item)
+                        .into_iter()
+                        .map(|field| field.rust)
+                        .collect();
+                    format!(
+                        "field `{name}` does not exist in the schema of `{type_name}`. Available fields: {available:?}"
+                    )
+                }
+                Err(Refusal::Ambiguous(owners)) => format!(
                     "`{name}` is the JSON name of more than one field of `{type_name}` ({owners:?}); name the field by its Rust identifier"
-                )
+                ),
             };
             return Err(match input.spans.field(param, name) {
                 Some(span) => syn::Error::new(span, message),
@@ -221,16 +165,21 @@ fn filter_struct_fields(
         let fields = emitted_fields(struct_item);
         let selected = |set: &HashSet<String>| -> HashSet<usize> {
             set.iter()
-                .flat_map(|name| selected_fields(&fields, name))
+                .flat_map(|name| select(&fields, name))
                 .map(|f| f.index)
                 .collect()
         };
         let (omitted, picked) = (selected(omit_set), selected(pick_set));
+        // Only the emitted fields stay: a `cfg` twin the build removes must not
+        // reach the schema through the struct this returns.
+        let emitted: HashSet<usize> = fields.iter().map(|f| f.index).collect();
         fields_named.named = std::mem::take(&mut fields_named.named)
             .into_iter()
             .enumerate()
             .filter(|(index, _)| {
-                !omitted.contains(index) && (pick_set.is_empty() || picked.contains(index))
+                emitted.contains(index)
+                    && !omitted.contains(index)
+                    && (pick_set.is_empty() || picked.contains(index))
             })
             .map(|(_, field)| field)
             .collect();
@@ -696,8 +645,29 @@ mod tests {
         let err = validate_filter_names(&item, &pick_input(r#"S, pick = ["x"]"#), "S").unwrap_err();
         assert_eq!(
             err.to_string(),
-            "`x` is the JSON name of more than one field of `S` ({\"a\", \"c\"}); name the field by its Rust identifier"
+            "`x` is the JSON name of more than one field of `S` ([\"a\", \"c\"]); name the field by its Rust identifier"
         );
+    }
+
+    /// M1 (round 27): a JSON name shared by a `cfg` twin pair is not ambiguous
+    /// when only one twin exists in the build. Here the `feature = "a"` twin is
+    /// the one that stays, so `"v"` names exactly one field.
+    #[rstest::rstest]
+    #[case::feature_on(r#"S, omit = ["v"]"#)]
+    #[case::feature_on_rust_name(r#"S, omit = ["x"]"#)]
+    fn feature_gated_json_name_twin_is_not_ambiguous(#[case] input: &str) {
+        let _args = crate::env_access::test_env::set_var(
+            crate::env_access::COMPILER_ARGS_KEY,
+            "rustc\n--crate-name\napp\n--cfg\nfeature=\"a\"",
+        );
+        let item = parse(
+            r#"struct S {
+                #[cfg(feature = "a")] #[serde(rename = "v")] x: i32,
+                #[cfg(not(feature = "a"))] #[serde(rename = "v")] y: i32,
+                other: i32,
+            }"#,
+        );
+        assert!(validate_filter_names(&item, &pick_input(input), "S").is_ok());
     }
 
     fn pick_input(input: &str) -> SchemaInput {

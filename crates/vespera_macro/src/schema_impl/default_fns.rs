@@ -275,18 +275,56 @@ impl HasAttrs for syn::ImplItemFn {
     }
 }
 
+impl HasAttrs for syn::ItemMod {
+    fn attrs(&self) -> &[syn::Attribute] {
+        &self.attrs
+    }
+}
+
 /// The items of the inline module `chain` below `items`. A `#[cfg]`-disabled
 /// twin module of the same name is skipped, as the module chain is (R25-SM0-M1):
 /// the struct is resolved in the active twin, so its function must be too.
 fn inline_module_items(items: Vec<syn::Item>, chain: &[String]) -> Option<Vec<syn::Item>> {
+    // The same `unique_active` rule as the other lookups: two active twins of
+    // one module name (`#[cfg(unix)] mod inner` / `#[cfg(windows)] mod inner`)
+    // resolve to nothing, not to whichever twin comes first (R27-SM0-L1).
     chain.iter().try_fold(items, |items, segment| {
-        items.into_iter().find_map(|item| match item {
-            syn::Item::Mod(module)
-                if ident_name(&module.ident) == *segment && !statically_inactive(&module.attrs) =>
-            {
-                module.content.map(|(_, inner)| inner)
-            }
+        let module = unique_active(items.iter().filter_map(|item| match item {
+            syn::Item::Mod(module) if ident_name(&module.ident) == *segment => Some(module),
             _ => None,
-        })
+        }))?;
+        module.content.as_ref().map(|(_, inner)| inner.clone())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn items(source: &str) -> Vec<syn::Item> {
+        syn::parse_file(source).expect("valid source").items
+    }
+
+    #[test]
+    fn one_active_inline_module_resolves() {
+        let items = items("mod inner { pub fn f() {} }");
+        let inner = inline_module_items(items, &["inner".to_string()]);
+        assert_eq!(inner.map(|inner| inner.len()), Some(1));
+    }
+
+    /// R27-SM0-L1: a platform twin pair of an inline module resolves to
+    /// nothing, as the top-level and `crate::` lookups do, not to the first twin.
+    #[test]
+    fn two_active_inline_module_twins_resolve_to_nothing() {
+        let items = items(
+            "#[cfg(unix)] mod inner { pub fn f() {} } #[cfg(windows)] mod inner { pub fn g() {} }",
+        );
+        assert!(inline_module_items(items, &["inner".to_string()]).is_none());
+    }
+
+    #[test]
+    fn a_disabled_inline_module_twin_is_skipped() {
+        let items = items("#[cfg(any())] mod inner { pub fn f() {} } mod inner { pub fn g() {} }");
+        assert!(inline_module_items(items, &["inner".to_string()]).is_some());
+    }
 }

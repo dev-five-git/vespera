@@ -24,7 +24,12 @@ use crate::schema_macro::file_cache::{
     FileFingerprint, get_file_content, get_file_fingerprint, get_parsed_file,
 };
 
-/// Source identity → its file's fingerprint when it was registered.
+/// Item key (`file::Ident`) → its file's fingerprint when it was registered.
+///
+/// Keyed by the item, not by its `line:column`: an edit that moves an item
+/// re-registers it under its new position, and a position-keyed map would keep
+/// the old entry for ever (R27-SM0-L3). One entry per item bounds the map by
+/// the items the session has seen, not by the edits it has made.
 static FINGERPRINTS: LazyLock<Mutex<HashMap<String, Option<FileFingerprint>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -34,17 +39,21 @@ fn file_and_ident(identity: &str) -> Option<(&str, &str)> {
     base.rsplit_once("::")
 }
 
+/// The [`FINGERPRINTS`] key of the item `ident` in `file`.
+fn item_key(file: &str, ident: &str) -> String {
+    format!("{file}::{ident}")
+}
+
 /// Remember the current fingerprint of `identity`'s file.
 pub(super) fn record(identity: Option<&str>) {
-    let Some((identity, (file, _))) = identity.and_then(|id| Some((id, file_and_ident(id)?)))
-    else {
+    let Some((file, ident)) = identity.and_then(file_and_ident) else {
         return;
     };
     let fingerprint = get_file_fingerprint(Path::new(file));
     FINGERPRINTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(identity.to_string(), fingerprint);
+        .insert(item_key(file, ident), fingerprint);
 }
 
 /// Whether the stored `existing` entry's item has left its file since it was
@@ -59,7 +68,7 @@ pub(super) fn left_its_file(existing: &StructMetadata) -> bool {
     let recorded = FINGERPRINTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(identity)
+        .get(&item_key(file, ident))
         .copied();
     let path = Path::new(file);
     match recorded {
@@ -98,5 +107,21 @@ mod tests {
         assert!(!left_its_file(&stored(None)));
         assert!(!left_its_file(&stored(Some("User@1:7"))));
         assert!(!left_its_file(&stored(Some("never/recorded.rs::User@1:7"))));
+    }
+
+    /// R27-SM0-L3: an item that edits move keeps one fingerprint entry, not one
+    /// per position it was registered at.
+    #[test]
+    fn moved_item_keeps_one_fingerprint_entry() {
+        record(Some("growth/moved.rs::Stable@1:1"));
+        record(Some("growth/moved.rs::Stable@2:1"));
+        record(Some("growth/moved.rs::Stable@9:4"));
+        let entries = FINGERPRINTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .filter(|key| key.starts_with("growth/moved.rs::Stable"))
+            .count();
+        assert_eq!(entries, 1);
     }
 }

@@ -3,13 +3,14 @@
 //! decide between `From` and `from_model`, not the target `Model` alone).
 
 use super::{source_column_read, source_field_named};
+use crate::schema_macro::field_selection::selected_rust_names;
 use crate::schema_macro::generate_type::readable_from;
 use crate::schema_macro::input::SchemaTypeInput;
 use crate::schema_macro::seaorm::{
     convert_relation_type_to_schema_with_info, has_sea_orm_database_default,
     has_sea_orm_primary_key, primary_key_count,
 };
-use crate::schema_macro::transformation::{build_omit_set, build_pick_set, should_skip_field};
+use crate::schema_macro::transformation::should_skip_field;
 use crate::schema_macro::type_utils::{SeaOrmRelationKind, is_seaorm_model, seaorm_relation_kind};
 
 /// The conversion a generated target `Schema` offers.
@@ -92,8 +93,10 @@ fn compute_target_shape(
     // alone: `generate_type` builds the DTO from that struct.
     let (source_module, source_def) = source_of(&input.source_type, module, model_def)?;
     let model = crate::schema_macro::file_cache::parse_struct_cached(&source_def).ok()?;
-    let omit = build_omit_set(input.omit.as_ref());
-    let pick = build_pick_set(input.pick.as_ref());
+    // The same name resolution `generate_type` applies (the DTO was validated
+    // when it was generated; a name that selects nothing is kept as written).
+    let omit = selected_rust_names(&model, input.omit.as_deref().unwrap_or_default());
+    let pick = selected_rust_names(&model, input.pick.as_deref().unwrap_or_default());
     // The `generate_type` rules: relations survive `omit` / `pick`, HasMany
     // only when `pick`ed; every other kept field must be readable from the
     // module the DTO is emitted in (a private field of another module makes

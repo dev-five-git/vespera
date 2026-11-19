@@ -369,7 +369,10 @@ impl TypeResolver<'_> {
             .collect();
         if path.leading_colon.is_some() {
             segments[0].0.insert_str(0, "::");
-        } else {
+        } else if !self.generic_params.contains(&segments[0].0) {
+            // A generic parameter's path (`Item::Cursor` of `Page<Item>`) stays
+            // as written: an import or item of the same name is not its root
+            // (R27-SM4-L2, as `single` keeps a bare parameter).
             // The whole leading `self` / `super` run is resolved at once:
             // `super::super::x` resolved one `super` at a time left the second
             // one in the emitted path (R20-S4-M1, round 20).

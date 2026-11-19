@@ -11,8 +11,9 @@
 //!
 //! # Validation Functions
 //!
-//! - [`validate_pick_fields`] - Ensure all pick fields exist
-//! - [`validate_omit_fields`] - Ensure all omit fields exist
+//! - [`resolve_filter_names`] - Resolve every pick / omit name to a field (Rust
+//!   identifier, then serde JSON name; see `field_selection`), refusing an
+//!   unknown, skipped or ambiguous one
 //! - [`validate_rename_fields`] - Ensure all rename source fields exist
 //! - [`validate_partial_fields`] - Ensure all partial fields exist
 //! - [`validate_relation_adapters`] - Ensure every adapter names a distinct
@@ -33,6 +34,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 
+use super::field_selection::{Refusal, resolve_name};
 use super::input::ParamSpans;
 
 /// Where a diagnostic about a field name given to a parameter points.
@@ -117,40 +119,55 @@ fn validate_fields_exist<'a>(
     Ok(())
 }
 
-/// Validates that all fields in `pick` exist in the source struct.
-///
-/// Returns an error if any field in `pick` does not exist.
-pub fn validate_pick_fields(
-    pick_fields: Option<&Vec<String>>,
-    source_field_names: &HashSet<String>,
-    at: &impl ErrorAt,
+/// The Rust identifiers the `param` (`pick` / `omit`) names select in
+/// `source`, each name read as `schema!` reads it ([`resolve_name`]: Rust
+/// identifier first, then serde JSON name). A name that selects nothing, names
+/// a serde-skipped field, or is an ambiguous JSON name is a spanned error.
+pub fn resolve_filter_names(
+    param: &str,
+    names: Option<&Vec<String>>,
+    source: &syn::ItemStruct,
     source_type_name: &str,
-) -> Result<(), syn::Error> {
-    validate_fields_exist(
-        "pick",
-        pick_fields.into_iter().flatten().map(String::as_str),
-        source_field_names,
-        at,
-        source_type_name,
-    )
-}
-
-/// Validates that all fields in `omit` exist in the source struct.
-///
-/// Returns an error if any field in `omit` does not exist.
-pub fn validate_omit_fields(
-    omit_fields: Option<&Vec<String>>,
-    source_field_names: &HashSet<String>,
     at: &impl ErrorAt,
-    source_type_name: &str,
-) -> Result<(), syn::Error> {
-    validate_fields_exist(
-        "omit",
-        omit_fields.into_iter().flatten().map(String::as_str),
-        source_field_names,
-        at,
-        source_type_name,
-    )
+) -> Result<HashSet<String>, syn::Error> {
+    let mut selected = HashSet::new();
+    for name in names.into_iter().flatten() {
+        let rust = match resolve_name(source, name) {
+            Ok(rust) => rust,
+            Err(Refusal::Missing {
+                skipped: Some(rust),
+            }) => {
+                return Err(at.error_at(
+                    param,
+                    name,
+                    format!(
+                        "`{param}` names field `{name}`, which this type does not include: serde does not serialize it (`{rust}` is `#[serde(skip)]` or `skip_serializing`)"
+                    ),
+                ));
+            }
+            Err(Refusal::Missing { skipped: None }) => {
+                return Err(at.error_at(
+                    param,
+                    name,
+                    format!(
+                        "field `{name}` does not exist in type `{source_type_name}`. Available fields: {:?}",
+                        sorted_source_fields(&extract_source_field_names(source))
+                    ),
+                ));
+            }
+            Err(Refusal::Ambiguous(owners)) => {
+                return Err(at.error_at(
+                    param,
+                    name,
+                    format!(
+                        "`{name}` is the JSON name of more than one field of `{source_type_name}` ({owners:?}); name the field by its Rust identifier"
+                    ),
+                ));
+            }
+        };
+        selected.insert(rust);
+    }
+    Ok(selected)
 }
 
 /// Returns `true` when `name` is a legal Rust identifier — i.e. the
@@ -424,58 +441,58 @@ mod tests {
         names.iter().map(std::string::ToString::to_string).collect()
     }
 
-    #[test]
-    fn test_validate_pick_fields_success() {
-        let source_fields = create_field_names(&["id", "name", "email"]);
-        let pick = Some(vec!["id".to_string(), "name".to_string()]);
+    #[rstest::rstest]
+    #[case::camel_json_name(
+        "#[serde(rename_all = \"camelCase\")] struct User { user_name: String, id: i32 }",
+        "userName",
+        Some("user_name")
+    )]
+    #[case::rust_name("struct User { user_name: String }", "user_name", Some("user_name"))]
+    #[case::skipped_is_refused(
+        "struct User { id: i32, #[serde(skip)] hidden: i32 }",
+        "hidden",
+        None
+    )]
+    #[case::unknown_is_refused("struct User { id: i32 }", "nope", None)]
+    fn resolves_filter_names(
+        #[case] source: &str,
+        #[case] name: &str,
+        #[case] expected: Option<&str>,
+    ) {
+        let parsed: syn::ItemStruct = syn::parse_str(source).unwrap();
         let ty: syn::Type = syn::parse2(quote!(User)).unwrap();
-
-        let result = validate_pick_fields(pick.as_ref(), &source_fields, &ty, "User");
-        assert!(result.is_ok());
+        let names = Some(vec![name.to_string()]);
+        let result = resolve_filter_names("pick", names.as_ref(), &parsed, "User", &ty);
+        match expected {
+            Some(rust) => assert_eq!(result.unwrap(), HashSet::from([rust.to_string()])),
+            None => assert!(result.is_err()),
+        }
     }
 
     #[test]
-    fn test_validate_pick_fields_nonexistent() {
-        let source_fields = create_field_names(&["id", "name"]);
-        let pick = Some(vec!["nonexistent".to_string()]);
+    fn json_name_shared_by_two_fields_is_refused() {
+        let parsed: syn::ItemStruct = syn::parse_str(
+            "struct User { #[serde(rename = \"v\")] x: i32, #[serde(rename = \"v\")] y: i32 }",
+        )
+        .unwrap();
         let ty: syn::Type = syn::parse2(quote!(User)).unwrap();
-
-        let result = validate_pick_fields(pick.as_ref(), &source_fields, &ty, "User");
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("does not exist"));
-        assert!(err.contains("nonexistent"));
+        let names = Some(vec!["v".to_string()]);
+        let err = resolve_filter_names("omit", names.as_ref(), &parsed, "User", &ty)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("more than one field"), "{err}");
     }
 
     #[test]
-    fn test_validate_pick_fields_none() {
-        let source_fields = create_field_names(&["id", "name"]);
+    fn unknown_name_lists_the_available_fields() {
+        let parsed: syn::ItemStruct = syn::parse_str("struct User { id: i32 }").unwrap();
         let ty: syn::Type = syn::parse2(quote!(User)).unwrap();
-
-        let result = validate_pick_fields(None, &source_fields, &ty, "User");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_omit_fields_success() {
-        let source_fields = create_field_names(&["id", "name", "password"]);
-        let omit = Some(vec!["password".to_string()]);
-        let ty: syn::Type = syn::parse2(quote!(User)).unwrap();
-
-        let result = validate_omit_fields(omit.as_ref(), &source_fields, &ty, "User");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_omit_fields_nonexistent() {
-        let source_fields = create_field_names(&["id", "name"]);
-        let omit = Some(vec!["missing".to_string()]);
-        let ty: syn::Type = syn::parse2(quote!(User)).unwrap();
-
-        let result = validate_omit_fields(omit.as_ref(), &source_fields, &ty, "User");
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("does not exist"));
+        let names = Some(vec!["missing".to_string()]);
+        let err = resolve_filter_names("omit", names.as_ref(), &parsed, "User", &ty)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("does not exist"), "{err}");
+        assert!(err.contains("\"id\""), "{err}");
     }
 
     #[test]

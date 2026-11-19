@@ -245,6 +245,11 @@ pub fn derive_multipart_feature_disabled(input: TokenStream) -> TokenStream {
 /// - `omit = [...]`: Optional list of field names to exclude from the schema
 /// - `pick = [...]`: Optional list of field names to include (excludes all others)
 ///
+/// A name is the field's Rust identifier, or else its serde JSON name (the
+/// `rename` / `rename_all` the schema documents); a name that is both selects
+/// the Rust identifier. A JSON name shared by two fields is a compile error,
+/// and so is a name no emitted field carries.
+///
 /// Note: `omit` and `pick` cannot be used together.
 ///
 /// # Example
@@ -305,6 +310,11 @@ pub fn schema(input: TokenStream) -> TokenStream {
 /// - `from SourceType`: The source type to derive from (must have `#[derive(Schema)]`)
 /// - `pick = [...]`: List of field names to include (excludes all others)
 /// - `omit = [...]`: List of field names to exclude
+///   (`pick` and `omit` names resolve as `schema!` resolves them: the Rust
+///   identifier first, else the serde JSON name; a name that selects no field,
+///   a serde-skipped field, or a JSON name shared by two fields is a compile
+///   error. `rename`, `partial`, `add` and `relation_adapters` take Rust
+///   identifiers only.)
 /// - `clone = bool`: Whether to derive Clone (default: true)
 /// - `partial`: Make all fields `Option<T>` (fields already `Option<T>` are unchanged)
 /// - `partial = [...]`: Make only listed fields `Option<T>`

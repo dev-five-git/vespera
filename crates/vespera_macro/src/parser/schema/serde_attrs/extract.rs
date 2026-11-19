@@ -114,6 +114,10 @@ fn string_attr_value(attrs: &[syn::Attribute], attr: &str, key: &str) -> Option<
 /// Field / variant `rename` (the serialize side). Schemas are shared by
 /// request and response bodies, so they use the serialized name; an input-only
 /// `rename(deserialize = "..")` leaves it at the default.
+///
+/// No production caller left after round 27 (`schema!` / `schema_type!` read
+/// the owner-aware [`extract_field_rename_owned`]); kept for its tests.
+#[allow(dead_code)]
 pub fn extract_field_rename(attrs: &[syn::Attribute]) -> Option<String> {
     extract_field_rename_for(attrs, SerdeSide::Serialize)
 }
