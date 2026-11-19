@@ -493,16 +493,61 @@ fn start_once_for_crate_starts_each_job_of_a_crate_once() {
 fn claim_jobs_dedups_per_crate_and_name() {
     let started = Mutex::new(BTreeSet::new());
     let job = |name| CronJob::new("* * * * * *", tick).with_name(name);
-    let names = |jobs: Vec<CronJob>| jobs.iter().map(|job| job.name).collect::<Vec<_>>();
-    assert_eq!(
-        names(claim_jobs(&started, "a", vec![job("x"), job("x")])),
-        ["x"]
+    let mut seen = Vec::new();
+    let mut record = |jobs: Vec<CronJob>| {
+        seen.push(job_names(&jobs));
+        true
+    };
+    start_crate_jobs(&started, "a", vec![job("x"), job("x")], &mut record);
+    start_crate_jobs(&started, "a", vec![job("x"), job("y")], &mut record);
+    start_crate_jobs(&started, "b", vec![job("x")], &mut record);
+    assert_eq!(seen, [vec!["x"], vec!["y"], vec!["x"]]);
+}
+
+fn job_names(jobs: &[CronJob]) -> Vec<&'static str> {
+    jobs.iter().map(|job| job.name).collect()
+}
+
+/// A start that reports failure releases its claims, so a later call starts
+/// the same jobs again; a successful start keeps them claimed, and a repeat
+/// call with nothing new never invokes `start`.
+#[test]
+fn a_failed_crate_start_releases_its_claims_for_a_retry() {
+    let started = Mutex::new(BTreeSet::new());
+    let job = |name| CronJob::new("* * * * * *", tick).with_name(name);
+    let mut attempts = Vec::new();
+    start_crate_jobs(&started, "a", vec![job("x"), job("y")], |jobs| {
+        attempts.push(job_names(&jobs));
+        false
+    });
+    assert!(
+        started.lock().unwrap().is_empty(),
+        "failed claims are released"
     );
-    assert_eq!(
-        names(claim_jobs(&started, "a", vec![job("x"), job("y")])),
-        ["y"]
-    );
-    assert_eq!(names(claim_jobs(&started, "b", vec![job("x")])), ["x"]);
+
+    start_crate_jobs(&started, "a", vec![job("x")], |jobs| {
+        attempts.push(job_names(&jobs));
+        true
+    });
+    assert_eq!(attempts, [vec!["x", "y"], vec!["x"]]);
+    start_crate_jobs(&started, "a", vec![job("x")], |_| {
+        panic!("a claimed job must not be started again")
+    });
+}
+
+/// A scheduler thread the OS refuses to start is reported as a failure
+/// (the jobs are dropped unrun, and the caller releases their claims).
+#[test]
+fn a_refused_scheduler_thread_is_reported_as_a_failed_start() {
+    let refused = spawn_scheduler_thread(Vec::new(), |_| {
+        Err(std::io::Error::other("thread limit reached"))
+    });
+    assert!(!refused);
+    let accepted = spawn_scheduler_thread(Vec::new(), |run| {
+        drop(run);
+        Ok(())
+    });
+    assert!(accepted);
 }
 
 /// The wall clock is re-checked after every sleep: a backwards step

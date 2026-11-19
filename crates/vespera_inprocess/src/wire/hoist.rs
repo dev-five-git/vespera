@@ -555,10 +555,34 @@ mod tests {
         let items = try_hoist_validation_errors(&json_headers(), &body).expect("must hoist");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].path, "b");
-        assert_eq!(
-            bench_hoist_new(&json_headers(), &body),
-            bench_hoist_old(&json_headers(), &body)
-        );
+        assert_same_hoist(&body);
+    }
+
+    /// Every hoisted item as `(path, code, message)`.  The differential tests
+    /// compare these, not summed lengths: two different errors of equal
+    /// length would sum the same.
+    fn hoisted_fields(
+        items: Vec<ValidationErrorItem<'_>>,
+    ) -> Vec<(String, Option<String>, Option<String>)> {
+        items
+            .into_iter()
+            .map(|i| {
+                (
+                    i.path.to_string(),
+                    i.code.as_deref().map(str::to_owned),
+                    i.message.as_deref().map(str::to_owned),
+                )
+            })
+            .collect()
+    }
+
+    /// The strict typed hoister and the `Value`-walk twin hoist the same
+    /// items (the same fields, in the same order), or both hoist nothing.
+    fn assert_same_hoist(body: &Bytes) {
+        let strict = try_hoist_validation_errors(&json_headers(), body).map(hoisted_fields);
+        let value =
+            try_hoist_validation_errors_value_old(&json_headers(), body).map(hoisted_fields);
+        assert_eq!(strict, value);
     }
 
     /// Regression (round 23): a lone surrogate inside a value the strict path
@@ -587,10 +611,7 @@ mod tests {
         let items = try_hoist_validation_errors(&json_headers(), &body).expect("valid pairs hoist");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].path, "a");
-        assert_eq!(
-            bench_hoist_new(&json_headers(), &body),
-            bench_hoist_old(&json_headers(), &body)
-        );
+        assert_same_hoist(&body);
     }
 
     /// Regression (round 24): an out-of-range number in an unknown value is

@@ -202,6 +202,43 @@ async fn event_stream_is_pending_immediately_and_streams() {
     assert_eq!(body, b"data: 1\n\n");
 }
 
+/// A `422` that is an event stream never ends, so it must return pending like
+/// any other event stream: the hoist prefetch (which reads until the body ends
+/// or the 64 KiB bound) would wait on it forever.
+#[tokio::test]
+async fn an_event_stream_422_skips_the_hoist_prefetch() {
+    use futures_util::StreamExt as _;
+
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("text/event-stream"),
+    );
+    let never_ending = Body::from_stream(
+        futures_util::stream::iter(vec![Ok::<_, Infallible>(Bytes::from_static(
+            b"data: bad\n\n",
+        ))])
+        .chain(futures_util::stream::pending::<Result<Bytes, Infallible>>()),
+    );
+    let mut out = vec![0u8; 4096];
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        finish_resumable(
+            &mut out,
+            422,
+            headers,
+            ResponseMetadata::current(),
+            never_ending,
+            true,
+        ),
+    )
+    .await;
+    let Ok(ResumableDirectWrite::Overflow(pending)) = result else {
+        panic!("an event-stream 422 must return pending, not wait for its body");
+    };
+    assert!(pending.prefers_streaming());
+}
+
 #[rstest]
 #[case::delivers_prefix_and_rest(false, StreamOutcome::Complete, b"abcdef".as_slice())]
 #[case::stop_on_prefix(true, StreamOutcome::SinkStopped, b"abcd".as_slice())]

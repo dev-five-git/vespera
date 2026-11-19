@@ -503,6 +503,23 @@ async fn data_errors_map_to_the_envelope_path(#[case] uri: &str, #[case] expecte
     );
 }
 
+/// axum echoes the client's whole segment in the parse message; the envelope
+/// bounds it, so a huge segment keeps the `422` body small (and under the
+/// wire hoist cap) instead of echoing 70 KiB back.
+#[tokio::test]
+async fn an_oversized_path_value_is_bounded_in_the_envelope_message() {
+    // Long enough to echo back past the 64 KiB hoist cap, short enough for
+    // `http::Uri` (it rejects a URI over 65535 bytes).
+    let segment = "a".repeat(60_000);
+    let (status, body) = send(get_req(&format!("/num/{segment}"))).await;
+    assert_eq!(status, 422);
+    assert!(body.len() < 1024, "422 body is {} bytes", body.len());
+    let parsed: ::serde_json::Value = ::serde_json::from_str(&body).unwrap();
+    let message = parsed["errors"][0]["message"].as_str().unwrap();
+    assert!(message.ends_with("... (truncated)"), "{message}");
+    assert!(message.starts_with("Cannot parse `aaa"), "{message}");
+}
+
 #[tokio::test]
 async fn custom_path_message_is_reported_verbatim() {
     let (status, body) = send(get_req("/even/3")).await;

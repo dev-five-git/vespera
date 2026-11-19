@@ -21,9 +21,11 @@ pub use vespera_inprocess;
 /// The JNI dispatch hot path allocates several times per call (input
 /// buffer, request body, response collection, wire response); the OS
 /// default allocator — Windows `HeapAlloc` in particular — is
-/// measurably slower than mimalloc on this pattern.  Opt-in because a
-/// `#[global_allocator]` is process-wide and belongs to the final
-/// cdylib's build decision.
+/// measurably slower than mimalloc on this pattern.  Off by default in
+/// this crate (its `mimalloc` feature is not in `default`): a
+/// `#[global_allocator]` is process-wide and belongs to the final cdylib's
+/// build decision.  The `vespera` facade's default features DO enable it for
+/// `jni` builds; use `default-features = false` to supply your own allocator.
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;

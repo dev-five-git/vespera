@@ -354,16 +354,19 @@ pub async fn finish_direct_write(
     }
 }
 
-/// Resumable direct-write tail: `422` responses up to the 64 KiB hoist bound
-/// (`MAX_HOIST_BODY_BYTES`) are materialised so `validation_errors` hoisting
-/// is preserved byte-for-byte; a larger `422` body is written directly,
-/// unhoisted. Every other
-/// status streams status + headers + body frames straight into `out` and,
-/// the moment a frame does not fit (or up front, when the body's exact size
-/// hint already exceeds `out`), stops and returns the response as a
-/// [`PendingDirectResponse`] — nothing beyond `out` is drained.  With
-/// `stream_event_streams`, a `text/event-stream` response is returned as
-/// pending immediately (it may never end, so it must not be buffered).
+/// Resumable direct-write tail.  A `422` (other than a `text/event-stream`
+/// response, when `stream_event_streams` is set) first prefetches up to the
+/// 64 KiB hoist bound (`MAX_HOIST_BODY_BYTES`): a small one is materialised
+/// so `validation_errors` hoisting is preserved byte-for-byte, and a larger
+/// one is written directly, unhoisted.  The prefetch reads before the `out`
+/// size is checked, so a `422` can read up to that bound from its body before
+/// the call returns.  Every other response streams status + headers + body
+/// frames straight into `out` and, the moment a frame does not fit (or up
+/// front, when the body's exact size hint already exceeds `out`), stops and
+/// returns the response as a [`PendingDirectResponse`] — nothing beyond `out`
+/// is drained.  With `stream_event_streams`, a `text/event-stream` response
+/// is returned as pending immediately (it may never end, so it must not be
+/// buffered, and it skips the `422` prefetch too).
 pub async fn finish_resumable(
     out: &mut [u8],
     status: u16,
@@ -372,7 +375,8 @@ pub async fn finish_resumable(
     mut body: Body,
     stream_event_streams: bool,
 ) -> ResumableDirectWrite {
-    if status == 422 {
+    let prefers_streaming = stream_event_streams && is_event_stream(&headers);
+    if status == 422 && !prefers_streaming {
         // Bounded prefetch: a small 422 is materialised to preserve the
         // `validation_errors` hoisting byte-for-byte; an oversized one falls
         // through to the ordinary direct write below, unhoisted.
@@ -397,7 +401,6 @@ pub async fn finish_resumable(
         }
     }
 
-    let prefers_streaming = stream_event_streams && is_event_stream(&headers);
     let max = max_buffered_response_bytes();
     // An exact-length body past the cap is the buffered path's `500`: its
     // size is known before any frame is read, so it is refused here rather

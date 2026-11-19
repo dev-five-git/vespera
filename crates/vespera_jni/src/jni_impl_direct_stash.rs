@@ -21,8 +21,10 @@
 //! `fetch0` (copy into a larger buffer), `stream0` (header-first streaming)
 //! or released with `discard0`.  An unredeemed entry expires after
 //! [`STASH_TTL`] (swept on every stash access — put, fetch, stream,
-//! discard); at most [`MAX_STASHED`] entries, holding at most
-//! [`MAX_STASHED_BYTES`] bytes, are kept (least recently stashed evicted).
+//! discard); at most [`MAX_STASHED`] entries are kept (least recently
+//! stashed evicted), and their held bytes stay within [`MAX_STASHED_BYTES`]
+//! except for one response larger than that budget, which is kept alone
+//! (evicting it would make the handler run again).
 //! The byte count covers what an entry holds in memory (its header and the
 //! body bytes already read), not the unread rest of a body.
 

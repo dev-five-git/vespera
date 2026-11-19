@@ -226,6 +226,10 @@ fn path_query_suffix_is_never_recorded_and_named_app_is() {
     let span = capture.dispatch_span();
     assert_eq!(field(&span, "route"), "/ok");
     assert_eq!(field(&span, "app"), "admin");
+    assert!(
+        !format!("{span:?}").contains("secret"),
+        "query leaked: {span:?}"
+    );
 }
 
 #[test]

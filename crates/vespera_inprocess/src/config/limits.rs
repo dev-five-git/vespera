@@ -62,8 +62,10 @@ const MAX_STREAMING_REQUEST_PRODUCERS_LIMIT: usize = 1 << 20;
 /// count its exact size, and that counting drain stops with the same `500`
 /// once the body exceeds this cap (with `0` = unlimited it is unbounded).
 /// The resumable variant ([`crate::dispatch_into_async_borrowed_resumable`])
-/// never drains past the caller's buffer at all — it hands the unread
-/// remainder back as a [`crate::PendingDirectResponse`].
+/// does not drain past the caller's buffer either — it hands the unread
+/// remainder back as a [`crate::PendingDirectResponse`] — except that a
+/// non-event-stream `422` first reads up to the 64 KiB hoist bound (see
+/// that function's docs).
 #[must_use]
 #[inline]
 pub fn max_buffered_response_bytes() -> usize {

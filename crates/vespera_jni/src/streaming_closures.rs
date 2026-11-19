@@ -18,6 +18,7 @@
 //! exclusively in [`crate::jni_impl`].
 
 use std::ops::ControlFlow;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -544,6 +545,11 @@ pub fn make_pull_closure(
 /// `vespera_inprocess::dispatch_streaming_with_header_async`): it calls
 /// `OutputStream.flush()` instead of writing.
 ///
+/// `reached` is set (Release) as soon as the sink accepts ANY segment of a
+/// chunk, so a caller can tell "bytes reached Java" from the returned
+/// `ControlFlow`: a chunk split into several segments can fail after its
+/// first segment was already written.
+///
 /// NOTE: when request pull and response push run concurrently
 /// (bidirectional streaming), each side MUST own a **separate**
 /// buffer — they execute on different threads.
@@ -551,6 +557,7 @@ pub fn make_push_closure(
     jvm: jni::JavaVM,
     stream: Global<JObject<'static>>,
     buf: Arc<Global<jni::objects::JByteArray<'static>>>,
+    reached: Arc<AtomicBool>,
 ) -> impl FnMut(&[u8]) -> ControlFlow<()> + Send + 'static {
     let chunk_size = streaming_chunk_size();
     // `chunk_size` is config-clamped to <= 8 MiB (see config::MAX_STREAMING_CHUNK_BYTES),
@@ -582,7 +589,7 @@ pub fn make_push_closure(
                 return Ok(());
             }
             let arr: &jni::objects::JByteArray<'_> = buf.as_ref().as_ref();
-            for seg in chunk.chunks(chunk_size) {
+            write_segments(chunk, chunk_size, &reached, |seg| {
                 // `seg.len() <= chunk_size` (max 8 MiB) so it always fits
                 // both the buffer and `i32`.
                 arr.set_region(env, 0, crate::jni_buf::as_jbytes(seg))?;
@@ -603,8 +610,8 @@ pub fn make_push_closure(
                 if take_pending_exception(env) {
                     return Err(jni::errors::Error::JavaException);
                 }
-            }
-            Ok(())
+                Ok(())
+            })
         });
         if outcome.is_err() {
             failed = true;
@@ -613,6 +620,23 @@ pub fn make_push_closure(
             ControlFlow::Continue(())
         }
     }
+}
+
+/// Writes `chunk` through `write_segment` in `chunk_size` pieces, latching
+/// `reached` after each piece the sink accepted.  The first failing piece
+/// stops the loop (the remaining segments are never attempted), and an
+/// earlier accepted piece keeps `reached` set.
+pub fn write_segments(
+    chunk: &[u8],
+    chunk_size: usize,
+    reached: &AtomicBool,
+    mut write_segment: impl FnMut(&[u8]) -> jni::errors::Result<()>,
+) -> jni::errors::Result<()> {
+    for seg in chunk.chunks(chunk_size) {
+        write_segment(seg)?;
+        reached.store(true, Ordering::Release);
+    }
+    Ok(())
 }
 
 pub fn call_header_consumer(

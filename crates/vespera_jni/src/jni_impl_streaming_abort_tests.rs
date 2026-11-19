@@ -177,18 +177,51 @@ fn stream_abort_messages_match_the_java_contract() {
     );
 }
 
-/// A chunk the Java stream refused was never delivered, so the dispatch may
-/// still answer with its error header; an accepted chunk latches the flag.
+/// A segment the Java stream refused reached nothing, so the dispatch may
+/// still answer with its error header.
 #[test]
-fn a_refused_chunk_is_not_counted_as_delivered() {
-    use std::cell::Cell;
-    use std::ops::ControlFlow;
+fn a_refused_segment_is_not_counted_as_delivered() {
+    use crate::streaming_closures::write_segments;
 
-    let delivered = Cell::new(false);
-    assert!(super::record_delivery(&delivered, ControlFlow::Break(())).is_break());
-    assert!(!delivered.get(), "a refused chunk reached nothing");
-    assert!(super::record_delivery(&delivered, ControlFlow::Continue(())).is_continue());
-    assert!(delivered.get());
+    let reached = AtomicBool::new(false);
+    let result = write_segments(b"chunk", 4, &reached, |_| {
+        Err(jni::errors::Error::JavaException)
+    });
+    assert!(result.is_err());
+    assert!(
+        !reached.load(Ordering::Acquire),
+        "a refused segment reached nothing"
+    );
+}
+
+/// Regression for the round-25 `record_delivery` bug: a chunk split into
+/// several segments can fail after its first segment was accepted by Java.
+/// Those bytes reached the sink, so the failure must abort the stream (after
+/// delivery), not answer a clean error header, and the segments after the
+/// failed write are not attempted.
+#[test]
+fn a_second_segment_failure_after_an_accepted_segment_aborts() {
+    use crate::streaming_closures::write_segments;
+    use vespera_inprocess::StreamOutcome;
+
+    let reached = AtomicBool::new(false);
+    let mut attempts = 0;
+    let result = write_segments(b"0123456789", 4, &reached, |_| {
+        attempts += 1;
+        if attempts == 2 {
+            Err(jni::errors::Error::JavaException)
+        } else {
+            Ok(())
+        }
+    });
+    assert!(result.is_err());
+    assert_eq!(
+        attempts, 2,
+        "segments after the failed write are not attempted"
+    );
+    let delivered = reached.load(Ordering::Acquire);
+    assert!(delivered, "the first segment reached Java");
+    assert!(super::stream_aborts(StreamOutcome::SinkStopped, delivered));
 }
 
 /// Only a truncation after a delivered chunk throws; a truncation before any
