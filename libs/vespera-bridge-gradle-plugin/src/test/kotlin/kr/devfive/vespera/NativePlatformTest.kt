@@ -136,7 +136,8 @@ class NativePlatformTest {
         "linux-aarch64, aarch64-unknown-linux-musl, linux-aarch64-musl",
         "linux-arm, armv7-unknown-linux-musleabihf, linux-arm-musl",
         "linux-aarch64-musl, aarch64-unknown-linux-musl, linux-aarch64-musl",
-        // An explicit -musl key with a custom target spec is kept as is.
+        // bundlePlatform keeps an explicit -musl key whatever the triple is; the
+        // full plannedBuilds path rejects a non-triple name (see aNonTripleTargetNameIsRejected).
         "linux-x86_64-musl, my-custom-target, linux-x86_64-musl",
         "macos-aarch64, aarch64-apple-darwin, macos-aarch64",
         "windows-x86_64, x86_64-pc-windows-msvc, windows-x86_64",
@@ -374,6 +375,27 @@ class NativePlatformTest {
     }
 
     /**
+     * `targets` values are Rust target triples. A custom target spec name
+     * passes [NativePlatform.bundlePlatform] (it keeps an explicit -musl key),
+     * but [NativePlatform.plannedBuilds] rejects it: its arch segment is not
+     * the key's arch, so a custom spec is unsupported in `targets`.
+     */
+    @Test
+    fun aNonTripleTargetNameIsRejected() {
+        val custom = assertThrows<IllegalArgumentException> {
+            NativePlatform.plannedBuilds(
+                "linux-x86_64", "demo", "release", mapOf("linux-x86_64-musl" to "my-custom-target"),
+            )
+        }
+        assertTrue(custom.message!!.contains("'my-custom-target'"), custom.message)
+        assertThrows<IllegalArgumentException> {
+            NativePlatform.plannedBuilds(
+                "linux-x86_64", "demo", "release", mapOf("linux-x86_64" to "my-custom-target"),
+            )
+        }
+    }
+
+    /**
      * A Rust triple may spell its arch differently from the JVM `os.arch` the
      * key names (`i686` for `x86`, `riscv64gc` for `riscv64`, `powerpc64le`
      * for `ppc64le`); the key's arch is the one the bridge probes, so these
@@ -418,6 +440,17 @@ class NativePlatformTest {
         assertThrows<IllegalArgumentException> {
             NativePlatform.plannedBuilds(
                 "linux-x86_64", "demo", "release", mapOf("macos-x86_64" to "x86_64-unknown-linux-gnu"),
+            )
+        }
+        // An iOS (or any other non-darwin Apple) triple is not a macOS build.
+        assertThrows<IllegalArgumentException> {
+            NativePlatform.plannedBuilds(
+                "linux-x86_64", "demo", "release", mapOf("macos-aarch64" to "aarch64-apple-ios"),
+            )
+        }
+        assertThrows<IllegalArgumentException> {
+            NativePlatform.plannedBuilds(
+                "linux-x86_64", "demo", "release", mapOf("macos-aarch64" to "aarch64-apple-ios-sim"),
             )
         }
         // A triple of an OS the plugin does not bundle is not the key's OS either.

@@ -539,7 +539,7 @@ class VesperaWireTest {
         headers.put("x-unicode", "한글-😀");
 
         byte[] wire = VesperaBridge.encodeRequest(
-                "POST", "/p\"a\\th/한글", "q=\"x\"&한=글", headers, new byte[0]);
+                "POST", "/p\"a\\th/한글\t\n😀", "q=\"x\"&한=글\t\n😀", headers, new byte[0]);
 
         int headerLen = ByteBuffer.wrap(wire).order(ByteOrder.BIG_ENDIAN).getInt();
         byte[] headerJson = new byte[headerLen];
@@ -550,7 +550,7 @@ class VesperaWireTest {
         // path and query are each JSON-escaped, then joined by a literal '?'
         // into the single `path` request target — no separate `query` field.
         // Independently re-parsed by Jackson, so a mis-escape here fails loudly.
-        assertEquals("/p\"a\\th/한글?q=\"x\"&한=글", h.path("path").asText());
+        assertEquals("/p\"a\\th/한글\t\n😀?q=\"x\"&한=글\t\n😀", h.path("path").asText());
         assertTrue(h.path("query").isMissingNode());
         assertEquals("a\"b\\c\td\ne", h.path("headers").path("x-quote").asText());
         assertEquals("한글-😀", h.path("headers").path("x-unicode").asText());

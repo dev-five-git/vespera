@@ -76,6 +76,26 @@ dependencies {
 // the buffered-response cap (forwarded before the first dispatch). The shared
 // runtime has ONE worker here (AsyncDispatchExceptionHygieneTest needs it).
 val isolatedJvmTag = "isolated-jvm"
+
+// Bench / runtime knobs forwarded from the Gradle CLI (`-D...`) into every
+// forked test JVM. Both `test` and `isolatedJvmTest` apply the same list, so an
+// override reaches the isolated JVM too.
+val forwardedSystemProperties = listOf(
+    "vespera.bench",
+    "vespera.streaming.chunkBytes",
+    "vespera.streaming.channelCapacity",
+    "vespera.runtime.workerThreads",
+    "vespera.direct.maxRetainedBytes",
+    "vespera.direct.maxBufferBytes",
+)
+
+fun Test.forwardGradleSystemProperties() {
+    // Chunk size is process-fixed, so each value needs its own `gradlew test -D...` run.
+    forwardedSystemProperties.forEach { key ->
+        System.getProperty(key)?.let { systemProperty(key, it) }
+    }
+}
+
 val isolatedJvmTest = tasks.register<Test>("isolatedJvmTest") {
     description = "Runs the E2E tests that need a JVM of their own."
     group = LifecycleBasePlugin.VERIFICATION_GROUP
@@ -83,6 +103,8 @@ val isolatedJvmTest = tasks.register<Test>("isolatedJvmTest") {
     classpath = sourceSets.test.get().runtimeClasspath
     useJUnitPlatform { includeTags(isolatedJvmTag) }
     systemProperty("junit.jupiter.testclass.order.default", "org.junit.jupiter.api.ClassOrderer\$OrderAnnotation")
+    forwardGradleSystemProperties()
+    // Set after the forward: the isolated JVM always runs one worker.
     systemProperty("vespera.runtime.workerThreads", "1")
     testLogging.showStandardStreams = true
 }
@@ -91,19 +113,7 @@ tasks.check { dependsOn(isolatedJvmTest) }
 tasks.test {
     useJUnitPlatform { excludeTags(isolatedJvmTag) }
     finalizedBy(isolatedJvmTest)
-    // Propagate streaming bench knobs from the Gradle CLI into the
-    // forked test JVM (chunk size is process-fixed, so each value
-    // needs its own `gradlew test -D...` run).
-    listOf(
-        "vespera.bench",
-        "vespera.streaming.chunkBytes",
-        "vespera.streaming.channelCapacity",
-        "vespera.runtime.workerThreads",
-        "vespera.direct.maxRetainedBytes",
-        "vespera.direct.maxBufferBytes",
-    ).forEach { key ->
-        System.getProperty(key)?.let { systemProperty(key, it) }
-    }
+    forwardGradleSystemProperties()
     // Bench output is read from stdout.
     testLogging.showStandardStreams = true
 }

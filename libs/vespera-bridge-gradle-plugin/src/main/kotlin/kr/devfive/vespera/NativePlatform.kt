@@ -287,7 +287,8 @@ internal object NativePlatform {
     private fun tripleOs(triple: String): String? = when {
         "-linux" in triple -> "linux"
         "-windows" in triple -> "windows"
-        "-apple-" in triple || "-darwin" in triple -> "macos"
+        // Only darwin triples: `aarch64-apple-ios` is an iOS build, not a macOS dylib.
+        "-darwin" in triple -> "macos"
         else -> null
     }
 
