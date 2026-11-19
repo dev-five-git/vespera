@@ -31,19 +31,17 @@ use super::seaorm::{
     has_sea_orm_database_default, has_sea_orm_primary_key, primary_key_count,
 };
 use super::transformation::{
-    OptionWrap, build_omit_set, build_partial_config, build_pick_set, build_rename_map,
-    container_serde_attrs, dto_renaming, extract_doc_attrs, extract_form_data_attrs,
-    field_form_name, field_serde_attrs, renamed_field_serde_rename, reroot_serde_paths,
-    should_skip_field, should_wrap_in_option,
+    OptionWrap, build_partial_config, build_rename_map, container_serde_attrs, dto_renaming,
+    extract_doc_attrs, extract_form_data_attrs, field_form_name, field_serde_attrs,
+    renamed_field_serde_rename, reroot_serde_paths, should_skip_field, should_wrap_in_option,
 };
 use super::type_utils::{
     extract_module_path, extract_type_name, is_option_type, is_seaorm_model,
     is_seaorm_relation_type,
 };
 use super::validation::{
-    SpannedSource, extract_source_field_names, validate_add_field_idents, validate_included,
-    validate_omit_fields, validate_partial_fields, validate_pick_fields,
-    validate_relation_adapters, validate_rename_fields,
+    SpannedSource, extract_source_field_names, resolve_filter_names, validate_add_field_idents,
+    validate_included, validate_partial_fields, validate_relation_adapters, validate_rename_fields,
 };
 use crate::metadata::StructMetadata;
 use crate::parser::schema::SerdeSide;
@@ -115,17 +113,20 @@ pub fn generate_schema_type_code(
         source_type: &input.source_type,
         spans: &input.spans,
     };
-    validate_pick_fields(
+    // `pick` / `omit` names resolve as in `schema!` (Rust identifier first).
+    let pick_set = resolve_filter_names(
+        "pick",
         input.pick.as_ref(),
-        &source_field_names,
-        &at,
+        &parsed_struct,
         &source_type_name,
+        &at,
     )?;
-    validate_omit_fields(
+    let omit_set = resolve_filter_names(
+        "omit",
         input.omit.as_ref(),
-        &source_field_names,
-        &at,
+        &parsed_struct,
         &source_type_name,
+        &at,
     )?;
     validate_rename_fields(
         input.rename.as_ref(),
@@ -155,8 +156,6 @@ pub fn generate_schema_type_code(
     )?;
 
     // Build filter sets and rename map
-    let omit_set = build_omit_set(input.omit.as_ref());
-    let pick_set = build_pick_set(input.pick.as_ref());
     validate_included(
         "rename",
         input.rename.iter().flatten().map(|(from, _)| from.as_str()),
@@ -714,6 +713,7 @@ pub fn generate_schema_type_code(
             relation_names: &relation_names,
             used_adapters: &used_adapters,
             field_mappings: &field_mappings,
+            picked: &pick_set,
         },
         &at,
         &source_type_name,

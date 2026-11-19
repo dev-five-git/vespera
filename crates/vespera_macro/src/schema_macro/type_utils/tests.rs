@@ -611,6 +611,31 @@ fn resolve_type_unknown_module_cases(#[case] input: &str, #[case] expected: &str
     );
 }
 
+/// R27-SM4-L2: `Item::Cursor` of `Page<Item>` is the generic's path. The
+/// source module imports a different `Item`, which must not root it.
+#[test]
+fn generic_parameter_path_is_kept_despite_an_import_of_its_name() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(src.join("models")).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod models;").unwrap();
+    std::fs::write(src.join("models.rs"), "pub mod page; pub mod item;").unwrap();
+    std::fs::write(src.join("models").join("item.rs"), "pub trait Item {}").unwrap();
+    std::fs::write(
+        src.join("models").join("page.rs"),
+        "use crate::models::item::Item;",
+    )
+    .unwrap();
+    let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    crate::schema_macro::file_cache::bump_epoch();
+    let module = ["crate", "models", "page"].map(String::from);
+    let ty: syn::Type = syn::parse_str("Item::Cursor").unwrap();
+    assert_eq!(
+        resolve_type_with_params(&ty, &module, &["Item".to_string()]).to_string(),
+        "Item :: Cursor"
+    );
+}
+
 #[test]
 fn test_resolve_type_to_absolute_path_leading_colon_and_empty_path() {
     let ty: syn::Type = syn::parse_str("::crate::models::User").unwrap();

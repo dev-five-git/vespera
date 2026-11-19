@@ -143,6 +143,12 @@ fn reroot_rule(rule: Rule, module_path: &[String]) -> Rule {
                         expr.into_token_stream()
                     })
                 }
+                // `adapt(path)` names a module (or item) of the source module,
+                // a path like `custom`'s function (R27-SM2-L2).
+                "adapt" => syn::parse2::<syn::Path>(args.clone()).ok().map(|mut path| {
+                    reroot_syn_path(&mut path, module_path);
+                    path.into_token_stream()
+                }),
                 "context" => syn::parse::Parser::parse2(parse_context, args.clone())
                     .ok()
                     .map(|(mut ty, binding)| {
@@ -225,7 +231,8 @@ mod tests {
         std::fs::write(
             src.join("models").join("user.rs"),
             "use crate::util::make_check; fn check_name() {} pub struct Ctx; \
-             pub const MAX_NAME: usize = 50; static EMAIL_RE: u8 = 0;",
+             pub const MAX_NAME: usize = 50; static EMAIL_RE: u8 = 0; \
+             pub mod checks { pub fn apply() {} }",
         )
         .unwrap();
         let guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
@@ -253,6 +260,10 @@ mod tests {
     #[case::context_binding(
         "#[garde(context(Ctx as ctx))]",
         "# [garde (context (crate :: models :: user :: Ctx as ctx))]"
+    )]
+    #[case::adapt_module(
+        "#[garde(adapt(checks), length(min = 1))]",
+        "# [garde (adapt (crate :: models :: user :: checks) , length (min = 1))]"
     )]
     #[case::unknown_kept("#[garde(custom(std_fn))]", "# [garde (custom (std_fn))]")]
     #[case::closure_kept(

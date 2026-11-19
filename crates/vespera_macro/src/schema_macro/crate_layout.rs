@@ -68,13 +68,24 @@ impl CrateLayout {
         let library_src = self.module_dir.file_name() == Some(std::ffi::OsStr::new("src"));
         let root_rules = !in_target(self.module_dir.file_name())
             && (library_src || !in_target(self.module_dir.parent().and_then(Path::file_name)));
+        // A `src/bin/` file is a binary's root only in the build of that binary
+        // (`CARGO_BIN_NAME`): in a library it is a module when `mod bin;`
+        // declares it, so its module path is `crate::bin::..` (R27-SM1-L3).
+        let bin_target = crate_var("CARGO_BIN_NAME");
+        let is_bin = |target: &str| bin_target.as_deref() == Some(target);
         let is_root = root_rules
             && match names.as_slice() {
                 [file] => *file == "main.rs" || *file == "lib.rs",
                 [bin, file] => {
-                    *bin == "bin" && Path::new(file).extension().is_some_and(|ext| ext == "rs")
+                    let path = Path::new(file);
+                    *bin == "bin"
+                        && path.extension().is_some_and(|ext| ext == "rs")
+                        && path
+                            .file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .is_some_and(is_bin)
                 }
-                [bin, _, file] => *bin == "bin" && *file == "main.rs",
+                [bin, dir, file] => *bin == "bin" && *file == "main.rs" && is_bin(dir),
                 _ => false,
             };
         if is_root {
@@ -140,7 +151,10 @@ pub fn layout_for(manifest_dir: &Path, call_site: Option<&Path>) -> CrateLayout 
             crate_var("CARGO_CRATE_NAME"),
             *entry,
         )),
-        ["src", "bin", entry, ..] => Some((src.join("bin"), crate_var("CARGO_BIN_NAME"), *entry)),
+        // Only in a binary's build: a library's `src/bin/` file is its module tree.
+        ["src", "bin", entry, ..] if crate_var("CARGO_BIN_NAME").is_some() => {
+            Some((src.join("bin"), crate_var("CARGO_BIN_NAME"), *entry))
+        }
         _ => None,
     };
     if let Some((dir, target_name, entry)) = target
@@ -312,6 +326,16 @@ mod tests {
         "src/bin/tool.rs",
         "crate"
     )]
+    // A library's `src/bin/` file is its module (`mod bin;`), not a binary root
+    // (R27-SM1-L3): no `CARGO_BIN_NAME` is set while the library compiles.
+    #[case::library_bin_module(
+        "src/bin/tool.rs",
+        None,
+        None,
+        "src",
+        "src/lib.rs",
+        "crate::bin::tool"
+    )]
     #[case::bin_dir(
         "src/bin/multi/helper.rs",
         None,
@@ -382,6 +406,7 @@ mod tests {
 
     /// A crate checked out in a directory named like a target (`tests/`) keeps
     /// its binary roots: the manifest's own name decides nothing (R24-SM1-L1).
+    /// The root is the binary's own build (`CARGO_BIN_NAME`, R27-SM1-L3).
     #[test]
     fn crate_named_like_a_target_keeps_its_bin_roots() {
         let outer = TempDir::new().unwrap();
@@ -390,6 +415,7 @@ mod tests {
         std::fs::write(manifest.join("src/lib.rs"), "").unwrap();
         let other = manifest.join("src/bin/other.rs");
         std::fs::write(&other, "").unwrap();
+        let _bin = crate::env_access::test_env::set_var("CARGO_BIN_NAME", "other");
         let layout = layout_for(&manifest, None);
         assert_eq!(layout.module_path_of(&other), ["crate"]);
     }

@@ -1131,6 +1131,8 @@ let safe: vespera::schema::Schema = schema!(User, omit = ["password"]);
 let summary: vespera::schema::Schema = schema!(User, pick = ["id", "name"]);
 ```
 
+`pick` / `omit` names (in `schema!` and `schema_type!` alike) resolve with one rule: a name is the field's **Rust identifier** if one field has it; otherwise it is the field's **serde JSON name** (the `rename` / `rename_all` the schema documents, e.g. `"userName"` for `user_name` under `rename_all = "camelCase"`). Fields a `cfg` removes are not candidates. Three cases are compile errors: a name that selects no field, a name that selects a `#[serde(skip)]` / `skip_serializing` field, and a JSON name shared by two fields (name one of them by its Rust identifier). `rename`, `partial`, `add` and `relation_adapters` always take Rust identifiers.
+
 > **Note:** For creating request/response types, use `schema_type!` instead - it generates actual struct types with `From` impl.
 
 ---

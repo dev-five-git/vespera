@@ -17,8 +17,11 @@ pub use common::{
 pub use enum_repr::{SerdeEnumRepr, extract_enum_repr, extract_tag, extract_untagged};
 pub use extract::{
     SerdeSide, SerdeSkipFlags, derives_serialize, extract_aliases, extract_default,
-    extract_deny_unknown_fields, extract_field_rename, extract_field_rename_for,
-    extract_field_rename_owned, extract_flatten, extract_rename_all, extract_rename_all_fields_for,
-    extract_rename_all_for, extract_serde_rename_all, extract_serde_skip_flags, extract_skip,
+    extract_deny_unknown_fields, extract_field_rename_for, extract_field_rename_owned,
+    extract_flatten, extract_rename_all, extract_rename_all_fields_for, extract_rename_all_for,
+    extract_serde_rename_all, extract_serde_skip_flags, extract_skip,
 };
+// The serde-attribute tests read the plain rename through the glob import.
+#[cfg(test)]
+pub use extract::extract_field_rename;
 pub use rename_case::{rename_field, rename_variant};

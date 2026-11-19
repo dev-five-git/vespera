@@ -10,6 +10,7 @@ mod codegen;
 mod crate_layout;
 mod defaults;
 mod field_attrs;
+mod field_selection;
 pub mod file_cache;
 mod file_lookup;
 mod from_model;
@@ -333,6 +334,59 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("failed to parse"));
+    }
+
+    /// R27-SM3-L2: `pick` / `omit` naming a serde-skipped field is refused, as
+    /// `schema!` refuses it, instead of carrying the field into the DTO.
+    #[rstest::rstest]
+    #[case::pick(quote!(NewUser from User, pick = ["hidden"]), "pick")]
+    #[case::omit(quote!(NewUser from User, omit = ["hidden"]), "omit")]
+    fn test_generate_schema_type_code_refuses_a_skipped_field(
+        #[case] tokens: proc_macro2::TokenStream,
+        #[case] param: &str,
+    ) {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, #[serde(skip)] pub hidden: i32 }",
+        )]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let err = generate_schema_type_code(&input, &storage)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(param), "{err}");
+        assert!(err.contains("serde does not serialize it"), "{err}");
+    }
+
+    /// R27-SM3-L1 / round 27 contract: a JSON name shared by two fields is
+    /// refused by `schema_type!` as by `schema!`.
+    #[test]
+    fn test_generate_schema_type_code_refuses_an_ambiguous_json_name() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { #[serde(rename = \"v\")] pub x: i32, #[serde(rename = \"v\")] pub y: i32 }",
+        )]);
+        let input: SchemaTypeInput = syn::parse2(quote!(NewUser from User, pick = ["v"])).unwrap();
+        let err = generate_schema_type_code(&input, &storage)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("more than one field"), "{err}");
+    }
+
+    /// The JSON name of a renamed field selects it (`schema!`'s rule).
+    #[test]
+    fn test_generate_schema_type_code_pick_accepts_a_json_name() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { #[serde(rename = \"userName\")] pub user_name: String, pub id: i32 }",
+        )]);
+        let input: SchemaTypeInput =
+            syn::parse2(quote!(NewUser from User, pick = ["userName"])).unwrap();
+        let tokens = generate_schema_type_code(&input, &storage)
+            .expect("the JSON name selects the field")
+            .0
+            .to_string();
+        assert!(tokens.contains("user_name"), "{tokens}");
+        assert!(!tokens.contains("pub id"), "{tokens}");
     }
 
     #[test]

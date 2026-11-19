@@ -197,7 +197,7 @@ fn path_through_external_crate_import_is_an_error() {
 #[case::plain_extern("--extern\nentity=/deps/libentity.rlib", true)]
 #[case::extern_option("--extern\npriv:entity=/deps/libentity.rlib", true)]
 #[case::other_extern("--extern\nserde=/deps/libserde.rlib", false)]
-#[case::not_rustc("", false)]
+#[case::no_extern_flag("", false)]
 fn unimported_dependency_path_is_external(#[case] args: &str, #[case] external: bool) {
     let (_dir, _guard) = temp_crate("lib.rs");
     let _args = crate::env_access::test_env::set_var(
@@ -284,6 +284,8 @@ fn missing_struct_lists_module_files_and_crate_roots(#[case] path: &str, #[case]
 #[case::bin_dir_module("src/bin/tool/other.rs", "crate::bin::tool::other")]
 #[case::nested_main("src/models/main.rs", "crate::models::main")]
 fn crate_root_files_map_to_crate(#[case] file: &str, #[case] module: &str) {
+    // A `src/bin/` file is a root in its binary's build only (R27-SM1-L3).
+    let _bin = crate::env_access::test_env::set_var("CARGO_BIN_NAME", "tool");
     let module_path = file_path_to_module_path(Path::new(file), Path::new("src"));
     assert_eq!(module_path.join("::"), module);
 }

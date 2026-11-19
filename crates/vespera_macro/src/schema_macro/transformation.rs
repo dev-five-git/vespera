@@ -7,7 +7,6 @@
 //!
 //! The `schema_type`! macro applies transformations to the source struct to create a new schema type.
 //! This module provides utilities to:
-//! - Build sets of fields to include (pick) or exclude (omit)
 //! - Construct rename maps for field renaming
 //! - Track which fields should be made optional (partial)
 //! - Apply serde rename strategies (camelCase, `snake_case`, etc.)
@@ -15,8 +14,8 @@
 //!
 //! # Key Functions
 //!
-//! - [`build_pick_set`] - Create set of fields to include
-//! - [`build_omit_set`] - Create set of fields to exclude
+//! - [`should_skip_field`] - Whether omit / pick drop a field (Rust identifiers;
+//!   the names are resolved by `validation::resolve_filter_names`)
 //! - [`build_partial_config`] - Determine optional field configuration
 //! - [`build_rename_map`] - Create field name mapping for renames
 //! - [`filter_fields`] - Apply pick/omit filters to field list
@@ -25,9 +24,6 @@
 //! # Example
 //!
 //! ```ignore
-//! // Builds sets for filtering
-//! let pick_set = build_pick_set(Some(vec!["id".to_string(), "name".to_string()]));
-//! let omit_set = build_omit_set(Some(vec!["password".to_string()]));
 //! let (partial_all, partial_set) = build_partial_config(&partial_mode);
 //! ```
 
@@ -41,16 +37,6 @@ use super::input::PartialMode;
 use super::module_scope::{Resolved, path_tokens, resolve_name};
 use crate::parser::extract_rename_all_for;
 use crate::parser::schema::{SerdeSide, extract_field_rename_for, rename_field};
-
-/// Builds the omit set from input without cloning the source Vec.
-pub fn build_omit_set(omit: Option<&Vec<String>>) -> HashSet<String> {
-    omit.into_iter().flatten().cloned().collect()
-}
-
-/// Builds the pick set from input without cloning the source Vec.
-pub fn build_pick_set(pick: Option<&Vec<String>>) -> HashSet<String> {
-    pick.into_iter().flatten().cloned().collect()
-}
 
 /// Builds the partial set based on partial mode.
 ///

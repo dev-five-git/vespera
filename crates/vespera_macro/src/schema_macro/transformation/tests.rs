@@ -3,32 +3,6 @@ use rstest::rstest;
 use super::*;
 
 #[test]
-fn test_build_omit_set() {
-    let omit = Some(vec!["password".to_string(), "secret".to_string()]);
-    let set = build_omit_set(omit.as_ref());
-
-    assert!(set.contains("password"));
-    assert!(set.contains("secret"));
-    assert_eq!(set.len(), 2);
-}
-
-#[test]
-fn test_build_omit_set_none() {
-    let set = build_omit_set(None);
-    assert!(set.is_empty());
-}
-
-#[test]
-fn test_build_pick_set() {
-    let pick = Some(vec!["id".to_string(), "name".to_string()]);
-    let set = build_pick_set(pick.as_ref());
-
-    assert!(set.contains("id"));
-    assert!(set.contains("name"));
-    assert_eq!(set.len(), 2);
-}
-
-#[test]
 fn test_build_partial_config_all() {
     let partial = Some(PartialMode::All);
     let (all, set) = build_partial_config(&partial);

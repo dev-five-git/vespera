@@ -20,6 +20,9 @@ pub(super) struct Emitted<'a> {
     /// The `relation_adapters` entries a HasOne / BelongsTo field used.
     pub used_adapters: &'a HashSet<String>,
     pub field_mappings: &'a [FieldMapping],
+    /// The Rust identifiers `pick` selects (each name resolved, see
+    /// `field_selection`).
+    pub picked: &'a HashSet<String>,
 }
 
 pub(super) fn check_emitted(
@@ -29,6 +32,8 @@ pub(super) fn check_emitted(
     at: &SpannedSource<'_>,
     source_type_name: &str,
 ) -> syn::Result<()> {
+    let mut picked: Vec<&str> = emitted.picked.iter().map(String::as_str).collect();
+    picked.sort_unstable();
     for (param, names) in [
         (
             "rename",
@@ -47,10 +52,7 @@ pub(super) fn check_emitted(
                 .map(String::as_str)
                 .collect(),
         ),
-        (
-            "pick",
-            input.pick.iter().flatten().map(String::as_str).collect(),
-        ),
+        ("pick", picked),
     ] {
         validate_emitted(param, names, emitted.dropped, at)?;
     }
