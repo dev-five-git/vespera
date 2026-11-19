@@ -255,24 +255,31 @@ impl ChannelBody {
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), StreamAbort>> {
         if self.rx.is_none() && self.pull_chunk.is_some() {
-            // A finished dispatch will never read this body: fail it now,
-            // without queueing for a slot that another upload may hold for good.
-            if self.inline.finished() {
-                self.pull_chunk = None;
-                self.failed = true;
-                return Poll::Ready(Err(StreamAbort));
-            }
             let Poll::Ready(permit) = self.poll_producer_slot(cx) else {
+                // Still waiting for a slot.  A dispatch that finished meanwhile
+                // will never read this body: stop waiting for a slot that
+                // another upload may hold for good.
+                if self.inline.finished() {
+                    return self.abandon();
+                }
                 return Poll::Pending;
             };
             if let Some(pull) = self.pull_chunk.take()
                 && !self.start_producer(pull, permit)
             {
-                self.failed = true;
-                return Poll::Ready(Err(StreamAbort));
+                return self.abandon();
             }
         }
         Poll::Ready(Ok(()))
+    }
+
+    /// Fails the body without starting a producer: the source is dropped
+    /// unread and every later poll fails too.
+    fn abandon(&mut self) -> Poll<Result<(), StreamAbort>> {
+        self.pull_chunk = None;
+        self.permit_wait = None;
+        self.failed = true;
+        Poll::Ready(Err(StreamAbort))
     }
 
     /// Acquire one producer slot: an uncontended `try_acquire_owned` costs
