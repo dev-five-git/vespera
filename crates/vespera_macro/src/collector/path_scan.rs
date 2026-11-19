@@ -29,7 +29,8 @@ pub fn fingerprints_from_scan(
         .filter(|(file, _)| file.extension().is_some_and(|e| e == "rs"))
         .map(|(file, mtime)| (file.display().to_string(), *mtime))
         .collect();
-    let declarer = folder_path.with_extension("rs");
+    // `with_extension` would turn `api.v2` into `api.rs`; append `.rs` instead.
+    let declarer = super::module_scope::sibling_rs_file(folder_path);
     if let Ok(meta) = std::fs::metadata(&declarer) {
         fingerprints.insert(
             declarer.display().to_string(),
@@ -469,6 +470,25 @@ mod tests {
             "#[cfg(feature = \"admin\")] pub mod admin;",
         );
         assert_ne!(fingerprints_from_scan(&routes, &scanned), before);
+    }
+
+    /// A dotted route folder (`api.v2/`) is declared by `api.v2.rs`, not by
+    /// `api.rs`, which an extension swap would fingerprint instead.
+    #[test]
+    fn dotted_route_folder_fingerprints_its_own_declarer() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let routes = temp_dir.path().join("api.v2");
+        create_temp_file(&temp_dir, "api.v2/users.rs", "");
+        create_temp_file(&temp_dir, "api.rs", "");
+        let scanned = scan_route_folder(&routes).unwrap();
+        let own = temp_dir.path().join("api.v2.rs").display().to_string();
+        let wrong = temp_dir.path().join("api.rs").display().to_string();
+
+        assert!(!fingerprints_from_scan(&routes, &scanned).contains_key(&own));
+        create_temp_file(&temp_dir, "api.v2.rs", "pub mod users;");
+        let fingerprints = fingerprints_from_scan(&routes, &scanned);
+        assert!(fingerprints.contains_key(&own));
+        assert!(!fingerprints.contains_key(&wrong));
     }
 
     #[test]

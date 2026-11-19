@@ -13,8 +13,9 @@
 //!   their name, so each expansion embeds exactly the bytes it generated.
 //!   Superseded files are pruned once they have been superseded for long
 //!   enough that no in-flight compilation can still be about to read them
-//!   (the grace period runs from the write that superseded them, not from
-//!   their own creation);
+//!   (the grace period runs from the moment the selection moved to the file
+//!   that superseded them, kept in a `<stem>.selected` marker, not from their
+//!   own creation or from a reselection of an unchanged file);
 //! * **per-variant names** — the library, a binary, the `--test` harness and
 //!   rust-analyzer get their own file stems (`path_utils::target_variant`),
 //!   so pruning only ever removes an older file of the SAME build variant.
@@ -79,19 +80,35 @@ pub(super) fn prune_superseded(keep: &Path, stem: &str) {
     prune_superseded_older_than(keep, stem, PRUNE_AFTER);
 }
 
+/// The `<stem>.selected` marker: it names the file `stem` last selected, and
+/// its mtime is when the selection last moved there.
+fn record_selection(dir: &Path, stem: &str, keep: &Path) -> PathBuf {
+    let marker = dir.join(format!("{stem}.selected"));
+    let name = keep
+        .file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    // Rewritten only when the selection moves: a kept file reselected without
+    // a rewrite keeps the time it was superseded from, not the reselection.
+    if !std::fs::read_to_string(&marker).is_ok_and(|current| current == name) {
+        let _ = std::fs::write(&marker, name);
+    }
+    marker
+}
+
 fn prune_superseded_older_than(keep: &Path, stem: &str, age: Duration) {
     let Some(dir) = keep.parent() else {
         return;
     };
+    let marker = record_selection(dir, stem, keep);
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     let prefix = format!("{stem}-");
     let now = SystemTime::now();
-    // A superseded file was superseded when the kept file was written (it is
-    // never rewritten, so its own mtime is its creation). The grace period
-    // runs from that later of the two writes, never from creation alone.
-    let kept_modified = std::fs::metadata(keep)
+    // A superseded file was superseded when the selection last moved to the
+    // kept file (the marker's mtime). The kept file's own mtime is not used:
+    // it is not refreshed when the file is selected again.
+    let selected_at = std::fs::metadata(&marker)
         .and_then(|meta| meta.modified())
         .ok();
     for entry in entries.flatten() {
@@ -105,7 +122,7 @@ fn prune_superseded_older_than(keep: &Path, stem: &str, age: Duration) {
             .metadata()
             .and_then(|meta| meta.modified())
             .is_ok_and(|modified| {
-                let superseded_at = kept_modified.map_or(modified, |kept| kept.max(modified));
+                let superseded_at = selected_at.map_or(modified, |selected| selected.max(modified));
                 now.duration_since(superseded_at).unwrap_or_default() >= age
             });
         if is_sibling && stale && path != keep {
@@ -176,9 +193,18 @@ mod tests {
         prune_superseded(Path::new("/"), "x");
     }
 
-    /// The grace period of a superseded file runs from the write that
-    /// superseded it (the kept file's), not from its own creation: a file
-    /// written an hour ago, superseded just now, is kept.
+    fn set_age(path: &Path, ago: Duration) {
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(SystemTime::now() - ago)
+            .unwrap();
+    }
+
+    /// The grace period of a superseded file runs from the selection that
+    /// superseded it, not from its own creation: a file written an hour ago,
+    /// superseded just now, is kept.
     #[test]
     fn prune_grace_runs_from_supersession_not_creation() {
         let temp = TempDir::new().unwrap();
@@ -186,26 +212,54 @@ mod tests {
         let keep = content_addressed(dir, "vespera_spec-app", 1);
         let old = content_addressed(dir, "vespera_spec-app", 2);
         fs::write(&old, "{}").unwrap();
-        fs::File::options()
-            .write(true)
-            .open(&old)
-            .unwrap()
-            .set_modified(SystemTime::now() - Duration::from_secs(60 * 60))
-            .unwrap();
+        set_age(&old, Duration::from_secs(60 * 60));
         fs::write(&keep, "{}").unwrap();
 
         prune_superseded_older_than(&keep, "vespera_spec-app", Duration::from_secs(10 * 60));
         assert!(old.exists());
 
         // Once it has been superseded for the whole grace period, it goes.
-        fs::File::options()
-            .write(true)
-            .open(&keep)
-            .unwrap()
-            .set_modified(SystemTime::now() - Duration::from_secs(60 * 60))
-            .unwrap();
+        set_age(
+            &dir.join("vespera_spec-app.selected"),
+            Duration::from_secs(60 * 60),
+        );
         prune_superseded_older_than(&keep, "vespera_spec-app", Duration::from_secs(10 * 60));
         assert!(!old.exists());
         assert!(keep.exists());
+    }
+
+    /// Reselecting a kept file without rewriting it moves the supersession
+    /// time of the file it replaced: `b` superseded by `a`'s reselection just
+    /// now survives its grace period, though `b` and `a` were both written
+    /// long ago.
+    #[test]
+    fn reselecting_an_unchanged_file_restarts_the_grace_of_the_one_it_replaced() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let stem = "vespera_spec-app";
+        let a = content_addressed(dir, stem, 1);
+        let b = content_addressed(dir, stem, 2);
+        let marker = dir.join("vespera_spec-app.selected");
+        let grace = Duration::from_secs(10 * 60);
+        fs::write(&a, "{}").unwrap();
+        fs::write(&b, "{}").unwrap();
+        set_age(&a, Duration::from_secs(30 * 60));
+        set_age(&b, Duration::from_secs(29 * 60));
+
+        // `a` selected 30 minutes ago, `b` selected a minute later.
+        prune_superseded_older_than(&a, stem, Duration::MAX);
+        set_age(&marker, Duration::from_secs(30 * 60));
+        prune_superseded_older_than(&b, stem, Duration::MAX);
+        set_age(&marker, Duration::from_secs(29 * 60));
+        // `a` is reselected without a rewrite, 2 minutes ago.
+        prune_superseded_older_than(&a, stem, Duration::MAX);
+        set_age(&marker, Duration::from_secs(2 * 60));
+        prune_superseded_older_than(&a, stem, grace);
+        assert!(b.exists(), "superseded just now, inside its grace period");
+
+        set_age(&marker, Duration::from_secs(20 * 60));
+        prune_superseded_older_than(&a, stem, grace);
+        assert!(!b.exists());
+        assert!(a.exists());
     }
 }

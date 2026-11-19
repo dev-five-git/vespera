@@ -239,6 +239,11 @@ pub struct TestOnlyRoute {
     pub file_path: String,
     /// `RouteMetadata::function_name` of the route
     pub function_name: String,
+    /// HTTP method of the route, lowercase. Tells a test-only twin apart from
+    /// a production route of the same name in the same build. Empty for
+    /// entries recorded without it: those match by name alone.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub method: String,
 }
 
 impl CollectedMetadata {

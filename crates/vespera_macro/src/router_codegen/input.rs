@@ -291,6 +291,16 @@ fn validate_doc_urls(urls: &[(&str, Option<&LitStr>)]) -> syn::Result<()> {
                 format!("vespera! macro: {key} must start with `/`, got \"{value}\""),
             ));
         }
+        // A request's matched path never has a query or fragment, and a space
+        // arrives percent-encoded: such a route could never be reached.
+        if value.contains(['?', '#']) || value.chars().any(char::is_whitespace) {
+            return Err(syn::Error::new(
+                lit.span(),
+                format!(
+                    "vespera! macro: {key} must be a path without a query, a fragment or whitespace, got \"{value}\""
+                ),
+            ));
+        }
         if value.contains(['{', '}'])
             || value
                 .split('/')

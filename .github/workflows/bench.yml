@@ -47,8 +47,6 @@ on:
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'rust-toolchain'
-      - 'rust-toolchain.toml'
       - '.cargo/**'
       - '.github/workflows/bench.yml'
       - 'scripts/bench-interleaved.sh'
@@ -57,8 +55,6 @@ on:
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'rust-toolchain'
-      - 'rust-toolchain.toml'
       - '.cargo/**'
       - '.github/workflows/bench.yml'
       - 'scripts/bench-interleaved.sh'
@@ -102,7 +98,7 @@ jobs:
           should_run=false
           while IFS= read -r path; do
             case "$path" in
-              crates/*|rust-toolchain|rust-toolchain.toml|.cargo/*|.github/workflows/bench.yml|scripts/bench-interleaved.sh)
+              crates/*|.cargo/*|.github/workflows/bench.yml|scripts/bench-interleaved.sh)
                 should_run=true
                 ;;
             esac

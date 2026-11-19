@@ -50,6 +50,18 @@ fn file_modules(file: &Path) -> Option<Vec<String>> {
             modules.push(name.to_str()?.to_owned());
         }
     }
+    // Cargo's binary targets (`src/bin/*.rs`, under a `src` root) and its
+    // example / test / bench targets (beside `src`) are crates of their own,
+    // not modules of the library: they have no module path here.
+    let root_is_src = root.file_name().is_some_and(|name| name == "src");
+    let target_crate = match modules.first().map(String::as_str) {
+        Some("bin") => root_is_src,
+        Some("examples" | "tests" | "benches") => !root_is_src,
+        _ => false,
+    };
+    if target_crate {
+        return None;
+    }
     let file_name = modules.pop()?;
     match Path::new(&file_name).file_stem()?.to_str()? {
         "mod" => {}
@@ -156,6 +168,31 @@ mod tests {
         let file = src.join("api").join("user.rs");
         fs::write(&file, "").unwrap();
         assert_eq!(file_modules(&file).unwrap(), ["api", "user"]);
+    }
+
+    /// `src/bin/tool.rs` and `examples/demo.rs` are crates of their own: no
+    /// module path, so they cannot shadow a library `tool::Foo`. A library
+    /// module that merely shares the name (`src/tests/helper.rs`) keeps its.
+    #[test]
+    fn cargo_target_files_have_no_library_module_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("bin")).unwrap();
+        fs::create_dir_all(src.join("tests")).unwrap();
+        fs::create_dir_all(dir.path().join("examples")).unwrap();
+        fs::write(dir.path().join("Cargo.toml"), "").unwrap();
+        fs::write(dir.path().join("main.rs"), "").unwrap();
+        fs::write(src.join("lib.rs"), "").unwrap();
+        for file in [
+            src.join("bin").join("tool.rs"),
+            dir.path().join("examples").join("demo.rs"),
+        ] {
+            fs::write(&file, "").unwrap();
+            assert_eq!(file_modules(&file), None, "{}", file.display());
+        }
+        let helper = src.join("tests").join("helper.rs");
+        fs::write(&helper, "").unwrap();
+        assert_eq!(file_modules(&helper).unwrap(), ["tests", "helper"]);
     }
 
     #[test]

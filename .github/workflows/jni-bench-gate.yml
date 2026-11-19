@@ -42,8 +42,6 @@ on:
       # measured code as much as a source edit does.
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'rust-toolchain'
-      - 'rust-toolchain.toml'
       - '.cargo/**'
       - '.github/workflows/jni-bench-gate.yml'
       - 'scripts/jni-bench-interleaved.sh'

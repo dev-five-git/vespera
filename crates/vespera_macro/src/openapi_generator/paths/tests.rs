@@ -641,6 +641,20 @@ fn route_storage_legacy_none_file_path_is_skipped_when_ambiguous(
         }
     };
 
+    // A route is documented exactly when its signature resolved (an
+    // unresolvable one is omitted, see `paths.rs`), so presence is pinned
+    // explicitly rather than inferred from the schema lookup below.
+    let documented = expected.is_some();
+    assert_eq!(
+        doc.paths.contains_key("/users"),
+        documented,
+        "users presence"
+    );
+    assert_eq!(
+        doc.paths.contains_key("/posts"),
+        documented,
+        "posts presence"
+    );
     assert_eq!(response_schema_type("/users"), expected);
     assert_eq!(response_schema_type("/posts"), expected);
 }

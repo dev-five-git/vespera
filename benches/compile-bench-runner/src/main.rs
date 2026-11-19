@@ -245,6 +245,18 @@ fn measure_once(target: &str, pass: &str, vespera_dir: Option<&CacheDir>) -> Opt
     extract_pass_time(&stderr, pass)
 }
 
+/// The timings a comparison can use: finite and positive, sorted with
+/// `total_cmp` (a NaN or infinite value from a malformed line is dropped, it
+/// cannot abort the run).
+fn usable_timings(values: impl IntoIterator<Item = f64>) -> Vec<f64> {
+    let mut values: Vec<f64> = values
+        .into_iter()
+        .filter(|t| t.is_finite() && *t > 0.0)
+        .collect();
+    values.sort_by(f64::total_cmp);
+    values
+}
+
 fn median(sorted: &[f64]) -> f64 {
     let n = sorted.len();
     if n == 0 {
@@ -305,11 +317,11 @@ fn main() {
             ),
         }
     }
+    let samples = usable_timings(samples);
     if samples.is_empty() {
         fatal("no samples collected (is the target a lib that uses vespera macros?)");
     }
 
-    samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let med0 = median(&samples);
     let clean: Vec<f64> = samples
         .iter()
@@ -356,11 +368,10 @@ fn main() {
         let path = baselines_dir().join(format!("{name}.txt"));
         match fs::read_to_string(&path) {
             Ok(s) => {
-                let mut base: Vec<f64> = s.lines().filter_map(|l| l.trim().parse().ok()).collect();
+                let base = usable_timings(s.lines().filter_map(|l| l.trim().parse().ok()));
                 if base.is_empty() {
-                    eprintln!("   baseline `{name}` is empty");
+                    eprintln!("   baseline `{name}` has no usable timings");
                 } else {
-                    base.sort_by(|a, b| a.partial_cmp(b).unwrap());
                     let bmin = base[0];
                     let bmed = median(&base);
                     let d_min = 100.0 * (min - bmin) / bmin;
@@ -449,5 +460,14 @@ mod tests {
             CacheDir::UnderTarget(target.clone()).dirs(),
             [target.join("vespera")]
         );
+    }
+
+    /// A NaN or infinite timing (a malformed line) is dropped rather than
+    /// panicking the sort; the rest come back ascending.
+    #[test]
+    fn usable_timings_drops_non_finite_and_non_positive_values() {
+        let timings = usable_timings([2.5, f64::NAN, 0.0, -1.0, f64::INFINITY, 0.5, 1.0]);
+        assert_eq!(timings, [0.5, 1.0, 2.5]);
+        assert!(usable_timings([f64::NAN]).is_empty());
     }
 }

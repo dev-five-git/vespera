@@ -203,6 +203,20 @@ fn same_named_route_twins_are_told_apart_by_method_and_signature() {
     assert!(route_test_only(&defs, "other", "put", "anything"));
 }
 
+/// The stored signature of an alias-expanded return type differs from the
+/// source text; the one same-method definition still matches it.
+#[test]
+fn alias_expanded_signature_matches_its_single_method_twin() {
+    let krate = crate_with(&[(
+        "aliased.rs",
+        "#[cfg(test)]\n#[route(get)]\npub async fn list() -> Page {}\n#[route(post)]\npub async fn list() -> Page {}\n",
+    )]);
+    let defs = fn_definitions(&krate.path().join("src").join("aliased.rs"));
+    let expanded = "async fn list () -> Expanded";
+    assert!(route_test_only(&defs, "list", "get", expanded));
+    assert!(!route_test_only(&defs, "list", "post", expanded));
+}
+
 /// Two declarations load the same file, one of them ungated: the file is in
 /// every build, so it is production (`file_test_only` is false).
 #[test]
@@ -217,6 +231,23 @@ fn file_also_loaded_by_an_ungated_declaration_is_production() {
     let src = krate.path().join("src");
     let mut scope = TestScope::new(Some(&src));
     assert!(!scope.file_test_only(&src.join("models.rs")));
+}
+
+/// A gated `mod` whose name an ungated `mod` of the same file also declares
+/// (`#[cfg(test)] mod shared;` next to `#[cfg(not(test))] mod shared;`) loads
+/// the file in every build, so the file is production.
+#[test]
+fn file_also_loaded_by_an_ungated_chain_declaration_is_production() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "#[cfg(test)]\nmod shared;\n#[cfg(not(test))]\nmod shared;\n",
+        ),
+        ("shared.rs", "pub struct Kept {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(!scope.file_test_only(&src.join("shared.rs")));
 }
 
 /// An ungated `#[path]` module loads its file in every build, even beside a
@@ -302,6 +333,7 @@ fn documented_view_leaves_out_test_only_items() {
     metadata.test_only_routes.push(TestOnlyRoute {
         file_path: "users.rs".to_string(),
         function_name: "debug".to_string(),
+        method: "get".to_string(),
     });
     let view = documented_view(&metadata);
     let routes: Vec<_> = view
@@ -497,6 +529,24 @@ fn path_attributed_test_module_gates_the_file_it_names() {
     assert!(!scope.file_test_only(&src.join("lib.rs")));
 }
 
+/// The child modules of a test-gated `#[path = "fixtures/mod.rs"]` module
+/// live beside that `mod.rs`, so they are test-only too.
+#[test]
+fn path_attributed_test_mod_rs_gates_its_child_modules() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "#[cfg(test)]\n#[path = \"fixtures/mod.rs\"]\nmod fixtures;\n",
+        ),
+        ("fixtures/mod.rs", "pub mod helpers;"),
+        ("fixtures/helpers.rs", "pub struct Fixture {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(scope.file_test_only(&src.join("fixtures/mod.rs")));
+    assert!(scope.file_test_only(&src.join("fixtures/helpers.rs")));
+}
+
 /// A `#[cfg(test)] #[path]` module inside an inline module of a non-mod-rs
 /// file (`routes.rs`) resolves under `routes/<inline>/`, as rustc does, not
 /// under `<inline>/` beside the declarer.
@@ -532,4 +582,21 @@ fn non_literal_path_attribute_falls_back_to_the_module_file() {
     let mut scope = TestScope::new(Some(&src));
     assert!(!scope.file_test_only(&src.join("fixtures.rs")));
     assert!(scope.file_test_only(&src.join("support.rs")));
+}
+
+/// A test-only `GET` twin leaves a production `POST` route of the same name
+/// in the document: the entry records the method it was registered with.
+#[test]
+fn documented_view_keeps_production_twin_of_another_method() {
+    let mut metadata = CollectedMetadata::new();
+    metadata.routes = vec![route("users.rs", "list"), route("users.rs", "list")];
+    metadata.routes[1].method = "post".to_string();
+    metadata.test_only_routes = vec![TestOnlyRoute {
+        file_path: "users.rs".to_string(),
+        function_name: "list".to_string(),
+        method: "get".to_string(),
+    }];
+    let view = documented_view(&metadata);
+    let methods: Vec<&str> = view.routes.iter().map(|r| r.method.as_str()).collect();
+    assert_eq!(methods, ["post"]);
 }

@@ -90,12 +90,10 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
     let per_field: Vec<(&syn::Field, &SchemaConstraints)> =
         fields_named.named.iter().zip(field_constraints).collect();
 
-    // A rule on a serde-skipped field is never checked (see `field_blocks`),
-    // so it does not make the impl necessary either.
-    if per_field.iter().all(|(field, c)| {
-        let skip = crate::parser::schema::extract_serde_skip_flags(&field.attrs);
-        !c.has_runtime_rule() || skip.skip || skip.skip_deserializing
-    }) {
+    // A rule on a serde-skipped field is never checked (see `field_blocks`), but
+    // the impl is still emitted for it: `Validated<Json<S>>` needs a `Validate`
+    // impl for every payload type, and an empty one is what keeps it compiling.
+    if per_field.iter().all(|(_, c)| !c.has_runtime_rule()) {
         // No field requested a runtime rule — skip Validate emission.
         // OpenAPI annotation-only constraints (example / read_only /
         // write_only / unique_items / exclusive bounds / multiple_of /
@@ -205,8 +203,10 @@ fn emit_field_block(
     let field_ty = &field.ty;
     // Every `Option` layer: `Option<Option<i32>>` still ranges as an `i32`.
     let mut numeric_ty = field_ty;
+    let mut option_layers = 0_usize;
     while let Some(inner) = crate::schema_macro::type_utils::option_inner(numeric_ty) {
         numeric_ty = inner;
+        option_layers += 1;
     }
     let numeric_kind = rust_numeric_kind(numeric_ty);
     let exact = ExactBounds::from_attrs(&field.attrs);
@@ -222,13 +222,24 @@ fn emit_field_block(
     };
     let block = if crate::schema_macro::type_utils::is_option_type(field_ty) {
         // `field_ident` is `&Option<T>` after the `let Self { .. } = self` destructure.
-        // Match ergonomics make `inner` end up as `&T`.
+        // Match ergonomics make `inner` end up as `&T`. Each further layer is
+        // peeled the same way, so the rules see the innermost value.
+        let mut checked = quote! {
+            #rule_blocks
+            #dive_block
+        };
+        for _ in 1..option_layers {
+            checked = quote! {
+                if let ::std::option::Option::Some(__garde_binding) = __garde_binding {
+                    #checked
+                }
+            };
+        }
         quote! {
             {
                 #nest
                 if let ::std::option::Option::Some(__garde_binding) = #field_ident {
-                    #rule_blocks
-                    #dive_block
+                    #checked
                 }
             }
         }

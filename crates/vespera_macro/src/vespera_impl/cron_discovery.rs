@@ -677,7 +677,9 @@ fn imports_foreign_cron(items: &[syn::Item]) -> bool {
             syn::UseTree::Name(name) => name.ident == "cron" && foreign(),
             syn::UseTree::Rename(rename) => rename.rename == "cron" && foreign(),
             syn::UseTree::Group(group) => group.items.iter().any(|tree| imports(tree, root)),
-            syn::UseTree::Glob(_) => false,
+            // A glob may bring in another crate's `cron`; only vespera's (or
+            // this crate's own) globs leave the bare form vespera's.
+            syn::UseTree::Glob(_) => foreign(),
         }
     }
     items

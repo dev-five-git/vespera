@@ -100,6 +100,17 @@ fn normalize_prefix(prefix: &LitStr) -> syn::Result<LitStr> {
         ));
     }
     let normalized = with_leading_slash.trim_end_matches('/');
+    // `.` / `..` are resolved by clients (RFC 3986 5.2.4), so the routes would
+    // be requested under another path than the one registered here.
+    if normalized
+        .split('/')
+        .any(|segment| segment == "." || segment == "..")
+    {
+        return Err(syn::Error::new(
+            prefix.span(),
+            "export_app! macro: `prefix` must not contain `.` or `..` path segments (clients resolve them)",
+        ));
+    }
     if normalized.contains([':', '*', '{', '}']) {
         return Err(syn::Error::new(
             prefix.span(),
@@ -435,6 +446,9 @@ mod tests {
     #[case("/api//users", "must not contain empty path segments")]
     #[case("//", "must not contain empty path segments")]
     #[case("/api//", "must not contain empty path segments")]
+    #[case("/api/../v1", "must not contain `.` or `..` path segments")]
+    #[case("/./api", "must not contain `.` or `..` path segments")]
+    #[case("/api/..", "must not contain `.` or `..` path segments")]
     #[case("/---", "must contain at least one ASCII alphanumeric character")]
     #[case("/카탈로그", "must contain at least one ASCII alphanumeric character")]
     #[case("/api/{tenant}", "must be a static path")]

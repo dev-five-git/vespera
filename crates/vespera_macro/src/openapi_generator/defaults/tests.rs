@@ -306,6 +306,32 @@ fn inline_prop(default: Option<Value>) -> SchemaRef {
     SchemaRef::Inline(Box::new(schema))
 }
 
+/// The response view names fields by serde's `rename_all` for an owner that
+/// derives `Serialize`; the `try_from_multipart` fallback names form fields.
+#[test]
+fn response_view_defaults_use_serdes_rename_all_not_the_multipart_fallback() {
+    let file_ast: syn::File = syn::parse_str("fn d() -> bool { true }").unwrap();
+    let struct_item: syn::ItemStruct = syn::parse_str(
+        r#"#[derive(Serialize)] #[serde(rename_all = "camelCase")] #[try_from_multipart(rename_all = "kebab-case")] pub struct R { #[serde(default = "d")] pub on_flag: bool }"#,
+    )
+    .unwrap();
+    let mut schema = Schema::object();
+    let props = schema.properties.get_or_insert_with(BTreeMap::new);
+    props.insert(
+        "onFlag".to_string(),
+        SchemaRef::Inline(Box::new(Schema::boolean())),
+    );
+    process_default_functions_for(
+        &struct_item,
+        Some(&file_ast),
+        &mut schema,
+        &BTreeMap::new(),
+        SerdeSide::Serialize,
+        &[],
+    );
+    assert_inline_default(schema.properties.as_ref().unwrap(), "onFlag", &json!(true));
+}
+
 fn assert_inline_default(properties: &BTreeMap<String, SchemaRef>, key: &str, expected: &Value) {
     let SchemaRef::Inline(prop) = properties.get(key).expect("property present") else {
         panic!("expected inline schema for {key}");

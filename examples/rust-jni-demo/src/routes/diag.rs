@@ -124,14 +124,14 @@ pub async fn sleep(Path((key, ms)): Path<(String, u64)>) -> &'static str {
     "slept"
 }
 
-/// A `text/plain` stream of `chunks` 1 KiB chunks (at most
+/// A `text/plain; charset=utf-8` stream of `chunks` 1 KiB chunks (at most
 /// [`MAX_DRIP_CHUNKS`]), one every `ms` milliseconds (at most 1 s).  Counts a
 /// run of `key` when the last chunk was produced, or `"<key>:dropped"` when
 /// the body is dropped before — the client went away and the proxy's write
 /// failed.
 #[allow(clippy::unused_async)]
 #[vespera::route(get, path = "/drip/{key}/{chunks}/{ms}", tags = ["diag"])]
-pub async fn drip(Path((key, chunks, ms)): Path<(String, u64, u64)>) -> Body {
+pub async fn drip(Path((key, chunks, ms)): Path<(String, u64, u64)>) -> Response {
     let chunks = chunks.min(MAX_DRIP_CHUNKS);
     let every = Duration::from_millis(ms.min(1_000));
     let stream = futures_util::stream::unfold(
@@ -158,7 +158,11 @@ pub async fn drip(Path((key, chunks, ms)): Path<(String, u64, u64)>) -> Body {
             Some((Ok::<_, std::convert::Infallible>(chunk), (probe, n + 1)))
         },
     );
-    Body::from_stream(stream)
+    (
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        Body::from_stream(stream),
+    )
+        .into_response()
 }
 
 /// How many runs of `key` finished (`"<key>:dropped"` counts cancellations).
@@ -238,7 +242,7 @@ mod tests {
     #[tokio::test]
     async fn drip_counts_a_run_once_its_last_chunk_is_read() {
         let key = "unit-drip-last-chunk".to_owned();
-        let body = drip(Path((key.clone(), 2, 0))).await;
+        let body = drip(Path((key.clone(), 2, 0))).await.into_body();
         let mut stream = body.into_data_stream();
         assert!(matches!(stream.next().await, Some(Ok(_))));
         assert!(matches!(stream.next().await, Some(Ok(_))));
@@ -248,11 +252,21 @@ mod tests {
         assert_eq!(count(&format!("{key}:dropped")), 0);
     }
 
+    /// The drip response is declared `text/plain`, as its doc says.
+    #[tokio::test]
+    async fn drip_declares_a_text_plain_body() {
+        let response = drip(Path(("unit-drip-content-type".to_owned(), 1, 0))).await;
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/plain; charset=utf-8"
+        );
+    }
+
     /// A drip the consumer abandons before its last chunk is a cancellation.
     #[tokio::test]
     async fn drip_abandoned_mid_stream_counts_as_dropped() {
         let key = "unit-drip-abandoned".to_owned();
-        let body = drip(Path((key.clone(), 3, 0))).await;
+        let body = drip(Path((key.clone(), 3, 0))).await.into_body();
         let mut stream = body.into_data_stream();
         assert!(matches!(stream.next().await, Some(Ok(_))));
         drop(stream);

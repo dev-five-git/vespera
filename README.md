@@ -789,6 +789,9 @@ with `/` and they must not share a path (both are compile errors).
 | `response_example` | Operation-level `200` response example as a JSON string; invalid JSON is emitted as a JSON string value |
 | `deprecated` | Bare flag marking the OpenAPI operation as deprecated |
 
+Argument names and HTTP method names are matched case-insensitively (`GET`
+is accepted as `get`), but the lowercase spelling is the documented one.
+
 ## `export_app!` Macro Reference
 
 Export a vespera app for merging into other apps:
@@ -804,6 +807,17 @@ vespera::export_app!(MyApp, dir = "api");
 Generates a struct with:
 - `MyApp::OPENAPI_SPEC: &'static str` - The OpenAPI JSON spec
 - `MyApp::router() -> Router` - Function returning the Axum router
+
+| Parameter | Description |
+|-----------|-------------|
+| `dir` | Route folder to scan (default `routes`, or `VESPERA_DIR`) |
+| `prefix` | Static URL path the app is exported under (`prefix = "/api/v1"`); the app's components get a namespace derived from it |
+
+`prefix` is a static path: no whitespace, query, fragment, `.` / `..` or empty
+segments, and no `:`, `*`, `{` or `}`. The namespace drops a leading `/api`
+and is PascalCase (`/api/media-library` -> `MediaLibrary`), so two apps merged
+under different prefixes keep their same-named components apart. Merging two
+apps whose same-named components differ is a compile error.
 
 ### Environment Variable Fallbacks
 
@@ -1159,6 +1173,9 @@ pub async fn hourly_report() {
 2. `vespera!()` auto-discovers all registered cron jobs — no extra parameters needed
 3. A background scheduler spawns via `tokio::spawn` when the app starts (once
    per process, however often the router is built)
+4. A job whose expression never fires again (for example a fixed year that has
+   passed) stops with a WARN naming the job and its expression; the other jobs
+   keep running
 
 ```rust
 // No cron-specific config — just works
@@ -1225,7 +1242,7 @@ pub async fn reindex() {}
   (`vespera: cron job `module::function` panicked: …`) and its schedule keeps
   going. With the `tracing` feature, cron diagnostics are `tracing` events on
   target `vespera::cron` instead (panic / unschedulable job at ERROR, overlap
-  skip at WARN).
+  skip and a job with no further occurrence at WARN).
 - `vespera::cron::shutdown()` stops scheduling new runs (process-wide, for
   good); `vespera::cron::shutdown_and_wait(timeout).await` additionally waits
   up to `timeout` for in-flight runs and returns whether they all finished.
