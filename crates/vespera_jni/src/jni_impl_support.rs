@@ -188,6 +188,14 @@ pub fn push_unless_header_failed(
 /// consumer in the rare "callback threw, then the dispatch future panicked"
 /// edge; this predicate closes that gap and is unit-tested in
 /// `jni_impl_streaming_abort_tests.rs`.)
+/// The abort reason for a header callback that threw while `wire` was being
+/// delivered.  Delivering the panic wire (the fallback of a panicked dispatch)
+/// keeps the panic bit, so Java's `panicked()` is not lost behind the plain
+/// header-failure message.
+pub fn header_failure_reason(wire: &[u8]) -> AbortReason {
+    AbortReason::from_flags(true, wire == crate::jni_impl::panic_wire().as_slice())
+}
+
 pub fn should_fire_fallback_header(header_sent: bool, header_failed: bool) -> bool {
     !header_sent && !header_failed
 }

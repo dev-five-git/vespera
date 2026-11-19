@@ -2,8 +2,9 @@ use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::support::{
-    AbortReason, PanicHeaderAction, STREAM_ABORTED_CLASS, panic_post_header_action,
-    push_unless_header_failed, should_fire_fallback_header, typed_throw_succeeded,
+    AbortReason, PanicHeaderAction, STREAM_ABORTED_CLASS, header_failure_reason,
+    panic_post_header_action, push_unless_header_failed, should_fire_fallback_header,
+    typed_throw_succeeded,
 };
 
 #[test]
@@ -135,6 +136,20 @@ fn pull_token_reports_whether_the_pull_closure_is_still_alive() {
     assert!(
         token.producer_dropped(),
         "closure dropped -> lease reusable"
+    );
+}
+
+/// Round 31: a header callback that throws while the panic wire is delivered
+/// (the panicked dispatch's fallback header) keeps the panic bit.
+#[test]
+fn a_failed_header_delivering_the_panic_wire_keeps_the_panic_bit() {
+    assert_eq!(
+        header_failure_reason(&super::panic_wire()),
+        AbortReason::HeaderCallbackFailedAndPanicked
+    );
+    assert_eq!(
+        header_failure_reason(&vespera_inprocess::error_wire(400, "bad")),
+        AbortReason::HeaderCallbackFailed
     );
 }
 

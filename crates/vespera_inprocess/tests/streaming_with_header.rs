@@ -231,6 +231,26 @@ fn encode_unknown_app(method: &str, path: &str) -> Vec<u8> {
 /// Every `on_header` call, one entry per call.
 type HeaderFrames = Arc<Mutex<Vec<Vec<u8>>>>;
 
+/// Callback events in the order they ran: `"header"` or `"chunk"`.
+type EventLog = Arc<Mutex<Vec<&'static str>>>;
+
+/// The header callback ran exactly once, before the first body chunk, and
+/// every later event is a chunk (one shared log, so the order is observed).
+fn assert_header_before_chunks(events: &EventLog) {
+    let log = events.lock().unwrap();
+    assert_eq!(
+        log.iter().filter(|event| **event == "header").count(),
+        1,
+        "exactly one header callback: {log:?}"
+    );
+    assert_eq!(log.first(), Some(&"header"), "header first: {log:?}");
+    assert!(log.len() > 1, "a body chunk follows the header: {log:?}");
+    assert!(
+        log[1..].iter().all(|event| *event == "chunk"),
+        "only chunks follow the header: {log:?}"
+    );
+}
+
 /// The single header frame `on_header` received; fails when it fired more
 /// than once (e.g. a `200` followed by an error header) or never.
 fn single_header(frames: &HeaderFrames) -> Vec<u8> {
@@ -256,19 +276,26 @@ async fn streaming_with_header_emits_header_before_chunks() {
     let wire = encode_wire("GET", "/ping", HashMap::new(), &[]);
     let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let chunks: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    let events: EventLog = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
+    let (ev_h, ev_c) = (Arc::clone(&events), Arc::clone(&events));
 
     let _ = dispatch_streaming_with_header_async(
         wire,
-        move |bytes| h.lock().unwrap().push(bytes.to_vec()),
+        move |bytes| {
+            ev_h.lock().unwrap().push("header");
+            h.lock().unwrap().push(bytes.to_vec());
+        },
         move |chunk| {
+            ev_c.lock().unwrap().push("chunk");
             c.lock().unwrap().push(chunk.to_vec());
             ControlFlow::Continue(())
         },
     )
     .await;
 
+    assert_header_before_chunks(&events);
     let header_bytes = single_header(&header_buf);
     let (header_json, body_in_header) = decode_wire(&header_bytes);
     assert_eq!(header_json["status"].as_u64(), Some(200));
@@ -487,20 +514,27 @@ async fn bidirectional_with_header_roundtrips_body() {
 
     let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let events: EventLog = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
+    let (ev_h, ev_c) = (Arc::clone(&events), Arc::clone(&events));
 
     let _ = dispatch_bidirectional_streaming_with_header(
         wire,
         pull,
         move |chunk| {
+            ev_c.lock().unwrap().push("chunk");
             b.lock().unwrap().extend_from_slice(chunk);
             ControlFlow::Continue(())
         },
-        move |hdr| h.lock().unwrap().push(hdr.to_vec()),
+        move |hdr| {
+            ev_h.lock().unwrap().push("header");
+            h.lock().unwrap().push(hdr.to_vec());
+        },
     )
     .await;
 
+    assert_header_before_chunks(&events);
     let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(200));
     assert_eq!(body_buf.lock().unwrap().as_slice(), b"foobar");
@@ -708,20 +742,27 @@ async fn bidirectional_with_header_slow_producer_delivers_every_chunk() {
 
     let header_buf: HeaderFrames = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let events: EventLog = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
+    let (ev_h, ev_c) = (Arc::clone(&events), Arc::clone(&events));
 
     let _ = dispatch_bidirectional_streaming_with_header(
         wire,
         pull,
         move |chunk| {
+            ev_c.lock().unwrap().push("chunk");
             b.lock().unwrap().extend_from_slice(chunk);
             ControlFlow::Continue(())
         },
-        move |hdr| h.lock().unwrap().push(hdr.to_vec()),
+        move |hdr| {
+            ev_h.lock().unwrap().push("header");
+            h.lock().unwrap().push(hdr.to_vec());
+        },
     )
     .await;
 
+    assert_header_before_chunks(&events);
     let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(200));
     assert_eq!(body_buf.lock().unwrap().as_slice(), b"chunkchunkchunk");

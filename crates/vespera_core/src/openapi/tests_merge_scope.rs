@@ -365,6 +365,34 @@ fn ref_path_item_stays_a_reference_when_nothing_is_pushed_down() {
     assert!(item.get.is_none());
 }
 
+/// Pins the documented behaviour of `OpenApi::merge`: a reference `other`
+/// cannot resolve is kept by name, so it resolves to `self`'s component of
+/// that name once merged (the target is unknown, so it cannot be inlined).
+#[test]
+fn dangling_adopted_ref_resolves_to_the_receivers_component_of_the_same_name() {
+    let mut parent = doc(json!({
+        "components": {"pathItems": {"Missing": {"get": {"summary": "parent", "responses": {}}}}}
+    }));
+    parent.merge(doc(
+        json!({"paths": {"/x": {"$ref": "#/components/pathItems/Missing"}}}),
+    ));
+    assert_eq!(
+        parent.paths["/x"].ref_path.as_deref(),
+        Some("#/components/pathItems/Missing")
+    );
+    let component = &parent
+        .components
+        .as_ref()
+        .unwrap()
+        .path_items
+        .as_ref()
+        .unwrap()["Missing"];
+    assert_eq!(
+        component.get.as_ref().unwrap().summary.as_deref(),
+        Some("parent")
+    );
+}
+
 #[test]
 fn ref_path_items_without_components_are_left_alone() {
     let mut parent = doc(json!({"security": [{"apiKey": []}]}));

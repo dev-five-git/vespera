@@ -617,10 +617,12 @@ where
 /// Returns the wire-format **header only** (`[u32 BE header_len |
 /// header JSON]`) — the response body was delivered via `on_chunk`.
 ///
-/// `pull_chunk` runs on a Tokio blocking thread (`spawn_blocking`)
-/// because the JNI implementation reads from a Java `InputStream`,
-/// which is inherently blocking.  That blocking producer is started
-/// lazily on the first request-body poll, so handlers that never read
+/// Pulls run on a Tokio blocking thread (`spawn_blocking`) because the
+/// JNI implementation reads from a Java `InputStream`, which is inherently
+/// blocking.  The exception is the first two pulls made before the handler
+/// returns, which may run inline on the thread driving `block_on` (see the
+/// **Small-body fast path** paragraph below).  That blocking producer is
+/// started lazily on the first request-body poll, so handlers that never read
 /// the body never touch the `InputStream`. Backpressure is enforced by
 /// a bounded mpsc channel ([`crate::effective_streaming_channel_capacity`] slots,
 /// default 16): if axum reads slowly, the `pull_chunk` call blocks

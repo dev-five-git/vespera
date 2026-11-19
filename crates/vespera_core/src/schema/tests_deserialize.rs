@@ -272,3 +272,32 @@ fn property_names_round_trips() {
             .contains("propertyNames")
     );
 }
+
+#[rstest]
+#[case::unknown_name(
+    json!("strng"),
+    "invalid value: string \"strng\", expected a JSON Schema type name or an array of type names"
+)]
+#[case::number(
+    json!(3),
+    "invalid type: integer `3`, expected a JSON Schema type name or an array of type names"
+)]
+#[case::unknown_array_member(
+    json!(["string", "strng"]),
+    "invalid value: string \"strng\", expected a JSON Schema type name"
+)]
+#[case::number_array_member(
+    json!(["string", 3]),
+    "invalid type: integer `3`, expected a JSON Schema type name"
+)]
+fn bad_type_keyword_names_the_expected_shape_and_value(
+    #[case] type_keyword: serde_json::Value,
+    #[case] expected: &str,
+) {
+    let err = serde_json::from_value::<Schema>(json!({ "type": type_keyword })).unwrap_err();
+
+    assert!(
+        err.to_string().contains(expected),
+        "unexpected error: {err}"
+    );
+}
