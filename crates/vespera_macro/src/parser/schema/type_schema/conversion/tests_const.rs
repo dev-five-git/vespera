@@ -219,3 +219,33 @@ fn const_substitution_keeps_a_type_argument_named_like_a_const() {
         Reference::schema("N").ref_path
     );
 }
+
+/// Round 31: a const parameter of a generic definition is part of its own
+/// instantiation's name, so the definition's self-reference (`Node<N>` inside
+/// `Node`, `Buf<T, N>` inside `Buf`) refers back to its component instead of
+/// materialising `Node_Const.N` / `Buf_T_Const.N`. The const-only case
+/// regressed in round 30; the mixed case never registered its instance.
+#[rstest]
+#[case::const_only("Node", "struct Node<const N: usize> { kids: Vec<Node<N>> }")]
+#[case::mixed(
+    "Buf",
+    "struct Buf<T, const N: usize> { items: Vec<T>, kids: Vec<Buf<T, N>> }"
+)]
+fn definition_self_reference_refers_to_its_component(#[case] name: &str, #[case] src: &str) {
+    take_materialized();
+    let item: syn::ItemStruct = syn::parse_str(src).unwrap();
+    let known: HashSet<String> = HashSet::from([name.to_string()]);
+    let defs = HashMap::from([(name.to_string(), src.to_string())]);
+    let schema = crate::parser::schema::parse_struct_to_schema(&item, &known, &defs);
+    let properties = schema.properties.expect("the struct's fields");
+    let SchemaRef::Inline(kids) = &properties["kids"] else {
+        panic!("the vector is inline");
+    };
+    assert_eq!(
+        reference(kids.items.clone().expect("the vector's items")),
+        Reference::schema(name).ref_path
+    );
+    let materialized = take_materialized();
+    let keys: Vec<&String> = materialized.keys().collect();
+    assert!(keys.iter().all(|key| !key.contains("_Const.N")), "{keys:?}");
+}

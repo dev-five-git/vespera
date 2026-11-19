@@ -120,20 +120,24 @@ fn body_for_type(
             return Some(single_content_body(media_type, schema));
         }
 
+        // A user type named like an axum wrapper is not the wrapper (an
+        // external-rooted path such as `axum::body::Body` still is).
+        let shadows = Shadows {
+            known_schemas,
+            struct_definitions,
+        };
+
         // Raw Multipart extractor (untyped) → multipart/form-data with generic object schema
-        if ident == "Multipart" && matches!(segment.arguments, syn::PathArguments::None) {
+        if ident == "Multipart"
+            && matches!(segment.arguments, syn::PathArguments::None)
+            && !shadows.names_user_type(ty)
+        {
             return Some(single_content_body(
                 "multipart/form-data",
                 SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object))),
             ));
         }
 
-        // A user type named `Body` / `Bytes` is not axum's wrapper (an
-        // external-rooted path such as `axum::body::Body` still is).
-        let shadows = Shadows {
-            known_schemas,
-            struct_definitions,
-        };
         if is_bytes_extractor(segment) && !shadows.names_user_type(ty) {
             return Some(single_content_body(
                 "application/octet-stream",
@@ -243,6 +247,24 @@ mod tests {
         let defs = HashMap::from([("Body", "pub struct Body { pub name: String }")]);
         let bare: syn::ItemFn = syn::parse_str("fn test(body: Body) {}").unwrap();
         let qualified: syn::ItemFn = syn::parse_str("fn test(body: axum::body::Body) {}").unwrap();
+        let shadowed = parse_request_body(bare.sig.inputs.first().unwrap(), &HashSet::new(), &defs);
+        assert!(shadowed.is_none());
+        let external = parse_request_body(
+            qualified.sig.inputs.first().unwrap(),
+            &HashSet::new(),
+            &defs,
+        );
+        assert!(external.is_some());
+    }
+
+    /// Round 31: a user type named `Multipart` is not axum's raw extractor
+    /// (no `multipart/form-data` body); the qualified axum path still is.
+    #[test]
+    fn user_type_named_multipart_is_not_the_raw_extractor() {
+        let defs = HashMap::from([("Multipart", "pub struct Multipart { pub name: String }")]);
+        let bare: syn::ItemFn = syn::parse_str("fn test(upload: Multipart) {}").unwrap();
+        let qualified: syn::ItemFn =
+            syn::parse_str("fn test(upload: axum::extract::Multipart) {}").unwrap();
         let shadowed = parse_request_body(bare.sig.inputs.first().unwrap(), &HashSet::new(), &defs);
         assert!(shadowed.is_none());
         let external = parse_request_body(

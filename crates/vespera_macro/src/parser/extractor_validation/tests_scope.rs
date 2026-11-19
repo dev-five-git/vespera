@@ -234,14 +234,30 @@ fn production_twin_non_schema_extractor_is_flagged() {
     assert!(message.contains("`Json<Local>`"), "{message}");
 }
 
-/// A bare `#[route]` is a GET, `#[vespera::route(..)]` counts too, and a fn
-/// routed to another method is not this route's handler.
+/// A bare `#[route]` is a GET, `#[vespera::route(..)]` counts too, the
+/// name-value form (`#[route = "post"]`) names its method like the list form,
+/// and a fn routed to another method is not this route's handler.
 #[rstest]
 #[case::bare_is_get("#[route] pub fn handler(Json(l): Json<Local>) {}", "get", true)]
 #[case::qualified_post(
     "#[vespera::route(post)] pub fn handler(Json(l): Json<Local>) {}",
     "post",
     true
+)]
+#[case::name_value_post(
+    "#[route = \"post\"] pub fn handler(Json(l): Json<Local>) {}",
+    "post",
+    true
+)]
+#[case::name_value_upper_post(
+    "#[route = \"POST\"] pub fn handler(Json(l): Json<Local>) {}",
+    "post",
+    true
+)]
+#[case::name_value_other_method_ignored(
+    "#[route = \"put\"] pub fn handler(Json(l): Json<Local>) {}",
+    "get",
+    false
 )]
 #[case::other_method_ignored("#[route(put)] pub fn handler(Json(l): Json<Local>) {}", "get", false)]
 fn route_attribute_spellings_pick_the_handler(

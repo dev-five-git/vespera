@@ -257,8 +257,17 @@ fn is_handler_of(f: &syn::ItemFn, method: &str) -> bool {
 }
 
 /// The method a `#[route(..)]` attribute names, lower case (`get` for a bare
-/// `#[route]`, as the collector reads it). Both spellings count.
+/// `#[route]`, as the collector reads it). The list form (`#[route(post)]`)
+/// and the name-value form (`#[route = "post"]`) both count.
 fn route_attr_method(attr: &syn::Attribute) -> String {
+    if let syn::Meta::NameValue(meta_nv) = &attr.meta
+        && let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(lit_str),
+            ..
+        }) = &meta_nv.value
+    {
+        return lit_str.value().to_lowercase();
+    }
     attr.meta
         .require_list()
         .ok()

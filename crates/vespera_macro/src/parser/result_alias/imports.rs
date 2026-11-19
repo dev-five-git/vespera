@@ -5,7 +5,10 @@
 
 use std::path::Path;
 
-use crate::{collector::test_scope::attrs_test_only, schema_macro::file_cache};
+use crate::{
+    collector::test_scope::{TestScope, attrs_test_only},
+    schema_macro::file_cache,
+};
 
 use super::{
     Import, MAX_ALIAS_DEPTH, Qualifier, Scope, alias_item, declares_nominal, file_module,
@@ -119,10 +122,14 @@ pub(super) fn any_module_items(
     src_dir: Option<&Path>,
     check: &dyn Fn(&[syn::Item]) -> bool,
 ) -> bool {
+    // Test-only files (`#[cfg(test)] mod fixtures;`) never define an alias
+    // or a struct the handler can name, so they are not searched.
     let top_level = |root_only: bool| {
         src_dir.is_some_and(|src_dir| {
+            let mut test_scope = TestScope::new(Some(src_dir));
             file_cache::list_rs_files(src_dir).iter().any(|path| {
                 (!root_only || file_module(path, src_dir).is_none())
+                    && !test_scope.file_test_only(path)
                     && parse_items(path).is_some_and(|file| check(&file.items))
             })
         })
@@ -174,15 +181,17 @@ fn module_items(
     }
     walk(&scope.file.items, None, module, check)
         || src_dir.is_some_and(|src_dir| {
+            let mut test_scope = TestScope::new(Some(src_dir));
             file_cache::list_rs_files(src_dir).iter().any(|path| {
-                parse_items(path).is_some_and(|file| {
-                    walk(
-                        &file.items,
-                        file_module(path, src_dir).as_deref(),
-                        module,
-                        check,
-                    )
-                })
+                !test_scope.file_test_only(path)
+                    && parse_items(path).is_some_and(|file| {
+                        walk(
+                            &file.items,
+                            file_module(path, src_dir).as_deref(),
+                            module,
+                            check,
+                        )
+                    })
             })
         })
 }
