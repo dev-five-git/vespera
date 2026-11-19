@@ -143,19 +143,19 @@ pub struct TestScope {
     path_targets: Option<PathTargets>,
     /// The module tree of each `#[path]` target, by how the walk may reach
     /// into it (see [`path_tree`]).
-    path_trees: HashMap<(PathBuf, path_tree::Reach), std::rc::Rc<HashSet<PathBuf>>>,
+    path_trees: HashMap<(path_tree::TreeRoot, path_tree::Reach), std::rc::Rc<HashSet<PathBuf>>>,
     /// Declaring files whose own test-only classification is in progress
     /// (see `loads_in_every_build`).
     resolving: HashSet<PathBuf>,
 }
 
-/// The files named by `#[path]` modules of a crate, by whether every build
+/// The trees named by `#[path]` modules of a crate, by whether every build
 /// loads them (`open`) or only `cfg(test)` builds do (`gated`).
 #[derive(Default)]
 struct PathTargets {
-    gated: Vec<PathBuf>,
+    gated: Vec<path_tree::TreeRoot>,
     /// Each ungated target with the file declaring it.
-    open: Vec<(PathBuf, PathBuf)>,
+    open: Vec<(PathBuf, path_tree::TreeRoot)>,
 }
 
 impl TestScope {
@@ -265,11 +265,11 @@ impl TestScope {
     /// modules sit beside it).
     fn file_path_gated(&mut self, file: &Path, src_dir: &Path, segments: &[String]) -> bool {
         let targets = self.path_targets();
-        let all: Vec<PathBuf> = targets
+        let all: Vec<path_tree::TreeRoot> = targets
             .gated
             .iter()
             .cloned()
-            .chain(targets.open.iter().map(|(_, target)| target.clone()))
+            .chain(targets.open.iter().map(|(_, root)| root.clone()))
             .collect();
         let gated = self.tree_holds(file, &all, path_tree::Reach::Any);
         gated && !self.open_path_loads(file) && !self.open_chain_loads(src_dir, segments)
@@ -294,7 +294,12 @@ impl TestScope {
     /// (canonical when the filesystem has it): `file` may come from the
     /// canonical fallback, and a target is written under the lexical `src/`,
     /// which can name the same file through a symlinked alias of the crate.
-    fn tree_holds(&mut self, file: &Path, targets: &[PathBuf], reach: path_tree::Reach) -> bool {
+    fn tree_holds(
+        &mut self,
+        file: &Path,
+        targets: &[path_tree::TreeRoot],
+        reach: path_tree::Reach,
+    ) -> bool {
         same_spelling_key(file).is_some_and(|file| {
             targets
                 .iter()
@@ -305,11 +310,11 @@ impl TestScope {
     /// The module tree of the `#[path]` target `target` (memoized per reach).
     fn path_tree(
         &mut self,
-        target: &Path,
+        target: &path_tree::TreeRoot,
         reach: path_tree::Reach,
     ) -> std::rc::Rc<HashSet<PathBuf>> {
         self.path_trees
-            .entry((target.to_path_buf(), reach))
+            .entry((target.clone(), reach))
             .or_insert_with(|| std::rc::Rc::new(path_tree::tree_of(target, reach)))
             .clone()
     }
@@ -419,11 +424,16 @@ fn string_literal(expr: &syn::Expr) -> Option<String> {
 /// Collect the `mod`s loaded by their own name among `items` (prefixed by
 /// `prefix`), recursing into every inline module. A gated inline module gates
 /// everything it nests: its own name goes in as a chain. `within_gated` says
-/// `items` already sit in a gated inline module. A `#[path]` module is skipped:
-/// `path_tree` resolves its file with the directory rules.
+/// `items` already sit in a gated inline module. A `#[path]` module, inline or
+/// not, is skipped with everything inside it: `path_tree` resolves its files
+/// with the directory rules (an inline `#[path]` block nests its children
+/// under its `#[path]` value, not under the module name).
 fn gated_mod_paths(items: &[Item], prefix: &str, within_gated: bool, out: &mut GatedMods) {
     for item in items {
         let Item::Mod(module) = item else { continue };
+        if path_attr(&module.attrs).is_some() {
+            continue;
+        }
         let name = syn::ext::IdentExt::unraw(&module.ident).to_string();
         let path = format!("{prefix}{name}");
         let gated = within_gated || attrs_test_only(&module.attrs);
@@ -434,7 +444,6 @@ fn gated_mod_paths(items: &[Item], prefix: &str, within_gated: bool, out: &mut G
                 }
                 gated_mod_paths(content, &format!("{path}::"), gated, out);
             }
-            None if path_attr(&module.attrs).is_some() => {}
             None if gated => {
                 out.chains.insert(path);
             }
@@ -540,20 +549,31 @@ fn route_method(attrs: &[syn::Attribute]) -> String {
     attrs
         .iter()
         .filter(|attr| crate::route::check_route_by_meta(&attr.meta))
-        .filter_map(|attr| attr.meta.require_list().ok())
-        .filter_map(|list| {
-            list.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
-                .ok()
-        })
-        .flatten()
-        .find_map(|meta| {
-            let syn::Meta::Path(path) = meta else {
-                return None;
-            };
-            let method = path.get_ident()?.to_string().to_ascii_lowercase();
-            ROUTE_METHODS.contains(&method.as_str()).then_some(method)
-        })
+        .find_map(|attr| method_of_meta(&attr.meta))
         .unwrap_or_else(|| "get".to_owned())
+}
+
+/// The HTTP method one `#[route]` attribute names, lower case: a bare method
+/// in the list (`#[route(post)]`) or the string of the `#[route = "post"]`
+/// form. A bare `#[route]` names none.
+fn method_of_meta(meta: &syn::Meta) -> Option<String> {
+    let candidates: Vec<String> = match meta {
+        syn::Meta::List(list) => list
+            .parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+            .ok()?
+            .iter()
+            .filter_map(|meta| match meta {
+                syn::Meta::Path(path) => path.get_ident().map(ToString::to_string),
+                _ => None,
+            })
+            .collect(),
+        syn::Meta::NameValue(named) => vec![string_literal(&named.value)?],
+        syn::Meta::Path(_) => return None,
+    };
+    candidates
+        .iter()
+        .map(|method| method.to_ascii_lowercase())
+        .find(|method| ROUTE_METHODS.contains(&method.as_str()))
 }
 
 /// The top-level fns of `file` (kept while the file is unchanged; empty when
@@ -867,3 +887,9 @@ pub fn documented_view(metadata: &CollectedMetadata) -> Cow<'_, CollectedMetadat
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_inline_path;
+
+#[cfg(test)]
+mod tests_route_method;
