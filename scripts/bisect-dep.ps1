@@ -8,7 +8,8 @@
   The probe command decides good/bad by exit code: 0 = good, non-zero = bad.
   For a perf regression make the probe fail when the number is too high, e.g. a
   script that runs `cargo bench ... -- --baseline main` and applies the same
-  +30% mean / +20% CI-lower-bound rule as .github/workflows/bench.yml.
+  rule as scripts/bench-interleaved.sh: the median of the paired per-round
+  changes above +30%, with every round above +20%.
 
   - Candidate versions come from the crates.io API: non-yanked, non-prerelease
     releases between -Good and -Bad (inclusive), semver-sorted.

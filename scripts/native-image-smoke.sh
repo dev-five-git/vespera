@@ -14,11 +14,13 @@
 # metadata must cover:
 #   DIRECT        GET  /health                    (dispatchDirect0)
 #   overflow      GET  /stream/big                (DirectStash fetch/stream)
-#   SYNC / ASYNC  POST /echo                      (dispatchBytes / dispatchAsync)
+#   SYNC          POST /echo                      (dispatchBytes; in the parked round the
+#                                                 SYNC dispatch goes through dispatchAsync)
 #   STREAMING     GET  /stream/events (SSE)       (Consumer.accept, OutputStream.write/flush)
 #   BIDI          POST /echo/stream  (1 MiB, x3)  (InputStream.read/close)
 #   422 hoisting  POST /documents/register {"title":"","pageCount":0} (garde rules)
-#   panic         POST /echo/panic                (500, panicked metadata)
+#   panic         POST /echo/panic                (HTTP 500 only: the panic metadata and
+#                                                 WARN log are not asserted here)
 # Exit 1 on the first failed check. Needs: bash, curl, head, cmp.
 # Env: KEEP_LOG=<file> keeps the last application log (for crash reports).
 set -euo pipefail

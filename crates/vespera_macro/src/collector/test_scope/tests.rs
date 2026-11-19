@@ -149,6 +149,27 @@ fn symlinked_module_directories_follow_the_logical_chain() {
     assert!(!scope.file_test_only(&alias_crate.join("src/routes/v1/users.rs")));
 }
 
+/// A `#[path]` module's file reached through a symlinked alias of the crate:
+/// the chain check cannot match it (its module name is `support`, not the
+/// file's stem), so `file_path_gated` must compare the alias spelling and the
+/// lexical `#[path]` target in one spelling (round-27 macrorest-1 L1).
+#[cfg(unix)]
+#[test]
+fn path_attribute_gated_file_through_an_alias_is_test_only() {
+    let krate = crate_with(&[(
+        "lib.rs",
+        "#[cfg(test)] #[path = \"fixtures.rs\"] mod support; mod plain;",
+    )]);
+    fs::write(krate.path().join("src/fixtures.rs"), "").unwrap();
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    let alias = TempDir::new().unwrap();
+    let alias_crate = alias.path().join("krate");
+    std::os::unix::fs::symlink(krate.path(), &alias_crate).unwrap();
+    assert!(scope.file_test_only(&alias_crate.join("src/fixtures.rs")));
+    assert!(scope.file_test_only(&src.join("fixtures.rs")));
+}
+
 #[test]
 fn functions_behind_test_only_cfg() {
     let krate = crate_with(&[

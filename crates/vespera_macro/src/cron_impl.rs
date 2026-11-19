@@ -29,6 +29,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock, Mutex};
 
+use proc_macro2::LineColumn;
+
 use crate::macro_storage::{CrateStorage, SourceIdentified};
 use crate::metadata::CronOptions;
 
@@ -162,12 +164,13 @@ impl SourceIdentified for StoredCronInfo {
 }
 
 /// The inline-module path (see [`StoredCronInfo::inline_module`]) enclosing
-/// the function `fn_name` whose name token starts on `line` of `file`.
+/// the function `fn_name` whose name token starts at `at` (line and column)
+/// in `file`.  The column tells apart two same-named functions on one line.
 ///
 /// Served from the file's [`FnIndex`], built once per content version (one
 /// parse per file, not one per handler: `#[route]` asks this for every
 /// handler of a route file).
-pub fn inline_module_of(file: Option<&str>, fn_name: &str, line: usize) -> Option<String> {
+pub fn inline_module_of(file: Option<&str>, fn_name: &str, at: LineColumn) -> Option<String> {
     // Declarations compare unraw: `r#match` (a route's stored name) is the
     // `match` the AST walk sees.
     let fn_name = fn_name.strip_prefix("r#").unwrap_or(fn_name);
@@ -177,7 +180,7 @@ pub fn inline_module_of(file: Option<&str>, fn_name: &str, line: usize) -> Optio
     if !content.contains("mod") {
         return Some(String::new());
     }
-    fn_index(path)?.module_of(fn_name, line)
+    fn_index(path)?.module_of(fn_name, at)
 }
 
 /// Plain-data summary of one file's functions, derived from a parse with
@@ -189,18 +192,18 @@ pub fn inline_module_of(file: Option<&str>, fn_name: &str, line: usize) -> Optio
 #[derive(Debug, Default)]
 struct FnIndex {
     /// Module-level functions (the file's items and its inline modules',
-    /// depth-first): unraw name, name line, inline-module path.
-    module_fns: Vec<(String, usize, String)>,
-    /// `(unraw name, line)` of every function declared anywhere other than at
-    /// module level (see [`nested_fns`]).
-    nested: HashSet<(String, usize)>,
+    /// depth-first): unraw name, name position, inline-module path.
+    module_fns: Vec<(String, LineColumn, String)>,
+    /// `(unraw name, name position)` of every function declared anywhere other
+    /// than at module level (see [`nested_fns`]).
+    nested: HashSet<(String, LineColumn)>,
 }
 
 impl FnIndex {
-    fn module_of(&self, fn_name: &str, line: usize) -> Option<String> {
+    fn module_of(&self, fn_name: &str, at: LineColumn) -> Option<String> {
         self.module_fns
             .iter()
-            .find(|(name, at, _)| name == fn_name && *at == line)
+            .find(|(name, found_at, _)| name == fn_name && *found_at == at)
             .map(|(_, _, module)| module.clone())
     }
 }
@@ -227,19 +230,19 @@ fn build_fn_index(ast: &syn::File) -> FnIndex {
 }
 
 /// Reject a cron function `vespera!` could not call as
-/// `crate::module::function`: one declared (on `line` of `file`) inside an
-/// `impl` / `trait` block or another function's body.  Without this the job
+/// `crate::module::function`: one declared (its name at `at` in `file`) inside
+/// an `impl` / `trait` block or another function's body.  Without this the job
 /// fell back to the file's module path and either failed to resolve at the
 /// `vespera!` call site or — worse — scheduled a same-named free function.
 pub fn check_free_function(
     file: Option<&str>,
     item_fn: &syn::ItemFn,
-    line: usize,
+    at: LineColumn,
 ) -> syn::Result<()> {
     let fn_name = syn::ext::IdentExt::unraw(&item_fn.sig.ident).to_string();
     let nested = file
         .and_then(|file| fn_index(std::path::Path::new(file)))
-        .is_some_and(|index| index.nested.contains(&(fn_name, line)));
+        .is_some_and(|index| index.nested.contains(&(fn_name, at)));
     if nested {
         return Err(syn::Error::new_spanned(
             &item_fn.sig.ident,
@@ -249,11 +252,11 @@ pub fn check_free_function(
     Ok(())
 }
 
-/// `(unraw name, line)` of every function `items` declare anywhere other than
-/// at module level: in an `impl` / `trait` block, a function body (also
-/// inside nested blocks, closures and `async` blocks) or a `const` / `static`
-/// initialiser (`const _: () = { .. };`).
-fn nested_fns(items: &mut dyn Iterator<Item = &syn::Item>) -> HashSet<(String, usize)> {
+/// `(unraw name, name position)` of every function `items` declare anywhere
+/// other than at module level: in an `impl` / `trait` block, a function body
+/// (also inside nested blocks, closures and `async` blocks) or a `const` /
+/// `static` initialiser (`const _: () = { .. };`).
+fn nested_fns(items: &mut dyn Iterator<Item = &syn::Item>) -> HashSet<(String, LineColumn)> {
     use syn::visit::Visit;
 
     /// Walks every item and expression; `depth` counts the enclosing scopes
@@ -261,12 +264,12 @@ fn nested_fns(items: &mut dyn Iterator<Item = &syn::Item>) -> HashSet<(String, u
     #[derive(Default)]
     struct Finder {
         depth: usize,
-        found: HashSet<(String, usize)>,
+        found: HashSet<(String, LineColumn)>,
     }
     impl Finder {
         fn record(&mut self, sig: &syn::Signature) {
             let name = syn::ext::IdentExt::unraw(&sig.ident).to_string();
-            self.found.insert((name, sig.ident.span().start().line));
+            self.found.insert((name, sig.ident.span().start()));
         }
         fn nested(&mut self, visit: impl FnOnce(&mut Self)) {
             self.depth += 1;
@@ -306,12 +309,16 @@ fn nested_fns(items: &mut dyn Iterator<Item = &syn::Item>) -> HashSet<(String, u
 
 /// Depth-first collection of the module-level functions of `items` and of
 /// the inline modules inside them, each with its inline path.
-fn collect_module_fns(items: &[syn::Item], prefix: &str, out: &mut Vec<(String, usize, String)>) {
+fn collect_module_fns(
+    items: &[syn::Item],
+    prefix: &str,
+    out: &mut Vec<(String, LineColumn, String)>,
+) {
     for item in items {
         match item {
             syn::Item::Fn(function) => out.push((
                 syn::ext::IdentExt::unraw(&function.sig.ident).to_string(),
-                function.sig.ident.span().start().line,
+                function.sig.ident.span().start(),
                 prefix.to_owned(),
             )),
             syn::Item::Mod(syn::ItemMod {
@@ -456,10 +463,10 @@ pub fn process_cron_attribute(
     let file_path = proc_macro2::Span::call_site()
         .local_file()
         .map(|p| p.display().to_string());
-    let line = item_fn.sig.ident.span().start().line;
-    check_free_function(file_path.as_deref(), &item_fn, line)?;
+    let at = item_fn.sig.ident.span().start();
+    check_free_function(file_path.as_deref(), &item_fn, at)?;
     let stored = StoredCronInfo {
-        inline_module: inline_module_of(file_path.as_deref(), &fn_name, line),
+        inline_module: inline_module_of(file_path.as_deref(), &fn_name, at),
         fn_name,
         expression: args.expression.value(),
         file_path,

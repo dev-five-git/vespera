@@ -399,6 +399,39 @@ fn no_assertion_for_serde_json_value() {
 }
 
 #[test]
+fn no_assertion_for_phantom_data_of_a_user_type() {
+    // Non-generic struct: `PhantomData<User>` has no `Schema` impl, so an
+    // assertion on it would fail to compile (round-27 macrorest-4 M1).
+    let input: syn::DeriveInput = parse_quote! {
+        pub struct UserId {
+            pub raw: u64,
+            pub _marker: PhantomData<User>,
+            pub other: std::marker::PhantomData<Account>,
+        }
+    };
+    let out = emit_field_assertions(&input, &constraints_for(&input)).to_string();
+    assert!(
+        out.is_empty(),
+        "PhantomData fields must emit no assertions, got: {out}"
+    );
+}
+
+#[test]
+fn phantom_data_of_a_user_module_path_is_still_asserted() {
+    // `api::PhantomData` is a user's own type, not `core::marker::PhantomData`.
+    let input: syn::DeriveInput = parse_quote! {
+        pub struct Holder {
+            inner: api::PhantomData,
+        }
+    };
+    let out = emit_field_assertions(&input, &constraints_for(&input)).to_string();
+    assert!(
+        out.contains("__vespera_assert_schema"),
+        "expected assertion on api::PhantomData, got: {out}"
+    );
+}
+
+#[test]
 fn no_assertion_for_any_marked_field() {
     let input: syn::DeriveInput = parse_quote! {
         pub struct Holder {

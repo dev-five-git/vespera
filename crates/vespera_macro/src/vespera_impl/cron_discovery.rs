@@ -23,7 +23,7 @@
 //! way rustc resolves them, and only the module
 //! tree that contains the `vespera!` call site is used, so stray files never
 //! produce a `crate::…` path that does not resolve.  A cheap text pre-filter
-//! (`cron(` anywhere under `src/`) keeps the common case — no cron jobs at
+//! (the name `cron` anywhere under `src/`) keeps the common case — no cron jobs at
 //! all — free of any parsing.
 
 use std::collections::{HashMap, HashSet};
@@ -252,7 +252,7 @@ fn has_cron_attribute(src_dir: &Path) -> bool {
 }
 
 /// Whether `call_site` lies outside `src_dir` (`examples/demo/main.rs`) and
-/// a `cron(` attribute occurs in its directory: the call-site file itself or
+/// the name `cron` occurs in its directory: the call-site file itself or
 /// a module it declares (`examples/demo/jobs.rs`), which the `src/` check
 /// never reads.
 fn outside_src_has_cron(src_dir: &Path, call_site: &Path) -> bool {
@@ -553,7 +553,7 @@ impl ModuleTree {
 type CronJob = (String, crate::metadata::CronOptions);
 
 /// What the module-tree walk reads off one file: its items (cron functions
-/// only when the file can hold jobs: `cron(` occurs in it).  Plain data
+/// only when the file can hold jobs: the name `cron` occurs in it).  Plain data
 /// derived from one parse, kept while the file is unchanged
 /// (`file_cache::derived`): every `vespera!` walks the whole crate,
 /// route-cache hits included.

@@ -23,7 +23,6 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
-$env:RUSTC_BOOTSTRAP = "1"
 $targetDir = Join-Path $repo "target"
 
 function Invoke-Measured([string]$manifest, [string[]]$rustcArgs) {
@@ -33,16 +32,24 @@ function Invoke-Measured([string]$manifest, [string[]]$rustcArgs) {
   $psi.RedirectStandardError = $true
   $psi.RedirectStandardOutput = $true
   $psi.UseShellExecute = $false
+  # Only the measured child sees RUSTC_BOOTSTRAP: the caller's shell keeps
+  # its stable toolchain behaviour.
+  $psi.EnvironmentVariables["RUSTC_BOOTSTRAP"] = "1"
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $p = [Diagnostics.Process]::Start($psi)
   $errTask = $p.StandardError.ReadToEndAsync()
   $outTask = $p.StandardOutput.ReadToEndAsync()
   $peak = 0.0
   while (-not $p.HasExited) {
-    # The peak of the largest single rustc process (not the sum over concurrent
-    # rustc processes, which would overstate one crate's memory).
-    $one =(Get-Process -Name rustc -ErrorAction SilentlyContinue | Measure-Object WorkingSet64 -Maximum).Maximum
-    if ($one -and $one / 1MB -gt $peak) { $peak = $one / 1MB }
+    # The peak of the largest single rustc process of THIS build: only the
+    # rustc children of the measured cargo (not every rustc on the machine,
+    # e.g. rust-analyzer's), and never the sum over concurrent processes.
+    $kids = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($p.Id)" -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -eq "rustc.exe" }
+    foreach ($kid in $kids) {
+      $proc = Get-Process -Id $kid.ProcessId -ErrorAction SilentlyContinue
+      if ($proc -and $proc.WorkingSet64 / 1MB -gt $peak) { $peak = $proc.WorkingSet64 / 1MB }
+    }
     Start-Sleep -Milliseconds 25
   }
   $p.WaitForExit()
@@ -105,6 +112,7 @@ foreach ($n in $Sizes) {
   & cargo clean --quiet -p stress-app --manifest-path $manifest --target-dir $targetDir 2>$null
   $hit = Invoke-Measured $manifest @("-Z", "time-passes")
   $hitExp = (Get-Pass $hit.Err "macro_expand_crate")[0]
+  if ($null -eq $hitExp) { throw "no macro_expand_crate pass in cache-hit output:`n$($hit.Err)" }
   Add-Content "$dir\src\routes\g0.rs" "// touch"
   $inc = Invoke-Measured $manifest @("-Z", "time-passes")
   $oa = if (Test-Path "$dir\openapi.json") { [Math]::Round((Get-Item "$dir\openapi.json").Length / 1KB) } else { 0 }

@@ -113,34 +113,49 @@ fn test_validate_cron_fn_rejects_uncallable_signatures(
 /// `const` / `static` initialiser, a closure, an inner block and an
 /// `async` block are function-local scopes too.
 #[rstest::rstest]
-#[case::top_level(2, true)]
-#[case::inline_module(3, true)]
-#[case::impl_method(5, false)]
-#[case::trait_default(8, false)]
-#[case::nested_in_fn(11, false)]
-#[case::nested_in_method(15, false)]
-#[case::nested_in_trait_default(20, false)]
-#[case::const_initialiser(25, false)]
-#[case::static_initialiser(26, false)]
-#[case::closure_body(27, false)]
-#[case::inner_block(28, false)]
-#[case::async_block(29, false)]
-#[case::module_after_items(30, true)]
-fn test_check_free_function(#[case] line: usize, #[case] free: bool) {
+#[case::top_level(2, 0, true)]
+#[case::inline_module(3, 0, true)]
+#[case::impl_method(5, 0, false)]
+#[case::trait_default(8, 0, false)]
+#[case::nested_in_fn(11, 0, false)]
+#[case::nested_in_method(15, 0, false)]
+#[case::nested_in_trait_default(20, 0, false)]
+#[case::const_initialiser(25, 0, false)]
+#[case::static_initialiser(26, 0, false)]
+#[case::closure_body(27, 0, false)]
+#[case::inner_block(28, 0, false)]
+#[case::async_block(29, 0, false)]
+#[case::module_after_items(30, 0, true)]
+// Two `tick`s on one line: only the second is nested (round-27 macrorest-1 L4).
+#[case::same_line_top_level(31, 0, true)]
+#[case::same_line_nested(31, 1, false)]
+fn test_check_free_function(#[case] line: usize, #[case] nth: usize, #[case] free: bool) {
     let dir = tempfile::TempDir::new().unwrap();
     let file = dir.path().join("jobs.rs");
-    std::fs::write(
-        &file,
-        "\npub async fn tick() {}\nmod a { pub async fn tick() {} }\nimpl S {\n    pub async fn tick() {}\n}\ntrait T {\n    async fn tick() {}\n}\npub fn outer() {\n    let _x = 1; pub async fn tick() {}\n}\nimpl S {\n    pub fn method() {\n        pub async fn tick() {}\n    }\n}\ntrait U {\n    fn provided() {\n        pub async fn tick() {}\n    }\n    fn required();\n}\npub struct S;\nconst _: () = { pub async fn tick() {} };\nstatic X: () = { pub async fn tick() {} };\npub fn closure() { let _c = || { pub async fn tick() {} }; }\npub fn blocky() { { pub async fn tick() {} } }\npub fn asyncb() { let _f = async { pub async fn tick() {} }; }\nmod late { pub async fn tick() {} }\n",
-    )
-    .unwrap();
+    std::fs::write(&file, FREE_FN_FILE).unwrap();
     crate::schema_macro::file_cache::bump_epoch();
     let item: syn::ItemFn = syn::parse_quote!(
         pub async fn tick() {}
     );
     let file = file.display().to_string();
-    assert_eq!(check_free_function(Some(&file), &item, line).is_ok(), free);
-    assert!(check_free_function(None, &item, line).is_ok());
+    let at = name_position(FREE_FN_FILE, line, nth, "tick");
+    assert_eq!(check_free_function(Some(&file), &item, at).is_ok(), free);
+    assert!(check_free_function(None, &item, at).is_ok());
+}
+
+/// The fixture of [`test_check_free_function`]; `tick` is declared on the
+/// lines the cases name.
+const FREE_FN_FILE: &str = "\npub async fn tick() {}\nmod a { pub async fn tick() {} }\nimpl S {\n    pub async fn tick() {}\n}\ntrait T {\n    async fn tick() {}\n}\npub fn outer() {\n    let _x = 1; pub async fn tick() {}\n}\nimpl S {\n    pub fn method() {\n        pub async fn tick() {}\n    }\n}\ntrait U {\n    fn provided() {\n        pub async fn tick() {}\n    }\n    fn required();\n}\npub struct S;\nconst _: () = { pub async fn tick() {} };\nstatic X: () = { pub async fn tick() {} };\npub fn closure() { let _c = || { pub async fn tick() {} }; }\npub fn blocky() { { pub async fn tick() {} } }\npub fn asyncb() { let _f = async { pub async fn tick() {} }; }\nmod late { pub async fn tick() {} }\npub async fn tick() {} pub fn one_line() { pub async fn tick() {} }\n";
+
+/// Position of the `nth` occurrence of `name` on the 1-based `line` of
+/// `content`: the position `proc_macro2` reports for that name token.
+fn name_position(content: &str, line: usize, nth: usize, name: &str) -> LineColumn {
+    let text = content.lines().nth(line - 1).expect("fixture line");
+    let (column, _) = text
+        .match_indices(name)
+        .nth(nth)
+        .expect("fixture name occurrence");
+    LineColumn { line, column }
 }
 
 #[test]
@@ -346,29 +361,65 @@ fn test_register_cron_keys_by_inline_module() {
 }
 
 #[rstest::rstest]
-#[case::file_level("tick", 2, Some(""))]
-#[case::inline_a("tick", 5, Some("a"))]
-#[case::nested_raw_b("tick", 9, Some("b::inner"))]
-#[case::wrong_line("tick", 3, None)]
-#[case::unknown_fn("tock", 5, None)]
-#[case::raw_name("r#match", 13, Some("c"))]
-#[case::unraw_name("match", 13, Some("c"))]
+#[case::file_level("tick", 2, "tick", Some(""))]
+#[case::inline_a("tick", 5, "tick", Some("a"))]
+#[case::nested_raw_b("tick", 9, "tick", Some("b::inner"))]
+#[case::wrong_line("tick", 3, "tick", None)]
+#[case::unknown_fn("tock", 5, "tick", None)]
+#[case::raw_name("r#match", 13, "r#match", Some("c"))]
+#[case::unraw_name("match", 13, "r#match", Some("c"))]
 fn test_inline_module_of_locates_the_declaration(
     #[case] fn_name: &str,
     #[case] line: usize,
+    #[case] needle: &str,
     #[case] expected: Option<&str>,
 ) {
     let dir = tempfile::TempDir::new().unwrap();
     let file = dir.path().join("jobs.rs");
+    std::fs::write(&file, INLINE_MODULE_FILE).unwrap();
+    let file = file.display().to_string();
+    // `wrong_line` names a line with no `tick`: any column there is wrong.
+    let column = INLINE_MODULE_FILE
+        .lines()
+        .nth(line - 1)
+        .and_then(|text| text.find(needle))
+        .unwrap_or(0);
+    let at = LineColumn { line, column };
+    assert_eq!(
+        inline_module_of(Some(&file), fn_name, at),
+        expected.map(str::to_string)
+    );
+}
+
+const INLINE_MODULE_FILE: &str = "\n#[cron(\"0 * * * * *\")] pub async fn tick() {}\nmod a {\n    pub fn other() {}\n    #[cron(\"1 * * * * *\")] pub async fn tick() {}\n}\nmod r#b {\n    mod inner {\n        #[cron(\"2 * * * * *\")] pub async fn tick() {}\n    }\n    mod external;\n}\nmod c { pub async fn r#match() {} }\n";
+
+/// Two same-named functions on one line of one module are told apart by
+/// column (round-27 macrorest-1 L4): the second is the one at its column.
+#[test]
+fn test_inline_module_of_same_line_by_column() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("jobs.rs");
     std::fs::write(
         &file,
-        "\n#[cron(\"0 * * * * *\")] pub async fn tick() {}\nmod a {\n    pub fn other() {}\n    #[cron(\"1 * * * * *\")] pub async fn tick() {}\n}\nmod r#b {\n    mod inner {\n        #[cron(\"2 * * * * *\")] pub async fn tick() {}\n    }\n    mod external;\n}\nmod c { pub async fn r#match() {} }\n",
+        "pub async fn tick() {} mod a { pub async fn tick() {} }\n",
     )
     .unwrap();
     let file = file.display().to_string();
+    let top = LineColumn {
+        line: 1,
+        column: 13,
+    };
+    let inner = LineColumn {
+        line: 1,
+        column: 44,
+    };
     assert_eq!(
-        inline_module_of(Some(&file), fn_name, line),
-        expected.map(str::to_string)
+        inline_module_of(Some(&file), "tick", top).as_deref(),
+        Some("")
+    );
+    assert_eq!(
+        inline_module_of(Some(&file), "tick", inner).as_deref(),
+        Some("a")
     );
 }
 
@@ -376,7 +427,8 @@ fn test_inline_module_of_locates_the_declaration(
 #[case::no_file(None)]
 #[case::missing_file(Some("/definitely/not/here/jobs.rs"))]
 fn test_inline_module_of_without_a_readable_file(#[case] file: Option<&str>) {
-    assert_eq!(inline_module_of(file, "tick", 1), None);
+    let at = LineColumn { line: 1, column: 0 };
+    assert_eq!(inline_module_of(file, "tick", at), None);
 }
 
 #[test]
@@ -384,11 +436,14 @@ fn test_inline_module_of_unparsable_file() {
     let dir = tempfile::TempDir::new().unwrap();
     let file = dir.path().join("broken.rs");
     std::fs::write(&file, "mod {{{").unwrap();
+    let at = LineColumn { line: 1, column: 0 };
     assert_eq!(
-        inline_module_of(Some(&file.display().to_string()), "tick", 1),
+        inline_module_of(Some(&file.display().to_string()), "tick", at),
         None
     );
 }
+
+const FN_INDEX_FILE: &str = "mod a { pub async fn x() {} }\npub async fn y() {}\n";
 
 /// Every handler of one file shares ONE parse: `#[route]` asks for each
 /// handler's inline module, `#[cron]` additionally checks it is free — the
@@ -398,11 +453,7 @@ fn test_inline_module_of_unparsable_file() {
 fn test_fn_index_parses_each_file_version_once() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("routes.rs");
-    std::fs::write(
-        &path,
-        "mod a { pub async fn x() {} }\npub async fn y() {}\n",
-    )
-    .unwrap();
+    std::fs::write(&path, FN_INDEX_FILE).unwrap();
     let file = path.display().to_string();
     crate::schema_macro::file_cache::bump_epoch();
     let before = crate::schema_macro::file_cache::derived_computes();
@@ -411,9 +462,25 @@ fn test_fn_index_parses_each_file_version_once() {
     );
     for _ in 0..3 {
         crate::schema_macro::file_cache::bump_epoch();
-        assert_eq!(inline_module_of(Some(&file), "x", 1).as_deref(), Some("a"));
-        assert_eq!(inline_module_of(Some(&file), "y", 2).as_deref(), Some(""));
-        assert!(check_free_function(Some(&file), &item, 2).is_ok());
+        // `x` in `mod a { pub async fn x() {} }` is column 21; `y` on line 2
+        // is column 13 (a `name_position` search would match the `y` of `async`).
+        let x_at = LineColumn {
+            line: 1,
+            column: 21,
+        };
+        let y_at = LineColumn {
+            line: 2,
+            column: 13,
+        };
+        assert_eq!(
+            inline_module_of(Some(&file), "x", x_at).as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            inline_module_of(Some(&file), "y", y_at).as_deref(),
+            Some("")
+        );
+        assert!(check_free_function(Some(&file), &item, y_at).is_ok());
     }
     assert_eq!(
         crate::schema_macro::file_cache::derived_computes() - before,
@@ -426,7 +493,15 @@ fn test_fn_index_parses_each_file_version_once() {
     )
     .unwrap();
     crate::schema_macro::file_cache::bump_epoch();
-    assert_eq!(inline_module_of(Some(&file), "x", 2).as_deref(), Some("bb"));
+    // `x` on line 2 of `mod bb { pub async fn x() {} }`: column 22.
+    let x_at = LineColumn {
+        line: 2,
+        column: 22,
+    };
+    assert_eq!(
+        inline_module_of(Some(&file), "x", x_at).as_deref(),
+        Some("bb")
+    );
     assert_eq!(
         crate::schema_macro::file_cache::derived_computes() - before,
         2
@@ -568,7 +643,15 @@ pub async fn r#match() {}
     )
     .unwrap();
     assert_eq!(
-        inline_module_of(Some(&file.display().to_string()), "match", 2),
+        // `r#match` on line 2 starts at its `r`: column 13.
+        inline_module_of(
+            Some(&file.display().to_string()),
+            "match",
+            LineColumn {
+                line: 2,
+                column: 13
+            },
+        ),
         Some("a".to_owned())
     );
 }

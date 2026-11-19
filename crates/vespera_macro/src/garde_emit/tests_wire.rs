@@ -57,6 +57,36 @@ fn skipped_runtime_rule_only_struct_emits_an_empty_impl() {
     assert!(!out.contains("\"a\""), "{out}");
 }
 
+/// A direct `f32` bound rounds inward (round-27 coordinator item): the nearest
+/// `f32` to `16777217` is `16777216`, which would admit a value the bound
+/// forbids, so the minimum steps up and the maximum steps down. `f64` keeps
+/// the bound as written.
+#[test]
+fn f32_bounds_round_inward_and_f64_bounds_do_not() {
+    let min = emit("struct S { #[schema(minimum = 16777217)] f: f32 }");
+    assert!(min.contains("next_up"), "{min}");
+    assert!(!min.contains("next_down"), "{min}");
+    let max = emit("struct S { #[schema(maximum = 16777217)] f: f32 }");
+    assert!(max.contains("next_down"), "{max}");
+    assert!(!max.contains("next_up"), "{max}");
+    let f64_min = emit("struct S { #[schema(minimum = 1.5)] f: f64 }");
+    assert!(!f64_min.contains("next_up"), "{f64_min}");
+    assert!(f64_min.contains("1.5f64 as f64"), "{f64_min}");
+}
+
+/// A generic struct whose only runtime rule sits on a skipped field gets the
+/// empty impl with its generics (round-27 macrorest-1 L2), not the
+/// "generic types" compile error: serde never reads that field.
+#[test]
+fn skipped_runtime_rule_on_generic_struct_emits_an_empty_generic_impl() {
+    let out = emit("struct W<T> { #[serde(skip)] #[schema(minimum = 1)] n: i32, v: T }");
+    assert!(!out.contains("compile_error"), "{out}");
+    assert!(
+        out.contains("impl < T > :: vespera :: __validation :: garde :: Validate for W < T >"),
+        "{out}"
+    );
+}
+
 /// A struct with no runtime rule at all gets no impl.
 #[test]
 fn struct_without_runtime_rules_emits_no_impl() {
@@ -129,6 +159,14 @@ fn transparent_struct_field_keeps_the_parent_path() {
 #[case::u64_max_clamped(
     "#[schema(maximum = 18446744073709551615)] f: u64",
     "Some (18446744073709551615u64)"
+)]
+#[case::u64_float_max_is_the_integer_max(
+    "#[schema(maximum = 18446744073709551615.0)] f: u64",
+    "Some (18446744073709551615u64)"
+)]
+#[case::i64_float_max_is_the_integer_max(
+    "#[schema(maximum = 9223372036854775807.0)] f: i64",
+    "Some (9223372036854775807i64)"
 )]
 #[case::value_type_attr_not_stale(
     "#[schema(minimum = 9007199254740993)] #[schema(value_type = Vec<u8>, minimum = 3)] f: i64",

@@ -7,8 +7,9 @@
 # Like `git bisect run`, but over crates.io releases instead of commits. The
 # probe command decides good/bad by exit code: 0 = good, non-zero = bad. For a
 # perf regression make the probe fail when the number is too high, e.g. a script
-# that runs `cargo bench ... -- --baseline main` and applies the same +30% mean /
-# +20% CI-lower-bound rule as .github/workflows/bench.yml.
+# that runs `cargo bench ... -- --baseline main` and applies the same rule as
+# scripts/bench-interleaved.sh: the median of the paired per-round changes above
+# +30%, with every round above +20%.
 #
 # - Candidates come from the crates.io API (needs curl + jq): non-yanked,
 #   non-prerelease releases between <good> and <bad> inclusive, semver-sorted.

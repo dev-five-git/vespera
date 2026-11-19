@@ -386,7 +386,7 @@ pub fn process_route_attribute(
     let inline_module = crate::cron_impl::inline_module_of(
         source_file.as_deref().and_then(std::path::Path::to_str),
         &syn::ext::IdentExt::unraw(&item_fn.sig.ident).to_string(),
-        item_fn.sig.ident.span().start().line,
+        item_fn.sig.ident.span().start(),
     );
     path_check::check_path_extractors(
         &item_fn.sig,
@@ -903,13 +903,27 @@ mod tests {
         crate::schema_macro::file_cache::bump_epoch();
         let path = file.to_str();
         assert_eq!(
-            crate::cron_impl::inline_module_of(path, "scoped_list", 3),
+            crate::cron_impl::inline_module_of(
+                path,
+                "scoped_list",
+                proc_macro2::LineColumn {
+                    line: 3,
+                    column: 17
+                },
+            ),
             Some("v2".to_string())
         );
         std::fs::write(&file, "pub async fn scoped_list() {}\n").unwrap();
         crate::schema_macro::file_cache::bump_epoch();
         assert_eq!(
-            crate::cron_impl::inline_module_of(path, "scoped_list", 1),
+            crate::cron_impl::inline_module_of(
+                path,
+                "scoped_list",
+                proc_macro2::LineColumn {
+                    line: 1,
+                    column: 13
+                },
+            ),
             Some(String::new())
         );
     }

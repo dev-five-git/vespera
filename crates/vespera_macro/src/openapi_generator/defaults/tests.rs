@@ -294,8 +294,23 @@ fn extract_schema_default_attr_cases(
 #[case::empty_array("[]", json!([]))]
 #[case::object(r#"{"a": 1}"#, json!({"a": 1}))]
 #[case::null("null", Value::Null)]
+#[case::i64_min("-9223372036854775808", json!(i64::MIN))]
+#[case::u64_max("18446744073709551615", json!(u64::MAX))]
+#[case::u64_beyond_i64("12345678901234567890", json!(12_345_678_901_234_567_890_u64))]
+#[case::below_i64_min_stays_text("-9223372036854775809", json!("-9223372036854775809"))]
+#[case::beyond_u64_stays_text("18446744073709551616", json!("18446744073709551616"))]
 fn parse_default_string_to_json_value_cases(#[case] input: &str, #[case] expected: Value) {
     assert_eq!(parse_default_string_to_json_value(input), expected);
+}
+
+/// An integer literal that fits no 64-bit integer is never rounded through
+/// `f64` (`18446744073709551615` read as `1.8446744073709552e19`, which is not
+/// an integer and is above `u64::MAX`): the literal stays text.
+#[test]
+fn integer_literal_beyond_u64_is_never_a_float() {
+    let value = parse_default_string_to_json_value("18446744073709551615000");
+    assert!(value.is_string(), "{value}");
+    assert!(!value.is_f64(), "{value}");
 }
 
 // ---------- set_property_default ----------

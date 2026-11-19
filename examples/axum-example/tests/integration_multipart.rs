@@ -796,15 +796,17 @@ async fn test_multipart_rejection_missing_content_type() {
     let server = TestServer::new(create_coverage_test_app());
 
     let response = server
-        .post("/vec-test")
+        .post("/strict-test")
         .bytes(b"not multipart".to_vec().into())
         .await;
 
-    // axum rejects with 4xx because there's no multipart content-type
+    // No multipart Content-Type: the MultipartRejection is a 400 with the same
+    // "Invalid multipart request" body as the JSON-content-type case above.
+    response.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    let body = response.text();
     assert!(
-        response.status_code().is_client_error(),
-        "Should be a client error, got {}",
-        response.status_code()
+        body.contains("Invalid multipart request"),
+        "unexpected body: {body}"
     );
 }
 
