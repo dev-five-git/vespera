@@ -4,7 +4,7 @@ import static com.devfive.vespera.bridge.ReactiveTestSupport.call;
 import static com.devfive.vespera.bridge.ReactiveTestSupport.responseWire;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -881,7 +881,7 @@ class VesperaReactiveProxyHandlerTest {
                     .header(HttpHeaders.ACCEPT, "text/event-stream"));
             assertEquals(503, rejected.status());
             assertEquals(ProxyErrors.STREAMING_SATURATED, rejected.body());
-            assertTrue(rejected.header("X-Request-Id") != null);
+            assertNotNull(rejected.header("X-Request-Id"));
             assertEquals(1, transport.requests.size(), "never reached Rust");
             DispatchEvent event = awaitEvent("/three");
             assertEquals(503, event.status());

@@ -52,9 +52,10 @@ final class VesperaWireCodec {
      * principal — never the body, which is appended separately in
      * {@link #assembleWire} / {@link #assembleInto}. Servlet containers cap
      * inbound header sizes orders of magnitude below this, and
-     * {@link #writePrincipal} keeps the principal within
-     * {@link #MAX_WIRE_HEADER_BYTES}. A header above that Rust limit still
-     * encodes (Rust answers it with a {@code 400} wire); this ceiling is pure
+     * {@link #writePrincipal} keeps the authorities and attributes within
+     * {@link #MAX_WIRE_HEADER_BYTES} (the principal name is not budgeted). A
+     * header above that Rust limit still encodes (Rust answers it with a
+     * {@code 400} wire); this ceiling is pure
      * defense-in-depth: a pathological header that tried to grow the buffer
      * past it fails fast with an exception instead of doubling toward an
      * OutOfMemoryError.
@@ -64,7 +65,9 @@ final class VesperaWireCodec {
      * Largest wire request header the Rust side parses (mirrors
      * {@code vespera_inprocess::wire::MAX_WIRE_HEADER_BYTES}, 1 MiB); a longer
      * one is answered {@code 400}. {@link #writePrincipal} drops principal
-     * entries that would push the header past it.
+     * authorities and attributes that would push the header past it; the
+     * principal name is written whole, so a name that alone exceeds the limit
+     * still yields a {@code 400}.
      */
     static final int MAX_WIRE_HEADER_BYTES = 1024 * 1024;
 
@@ -581,7 +584,10 @@ final class VesperaWireCodec {
      * past {@code limit} bytes ({@link #principalLimit}: the Rust side answers a
      * header over {@link #MAX_WIRE_HEADER_BYTES} with {@code 400}) ends the
      * principal — authorities are written first, so they take the budget
-     * before the attributes. Dropped entries are logged once per process.
+     * before the attributes. Dropped entries are logged once per process. The
+     * name is not budgeted: truncating it would alias two principals onto one
+     * identity, and dropping the principal would silently downgrade
+     * authentication, so an over-long name stays a loud {@code 400} from Rust.
      */
     static void writePrincipal(ExposedByteArrayOutputStream buf, VesperaPrincipal principal, int limit) {
         if (principal == null) {
