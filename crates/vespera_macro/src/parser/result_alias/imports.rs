@@ -95,12 +95,12 @@ fn reexports_nominal(
     }
     match import_kind(items, name) {
         Some(Import::External) => true,
-        Some(Import::Local) => match import_parent(items, name) {
-            Some(parent @ (Qualifier::CrateRoot | Qualifier::Module(_))) => {
-                nominal_in(name, &parent, scope, src_dir, depth + 1)
-            }
-            _ => true,
-        },
+        // Only a crate-root / named-module source can be followed; any other
+        // local import (`super`, `self`, an unresolved chain) stays nominal.
+        Some(Import::Local) => import_parent(items, name).is_none_or(|parent| {
+            !matches!(parent, Qualifier::CrateRoot | Qualifier::Module(_))
+                || nominal_in(name, &parent, scope, src_dir, depth + 1)
+        }),
         // A glob of `super` / of an unresolved chain names no module this
         // lookup can follow, so it brings nothing nominal into view here.
         None => glob_parents(items).iter().any(|parent| {
