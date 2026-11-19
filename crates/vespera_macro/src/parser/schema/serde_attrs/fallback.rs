@@ -194,16 +194,15 @@ mod tests {
         );
     }
 
-    /// Test that the fallback's "default appears as a substring inside
-    /// another identifier" branch returns None (no false-positive
-    /// match).  Exercises the trailing `None` arm of
-    /// `scan_default_from_raw_tokens` (substring found, but neither
-    /// `=` follows nor delimiter chars surround it).
+    /// Test that a "default" occurring as part of a longer identifier is not
+    /// a serde default: `scan_default_from_raw_tokens` skips it (the
+    /// `key_positions` candidates must be whole keys), so the scan finds
+    /// nothing and returns `None`.
     #[test]
     fn test_extract_default_substring_in_identifier_is_not_a_match() {
-        // `field_default` contains "default" but as a suffix of an
-        // identifier — `before_char` is `_`, not one of the valid
-        // delimiters, so the standalone check fails.
+        // `field_default` contains "default" only as a suffix of an
+        // identifier: the character before it is `_`, which is not a key
+        // boundary, so it is not a key candidate.
         let tokens: TokenStream = "@bogus, field_default"
             .parse()
             .expect("token stream parses");

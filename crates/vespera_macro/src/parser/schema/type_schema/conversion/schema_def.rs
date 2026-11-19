@@ -229,6 +229,13 @@ impl SchemaDef {
     /// Vec<T>)]`, `#[serde(into = "Wire<T>")]`) — container, variants and
     /// fields (all variants of an enum).
     pub(super) fn substitute(&mut self, params: &[String], concrete: &[&Type]) {
+        self.rewrite_types(&|ty| substitute_type(ty, params, concrete));
+    }
+
+    /// Apply `rewrite` to every field type and to every type the container,
+    /// variant and field attributes name (`value_type`, `into`, `from`,
+    /// `try_from`), in the order they are written.
+    fn rewrite_types(&mut self, rewrite: &dyn Fn(&Type) -> Type) {
         let mut attrs: Vec<&mut Vec<syn::Attribute>> = Vec::new();
         let mut fields: Vec<&mut syn::Field> = Vec::new();
         match self {
@@ -245,42 +252,39 @@ impl SchemaDef {
             }
         }
         for field in fields {
-            field.ty = substitute_type(&field.ty, params, concrete);
+            field.ty = rewrite(&field.ty);
             attrs.push(&mut field.attrs);
         }
         for attr in attrs.into_iter().flatten() {
             if let syn::Meta::List(list) = &mut attr.meta
                 && (list.path.is_ident("schema") || list.path.is_ident("serde"))
             {
-                list.tokens = substitute_tokens(list.tokens.clone(), params, concrete);
+                list.tokens = substitute_tokens(list.tokens.clone(), rewrite);
             }
         }
     }
 
     /// Replace the const parameters `consts` (see [`const_argument_exprs`]) by
-    /// their argument expressions in every field type, so an array length
+    /// their argument expressions in every field type and in the types the
+    /// attributes name (`#[schema(value_type = [T; N])]`), so an array length
     /// `[T; N]` becomes the literal the instantiation gives (`[T; 4]`, which
     /// pins `minItems` / `maxItems`).
     pub(super) fn substitute_consts(&mut self, consts: &[(String, syn::Expr)]) {
-        let fields: Vec<&mut syn::Field> = match self {
-            Self::Struct(item) => item.fields.iter_mut().collect(),
-            Self::Enum(item) => item
-                .variants
-                .iter_mut()
-                .flat_map(|variant| variant.fields.iter_mut())
-                .collect(),
-        };
-        let mut visitor = ConstArgs { consts };
-        for field in fields {
-            syn::visit_mut::VisitMut::visit_type_mut(&mut visitor, &mut field.ty);
+        if consts.is_empty() {
+            return;
         }
+        self.rewrite_types(&|ty| {
+            let mut ty = ty.clone();
+            syn::visit_mut::VisitMut::visit_type_mut(&mut ConstArgs { consts }, &mut ty);
+            ty
+        });
     }
 }
 
-/// `tokens` of an attribute list with the type after `value_type =` and the
-/// type string after `into =` / `from =` / `try_from =` substituted (other
-/// keys, `rename = "T"` included, are left alone).
-fn substitute_tokens(tokens: TokenStream, params: &[String], concrete: &[&Type]) -> TokenStream {
+/// `tokens` of an attribute list with `rewrite` applied to the type after
+/// `value_type =` and to the type string after `into =` / `from =` /
+/// `try_from =` (other keys, `rename = "T"` included, are left alone).
+fn substitute_tokens(tokens: TokenStream, rewrite: &dyn Fn(&Type) -> Type) -> TokenStream {
     let trees: Vec<TokenTree> = tokens.into_iter().collect();
     let mut out = TokenStream::new();
     let mut index = 0;
@@ -290,7 +294,7 @@ fn substitute_tokens(tokens: TokenStream, params: &[String], concrete: &[&Type])
             TokenTree::Group(group) => {
                 let mut inner = proc_macro2::Group::new(
                     group.delimiter(),
-                    substitute_tokens(group.stream(), params, concrete),
+                    substitute_tokens(group.stream(), rewrite),
                 );
                 inner.set_span(group.span());
                 out.extend([TokenTree::Group(inner)]);
@@ -310,7 +314,7 @@ fn substitute_tokens(tokens: TokenStream, params: &[String], concrete: &[&Type])
         index += 1;
         let end = value_end(&trees, index);
         let value: TokenStream = trees[index..end].iter().cloned().collect();
-        out.extend(substitute_value(&key, value, params, concrete));
+        out.extend(substitute_value(&key, value, rewrite));
         index = end;
     }
     out
@@ -341,21 +345,16 @@ fn value_end(trees: &[TokenTree], start: usize) -> usize {
 
 /// The substituted `value` of `key` (unchanged for other keys or a value
 /// that is not a type / type string).
-fn substitute_value(
-    key: &str,
-    value: TokenStream,
-    params: &[String],
-    concrete: &[&Type],
-) -> TokenStream {
+fn substitute_value(key: &str, value: TokenStream, rewrite: &dyn Fn(&Type) -> Type) -> TokenStream {
     let substituted = match key {
         "value_type" => syn::parse2::<Type>(value.clone())
             .ok()
-            .map(|ty| quote::ToTokens::into_token_stream(substitute_type(&ty, params, concrete))),
+            .map(|ty| quote::ToTokens::into_token_stream(rewrite(&ty))),
         "into" | "from" | "try_from" => syn::parse2::<syn::LitStr>(value.clone())
             .ok()
             .and_then(|lit| Some((lit.parse::<Type>().ok()?, lit.span())))
             .map(|(ty, span)| {
-                let ty = substitute_type(&ty, params, concrete);
+                let ty = rewrite(&ty);
                 let text = quote::ToTokens::into_token_stream(ty).to_string();
                 quote::ToTokens::into_token_stream(syn::LitStr::new(&text, span))
             }),

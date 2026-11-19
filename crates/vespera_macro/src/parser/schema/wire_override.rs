@@ -114,12 +114,13 @@ pub fn field_schema_ref(
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> SchemaRef {
-    // `#[schema(any)]` is the "any JSON value" (`{}`) escape hatch.
-    if constraints.is_any() {
-        return SchemaRef::Inline(Box::default());
-    }
+    // `value_type` always wins; then `#[schema(any)]` is the "any JSON value"
+    // (`{}`) escape hatch.
     if let Some(value_type) = &constraints.value_type {
         return parse_type_to_schema_ref(&value_type.0, known_schemas, struct_definitions);
+    }
+    if constraints.is_any() {
+        return SchemaRef::Inline(Box::default());
     }
     match codec_wire(field, side) {
         CodecWire::RustType => {
@@ -351,6 +352,28 @@ mod tests {
     fn field(src: &str) -> syn::Field {
         let item: syn::ItemStruct = syn::parse_str(&format!("struct S {{ {src} }}")).unwrap();
         item.fields.into_iter().next().unwrap()
+    }
+
+    /// Round 30: `value_type` wins over `#[schema(any)]` on the same field
+    /// (the module doc): the field documents the value type, not `{}`.
+    #[test]
+    fn value_type_wins_over_any() {
+        let field = field("#[schema(any, value_type = String)] x: Vec<u8>");
+        let constraints = extract_schema_constraints(&field.attrs);
+        let schema = field_schema_ref(
+            &field,
+            &constraints,
+            SerdeSide::Serialize,
+            &HashSet::<String>::new(),
+            &HashMap::<String, String>::new(),
+        );
+        let SchemaRef::Inline(schema) = schema else {
+            panic!("expected an inline schema");
+        };
+        assert_eq!(
+            schema.schema_type,
+            Some(vespera_core::schema::SchemaType::String)
+        );
     }
 
     #[rstest]

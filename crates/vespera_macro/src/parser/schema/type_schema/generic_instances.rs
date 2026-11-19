@@ -129,6 +129,16 @@ fn push_type_segments(
                     for arg in &args.args {
                         if let syn::GenericArgument::Type(inner) = arg {
                             push_type_segments(name, inner, component);
+                        } else if let syn::GenericArgument::Const(expr) = arg {
+                            // A nested const argument (`Tree<Buf<u8, 4>>`) is
+                            // spelled as a top-level one is
+                            // ([`push_const_segments`]), so `Buf<u8, 4>` and
+                            // `Buf<u8, 8>` never share a name. A bare
+                            // identifier (`Buf<u8, LEN>`) parses as a type and
+                            // spells as one; a const slot never holds a type,
+                            // so that cannot collide with a type argument.
+                            name.push_str("_Const.");
+                            push_array_len(name, expr);
                         }
                     }
                 }
@@ -385,6 +395,10 @@ mod tests {
     #[case::other("Page", &["impl Trait"], "Page_.Value")]
     #[case::qualified_self("Page", &["<T as Tr>::Out"], "Page_.Qself_T_Tr.pOut")]
     #[case::underscore_ident("Pair", &["A_B", "C"], "Pair_A-B_C")]
+    // A const argument of a nested type is spelled like a top-level one; a
+    // bare identifier in that slot spells as the type it parses as.
+    #[case::nested_const_argument("Tree", &["Buf<u8, 4>"], "Tree_Buf_u8_Const.4")]
+    #[case::nested_bare_const_argument("Tree", &["Buf<u8, LEN>"], "Tree_Buf_u8_LEN")]
     // Round 11: the base is escaped like an argument.
     #[case::underscore_base("My_Tree", &["i32"], "My-Tree_i32")]
     #[case::dash_dot_base("My-Tree.v1", &["i32"], "My.hTree.dv1_i32")]
@@ -411,6 +425,11 @@ mod tests {
     #[case::qualified_self_vs_bare(&["<T as Tr>::Out"], &["Out"])]
     #[case::const_len_vs_expr(&["[u8; N]"], &["[u8; 2 * 2]"])]
     #[case::const_len_path_vs_bare(&["[u8; a::N]"], &["[u8; N]"])]
+    // Round 30: nested const arguments are part of the name, so two
+    // instances of a nested const generic never share a component.
+    #[case::nested_const_len(&["Tree<Buf<u8, 4>>"], &["Tree<Buf<u8, 8>>"])]
+    #[case::nested_const_vs_bare_const(&["Tree<Buf<u8, 4>>"], &["Tree<Buf<u8, LEN>>"])]
+    #[case::nested_const_vs_type(&["Tree<Buf<u8, 4>>"], &["Tree<Buf<u8, Four>>"])]
     fn instance_names_are_injective(#[case] left: &[&str], #[case] right: &[&str]) {
         let parse = |args: &[&str]| -> Vec<Type> {
             args.iter()

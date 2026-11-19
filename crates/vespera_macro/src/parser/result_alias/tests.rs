@@ -83,6 +83,33 @@ fn expand(file_src: &str, ret: &str) -> String {
 #[case::wrapper_untouched("type Json = Bad;", "-> Json<u8>", "-> Json < u8 >")]
 #[case::too_many_args("type R<T> = Result<T, E>;", "-> R<A, B>", "-> R < A , B >")]
 #[case::missing_arg_without_default("type R<T, E> = Result<T, E>;", "-> R<A>", "-> R < A >")]
+// A const parameter takes its argument's slot, even when the argument is a
+// bare identifier that parses as a type: `LIMIT` is a value, `User` the `T`.
+#[case::bare_const_argument_takes_const_slot(
+    "type Page<const MAX: usize, T> = Json<Vec<T>>;",
+    "-> Page<LIMIT, User>",
+    "-> Json < Vec < User > >"
+)]
+#[case::literal_const_argument_takes_const_slot(
+    "type Page<const MAX: usize, T> = Json<Vec<T>>;",
+    "-> Page<3, User>",
+    "-> Json < Vec < User > >"
+)]
+#[case::lifetime_before_const_argument(
+    "type Page<'a, const MAX: usize, T> = Json<Vec<T>>;",
+    "-> Page<'static, LIMIT, User>",
+    "-> Json < Vec < User > >"
+)]
+#[case::const_parameter_after_type_parameter(
+    "type Page<T, const MAX: usize> = Json<Vec<T>>;",
+    "-> Page<User, LIMIT>",
+    "-> Json < Vec < User > >"
+)]
+#[case::extra_type_argument_after_const_slot_still_counts(
+    "type Page<const MAX: usize, T> = Json<Vec<T>>;",
+    "-> Page<LIMIT, A, B>",
+    "-> Page < LIMIT , A , B >"
+)]
 #[case::unknown_alias("", "-> ApiResult<User>", "-> ApiResult < User >")]
 #[case::self_recursive_stops("type Result<T> = Result<T>;", "-> Result<u8>", "-> Result < u8 >")]
 #[case::cycle_back_to_start("type A = B; type B = A;", "-> A", "-> A")]

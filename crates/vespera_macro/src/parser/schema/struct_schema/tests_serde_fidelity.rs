@@ -135,6 +135,9 @@ fn both_views(src: &str) -> String {
     "flatten_two_maps",
     "struct Req { #[serde(flatten)] a: HashMap<String, u8>, #[serde(flatten)] b: HashMap<String, u16> }"
 )]
+// The opaque enum keeps the object open, so the map's value type is not
+// documented in either view (`additionalProperties` cannot see the enum's
+// keys; see the flatten module doc). Nothing is rejected.
 #[case::flatten_map_and_enum(
     "flatten_map_and_enum",
     "struct Req { id: i32, #[serde(flatten)] kind: Kind, #[serde(flatten)] extra: HashMap<String, String> }"

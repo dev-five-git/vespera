@@ -495,8 +495,10 @@ pub fn parse_return_type(
 ///
 /// The error body is found like the success one: `(StatusCode, Json<E>)`,
 /// `(HeaderMap, Json<E>)` and header arrays document `E`; a metadata-only
-/// error (`StatusCode`, `(StatusCode, HeaderMap)`) has no content. The
-/// default error status is `400`; an error that is a `Redirect` /
+/// error (`StatusCode`, `(StatusCode, HeaderMap)`) has no content. A
+/// `HeaderMap` the error sets (bare or in the tuple) documents `headers` on
+/// its status, as the success side does. The default error status is `400`;
+/// an error that is a `Redirect` /
 /// `NoContent` is keyed like the success side (`3XX` / `204`), never
 /// overwriting the success entry. An error documented without a body (an
 /// outer `StatusCode`) takes the body of a later (inner) one, and several
@@ -515,6 +517,10 @@ fn insert_error_response(
         "200" => "400",
         key => key,
     };
+    let shadows = Shadows {
+        known_schemas,
+        struct_definitions,
+    };
     let response = responses
         .entry(key.to_string())
         .or_insert_with(|| Response {
@@ -530,6 +536,10 @@ fn insert_error_response(
             content: None,
             ..Default::default()
         });
+    response.headers = response
+        .headers
+        .take()
+        .or_else(|| has_header_map(err_ty, shadows).then(BTreeMap::new));
     let Some(content) = response_content(err_ty, known_schemas, struct_definitions) else {
         return;
     };

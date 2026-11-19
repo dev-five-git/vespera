@@ -644,7 +644,7 @@ fn positional_schema_with(
 ) -> SchemaRef {
     let mut schema_ref =
         field_schema_ref(field, constraints, side, known_schemas, struct_definitions);
-    if !constraints.is_any() {
+    if !constraints.any_decides() {
         apply_garde_rules(
             &mut schema_ref,
             &field.ty,
@@ -672,7 +672,7 @@ fn positional_schema_with(
 /// constraints `c` (explicit — they win). Shared by object properties and
 /// query / path struct parameters.
 pub fn apply_field_rules(schema_ref: &mut SchemaRef, field: &syn::Field, c: &SchemaConstraints) {
-    if !c.is_any() {
+    if !c.any_decides() {
         apply_garde_rules(schema_ref, &field.ty, &extract_garde_rules(&field.attrs), c);
     }
     if !c.is_empty() {

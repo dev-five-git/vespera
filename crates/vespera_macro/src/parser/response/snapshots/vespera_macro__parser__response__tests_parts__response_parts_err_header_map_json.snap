@@ -1,6 +1,6 @@
 ---
 source: crates/vespera_macro/src/parser/response/tests_parts.rs
-assertion_line: 63
+assertion_line: 88
 expression: responses_json(return_type)
 ---
 {
@@ -16,6 +16,7 @@ expression: responses_json(return_type)
   },
   "400": {
     "description": "Error response",
+    "headers": {},
     "content": {
       "application/json": {
         "schema": {
