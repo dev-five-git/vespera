@@ -60,12 +60,13 @@ use vespera_core::cron::{Cron, parse};
 
 /// Scheduler diagnostic: a `tracing` event at `$level` on target
 /// `vespera::cron` with the `tracing` feature, else a `vespera: `-prefixed
-/// `eprintln!` (the pre-feature behaviour). Every message also goes through
-/// [`capture::record`], so the unit tests can assert what was reported.
+/// `eprintln!` (the pre-feature behaviour). In unit-test builds every message
+/// also goes to `capture::record`, so the tests can assert what was reported.
 #[cfg(feature = "tracing")]
 macro_rules! cron_diag {
     ($level:ident, $($arg:tt)+) => {{
         let message = ::std::format!($($arg)+);
+        #[cfg(test)]
         crate::cron::capture::record(&message);
         ::tracing::$level!(target: "vespera::cron", "{message}");
     }};
@@ -74,18 +75,18 @@ macro_rules! cron_diag {
 macro_rules! cron_diag {
     ($level:ident, $($arg:tt)+) => {{
         let message = ::std::format!($($arg)+);
+        #[cfg(test)]
         crate::cron::capture::record(&message);
         ::std::eprintln!("vespera: {message}");
     }};
 }
 
-/// Diagnostic capture seam: unit tests read back what [`cron_diag!`] reported.
-/// The no-op build (every non-test build) keeps nothing.
+/// Diagnostic capture seam (unit-test builds only): the tests read back what
+/// [`cron_diag!`] reported.
+#[cfg(test)]
 mod capture {
-    #[cfg(test)]
     static REPORTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-    #[cfg(test)]
     pub(super) fn record(message: &str) {
         REPORTS
             .lock()
@@ -93,17 +94,13 @@ mod capture {
             .push(message.to_owned());
     }
 
-    /// Every message reported so far (unit-test builds only).
-    #[cfg(test)]
+    /// Every message reported so far.
     pub(super) fn reports() -> Vec<String> {
         REPORTS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
-
-    #[cfg(not(test))]
-    pub(super) fn record(_message: &str) {}
 }
 
 /// Boxed future returned by a cron job function.
