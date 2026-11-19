@@ -153,20 +153,24 @@ pub(super) fn resolve_field_name(
 /// Extract the `strict` flag from `#[try_from_multipart(strict)]`, reading
 /// past any other key (`rename_all = "..."`) in the same list.
 pub(super) fn extract_strict(attrs: &[syn::Attribute]) -> syn::Result<bool> {
-    let mut strict = false;
+    // Every value is validated; the first occurrence wins, like
+    // `form_data(default)` (R29-SM0-L1: a later bare `strict` used to OR
+    // over an earlier `strict = false`).
+    let mut strict = None;
     for attr in attrs
         .iter()
         .filter(|attr| attr.path().is_ident("try_from_multipart"))
     {
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("strict") {
-                strict |= flag_value(&meta)?;
+                let value = flag_value(&meta)?;
+                strict = strict.or(Some(value));
                 return Ok(());
             }
             skip_value(&meta)
         })?;
     }
-    Ok(strict)
+    Ok(strict.unwrap_or(false))
 }
 
 /// The `Option<usize>` tokens of a field's limit: `None` without one,
@@ -361,6 +365,15 @@ mod tests {
     // L10 (round 12): the value is read (`strict = false` used to be true).
     #[case::explicit_true("#[try_from_multipart(strict = true)] struct T { }", true)]
     #[case::explicit_false("#[try_from_multipart(strict = false)] struct T { }", false)]
+    // R29-SM0-L1: the first occurrence wins, a later one is ignored.
+    #[case::first_false_wins(
+        "#[try_from_multipart(strict = false)] #[try_from_multipart(strict)] struct T { }",
+        false
+    )]
+    #[case::first_true_wins(
+        "#[try_from_multipart(strict)] #[try_from_multipart(strict = false)] struct T { }",
+        true
+    )]
     fn test_extract_strict(#[case] code: &str, #[case] expected: bool) {
         assert_eq!(extract_strict(&parse_struct_attrs(code)).unwrap(), expected);
     }

@@ -718,6 +718,17 @@ mod tests {
         );
         let struct_def: syn::ItemStruct =
             syn::parse_str("pub struct S { #[cfg(feature = \"x\")] gated: i32, id: i32 }").unwrap();
+        // R29-SM4-02: the premise is checked, not assumed: the field is
+        // statically removed in this build (the `x` feature is off).
+        let gated = struct_def
+            .fields
+            .iter()
+            .find(|field| field.ident.as_ref().is_some_and(|ident| *ident == "gated"))
+            .unwrap();
+        assert!(
+            statically_inactive(&gated.attrs),
+            "`gated` must be cfg-removed"
+        );
         let ty: syn::Type = syn::parse2(quote!(S)).unwrap();
         let fields = extract_source_field_names(&struct_def);
         let rename = Some(vec![("gated".to_string(), "other".to_string())]);

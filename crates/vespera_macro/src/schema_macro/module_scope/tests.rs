@@ -275,6 +275,9 @@ pub mod kinds { pub enum Kind { A } }
 #[case::child_module_multi_segment("kinds::Kind", "crate :: models :: memo :: kinds :: Kind")]
 #[case::super_relative("super::enums::Other", "crate :: models :: enums :: Other")]
 #[case::self_relative("self::Local", "crate :: models :: memo :: Local")]
+// R29-SM3-L1: a private `use` of the module is reached through its target.
+#[case::self_private_import("self::Status", "crate :: models :: enums :: Status")]
+#[case::self_import_multi_segment("self::enums::Other", "crate :: models :: enums :: Other")]
 #[case::crate_glob("Shared", "crate :: shared :: Shared")]
 #[case::crate_glob_reexport("Deep", "crate :: deep :: Deep")]
 #[case::imported_json_is_not_serde_json("Json", "other_crate :: Json")]
@@ -489,6 +492,22 @@ fn resolve_name_without_scope(#[case] path: &[&str], #[case] expected: Resolved)
     assert_eq!(
         resolve_name(&segs("self::x"), &segs("models")),
         Resolved::Unknown
+    );
+}
+
+/// A bare relative prefix names the parent module, and a name the parent does
+/// not know keeps the normalized path (no scope to consult).
+#[test]
+fn relative_prefix_alone_and_unknown_parent_names() {
+    let (_dir, _guard) = temp_crate(RESOLVE_TREE);
+    let memo = segs("crate::models::memo");
+    assert_eq!(
+        resolve_name(&segs("super"), &memo),
+        Resolved::Path(segs("crate::models"))
+    );
+    assert_eq!(
+        resolve_name(&segs("super::Missing"), &memo),
+        Resolved::Path(segs("crate::models::Missing"))
     );
 }
 

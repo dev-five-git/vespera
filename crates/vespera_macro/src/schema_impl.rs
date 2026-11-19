@@ -360,7 +360,7 @@ pub fn require_component_key(name: &str, span: proc_macro2::Span) -> syn::Result
     Err(syn::Error::new(
         span,
         format!(
-            "schema name \"{name}\" must match `^[a-zA-Z0-9.\\-_]+$` (it is a `components.schemas` key): use `#[schema(name = \"..\")]` with letters, digits, `.`, `-` or `_`"
+            "schema name \"{name}\" must match `^[a-zA-Z0-9.\\-_]+$` (it is a `components.schemas` key): rename the type or use `#[schema(name = \"..\")]` with letters, digits, `.`, `-` or `_`"
         ),
     ))
 }
@@ -569,16 +569,19 @@ pub fn process_derive_schema(
             return (None, error.to_compile_error());
         }
     }
-    // A custom name is the `components.schemas` key: a value outside the
-    // OpenAPI key pattern would otherwise reach the document unchecked.
-    if let Some(custom) = schema_attr.name.as_deref()
-        && let Err(error) = require_component_key(custom, input.ident.span())
-    {
+    // Unraw'd like every other schema name (`struct r#type` is `type`).
+    let rust_name = strip_raw_prefix_owned(name.to_string());
+    // The schema name is the `components.schemas` key: a value outside the
+    // OpenAPI key pattern would otherwise reach the document unchecked. The
+    // default is the Rust ident (R29-SM0-L2: a non-ASCII ident such as `회원`
+    // compiles, so it is checked too).
+    if let Err(error) = require_component_key(
+        schema_attr.name.as_deref().unwrap_or(&rust_name),
+        name.span(),
+    ) {
         return (None, error.to_compile_error());
     }
     let has_explicit_schema_name = schema_attr.name.is_some();
-    // Unraw'd like every other schema name (`struct r#type` is `type`).
-    let rust_name = strip_raw_prefix_owned(name.to_string());
     let schema_name = schema_attr.name.unwrap_or_else(|| rust_name.clone());
 
     // Extract default values from serde(default = "fn_name") attributes at derive time.

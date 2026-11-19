@@ -718,7 +718,7 @@ pub fn resolve_name(segments: &[String], module_path: &[String]) -> Resolved {
     match first.as_str() {
         "crate" | "" => return Resolved::Path(segments.to_vec()),
         "self" | "super" if module_path.first().is_some_and(|s| s == "crate") => {
-            return Resolved::Path(normalize_use_path(segments, module_path, &HashSet::new()));
+            return Resolved::Path(relative_path(segments, module_path));
         }
         _ => {}
     }
@@ -742,6 +742,29 @@ pub fn resolve_name(segments: &[String], module_path: &[String]) -> Resolved {
     glob_lookup(&scope, first, module_path).map_or(Resolved::Unknown, |path| {
         Resolved::Path(path.into_iter().chain(rest).collect())
     })
+}
+
+/// `self::X` / `super::X..` written inside `module_path`: the module the
+/// relative prefix names, then `X` as that module's own scope sees it. An
+/// import there resolves to its use target (`self::Status` for a private
+/// `use super::enums::Status;` is `crate::models::enums::Status`, the path
+/// `memo::Status` would be E0603); a local item, or a name the module does
+/// not know, keeps the normalized module path.
+fn relative_path(segments: &[String], module_path: &[String]) -> Vec<String> {
+    let prefix = segments
+        .iter()
+        .take_while(|s| *s == "self" || *s == "super")
+        .count();
+    let target = normalize_use_path(&segments[..prefix], module_path, &HashSet::new());
+    let Some((name, tail)) = segments[prefix..].split_first() else {
+        return target;
+    };
+    module_scope(&target)
+        .and_then(|scope| scope.lookup(name, &target))
+        .unwrap_or_else(|| target.iter().chain([name]).cloned().collect())
+        .into_iter()
+        .chain(tail.iter().cloned())
+        .collect()
 }
 
 /// A path root that never names an import.
