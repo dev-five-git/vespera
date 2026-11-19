@@ -58,10 +58,10 @@ class StreamingDisconnectHttpTest extends AbstractVesperaHttpIntegrationTest {
             out.flush();
             // Read the status line and some body, proving the stream started.
             InputStream in = socket.getInputStream();
-            byte[] buf = new byte[4096];
-            int read = in.read(buf);
-            assertTrue(read > 0);
-            assertTrue(new String(buf, 0, read, StandardCharsets.US_ASCII).startsWith("HTTP/1.1 200"));
+            // readNBytes: TCP may split the status line, so one read() can return a fragment.
+            byte[] head = in.readNBytes(12);
+            assertEquals(12, head.length, "the stream ended before the status line");
+            assertTrue(new String(head, StandardCharsets.US_ASCII).startsWith("HTTP/1.1 200"));
             socket.setSoLinger(true, 0); // close with RST, like a killed browser tab
         }
 

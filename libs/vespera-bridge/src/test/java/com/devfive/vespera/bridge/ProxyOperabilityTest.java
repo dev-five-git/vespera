@@ -310,6 +310,23 @@ class ProxyOperabilityTest {
     }
 
     @Test
+    void appTagsLearnAnAppWhoseHandlerOnlyAnswersWithANon503ServerError() {
+        // A handler's own 500 / 502 / 504 proves the app is registered (Rust resolves
+        // the app before the handler, and the non-panic 5xx it produces come after it).
+        AppTags tags = new AppTags(null);
+        assertEquals("admin", tags.tag("admin", 500, false, true), "non-panic 500 learned");
+        assertEquals("gateway", tags.tag("gateway", 502, false, true), "502 learned");
+        assertEquals("slow", tags.tag("slow", 504, false, true), "504 learned");
+        assertTrue(AppTags.answeredByHandler(500, false));
+        assertTrue(AppTags.answeredByHandler(599, false));
+        // 503 is also answered before app lookup (shut-down runtime, async in-flight cap)
+        // and the wire cannot tell that from a handler's own 503, so it never teaches a name.
+        assertFalse(AppTags.answeredByHandler(503, false));
+        assertEquals(AppTags.UNKNOWN, tags.tag("random-503", 503, false, true));
+        assertEquals(AppTags.UNKNOWN, tags.tag("random-600", 600, false, true), "not a 5xx");
+    }
+
+    @Test
     void appTagsLearnedCapHoldsWhenDistinctNamesRaceForTheLastSlot() throws Exception {
         // One free slot, 32 threads each learning a different name at once:
         // reserving the slot before the add keeps the cap; check-then-add did not.

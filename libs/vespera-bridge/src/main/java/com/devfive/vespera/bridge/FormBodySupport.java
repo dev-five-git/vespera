@@ -62,7 +62,8 @@ final class FormBodySupport {
     /** Re-encode the body (non-query) parameters as a form-urlencoded body. */
     static byte[] rebuildFromParameters(HttpServletRequest request) {
         Charset charset = requestCharset(request);
-        Map<String, Integer> queryCounts = queryParameterCounts(request.getQueryString());
+        Map<String, Integer> queryCounts =
+                queryParameterCounts(request.getQueryString(), charset);
         StringBuilder out = new StringBuilder();
         for (Map.Entry<String, String[]> entry : request.getParameterMap().entrySet()) {
             String name = entry.getKey();
@@ -97,8 +98,12 @@ final class FormBodySupport {
         }
     }
 
-    /** How many times each (decoded) parameter name occurs in the query string. */
-    static Map<String, Integer> queryParameterCounts(String query) {
+    /**
+     * How many times each parameter name occurs in the query string, decoded
+     * with {@code charset} (the request's charset, which the container used for
+     * its parameter-map keys, so a non-ASCII name matches its key).
+     */
+    static Map<String, Integer> queryParameterCounts(String query, Charset charset) {
         Map<String, Integer> counts = new HashMap<>();
         if (query == null || query.isEmpty()) {
             return counts;
@@ -109,14 +114,14 @@ final class FormBodySupport {
             }
             int eq = pair.indexOf('=');
             String rawName = eq < 0 ? pair : pair.substring(0, eq);
-            counts.merge(decodeName(rawName), 1, Integer::sum);
+            counts.merge(decodeName(rawName, charset), 1, Integer::sum);
         }
         return counts;
     }
 
-    private static String decodeName(String rawName) {
+    private static String decodeName(String rawName, Charset charset) {
         try {
-            return URLDecoder.decode(rawName, StandardCharsets.UTF_8);
+            return URLDecoder.decode(rawName, charset);
         } catch (IllegalArgumentException malformed) {
             return rawName;
         }

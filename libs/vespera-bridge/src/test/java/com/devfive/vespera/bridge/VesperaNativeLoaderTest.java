@@ -68,15 +68,17 @@ class VesperaNativeLoaderTest {
                 }, deleter));
         assertEquals(List.of(library, library.getParent()), deleted);
 
-        // A copy in the shared content-addressed directory is removed alone:
-        // the directory may be in use by a concurrent JVM.
+        // A copy in the shared content-addressed directory is never deleted, not even
+        // the library file: a concurrent JVM may be loading that very file right now.
         deleted.clear();
         VesperaNativeLoader.Extracted reusableCopy = new VesperaNativeLoader.Extracted(library, true);
-        assertThrows(UnsatisfiedLinkError.class,
+        UnsatisfiedLinkError sharedFailure = assertThrows(UnsatisfiedLinkError.class,
                 () -> VesperaNativeLoader.loadExtracted(reusableCopy, path -> {
-                    throw new UnsatisfiedLinkError("wrong ELF class");
+                    throw new UnsatisfiedLinkError("libdep.so: cannot open shared object file");
                 }, deleter));
-        assertEquals(List.of(library), deleted, "shared directory must survive a failed load");
+        assertTrue(sharedFailure.getMessage().contains("cannot open shared object"),
+                sharedFailure.getMessage());
+        assertEquals(List.of(), deleted, "the shared copy and its directory must survive a failed load");
 
         List<String> loaded = new ArrayList<>();
         VesperaNativeLoader.loadExtracted(privateCopy, loaded::add, deleter);
@@ -175,10 +177,11 @@ class VesperaNativeLoaderTest {
                 assertFalse(error.getMessage().contains("integrity check failed"), error.getMessage());
                 assertFalse(error.getMessage().contains("Native library extraction failed"), error.getMessage());
             }
-            // A resource that fails System.load leaves no cached copy behind; the
-            // shared extraction directory itself is kept (another JVM may be using it).
+            // A shared, content-addressed copy that fails System.load is kept, not deleted:
+            // a concurrent JVM may be loading that very file, and the next start re-verifies
+            // it (the digest still matches) and reports the same load error again.
             try (var left = Files.walk(extractDir)) {
-                assertEquals(0, left.filter(Files::isRegularFile).count());
+                assertEquals(1, left.filter(Files::isRegularFile).count());
             }
         } finally {
             restoreProperty("vespera.native.verifyExtractedDigest", oldVerify);

@@ -20,9 +20,13 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>"Answered from a handler" means the request reached Rust and produced a
  * status Rust's app resolution never returns: below {@code 400}, a
- * {@code 4xx} other than {@code 400 / 404 / 408 / 413 / 431}, or a caught
- * panic.  The learned set therefore only ever holds registered app names; it
- * is additionally capped at {@value #MAX_LEARNED} entries.
+ * {@code 4xx} other than {@code 400 / 404 / 408 / 413 / 431}, a {@code 5xx}
+ * other than {@code 503}, or a caught panic.  {@code 503} is excluded because
+ * Rust answers it before app lookup too (shut-down runtime, async in-flight
+ * cap), and the wire cannot tell those from a handler's own {@code 503}; a
+ * handler app that only ever answers {@code 503} therefore stays
+ * {@link #UNKNOWN}.  The learned set therefore only ever holds registered app
+ * names; it is additionally capped at {@value #MAX_LEARNED} entries.
  *
  * <p>Package-private: an internal collaborator of the proxy controller.
  */
@@ -87,6 +91,12 @@ final class AppTags {
         return true;
     }
 
+    /**
+     * Whether a status proves the app was resolved and its handler ran (or
+     * panicked). The statuses Rust answers before app lookup are excluded:
+     * {@code 400}, {@code 404}, {@code 408}, {@code 413}, {@code 431} and
+     * {@code 503}.
+     */
     static boolean answeredByHandler(int status, boolean panicked) {
         if (panicked) {
             return true;
@@ -94,7 +104,10 @@ final class AppTags {
         if (status >= 100 && status < 400) {
             return true;
         }
-        return status >= 400 && status < 500
-                && status != 400 && status != 404 && status != 408 && status != 413 && status != 431;
+        if (status >= 400 && status < 500) {
+            return status != 400 && status != 404 && status != 408 && status != 413
+                    && status != 431;
+        }
+        return status >= 500 && status < 600 && status != 503;
     }
 }

@@ -405,15 +405,26 @@ public class VesperaReactiveProxyHandler implements WebHandler {
 
     /**
      * Aggregate the request body without blocking: capped by {@code cap}
-     * ({@code > 0}), else by the single-array bound — 64 MiB for an unknown
-     * length (servlet parity). Exceeding the cap answers {@code 413}.
+     * ({@code > 0}, and never above {@link VesperaWireCodec#MAX_FRAME_BODY}),
+     * else by the single-array bound — 64 MiB for an unknown length (servlet
+     * parity). Exceeding the limit answers {@code 413}.
      */
     static Mono<byte[]> readBody(ServerHttpRequest request, long declared, long cap) {
+        return readBody(request, declared, cap, VesperaWireCodec.MAX_FRAME_BODY);
+    }
+
+    /**
+     * {@link #readBody(ServerHttpRequest, long, long)} with the frame bound as a
+     * parameter (tests pass a small one; production passes
+     * {@link VesperaWireCodec#MAX_FRAME_BODY}).
+     */
+    static Mono<byte[]> readBody(
+            ServerHttpRequest request, long declared, long cap, long frameBound) {
         if (declared == 0) {
             return Mono.just(VesperaWireCodec.EMPTY_BODY);
         }
         long limit = cap > 0
-                ? Math.min(cap, MAX_BUFFERED_BODY)
+                ? Math.min(cap, frameBound)
                 : (declared > 0 ? MAX_BUFFERED_BODY : MAX_FIXED_BODY);
         return DataBufferUtils.join(request.getBody(), (int) limit)
                 .map(buffer -> {

@@ -202,8 +202,21 @@ internal object NativePlatform {
             "$property '$key': the bridge loader never looks up arch '$arch' (the JVM " +
                 "reports it as '$loaderArch'); use '${key.replace(arch, loaderArch)}'."
         }
+        // A segment that is no arch at all (`linux-musl`, `linux-gnu`, `linux-sparc`) would
+        // pass the alias check above unchanged, and nativeJarPlatforms would package a
+        // library under a folder the bridge never reads.
+        require(arch in LOADER_ARCHES) {
+            "$property '$key': arch '$arch' is not one the bridge loader looks up " +
+                "(${LOADER_ARCHES.sorted().joinToString()})."
+        }
         return key.substringBefore('-')
     }
+
+    /**
+     * The JVM `os.arch` names the bridge's `BundledNativeIndex.KNOWN_PLATFORMS`
+     * uses, after [loaderArch]'s aliases. Keep the two lists in step.
+     */
+    private val LOADER_ARCHES = setOf("x86_64", "aarch64", "x86", "arm", "riscv64", "ppc64le", "s390x")
 
     /**
      * The arch segment the bridge loader (`NativePlatformDetector`) looks up

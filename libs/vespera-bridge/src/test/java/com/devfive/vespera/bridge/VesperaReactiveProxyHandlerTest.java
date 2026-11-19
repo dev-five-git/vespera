@@ -451,10 +451,10 @@ class VesperaReactiveProxyHandlerTest {
     }
 
     @Test
-    void aBlankRequestMethodIsLeftToSpringInsteadOfFailingTheFilter() {
+    void aBlankRequestMethodPreflightIsAnsweredByTheProxy() {
         // An empty Access-Control-Request-Method used to throw from the filter (a 500).
         // With no actual request to match, the proxy owns the preflight, as it does
-        // when no mapping exists.
+        // when no mapping exists: it is dispatched to Rust, not answered by Spring.
         Result preflight = call(client(handler()).options().uri("/users")
                 .header(HttpHeaders.ORIGIN, "https://a.example")
                 .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, ""));
