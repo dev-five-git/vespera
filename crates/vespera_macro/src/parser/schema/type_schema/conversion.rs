@@ -32,6 +32,7 @@ use super::super::{
 mod schema_def;
 use schema_def::{
     SchemaDef, const_argument_exprs, parse_schema_def, ref_override_of, schema_name_of,
+    type_argument_types,
 };
 mod json_paths;
 use json_paths::{is_json_value_path, is_serde_json_map_path};
@@ -652,18 +653,9 @@ fn parse_type_impl(
                         // Extract concrete type arguments; a parameter left
                         // out takes its default (`Page<T, M = Meta>` used as
                         // `Page<User>` is `Page<User, Meta>`), which may name
-                        // the parameters before it.
-                        let mut concrete_owned: Vec<Type> = args
-                            .args
-                            .iter()
-                            .filter_map(|arg| {
-                                if let syn::GenericArgument::Type(ty) = arg {
-                                    Some(ty.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
+                        // the parameters before it. A const argument spelled as
+                        // a bare identifier (`Buf<u8, LEN>`) is no type argument.
+                        let mut concrete_owned = type_argument_types(parsed.generics_mut(), args);
                         for default in defaults.iter().skip(concrete_owned.len()) {
                             let Some(default) = default else { break };
                             let given: Vec<&Type> = concrete_owned.iter().collect();
@@ -686,8 +678,11 @@ fn parse_type_impl(
                             // to their inner / prefixItems schema; every
                             // variant's fields for an enum) and in the types
                             // its attributes name (`value_type`, `into`).
-                            parsed.substitute(&generic_params, &concrete_types);
+                            // Consts first: a concrete type argument spelled
+                            // like a const parameter (`Buf<N, 4>` with a user
+                            // type `N`) must not be rewritten by the const.
                             parsed.substitute_consts(&const_exprs);
+                            parsed.substitute(&generic_params, &concrete_types);
 
                             // Remove generics from the definition (it's now concrete)
                             let generics = parsed.generics_mut();

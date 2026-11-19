@@ -94,6 +94,18 @@ fn expands_in_crate(files: &[(&str, &str)], handler: &str, ret: &str) -> bool {
     "crate::ApiResponse<User>",
     false
 )]
+#[case::self_rename_import_is_nominal(
+    &[("lib.rs", "mod models; mod routes;"), MODELS, ROUTES],
+    "use crate::models::ApiResponse as ApiResponse; pub fn h() {}",
+    "ApiResponse<User>",
+    false
+)]
+#[case::self_rename_in_group_is_nominal(
+    &[("lib.rs", "mod models; mod routes;"), MODELS, ROUTES],
+    "use crate::{models::ApiResponse as ApiResponse}; pub fn h() {}",
+    "ApiResponse<User>",
+    false
+)]
 #[case::super_reexport_in_module(
     &[("lib.rs", "mod routes; mod v2 { pub use super::ApiResponse; }"), ROUTES],
     "pub fn h() {}",

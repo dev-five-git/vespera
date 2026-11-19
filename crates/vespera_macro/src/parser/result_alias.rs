@@ -683,7 +683,8 @@ fn glob_parents(items: &[syn::Item]) -> Vec<Qualifier> {
 /// Where a plain `use` among `items` imports `name` from: the module
 /// (`models` for `use crate::models::ApiResponse;`), the crate root (`use
 /// crate::ApiResponse;`) or the parent module (`use super::ApiResponse;`).
-/// `None` without such an import, for a rename / glob, and for `self`.
+/// `None` without such an import, for a rename to another name / glob, and for
+/// `self`.
 fn import_parent(items: &[syn::Item], name: &str) -> Option<Qualifier> {
     /// `Some(parent)` once the import of `name` is found (stops the walk).
     #[allow(clippy::option_option)]
@@ -701,7 +702,11 @@ fn import_parent(items: &[syn::Item], name: &str) -> Option<Qualifier> {
                 .items
                 .iter()
                 .find_map(|tree| walk(tree, parent, nested, name)),
-            syn::UseTree::Rename(_) | syn::UseTree::Glob(_) => None,
+            // `use a::X as X;` brings `X` itself into scope, so it is followed
+            // like `use a::X;`; a real rename (`X as Y`) imports another name.
+            syn::UseTree::Rename(rename) => (rename.ident == name && rename.rename == name)
+                .then(|| parent.and_then(|parent| import_qualifier(parent, nested))),
+            syn::UseTree::Glob(_) => None,
         }
     }
     items
