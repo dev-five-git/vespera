@@ -99,10 +99,8 @@ fn prune_superseded_older_than(keep: &Path, stem: &str, age: Duration) {
     let Some(dir) = keep.parent() else {
         return;
     };
-    let Some(marker) = record_selection(dir, stem, keep) else {
-        return;
-    };
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let (Some(marker), Ok(entries)) = (record_selection(dir, stem, keep), std::fs::read_dir(dir))
+    else {
         return;
     };
     let prefix = format!("{stem}-");
