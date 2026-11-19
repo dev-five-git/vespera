@@ -28,6 +28,8 @@ fn remove(key: &str) {
 #[case::renamed(Some("pub struct Account { id: i32 }\n"), true)]
 #[case::moved_out(Some("// User moved to b.rs\n"), true)]
 #[case::file_deleted(None, true)]
+// R26-SM-L1: a file that no longer parses (mid-edit) still may hold the item.
+#[case::unparseable_still_there(Some("pub struct User { id: i64, \nfn broken( {\n"), false)]
 fn stale_entry_of_a_changed_file(#[case] first_file_after: Option<&str>, #[case] accepted: bool) {
     let dir = tempfile::TempDir::new().unwrap();
     let first = dir.path().join("a.rs");
@@ -98,4 +100,38 @@ fn variant_of_a_deleted_item_is_no_longer_a_variant() {
     bump_epoch();
     assert!(variants::in_module("VariantGone", &second_module).is_none());
     assert!(variants::in_module("VariantGone", &first_module).is_some());
+}
+
+/// R26-SM-L1: a same-named variant whose file no longer parses (an unbalanced
+/// brace typed mid-edit) is still a variant. Dropping it made `schema_type!`
+/// read the other module's same-named item instead of the imported one.
+#[test]
+fn variant_of_an_unparseable_file_is_kept() {
+    const SOURCE: &str = "pub struct VariantBroken { pub limit: u32 }\n";
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod first;\npub mod second;\n").unwrap();
+    let first = src.join("first.rs");
+    let second = src.join("second.rs");
+    std::fs::write(&first, SOURCE).unwrap();
+    std::fs::write(&second, SOURCE).unwrap();
+    let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    bump_epoch();
+
+    let metadata = |file: &Path| {
+        StructMetadata::new("VariantBroken".to_string(), SOURCE.trim().to_string())
+            .with_source_identity(format!("{}::VariantBroken@1:11", file.display()))
+    };
+    let first_module = ["crate", "first"].map(String::from);
+    assert!(register_schema("VariantBroken".to_string(), metadata(&first)).is_ok());
+    assert!(register_schema("VariantBroken".to_string(), metadata(&second)).is_ok());
+
+    std::fs::write(
+        &first,
+        "pub struct VariantBroken { pub limit: u32 \nfn broken( {\n",
+    )
+    .unwrap();
+    bump_epoch();
+    assert!(variants::in_module("VariantBroken", &first_module).is_some());
 }
