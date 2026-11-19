@@ -192,8 +192,13 @@ fn push_leaf_assertions(
         // external crate's path; a user module's `api::Header` is a type of
         // its own, so it is checked like any other custom leaf.
         let builtin = is_builtin_openapi_type(&last_ident) && !is_user_module_path(&leaf);
+        // `PhantomData<T>` has no `Schema` impl (std type), and serde writes it
+        // as a unit (`null`): it is exempt here, not in the conversion builtin
+        // list (`is_builtin_openapi_type`), whose leaf arms must stay in sync.
+        let phantom = last_ident == "PhantomData" && !is_user_module_path(&leaf);
         if type_contains_generic(&leaf, generic_idents)
             || builtin
+            || phantom
             || is_serde_json_value_leaf(&leaf)
             || is_serde_json_map_leaf(&leaf)
         {

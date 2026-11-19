@@ -57,6 +57,11 @@ jobs:
           case "$SECONDS_PER_TARGET" in
             ''|*[!0-9]*) echo "::error::seconds must be an integer"; exit 1 ;;
           esac
+          # The job has 45 minutes: a run longer than 2100 s (35 min, leaving
+          # room for the build and the upload) would be cut off by the timeout.
+          if [ "$SECONDS_PER_TARGET" -gt 2100 ]; then
+            echo "::error::seconds must be at most 2100 (the job timeout is 45 minutes)"; exit 1
+          fi
           cargo fuzz run --target x86_64-unknown-linux-gnu "$TARGET" -- \
             -max_total_time="$SECONDS_PER_TARGET" -rss_limit_mb=2048 -timeout=10
       - name: Upload crash reproducers

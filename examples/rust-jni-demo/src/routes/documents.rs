@@ -4,6 +4,7 @@
 //! are auto-discovered by `vespera!()` and DTOs appear in the OpenAPI
 //! spec, exactly like `axum-example/src/routes/users.rs`.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -294,12 +295,29 @@ fn days_in_month(year: i32, month: u32) -> u32 {
     }
 }
 
+/// `DOC-<unix millis>-<sequence>`: the sequence makes two validations in the
+/// same millisecond distinct (round-27 macrorest-7 L3).
 fn generate_document_id() -> String {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    format!("DOC-{ts}")
+    let seq = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("DOC-{ts}-{seq}")
+}
+
+#[cfg(test)]
+mod document_id_tests {
+    use super::generate_document_id;
+
+    #[test]
+    fn same_millisecond_ids_are_distinct() {
+        let ids: std::collections::HashSet<String> =
+            (0..100).map(|_| generate_document_id()).collect();
+        assert_eq!(ids.len(), 100);
+        assert!(ids.iter().all(|id| id.starts_with("DOC-")));
+    }
 }
 
 #[cfg(test)]

@@ -108,8 +108,13 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
     // Bail with a clear compile error for generic types — supporting
     // them properly would require synthesising `where` bounds based on
     // which generic parameters appear in validated field types.  Out
-    // of scope for v1.
-    if !input.generics.params.is_empty() {
+    // of scope for v1.  Only a rule serde reads needs those bounds: when
+    // every rule sits on a skipped field, the empty impl below is emitted
+    // with the struct's generics (no bounds are needed for an empty body).
+    let reads_a_rule = per_field
+        .iter()
+        .any(|(field, c)| c.has_runtime_rule() && !skipped_on_read(field));
+    if reads_a_rule && !input.generics.params.is_empty() {
         let msg = format!(
             "vespera::Schema validation does not yet support generic / \
              lifetime-parameterised types (struct `{}`).  Move the \
@@ -121,6 +126,7 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
     }
 
     let struct_ident = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let field_idents: Vec<&syn::Ident> = fields_named
         .named
         .iter()
@@ -142,8 +148,7 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
             let ident = field.ident.as_ref()?;
             // serde never reads a skipped field (it holds its default): a
             // rule on it would reject every request.
-            let skip = crate::parser::schema::extract_serde_skip_flags(&field.attrs);
-            if skip.skip || skip.skip_deserializing {
+            if skipped_on_read(field) {
                 return None;
             }
             let wire_name = crate::parser::extract_field_rename_for(
@@ -175,7 +180,7 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
             unused_parens,
             non_upper_case_globals,
         )]
-        impl ::vespera::__validation::garde::Validate for #struct_ident {
+        impl #impl_generics ::vespera::__validation::garde::Validate for #struct_ident #ty_generics #where_clause {
             type Context = ();
 
             fn validate_into(
@@ -190,6 +195,14 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
             }
         }
     }
+}
+
+/// Whether serde never reads `field` (`skip` / `skip_deserializing`): a rule
+/// on it is never checked.
+#[cfg(feature = "validation")]
+fn skipped_on_read(field: &syn::Field) -> bool {
+    let skip = crate::parser::schema::extract_serde_skip_flags(&field.attrs);
+    skip.skip || skip.skip_deserializing
 }
 
 #[cfg(feature = "validation")]
@@ -710,6 +723,29 @@ const fn integer_range(kind: &str) -> Option<(i128, u128)> {
 /// every bound through `vespera::__validation::RangeBound`, which rounds a
 /// fractional bound inward for an integer target and keeps it for a float
 /// one, and takes an integer literal in the target's own type.
+/// The bound of a direct float field (`f32` / `f64`) as an `Option` value.
+/// `f64` takes the documented bound as is. `f32` rounds it INWARD: the nearest
+/// `f32` may lie past the bound (`16777217.0` rounds to `16777216.0`, which
+/// would admit a value the schema forbids), so a minimum steps up and a
+/// maximum steps down when the rounded value overshoots. `f32::next_up` /
+/// `next_down` are stable from Rust 1.86 (MSRV 1.88).
+#[cfg(feature = "validation")]
+fn float_some(kind: &str, v: f64, bound: Bound) -> TokenStream {
+    if kind != "f32" {
+        let ty_ident = syn::Ident::new(kind, Span::call_site());
+        return quote! { ::std::option::Option::Some(#v as #ty_ident) };
+    }
+    let inward = match bound {
+        Bound::Min => {
+            quote! { if f64::from(__garde_bound) < #v { __garde_bound.next_up() } else { __garde_bound } }
+        }
+        Bound::Max => {
+            quote! { if f64::from(__garde_bound) > #v { __garde_bound.next_down() } else { __garde_bound } }
+        }
+    };
+    quote! { ::std::option::Option::Some({ let __garde_bound = #v as f32; #inward }) }
+}
+
 #[cfg(feature = "validation")]
 fn numeric_some(
     value: Option<f64>,
@@ -754,9 +790,8 @@ fn numeric_some(
             quote! { ::std::option::Option::Some(<_ as ::vespera::__validation::RangeBound>::#convert(#v)) },
         );
     };
-    let ty_ident = syn::Ident::new(kind, Span::call_site());
     let Some((type_min, type_max)) = integer_range(kind) else {
-        return Ok(quote! { ::std::option::Option::Some(#v as #ty_ident) });
+        return Ok(float_some(kind, v, bound));
     };
     if let Some(exact) = exact {
         // An integer literal bound keeps every digit: the `f64` copy loses
@@ -786,6 +821,13 @@ fn numeric_some(
     // Every integer type's MIN is a power of two (exact as f64), so the lower
     // bound compares in the float domain; the upper one compares as `u128`
     // (`as` saturates, hence the explicit 2^128 guard).
+    // `f64` cannot hold `u64::MAX` / `i64::MAX`: those round up to 2^64 /
+    // 2^63 (`type_max as f64`), so a float bound that rounds to the type's
+    // maximum is that maximum (emitted as the exact integer, never 2^64).
+    // Exact equality on purpose: a value above the rounded maximum (2^65 on
+    // `u64`) is not the maximum.
+    #[allow(clippy::float_cmp, clippy::cast_precision_loss)]
+    let at_max = rounded == type_max as f64;
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -793,13 +835,18 @@ fn numeric_some(
     )]
     let fits = rounded < 340_282_366_920_938_463_463_374_607_431_768_211_456.0
         && rounded >= type_min as f64
-        && (rounded < 0.0 || rounded as u128 <= type_max);
+        && (rounded < 0.0 || at_max || rounded as u128 <= type_max);
     if !fits {
         return Err(format!(
             "`{key} = {v}` does not fit the field type `{kind}` (range {type_min}..={type_max})"
         ));
     }
-    let literal: TokenStream = format!("{rounded:.0}{kind}")
+    let digits = if at_max {
+        type_max.to_string()
+    } else {
+        format!("{rounded:.0}")
+    };
+    let literal: TokenStream = format!("{digits}{kind}")
         .parse()
         .expect("an integer literal with a type suffix is a valid token stream");
     Ok(quote! { ::std::option::Option::Some(#literal) })

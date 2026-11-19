@@ -35,8 +35,22 @@ impl ::vespera::__validation::garde::Validate for U {
             } else if let ::std::result::Result::Err(__garde_error) = (::vespera::__validation::garde::rules::range::apply)(
                 __garde_binding,
                 (
-                    ::std::option::Option::Some(0.5f64 as f32),
-                    ::std::option::Option::Some(1.5f64 as f32),
+                    ::std::option::Option::Some({
+                        let __garde_bound = 0.5f64 as f32;
+                        if f64::from(__garde_bound) < 0.5f64 {
+                            __garde_bound.next_up()
+                        } else {
+                            __garde_bound
+                        }
+                    }),
+                    ::std::option::Option::Some({
+                        let __garde_bound = 1.5f64 as f32;
+                        if f64::from(__garde_bound) > 1.5f64 {
+                            __garde_bound.next_down()
+                        } else {
+                            __garde_bound
+                        }
+                    }),
                 ),
             ) {
                 __garde_report.append(__garde_path(), __garde_error);

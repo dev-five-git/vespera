@@ -715,6 +715,18 @@ fn test_server_duplicate_field_rejected() {
     quote::quote!(security_schemes = [{ name = "apiKey", type = "apiKey", in = "header" }]),
     "vespera! macro: security scheme `apiKey` of type `apiKey` is missing required field `header_name` (the api-key parameter name)"
 )]
+#[case::api_key_empty_header_name(
+    quote::quote!(security_schemes = [{ name = "k", type = "apiKey", header_name = "", in = "header" }]),
+    "vespera! macro: `header_name` must not be empty"
+)]
+#[case::http_empty_scheme(
+    quote::quote!(security_schemes = [{ name = "b", type = "http", scheme = "" }]),
+    "vespera! macro: `scheme` must not be empty"
+)]
+#[case::http_empty_bearer_format(
+    quote::quote!(security_schemes = [{ name = "b", type = "http", scheme = "bearer", bearer_format = "" }]),
+    "vespera! macro: `bearer_format` must not be empty"
+)]
 #[case::api_key_with_http_scheme(
     quote::quote!(security_schemes = [{ name = "key", type = "apiKey", header_name = "X-Key", in = "header", scheme = "bearer" }]),
     "vespera! macro: security scheme `key` of type `apiKey` cannot declare `scheme`; only `http` schemes have scheme"

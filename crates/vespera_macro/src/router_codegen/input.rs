@@ -493,10 +493,19 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
             }
             "type" => scheme_type = Some(parse_security_scheme_type(&value)?),
             "description" => description = Some(value.value()),
-            "header_name" => header_name = Some(value.value()),
+            "header_name" => {
+                super::security_dsl::require_non_empty("header_name", &value)?;
+                header_name = Some(value.value());
+            }
             "in" => location = Some(value.value()),
-            "scheme" => scheme = Some(value.value()),
-            "bearer_format" => bearer_format = Some(value.value()),
+            "scheme" => {
+                super::security_dsl::require_non_empty("scheme", &value)?;
+                scheme = Some(value.value());
+            }
+            "bearer_format" => {
+                super::security_dsl::require_non_empty("bearer_format", &value)?;
+                bearer_format = Some(value.value());
+            }
             "open_id_connect_url" => {
                 super::security_dsl::require_absolute_url("open_id_connect_url", &value)?;
                 open_id_connect_url = Some(value.value());
@@ -722,13 +731,16 @@ fn parse_openapi_values(input: ParseStream) -> syn::Result<Vec<LitStr>> {
 /// network-path reference: it names another host, so it is not accepted
 /// either.  A relative reference carries no whitespace, query or fragment
 /// (the same bar as the absolute form, plus `?` / `#`, which an OpenAPI server
-/// URL does not carry).  `{var}` templates are not accepted: `vespera!` cannot
-/// declare the `variables` they need.
+/// URL does not carry).  A backslash is refused too: WHATWG URL parsing reads
+/// `\` as `/` for http(s), so `/\host` is the same network-path reference as
+/// `//host`.  The absolute form keeps the `info` URL rule, which allows a
+/// query or fragment; only the relative form refuses them.  `{var}` templates
+/// are not accepted: `vespera!` cannot declare the `variables` they need.
 fn is_server_url(url: &str) -> bool {
     let relative = url.starts_with('/')
         && !url.starts_with("//")
         && !url.contains(char::is_whitespace)
-        && !url.contains(['?', '#']);
+        && !url.contains(['?', '#', '\\']);
     (super::info::is_absolute_http_url(url) || relative) && !is_url_template(url)
 }
 

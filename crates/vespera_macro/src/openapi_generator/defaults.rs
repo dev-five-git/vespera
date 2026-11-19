@@ -267,8 +267,9 @@ pub fn process_default_functions_for(
 
     // Demote every serde-default field from `required` in the REQUEST view:
     // serde fills an omitted key in on input, however the default value was
-    // obtained. The response view keeps it required: serde always writes a
-    // `#[serde(default)]` field on output.
+    // obtained. The response view keeps it required: serde writes a
+    // `#[serde(default)]` field on output unless `skip_serializing_if` omits
+    // it (the response `required` is computed in `parser/schema/struct_schema.rs`).
     if side == SerdeSide::Deserialize && !serde_default_fields.is_empty() {
         if let Some(required) = target.required.as_mut() {
             required.retain(|name| !serde_default_fields.contains(name));
@@ -383,9 +384,18 @@ pub(super) fn parse_default_string_to_json_value(value: &str) -> serde_json::Val
     if value == "null" {
         return serde_json::Value::Null;
     }
-    // Try integer first
-    if let Ok(n) = value.parse::<i64>() {
-        return serde_json::Value::Number(n.into());
+    // An integer literal is never an `f64`: through `f64` a value past 2^53
+    // (or past `u64::MAX`) rounds to a non-integer. It is an `i64` or `u64`
+    // number, else the literal stays text.
+    let integer_literal = value.strip_prefix('-').unwrap_or(value);
+    if !integer_literal.is_empty() && integer_literal.bytes().all(|b| b.is_ascii_digit()) {
+        if let Ok(n) = value.parse::<i64>() {
+            return serde_json::Value::Number(n.into());
+        }
+        if let Ok(n) = value.parse::<u64>() {
+            return serde_json::Value::Number(n.into());
+        }
+        return serde_json::Value::String(value.to_string());
     }
     // Try float
     if let Ok(f) = value.parse::<f64>()

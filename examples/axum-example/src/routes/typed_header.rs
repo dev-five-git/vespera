@@ -13,6 +13,9 @@ pub async fn typed_header(
     "ok"
 }
 
+// Parses the `Authorization: Bearer` header only. It does NOT verify the token
+// and declares no `security`: this shows typed header extraction, not auth.
+// (A plain `//` comment, not a doc comment, so the OpenAPI text is unchanged.)
 #[vespera::route()]
 pub async fn typed_header_jwt(
     TypedHeader(authorization): TypedHeader<Authorization<Bearer>>,

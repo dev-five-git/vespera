@@ -9,6 +9,8 @@ use rstest::rstest;
 #[case::tab_in_path("/api\tv1")]
 #[case::query("/api?x=1")]
 #[case::fragment("/api#top")]
+#[case::backslash_network_path("/\\attacker.example")]
+#[case::backslash_in_path("/api\\v1")]
 fn test_validate_server_url_rejects_spaced_or_query_relative(#[case] url: &str) {
     let lit = LitStr::new(url, Span::call_site());
     assert!(validate_server_url(&lit).is_err(), "{url}");

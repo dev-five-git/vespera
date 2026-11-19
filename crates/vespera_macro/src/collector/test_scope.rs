@@ -175,17 +175,23 @@ impl TestScope {
     /// by the directory of a non-`mod.rs` module's own file, whose child
     /// modules sit beside it).
     fn file_path_gated(&mut self, file: &Path, src_dir: &Path, segments: &[String]) -> bool {
-        lexical(file).is_some_and(|file| {
-            let loads = |targets: &[PathBuf]| {
-                targets
-                    .iter()
-                    .any(|target| file == *target || file.starts_with(child_dir(target)))
-            };
-            let targets = self.path_targets();
-            let gated = loads(&targets.gated);
-            let open = loads(&targets.open);
-            gated && !open && !self.open_chain_loads(src_dir, segments)
-        })
+        // The file and the `#[path]` targets are compared in one spelling
+        // (canonical when the filesystem has it): `file` may come from the
+        // canonical fallback, and a target is written under the lexical `src/`,
+        // which can name the same file through a symlinked alias of the crate.
+        let Some(file) = same_spelling_key(file) else {
+            return false;
+        };
+        let loads = |targets: &[PathBuf]| {
+            targets
+                .iter()
+                .filter_map(|target| same_spelling_key(target))
+                .any(|target| file == target || file.starts_with(child_dir(&target)))
+        };
+        let targets = self.path_targets();
+        let gated = loads(&targets.gated);
+        let open = loads(&targets.open);
+        gated && !open && !self.open_chain_loads(src_dir, segments)
     }
 
     /// Whether an ungated `mod` declaration on the module chain of `segments`
@@ -393,6 +399,12 @@ fn chain_starts_with(rest: &[String], path: &str) -> bool {
     let mut rest = rest.iter();
     path.split("::")
         .all(|part| rest.next().is_some_and(|segment| segment == part))
+}
+
+/// The spelling two paths are compared in: the canonical one when the file
+/// exists (one file has one canonical path), else the lexical one.
+fn same_spelling_key(path: &Path) -> Option<PathBuf> {
+    file_cache::canonicalize_cached(path).or_else(|| lexical(path))
 }
 
 /// `path` made absolute (against the current directory) with `.` / `..`

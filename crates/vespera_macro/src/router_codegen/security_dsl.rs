@@ -213,6 +213,19 @@ pub(super) fn require_absolute_url(field: &str, url: &LitStr) -> syn::Result<()>
     ))
 }
 
+/// A free-text security scheme field (`header_name`, `scheme`, `bearer_format`)
+/// must not be empty: `""` passes a presence check but emits a value no client
+/// can use (a header no request can send, an empty HTTP auth scheme).
+pub(super) fn require_non_empty(field: &str, value: &LitStr) -> syn::Result<()> {
+    if value.value().is_empty() {
+        return Err(syn::Error::new(
+            value.span(),
+            format!("vespera! macro: `{field}` must not be empty"),
+        ));
+    }
+    Ok(())
+}
+
 /// A security scheme name becomes a `components.securitySchemes` key, which
 /// OpenAPI 3.1 requires to match `^[a-zA-Z0-9\.\-_]+$`.
 pub(super) fn require_component_key(name: &LitStr) -> syn::Result<()> {
