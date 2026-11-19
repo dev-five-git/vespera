@@ -332,3 +332,64 @@ fn naming_a_dropped_field_is_an_error(#[case] input: &str, #[case] expected: &st
     let error = generate_schema_type_code(&input, &storage).unwrap_err();
     assert_eq!(error.to_string(), expected);
 }
+
+/// R28-SM2-L1: `omit_default` drops the primary-key twin of a `#[cfg]` pair,
+/// but the other twin is emitted in every build, so the name stays valid for
+/// `rename` / `pick` / `partial`.
+#[rstest::rstest]
+#[case::rename(
+    "Dto from Model, omit_default, rename = [(\"id\", \"key\")]",
+    "pub key"
+)]
+#[case::pick("Dto from Model, omit_default, pick = [\"id\"]", "pub id")]
+#[case::partial("Dto from Model, omit_default, partial = [\"id\"]", "Option")]
+fn cfg_twin_dropped_by_omit_default_keeps_the_name(#[case] input: &str, #[case] expected: &str) {
+    let storage = to_storage(vec![create_test_struct_metadata(
+        "Model",
+        r#"pub struct Model {
+            #[cfg(feature = "pg")]
+            #[sea_orm(primary_key)]
+            pub id: i64,
+            #[cfg(not(feature = "pg"))]
+            pub id: i64,
+            pub name: String,
+        }"#,
+    )]);
+    let input: SchemaTypeInput = syn::parse_str(input).unwrap();
+    let output = generate_schema_type_code(&input, &storage)
+        .unwrap_or_else(|error| panic!("{error}"))
+        .0
+        .to_string();
+    assert!(output.contains(expected), "{output}");
+}
+
+/// R28-SM4-M1 (the `schema_type!` twin of `schema!`'s
+/// `filter_name_ignores_skipped_fields`): the serde-skipped `id` does not take
+/// the name `id` from `public_id`, whose JSON name is `id`.
+#[rstest::rstest]
+#[case::omit_drops_the_renamed_field("Dto from Model, omit = [\"id\"]", "label", "public_id")]
+#[case::pick_selects_the_renamed_field("Dto from Model, pick = [\"id\"]", "public_id", "label")]
+fn skipped_identifier_does_not_shadow_a_json_name(
+    #[case] input: &str,
+    #[case] kept: &str,
+    #[case] dropped: &str,
+) {
+    let storage = to_storage(vec![create_test_struct_metadata(
+        "Model",
+        r#"#[derive(serde::Serialize)]
+        pub struct Model {
+            #[serde(skip)]
+            pub id: i64,
+            #[serde(rename = "id")]
+            pub public_id: i64,
+            pub label: String,
+        }"#,
+    )]);
+    let input: SchemaTypeInput = syn::parse_str(input).unwrap();
+    let output = generate_schema_type_code(&input, &storage)
+        .unwrap_or_else(|error| panic!("{error}"))
+        .0
+        .to_string();
+    assert!(output.contains(kept), "{output}");
+    assert!(!output.contains(dropped), "{output}");
+}

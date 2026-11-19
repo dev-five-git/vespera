@@ -158,19 +158,11 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
     // generated `openapi.json`.
     if schema_impl::register_schema(name.clone(), metadata).is_err() {
         let span = input.ident.span();
-        let msg = format!(
-            "duplicate vespera Schema name `{name}` -- two different struct \
-             definitions both register under the same OpenAPI schema name. \
-             The later definition would silently overwrite the earlier one \
-             in the generated `openapi.json`. Rename one of the structs, or \
-             annotate one with `#[schema(name = \"OtherName\")]` to give \
-             them distinct OpenAPI names."
-        );
         // The derive's other output (the `garde::Validate` impl, the
         // `Schema` marker, the leaf assertions) stays: without it every
         // later `Validated<T>` / `T: Schema` use adds a cascade of
         // "trait bound not satisfied" errors next to this one.
-        let err = syn::Error::new(span, msg).to_compile_error();
+        let err = schema_impl::duplicate_name_error(&name, span).to_compile_error();
         return TokenStream::from(quote::quote! { #err #expanded });
     }
 
@@ -245,10 +237,12 @@ pub fn derive_multipart_feature_disabled(input: TokenStream) -> TokenStream {
 /// - `omit = [...]`: Optional list of field names to exclude from the schema
 /// - `pick = [...]`: Optional list of field names to include (excludes all others)
 ///
-/// A name is the field's Rust identifier, or else its serde JSON name (the
-/// `rename` / `rename_all` the schema documents); a name that is both selects
-/// the Rust identifier. A JSON name shared by two fields is a compile error,
-/// and so is a name no emitted field carries.
+/// A name is the Rust identifier of a serialized field (one not
+/// `#[serde(skip)]` / `skip_serializing`), or else the serde JSON name of a
+/// serialized field (the `rename` / `rename_all` the schema documents); a name
+/// that is both selects the Rust identifier. A serde-skipped field's identifier
+/// takes no name from another field's JSON name. A JSON name shared by two
+/// fields is a compile error, and so is a name no emitted field carries.
 ///
 /// Note: `omit` and `pick` cannot be used together.
 ///
@@ -311,10 +305,11 @@ pub fn schema(input: TokenStream) -> TokenStream {
 /// - `pick = [...]`: List of field names to include (excludes all others)
 /// - `omit = [...]`: List of field names to exclude
 ///   (`pick` and `omit` names resolve as `schema!` resolves them: the Rust
-///   identifier first, else the serde JSON name; a name that selects no field,
-///   a serde-skipped field, or a JSON name shared by two fields is a compile
-///   error. `rename`, `partial`, `add` and `relation_adapters` take Rust
-///   identifiers only.)
+///   identifier of a serialized field first, else the serde JSON name of a
+///   serialized field; a name that selects no field, only a serde-skipped
+///   field, or a JSON name shared by two fields is a compile error.
+///   `rename`, `partial` and `relation_adapters` take Rust identifiers only,
+///   of fields a `cfg` keeps; `add` names new fields.)
 /// - `clone = bool`: Whether to derive Clone (default: true)
 /// - `partial`: Make all fields `Option<T>` (fields already `Option<T>` are unchanged)
 /// - `partial = [...]`: Make only listed fields `Option<T>`
@@ -375,9 +370,16 @@ pub fn schema_type(input: TokenStream) -> TokenStream {
     // definitions are textually different (the pre-registered one is
     // synthesised by `schema_macro`; the derive-emitted one is the
     // expanded struct token stream).
-    if ignore_schema && let Some(metadata) = generated_metadata {
-        let name = metadata.name.clone();
-        schema_impl::insert_schema(name, metadata);
+    // The pre-registration follows the derive's duplicate-name rule (R28-MR2-1):
+    // a conflicting definition is the same compile error. The struct is still
+    // emitted, so later uses of the type add no cascade.
+    if ignore_schema
+        && let Some(metadata) = generated_metadata
+        && let Err(err) =
+            schema_impl::register_ignored_schema(metadata, proc_macro2::Span::call_site())
+    {
+        let err = err.to_compile_error();
+        return TokenStream::from(quote::quote! { #err #tokens });
     }
     TokenStream::from(tokens)
 }

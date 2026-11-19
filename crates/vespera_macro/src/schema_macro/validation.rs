@@ -34,6 +34,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 
+use super::cfg_eval::statically_inactive;
 use super::field_selection::{Refusal, resolve_name};
 use super::input::ParamSpans;
 
@@ -413,7 +414,10 @@ pub fn validate_emitted<'a>(
     Ok(())
 }
 
-/// Extracts all field names from a struct's named fields.
+/// Extracts the field names of a struct's named fields that its `#[cfg]`
+/// predicates keep (a field a statically false `cfg` removes is no candidate,
+/// the way `pick` / `omit` read it: R28-SM4-L1 / L2). `rename`, `partial`,
+/// `relation_adapters` and the "Available fields" listing use this set.
 ///
 /// Returns an empty set for tuple or unit structs.
 pub fn extract_source_field_names(parsed_struct: &syn::ItemStruct) -> HashSet<String> {
@@ -423,6 +427,7 @@ pub fn extract_source_field_names(parsed_struct: &syn::ItemStruct) -> HashSet<St
         fields_named
             .named
             .iter()
+            .filter(|f| !statically_inactive(&f.attrs))
             .filter_map(|f| f.ident.as_ref())
             .map(|i| strip_raw_prefix_owned(i.to_string()))
             .collect()
@@ -658,6 +663,32 @@ mod tests {
 
         assert!(names.contains("type"));
         assert_eq!(names.len(), 1);
+    }
+
+    /// R28-SM4-L1 / L2: a field a statically false `cfg` removes is not a
+    /// candidate, so the "Available fields" listing omits it and `rename` /
+    /// `partial` / adapters refuse it like `pick` / `omit` do.
+    #[test]
+    fn cfg_disabled_fields_are_no_candidates() {
+        let struct_def: syn::ItemStruct =
+            syn::parse_str("pub struct S { #[cfg(any())] gone: i32, id: i32 }").unwrap();
+        assert_eq!(
+            extract_source_field_names(&struct_def),
+            HashSet::from(["id".to_string()])
+        );
+        let ty: syn::Type = syn::parse2(quote!(S)).unwrap();
+        let omit = Some(vec!["nope".to_string()]);
+        let err = resolve_filter_names("omit", omit.as_ref(), &struct_def, "S", &ty)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("\"id\""), "{err}");
+        assert!(!err.contains("gone"), "{err}");
+        let rename = Some(vec![("gone".to_string(), "x".to_string())]);
+        let fields = extract_source_field_names(&struct_def);
+        let err = validate_rename_fields(rename.as_ref(), &fields, &ty, "S")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("does not exist"), "{err}");
     }
 
     /// A `rename` target / `add` name equal to another generated field is a

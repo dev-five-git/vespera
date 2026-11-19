@@ -157,6 +157,7 @@ pub fn layout_for(manifest_dir: &Path, call_site: Option<&Path>) -> CrateLayout 
         }
         _ => None,
     };
+    let custom_target = target.is_none();
     if let Some((dir, target_name, entry)) = target
         && let Some(root) = target_root(&dir, target_name.as_deref(), entry)
     {
@@ -165,6 +166,15 @@ pub fn layout_for(manifest_dir: &Path, call_site: Option<&Path>) -> CrateLayout 
             module_dir,
             roots: vec![root],
         };
+    }
+    // A custom `[[test]]` / `[[bench]]` / `[[example]]` / `[[bin]]` `path` outside
+    // the default directories (R28-SM1-L1) is rooted at the file rustc compiles.
+    if custom_target
+        && let Some(call_site) = call_site
+        && relative_to(call_site, &src).is_none()
+        && let Some(layout) = compiler_root_layout(call_site)
+    {
+        return layout;
     }
     let (lib, main) = (src.join("lib.rs"), src.join("main.rs"));
     let roots = if crate::env_access::var("CARGO_BIN_NAME").is_ok() {
@@ -176,6 +186,22 @@ pub fn layout_for(manifest_dir: &Path, call_site: Option<&Path>) -> CrateLayout 
         module_dir: src,
         roots,
     }
+}
+
+/// The layout rooted at the crate root rustc compiles (its positional `.rs`
+/// input), when that root's directory holds the call site: the same rule
+/// `vespera_impl::cron_discovery` uses for `vespera!` call sites.
+fn compiler_root_layout(call_site: &Path) -> Option<CrateLayout> {
+    let root = crate::env_access::compiler_args()
+        .iter()
+        .map(PathBuf::from)
+        .find(|arg| arg.extension().is_some_and(|ext| ext == "rs") && arg.is_file())?;
+    let module_dir = root.parent()?.to_path_buf();
+    relative_to(call_site, &module_dir)?;
+    Some(CrateLayout {
+        module_dir,
+        roots: vec![root],
+    })
 }
 
 fn crate_var(name: &str) -> Option<String> {
@@ -418,6 +444,65 @@ mod tests {
         let _bin = crate::env_access::test_env::set_var("CARGO_BIN_NAME", "other");
         let layout = layout_for(&manifest, None);
         assert_eq!(layout.module_path_of(&other), ["crate"]);
+    }
+
+    /// R28-SM1-L1: a custom `[[test]] path = "suite/main.rs"` (outside every
+    /// default target directory) is rooted at the file rustc compiles, so its
+    /// `crate::` modules resolve from `suite/`, not from the library `src/`.
+    /// A call site outside that root's directory keeps the library layout.
+    #[rstest]
+    #[case::module_of_custom_root("suite/models/user.rs", "suite", "suite/main.rs")]
+    #[case::outside_custom_root("tools/cli.rs", "src", "src/lib.rs")]
+    fn custom_target_root_outside_default_dirs(
+        #[case] call_site: &str,
+        #[case] module_dir: &str,
+        #[case] root: &str,
+    ) {
+        let dir = temp_crate();
+        std::fs::create_dir_all(dir.path().join("suite/models")).unwrap();
+        std::fs::create_dir_all(dir.path().join("tools")).unwrap();
+        std::fs::write(dir.path().join("suite/main.rs"), "").unwrap();
+        std::fs::write(dir.path().join("suite/models/user.rs"), "").unwrap();
+        std::fs::write(dir.path().join("tools/cli.rs"), "").unwrap();
+        let _args = crate::env_access::test_env::set_var(
+            crate::env_access::COMPILER_ARGS_KEY,
+            format!("rustc\n{}", dir.path().join("suite/main.rs").display()),
+        );
+        let file = dir.path().join(call_site);
+        let layout = layout_for(dir.path(), Some(&file));
+        assert!(
+            same_path(&layout.module_dir, &dir.path().join(module_dir)),
+            "{layout:?}"
+        );
+        assert!(
+            same_path(&layout.roots[0], &dir.path().join(root)),
+            "{layout:?}"
+        );
+    }
+
+    /// The module path of a custom root's child module (`crate::models::user`).
+    #[test]
+    fn custom_target_root_child_module_path() {
+        let dir = temp_crate();
+        std::fs::create_dir_all(dir.path().join("suite/models")).unwrap();
+        std::fs::write(dir.path().join("suite/main.rs"), "").unwrap();
+        std::fs::write(dir.path().join("suite/models/user.rs"), "").unwrap();
+        let _args = crate::env_access::test_env::set_var(
+            crate::env_access::COMPILER_ARGS_KEY,
+            format!("rustc\n{}", dir.path().join("suite/main.rs").display()),
+        );
+        let file = dir.path().join("suite/models/user.rs");
+        let layout = layout_for(dir.path(), Some(&file));
+        assert_eq!(
+            layout.module_path_of(&file).join("::"),
+            "crate::models::user"
+        );
+        assert_eq!(
+            layout
+                .module_path_of(&dir.path().join("suite/main.rs"))
+                .join("::"),
+            "crate"
+        );
     }
 
     /// A cwd-relative call-site path (what rustc reports for workspace
