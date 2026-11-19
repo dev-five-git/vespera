@@ -710,10 +710,15 @@ fn parse_openapi_values(input: ParseStream) -> syn::Result<Vec<LitStr>> {
 /// relative reference to the document's host (`/api/v1`, which OpenAPI 3.1
 /// resolves against the URL serving the document).  `//host/..` is a
 /// network-path reference: it names another host, so it is not accepted
-/// either.  `{var}` templates are not accepted: `vespera!` cannot declare the
-/// `variables` they need.
+/// either.  A relative reference carries no whitespace, query or fragment
+/// (the same bar as the absolute form, plus `?` / `#`, which an OpenAPI server
+/// URL does not carry).  `{var}` templates are not accepted: `vespera!` cannot
+/// declare the `variables` they need.
 fn is_server_url(url: &str) -> bool {
-    let relative = url.starts_with('/') && !url.starts_with("//");
+    let relative = url.starts_with('/')
+        && !url.starts_with("//")
+        && !url.contains(char::is_whitespace)
+        && !url.contains(['?', '#']);
     (super::info::is_absolute_http_url(url) || relative) && !is_url_template(url)
 }
 
@@ -944,3 +949,7 @@ pub fn process_vespera_input(input: AutoRouterInput) -> ProcessedVesperaInput {
 #[cfg(test)]
 #[path = "input_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "input_tests_server_url.rs"]
+mod server_url_tests;

@@ -31,7 +31,7 @@ mod validation;
 pub use file_cache::print_profile_summary;
 #[cfg(test)]
 pub use file_lookup::set_test_call_site_module;
-pub use file_lookup::{call_site_module, reexported_item, storage_module_path};
+pub use file_lookup::{call_site_module, is_extern_crate, reexported_item, storage_module_path};
 pub use generate_type::generate_schema_type_code;
 pub use input::{SchemaInput, SchemaTypeInput};
 
