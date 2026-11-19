@@ -916,6 +916,16 @@ fn use_site_argument_resolves_in_the_handler_scope_not_the_body_scope() {
 /// `super::super::R` names an ancestor beyond the parent, which is not
 /// looked up: the handler module's own `R` must not stand in for the crate
 /// root's, so the return type stays as written.
+/// Response positions nested deeper than the depth bound are left as written:
+/// the expansion stops at the bound instead of recursing into them.
+#[test]
+fn nesting_past_the_depth_bound_is_left_as_written() {
+    let file: syn::File = syn::parse_str("").unwrap();
+    let ret = format!("-> {}u8{}", "Result<".repeat(12), ", AppError>".repeat(12));
+    let mut sig: syn::Signature = syn::parse_str(&format!("fn h() {ret}")).unwrap();
+    assert!(!expand_return_type_alias(&mut sig, None, Some(&file), None));
+}
+
 /// An unresolved chain names no module, so no struct of that name is found
 /// in one (and the alias lookup stops before it could matter).
 #[test]

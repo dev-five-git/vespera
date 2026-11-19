@@ -154,16 +154,17 @@ fn type_param_arguments<'a>(
     };
     let mut given = given.into_iter();
     let mut types = Vec::new();
-    for param in &generics.params {
-        match param {
-            syn::GenericParam::Lifetime(_) => {}
-            syn::GenericParam::Type(_) => types.push(match given.next() {
+    for param in generics
+        .params
+        .iter()
+        .filter(|param| !matches!(param, syn::GenericParam::Lifetime(_)))
+    {
+        let arg = given.next();
+        if let syn::GenericParam::Type(_) = param {
+            types.push(match arg {
                 Some(syn::GenericArgument::Type(ty)) => Some(ty),
                 _ => None,
-            }),
-            syn::GenericParam::Const(_) => {
-                given.next();
-            }
+            });
         }
     }
     types
