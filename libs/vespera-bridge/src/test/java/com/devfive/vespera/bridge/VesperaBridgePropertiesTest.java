@@ -78,4 +78,30 @@ class VesperaBridgePropertiesTest {
         nativeSettings.setDispatchTimeout(null);
         assertEquals(null, nativeSettings.getDispatchTimeout());
     }
+
+    @Test
+    void negativeNativeKnobsAreRejectedAtBinding() {
+        VesperaBridgeProperties.Native nativeSettings = new VesperaBridgeProperties.Native();
+        // A negative value is the bridge's "untouched" sentinel, so accepting it would
+        // silently keep the native default: every knob rejects it when it is bound.
+        assertThrows(IllegalArgumentException.class, () -> nativeSettings.setWorkerThreads(-1));
+        assertThrows(IllegalArgumentException.class, () -> nativeSettings.setMaxBlockingThreads(-1));
+        assertThrows(IllegalArgumentException.class, () -> nativeSettings.setMaxRequestBytes(-1L));
+        assertThrows(IllegalArgumentException.class,
+                () -> nativeSettings.setMaxStreamingRequestBytes(-1L));
+        assertThrows(IllegalArgumentException.class,
+                () -> nativeSettings.setMaxBufferedResponseBytes(-1L));
+        assertThrows(IllegalArgumentException.class, () -> nativeSettings.setAsyncMaxInFlight(-1));
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> nativeSettings.setMaxRequestProducers(-2));
+        assertTrue(e.getMessage().contains("max-request-producers"), e.getMessage());
+        // A rejected value is not stored; 0 keeps its documented meaning for every knob.
+        assertNull(nativeSettings.getAsyncMaxInFlight());
+        nativeSettings.setAsyncMaxInFlight(0);
+        nativeSettings.setWorkerThreads(0);
+        nativeSettings.setMaxRequestBytes(0L);
+        assertEquals(Integer.valueOf(0), nativeSettings.getAsyncMaxInFlight());
+        assertEquals(Integer.valueOf(0), nativeSettings.getWorkerThreads());
+        assertEquals(Long.valueOf(0L), nativeSettings.getMaxRequestBytes());
+    }
 }

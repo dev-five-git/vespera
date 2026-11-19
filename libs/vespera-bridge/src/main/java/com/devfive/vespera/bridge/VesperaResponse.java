@@ -154,8 +154,10 @@ public final class VesperaResponse {
 
     @Override
     public String toString() {
+        // Header NAMES only: values can carry session cookies and other secrets, and a
+        // response is routinely logged whole.
         return "VesperaResponse{status=" + decoded.status()
-                + ", headers=" + decoded.headers()
+                + ", headerNames=" + decoded.headers().keySet()
                 + ", bodyBytes=" + decoded.body().remaining() + '}';
     }
 

@@ -546,7 +546,9 @@ public class VesperaBridgeProperties {
      * Rust-side knobs under {@code vespera.bridge.native.*}.  Every field is
      * nullable: {@code null} means "not configured here".  They only take
      * effect before the first native dispatch; a late value is logged and
-     * ignored by {@link VesperaBridge}.
+     * ignored by {@link VesperaBridge}.  A negative value is rejected with an
+     * {@link IllegalArgumentException} when it is bound (see
+     * {@link #requireNonNegative}); {@code 0} keeps its documented meaning.
      */
     public static class Native {
 
@@ -606,6 +608,7 @@ public class VesperaBridgeProperties {
         }
 
         public void setMaxRequestProducers(Integer maxRequestProducers) {
+            requireNonNegative("max-request-producers", maxRequestProducers);
             this.maxRequestProducers = maxRequestProducers;
         }
 
@@ -614,6 +617,7 @@ public class VesperaBridgeProperties {
         }
 
         public void setWorkerThreads(Integer workerThreads) {
+            requireNonNegative("worker-threads", workerThreads);
             this.workerThreads = workerThreads;
         }
 
@@ -622,6 +626,7 @@ public class VesperaBridgeProperties {
         }
 
         public void setMaxBlockingThreads(Integer maxBlockingThreads) {
+            requireNonNegative("max-blocking-threads", maxBlockingThreads);
             this.maxBlockingThreads = maxBlockingThreads;
         }
 
@@ -630,6 +635,7 @@ public class VesperaBridgeProperties {
         }
 
         public void setMaxRequestBytes(Long maxRequestBytes) {
+            requireNonNegative("max-request-bytes", maxRequestBytes);
             this.maxRequestBytes = maxRequestBytes;
         }
 
@@ -638,6 +644,7 @@ public class VesperaBridgeProperties {
         }
 
         public void setMaxStreamingRequestBytes(Long maxStreamingRequestBytes) {
+            requireNonNegative("max-streaming-request-bytes", maxStreamingRequestBytes);
             this.maxStreamingRequestBytes = maxStreamingRequestBytes;
         }
 
@@ -646,6 +653,7 @@ public class VesperaBridgeProperties {
         }
 
         public void setMaxBufferedResponseBytes(Long maxBufferedResponseBytes) {
+            requireNonNegative("max-buffered-response-bytes", maxBufferedResponseBytes);
             this.maxBufferedResponseBytes = maxBufferedResponseBytes;
         }
 
@@ -691,7 +699,24 @@ public class VesperaBridgeProperties {
         }
 
         public void setAsyncMaxInFlight(Integer asyncMaxInFlight) {
+            requireNonNegative("async-max-in-flight", asyncMaxInFlight);
             this.asyncMaxInFlight = asyncMaxInFlight;
+        }
+
+        /**
+         * Rejects a negative value when it is bound. A negative number is the
+         * "leave untouched" sentinel of the {@link VesperaBridge} setters, so
+         * accepting it here would silently keep the native default (for
+         * {@code async-max-in-flight: -1}, the 4096 cap instead of the
+         * "unlimited" the operator meant).
+         *
+         * @throws IllegalArgumentException for a negative value
+         */
+        static void requireNonNegative(String key, Number value) {
+            if (value != null && value.longValue() < 0) {
+                throw new IllegalArgumentException("vespera.bridge.native." + key
+                        + " must not be negative: " + value);
+            }
         }
 
         /**

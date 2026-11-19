@@ -93,12 +93,11 @@ class VesperaDirectWrapperTest {
     }
 
     @Test
-    void readOnlyInBufferRejectedBeforeJni() {
+    void readOnlyInBufferIsAcceptedBecauseTheRequestIsOnlyRead() {
+        // The native side reads `in` through a borrowed slice, so a read-only request buffer
+        // is safe. Before this rule was dropped the check threw here.
         ByteBuffer readOnlyIn = ByteBuffer.allocateDirect(64).asReadOnlyBuffer();
-        IllegalArgumentException e = assertThrows(
-                IllegalArgumentException.class,
-                () -> VesperaBridge.dispatchDirect(readOnlyIn, 4, DIRECT));
-        assertTrue(e.getMessage().contains("writable"), e.getMessage());
+        BridgeInputChecks.requireDirectBuffers(readOnlyIn, 4, DIRECT);
     }
 
     @Test

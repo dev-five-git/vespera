@@ -328,7 +328,9 @@ public final class VesperaRequest {
      * or heavy continuations with the {@code *Async} variants, and never call
      * a blocking vespera dispatch ({@link #send()}) inline from one; or use
      * {@link #sendAsync(Executor)}. Transport failures complete the future
-     * exceptionally with {@link VesperaClientException}. Cancelling the
+     * exceptionally with {@link VesperaClientException}. A request that cannot
+     * be encoded (for example a header block past the 64 MiB ceiling) completes
+     * it the same way, with an {@link IllegalArgumentException}. Cancelling the
      * returned future (or completing it exceptionally, e.g. via
      * {@code orTimeout}) cancels the native dispatch: the Rust handler is
      * dropped and its in-flight slot released.
@@ -376,7 +378,12 @@ public final class VesperaRequest {
     }
 
     private CompletableFuture<byte[]> dispatchAsync() {
-        byte[] wire = encode(body);
+        byte[] wire;
+        try {
+            wire = encode(body);
+        } catch (IllegalArgumentException e) {
+            return CompletableFuture.failedFuture(e);
+        }
         try {
             return transport.dispatchAsync(wire);
         } catch (VesperaClientException e) {

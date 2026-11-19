@@ -130,6 +130,13 @@ class ReactiveFormBodyTest {
     }
 
     @Test
+    void consumedFormWithAnUnknownCharsetFallsBackToUtf8() throws Exception {
+        start(true);
+        post("application/x-www-form-urlencoded; charset=x-vespera-no-such", "a=1&c=%ED%95%9C");
+        assertEquals("a=1&c=%ED%95%9C", transport.lastBody());
+    }
+
+    @Test
     void unconsumedFormIsForwardedByteForByte() throws Exception {
         start(false);
         // Interleaving and the original percent-encoding are kept when nothing consumed the body.

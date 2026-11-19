@@ -141,12 +141,41 @@ class ReactiveProxyE2ETest {
     }
 
     /**
+     * The bridge's rule for an integer system property
+     * ({@code VesperaNativeConfig.parseIntegerProperty}): an optional sign, then
+     * {@code 0x} / {@code 0X} / {@code #} hexadecimal, else decimal. A leading zero
+     * is decimal, unlike {@code Long.decode}, which reads {@code 01000000} as octal
+     * and rejects {@code 0524288}. Malformed input throws NumberFormatException.
+     */
+    static long parseBridgeInteger(String text) {
+        String sign = "";
+        String digits = text;
+        if (digits.startsWith("-") || digits.startsWith("+")) {
+            sign = digits.substring(0, 1);
+            digits = digits.substring(1);
+        }
+        int radix = 10;
+        if (digits.startsWith("0x") || digits.startsWith("0X")) {
+            radix = 16;
+            digits = digits.substring(2);
+        } else if (digits.startsWith("#")) {
+            radix = 16;
+            digits = digits.substring(1);
+        }
+        if (digits.startsWith("-") || digits.startsWith("+")) {
+            throw new NumberFormatException("sign after the radix prefix: " + text);
+        }
+        return Long.parseLong(sign + digits, radix);
+    }
+
+    /**
      * 1 KiB chunks {@code /diag/panic-mid-body} must emit so at least one
      * coalesced batch is committed before the panic: two streaming chunks'
      * worth, at least 512. The chunk size resolves like the bridge + Rust
      * (demo-app's {@code NonHeaderStreamingE2ETest} has the same helper):
-     * the {@code vespera.streaming.chunkBytes} property ({@code Long.decode};
-     * malformed or {@code <= 0} is never forwarded), else the
+     * the {@code vespera.streaming.chunkBytes} property (the bridge's decimal /
+     * {@code 0x}-hex rule, see {@link #parseBridgeInteger}; malformed or
+     * {@code <= 0} is never forwarded), else the
      * {@code VESPERA_STREAMING_CHUNK_BYTES} env var (non-negative decimal,
      * else the default), else 256 KiB; clamped to 4 KiB .. 8 MiB.
      */
@@ -154,7 +183,7 @@ class ReactiveProxyE2ETest {
         long chunkBytes = 0;
         if (property != null) {
             try {
-                chunkBytes = Math.min(Integer.MAX_VALUE, Long.decode(property.trim()));
+                chunkBytes = Math.min(Integer.MAX_VALUE, parseBridgeInteger(property.trim()));
             } catch (NumberFormatException malformed) {
                 chunkBytes = 0;
             }
@@ -183,6 +212,10 @@ class ReactiveProxyE2ETest {
         assertEquals(16384, panicChunksPastOneStreamingChunk("0", "8388608"));
         assertEquals(512, panicChunksPastOneStreamingChunk(null, "big"));
         assertEquals(512, panicChunksPastOneStreamingChunk(null, "-5"));
+        // Leading zeros are decimal in the bridge, hex needs the 0x prefix.
+        assertEquals(1953, panicChunksPastOneStreamingChunk("01000000", null));
+        assertEquals(1024, panicChunksPastOneStreamingChunk("0524288", null));
+        assertEquals(2048, panicChunksPastOneStreamingChunk("0x100000", null));
     }
 
     private HttpResponse<InputStream> streamPanic(int chunks) throws Exception {

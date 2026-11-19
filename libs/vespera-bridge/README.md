@@ -698,7 +698,8 @@ payload size.
 Contract:
 - Both buffers MUST be direct (`ByteBuffer.allocateDirect`); heap
   buffers are rejected with `IllegalArgumentException` before crossing
-  JNI.
+  JNI. `out` MUST also be writable (the native side writes the response
+  into it); a read-only `in` is accepted, because the request is only read.
 - The request is read from absolute offsets `in[0..inLen]` — the
   buffer's position/limit are **ignored**; `inLen` is authoritative.
 - Return `>= 0`: a complete wire response occupies `out[0..n]`.
@@ -859,8 +860,9 @@ end-to-end:
 - Or lower `vespera.direct.maxBufferBytes` to reduce per-thread
   allocation size on platform threads.
 
-`DispatchMode.BIDIRECTIONAL_STREAMING` is safe for virtual threads
-and handles all payload sizes without pooling.
+`DispatchMode.BIDIRECTIONAL_STREAMING` works on virtual threads and
+handles all payload sizes without pooling, but it pins the carrier thread
+for the duration of the call (see above).
 
 ### Synchronous dispatch runtime semantics (background tasks)
 
@@ -1368,7 +1370,7 @@ The bundled lookup is a plain classpath resource lookup, so the library may come
 
 **musl vs glibc (Linux).** A glibc `.so` cannot be loaded into a musl JVM (Alpine) and vice versa, so musl builds live under their own `native/linux-<arch>-musl/` folder. On Linux the bridge detects the libc the JVM itself is linked against from `/proc/self/maps` (no process is spawned; a mapped `ld-musl-*` means musl) — falling back, without `/proc`, to "`/lib/ld-musl-*` exists and no `ld-linux*` loader does" — and can be forced with `-Dvespera.native.libc=musl|glibc`. On musl it tries `native/linux-<arch>-musl/` first and only when no musl library is bundled loads `native/linux-<arch>/` with a WARN (that load most likely fails); glibc JVMs only ever look at `native/linux-<arch>/`. Build the musl library with a `*-linux-musl` Rust target (a cdylib needs `RUSTFLAGS="-C target-feature=-crt-static"`).
 
-The platforms CI builds and tests are `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-aarch64` and `windows-x86_64` (the glibc Linux JVM and the Windows/macOS hosts). The `-musl` folders are built by the Gradle plugin and loaded by the bridge on a musl JVM, but no CI job runs an Alpine/musl host, so that path is not exercised by CI. The loader-failure diagnostics also probe `windows-aarch64`, `windows-x86`, `linux-arm`, `linux-riscv64`, `linux-ppc64le` and `linux-s390x`, and the Gradle plugin accepts any `<os>-<arch>` target key; none of those are built or tested by CI. Place the cdylib at `src/main/resources/native/{platform}/` to bundle it, or let the [vespera-bridge Gradle plugin](#one-line-setup-via-the-gradle-plugin-recommended) (`vespera { ... }`) build and place it, as the demo's [`build.gradle.kts`](../../examples/rust-jni-demo/java/demo-app/build.gradle.kts) does.
+The platforms CI builds and tests are `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-aarch64` and `windows-x86_64` (the glibc Linux JVM and the Windows/macOS hosts). The `-musl` folders are built by the Gradle plugin and loaded by the bridge on a musl JVM, but no CI job runs an Alpine/musl host, so that path is not exercised by CI. The loader-failure diagnostics also probe `windows-aarch64`, `windows-x86`, `linux-arm`, `linux-riscv64`, `linux-ppc64le` and `linux-s390x`, and the Gradle plugin accepts `windows-<arch>`, `macos-<arch>` and `linux-<arch>` (or `linux-<arch>-musl`) target keys whose arch the loader looks up (other OS names fail at configuration time); none of those are built or tested by CI. Place the cdylib at `src/main/resources/native/{platform}/` to bundle it, or let the [vespera-bridge Gradle plugin](#one-line-setup-via-the-gradle-plugin-recommended) (`vespera { ... }`) build and place it, as the demo's [`build.gradle.kts`](../../examples/rust-jni-demo/java/demo-app/build.gradle.kts) does.
 
 ## GraalVM native image
 

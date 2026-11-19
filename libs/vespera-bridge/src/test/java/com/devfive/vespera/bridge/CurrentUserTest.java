@@ -2,7 +2,6 @@ package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -296,7 +295,11 @@ class CurrentUserTest {
             System.setProperty("user.name", saved);
             UserPrincipal resolved = CurrentUser.SYSTEM.userNameLookup();
             assertNotNull(resolved);
-            assertNotEquals(MALLORY.getName(), resolved.getName());
+            // The lookup resolves the requested account. Windows may qualify the name with a
+            // domain or host (DOMAIN\\user) and folds case, so compare the account part only.
+            String account = resolved.getName().substring(resolved.getName().lastIndexOf('\\') + 1);
+            assertTrue(account.equalsIgnoreCase(saved),
+                    "resolved " + resolved.getName() + " for user.name " + saved);
         } finally {
             System.setProperty("user.name", saved);
         }

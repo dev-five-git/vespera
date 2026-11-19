@@ -284,5 +284,24 @@ class BridgeHardeningTest {
         // No body object at all: nothing for a message converter to size.
         assertNull(head.getBody());
         assertEquals(List.of("5"), List.of(head.getHeaders().getFirst("Content-Length")));
+
+        // Realistic HEAD: axum sends no body bytes at all, so the wire has no body region.
+        byte[] bareWire = java.nio.ByteBuffer.allocate(4 + header.length)
+                .putInt(header.length).put(header).array();
+        org.springframework.http.ResponseEntity<?> bare =
+                WireResponseWriter.buildAsyncResponseEntityFromWire(bareWire, "HEAD", null);
+        assertNull(bare.getBody());
+        assertNull(bare.getHeaders().getFirst("Content-Length"),
+                "no declared length and no body: unset, never a misleading 0");
+
+        // The GET-equivalent length Rust declared wins over the empty HEAD body.
+        byte[] sizedHeader = ("{\"status\":200,\"headers\":{\"content-type\":\"text/plain\","
+                + "\"content-length\":\"5\"}}").getBytes(StandardCharsets.UTF_8);
+        byte[] sizedWire = java.nio.ByteBuffer.allocate(4 + sizedHeader.length)
+                .putInt(sizedHeader.length).put(sizedHeader).array();
+        org.springframework.http.ResponseEntity<?> sized =
+                WireResponseWriter.buildAsyncResponseEntityFromWire(sizedWire, "HEAD", null);
+        assertNull(sized.getBody());
+        assertEquals(List.of("5"), List.of(sized.getHeaders().getFirst("Content-Length")));
     }
 }

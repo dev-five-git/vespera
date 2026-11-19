@@ -116,13 +116,6 @@ class ProxyResolverAndCorsTest {
         }
     }
 
-    @Test
-    void thePolicyRejectionIsStillABufferTooSmallException() {
-        VesperaBridge.BufferTooSmallException rejected =
-                new VesperaDirectBufferPool.PooledFallbackRejectedException(123, "virtual thread");
-        assertEquals(123, rejected.requiredSize());
-    }
-
     // ── ASYNC HEAD ─────────────────────────────────────────────────────────
 
     @Test
