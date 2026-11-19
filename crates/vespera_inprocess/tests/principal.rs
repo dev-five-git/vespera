@@ -72,6 +72,8 @@ fn status_and_body(wire: &[u8]) -> (u16, String) {
 
 const ALICE: &str = r#","principal":{"name":"alice","authorities":["ROLE_USER","ROLE_ADMIN"],"attributes":{"tenant":"acme","auth_type":"BASIC"}}"#;
 const ALICE_SEEN: &str = "alice|ROLE_USER,ROLE_ADMIN|auth_type=BASIC,tenant=acme";
+/// The `400` body of a `principal` without `name` (the header parse error).
+const MISSING_NAME_MSG: &str = "wire header JSON parse error: missing field `name` in `principal`";
 
 #[rstest]
 #[case::full("/whoami", ALICE, 200, ALICE_SEEN)]
@@ -87,7 +89,7 @@ const ALICE_SEEN: &str = "alice|ROLE_USER,ROLE_ADMIN|auth_type=BASIC,tenant=acme
     401,
     MISSING_PRINCIPAL_MSG
 )]
-#[case::missing_name_is_bad_request("/whoami", r#","principal":{}"#, 400, "")]
+#[case::missing_name_is_bad_request("/whoami", r#","principal":{}"#, 400, MISSING_NAME_MSG)]
 #[tokio::test]
 async fn buffered_dispatch_inserts_principal(
     #[case] path: &str,
@@ -99,9 +101,7 @@ async fn buffered_dispatch_inserts_principal(
     let (got_status, got_body) =
         status_and_body(&dispatch_from_bytes_async(wire(path, extra)).await);
     assert_eq!(got_status, status, "{got_body}");
-    if status != 400 {
-        assert_eq!(got_body, body);
-    }
+    assert_eq!(got_body, body);
 }
 
 #[tokio::test]

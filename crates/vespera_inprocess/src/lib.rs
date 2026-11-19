@@ -42,15 +42,21 @@
 //!                       no encoding applied)
 //!    ```
 //!
-//!    All failure modes return a valid wire-format response so the
-//!    caller's decoder never has to special-case errors.
+//!    The failure modes listed above return a valid wire-format response
+//!    so the caller's decoder never has to special-case errors.  A handler
+//!    panic becomes a `500` wire only on the JNI and C ABI entry points;
+//!    the Rust `dispatch_*` and `dispatch_*streaming*` functions let it
+//!    unwind to the caller.
 //!
 //! # Security: default `Content-Type`
 //!
 //! On every API layer a request body that carries no `Content-Type`
 //! reaches the router with `content-type: application/json` (when the
 //! body is non-empty; bidirectional streaming, whose body is not visible
-//! up front, unless the headers declare `content-length: 0`).  axum's
+//! up front, unless the headers declare `content-length: 0`), unless the
+//! process turned that default off (`set_default_json_content_type(false)`,
+//! `VESPERA_DEFAULT_JSON_CONTENT_TYPE=false`, or
+//! `vespera_configure_default_json_content_type(0)`).  axum's
 //! `Json<T>` therefore accepts it, so its content-type check is **no
 //! CSRF defence** behind a host that forwards browser requests: a
 //! cross-site "simple" request (e.g. `fetch` of an untyped `Blob`) sends

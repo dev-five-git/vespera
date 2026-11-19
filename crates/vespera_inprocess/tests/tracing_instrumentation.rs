@@ -373,13 +373,15 @@ fn unknown_app_is_a_rejected_request() {
 /// Round 11: `app` is recorded from the RESOLVED name only — trimmed like the
 /// registry looks it up, and never for an invalid (`400`) name, whose raw
 /// client text would otherwise reach every subscriber's span.  Round 23: the
-/// invalid-name WARN event's `detail` echoes at most a 64-byte prefix too.
+/// invalid-name WARN event's `detail` echoes at most 64 bytes, because the
+/// length check runs first and rejects anything longer.
 #[test]
 fn app_field_is_the_resolved_name_never_the_raw_client_value() {
     setup();
     // Past the 64-byte name limit, under the suite's 4 KiB request cap.
     let long = "x".repeat(2 * 1024);
-    // Long AND invalid: the invalid-characters message is the one that echoes.
+    // Long AND invalid: the length check runs first, so the too-long message
+    // is returned and the name is not echoed at all.
     let long_invalid = format!("{long}!");
     for (app, status, recorded) in [
         (" admin ", 200, "admin"),

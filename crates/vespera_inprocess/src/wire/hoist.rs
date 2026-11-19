@@ -61,10 +61,12 @@ fn body_is_json(headers: &http::HeaderMap) -> bool {
 /// fallback walk in [`try_hoist_validation_errors`], so the hoist stays
 /// genuinely best-effort without taxing the common case.
 ///
-/// Unknown keys are read into a `serde_json::Value`, not skipped with
-/// `IgnoredAny`: skipping does not validate `\u` surrogate pairing inside
-/// string values, which the lenient `Value` walk does.  Parsing them the same
-/// way keeps the strict path from accepting a body the fallback rejects.
+/// Unknown values go through [`SkippedValue`]: it skips the value without
+/// converting it (so an out-of-range number such as `1e400` is accepted, as
+/// `IgnoredAny` accepts it) but still validates every `\u` surrogate pairing
+/// in its strings, which `IgnoredAny` does not and the `Value` walk does.  A
+/// lone surrogate therefore fails the strict parse and the body is rejected
+/// by both paths, while an out-of-range number no longer costs the hoist.
 ///
 /// Both `Deserialize` impls are hand-written **map-only** visitors: a derive
 /// would also accept a JSON array through `visit_seq` (positional
@@ -99,6 +101,61 @@ fn set_once<'de, A: serde::de::MapAccess<'de>, T: Deserialize<'de>>(
     Ok(())
 }
 
+/// An unknown value, skipped without converting it.  The raw text is captured
+/// (`RawValue`, so no number is converted and an out-of-range `1e400` is fine)
+/// and checked by [`surrogates_paired`]: a `\u` escape pair must be valid
+/// UTF-16, the rule the `serde_json::Value` walk applies to strings.
+struct SkippedValue;
+
+impl<'de> Deserialize<'de> for SkippedValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = <&serde_json::value::RawValue as Deserialize>::deserialize(deserializer)?;
+        if surrogates_paired(raw.get().as_bytes()) {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom(
+                "lone surrogate in an unknown value",
+            ))
+        }
+    }
+}
+
+/// `true` when every `\u` escape in `raw` (a syntactically valid JSON value)
+/// is a scalar value or a high surrogate directly followed by its low
+/// surrogate.  A backslash in valid JSON always opens an escape, so the scan
+/// steps over each escape whole (`\\` included).
+fn surrogates_paired(raw: &[u8]) -> bool {
+    // A high surrogate was the previous escape, so the next one must be a low
+    // `\u` escape starting exactly where the high one ended (`at`).
+    let mut high_open = false;
+    let mut at = 0;
+    while let Some(off) = raw
+        .get(at..)
+        .and_then(|rest| rest.iter().position(|&b| b == b'\\'))
+    {
+        let esc = at + off;
+        let is_u = raw.get(esc + 1) == Some(&b'u');
+        let unit = if is_u {
+            raw.get(esc + 2..esc + 6).and_then(hex_unit)
+        } else {
+            None
+        };
+        let high = matches!(unit, Some(0xD800..=0xDBFF));
+        let low = matches!(unit, Some(0xDC00..=0xDFFF));
+        if (high_open && (esc != at || !low)) || (low && !high_open) {
+            return false;
+        }
+        high_open = high;
+        at = if is_u { esc + 6 } else { esc + 2 };
+    }
+    !high_open
+}
+
+/// The UTF-16 code unit of four hex digits.
+fn hex_unit(digits: &[u8]) -> Option<u16> {
+    u16::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()
+}
+
 /// Map-only visitor behind [`HoistEnvelope`]'s `Deserialize`.
 struct EnvelopeVisitor;
 
@@ -118,7 +175,7 @@ impl<'de> serde::de::Visitor<'de> for EnvelopeVisitor {
             if key == "errors" {
                 set_once(&mut access, &mut errors, "errors")?;
             } else {
-                access.next_value::<serde_json::Value>()?;
+                access.next_value::<SkippedValue>()?;
             }
         }
         let errors = errors.ok_or_else(|| serde::de::Error::missing_field("errors"))?;
@@ -153,7 +210,7 @@ impl<'de> serde::de::Visitor<'de> for ErrorVisitor {
                 "code" => set_once(&mut access, &mut code, "code")?,
                 "message" => set_once(&mut access, &mut message, "message")?,
                 _ => {
-                    access.next_value::<serde_json::Value>()?;
+                    access.next_value::<SkippedValue>()?;
                 }
             }
         }
@@ -234,6 +291,12 @@ fn hoist_from_value<'a>(body_bytes: &Bytes) -> Option<Vec<ValidationErrorItem<'a
 ///   `+json`)
 /// - body bytes that don't parse as the `{"errors":[...]}` envelope
 /// - an envelope whose hoistable errors (those carrying a `path`) are empty
+///
+/// Both paths reject the same lone surrogates.  They differ on one number
+/// rule: the strict path accepts an out-of-range number (`1e400`) in an
+/// unknown value, while the `serde_json::Value` fallback (used only when a
+/// known field has the wrong type) rejects it, so such a body hoists only
+/// when the strict path succeeds.
 ///
 /// This is intentionally lenient — a malformed 422 body must never
 /// degrade to a 5xx; the original body is still surfaced verbatim.
@@ -489,6 +552,45 @@ mod tests {
             bench_hoist_new(&json_headers(), &body),
             bench_hoist_old(&json_headers(), &body)
         );
+    }
+
+    /// Regression (round 24): an out-of-range number in an unknown value is
+    /// accepted by the strict path (as `IgnoredAny` accepted it before round
+    /// 23), so the envelope still hoists.  The `Value` walk rejects `1e400`,
+    /// which is why this case must not depend on the fallback.
+    #[rstest::rstest]
+    #[case::top_level_unknown(br#"{"errors":[{"path":"email","message":"bad"}],"debug":1e400}"#.as_slice())]
+    #[case::nested_unknown(br#"{"errors":[{"path":"email","extra":[-1e400,2]}]}"#.as_slice())]
+    fn hoisting_accepts_out_of_range_numbers_in_unknown_values(#[case] body: &'static [u8]) {
+        let body = Bytes::from_static(body);
+        let items = try_hoist_validation_errors(&json_headers(), &body)
+            .expect("an out-of-range number in an unknown value must not block the hoist");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].path, "email");
+    }
+
+    /// The surrogate scan over one raw unknown value: escapes are stepped over
+    /// whole, a high surrogate must be followed directly by a low one, and a
+    /// lone low surrogate is rejected.
+    #[rstest::rstest]
+    #[case::plain_text(br#""abc""#.as_slice(), true)]
+    #[case::number_out_of_range(b"1e400".as_slice(), true)]
+    #[case::escaped_backslash_then_u(br#""\\ud800""#.as_slice(), true)]
+    #[case::simple_escape_before_pair(br#""\n\ud83d\ude00""#.as_slice(), true)]
+    #[case::valid_pair(br#""\ud83d\ude00""#.as_slice(), true)]
+    #[case::lone_low(br#""\udc00""#.as_slice(), false)]
+    #[case::lone_high_at_end(br#""\ud800""#.as_slice(), false)]
+    #[case::high_then_plain_text(br#""\ud800x\udc00""#.as_slice(), false)]
+    #[case::high_then_other_escape(br#""\ud800\n""#.as_slice(), false)]
+    #[case::high_then_non_low(br#""\ud800\u0041""#.as_slice(), false)]
+    #[case::two_highs_then_low(br#""\ud800\ud800\udc00""#.as_slice(), false)]
+    fn surrogate_scan_matches_the_value_walk(#[case] raw: &[u8], #[case] paired: bool) {
+        assert_eq!(surrogates_paired(raw), paired);
+        // The `Value` walk decides the same string cases.
+        if raw.starts_with(b"\"") {
+            let text = std::str::from_utf8(raw).unwrap();
+            assert_eq!(serde_json::from_str::<String>(text).is_ok(), paired);
+        }
     }
 
     #[test]

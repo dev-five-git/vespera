@@ -68,7 +68,9 @@ http-body = "1"
 http-body-util = "0.1"
 tower = { version = "0.5.3", features = ["util"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+# `raw_value`: `RawValue` captures an unknown 422 value without converting it
+# (wire/hoist.rs `SkippedValue`); no extra dependencies.
+serde_json = { version = "1.0.154", features = ["raw_value"] }
 # `time`: the optional per-dispatch deadline (`set_dispatch_timeout`) and the
 # bounded request-producer join on the bidirectional streaming paths.
 # `rt-multi-thread`: `tokio::task::block_in_place`, which the bidirectional

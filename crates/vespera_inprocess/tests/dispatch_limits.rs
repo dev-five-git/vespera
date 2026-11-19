@@ -339,6 +339,11 @@ async fn bidirectional_request_body_cap(#[case] upload_len: usize, #[case] statu
     assert_eq!(split(&header).0["status"], status);
     if status == 200 {
         assert_eq!(body, upload_len.to_string().as_bytes());
+    } else {
+        // The `413` body names the cap, the same way the buffered cap tests do.
+        let msg = String::from_utf8_lossy(&body);
+        assert!(msg.contains("VESPERA_MAX_STREAMING_REQUEST_BYTES"), "{msg}");
+        assert!(msg.contains(&MAX_STREAM_REQUEST.to_string()), "{msg}");
     }
 }
 

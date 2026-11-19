@@ -12,8 +12,12 @@
 //! Same contract as the rest of [`super`]: accept/reject- and
 //! value-identical to the serde twin (`bench_serde::de_opt_principal`) —
 //! any key order, unknown keys validated then skipped, duplicate known keys
-//! rejected, plain strings borrowed.  Additionally caps `authorities` and
-//! `attributes` at [`MAX_PRINCIPAL_ENTRIES`] each (the serde twin enforces
+//! rejected, plain strings borrowed.  One exception, as in [`super`]: inside
+//! an **unknown** key's value this parser validates `\u` surrogate pairing
+//! and the serde twin's `IgnoredAny` skip does not, so
+//! `"principal":{"name":"a","x":"\udc00"}` is rejected here and accepted by
+//! the twin (production uses only this parser).  Additionally caps
+//! `authorities` and `attributes` at [`MAX_PRINCIPAL_ENTRIES`] each (the serde twin enforces
 //! the same cap, `bench_serde`; the property tests stay below it), so a
 //! hostile host frame cannot grow them without bound.
 

@@ -13,9 +13,12 @@
 //!   through the Java `addHeader` Latin-1 encoder.
 //! - **Request** ([`header_value_wire_bytes`]): a value whose `char`s are all
 //!   `<= U+00FF` maps each `char` back to one byte (the servlet's Latin-1
-//!   view of the raw request bytes).  A value containing any `char` above
-//!   `U+00FF` cannot be a Latin-1 view, so it keeps its UTF-8 encoding —
-//!   backwards compatible with wire producers that send UTF-8 text.
+//!   view of the raw request bytes).  So UTF-8 text in that range is not
+//!   recovered: `café` sent as UTF-8 (`63 61 66 C3 A9`) arrives as
+//!   `63 61 66 E9`.  Only a value containing a `char` above `U+00FF`, which
+//!   cannot be a Latin-1 view, keeps its UTF-8 encoding.  A non-servlet
+//!   producer that sends UTF-8 must not rely on the pass-through for text in
+//!   `U+0080..=U+00FF`.
 //!
 //! Header **names** are ASCII tokens and are never remapped.
 
