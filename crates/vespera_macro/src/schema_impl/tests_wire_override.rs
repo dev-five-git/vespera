@@ -50,6 +50,28 @@ fn container_value_type_drives_assertions(
     );
 }
 
+/// R29-SM0-L2: rustc accepts a non-ASCII ident, so the default name it gives
+/// the component key is checked like an explicit `#[schema(name = ..)]`.
+#[test]
+fn default_name_from_a_non_ascii_ident_is_refused() {
+    let input: syn::DeriveInput = syn::parse_str("struct 회원 { id: i64 }").unwrap();
+    let (metadata, expanded) = process_derive_schema(&input);
+    assert!(metadata.is_none());
+    let expanded = expanded.to_string();
+    assert!(expanded.contains("compile_error"), "{expanded}");
+    assert!(expanded.contains("회원"), "{expanded}");
+}
+
+/// The explicit name still wins over the ident, so a non-ASCII ident with an
+/// ASCII `#[schema(name = ..)]` is accepted.
+#[test]
+fn explicit_ascii_name_accepts_a_non_ascii_ident() {
+    let input: syn::DeriveInput =
+        syn::parse_str("#[schema(name = \"Member\")] struct 회원 { id: i64 }").unwrap();
+    let (metadata, expanded) = process_derive_schema(&input);
+    assert!(metadata.is_some(), "{expanded}");
+}
+
 #[test]
 fn container_value_type_must_be_a_type() {
     let input: syn::DeriveInput =

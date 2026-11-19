@@ -6,6 +6,8 @@
 use syn::parse::Parser;
 use syn::punctuated::Punctuated;
 
+use crate::schema_macro::generate_type::assignments::readable_from;
+
 /// Whether a name the copied text uses is one the call site cannot resolve.
 type Judge<'a> = &'a dyn Fn(&str) -> bool;
 
@@ -234,11 +236,81 @@ pub(super) fn unresolved_at_call_site(
     })
 }
 
+/// Refuses a storage-fallback adapter DTO the call site cannot use: a name it
+/// does not resolve the way its own module does ([`unresolved_at_call_site`]),
+/// or a field the call site cannot read (R29-SM3-L2). The wrapper builds the
+/// DTO with a struct literal there, which names every field, so a private one
+/// is E0451 inside the generated code; the error is spanned at the adapter.
+pub(super) fn check_storage_fallback(
+    field_name: &str,
+    adapter_name: &syn::Ident,
+    dto_name: &str,
+    dto: &syn::ItemStruct,
+    dto_module: Option<&[String]>,
+) -> syn::Result<()> {
+    if let Some(name) = unresolved_at_call_site(dto, dto_module) {
+        return Err(syn::Error::new_spanned(
+            adapter_name,
+            format!(
+                "schema_type!: relation field `{field_name}` adapter `{dto_name}` is declared in another module and names `{name}`, which the call-site module does not resolve; import `{name}` here, use an absolute path in that struct, or declare the adapter in this file"
+            ),
+        ));
+    }
+    let call_site = crate::schema_macro::call_site_module();
+    let module = dto_module.unwrap_or_default();
+    let private = dto
+        .fields
+        .iter()
+        .find(|field| !readable_from(&field.vis, module, call_site.as_deref()))
+        .and_then(|field| field.ident.as_ref());
+    if let Some(ident) = private {
+        return Err(syn::Error::new_spanned(
+            adapter_name,
+            format!(
+                "schema_type!: relation field `{field_name}` adapter `{dto_name}` is declared in another module and its field `{ident}` is not readable from this module (the generated struct literal sets every field); make `{ident}` `pub` or declare the adapter in this file"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::schema_macro::file_cache::bump_epoch;
     use crate::schema_macro::file_lookup::set_test_call_site_module;
+
+    /// R29-SM3-L2: a private field of a storage-fallback DTO is refused, naming
+    /// the field; `pub` / `pub(crate)` fields and a call site inside the DTO's
+    /// module pass.
+    #[rstest::rstest]
+    #[case::private_field("struct D { id: i32 }", "crate::routes", Some("id"))]
+    #[case::second_private_field(
+        "struct D { pub id: i32, name: String }",
+        "crate::routes",
+        Some("name")
+    )]
+    #[case::public_field("struct D { pub id: i32 }", "crate::routes", None)]
+    #[case::crate_visible_field("struct D { pub(crate) id: i32 }", "crate::routes", None)]
+    #[case::same_module("struct D { id: i32 }", "crate::models::card", None)]
+    fn storage_fallback_fields_must_be_readable_at_the_call_site(
+        #[case] src: &str,
+        #[case] call_site: &str,
+        #[case] refused: Option<&str>,
+    ) {
+        let _call = set_test_call_site_module(call_site);
+        let dto: syn::ItemStruct = syn::parse_str(src).unwrap();
+        let module = ["crate", "models", "card"].map(String::from);
+        let adapter = syn::Ident::new("OwnerCard", proc_macro2::Span::call_site());
+        let result = check_storage_fallback("owner", &adapter, "OwnerCard", &dto, Some(&module));
+        match refused {
+            Some(field) => {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains(&format!("field `{field}`")), "{error}");
+            }
+            None => assert!(result.is_ok()),
+        }
+    }
 
     /// R24-SM3-01: every serde path and type the proxy copies is judged, not
     /// only a field's `default`.
@@ -275,6 +347,9 @@ mod tests {
         None
     )]
     #[case::std_field_type("struct D { id: std::option::Option<i32> }", None)]
+    // R29-SM4-01: `Decimal` is no prelude name, so the call site must resolve
+    // it like any other imported name.
+    #[case::decimal_is_judged("struct D { total: Decimal }", Some("Decimal"))]
     // A serde value that is no string literal is no copied path.
     #[case::non_string_value("struct D { #[serde(with = codec)] id: i32 }", None)]
     fn copied_serde_paths_are_judged(#[case] source: &str, #[case] expected: Option<&str>) {

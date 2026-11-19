@@ -662,13 +662,15 @@ impl syn::visit_mut::VisitMut for LenPaths<'_, '_> {
 }
 
 /// How many leading segments of a type path resolve together: its leading
-/// `self` / `super` run, or the first segment alone (at least one).
+/// `self` / `super` run plus the name after it (`self::Status` must consult
+/// that module's imports, R29-SM3-L1), or the first segment alone (at least
+/// one).
 fn leading_run_len(segments: &[(String, TokenStream)]) -> usize {
-    segments
+    let relative = segments
         .iter()
         .take_while(|(name, _)| name == "self" || name == "super")
-        .count()
-        .max(1)
+        .count();
+    (relative + usize::from(relative > 0)).clamp(1, segments.len())
 }
 
 /// The external glob imports of `scope`, in source order: not `crate` /
@@ -688,10 +690,13 @@ fn external_glob(scope: &ModuleScope) -> Option<&Vec<String>> {
 }
 
 /// Names a glob import never supplies: the primitives and the std prelude.
+/// `Decimal` is in [`PRIMITIVE_TYPE_NAMES`] for the schema mapping only; it is
+/// no primitive and no prelude name, so an external glob (`use rust_decimal::*;`)
+/// supplies it (R29-SM4-01).
 pub(super) fn is_prelude_name(name: &str) -> bool {
-    // `char` and `str` are primitives the list above does not carry: a glob
-    // import would have been taken for them (R21-B4-M1, round 21).
-    PRIMITIVE_TYPE_NAMES.contains(&name)
+    (PRIMITIVE_TYPE_NAMES.contains(&name) && name != "Decimal")
+        // `char` and `str` are primitives the list above does not carry: a glob
+        // import would have been taken for them (R21-B4-M1, round 21).
         || matches!(
             name,
             "char" | "str" | "Vec" | "Option" | "Result" | "Box" | "Self"

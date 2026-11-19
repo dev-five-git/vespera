@@ -14,7 +14,7 @@ fn glob_crate() -> tempfile::TempDir {
     std::fs::write(src.join("lib.rs"), "pub mod models;").unwrap();
     std::fs::write(
         src.join("models.rs"),
-        "pub mod toml_glob;\npub mod std_glob;",
+        "pub mod toml_glob;\npub mod std_glob;\npub mod decimal_glob;",
     )
     .unwrap();
     std::fs::write(
@@ -27,6 +27,12 @@ fn glob_crate() -> tempfile::TempDir {
         "use std::collections::*;\npub struct Holder { pub m: HashMap<String, i32> }",
     )
     .unwrap();
+    // R29-SM4-01: `Decimal` is no primitive, so this glob supplies it.
+    std::fs::write(
+        src.join("models").join("decimal_glob.rs"),
+        "use rust_decimal::*;\npub struct Holder { pub total: Decimal }",
+    )
+    .unwrap();
     dir
 }
 
@@ -37,6 +43,7 @@ fn glob_crate() -> tempfile::TempDir {
     "HashMap<String, i32>",
     "std :: collections :: HashMap < String , i32 >"
 )]
+#[case::decimal_is_not_a_prelude_name("decimal_glob", "Decimal", "rust_decimal :: Decimal")]
 fn external_glob_supplies_names_the_module_does_not_define(
     #[case] module: &str,
     #[case] ty: &str,

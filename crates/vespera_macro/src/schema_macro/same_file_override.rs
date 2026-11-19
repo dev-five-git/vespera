@@ -16,7 +16,6 @@ use super::type_utils::snake_to_pascal_case;
 use crate::metadata::StructMetadata;
 
 mod unresolved;
-use unresolved::unresolved_at_call_site;
 
 #[cfg(test)]
 pub(super) struct __VesperaSameFileLookupFixture {
@@ -331,18 +330,16 @@ fn explicit_adapter_struct(
     // and serde function paths copied verbatim into this call-site proxy: a
     // name only the DTO's own module resolves would not compile here
     // (R23-SM3-02).
-    if same_file_definition(&dto_name).is_none()
-        && let Some(name) = unresolved_at_call_site(
+    // Its fields must also be readable here: the wrapper builds the DTO with a
+    // struct literal (R29-SM3-L2, checked with the names in `unresolved`).
+    if same_file_definition(&dto_name).is_none() {
+        unresolved::check_storage_fallback(
+            field_name,
+            adapter_name,
+            &dto_name,
             &dto_struct,
             super::file_lookup::storage_module_path(&dto_meta).as_deref(),
-        )
-    {
-        return Err(syn::Error::new_spanned(
-            adapter_name,
-            format!(
-                "schema_type!: relation field `{field_name}` adapter `{dto_name}` is declared in another module and names `{name}`, which the call-site module does not resolve; import `{name}` here, use an absolute path in that struct, or declare the adapter in this file"
-            ),
-        ));
+        )?;
     }
     Ok((dto_name, dto_struct))
 }
