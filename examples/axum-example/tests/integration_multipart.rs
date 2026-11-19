@@ -265,7 +265,7 @@ async fn test_serde_rename_all_rust_name_rejected() {
 
     let response = server.post("/serde-test").multipart(form).await;
     // "userName" is missing → MissingField error
-    response.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    response.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 // ─── serde(rename = "...") tests ────────────────────────────────────────────
@@ -297,7 +297,7 @@ async fn test_serde_rename_camel_case_of_field_rejected() {
 
     let response = server.post("/serde-test").multipart(form).await;
     // "customTag" is missing → MissingField error
-    response.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    response.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 // ─── serde(default) field-level tests ───────────────────────────────────────
@@ -597,7 +597,7 @@ async fn test_form_data_field_name_rust_name_rejected() {
         .add_text("data", "payload");
 
     let response = server.post("/field-name-test").multipart(form).await;
-    response.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    response.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 // ─── form_data(default) tests ───────────────────────────────────────────────
@@ -864,7 +864,7 @@ async fn test_missing_required_field() {
     let form = MultipartForm::new().add_text("name", "Alice");
     let response = server.post("/strict-test").multipart(form).await;
 
-    response.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    response.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
     let body = response.text();
     assert!(
         body.contains("Missing field"),
@@ -885,7 +885,7 @@ async fn test_missing_multiple_required_fields() {
     let form = MultipartForm::new().add_text("name", "Alice");
     let response = server.post("/numeric-char-test").multipart(form).await;
 
-    response.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    response.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
     let body = response.text();
     assert!(
         body.contains("Missing field"),
