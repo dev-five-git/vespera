@@ -917,3 +917,6 @@ mod tests_glob;
 
 #[cfg(test)]
 mod tests_reexport;
+
+#[cfg(test)]
+mod tests_test_scope;

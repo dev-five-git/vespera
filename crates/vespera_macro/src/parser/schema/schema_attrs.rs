@@ -92,7 +92,8 @@ pub struct SchemaConstraints {
     /// is intentionally arbitrary / opaque JSON.  Bare form
     /// `#[schema(any)]` sets it to `true`; an explicit
     /// `#[schema(any = false)]` is also accepted. A `value_type` on the same
-    /// field wins over it (see [`SchemaConstraints::any_decides`]).
+    /// field wins over it: the field is then documented by that type and its
+    /// leaf assertion is not skipped (see [`SchemaConstraints::any_decides`]).
     pub any: Option<bool>,
 
     /// `#[schema(value_type = T)]`: document the field (or, on a container,

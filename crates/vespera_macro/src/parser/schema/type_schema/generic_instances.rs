@@ -262,8 +262,9 @@ pub fn inline_or_reference(name: &str, build: impl FnOnce() -> Schema) -> Schema
 
 /// Run `build` (the schema of the struct / enum definition `ident` with
 /// `generics` and container `attrs`); for a generic definition such as
-/// `Tree<T>`, its own instantiation `Tree<T>` inside it refers back to its
-/// component (`Tree`) instead of materialising `Tree_T`.
+/// `Tree<T>` (or `Node<const N: usize>`, or `Buf<T, const N: usize>`), its own
+/// instantiation inside it (`Tree<T>`, `Node<N>`, `Buf<T, N>`) refers back to
+/// its component (`Tree`) instead of materialising `Tree_T` / `Node_Const.N`.
 pub fn with_definition<R>(
     ident: &syn::Ident,
     generics: &syn::Generics,
@@ -277,7 +278,16 @@ pub fn with_definition<R>(
             syn::parse_quote!(#ident)
         })
         .collect();
-    if params.is_empty() {
+    // A const parameter is spelled by its argument expression (`N`), as a
+    // const argument of an instantiation is ([`push_const_segments`]).
+    let consts: Vec<syn::Expr> = generics
+        .const_params()
+        .map(|param| {
+            let ident = &param.ident;
+            syn::parse_quote!(#ident)
+        })
+        .collect();
+    if params.is_empty() && consts.is_empty() {
         return build();
     }
     let component =
@@ -285,10 +295,23 @@ pub fn with_definition<R>(
     // A self-reference may omit a defaulted parameter (`Tree<T>` inside
     // `Tree<T, M = Meta>` means `Tree<T, Meta>`): it names the same component
     // as the parameters spelled out (`Tree<T, M>`).
-    let as_written = instance_name(&component, &params);
-    let defaults_filled = instance_name(&component, &default_filled_params(generics, &params));
+    let as_written = definition_instance(&component, &params, &consts);
+    let defaults_filled = definition_instance(
+        &component,
+        &default_filled_params(generics, &params),
+        &consts,
+    );
     let instances = [as_written, defaults_filled];
     with_self_instances(&instances, &component, build)
+}
+
+/// The name of `component` instantiated with the type arguments `types`
+/// followed by the const arguments `consts`: the order an instantiation is
+/// spelled in (`conversion` appends the const segments after the types).
+fn definition_instance(component: &str, types: &[Type], consts: &[syn::Expr]) -> String {
+    let mut name = instance_name(component, types);
+    push_const_segments(&mut name, consts.iter());
+    name
 }
 
 /// `params` (the type parameters as types) with every defaulted parameter

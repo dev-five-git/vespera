@@ -160,11 +160,13 @@ fn emit_field_assertions(
         for (field, constraints) in fields_named.named.iter().zip(field_constraints) {
             // `#[schema(any)]` is the documented escape hatch — the field
             // explicitly opted out of type-driven schema generation, so
-            // there's no leaf to assert.  Parse errors on `#[schema(...)]`
-            // are surfaced upstream by `process_derive_schema`.
+            // there's no leaf to assert. A `value_type` on the same field
+            // wins over it (`any_decides`), so that type is still asserted.
+            // Parse errors on `#[schema(...)]` are surfaced upstream by
+            // `process_derive_schema`.
             // A fully `#[serde(skip)]`-ped field never reaches the schema
             // (a `PgPool` handle, a cache), so its type is never consulted.
-            if constraints.is_any() || extract_skip(&field.attrs) {
+            if constraints.any_decides() || extract_skip(&field.attrs) {
                 continue;
             }
             let codec = extract_field_codec(&field.attrs);
