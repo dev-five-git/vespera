@@ -640,11 +640,7 @@ mod tests {
             .properties
             .as_ref()
             .expect("variant props missing");
-        let SchemaRef::Inline(inner) = props
-            .get("detail")
-            .or_else(|| props.get("Detail"))
-            .expect("variant key missing")
-        else {
+        let SchemaRef::Inline(inner) = props.get("detail").expect("variant key missing") else {
             panic!("Expected inline inner schema")
         };
         let inner_props = inner.properties.as_ref().expect("inner props missing");

@@ -563,7 +563,8 @@ mod tests {
         assert_eq!(result.as_deref(), Some("PascalCase"));
     }
 
-    /// A key embedded in a longer identifier is skipped by the fallback.
+    /// A qualified key whose prefix is a longer identifier is still matched by
+    /// its last segment.
     #[test]
     fn test_extract_rename_all_raw_tokens_force_fallback() {
         let tokens: TokenStream = "@broken, __rename_all_prefix::rename_all = \"lowercase\""

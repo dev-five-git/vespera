@@ -31,6 +31,8 @@ use super::super::{
 
 mod schema_def;
 use schema_def::{SchemaDef, parse_schema_def, ref_override_of, schema_name_of};
+mod json_paths;
+use json_paths::{is_json_value_path, is_serde_json_map_path};
 mod tuple_schema;
 use tuple_schema::tuple_array_schema;
 
@@ -146,6 +148,12 @@ fn unsigned_integer(format: &str, maximum: Option<f64>) -> SchemaRef {
 /// Whether `path` is qualified with a crate whose types the builtin table
 /// maps (`chrono::NaiveDate`, `sea_orm::prelude::Decimal`, `std::net::..`),
 /// so a same-named user schema cannot be meant.
+///
+/// Known limitation: the first segment is matched by name alone, so a
+/// crate-local module with one of these names (`mod url;` next to a user
+/// `Url` schema) reads as the external crate. Only the crate's own module
+/// declarations could tell them apart, and this check does not see them (the
+/// `--extern` list is no substitute: it is empty outside rustc).
 fn is_external_crate_path(path: &syn::Path) -> bool {
     path.segments.len() > 1
         && path.segments.first().is_some_and(|root| {
@@ -432,6 +440,13 @@ fn parse_type_impl(
             if is_json_value_path(path, segment, known_schemas) {
                 // `serde_json::Value` accepts any JSON value → `{}`.
                 return SchemaRef::Inline(Box::default());
+            }
+            if is_serde_json_map_path(path) {
+                // `serde_json::Map<String, V>` is a JSON object of any members.
+                return SchemaRef::Inline(Box::new(Schema {
+                    additional_properties: Some(AdditionalProperties::Bool(true)),
+                    ..Schema::new(SchemaType::Object)
+                }));
             }
             let primitive_result: Option<SchemaRef> = match ident_str.as_str() {
                 _ if user_shadowed => None,
@@ -814,34 +829,6 @@ fn is_unsigned_int_type(ty: &Type) -> bool {
     if type_path.path.segments.last().is_some_and(|seg| {
         matches!(seg.ident.to_string().as_str(), "u8" | "u16" | "u32" | "u64" | "u128" | "usize")
     }))
-}
-
-/// `serde_json::Value` under any of its names:
-///
-/// - `Value` through a `serde_json` segment (`serde_json::Value`,
-///   `vespera::serde_json::Value`);
-/// - SeaORM's aliases `Json` (`sea_orm::prelude::Json`) and `JsonValue`
-///   (`sea_orm::JsonValue`), qualified or not — but only WITHOUT generic
-///   arguments: `Json<T>` is axum's body wrapper, not a JSON value;
-/// - a `Value` / `Json` / `JsonValue` that is not a known component schema
-///   (a user `#[derive(Schema)] struct Json` keeps its `$ref`, also as
-///   `crate::models::Json`) unless the path names `serde_json` / `sea_orm`.
-fn is_json_value_path(
-    path: &syn::Path,
-    last: &syn::PathSegment,
-    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
-) -> bool {
-    let alias = last.ident == "Json" || last.ident == "JsonValue";
-    if !(alias || last.ident == "Value") || !last.arguments.is_none() {
-        return false;
-    }
-    let qualified = path
-        .segments
-        .iter()
-        .any(|segment| segment.ident == "serde_json" || (alias && segment.ident == "sea_orm"));
-    qualified
-        || ((alias || path.segments.len() == 1)
-            && !known_schemas.contains(last.ident.to_string().as_str()))
 }
 
 /// Description of a `time` crate value (see [`time_crate_schema`]).

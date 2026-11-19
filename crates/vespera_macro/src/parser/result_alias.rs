@@ -76,7 +76,34 @@ const NON_ALIAS_IDENTS: [&str; 11] = [
 /// Whether `sig`'s return type could name a user alias (so looking one up is
 /// worth reading the source file).
 pub fn needs_alias_expansion(sig: &syn::Signature) -> bool {
-    matches!(&sig.output, ReturnType::Type(_, ty) if alias_candidate(ty).is_some())
+    matches!(&sig.output, ReturnType::Type(_, ty) if has_alias_position(ty))
+}
+
+/// Whether an alias can apply to `ty` or to a response position nested in it
+/// (a tuple element or a `Result` argument, as [`expand_position`] walks them).
+fn has_alias_position(ty: &Type) -> bool {
+    if alias_candidate(ty).is_some() {
+        return true;
+    }
+    match ty {
+        Type::Tuple(tuple) => tuple.elems.iter().any(has_alias_position),
+        Type::Path(type_path) => type_path
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "Result" && result_has_alias_arg(segment)),
+        _ => false,
+    }
+}
+
+/// Whether a `Result` path segment has a type argument with an alias position.
+fn result_has_alias_arg(segment: &syn::PathSegment) -> bool {
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return false;
+    };
+    args.args
+        .iter()
+        .any(|arg| matches!(arg, syn::GenericArgument::Type(inner) if has_alias_position(inner)))
 }
 
 /// Where a name is resolved: a parsed file and the inline module path of the
@@ -592,11 +619,28 @@ fn declares_nominal(items: &[syn::Item], name: &str) -> bool {
 /// The module each glob of this crate among `items` imports from (`crate::
 /// models::*` → `models`, `super::*` → the parent, `crate::*` → the root).
 /// A glob of another crate, or of `self`, names no module of this crate.
+/// The [`Qualifier`] of an import whose immediate parent segment is `parent`.
+/// `nested` means that segment is itself preceded by another path segment, so
+/// a `crate` / `super` there is one step of a chain (`super::super::X`): no
+/// alias lookup resolves that, and it is left unexpanded.
+fn import_qualifier(parent: &syn::Ident, nested: bool) -> Option<Qualifier> {
+    match parent.to_string().as_str() {
+        "crate" | "super" if nested => Some(Qualifier::Unresolved),
+        "crate" => Some(Qualifier::CrateRoot),
+        "super" => Some(Qualifier::Super),
+        "self" => None,
+        _ => Some(Qualifier::Module(
+            syn::ext::IdentExt::unraw(parent).to_string(),
+        )),
+    }
+}
+
 fn glob_parents(items: &[syn::Item]) -> Vec<Qualifier> {
     fn walk(
         tree: &syn::UseTree,
         root: Option<&syn::Ident>,
         parent: Option<&syn::Ident>,
+        nested: bool,
         items: &[syn::Item],
         out: &mut Vec<Qualifier>,
     ) {
@@ -605,26 +649,20 @@ fn glob_parents(items: &[syn::Item]) -> Vec<Qualifier> {
                 &path.tree,
                 root.or(Some(&path.ident)),
                 Some(&path.ident),
+                parent.is_some(),
                 items,
                 out,
             ),
             syn::UseTree::Group(group) => {
                 for tree in &group.items {
-                    walk(tree, root, parent, items, out);
+                    walk(tree, root, parent, nested, items, out);
                 }
             }
             syn::UseTree::Glob(_) => {
                 let local =
                     root.is_some_and(|root| is_local_root(root) || declares_module(items, root));
                 if let Some(parent) = parent.filter(|_| local) {
-                    out.extend(match parent.to_string().as_str() {
-                        "crate" => Some(Qualifier::CrateRoot),
-                        "super" => Some(Qualifier::Super),
-                        "self" => None,
-                        _ => Some(Qualifier::Module(
-                            syn::ext::IdentExt::unraw(parent).to_string(),
-                        )),
-                    });
+                    out.extend(import_qualifier(parent, nested));
                 }
             }
             syn::UseTree::Name(_) | syn::UseTree::Rename(_) => {}
@@ -633,7 +671,7 @@ fn glob_parents(items: &[syn::Item]) -> Vec<Qualifier> {
     let mut out = Vec::new();
     for item in items {
         if let syn::Item::Use(item_use) = item {
-            walk(&item_use.tree, None, None, items, &mut out);
+            walk(&item_use.tree, None, None, false, items, &mut out);
         }
     }
     out
@@ -649,30 +687,24 @@ fn import_parent(items: &[syn::Item], name: &str) -> Option<Qualifier> {
     fn walk(
         tree: &syn::UseTree,
         parent: Option<&syn::Ident>,
+        nested: bool,
         name: &str,
     ) -> Option<Option<Qualifier>> {
         match tree {
-            syn::UseTree::Path(path) => walk(&path.tree, Some(&path.ident), name),
-            syn::UseTree::Name(used) => (used.ident == name).then(|| {
-                parent.and_then(|parent| match parent.to_string().as_str() {
-                    "crate" => Some(Qualifier::CrateRoot),
-                    "super" => Some(Qualifier::Super),
-                    "self" => None,
-                    _ => Some(Qualifier::Module(
-                        syn::ext::IdentExt::unraw(parent).to_string(),
-                    )),
-                })
-            }),
-            syn::UseTree::Group(group) => {
-                group.items.iter().find_map(|tree| walk(tree, parent, name))
-            }
+            syn::UseTree::Path(path) => walk(&path.tree, Some(&path.ident), parent.is_some(), name),
+            syn::UseTree::Name(used) => (used.ident == name)
+                .then(|| parent.and_then(|parent| import_qualifier(parent, nested))),
+            syn::UseTree::Group(group) => group
+                .items
+                .iter()
+                .find_map(|tree| walk(tree, parent, nested, name)),
             syn::UseTree::Rename(_) | syn::UseTree::Glob(_) => None,
         }
     }
     items
         .iter()
         .find_map(|item| match item {
-            syn::Item::Use(item_use) => walk(&item_use.tree, None, name),
+            syn::Item::Use(item_use) => walk(&item_use.tree, None, false, name),
             _ => None,
         })
         .flatten()
@@ -920,3 +952,6 @@ fn same_definition(a: &syn::ItemType, b: &syn::ItemType) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_gate;

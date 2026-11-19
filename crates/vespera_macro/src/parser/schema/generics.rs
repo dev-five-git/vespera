@@ -399,10 +399,7 @@ mod tests {
 
     #[rstest]
     #[case("$invalid", "String")]
-    fn test_substitute_type_parse_failure_uses_original(
-        #[case] invalid: &str,
-        #[case] concrete_src: &str,
-    ) {
+    fn verbatim_type_passes_through_unchanged(#[case] invalid: &str, #[case] concrete_src: &str) {
         use std::str::FromStr;
 
         use proc_macro2::TokenStream;
