@@ -296,9 +296,7 @@ public class VesperaBridge {
      * Configure the shared Tokio runtime (same pending-config pattern and
      * precedence as {@link #configureStreaming}).  Must take effect before the
      * runtime starts (first dispatch); values {@code <= 0} leave a setting
-     * untouched.  (Spring rejects a negative {@code vespera.bridge.native.*}
-     * value at binding time; this method keeps the sentinel meaning for
-     * programmatic callers.)
+     * untouched (Spring rejects them at binding instead).
      *
      * @param workerThreads      worker threads (clamped 1–1024; default:
      *                           logical CPUs)

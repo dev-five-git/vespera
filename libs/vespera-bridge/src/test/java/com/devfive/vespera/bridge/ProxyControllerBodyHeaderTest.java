@@ -372,7 +372,7 @@ class ProxyControllerBodyHeaderTest {
     }
 
     @Test
-    void unknownLengthWithHugeConfiguredCapDoesNotAllocateHugeReadBuffer() throws IOException {
+    void unknownLengthWithHugeConfiguredCapReadsTheBody() throws IOException {
         MockHttpServletRequest req = new MockHttpServletRequest("POST", "/x") {
             @Override
             public long getContentLengthLong() {

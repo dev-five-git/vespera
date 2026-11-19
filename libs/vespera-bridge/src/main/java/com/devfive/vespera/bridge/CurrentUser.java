@@ -151,7 +151,12 @@ final class CurrentUser {
             failures.addSuppressed(e);
         }
         try {
-            return s.tmpdirProbeOwner();
+            // null = java.io.tmpdir is not trusted: the next source answers, the
+            // directory being verified never does.
+            UserPrincipal owner = s.tmpdirProbeOwner();
+            if (owner != null) {
+                return owner;
+            }
         } catch (IOException | SecurityException | UnsupportedOperationException e) {
             failures.addSuppressed(e);
         }

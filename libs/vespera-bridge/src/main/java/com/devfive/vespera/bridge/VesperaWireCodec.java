@@ -313,6 +313,18 @@ final class VesperaWireCodec {
     static final int MAX_WIRE_LENGTH = Integer.MAX_VALUE - 8;
 
     /**
+     * Largest declared request body a buffered proxy path accepts up front:
+     * its wire frame {@code 4 + headerLen + body} must fit {@link #MAX_WIRE_LENGTH}
+     * even with a request header block of {@link #WIRE_HEADER_RESERVE} bytes
+     * (the header is only encoded after the body is read, so the bound is
+     * checked against the reserve). Container request-header limits are far
+     * below the reserve, so a larger declared body could never be encoded and
+     * is answered {@code 413} before it is read.
+     */
+    static final long WIRE_HEADER_RESERVE = 1L << 20;
+    static final long MAX_FRAME_BODY = MAX_WIRE_LENGTH - 4L - WIRE_HEADER_RESERVE;
+
+    /**
      * Total wire length {@code 4 + headerLen + bodyLen}, computed in
      * {@code long} and validated against {@link #MAX_WIRE_LENGTH} (the JVM
      * array-length ceiling, {@code Integer.MAX_VALUE - 8}).

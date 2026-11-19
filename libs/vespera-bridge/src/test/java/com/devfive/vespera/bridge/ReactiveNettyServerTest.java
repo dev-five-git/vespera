@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.devfive.vespera.bridge.ReactiveTestSupport.FakeTransport;
+import java.io.EOFException;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetAddress;
@@ -19,6 +21,8 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -154,9 +158,27 @@ class ReactiveNettyServerTest {
             nativeFuture.complete(responseWire(200, "{}", "late"));
             InputStream in = socket.getInputStream();
             socket.setSoTimeout(5000);
-            byte[] head = in.readNBytes(12);
-            assertEquals("HTTP/1.1 200", new String(head, StandardCharsets.US_ASCII));
+            // Keep-alive: frame the response by its head and Content-Length, never EOF.
+            String head = readHead(in);
+            assertTrue(head.startsWith("HTTP/1.1 200 "), head);
+            Matcher length = Pattern.compile("(?im)^content-length:[ \\t]*(\\d+)").matcher(head);
+            assertTrue(length.find(), head);
+            byte[] body = in.readNBytes(Integer.parseInt(length.group(1)));
+            assertEquals("late", new String(body, StandardCharsets.US_ASCII));
         }
+    }
+
+    /** The response head up to and including its blank line. */
+    private static String readHead(InputStream in) throws IOException {
+        StringBuilder head = new StringBuilder();
+        while (!head.toString().endsWith("\r\n\r\n")) {
+            int b = in.read();
+            if (b < 0) {
+                throw new EOFException("connection closed inside the response head: " + head);
+            }
+            head.append((char) b);
+        }
+        return head.toString();
     }
 
     /**

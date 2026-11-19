@@ -68,9 +68,12 @@ class MultipartPassthroughTest {
     }
 
     /**
-     * Stands in for the native dispatch: runs the body acquisition
-     * {@code VesperaProxyController#dispatch} hands to the native call for
-     * the requested mode and echoes what Rust would receive.
+     * Stands in for the native dispatch. It repeats the request-body selection
+     * of {@code VesperaProxyController#dispatch} (streaming for bidirectional
+     * streaming, else {@code readBody} with the default cap) and echoes what
+     * Rust would receive. It does not run the production {@code dispatch}: no
+     * {@code formSafeMode} handling and no configured cap, so it proves the
+     * byte path of these readers, not the wiring inside {@code dispatch}.
      */
     static class CapturingProxy extends VesperaProxyController {
         CapturingProxy() {
@@ -194,7 +197,7 @@ class MultipartPassthroughTest {
 
     @ParameterizedTest
     @EnumSource(DispatchMode.class)
-    void bodyAcquisitionKeepsMultipartBytesVerbatimForEveryMode(DispatchMode mode) throws Exception {
+    void theBodyReadersKeepMultipartBytesVerbatimForEveryMode(DispatchMode mode) throws Exception {
         byte[] small = multipartBody("small.bin", randomBytes(4096));
         // Over Spring Boot's default spring.servlet.multipart.max-file-size (1 MB).
         byte[] large = multipartBody("large.bin", randomBytes(1_572_864));

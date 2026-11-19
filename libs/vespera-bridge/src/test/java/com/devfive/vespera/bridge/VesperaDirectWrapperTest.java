@@ -98,6 +98,10 @@ class VesperaDirectWrapperTest {
         // is safe. Before this rule was dropped the check threw here.
         ByteBuffer readOnlyIn = ByteBuffer.allocateDirect(64).asReadOnlyBuffer();
         BridgeInputChecks.requireDirectBuffers(readOnlyIn, 4, DIRECT);
+        // The public entry point passes validation and reaches the native boundary
+        // (no library in a unit test: the call fails at the native symbol).
+        assertThrows(UnsatisfiedLinkError.class,
+                () -> VesperaBridge.dispatchDirect(readOnlyIn, 4, DIRECT));
     }
 
     @Test
@@ -362,13 +366,48 @@ class VesperaDirectWrapperTest {
         }
     }
 
+    @Test
+    void directPoolKnobsAreDecimalWithALeadingZeroAndClampedAfterParsing() throws Exception {
+        String previous = System.getProperty("vespera.direct.maxBufferBytes");
+        String knob = "vespera.direct.testKnob";
+        try {
+            // Integer.getInteger read these as octal (or dropped them) instead.
+            System.setProperty("vespera.direct.maxBufferBytes", "08388608");
+            assertEquals(8 * 1024 * 1024, isolatedDirectMaximum());
+
+            System.setProperty(knob, "01048576");
+            assertEquals(1024 * 1024,
+                    VesperaDirectBufferPool.directKnob(knob, 7, 64 * 1024, 4 * 1024 * 1024));
+            System.setProperty(knob, "1");
+            assertEquals(64 * 1024,
+                    VesperaDirectBufferPool.directKnob(knob, 7, 64 * 1024, 4 * 1024 * 1024));
+            System.setProperty(knob, "99999999999");
+            assertEquals(4 * 1024 * 1024,
+                    VesperaDirectBufferPool.directKnob(knob, 7, 64 * 1024, 4 * 1024 * 1024));
+            System.setProperty(knob, "1MiB");
+            assertEquals(2 * 1024 * 1024,
+                    VesperaDirectBufferPool.directKnob(knob, 2 * 1024 * 1024, 64 * 1024,
+                            4 * 1024 * 1024));
+            System.clearProperty(knob);
+            assertEquals(2 * 1024 * 1024,
+                    VesperaDirectBufferPool.directKnob(knob, 2 * 1024 * 1024, 64 * 1024,
+                            4 * 1024 * 1024));
+        } finally {
+            System.clearProperty(knob);
+            restoreProperty("vespera.direct.maxBufferBytes", previous);
+        }
+    }
+
     private static int isolatedDirectMaximum() throws Exception {
         URL classes = VesperaBridge.class.getProtectionDomain().getCodeSource().getLocation();
         try (URLClassLoader loader = new URLClassLoader(
                 new URL[] {classes}, VesperaDirectWrapperTest.class.getClassLoader()) {
             @Override
             protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-                if (name.startsWith("com.devfive.vespera.bridge.VesperaDirectBufferPool")) {
+                // The whole bridge package joins the isolated loader: the pool's static
+                // init reaches package-private code (VesperaNativeConfig's knobs and
+                // their VesperaBridge hooks), which an other-loader copy would refuse.
+                if (name.startsWith("com.devfive.vespera.bridge.")) {
                     synchronized (getClassLoadingLock(name)) {
                         Class<?> loaded = findLoadedClass(name);
                         if (loaded == null) {

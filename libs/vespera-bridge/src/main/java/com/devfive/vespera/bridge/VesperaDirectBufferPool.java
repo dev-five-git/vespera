@@ -50,8 +50,19 @@ final class VesperaDirectBufferPool {
     private static final int DIRECT_MAX_CAPACITY = directMaxCapacity();
 
     private static int directMaxCapacity() {
-        int configured = Integer.getInteger("vespera.direct.maxBufferBytes", 4 * 1024 * 1024);
-        return Math.max(DIRECT_INITIAL_CAPACITY, Math.min(DIRECT_MAX_HARD_CAPACITY, configured));
+        return directKnob("vespera.direct.maxBufferBytes", 4 * 1024 * 1024,
+                DIRECT_INITIAL_CAPACITY, DIRECT_MAX_HARD_CAPACITY);
+    }
+
+    /**
+     * A direct-pool size knob, read like every other numeric property of the
+     * bridge ({@link VesperaNativeConfig#longProperty}: a leading zero is
+     * decimal, a malformed value logs a WARNING and keeps the fallback), then
+     * clamped to {@code [min, max]}.
+     */
+    static int directKnob(String property, int fallback, int min, int max) {
+        long configured = VesperaNativeConfig.longProperty(property, fallback);
+        return (int) Math.max(min, Math.min(max, configured));
     }
 
     /**
@@ -70,10 +81,9 @@ final class VesperaDirectBufferPool {
      * {@link #DIRECT_MAX_CAPACITY} for an individual request is always
      * allowed — only steady-state retention is capped.
      */
-    private static final int DIRECT_RETAIN_CAPACITY = Math.max(
-            DIRECT_INITIAL_CAPACITY,
-            Math.min(DIRECT_MAX_CAPACITY,
-                    Integer.getInteger("vespera.direct.maxRetainedBytes", 2 * 1024 * 1024)));
+    private static final int DIRECT_RETAIN_CAPACITY = directKnob(
+            "vespera.direct.maxRetainedBytes", 2 * 1024 * 1024,
+            DIRECT_INITIAL_CAPACITY, DIRECT_MAX_CAPACITY);
 
     /**
      * Index 0 = request buffer, index 1 = response buffer.

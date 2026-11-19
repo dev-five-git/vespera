@@ -156,9 +156,39 @@ class VesperaProxyControllerCoverageTest {
 
         assertEquals(413, exception.getStatusCode().value());
         assertFalse(read.get());
-        assertEquals("buffered request body reaches the built-in " + maxBufferedBody
+        assertEquals("buffered request body reaches the built-in "
+                + VesperaWireCodec.MAX_FRAME_BODY
                 + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes=0; actual "
                 + maxBufferedBody + " bytes); use BIDIRECTIONAL_STREAMING", exception.getReason());
+    }
+
+    @Test
+    void declaredLengthThatLeavesNoRoomForTheWireHeaderIsRejectedBeforeReading() {
+        // The frame is 4 + header + body: a body within the header reserve of the
+        // array ceiling passes the old bound but could not be encoded after it was read.
+        long declared = VesperaWireCodec.MAX_FRAME_BODY + 1;
+        AtomicBoolean read = new AtomicBoolean();
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/upload") {
+            @Override
+            public long getContentLengthLong() {
+                return declared;
+            }
+
+            @Override
+            public ServletInputStream getInputStream() {
+                read.set(true);
+                throw new AssertionError("a body that cannot be framed must not be read");
+            }
+        };
+
+        ResponseStatusException exception = assertThrows(
+                ResponseStatusException.class,
+                () -> VesperaProxyController.readBody(request, 0));
+
+        assertEquals(413, exception.getStatusCode().value());
+        assertFalse(read.get());
+        assertEquals(VesperaWireCodec.MAX_FRAME_BODY, VesperaWireCodec.MAX_WIRE_LENGTH - 4L
+                - VesperaWireCodec.WIRE_HEADER_RESERVE);
     }
 
     @Test

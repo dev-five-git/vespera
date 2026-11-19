@@ -351,7 +351,13 @@ public class VesperaBridgeProperties {
         return maxBufferedRequestBytes;
     }
 
+    /**
+     * @throws IllegalArgumentException for a negative size (rejected at
+     *         binding: the proxy would otherwise read it as {@code 0} = unlimited)
+     */
     public void setMaxBufferedRequestBytes(long maxBufferedRequestBytes) {
+        Native.requireNonNegativeProperty("vespera.bridge.max-buffered-request-bytes",
+                maxBufferedRequestBytes);
         this.maxBufferedRequestBytes = maxBufferedRequestBytes;
     }
 
@@ -359,7 +365,13 @@ public class VesperaBridgeProperties {
         return maxBufferedResponseBytes;
     }
 
+    /**
+     * @throws IllegalArgumentException for a negative size (rejected at
+     *         binding: the proxy would otherwise read it as {@code 0} = unlimited)
+     */
     public void setMaxBufferedResponseBytes(long maxBufferedResponseBytes) {
+        Native.requireNonNegativeProperty("vespera.bridge.max-buffered-response-bytes",
+                maxBufferedResponseBytes);
         this.maxBufferedResponseBytes = maxBufferedResponseBytes;
     }
 
@@ -529,7 +541,13 @@ public class VesperaBridgeProperties {
             return maxThreads;
         }
 
+        /**
+         * @throws IllegalArgumentException for a negative count (the executor
+         *         would otherwise read it as the default without saying so)
+         */
         public void setMaxThreads(int maxThreads) {
+            Native.requireNonNegativeProperty("vespera.bridge.reactive-streaming.max-threads",
+                    maxThreads);
             this.maxThreads = maxThreads;
         }
 
@@ -537,7 +555,13 @@ public class VesperaBridgeProperties {
             return maxQueued;
         }
 
+        /**
+         * @throws IllegalArgumentException for a negative count (the executor
+         *         would otherwise read it as {@code 0} without saying so)
+         */
         public void setMaxQueued(int maxQueued) {
+            Native.requireNonNegativeProperty("vespera.bridge.reactive-streaming.max-queued",
+                    maxQueued);
             this.maxQueued = maxQueued;
         }
     }
@@ -548,7 +572,9 @@ public class VesperaBridgeProperties {
      * effect before the first native dispatch; a late value is logged and
      * ignored by {@link VesperaBridge}.  A negative value is rejected with an
      * {@link IllegalArgumentException} when it is bound (see
-     * {@link #requireNonNegative}); {@code 0} keeps its documented meaning.
+     * {@link #requireNonNegative}); so is {@code 0} for the runtime pair
+     * ({@link #requirePositive}), while {@code 0} keeps its documented meaning
+     * for the others.
      */
     public static class Native {
 
@@ -617,7 +643,7 @@ public class VesperaBridgeProperties {
         }
 
         public void setWorkerThreads(Integer workerThreads) {
-            requireNonNegative("worker-threads", workerThreads);
+            requirePositive("worker-threads", workerThreads);
             this.workerThreads = workerThreads;
         }
 
@@ -626,7 +652,7 @@ public class VesperaBridgeProperties {
         }
 
         public void setMaxBlockingThreads(Integer maxBlockingThreads) {
-            requireNonNegative("max-blocking-threads", maxBlockingThreads);
+            requirePositive("max-blocking-threads", maxBlockingThreads);
             this.maxBlockingThreads = maxBlockingThreads;
         }
 
@@ -713,9 +739,27 @@ public class VesperaBridgeProperties {
          * @throws IllegalArgumentException for a negative value
          */
         static void requireNonNegative(String key, Number value) {
+            requireNonNegativeProperty("vespera.bridge.native." + key, value);
+        }
+
+        /** {@link #requireNonNegative} for a full property name (outside {@code native.*}). */
+        static void requireNonNegativeProperty(String property, Number value) {
             if (value != null && value.longValue() < 0) {
+                throw new IllegalArgumentException(property + " must not be negative: " + value);
+            }
+        }
+
+        /**
+         * Rejects a value below {@code 1} when it is bound: for the runtime
+         * pair {@code 0} would otherwise be the "leave untouched" sentinel of
+         * {@link VesperaBridge#configureRuntime}, silently keeping the native default.
+         *
+         * @throws IllegalArgumentException for a value below 1
+         */
+        static void requirePositive(String key, Number value) {
+            if (value != null && value.longValue() < 1) {
                 throw new IllegalArgumentException("vespera.bridge.native." + key
-                        + " must not be negative: " + value);
+                        + " must be at least 1 (unset keeps the native default): " + value);
             }
         }
 

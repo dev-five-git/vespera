@@ -4,6 +4,7 @@ import static com.devfive.vespera.bridge.ReactiveTestSupport.call;
 import static com.devfive.vespera.bridge.ReactiveTestSupport.responseWire;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -282,7 +283,7 @@ class VesperaReactiveProxyHandlerTest {
 
     @Test
     void declaredLengthAboveTheSingleArrayBoundNamesTheBoundNotAnUnsetProperty() {
-        long bound = Integer.MAX_VALUE - 8L;
+        long bound = VesperaWireCodec.MAX_FRAME_BODY;
         for (long cap : new long[] {0, 4294967296L}) {
             Result result = call(client(handler(new ReactiveHeaderAppNameResolver("X-Vespera-App", null),
                     null, cap, 1024, CorsHandling.RUST)).post().uri("/upload")
@@ -297,17 +298,20 @@ class VesperaReactiveProxyHandlerTest {
     }
 
     @Test
-    void declaredLengthExactlyAtTheSingleArrayBoundIsRejectedUpfront() {
-        // Servlet parity: a body of exactly the bound cannot fit a wire frame
-        // in a byte[] either, so it is a 413 before any aggregation.
-        long bound = Integer.MAX_VALUE - 8L;
-        Result result = call(client(handler(new ReactiveHeaderAppNameResolver("X-Vespera-App", null),
-                null, 0, 1024, CorsHandling.RUST)).post().uri("/upload")
-                .header(HttpHeaders.CONTENT_LENGTH, Long.toString(bound)));
-        assertEquals(413, result.status());
-        assertEquals("buffered request body reaches the built-in " + bound
-                + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes=0; actual "
-                + bound + " bytes)", result.body());
+    void declaredLengthAboveTheWireFrameBoundIsRejectedUpfront() {
+        // Servlet parity: a declared body whose wire frame (with the header
+        // reserve) cannot fit a byte[] is a 413 before any aggregation, so no
+        // body is read only to be refused.
+        long frameBound = VesperaWireCodec.MAX_FRAME_BODY;
+        for (long declared : new long[] {frameBound + 1, Integer.MAX_VALUE - 8L}) {
+            Result result = call(client(handler(new ReactiveHeaderAppNameResolver("X-Vespera-App", null),
+                    null, 0, 1024, CorsHandling.RUST)).post().uri("/upload")
+                    .header(HttpHeaders.CONTENT_LENGTH, Long.toString(declared)));
+            assertEquals(413, result.status(), Long.toString(declared));
+            assertEquals("buffered request body reaches the built-in " + frameBound
+                    + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes=0; actual "
+                    + declared + " bytes)", result.body());
+        }
         assertTrue(transport.requests.isEmpty());
     }
 
@@ -435,10 +439,27 @@ class VesperaReactiveProxyHandlerTest {
 
     @Test
     void withoutThePreflightFilterSpringKeepsPreflights() {
-        call(client(handler(), ProxyPathPatterns.defaults(), false, ctx -> { }).options().uri("/users")
+        Result preflight = call(client(handler(), ProxyPathPatterns.defaults(), false, ctx -> { })
+                .options().uri("/users")
                 .header(HttpHeaders.ORIGIN, "https://a.example")
                 .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "PUT"));
+        // Spring's own answer: no CORS config, so no Allow-Origin header. The status is
+        // Framework-specific (403 on 6.2 under testBoot3, 200 on 7), never Rust's and never a 500.
+        assertTrue(List.of(200, 403).contains(preflight.status()), "status " + preflight.status());
+        assertNull(preflight.header(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
         assertTrue(transport.requests.isEmpty(), "DispatcherHandler never runs a handler for a preflight");
+    }
+
+    @Test
+    void aBlankRequestMethodIsLeftToSpringInsteadOfFailingTheFilter() {
+        // An empty Access-Control-Request-Method used to throw from the filter (a 500).
+        // With no actual request to match, the proxy owns the preflight, as it does
+        // when no mapping exists.
+        Result preflight = call(client(handler()).options().uri("/users")
+                .header(HttpHeaders.ORIGIN, "https://a.example")
+                .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, ""));
+        assertNotEquals(500, preflight.status());
+        assertEquals(1, transport.requests.size(), "answered by the proxy, not an error");
     }
 
     private Consumer<AnnotationConfigApplicationContext> springCors() {

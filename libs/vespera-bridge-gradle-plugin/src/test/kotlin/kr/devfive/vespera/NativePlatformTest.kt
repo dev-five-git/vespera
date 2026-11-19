@@ -453,6 +453,17 @@ class NativePlatformTest {
     }
 
     @Test
+    fun anExactUnderscorePackageWinsOverAHyphenatedTwin() {
+        // Cargo accepts both names in one workspace; the hyphenated one is listed first.
+        val twins = """
+            {"packages":[{"name":"rust-jni-demo","targets":[{"name":"rust_jni_demo"}]},
+            {"name":"rust_jni_demo","targets":[{"name":"rust_jni_demo"}]}]}
+        """.trimIndent()
+        assertEquals("rust_jni_demo", NativePlatform.resolvePackageName("rust_jni_demo", twins))
+        assertEquals("rust-jni-demo", NativePlatform.resolvePackageName("rust-jni-demo", twins))
+    }
+
+    @Test
     fun fallsBackToTheCrateNameWithoutMetadata() {
         assertEquals("rust_jni_demo", NativePlatform.resolvePackageName("rust_jni_demo", null))
         assertEquals("rust_jni_demo", NativePlatform.resolvePackageName("rust_jni_demo", ""))

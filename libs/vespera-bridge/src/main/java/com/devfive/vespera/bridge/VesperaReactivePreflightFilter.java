@@ -86,7 +86,14 @@ public final class VesperaReactivePreflightFilter implements WebFilter, Ordered,
         if (all.isEmpty()) {
             return handler.handle(exchange);
         }
-        ServerWebExchange actual = actualRequest(exchange);
+        ServerWebExchange actual;
+        try {
+            actual = actualRequest(exchange);
+        } catch (IllegalArgumentException blankOrInvalidMethod) {
+            // No actual request to match a Java mapping against: the proxy owns the
+            // preflight, as it does when no mapping exists at all. Never a 500.
+            return handler.handle(exchange);
+        }
         return Flux.fromIterable(all)
                 .concatMap(mapping -> {
                     if (mapping instanceof RequestMappingInfoHandlerMapping infoMapping) {

@@ -97,7 +97,10 @@ class DirectGateSweepBenchTest {
 
     @Test
     void directGateSweep() throws IOException {
-        long retain = Long.getLong("vespera.direct.maxRetainedBytes", 2 * 1024 * 1024L);
+        // Decimal, like the bridge's own knob parser (Long.getLong would read 01048576 as octal).
+        long retain =
+                Long.parseLong(
+                        System.getProperty("vespera.direct.maxRetainedBytes", "2097152").trim());
         System.out.printf("VESPERA_BENCH gate_sweep config retain_bytes=%d%n", retain);
 
         for (int kib : SIZES_KIB) {

@@ -16,7 +16,7 @@ import org.springframework.context.annotation.ImportRuntimeHints;
  * counterpart of {@link VesperaBridgeAutoConfiguration}, active only in a
  * {@code REACTIVE} web application with Spring WebFlux and Reactor on the
  * classpath (both provided by the application; the bridge never exports
- * them). Every bean is {@code @ConditionalOnMissingBean}.
+ * them). Every bean but the startup log runner is {@code @ConditionalOnMissingBean}.
  *
  * <ul>
  *   <li>{@link VesperaReactiveProxyHandler} (disable with
