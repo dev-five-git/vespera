@@ -1,3 +1,5 @@
+use crate::schema_macro::cfg_eval::{Predicate, statically_false};
+
 use super::fallback::{
     contains_standalone_word, quoted_value_after_key, scan_default_from_raw_tokens,
 };
@@ -157,24 +159,62 @@ pub fn extract_field_rename_owned(
 }
 
 /// Whether the item's `#[derive(..)]` lists serde's `Serialize`, by its last
-/// path segment (`Serialize`, `serde::Serialize`, `::serde::Serialize`). Like
-/// [`super::enum_schema::derives_serde_repr`], only plain `derive` lists are
-/// read.
+/// path segment (`Serialize`, `serde::Serialize`, `::serde::Serialize`), also
+/// inside a `#[cfg_attr(predicate, derive(..))]` whose predicate is not known
+/// to be false (see [`cfg_attr_derives_serialize`]).
 pub fn derives_serialize(attrs: &[syn::Attribute]) -> bool {
-    attrs
-        .iter()
-        .filter(|attr| attr.path().is_ident("derive"))
-        .any(|attr| {
-            let mut found = false;
-            let _ = attr.parse_nested_meta(|meta| {
-                found |= meta
-                    .path
-                    .segments
-                    .last()
-                    .is_some_and(|seg| seg.ident == "Serialize");
-                Ok(())
-            });
-            found
+    attrs.iter().any(|attr| {
+        if attr.path().is_ident("derive") {
+            derive_lists_serialize(attr)
+        } else {
+            attr.path().is_ident("cfg_attr") && cfg_attr_derives_serialize(attr)
+        }
+    })
+}
+
+/// Whether a `#[derive(..)]` attribute lists `Serialize`.
+fn derive_lists_serialize(attr: &syn::Attribute) -> bool {
+    let mut found = false;
+    let _ = attr.parse_nested_meta(|meta| {
+        found |= meta
+            .path
+            .segments
+            .last()
+            .is_some_and(|seg| seg.ident == "Serialize");
+        Ok(())
+    });
+    found
+}
+
+/// Whether a `#[cfg_attr(predicate, derive(..), ..)]` lists `Serialize` while
+/// its predicate is not known to be false. An undecidable predicate (`unix`,
+/// `test`, a feature outside rustc) counts as active: the derive may be
+/// compiled in, and a `form_data` rename is then the one serde would use.
+fn cfg_attr_derives_serialize(attr: &syn::Attribute) -> bool {
+    let parsed = attr.parse_args_with(|input: syn::parse::ParseStream<'_>| {
+        let predicate: Predicate = input.parse()?;
+        input.parse::<syn::Token![,]>()?;
+        let metas =
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated(input)?;
+        Ok((predicate, metas))
+    });
+    let Ok((predicate, metas)) = parsed else {
+        return false;
+    };
+    !statically_false(&predicate)
+        && metas.iter().any(|meta| match meta {
+            syn::Meta::List(list) if list.path.is_ident("derive") => list
+                .parse_args_with(
+                    syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+                )
+                .is_ok_and(|paths| {
+                    paths.iter().any(|path| {
+                        path.segments
+                            .last()
+                            .is_some_and(|seg| seg.ident == "Serialize")
+                    })
+                }),
+            _ => false,
         })
 }
 
@@ -780,6 +820,19 @@ mod tests {
     #[case::deserialize_only("#[derive(Deserialize)] struct S;", false)]
     #[case::serialize_repr("#[derive(Serialize_repr)] struct S;", false)]
     #[case::no_derive("struct S;", false)]
+    #[case::cfg_attr_true("#[cfg_attr(all(), derive(serde::Serialize))] struct S;", true)]
+    #[case::cfg_attr_false("#[cfg_attr(any(), derive(serde::Serialize))] struct S;", false)]
+    #[case::cfg_attr_undecided("#[cfg_attr(unix, derive(serde::Serialize))] struct S;", true)]
+    #[case::cfg_attr_other_derive(
+        "#[cfg_attr(all(), derive(Debug, Deserialize))] struct S;",
+        false
+    )]
+    #[case::cfg_attr_multiple_lists(
+        "#[cfg_attr(all(), derive(Debug), derive(Serialize),)] struct S;",
+        true
+    )]
+    #[case::cfg_attr_not_a_list("#[cfg_attr(all(), allow(dead_code))] struct S;", false)]
+    #[case::cfg_attr_malformed("#[cfg_attr(all())] struct S;", false)]
     fn derives_serialize_reads_derive_lists(#[case] source: &str, #[case] expected: bool) {
         let item: syn::ItemStruct = syn::parse_str(source).unwrap();
         assert_eq!(derives_serialize(&item.attrs), expected);

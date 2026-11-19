@@ -48,6 +48,9 @@ use crate::parser::schema::{
 };
 use crate::schema_macro::is_extern_crate;
 
+mod map_leaf;
+use map_leaf::is_serde_json_map_leaf;
+
 /// Emit BOTH the marker-trait impl AND the per-field leaf-type
 /// assertions for `input` — the single entry point called from
 /// `process_derive_schema`.  Returns an empty `TokenStream` only when
@@ -192,6 +195,7 @@ fn push_leaf_assertions(
         if type_contains_generic(&leaf, generic_idents)
             || builtin
             || is_serde_json_value_leaf(&leaf)
+            || is_serde_json_map_leaf(&leaf)
         {
             continue;
         }

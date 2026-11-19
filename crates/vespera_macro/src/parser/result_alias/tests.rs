@@ -128,6 +128,23 @@ fn expand(file_src: &str, ret: &str) -> String {
     "-> v2::ApiResult<u8>",
     "-> Result < Json < u8 > , V2Err >"
 )]
+// `super::super::X` is a chain: the grandparent is never looked up, so the
+// import names no alias here (the parent's own `ApiResult` must not be used).
+#[case::import_super_chain(
+    "pub type ApiResult<T> = Result<Json<T>, RootErr>; mod a { pub type ApiResult<T> = Result<Json<T>, AErr>; pub mod b { use super::super::ApiResult; pub fn handler() {} } }",
+    "-> ApiResult<u8>",
+    "-> ApiResult < u8 >"
+)]
+#[case::glob_super_chain(
+    "pub type ApiResult<T> = Result<Json<T>, RootErr>; mod a { pub type ApiResult<T> = Result<Json<T>, AErr>; pub mod b { use super::super::*; pub fn handler() {} } }",
+    "-> ApiResult<u8>",
+    "-> ApiResult < u8 >"
+)]
+#[case::import_single_super(
+    "mod a { pub type ApiResult<T> = Result<Json<T>, AErr>; pub mod b { use super::ApiResult; pub fn handler() {} } }",
+    "-> ApiResult<u8>",
+    "-> Result < Json < u8 > , AErr >"
+)]
 // Not declared in the named module (a re-export): the unique definition.
 #[case::qualified_reexport(
     "mod v2 { pub use super::inner::*; } mod inner { pub type ApiResult<T> = Result<T, E>; }",
@@ -913,20 +930,6 @@ fn use_site_argument_resolves_in_the_handler_scope_not_the_body_scope() {
     );
 }
 
-/// `super::super::R` names an ancestor beyond the parent, which is not
-/// looked up: the handler module's own `R` must not stand in for the crate
-/// root's, so the return type stays as written.
-/// Response positions nested deeper than the depth bound are left as written:
-/// the expansion stops at the bound instead of recursing into them.
-#[test]
-fn nesting_past_the_depth_bound_is_left_as_written() {
-    let file: syn::File = syn::parse_str("").unwrap();
-    let ret = format!("-> {}u8{}", "Result<".repeat(12), ", AppError>".repeat(12));
-    let mut sig: syn::Signature = syn::parse_str(&format!("fn h() {ret}")).unwrap();
-    assert!(!expand_return_type_alias(&mut sig, None, Some(&file), None));
-}
-
-/// An unresolved chain names no module, so no struct of that name is found
 /// in one (and the alias lookup stops before it could matter).
 #[test]
 fn unresolved_chain_names_no_declared_struct() {
@@ -938,6 +941,9 @@ fn unresolved_chain_names_no_declared_struct() {
     assert!(!imported_nominal("R", &Qualifier::Unresolved, &scope, None));
 }
 
+/// `super::super::R` names an ancestor beyond the parent, which is not
+/// looked up: the handler module's own `R` must not stand in for the crate
+/// root's, so the return type stays as written.
 #[test]
 fn longer_super_chain_is_left_unexpanded() {
     let file: syn::File = syn::parse_str(

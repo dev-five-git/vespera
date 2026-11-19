@@ -39,9 +39,11 @@ pub(super) use flatten::{
 ///
 /// This function extracts:
 /// - Field names and types as properties
-/// - Required fields (non-`Option` types). In the response view a
-///   `#[serde(default)]` field stays present on output; inside
-///   `request_view::with_request_view` (the `{Name}Input` view) it is optional
+/// - Required fields: every field serde always writes. An `Option` is written
+///   as `null`, so it is required in the response view. In the request view
+///   (`request_view::with_request_view`, the `{Name}Input` view) a
+///   `#[serde(default)]` field, an `Option` field, or a field with
+///   `skip_serializing_if` (response only) is optional
 /// - Doc comments as descriptions
 /// - Serde attributes (rename, `rename_all`, skip, default, alias, flatten)
 ///

@@ -181,3 +181,60 @@ fn polymorphic_recursion_is_capped_per_top_level_instance() {
         schema.len()
     );
 }
+
+/// `serde_json::Map` (any path through a `serde_json` segment) is a JSON
+/// object of any members, not an unknown named type.
+#[test]
+fn serde_json_map_is_an_object_of_any_members() {
+    take_materialized();
+    let known: HashSet<String> = HashSet::new();
+    let defs: HashMap<String, String> = HashMap::new();
+    for src in [
+        "serde_json::Map<String, serde_json::Value>",
+        "vespera::serde_json::Map<String, u8>",
+        "::serde_json::Map",
+    ] {
+        let ty: Type = syn::parse_str(src).unwrap();
+        let schema = serde_json::to_value(parse_type_to_schema_ref(&ty, &known, &defs)).unwrap();
+        assert_eq!(
+            schema,
+            serde_json::json!({"type": "object", "additionalProperties": true}),
+            "{src}"
+        );
+    }
+    assert!(take_materialized().is_empty(), "no component for a builtin");
+}
+
+/// A use site that omits a defaulted parameter (`Page<User>` for `Page<T, M =
+/// Meta>`) is the instance that spells it (`Page<User, Meta>`): one component,
+/// named with the default filled in (`Page_User_Meta`), never a second one.
+#[test]
+fn omitted_defaulted_argument_names_the_spelled_component() {
+    take_materialized();
+    let src = "struct Page<T, M = Meta> { value: T, meta: M, kids: Vec<Page<T>> }";
+    let known: HashSet<String> = ["Page", "Meta", "User"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let defs = HashMap::from([
+        ("Page".to_string(), src.to_string()),
+        ("Meta".to_string(), "struct Meta { x: u8 }".to_string()),
+        ("User".to_string(), "struct User { id: u8 }".to_string()),
+    ]);
+    let reference_of = |src: &str| {
+        let ty: Type = syn::parse_str(src).unwrap();
+        reference(parse_type_to_schema_ref(&ty, &known, &defs))
+    };
+    assert_eq!(
+        reference_of("Page<User>"),
+        "#/components/schemas/Page_User_Meta"
+    );
+    assert_eq!(
+        reference_of("Page<User, Meta>"),
+        "#/components/schemas/Page_User_Meta"
+    );
+    assert_eq!(
+        take_materialized().keys().collect::<Vec<_>>(),
+        ["Page_User_Meta"]
+    );
+}

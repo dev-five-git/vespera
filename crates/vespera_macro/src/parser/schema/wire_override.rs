@@ -174,13 +174,18 @@ pub fn documented_tokens(field: &syn::Field, side: SerdeSide) -> Option<String> 
 /// The compile error for `field` (named `name` in the message) whose codec on
 /// either side has an unknown wire shape and no `value_type` / `any` override.
 /// Spanned on the `#[serde(..)]` attribute holding the codec.
-pub fn unknown_codec_error(field: &syn::Field, name: &str) -> Option<syn::Error> {
+pub fn unknown_codec_error(
+    field: &syn::Field,
+    name: &str,
+    sides: &[SerdeSide],
+) -> Option<syn::Error> {
     let constraints = extract_schema_constraints(&field.attrs);
     if constraints.is_any() || constraints.value_type.is_some() {
         return None;
     }
-    [SerdeSide::Serialize, SerdeSide::Deserialize]
-        .into_iter()
+    sides
+        .iter()
+        .copied()
         .find(|side| matches!(codec_wire(field, *side), CodecWire::Unknown))
         .and_then(|side| {
             field
@@ -211,6 +216,15 @@ pub fn derive_codec_error(input: &syn::DeriveInput) -> Option<syn::Error> {
     {
         return None;
     }
+    // A container `into` / `from` (or `try_from`) replaces that side: serde
+    // never runs the field codecs there, so only the other side can need one.
+    let sides: Vec<SerdeSide> = [SerdeSide::Serialize, SerdeSide::Deserialize]
+        .into_iter()
+        .filter(|side| container_override_type(&input.attrs, *side).is_none())
+        .collect();
+    if sides.is_empty() {
+        return None;
+    }
     let first_error = |fields: &syn::Fields, prefix: &str| {
         fields.iter().enumerate().find_map(|(index, field)| {
             // Serde skips a field on both sides: its codec is never run, so
@@ -222,7 +236,7 @@ pub fn derive_codec_error(input: &syn::DeriveInput) -> Option<syn::Error> {
                 .ident
                 .as_ref()
                 .map_or_else(|| index.to_string(), ToString::to_string);
-            unknown_codec_error(field, &format!("{prefix}{name}"))
+            unknown_codec_error(field, &format!("{prefix}{name}"), &sides)
         })
     };
     match &input.data {
@@ -424,6 +438,21 @@ mod tests {
         "struct S { #[serde(skip_serializing, with = \"hex\")] key: Vec<u8> }",
         Some("`key` uses")
     )]
+    // A container `into` replaces the Serialize side only: the Deserialize
+    // side still reads the field, so the codec still needs a wire shape.
+    #[case::container_into_only(
+        "#[serde(into = \"UserDto\")] struct S { #[serde(with = \"hex\")] key: Vec<u8> }",
+        Some("`key` uses")
+    )]
+    #[case::container_from_only(
+        "#[serde(from = \"UserDto\")] struct S { #[serde(with = \"hex\")] key: Vec<u8> }",
+        Some("`key` uses")
+    )]
+    // Both sides replaced: serde never runs the field codec on either side.
+    #[case::container_into_and_from(
+        "#[serde(into = \"UserDto\", from = \"UserDto\")] struct S { #[serde(with = \"hex\")] key: Vec<u8> }",
+        None
+    )]
     #[case::union_ignored("union U { a: u8 }", None)]
     #[case::container_value_type(
         "#[schema(value_type = i64)] struct S(#[serde(with = \"hex\")] Vec<u8>);",
@@ -603,7 +632,8 @@ mod tests {
     )]
     #[case::no_codec("checksum: Vec<u8>", false)]
     fn unknown_codec_errors(#[case] src: &str, #[case] expected: bool) {
-        let error = unknown_codec_error(&field(src), "checksum");
+        let sides = [SerdeSide::Serialize, SerdeSide::Deserialize];
+        let error = unknown_codec_error(&field(src), "checksum", &sides);
         assert_eq!(error.is_some(), expected, "{src}");
         if let Some(error) = error {
             assert!(
