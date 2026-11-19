@@ -52,6 +52,10 @@ class VesperaSpringdocSupportTest {
 
         props.setApps(List.of("admin", "_default", " public "));
         assertEquals(List.of("_default", "admin", "public"), props.documentedApps(List.of("other")));
+        // A padded default entry (a YAML list item keeps its spaces) still
+        // leads the list, as documented.
+        props.setApps(List.of("admin", " _default"));
+        assertEquals(List.of("_default", "admin"), props.documentedApps(List.of()));
         props.setApps(List.of("admin"));
         assertEquals(List.of("admin"), props.documentedApps(List.of()));
         props.setApps(null);

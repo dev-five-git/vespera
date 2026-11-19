@@ -27,9 +27,9 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 
 /**
- * Operability end to end: {@code vespera.bridge.library-name} (a no-op here,
- * another test class already loaded the library; the real auto-init is
- * {@link LibraryNameAutoInitIsolatedTest}), client address
+ * Operability end to end: {@code vespera.bridge.library-name} (loads the
+ * library when this is the first class to need it, otherwise a no-op; the
+ * real auto-init is {@link LibraryNameAutoInitIsolatedTest}), client address
  * and scheme forwarding, request ids, and {@link DispatchObserver} events for
  * normal and panicking dispatches.
  */

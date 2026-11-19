@@ -44,7 +44,7 @@ final class AppHeaderSelection {
         Set<String> allowed = new LinkedHashSet<>();
         for (String app : exposedApps) {
             if (app != null && !app.isBlank()) {
-                allowed.add(app.strip());
+                allowed.add(AppNames.trimAscii(app));
             }
         }
         if (allowed.isEmpty()) {
@@ -87,11 +87,13 @@ final class AppHeaderSelection {
         }
         if (exposedApps == null) {
             if (unrestrictedWarned.compareAndSet(false, true)) {
+                // The value is client-controlled: log it only in the bounded,
+                // ASCII form Rust accepts, never verbatim.
                 log.warn("Request selected vespera app '{}' via the client-controlled {} header "
                         + "and vespera.bridge.exposed-apps is not set: any client can reach any "
                         + "registered app, bypassing path-based security rules. Set "
                         + "vespera.bridge.exposed-apps to the apps this proxy may expose "
-                        + "(logged once).", app, headerName);
+                        + "(logged once).", AppNames.loggable(app), headerName);
             }
             return app;
         }
@@ -101,20 +103,9 @@ final class AppHeaderSelection {
         return app;
     }
 
+    /** ASCII trim (as Rust); a value that is empty after trimming means the default app. */
     private static String trimmed(String value) {
-        if (value == null) {
-            return null;
-        }
-        if (!hasLeadingOrTrailingWhitespace(value)) {
-            return value.isEmpty() ? null : value;
-        }
-        String trimmed = value.strip();
-        return trimmed.isEmpty() ? null : trimmed;
-    }
-
-    private static boolean hasLeadingOrTrailingWhitespace(String value) {
-        int len = value.length();
-        return len > 0 && (Character.isWhitespace(value.charAt(0))
-                || Character.isWhitespace(value.charAt(len - 1)));
+        String trimmed = AppNames.trimAscii(value);
+        return trimmed == null || trimmed.isEmpty() ? null : trimmed;
     }
 }

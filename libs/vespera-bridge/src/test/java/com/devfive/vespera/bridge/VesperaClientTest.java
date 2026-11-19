@@ -668,6 +668,20 @@ class VesperaClientTest {
     }
 
     @Test
+    void appNamesAreTrimmedWithTheAsciiSetRustUses() throws IOException {
+        // Rust's trim_ascii strips space, \t, \n, \f, \r only: a Unicode space
+        // stays part of the name and is sent as-is (Rust answers 400 for it),
+        // rather than being silently routed to another app.
+        assertEquals("　admin", client.forApp("　admin").appName());
+        assertEquals("admin", client.forApp("\r\n\tadmin\f ").appName());
+        assertNull(client.forApp(" \t\n ").appName());
+
+        client.get("/x").app("　admin").send();
+        assertEquals("　admin",
+                header(transport.requests.get(transport.requests.size() - 1)).get("app").asText());
+    }
+
+    @Test
     void theDefaultAppNameReportsAsNull() {
         assertNull(client.forApp("_default").appName());
         assertNull(client.forApp(" _default ").appName());

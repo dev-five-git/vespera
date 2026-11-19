@@ -26,13 +26,18 @@ class VesperaBridgeInitTest {
 
     @Test
     void reInitWithDifferentLibraryThrowsAndSameNameIsNoOp() throws Exception {
-        Field loadedField = VesperaBridge.class.getDeclaredField("nativeLoaded");
+        Field nativeField = VesperaBridge.class.getDeclaredField("nativeLoaded");
+        Field loadedField = VesperaBridge.class.getDeclaredField("loaded");
         Field nameField = VesperaBridge.class.getDeclaredField("loadedLibraryName");
+        nativeField.setAccessible(true);
         loadedField.setAccessible(true);
         nameField.setAccessible(true);
+        boolean prevNative = nativeField.getBoolean(null);
         boolean prevLoaded = loadedField.getBoolean(null);
         Object prevName = nameField.get(null);
         try {
+            // A fully configured library: loaded and configured.
+            nativeField.setBoolean(null, true);
             loadedField.setBoolean(null, true);
             nameField.set(null, "libA");
 
@@ -44,6 +49,7 @@ class VesperaBridgeInitTest {
                     () -> VesperaBridge.init("libB"),
                     "re-init with a different library name must throw");
         } finally {
+            nativeField.setBoolean(null, prevNative);
             loadedField.setBoolean(null, prevLoaded);
             nameField.set(null, prevName);
         }
@@ -66,20 +72,28 @@ class VesperaBridgeInitTest {
                 // A concurrent dispatcher gating on isInitialized() must not
                 // run before the pending configure* values reach Rust ...
                 assertFalse(VesperaBridge.isInitialized());
-                // ... while configure* (and a re-init) already treat the
-                // library as loaded.
-                assertDoesNotThrow(() -> VesperaBridge.init("libA"));
+                // ... while configure* already treats the library as loaded.
+                // A re-init in that window is refused: the configuration has
+                // not completed yet.
+                assertThrows(IllegalStateException.class, () -> VesperaBridge.init("libA"));
                 applied.incrementAndGet();
             });
             assertEquals(1, applied.get());
             assertTrue(VesperaBridge.isInitialized());
 
-            // A failing configuration hook still marks the library loaded.
+            // A failing configuration hook propagates and does NOT publish
+            // the library as initialised: dispatchers stay closed.
             loadedField.setBoolean(null, false);
             assertThrows(IllegalStateException.class, () -> VesperaBridge.completeLoad("libA", () -> {
                 throw new IllegalStateException("hook failed");
             }));
-            assertTrue(VesperaBridge.isInitialized());
+            assertFalse(VesperaBridge.isInitialized());
+            // The cdylib stays marked loaded (never loaded twice), so a later
+            // init() reports the incomplete configuration instead of no-op.
+            IllegalStateException again = assertThrows(
+                    IllegalStateException.class, () -> VesperaBridge.init("libA"));
+            assertTrue(again.getMessage().contains("restart the JVM"), again.getMessage());
+            assertFalse(VesperaBridge.isInitialized());
         } finally {
             loadedField.setBoolean(null, prevLoaded);
             nativeField.setBoolean(null, prevNative);

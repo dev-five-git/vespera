@@ -185,7 +185,7 @@ vespera:
     direct-retry-on-overflow: true # set false to avoid DIRECT retry double-execution
     forward-principal: true      # forward the authenticated principal to Rust, see "Forwarded principal"
     multipart-passthrough: true  # proxied multipart bodies reach Rust raw, see "Multipart uploads"
-    max-buffered-request-bytes: 67108864 # default 64 MiB; 0 = unlimited
+    max-buffered-request-bytes: 67108864 # default 64 MiB; 0 = no configured cap (unknown-length bodies still bounded at 64 MiB, see below)
     max-buffered-response-bytes: 67108864 # SYNC/ASYNC response cap → 500 (default 64 MiB; 0 = unlimited)
     native:                      # Rust-side knobs, applied before the first dispatch
       max-request-bytes: 67108864           # buffered request cap → 413 (0 = unlimited)
@@ -1435,7 +1435,7 @@ See [`examples/rust-jni-demo`](../../examples/rust-jni-demo/) for a complete Rus
 2. **`HEAD` responses advertise the real representation length.** axum answers `HEAD` with an empty body but the `content-length` of the matching `GET`; the proxy now forwards that value (in every dispatch mode) instead of `Content-Length: 0`. When Rust declares no length and sends no body, `Content-Length` is left unset rather than `0`.
 3. **Native library extraction location.** The bundled cdylib is extracted to `vespera-native-<sha256-prefix>/` under `vespera.native.dir` / `VESPERA_NATIVE_DIR` / the per-user `<java.io.tmpdir>/vespera-<user.name>` and kept for reuse (only from a verified-private directory on POSIX), instead of a fresh `deleteOnExit` temp file per start; see [Native library loading](#native-library-loading).
 4. **Autoconfiguration guard.** `VesperaBridgeAutoConfiguration` is now an `@AutoConfiguration` that also requires Spring MVC (`DispatcherServlet`) and the servlet API on the classpath.
-5. **Native defaults now bound resources.** Buffered request bodies are capped at 64 MiB (`413`), buffered responses at 256 MiB (`500`), and `dispatchAsync` at 4096 in-flight calls (`503`). Raise or disable them (`0`) via `vespera.bridge.native.*` or the `vespera.limits.*` / `vespera.async.*` system properties. A per-dispatch deadline is available (`dispatch-timeout`, off by default).
+5. **Native defaults now bound resources.** Buffered request bodies are capped at 64 MiB (`413`), buffered responses at 64 MiB in a Spring application (`500`; the Rust-side default is 256 MiB, see item 18), and `dispatchAsync` at 4096 in-flight calls (`503`). Raise or disable them (`0`) via `vespera.bridge.native.*` or the `vespera.limits.*` / `vespera.async.*` system properties. A per-dispatch deadline is available (`dispatch-timeout`, off by default).
 6. **`SYNC`/`DIRECT` run on the shared runtime** (see [Synchronous dispatch runtime semantics](#synchronous-dispatch-runtime-semantics-background-tasks)).
 7. **`dispatchStreaming` / `dispatchFullStreaming` throw `IOException`** when the response fails after body bytes were written (previously a synthetic 500 header after a partial body), and `dispatchStreaming` now hoists 422 `validation_errors`.
 8. **The new `configure*` methods return `boolean`** (`false` + a logged warning when the native side already fixed the value). `configureStreaming(int, int)` keeps its 0.5.x `void` signature for binary compatibility (a not-applied value is logged).

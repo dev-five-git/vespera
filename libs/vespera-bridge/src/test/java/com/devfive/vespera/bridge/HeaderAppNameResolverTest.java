@@ -41,10 +41,63 @@ class HeaderAppNameResolverTest {
     }
 
     @Test
-    void unicodeWhitespaceIsStripped() {
+    void onlyAsciiWhitespaceIsTrimmedLikeRust() {
+        // Rust trims ASCII whitespace only: a Unicode space is part of the
+        // name (and Rust answers it 400), so the proxy must not "fix" it.
         MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
         req.addHeader("X-Vespera-App", "\u2003admin\u2003");
-        assertEquals("admin", resolver.resolveAppName(req));
+        assertEquals("\u2003admin\u2003", resolver.resolveAppName(req));
+
+        MockHttpServletRequest ascii = new MockHttpServletRequest("GET", "/x");
+        ascii.addHeader("X-Vespera-App", "\r\n\u000cadmin\t ");
+        assertEquals("admin", resolver.resolveAppName(ascii));
+
+        MockHttpServletRequest vt = new MockHttpServletRequest("GET", "/x");
+        vt.addHeader("X-Vespera-App", "\u000badmin");
+        assertEquals("\u000badmin", resolver.resolveAppName(vt));
+    }
+
+    @Test
+    void unicodeOnlyHeaderIsNotTheDefaultApp() {
+        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
+        req.addHeader("X-Vespera-App", "\u2003");
+        assertEquals("\u2003", resolver.resolveAppName(req));
+    }
+
+    @Test
+    void unrestrictedWarningNeverEchoesAClientNameVerbatim() {
+        ch.qos.logback.classic.Logger logger = (ch.qos.logback.classic.Logger)
+                org.slf4j.LoggerFactory.getLogger(HeaderAppNameResolver.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> warnings =
+                new ch.qos.logback.core.read.ListAppender<>();
+        warnings.start();
+        logger.addAppender(warnings);
+        try {
+            HeaderAppNameResolver unrestricted = new HeaderAppNameResolver("X-Vespera-App");
+            String overlong = "a".repeat(300);
+            assertEquals(overlong, unrestricted.resolveAppName(selecting(overlong)));
+            assertEquals(1, warnings.list.size());
+            String logged = warnings.list.get(0).getFormattedMessage();
+            assertFalse(logged.contains(overlong), logged);
+            assertTrue(logged.contains("<invalid app name of 300 chars>"), logged);
+        } finally {
+            logger.detachAppender(warnings);
+        }
+
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> forged =
+                new ch.qos.logback.core.read.ListAppender<>();
+        forged.start();
+        logger.addAppender(forged);
+        try {
+            HeaderAppNameResolver unrestricted = new HeaderAppNameResolver("X-Vespera-App");
+            unrestricted.resolveAppName(selecting("admin\nWARN forged"));
+            assertEquals(1, forged.list.size());
+            String logged = forged.list.get(0).getFormattedMessage();
+            assertFalse(logged.contains("forged"), logged);
+            assertTrue(logged.contains("<invalid app name of 17 chars>"), logged);
+        } finally {
+            logger.detachAppender(forged);
+        }
     }
 
     @Test

@@ -146,16 +146,18 @@ public class VesperaSpringdocProperties {
      * when set, otherwise {@code _default} plus {@code exposedApps}.
      */
     List<String> documentedApps(List<String> exposedApps) {
-        Set<String> out = new LinkedHashSet<>();
-        List<String> source = apps.isEmpty() ? withDefault(exposedApps) : apps;
-        if (source.stream().anyMatch(AppNameResolver.DEFAULT_APP::equals)) {
-            out.add(AppNameResolver.DEFAULT_APP);
-        }
-        for (String app : source) {
+        List<String> trimmed = new ArrayList<>();
+        for (String app : apps.isEmpty() ? withDefault(exposedApps) : apps) {
             if (app != null && !app.isBlank()) {
-                out.add(app.trim());
+                trimmed.add(app.trim());
             }
         }
+        // Checked after trimming, so a padded " _default" entry still leads.
+        Set<String> out = new LinkedHashSet<>();
+        if (trimmed.contains(AppNameResolver.DEFAULT_APP)) {
+            out.add(AppNameResolver.DEFAULT_APP);
+        }
+        out.addAll(trimmed);
         return List.copyOf(out);
     }
 
