@@ -17,6 +17,11 @@ pub async fn typed_header(
 pub async fn typed_header_jwt(
     TypedHeader(authorization): TypedHeader<Authorization<Bearer>>,
 ) -> &'static str {
-    println!("authorization: {:?}", authorization);
+    // Never print the credential: `Debug` of `Authorization<Bearer>` is the
+    // whole token, and logs keep what they capture.
+    println!(
+        "authorization: bearer token of {} bytes",
+        authorization.token().len()
+    );
     "ok"
 }

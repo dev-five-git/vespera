@@ -226,24 +226,28 @@ fn retain_declared_if<T: Clone + SourceIdentified>(
 /// an `ident!(` / `ident![` / `ident!{` invocation count, outside string
 /// literals: `tracing::info!("list called")` does not keep `list`.
 fn may_come_from_macro(content: &str, name: &str) -> bool {
-    content.lines().any(|line| {
-        let code = strip_string_literals(line);
-        code.match_indices('!').any(|(bang, _)| {
-            // `ident!(`: the `!` follows a name, so `if !(x)` and `a != (b)`
-            // are not invocations.
-            let follows_name = code[..bang].chars().next_back().is_some_and(is_ident_char);
-            let rest = code[bang + 1..].trim_start();
-            follows_name
-                && rest.starts_with(['(', '[', '{'])
-                && contains_ident(invocation_arguments(&rest[1..]), name)
-        })
+    // The whole text, not line by line: an invocation's argument group may
+    // run over several lines (`gen!(` / `list,` / `);`).
+    let code = content
+        .lines()
+        .map(strip_string_literals)
+        .collect::<Vec<_>>()
+        .join("\n");
+    code.match_indices('!').any(|(bang, _)| {
+        // `ident!(`: the `!` follows a name, so `if !(x)` and `a != (b)`
+        // are not invocations.
+        let follows_name = code[..bang].chars().next_back().is_some_and(is_ident_char);
+        let rest = code[bang + 1..].trim_start();
+        follows_name
+            && rest.starts_with(['(', '[', '{'])
+            && contains_ident(invocation_arguments(&rest[1..]), name)
     })
 }
 
 /// The text of a macro invocation's argument group, given the text after its
 /// opening bracket: up to the matching close bracket, so `log!(x); list();`
 /// does not hand `list` to `log!`. An unclosed group (the invocation runs past
-/// the line) yields the rest of the line.
+/// the end of the text) yields the rest of the text.
 fn invocation_arguments(rest: &str) -> &str {
     let mut depth = 0usize;
     for (at, c) in rest.char_indices() {
@@ -306,7 +310,7 @@ fn char_literal_end(chars: &[char], start: usize) -> Option<usize> {
 fn string_literal_span(chars: &[char], start: usize) -> Option<(usize, usize, usize)> {
     let (open_end, hashes) = match chars.get(start)? {
         '"' => (start + 1, None),
-        'r' if start == 0 || !is_ident_char(chars[start - 1]) => {
+        'r' if raw_prefix_starts_at(chars, start) => {
             let hashes = chars[start + 1..].iter().take_while(|c| **c == '#').count();
             if chars.get(start + 1 + hashes) != Some(&'"') {
                 return None;
@@ -331,6 +335,17 @@ fn string_literal_span(chars: &[char], start: usize) -> Option<(usize, usize, us
         return Some((open_end, len, len));
     }
     Some((open_end, at, at + 1 + hashes.unwrap_or(0)))
+}
+
+/// Whether the `r` at `start` opens a raw string: it is not glued to a
+/// preceding identifier, and a `b` prefix (`br"…"`) must not be either.
+fn raw_prefix_starts_at(chars: &[char], start: usize) -> bool {
+    let prefix_start = if start > 0 && chars[start - 1] == 'b' {
+        start - 1
+    } else {
+        start
+    };
+    prefix_start == 0 || !is_ident_char(chars[prefix_start - 1])
 }
 
 /// Whether `chars[at..]` is a `"` followed by `hashes` `#`s.
@@ -511,6 +526,8 @@ mod tests {
     #[case::call_after_invocation("log!(x); list();", false)]
     #[case::not_equal("let d = list != (other);", false)]
     #[case::bang_after_space("if ! (list()) {}", false)]
+    #[case::group_over_several_lines("gen!(\n    list,\n);", true)]
+    #[case::call_after_multi_line_group("gen!(\n    x,\n); list();", false)]
     fn may_come_from_macro_names_only_invocation_arguments(
         #[case] line: &str,
         #[case] expected: bool,
@@ -527,6 +544,12 @@ mod tests {
     #[case::char_escape_at_end(r"let c = '\", r"let c = '\")]
     #[case::lifetime(r"fn f<'a>(x: &'a str) {}", r"fn f<'a>(x: &'a str) {}")]
     #[case::raw_string_backslash(r#"let p = r"C:\"; x"#, r#"let p = r""; x"#)]
+    #[case::byte_raw_string_backslash(
+        r#"let p = br"C:\"; gen!(list);"#,
+        r#"let p = br""; gen!(list);"#
+    )]
+    #[case::byte_raw_string_hashes(r##"br#"a"b"# x"##, "br#\"\"# x")]
+    #[case::ident_ending_in_b_is_not_a_prefix(r#"nb"x" y"#, r#"nb"" y"#)]
     #[case::raw_string_hashes(r##"r#"a "q" b"# x"##, "r#\"\"# x")]
     #[case::raw_ident(r"let r#type = 1;", r"let r#type = 1;")]
     #[case::r_inside_word(r"for x in y {}", r"for x in y {}")]

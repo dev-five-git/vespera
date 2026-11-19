@@ -301,6 +301,16 @@ fn validate_doc_urls(urls: &[(&str, Option<&LitStr>)]) -> syn::Result<()> {
                 ),
             ));
         }
+        // A client requests `/api/../docs` as `/docs` (and `%2e%2e`, `\` alike):
+        // the page would be reachable only at another URL than the one named.
+        if super::path_segments::resolved_by_clients(&value) {
+            return Err(syn::Error::new(
+                lit.span(),
+                format!(
+                    "vespera! macro: {key} must not contain `.` or `..` path segments (also percent-encoded) or a backslash, got \"{value}\""
+                ),
+            ));
+        }
         if value.contains(['{', '}'])
             || value
                 .split('/')
@@ -953,3 +963,7 @@ mod tests;
 #[cfg(test)]
 #[path = "input_tests_server_url.rs"]
 mod server_url_tests;
+
+#[cfg(test)]
+#[path = "input_tests_doc_urls.rs"]
+mod doc_url_tests;

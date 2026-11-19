@@ -98,6 +98,31 @@ export function missingOnHead(
   return [...missing].sort()
 }
 
+/**
+ * Modes a base round reports whose paired changes do not cover every round:
+ * a head round lacks the mode, or a round is missing on one side. `evaluate`
+ * would gate such a mode on fewer samples, which silently turns the "every
+ * round" rule into a smaller sample test. Head-only modes are new benchmarks
+ * and are not judged here.
+ */
+export function incompleteModes(
+  base: readonly Map<string, number>[],
+  head: readonly Map<string, number>[],
+): string[] {
+  const expected = Math.max(base.length, head.length)
+  const baseModes = new Set<string>()
+  for (const r of base) for (const k of r.keys()) baseModes.add(k)
+  return [...baseModes]
+    .filter((mode) => {
+      const pairs = pairedChanges(
+        base.map((r) => r.get(mode)),
+        head.map((r) => r.get(mode)),
+      )
+      return pairs.length < expected
+    })
+    .sort()
+}
+
 export function evaluate(
   base: readonly Map<string, number>[],
   head: readonly Map<string, number>[],
@@ -211,7 +236,15 @@ function main(): number {
       `::error::JNI bench mode ${mode} is reported by the base but missing from the head; it cannot be gated`,
     )
   }
-  if (missing.length > 0) return 1
+  const incomplete = incompleteModes(base, head).filter(
+    (mode) => !missing.includes(mode),
+  )
+  for (const mode of incomplete) {
+    console.error(
+      `::error::JNI bench mode ${mode} is not paired in every round; it cannot be gated on every round`,
+    )
+  }
+  if (missing.length > 0 || incomplete.length > 0) return 1
   for (const v of verdicts.filter((x) => x.regressed)) {
     console.error(
       `::error::JNI performance regression: ${v.mode} median ${pct(v.median)} with every paired round > ${pct(t.lower)}`,

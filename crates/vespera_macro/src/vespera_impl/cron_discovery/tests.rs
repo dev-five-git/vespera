@@ -456,7 +456,35 @@ fn stored_job_of_a_file_included_by_two_path_declarations_is_rejected() {
         Some(src.join("common.rs").display().to_string()),
     )];
     let err = discover_cron_jobs(&storage, Some(&src), None).unwrap_err();
-    assert!(err.contains("more than one module includes"), "{err}");
+    assert!(err.contains("more than one module path"), "{err}");
+    assert!(err.contains("`#[path]`"), "{err}");
+}
+
+/// Same-named jobs in sibling inline modules are not a `#[path]` problem: an
+/// inline-less stored entry cannot pick one of them, so the error says so
+/// (and does not blame `#[path]`); a named inline module still places it.
+#[test]
+fn inline_less_stored_job_of_same_named_sibling_modules_is_rejected_honestly() {
+    let krate = crate_with(&[(
+        "lib.rs",
+        r#"
+        pub mod a { #[cron("1 * * * * *")] pub async fn tick() {} }
+        pub mod b { #[cron("2 * * * * *")] pub async fn tick() {} }
+        pub fn create_app() {}
+        "#,
+    )]);
+    let src = krate.path().join("src");
+    let lib = src.join("lib.rs");
+    let inline_less = [stored("tick", Some(lib.display().to_string()))];
+    let err = discover_cron_jobs(&inline_less, Some(&src), Some(&lib)).unwrap_err();
+    assert!(err.contains("sibling inline"), "{err}");
+
+    let named = [stored_in("tick", &lib, "b", "2 * * * * *")];
+    let jobs = discover(&named, Some(&src), Some(&lib));
+    assert_eq!(
+        summary(&jobs),
+        rows(&[("a", "tick", "1 * * * * *"), ("b", "tick", "2 * * * * *")])
+    );
 }
 
 /// Jobs in modules rustc expands after `vespera!` are recovered from the

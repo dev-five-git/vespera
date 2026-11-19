@@ -5,7 +5,7 @@
 
 use serde_json::json;
 
-use super::defaults::snapshot_stored_defaults;
+use super::defaults::{snapshot_stored_defaults, stored_defaults_of};
 use super::tests_accuracy::{post, renamed, schema, stored_post};
 use crate::metadata::CollectedMetadata;
 use crate::openapi_generator::try_generate_openapi_doc_with_metadata;
@@ -30,12 +30,16 @@ fn failed_generation_clears_the_stored_defaults_it_installed() {
         "async fn h(Json(body): Json<Foo>) -> String",
     )];
 
+    // The premise: the defaults this generation installs are not empty.
+    assert!(!stored_defaults_of(&metadata).is_empty());
+
     let result =
         try_generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &storage);
 
+    let err = result.expect_err("the ambiguous alias must fail the generation");
     assert!(
-        result.is_err(),
-        "the ambiguous alias must fail the generation"
+        err.to_string().contains("ambiguous type `Foo`"),
+        "failed for an unrelated reason: {err}"
     );
     assert!(
         snapshot_stored_defaults().is_empty(),

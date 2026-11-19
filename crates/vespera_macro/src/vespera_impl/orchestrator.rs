@@ -299,28 +299,36 @@ fn current_crate_cron_jobs() -> syn::Result<Vec<crate::metadata::CronMetadata>> 
         .map_err(|message| syn::Error::new(Span::call_site(), message))
 }
 
+/// The two texts of an export: the pure OpenAPI document (struct field order,
+/// what `OPENAPI_SPEC` and the `include_str!` copy carry) and the sidecar the
+/// parent merge reads, which is the same document with the
+/// [`super::merge_lookup::CATCH_ALL_KEY`] marker spliced in as its last key.
 fn namespace_and_serialize_export_openapi(
     openapi: &mut vespera_core::OpenApi,
     metadata: &CollectedMetadata,
     prefix: &str,
-) -> syn::Result<String> {
+) -> syn::Result<(String, String)> {
     let schema_namespace = schema_namespace_from_prefix(prefix);
     namespace_export_schemas(openapi, metadata, &schema_namespace)?;
-    let mut value = serde_json::to_value(&*openapi).map_err(|error| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to serialize OpenAPI spec to JSON. Error: {error}. Check that all schema types are serializable.")))?;
-    // The catch-all marker (`merge_lookup::CATCH_ALL_KEY`) rides along with the
-    // document; typed readers ignore it.  Built from plain strings, so adding
-    // it cannot fail.
-    if let Some(object) = value.as_object_mut() {
-        let templates = super::merge_lookup::catch_all_templates(&metadata.routes)
-            .into_iter()
-            .map(|(path, template)| (path, serde_json::Value::String(template)))
-            .collect();
-        object.insert(
-            super::merge_lookup::CATCH_ALL_KEY.to_owned(),
-            serde_json::Value::Object(templates),
-        );
-    }
-    Ok(value.to_string())
+    let spec = serde_json::to_string(&*openapi).map_err(|error| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to serialize OpenAPI spec to JSON. Error: {error}. Check that all schema types are serializable.")))?;
+    // Splicing (not a `Value` round trip) keeps the struct's key order: a
+    // serialized `OpenApi` is always a non-empty object, so its `}` is last.
+    let templates =
+        serde_json::to_string(&super::merge_lookup::catch_all_templates(&metadata.routes))
+            .map_err(|error| {
+                syn::Error::new(
+                    Span::call_site(),
+                    format!(
+                        "export_app! macro: failed to serialize catch-all paths. Error: {error}."
+                    ),
+                )
+            })?;
+    let body = spec.strip_suffix('}').unwrap_or(&spec);
+    let sidecar = format!(
+        "{body},\"{}\":{templates}}}",
+        super::merge_lookup::CATCH_ALL_KEY
+    );
+    Ok((spec, sidecar))
 }
 
 fn finish_export_metadata(
@@ -447,16 +455,18 @@ pub fn process_export_app(
             Some(file_asts),
             route_storage,
         )?;
-        let spec_json =
+        let (spec_json, sidecar_json) =
             namespace_and_serialize_export_openapi(&mut openapi_doc, &documented, prefix)?;
         drop(documented);
 
         // Write spec to temp file for compile-time merging by parent apps
         // (stable name for parents' lookups + content-addressed copy for this
-        // expansion's `include_str!`; both replaced atomically).
+        // expansion's `include_str!`; both replaced atomically). The sidecar
+        // text is what the cache validates, so the copy is named by its hash:
+        // the pair is one identity, and only the sidecar carries the marker.
         std::fs::create_dir_all(&export_dir).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to create build cache directory '{}'. Error: {}. Ensure the target directory is writable.", export_dir.display(), e)))?;
-        let spec_json_fingerprint = super::openapi_io::write_if_changed(&spec_file, &spec_json).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to write OpenAPI spec file '{}'. Error: {}. Ensure the file path is writable.", spec_file.display(), e)))?;
-        let hash = hash_str(&spec_json);
+        let spec_json_fingerprint = super::openapi_io::write_if_changed(&spec_file, &sidecar_json).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to write OpenAPI spec file '{}'. Error: {}. Ensure the file path is writable.", spec_file.display(), e)))?;
+        let hash = hash_str(&sidecar_json);
         let include_file = content_addressed(&export_dir, &include_stem, hash);
         super::openapi_io::write_if_changed(&include_file, &spec_json).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to write OpenAPI spec file '{}'. Error: {}. Ensure the file path is writable.", include_file.display(), e)))?;
         prune_superseded(&include_file, &include_stem);
@@ -528,3 +538,6 @@ mod tests_audit;
 
 #[cfg(test)]
 mod tests_variants;
+
+#[cfg(test)]
+mod tests_export_sidecar;

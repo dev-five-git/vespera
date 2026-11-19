@@ -38,11 +38,12 @@ on:
       # not part of the measurement.
       - 'examples/rust-jni-demo/src/**'
       - 'examples/rust-jni-demo/Cargo.toml'
-      # Dependency versions, profiles (fat LTO) and the toolchain change the
-      # measured code as much as a source edit does.
+      # Dependency versions and profiles (fat LTO) change the measured code as
+      # much as a source edit does. The toolchain is set inline in the workflow
+      # steps (the repository has no rust-toolchain file), so only a change to
+      # this workflow file reaches the gate through the toolchain.
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - '.cargo/**'
       - '.github/workflows/jni-bench-gate.yml'
       - 'scripts/jni-bench-interleaved.sh'
       - 'scripts/jni-bench-compare.ts'

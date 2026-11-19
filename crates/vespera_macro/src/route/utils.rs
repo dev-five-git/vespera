@@ -676,6 +676,10 @@ mod tests {
         assert_eq!(parse_example_string(&literal), expected);
     }
 
+    /// Precondition: the fast path (`route_impl`) rejects these inputs with a
+    /// compile error before the collector runs, so this slow-path reader never
+    /// sees a build that gets past expansion. It keeps the lenient shape only
+    /// for the fallback that re-reads a parsed file.
     #[test]
     fn status_and_string_extractors_ignore_wrong_expression_kinds() {
         let statuses: syn::ExprArray = syn::parse_quote!([400, BAD_REQUEST, "404", 70_000]);
@@ -707,6 +711,9 @@ mod tests {
         assert_eq!(extract_typed_response(&expression), expected);
     }
 
+    /// Precondition (as for the status extractors above): `route_impl` already
+    /// rejected every invalid entry at expansion, so the drop-and-continue
+    /// behaviour pinned here only matters for a file parsed without expansion.
     #[test]
     fn typed_responses_drop_invalid_entries_and_report_empty_results() {
         let mixed: syn::ExprArray = syn::parse_quote!([

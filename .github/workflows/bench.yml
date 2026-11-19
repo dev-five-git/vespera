@@ -47,7 +47,6 @@ on:
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - '.cargo/**'
       - '.github/workflows/bench.yml'
       - 'scripts/bench-interleaved.sh'
   pull_request:
@@ -55,7 +54,6 @@ on:
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - '.cargo/**'
       - '.github/workflows/bench.yml'
       - 'scripts/bench-interleaved.sh'
 

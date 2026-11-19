@@ -100,15 +100,12 @@ fn normalize_prefix(prefix: &LitStr) -> syn::Result<LitStr> {
         ));
     }
     let normalized = with_leading_slash.trim_end_matches('/');
-    // `.` / `..` are resolved by clients (RFC 3986 5.2.4), so the routes would
-    // be requested under another path than the one registered here.
-    if normalized
-        .split('/')
-        .any(|segment| segment == "." || segment == "..")
-    {
+    // `.` / `..` (also percent-encoded) and `\` are resolved by clients, so the
+    // routes would be requested under another path than the one registered.
+    if super::path_segments::resolved_by_clients(normalized) {
         return Err(syn::Error::new(
             prefix.span(),
-            "export_app! macro: `prefix` must not contain `.` or `..` path segments (clients resolve them)",
+            "export_app! macro: `prefix` must not contain `.` or `..` path segments (also percent-encoded) or a backslash (clients resolve them)",
         ));
     }
     if normalized.contains([':', '*', '{', '}']) {
@@ -449,6 +446,10 @@ mod tests {
     #[case("/api/../v1", "must not contain `.` or `..` path segments")]
     #[case("/./api", "must not contain `.` or `..` path segments")]
     #[case("/api/..", "must not contain `.` or `..` path segments")]
+    #[case("/api/%2E%2e/admin", "must not contain `.` or `..` path segments")]
+    #[case("/a/.%2e", "must not contain `.` or `..` path segments")]
+    #[case("/api\\..\\x", "must not contain `.` or `..` path segments")]
+    #[case("/api\\users", "must not contain `.` or `..` path segments")]
     #[case("/---", "must contain at least one ASCII alphanumeric character")]
     #[case("/카탈로그", "must contain at least one ASCII alphanumeric character")]
     #[case("/api/{tenant}", "must be a static path")]

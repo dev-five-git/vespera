@@ -238,6 +238,10 @@ impl TestScope {
             return gated.clone();
         }
         let dir = declarer.parent().map(Path::to_path_buf).unwrap_or_default();
+        let is_crate_root = matches!(
+            declarer.file_name().and_then(|name| name.to_str()),
+            Some("lib.rs" | "main.rs")
+        ) && self.src_dir.as_deref() == Some(dir.as_path());
         // rustc resolves a `#[path]` inside an inline module relative to the
         // inline module's directory: for a non-mod-rs declarer (`routes.rs`)
         // that directory is named after the file (`routes/<inline>/`).
@@ -250,7 +254,9 @@ impl TestScope {
         };
         let gated = file_cache::derived(declarer, |content| {
             let mut gated = GatedMods::default();
-            if may_gate_tests(content)
+            // A crate root is loaded by every build, so its ungated `mod`s are
+            // always recorded; other files only when they may gate a test.
+            if (may_gate_tests(content) || is_crate_root)
                 && let Ok(ast) = syn::parse_file(content)
             {
                 gated_mod_paths(&ast.items, "", &dir, &inline_dir, false, &mut gated);
@@ -574,7 +580,7 @@ fn end_of(span: proc_macro2::Span) -> Position {
 fn gated_items(file: &Path) -> std::rc::Rc<GatedItems> {
     file_cache::derived(file, |content| {
         let mut gated = GatedItems::default();
-        // `contains("test")`, not `may_gate_tests`: a `#[test]` fn gates its
+        // `contains("test")`, not a `cfg` filter: a `#[test]` fn gates its
         // body without any `cfg`.
         if content.contains("test") {
             // Only fallback spans carry real line numbers (see `cron_impl`);

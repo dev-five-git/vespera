@@ -124,7 +124,7 @@ pub async fn patch_file_upload(
                 .filter(|s| !s.is_empty())
                 .collect()
         }),
-        is_active: true,
+        is_active: req.is_active.unwrap_or(true),
         created_at: "2024-01-01T00:00:00Z".to_string(),
     }))
 }
