@@ -484,19 +484,17 @@ class StreamingClosureStressTest {
      * on every later write.  Body bytes were already delivered, so the response
      * is truncated and {@code dispatchStreaming} throws {@link IOException}
      * (abort the transport) instead of returning a header; vespera never
-     * reports a truncated body as a clean success.  The payload is larger than
-     * one streaming chunk, so the echo spans several pushes and the second one
-     * is the failing write.  The Rust side locks the same contract in
+     * reports a truncated body as a clean success.  {@code /diag/drip} sends
+     * three 1 KiB chunks 30 ms apart, each its own push, so the second one is
+     * the failing write (an echoed body can reach the sink in one write).  The
+     * Rust side locks the same contract in
      * {@code sink_stop_after_first_chunk_is_reported_as_truncation}.
      */
     @Test
     @Order(6)
     void responseStreaming_outputStreamFailsAfterFirstChunk_throwsAborted() {
-        assertTrue(PAYLOAD_BYTES > NonHeaderStreamingE2ETest.effectiveStreamingChunkBytes(),
-                "the payload must span more than one streaming chunk");
-        byte[] payload = randomPayload(new Random(SEED));
         byte[] wireRequest = VesperaBridge.encodeRequest(
-                "POST", "/echo/stream", null, ECHO_HEADERS, payload);
+                "GET", "/diag/drip/stress-sink-truncation/3/30", null, Map.of(), new byte[0]);
 
         OutputStream failsAfterFirst = new OutputStream() {
             private int writes;
