@@ -95,7 +95,10 @@ use std::{
 ///
 /// `Query` / `Form` / `Path` (and multipart text fields) parse an `f32` /
 /// `f64` with [`str::parse`], which accepts `NaN`, `inf` and `-infinity`
-/// (JSON has no such literals, so `Json` bodies never carry them). Only a
+/// (JSON has no such literals, so a `Json` body never spells them). A JSON
+/// number beyond the range of the target type is not rejected by the default
+/// build: an `f32` field given `1e39` deserializes to `f32::INFINITY` (serde
+/// casts the `f64`), and the handler receives it. Only a
 /// float field with a `#[schema(minimum = ..)]` / `#[schema(maximum = ..)]`
 /// bound rejects a non-finite value (`"not a finite number"`, `422`); an
 /// unbounded float field passes `NaN` / `±inf` to the handler although the

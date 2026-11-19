@@ -34,6 +34,31 @@ fn unscheduled_wire(outcome: &std::thread::Result<bool>) -> Vec<u8> {
     }
 }
 
+/// Body of the tiny `500` wire an on-thread completion falls back to when the
+/// payload it meant to deliver could not be allocated.
+const ASYNC_COMPLETION_FAILED_MSG: &str = "async completion failed";
+
+/// The retry policy of every on-thread completion, mirroring
+/// [`complete_async_future`]: `complete` runs once with `wire`, and only when
+/// it never reached Java (`ArrayAllocFailed`) once more with the tiny `500`
+/// wire. An invoked `complete()` is never repeated (it would complete the same
+/// future twice).
+fn complete_with_fallback(mut complete: impl FnMut(&[u8]) -> CompleteAttempt, wire: &[u8]) {
+    if matches!(complete(wire), CompleteAttempt::ArrayAllocFailed) {
+        let _ = complete(&vespera_inprocess::error_wire(
+            500,
+            ASYNC_COMPLETION_FAILED_MSG,
+        ));
+    }
+}
+
+/// Completes `future` from the JNI entry thread (the local ref is still valid)
+/// through [`complete_with_fallback`], so no on-thread path can leave the Java
+/// future pending because its first payload failed to allocate.
+fn complete_on_thread(env: &mut jni::Env<'_>, future: &JObject<'_>, wire: &[u8]) {
+    complete_with_fallback(|bytes| complete_future_local(env, future, bytes), wire);
+}
+
 /// `com.devfive.vespera.bridge.AsyncDispatch.dispatch0(CompletableFuture<byte[]>, byte[]) -> long`
 /// (behind the public `VesperaBridge.dispatchAsync`)
 ///
@@ -143,7 +168,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_AsyncDispatch_dispatch0<'
         // in-flight cap answers a retryable 503 immediately instead of
         // queueing unbounded tasks (and their request buffers).
         let Some(permit) = try_acquire_async_permit() else {
-            let _ = complete_future_local(env, &future_obj, &async_overloaded_wire());
+            complete_on_thread(env, &future_obj, &async_overloaded_wire());
             future_notified_body.store(true, Ordering::Release);
             return Ok(());
         };
@@ -151,7 +176,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_AsyncDispatch_dispatch0<'
             Ok(buf) => buf,
             Err(err) => {
                 drop(permit);
-                let _ = complete_future_local(env, &future_obj, &err);
+                complete_on_thread(env, &future_obj, &err);
                 future_notified_body.store(true, Ordering::Release);
                 return Ok(());
             }
@@ -163,7 +188,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_AsyncDispatch_dispatch0<'
             Ok(jvm) => jvm,
             Err(e) => {
                 drop(permit);
-                let _ = complete_future_local(
+                complete_on_thread(
                     env,
                     &future_obj,
                     &vespera_inprocess::error_wire(500, "JNI VM promotion failed"),
@@ -181,7 +206,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_AsyncDispatch_dispatch0<'
             Ok(g) => g,
             Err(e) => {
                 drop(permit);
-                let _ = complete_future_local(
+                complete_on_thread(
                     env,
                     &future_obj,
                     &vespera_inprocess::error_wire(500, "JNI global ref failed"),
@@ -247,7 +272,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_AsyncDispatch_dispatch0<'
         }));
         if !matches!(scheduled, Ok(true)) {
             let wire = unscheduled_wire(&scheduled);
-            let _ = complete_future_local(env, &future_obj, &wire);
+            complete_on_thread(env, &future_obj, &wire);
         }
         future_notified_body.store(true, Ordering::Release);
 
@@ -255,7 +280,8 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_AsyncDispatch_dispatch0<'
     });
     if panicked && !future_notified.load(Ordering::Acquire) && !future_obj.is_null() {
         let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
-            complete_future_local(env, &future_obj, &panic_wire())
+            complete_on_thread(env, &future_obj, &panic_wire());
+            Ok(())
         });
     }
     // Tokens are sequential from 1, far below `i64::MAX`.
@@ -338,7 +364,7 @@ fn complete_async_future(
             let _ = complete_future(
                 env,
                 future,
-                &vespera_inprocess::error_wire(500, "async completion failed"),
+                &vespera_inprocess::error_wire(500, ASYNC_COMPLETION_FAILED_MSG),
             );
             Ok(())
         });
@@ -347,7 +373,68 @@ fn complete_async_future(
 
 #[cfg(test)]
 mod tests {
-    use super::{panic_wire, runtime_unavailable_wire, unscheduled_wire};
+    use std::cell::RefCell;
+
+    use super::{
+        ASYNC_COMPLETION_FAILED_MSG, complete_with_fallback, panic_wire, runtime_unavailable_wire,
+        unscheduled_wire,
+    };
+    use crate::streaming_closures::CompleteAttempt;
+
+    /// Runs `complete_with_fallback` against scripted `complete()` outcomes
+    /// and returns every payload `complete` was called with.
+    fn run_fallback(outcomes: &[CompleteAttempt], wire: &[u8]) -> Vec<Vec<u8>> {
+        let calls = RefCell::new(Vec::new());
+        let outcomes = RefCell::new(outcomes.iter());
+        complete_with_fallback(
+            |bytes| {
+                calls.borrow_mut().push(bytes.to_vec());
+                match outcomes.borrow_mut().next() {
+                    Some(CompleteAttempt::ArrayAllocFailed) => CompleteAttempt::ArrayAllocFailed,
+                    _ => CompleteAttempt::Invoked,
+                }
+            },
+            wire,
+        );
+        calls.into_inner()
+    }
+
+    /// An invoked `complete()` (resolved, already resolved, or threw) is never
+    /// repeated: the future must not be completed twice.
+    #[test]
+    fn an_invoked_completion_is_not_retried() {
+        let wire = unscheduled_wire(&Ok(false));
+        let calls = run_fallback(&[CompleteAttempt::Invoked], &wire);
+        assert_eq!(calls, vec![wire]);
+    }
+
+    /// A payload that could not be allocated never reached Java, so the same
+    /// future is completed once more with the tiny `500` wire.
+    #[test]
+    fn an_unallocated_payload_falls_back_to_the_500_wire() {
+        let wire = panic_wire();
+        let calls = run_fallback(&[CompleteAttempt::ArrayAllocFailed], &wire);
+        assert_eq!(calls.len(), 2, "one retry, no more");
+        assert_eq!(calls[0], wire);
+        assert_eq!(
+            calls[1],
+            vespera_inprocess::error_wire(500, ASYNC_COMPLETION_FAILED_MSG)
+        );
+    }
+
+    /// The fallback itself is not retried when it cannot be allocated either.
+    #[test]
+    fn a_failing_fallback_is_attempted_once() {
+        let wire = panic_wire();
+        let calls = run_fallback(
+            &[
+                CompleteAttempt::ArrayAllocFailed,
+                CompleteAttempt::ArrayAllocFailed,
+            ],
+            &wire,
+        );
+        assert_eq!(calls.len(), 2);
+    }
 
     /// A panic while scheduling answers the panic wire (`"panicked":"true"`),
     /// not a plain `500`, so the host classifies it as a panic.

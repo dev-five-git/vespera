@@ -668,23 +668,9 @@ fn stream_stashed_body(env: &mut jni::Env<'_>, args: &StashStreamArgs<'_, '_>) {
     ) {
         return;
     }
-    let Some(pending) = crate::jni_impl::direct_stash::take_stashed(args.token) else {
-        // A shutdown cleared the stash after the overflow was stashed: the
-        // retryable `503` of every other request, not "expired".
-        let wire = if vespera_inprocess::runtime::runtime_shut_down() {
-            runtime_unavailable_wire()
-        } else {
-            vespera_inprocess::error_wire(500, STASH_EXPIRED_MSG)
-        };
-        notify_local_wire(
-            env,
-            args.header_consumer,
-            args.output_stream,
-            &wire,
-            args.flags,
-        );
-        return;
-    };
+    // The stream setup and the runtime check run BEFORE the stash entry is
+    // taken: a failure there (a transient JNI allocation error, no runtime)
+    // must leave the already computed response redeemable, not drop it.
     let Ok((header_global, stream_global, jvm, push_buf, push_buf_lease)) =
         setup_stream_with_header(env, args.header_consumer, args.output_stream)
     else {
@@ -698,6 +684,24 @@ fn stream_stashed_body(env: &mut jni::Env<'_>, args: &StashStreamArgs<'_, '_>) {
             args.header_consumer,
             args.output_stream,
             &runtime_unavailable_wire(),
+            args.flags,
+        );
+        return;
+    };
+    let Some(pending) = crate::jni_impl::direct_stash::take_stashed(args.token) else {
+        // A shutdown cleared the stash after the overflow was stashed: the
+        // retryable `503` of every other request, not "expired".
+        mark_streaming_buffer_reusable(push_buf_lease);
+        let wire = if vespera_inprocess::runtime::runtime_shut_down() {
+            runtime_unavailable_wire()
+        } else {
+            vespera_inprocess::error_wire(500, STASH_EXPIRED_MSG)
+        };
+        notify_local_wire(
+            env,
+            args.header_consumer,
+            args.output_stream,
+            &wire,
             args.flags,
         );
         return;

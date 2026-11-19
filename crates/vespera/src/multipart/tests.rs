@@ -343,11 +343,30 @@ fn test_into_response_other() {
 
 #[test]
 fn test_into_response_missing_field() {
+    // Aligned with `Validated<Json<_>>` (a missing field is a 422 there), so
+    // the JNI bridge hoists the envelope into `validation_errors`.
     let err = TypedMultipartError::MissingField {
         field_name: "x".to_string(),
     };
     let resp = err.into_response();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[test]
+fn test_into_response_strict_shape_errors_stay_400() {
+    // Duplicate, unknown and nameless parts are request-shape errors, not
+    // field-value errors: they keep 400 (no `validation_errors` hoisting).
+    for err in [
+        TypedMultipartError::DuplicateField {
+            field_name: "x".to_string(),
+        },
+        TypedMultipartError::UnknownField {
+            field_name: "x".to_string(),
+        },
+        TypedMultipartError::NamelessField,
+    ] {
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
 }
 
 // ─── Error trait ────────────────────────────────────────────────────

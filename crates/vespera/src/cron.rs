@@ -60,18 +60,50 @@ use vespera_core::cron::{Cron, parse};
 
 /// Scheduler diagnostic: a `tracing` event at `$level` on target
 /// `vespera::cron` with the `tracing` feature, else a `vespera: `-prefixed
-/// `eprintln!` (the pre-feature behaviour).
+/// `eprintln!` (the pre-feature behaviour). Every message also goes through
+/// [`capture::record`], so the unit tests can assert what was reported.
 #[cfg(feature = "tracing")]
 macro_rules! cron_diag {
-    ($level:ident, $($arg:tt)+) => {
-        ::tracing::$level!(target: "vespera::cron", $($arg)+)
-    };
+    ($level:ident, $($arg:tt)+) => {{
+        let message = ::std::format!($($arg)+);
+        crate::cron::capture::record(&message);
+        ::tracing::$level!(target: "vespera::cron", "{message}");
+    }};
 }
 #[cfg(not(feature = "tracing"))]
 macro_rules! cron_diag {
-    ($level:ident, $($arg:tt)+) => {
-        ::std::eprintln!("vespera: {}", ::std::format_args!($($arg)+))
-    };
+    ($level:ident, $($arg:tt)+) => {{
+        let message = ::std::format!($($arg)+);
+        crate::cron::capture::record(&message);
+        ::std::eprintln!("vespera: {message}");
+    }};
+}
+
+/// Diagnostic capture seam: unit tests read back what [`cron_diag!`] reported.
+/// The no-op build (every non-test build) keeps nothing.
+mod capture {
+    #[cfg(test)]
+    static REPORTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    #[cfg(test)]
+    pub(super) fn record(message: &str) {
+        REPORTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(message.to_owned());
+    }
+
+    /// Every message reported so far (unit-test builds only).
+    #[cfg(test)]
+    pub(super) fn reports() -> Vec<String> {
+        REPORTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    #[cfg(not(test))]
+    pub(super) fn record(_message: &str) {}
 }
 
 /// Boxed future returned by a cron job function.

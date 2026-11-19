@@ -769,25 +769,32 @@ pub fn write_output_local(
 /// ref (for the spawned task) instead of a second one kept solely for
 /// these on-thread completions.
 ///
-/// On a failed completion the `CompletableFuture` is left uncompleted by
-/// THIS helper; the caller treats the `Err` as a failed best-effort
-/// completion rather than hanging on a poisoned thread.  The original
-/// exception is intentionally discarded — we are converting a JNI failure
-/// into a best-effort `500` completion, not surfacing the inner throw.
+/// The outcome mirrors [`complete_future`]: `ArrayAllocFailed` means the
+/// payload `byte[]` could not be allocated, so `complete()` never ran and the
+/// caller may retry with a smaller payload; `Invoked` means `complete()` ran
+/// (it resolved the future, found it resolved, or threw) and must not be
+/// repeated. The original exception of a throwing `complete()` is discarded:
+/// the caller converts a JNI failure into a best-effort completion.
 pub fn complete_future_local(
     env: &mut jni::Env<'_>,
     future: &JObject<'_>,
     bytes: &[u8],
-) -> jni::errors::Result<()> {
-    cold_path_byte_array_call(env, bytes, |env, arr_obj| {
-        env.call_method(
-            future,
-            jni_str!("complete"),
-            jni_sig!("(Ljava/lang/Object;)Z"),
-            &[JValue::Object(arr_obj)],
-        )
-        .map(|_| ())
-    })
+) -> CompleteAttempt {
+    clear_pending_exception(env);
+    let attempt =
+        env.byte_array_from_slice(bytes)
+            .map_or(CompleteAttempt::ArrayAllocFailed, |arr| {
+                let arr_obj: JObject = arr.into();
+                let _ = env.call_method(
+                    future,
+                    jni_str!("complete"),
+                    jni_sig!("(Ljava/lang/Object;)Z"),
+                    &[JValue::Object(&arr_obj)],
+                );
+                CompleteAttempt::Invoked
+            });
+    clear_pending_exception(env);
+    attempt
 }
 
 /// Best-effort `InputStream.close()` — invoked after a bidirectional

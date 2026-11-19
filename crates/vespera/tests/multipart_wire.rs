@@ -585,7 +585,7 @@ fn typed_multipart_unknown_fields_count_toward_max_fields() {
     // dispatch arm) must still count against `max_fields`.  Before the fix,
     // counting happened only inside the per-known-field parsers, so a flood of
     // unknown parts bypassed the cap entirely (a DoS-adjacent gap) and this
-    // request would instead fail later with a 400 missing-field error.  With
+    // request would instead fail later with a 422 missing-field error.  With
     // `MAX_FIELDS = 0`, even one part — known OR unknown — must be rejected 413.
     install_router_once();
     let runtime = Builder::new_current_thread()

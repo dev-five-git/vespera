@@ -317,15 +317,17 @@ async fn overlap_policy_controls_concurrent_runs(
     controller.shutdown();
 }
 
-/// A panicking run is logged by its supervisor and the job keeps its
-/// schedule, also when the job's fn panics before returning its future.
+/// A panicking run is logged by its supervisor (the job name and the panic
+/// payload are in the diagnostic) and the job keeps its schedule, also when
+/// the job's fn panics before returning its future.
 #[rstest]
-#[case::in_future(panicking as fn() -> JobFuture, &PANIC_ATTEMPTS)]
-#[case::before_future(panicking_eagerly, &EAGER_PANIC_ATTEMPTS)]
+#[case::in_future(panicking as fn() -> JobFuture, &PANIC_ATTEMPTS, "boom")]
+#[case::before_future(panicking_eagerly, &EAGER_PANIC_ATTEMPTS, "eager boom")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn panicking_job_is_reported_and_keeps_its_schedule(
     #[case] run: fn() -> JobFuture,
     #[case] attempts: &'static AtomicUsize,
+    #[case] payload: &'static str,
 ) {
     let controller = controller();
     let job = CronJob::new("* * * * * *", run).with_name("tests::panicking");
@@ -340,6 +342,12 @@ async fn panicking_job_is_reported_and_keeps_its_schedule(
         .expect("scheduler exits on shutdown")
         .expect("scheduler did not panic");
     assert!(controller.wait_idle(Duration::from_secs(5)).await);
+    let expected = format!("cron job `tests::panicking` panicked: {payload}");
+    assert!(
+        capture::reports().contains(&expected),
+        "no supervisor report `{expected}`, got {:?}",
+        capture::reports()
+    );
 }
 
 #[rstest]
