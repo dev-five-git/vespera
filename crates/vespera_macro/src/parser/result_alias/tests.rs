@@ -179,17 +179,17 @@ fn expands_aliases(#[case] file_src: &str, #[case] ret: &str, #[case] expected: 
     assert_eq!(expand(file_src, ret), expected);
 }
 
-/// `type Loop = Result<Loop, AppError>;` nests itself in the `Result` position
-/// forever; the expansion stops at the depth bound, leaving the innermost
-/// `Loop` as it was.
+/// `type Loop = Result<Loop, AppError>;` nests itself in the `Result` position:
+/// the inner `Loop` is an alias already being expanded, so it is left as it
+/// was (one level, not an endless nesting).
 #[test]
-fn self_nesting_alias_stops_at_the_depth_bound() {
+fn self_nesting_alias_stops_at_the_cycle() {
     let file: syn::File = syn::parse_str("type Loop = Result<Loop, AppError>;").unwrap();
     let mut sig: syn::Signature = syn::parse_str("fn handler() -> Loop").unwrap();
     assert!(expand_return_type_alias(&mut sig, None, Some(&file), None));
     let output = &sig.output;
     let after = quote::quote!(#output).to_string();
-    assert_eq!(after.matches("Result").count(), MAX_ALIAS_DEPTH);
+    assert_eq!(after.matches("Result").count(), 1);
     assert!(after.contains("Result < Loop , AppError >"), "{after}");
 }
 
@@ -209,7 +209,7 @@ fn qualified_path_without_file_is_external() {
 #[case::crate_root("crate::ApiResult<u8>", Some(Qualifier::CrateRoot))]
 #[case::super_module("super::ApiResult<u8>", Some(Qualifier::Super))]
 #[case::self_module("self::ApiResult<u8>", None)]
-#[case::super_chain("super::super::ApiResult<u8>", None)]
+#[case::super_chain("super::super::ApiResult<u8>", Some(Qualifier::Unresolved))]
 #[case::non_path("(u8, u8)", None)]
 fn alias_qualifiers(#[case] ty: &str, #[case] expected: Option<Qualifier>) {
     let ty: Type = syn::parse_str(ty).unwrap();
@@ -885,5 +885,61 @@ fn nested_positions_resolve_in_the_defining_alias_scope() {
     assert_eq!(
         quote::quote!(#output).to_string(),
         "-> Result < (StatusCode , Json < User >) , AppError >"
+    );
+}
+
+/// A use-site argument is resolved in the handler's scope, even when the
+/// alias body names the same type: the handler's own `Wrap` (a `Vec`) is the
+/// argument, the defining module's `Wrap` (the `Json` tuple) is the body's.
+#[test]
+fn use_site_argument_resolves_in_the_handler_scope_not_the_body_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path();
+    std::fs::write(
+        src.join("m.rs"),
+        "type Wrap<T> = (StatusCode, Json<T>); \
+         pub type Api<T> = Result<Wrap<T>, AppError>;",
+    )
+    .unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    let file: syn::File =
+        syn::parse_str("use crate::m::Api; type Wrap<T> = Vec<T>; pub fn h() {}").unwrap();
+    let mut sig: syn::Signature = syn::parse_str("fn h() -> Api<Wrap<User>>").unwrap();
+    expand_return_type_alias(&mut sig, None, Some(&file), Some(src));
+    let output = &sig.output;
+    assert_eq!(
+        quote::quote!(#output).to_string(),
+        "-> Result < (StatusCode , Json < Vec < User > >) , AppError >"
+    );
+}
+
+/// `super::super::R` names an ancestor beyond the parent, which is not
+/// looked up: the handler module's own `R` must not stand in for the crate
+/// root's, so the return type stays as written.
+/// An unresolved chain names no module, so no struct of that name is found
+/// in one (and the alias lookup stops before it could matter).
+#[test]
+fn unresolved_chain_names_no_declared_struct() {
+    let scope = Scope {
+        file: Cow::Owned(syn::parse_str("struct R;").unwrap()),
+        module: Vec::new(),
+        path: None,
+    };
+    assert!(!imported_nominal("R", &Qualifier::Unresolved, &scope, None));
+}
+
+#[test]
+fn longer_super_chain_is_left_unexpanded() {
+    let file: syn::File = syn::parse_str(
+        "type R<T> = Result<T, RootErr>; \
+         mod a { mod b { type R<T> = Result<T, BErr>; pub fn h() {} } }",
+    )
+    .unwrap();
+    let mut sig: syn::Signature = syn::parse_str("fn h() -> super::super::R<u8>").unwrap();
+    assert!(!expand_return_type_alias(&mut sig, None, Some(&file), None));
+    let output = &sig.output;
+    assert_eq!(
+        quote::quote!(#output).to_string(),
+        "-> super :: super :: R < u8 >"
     );
 }

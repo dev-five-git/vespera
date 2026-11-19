@@ -241,9 +241,19 @@ fn parse_type_impl(
                 return SchemaRef::Inline(Box::default());
             };
             let ident_str = segment.ident.to_string();
+            // A user `#[derive(Schema)]` type named like a builtin (`Date`,
+            // `Decimal`, `StatusCode`, `Ipv4Addr`, ...) keeps its `$ref`,
+            // unless the path is qualified with the external crate
+            // (`chrono::DateTime<Utc>`, `rust_decimal::Decimal`).
+            let user_shadowed =
+                known_schemas.contains(ident_str.as_str()) && !is_external_crate_path(path);
 
-            // Handle generic types
-            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+            // Handle generic types. A user type named like a builtin takes no
+            // builtin shape for its arguments either (`Result<A, B>` of a user
+            // `Result` is its `$ref`, not the std externally tagged enum).
+            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+                && !user_shadowed
+            {
                 match ident_str.as_str() {
                     // Box<T> / Arc<T> / Rc<T> / Cow<'a, T> -> T's schema: smart
                     // pointers are transparent for serde (and so for the schema).
@@ -423,12 +433,6 @@ fn parse_type_impl(
                 // `serde_json::Value` accepts any JSON value → `{}`.
                 return SchemaRef::Inline(Box::default());
             }
-            // A user `#[derive(Schema)]` type named like a builtin (`Date`,
-            // `Decimal`, `StatusCode`, `Ipv4Addr`, ...) keeps its `$ref`,
-            // unless the path is qualified with the external crate
-            // (`chrono::DateTime<Utc>`, `rust_decimal::Decimal`).
-            let user_shadowed =
-                known_schemas.contains(ident_str.as_str()) && !is_external_crate_path(path);
             let primitive_result: Option<SchemaRef> = match ident_str.as_str() {
                 _ if user_shadowed => None,
                 // Signed integers: use OpenAPI format registry

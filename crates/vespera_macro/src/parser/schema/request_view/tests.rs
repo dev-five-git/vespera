@@ -165,6 +165,12 @@ fn scoped_names(
     true
 )]
 #[case::alias(r#"struct A { #[serde(alias = "b")] a: u8 }"#, true)]
+// Round 24: `#[schema(any)]` documents `{}` on both sides, so a one-sided
+// codec does not split the view.
+#[case::any_one_sided_codec(
+    r#"struct A { #[schema(any)] #[serde(serialize_with = "f")] x: u8 }"#,
+    false
+)]
 #[case::hash_set("struct A { tags: std::collections::HashSet<String> }", true)]
 #[case::btree_set_value_type("struct A { #[schema(value_type = BTreeSet<u8>)] tags: Bits }", true)]
 #[case::std_duration("struct A { ttl: std::time::Duration }", true)]

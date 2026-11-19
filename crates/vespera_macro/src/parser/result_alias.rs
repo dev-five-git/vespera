@@ -30,7 +30,9 @@
 //! handler's alias. Generic parameters (including defaults such as `type R<T,
 //! E = AppError>`) are substituted, and an alias of an alias is followed a few
 //! levels deep — resolved where the outer alias is defined, not where the
-//! handler is. An alias that cannot be resolved is left untouched; the
+//! handler is: the alias body's names are resolved in the module that defines
+//! the alias, and the use-site arguments substituted into it in the handler's
+//! own scope. An alias that cannot be resolved is left untouched; the
 //! response parser then documents it by description only instead of
 //! inventing a schema.
 
@@ -198,11 +200,13 @@ enum Qualifier {
     CrateRoot,
     /// `super::ApiResult<..>`: the handler module's parent.
     Super,
+    /// A `crate` / `super` chain longer than one segment (`super::super::X`):
+    /// no ancestor beyond the parent is looked up, so the alias is left
+    /// unexpanded (a bare-name lookup would find the handler module's own).
+    Unresolved,
 }
 
-/// The [`Qualifier`] of `ty`. `None` for a bare name, `self::X`, and the
-/// longer `crate` / `super` chains (`super::super::X`), which are resolved
-/// like a bare name.
+/// The [`Qualifier`] of `ty`. `None` for a bare name and `self::X`.
 fn alias_qualifier(ty: &Type) -> Option<Qualifier> {
     let Type::Path(type_path) = ty else {
         return None;
@@ -217,6 +221,7 @@ fn alias_qualifier(ty: &Type) -> Option<Qualifier> {
     match (segments.len(), module.to_string().as_str()) {
         (2, "crate") => Some(Qualifier::CrateRoot),
         (2, "super") => Some(Qualifier::Super),
+        (_, "crate" | "super") => Some(Qualifier::Unresolved),
         _ => None,
     }
 }
@@ -416,6 +421,7 @@ fn find_alias<'a>(
             .filter(|(alias, found, module, root)| match qualifier {
                 Qualifier::Module(qualifier) => module.as_deref() == Some(qualifier.as_str()),
                 Qualifier::CrateRoot => *root,
+                Qualifier::Unresolved => false,
                 // Never the handler module's own alias.
                 Qualifier::Super => {
                     !scope.is_some_and(|scope| is_own_alias(scope, own.as_ref(), found, alias))
@@ -424,11 +430,12 @@ fn find_alias<'a>(
             .cloned()
             .collect();
         // `super::` never names the handler module's own alias: with only
-        // that one left, the type is not expanded. A named module (or the
-        // crate root) that declares a struct / enum of that name holds the
-        // return type itself, so a same-named alias elsewhere is unrelated.
+        // that one left, the type is not expanded. An unresolved chain names
+        // nothing. A named module (or the crate root) that declares a struct /
+        // enum of that name holds the return type itself, so a same-named
+        // alias elsewhere is unrelated.
         if named.is_empty()
-            && (matches!(qualifier, Qualifier::Super)
+            && (matches!(qualifier, Qualifier::Super | Qualifier::Unresolved)
                 || scope.is_some_and(|scope| imported_nominal(name, qualifier, scope, src_dir)))
         {
             return None;
@@ -713,6 +720,7 @@ fn imported_nominal(
     match parent {
         Qualifier::Module(module) => nominal_in_module(name, module, scope, src_dir),
         Qualifier::CrateRoot => top_level(true),
+        Qualifier::Unresolved => false,
         Qualifier::Super => match scope.module.split_last() {
             Some((_, parent)) => {
                 let parent = Scope {
@@ -908,50 +916,6 @@ fn same_definition(a: &syn::ItemType, b: &syn::ItemType) -> bool {
         quote::quote!(#generics = #ty).to_string()
     };
     tokens(a) == tokens(b)
-}
-
-/// `alias` applied to the use site `ty` (`ApiResult<User>` →
-/// `Result<Json<User>, AppError>`), or `None` when the arguments do not fit
-/// the alias's type parameters.
-fn apply_alias(alias: &syn::ItemType, ty: &Type) -> Option<Type> {
-    let segment = crate::schema_macro::type_utils::last_path_segment(ty)?;
-    let args: Vec<&Type> = match &segment.arguments {
-        syn::PathArguments::AngleBracketed(args) => args
-            .args
-            .iter()
-            .filter_map(|arg| match arg {
-                syn::GenericArgument::Type(ty) => Some(ty),
-                _ => None,
-            })
-            .collect(),
-        // `None` (and the `Fn(..)` sugar, which never reaches a return type).
-        _ => Vec::new(),
-    };
-    let params: Vec<&syn::TypeParam> = alias.generics.type_params().collect();
-    if args.len() > params.len() {
-        return None;
-    }
-    let names: Vec<String> = params.iter().map(|param| param.ident.to_string()).collect();
-    let mut concrete: Vec<Type> = Vec::with_capacity(params.len());
-    for (index, param) in params.iter().enumerate() {
-        let ty = if let Some(arg) = args.get(index) {
-            (*arg).clone()
-        } else {
-            // A default may name earlier parameters (`type R<T, E =
-            // Wrapper<T>>`): they are already concrete.
-            let earlier: Vec<&Type> = concrete.iter().collect();
-            crate::parser::schema::substitute_type(
-                &param.default.as_ref()?.1,
-                &names[..index],
-                &earlier,
-            )
-        };
-        concrete.push(ty);
-    }
-    let concrete: Vec<&Type> = concrete.iter().collect();
-    Some(crate::parser::schema::substitute_type(
-        &alias.ty, &names, &concrete,
-    ))
 }
 
 #[cfg(test)]
