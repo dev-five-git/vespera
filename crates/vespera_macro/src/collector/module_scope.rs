@@ -52,17 +52,44 @@ pub(super) fn module_cfg_predicates(folder_path: &Path, segments: &[String]) -> 
     let mut parent = folder_path.to_path_buf();
     let mut predicates = Vec::new();
     for segment in segments {
-        for declarer in [parent.join("mod.rs"), sibling_rs_file(&parent)] {
-            for module in declared_mods(&declarer)
-                .iter()
-                .filter(|module| &module.segment == segment)
-            {
-                predicates.extend(module.cfgs.iter().cloned());
-            }
-        }
+        let declarations: Vec<Vec<String>> = [parent.join("mod.rs"), sibling_rs_file(&parent)]
+            .iter()
+            .flat_map(|declarer| {
+                declared_mods(declarer)
+                    .iter()
+                    .filter(|module| &module.segment == segment)
+                    .map(|module| module.cfgs.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        predicates.extend(declared_cfg(&declarations));
         parent.push(segment);
     }
     predicates
+}
+
+/// The predicates under which the `mod` declarations of one module load it
+/// (each declaration's `#[cfg]` predicates), in the form the generator ANDs
+/// them. An ungated declaration loads the module in every build, so nothing
+/// gates it. One declaration gives its predicates. Cfg-disjoint twins are
+/// ORed (only one of them is compiled per build), so they give one
+/// `any(all(..), ..)`: `#[cfg(unix)] mod m;` beside `#[cfg(not(unix))] mod m;`
+/// is `any(all(unix), all(not(unix)))`, not `unix` AND `not(unix)`.
+fn declared_cfg(declarations: &[Vec<String>]) -> Vec<String> {
+    if declarations.iter().any(Vec::is_empty) {
+        return Vec::new();
+    }
+    match declarations {
+        [] => Vec::new(),
+        [single] => single.clone(),
+        many => {
+            let twins: Vec<String> = many
+                .iter()
+                .map(|cfgs| format!("all({})", cfgs.join(", ")))
+                .collect();
+            vec![format!("any({})", twins.join(", "))]
+        }
+    }
 }
 
 /// The Rust module path of a route file, as its `mod` declarations name the
@@ -383,6 +410,21 @@ mod tests {
     #[case::path_mod_rs_bare("#[cfg(unix)] #[path = \"mod.rs\"] mod admin;", &["admin"], &["unix"])]
     #[case::path_without_stem("#[cfg(unix)] #[path = \"\"] mod admin;", &["admin"], &["unix"])]
     #[case::non_literal_path("#[cfg(unix)] #[path = concat!(\"a\", \".rs\")] mod admin;", &["admin"], &["unix"])]
+    #[case::undeclared_module("mod other;", &["admin"], &[])]
+    // Cfg-disjoint twins load the module under either predicate (round-30 M1):
+    // ANDing them would never load it.
+    #[case::cfg_twins(
+        "#[cfg(unix)] pub mod admin;\n#[cfg(not(unix))] pub mod admin;",
+        &["admin"],
+        &["any(all(unix), all(not (unix)))"]
+    )]
+    #[case::multi_cfg_twins(
+        "#[cfg(unix)] #[cfg(test)] mod admin; #[cfg(windows)] mod admin;",
+        &["admin"],
+        &["any(all(unix, test), all(windows))"]
+    )]
+    // An ungated twin loads the module in every build: nothing gates it.
+    #[case::ungated_twin("#[cfg(unix)] pub mod admin;\npub mod admin;", &["admin"], &[])]
     fn module_declaration_cfg(
         #[case] mod_rs: &str,
         #[case] segments: &[&str],

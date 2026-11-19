@@ -699,6 +699,36 @@ fn cfg_gated_route_modules_and_handlers_are_mounted_conditionally() {
     insta::assert_snapshot!("cfg_gated_routes", gated.join("\n"));
 }
 
+/// Cfg-disjoint twin `mod` declarations load the module under either
+/// predicate, so the route is mounted under their `any` (round-30 M1). Without
+/// a `#[route]` storage entry the file takes the slow path, which used to AND
+/// the two predicates into `all(unix, not(unix))`: never mounted.
+#[test]
+fn cfg_twin_module_declarations_mount_the_route_under_either_predicate() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    create_temp_file(
+        &temp_dir,
+        "mod.rs",
+        "#[cfg(unix)]\npub mod users;\n#[cfg(not(unix))]\npub mod users;\n",
+    );
+    create_temp_file(
+        &temp_dir,
+        "users.rs",
+        "#[route(get)] pub async fn list() {}\n",
+    );
+    crate::schema_macro::file_cache::bump_epoch();
+
+    let (metadata, _) = collect_metadata(temp_dir.path(), "routes", &[]).unwrap();
+
+    assert!(metadata.routes.is_empty());
+    let cfgs: Vec<String> = metadata
+        .cfg_routes
+        .iter()
+        .map(|route| route.cfg.join(" & "))
+        .collect();
+    assert_eq!(cfgs, ["any(all(unix), all(not (unix)))"]);
+}
+
 #[test]
 fn inline_module_route_is_a_compile_error() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
