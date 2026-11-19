@@ -673,22 +673,10 @@ final class VesperaWireCodec {
         }
     }
 
+    /** The app name as Rust sees it: ASCII-trimmed, {@code null} when nothing is left. */
     static String normalizedAppName(String appName) {
-        if (appName == null) {
-            return null;
-        }
-        int start = 0;
-        int end = appName.length();
-        while (start < end && Character.isWhitespace(appName.charAt(start))) {
-            start++;
-        }
-        while (end > start && Character.isWhitespace(appName.charAt(end - 1))) {
-            end--;
-        }
-        if (start == end) {
-            return null;
-        }
-        return start == 0 && end == appName.length() ? appName : appName.substring(start, end);
+        String trimmed = AppNames.trimAscii(appName);
+        return trimmed == null || trimmed.isEmpty() ? null : trimmed;
     }
 
     static ExposedByteArrayOutputStream reusableHeaderBuffer() {

@@ -390,19 +390,25 @@ class WireHeaderReaderTest {
     }
 
     @Test
-    void malformedUtf8CoversTruncationOverlongSurrogateAndOutOfRangeForms() {
-        byte[][] invalidValues = {
-            {(byte) 0xE0, (byte) 0x80, (byte) 0x80},
-            {(byte) 0xED, (byte) 0xA0, (byte) 0x80},
-            {(byte) 0xF0, (byte) 0x80, (byte) 0x80, (byte) 0x80},
-            {(byte) 0xF4, (byte) 0x90, (byte) 0x80, (byte) 0x80},
-            {(byte) 0xF5, (byte) 0x80, (byte) 0x80, (byte) 0x80},
-            {(byte) 0xE2}
+    void malformedUtf8ReportsTheExactReasonAndOffsetForEachForm() {
+        // The value starts after the 17-byte prefix {"headers":{"x":" ; each
+        // expected offset is the position just past the byte the reader
+        // consumed when it rejected the sequence.
+        Object[][] cases = {
+            {new byte[] {(byte) 0xE0, (byte) 0x80, (byte) 0x80}, "bad UTF-8", 19},
+            {new byte[] {(byte) 0xED, (byte) 0xA0, (byte) 0x80}, "bad UTF-8", 19},
+            {new byte[] {(byte) 0xF0, (byte) 0x80, (byte) 0x80, (byte) 0x80}, "bad UTF-8", 19},
+            {new byte[] {(byte) 0xF4, (byte) 0x90, (byte) 0x80, (byte) 0x80}, "bad UTF-8", 19},
+            {new byte[] {(byte) 0xF5, (byte) 0x80, (byte) 0x80, (byte) 0x80}, "bad UTF-8", 18},
+            // A lead byte followed by a quote: the quote is no continuation byte.
+            {new byte[] {(byte) 0xE2}, "bad UTF-8 continuation", 19},
         };
         byte[] prefix = "{\"headers\":{\"x\":\"".getBytes(StandardCharsets.UTF_8);
         byte[] suffix = "\"}}".getBytes(StandardCharsets.UTF_8);
+        assertEquals(17, prefix.length);
 
-        for (byte[] invalid : invalidValues) {
+        for (Object[] c : cases) {
+            byte[] invalid = (byte[]) c[0];
             byte[] json = new byte[prefix.length + invalid.length + suffix.length];
             System.arraycopy(prefix, 0, json, 0, prefix.length);
             System.arraycopy(invalid, 0, json, prefix.length, invalid.length);
@@ -410,8 +416,7 @@ class WireHeaderReaderTest {
             IllegalArgumentException error = assertThrows(
                     IllegalArgumentException.class,
                     () -> WireHeaderReader.decode(json, 0, json.length));
-            org.junit.jupiter.api.Assertions.assertTrue(
-                    error.getMessage().contains("UTF-8"), error.getMessage());
+            assertEquals("wire header JSON: " + c[1] + " at offset " + c[2], error.getMessage());
         }
     }
 

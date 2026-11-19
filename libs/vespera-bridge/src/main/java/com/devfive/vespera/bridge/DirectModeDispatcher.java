@@ -51,8 +51,9 @@ final class DirectModeDispatcher {
      * overflow retry is allowed even though the replayed response may differ
      * (timestamps, random IDs). Idempotent-but-unsafe methods (PUT/DELETE)
      * are excluded: their second run can return a different response
-     * (e.g. DELETE → 204 then 404), so on overflow they fail with
-     * {@link VesperaBridge.BufferTooSmallException} instead of silently
+     * (e.g. DELETE → 204 then 404), so on overflow the proxy answers
+     * {@code 500} (the dispatch layer throws
+     * {@link VesperaBridge.BufferTooSmallException}) instead of silently
      * double-executing.
      */
     static boolean shouldRetry(boolean retryOnOverflow, String method) {

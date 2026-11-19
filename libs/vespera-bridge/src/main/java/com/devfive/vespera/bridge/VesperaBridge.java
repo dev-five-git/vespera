@@ -164,6 +164,9 @@ public class VesperaBridge {
      * {@link IllegalStateException} unless
      * {@code -Dvespera.native.versionCheck=warn} (log only) or {@code off}.
      *
+     * <p>A failed pending configuration leaves {@link #isInitialized()} false, and a
+     * later {@code init} of the same library throws (the cdylib is not reloaded).
+     *
      * @param libraryName Cargo crate name (e.g. {@code "rust_jni_demo"})
      */
     public static synchronized void init(String libraryName) {
@@ -180,6 +183,10 @@ public class VesperaBridge {
                         + loadedLibraryName + "' and cannot be re-initialised with a "
                         + "different library '" + libraryName + "'.");
             }
+            if (!loaded) {
+                throw new IllegalStateException("VesperaBridge configuration of '" + libraryName
+                        + "' did not complete; the cdylib cannot be reloaded, restart the JVM.");
+            }
             return;
         }
         VesperaNativeLoader.loadNativeLibrary(
@@ -191,23 +198,15 @@ public class VesperaBridge {
     }
 
     /**
-     * Mark the native library as loaded once System.load succeeded and the
-     * versions match (a later init() must not load the same cdylib again,
-     * even when the post-load configuration hooks throw), apply the pending
-     * configuration (set via configure* before init; pending values beat
-     * system properties: Rust-side setter &gt; env &gt; default), and only
-     * then publish {@link #isInitialized()}. Publishing first would let a
-     * concurrent first dispatch fix the defaults before the pending values
-     * are applied.
+     * Mark the cdylib loaded (never loaded twice), apply the pending
+     * configuration, and publish {@link #isInitialized()} only after it was
+     * applied in full; a throw leaves the library unpublished.
      */
     static synchronized void completeLoad(String libraryName, Runnable applyPendingConfig) {
         nativeLoaded = true;
         loadedLibraryName = libraryName;
-        try {
-            applyPendingConfig.run();
-        } finally {
-            loaded = true;
-        }
+        applyPendingConfig.run();
+        loaded = true;
     }
 
     /** Whether {@link #init(String)} has loaded the native library in this class loader. */
