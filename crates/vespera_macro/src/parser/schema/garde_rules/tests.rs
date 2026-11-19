@@ -215,6 +215,11 @@ fn numeric_bounds(field_src: &str) -> (Option<f64>, Option<f64>) {
     "#[garde(range(min = LOW))] #[garde(range(min = 18, max = 30))] value: i32",
     (Some(18.0), Some(30.0))
 )]
+#[case::overflowing_minimum_is_not_documented("#[garde(range(min = 1e999))] value: f64", (None, None))]
+#[case::overflowing_maximum_keeps_finite(
+    "#[garde(range(max = 9))] #[garde(range(max = -1e999))] value: f64",
+    (None, Some(9.0))
+)]
 fn repeated_range_rules_document_the_tightest_bound(
     #[case] field_src: &str,
     #[case] expected: (Option<f64>, Option<f64>),

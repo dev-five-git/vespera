@@ -151,7 +151,10 @@ pub(super) fn parse_serde_repr_enum(
     enum_item: &syn::ItemEnum,
     description: Option<String>,
 ) -> Option<Schema> {
+    // An enum without variants has no value on any side: the general path
+    // documents it as `{not: {}}` (an integer schema would accept every value).
     if !derives_serde_repr(&enum_item.attrs, current_side())
+        || enum_item.variants.is_empty()
         || !enum_item
             .variants
             .iter()

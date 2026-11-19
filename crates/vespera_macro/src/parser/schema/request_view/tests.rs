@@ -294,6 +294,20 @@ fn scoped_names(
 )]
 #[case::decimal_field("struct A { price: Decimal }", true)]
 #[case::decimal_tuple("struct A(rust_decimal::Decimal);", true)]
+// A flattened member skipped on both sides is in neither view: an optional
+// one does not make the request view differ.
+#[case::fully_skipped_flatten_option(
+    "struct A { id: u8, #[serde(flatten, skip)] p: Option<Page> }",
+    false
+)]
+#[case::fully_skipped_flatten_then_map(
+    "struct A { #[serde(flatten, skip)] p: Option<Page>, #[serde(flatten)] m: HashMap<String, u8> }",
+    false
+)]
+#[case::side_skipped_flatten_option(
+    "struct A { id: u8, #[serde(flatten, skip_deserializing)] p: Option<Page> }",
+    true
+)]
 fn direct_differences(#[case] src: &str, #[case] expected: bool) {
     let flat = FlatKinds {
         param_of: BTreeMap::new(),
@@ -386,6 +400,32 @@ fn flat_kinds_are_transitive() {
             ("WithUntagged".to_string(), leaves(false)),
             ("WrapsWrapper".to_string(), FlatKind::Map),
         ])
+    );
+}
+
+/// A flattened map that serde skips on input (`skip`, or `skip_deserializing`)
+/// reads no keys, so the struct holding it is not a map, and a struct flattening
+/// it is not one either.
+#[test]
+fn skipped_flattened_map_reads_no_keys() {
+    let items: Vec<syn::Item> = [
+        "struct Skips { #[serde(flatten, skip)] m: HashMap<String, u8>, id: u8 }",
+        "struct SkipsDe { #[serde(flatten, skip_deserializing)] m: HashMap<String, u8>, id: u8 }",
+        "struct Wraps { #[serde(flatten)] s: Skips }",
+    ]
+    .iter()
+    .map(|src| syn::parse_str(src).unwrap())
+    .collect();
+    let items: Vec<&syn::Item> = items.iter().collect();
+    let kinds = FlatKinds::of(&items).kinds;
+    assert!(!kinds.contains_key("Skips"), "{kinds:?}");
+    assert!(!kinds.contains_key("SkipsDe"), "{kinds:?}");
+    // `Wraps` leaves the keys it reads in the buffer, as any flattened struct
+    // with a flatten field of its own does; it is not a map.
+    assert_eq!(
+        kinds.get("Wraps"),
+        Some(&FlatKind::Leaves { known_keys: true }),
+        "{kinds:?}"
     );
 }
 

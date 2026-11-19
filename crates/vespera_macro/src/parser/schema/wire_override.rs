@@ -37,8 +37,8 @@ use vespera_core::schema::{Schema, SchemaRef};
 use super::{
     schema_attrs::{SchemaConstraints, extract_schema_constraints},
     serde_attrs::{
-        SerdeSide, extract_codec_module, extract_container_conversion, extract_field_codec,
-        extract_serde_skip_flags,
+        SerdeSide, SerdeSkipFlags, extract_codec_module, extract_container_conversion,
+        extract_field_codec, extract_serde_skip_flags,
     },
     type_schema::parse_type_to_schema_ref,
 };
@@ -225,28 +225,47 @@ pub fn derive_codec_error(input: &syn::DeriveInput) -> Option<syn::Error> {
     if sides.is_empty() {
         return None;
     }
-    let first_error = |fields: &syn::Fields, prefix: &str| {
+    // `flags` are the skips of the variant holding `fields` (none for a struct).
+    let first_error = |fields: &syn::Fields, prefix: &str, flags: SerdeSkipFlags| {
+        let variant_sides = sides_serde_runs(&sides, flags);
         fields.iter().enumerate().find_map(|(index, field)| {
-            // Serde skips a field on both sides: its codec is never run, so
-            // it needs no wire shape.
-            if extract_serde_skip_flags(&field.attrs).fully_skipped() {
-                return None;
-            }
+            // A side that skips the field never runs its codec, so only the
+            // sides that do can need a wire shape (none: no error).
+            let field_sides =
+                sides_serde_runs(&variant_sides, extract_serde_skip_flags(&field.attrs));
             let name = field
                 .ident
                 .as_ref()
                 .map_or_else(|| index.to_string(), ToString::to_string);
-            unknown_codec_error(field, &format!("{prefix}{name}"), &sides)
+            unknown_codec_error(field, &format!("{prefix}{name}"), &field_sides)
         })
     };
     match &input.data {
-        syn::Data::Struct(data) => first_error(&data.fields, ""),
-        syn::Data::Enum(data) => data
-            .variants
-            .iter()
-            .find_map(|variant| first_error(&variant.fields, &format!("{}::", variant.ident))),
+        syn::Data::Struct(data) => first_error(&data.fields, "", SerdeSkipFlags::default()),
+        syn::Data::Enum(data) => data.variants.iter().find_map(|variant| {
+            first_error(
+                &variant.fields,
+                &format!("{}::", variant.ident),
+                extract_serde_skip_flags(&variant.attrs),
+            )
+        }),
         syn::Data::Union(_) => None,
     }
+}
+
+/// The sides of `sides` on which serde runs the codec of a field or variant
+/// with `flags`: a side that skips it (`skip`, or `skip_serializing` /
+/// `skip_deserializing`) never writes or reads it, so its codec never runs.
+fn sides_serde_runs(sides: &[SerdeSide], flags: SerdeSkipFlags) -> Vec<SerdeSide> {
+    let skipped = |side: &SerdeSide| match side {
+        SerdeSide::Serialize => flags.skip || flags.skip_serializing,
+        SerdeSide::Deserialize => flags.skip || flags.skip_deserializing,
+    };
+    sides
+        .iter()
+        .copied()
+        .filter(|side| !skipped(side))
+        .collect()
 }
 
 /// The type a container is documented as on `side` instead of its own
@@ -437,6 +456,30 @@ mod tests {
     #[case::skip_serializing_only_still_errors(
         "struct S { #[serde(skip_serializing, with = \"hex\")] key: Vec<u8> }",
         Some("`key` uses")
+    )]
+    // A codec on the side the field is skipped on is never run there: only
+    // the other side's codec decides.
+    #[case::skipped_serialize_with_is_not_run(
+        "struct S { id: u8, #[serde(skip_serializing, serialize_with = \"hex\")] key: Vec<u8> }",
+        None
+    )]
+    #[case::skipped_deserialize_with_is_not_run(
+        "struct S { #[serde(skip_deserializing, deserialize_with = \"hex\")] key: Vec<u8> }",
+        None
+    )]
+    #[case::skip_deserializing_with_still_errors(
+        "struct S { #[serde(skip_deserializing, with = \"hex\")] key: Vec<u8> }",
+        Some("`key` uses")
+    )]
+    // The same holds for a variant: skipped on both sides, its fields need no
+    // wire shape; skipped on one side, the other side's codec still counts.
+    #[case::variant_skipped_both_ways_is_not_run(
+        "enum E { A, #[serde(skip_serializing, skip_deserializing)] B(#[serde(with = \"hex\")] Vec<u8>) }",
+        None
+    )]
+    #[case::variant_skipped_one_side_still_errors(
+        "enum E { #[serde(skip_serializing)] B(#[serde(with = \"hex\")] Vec<u8>) }",
+        Some("`B::0` uses")
     )]
     // A container `into` replaces the Serialize side only: the Deserialize
     // side still reads the field, so the codec still needs a wire shape.
