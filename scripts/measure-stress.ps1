@@ -7,7 +7,8 @@
   -Runs times: clean-rebuild only the stress crate (deps stay built) via
   `cargo rustc -- -Z time-passes` (RUSTC_BOOTSTRAP, stable toolchain), and
   report wall seconds, the `macro_expand_crate` pass seconds, peak working
-  set (MB, the largest single rustc process, sampled every 25 ms) and openapi.json
+  set (MB, the largest single rustc process, polled in a loop of one WMI process
+  query plus a 25 ms sleep, so a short peak between two polls can be missed) and openapi.json
   size. Also one incremental rebuild (touch one route file). Prints a
   markdown table plus a log-log slope (1.0 = linear, >1 superlinear) of
   macro_expand_crate vs N.
@@ -82,6 +83,20 @@ function VesperaCacheDir($crateDir) {
   return Join-Path $v "vespera"
 }
 
+# `cargo clean` prints warnings on stderr. Under "Stop" each native stderr line
+# becomes a terminating error, so the call runs under "Continue" and its exit
+# code is checked instead.
+function Invoke-CargoClean([string]$manifest) {
+  $previous = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    & cargo clean --quiet -p stress-app --manifest-path $manifest --target-dir $targetDir 2>$null | Out-Null
+  } finally {
+    $ErrorActionPreference = $previous
+  }
+  if ($LASTEXITCODE -ne 0) { throw "cargo clean failed for $manifest (exit $LASTEXITCODE)" }
+}
+
 # The middle value of an odd count; the mean of the two middle values of an even one.
 function Median($xs) {
   $s = @($xs | Sort-Object)
@@ -103,13 +118,13 @@ foreach ($n in $Sizes) {
     # The route cache lives under the build's target dir (rustc's --out-dir),
     # i.e. $targetDir\vespera, or under VESPERA_TARGET_DIR when that is set.
     Remove-Item (VesperaCacheDir $dir) -Recurse -Force -ErrorAction SilentlyContinue
-    & cargo clean --quiet -p stress-app --manifest-path $manifest --target-dir $targetDir 2>$null
+    Invoke-CargoClean $manifest
     $m = Invoke-Measured $manifest @("-Z", "time-passes")
     $pass = Get-Pass $m.Err "macro_expand_crate"
     if ($null -eq $pass[0]) { throw "no macro_expand_crate pass in output:`n$($m.Err)" }
     $wall += $m.Wall; $exp += $pass[0]; $peak += $m.PeakMB; $rss += $pass[1]
   }
-  & cargo clean --quiet -p stress-app --manifest-path $manifest --target-dir $targetDir 2>$null
+  Invoke-CargoClean $manifest
   $hit = Invoke-Measured $manifest @("-Z", "time-passes")
   $hitExp = (Get-Pass $hit.Err "macro_expand_crate")[0]
   if ($null -eq $hitExp) { throw "no macro_expand_crate pass in cache-hit output:`n$($hit.Err)" }
@@ -118,7 +133,7 @@ foreach ($n in $Sizes) {
   $oa = if (Test-Path "$dir\openapi.json") { [Math]::Round((Get-Item "$dir\openapi.json").Length / 1KB) } else { 0 }
   $stats = ""
   if ($MacroStats) {
-    & cargo clean --quiet -p stress-app --manifest-path $manifest --target-dir $targetDir 2>$null
+    Invoke-CargoClean $manifest
     $s = Invoke-Measured $manifest @("-Z", "macro-stats")
     $stats = $s.Err
     Set-Content (Join-Path $dir "macro-stats.txt") $stats

@@ -74,6 +74,50 @@ fn f32_bounds_round_inward_and_f64_bounds_do_not() {
     assert!(f64_min.contains("1.5f64 as f64"), "{f64_min}");
 }
 
+/// A direct `f32` bound whose shortest decimal is the written value keeps the
+/// nearest `f32` (round-27 regression): `0.1` must stay `0.1f32`, not step to
+/// the neighbouring `f32` (which would reject the advertised minimum).
+#[test]
+fn f32_bound_with_a_round_tripping_decimal_is_kept_exactly() {
+    let max = emit("struct S { #[schema(maximum = 0.1)] f: f32 }");
+    assert!(max.contains("0.1f32"), "{max}");
+    assert!(!max.contains("next_down"), "{max}");
+    assert!(!max.contains("as f32"), "{max}");
+}
+
+/// Maximum and minimum bounds that round to `u64::MAX` / `i64::MAX`'s float
+/// image (2^64 / 2^63) are the integer maximum only for a MAXIMUM; a MINIMUM
+/// there admits no value of the type and is a "does not fit" error.
+#[rstest]
+#[case::u64_max_at_2_pow_64(18_446_744_073_709_551_616.0, Bound::Max, "u64", true)]
+#[case::u64_min_at_2_pow_64(18_446_744_073_709_551_616.0, Bound::Min, "u64", false)]
+#[case::i64_min_at_2_pow_63(9_223_372_036_854_775_808.0, Bound::Min, "i64", false)]
+#[case::i64_max_at_2_pow_63(9_223_372_036_854_775_808.0, Bound::Max, "i64", true)]
+#[case::u128_max_at_2_pow_128(
+    340_282_366_920_938_463_463_374_607_431_768_211_456.0,
+    Bound::Max,
+    "u128",
+    true
+)]
+#[case::u128_min_at_2_pow_128(
+    340_282_366_920_938_463_463_374_607_431_768_211_456.0,
+    Bound::Min,
+    "u128",
+    false
+)]
+fn float_bound_at_the_integer_edge_is_max_only(
+    #[case] value: f64,
+    #[case] bound: Bound,
+    #[case] kind: &str,
+    #[case] accepted: bool,
+) {
+    let out = numeric_some(Some(value), None, bound, Some(kind));
+    assert_eq!(out.is_ok(), accepted, "{out:?}");
+    if let Ok(tokens) = out {
+        assert!(tokens.to_string().contains(kind), "{tokens}");
+    }
+}
+
 /// A generic struct whose only runtime rule sits on a skipped field gets the
 /// empty impl with its generics (round-27 macrorest-1 L2), not the
 /// "generic types" compile error: serde never reads that field.

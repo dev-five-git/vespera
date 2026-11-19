@@ -17,8 +17,9 @@
 #   FAIL  iff  median(c_i) > REGRESS_MEAN (+30%)   -- the "mean change" estimate
 #         AND  min(c_i)    > REGRESS_LOWER (+20%)  -- the confidence lower bound
 # min of N paired samples is the distribution-free lower confidence limit of
-# the median (sign test: 1 - 2/2^N, i.e. 93.75% for N=5): a regression must
-# show up in EVERY round, so one noisy round can no longer trip the gate, while
+# the median (one-sided sign test: 1 - 1/2^N, i.e. 96.875% for N=5): a
+# regression must show up in EVERY round, so one noisy round can no longer trip
+# the gate, while
 # a real >30% slowdown (present in every round) still does.
 #
 # Env: ROUNDS (5) WARMUP_SECS (1) MEASURE_SECS (2) REGRESS_MEAN (0.30)

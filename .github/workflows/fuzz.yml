@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       seconds:
-        description: 'Run time per target, in seconds'
+        description: 'Run time per target, in seconds (an integer from 1 to 2100)'
         required: false
         default: '600'
 
@@ -54,13 +54,15 @@ jobs:
           SECONDS_PER_TARGET: ${{ inputs.seconds || '600' }}
           TARGET: ${{ matrix.target }}
         run: |
+          # 0 is rejected too: libFuzzer reads -max_total_time=0 as "run
+          # until stopped", so the job would only end at its timeout.
           case "$SECONDS_PER_TARGET" in
-            ''|*[!0-9]*) echo "::error::seconds must be an integer"; exit 1 ;;
+            ''|0*|*[!0-9]*|?????*) echo "::error::seconds must be an integer from 1 to 2100 (no leading zeros)"; exit 1 ;;
           esac
           # The job has 45 minutes: a run longer than 2100 s (35 min, leaving
           # room for the build and the upload) would be cut off by the timeout.
-          if [ "$SECONDS_PER_TARGET" -gt 2100 ]; then
-            echo "::error::seconds must be at most 2100 (the job timeout is 45 minutes)"; exit 1
+          if [ "$SECONDS_PER_TARGET" -lt 1 ] || [ "$SECONDS_PER_TARGET" -gt 2100 ]; then
+            echo "::error::seconds must be between 1 and 2100 (the job timeout is 45 minutes)"; exit 1
           fi
           cargo fuzz run --target x86_64-unknown-linux-gnu "$TARGET" -- \
             -max_total_time="$SECONDS_PER_TARGET" -rss_limit_mb=2048 -timeout=10

@@ -36,15 +36,12 @@ pub struct UploadSummary {
 /// other reason (a dropped connection) answers `500`.
 #[vespera::route(post, tags = ["upload"], error_status = [400, 413, 500])]
 pub async fn upload(mut multipart: Multipart) -> Result<Json<UploadSummary>, (StatusCode, String)> {
-    let rejection = |error: vespera::axum::extract::multipart::MultipartError| {
-        (error.status(), error.body_text())
-    };
     let mut parts = Vec::new();
-    while let Some(field) = multipart.next_field().await.map_err(rejection)? {
+    while let Some(field) = multipart.next_field().await.map_err(multipart_rejection)? {
         let name = field.name().unwrap_or_default().to_owned();
         let file_name = field.file_name().map(str::to_owned);
         let content_type = field.content_type().map(str::to_owned);
-        let bytes = field.bytes().await.map_err(rejection)?;
+        let bytes = field.bytes().await.map_err(multipart_rejection)?;
         parts.push(UploadedPart {
             name,
             file_name,
@@ -54,6 +51,21 @@ pub async fn upload(mut multipart: Multipart) -> Result<Json<UploadSummary>, (St
         });
     }
     Ok(Json(UploadSummary { parts }))
+}
+
+/// The response of a multipart error: a 4xx keeps axum's `body_text()`, while a
+/// 500 (a body stream that broke, e.g. a dropped connection) answers a fixed
+/// message, because its text can carry transport or OS error detail.
+fn multipart_rejection(
+    error: vespera::axum::extract::multipart::MultipartError,
+) -> (StatusCode, String) {
+    let status = error.status();
+    let body = if status == StatusCode::INTERNAL_SERVER_ERROR {
+        "internal error".to_owned()
+    } else {
+        error.body_text()
+    };
+    (status, body)
 }
 
 /// FNV-1a 64-bit (the Java E2E test computes the same hash).

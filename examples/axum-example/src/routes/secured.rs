@@ -148,18 +148,21 @@ pub const READ_USERS_TOKEN: &str = "read-users-token";
     error_status = [401, 403]
 )]
 pub async fn user_directory(headers: HeaderMap) -> Result<Json<Vec<String>>, AuthError> {
-    match bearer_token(&headers) {
-        Some(READ_USERS_TOKEN) => Ok(Json(vec!["alice".to_string(), "bob".to_string()])),
-        // Authenticated, but the token lacks the `read:users` scope.
-        Some(DEMO_TOKEN) => Err((
+    let presented = bearer_token(&headers);
+    if credential_matches(presented, READ_USERS_TOKEN) {
+        return Ok(Json(vec!["alice".to_string(), "bob".to_string()]));
+    }
+    // Authenticated, but the token lacks the `read:users` scope.
+    if credential_matches(presented, DEMO_TOKEN) {
+        return Err((
             StatusCode::FORBIDDEN,
             [(
                 WWW_AUTHENTICATE,
                 r#"Bearer error="insufficient_scope", scope="read:users""#,
             )],
-        )),
-        _ => Err(unauthorized("Bearer")),
+        ));
     }
+    Err(unauthorized("Bearer"))
 }
 
 #[cfg(test)]

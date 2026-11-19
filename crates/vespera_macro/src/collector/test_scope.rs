@@ -62,6 +62,53 @@ pub fn attrs_test_only(attrs: &[syn::Attribute]) -> bool {
         .any(|list| is_test_only_predicate(&list.tokens.to_string()))
 }
 
+/// Whether `attrs` derive `Schema` only under a test-only `cfg_attr`
+/// (`#[cfg_attr(test, derive(Schema))]`): the derive, and so the schema, exists
+/// only in `cfg(test)` builds. An unconditional `derive(Schema)` keeps the item
+/// in every build, whatever else the attributes say.
+fn schema_derive_test_only(attrs: &[syn::Attribute]) -> bool {
+    let mut gated = false;
+    for attr in attrs {
+        if attr.path().is_ident("derive") && derive_names_schema(attr.meta.require_list().ok()) {
+            return false;
+        }
+        let Ok(list) = attr.meta.require_list() else {
+            continue;
+        };
+        if !list.path.is_ident("cfg_attr") {
+            continue;
+        }
+        let Ok(parts) =
+            list.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+        else {
+            continue;
+        };
+        let mut parts = parts.iter();
+        let predicate_is_test = parts.next().is_some_and(meta_test_only);
+        gated |= predicate_is_test
+            && parts.any(|part| {
+                part.path().is_ident("derive") && derive_names_schema(part.require_list().ok())
+            });
+    }
+    gated
+}
+
+/// Whether the `derive(..)` list names a `Schema` derive (`Schema` or
+/// `vespera::Schema`).
+fn derive_names_schema(list: Option<&syn::MetaList>) -> bool {
+    list.and_then(|list| {
+        list.parse_args_with(Punctuated::<syn::Path, syn::Token![,]>::parse_terminated)
+            .ok()
+    })
+    .is_some_and(|paths| {
+        paths.iter().any(|path| {
+            path.segments
+                .last()
+                .is_some_and(|segment| segment.ident == "Schema")
+        })
+    })
+}
+
 /// Whether `attrs` mark a test harness fn (`#[test]`, `#[tokio::test]`, any
 /// `<path>::test`): rustc compiles one only under `--test`, so its body is as
 /// test-only as a `#[cfg(test)]` one.
@@ -147,25 +194,39 @@ impl TestScope {
         };
         let mut parent = src_dir.clone();
         for (depth, segment) in segments.iter().enumerate() {
-            let declarers = if depth == 0 {
-                vec![src_dir.join("lib.rs"), src_dir.join("main.rs")]
-            } else {
-                vec![parent.join("mod.rs"), sibling_rs_file(&parent)]
-            };
+            let declarers = declarers_at(&src_dir, &parent, depth);
             let rest = &segments[depth..];
-            if declarers.iter().any(|declarer| {
-                self.gated_mods_of(declarer)
-                    .chains
-                    .iter()
-                    .any(|gated| chain_starts_with(rest, gated))
-            }) {
-                // A same-named ungated declaration loads the file in every
-                // build, so a gated twin next to it does not make it test-only.
-                return !self.open_chain_loads(&src_dir, &segments);
+            let mut gated_here = Vec::new();
+            for declarer in &declarers {
+                let mods = self.gated_mods_of(declarer);
+                gated_here.extend(
+                    mods.chains
+                        .iter()
+                        .filter(|gated| chain_starts_with(rest, gated))
+                        .cloned(),
+                );
+            }
+            if !gated_here.is_empty() {
+                // The first gated link decides: a same-named ungated
+                // declaration of that link loads the file in every build, so
+                // a gated twin next to it does not make it test-only. A
+                // deeper ungated declaration cannot cancel this link.
+                return !self.ungated_twin_loads(&declarers, &gated_here);
             }
             parent.push(segment);
         }
         self.file_path_gated(file, &src_dir, &segments)
+    }
+
+    /// Whether one of `declarers` declares ungated one of the `gated` chains
+    /// of the same name (the module at the gated depth, not a deeper one).
+    fn ungated_twin_loads(&mut self, declarers: &[PathBuf], gated: &[String]) -> bool {
+        let mut loads = false;
+        for declarer in declarers {
+            let mods = self.gated_mods_of(declarer);
+            loads |= mods.open_chains.iter().any(|open| gated.contains(open));
+        }
+        loads
     }
 
     /// Whether a test-gated `#[path = ".."]` module names `file` and no
@@ -198,11 +259,7 @@ impl TestScope {
     fn open_chain_loads(&mut self, src_dir: &Path, segments: &[String]) -> bool {
         let mut parent = src_dir.to_path_buf();
         for (depth, segment) in segments.iter().enumerate() {
-            let declarers = if depth == 0 {
-                vec![src_dir.join("lib.rs"), src_dir.join("main.rs")]
-            } else {
-                vec![parent.join("mod.rs"), sibling_rs_file(&parent)]
-            };
+            let declarers = declarers_at(src_dir, &parent, depth);
             let rest = &segments[depth..];
             if declarers.iter().any(|declarer| {
                 self.gated_mods_of(declarer)
@@ -380,6 +437,16 @@ fn child_dir(target: &Path) -> PathBuf {
         target.parent().unwrap_or(target).to_path_buf()
     } else {
         target.with_extension("")
+    }
+}
+
+/// The files that may declare the module at `depth` of a chain: the crate
+/// root at depth 0, else the `mod.rs` / sibling file of its parent directory.
+fn declarers_at(src_dir: &Path, parent: &Path, depth: usize) -> Vec<PathBuf> {
+    if depth == 0 {
+        vec![src_dir.join("lib.rs"), src_dir.join("main.rs")]
+    } else {
+        vec![parent.join("mod.rs"), sibling_rs_file(parent)]
     }
 }
 
@@ -655,7 +722,7 @@ impl<'ast> syn::visit::Visit<'ast> for GatedCollector<'_> {
         if let Item::Struct(syn::ItemStruct { attrs, ident, .. })
         | Item::Enum(syn::ItemEnum { attrs, ident, .. }) = item
         {
-            if self.gated || attrs_test_only(attrs) {
+            if self.gated || attrs_test_only(attrs) || schema_derive_test_only(attrs) {
                 self.out
                     .items
                     .insert((ident.to_string(), start_of(ident.span())));

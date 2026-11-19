@@ -81,15 +81,27 @@ pub async fn contact(Form(input): Form<ContactFormRequest>) -> Json<ContactFormR
 pub async fn upload(
     mut multipart: Multipart,
 ) -> Result<Json<ContactFormResponse>, (StatusCode, String)> {
-    let bad_request = |error: vespera::axum::extract::multipart::MultipartError| {
-        (error.status(), error.body_text())
-    };
-    while let Some(field) = multipart.next_field().await.map_err(bad_request)? {
+    while let Some(field) = multipart.next_field().await.map_err(multipart_rejection)? {
         let _name = field.name().unwrap_or("unknown").to_string();
-        let _data = field.bytes().await.map_err(bad_request)?;
+        let _data = field.bytes().await.map_err(multipart_rejection)?;
     }
     Ok(Json(ContactFormResponse {
         success: true,
         ticket_id: "UPLOAD-001".to_string(),
     }))
+}
+
+/// The response of a multipart error: a 4xx keeps axum's `body_text()`, while a
+/// 500 (a body stream that broke) answers a fixed message, because its text can
+/// carry transport or OS error detail.
+fn multipart_rejection(
+    error: vespera::axum::extract::multipart::MultipartError,
+) -> (StatusCode, String) {
+    let status = error.status();
+    let body = if status == StatusCode::INTERNAL_SERVER_ERROR {
+        "internal error".to_owned()
+    } else {
+        error.body_text()
+    };
+    (status, body)
 }

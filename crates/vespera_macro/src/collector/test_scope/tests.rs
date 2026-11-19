@@ -682,3 +682,80 @@ fn ungated_declaration_in_a_file_without_cfg_text_keeps_the_file_production() {
     assert!(!scope.file_test_only(&src.join("fixtures.rs")));
     assert!(!scope.file_test_only(&src.join("shared.rs")));
 }
+
+/// A deeper ungated declaration cannot cancel a shallower test-only `mod`
+/// (round-28 macrorest-1 M1): `fixtures` is gated in `routes/mod.rs`, and
+/// `fixtures/mod.rs` declares `models` ungated, so `models.rs` is loaded only
+/// by `cfg(test)` builds and is test-only.
+#[test]
+fn deeper_ungated_declaration_does_not_cancel_a_gated_parent() {
+    let krate = crate_with(&[
+        ("lib.rs", "mod routes;"),
+        ("routes/mod.rs", "#[cfg(test)] mod fixtures;"),
+        (
+            "routes/fixtures/mod.rs",
+            "#[cfg(unix)] pub mod models; // test helpers",
+        ),
+        ("routes/fixtures/models.rs", ""),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(scope.file_test_only(&src.join("routes/fixtures/models.rs")));
+}
+
+/// The gated link declared ungated beside its gated twin (round-28
+/// macrorest-1 M1, the other side): `routes/mod.rs` loads `fixtures` in every
+/// build, so the file behind it is production.
+#[test]
+fn ungated_twin_of_a_gated_parent_keeps_the_file_production() {
+    let krate = crate_with(&[
+        ("lib.rs", "mod routes;"),
+        ("routes/mod.rs", "#[cfg(test)] mod fixtures; mod fixtures;"),
+        ("routes/fixtures/mod.rs", "pub mod models;"),
+        ("routes/fixtures/models.rs", ""),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(!scope.file_test_only(&src.join("routes/fixtures/models.rs")));
+}
+
+/// `#[cfg_attr(test, derive(Schema))]` derives the schema only in `cfg(test)`
+/// builds (round-28 macrorest-1 L2), so the struct is test-only; a plain
+/// `derive(Schema)` beside it, or another predicate, keeps it production.
+#[test]
+fn cfg_attr_schema_derive_under_test_is_test_only() {
+    let source = "#[cfg_attr(test, derive(Schema))] struct Probe {}\n\
+                  #[derive(Schema)] struct Plain {}\n\
+                  #[cfg_attr(test, derive(Schema))] #[derive(Schema)] struct Both {}\n\
+                  #[cfg_attr(feature = \"x\", derive(Schema))] struct Feature {}\n";
+    let krate = crate_with(&[("lib.rs", source)]);
+    let gated = gated_items(&krate.path().join("src/lib.rs"));
+    assert!(gated.contains("Probe", position_of(source, "Probe")));
+    for ident in ["Plain", "Both", "Feature"] {
+        assert!(
+            !gated.contains(ident, position_of(source, ident)),
+            "{ident}"
+        );
+    }
+}
+
+#[rstest]
+#[case::cfg_attr_test("#[cfg_attr(test, derive(Schema))] struct S;", true)]
+#[case::cfg_attr_list(
+    "#[cfg_attr(all(test, unix), derive(serde::Serialize, vespera::Schema))] struct S;",
+    true
+)]
+#[case::plain_derive("#[derive(Schema)] struct S;", false)]
+#[case::unconditional_beside_gated(
+    "#[cfg_attr(test, derive(Schema))] #[derive(Schema)] struct S;",
+    false
+)]
+#[case::other_predicate("#[cfg_attr(feature = \"x\", derive(Schema))] struct S;", false)]
+#[case::other_derive("#[cfg_attr(test, derive(Debug))] struct S;", false)]
+#[case::other_attribute("#[cfg_attr(test, allow(dead_code))] struct S;", false)]
+#[case::bare_attribute("#[inline] #[cfg_attr(test, derive(Schema))] struct S;", true)]
+#[case::unparseable_cfg_attr("#[cfg_attr(= 1)] struct S;", false)]
+fn schema_derive_under_a_test_only_cfg_attr(#[case] source: &str, #[case] expected: bool) {
+    let item: syn::ItemStruct = syn::parse_str(source).unwrap();
+    assert_eq!(schema_derive_test_only(&item.attrs), expected);
+}
