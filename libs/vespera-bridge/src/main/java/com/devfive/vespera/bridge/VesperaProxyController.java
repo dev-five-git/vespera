@@ -556,11 +556,10 @@ public class VesperaProxyController {
         // known Content-Length can never be materialised here, so reject it
         // (413) instead of letting readAllBytes()/readNBytes() attempt an
         // impossible allocation and throw OutOfMemoryError. Such requests must
-        // go through BIDIRECTIONAL_STREAMING. A body of exactly the ceiling
-        // is rejected too: the read could not tell it from a larger one (and
-        // its wire frame would not fit a byte[] either), so ~2 GiB is never
-        // read only to be refused.
-        if (contentLength >= MAX_BUFFERED_BODY) {
+        // go through BIDIRECTIONAL_STREAMING. The bound leaves room for the
+        // wire header (VesperaWireCodec.MAX_FRAME_BODY), so a body whose frame
+        // could not be encoded is refused here, not after ~2 GiB was read.
+        if (contentLength > VesperaWireCodec.MAX_FRAME_BODY) {
             throw declaredAboveSingleArrayBound(contentLength, cap);
         }
         byte[] raw;
@@ -690,7 +689,7 @@ public class VesperaProxyController {
     static ResponseStatusException declaredAboveSingleArrayBound(long actualBytes, long cap) {
         return new ResponseStatusException(
                 CONTENT_TOO_LARGE,
-                "buffered request body reaches the built-in " + MAX_BUFFERED_BODY
+                "buffered request body reaches the built-in " + VesperaWireCodec.MAX_FRAME_BODY
                         + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes="
                         + cap + "; actual " + actualBytes + " bytes); use BIDIRECTIONAL_STREAMING");
     }

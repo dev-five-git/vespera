@@ -95,13 +95,63 @@ class VesperaBridgePropertiesTest {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 () -> nativeSettings.setMaxRequestProducers(-2));
         assertTrue(e.getMessage().contains("max-request-producers"), e.getMessage());
-        // A rejected value is not stored; 0 keeps its documented meaning for every knob.
+        // A rejected value is not stored; 0 keeps its documented meaning for the knobs
+        // whose range includes it.
         assertNull(nativeSettings.getAsyncMaxInFlight());
         nativeSettings.setAsyncMaxInFlight(0);
-        nativeSettings.setWorkerThreads(0);
         nativeSettings.setMaxRequestBytes(0L);
         assertEquals(Integer.valueOf(0), nativeSettings.getAsyncMaxInFlight());
-        assertEquals(Integer.valueOf(0), nativeSettings.getWorkerThreads());
         assertEquals(Long.valueOf(0L), nativeSettings.getMaxRequestBytes());
+    }
+
+    @Test
+    void zeroRuntimeThreadsAreRejectedAtBindingBecauseTheirRangeStartsAtOne() {
+        // 0 would reach configureRuntime as its "leave untouched" sentinel.
+        VesperaBridgeProperties.Native nativeSettings = new VesperaBridgeProperties.Native();
+        IllegalArgumentException workers = assertThrows(IllegalArgumentException.class,
+                () -> nativeSettings.setWorkerThreads(0));
+        assertTrue(workers.getMessage().contains("worker-threads"), workers.getMessage());
+        IllegalArgumentException blocking = assertThrows(IllegalArgumentException.class,
+                () -> nativeSettings.setMaxBlockingThreads(0));
+        assertTrue(blocking.getMessage().contains("max-blocking-threads"), blocking.getMessage());
+        assertNull(nativeSettings.getWorkerThreads());
+        assertNull(nativeSettings.getMaxBlockingThreads());
+        nativeSettings.setWorkerThreads(1);
+        nativeSettings.setMaxBlockingThreads(1);
+        assertEquals(Integer.valueOf(1), nativeSettings.getWorkerThreads());
+        assertEquals(Integer.valueOf(1), nativeSettings.getMaxBlockingThreads());
+    }
+
+    @Test
+    void negativeTopLevelBufferCapsAndReactiveStreamingCountsAreRejectedAtBinding() {
+        // Read as 0 (unlimited) or silently defaulted before this check.
+        VesperaBridgeProperties properties = new VesperaBridgeProperties();
+        IllegalArgumentException request = assertThrows(IllegalArgumentException.class,
+                () -> properties.setMaxBufferedRequestBytes(-1L));
+        assertTrue(request.getMessage().contains("max-buffered-request-bytes"), request.getMessage());
+        IllegalArgumentException response = assertThrows(IllegalArgumentException.class,
+                () -> properties.setMaxBufferedResponseBytes(-1L));
+        assertTrue(response.getMessage().contains("max-buffered-response-bytes"),
+                response.getMessage());
+        assertEquals(VesperaProxyController.DEFAULT_MAX_BUFFERED_REQUEST_BYTES,
+                properties.getMaxBufferedRequestBytes());
+        properties.setMaxBufferedRequestBytes(0L);
+        properties.setMaxBufferedResponseBytes(0L);
+        assertEquals(0L, properties.getMaxBufferedRequestBytes());
+        assertEquals(0L, properties.getMaxBufferedResponseBytes());
+
+        VesperaBridgeProperties.ReactiveStreaming streaming = new VesperaBridgeProperties.ReactiveStreaming();
+        IllegalArgumentException threads = assertThrows(IllegalArgumentException.class,
+                () -> streaming.setMaxThreads(-1));
+        assertTrue(threads.getMessage().contains("max-threads"), threads.getMessage());
+        IllegalArgumentException queued = assertThrows(IllegalArgumentException.class,
+                () -> streaming.setMaxQueued(-1));
+        assertTrue(queued.getMessage().contains("max-queued"), queued.getMessage());
+        assertEquals(0, streaming.getMaxThreads());
+        assertEquals(100, streaming.getMaxQueued());
+        streaming.setMaxThreads(0);
+        streaming.setMaxQueued(0);
+        assertEquals(0, streaming.getMaxThreads());
+        assertEquals(0, streaming.getMaxQueued());
     }
 }

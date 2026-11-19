@@ -227,7 +227,10 @@ programmatic value equal to a knob's "unset" sentinel — `<= 0` for
 `worker-threads` / `max-blocking-threads`, `< 0` for the limits, timeout and
 async cap — is ignored and never shadows the system property or environment
 variable (e.g. `configureRuntime(8, 0)` keeps
-`-Dvespera.runtime.maxBlockingThreads`).
+`-Dvespera.runtime.maxBlockingThreads`). Spring's `vespera.bridge.native.*`
+binding does not share that sentinel: a negative value, and `0` for
+`worker-threads` / `max-blocking-threads`, fails with an
+`IllegalArgumentException` at startup.
 
 `vespera.bridge.native.*` is forwarded in every Spring Boot application,
 including non-web ones (`spring.main.web-application-type=none`), by

@@ -131,6 +131,22 @@ class CurrentUserTest {
     }
 
     @Test
+    void anUntrustedTmpdirFallsThroughToTheUserNameLookupNotTheDirectory() throws Exception {
+        UserPrincipal me = () -> "me";
+        // tmpdirProbeOwner answers null for an untrusted java.io.tmpdir.
+        Scripted s = install(new Scripted() {
+            @Override
+            public UserPrincipal tmpdirProbeOwner() {
+                return null;
+            }
+        });
+        s.userName = me;
+        s.dirAnswers.add(MALLORY);
+        assertSame(me, CurrentUser.of(dir));
+        assertTrue(s.dirProbes.isEmpty(), "the directory being verified is never probed");
+    }
+
+    @Test
     void directoryProbeIsTheLastResortAndNeverCached() throws Exception {
         UserPrincipal first = () -> "first";
         UserPrincipal second = () -> "second";

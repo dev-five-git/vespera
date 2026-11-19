@@ -95,8 +95,11 @@ final class ReactiveTestSupport {
 
         /** Whether the request's {@code Accept} asked for a stream (vs an implicitly streamed GET). */
         static boolean explicitStreamingRequest(byte[] wireRequest) {
-            String header = header(wireRequest).toString().toLowerCase(java.util.Locale.ROOT);
-            return header.contains("event-stream") || header.contains("ndjson") || header.contains("stream+json");
+            // The Accept value only: the path or method must not classify the request.
+            String accept = header(wireRequest).path("headers").path("accept").asText("")
+                    .toLowerCase(java.util.Locale.ROOT);
+            return accept.contains("event-stream") || accept.contains("ndjson")
+                    || accept.contains("stream+json");
         }
 
         JsonNode lastHeader() {

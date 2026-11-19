@@ -155,14 +155,15 @@ internal object NativePlatform {
     }
 
     /**
-     * Pick the Cargo package whose underscore form is [crateName] from
-     * `cargo metadata --no-deps --format-version 1` output: a
-     * `packages[*].name` `n` with `n != crateName` and
-     * `n.replace('-', '_') == crateName` (so the demo's `rust_jni_demo`
-     * resolves to the `rust-jni-demo` package). Only package names count —
-     * target (`[[bin]]`, test, ...) and dependency names are ignored. Falls
-     * back to [crateName] when there is none (an underscore package name, or
-     * no / unparseable metadata).
+     * Pick the Cargo package for [crateName] from
+     * `cargo metadata --no-deps --format-version 1` output. A package named
+     * exactly [crateName] wins, so a workspace that has both `rust_jni_demo`
+     * and `rust-jni-demo` builds the one the user named. Otherwise a
+     * `packages[*].name` `n` with `n.replace('-', '_') == crateName` is used
+     * (the demo's `rust_jni_demo` resolves to the `rust-jni-demo` package).
+     * Only package names count: target (`[[bin]]`, test, ...) and dependency
+     * names are ignored. Falls back to [crateName] when there is none, or when
+     * the metadata is missing or unparseable.
      */
     fun resolvePackageName(crateName: String, metadataJson: String?): String {
         if (metadataJson.isNullOrBlank()) return crateName
@@ -172,9 +173,9 @@ internal object NativePlatform {
             return crateName
         }
         val packages = (root as? Map<*, *>)?.get("packages") as? List<*> ?: return crateName
-        return packages.asSequence()
-            .mapNotNull { (it as? Map<*, *>)?.get("name") as? String }
-            .firstOrNull { it != crateName && it.replace('-', '_') == crateName }
+        val names = packages.mapNotNull { (it as? Map<*, *>)?.get("name") as? String }
+        return names.firstOrNull { it == crateName }
+            ?: names.firstOrNull { it.replace('-', '_') == crateName }
             ?: crateName
     }
 

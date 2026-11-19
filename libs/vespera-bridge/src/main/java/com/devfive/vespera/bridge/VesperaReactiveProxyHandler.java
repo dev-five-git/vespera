@@ -316,9 +316,9 @@ public class VesperaReactiveProxyHandler implements WebHandler {
         if (cap > 0 && declared > cap) {
             throw payloadTooLarge(declared, cap);
         }
-        // A body of exactly the ceiling is rejected too (servlet parity): its
-        // wire frame could not fit a byte[] either.
-        if (declared >= MAX_BUFFERED_BODY) {
+        // Servlet parity: the declared body must leave room for the wire header
+        // (VesperaWireCodec.MAX_FRAME_BODY), so its frame still fits a byte[].
+        if (declared > VesperaWireCodec.MAX_FRAME_BODY) {
             throw declaredAboveSingleArrayBound(declared, cap);
         }
         String rawQuery = request.getURI().getRawQuery();
@@ -452,7 +452,7 @@ public class VesperaReactiveProxyHandler implements WebHandler {
     static ResponseStatusException declaredAboveSingleArrayBound(long actualBytes, long cap) {
         return new ResponseStatusException(
                 HttpStatusCode.valueOf(413),
-                "buffered request body reaches the built-in " + MAX_BUFFERED_BODY
+                "buffered request body reaches the built-in " + VesperaWireCodec.MAX_FRAME_BODY
                         + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes="
                         + cap + "; actual " + actualBytes + " bytes)");
     }

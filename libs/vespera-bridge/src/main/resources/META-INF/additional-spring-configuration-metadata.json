@@ -5,14 +5,14 @@
       "type": "com.devfive.vespera.bridge.VesperaBridgeProperties$Native",
       "sourceType": "com.devfive.vespera.bridge.VesperaBridgeProperties",
       "sourceMethod": "getNative()",
-      "description": "Rust-side runtime knobs forwarded to the VesperaBridge configure* methods during context startup, before the first native dispatch. Unset values keep the native default (or the vespera.limits.* / vespera.dispatch.* / vespera.async.* / vespera.runtime.* / vespera.streaming.* / vespera.request.* system properties and their VESPERA_* environment variables). A negative value is rejected at binding time (IllegalArgumentException); 0 keeps its documented meaning (unlimited, disabled or the runtime default)."
+      "description": "Rust-side runtime knobs forwarded to the VesperaBridge configure* methods during context startup, before the first native dispatch. Unset values keep the native default (or the vespera.limits.* / vespera.dispatch.* / vespera.async.* / vespera.runtime.* / vespera.streaming.* / vespera.request.* system properties and their VESPERA_* environment variables). A negative value is rejected at binding time (IllegalArgumentException), and so is 0 for worker-threads and max-blocking-threads (their range starts at 1); 0 keeps its documented meaning (unlimited, disabled or the runtime default) for the other knobs."
     },
     {
       "name": "vespera.bridge.reactive-streaming",
       "type": "com.devfive.vespera.bridge.VesperaBridgeProperties$ReactiveStreaming",
       "sourceType": "com.devfive.vespera.bridge.VesperaBridgeProperties",
       "sourceMethod": "getReactiveStreaming()",
-      "description": "WebFlux proxy only: the dedicated, bounded thread pool (VesperaStreamingExecutor) streamed text/event-stream / NDJSON responses run on, one thread per stream for its lifetime, instead of Reactor's shared boundedElastic scheduler. Once max-threads streams run and max-queued more wait, further streaming requests are answered 503 before anything is committed. Closed with the application context."
+      "description": "WebFlux proxy only: the dedicated, bounded thread pool (VesperaStreamingExecutor) streamed text/event-stream / NDJSON responses run on, one thread per stream for its lifetime, instead of Reactor's shared boundedElastic scheduler. Once max-threads streams run and max-queued more wait, further streaming requests are answered 503 before anything is committed. Negative max-threads / max-queued values are rejected at binding (IllegalArgumentException). Closed with the application context."
     },
     {
       "name": "vespera.bridge.springdoc",
