@@ -468,6 +468,28 @@ fn path_cycle_terminates_and_stays_production() {
     assert!(!scope.file_test_only(&src.join("b.rs")));
 }
 
+/// An inline `#[path]` inside a path-loaded non-mod-rs file resolves beside
+/// that file's directory, as rustc does: `beside/support.rs` declares
+/// `mod inner { #[cfg(test)] #[path = "keep.rs"] mod probe; }`, so the file is
+/// `beside/inner/keep.rs`. The stem rule (`beside/support/inner/keep.rs`, the
+/// directory named after the file) classified the other file instead.
+#[test]
+fn inline_path_of_a_path_loaded_file_resolves_beside_it_not_under_its_stem() {
+    let krate = crate_with(&[
+        ("lib.rs", "#[path = \"beside/support.rs\"]\nmod support;\n"),
+        (
+            "beside/support.rs",
+            "mod inner {\n    #[cfg(test)]\n    #[path = \"keep.rs\"]\n    mod probe;\n}\n",
+        ),
+        ("beside/inner/keep.rs", "pub struct Fixture {}"),
+        ("beside/support/inner/keep.rs", "pub struct Kept {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(scope.file_test_only(&src.join("beside/inner/keep.rs")));
+    assert!(!scope.file_test_only(&src.join("beside/support/inner/keep.rs")));
+}
+
 fn schema(name: &str, identity: Option<String>) -> StructMetadata {
     let mut schema = StructMetadata::new(name.to_string(), format!("struct {name} {{}}"));
     schema.source_identity = identity;

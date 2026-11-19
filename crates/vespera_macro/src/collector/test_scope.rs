@@ -340,21 +340,20 @@ impl TestScope {
     /// the crate (memoized per scope).
     fn path_targets(&mut self) -> &PathTargets {
         if self.path_targets.is_none() {
-            let files: Vec<PathBuf> = self
+            // Every `#[path]` of the crate's module tree, resolved by the one
+            // rustc-rule resolver (`path_tree`), not by a per-file guess.
+            let decls = self
                 .src_dir
                 .as_deref()
-                .map(|dir| file_cache::list_rs_files(dir).to_vec())
+                .map(path_tree::path_declarations)
                 .unwrap_or_default();
             let mut targets = PathTargets::default();
-            for file in &files {
-                let gated = self.gated_mods_of(file);
-                targets.gated.extend(gated.path_targets.iter().cloned());
-                targets.open.extend(
-                    gated
-                        .open_path_targets
-                        .iter()
-                        .map(|target| (file.clone(), target.clone())),
-                );
+            for decl in decls {
+                if decl.gated {
+                    targets.gated.push(decl.target);
+                } else {
+                    targets.open.push((decl.declarer, decl.target));
+                }
             }
             self.path_targets = Some(targets);
         }
@@ -366,17 +365,6 @@ impl TestScope {
         if let Some(gated) = self.gated_mods.get(declarer) {
             return gated.clone();
         }
-        let dir = declarer.parent().map(Path::to_path_buf).unwrap_or_default();
-        // rustc resolves a `#[path]` inside an inline module relative to the
-        // inline module's directory: for a non-mod-rs declarer (`routes.rs`)
-        // that directory is named after the file (`routes/<inline>/`).
-        let inline_dir = if mod_rs(declarer) {
-            dir.clone()
-        } else {
-            declarer
-                .file_stem()
-                .map_or_else(|| dir.clone(), |stem| dir.join(stem))
-        };
         let gated = file_cache::derived(declarer, |content| {
             let mut gated = GatedMods::default();
             // Every declarer's `mod`s load their files in some build (ungated
@@ -385,7 +373,7 @@ impl TestScope {
             if content.contains("mod")
                 && let Ok(ast) = syn::parse_file(content)
             {
-                gated_mod_paths(&ast.items, "", &dir, &inline_dir, false, &mut gated);
+                gated_mod_paths(&ast.items, "", false, &mut gated);
             }
             gated
         })
@@ -396,18 +384,15 @@ impl TestScope {
     }
 }
 
-/// A declarer's test-gated `mod`s: the `::`-joined chain paths (relative to
-/// the declarer: `b` for `#[cfg(test)] mod b;`, `a::b` inside an inline
-/// `mod a { .. }`) of those loaded by their own name, and the files of those
-/// given a `#[path]`.
+/// A declarer's `mod`s loaded by their own name: the `::`-joined chain paths
+/// (relative to the declarer: `b` for `#[cfg(test)] mod b;`, `a::b` inside an
+/// inline `mod a { .. }`), split by whether a test-only `cfg` gates them. A
+/// `#[path]` module is not here: `path_tree` resolves its file.
 #[derive(Clone, Default)]
 struct GatedMods {
     chains: HashSet<String>,
-    path_targets: Vec<PathBuf>,
-    /// The ungated `mod`s loaded by their own name (`::`-joined as `chains`)
-    /// and the files of the ungated ones given a `#[path]`.
+    /// The ungated `mod`s loaded by their own name (`::`-joined as `chains`).
     open_chains: HashSet<String>,
-    open_path_targets: Vec<PathBuf>,
 }
 
 /// The `#[path = ".."]` value of `attrs`.
@@ -431,25 +416,12 @@ fn string_literal(expr: &syn::Expr) -> Option<String> {
     Some(value.value())
 }
 
-/// Collect the test-gated `mod`s among `items` (prefixed by `prefix`; `dir`
-/// is the directory their out-of-line files are loaded from), recursing into
-/// every inline module. A gated inline module gates everything it nests: its
-/// own name goes in as a chain, and the `#[path]` modules nested in it are
-/// gated too (they name files only test builds load). A gated `#[path]`
-/// module names its file directly, relative to `dir` (rustc resolves it from
-/// the declaring file's directory). `inline_dir` is where the inline modules
-/// of `items` nest: `dir` itself for a mod-rs declarer, `dir/<file stem>` for
-/// any other, so a `#[path]` inside `mod v2 { .. }` of `routes.rs` resolves
-/// under `routes/v2/`. `within_gated` says `items` already sit in a gated
-/// inline module.
-fn gated_mod_paths(
-    items: &[Item],
-    prefix: &str,
-    dir: &Path,
-    inline_dir: &Path,
-    within_gated: bool,
-    out: &mut GatedMods,
-) {
+/// Collect the `mod`s loaded by their own name among `items` (prefixed by
+/// `prefix`), recursing into every inline module. A gated inline module gates
+/// everything it nests: its own name goes in as a chain. `within_gated` says
+/// `items` already sit in a gated inline module. A `#[path]` module is skipped:
+/// `path_tree` resolves its file with the directory rules.
+fn gated_mod_paths(items: &[Item], prefix: &str, within_gated: bool, out: &mut GatedMods) {
     for item in items {
         let Item::Mod(module) = item else { continue };
         let name = syn::ext::IdentExt::unraw(&module.ident).to_string();
@@ -457,40 +429,20 @@ fn gated_mod_paths(
         let gated = within_gated || attrs_test_only(&module.attrs);
         match &module.content {
             Some((_, content)) => {
-                // Everything nested inside an inline module lives under it.
-                let nested = inline_dir.join(&name);
                 if gated {
                     out.chains.insert(path.clone());
                 }
-                gated_mod_paths(content, &format!("{path}::"), &nested, &nested, gated, out);
+                gated_mod_paths(content, &format!("{path}::"), gated, out);
             }
-            None if gated => match path_attr(&module.attrs) {
-                Some(target) => out.path_targets.extend(lexical(&dir.join(target))),
-                None => {
-                    out.chains.insert(path);
-                }
-            },
+            None if path_attr(&module.attrs).is_some() => {}
+            None if gated => {
+                out.chains.insert(path);
+            }
             None => {
-                // An ungated out-of-line module: every build loads its file.
-                match path_attr(&module.attrs) {
-                    Some(target) => out.open_path_targets.extend(lexical(&dir.join(target))),
-                    None => {
-                        out.open_chains.insert(path);
-                    }
-                }
+                out.open_chains.insert(path);
             }
         }
     }
-}
-
-/// Whether `declarer` is a mod-rs file (`lib.rs`, `main.rs`, `mod.rs`): its
-/// inline modules nest under its own directory, any other file's under a
-/// directory named after the file.
-fn mod_rs(declarer: &Path) -> bool {
-    matches!(
-        declarer.file_stem().and_then(|stem| stem.to_str()),
-        Some("lib" | "main" | "mod")
-    )
 }
 
 /// The files that may declare the module at `depth` of a chain: the crate

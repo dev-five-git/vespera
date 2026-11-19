@@ -123,37 +123,27 @@ pub(super) fn tree_of(target: &Path, reach: Reach) -> HashSet<PathBuf> {
 
 /// The files the `mod` declarations of `file` load (`children_dir` is the
 /// directory its child modules are loaded from), through the edges `reach`
-/// allows: a `#[path]` names its file (outside inline blocks relative to the
-/// declaring file's directory, inside them to the inline module's), a by-name
-/// `mod` loads `<dir>/<name>.rs` or `<dir>/<name>/mod.rs`.
+/// allows.
 fn children(file: &Path, children_dir: &Path, reach: Reach) -> Vec<Node> {
     let mut nodes = Vec::new();
-    let parent = file.parent().map(Path::to_path_buf).unwrap_or_default();
     for decl in mod_decls(file)
         .0
         .iter()
         .filter(|decl| reach == Reach::Any || !decl.gated)
     {
-        let inline_dir = decl
-            .inline
-            .iter()
-            .fold(children_dir.to_path_buf(), |dir, block| dir.join(block));
-        if let Some(path_value) = &decl.path {
-            let base = if decl.inline.is_empty() {
-                &parent
-            } else {
-                &inline_dir
-            };
-            if let Some(child) = lexical(&base.join(path_value)) {
+        if decl.path.is_some() {
+            if let Some(child) = path_target(file, children_dir, decl) {
                 nodes.push(Node {
                     children_dir: child.parent().map(Path::to_path_buf).unwrap_or_default(),
                     file: child,
                 });
             }
         } else {
-            let child_dir = inline_dir.join(&decl.name);
+            // A by-name child: `<dir>/<name>.rs` or `<dir>/<name>/mod.rs` (the
+            // one that exists is the module; the other holds no declarations).
+            let child_dir = inline_dir(children_dir, decl).join(&decl.name);
             nodes.push(Node {
-                file: inline_dir.join(format!("{}.rs", decl.name)),
+                file: child_dir.with_extension("rs"),
                 children_dir: child_dir.clone(),
             });
             nodes.push(Node {
@@ -163,4 +153,66 @@ fn children(file: &Path, children_dir: &Path, reach: Reach) -> Vec<Node> {
         }
     }
     nodes
+}
+
+/// The directory a `mod` declaration of a file with child directory
+/// `children_dir` is resolved in: its inline blocks nest under it.
+fn inline_dir(children_dir: &Path, decl: &ModDecl) -> PathBuf {
+    decl.inline
+        .iter()
+        .fold(children_dir.to_path_buf(), |dir, block| dir.join(block))
+}
+
+/// The file a `#[path]` declaration names, the one rustc resolves: outside
+/// inline blocks relative to the declaring file's directory, inside them to
+/// the inline module's directory. A declaration with no `#[path]` names none.
+fn path_target(file: &Path, children_dir: &Path, decl: &ModDecl) -> Option<PathBuf> {
+    let path_value = decl.path.as_deref()?;
+    let base = if decl.inline.is_empty() {
+        file.parent().map(Path::to_path_buf).unwrap_or_default()
+    } else {
+        inline_dir(children_dir, decl)
+    };
+    lexical(&base.join(path_value))
+}
+
+/// A `#[path]` declaration of the crate: the file declaring it, the file it
+/// names, and whether a test-only `cfg` gates it.
+pub(super) struct PathDecl {
+    pub(super) declarer: PathBuf,
+    pub(super) target: PathBuf,
+    pub(super) gated: bool,
+}
+
+/// Every `#[path]` declaration in the module tree of the crate whose sources
+/// are under `src_dir`. The tree is walked from `lib.rs` / `main.rs` with
+/// rustc's directory rules and every `cfg` ignored (a gated declaration is
+/// listed with `gated`). A file no declaration reaches is not compiled, so its
+/// declarations are not listed.
+pub(super) fn path_declarations(src_dir: &Path) -> Vec<PathDecl> {
+    let mut decls = Vec::new();
+    let mut found = HashSet::new();
+    let mut pending: Vec<Node> = ["lib.rs", "main.rs"]
+        .iter()
+        .map(|root| Node {
+            file: src_dir.join(root),
+            children_dir: src_dir.to_path_buf(),
+        })
+        .collect();
+    while let Some(Node { file, children_dir }) = pending.pop() {
+        let key = same_spelling_key(&file).unwrap_or_else(|| file.clone());
+        if found.insert(key) {
+            for decl in &mod_decls(&file).0 {
+                if let Some(target) = path_target(&file, &children_dir, decl) {
+                    decls.push(PathDecl {
+                        declarer: file.clone(),
+                        target,
+                        gated: decl.gated,
+                    });
+                }
+            }
+            pending.extend(children(&file, &children_dir, Reach::Any));
+        }
+    }
+    decls
 }
