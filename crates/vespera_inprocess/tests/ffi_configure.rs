@@ -109,15 +109,22 @@ fn start_async(req: &[u8]) -> mpsc::Receiver<Vec<u8>> {
 }
 
 /// Frees its response and dispatches `GET /fast` from inside the callback,
-/// handing the boxed sender on to that dispatch's `on_response`.
+/// handing the boxed sender on to that dispatch's `on_response`. A refused
+/// nested dispatch is reported through the same channel (the test body fails
+/// on the unexpected bytes): an `extern "C"` callback must not assert, since
+/// a panic cannot unwind out of it.
 unsafe extern "C" fn chain_fast(user_data: *mut c_void, response: *mut u8, len: usize) {
     let req = request("GET", "/fast", b"");
     // SAFETY: the response is freed once; `user_data` (the boxed sender)
-    // moves to the nested dispatch, whose callback reclaims it.
+    // moves to the nested dispatch, whose callback reclaims it, or back to
+    // this callback when the nested dispatch is refused.
     unsafe {
         vespera_free(response, len);
         let code = vespera_dispatch_async(req.as_ptr(), req.len(), Some(on_response), user_data);
-        assert_eq!(code, VESPERA_OK);
+        if code != VESPERA_OK {
+            let sender = Box::from_raw(user_data.cast::<mpsc::Sender<Vec<u8>>>());
+            let _ = sender.send(format!("nested dispatch refused with code {code}").into_bytes());
+        }
     }
 }
 

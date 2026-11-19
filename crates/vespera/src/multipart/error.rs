@@ -365,19 +365,19 @@ impl IntoResponse for TypedMultipartError {
             // a client that aborted the upload) to `500` too; it is reported as
             // axum's status rather than rewritten here.
             Self::InvalidRequestBody { source } => source.status(),
-            Self::MissingField { .. }
-            | Self::DuplicateField { .. }
-            | Self::UnknownField { .. }
-            | Self::NamelessField => StatusCode::BAD_REQUEST,
-            // Scalar conversion failures and unknown enum variants are
-            // malformed field values, not an unsupported multipart media type
-            // or a malformed form. Keep this aligned with `Validated<T>`'s
-            // validation-failure status (an unknown variant in a
-            // `Validated<Json<_>>` body is a `422` too), so under JNI both
-            // hoist into `validation_errors` the same way.
-            Self::WrongFieldType { .. } | Self::InvalidEnumValue { .. } => {
-                StatusCode::UNPROCESSABLE_ENTITY
+            Self::DuplicateField { .. } | Self::UnknownField { .. } | Self::NamelessField => {
+                StatusCode::BAD_REQUEST
             }
+            // A missing required field, scalar conversion failures and unknown
+            // enum variants are malformed field values, not an unsupported
+            // multipart media type or a malformed form. Keep this aligned with
+            // `Validated<T>`'s rejection status (a missing field in a
+            // `Validated<Json<_>>` body is a `422` too, and so is an unknown
+            // variant), so under JNI all of them hoist into `validation_errors`
+            // the same way.
+            Self::MissingField { .. }
+            | Self::WrongFieldType { .. }
+            | Self::InvalidEnumValue { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             Self::FieldTooLarge { .. }
             | Self::RequestTooLarge { .. }
             | Self::TooManyFields { .. } => StatusCode::PAYLOAD_TOO_LARGE,

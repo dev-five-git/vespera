@@ -55,6 +55,9 @@ unsafe extern "C" fn on_chained(user_data: *mut c_void, response: *mut u8, len: 
     }
 }
 
+// An `extern "C"` callback cannot unwind: a failed assertion here would abort
+// the whole test binary instead of failing the test. Every observed value is
+// therefore sent through the channel and asserted by the test body.
 unsafe extern "C" fn on_dropped(user_data: *mut c_void, response: *mut u8, len: usize) {
     // SAFETY: boxed sender leaked by the test; the response is freed once.
     unsafe {
@@ -65,11 +68,13 @@ unsafe extern "C" fn on_dropped(user_data: *mut c_void, response: *mut u8, len: 
         let (tx, rx) = mpsc::channel::<String>();
         let req = request();
         let chained_data = Box::into_raw(Box::new(tx)).cast::<c_void>();
-        assert_eq!(
-            vespera_dispatch_async(req.as_ptr(), req.len(), Some(on_chained), chained_data),
-            VESPERA_OK
-        );
-        let chained = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let code = vespera_dispatch_async(req.as_ptr(), req.len(), Some(on_chained), chained_data);
+        let chained = if code == VESPERA_OK {
+            rx.recv_timeout(Duration::from_secs(5))
+                .unwrap_or_else(|error| format!("no chained answer: {error}"))
+        } else {
+            format!("chained dispatch refused with code {code}")
+        };
         let _ = sender.send((own, in_flight, chained));
     }
 }

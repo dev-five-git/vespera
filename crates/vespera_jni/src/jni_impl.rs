@@ -462,10 +462,12 @@ use async_dispatch::AsyncCompletion;
 ///
 /// Returns the wire-format **header only** (`[u32 BE header_len |
 /// header JSON]`) — the body is delivered through the
-/// `OutputStream` argument while the dispatch is in flight.
-/// Callers (e.g. Spring `StreamingResponseBody`) read the header
-/// first to commit the HTTP status + response headers, then
-/// continue serving the streamed body bytes.
+/// `OutputStream` argument while the dispatch is in flight. The header is
+/// returned only when the call returns, i.e. **after** the whole body has been
+/// written, so it cannot commit the HTTP status or response headers before the
+/// first body byte. To commit status and headers first, use
+/// `dispatchStreamingWithHeader` (its header callback fires before the first
+/// body chunk).
 ///
 /// Failure modes: a **pre-streaming** failure (malformed wire, version
 /// mismatch, no app registered, a `504` deadline before the header, or a

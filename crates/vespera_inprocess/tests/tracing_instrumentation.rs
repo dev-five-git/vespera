@@ -369,8 +369,12 @@ fn unknown_app_is_a_rejected_request() {
     assert_eq!(field(&span, "app"), "<unset>");
     assert_eq!(field(&span, "status"), "404");
     assert_eq!(
-        capture.events()[0].1,
-        "vespera dispatch: request rejected".to_owned()
+        capture.events(),
+        [(
+            Level::WARN,
+            "vespera dispatch: request rejected".to_owned(),
+            Some("vespera.dispatch")
+        )]
     );
 }
 

@@ -50,7 +50,8 @@ impl<T: garde::Validate + ?Sized> AssertValidate for T {}
 /// excludes — saturating at the type's range (a bound no value reaches is
 /// caught first by [`range_unsatisfiable`]); a float type keeps the value,
 /// except that an `f32` steps the nearest `f32` to the inside of the bound
-/// when it rounds across it.
+/// when it rounds across it (judged on the decimal the document states, so the
+/// documented `0.1` stays `0.1f32`).
 ///
 /// [`RangeBound::exact`] carries an integer-literal bound: an integer target
 /// takes the literal in its own type (so an out-of-range literal is still the
@@ -194,8 +195,15 @@ impl RangeBound for f64 {
 /// Without the step a bound such as `16777217` or `0.099_999_997_01` rounds to
 /// the wrong side of the document, the same error the integer impls avoid by
 /// rounding inward.
+///
+/// The comparison is on the decimal the document states, not the binary value
+/// of the nearest `f32`: when the shortest decimal of `value` parses back to
+/// `bound` (`0.1` is `0.1f32`), `value` is the documented bound and is kept, so
+/// a client sending the documented `0.1` is not rejected by `maximum = 0.1`.
 fn inward_f32(value: f32, bound: f64, lower: bool) -> f32 {
-    if lower && f64::from(value) < bound {
+    if format!("{value}").parse::<f64>() == Ok(bound) {
+        value
+    } else if lower && f64::from(value) < bound {
         value.next_up()
     } else if !lower && f64::from(value) > bound {
         value.next_down()
@@ -313,12 +321,35 @@ mod tests {
         assert_eq!(minimum, f32::from_bits(0x3DCC_CCCD));
         assert!(f64::from(minimum) >= 0.099_999_997_01);
         // Above the maximum 0.100_000_000_1, 0.1f32 steps down to 0.09999999404.
+        // (Its shortest decimal `0.1` is not the documented bound, so the step
+        // still applies.)
         let maximum = <f32 as RangeBound>::max(0.100_000_000_1);
         assert_eq!(maximum, f32::from_bits(0x3DCC_CCCC));
         assert!(f64::from(maximum) <= 0.100_000_000_1);
         // A bound that is exact in f32 is kept as it is.
         assert_eq!(<f32 as RangeBound>::max(2.5), 2.5);
         assert_eq!(<f32 as RangeBound>::exact_within(7, 7.0, true), 7.0);
+    }
+
+    /// A documented decimal bound whose nearest `f32` is above it (`0.1`
+    /// rounds to `0.100000001490116`) keeps that `f32`: the value a client
+    /// sends for the documented `0.1` is the bound, not beyond it.
+    #[test]
+    fn f32_decimal_bounds_keep_the_documented_value() {
+        let decimal_tenth = f32::from_bits(0x3DCC_CCCD);
+        assert_eq!(<f32 as RangeBound>::max(0.1), decimal_tenth);
+        assert_eq!(<f32 as RangeBound>::min(0.1), decimal_tenth);
+        assert_eq!(
+            <f32 as RangeBound>::exact_within(0, 0.1, false),
+            decimal_tenth
+        );
+        assert_eq!(<f32 as RangeBound>::exact_within(0, 0.1, true), 0.0);
+        // The integer-literal rule is unchanged: 16777217 is not an f32, and
+        // its minimum is still stepped above the rounded 16777216.
+        assert_eq!(<f32 as RangeBound>::min(16_777_217.0), 16_777_218.0);
+        assert_eq!(<f32 as RangeBound>::max(16_777_217.0), 16_777_216.0);
+        // A decimal whose nearest f32 sits on the inside is untouched.
+        assert_eq!(<f32 as RangeBound>::min(0.5), 0.5);
     }
 
     /// An integer-literal bound keeps the literal, unless the documented
