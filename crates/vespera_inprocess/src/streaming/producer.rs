@@ -255,6 +255,13 @@ impl ChannelBody {
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), StreamAbort>> {
         if self.rx.is_none() && self.pull_chunk.is_some() {
+            // A finished dispatch will never read this body: fail it now,
+            // without queueing for a slot that another upload may hold for good.
+            if self.inline.finished() {
+                self.pull_chunk = None;
+                self.failed = true;
+                return Poll::Ready(Err(StreamAbort));
+            }
             let Poll::Ready(permit) = self.poll_producer_slot(cx) else {
                 return Poll::Pending;
             };

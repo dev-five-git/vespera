@@ -455,10 +455,14 @@ fn start_on_a_runtime_without_timers_runs_the_jobs_on_it() {
 /// job has run out of occurrences.
 #[test]
 fn scheduler_thread_returns_when_jobs_finish() {
-    run_scheduler_thread(vec![
-        CronJob::new("0 0 0 1 1 * 1970", tick),
-        CronJob::new("not a cron", tick),
-    ]);
+    let runtime = build_scheduler_runtime().unwrap();
+    run_scheduler_thread(
+        &runtime,
+        vec![
+            CronJob::new("0 0 0 1 1 * 1970", tick),
+            CronJob::new("not a cron", tick),
+        ],
+    );
 }
 
 /// A second `start_once` with the same guard is a no-op, so re-building
@@ -539,11 +543,36 @@ fn a_failed_crate_start_releases_its_claims_for_a_retry() {
 /// (the jobs are dropped unrun, and the caller releases their claims).
 #[test]
 fn a_refused_scheduler_thread_is_reported_as_a_failed_start() {
-    let refused = spawn_scheduler_thread(Vec::new(), |_| {
+    let refused = spawn_scheduler_thread(Vec::new(), build_scheduler_runtime, |_| {
         Err(std::io::Error::other("thread limit reached"))
     });
     assert!(!refused);
-    let accepted = spawn_scheduler_thread(Vec::new(), |run| {
+    let accepted = spawn_scheduler_thread(Vec::new(), build_scheduler_runtime, |run| {
+        drop(run);
+        Ok(())
+    });
+    assert!(accepted);
+}
+
+fn refuse_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    Err(std::io::Error::other("out of file descriptors"))
+}
+
+/// A scheduler runtime that cannot be built is a failed start, reported
+/// before any thread is spawned, so the caller releases the job claims for a
+/// retry.
+#[test]
+fn a_scheduler_runtime_that_cannot_be_built_is_a_failed_start() {
+    let refused = spawn_scheduler_thread(
+        vec![CronJob::new("* * * * * *", tick)],
+        refuse_runtime,
+        |run| {
+            drop(run);
+            Ok(())
+        },
+    );
+    assert!(!refused);
+    let accepted = spawn_scheduler_thread(Vec::new(), build_scheduler_runtime, |run| {
         drop(run);
         Ok(())
     });

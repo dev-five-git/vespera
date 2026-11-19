@@ -366,9 +366,9 @@ async fn run_async(input: Vec<u8>, lease: RuntimeLease, mut completion: Completi
 ///
 /// `request` must be readable for `request_len` bytes (or `request_len ==
 /// 0`) for the duration of this call (it is copied before returning);
-/// `callback` must be NULL or a function honouring the `vespera_callback`
-/// contract; `user_data` must be usable from any thread until the callback
-/// has run.
+/// `callback` must be a non-NULL function honouring the `vespera_callback`
+/// contract (a NULL callback is rejected with `VESPERA_ERR_INVALID_ARGUMENT`);
+/// `user_data` must be usable from any thread until the callback has run.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vespera_dispatch_async(
     request: *const u8,

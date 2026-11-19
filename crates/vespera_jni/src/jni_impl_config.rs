@@ -52,9 +52,15 @@ fn guarded_configure(apply: impl FnOnce() -> bool) -> jboolean {
 }
 
 /// Apply an optional `usize` knob: a negative JNI value means "not
-/// configured" (nothing to apply → `true`); otherwise run `set`.
+/// configured" (nothing to apply → `true`); otherwise run `set`.  A
+/// non-negative value too large for `usize` (only possible on a 32-bit target)
+/// saturates to `usize::MAX` and is still applied, rather than being dropped
+/// while the hook reports success.
 fn apply_optional(value: jlong, set: impl FnOnce(usize) -> bool) -> bool {
-    usize::try_from(value).map_or(true, set)
+    if value < 0 {
+        return true;
+    }
+    set(usize::try_from(value).unwrap_or(usize::MAX))
 }
 
 /// `com.devfive.vespera.bridge.VesperaBridge.configureRuntime0(int) -> boolean`
@@ -326,6 +332,23 @@ mod tests {
         });
         assert_eq!(called, expect_call);
         assert_eq!(applied, !expect_call || setter_result);
+    }
+
+    /// A non-negative value that does not fit `usize` is still handed to the
+    /// setter (saturated), never reported as applied without a call. On a
+    /// 64-bit target every `jlong` fits, so the saturated value is the value.
+    #[test]
+    fn an_oversized_optional_value_still_reaches_the_setter() {
+        let mut received = None;
+        let applied = apply_optional(jlong::MAX, |v| {
+            received = Some(v);
+            true
+        });
+        assert!(applied);
+        assert_eq!(
+            received,
+            Some(usize::try_from(jlong::MAX).unwrap_or(usize::MAX))
+        );
     }
 
     #[test]
