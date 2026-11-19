@@ -38,5 +38,6 @@ mod tests {
         assert!(is_serde_json_map_leaf(&parse_ty("::serde_json::Map")));
         assert!(!is_serde_json_map_leaf(&parse_ty("foo::Map")));
         assert!(!is_serde_json_map_leaf(&parse_ty("Map")));
+        assert!(!is_serde_json_map_leaf(&parse_ty("&serde_json::Map")));
     }
 }
