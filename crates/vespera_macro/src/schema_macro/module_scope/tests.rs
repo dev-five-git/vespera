@@ -362,13 +362,17 @@ fn glob_private_names_are_visible_to_descendants() {
     );
 }
 
-/// A self-referencing / cyclic import chain stops instead of looping.
+/// A self-referencing / cyclic import chain stops instead of looping, and
+/// stops at the same value every run (keys are rerooted in sorted order):
+/// `x` reroots through `z` once (`z` is still `x::y`), then `z` cannot
+/// reroot through `x` (it would name itself), so the walk ends.
 #[test]
 fn cyclic_import_chain_terminates() {
     let (_dir, _guard) = temp_crate(&[("c.rs", "use foo::foo; use x::y as z; use z::w as x;")]);
     let scope = module_scope(&segs("crate::c")).unwrap();
     assert_eq!(scope.imports["foo"].join("::"), "foo::foo");
-    assert!(scope.imports["x"].len() <= 8);
+    assert_eq!(scope.imports["x"], segs("x::y::w"));
+    assert_eq!(scope.imports["z"], segs("x::y"));
 }
 
 /// A `#[cfg]`-dropped `#[path]` module twin is not descended into.

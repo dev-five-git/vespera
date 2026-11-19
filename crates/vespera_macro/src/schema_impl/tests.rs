@@ -692,6 +692,23 @@ fn schema_attribute_summary_first_name_wins_across_attributes() {
     assert!(collect_schema_attribute_summary(&malformed.attrs).is_err());
 }
 
+/// A repeated `name` inside ONE `#[schema(..)]` is a spanned error (the
+/// across-attributes rule keeps the first, but one attribute cannot carry two
+/// names); the same key in two attributes still keeps the first.
+#[rstest::rstest]
+#[case::same_attribute(quote::quote!(#[schema(name = "Alpha", name = "Beta")]))]
+#[case::same_attribute_with_ref(quote::quote!(#[schema(name = "Alpha", ref = "x", name = "Beta")]))]
+fn repeated_name_in_one_schema_attr_is_compile_error(#[case] attr: proc_macro2::TokenStream) {
+    let input: syn::DeriveInput = syn::parse_quote! {
+        #attr
+        struct User { id: i32 }
+    };
+    let Err(err) = collect_schema_attribute_summary(&input.attrs) else {
+        panic!("a repeated `name` must be refused");
+    };
+    assert!(err.to_string().contains("duplicate `name`"), "{err}");
+}
+
 /// Malformed container `#[schema(...)]` attributes are compile errors
 /// instead of being silently ignored.
 #[rstest::rstest]

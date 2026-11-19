@@ -533,7 +533,10 @@ impl ModuleScope {
     fn reroot_chained_imports(&mut self) {
         for _ in 0..=self.imports.len() {
             let mut changed = false;
-            let keys: Vec<String> = self.imports.keys().cloned().collect();
+            // Sorted: a cyclic chain resolves to a value that depends on the
+            // order its keys are rerooted in, and `HashMap` order is random.
+            let mut keys: Vec<String> = self.imports.keys().cloned().collect();
+            keys.sort_unstable();
             for key in keys {
                 let path = &self.imports[&key];
                 // A head that is itself an import (not the name, not a root,

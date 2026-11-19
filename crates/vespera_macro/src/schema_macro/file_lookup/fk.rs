@@ -42,10 +42,10 @@ pub fn find_fk_column_from_target_entity(
     let syn::Fields::Named(fields_named) = &model.fields else {
         return None;
     };
-    let field = fields_named
-        .named
-        .iter()
-        .find(|field| extract_relation_enum(&field.attrs).as_deref() == Some(via_rel))?;
+    let field = fields_named.named.iter().find(|field| {
+        !crate::schema_macro::cfg_eval::compiled_out(&field.attrs)
+            && extract_relation_enum(&field.attrs).as_deref() == Some(via_rel)
+    })?;
     let from = extract_belongs_to_from_field(&field.attrs, &model.fields)?;
     Some((from, extract_belongs_to_to_raw(&field.attrs)))
 }
@@ -111,6 +111,46 @@ pub struct Model {
             "Should find FK column from mod.rs"
         );
     }
+    /// R31-SM2-03 (round 31): the relation twin a `cfg_attr(p, cfg(q))` removes
+    /// is not the one whose FK column is read, in either declaration order.
+    #[rstest::rstest]
+    #[case::disabled_twin_first(
+        r#"
+    #[cfg_attr(all(), cfg(any()))]
+    #[sea_orm(belongs_to = "super::user::Entity", from = "owner_a", to = "id", relation_enum = "Owner")]
+    pub owner: BelongsTo<super::user::Entity>,
+    #[sea_orm(belongs_to = "super::user::Entity", from = "owner_b", to = "id", relation_enum = "Owner")]
+    pub owner_active: BelongsTo<super::user::Entity>,
+    "#
+    )]
+    #[case::active_twin_first(
+        r#"
+    #[sea_orm(belongs_to = "super::user::Entity", from = "owner_b", to = "id", relation_enum = "Owner")]
+    pub owner_active: BelongsTo<super::user::Entity>,
+    #[cfg_attr(all(), cfg(any()))]
+    #[sea_orm(belongs_to = "super::user::Entity", from = "owner_a", to = "id", relation_enum = "Owner")]
+    pub owner: BelongsTo<super::user::Entity>,
+    "#
+    )]
+    fn fk_lookup_ignores_a_cfg_attr_disabled_relation_twin(#[case] relations: &str) {
+        let temp_dir = TempDir::new().unwrap();
+        let models_dir = temp_dir.path().join("src").join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+        std::fs::write(
+            models_dir.join("notification.rs"),
+            format!(
+                "pub struct Model {{ pub id: i32, pub owner_a: i32, pub owner_b: i32, {relations} }}"
+            ),
+        )
+        .unwrap();
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
+        assert_eq!(
+            find_fk_column_from_target_entity("crate::models::notification::Schema", "Owner"),
+            Some("owner_b".to_string())
+        );
+    }
+
     /// A target path without module segments (`crate::Schema`) searches
     /// the crate root: the root's `Model` answers, and a crate without
     /// `src/` has none (the old test, named "empty module segments return

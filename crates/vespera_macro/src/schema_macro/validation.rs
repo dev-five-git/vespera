@@ -34,8 +34,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use super::cfg_eval::statically_inactive;
-use super::field_selection::{Refusal, resolve_name};
+use super::field_selection::{Refusal, resolve_name, source_fields};
 use super::input::ParamSpans;
 
 /// Where a diagnostic about a field name given to a parameter points.
@@ -177,20 +176,22 @@ pub fn resolve_filter_names(
     Ok(selected)
 }
 
-/// Returns `true` when `name` is a legal Rust identifier — i.e. the
-/// downstream `syn::Ident::new(name, ..)` that turns a `rename`/`add`
-/// target into a struct field identifier cannot panic on it.
+/// Returns `true` when `name` is a legal Rust identifier, i.e. the field
+/// identifier `module_scope::segment_ident` emits for a `rename` / `add`
+/// target is exactly `name`, so the collision and keyword guards check the
+/// text that is emitted.
 ///
 /// `syn::parse_str::<Ident>` rejects non-identifiers (`"user-id"`,
 /// `"a b"`, `""`, a leading digit) AND reserved keywords (`"type"`,
-/// `"match"`) — both of which would otherwise either panic
-/// `Ident::new` or emit a struct field that fails to compile. Raw
-/// identifiers (`"r#type"`) are accepted, but not the path keywords with a
-/// raw prefix (`"r#self"`, `"r#super"`, `"r#crate"`, `"r#Self"`, `"r#_"`):
-/// syn accepts those, and the emitted field would lose its `r#` (R20-S4-L2,
-/// round 20).
+/// `"match"`). It also tokenizes its input, so padded or commented text
+/// (`" id "`, `"id /* c */"`) parses to a trimmed identifier: the round-trip
+/// check refuses those, since they would pass the guards as written and be
+/// emitted as `id`. Raw identifiers (`"r#type"`) are accepted, but not the
+/// path keywords with a raw prefix (`"r#self"`, `"r#super"`, `"r#crate"`,
+/// `"r#Self"`, `"r#_"`): syn accepts those, and the emitted field would lose
+/// its `r#` (R20-S4-L2, round 20).
 fn is_valid_field_ident(name: &str) -> bool {
-    syn::parse_str::<syn::Ident>(name).is_ok()
+    syn::parse_str::<syn::Ident>(name).is_ok_and(|ident| ident == name)
         && !matches!(
             name.strip_prefix("r#").unwrap_or(name),
             "self" | "Self" | "super" | "crate" | "_"
@@ -202,9 +203,9 @@ fn is_valid_field_ident(name: &str) -> bool {
 /// identifier.
 ///
 /// The target check is what stops a `schema_type!(.., rename = [("id",
-/// "user-id")])` (or a keyword target like `"type"`) from panicking the
-/// proc-macro at `syn::Ident::new` — it now surfaces as a spanned compile
-/// error instead of an opaque expansion abort.
+/// "user-id")])` (or a keyword target like `"type"`) from reaching
+/// `module_scope::segment_ident` as a field name it cannot emit; it surfaces
+/// as a spanned compile error instead of an opaque expansion abort.
 pub fn validate_rename_fields(
     rename_pairs: Option<&Vec<(String, String)>>,
     source_field_names: &HashSet<String>,
@@ -248,9 +249,10 @@ pub fn validate_rename_fields(
 }
 
 /// Validates that every `add = [(name: Type)]` field name is a legal Rust
-/// identifier, so the `syn::Ident::new(name, ..)` that materializes the
-/// added field cannot panic on a non-identifier / keyword name (same
-/// class of bug as an invalid `rename` target).
+/// identifier (see [`is_valid_field_ident`]): the field
+/// `module_scope::segment_ident` materializes for it is then exactly `name`,
+/// so a non-identifier / keyword name is refused here like an invalid
+/// `rename` target.
 pub fn validate_add_field_idents(
     add: Option<&Vec<(String, syn::Type)>>,
     at: &impl ErrorAt,
@@ -443,23 +445,23 @@ pub fn extract_source_field_names(parsed_struct: &syn::ItemStruct) -> HashSet<St
     }
 }
 
-/// The field names the "Available fields" listing shows: the named fields a
+/// The entries the "Available fields" listing shows: the named fields a
 /// statically false `#[cfg]` (or `feature` predicate) removes are left out
-/// (R28-SM4-L1). Only the listing; validation uses [`extract_source_field_names`].
+/// (R28-SM4-L1). A field whose serde JSON name differs from its Rust
+/// identifier shows both (`user_name (userName)`), since `pick` / `omit`
+/// accept either spelling. Only the listing; validation uses
+/// [`extract_source_field_names`].
 fn listed_source_field_names(parsed_struct: &syn::ItemStruct) -> HashSet<String> {
-    use crate::parser::strip_raw_prefix_owned;
-
-    if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
-        fields_named
-            .named
-            .iter()
-            .filter(|f| !statically_inactive(&f.attrs))
-            .filter_map(|f| f.ident.as_ref())
-            .map(|i| strip_raw_prefix_owned(i.to_string()))
-            .collect()
-    } else {
-        HashSet::new()
-    }
+    source_fields(parsed_struct)
+        .into_iter()
+        .map(|field| {
+            if field.json == field.rust {
+                field.rust
+            } else {
+                format!("{} ({})", field.rust, field.json)
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -603,6 +605,29 @@ mod tests {
         assert!(result.is_err(), "`{target}` must not be a field name");
     }
 
+    /// R31-SM5-L1: `syn::parse_str` tokenizes its input, so padded or commented
+    /// text parses to a trimmed identifier. The guards must check the text that
+    /// is emitted, so these names are refused as a rename target and as an
+    /// `add` name (a padded `id` would otherwise collide with `id` unseen).
+    #[rstest::rstest]
+    #[case::padded(" id ")]
+    #[case::commented("id /* c */")]
+    #[case::padded_raw_self(" r#self ")]
+    fn test_padded_field_names_are_refused(#[case] name: &str) {
+        let source_fields = create_field_names(&["id"]);
+        let ty: syn::Type = syn::parse2(quote!(User)).unwrap();
+        let rename = Some(vec![("id".to_string(), name.to_string())]);
+        assert!(
+            validate_rename_fields(rename.as_ref(), &source_fields, &ty, "User").is_err(),
+            "rename target `{name}`"
+        );
+        let add = Some(vec![(name.to_string(), syn::parse_quote!(String))]);
+        assert!(
+            validate_add_field_idents(add.as_ref(), &ty).is_err(),
+            "add name `{name}`"
+        );
+    }
+
     /// L15: a field renamed twice used to take the last target silently.
     #[test]
     fn test_validate_rename_fields_duplicate_source_rejected() {
@@ -706,6 +731,25 @@ mod tests {
         assert!(!err.contains("gone"), "{err}");
     }
 
+    /// R31-SM5-L3: a field whose serde JSON name differs from its Rust identifier
+    /// is listed with both, because `pick` / `omit` accept either spelling.
+    #[test]
+    fn listing_shows_the_json_name_where_it_differs() {
+        let struct_def: syn::ItemStruct = syn::parse_str(
+            "#[derive(serde::Serialize)] #[serde(rename_all = \"camelCase\")] pub struct S { user_name: i32, id: i32 }",
+        )
+        .unwrap();
+        let ty: syn::Type = syn::parse2(quote!(S)).unwrap();
+        let omit = Some(vec!["nope".to_string()]);
+        let err = resolve_filter_names("omit", omit.as_ref(), &struct_def, "S", &ty)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Available fields: [\"id\", \"user_name (userName)\"]"),
+            "{err}"
+        );
+    }
+
     /// R28-SM4-L2 (decided: accepted). A `rename` / `partial` / adapter name of
     /// a `#[cfg(feature = "x")]` field is accepted with the feature off: a DTO
     /// may rename a feature-gated field, and the rename has no effect in that
@@ -726,7 +770,7 @@ mod tests {
             .find(|field| field.ident.as_ref().is_some_and(|ident| *ident == "gated"))
             .unwrap();
         assert!(
-            statically_inactive(&gated.attrs),
+            crate::schema_macro::cfg_eval::statically_inactive(&gated.attrs),
             "`gated` must be cfg-removed"
         );
         let ty: syn::Type = syn::parse2(quote!(S)).unwrap();

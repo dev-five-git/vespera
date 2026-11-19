@@ -9,7 +9,8 @@
 //! field's identifier does not shadow a serialized field's JSON name
 //! (R28-SM4-M1: a skipped `id` plus `rename = "id"` on another field selects
 //! that field for `omit = ["id"]`, pinned by the `schema!` and `schema_type!`
-//! tests). A field a statically false `#[cfg]` removes is no candidate, and a
+//! tests). A field a statically false `#[cfg]` (or `cfg_attr(p, cfg(q))`)
+//! removes is no candidate, and a
 //! JSON name shared by fields with different Rust identifiers is ambiguous
 //! (refused).
 
@@ -22,7 +23,7 @@ use crate::parser::schema::{
 };
 use crate::parser::{extract_rename_all, rename_field, strip_raw_prefix_owned};
 
-use super::cfg_eval::statically_inactive;
+use super::cfg_eval::compiled_out;
 
 /// One named field of a source struct a `pick` / `omit` name can select.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +56,7 @@ pub fn source_fields(struct_item: &syn::ItemStruct) -> Vec<SourceField> {
         .named
         .iter()
         .enumerate()
-        .filter(|(_, field)| !statically_inactive(&field.attrs))
+        .filter(|(_, field)| !compiled_out(&field.attrs))
         .map(|(index, field)| {
             let rust = field.ident.as_ref().map_or_else(
                 || "unknown".to_string(),
@@ -176,6 +177,19 @@ mod tests {
     #[case::cfg_inactive_field_is_no_candidate(
         "struct S { #[cfg(any())] gone: i32, id: i32 }",
         "gone",
+        Err(Refusal::Missing { skipped: None })
+    )]
+    // R31-SM4-L1 / R31-SM1 note: a field `cfg_attr(p, cfg(q))` removes is no
+    // candidate either; a `schema_type!` source is read from its file, where
+    // rustc has not stripped it.
+    #[case::cfg_attr_inactive_field_is_no_candidate(
+        "struct S { #[cfg_attr(all(), cfg(any()))] gone: i32, id: i32 }",
+        "gone",
+        Err(Refusal::Missing { skipped: None })
+    )]
+    #[case::cfg_attr_inactive_json_name_is_not_selected(
+        "#[derive(serde::Serialize)] struct S { #[cfg_attr(all(), cfg(any()))] #[serde(rename = \"old\")] legacy: i32, id: i32 }",
+        "old",
         Err(Refusal::Missing { skipped: None })
     )]
     fn resolves_a_name(

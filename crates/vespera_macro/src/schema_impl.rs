@@ -456,6 +456,11 @@ fn collect_schema_attribute_summary(
         let mut attr_name = None;
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("name") {
+                // A repeated key inside one attribute is refused, as serde
+                // refuses it; only a key across attributes keeps the first.
+                if attr_name.is_some() {
+                    return Err(meta.error("duplicate `name` in `#[schema(..)]`"));
+                }
                 let lit: syn::LitStr = meta.value()?.parse()?;
                 attr_name = Some(lit.value());
             } else if meta.path.is_ident("ref") {
