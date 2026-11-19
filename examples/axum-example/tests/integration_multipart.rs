@@ -665,6 +665,11 @@ async fn test_numeric_field_invalid_value() {
 
     let response = server.post("/numeric-char-test").multipart(form).await;
     response.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response.text();
+    assert!(
+        body.contains("Wrong type for field `count`"),
+        "unexpected body: {body}"
+    );
 }
 
 #[tokio::test]
@@ -680,6 +685,11 @@ async fn test_float_field_invalid_value() {
 
     let response = server.post("/numeric-char-test").multipart(form).await;
     response.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response.text();
+    assert!(
+        body.contains("Wrong type for field `score`"),
+        "unexpected body: {body}"
+    );
 }
 
 #[tokio::test]
@@ -695,6 +705,11 @@ async fn test_char_field_multiple_chars() {
 
     let response = server.post("/numeric-char-test").multipart(form).await;
     response.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response.text();
+    assert!(
+        body.contains("Wrong type for field `initial`"),
+        "unexpected body: {body}"
+    );
 }
 
 #[tokio::test]
@@ -710,6 +725,11 @@ async fn test_char_field_empty_string() {
 
     let response = server.post("/numeric-char-test").multipart(form).await;
     response.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response.text();
+    assert!(
+        body.contains("Wrong type for field `initial`"),
+        "unexpected body: {body}"
+    );
 }
 
 // ─── serde(default) struct-level tests ──────────────────────────────────────
@@ -824,6 +844,11 @@ async fn test_numeric_field_non_utf8_bytes() {
 
     let response = server.post("/numeric-char-test").multipart(form).await;
     response.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response.text();
+    assert!(
+        body.contains("Wrong type for field `count`"),
+        "unexpected body: {body}"
+    );
 }
 
 #[tokio::test]

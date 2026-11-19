@@ -167,8 +167,9 @@ pub async fn validated_page(
 }
 
 /// Profile validated by garde's own derive — `#[derive(Schema)]` documents
-/// every `#[garde(...)]` rule with a JSON Schema equivalent, so the
-/// constraints in `openapi.json` match the `422` this route answers.
+/// every `#[garde(...)]` rule with a JSON Schema equivalent (`alphanumeric`
+/// excepted, see `nickname`), so the constraints in `openapi.json` match the
+/// `422` this route answers.
 #[derive(Debug, Deserialize, Serialize, Schema, garde::Validate)]
 pub struct GardeProfile {
     /// 2–20 characters (`chars` mode → `minLength` / `maxLength`).

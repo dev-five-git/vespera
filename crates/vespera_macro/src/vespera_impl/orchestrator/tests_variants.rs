@@ -16,6 +16,18 @@ fn include_target(tokens: &str) -> PathBuf {
     PathBuf::from(tokens[start..end].replace("\\\\", "\\"))
 }
 
+/// The `<stem>` of a content-addressed `<stem>-<16 hex>.json` sidecar.
+fn sidecar_stem(path: &Path) -> String {
+    let name = path.file_name().unwrap().to_string_lossy();
+    let (stem, hash) = name
+        .strip_suffix(".json")
+        .unwrap()
+        .rsplit_once('-')
+        .unwrap();
+    assert_eq!(hash.len(), 16, "{name}");
+    stem.to_owned()
+}
+
 fn crate_with_routes(users: &str) -> TempDir {
     let temp_dir = TempDir::new().unwrap();
     let routes = temp_dir.path().join("src").join("routes");
@@ -73,6 +85,10 @@ fn test_harness_build_never_prunes_the_library_sidecar() {
             .to_string()
     };
     let harness_spec = include_target(&harness);
+    // Different content names different files either way; the regression is a
+    // shared `<stem>` (the selection marker then moves onto the harness file
+    // and the library file is pruned after the grace period).
+    assert_ne!(sidecar_stem(&library_spec), sidecar_stem(&harness_spec));
     assert_ne!(library_spec, harness_spec);
     assert!(harness_spec.exists());
     assert!(

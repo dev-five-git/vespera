@@ -456,12 +456,13 @@ mod tests {
 
     #[test]
     fn find_target_dir_is_inside_the_workspace_root_by_default() {
+        let _vespera = crate::env_access::test_env::remove_var("VESPERA_TARGET_DIR");
+        let _cargo = crate::env_access::test_env::remove_var("CARGO_TARGET_DIR");
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let expected = target_dir_in(
-            temp_dir.path(),
-            crate::env_access::var_os("CARGO_TARGET_DIR"),
+        assert_eq!(
+            find_target_dir(temp_dir.path()),
+            temp_dir.path().join("target")
         );
-        assert_eq!(find_target_dir(temp_dir.path()), expected);
     }
 
     #[test]

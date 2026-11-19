@@ -400,12 +400,6 @@ fn rust_ident_aliases(metadata: &CollectedMetadata) -> BTreeMap<&str, BTreeMap<&
     aliases
 }
 
-/// Reject a Rust type name that two `#[schema(name = "..")]` renames share
-/// (`mod a { #[schema(name = "A")] struct Foo }` + `mod b { #[schema(name =
-/// "B")] struct Foo }`) when a handler signature, a `responses = [...]` entry
-/// or another schema uses it:
-/// the macro sees only the bare ident, so it cannot tell which `Foo` is meant.
-/// A schema actually NAMED like the ident wins, so it is never ambiguous.
 /// Whether the document describes the stored route `stored`. A `cfg(test)`
 /// route is mounted only in test builds and is left out of the document, so
 /// its signature cannot make an alias ambiguous for it (round-29
@@ -428,6 +422,12 @@ fn documented_stored_route(
     documented || !test_only
 }
 
+/// Reject a Rust type name that two `#[schema(name = "..")]` renames share
+/// (`mod a { #[schema(name = "A")] struct Foo }` + `mod b { #[schema(name =
+/// "B")] struct Foo }`) when a handler signature, a `responses = [...]` entry
+/// or another schema uses it:
+/// the macro sees only the bare ident, so it cannot tell which `Foo` is meant.
+/// A schema actually NAMED like the ident wins, so it is never ambiguous.
 pub(super) fn check_ambiguous_aliases(
     metadata: &CollectedMetadata,
     file_cache: &HashMap<String, syn::File>,

@@ -150,6 +150,11 @@ cannot match) is a compile error on the path literal. A static prefix is fine
 (`/report-{year}` documents `year`); escaped literal braces `{{` / `}}` are not
 parameters and are documented percent-encoded (`%7B` / `%7D`).
 
+Known limit: a route module behind `#[cfg(..)]` that is compiled in is served,
+but the OpenAPI document leaves it out when the module is declared after
+`vespera!`. Declare gated route modules before `vespera!` so the document lists
+them.
+
 ### Route Handlers
 
 Handlers must be `pub async fn` with the `#[vespera::route]` attribute:

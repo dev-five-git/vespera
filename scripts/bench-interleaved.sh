@@ -92,6 +92,9 @@ run_side() { # <side> <round> <binary> <package-dir>
   (cd "$4" && CRITERION_HOME="$work/criterion/$1/$2" "$3" --bench \
     --noplot --warm-up-time "$warmup" --measurement-time "$measure" ${filter:+"$filter"})
 }
+# A caller-supplied WORK_DIR may hold an earlier run's estimates: clear them so a
+# run that measures nothing cannot read them back as its own.
+rm -rf "$work/criterion"
 for round in $(seq 1 "$rounds"); do
   echo "::group::round $round/$rounds"
   if [ $((round % 2)) -eq 1 ]; then order="base head"; else order="head base"; fi

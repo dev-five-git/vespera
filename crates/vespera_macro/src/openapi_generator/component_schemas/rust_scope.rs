@@ -42,6 +42,21 @@ fn is_crate_root_dir(dir: &Path) -> bool {
 /// the root naming nothing. The root is the nearest ancestor that is a crate
 /// root by [`is_crate_root_dir`] and holds a `lib.rs` or `main.rs`.
 fn file_modules(file: &Path) -> Option<Vec<String>> {
+    file_modules_from(file, &std::env::current_dir().ok()?)
+}
+
+/// [`file_modules`] with the directory a relative file name is anchored to.
+/// Cargo runs rustc in the package root, so a bare `models.rs` names the
+/// package root's own file: anchoring it there finds that root. A `..` path
+/// stays relative, since anchoring would hide the parent components.
+fn file_modules_from(file: &Path, cwd: &Path) -> Option<Vec<String>> {
+    let anchored;
+    let file = if file.is_relative() && !file.components().any(|c| c == Component::ParentDir) {
+        anchored = cwd.join(file);
+        anchored.as_path()
+    } else {
+        file
+    };
     let root = file.ancestors().skip(1).find(|dir| {
         !dir.as_os_str().is_empty()
             && (dir.join("lib.rs").is_file() || dir.join("main.rs").is_file())
@@ -269,6 +284,28 @@ mod tests {
         let file = src.join("bin").join("tool.rs");
         fs::write(&file, "").unwrap();
         assert_eq!(file_modules(&file).unwrap(), ["bin", "tool"]);
+    }
+
+    /// A package with `lib.rs` and `models.rs` at its root (no `src/`): the
+    /// bare relative name `models.rs` is the root's own file, so it is
+    /// `models`. A `..` path is not anchored and never reaches the cwd root.
+    #[test]
+    fn bare_relative_file_at_the_package_root_has_a_module() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"), "").unwrap();
+        fs::write(dir.path().join("lib.rs"), "").unwrap();
+        assert_eq!(
+            file_modules_from(Path::new("models.rs"), dir.path()).unwrap(),
+            ["models"]
+        );
+        assert_eq!(
+            file_modules_from(Path::new("lib.rs"), dir.path()).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            file_modules_from(Path::new("../models.rs"), dir.path()),
+            None
+        );
     }
 
     #[test]

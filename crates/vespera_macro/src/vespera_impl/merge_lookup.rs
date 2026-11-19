@@ -238,6 +238,16 @@ pub(super) fn ambiguous_alias_error(
     })
 }
 
+/// `app` as exported by crate `krate`, when that crate published a spec for it.
+fn export_in(vespera_dir: &Path, krate: String, app: &str) -> Option<ResolvedExport> {
+    let spec_file = export_spec_path(vespera_dir, &krate, app);
+    spec_file.is_file().then(|| ResolvedExport {
+        krate,
+        app: app.to_owned(),
+        spec_file,
+    })
+}
+
 /// Resolve `merge_path` against the call-site `aliases` and the exported
 /// specs under `vespera_dir`.
 pub(super) fn resolve_export(
@@ -268,23 +278,25 @@ pub(super) fn resolve_export(
         .filter(|_| segments.len() > 1)
         .filter(|first| !matches!(first.as_str(), "crate" | "self" | "super"))
         .cloned();
-    let candidates = named.into_iter().chain(std::iter::once(current.clone()));
-    for krate in candidates {
-        let spec_file = export_spec_path(vespera_dir, &krate, &app);
-        if spec_file.is_file() {
-            return Some(ResolvedExport {
-                krate,
-                app,
-                spec_file,
-            });
-        }
+    // A crate the path names (`child::App`) that exported the app wins.
+    let is_bare = named.is_none();
+    if let Some(resolved) = named.and_then(|krate| export_in(vespera_dir, krate, &app)) {
+        return Some(resolved);
     }
-    // Renamed dependency: the only crate that exported this app name.
-    let mut exporters = exporters_of(vespera_dir, &app);
-    let krate = if exporters.len() == 1 {
-        exporters.pop()?
-    } else {
-        current
+    // A bare name is the current crate's own export.
+    if is_bare && let Some(resolved) = export_in(vespera_dir, current.clone(), &app) {
+        return Some(resolved);
+    }
+    // Renamed dependency (or a module path the call site cannot tell apart
+    // from one): the unique exporter other than the current crate. The current
+    // crate is the fallback when no other exporter, or several, exist.
+    let others: Vec<String> = exporters_of(vespera_dir, &app)
+        .into_iter()
+        .filter(|krate| *krate != current)
+        .collect();
+    let krate = match others.as_slice() {
+        [only] => only.clone(),
+        _ => current,
     };
     Some(ResolvedExport {
         spec_file: export_spec_path(vespera_dir, &krate, &app),
@@ -558,6 +570,32 @@ mod tests {
         assert_eq!(
             resolve("dep::Missing", "", dir),
             Some(pair("parent", "Missing"))
+        );
+    }
+
+    /// A renamed dependency (`dep::SharedApp`) whose app name the current crate
+    /// also exports resolves to the other exporter, not to the current crate.
+    /// A bare name stays with the current crate, and with two other exporters
+    /// the current crate is the fallback as before.
+    #[test]
+    fn renamed_dependency_prefers_the_other_exporter_over_the_current_crate() {
+        let temp = TempDir::new().unwrap();
+        let _crate = crate::env_access::test_env::set_var("CARGO_CRATE_NAME", "parent");
+        let dir = temp.path();
+        publish(dir, "parent", "SharedApp");
+        publish(dir, "child", "SharedApp");
+        assert_eq!(
+            resolve("dep::SharedApp", "", dir),
+            Some(pair("child", "SharedApp"))
+        );
+        assert_eq!(
+            resolve("SharedApp", "", dir),
+            Some(pair("parent", "SharedApp"))
+        );
+        publish(dir, "other", "SharedApp");
+        assert_eq!(
+            resolve("dep::SharedApp", "", dir),
+            Some(pair("parent", "SharedApp"))
         );
     }
 
