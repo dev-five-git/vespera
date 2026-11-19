@@ -560,7 +560,8 @@ pub fn make_push_closure(
     reached: Arc<AtomicBool>,
 ) -> impl FnMut(&[u8]) -> ControlFlow<()> + Send + 'static {
     let chunk_size = streaming_chunk_size();
-    // `chunk_size` is config-clamped to <= 8 MiB (see config::MAX_STREAMING_CHUNK_BYTES),
+    // `chunk_size` is config-clamped to <= 8 MiB (see `MAX_STREAMING_CHUNK_BYTES` in
+    // `vespera_inprocess`'s `config` module),
     // so every segment length (<= chunk_size) fits an `i32`.  Precompute the
     // saturating bound once so the per-segment length conversion below needs no
     // panic site; the `unwrap_or` fallback is the buffer size (never exceeds it),

@@ -715,3 +715,36 @@ fn wait_idle_gives_up_when_its_timeout_thread_cannot_start() {
     assert!(!idle);
     assert!(started.elapsed() < Duration::from_secs(5), "waited anyway");
 }
+
+/// A host runtime that refuses the jobs (shut down) reports each one and
+/// returns `false`, so the caller releases the claims; an accepting runtime
+/// returns `true` and reports nothing.
+#[cfg(any(feature = "jni", feature = "ffi"))]
+#[test]
+fn a_refused_host_hand_off_reports_each_job() {
+    fn idle() -> JobFuture {
+        Box::pin(async {})
+    }
+    let jobs = || {
+        vec![
+            CronJob::new("* * * * * *", idle).with_name("tests::refused_a"),
+            CronJob::new("* * * * * *", idle).with_name("tests::refused_b"),
+        ]
+    };
+    assert!(!hand_to_host_runtime(jobs(), |hook| {
+        drop(hook);
+        false
+    }));
+    for name in ["tests::refused_a", "tests::refused_b"] {
+        let expected = format!("cron job `{name}` not scheduled: the host runtime is shut down");
+        assert!(
+            capture::reports().contains(&expected),
+            "no report `{expected}`, got {:?}",
+            capture::reports()
+        );
+    }
+    assert!(hand_to_host_runtime(jobs(), |hook| {
+        drop(hook);
+        true
+    }));
+}

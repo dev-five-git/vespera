@@ -378,20 +378,32 @@ static HOST_LOADED: AtomicBool = AtomicBool::new(false);
 /// the first dispatch builds it.  Dropped after [`shutdown_runtime`].  Used
 /// by `vespera::cron` so jobs registered from a host's load hook
 /// (`JNI_OnLoad`, `vespera_init`) run on the configured shared runtime and
-/// stop with it.
+/// stop with it.  A hook refused after shutdown is dropped silently; use
+/// [`try_on_shared_runtime`] to learn whether it was accepted.
 pub fn on_shared_runtime(hook: RuntimeHook) {
-    if GATE.is_closed() {
-        return;
+    let _accepted = try_on_shared_runtime(hook);
+}
+
+/// [`on_shared_runtime`], reporting whether the hook was accepted.  `false`
+/// once [`shutdown_runtime`] has closed the runtime: the hook is dropped and
+/// never runs, so a caller that claimed its work (cron's per-job claims)
+/// must release it.
+#[must_use]
+pub fn try_on_shared_runtime(hook: RuntimeHook) -> bool {
+    let accepted = !GATE.is_closed()
+        && HOOKS.lock().is_ok_and(|mut hooks| {
+            hooks.push(hook);
+            true
+        });
+    if accepted {
+        HOOKS_PENDING.store(true, Ordering::SeqCst);
+        // Pairs with the builder's fence in `runtime()` (store-buffer pattern).
+        fence(Ordering::SeqCst);
+        if let Some(Some(shared)) = RUNTIME.get() {
+            flush_hooks(&shared.handle);
+        }
     }
-    if let Ok(mut hooks) = HOOKS.lock() {
-        hooks.push(hook);
-    }
-    HOOKS_PENDING.store(true, Ordering::SeqCst);
-    // Pairs with the builder's fence in `runtime()` (store-buffer pattern).
-    fence(Ordering::SeqCst);
-    if let Some(Some(shared)) = RUNTIME.get() {
-        flush_hooks(&shared.handle);
-    }
+    accepted
 }
 
 /// Build the runtime now when hooks wait for it.  Returns whether it runs.
@@ -459,5 +471,35 @@ mod tests {
         assert_eq!(parse_worker_threads(Some(" 0 ")), Some(1));
         assert_eq!(parse_worker_threads(Some("4")), Some(4));
         assert_eq!(parse_worker_threads(Some("99999")), Some(1024));
+    }
+
+    /// The gate and the hook list are process-global and shutdown is
+    /// irreversible, so the check runs in a child process.
+    #[test]
+    #[cfg_attr(miri, ignore = "re-executes the test binary as a child process")]
+    fn hooks_are_refused_once_the_runtime_is_shut_down() {
+        static RAN: AtomicBool = AtomicBool::new(false);
+        const CHILD_ENV: &str = "VESPERA_RUNTIME_HOOK_REFUSED_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            crate::test_child::run_isolated(
+                "runtime::tests::hooks_are_refused_once_the_runtime_is_shut_down",
+                CHILD_ENV,
+                &[],
+                &[],
+            );
+            return;
+        }
+        // Accepted while the runtime is open (it is never built here).
+        assert!(try_on_shared_runtime(Box::new(
+            |_| RAN.store(true, Ordering::SeqCst)
+        )));
+        assert!(shutdown_runtime(Duration::from_millis(10)));
+        // Refused after shutdown: reported as such, dropped, never run.
+        assert!(!try_on_shared_runtime(Box::new(
+            |_| RAN.store(true, Ordering::SeqCst)
+        )));
+        on_shared_runtime(Box::new(|_| RAN.store(true, Ordering::SeqCst)));
+        assert!(!start_runtime_for_hooks());
+        assert!(!RAN.load(Ordering::SeqCst), "a refused hook never runs");
     }
 }

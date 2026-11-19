@@ -253,9 +253,10 @@ pub fn start(jobs: impl IntoIterator<Item = CronJob>) {
 }
 
 /// The non-generic body of [`start`]: one copy of the code (and of its
-/// coverage counters) however many iterator types call it.  `false` only
-/// when the dedicated scheduler thread could not be started: its runtime
-/// could not be built, or the OS refused the thread.
+/// coverage counters) however many iterator types call it.  `false` when the
+/// jobs could not be started: the dedicated scheduler thread could not be
+/// started (its runtime could not be built, or the OS refused the thread), or
+/// a host-loaded library's shared runtime was already shut down.
 fn start_jobs(jobs: Vec<CronJob>) -> bool {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         for job in jobs {
@@ -265,14 +266,35 @@ fn start_jobs(jobs: Vec<CronJob>) -> bool {
     }
     #[cfg(any(feature = "jni", feature = "ffi"))]
     if vespera_inprocess::runtime::host_loaded() {
-        vespera_inprocess::runtime::on_shared_runtime(Box::new(move |handle| {
-            for job in jobs {
-                handle.spawn(run_job(job, &CONTROLLER));
-            }
-        }));
-        return true;
+        return hand_to_host_runtime(jobs, vespera_inprocess::runtime::try_on_shared_runtime);
     }
     spawn_scheduler_thread(jobs, build_scheduler_runtime, spawn_os_thread)
+}
+
+/// Hands `jobs` to the host runtime through `accept` (in production
+/// `try_on_shared_runtime`).  `false` when it refused them because the
+/// runtime is shut down: each job is reported, and the caller releases the
+/// claims so nothing is recorded as started.
+#[cfg(any(feature = "jni", feature = "ffi"))]
+fn hand_to_host_runtime(
+    jobs: Vec<CronJob>,
+    accept: impl FnOnce(vespera_inprocess::runtime::RuntimeHook) -> bool,
+) -> bool {
+    let names: Vec<&'static str> = jobs.iter().map(|job| job.name).collect();
+    let accepted = accept(Box::new(move |handle| {
+        for job in jobs {
+            handle.spawn(run_job(job, &CONTROLLER));
+        }
+    }));
+    if !accepted {
+        for name in names {
+            cron_diag!(
+                error,
+                "cron job `{name}` not scheduled: the host runtime is shut down"
+            );
+        }
+    }
+    accepted
 }
 
 /// Stop scheduling new cron runs, process-wide and for good.

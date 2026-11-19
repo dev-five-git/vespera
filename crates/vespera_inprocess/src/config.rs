@@ -316,22 +316,11 @@ mod tests {
     fn process_config_setters_clamp_cache_and_feed_public_predicates() {
         const CHILD_ENV: &str = "VESPERA_CONFIG_SETTER_TEST_CHILD";
         if std::env::var_os(CHILD_ENV).is_none() {
-            let output = std::process::Command::new(
-                std::env::current_exe().expect("current unit-test executable"),
-            )
-            .args([
-                "--exact",
+            crate::test_child::run_isolated(
                 "config::tests::process_config_setters_clamp_cache_and_feed_public_predicates",
-                "--nocapture",
-            ])
-            .env(CHILD_ENV, "1")
-            .output()
-            .expect("run isolated config-setter child test");
-            assert!(
-                output.status.success(),
-                "isolated config test failed:\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
+                CHILD_ENV,
+                &[],
+                &[],
             );
             return;
         }
