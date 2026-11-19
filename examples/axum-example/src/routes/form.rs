@@ -81,9 +81,16 @@ pub async fn contact(Form(input): Form<ContactFormRequest>) -> Json<ContactFormR
 pub async fn upload(
     mut multipart: Multipart,
 ) -> Result<Json<ContactFormResponse>, (StatusCode, String)> {
-    while let Some(field) = multipart.next_field().await.map_err(multipart_rejection)? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| multipart_rejection(&error))?
+    {
         let _name = field.name().unwrap_or("unknown").to_string();
-        let _data = field.bytes().await.map_err(multipart_rejection)?;
+        let _data = field
+            .bytes()
+            .await
+            .map_err(|error| multipart_rejection(&error))?;
     }
     Ok(Json(ContactFormResponse {
         success: true,
@@ -95,7 +102,7 @@ pub async fn upload(
 /// 500 (a body stream that broke) answers a fixed message, because its text can
 /// carry transport or OS error detail.
 fn multipart_rejection(
-    error: vespera::axum::extract::multipart::MultipartError,
+    error: &vespera::axum::extract::multipart::MultipartError,
 ) -> (StatusCode, String) {
     let status = error.status();
     let body = if status == StatusCode::INTERNAL_SERVER_ERROR {

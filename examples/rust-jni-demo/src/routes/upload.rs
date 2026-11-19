@@ -37,11 +37,18 @@ pub struct UploadSummary {
 #[vespera::route(post, tags = ["upload"], error_status = [400, 413, 500])]
 pub async fn upload(mut multipart: Multipart) -> Result<Json<UploadSummary>, (StatusCode, String)> {
     let mut parts = Vec::new();
-    while let Some(field) = multipart.next_field().await.map_err(multipart_rejection)? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| multipart_rejection(&error))?
+    {
         let name = field.name().unwrap_or_default().to_owned();
         let file_name = field.file_name().map(str::to_owned);
         let content_type = field.content_type().map(str::to_owned);
-        let bytes = field.bytes().await.map_err(multipart_rejection)?;
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|error| multipart_rejection(&error))?;
         parts.push(UploadedPart {
             name,
             file_name,
@@ -57,7 +64,7 @@ pub async fn upload(mut multipart: Multipart) -> Result<Json<UploadSummary>, (St
 /// 500 (a body stream that broke, e.g. a dropped connection) answers a fixed
 /// message, because its text can carry transport or OS error detail.
 fn multipart_rejection(
-    error: vespera::axum::extract::multipart::MultipartError,
+    error: &vespera::axum::extract::multipart::MultipartError,
 ) -> (StatusCode, String) {
     let status = error.status();
     let body = if status == StatusCode::INTERNAL_SERVER_ERROR {
