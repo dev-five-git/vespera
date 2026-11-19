@@ -27,8 +27,14 @@ fn run_with_test_only(src: &str, test_only: &[(&str, &str)]) -> syn::Result<()> 
             },
         )
         .collect();
-    metadata.routes.push(RouteMetadata {
-        method: "get".to_string(),
+    metadata.routes.push(handler_route("get"));
+    check_with(&metadata, src)
+}
+
+/// The `handler` route of `x.rs` with `method`.
+fn handler_route(method: &str) -> RouteMetadata {
+    RouteMetadata {
+        method: method.to_string(),
         path: "/x".to_string(),
         function_name: "handler".to_string(),
         module_path: "routes::x".to_string(),
@@ -45,10 +51,14 @@ fn run_with_test_only(src: &str, test_only: &[(&str, &str)]) -> syn::Result<()> 
         response_example: None,
         deprecated: false,
         description: None,
-    });
+    }
+}
+
+/// [`check_extractors`] over `src` as the `x.rs` file of `metadata`.
+fn check_with(metadata: &CollectedMetadata, src: &str) -> syn::Result<()> {
     let ast: syn::File = syn::parse_str(src).expect("source parses");
     let file_cache = HashMap::from([("x.rs".to_string(), ast)]);
-    check_extractors(&metadata, &file_cache)
+    check_extractors(metadata, &file_cache)
 }
 
 #[rstest]
@@ -164,4 +174,23 @@ fn fast_path_route_files_are_checked() {
 fn test_only_routes_are_not_checked(#[case] test_only: &[(&str, &str)], #[case] ok: bool) {
     let src = "pub struct Probe { pub a: i32 } pub fn handler(Json(p): Json<Probe>) {}";
     assert_eq!(run_with_test_only(src, test_only).is_ok(), ok);
+}
+
+/// Two-twin layout: a production `#[route(post)] fn handler` next to a
+/// `#[cfg(test)] #[route(get)] fn handler`. The `cfg(test)` twin exempts the
+/// POST route only when it is the same method (`documented_view` matches the
+/// method too); a non-`Schema` extractor on the POST route must still fail.
+#[rstest]
+#[case::same_method_twin_exempts("post", true)]
+#[case::other_method_twin_does_not("get", false)]
+fn test_only_twin_must_match_the_route_method(#[case] twin_method: &str, #[case] ok: bool) {
+    let mut metadata = CollectedMetadata::new();
+    metadata.test_only_routes = vec![crate::metadata::TestOnlyRoute {
+        file_path: "x.rs".to_string(),
+        function_name: "handler".to_string(),
+        method: twin_method.to_string(),
+    }];
+    metadata.routes.push(handler_route("post"));
+    let src = "pub struct Probe { pub a: i32 } pub fn handler(Json(p): Json<Probe>) {}";
+    assert_eq!(check_with(&metadata, src).is_ok(), ok);
 }

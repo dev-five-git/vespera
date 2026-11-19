@@ -5,7 +5,10 @@
 //! another type that merely shares the leaf module name (see
 //! `parser::schema::scoped_ident`).
 
-use std::path::{Component, Path};
+use std::{
+    borrow::Cow,
+    path::{Component, Path},
+};
 
 /// The crate-relative module path and Rust ident of the type a derive source
 /// identity (`file::Ident@line:column`) names.
@@ -74,6 +77,53 @@ fn file_modules(file: &Path) -> Option<Vec<String>> {
 fn get_inline_modules(file: &Path, line: usize) -> Option<Vec<String>> {
     let content = crate::schema_macro::file_cache::get_file_content(file)?;
     inline_modules(&content, line)
+}
+
+/// The inline `mod` chain a source identity sits in, outermost first (empty
+/// at a file's top level). `None` for an unparseable identity.
+pub(super) fn inline_chain(source_identity: &str) -> Option<Vec<String>> {
+    let (base, position) = source_identity.rsplit_once('@')?;
+    let (file, _) = base.rsplit_once("::")?;
+    let line = position.split_once(':')?.0.parse().ok()?;
+    get_inline_modules(Path::new(file), line)
+}
+
+/// The file a struct's `#[serde(default = "fn")]` functions resolve in: the
+/// file itself for a top-level struct, or just the functions of the inline
+/// module the struct sits in (a same-named top-level fn belongs to another
+/// module). `None` when that module cannot be found in `file`.
+pub(super) fn default_scope<'a>(
+    file: &'a syn::File,
+    source_identity: Option<&str>,
+) -> Option<Cow<'a, syn::File>> {
+    let chain = source_identity.and_then(inline_chain).unwrap_or_default();
+    if chain.is_empty() {
+        return Some(Cow::Borrowed(file));
+    }
+    let items = nested_items(&file.items, &chain)?;
+    // An empty parse gives a `syn::File` without naming its (version-specific)
+    // fields; only the functions of the module are kept.
+    let mut scoped: syn::File = syn::parse_str("").ok()?;
+    scoped.items = items
+        .iter()
+        .filter(|item| matches!(item, syn::Item::Fn(_)))
+        .cloned()
+        .collect();
+    Some(Cow::Owned(scoped))
+}
+
+/// The items of the inline module `chain` names under `items`.
+fn nested_items<'a>(items: &'a [syn::Item], chain: &[String]) -> Option<&'a [syn::Item]> {
+    let Some((first, rest)) = chain.split_first() else {
+        return Some(items);
+    };
+    let inner = items.iter().find_map(|item| match item {
+        syn::Item::Mod(module) if syn::ext::IdentExt::unraw(&module.ident) == first.as_str() => {
+            module.content.as_ref().map(|(_, inner)| inner.as_slice())
+        }
+        _ => None,
+    })?;
+    nested_items(inner, rest)
 }
 
 /// Names of the inline `mod`s whose braces enclose `line`, outermost first.

@@ -655,6 +655,10 @@ pub(super) fn parse_component_schemas(
             }
             _ => struct_definitions,
         };
+        // The functions a `#[serde(default = "fn")]` names resolve in the
+        // struct's own inline module (see `rust_scope::default_scope`).
+        let scoped = file_ast
+            .and_then(|ast| rust_scope::default_scope(ast, struct_meta.source_identity.as_deref()));
         // One view of the item: the response view, or (inside
         // `with_request_view`) the request view with deserialize names.
         let build_view = |side: SerdeSide| {
@@ -673,7 +677,7 @@ pub(super) fn parse_component_schemas(
                     crate::schema_macro::storage_module_path(struct_meta).unwrap_or_default();
                 process_default_functions_for(
                     struct_item,
-                    file_ast,
+                    scoped.as_deref(),
                     &mut schema,
                     &struct_meta.field_defaults,
                     side,

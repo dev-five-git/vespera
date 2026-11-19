@@ -623,15 +623,15 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 #            `--no-default-features --features ffi` — the only place the
 #            feature-OFF UI cases (`cron_tz_needs_feature`,
 #            `multipart_needs_feature`) and `time_zone_without_feature` run
-#   bench           (bench.yml, PRs touching crates/**, Cargo.toml/.lock, the
-#                   toolchain files) criterion gate on the
+#   bench           (bench.yml, PRs touching crates/**, Cargo.toml/.lock, .cargo/**)
+#                   criterion gate on the
 #                   in-process hot path: merge base vs head, 5 interleaved
 #                   paired rounds, FAIL iff median > +30% AND every round > +20%
 #                   (scripts/bench-interleaved.sh; also fails when no bench
 #                   could be compared — a gate that measured nothing)
 #   jni-bench-gate  (jni-bench-gate.yml, PRs touching crates/vespera* /
 #                   libs/vespera-bridge / rust-jni-demo's Rust side /
-#                   Cargo.toml/.lock / toolchain / its scripts) the same rule over real
+#                   Cargo.toml/.lock / .cargo/** / its scripts) the same rule over real
 #                   JNI dispatch: rust-jni-demo cdylib (pinned alignment
 #                   RUSTFLAGS) + bridge JAR per side, one fresh JVM per side per
 #                   round running libs/vespera-bridge/bench/JniDispatchBench.java

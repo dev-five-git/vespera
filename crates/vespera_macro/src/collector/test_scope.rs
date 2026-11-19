@@ -253,7 +253,7 @@ impl TestScope {
             if may_gate_tests(content)
                 && let Ok(ast) = syn::parse_file(content)
             {
-                gated_mod_paths(&ast.items, "", &dir, &inline_dir, &mut gated);
+                gated_mod_paths(&ast.items, "", &dir, &inline_dir, false, &mut gated);
             }
             gated
         })
@@ -301,43 +301,50 @@ fn string_literal(expr: &syn::Expr) -> Option<String> {
 
 /// Collect the test-gated `mod`s among `items` (prefixed by `prefix`; `dir`
 /// is the directory their out-of-line files are loaded from), recursing into
-/// the ungated inline modules: a gated inline module gates everything it
-/// nests, so its own name is enough. A gated `#[path]` module names its file
-/// directly, relative to `dir` (rustc resolves it from the declaring file's
-/// directory). `inline_dir` is where the inline modules of `items` nest:
-/// `dir` itself for a mod-rs declarer, `dir/<file stem>` for any other, so a
-/// `#[path]` inside `mod v2 { .. }` of `routes.rs` resolves under
-/// `routes/v2/`.
+/// every inline module. A gated inline module gates everything it nests: its
+/// own name goes in as a chain, and the `#[path]` modules nested in it are
+/// gated too (they name files only test builds load). A gated `#[path]`
+/// module names its file directly, relative to `dir` (rustc resolves it from
+/// the declaring file's directory). `inline_dir` is where the inline modules
+/// of `items` nest: `dir` itself for a mod-rs declarer, `dir/<file stem>` for
+/// any other, so a `#[path]` inside `mod v2 { .. }` of `routes.rs` resolves
+/// under `routes/v2/`. `within_gated` says `items` already sit in a gated
+/// inline module.
 fn gated_mod_paths(
     items: &[Item],
     prefix: &str,
     dir: &Path,
     inline_dir: &Path,
+    within_gated: bool,
     out: &mut GatedMods,
 ) {
     for item in items {
         let Item::Mod(module) = item else { continue };
         let name = syn::ext::IdentExt::unraw(&module.ident).to_string();
         let path = format!("{prefix}{name}");
-        if attrs_test_only(&module.attrs) {
-            match path_attr(&module.attrs) {
-                Some(target) if module.content.is_none() => {
-                    out.path_targets.extend(lexical(&dir.join(target)));
+        let gated = within_gated || attrs_test_only(&module.attrs);
+        match &module.content {
+            Some((_, content)) => {
+                // Everything nested inside an inline module lives under it.
+                let nested = inline_dir.join(&name);
+                if gated {
+                    out.chains.insert(path.clone());
                 }
-                _ => {
+                gated_mod_paths(content, &format!("{path}::"), &nested, &nested, gated, out);
+            }
+            None if gated => match path_attr(&module.attrs) {
+                Some(target) => out.path_targets.extend(lexical(&dir.join(target))),
+                None => {
                     out.chains.insert(path);
                 }
-            }
-        } else if let Some((_, content)) = &module.content {
-            // Everything nested inside an inline module lives under it.
-            let nested = inline_dir.join(&name);
-            gated_mod_paths(content, &format!("{path}::"), &nested, &nested, out);
-        } else {
-            // An ungated out-of-line module: every build loads its file.
-            match path_attr(&module.attrs) {
-                Some(target) => out.open_path_targets.extend(lexical(&dir.join(target))),
-                None => {
-                    out.open_chains.insert(path);
+            },
+            None => {
+                // An ungated out-of-line module: every build loads its file.
+                match path_attr(&module.attrs) {
+                    Some(target) => out.open_path_targets.extend(lexical(&dir.join(target))),
+                    None => {
+                        out.open_chains.insert(path);
+                    }
                 }
             }
         }
@@ -439,10 +446,11 @@ pub struct FnDefinition {
 }
 
 /// The `#[route]` method of `attrs`, lower case (`get` when none is named).
+/// Both spellings count: `#[route(..)]` and `#[vespera::route(..)]`.
 fn route_method(attrs: &[syn::Attribute]) -> String {
     attrs
         .iter()
-        .filter(|attr| attr.path().is_ident("route"))
+        .filter(|attr| crate::route::check_route_by_meta(&attr.meta))
         .filter_map(|attr| attr.meta.require_list().ok())
         .filter_map(|list| {
             list.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)

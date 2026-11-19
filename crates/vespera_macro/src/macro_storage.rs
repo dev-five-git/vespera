@@ -229,10 +229,32 @@ fn may_come_from_macro(content: &str, name: &str) -> bool {
     content.lines().any(|line| {
         let code = strip_string_literals(line);
         code.match_indices('!').any(|(bang, _)| {
-            let args = code[bang + 1..].trim_start();
-            args.starts_with(['(', '[', '{']) && contains_ident(&args[1..], name)
+            // `ident!(`: the `!` follows a name, so `if !(x)` and `a != (b)`
+            // are not invocations.
+            let follows_name = code[..bang].chars().next_back().is_some_and(is_ident_char);
+            let rest = code[bang + 1..].trim_start();
+            follows_name
+                && rest.starts_with(['(', '[', '{'])
+                && contains_ident(invocation_arguments(&rest[1..]), name)
         })
     })
+}
+
+/// The text of a macro invocation's argument group, given the text after its
+/// opening bracket: up to the matching close bracket, so `log!(x); list();`
+/// does not hand `list` to `log!`. An unclosed group (the invocation runs past
+/// the line) yields the rest of the line.
+fn invocation_arguments(rest: &str) -> &str {
+    let mut depth = 0usize;
+    for (at, c) in rest.char_indices() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' if depth == 0 => return &rest[..at],
+            ')' | ']' | '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    rest
 }
 
 /// `line` with the contents of its string literals removed (the quotes, and a
@@ -473,6 +495,27 @@ mod tests {
         let path = file.display().to_string();
         let items = vec![entry("list", &path, "generated")];
         assert_eq!(retain_declared_if(&items, true).len(), 1);
+    }
+
+    /// Only the argument group of an `ident!` invocation may generate the
+    /// name: a negation, a `!=`, or a call that follows the invocation on the
+    /// same line does not.
+    #[rstest::rstest]
+    #[case::paren_invocation("gen!(list);", true)]
+    #[case::bracket_invocation("gen![list];", true)]
+    #[case::brace_invocation("gen! { list }", true)]
+    #[case::space_before_group("gen! (list);", true)]
+    #[case::nested_group("gen!(a(list));", true)]
+    #[case::group_running_past_the_line("gen!(list,", true)]
+    #[case::negated_group("if !(list()) {}", false)]
+    #[case::call_after_invocation("log!(x); list();", false)]
+    #[case::not_equal("let d = list != (other);", false)]
+    #[case::bang_after_space("if ! (list()) {}", false)]
+    fn may_come_from_macro_names_only_invocation_arguments(
+        #[case] line: &str,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(may_come_from_macro(line, "list"), expected);
     }
 
     #[rstest::rstest]

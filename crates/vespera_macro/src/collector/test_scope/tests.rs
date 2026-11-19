@@ -203,6 +203,24 @@ fn same_named_route_twins_are_told_apart_by_method_and_signature() {
     assert!(route_test_only(&defs, "other", "put", "anything"));
 }
 
+/// The `#[vespera::route(..)]` spelling carries its method like `#[route(..)]`:
+/// a `cfg(test)` GET twin next to a production POST of the same name is told
+/// apart by method, not both recorded as `get`.
+#[test]
+fn vespera_route_twins_are_told_apart_by_method() {
+    let krate = crate_with(&[(
+        "vtwins.rs",
+        "#[cfg(test)]\n#[vespera::route(get)]\npub async fn list() {}\n#[vespera::route(post)]\npub async fn list() {}\n",
+    )]);
+    let defs = fn_definitions(&krate.path().join("src").join("vtwins.rs"));
+    assert_eq!(defs.len(), 2);
+    assert_eq!(defs[0].method, "get");
+    assert_eq!(defs[1].method, "post");
+    let signature = defs[1].signature.clone();
+    assert!(!route_test_only(&defs, "list", "post", &signature));
+    assert!(route_test_only(&defs, "list", "get", &signature));
+}
+
 /// The stored signature of an alias-expanded return type differs from the
 /// source text; the one same-method definition still matches it.
 #[test]
@@ -565,6 +583,26 @@ fn path_attributed_test_module_inside_inline_mod_of_non_mod_rs_file() {
     let mut scope = TestScope::new(Some(&src));
     assert!(scope.file_test_only(&src.join("routes/v2/fixtures.rs")));
     assert!(!scope.file_test_only(&src.join("v2/fixtures.rs")));
+}
+
+/// A `#[path]` module nested in a test-gated inline module names a file only
+/// test builds load, even though the inline module itself is the chain the
+/// gate is found by. Without the recursion into the gated module the file is
+/// classified as production. An ungated inline module's `#[path]` stays open.
+#[test]
+fn path_module_nested_in_test_only_inline_mod_gates_its_file() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "#[cfg(test)]\nmod tests {\n    #[path = \"../routes/probe.rs\"]\n    mod probe;\n}\nmod shared {\n    #[path = \"../routes/kept.rs\"]\n    mod kept;\n}\n",
+        ),
+        ("routes/probe.rs", "pub async fn probe() {}"),
+        ("routes/kept.rs", "pub async fn kept() {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(scope.file_test_only(&src.join("routes/probe.rs")));
+    assert!(!scope.file_test_only(&src.join("routes/kept.rs")));
 }
 /// A `#[path]` whose value is not a string literal names no file, so the
 /// module falls back to the file named after it.
