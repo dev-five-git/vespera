@@ -763,17 +763,18 @@ fn stored_test_only_routes_pick_the_registered_twin() {
         ["list", "debug"]
     );
 
-    // Both twins compiled into one build: `list` has a production route.
+    // Both twins compiled into one build: only the `GET` twin is test-only,
+    // and it carries its method so the `POST` route stays documented.
     let both = [
         stored("list", "get", &defs[0].signature),
         stored("list", "post", &defs[1].signature),
         stored("debug", "put", &defs[2].signature),
     ];
     let refs: Vec<&StoredRouteInfo> = both.iter().collect();
-    assert_eq!(
-        names(&stored_test_only_routes(&file_path, false, &defs, &refs)),
-        ["debug"]
-    );
+    let recorded = stored_test_only_routes(&file_path, false, &defs, &refs);
+    assert_eq!(names(&recorded), ["list", "debug"]);
+    assert_eq!(recorded[0].method, "get");
+    assert_eq!(recorded[1].method, "put");
 
     // A file behind a test-only module is test-only as a whole.
     assert_eq!(

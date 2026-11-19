@@ -836,6 +836,8 @@ fn spec_url_is_parsed_and_processed() {
     quote::quote!(docs_url = "/:docs"),
     "vespera! macro: `docs_url` must be a static path, got \"/:docs\": `:`, `*`, `{` and `}` are axum route-parameter syntax"
 )]
+#[case::docs_url_query(quote::quote!(docs_url = "/openapi.json?v=1"), "vespera! macro: `docs_url` must be a path without a query, a fragment or whitespace, got \"/openapi.json?v=1\"")]
+#[case::spec_url_space(quote::quote!(spec_url = "/re doc"), "vespera! macro: `spec_url` must be a path without a query, a fragment or whitespace, got \"/re doc\"")]
 #[case::spec_url_wildcard(
     quote::quote!(spec_url = "/spec/*rest"),
     "vespera! macro: `spec_url` must be a static path, got \"/spec/*rest\": `:`, `*`, `{` and `}` are axum route-parameter syntax"

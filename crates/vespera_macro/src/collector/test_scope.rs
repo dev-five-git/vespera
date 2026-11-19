@@ -159,7 +159,9 @@ impl TestScope {
                     .iter()
                     .any(|gated| chain_starts_with(rest, gated))
             }) {
-                return true;
+                // A same-named ungated declaration loads the file in every
+                // build, so a gated twin next to it does not make it test-only.
+                return !self.open_chain_loads(&src_dir, &segments);
             }
             parent.push(segment);
         }
@@ -177,7 +179,7 @@ impl TestScope {
             let loads = |targets: &[PathBuf]| {
                 targets
                     .iter()
-                    .any(|target| file == *target || file.starts_with(target.with_extension("")))
+                    .any(|target| file == *target || file.starts_with(child_dir(target)))
             };
             let targets = self.path_targets();
             let gated = loads(&targets.gated);
@@ -201,7 +203,7 @@ impl TestScope {
                 self.gated_mods_of(declarer)
                     .open_chains
                     .iter()
-                    .any(|open| chain_starts_with(rest, open))
+                    .any(|open| chain_is(rest, open))
             }) {
                 return true;
             }
@@ -352,6 +354,27 @@ fn mod_rs(declarer: &Path) -> bool {
     )
 }
 
+/// The directory whose files are the child modules of a `#[path]` target:
+/// a `mod.rs` (or crate root) owns its directory, any other file owns the
+/// directory named after it (`helpers.rs` -> `helpers/`).
+fn child_dir(target: &Path) -> PathBuf {
+    if mod_rs(target) {
+        target.parent().unwrap_or(target).to_path_buf()
+    } else {
+        target.with_extension("")
+    }
+}
+
+/// Whether the module chain `rest` is exactly the `::`-joined `path`: an
+/// ungated declaration loads the file only when it names the file's own
+/// module, not one of the directories above it.
+fn chain_is(rest: &[String], path: &str) -> bool {
+    let mut rest = rest.iter();
+    path.split("::")
+        .all(|part| rest.next().is_some_and(|segment| segment == part))
+        && rest.next().is_none()
+}
+
 /// Whether the module chain `rest` begins with the `::`-joined `path`.
 fn chain_starts_with(rest: &[String], path: &str) -> bool {
     let mut rest = rest.iter();
@@ -481,10 +504,20 @@ pub fn route_test_only(defs: &[FnDefinition], name: &str, method: &str, signatur
     if same_name.iter().all(|def| def.test_only) {
         return true;
     }
-    let matching: Vec<&FnDefinition> = same_name
+    let same_method: Vec<&FnDefinition> = same_name
         .into_iter()
-        .filter(|def| def.method.eq_ignore_ascii_case(method) && def.signature == signature)
+        .filter(|def| def.method.eq_ignore_ascii_case(method))
         .collect();
+    // The stored signature is alias-expanded and may differ from the source
+    // text, so the signature only decides between several same-method twins.
+    let matching: Vec<&FnDefinition> = if same_method.len() > 1 {
+        same_method
+            .into_iter()
+            .filter(|def| def.signature == signature)
+            .collect()
+    } else {
+        same_method
+    };
     !matching.is_empty() && matching.iter().all(|def| def.test_only)
 }
 
@@ -723,7 +756,10 @@ pub fn documented_view(metadata: &CollectedMetadata) -> Cow<'_, CollectedMetadat
     let mut view = metadata.clone();
     view.routes.retain(|route| {
         !metadata.test_only_routes.iter().any(|test_only| {
-            test_only.file_path == route.file_path && test_only.function_name == route.function_name
+            test_only.file_path == route.file_path
+                && test_only.function_name == route.function_name
+                && (test_only.method.is_empty()
+                    || test_only.method.eq_ignore_ascii_case(&route.method))
         })
     });
     let mut test_structs = test_structs.into_iter();

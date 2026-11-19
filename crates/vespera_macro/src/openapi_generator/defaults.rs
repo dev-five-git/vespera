@@ -17,6 +17,7 @@ use crate::{
         extract_default, rename_field,
         schema::{
             SerdeSide, derives_serialize, extract_field_rename_owned, extract_rename_all_for,
+            extract_serde_rename_all,
         },
         strip_raw_prefix_owned,
     },
@@ -175,8 +176,15 @@ pub fn process_default_functions_for(
         return;
     }
 
-    // Extract rename_all from struct level
-    let struct_rename_all = extract_rename_all_for(&struct_item.attrs, side);
+    let owner_serializes = derives_serialize(&struct_item.attrs);
+    // Extract rename_all from struct level. The serialize view of an owner
+    // that derives `Serialize` names fields as serde writes them: the
+    // `try_from_multipart` fallback names form fields only.
+    let struct_rename_all = if owner_serializes && side == SerdeSide::Serialize {
+        extract_serde_rename_all(&struct_item.attrs)
+    } else {
+        extract_rename_all_for(&struct_item.attrs, side)
+    };
 
     // Locate the object schema that actually holds the fields. Flatten structs
     // are `allOf`-shaped: their own (non-flattened) fields live in the first
@@ -191,7 +199,6 @@ pub fn process_default_functions_for(
     // not on whether we could statically extract the default value.
     let mut serde_default_fields: BTreeSet<String> = BTreeSet::new();
     let function_index = file_ast.map(function_index_by_name);
-    let owner_serializes = derives_serialize(&struct_item.attrs);
 
     // Process each field in the struct
     if let Some(properties) = target.properties.as_mut()

@@ -444,6 +444,11 @@ fn parse_header_values(input: syn::parse::ParseStream) -> syn::Result<Vec<Header
             break;
         }
     }
+    // A missing comma leaves the rest of the list unparsed; reject it instead
+    // of dropping the entries after it.
+    if !content.is_empty() {
+        return Err(content.error("expected `,` between `headers` entries"));
+    }
 
     Ok(headers)
 }
@@ -520,6 +525,11 @@ fn parse_header_struct(input: syn::parse::ParseStream) -> syn::Result<HeaderPara
         } else {
             break;
         }
+    }
+    // A missing comma (`{ name = "A" required = true }`) would silently drop
+    // the fields after it; reject it.
+    if !content.is_empty() {
+        return Err(content.error("expected `,` between header fields"));
     }
 
     let name = name.ok_or_else(|| {

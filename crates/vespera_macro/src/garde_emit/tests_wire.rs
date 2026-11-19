@@ -44,12 +44,33 @@ fn skipped_fields_are_not_validated_and_flatten_keeps_the_path() {
     );
 }
 
-/// A struct whose only runtime rules sit on skipped fields gets no `Validate`
-/// impl, as a struct with no rule at all, not an empty one.
+/// A struct whose only runtime rules sit on skipped fields still gets the
+/// (empty) `Validate` impl: `Validated<Json<S>>` requires it, and dropping it
+/// broke compiling payloads that had compiled before.
 #[test]
-fn skipped_runtime_rule_only_struct_emits_no_impl() {
+fn skipped_runtime_rule_only_struct_emits_an_empty_impl() {
     let out = emit("struct S { #[serde(skip)] #[schema(min_length = 1)] a: String }");
+    assert!(
+        out.contains("impl :: vespera :: __validation :: garde :: Validate for S"),
+        "{out}"
+    );
+    assert!(!out.contains("\"a\""), "{out}");
+}
+
+/// A struct with no runtime rule at all gets no impl.
+#[test]
+fn struct_without_runtime_rules_emits_no_impl() {
+    let out = emit("struct S { #[schema(description = \"x\")] a: String }");
     assert!(out.is_empty(), "{out}");
+}
+
+/// Every `Option` layer is peeled before its rule runs: `Option<Option<i32>>`
+/// is checked on the inner `i32`, so the rule never sees an `Option`.
+#[test]
+fn nested_option_peels_every_layer_before_the_rule() {
+    let out = emit("struct S { #[schema(minimum = 0.5)] f: Option<Option<i32>> }");
+    assert_eq!(out.matches("= __garde_binding {").count(), 1, "{out}");
+    assert!(out.contains("Some (1i32)"), "{out}");
 }
 
 /// A `#[serde(transparent)]` struct's field is the struct itself on the

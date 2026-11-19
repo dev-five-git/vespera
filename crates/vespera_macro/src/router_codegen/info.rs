@@ -48,14 +48,21 @@ pub fn is_info_field(name: &str) -> bool {
 /// Shared by the `info` URLs, the absolute `servers` form and the OAuth2 / OIDC
 /// URLs (`security_dsl::require_absolute_url`), so they agree.
 pub(super) fn is_absolute_http_url(value: &str) -> bool {
-    value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"))
+    scheme_rest(value, "https://")
+        .or_else(|| scheme_rest(value, "http://"))
         .is_some_and(|rest| {
             // The authority (up to a path, query or fragment) names a host.
             let host = rest.split(['/', '?', '#']).next();
             host.is_some_and(|host| !host.is_empty()) && !rest.contains(char::is_whitespace)
         })
+}
+
+/// The part of `value` after `scheme` when it starts with it. URI schemes are
+/// case-insensitive (RFC 3986 section 3.1), so `HTTPS://` matches too.
+fn scheme_rest<'a>(value: &'a str, scheme: &str) -> Option<&'a str> {
+    let head = value.get(..scheme.len())?;
+    head.eq_ignore_ascii_case(scheme)
+        .then(|| &value[scheme.len()..])
 }
 
 fn require_http_url(key: &str, lit: &LitStr) -> syn::Result<()> {
@@ -203,6 +210,16 @@ mod tests {
     )]
     fn apply_builds_info(#[case] name: &str, #[case] pairs: &[(&str, &str)]) {
         insta::assert_snapshot!(name, info_json(pairs));
+    }
+
+    #[rstest]
+    #[case::https_upper("HTTPS://example.com/terms", true)]
+    #[case::mixed_case_http("Http://example.com", true)]
+    #[case::other_scheme("ftp://example.com", false)]
+    #[case::scheme_only("HTTPS://", false)]
+    #[case::non_ascii_head("ht\u{e9}ps://example.com", false)]
+    fn absolute_url_scheme_is_case_insensitive(#[case] url: &str, #[case] expected: bool) {
+        assert_eq!(is_absolute_http_url(url), expected);
     }
 
     #[rstest]

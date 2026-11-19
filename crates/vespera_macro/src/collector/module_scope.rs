@@ -61,11 +61,9 @@ pub(super) fn module_cfg_predicates(folder_path: &Path, segments: &[String]) -> 
                     file.items
                         .iter()
                         .filter_map(|item| match item {
-                            // `pub mod r#type;` declares the `type.rs` segment.
-                            Item::Mod(module) => Some((
-                                crate::parser::strip_raw_prefix_owned(module.ident.to_string()),
-                                cfg_predicates(&module.attrs),
-                            )),
+                            Item::Mod(module) => {
+                                Some((declared_segment(module), cfg_predicates(&module.attrs)))
+                            }
                             _ => None,
                         })
                         .collect()
@@ -80,6 +78,40 @@ pub(super) fn module_cfg_predicates(folder_path: &Path, segments: &[String]) -> 
         parent.push(segment);
     }
     predicates
+}
+
+/// The route-file segment a `mod` declaration loads. A `#[path = ".."]`
+/// module loads the file its path names (`mod admin` with `#[path =
+/// "admin_impl.rs"]` loads `admin_impl`; a `mod.rs` path is named after its
+/// directory), otherwise the module's own (unraw) name. `pub mod r#type;`
+/// declares the `type.rs` segment.
+fn declared_segment(module: &syn::ItemMod) -> String {
+    let own = || crate::parser::strip_raw_prefix_owned(module.ident.to_string());
+    let path = module
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("path"))
+        .and_then(|attr| attr.meta.require_name_value().ok())
+        .and_then(|named| match &named.value {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(value),
+                ..
+            }) => Some(value.value()),
+            _ => None,
+        });
+    let Some(path) = path else {
+        return own();
+    };
+    let path = Path::new(&path);
+    match path.file_stem().and_then(|stem| stem.to_str()) {
+        Some("mod") => path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .map_or_else(own, str::to_owned),
+        Some(stem) => stem.to_owned(),
+        None => own(),
+    }
 }
 
 /// `<dir>.rs`: the file declaring the module `dir`, appended (not
@@ -268,6 +300,21 @@ mod tests {
     #[case::other_module_gated("#[cfg(test)] mod tests; mod admin;", &["admin"], &[])]
     #[case::folder_root(r#"#[cfg(feature = "x")] mod admin;"#, &[], &[])]
     #[case::raw_keyword_module("#[cfg(unix)] pub mod r#type;", &["type"], &["unix"])]
+    // A `#[path]` module loads the file its path names, not its own name.
+    #[case::path_attribute(
+        "#[cfg(feature = \"admin\")] #[path = \"admin_impl.rs\"] mod admin;",
+        &["admin_impl"],
+        &["feature = \"admin\""]
+    )]
+    #[case::path_attribute_by_own_name(
+        "#[cfg(feature = \"admin\")] #[path = \"admin_impl.rs\"] mod admin;",
+        &["admin"],
+        &[]
+    )]
+    #[case::path_mod_rs("#[cfg(unix)] #[path = \"admin/mod.rs\"] mod admin;", &["admin"], &["unix"])]
+    #[case::path_mod_rs_bare("#[cfg(unix)] #[path = \"mod.rs\"] mod admin;", &["admin"], &["unix"])]
+    #[case::path_without_stem("#[cfg(unix)] #[path = \"\"] mod admin;", &["admin"], &["unix"])]
+    #[case::non_literal_path("#[cfg(unix)] #[path = concat!(\"a\", \".rs\")] mod admin;", &["admin"], &["unix"])]
     fn module_declaration_cfg(
         #[case] mod_rs: &str,
         #[case] segments: &[&str],

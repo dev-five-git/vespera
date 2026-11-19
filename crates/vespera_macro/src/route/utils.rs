@@ -525,10 +525,11 @@ mod tests {
             fn test() {}
         ";
         let file: syn::File = syn::parse_str(code).unwrap();
-        if let Some(syn::Item::Fn(fn_item)) = file.items.first() {
-            let doc = extract_doc_comment(&fn_item.attrs);
-            assert_eq!(doc, Some("This is a doc comment".to_string()));
-        }
+        let Some(syn::Item::Fn(fn_item)) = file.items.first() else {
+            panic!("expected a fn item");
+        };
+        let doc = extract_doc_comment(&fn_item.attrs);
+        assert_eq!(doc, Some("This is a doc comment".to_string()));
     }
 
     #[test]
@@ -540,20 +541,22 @@ mod tests {
             fn test() {}
         ";
         let file: syn::File = syn::parse_str(code).unwrap();
-        if let Some(syn::Item::Fn(fn_item)) = file.items.first() {
-            let doc = extract_doc_comment(&fn_item.attrs);
-            assert_eq!(doc, Some("First line\nSecond line\nThird line".to_string()));
-        }
+        let Some(syn::Item::Fn(fn_item)) = file.items.first() else {
+            panic!("expected a fn item");
+        };
+        let doc = extract_doc_comment(&fn_item.attrs);
+        assert_eq!(doc, Some("First line\nSecond line\nThird line".to_string()));
     }
 
     #[test]
     fn test_extract_doc_comment_empty() {
         let code = "fn test() {}";
         let file: syn::File = syn::parse_str(code).unwrap();
-        if let Some(syn::Item::Fn(fn_item)) = file.items.first() {
-            let doc = extract_doc_comment(&fn_item.attrs);
-            assert_eq!(doc, None);
-        }
+        let Some(syn::Item::Fn(fn_item)) = file.items.first() else {
+            panic!("expected a fn item");
+        };
+        let doc = extract_doc_comment(&fn_item.attrs);
+        assert_eq!(doc, None);
     }
 
     #[test]
@@ -565,10 +568,11 @@ mod tests {
             fn test() {}
         ";
         let file: syn::File = syn::parse_str(code).unwrap();
-        if let Some(syn::Item::Fn(fn_item)) = file.items.first() {
-            let doc = extract_doc_comment(&fn_item.attrs);
-            assert_eq!(doc, Some("Doc comment".to_string()));
-        }
+        let Some(syn::Item::Fn(fn_item)) = file.items.first() else {
+            panic!("expected a fn item");
+        };
+        let doc = extract_doc_comment(&fn_item.attrs);
+        assert_eq!(doc, Some("Doc comment".to_string()));
     }
 
     #[test]
@@ -578,10 +582,11 @@ mod tests {
             fn test() {}
         ";
         let file: syn::File = syn::parse_str(code).unwrap();
-        if let Some(syn::Item::Fn(fn_item)) = file.items.first() {
-            let doc = extract_doc_comment(&fn_item.attrs);
-            assert_eq!(doc, Some("No leading space".to_string()));
-        }
+        let Some(syn::Item::Fn(fn_item)) = file.items.first() else {
+            panic!("expected a fn item");
+        };
+        let doc = extract_doc_comment(&fn_item.attrs);
+        assert_eq!(doc, Some("No leading space".to_string()));
     }
 
     // Tests for tags and description in extract_route_info

@@ -1,6 +1,6 @@
 //! Collector for routes and structs
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use syn::Item;
@@ -91,11 +91,6 @@ fn take_or_clone(
     }
 }
 
-/// Fast path: push one file's routes straight from its `ROUTE_STORAGE`
-/// entries, skipping `syn::parse_file()` entirely.
-///
-/// `module_path` / `file_path` are the per-file invariants; the last route
-/// MOVES them out via [`take_or_clone`], every earlier route clones.
 /// The `test_only_routes` entries of one route file's stored routes: the
 /// ones behind a test-only `#[cfg(..)]` (`file_test_only` for the whole file,
 /// else decided per route from the file's fns `defs`, see
@@ -118,28 +113,30 @@ fn stored_test_only_routes(
                 )
         })
         .collect();
-    // `TestOnlyRoute` is keyed by name: a name that also has a production
-    // route in this build cannot be recorded without dropping that route too,
-    // so the test-only twin stays documented.
-    let production_names: HashSet<&str> = stored_routes
-        .iter()
-        .zip(&verdicts)
-        .filter(|(_, test_only)| !**test_only)
-        .map(|(stored, _)| stored.fn_name.trim_start_matches("r#"))
-        .collect();
+    // `TestOnlyRoute` carries the method too, so a test-only twin that shares
+    // its name with a production route of another method is recorded without
+    // dropping that production route from the document.
     stored_routes
         .iter()
         .zip(&verdicts)
-        .filter(|(stored, test_only)| {
-            **test_only && !production_names.contains(stored.fn_name.trim_start_matches("r#"))
-        })
+        .filter(|(_, test_only)| **test_only)
         .map(|(stored, _)| crate::metadata::TestOnlyRoute {
             file_path: file_path.to_owned(),
             function_name: stored.fn_name.clone(),
+            method: stored
+                .method
+                .as_deref()
+                .unwrap_or("get")
+                .to_ascii_lowercase(),
         })
         .collect()
 }
 
+/// Fast path: push one file's routes straight from its `ROUTE_STORAGE`
+/// entries, skipping `syn::parse_file()` entirely.
+///
+/// `module_path` / `file_path` are the per-file invariants; the last route
+/// MOVES them out via [`take_or_clone`], every earlier route clones.
 fn push_stored_routes(
     metadata: &mut CollectedMetadata,
     base_path: &str,

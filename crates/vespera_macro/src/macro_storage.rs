@@ -77,7 +77,9 @@ fn single_declaration_in_ide<T: SourceIdentified>(info: &T) -> bool {
 /// Replace-insert one metadata entry in the current crate's bucket.
 ///
 /// A re-expansion of the same source item (same function name, same normalized
-/// file path) overwrites the previous entry; anything else is appended.
+/// file path, and the same scope: two known scopes must be equal, two unknown
+/// ones match, a known and an unknown scope do not) overwrites the previous
+/// entry; anything else is appended.
 ///
 /// An entry whose scope is unknown next to a known-scope entry of the same
 /// function and file is a stale view of that function (an IDE expansion of
@@ -233,26 +235,92 @@ fn may_come_from_macro(content: &str, name: &str) -> bool {
     })
 }
 
-/// `line` with the contents of its double-quoted string literals removed
-/// (the quotes stay). A literal spanning lines is not seen as one.
+/// `line` with the contents of its string literals removed (the quotes, and a
+/// raw string's `#`s, stay). Char literals are skipped whole, so the `"` of
+/// `'"'` does not open a string. A literal spanning lines is not seen as one.
 fn strip_string_literals(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
     let mut out = String::with_capacity(line.len());
-    let mut in_string = false;
-    let mut escaped = false;
-    for c in line.chars() {
-        if !in_string {
-            in_string = c == '"';
-            out.push(c);
-        } else if escaped {
-            escaped = false;
-        } else if c == '\\' {
-            escaped = true;
-        } else if c == '"' {
-            in_string = false;
-            out.push(c);
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some(end) = char_literal_end(&chars, i) {
+            out.extend(&chars[i..end]);
+            i = end;
+        } else if let Some((open_end, close_start, end)) = string_literal_span(&chars, i) {
+            out.extend(&chars[i..open_end]);
+            out.extend(&chars[close_start..end]);
+            i = end;
+        } else {
+            out.push(chars[i]);
+            i += 1;
         }
     }
     out
+}
+
+/// The end (exclusive) of the char literal starting at `start` (`'x'`,
+/// `'"'`, `'\n'`, `'\''`, `'\u{..}'`); `None` when the quote opens a lifetime
+/// or label.
+fn char_literal_end(chars: &[char], start: usize) -> Option<usize> {
+    if chars.get(start) != Some(&'\'') {
+        return None;
+    }
+    if chars.get(start + 1) == Some(&'\\') {
+        let escape = chars.get(start + 3..)?;
+        return escape
+            .iter()
+            .take(10)
+            .position(|c| *c == '\'')
+            .map(|at| start + 3 + at + 1);
+    }
+    (chars.get(start + 2) == Some(&'\'')).then_some(start + 3)
+}
+
+/// The string literal starting at `start` (`"…"`, or `r#"…"#` with any number
+/// of `#`s) as `(open_end, close_start, end)`: `chars[..open_end]` is the
+/// opening quote, `chars[close_start..end]` the closing one, and the body
+/// between them is dropped. An unterminated literal runs to the end of the
+/// line (nothing after its opening quote is kept).
+fn string_literal_span(chars: &[char], start: usize) -> Option<(usize, usize, usize)> {
+    let (open_end, hashes) = match chars.get(start)? {
+        '"' => (start + 1, None),
+        'r' if start == 0 || !is_ident_char(chars[start - 1]) => {
+            let hashes = chars[start + 1..].iter().take_while(|c| **c == '#').count();
+            if chars.get(start + 1 + hashes) != Some(&'"') {
+                return None;
+            }
+            (start + 2 + hashes, Some(hashes))
+        }
+        _ => return None,
+    };
+    let len = chars.len();
+    let mut at = open_end;
+    while at < len {
+        match hashes {
+            // A raw string has no escapes; it closes at `"` plus its `#`s.
+            Some(hashes) if closes_raw(chars, at, hashes) => break,
+            None if chars[at] == '"' => break,
+            None if chars[at] == '\\' => at += 2,
+            _ => at += 1,
+        }
+    }
+    let at = at.min(len);
+    if at == len {
+        return Some((open_end, len, len));
+    }
+    Some((open_end, at, at + 1 + hashes.unwrap_or(0)))
+}
+
+/// Whether `chars[at..]` is a `"` followed by `hashes` `#`s.
+fn closes_raw(chars: &[char], at: usize, hashes: usize) -> bool {
+    chars.get(at) == Some(&'"')
+        && chars
+            .get(at + 1..at + 1 + hashes)
+            .is_some_and(|tail| tail.iter().all(|c| *c == '#'))
+}
+
+fn is_ident_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
 /// Whether `text` contains `name` as a whole identifier (an unraw `name`
@@ -392,6 +460,36 @@ mod tests {
         let path = file.display().to_string();
         let items = vec![entry("list_users", &path, "stale")];
         assert!(retain_declared_if(&items, true).is_empty());
+    }
+
+    /// A char literal `'"'` does not open a string, so the invocation after it
+    /// on the same line still names the generated `list`.
+    #[test]
+    fn retain_declared_sees_an_invocation_after_a_char_literal_quote() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let file = temp.path().join("generated_routes.rs");
+        std::fs::write(&file, "let q = '\"'; gen!(list);\n").unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let path = file.display().to_string();
+        let items = vec![entry("list", &path, "generated")];
+        assert_eq!(retain_declared_if(&items, true).len(), 1);
+    }
+
+    #[rstest::rstest]
+    #[case::plain_string(r#"say("list")"#, r#"say("")"#)]
+    #[case::escaped_quote(r#"say("a\"b") x"#, r#"say("") x"#)]
+    #[case::char_quote(r#"let q = '"'; gen!(list);"#, r#"let q = '"'; gen!(list);"#)]
+    #[case::escaped_char(r"let q = '\''; x", r"let q = '\''; x")]
+    #[case::unicode_char(r"let c = '\u{1F600}'; x", r"let c = '\u{1F600}'; x")]
+    #[case::char_escape_at_end(r"let c = '\", r"let c = '\")]
+    #[case::lifetime(r"fn f<'a>(x: &'a str) {}", r"fn f<'a>(x: &'a str) {}")]
+    #[case::raw_string_backslash(r#"let p = r"C:\"; x"#, r#"let p = r""; x"#)]
+    #[case::raw_string_hashes(r##"r#"a "q" b"# x"##, "r#\"\"# x")]
+    #[case::raw_ident(r"let r#type = 1;", r"let r#type = 1;")]
+    #[case::r_inside_word(r"for x in y {}", r"for x in y {}")]
+    #[case::unterminated(r#"say("list"#, r#"say(""#)]
+    fn strip_string_literals_keeps_code_and_quotes(#[case] line: &str, #[case] expected: &str) {
+        assert_eq!(strip_string_literals(line), expected);
     }
 
     #[rstest::rstest]

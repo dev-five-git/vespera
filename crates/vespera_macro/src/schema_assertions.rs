@@ -184,8 +184,12 @@ fn push_leaf_assertions(
     blocks: &mut Vec<TokenStream>,
 ) {
     for (leaf, last_ident) in collect_leaf_custom_types(ty) {
+        // A builtin-named leaf is the builtin only when it is bare or an
+        // external crate's path; a user module's `api::Header` is a type of
+        // its own, so it is checked like any other custom leaf.
+        let builtin = is_builtin_openapi_type(&last_ident) && !is_user_module_path(&leaf);
         if type_contains_generic(&leaf, generic_idents)
-            || is_builtin_openapi_type(&last_ident)
+            || builtin
             || is_serde_json_value_leaf(&leaf)
         {
             continue;
@@ -331,6 +335,29 @@ fn type_contains_generic(ty: &Type, generic_idents: &HashSet<String>) -> bool {
     mentions.found
 }
 
+/// Whether `ty` is a path into a user module (`api::Header`, `crate::Date`,
+/// `super::Uuid`) rather than a bare name or one of the external crates the
+/// builtin types come from (`chrono::`, `rust_decimal::`, `axum::`, ...).
+fn is_user_module_path(ty: &Type) -> bool {
+    const EXTERNAL_ROOTS: [&str; 11] = [
+        "axum",
+        "alloc",
+        "chrono",
+        "core",
+        "rust_decimal",
+        "sea_orm",
+        "serde_json",
+        "std",
+        "time",
+        "uuid",
+        "vespera",
+    ];
+    // Leaves reaching here are always paths (`collect_leaf_custom_types`), so
+    // a non-path type needs no arm of its own.
+    matches!(ty, Type::Path(type_path) if type_path.path.segments.len() > 1
+        && !EXTERNAL_ROOTS.iter().any(|root| type_path.path.segments[0].ident == *root))
+}
+
 /// `serde_json::Value` allowlist — bare `Value`, or any qualified path
 /// whose final segment is `Value` and which contains a `serde_json`
 /// segment somewhere (catches `serde_json::Value`, `::serde_json::Value`,
@@ -348,9 +375,13 @@ fn is_serde_json_value_leaf(ty: &Type) -> bool {
         return false;
     };
     // SeaORM's `JsonValue` alias of `serde_json::Value` (bare or
-    // `sea_orm::JsonValue`); its `Json` alias is already a builtin ident.
+    // `sea_orm::JsonValue`); its `Json` alias is already a builtin ident. A
+    // `JsonValue` under another path is a user type, not the alias.
     if last.ident == "JsonValue" {
-        return true;
+        return segments.len() == 1
+            || segments
+                .iter()
+                .any(|segment| segment.ident == "sea_orm" || segment.ident == "serde_json");
     }
     if last.ident != "Value" {
         return false;
@@ -928,6 +959,23 @@ mod tests {
     )]
     #[case::generic_conversion_is_skipped(r#"#[serde(into = "Vec<T>")] struct S<T> { a: T }"#, &[])]
     fn wire_override_assertions(#[case] src: &str, #[case] expected: &[&str]) {
+        assert_eq!(asserted_leaves(src), expected);
+    }
+
+    /// A builtin-named type under a user module is checked, so a forgotten
+    /// derive there cannot document as the builtin. Bare names and the
+    /// external crates' own paths keep their builtin exemption.
+    #[rstest::rstest]
+    #[case::user_module_builtin_name("struct S { a: api::Header }", &["api::Header"])]
+    #[case::crate_path_builtin_name("struct S { a: crate::models::Date }", &["crate::models::Date"])]
+    #[case::external_builtin_names(
+        "struct S { a: chrono::DateTime<Utc>, b: axum::Json<u8>, c: rust_decimal::Decimal, d: vespera::Json<u8> }",
+        &[]
+    )]
+    #[case::bare_builtin_names("struct S { a: Header, b: Decimal }", &[])]
+    #[case::user_json_value_alias("struct S { a: models::JsonValue }", &["models::JsonValue"])]
+    #[case::external_json_value_aliases("struct S { a: sea_orm::JsonValue, b: serde_json::Value }", &[])]
+    fn builtin_named_leaves_follow_their_path(#[case] src: &str, #[case] expected: &[&str]) {
         assert_eq!(asserted_leaves(src), expected);
     }
 }

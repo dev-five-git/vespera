@@ -564,8 +564,9 @@ fn scan_recovers_unexpanded_jobs_from_the_module_tree() {
     );
 }
 
-/// Without a `cron(` attribute outside the storage-covered files nothing
-/// is parsed and nothing is added.
+/// Without a `#[cron]` outside the storage-covered files the scan adds no job:
+/// the result is exactly the stored jobs. (Whether a file was parsed is not
+/// observable here, so the claim is limited to the resulting jobs.)
 #[rstest]
 #[case::no_cron_anywhere(&[("lib.rs", "mod a;"), ("a.rs", "pub fn a() {}")], false)]
 #[case::all_in_storage(&[("lib.rs", "mod a;"), ("a.rs", r#"#[cron("1 * * * * *")] pub async fn a() {}"#)], true)]
@@ -658,7 +659,10 @@ fn crate_without_a_root_file_contributes_nothing() {
 #[case::foreign_rename("use other::schedule as cron;", &[("", "spelled", "2 * * * * *")])]
 #[case::vespera_import("use vespera::cron;", &[("", "bare", "1 * * * * *"), ("", "spelled", "2 * * * * *")])]
 #[case::vespera_group("use ::vespera::{cron, axum};", &[("", "bare", "1 * * * * *"), ("", "spelled", "2 * * * * *")])]
-#[case::glob_import("use other::*;", &[("", "bare", "1 * * * * *"), ("", "spelled", "2 * * * * *")])]
+#[case::foreign_glob("use other::*;", &[("", "spelled", "2 * * * * *")])]
+#[case::foreign_glob_of_module("use other::prelude::*;", &[("", "spelled", "2 * * * * *")])]
+#[case::vespera_glob("use vespera::*;", &[("", "bare", "1 * * * * *"), ("", "spelled", "2 * * * * *")])]
+#[case::crate_glob("use crate::prelude::*;", &[("", "bare", "1 * * * * *"), ("", "spelled", "2 * * * * *")])]
 #[case::other_cron_name("use other::cron as tick;", &[("", "bare", "1 * * * * *"), ("", "spelled", "2 * * * * *")])]
 fn foreign_cron_attributes_are_not_claimed(
     #[case] import: &str,

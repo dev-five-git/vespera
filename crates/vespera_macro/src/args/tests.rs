@@ -288,6 +288,9 @@ fn test_route_args_parse_headers(#[case] input: &str, #[case] expected_headers: 
 #[case(r#"headers = [{ name = "" }]"#)]
 #[case(r#"headers = [{ name = "x y" }]"#)]
 #[case(r#"headers = [{ name = "X-Caf\u{e9}" }]"#)]
+// A missing comma between entries or fields must not drop the rest silently.
+#[case(r#"headers = [{ name = "A" } { name = "B" }]"#)]
+#[case(r#"headers = [{ name = "A" required = true }]"#)]
 fn test_route_args_parse_headers_invalid(#[case] input: &str) {
     assert!(syn::parse_str::<RouteArgs>(input).is_err());
 }

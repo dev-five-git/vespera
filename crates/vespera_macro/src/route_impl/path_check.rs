@@ -91,6 +91,13 @@ pub(super) fn check_with_lookup(
     let route_path =
         route_path.map_or_else(|| "without `path`".to_string(), |path| format!("`{path}`"));
     let route_path = route_path.as_str();
+    // A handler type parameter is not the struct of the same name in the
+    // module (`fn h<Ids: DeserializeOwned>(Path(p): Path<Ids>)`), so it is
+    // never looked up.
+    let lookup = |name: &str| {
+        let is_type_param = sig.generics.type_params().any(|param| param.ident == name);
+        if is_type_param { None } else { lookup(name) }
+    };
     for input in &sig.inputs {
         let syn::FnArg::Typed(pat_type) = input else {
             continue;
@@ -356,6 +363,22 @@ mod tests {
     #[case::no_path_extractor(None, "Json(b): Json<(u32, u32)>")]
     fn accepted(#[case] path: Option<&str>, #[case] arg: &str) {
         assert_eq!(check(path, arg), Ok(()));
+    }
+
+    /// A handler type parameter named like a struct of the module is that
+    /// parameter, not the struct: its `Path<T>` is left to axum. The same
+    /// struct named outside the generic list is still checked.
+    #[test]
+    fn handler_type_parameter_shadows_the_struct_of_its_name() {
+        let check_sig = |sig: &str| {
+            let sig: syn::Signature = syn::parse_str(sig).unwrap();
+            check_with_lookup(&sig, Some("/{org}/{id}"), lookup).map_err(|e| e.to_string())
+        };
+        assert_eq!(
+            check_sig("async fn h<Strict: Send>(p: Path<Strict>)"),
+            Ok(())
+        );
+        assert!(check_sig("async fn h(p: Path<Strict>)").is_err());
     }
 
     #[rstest]

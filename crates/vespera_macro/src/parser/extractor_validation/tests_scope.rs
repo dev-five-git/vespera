@@ -22,6 +22,8 @@ fn run_with_test_only(src: &str, test_only: &[(&str, &str)]) -> syn::Result<()> 
             |(file_path, function_name)| crate::metadata::TestOnlyRoute {
                 file_path: (*file_path).to_string(),
                 function_name: (*function_name).to_string(),
+                // Legacy entry without a method: matches by name alone.
+                method: String::new(),
             },
         )
         .collect();
