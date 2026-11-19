@@ -1,5 +1,5 @@
 //! `requested_variant` (R20-SM3-03, round 20): a bare name the call site
-//! imports explicitly names that import's module; a glob import does not.
+//! imports explicitly, or defines itself, is named; a glob import is not.
 
 use super::*;
 use crate::metadata::StructMetadata;
@@ -24,6 +24,9 @@ fn write_crate(dir: &std::path::Path, routes_source: &str) -> String {
 #[rstest::rstest]
 #[case::explicit_import_of_an_underived_item("use crate::a::Page;\n", true)]
 #[case::glob_import_stays_lenient("use crate::a::*;\n", false)]
+// R30-SM3-M1: the call site's own underived `Page` is named like an import; it
+// must not silently fall back to the stored `b::Page`.
+#[case::own_underived_definition("pub struct Page { pub q: u32 }\n", true)]
 fn bare_name_import_of_an_underived_item(#[case] routes_source: &str, #[case] rejected: bool) {
     let dir = tempfile::TempDir::new().unwrap();
     let stored_file = write_crate(dir.path(), routes_source);

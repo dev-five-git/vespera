@@ -574,11 +574,14 @@ pub fn process_derive_schema(
     // The schema name is the `components.schemas` key: a value outside the
     // OpenAPI key pattern would otherwise reach the document unchecked. The
     // default is the Rust ident (R29-SM0-L2: a non-ASCII ident such as `회원`
-    // compiles, so it is checked too).
-    if let Err(error) = require_component_key(
-        schema_attr.name.as_deref().unwrap_or(&rust_name),
-        name.span(),
-    ) {
+    // compiles, so it is checked too), but `#[schema(ref = ..)]` keeps the
+    // type out of `components`, so only an explicit name is checked then
+    // (R30-SM-L1).
+    let component_key = schema_attr
+        .name
+        .as_deref()
+        .or((!schema_attr.has_ref_override).then_some(rust_name.as_str()));
+    if let Some(Err(error)) = component_key.map(|key| require_component_key(key, name.span())) {
         return (None, error.to_compile_error());
     }
     let has_explicit_schema_name = schema_attr.name.is_some();

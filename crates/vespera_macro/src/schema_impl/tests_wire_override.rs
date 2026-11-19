@@ -72,6 +72,28 @@ fn explicit_ascii_name_accepts_a_non_ascii_ident() {
     assert!(metadata.is_some(), "{expanded}");
 }
 
+/// R30-SM-L1: `#[schema(ref = ..)]` keeps the type out of `components`, so
+/// its non-ASCII default ident is never emitted as a key and is not checked.
+#[test]
+fn ref_override_skips_the_default_name_check() {
+    let input: syn::DeriveInput =
+        syn::parse_str(r#"#[schema(ref = "ExternalUser")] struct 회원 { id: i64 }"#).unwrap();
+    let (metadata, expanded) = process_derive_schema(&input);
+    assert!(metadata.is_some(), "{expanded}");
+}
+
+/// The explicit `name` is still checked under `ref`, since it is a key the
+/// derive was asked to write.
+#[test]
+fn ref_override_still_checks_an_explicit_name() {
+    let input: syn::DeriveInput =
+        syn::parse_str(r#"#[schema(ref = "ExternalUser", name = "bad name")] struct S { a: u8 }"#)
+            .unwrap();
+    let (metadata, expanded) = process_derive_schema(&input);
+    assert!(metadata.is_none());
+    assert!(expanded.to_string().contains("compile_error"), "{expanded}");
+}
+
 #[test]
 fn container_value_type_must_be_a_type() {
     let input: syn::DeriveInput =

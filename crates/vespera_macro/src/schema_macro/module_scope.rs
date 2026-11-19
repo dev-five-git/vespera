@@ -760,7 +760,13 @@ fn relative_path(segments: &[String], module_path: &[String]) -> Vec<String> {
         return target;
     };
     module_scope(&target)
-        .and_then(|scope| scope.lookup(name, &target))
+        // A glob import of the target names it too (R30-SM3-L1): `self::X`
+        // is the target's own scope, globs included, as `resolve_name` sees it.
+        .and_then(|scope| {
+            scope
+                .lookup(name, &target)
+                .or_else(|| glob_lookup(&scope, name, &target))
+        })
         .unwrap_or_else(|| target.iter().chain([name]).cloned().collect())
         .into_iter()
         .chain(tail.iter().cloned())

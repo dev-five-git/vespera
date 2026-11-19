@@ -617,7 +617,7 @@ mod tests {
     fn explicit_adapter_falls_back_to_storage_when_the_file_lacks_it() {
         let storage = to_storage(vec![create_test_struct_metadata(
             "__VesperaStorageOnly",
-            "struct __VesperaStorageOnly { value: i32 }",
+            "struct __VesperaStorageOnly { pub value: i32 }",
         )]);
         let ident = syn::Ident::new("__VesperaStorageOnly", proc_macro2::Span::call_site());
         let (name, dto) = explicit_adapter_struct("author", &ident, &storage).unwrap();
@@ -703,44 +703,47 @@ mod tests {
     /// `#[cfg]` fields keep their cfg on each assignment, and the container
     /// conversion keys shape the `Deserialize`.
     #[rstest::rstest]
-    #[case::plain("adapter_plain", "struct UserInArticle { id: i32, name: String }")]
+    #[case::plain(
+        "adapter_plain",
+        "struct UserInArticle { pub id: i32, pub name: String }"
+    )]
     #[case::cfg_field(
         "adapter_cfg_field",
-        "struct UserInArticle { id: i32, #[cfg(feature = \"x\")] #[serde(rename = \"n\")] name: String }"
+        "struct UserInArticle { pub id: i32, #[cfg(feature = \"x\")] #[serde(rename = \"n\")] pub name: String }"
     )]
     #[case::container_from(
         "adapter_container_from",
-        "#[serde(from = \"String\", into = \"String\", rename_all = \"camelCase\")] struct UserInArticle { id: i32 }"
+        "#[serde(from = \"String\", into = \"String\", rename_all = \"camelCase\")] struct UserInArticle { pub id: i32 }"
     )]
     #[case::container_try_from(
         "adapter_container_try_from",
-        "#[serde(try_from = \"String\")] struct UserInArticle { id: i32 }"
+        "#[serde(try_from = \"String\")] struct UserInArticle { pub id: i32 }"
     )]
     #[case::container_default(
         "adapter_container_default",
-        "#[serde(default, bound = \"\", deny_unknown_fields)] struct UserInArticle { id: i32, #[cfg(test)] name: String }"
+        "#[serde(default, bound = \"\", deny_unknown_fields)] struct UserInArticle { pub id: i32, #[cfg(test)] pub name: String }"
     )]
     #[case::container_default_path(
         "adapter_container_default_path",
-        "#[serde(default = \"Self::fallback\")] struct UserInArticle { id: i32 }"
+        "#[serde(default = \"Self::fallback\")] struct UserInArticle { pub id: i32 }"
     )]
     // L13 (round 12): `cfg_attr` serde items reach the proxy (a cfg-gated
     // conversion key is dropped, non-serde items and unparseable ones too).
     #[case::cfg_attr_serde(
         "adapter_cfg_attr_serde",
-        "#[cfg_attr(feature = \"x\", serde(rename_all = \"camelCase\", from = \"String\"), schema(name = \"Q\"))] #[cfg_attr(all(), serde(default))] #[cfg_attr(feature)] struct UserInArticle { #[cfg_attr(feature = \"x\", serde(rename = \"uid\"), garde(skip))] user_id: i32, #[cfg_attr(all(), serde, schema(minimum = 1))] other: i32 }"
+        "#[cfg_attr(feature = \"x\", serde(rename_all = \"camelCase\", from = \"String\"), schema(name = \"Q\"))] #[cfg_attr(all(), serde(default))] #[cfg_attr(feature)] struct UserInArticle { #[cfg_attr(feature = \"x\", serde(rename = \"uid\"), garde(skip))] pub user_id: i32, #[cfg_attr(all(), serde, schema(minimum = 1))] pub other: i32 }"
     )]
     // L11 (round 16): a `cfg_attr(p, cfg(q))` field gates its assignments
     // and its proxy field (both were unconditional: E0560).
     #[case::cfg_attr_cfg(
         "adapter_cfg_attr_cfg",
-        "struct UserInArticle { id: i32, #[cfg_attr(feature = \"a\", cfg(feature = \"b\"), serde(rename = \"n\"))] name: String }"
+        "struct UserInArticle { pub id: i32, #[cfg_attr(feature = \"a\", cfg(feature = \"b\"), serde(rename = \"n\"))] pub name: String }"
     )]
     // L3 (round 17): `Self` in the DTO's serde paths and field types names
     // the DTO, not the proxy (`<Proxy>::default_name`: E0599).
     #[case::self_paths(
         "adapter_self_paths",
-        "#[serde(default = \"Self::make\")] struct UserInArticle { #[serde(default = \"Self::default_name\")] name: String, next: Option<Box<Self>> }"
+        "#[serde(default = \"Self::make\")] struct UserInArticle { #[serde(default = \"Self::default_name\")] pub name: String, pub next: Option<Box<Self>> }"
     )]
     fn adapter_helpers_snapshot(#[case] name: &str, #[case] definition: &str) {
         let storage = to_storage(vec![create_test_struct_metadata(
@@ -796,7 +799,7 @@ mod tests {
                 derive_clone,
             )
         };
-        let definition = "struct UserInArticle { id: i32 }";
+        let definition = "struct UserInArticle { pub id: i32 }";
         let (_, with) = generate(definition, true).unwrap();
         let (_, without) = generate(definition, false).unwrap();
         assert!(with.to_string().contains("impl Clone for"));
@@ -861,7 +864,7 @@ mod tests {
 
         let storage = to_storage(vec![create_test_struct_metadata(
             "UserInArticle",
-            "struct UserInArticle { id: i32 }",
+            "struct UserInArticle { pub id: i32 }",
         )]);
         let new_type_name = syn::Ident::new("ArticleResponse", proc_macro2::Span::call_site());
         let adapter_name = syn::Ident::new("UserInArticle", proc_macro2::Span::call_site());
@@ -967,7 +970,7 @@ mod tests {
         };
         let storage = to_storage(vec![create_test_struct_metadata(
             "UserInArticle",
-            r#"#[schema(name = "ArticleUser")] struct UserInArticle { id: i32, name: String }"#,
+            r#"#[schema(name = "ArticleUser")] struct UserInArticle { pub id: i32, pub name: String }"#,
         )]);
         let new_type_name = syn::Ident::new("ArticleResponse", proc_macro2::Span::call_site());
         let adapter_name = syn::Ident::new("UserInArticle", proc_macro2::Span::call_site());
