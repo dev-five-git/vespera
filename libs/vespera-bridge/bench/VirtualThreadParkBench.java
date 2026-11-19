@@ -69,7 +69,8 @@ public final class VirtualThreadParkBench {
             m.setAccessible(true);
             return java.lang.invoke.MethodHandles.lookup().unreflect(m);
         } catch (ReflectiveOperationException e) {
-            return null;
+            throw new IllegalStateException(
+                    "cannot look up ParkingDispatch.park(byte[]); the bench needs that method", e);
         }
     }
 

@@ -3,6 +3,7 @@ package com.devfive.vespera.bridge;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import jakarta.servlet.Filter;
@@ -91,8 +92,10 @@ class MultipartPassthroughTest {
             String contentLength = forwardedContentLength(shape, body);
             response.setStatus(200);
             response.setHeader("x-seen-content-type", headers.get("content-type"));
-            response.setHeader("x-seen-content-length",
-                    contentLength != null ? contentLength : String.valueOf(headers.get("content-length")));
+            String seenLength = contentLength != null ? contentLength : headers.get("content-length");
+            if (seenLength != null) {
+                response.setHeader("x-seen-content-length", seenLength);
+            }
             response.setHeader("x-seen-sha256", sha256(body));
             response.setHeader("x-seen-length", Integer.toString(body.length));
             return null;
@@ -191,8 +194,12 @@ class MultipartPassthroughTest {
         assertEquals(CONTENT_TYPE, response.headers().firstValue("x-seen-content-type").orElse(null));
         assertEquals(Integer.toString(body.length), response.headers().firstValue("x-seen-length").orElse(null));
         assertEquals(sha256(body), response.headers().firstValue("x-seen-sha256").orElse(null));
-        assertEquals(chunked ? "null" : Integer.toString(body.length),
-                response.headers().firstValue("x-seen-content-length").orElse(null));
+        String seenLength = response.headers().firstValue("x-seen-content-length").orElse(null);
+        if (chunked) {
+            assertNull(seenLength, "a chunked upload has no Content-Length to forward");
+        } else {
+            assertEquals(Integer.toString(body.length), seenLength);
+        }
     }
 
     @ParameterizedTest

@@ -216,17 +216,23 @@ class NativePlatformTest {
     }
 
     @ParameterizedTest
-    @CsvSource("linux-arm, linux", "linux-riscv64, linux", "linux-x86-musl, linux", "macos-x86_64, macos")
-    fun acceptsTheArchNamesTheLoaderLooksUp(key: String, os: String) {
+    @CsvSource(
+        "linux-arm, linux", "linux-riscv64, linux", "linux-x86-musl, linux", "macos-x86_64, macos",
+        "linux-loongarch64, linux", "linux-ppc64, linux", "linux-sparc, linux", "linux-sparcv9, linux",
+    )
+    fun acceptsAnyArchTheLoaderLooksUp(key: String, os: String) {
         assertEquals(os, NativePlatform.osOfPlatformKey(key))
     }
 
     @ParameterizedTest
-    @CsvSource("linux-musl", "linux-gnu", "linux-sparc", "linux-sparcv9", "macos-foo", "windows-libc")
-    fun rejectsASegmentThatIsNoArchAtAll(key: String) {
+    @CsvSource(
+        "linux-musl", "linux-gnu", "linux-gnueabihf", "linux-musleabihf",
+        "windows-msvc", "windows-libc",
+    )
+    fun rejectsAnAbiOrLibcWordAsTheArch(key: String) {
         val rejected = assertThrows<IllegalArgumentException> { NativePlatform.osOfPlatformKey(key) }
         assertTrue(rejected.message!!.startsWith("vespera.targets key '$key'"), rejected.message)
-        assertTrue(rejected.message!!.contains("is not one the bridge loader looks up"), rejected.message)
+        assertTrue(rejected.message!!.contains("is an ABI or libc name, not a CPU arch"), rejected.message)
         val named = assertThrows<IllegalArgumentException> {
             NativePlatform.osOfPlatformKey(key, "vespera.nativeJarPlatforms entry")
         }

@@ -1,6 +1,7 @@
 package kr.go.demo;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -13,6 +14,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -93,12 +96,14 @@ class BridgeHardeningHttpTest extends AbstractVesperaHttpIntegrationTest {
 
         // Spring's own preflight handling answers without dispatching; here the
         // proxy ran (request id echoed, observer event) and the Rust router
-        // answered the OPTIONS itself (the demo router has no CORS layer).
+        // answered the OPTIONS itself: the demo's /health is GET-only and the
+        // demo router has no CORS layer, so axum answers 405.
         assertEquals("preflight-1", response.headers().firstValue("X-Request-Id").orElse(null));
+        assertEquals(405, response.statusCode(), response.body());
         DispatchEvent event = eventFor("preflight-1");
         assertEquals("OPTIONS", event.method());
         assertEquals("/health", event.path());
-        assertEquals(response.statusCode(), event.status());
+        assertEquals(405, event.status());
     }
 
     @Test
@@ -126,8 +131,24 @@ class BridgeHardeningHttpTest extends AbstractVesperaHttpIntegrationTest {
         String body = health.body();
         assertTrue(body.contains("\"status\":\"UP\""), body);
         assertTrue(VesperaBridge.isInitialized());
-        // init() verified bridge and native versions share major.minor.
-        assertTrue(body.contains("\"nativeVersion\":\""), body);
-        assertTrue(body.contains("\"bridgeVersion\":\""), body);
+        // Both versions are reported and agree on major.minor. init() enforces that
+        // only while -Dvespera.native.versionCheck is strict, so assert it here too.
+        String nativeVersion = jsonField(body, "nativeVersion");
+        String bridgeVersion = jsonField(body, "bridgeVersion");
+        assertFalse(nativeVersion.isBlank(), body);
+        assertFalse(bridgeVersion.isBlank(), body);
+        assertEquals(majorMinor(bridgeVersion), majorMinor(nativeVersion), body);
+    }
+
+    private static String jsonField(String json, String field) {
+        Matcher matcher = Pattern.compile("\"" + field + "\":\"([^\"]*)\"").matcher(json);
+        assertTrue(matcher.find(), json);
+        return matcher.group(1);
+    }
+
+    private static String majorMinor(String version) {
+        Matcher matcher = Pattern.compile("^(\\d+\\.\\d+)").matcher(version);
+        assertTrue(matcher.find(), "no major.minor in '" + version + "'");
+        return matcher.group(1);
     }
 }

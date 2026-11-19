@@ -81,9 +81,13 @@ final class CurrentUser {
         @Override
         public UserPrincipal tmpdirProbeOwner() throws IOException {
             Path tmp = Paths.get(System.getProperty("java.io.tmpdir", "/tmp"));
-            if (!trustedTmpdir(tmp)) {
-                // Anyone could swap the probe in a shared directory: let the
-                // principal lookup answer instead.
+            UserPrincipal self = processOwner();
+            if (self == null) {
+                self = userNameLookup();
+            }
+            if (!trustedTmpdir(tmp, self)) {
+                // Anyone could swap the probe in a directory another user controls: let
+                // the principal lookup answer instead.
                 return null;
             }
             return ownerOfProbe(Files.createTempFile(tmp, "vespera-owner-", ".probe"));
@@ -211,12 +215,16 @@ final class CurrentUser {
     }
 
     /**
-     * Whether {@code java.io.tmpdir} may host the probe: on POSIX it must be a
-     * directory that is not group/other-writable, or a sticky one (sticky
-     * {@code /tmp}: no other user can replace or delete a file it does not
-     * own). Non-POSIX file systems keep the per-user temp directory default.
+     * Whether {@code java.io.tmpdir} may host the probe. On POSIX it must be a
+     * directory that is either root-owned and sticky ({@code /tmp}: no other
+     * user can replace or delete a file it does not own), or owned by
+     * {@code self} (the process's identity, {@code null} when unknown: then
+     * untrusted) and not group/other-writable unless sticky. A directory
+     * another user owns is never trusted, even when it is 0755: its owner can
+     * rename the probe before it is read. Non-POSIX file systems keep the
+     * per-user temp directory default.
      */
-    static boolean trustedTmpdir(Path dir) throws IOException {
+    static boolean trustedTmpdir(Path dir, UserPrincipal self) throws IOException {
         if (!VesperaNativeLoader.posixSupported(dir)) {
             return true;
         }
@@ -224,9 +232,13 @@ final class CurrentUser {
         if (!attrs.isDirectory()) {
             return false;
         }
+        boolean sticky = sticky(dir);
+        if (sticky && "root".equals(attrs.owner().getName())) {
+            return true;
+        }
         boolean shared = attrs.permissions().contains(PosixFilePermission.GROUP_WRITE)
                 || attrs.permissions().contains(PosixFilePermission.OTHERS_WRITE);
-        return !shared || sticky(dir);
+        return self != null && self.equals(attrs.owner()) && (!shared || sticky);
     }
 
     /** The sticky bit, read through the {@code unix} view (absent on some file systems: not sticky). */
