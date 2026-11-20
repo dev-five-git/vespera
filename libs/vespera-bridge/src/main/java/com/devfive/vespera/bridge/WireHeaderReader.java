@@ -398,8 +398,10 @@ final class WireHeaderReader {
     static final int KEY_OTHER = -1;
     static final int KEY_STATUS = 0;
     static final int KEY_HEADERS = 1;
-    // Recognised additionally by the full decode() path (apply() skips these
-    // as KEY_OTHER); matched allocation-free by length + bytes like the rest.
+    // Recognised by apply() (applyInner) as well as the full decode() path: apply()
+    // looks inside metadata only for `"panicked":"true"`, and only when its sink
+    // is a PanicFlagSink; any other sink skips the value. Matched allocation-free
+    // by length + bytes like the rest.
     static final int KEY_METADATA = 2;
     static final int KEY_VALIDATION = 3;
 

@@ -39,6 +39,8 @@ class AsyncTimeoutHttpTest extends AbstractVesperaHttpIntegrationTest {
 
     static final long TIMEOUT_MILLIS = 300;
     private static final long HANDLER_MILLIS = 1500;
+    /** The in-flight count while only the diagnostic probe itself is in flight. */
+    private static final long PROBE_SLOT = 1;
 
     @TestConfiguration(proxyBeanMethods = false)
     static class AsyncConfiguration {
@@ -78,9 +80,31 @@ class AsyncTimeoutHttpTest extends AbstractVesperaHttpIntegrationTest {
         return client.send(request, HttpResponse.BodyHandlers.ofString());
     }
 
-    /** The process-wide count of ASYNC dispatches holding an in-flight slot. */
+    /**
+     * The process-wide count of ASYNC dispatches holding an in-flight slot.
+     * The probe is itself an ASYNC dispatch in this context, so its own slot
+     * is always counted while it reads the value.
+     */
     private long asyncInFlight(String requestId) throws Exception {
         return Long.parseLong(get("/diag/async-in-flight", requestId).body());
+    }
+
+    /**
+     * Waits until the probe's own slot is the only one held (a cancelled
+     * dispatch from an earlier request may release its slot late), and returns
+     * that baseline.
+     */
+    private long awaitAsyncIdle(String requestId) throws Exception {
+        long deadline = System.nanoTime() + 10_000_000_000L;
+        long inFlight = asyncInFlight(requestId);
+        while (inFlight != PROBE_SLOT) {
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("async dispatches still in flight: " + inFlight);
+            }
+            Thread.sleep(10);
+            inFlight = asyncInFlight(requestId);
+        }
+        return PROBE_SLOT;
     }
 
     private List<DispatchEvent> eventsFor(String requestId) {
@@ -92,9 +116,10 @@ class AsyncTimeoutHttpTest extends AbstractVesperaHttpIntegrationTest {
         String key = "async-timeout-" + System.nanoTime();
         String requestId = key;
 
-        // The in-flight counter is process-wide: read the baseline before the
-        // request and wait for the slot to return to it after the cancel.
-        long baseline = asyncInFlight(key + "-baseline");
+        // The in-flight counter is process-wide: wait until only the probe is
+        // in flight, take that as the baseline, and wait for the slot to return
+        // to it after the cancel.
+        long baseline = awaitAsyncIdle(key + "-baseline");
         HttpResponse<String> response = get("/diag/sleep/" + key + "/" + HANDLER_MILLIS, requestId);
         assertEquals(503, response.statusCode(), response.body());
 

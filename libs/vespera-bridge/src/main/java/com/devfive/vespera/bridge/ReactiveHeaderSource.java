@@ -132,10 +132,13 @@ final class ReactiveHeaderSource implements VesperaBridge.HeaderSource {
 
     /**
      * {@code ip:port} of the client (after any {@code ForwardedHeaderTransformer}
-     * rewrite), IPv6 bracketed; {@code null} when unknown.
+     * rewrite), IPv6 bracketed; {@code null} when unknown: no address, or no
+     * client port ({@code 0}, or negative). An unknown port is never sent as
+     * {@code :0}: that names a port the client never had, so the whole
+     * {@code remote_addr} is omitted instead (the servlet source does the same).
      */
     static String remoteAddr(InetSocketAddress address) {
-        if (address == null) {
+        if (address == null || address.getPort() <= 0) {
             return null;
         }
         InetAddress ip = address.getAddress();
@@ -149,7 +152,7 @@ final class ReactiveHeaderSource implements VesperaBridge.HeaderSource {
             host = host.substring(0, zone);
         }
         String bracketed = host.indexOf(':') >= 0 && host.charAt(0) != '[' ? "[" + host + "]" : host;
-        return bracketed + ":" + Math.max(0, address.getPort());
+        return bracketed + ":" + address.getPort();
     }
 
     /** {@code https} / {@code http} from the request URI (falls back to the TLS session). */

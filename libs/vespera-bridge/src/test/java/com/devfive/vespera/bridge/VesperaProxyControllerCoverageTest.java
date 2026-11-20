@@ -519,7 +519,50 @@ class VesperaProxyControllerCoverageTest {
         failed.reachedRust = true;
         AsyncProxyResponses.reportAsyncError(failed, new IllegalStateException("boom"), false);
         assertEquals(500, seen.get(1).status());
-        assertTrue(failed.reachedRust);
+        assertFalse(failed.reachedRust, "a container error never carries a Rust answer");
+    }
+
+    @Test
+    void asyncContainerErrorNeverLearnsAnAppAndLogsItsCause() {
+        java.util.List<DispatchEvent> seen = new java.util.ArrayList<>();
+        AppTags tags = new AppTags(null);
+        org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(VesperaProxyController.class);
+        ch.qos.logback.classic.Logger logback = (ch.qos.logback.classic.Logger) logger;
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> logged =
+                new ch.qos.logback.core.read.ListAppender<>();
+        logged.start();
+        logback.addAppender(logged);
+        try {
+            // A client-selected name that Rust never answered for (the container failed first).
+            ProxyExchange failed = new ProxyExchange(logger, java.util.List.of(seen::add), tags, "GET", "rid-7");
+            failed.app = "nosuch-app";
+            failed.reachedRust = true;
+            AsyncProxyResponses.reportAsyncError(failed, new IllegalStateException("boom"), false);
+            assertFalse(failed.reachedRust, "a container error is not an answer of the selected app");
+            assertEquals(500, seen.get(0).status());
+            assertEquals(AppTags.UNKNOWN, seen.get(0).app(), "the unregistered name is not reported");
+            assertEquals(AppTags.UNKNOWN, tags.tag("nosuch-app", 404, false, false),
+                    "and nothing was learned from it");
+
+            java.util.List<ch.qos.logback.classic.spi.ILoggingEvent> causes = logged.list.stream()
+                    .filter(event -> event.getThrowableProxy() != null).toList();
+            assertEquals(1, causes.size(), "the failure is logged once, with its cause");
+            assertEquals("vespera async request failed", causes.get(0).getFormattedMessage());
+            assertEquals("boom", causes.get(0).getThrowableProxy().getMessage());
+            assertEquals("rid-7", causes.get(0).getMDCPropertyMap()
+                    .get(VesperaProxyController.MDC_REQUEST_ID));
+
+            // A client disconnect is not a server error: no WARN with a cause.
+            ProxyExchange gone = new ProxyExchange(logger, java.util.List.of(seen::add), tags, "GET", "rid-8");
+            AsyncProxyResponses.reportAsyncError(gone,
+                    new IllegalStateException(new IOException("Broken pipe")), false);
+            assertEquals(499, seen.get(1).status());
+            assertEquals(1, logged.list.stream()
+                    .filter(event -> event.getThrowableProxy() != null).count(),
+                    "no cause logged for a disconnect");
+        } finally {
+            logback.detachAppender(logged);
+        }
     }
 
     @Test

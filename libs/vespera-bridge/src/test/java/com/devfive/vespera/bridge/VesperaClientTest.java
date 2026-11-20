@@ -227,6 +227,47 @@ class VesperaClientTest {
                 () -> client.post("/s").body("é", "text/plain; charset="));
     }
 
+    /**
+     * A character the declared charset cannot encode is reported, never sent
+     * as a substitute byte: {@code ?} would change the data without an error.
+     */
+    @Test
+    void anUnencodableTextBodyFailsInsteadOfBecomingQuestionMarks() {
+        IllegalArgumentException unmappable = assertThrows(IllegalArgumentException.class,
+                () -> client.post("/s").body("price: €", "text/plain; charset=ISO-8859-1"));
+        assertTrue(unmappable.getMessage().contains("U+20AC at index 7"), unmappable.getMessage());
+        assertTrue(unmappable.getMessage().contains("ISO-8859-1"), unmappable.getMessage());
+
+        // A lone surrogate is not representable in ISO-8859-1 (UTF-8 keeps its U+FFFD rule).
+        IllegalArgumentException lone = assertThrows(IllegalArgumentException.class,
+                () -> client.post("/s").body("a\ud800b", "text/plain; charset=ISO-8859-1"));
+        assertTrue(lone.getMessage().contains("U+D800 at index 1"), lone.getMessage());
+
+        // Nothing was sent, and a representable text still encodes byte-exact.
+        assertTrue(transport.requests.isEmpty());
+        client.post("/t").body("é", "text/plain; charset=ISO-8859-1").send();
+        assertArrayEquals(new byte[] {(byte) 0xE9}, body(transport.requests.get(0)));
+    }
+
+    /**
+     * A stream the native side closed during a failed dispatch is not sent
+     * again, even though that dispatch never read it: the close is a use.
+     */
+    @Test
+    void aStreamTheNativeSideClosedIsNotResentEvenUnread() {
+        VesperaRequest req = new VesperaClient(new FakeTransport() {
+            @Override
+            public byte[] dispatchStreaming(byte[] header, InputStream in, OutputStream out)
+                    throws IOException {
+                in.close();
+                throw new IOException("body error after the header");
+            }
+        }, null).post("/s").body(new ByteArrayInputStream(new byte[] {1}), null);
+        assertThrows(VesperaClientException.class, req::send);
+        IllegalStateException again = assertThrows(IllegalStateException.class, req::send);
+        assertTrue(again.getMessage().contains("already sent"), again.getMessage());
+    }
+
     @Test
     void appSelectionFromClientAndRequest() throws IOException {
         VesperaClient admin = client.forApp("  admin ");
