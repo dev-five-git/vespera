@@ -717,7 +717,7 @@ pub fn set_default_temp_file_field_limit_bytes(limit_bytes: usize) -> usize {
 }
 
 // Scalar field parsers (`String`, `bool`, integers/floats, `char`) live in a
-// sidecar module so `multipart.rs` stays within the 1000-line source cap.
+// sidecar module so `multipart/mod.rs` stays within the 1000-line source cap.
 mod scalar_parsers;
 
 // ─── NamedTempFile ──────────────────────────────────────────────────────────

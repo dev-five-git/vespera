@@ -9,6 +9,9 @@
 //! - `["apiKey", ("oauth2", ["read:users"])]` → `{ "apiKey": [], "oauth2": ["read:users"] }`
 //!   (AND group — every scheme of the group is required together)
 //! - `[]` → `{}` (anonymous alternative: authentication becomes optional)
+//!   On a route, the element is spelled `security = [[]]`: a bare
+//!   `security = []` is an empty list of alternatives, the explicit no-auth
+//!   marker.
 
 use std::collections::BTreeMap;
 

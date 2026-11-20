@@ -302,15 +302,19 @@ pub(super) fn with_route_signature_hash(
 }
 
 /// The storage part of the route-cache key: schema contents, the stored
-/// `#[route]` signatures and every test-only verdict the document depends on
-/// (`collector::test_scope::verdict_hash`).
+/// `#[route]` signatures, every test-only verdict the document depends on
+/// (`collector::test_scope::verdict_hash`) and the route folder's resolved
+/// `mod` table (`collector::module_table_hash`), which a `#[path]` declarer
+/// outside the folder can change without touching a fingerprinted file.
 pub(super) fn storage_hash(
     schema_storage: &HashMap<String, StructMetadata>,
     route_storage: &[crate::route_impl::StoredRouteInfo],
+    module_table: u64,
 ) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     with_route_signature_hash(compute_schema_hash(schema_storage), route_storage).hash(&mut hasher);
     crate::collector::test_scope::verdict_hash(schema_storage, route_storage).hash(&mut hasher);
+    module_table.hash(&mut hasher);
     hasher.finish()
 }
 

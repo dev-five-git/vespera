@@ -51,3 +51,26 @@ fn invalid_vespera_dir_env_error_names_the_variable() {
         "{error}"
     );
 }
+
+#[cfg(unix)]
+fn non_unicode() -> std::ffi::OsString {
+    use std::os::unix::ffi::OsStringExt;
+    std::ffi::OsString::from_vec(vec![0x66, 0x80])
+}
+
+#[cfg(windows)]
+fn non_unicode() -> std::ffi::OsString {
+    use std::os::windows::ffi::OsStringExt;
+    std::ffi::OsString::from_wide(&[0x66, 0xD800])
+}
+
+/// A set but non-Unicode `VESPERA_*` fallback is a compile error naming the
+/// variable, like a malformed one: it is never silently ignored.
+#[test]
+fn non_unicode_vespera_env_is_a_compile_error_naming_it() {
+    let _title = crate::env_access::test_env::set_var("VESPERA_TITLE", non_unicode());
+    let Err(error) = syn::parse2::<AutoRouterInput>(quote::quote!()) else {
+        panic!("a non-Unicode fallback must be rejected");
+    };
+    assert!(error.to_string().contains("VESPERA_TITLE"), "{error}");
+}

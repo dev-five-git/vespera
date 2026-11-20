@@ -1,7 +1,7 @@
 //! [`TryFromFieldWithState`] implementations for scalar multipart fields
 //! (`String`, `bool`, the integer / float types, and `char`).
 //!
-//! Split out of `multipart.rs` to keep that file within the repository's
+//! Split out of `multipart/mod.rs` to keep that file within the repository's
 //! 1000-line source cap. `use super::*` keeps the shared helpers in scope —
 //! [`read_field_data`], [`MeteredField`], `tiny_scalar_limit`, `str_to_bool`,
 //! the capacity / limit constants, and [`TypedMultipartError`].

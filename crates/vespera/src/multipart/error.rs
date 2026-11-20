@@ -103,7 +103,7 @@ pub(super) const MAX_REFLECTED_VALUE_CHARS: usize = 128;
 ///
 /// `pub(super)` so sibling modules (`scalar_parsers`, the inline test module)
 /// reach it via `super::truncate_reflected_value` exactly as they did when
-/// it was defined in `multipart.rs`.
+/// it was defined in `multipart/mod.rs`.
 pub(super) fn truncate_reflected_value(value: &str) -> std::borrow::Cow<'_, str> {
     match value.char_indices().nth(MAX_REFLECTED_VALUE_CHARS) {
         None => std::borrow::Cow::Borrowed(value),

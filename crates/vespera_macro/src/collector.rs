@@ -264,6 +264,12 @@ fn push_parsed_routes(
     }
 }
 
+/// The hash of the `mod` table of the route folder `folder_path` (see
+/// `ModuleTable::digest`), which the route-cache key covers.
+pub fn module_table_hash(folder_path: &Path) -> u64 {
+    module_tree::ModuleTable::new(folder_path).digest()
+}
+
 /// Collect routes from a folder (structs come from `SCHEMA_STORAGE`, not
 /// from this scan).
 ///
@@ -359,6 +365,12 @@ pub fn collect_metadata_from_files<'a>(
                     e
                 ))
             })?;
+        if let Some((first, other)) = modules.name_conflict(&segments) {
+            return Err(err_call_site(format!(
+                "vespera! macro: route file '{}' is loaded by cfg-disjoint `mod` declarations that name it `{first}` and `{other}`; give them one name so its call path is the same on every platform",
+                file.display()
+            )));
+        }
 
         // The route dir's own `mod.rs` has no segments: its module is the
         // route dir itself (`routes`, never `routes::`). The call path names

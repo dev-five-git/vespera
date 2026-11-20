@@ -775,10 +775,12 @@ fn mentions_ident_ignores_unparsable_source() {
     assert!(!mentions_ident("fn f(x: Foobar)", "Foo"));
 }
 
-/// Set / `Duration` / `Decimal` fields, enums mixing unit and data
-/// variants, `#[form_data(default)]` and one-sided `serde_repr` derives make the request view differ without any `serde`
-/// attribute in the whole app.
+/// Set / `Duration` / `Decimal` fields, `Option` fields, enums mixing unit
+/// and data variants, `#[form_data(default)]` and one-sided `serde_repr`
+/// derives make the request view differ without any `serde` attribute in the
+/// whole app.
 #[rstest]
+#[case::option_field("struct Tags { note: Option<String> }", true)]
 #[case::form_data_default("struct Tags { #[form_data(default)] tag: String }", true)]
 #[case::one_sided_repr(
     "#[derive(Serialize_repr, Deserialize)] #[repr(u8)] enum Tags { A = 1 }",
