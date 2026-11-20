@@ -765,6 +765,34 @@ mod tests {
         assert_eq!(super::quoted_value_after_key(tokens, key), None);
     }
 
+    /// A qualified key with no spaces around `::`, read at the string level
+    /// (the `quote!` / proc-macro2 fallback printers space `::` out, so an
+    /// attribute-level test never reaches this form): only the `::` directly
+    /// before the key makes it a key (`is_qualified_key`), not a standalone
+    /// word.
+    #[rstest]
+    #[case::qualified_key(
+        "serde_with::rename_all = \"camelCase\"",
+        "rename_all",
+        Some("camelCase")
+    )]
+    #[case::deep_qualified_key("a::b::rename = \"x\"", "rename", Some("x"))]
+    #[case::qualified_key_after_others(
+        "skip, serde_with::rename_all = \"camelCase\"",
+        "rename_all",
+        Some("camelCase")
+    )]
+    fn quoted_value_after_qualified_key(
+        #[case] tokens: &str,
+        #[case] key: &str,
+        #[case] expected: Option<&str>,
+    ) {
+        assert_eq!(
+            super::quoted_value_after_key(tokens, key).as_deref(),
+            expected
+        );
+    }
+
     /// The value is the literal's value (escapes decoded like rustc reads
     /// it), not the text up to its first `"` byte.
     #[rstest]

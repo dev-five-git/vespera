@@ -157,24 +157,30 @@ pub enum EntityTarget {
     Unknown,
 }
 
-/// The known component a `<module>::Entity` path names (`None` when `ty` is
-/// not such a path): `{Module}`, then `{Module}Schema` — `Module` both
-/// `PascalCase`d (`user_profile` → `UserProfile`) and first-letter
-/// capitalized (`User_profile`) — so the `$ref` never dangles.
-pub fn entity_target(
-    ty: &syn::Type,
-    known_schemas: &std::collections::HashSet<impl std::borrow::Borrow<str> + Eq + std::hash::Hash>,
-) -> Option<EntityTarget> {
+/// The component names a `<module>::Entity` path may name, in lookup order
+/// (`None` when `ty` is not such a path): `{Module}`, then `{Module}Schema` —
+/// `Module` both `PascalCase`d (`user_profile` → `UserProfile`) and
+/// first-letter capitalized (`User_profile`).
+pub fn entity_candidates(ty: &syn::Type) -> Option<[String; 4]> {
     let capitalized = extract_schema_name_from_entity(ty)?;
     let pascal = crate::schema_macro::type_utils::snake_to_pascal_case(&capitalized);
-    let found = [
+    Some([
         pascal.clone(),
         format!("{pascal}Schema"),
         capitalized.clone(),
         format!("{capitalized}Schema"),
-    ]
-    .into_iter()
-    .find(|name| known_schemas.contains(name.as_str()));
+    ])
+}
+
+/// The known component a `<module>::Entity` path names (`None` when `ty` is
+/// not such a path), see [`entity_candidates`]: the `$ref` never dangles.
+pub fn entity_target(
+    ty: &syn::Type,
+    known_schemas: &std::collections::HashSet<impl std::borrow::Borrow<str> + Eq + std::hash::Hash>,
+) -> Option<EntityTarget> {
+    let found = entity_candidates(ty)?
+        .into_iter()
+        .find(|name| known_schemas.contains(name.as_str()));
     Some(found.map_or(EntityTarget::Unknown, EntityTarget::Component))
 }
 

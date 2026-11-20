@@ -12,7 +12,7 @@ use crate::{
 
 use super::{
     Import, MAX_ALIAS_DEPTH, Qualifier, Scope, alias_item, declares_nominal, file_module,
-    glob_parents, import_kind, import_parent, parse_items, renames_to,
+    glob_parent_entries, glob_parents, import_kind, import_parent, parse_items, renames_to,
 };
 
 /// Whether `items` declare `mod name` (inline or file module).
@@ -104,14 +104,19 @@ fn reexports_nominal(
             !matches!(parent, Qualifier::CrateRoot | Qualifier::Module(_))
                 || nominal_in(name, &parent, scope, src_dir, depth + 1)
         }),
-        // A glob of `super` / of an unresolved chain may bring a struct in from
-        // a module this lookup cannot follow, so it counts as nominal.
-        None => glob_parents(items).iter().any(|parent| match parent {
-            Qualifier::CrateRoot | Qualifier::Module(_) => {
-                nominal_in(name, parent, scope, src_dir, depth + 1)
-            }
-            Qualifier::Super | Qualifier::Unresolved => true,
-        }),
+        // A glob of an unresolved chain may bring a struct in from a module
+        // this lookup cannot follow, so it counts as nominal. A `pub` glob of
+        // `super` re-exports the parent's names (possibly a struct, which is
+        // then nominal); a private one only brings them into this module.
+        None => glob_parent_entries(items)
+            .iter()
+            .any(|(parent, public)| match parent {
+                Qualifier::CrateRoot | Qualifier::Module(_) => {
+                    nominal_in(name, parent, scope, src_dir, depth + 1)
+                }
+                Qualifier::Super => *public,
+                Qualifier::Unresolved => true,
+            }),
     }
 }
 

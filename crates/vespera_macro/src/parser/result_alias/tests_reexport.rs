@@ -128,6 +128,23 @@ fn expands_in_crate(files: &[(&str, &str)], handler: &str, ret: &str) -> bool {
     "crate::v2::ApiResponse<User>",
     false
 )]
+// A glob of an unresolved chain (`super::super::*`, deeper than one module
+// level) may bring the struct in from a module this lookup cannot follow: the
+// struct is nominal, not the crate alias.
+#[case::unresolved_super_chain_glob_is_nominal(
+    &[("lib.rs", "mod routes; pub mod v2;"), ("v2.rs", "pub use super::super::*;"), ROUTES],
+    "pub fn h() {}",
+    "crate::v2::ApiResponse<User>",
+    false
+)]
+// A grouped re-export of a renamed struct (`use crate::{m::X as Y};`) names
+// that struct too, so the same-named alias elsewhere is unrelated.
+#[case::grouped_renamed_reexport_is_nominal(
+    &[("lib.rs", "mod models; mod routes; pub use crate::{models::Envelope as ApiResponse};"), MODELS, ROUTES],
+    "pub fn h() {}",
+    "crate::ApiResponse<User>",
+    false
+)]
 #[case::reexport_cycle(
     &[
         ("lib.rs", "mod a; mod b; mod routes; pub use crate::a::ApiResponse;"),
@@ -137,6 +154,36 @@ fn expands_in_crate(files: &[(&str, &str)], handler: &str, ret: &str) -> bool {
     ],
     "pub fn h() {}",
     "crate::ApiResponse<User>",
+    false
+)]
+// Round 33 regression: a PRIVATE `use super::*;` brings the parent's names into
+// its module only (here the handler's `users` module, whose parent is the
+// file's top level holding the alias), so it still reaches the parent's alias.
+// `pub(crate)` re-exports like `pub`: the struct stays nominal.
+#[case::private_super_glob_keeps_the_parent_alias(
+    &[("lib.rs", "")],
+    "pub type ApiResponse<T> = Result<Json<T>, UsersErr>; pub mod users { use super::*; pub fn h() {} }",
+    "crate::users::ApiResponse<User>",
+    true
+)]
+#[case::pub_crate_super_glob_reexport_is_nominal(
+    &[("lib.rs", "pub struct ApiResponse<T>(pub T); mod routes; pub mod v2 { pub(crate) use super::*; }"), ROUTES],
+    "pub fn h() {}",
+    "crate::v2::ApiResponse<User>",
+    false
+)]
+// Round 34: `use a::X as Name;` imports `X`, so an alias stays expandable under
+// the rename, and a struct `X` stays the return type itself.
+#[case::renamed_alias_is_followed(
+    &[("lib.rs", "mod models; mod routes;"), MODELS, ROUTES],
+    "use crate::routes::ApiResponse as Api; pub fn h() {}",
+    "Api<User>",
+    true
+)]
+#[case::renamed_struct_stays_nominal(
+    &[("lib.rs", "mod models; mod routes;"), MODELS, ROUTES],
+    "use crate::models::ApiResponse as Api; pub fn h() {}",
+    "Api<User>",
     false
 )]
 fn reexports_decide_the_nominal_lookup(

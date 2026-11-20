@@ -17,10 +17,11 @@
 //! - the container is documented through a different type per direction
 //!   (`#[serde(into = "A")]` and/or `from` / `try_from = "B"`, see
 //!   `wire_override`),
-//! - a field has a `with` / `serialize_with` (without
-//!   `#[schema(value_type)]`: the request view documents the Rust type),
-//!   or is an `Option` read through a custom
-//!   deserializer (serde then requires it),
+//! - a field's `with` / `serialize_with` / `deserialize_with` codec documents
+//!   a different type per side (without `#[schema(value_type)]`, see
+//!   `codec_differs`: only when the two sides' documented shapes differ),
+//!   or is an `Option` read through a custom deserializer (serde then
+//!   requires it),
 //! - a field has `#[serde(alias)]` names (accepted keys), a non-`Option`
 //!   `skip_serializing_if` field without `default` (optional on output,
 //!   required on input), or an `Option` field without `skip_serializing_if`
@@ -924,57 +925,8 @@ fn mixes_unit_and_data(item: &syn::ItemEnum) -> bool {
     unit && data
 }
 
-/// Every type ident named by the item's fields (generic arguments included),
-/// their `#[schema(value_type = ..)]` types, and the container's
-/// `value_type` / `into` / `from` / `try_from` types.
-fn referenced_idents(item: &syn::Item) -> BTreeSet<String> {
-    let mut idents = BTreeSet::new();
-    let mut add_fields = |fields: &syn::Fields| {
-        for field in fields {
-            collect_idents(&field.ty, &mut idents);
-            if let Some(value_type) = extract_schema_constraints(&field.attrs).value_type {
-                collect_idents(&value_type.0, &mut idents);
-            }
-        }
-    };
-    let attrs = match item {
-        syn::Item::Struct(item) => {
-            add_fields(&item.fields);
-            &item.attrs
-        }
-        syn::Item::Enum(item) => {
-            item.variants.iter().for_each(|v| add_fields(&v.fields));
-            &item.attrs
-        }
-        _ => return idents,
-    };
-    for side in [SerdeSide::Serialize, SerdeSide::Deserialize] {
-        if let Some(ty) = container_override_type(attrs, side) {
-            collect_idents(&ty, &mut idents);
-        }
-    }
-    idents
-}
-
-fn collect_idents(ty: &syn::Type, idents: &mut BTreeSet<String>) {
-    struct Visitor<'a>(&'a mut BTreeSet<String>);
-    impl<'ast> syn::visit::Visit<'ast> for Visitor<'_> {
-        /// Every segment ident; a module-qualified type (`b::Foo`) as its
-        /// registry key instead of the bare ident, so it resolves to the
-        /// declaration its path names.
-        fn visit_path(&mut self, path: &'ast syn::Path) {
-            if let Some(last) = path.segments.last() {
-                self.0
-                    .insert(lookup_key(path).unwrap_or_else(|| last.ident.to_string()));
-            }
-            for segment in path.segments.iter().rev().skip(1) {
-                self.0.insert(segment.ident.to_string());
-            }
-            syn::visit::visit_path(self, path);
-        }
-    }
-    syn::visit::Visit::visit_type(&mut Visitor(idents), ty);
-}
+mod idents;
+use idents::{collect_idents, referenced_idents};
 
 #[cfg(test)]
 mod tests;
