@@ -679,50 +679,65 @@ pub fn parse_struct_cached(definition: &str) -> Result<syn::ItemStruct, syn::Err
 /// Call this at the end of macro execution to output cache statistics.
 /// Silent by default — only outputs when `VESPERA_PROFILE=1`.
 pub fn print_profile_summary() {
+    if let Some(report) = profile_summary_report() {
+        eprint!("{report}");
+    }
+}
+
+/// The text [`print_profile_summary`] writes, one line per counter; `None`
+/// when `VESPERA_PROFILE` is unset.
+fn profile_summary_report() -> Option<String> {
     if crate::env_access::var("VESPERA_PROFILE").is_err() {
-        return;
+        return None;
     }
 
-    FILE_CACHE.with(|cache| {
+    let lines = FILE_CACHE.with(|cache| {
         let cache = cache.borrow();
-        eprintln!("[vespera-profile] File cache stats:");
-        eprintln!(
-            "  file I/O: {} disk reads, {} cache hits",
-            cache.file_disk_reads, cache.content_cache_hits
-        );
-        eprintln!("  struct parses: {}", cache.struct_parses);
-        eprintln!("  AST parses: {}", cache.ast_parses);
-        eprintln!(
-            "  cache entries: {} file lists, {} file contents",
-            cache.file_lists.len(),
-            cache.file_contents.len()
-        );
-        eprintln!(
-            "  circular analysis: {} cache hits, {} entries",
-            cache.circular_cache_hits,
-            cache.circular_analysis.len()
-        );
-        eprintln!(
-            "  struct lookup: {} cache hits, {} entries",
-            cache.struct_lookup_cache_hits,
-            cache.struct_lookup.len()
-        );
-        eprintln!(
-            "  FK column lookup: {} cache hits, {} entries",
-            cache.fk_column_cache_hits,
-            cache.fk_column_lookup.len()
-        );
-        eprintln!(
-            "  struct definitions: {} cache hits, {} entries",
-            cache.struct_def_cache_hits,
-            cache.struct_definitions.len()
-        );
-        eprintln!(
-            "  module path: {} cache hits, {} entries",
-            cache.module_path_cache_hits,
-            cache.module_path_cache.len()
-        );
+        [
+            "[vespera-profile] File cache stats:".to_string(),
+            format!(
+                "  file I/O: {} disk reads, {} cache hits",
+                cache.file_disk_reads, cache.content_cache_hits
+            ),
+            format!("  struct parses: {}", cache.struct_parses),
+            format!("  AST parses: {}", cache.ast_parses),
+            format!(
+                "  cache entries: {} file lists, {} file contents",
+                cache.file_lists.len(),
+                cache.file_contents.len()
+            ),
+            format!(
+                "  circular analysis: {} cache hits, {} entries",
+                cache.circular_cache_hits,
+                cache.circular_analysis.len()
+            ),
+            format!(
+                "  struct lookup: {} cache hits, {} entries",
+                cache.struct_lookup_cache_hits,
+                cache.struct_lookup.len()
+            ),
+            format!(
+                "  FK column lookup: {} cache hits, {} entries",
+                cache.fk_column_cache_hits,
+                cache.fk_column_lookup.len()
+            ),
+            format!(
+                "  struct definitions: {} cache hits, {} entries",
+                cache.struct_def_cache_hits,
+                cache.struct_definitions.len()
+            ),
+            format!(
+                "  module path: {} cache hits, {} entries",
+                cache.module_path_cache_hits,
+                cache.module_path_cache.len()
+            ),
+        ]
     });
+    Some(lines.iter().fold(String::new(), |mut report, line| {
+        report.push_str(line);
+        report.push('\n');
+        report
+    }))
 }
 
 /// Inject a fake struct definition into the cache for testing.

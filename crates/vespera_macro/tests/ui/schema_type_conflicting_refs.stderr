@@ -40,7 +40,7 @@ error: `add` field name `type` is not a valid Rust identifier; use letters/digit
 29 | schema_type!(AddInvalid from User, add = [("type": i32)]);
    |                                            ^^^^^^
 
-error: `add` field `extra` is already a field of the generated type: omit or rename the source field, or pick another name
+error: `add` lists field `extra` more than once: keep one entry
   --> tests/ui/schema_type_conflicting_refs.rs:31:58
    |
 31 | schema_type!(AddTwice from User, add = [("extra": i32), ("extra": u8)]);

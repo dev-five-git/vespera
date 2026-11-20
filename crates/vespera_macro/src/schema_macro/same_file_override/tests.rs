@@ -496,6 +496,32 @@ fn container_cfg_attr_serde_is_judged_only_while_active() {
     assert_eq!(unresolved::unresolved_at_call_site(&malformed, None), None);
 }
 
+/// R36-SM4-L1: a nested `cfg_attr(q, serde(..))` is read under `all(p, q)`,
+/// the predicate the proxy copy gets: judged when both are statically active,
+/// dropped when either is false.
+#[test]
+fn nested_cfg_attr_serde_items_are_read_under_the_combined_predicate() {
+    let dto: syn::ItemStruct = syn::parse_str(concat!(
+        "#[cfg_attr(all(), cfg_attr(all(), serde(try_from = \"Unresolvable\")))] ",
+        "#[cfg_attr(all(), cfg_attr(any(), serde(rename = \"x\")))] ",
+        // Malformed (no predicate comma): no items, and no panic.
+        "#[cfg_attr(all(), cfg_attr(unix))] ",
+        "struct Dto { id: i32 }",
+    ))
+    .unwrap();
+    let statically = unresolved::serde_metas(
+        &dto.attrs,
+        &crate::schema_macro::cfg_eval::statically_active,
+    );
+    assert_eq!(statically.len(), 1);
+    assert!(statically[0].path().is_ident("try_from"));
+    assert_eq!(unresolved::serde_metas(&dto.attrs, &|_| true).len(), 2);
+    assert_eq!(
+        unresolved::unresolved_at_call_site(&dto, None).as_deref(),
+        Some("Unresolvable")
+    );
+}
+
 /// R35-SM4-L1: the `cfg_attr` serde items a predicate keeps are the ones read
 /// (and judged); the others never are. A field's `cfg_attr` serde is judged
 /// whatever its predicate.
