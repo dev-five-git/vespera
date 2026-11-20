@@ -201,6 +201,11 @@ pub struct CronMetadata {
     /// Optional `tz = "..."` / `overlap = "..."` attribute arguments
     #[serde(default)]
     pub options: CronOptions,
+    /// `#[cfg(..)]` predicates (token text, all must hold) that gate the
+    /// registration: the job of a `cfg_attr(p, cron(..))` the scan cannot
+    /// decide. Empty for every other job.
+    #[serde(default)]
+    pub cfg: Vec<String>,
 }
 
 /// Optional `#[cron("...", tz = "...", overlap = "...")]` arguments.

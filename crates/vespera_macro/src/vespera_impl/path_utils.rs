@@ -258,8 +258,10 @@ fn find_workspace_root_uncached(manifest_path: &Path) -> PathBuf {
 /// (`"[workspace]"`, `# [workspace]`, `[package.workspace]`) does not match.
 fn declares_workspace(cargo_toml: &str) -> bool {
     let mut top_level = true;
-    for line in cargo_toml.lines() {
-        let line = line.split('#').next().unwrap_or_default().trim();
+    let mut open = None;
+    for raw in cargo_toml.lines() {
+        let code = code_of_line(raw, &mut open);
+        let line = code.split('#').next().unwrap_or_default().trim();
         if let Some(header) = line.strip_prefix('[') {
             let name = header.split(']').next().unwrap_or_default();
             if name.split('.').next().unwrap_or_default().trim() == "workspace" {
@@ -275,6 +277,37 @@ fn declares_workspace(cargo_toml: &str) -> bool {
         }
     }
     false
+}
+
+/// The code of one TOML line with multi-line string contents (`"""` / `'''`)
+/// removed: a `[workspace]` line inside such a string is text, not a table.
+/// `open` carries an unterminated delimiter across lines; a delimiter after a
+/// `#` opens nothing (it is a comment).
+fn code_of_line(line: &str, open: &mut Option<&'static str>) -> String {
+    let mut code = String::new();
+    let mut rest = line;
+    loop {
+        if let Some(delim) = *open {
+            let Some(end) = rest.find(delim) else {
+                return code;
+            };
+            *open = None;
+            rest = &rest[end + 3..];
+            continue;
+        }
+        let limit = rest.find('#').unwrap_or(rest.len());
+        let opening = ["\"\"\"", "'''"]
+            .into_iter()
+            .filter_map(|delim| rest[..limit].find(delim).map(|at| (at, delim)))
+            .min();
+        let Some((at, delim)) = opening else {
+            code.push_str(rest);
+            return code;
+        };
+        code.push_str(&rest[..at]);
+        *open = Some(delim);
+        rest = &rest[at + 3..];
+    }
 }
 
 #[cfg(test)]
@@ -329,12 +362,39 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let manifest_path = temp_dir.path();
 
-        // Create Cargo.lock (but no [workspace] in Cargo.toml)
+        // Its own workspace root, so an ancestor Cargo.lock cannot decide it.
+        fs::write(manifest_path.join("Cargo.toml"), "[workspace]\n")
+            .expect("write workspace manifest");
         fs::write(manifest_path.join("Cargo.lock"), "").expect("Failed to write Cargo.lock");
 
         let result = find_workspace_root(manifest_path);
-        // Should use the directory with Cargo.lock
         assert_eq!(result, manifest_path);
+    }
+
+    #[test]
+    fn workspace_fallback_uses_the_topmost_cargo_lock_dir() {
+        // No `[workspace]` anywhere: the outermost directory holding a
+        // Cargo.lock wins over the nearer one.
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let top = temp_dir.path();
+        let member = top.join("member");
+        fs::create_dir(&member).expect("Failed to create member dir");
+        fs::write(top.join("Cargo.lock"), "").expect("Failed to write Cargo.lock");
+        fs::write(member.join("Cargo.lock"), "").expect("Failed to write Cargo.lock");
+        fs::write(member.join("Cargo.toml"), "[package]\nname = \"member\"")
+            .expect("Failed to write Cargo.toml");
+        assert_eq!(find_workspace_root(&member), top);
+    }
+
+    #[test]
+    fn workspace_fallback_without_lock_or_workspace_is_the_crate() {
+        // No `[workspace]` and no Cargo.lock on the way up: the crate itself.
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let crate_dir = temp_dir.path().join("crate");
+        fs::create_dir(&crate_dir).expect("Failed to create crate dir");
+        fs::write(crate_dir.join("Cargo.toml"), "[package]\nname = \"crate\"")
+            .expect("Failed to write Cargo.toml");
+        assert_eq!(find_workspace_root(&crate_dir), crate_dir);
     }
 
     #[test]
@@ -418,6 +478,11 @@ mod tests {
     #[case::string_value("[package]\ndescription = \"[workspace]\"", false)]
     #[case::other_table("[package.workspace]", false)]
     #[case::array_table("[[bin]]\nname = \"x\"", false)]
+    #[case::multiline_string_body("[package]\ndescription = \"\"\"\n[workspace]\n\"\"\"", false)]
+    #[case::literal_multiline_body("[package]\nd = '''\n[workspace]\n'''", false)]
+    #[case::table_after_multiline_string("d = \"\"\"\nx\n\"\"\"\n[workspace]", true)]
+    #[case::one_line_multiline_string("d = \"\"\"x\"\"\"\n[workspace]", true)]
+    #[case::delimiter_in_comment("# \"\"\" not a string\n[workspace]", true)]
     #[case::empty("", false)]
     fn declares_workspace_is_line_anchored(#[case] toml: &str, #[case] expected: bool) {
         assert_eq!(declares_workspace(toml), expected);
@@ -641,6 +706,8 @@ mod tests {
         use crate::env_access::test_env::{remove_var, set_var};
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let root = temp_dir.path();
+        // Its own workspace root, so an ancestor Cargo.lock cannot decide it.
+        fs::write(root.join("Cargo.toml"), "[workspace]\n").expect("write workspace manifest");
         let built = absolute("vespera-built");
         let _cargo = set_var("CARGO_TARGET_DIR", "cargo-target");
         let _args = set_var(

@@ -10,7 +10,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use crate::schema_macro::cfg_eval::statically_inactive;
+use crate::schema_macro::cfg_eval::compiled_out;
 
 /// The crate-relative module path and Rust ident of the type a derive source
 /// identity (`file::Ident@line:column`) names.
@@ -171,7 +171,7 @@ fn nested_items<'a>(items: &'a [syn::Item], chain: &[String]) -> Option<&'a [syn
     let mut modules = items.iter().filter_map(|item| match item {
         syn::Item::Mod(module)
             if syn::ext::IdentExt::unraw(&module.ident) == first.as_str()
-                && !statically_inactive(&module.attrs) =>
+                && !compiled_out(&module.attrs) =>
         {
             Some(module)
         }

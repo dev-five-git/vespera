@@ -47,6 +47,14 @@ jobs:
         with:
           java-version: '25'
           distribution: 'graalvm-community'
+      - name: Expose JDK 17 to Gradle toolchain detection
+        # setup-java installs into the tool cache, which Gradle's toolchain
+        # auto-detection does not scan; GraalVM (JAVA_HOME) is the last JDK
+        # set up, so the JDK 17 toolchain must come from the env vars here.
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.gradle"
+          echo 'org.gradle.java.installations.fromEnv=JAVA_HOME_17_X64,JAVA_HOME_17_ARM64' >> "$HOME/.gradle/gradle.properties"
       - uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
       - name: Build rust-jni-demo cdylib (release)
         run: cargo build -p rust-jni-demo --release

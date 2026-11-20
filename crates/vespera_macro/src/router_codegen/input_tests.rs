@@ -823,6 +823,20 @@ fn invalid_doc_url_env_fallbacks_name_the_variable(
     assert_eq!(error.to_string(), expected);
 }
 
+/// A documentation env var that is set but empty is unset: it neither becomes
+/// a route nor fails the build with "must start with `/`".
+#[test]
+fn empty_doc_url_env_fallbacks_are_unset() {
+    let _docs = crate::env_access::test_env::set_var("VESPERA_DOCS_URL", "");
+    let _redoc = crate::env_access::test_env::set_var("VESPERA_REDOC_URL", "");
+    let _spec = crate::env_access::test_env::set_var("VESPERA_SPEC_URL", "");
+    let input = syn::parse2::<AutoRouterInput>(quote::quote!())
+        .expect("empty doc URL env vars must be ignored");
+    assert!(input.docs_url.is_none());
+    assert!(input.redoc_url.is_none());
+    assert!(input.spec_url.is_none());
+}
+
 #[test]
 fn unknown_field_error_lists_spec_url() {
     let error = syn::parse2::<AutoRouterInput>(quote::quote!(spec = "/openapi.json"))

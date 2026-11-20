@@ -7,7 +7,7 @@ use crate::metadata::CronOptions;
 
 use super::*;
 
-fn discover(
+pub(super) fn discover(
     storage: &[StoredCronInfo],
     src_dir: Option<&Path>,
     call_site: Option<&Path>,
@@ -256,7 +256,7 @@ fn inline_path_module_resolves_its_children_under_the_path() {
 }
 
 /// Write `files` (relative to `src/`) into a fresh temp crate and return it.
-fn crate_with(files: &[(&str, &str)]) -> TempDir {
+pub(super) fn crate_with(files: &[(&str, &str)]) -> TempDir {
     let dir = TempDir::new().expect("temp dir");
     for (relative, content) in files {
         let path = dir.path().join("src").join(relative);
@@ -958,22 +958,6 @@ fn cfg_attr_cron_is_a_job_unless_its_predicate_is_statically_false(
         summary(&discover(&[], Some(&src), Some(&src.join("lib.rs")))),
         expected
     );
-}
-
-/// The `..` of a `#[path]` child is folded before the file check, under a
-/// verbatim-prefixed base too (where the filesystem leaves it unnormalised).
-#[test]
-fn fold_parent_dirs_drops_dots_and_pops_before_the_child() {
-    let base = Path::new("//?/C:/proj/src");
-    assert_eq!(
-        fold_parent_dirs(&base.join("../shared/./jobs.rs")),
-        Path::new("//?/C:/proj/shared/jobs.rs")
-    );
-    assert_eq!(
-        fold_parent_dirs(Path::new("a/../../b.rs")),
-        Path::new("b.rs")
-    );
-    assert_eq!(fold_parent_dirs(Path::new("./a.rs")), Path::new("a.rs"));
 }
 
 /// A `cfg_attr` the compiler could not parse is no `cron` attribute, but it

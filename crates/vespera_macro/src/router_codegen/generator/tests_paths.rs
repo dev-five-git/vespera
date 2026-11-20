@@ -251,6 +251,7 @@ fn cron_job_in_non_identifier_file_is_a_compile_error() {
         function_name: "tick".to_string(),
         module_path: "cron::my-jobs".to_string(),
         file_path: "src/cron/my-jobs.rs".to_string(),
+        cfg: Vec::new(),
         options: CronOptions::default(),
     }];
     let code = generate_cron_scheduler_code(&cron_jobs).to_string();

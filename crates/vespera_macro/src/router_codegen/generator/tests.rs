@@ -779,6 +779,7 @@ fn test_generate_router_code_with_merge_and_cron() {
         function_name: "cleanup".to_string(),
         module_path: "tasks".to_string(),
         file_path: "src/tasks.rs".to_string(),
+        cfg: Vec::new(),
         options: CronOptions::default(),
     }];
 
@@ -807,6 +808,7 @@ fn test_generate_router_code_with_cron_no_merge() {
         function_name: "heartbeat".to_string(),
         module_path: "cron::health".to_string(),
         file_path: "src/cron/health.rs".to_string(),
+        cfg: Vec::new(),
         options: CronOptions::default(),
     }];
 
@@ -837,6 +839,7 @@ fn cron_scheduler_code_starts_jobs_once_per_invocation() {
             function_name: "cleanup".to_string(),
             module_path: "tasks".to_string(),
             file_path: "src/tasks.rs".to_string(),
+            cfg: Vec::new(),
             options: CronOptions::default(),
         },
         CronMetadata {
@@ -844,6 +847,7 @@ fn cron_scheduler_code_starts_jobs_once_per_invocation() {
             function_name: "heartbeat".to_string(),
             module_path: "cron::health".to_string(),
             file_path: "src/cron/health.rs".to_string(),
+            cfg: Vec::new(),
             options: CronOptions::default(),
         },
     ];
@@ -865,6 +869,7 @@ fn cron_scheduler_code_applies_job_options() {
             function_name: "morning_report".to_string(),
             module_path: String::new(),
             file_path: "src/lib.rs".to_string(),
+            cfg: Vec::new(),
             options: CronOptions {
                 timezone: Some("Asia/Seoul".to_string()),
                 skip_overlap: true,
@@ -875,6 +880,7 @@ fn cron_scheduler_code_applies_job_options() {
             function_name: "reindex".to_string(),
             module_path: "tasks".to_string(),
             file_path: "src/tasks.rs".to_string(),
+            cfg: Vec::new(),
             options: CronOptions {
                 timezone: None,
                 skip_overlap: true,
@@ -887,4 +893,36 @@ fn cron_scheduler_code_applies_job_options() {
         "cron_scheduler_code_applies_job_options",
         prettyplease::unparse(&file)
     );
+}
+
+/// A job whose `cfg_attr` predicate the scan could not decide is pushed under
+/// that predicate, so rustc keeps its registration exactly when it keeps the
+/// attribute; the ungated jobs stay in the plain array.
+#[test]
+fn cron_scheduler_code_gates_an_undecided_job_on_its_predicate() {
+    let cron_jobs = vec![
+        CronMetadata {
+            expression: "1 * * * * *".to_string(),
+            function_name: "tick".to_string(),
+            module_path: "live".to_string(),
+            file_path: "src/live.rs".to_string(),
+            cfg: vec!["unix".to_string()],
+            options: CronOptions::default(),
+        },
+        CronMetadata {
+            expression: "2 * * * * *".to_string(),
+            function_name: "tock".to_string(),
+            module_path: "live".to_string(),
+            file_path: "src/live.rs".to_string(),
+            cfg: Vec::new(),
+            options: CronOptions::default(),
+        },
+    ];
+    let body = generate_cron_scheduler_code(&cron_jobs);
+    let file: syn::File = syn::parse2(quote!(fn create_app() { #body })).expect("valid fn");
+    let text = prettyplease::unparse(&file);
+    assert!(text.contains("#[cfg(all(unix))]"), "{text}");
+    assert_eq!(text.matches(".push(").count(), 1, "{text}");
+    assert!(text.contains("::std::vec!["), "{text}");
+    assert!(text.contains("\"2 * * * * *\""), "{text}");
 }

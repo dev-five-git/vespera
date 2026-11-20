@@ -25,3 +25,24 @@ fn parallel_workers_see_the_callers_call_site_module() {
     assert_eq!(sequential, expected);
     assert_eq!(parallel, expected);
 }
+
+/// R33-MR3-02: an error a worker returns is rebuilt after the fallback guard
+/// drops, so the error the caller compiles carries a span that
+/// `to_compile_error()` accepts (a worker's fallback span would panic there).
+#[test]
+fn parallel_worker_error_is_rebuilt_for_compile_error() {
+    let jobs: Vec<usize> = (0..(PARALLEL_THRESHOLD * 2)).collect();
+    let failing = |n: &usize| -> syn::Result<Option<usize>> {
+        if *n == 1 {
+            Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "worker boom",
+            ))
+        } else {
+            Ok(Some(*n))
+        }
+    };
+    let error = parallel_filter_map_on(&jobs, &failing, 2).expect_err("the worker error");
+    assert_eq!(error.to_string(), "worker boom");
+    let _ = error.to_compile_error();
+}

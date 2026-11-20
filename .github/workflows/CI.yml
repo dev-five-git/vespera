@@ -659,7 +659,8 @@ jobs:
         continue-on-error: true
         with:
           bun-version: 1.4.4
-      - name: Sync the version PR and run CI on it
+      - name: Sync the version PR
+        id: sync
         # changepacks bumps the versions in Cargo.toml / build.gradle.kts but
         # not the workspace members' Cargo.lock entries nor the versions the
         # landing docs quote, so the version PR (and the release tag) would
@@ -675,8 +676,9 @@ jobs:
         # (http.https://github.com/.extraheader), and the bun / cargo below
         # read configuration from the changepacks/main tree. The step
         # therefore removes that persisted header BEFORE any tree-controlled
-        # code runs, and the write token is written only into the two final
-        # commands (push, workflow dispatch), never into this step's env. The
+        # code runs, and the write token is never in this step's env: the
+        # push and the workflow dispatch run in the following step, which
+        # has the token and runs no tree code. The
         # changepacks action above keeps the persisted credentials it always
         # had; only this step loses them. The fetch that precedes the removal
         # runs no tree code.
@@ -712,10 +714,29 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit -am "Sync Cargo.lock and the landing docs with the bumped versions"
-            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' '${{ secrets.GITHUB_TOKEN }}' | base64 | tr -d '\n')" \
-              push origin HEAD:changepacks/main
+            echo "committed=true" >> "$GITHUB_OUTPUT"
           fi
-          GH_TOKEN='${{ secrets.GITHUB_TOKEN }}' gh workflow run CI.yml --repo "$GITHUB_REPOSITORY" --ref changepacks/main
+          echo "synced=true" >> "$GITHUB_OUTPUT"
+      - name: Push the version PR and dispatch CI on it
+        # Runs only after the sync step above succeeded, so no tree-controlled
+        # code (cargo, bun, build scripts) ever sees the write token. The token
+        # reaches this step's env only; git gets the basic-auth header through
+        # GIT_CONFIG_* environment variables (never argv or the shell source).
+        if: ${{ !cancelled() && steps.sync.outputs.synced == 'true' }}
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SYNC_COMMITTED: ${{ steps.sync.outputs.committed }}
+        run: |
+          if [ "$SYNC_COMMITTED" = "true" ]; then
+            auth=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
+            GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0='http.https://github.com/.extraheader' \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+              git push origin HEAD:changepacks/main
+          fi
+          gh workflow run CI.yml --repo "$GITHUB_REPOSITORY" --ref changepacks/main
     outputs:
       changepacks: ${{ steps.changepacks.outputs.changepacks }}
       release_assets_urls: ${{ steps.changepacks.outputs.release_assets_urls }}

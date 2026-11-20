@@ -29,13 +29,14 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
+use quote::ToTokens;
 use syn::ext::IdentExt;
 use syn::parse::ParseStream;
 use syn::punctuated::Punctuated;
 
 use crate::cron_impl::{CronArgs, StoredCronInfo, validate_cron_fn};
 use crate::metadata::CronMetadata;
-use crate::schema_macro::cfg_eval::{Predicate, statically_false};
+use crate::schema_macro::cfg_eval::{Predicate, statically_active, statically_false};
 use crate::schema_macro::field_attrs::field_cfgs;
 use crate::schema_macro::file_cache;
 
@@ -203,6 +204,9 @@ fn stored_jobs(
                 module_path,
                 file_path: s.file_path.clone().unwrap_or_default(),
                 options: s.options.clone(),
+                // Stored jobs were expanded by rustc, which already kept or
+                // dropped their attributes.
+                cfg: Vec::new(),
             })
         })
         .collect()
@@ -561,7 +565,7 @@ impl ModuleTree {
             }
         }
         if !scope.gated
-            && let Some((expression, options)) = job
+            && let Some((expression, options, cfg)) = job
         {
             self.jobs.push(CronMetadata {
                 expression: expression.clone(),
@@ -569,13 +573,15 @@ impl ModuleTree {
                 module_path: scope.module_path.to_owned(),
                 file_path: scope.file.to_owned(),
                 options: options.clone(),
+                cfg: cfg.clone(),
             });
         }
     }
 }
 
-/// A schedulable job's expression and options (see [`cron_attrs`]).
-type CronJob = (String, crate::metadata::CronOptions);
+/// A schedulable job's expression, options and registration `cfg` predicates
+/// (see [`cron_entries`]).
+type CronJob = (String, crate::metadata::CronOptions, Vec<String>);
 
 /// What the module-tree walk reads off one file: its items (cron functions
 /// only when the file can hold jobs: the name `cron` occurs in it).  Plain data
@@ -690,11 +696,13 @@ fn cron_attrs(function: &syn::ItemFn) -> Vec<CronAttr> {
 
 /// The [`CronAttr`]s one attribute of a fn carries: a `#[cron]` itself, or the
 /// `cron` of a `cfg_attr(p, ..)`. The compiler keeps the latter unless `p` is
-/// statically false, and then the scan reads it as a job the same way (an
-/// unknown `p` keeps it, as an unknown `cfg` keeps an item).
+/// statically false, so the scan drops it then. A `p` that is statically true
+/// makes it a plain job; an undecided `p` (`windows`, `test`, `target_*`, ..)
+/// keeps the job too, registered under `#[cfg(p)]` (see
+/// [`CronMetadata::cfg`]) so rustc decides exactly as it does for the attribute.
 fn cron_entries(attr: &syn::Attribute) -> Vec<CronAttr> {
     if is_cron_path(attr.path()) {
-        return vec![cron_attr(attr.path(), attr.parse_args::<CronArgs>())];
+        return vec![cron_attr(attr.path(), attr.parse_args::<CronArgs>(), &[])];
     }
     if !attr.path().is_ident("cfg_attr") {
         return Vec::new();
@@ -705,6 +713,11 @@ fn cron_entries(attr: &syn::Attribute) -> Vec<CronAttr> {
     if statically_false(&predicate) {
         return Vec::new();
     }
+    let gate = if statically_active(&predicate) {
+        Vec::new()
+    } else {
+        vec![predicate.to_token_stream().to_string()]
+    };
     metas
         .iter()
         .filter(|meta| is_cron_path(meta.path()))
@@ -712,7 +725,7 @@ fn cron_entries(attr: &syn::Attribute) -> Vec<CronAttr> {
             let args = meta
                 .require_list()
                 .and_then(syn::MetaList::parse_args::<CronArgs>);
-            cron_attr(meta.path(), args)
+            cron_attr(meta.path(), args, &gate)
         })
         .collect()
 }
@@ -726,12 +739,12 @@ fn cfg_attr_parts(
     Ok((predicate, Punctuated::parse_terminated(input)?))
 }
 
-fn cron_attr(path: &syn::Path, args: syn::Result<CronArgs>) -> CronAttr {
+fn cron_attr(path: &syn::Path, args: syn::Result<CronArgs>, gate: &[String]) -> CronAttr {
     CronAttr {
         bare: path.segments.len() == 1,
         job: args
             .ok()
-            .map(|args| (args.expression.value(), args.options())),
+            .map(|args| (args.expression.value(), args.options(), gate.to_vec())),
     }
 }
 
@@ -846,7 +859,8 @@ fn is_cfg_gated(attrs: &[syn::Attribute]) -> bool {
 }
 
 /// `path` with its `.` segments dropped and each `..` popping the segment
-/// before it (lexical: the file need not exist).
+/// before it (lexical: the file need not exist). Absolute bases only: a `..`
+/// with nothing left to pop is dropped, so it never escapes the base.
 fn fold_parent_dirs(path: &Path) -> PathBuf {
     let mut folded = PathBuf::new();
     for component in path.components() {
@@ -913,3 +927,5 @@ fn cron_module_path(relative: &str) -> String {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_gate;
