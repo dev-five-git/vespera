@@ -89,6 +89,8 @@ use super::{
 };
 use crate::schema_macro::type_utils::{is_option_type, option_inner};
 
+use super::type_schema::is_external_crate_path;
+
 /// The input components of the documented types.
 ///
 /// `names` maps a component name (and a Rust-ident alias of a renamed schema)
@@ -265,7 +267,7 @@ pub fn compute_input_names(sources: &[ViewSource<'_>], taken: &BTreeSet<String>)
         .collect();
     let referenced: Vec<(&str, BTreeSet<String>)> = sources
         .iter()
-        .map(|source| (source.name, referenced_idents(source.item)))
+        .map(|source| (source.name, referenced_idents(source.item, taken)))
         .collect();
     loop {
         let before = differs.len();
@@ -547,6 +549,17 @@ impl FlatKinds {
         })
     }
 
+    /// Whether a documented item claims the name `path` names (its scoped
+    /// key, or its bare ident, even when several items claim it).
+    fn claims(&self, path: &syn::Path) -> bool {
+        lookup_key(path).is_some_and(|key| self.scoped.contains_key(&key))
+            || (!is_external_crate_path(path)
+                && path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| self.bare.contains_key(&segment.ident.to_string())))
+    }
+
     /// An item's kind: a struct is a map when any flattened member reads
     /// every key.
     fn item_kind(&self, item: &syn::Item) -> Option<FlatKind> {
@@ -585,12 +598,14 @@ impl FlatKinds {
             ty = inner;
         }
         let ty = peel(ty);
-        if is_map_type(ty) {
-            return Some(FlatKind::Map);
-        }
         let syn::Type::Path(path) = ty else {
             return None;
         };
+        // A documented item claiming the name is that item, not the std map of
+        // the same name (a local `struct Map` is no `HashMap`).
+        if !self.claims(&path.path) && is_map_type(ty) {
+            return Some(FlatKind::Map);
+        }
         let index = self.resolve(&path.path)?;
         if let Some(&position) = self.param_of.get(&index) {
             // `W<X>` over its own parameter reads what `X` reads.
@@ -621,7 +636,7 @@ fn struct_differs(item: &syn::ItemStruct, flat: &FlatKinds) -> bool {
     let fields = match &item.fields {
         syn::Fields::Named(fields) => fields,
         syn::Fields::Unnamed(fields) => {
-            return tuple_differs(fields, extract_default(&item.attrs).is_some());
+            return tuple_differs(fields, extract_default(&item.attrs).is_some(), flat);
         }
         syn::Fields::Unit => return false,
     };
@@ -651,7 +666,7 @@ fn struct_differs(item: &syn::ItemStruct, flat: &FlatKinds) -> bool {
     fields
         .named
         .iter()
-        .any(|field| field_differs(field, owner_serializes))
+        .any(|field| field_differs(field, owner_serializes, flat))
         || flatten_differs(
             &fields.named,
             &item.generics,
@@ -734,13 +749,13 @@ fn is_map_type(ty: &syn::Type) -> bool {
 }
 
 /// A named field reads differently than it writes.
-fn field_differs(field: &syn::Field, owner_serializes: bool) -> bool {
+fn field_differs(field: &syn::Field, owner_serializes: bool, flat: &FlatKinds) -> bool {
     let skip = extract_serde_skip_flags(&field.attrs);
     !skip.fully_skipped()
         && (skip.skip_deserializing
             || skip.skip_serializing
             || field_codec_differs(field)
-            || field_type_differs(field)
+            || field_type_differs(field, flat)
             || extract_default(&field.attrs).is_some()
             || crate::multipart_impl::has_form_data_default(&field.attrs)
             || !extract_aliases(&field.attrs).is_empty()
@@ -765,12 +780,12 @@ fn field_differs(field: &syn::Field, owner_serializes: bool) -> bool {
 /// writes: skipped on one side only (the array length differs), a
 /// serialize-side custom serde function, or a type whose schema differs
 /// per side.
-fn positional_differs(field: &syn::Field) -> bool {
+fn positional_differs(field: &syn::Field, flat: &FlatKinds) -> bool {
     let skip = extract_serde_skip_flags(&field.attrs);
     !skip.fully_skipped()
         && (skip.skip_serializing != skip.skip_deserializing
             || codec_differs(field)
-            || field_type_differs(field))
+            || field_type_differs(field, flat))
 }
 
 /// A tuple struct / tuple variant reads differently than it writes: a
@@ -780,8 +795,11 @@ fn positional_differs(field: &syn::Field) -> bool {
 /// lets the trailing array items be omitted, or a `skip_serializing_if`
 /// (the response omits that item and shifts the rest left; serde still
 /// reads every position, see `struct_schema::tuple_fields_schema`).
-fn tuple_differs(fields: &syn::FieldsUnnamed, container_default: bool) -> bool {
-    fields.unnamed.iter().any(positional_differs)
+fn tuple_differs(fields: &syn::FieldsUnnamed, container_default: bool, flat: &FlatKinds) -> bool {
+    fields
+        .unnamed
+        .iter()
+        .any(|field| positional_differs(field, flat))
         || (fields.unnamed.len() > 1
             && (container_default
                 || fields.unnamed.iter().any(|field| {
@@ -801,32 +819,44 @@ fn one_sided_codec(attrs: &[syn::Attribute]) -> bool {
 }
 
 /// The field's type (or its `value_type`) has a different schema per side.
-fn field_type_differs(field: &syn::Field) -> bool {
-    type_view_differs(&field.ty)
+fn field_type_differs(field: &syn::Field, flat: &FlatKinds) -> bool {
+    let local = |path: &syn::Path| flat.claims(path);
+    type_view_differs(&field.ty, &local)
         || extract_schema_constraints(&field.attrs)
             .value_type
-            .is_some_and(|value_type| type_view_differs(&value_type.0))
+            .is_some_and(|value_type| type_view_differs(&value_type.0, &local))
 }
 
 /// Whether `ty` names a std type whose schema differs per side:
 /// `HashSet` / `BTreeSet` (`uniqueItems` only on output — serde silently
 /// drops duplicates when reading), `std::time::Duration` (also read from
 /// a `[secs, nanos]` array) and `Decimal` (also read from a JSON number).
-pub fn type_view_differs(ty: &syn::Type) -> bool {
-    struct Visitor(bool);
-    impl<'ast> syn::visit::Visit<'ast> for Visitor {
+/// `local` tells whether a documented item claims a path's name: such a path
+/// is that item, so the std-name heuristic does not apply to it. `Duration`
+/// is matched by its full `std::time` path only.
+pub fn type_view_differs(ty: &syn::Type, local: &dyn Fn(&syn::Path) -> bool) -> bool {
+    struct Visitor<'a> {
+        differs: bool,
+        local: &'a dyn Fn(&syn::Path) -> bool,
+    }
+    impl<'ast> syn::visit::Visit<'ast> for Visitor<'_> {
         fn visit_path(&mut self, path: &'ast syn::Path) {
-            self.0 |= path.segments.last().is_some_and(|segment| {
+            let std_name = path.segments.last().is_some_and(|segment| {
                 ["HashSet", "BTreeSet", "Decimal"]
                     .iter()
                     .any(|name| segment.ident == name)
-            }) || super::type_schema::is_std_duration_path(path);
+            });
+            self.differs |=
+                (std_name && !(self.local)(path)) || super::type_schema::is_std_duration_path(path);
             syn::visit::visit_path(self, path);
         }
     }
-    let mut visitor = Visitor(false);
+    let mut visitor = Visitor {
+        differs: false,
+        local,
+    };
     syn::visit::Visit::visit_type(&mut visitor, ty);
-    visitor.0
+    visitor.differs
 }
 
 /// `extract` yields a different value per serde direction.
@@ -873,7 +903,10 @@ fn enum_differs(item: &syn::ItemEnum, flat: &FlatKinds) -> bool {
                     syn::Fields::Named(fields) => {
                         // Enum variant fields: the enum's own `Serialize` derive
                         // is not read here (see `variant::build_struct_variant_fields`).
-                        fields.named.iter().any(|field| field_differs(field, false))
+                        fields
+                            .named
+                            .iter()
+                            .any(|field| field_differs(field, false, flat))
                             || flatten_differs(
                                 &fields.named,
                                 &item.generics,
@@ -883,7 +916,7 @@ fn enum_differs(item: &syn::ItemEnum, flat: &FlatKinds) -> bool {
                     }
                     syn::Fields::Unnamed(fields) => {
                         // A newtype skipped on input is a unit there: no content key.
-                        tuple_differs(fields, false)
+                        tuple_differs(fields, false, flat)
                             || (adjacently_tagged
                                 && fields.unnamed.len() == 1
                                 && is_option_type(&fields.unnamed[0].ty)

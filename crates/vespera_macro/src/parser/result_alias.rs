@@ -176,7 +176,7 @@ fn fn_module(items: &[syn::Item], name: &syn::Ident) -> Option<Vec<String>> {
 mod expansion;
 mod imports;
 pub use expansion::expand_return_type_alias;
-use imports::{declares_mod, glob_declares_module, imported_nominal};
+use imports::{declares_mod, glob_declares_module, imported_nominal, reexported_alias};
 
 /// Identifies one alias definition: its tokens, its file (`None` for the
 /// handler's own, already parsed file) and the inline module path inside it.
@@ -354,6 +354,42 @@ fn scan_src_definitions(src_dir: &Path, name: &str) -> Rc<[SrcDefinition]> {
     definitions.into()
 }
 
+/// The `type <name>` definitions the handler's file and the crate under
+/// `src_dir` hold, each with the scope it is defined in (see [`find_alias`]).
+fn definitions_named<'a>(
+    name: &str,
+    scope: Option<&Scope<'a>>,
+    src_dir: Option<&Path>,
+) -> Vec<Definition<'a>> {
+    let mut definitions: Vec<Definition<'a>> = Vec::new();
+    if let Some(scope) = scope {
+        let mut found = Vec::new();
+        collect_aliases(&scope.file, None, false, name, &mut found);
+        definitions.extend(found.into_iter().map(|(alias, found, innermost, root)| {
+            let found = Scope {
+                path: scope.path.clone(),
+                ..found
+            };
+            (alias, NextScope::Ready(found), innermost, root)
+        }));
+    }
+    if let Some(src_dir) = src_dir {
+        definitions.extend(
+            src_definitions(src_dir, name)
+                .iter()
+                .filter_map(|definition| {
+                    Some((
+                        syn::parse_str(&definition.alias).ok()?,
+                        NextScope::File(Rc::clone(&definition.file), definition.module.clone()),
+                        definition.innermost.clone(),
+                        definition.root,
+                    ))
+                }),
+        );
+    }
+    definitions
+}
+
 /// The `type <name>` definition visible from `scope`, if any, with the
 /// scope it is defined in. A `qualifier` skips the handler's own module:
 /// `v2::ApiResult` prefers the definitions module `v2` declares,
@@ -423,32 +459,7 @@ fn find_alias<'a>(
         }
     }
     let qualifier = qualifier.or(imported.as_ref());
-    let mut definitions: Vec<Definition<'a>> = Vec::new();
-    if let Some(scope) = scope {
-        let mut found = Vec::new();
-        collect_aliases(&scope.file, None, false, name, &mut found);
-        definitions.extend(found.into_iter().map(|(alias, found, innermost, root)| {
-            let found = Scope {
-                path: scope.path.clone(),
-                ..found
-            };
-            (alias, NextScope::Ready(found), innermost, root)
-        }));
-    }
-    if let Some(src_dir) = src_dir {
-        definitions.extend(
-            src_definitions(src_dir, name)
-                .iter()
-                .filter_map(|definition| {
-                    Some((
-                        syn::parse_str(&definition.alias).ok()?,
-                        NextScope::File(Rc::clone(&definition.file), definition.module.clone()),
-                        definition.innermost.clone(),
-                        definition.root,
-                    ))
-                }),
-        );
-    }
+    let mut definitions = definitions_named(name, scope, src_dir);
     if let Some(qualifier) = qualifier {
         let own =
             scope.and_then(|scope| scope.items().iter().find_map(|item| alias_item(item, name)));
@@ -465,6 +476,14 @@ fn find_alias<'a>(
             })
             .cloned()
             .collect();
+        // `pub use error::AppResult as ApiResponse;` re-exports an alias under
+        // another name: that alias, expanded like its own definition.
+        if named.is_empty()
+            && let Some(scope) = scope
+            && let Some((original, parent)) = reexported_alias(qualifier, name, scope, src_dir)
+        {
+            return find_alias(&original, Some(&parent), Some(scope), src_dir);
+        }
         // `super::` never names the handler module's own alias: with only
         // that one left, the type is not expanded. An unresolved chain names
         // nothing. A named module (or the crate root) that declares a struct /

@@ -157,7 +157,7 @@ fn unsigned_integer(format: &str, maximum: Option<f64>) -> SchemaRef {
 /// `Url` schema) reads as the external crate. Only the crate's own module
 /// declarations could tell them apart, and this check does not see them (the
 /// `--extern` list is no substitute: it is empty outside rustc).
-fn is_external_crate_path(path: &syn::Path) -> bool {
+pub(in crate::parser::schema) fn is_external_crate_path(path: &syn::Path) -> bool {
     path.segments.len() > 1
         && path.segments.first().is_some_and(|root| {
             matches!(
@@ -180,6 +180,20 @@ fn is_external_crate_path(path: &syn::Path) -> bool {
                     | "tempfile"
                     | "vespera"
             )
+        })
+}
+
+/// Whether a documented component claims the name `path` names: its last
+/// segment is a known component, unless the path is qualified with an
+/// external crate (as for `user_shadowed`). The request view's std-name
+/// heuristics stand aside for such a path.
+fn documented_ident(
+    path: &syn::Path,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+) -> bool {
+    !is_external_crate_path(path)
+        && path.segments.last().is_some_and(|segment| {
+            known_schemas.contains(segment.ident.unraw().to_string().as_str())
         })
 }
 
@@ -724,9 +738,11 @@ fn parse_type_impl(
                             if request_view::in_request_view()
                                 && (request_view::has_input(&base)
                                     || request_view::mentions_input(concrete_types.iter().copied())
-                                    || concrete_types
-                                        .iter()
-                                        .any(|ty| request_view::type_view_differs(ty)))
+                                    || concrete_types.iter().any(|ty| {
+                                        request_view::type_view_differs(ty, &|path: &syn::Path| {
+                                            documented_ident(path, known_schemas)
+                                        })
+                                    }))
                             {
                                 name.push_str(".Input");
                             }

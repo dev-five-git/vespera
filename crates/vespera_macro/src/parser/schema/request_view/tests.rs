@@ -685,7 +685,7 @@ fn referenced_idents_cover_overrides(#[case] src: &str, #[case] expected: &[&str
     let item: syn::Item = syn::parse_str(src).unwrap();
     let mut expected: Vec<&str> = expected.to_vec();
     expected.sort_unstable();
-    let found = referenced_idents(&item);
+    let found = referenced_idents(&item, &BTreeSet::new());
     assert_eq!(
         found.iter().map(String::as_str).collect::<Vec<_>>(),
         expected
@@ -802,7 +802,7 @@ fn qualified_flattened_type_reads_its_own_module() {
 #[test]
 fn non_type_items_reference_nothing() {
     let item: syn::Item = syn::parse_str("fn f() {}").unwrap();
-    assert!(referenced_idents(&item).is_empty());
+    assert!(referenced_idents(&item, &BTreeSet::new()).is_empty());
     let flat = FlatKinds::of(&[]);
     assert!(!directly_differs(&item, &flat));
 }
@@ -880,4 +880,74 @@ fn relation_targets_make_the_parent_differ(#[case] post_src: &str, #[case] diffe
         differs,
         "{result:?}"
     );
+}
+
+/// A relation's `<module>::Entity` documents as its FIRST known candidate
+/// (`User` before `UserSchema`, see `entity_target`): a `UserSchema` that is
+/// not the target does not make the parent's request view differ, while one
+/// that is (no `User` component) does.
+#[test]
+fn relation_documents_the_first_known_entity_candidate() {
+    let post = "struct Post { id: u8, author: BelongsTo<user::Entity> }";
+    let user = ("User", None, "struct User { id: i32 }");
+    let user_schema = (
+        "UserSchema",
+        None,
+        "struct UserSchema { #[serde(default)] name: String }",
+    );
+    let shadowed = names(&[user, user_schema, ("Post", None, post)], &[]);
+    assert_eq!(shadowed, [("UserSchema".into(), "UserSchemaInput".into())]);
+    let target = names(&[user_schema, ("Post", None, post)], &[]);
+    assert!(
+        target.iter().any(|(component, _)| component == "Post"),
+        "{target:?}"
+    );
+}
+
+/// A documented `Map` claims the name: a flattened `Map` is that type, not a
+/// std map (which reads every key, so `deny_unknown_fields` would reject
+/// them).
+#[test]
+fn local_map_type_is_not_a_std_map() {
+    let outer =
+        "#[serde(deny_unknown_fields)] struct Outer { #[serde(flatten)] inner: Map, id: u8 }";
+    let local = names(
+        &[
+            ("Map", None, "struct Map { x: u8 }"),
+            ("Outer", None, outer),
+        ],
+        &[],
+    );
+    assert!(
+        !local.iter().any(|(component, _)| component == "Outer"),
+        "{local:?}"
+    );
+    let std = names(
+        &[(
+            "Outer",
+            None,
+            "#[serde(deny_unknown_fields)] struct Outer { #[serde(flatten)] inner: HashMap<String, u8>, id: u8 }",
+        )],
+        &[],
+    );
+    assert!(
+        std.iter().any(|(component, _)| component == "Outer"),
+        "{std:?}"
+    );
+}
+
+/// A documented `Decimal` claims the name: a field of that type is the local
+/// type, not the std decimal (which is also read from a JSON number).
+#[test]
+fn local_decimal_type_is_not_the_std_decimal() {
+    let local = names(
+        &[
+            ("Decimal", None, "struct Decimal { v: u8 }"),
+            ("Price", None, "struct Price { amount: Decimal }"),
+        ],
+        &[],
+    );
+    assert!(local.is_empty(), "{local:?}");
+    let std = names(&[("Price", None, "struct Price { amount: Decimal }")], &[]);
+    assert_eq!(std, [("Price".into(), "PriceInput".into())]);
 }
