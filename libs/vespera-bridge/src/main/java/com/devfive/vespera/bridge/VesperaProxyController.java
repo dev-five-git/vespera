@@ -240,15 +240,14 @@ public class VesperaProxyController {
             return null;
         } catch (UnsatisfiedLinkError unlinked) {
             // A native symbol is missing: the library was never loaded (or
-            // predates this bridge). Answer 503 instead of escaping as an Error.
-            log.warn("vespera native call failed for {} {} requestId={}",
-                    exchange.method, exchange.path, requestId, unlinked);
+            // predates this bridge). Answer 503 instead of escaping as an Error;
+            // the error rides along as the cause of the one WARN line.
             failWith(response, exchange, new ResponseStatusException(
-                    HttpStatus.SERVICE_UNAVAILABLE, ProxyErrors.NOT_INITIALIZED));
+                    HttpStatus.SERVICE_UNAVAILABLE, ProxyErrors.NOT_INITIALIZED, unlinked));
             return null;
         } catch (IOException failure) {
             exchange.complete(response.isCommitted() ? response.getStatus() : 500,
-                    response.panicked());
+                    response.panicked(), failure);
             throw failure;
         } finally {
             if (requestId != null) {
@@ -272,10 +271,9 @@ public class VesperaProxyController {
             status = rejected.getStatusCode().value();
             message = rejected.getReason();
         } else {
-            // Details (message, stack) stay in the log; the client gets a
-            // generic body plus the request id header to correlate.
-            log.warn("vespera dispatch of {} {} failed requestId={}",
-                    exchange.method, exchange.path, exchange.requestId, failure);
+            // The client gets a generic body plus the request id header to
+            // correlate; the details (message, stack) ride along as the cause
+            // of the exchange's single WARN line.
             status = 500;
             message = ProxyErrors.describe(failure);
         }
@@ -288,14 +286,14 @@ public class VesperaProxyController {
             // request — the sibling catch (IOException) of proxy() never sees
             // an exception thrown from another catch clause.
             exchange.complete(response.isCommitted() ? response.getStatus() : status,
-                    response.panicked());
+                    response.panicked(), failure);
             throw clientGone;
         }
         if (!written) {
-            exchange.complete(response.getStatus(), response.panicked());
+            exchange.complete(response.getStatus(), response.panicked(), failure);
             throw failure;
         }
-        exchange.complete(status, response.panicked());
+        exchange.complete(status, response.panicked(), failure);
     }
 
     /**
@@ -617,6 +615,11 @@ public class VesperaProxyController {
             return body;
         }
         if (contentLength > 0) {
+            if (contentLength > frameBound) {
+                // Refused before the allocation, as readBody refuses a declared
+                // length above the built-in bound (the frame bound is that bound).
+                throw declaredAboveFrameBound(contentLength, cap, frameBound);
+            }
             // Known length, cap or not: one exact allocation filled in
             // place, skipping readAllBytes()'s grow-by-doubling and
             // its final trim copy.  readNBytes blocks until the
@@ -682,9 +685,15 @@ public class VesperaProxyController {
      * value the user did not set.
      */
     static ResponseStatusException declaredAboveSingleArrayBound(long actualBytes, long cap) {
+        return declaredAboveFrameBound(actualBytes, cap, VesperaWireCodec.MAX_FRAME_BODY);
+    }
+
+    /** {@link #declaredAboveSingleArrayBound} against an explicit frame bound (the seam). */
+    static ResponseStatusException declaredAboveFrameBound(
+            long actualBytes, long cap, long frameBound) {
         return new ResponseStatusException(
                 CONTENT_TOO_LARGE,
-                "buffered request body reaches the built-in " + VesperaWireCodec.MAX_FRAME_BODY
+                "buffered request body reaches the built-in " + frameBound
                         + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes="
                         + cap + "; actual " + actualBytes + " bytes); use BIDIRECTIONAL_STREAMING");
     }
@@ -817,13 +826,8 @@ public class VesperaProxyController {
                 // workers" contract). A rejected submission surfaces here as a
                 // RejectedExecutionException; translate it to a clean 503
                 // backpressure signal instead of an opaque 500.
-                .handle((resp, ex) -> ex == null ? resp
-                        : ProxyExchange.withMdc(requestId, () -> AsyncProxyResponses.asyncFailureToResponse(ex, response)))
-                .thenAccept(entity -> {
-                    if (result.setResult(entity)) {
-                        exchange.complete(entity.getStatusCode().value(), response.panicked());
-                    }
-                });
+                .whenComplete((resp, ex) -> AsyncProxyResponses.settle(
+                        result, exchange, response, resp, ex));
         return result;
     }
 

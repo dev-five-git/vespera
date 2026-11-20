@@ -186,9 +186,11 @@ class VesperaBridgePlugin : Plugin<Project> {
                     // must re-run the task, so it is declared as an input.
                     t.inputs.property(
                         "bundledFolders",
+                        // Prebuilt-only setups (extraNativeLibs, no crateName) plan no
+                        // build: an empty value, not a missing one, fails no task.
                         plannedBuilds.map { builds ->
                             builds.joinToString("\n") { "${it.relativePath}=${it.platform}" }
-                        },
+                        }.orElse(""),
                     )
                     t.from(planned.map { files -> files.keys.map(::File) }) {
                         eachFile(object : org.gradle.api.Action<org.gradle.api.file.FileCopyDetails> {

@@ -1340,7 +1340,7 @@ If the native library was never loaded (`VesperaBridge.init` not called, or it f
 
 ### Health indicator
 
-With Spring Boot Actuator on the classpath (Boot 4 `spring-boot-health` or Boot 3.5 `spring-boot-actuator` — both optional dependencies of the bridge), the `vespera` health indicator is registered: `UP` once the native library is loaded, `DOWN` (`reason: native library not initialized`) before that, `OUT_OF_SERVICE` after `VesperaBridge.shutdown(...)`. Its details carry `bridgeVersion` and the verified `nativeVersion`. Disable it with `management.health.vespera.enabled=false`. Like Boot's own indicators it also follows `management.health.defaults.enabled=false` while `management.health.vespera.enabled` is unset (the vespera key wins when set); see it at `/actuator/health/vespera` (with `management.endpoint.health.show-details`).
+With Spring Boot Actuator on the classpath (Boot 4 `spring-boot-health` or Boot 3.5 `spring-boot-actuator` — both optional dependencies of the bridge), the `vespera` health indicator is registered: `UP` once the native library is loaded, `DOWN` (`reason: native library not initialized`) before that, `OUT_OF_SERVICE` after `VesperaBridge.shutdown(...)`. Its details carry `bridgeVersion` and the reported `nativeVersion`. Disable it with `management.health.vespera.enabled=false`. Like Boot's own indicators it also follows `management.health.defaults.enabled=false` while `management.health.vespera.enabled` is unset (the vespera key wins when set); see it at `/actuator/health/vespera` (with `management.endpoint.health.show-details`).
 
 ### Panics, 5xx and metrics
 

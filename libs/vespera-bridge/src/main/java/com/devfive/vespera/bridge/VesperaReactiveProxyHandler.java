@@ -275,10 +275,10 @@ public class VesperaReactiveProxyHandler implements WebHandler {
         }
         return flow
                 .onErrorResume(failure -> fail(out, px, failure))
-                // The client went away. `reachedRust` stays as the request left it:
-                // true once the native call was made (an answered stream keeps its
-                // app tag), false while the request was still queued or unread.
-                .doOnCancel(() -> px.complete(CLIENT_CLOSED_REQUEST, out.panicked()));
+                // The client went away. Only a Rust answer that already arrived keeps
+                // its app tag (an answered stream does); a request still queued,
+                // unread or pending in a buffered dispatch does not.
+                .doOnCancel(() -> px.completeCancelled(CLIENT_CLOSED_REQUEST, out.panicked()));
     }
 
     /** Resolve, read the body, dispatch; throws synchronously for early rejections. */
@@ -498,6 +498,8 @@ public class VesperaReactiveProxyHandler implements WebHandler {
 
     static Mono<Void> writeBuffered(byte[] wire, ReactiveProxyResponse out, ProxyExchange px,
             String method, long cap) {
+        // The wire response arrived: Rust answered.
+        px.rustAnswered = true;
         int headerLen = VesperaWireCodec.readHeaderLength(wire);
         int bodyOff = 4 + headerLen;
         int bodyLen = wire.length - bodyOff;
@@ -551,6 +553,7 @@ public class VesperaReactiveProxyHandler implements WebHandler {
                 transport.dispatchStreaming(wire, headerBytes -> ProxyExchange.withMdc(px.requestId, () -> {
                     int headerLen = VesperaWireCodec.readHeaderLength(headerBytes);
                     gate.onHeader(out.applyWireHeader(headerBytes, 4, headerLen, true), method);
+                    px.rustAnswered = true;
                     return null;
                 }), gate);
                 gate.finish();
@@ -622,9 +625,11 @@ public class VesperaReactiveProxyHandler implements WebHandler {
         if (panic) {
             out.markPanicked();
         }
+        // The one WARN line of this request carries the cause.
+        Throwable cause = aborted != null ? aborted : failure;
         if (out.response.isCommitted()) {
-            px.complete(out.status(), out.panicked());
-            return Mono.error(aborted != null ? aborted : failure);
+            px.complete(out.status(), out.panicked(), cause);
+            return Mono.error(cause);
         }
         out.discardRustOutput();
         int status;
@@ -636,21 +641,17 @@ public class VesperaReactiveProxyHandler implements WebHandler {
             status = rejected.getStatusCode().value();
             message = rejected.getReason();
         } else {
-            ProxyExchange.withMdc(px.requestId, () -> {
-                log.warn("vespera dispatch of {} {} failed requestId={}",
-                        px.method, px.path, px.requestId, failure);
-                return null;
-            });
             status = 500;
             message = ProxyErrors.GENERIC_FAILURE;
         }
         return out.writeError(status, message)
-                .doOnSuccess(ignored -> px.complete(status, out.panicked()));
+                .doOnSuccess(ignored -> px.complete(status, out.panicked(), cause));
     }
 
+    /** 503 for a missing native symbol; the error is the cause of the request's one WARN line. */
     private static ResponseStatusException notInitialized(UnsatisfiedLinkError unlinked) {
-        log.warn("vespera native call failed: the native library is not loaded", unlinked);
-        return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, ProxyErrors.NOT_INITIALIZED);
+        return new ResponseStatusException(
+                HttpStatus.SERVICE_UNAVAILABLE, ProxyErrors.NOT_INITIALIZED, unlinked);
     }
 
     /**

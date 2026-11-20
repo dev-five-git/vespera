@@ -309,6 +309,31 @@ class VesperaBridgePluginFunctionalTest {
         assertFalse(File(dir, "build/resources/main/native").exists())
     }
 
+    /** A prebuilt-only consumer: extraNativeLibs and no crateName, so no build is planned at all. */
+    @Test
+    fun prebuiltOnlyWithoutCrateNameBundlesTheExtraLibraries() {
+        write("prebuilt/native/$extraPlatform/libmy_app.dylib", "prebuilt")
+        write("settings.gradle.kts", "rootProject.name = \"consumer\"\n")
+        write(
+            "build.gradle.kts",
+            """
+            plugins {
+                java
+                id("kr.devfive.vespera-bridge")
+            }
+            vespera {
+                bridgeVersion.set("0.0.0-test")
+                extraNativeLibs.set(layout.projectDirectory.dir("prebuilt"))
+            }
+            """.trimIndent(),
+        )
+
+        val result = run("processResources").build()
+
+        assertEquals(TaskOutcome.SUCCESS, result.task(":bundleNativeLib")?.outcome)
+        assertEquals("prebuilt", resource("$extraPlatform/libmy_app.dylib").readText())
+    }
+
     @Test
     fun hostKeyMappedToMuslStillBundlesTheHostLibrary() {
         assumeTrue(host == "linux-x86_64", "needs a glibc linux-x86_64 build host")
