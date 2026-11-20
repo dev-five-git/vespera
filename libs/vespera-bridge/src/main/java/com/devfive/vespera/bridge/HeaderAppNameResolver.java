@@ -10,8 +10,8 @@ import java.util.Set;
  * configurable HTTP request header (typically
  * {@code X-Vespera-App}).
  *
- * <p>When the header is absent (or empty / whitespace), this
- * resolver returns {@code null} so the dispatch layer falls back
+ * <p>When the header is absent (or empty / ASCII-whitespace-only, trimmed
+ * as Rust trims it), this resolver returns {@code null} so the dispatch layer falls back
  * to the default app registered via the Rust
  * {@code register_app} API.
  *

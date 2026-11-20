@@ -683,10 +683,12 @@ class VesperaReactiveProxyHandlerTest {
     /** A concrete non-streaming Accept, a HEAD or a request body keep the buffered ASYNC path. */
     @Test
     void nonStreamingAcceptHeadAndBodiesStayBuffered() throws Exception {
-        call(client(handler()).get().uri("/users").header(HttpHeaders.ACCEPT, "application/json"));
-        call(client(handler()).get().uri("/users").header(HttpHeaders.ACCEPT, "text/event-stream;q=0, */*;q=0"));
-        call(client(handler()).head().uri("/users"));
-        call(client(handler()).post().uri("/users").bodyValue("x"));
+        assertEquals(200, call(client(handler()).get().uri("/users")
+                .header(HttpHeaders.ACCEPT, "application/json")).status());
+        assertEquals(200, call(client(handler()).get().uri("/users")
+                .header(HttpHeaders.ACCEPT, "text/event-stream;q=0, */*;q=0")).status());
+        assertEquals(200, call(client(handler()).head().uri("/users")).status());
+        assertEquals(200, call(client(handler()).post().uri("/users").bodyValue("x")).status());
         assertEquals(4, transport.futures.size());
     }
 
@@ -931,11 +933,14 @@ class VesperaReactiveProxyHandlerTest {
             Disposable running = handler.handle(sse("/one")).subscribe();
             assertTrue(transport.streamsEntered.tryAcquire(5, java.util.concurrent.TimeUnit.SECONDS));
             // Subscribed: its task is submitted and waits in the pool queue.
-            Disposable queued = handler.handle(sse("/two")).subscribe();
+            Disposable queued = handler.handle(sse("/two", "ghost")).subscribe();
             assertEquals(2, streaming.inUse());
 
             queued.dispose(); // the client disconnected while queued
             assertEquals(1, streaming.inUse(), "the queued slot is freed at once");
+            DispatchEvent cancelled = awaitEvent("/two");
+            assertEquals(VesperaReactiveProxyHandler.CLIENT_CLOSED_REQUEST, cancelled.status());
+            assertEquals(AppTags.UNKNOWN, cancelled.app(), "queued, never reached Rust: not learned");
 
             gate.countDown();
             long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
@@ -957,6 +962,12 @@ class VesperaReactiveProxyHandlerTest {
     private static MockServerWebExchange sse(String path) {
         return MockServerWebExchange.from(MockServerHttpRequest.get(path)
                 .header(HttpHeaders.ACCEPT, "text/event-stream"));
+    }
+
+    private static MockServerWebExchange sse(String path, String app) {
+        return MockServerWebExchange.from(MockServerHttpRequest.get(path)
+                .header(HttpHeaders.ACCEPT, "text/event-stream")
+                .header("X-Vespera-App", app));
     }
 
     @Test

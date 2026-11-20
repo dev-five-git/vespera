@@ -254,6 +254,17 @@ class BridgeHardeningTest {
         }
     }
 
+    @Test
+    void healthReasonFollowsTheStatusTheIndicatorReported() {
+        // The indicator reads the status once and pairs the reason with that read,
+        // so a DOWN status is never reported without its reason.
+        assertEquals("native library not initialized",
+                VesperaBridgeHealth.details(VesperaBridgeHealth.Status.DOWN).get("reason"));
+        assertEquals("native runtime shut down",
+                VesperaBridgeHealth.details(VesperaBridgeHealth.Status.OUT_OF_SERVICE).get("reason"));
+        assertFalse(VesperaBridgeHealth.details(VesperaBridgeHealth.Status.UP).containsKey("reason"));
+    }
+
     private static boolean isBoot4() {
         try {
             Class.forName("org.springframework.boot.health.contributor.HealthIndicator");

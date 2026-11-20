@@ -68,6 +68,15 @@ final class ProxyExchange {
 
     /** Report the outcome; only the first call counts. */
     void complete(int status, boolean panicked) {
+        complete(status, panicked, null);
+    }
+
+    /**
+     * Report the outcome with the failure that caused it, if any. The WARN
+     * line (panic / 5xx) carries {@code cause} as its throwable, so one
+     * failure produces one WARN, never a second line for the same request.
+     */
+    void complete(int status, boolean panicked, Throwable cause) {
         if (!completed.compareAndSet(false, true)) {
             return;
         }
@@ -81,10 +90,11 @@ final class ProxyExchange {
         }
         withMdc(requestId, () -> {
             if (warn) {
+                // A null trailing argument is ignored by SLF4J: same line, no cause.
                 log.warn("vespera {} {} {} app={} mode={} status={} latency={}ms requestId={}",
                         panicked ? "Rust panic on" : "server error on",
                         method, path, appName, mode, status,
-                        TimeUnit.NANOSECONDS.toMillis(durationNanos), requestId);
+                        TimeUnit.NANOSECONDS.toMillis(durationNanos), requestId, cause);
             }
             if (observers.isEmpty()) {
                 return null;

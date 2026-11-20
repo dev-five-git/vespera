@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
 class NoSpringClasspathTest {
 
     @Test
-    void codecAndBufferCleanupRunWithoutSpringOnTheClasspath() throws Exception {
+    void codecRunsWithoutSpringOnTheClasspath() throws Exception {
         URL mainClasses = VesperaBridge.class.getProtectionDomain().getCodeSource().getLocation();
         try (URLClassLoader isolated =
                 new URLClassLoader(new URL[] {mainClasses}, ClassLoader.getPlatformClassLoader())) {

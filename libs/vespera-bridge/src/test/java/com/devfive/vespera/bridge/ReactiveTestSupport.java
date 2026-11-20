@@ -35,6 +35,10 @@ final class ReactiveTestSupport {
         volatile boolean streamFlush = true;
         /** When set, implicitly streamed GETs replay streamHeader / streamChunks too. */
         volatile boolean streamImplicitRequests;
+        /** When set, an explicit stream waits on it after its header (the body is then in flight). */
+        volatile java.util.concurrent.CountDownLatch streamAfterHeader;
+        /** Released once an explicit stream has sent its header. */
+        final java.util.concurrent.Semaphore headersSent = new java.util.concurrent.Semaphore(0);
         /** When set, a streaming dispatch blocks on it (holding its thread) before the header. */
         volatile java.util.concurrent.CountDownLatch streamGate;
         /** Released once each time a streaming dispatch starts. */
@@ -79,6 +83,16 @@ final class ReactiveTestSupport {
                 return;
             }
             headerConsumer.accept(streamHeader);
+            headersSent.release();
+            java.util.concurrent.CountDownLatch afterHeader = streamAfterHeader;
+            if (afterHeader != null) {
+                try {
+                    afterHeader.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(interrupted);
+                }
+            }
             for (String chunk : streamChunks) {
                 body.write(chunk.getBytes(StandardCharsets.UTF_8));
                 if (streamFlush) {

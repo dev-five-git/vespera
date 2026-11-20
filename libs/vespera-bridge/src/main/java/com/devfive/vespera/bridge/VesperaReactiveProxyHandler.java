@@ -275,12 +275,10 @@ public class VesperaReactiveProxyHandler implements WebHandler {
         }
         return flow
                 .onErrorResume(failure -> fail(out, px, failure))
-                .doOnCancel(() -> {
-                    // The client went away. Not "answered by a handler": keep
-                    // the client-selected app name out of the learned tags.
-                    px.reachedRust = false;
-                    px.complete(CLIENT_CLOSED_REQUEST, out.panicked());
-                });
+                // The client went away. `reachedRust` stays as the request left it:
+                // true once the native call was made (an answered stream keeps its
+                // app tag), false while the request was still queued or unread.
+                .doOnCancel(() -> px.complete(CLIENT_CLOSED_REQUEST, out.panicked()));
     }
 
     /** Resolve, read the body, dispatch; throws synchronously for early rejections. */
@@ -345,7 +343,6 @@ public class VesperaReactiveProxyHandler implements WebHandler {
             VesperaBridge.HeaderSource headers = new ReactiveHeaderSource(request, appSelectionHeader,
                     requestIdHeaderLower, px.requestId, parts.getT2().orElse(null), contentLength);
             byte[] wire = VesperaBridge.encodeRequest(appName, method, px.path, query, headers, bodyBytes);
-            px.reachedRust = true;
             if (streaming) {
                 return stream(wire, out, px, method, false);
             }
@@ -482,6 +479,7 @@ public class VesperaReactiveProxyHandler implements WebHandler {
      * which aborts the Rust handler.
      */
     private Mono<Void> buffered(byte[] wire, ReactiveProxyResponse out, ProxyExchange px, String method) {
+        px.reachedRust = true;
         CompletableFuture<byte[]> nativeResult = transport.dispatchAsync(wire);
         long cap = javaResponseCap(maxBufferedResponseBytes);
         return Mono.fromFuture(nativeResult)
@@ -548,6 +546,8 @@ public class VesperaReactiveProxyHandler implements WebHandler {
         Publisher<DataBuffer> body = DataBufferUtils.outputStreamPublisher(sink -> {
             BodyGate gate = implicit ? new SpillingGate(sink, out, method, (int) cap) : new BodyGate(sink);
             try {
+                // Only a task that runs reaches Rust: one cancelled while queued never sets this.
+                px.reachedRust = true;
                 transport.dispatchStreaming(wire, headerBytes -> ProxyExchange.withMdc(px.requestId, () -> {
                     int headerLen = VesperaWireCodec.readHeaderLength(headerBytes);
                     gate.onHeader(out.applyWireHeader(headerBytes, 4, headerLen, true), method);

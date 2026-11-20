@@ -87,6 +87,7 @@ val forwardedSystemProperties = listOf(
     "vespera.runtime.workerThreads",
     "vespera.direct.maxRetainedBytes",
     "vespera.direct.maxBufferBytes",
+    "vespera.native.dir",
 )
 
 fun Test.forwardGradleSystemProperties() {

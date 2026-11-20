@@ -73,20 +73,13 @@ final class AsyncProxyResponses {
      * carried a Rust answer (the container failed before the native result
      * was delivered), so the request is not "answered by a handler" and the
      * client-selected app stays out of the learned tags. A non-disconnect
-     * failure is logged at WARN with its cause and the request id, the same
-     * way {@link #asyncFailureToResponse} logs one; the response body stays
-     * generic.
+     * failure is logged by the exchange's single WARN line, with its cause and
+     * the request id; the response body stays generic.
      */
     static void reportAsyncError(ProxyExchange exchange, Throwable failure, boolean panicked) {
         exchange.reachedRust = false;
         int status = asyncErrorStatus(failure);
-        if (status != 499) {
-            ProxyExchange.withMdc(exchange.requestId, () -> {
-                log.warn("vespera async request failed", failure);
-                return null;
-            });
-        }
-        exchange.complete(status, panicked);
+        exchange.complete(status, panicked, status == 499 ? null : failure);
     }
 
     /**
