@@ -104,11 +104,13 @@ fn reexports_nominal(
             !matches!(parent, Qualifier::CrateRoot | Qualifier::Module(_))
                 || nominal_in(name, &parent, scope, src_dir, depth + 1)
         }),
-        // A glob of `super` / of an unresolved chain names no module this
-        // lookup can follow, so it brings nothing nominal into view here.
-        None => glob_parents(items).iter().any(|parent| {
-            matches!(parent, Qualifier::CrateRoot | Qualifier::Module(_))
-                && nominal_in(name, parent, scope, src_dir, depth + 1)
+        // A glob of `super` / of an unresolved chain may bring a struct in from
+        // a module this lookup cannot follow, so it counts as nominal.
+        None => glob_parents(items).iter().any(|parent| match parent {
+            Qualifier::CrateRoot | Qualifier::Module(_) => {
+                nominal_in(name, parent, scope, src_dir, depth + 1)
+            }
+            Qualifier::Super | Qualifier::Unresolved => true,
         }),
     }
 }

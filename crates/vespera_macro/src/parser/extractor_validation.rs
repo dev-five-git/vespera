@@ -32,6 +32,10 @@ use crate::collector::test_scope::attrs_test_only;
 use crate::metadata::CollectedMetadata;
 use crate::schema_macro::type_utils::option_inner;
 
+mod qualified;
+
+use qualified::collect_qualified_route_types;
+
 /// Request/query extractors whose generic argument must be a documented type.
 const REQUEST_EXTRACTORS: [&str; 7] = [
     "Query",
@@ -185,22 +189,48 @@ fn check_extractors(metadata: &CollectedMetadata, file_cache: &dyn AstLookup) ->
                 let local_without_schema =
                     local_types.contains(&ident) && !known.contains(ident.as_str());
                 if local_without_schema || imported_route_types.contains(&ident) {
-                    return Err(syn::Error::new(
-                        Span::call_site(),
-                        format!(
-                            "vespera! macro: route `{fn_name}` uses `{extractor}<{ident}>`, but \
-                             `{ident}` does not derive `Schema`. Vespera cannot document a \
-                             non-`Schema` type and would silently drop it from the OpenAPI spec. \
-                             Add `#[derive(vespera::Schema)]` to `{ident}`.",
-                            fn_name = route.function_name,
-                        ),
+                    return Err(non_schema_extractor_error(
+                        &route.function_name,
+                        extractor,
+                        &ident,
                     ));
                 }
+            }
+            // `crate::routes::other::Bar` / `super::other::Bar` written inline.
+            let mut qualified = Vec::new();
+            collect_qualified_route_types(
+                inner,
+                &route.module_path,
+                &route_module_files,
+                file_cache,
+                &known,
+                &mut qualified,
+            );
+            if let Some(ident) = qualified.first() {
+                return Err(non_schema_extractor_error(
+                    &route.function_name,
+                    extractor,
+                    ident,
+                ));
             }
         }
     }
 
     Ok(())
+}
+
+/// The error for `extractor<ident>` in route `fn_name` when `ident` (a
+/// non-`Schema` struct or enum) is the extractor's document type.
+fn non_schema_extractor_error(fn_name: &str, extractor: &str, ident: &str) -> syn::Error {
+    syn::Error::new(
+        Span::call_site(),
+        format!(
+            "vespera! macro: route `{fn_name}` uses `{extractor}<{ident}>`, but \
+             `{ident}` does not derive `Schema`. Vespera cannot document a \
+             non-`Schema` type and would silently drop it from the OpenAPI spec. \
+             Add `#[derive(vespera::Schema)]` to `{ident}`.",
+        ),
+    )
 }
 
 /// Whether `route` only exists in `cfg(test)` builds: such a route is mounted

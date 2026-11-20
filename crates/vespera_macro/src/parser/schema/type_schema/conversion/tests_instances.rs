@@ -239,3 +239,51 @@ fn omitted_defaulted_argument_names_the_spelled_component() {
         ["Page_User_Meta"]
     );
 }
+
+/// A raw identifier names its component by the unraw'd ident: the raw
+/// definition `r#Tree<T>` refers back to the component `Tree` from its own
+/// body, not to a second component `r#Tree_T` with an unresolved `T`.
+#[test]
+fn raw_identifier_self_reference_is_the_component() {
+    take_materialized();
+    let src = "struct r#Tree<T> { value: T, kids: Vec<r#Tree<T>> }";
+    let item: syn::ItemStruct = syn::parse_str(src).unwrap();
+    let known = HashSet::from(["Tree"]);
+    let defs = HashMap::from([("Tree", src)]);
+    let schema = crate::parser::schema::parse_struct_to_schema(&item, &known, &defs);
+    let kids = schema
+        .properties
+        .as_ref()
+        .and_then(|props| props.get("kids"))
+        .expect("kids property");
+    let SchemaRef::Inline(kids) = kids else {
+        panic!("kids is an inline array: {kids:?}");
+    };
+    let items = kids.items.clone().expect("array items");
+    assert_eq!(reference(items), "#/components/schemas/Tree");
+    assert!(
+        take_materialized().is_empty(),
+        "the raw self-reference is the component, not a second one"
+    );
+}
+
+/// A raw type argument spells its unraw'd ident: `Tree<r#Foo>` is the
+/// instance `Tree_Foo`, the same component `Tree<Foo>` names.
+#[test]
+fn raw_identifier_argument_spells_its_unraw_ident() {
+    take_materialized();
+    let known: HashSet<String> = ["Tree", "Foo"].into_iter().map(String::from).collect();
+    let defs = HashMap::from([
+        (
+            "Tree".to_string(),
+            "struct Tree<T> { value: T, kids: Vec<Tree<T>> }".to_string(),
+        ),
+        ("Foo".to_string(), "struct Foo { a: u8 }".to_string()),
+    ]);
+    let ty: Type = syn::parse_str("Tree<r#Foo>").unwrap();
+    assert_eq!(
+        reference(parse_type_to_schema_ref(&ty, &known, &defs)),
+        "#/components/schemas/Tree_Foo"
+    );
+    assert_eq!(take_materialized().keys().collect::<Vec<_>>(), ["Tree_Foo"]);
+}

@@ -402,6 +402,10 @@ fn flat_kinds_are_transitive() {
         "struct Tuple(HashMap<String, u8>);",
         "struct WrapsWrapper(Tuple);",
         "struct OptNewtype(Option<HashMap<String, u8>>);",
+        // Options and wrappers nest: each layer is peeled until the map shows.
+        "struct OptBoxed(Option<Box<HashMap<String, u8>>>);",
+        "struct OptOpt(Option<Option<HashMap<String, u8>>>);",
+        "struct WrapsOptOpt { #[serde(flatten)] n: Option<Option<OptOpt>> }",
         "#[serde(transparent)] struct Clear { #[serde(skip)] marker: (), m: HashMap<String, u8> }",
         "#[serde(transparent)] struct Skipped { #[serde(skip)] marker: () }",
         "struct Pair(HashMap<String, u8>, u8);",
@@ -429,12 +433,15 @@ fn flat_kinds_are_transitive() {
             ("HasMap".to_string(), FlatKind::Map),
             ("Internal".to_string(), leaves(false)),
             ("NewInternal".to_string(), leaves(false)),
+            ("OptBoxed".to_string(), FlatKind::Map),
             ("OptNewtype".to_string(), FlatKind::Map),
+            ("OptOpt".to_string(), FlatKind::Map),
             ("Outer".to_string(), FlatKind::Map),
             ("Plain".to_string(), leaves(true)),
             ("Tuple".to_string(), FlatKind::Map),
             ("Untagged".to_string(), leaves(false)),
             ("WithUntagged".to_string(), leaves(false)),
+            ("WrapsOptOpt".to_string(), FlatKind::Map),
             ("WrapsWrapper".to_string(), FlatKind::Map),
         ])
     );
