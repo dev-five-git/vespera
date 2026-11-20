@@ -142,8 +142,18 @@ if [ -z "$registry_version" ]; then
     head_metadata=
 fi
 for p in "${paths[@]}"; do
-  [[ $p =~ ^crates/([a-z_]+)/Cargo\.toml$ ]] || continue
-  crate=${BASH_REMATCH[1]}
+  case $p in
+    crates/*/Cargo.toml) ;;
+    *) continue ;;
+  esac
+  crate=${p#crates/}
+  crate=${crate%/Cargo.toml}
+  # Any other crates/ manifest (a name with a dot, a nested path) is not
+  # silently dropped: it is reported here and never attested.
+  if [[ ! $crate =~ ^[A-Za-z0-9_-]+$ ]]; then
+    fail "unrecognised crate path $p; not attesting it"
+    continue
+  fi
   if [ -n "$registry_version" ]; then
     version=$registry_version
   else

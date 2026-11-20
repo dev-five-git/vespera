@@ -167,6 +167,21 @@ export function checkChangepackLog(file: string, log: unknown): string[] {
   return errors
 }
 
+/**
+ * The parsed JSON of a changepack log, or the error naming the file when its
+ * text is not JSON. A bare `JSON.parse` failure does not say which log it was.
+ */
+export function parseChangepackLog(
+  file: string,
+  text: string,
+): { log: unknown } | { error: string } {
+  try {
+    return { log: JSON.parse(text) }
+  } catch {
+    return { error: `${file}: not valid JSON` }
+  }
+}
+
 function main(): number {
   const root = join(import.meta.dir, '..')
   const read = (path: string) => readFileSync(join(root, path), 'utf8')
@@ -226,7 +241,15 @@ function main(): number {
   for (const file of readdirSync(dir).filter((f) =>
     f.startsWith('changepack_log_'),
   )) {
-    const log: unknown = JSON.parse(readFileSync(join(dir, file), 'utf8'))
+    const parsed = parseChangepackLog(
+      file,
+      readFileSync(join(dir, file), 'utf8'),
+    )
+    if ('error' in parsed) {
+      errors.push(parsed.error)
+      continue
+    }
+    const { log } = parsed
     errors.push(...checkChangepackLog(file, log))
     const changes: Record<string, string> =
       (log as { changes?: Record<string, string> } | null)?.changes ?? {}

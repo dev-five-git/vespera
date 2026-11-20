@@ -7,6 +7,7 @@
 #
 # Bun only reads `bunfig.toml` from the current working directory, and the
 # plugin resolves `devup.json` / writes `df/` relative to it too — so these
-# tests MUST run from `apps/landing` (`bun run -F ./apps/landing test`), which
-# is what the root `test` script does.
+# tests must run with `apps/landing` as the CWD (`cd apps/landing && bun test`,
+# or the package's own `test` script). The root `bun test` reads the mirrored
+# root `bunfig.toml` instead, so it does not need this file.
 preload = ["@devup-ui/bun-plugin", "bun-test-env-dom"]

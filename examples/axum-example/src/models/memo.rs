@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
     Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize, vespera::Schema,
 )]
 #[serde(rename_all = "camelCase")]
-#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "memo_memo_status")]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "memo_status")]
 pub enum MemoStatus {
     #[sea_orm(string_value = "draft")]
     Draft,
