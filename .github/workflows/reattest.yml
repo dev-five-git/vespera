@@ -10,8 +10,9 @@ name: Re-attest release
 # `<name>(<project path>)@<version>` (all seven must agree, and must match each
 # crate's .cargo_vcs_info.json) and regenerates the SBOMs of that commit with
 # THIS ref's scripts/sbom.sh: `scripts/release-artifacts.sh --from-registries`.
-# `attest` mirrors CI.yml's `attest` job: no checkout, only GitHub's own attest
-# actions get `id-token: write` / `attestations: write`.
+# `attest` mirrors CI.yml's `attest` job: no checkout; it runs GitHub's own
+# attest actions, a validated read of the manifest and a best-effort SBOM upload
+# to the releases, and only it gets `id-token: write` / `attestations: write`.
 #
 # Verify the result with `--signer-workflow
 # dev-five-git/vespera/.github/workflows/reattest.yml` (see SECURITY.md).
@@ -106,10 +107,23 @@ jobs:
           path: ${{ runner.temp }}/release
       - name: Read the manifest
         id: release
+        # Same validation as CI.yml's `attest` job (keep in sync): every row is
+        # checked before any output is written; a bad row fails the job.
         run: |
           dir="$RUNNER_TEMP/release"
+          check() { # <regex> <value> <field>
+            [[ $2 =~ $1 && $2 != *..* ]] || { echo "::error::bad manifest $3 '$2'"; exit 1; }
+          }
+          while IFS=$'\t' read -r path version id artifact sbom; do
+            check '^(crates/[a-z_]+/Cargo\.toml|libs/[a-z-]+/build\.gradle\.kts)$' "$path" path
+            check '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$' "$version" version
+            check '^[a-z_]+$' "$id" id
+            check '^artifacts/[A-Za-z0-9][A-Za-z0-9._+-]*\.(crate|jar)$' "$artifact" artifact
+            check '^sbom/[A-Za-z0-9][A-Za-z0-9._+-]*\.json$' "$sbom" sbom
+            [ -f "$dir/$artifact" ] && [ -f "$dir/$sbom" ] ||
+              { echo "::error::manifest row $id: $artifact or $sbom was not downloaded"; exit 1; }
+          done <"$dir/manifest.tsv"
           while IFS=$'\t' read -r _path _version id artifact sbom; do
-            [[ $id =~ ^[a-z_]+$ ]] || { echo "::error::bad manifest id '$id'"; exit 1; }
             echo "$id=$dir/$artifact"
             echo "${id}_sbom=$dir/$sbom"
           done <"$dir/manifest.tsv" >>"$GITHUB_OUTPUT"

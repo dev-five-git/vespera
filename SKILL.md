@@ -223,7 +223,7 @@ pub async fn reindex() {}
   `cron-tz` it is a compile error.
 - **Overlap:** default `"allow"` (a slow run may overlap the next one);
   `"skip"` skips and logs a tick while the previous run is still going.
-- **Panics:** logged to stderr; the schedule keeps going.
+- **Panics:** logged via `tracing` (target `vespera::cron`, ERROR) with the `tracing` feature, otherwise to stderr; the schedule keeps going.
 - **Shutdown:** `vespera::cron::shutdown()` stops new runs (process-wide,
   permanent); `vespera::cron::shutdown_and_wait(timeout).await` also waits for
   in-flight runs. `serve_with_graceful_shutdown` calls both (10 s grace).
@@ -418,7 +418,7 @@ npx @apidevtools/swagger-cli validate openapi.json
 | `VESPERA_SPEC_URL` | Raw OpenAPI JSON path (`application/json`) | none |
 | `VESPERA_SERVER_URL` | Server URL | none (`servers` omitted → same origin) |
 
-An environment variable that is set but empty counts as unset.
+Every variable in this table treats a value that is set but empty as unset.
 
 ---
 
@@ -689,7 +689,7 @@ Ok(ArticleResponse {
     user: user.into(),
     category: category.into(),
     article_review_users,
-    ..
+    ..Default::default() // the remaining fields; list them instead if the struct has no Default
 })
 ```
 
@@ -868,11 +868,11 @@ let app = vespera!(
 Child compilation (export_app!):
   1. Scan routes/ folder
   2. Generate OpenAPI spec
-  3. Write to target/vespera/{Name}.openapi.json
+  3. Write to target/vespera/export/<crate>/<App>.openapi.json
 
 Parent compilation (vespera! with merge):
   1. Generate parent OpenAPI spec
-  2. Read child specs from target/vespera/
+  2. Read child specs from target/vespera/export/<crate>/
   3. Merge all specs together
   4. Write merged openapi.json
 ```

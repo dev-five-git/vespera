@@ -26,13 +26,20 @@ version, and security fixes land in the **latest released version** only.
 ## Verifying releases
 
 Every release is built and published by the `changepacks` job of
-[`.github/workflows/CI.yml`](.github/workflows/CI.yml) on `main`, only after all CI
-gates pass. For releases published after 0.5.0, the `attest` job of the same
-workflow run then records
+[`.github/workflows/CI.yml`](.github/workflows/CI.yml) on `main`, only after the
+jobs in its `needs:` list pass: `lint`, `msrv`, `deny`, `sbom`, `test`, `test-os`,
+`jni-e2e`, `miri`, `loom` and `features`. The other gates (`semver`, `bench`,
+`jni-bench-gate`, `rust-branch-coverage`, `minimal-versions`, `fuzz-build`,
+`native-image`) do not gate a release. For releases published after 0.5.0, the
+`attest` job of the same workflow run then records
 [GitHub artifact attestations](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
-(signed with Sigstore) for exactly the files that were published. Only that job,
-which runs nothing but GitHub's own attest actions, can request the signing
-token:
+(signed with Sigstore) for exactly the files that were published. Only that job
+can request the signing token. Besides GitHub's own attest actions it runs two
+shell steps and nothing else: it reads the release job's manifest and rejects any
+row whose paths are not the file names `scripts/release-artifacts.sh` writes (no
+`..`, no absolute path; a missing file fails the job before anything is attested),
+and it uploads the SBOMs to the GitHub releases on a best-effort basis
+(`contents: write`). It checks out no repository code:
 
 | Package | Attested files | SBOM (CycloneDX JSON) |
 |---|---|---|
