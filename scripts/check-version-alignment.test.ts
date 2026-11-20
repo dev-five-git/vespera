@@ -2,9 +2,32 @@ import { describe, expect, it } from 'bun:test'
 
 import {
   bumpVersion,
+  checkChangepackLog,
   checkDocumentedVersions,
   minorOf,
 } from './check-version-alignment'
+
+describe('checkChangepackLog', () => {
+  const valid = {
+    changes: { 'crates/vespera/Cargo.toml': 'Patch' },
+    note: 'fix',
+    date: '2026-11-20T00:00:00.000Z',
+  }
+
+  it('accepts a complete log', () => {
+    expect(checkChangepackLog('a.json', valid)).toEqual([])
+  })
+
+  it.each([
+    [{ ...valid, date: undefined }, 'a.json: missing or invalid "date" string'],
+    [{ ...valid, note: 1 }, 'a.json: missing or invalid "note" string'],
+    [{ ...valid, changes: [] }, 'a.json: missing or invalid "changes" object'],
+    [{ ...valid, date: 'soon' }, 'a.json: "date" is not a date: soon'],
+    [null, 'a.json: not a JSON object'],
+  ])('rejects %p', (log, error) => {
+    expect(checkChangepackLog('a.json', log)).toEqual([error])
+  })
+})
 
 describe('minorOf', () => {
   it.each([

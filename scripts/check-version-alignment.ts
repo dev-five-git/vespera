@@ -134,6 +134,39 @@ export function checkDocumentedVersions(
   return errors
 }
 
+/**
+ * Errors for a changepack log the changepacks CLI cannot parse: it requires a
+ * `changes` object and string `note` / `date` fields, and a log it rejects
+ * fails the main-only release job, not the PR.
+ */
+export function checkChangepackLog(file: string, log: unknown): string[] {
+  if (typeof log !== 'object' || log === null || Array.isArray(log)) {
+    return [`${file}: not a JSON object`]
+  }
+  const fields = log as Record<string, unknown>
+  const errors: string[] = []
+  const changes = fields.changes
+  if (
+    typeof changes !== 'object' ||
+    changes === null ||
+    Array.isArray(changes)
+  ) {
+    errors.push(`${file}: missing or invalid "changes" object`)
+  }
+  for (const key of ['note', 'date']) {
+    if (typeof fields[key] !== 'string') {
+      errors.push(`${file}: missing or invalid "${key}" string`)
+    }
+  }
+  if (
+    typeof fields.date === 'string' &&
+    Number.isNaN(Date.parse(fields.date))
+  ) {
+    errors.push(`${file}: "date" is not a date: ${fields.date}`)
+  }
+  return errors
+}
+
 function main(): number {
   const root = join(import.meta.dir, '..')
   const read = (path: string) => readFileSync(join(root, path), 'utf8')
@@ -193,8 +226,10 @@ function main(): number {
   for (const file of readdirSync(dir).filter((f) =>
     f.startsWith('changepack_log_'),
   )) {
+    const log: unknown = JSON.parse(readFileSync(join(dir, file), 'utf8'))
+    errors.push(...checkChangepackLog(file, log))
     const changes: Record<string, string> =
-      JSON.parse(readFileSync(join(dir, file), 'utf8')).changes ?? {}
+      (log as { changes?: Record<string, string> } | null)?.changes ?? {}
     for (const [path, level] of Object.entries(changes)) {
       const rank = LEVELS.indexOf(level as Level)
       if (!highest.has(path) || rank < 0) {
