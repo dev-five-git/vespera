@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// `OpenAPI` Components (reusable components)
+///
+/// `x-*` extension keys are dropped on load (see the `extensions` module docs).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Components {
@@ -70,6 +72,8 @@ pub enum SecuritySchemeType {
 }
 
 /// Security scheme definition
+///
+/// `x-*` extension keys are dropped on load (see the `extensions` module docs).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SecurityScheme {
@@ -99,6 +103,8 @@ pub struct SecurityScheme {
 }
 
 /// OAuth2 flow definitions for OpenAPI security schemes.
+///
+/// `x-*` extension keys are dropped on load (see the `extensions` module docs).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OAuthFlows {
@@ -142,6 +148,8 @@ impl OAuthFlows {
 }
 
 /// OAuth2 flow definition.
+///
+/// `x-*` extension keys are dropped on load (see the `extensions` module docs).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OAuthFlow {

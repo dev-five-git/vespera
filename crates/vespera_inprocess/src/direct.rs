@@ -80,10 +80,11 @@ pub enum ResumableDirectWrite {
 /// can be delivered without re-running the handler.
 ///
 /// Holds the serialized wire header, the body bytes already produced, and
-/// the **unread** remainder of the response body: nothing past the
-/// caller's buffer was drained, so an unbounded or slow body (a long
-/// download, an event stream) costs no memory or time here and can be
-/// handed to a streaming sink instead.  Dropping it drops the response.
+/// the **unread** remainder of the response body.  At most the one body
+/// frame that does not fit is read and kept (bounded by
+/// `max_buffered_response_bytes`); nothing after it is drained, so an
+/// unbounded body (a long download, an event stream) can be handed to a
+/// streaming sink instead.  Dropping it drops the response.
 pub struct PendingDirectResponse {
     header: Vec<u8>,
     prefix: Vec<u8>,
@@ -363,8 +364,8 @@ pub async fn finish_direct_write(
 /// the call returns.  Every other response streams status + headers + body
 /// frames straight into `out` and, the moment a frame does not fit (or up
 /// front, when the body's exact size hint already exceeds `out`), stops and
-/// returns the response as a [`PendingDirectResponse`] — nothing beyond `out`
-/// is drained.  With `stream_event_streams`, a `text/event-stream` response
+/// returns the response as a [`PendingDirectResponse`] — at most the one frame
+/// that does not fit is read beyond `out` (and kept).  With `stream_event_streams`, a `text/event-stream` response
 /// is returned as pending immediately (it may never end, so it must not be
 /// buffered, and it skips the `422` prefetch too).
 pub async fn finish_resumable(

@@ -266,12 +266,15 @@ fn run_direct_symbol<'local>(
                         "JNI direct output buffer address must be non-null"
                     );
 
-                    // Now resolve the INPUT buffer.  A failure here (null ⇒ heap
-                    // buffer, non-direct, or JVM trouble) writes a `400` wire
+                    // Now resolve the INPUT buffer.  An address-level failure of a
+                    // non-null `in_buf` (GetDirectBufferAddress / capacity returns
+                    // NULL or errors, e.g. a non-direct buffer) writes a `400` wire
                     // response into the already-resolved output buffer instead of
-                    // throwing + returning the default `jint` — so a caller that
-                    // bypasses the Java wrapper with a bad `in_buf` but a valid
-                    // `out_buf` still receives a decodable wire error.
+                    // throwing + returning the default `jint`, so a caller that
+                    // bypasses the Java wrapper with such an `in_buf` but a valid
+                    // `out_buf` still receives a decodable wire error.  A JNI-null
+                    // `in_buf` never reaches this point (it throws above), and is
+                    // unreachable via `VesperaBridge.dispatchDirect`.
                     let in_resolved = match env.get_direct_buffer_address(in_buf) {
                         Ok(addr) => env.get_direct_buffer_capacity(in_buf).map(|cap| (addr, cap)),
                         Err(e) => Err(e),
