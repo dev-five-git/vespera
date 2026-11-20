@@ -12,6 +12,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import jakarta.servlet.ServletOutputStream;
 import jakarta.servlet.WriteListener;
 import java.io.IOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -117,12 +119,29 @@ class ProxyOperabilityTest {
         assertEquals("bad id", plain.get("x-request-id"));
     }
 
+    /** The WebFlux twin: a client address with no usable port is omitted, never ":0". */
+    @Test
+    void reactiveConnectionFactsOmitAnUnknownPortToo() throws Exception {
+        assertEquals("203.0.113.9:8443", ReactiveHeaderSource.remoteAddr(
+                new InetSocketAddress(InetAddress.getByName("203.0.113.9"), 8443)));
+        assertEquals("[0:0:0:0:0:0:0:1]:8", ReactiveHeaderSource.remoteAddr(
+                new InetSocketAddress(InetAddress.getByName("::1"), 8)));
+        assertNull(ReactiveHeaderSource.remoteAddr(
+                new InetSocketAddress(InetAddress.getByName("203.0.113.9"), 0)));
+        assertNull(ReactiveHeaderSource.remoteAddr(
+                InetSocketAddress.createUnresolved("unresolved.example", 0)));
+        assertNull(ReactiveHeaderSource.remoteAddr(null));
+    }
+
     @Test
     void connectionFactsFollowTheContainerView() {
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.setRemoteAddr("203.0.113.9");
+        // An unknown client port is never sent as ":0": remote_addr is omitted.
         request.setRemotePort(-1);
-        assertEquals("203.0.113.9:0", ProxyHeaderSource.remoteAddr(request));
+        assertNull(ProxyHeaderSource.remoteAddr(request));
+        request.setRemotePort(0);
+        assertNull(ProxyHeaderSource.remoteAddr(request), "MockHttpServletRequest's default port");
         request.setRemoteAddr("[::1]");
         request.setRemotePort(8);
         assertEquals("[::1]:8", ProxyHeaderSource.remoteAddr(request));

@@ -71,11 +71,18 @@ final class ProxyHeaderSource implements VesperaBridge.HeaderSource {
     /**
      * {@code ip:port} as the servlet container reports it (after any
      * {@code RemoteIpValve} / {@code ForwardedHeaderFilter} rewrite), IPv6
-     * bracketed; {@code null} when the container reports no address.
+     * bracketed; {@code null} when the container reports no address or no
+     * client port ({@code -1} or {@code 0}). An unknown port is never sent as
+     * {@code :0}: that names a port the client never had, so the whole
+     * {@code remote_addr} is omitted instead.
      */
     static String remoteAddr(HttpServletRequest request) {
         String addr = request.getRemoteAddr();
         if (addr == null || addr.isEmpty()) {
+            return null;
+        }
+        int port = request.getRemotePort();
+        if (port <= 0) {
             return null;
         }
         if (addr.charAt(0) == '[' && addr.endsWith("]")) {
@@ -92,7 +99,7 @@ final class ProxyHeaderSource implements VesperaBridge.HeaderSource {
             return null;
         }
         String host = addr.indexOf(':') >= 0 ? "[" + addr + "]" : addr;
-        return host + ":" + Math.max(0, request.getRemotePort());
+        return host + ":" + port;
     }
 
     /** {@code https} / {@code http} (falls back to {@link HttpServletRequest#isSecure()}). */

@@ -4,6 +4,10 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.Charset;
+import java.nio.charset.CharsetEncoder;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -228,11 +232,16 @@ public final class VesperaRequest {
 
     /**
      * Text body encoded with the {@code charset} parameter of
-     * {@code contentType} (UTF-8 when absent).
+     * {@code contentType} (UTF-8 when absent). For a charset other than UTF-8
+     * the encoding is strict: a character the charset cannot represent is
+     * never replaced by a substitute byte such as {@code '?'}; the call fails
+     * instead, so the server never receives data the caller did not write
+     * (UTF-8 keeps the client's U+FFFD rule for unpaired surrogates).
      *
      * @param contentType sent as {@code content-type}; {@code null} leaves the header alone
      * @throws IllegalArgumentException when the {@code charset} parameter names a charset this JVM
-     *     does not know or cannot encode (the bytes would not match the declared label)
+     *     does not know or cannot encode (the bytes would not match the declared label), or when
+     *     the text has a character the charset cannot encode (the message names it and its index)
      */
     public VesperaRequest body(String text, @Nullable String contentType) {
         Objects.requireNonNull(text, "text");
@@ -251,8 +260,33 @@ public final class VesperaRequest {
             throw new IllegalArgumentException("the charset " + charset.name() + " of content type '"
                     + contentType + "' can only decode; send the body as bytes or use another charset");
         }
-        return body(charset.equals(StandardCharsets.UTF_8) ? VesperaClient.utf8(text) : text.getBytes(charset),
-                contentType);
+        // UTF-8 keeps the client's documented rule (an unpaired surrogate becomes
+        // U+FFFD, see VesperaClient#utf8); every other charset fails on what it cannot encode.
+        byte[] bytes = charset.equals(StandardCharsets.UTF_8) ? VesperaClient.utf8(text) : encodeStrict(charset, text);
+        return body(bytes, contentType);
+    }
+
+    /**
+     * Encodes {@code text} with a non-UTF-8 {@code charset}, reporting (not
+     * substituting) the first character it cannot represent: {@link String#getBytes}
+     * would write a {@code '?'} byte for it.
+     */
+    private static byte[] encodeStrict(Charset charset, String text) {
+        CharsetEncoder encoder = charset.newEncoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT);
+        CharBuffer in = CharBuffer.wrap(text);
+        ByteBuffer out = ByteBuffer.allocate((int) Math.ceil(text.length() * (double) encoder.maxBytesPerChar()));
+        if (encoder.encode(in, out, true).isError()) {
+            throw new IllegalArgumentException(String.format(
+                    "the text has U+%04X at index %d, which the charset %s cannot encode",
+                    text.codePointAt(in.position()), in.position(), charset.name()));
+        }
+        encoder.flush(out);
+        out.flip();
+        byte[] bytes = new byte[out.remaining()];
+        out.get(bytes);
+        return bytes;
     }
 
     /**
@@ -408,7 +442,8 @@ public final class VesperaRequest {
             responseHeader = transport.dispatchStreaming(header, tracked, out);
         } catch (IOException e) {
             // Same rule as the unchecked branches: a dispatch that failed
-            // before the request body was touched leaves it sendable again.
+            // before the request body was read leaves it sendable again (unless
+            // the native side closed it, see releaseUnreadStream).
             releaseUnreadStream(tracked);
             VesperaClientException failure = new VesperaClientException(
                     "streamed response failed "
@@ -488,7 +523,13 @@ public final class VesperaRequest {
         }
     }
 
-    /** A failed send that never read the body leaves the stream sendable again. */
+    /**
+     * A failed send that never read the body leaves the stream sendable again.
+     * A stream the native side closed during the dispatch is NOT re-armed,
+     * even one nothing read: {@link ReadTracking#close()} counts as a use. The
+     * dispatch took the stream and closed it when it finished, so a resend
+     * would read a stream the native side has already released.
+     */
     private void releaseUnreadStream(ReadTracking tracked) {
         if (!tracked.touched) {
             streamConsumed = false;
@@ -502,6 +543,7 @@ public final class VesperaRequest {
      * so {@link #sendStreaming()} rethrows it after the dispatch.
      */
     static final class ReadTracking extends java.io.FilterInputStream {
+        /** Set by any read, skip or close (a close by the native side is a use too). */
         volatile boolean touched;
         volatile IOException readFailure;
         /**
