@@ -6,6 +6,7 @@ use std::path::Path;
 use syn::Item;
 
 mod module_scope;
+mod module_tree;
 mod path_scan;
 pub mod test_scope;
 
@@ -331,6 +332,9 @@ pub fn collect_metadata_from_files<'a>(
     }
 
     let folder_module = crate::router_codegen::route_dir_module_path(folder_name);
+    // The `mod` chain of every route file of the folder, read off the module
+    // tree once (`#[path]` modules of any directory included).
+    let modules = module_tree::ModuleTable::new(folder_path);
     let mut test_scope = test_scope::TestScope::current();
     for file in files {
         if file.extension().is_none_or(|e| e != "rs") {
@@ -360,7 +364,7 @@ pub fn collect_metadata_from_files<'a>(
         // route dir itself (`routes`, never `routes::`). The call path names
         // the modules as declared (a `#[path]` module is not named after its
         // file).
-        let declared = module_scope::declared_module_segments(folder_path, &segments);
+        let declared = modules.declared_segments(&segments);
         let mut module_path = std::iter::once(folder_module.as_str())
             .chain(declared.iter().map(String::as_str))
             .filter(|segment| !segment.is_empty())
@@ -404,7 +408,7 @@ pub fn collect_metadata_from_files<'a>(
             // into SCHEMA_STORAGE.field_defaults (Priority 0 in process_default_functions)
         } else {
             let parsed = crate::schema_macro::file_cache::get_parsed_file(file);
-            let module_cfg = module_scope::module_cfg_predicates(folder_path, &segments);
+            let module_cfg = modules.cfg_predicates(&segments);
             if !module_cfg.is_empty() {
                 // Never registered by `#[route]` and declared behind
                 // `#[cfg(..)]`: compiled out, or expanded after `vespera!`.
