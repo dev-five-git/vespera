@@ -11,6 +11,13 @@
 //! skipped on deserialize instead ([`skip_extension_keys`]): an extension
 //! value is never mistaken for a Path Item / Response, and never comes back
 //! as a bogus route or status.
+//!
+//! **Known limit:** the objects below do not carry the map, so their `x-*`
+//! keys are dropped on deserialize (not stored, not re-emitted): `Components`,
+//! `Parameter`, `RequestBody`, `Response`, `Header`, `Example`, `Encoding`,
+//! `SecurityScheme`, `OAuthFlows`, `OAuthFlow`. Adding the field to them would
+//! add a public field to literal-constructible structs (a breaking change for
+//! a Patch release), so the limit is kept until the next breaking release.
 
 use crate::route::{Callback, PathItem};
 use serde::de::{DeserializeOwned, Error};

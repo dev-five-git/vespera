@@ -117,8 +117,8 @@ fn exclusive_bound_rejects_a_non_number_non_boolean() {
     json!({"type": "string", "enum": ["a", "b"]})
 )]
 #[case::all_of(
-    json!({"type": ["object", "null"], "allOf": [{"$ref": "#/components/schemas/A"}]}),
-    json!({"type": "object", "allOf": [{"$ref": "#/components/schemas/A"}]})
+    json!({"type": ["object", "null"], "allOf": [{"type": "object"}]}),
+    json!({"type": "object", "allOf": [{"type": "object"}]})
 )]
 #[case::enum_with_null(
     json!({"type": ["string", "null"], "enum": ["a", null]}),
@@ -146,10 +146,6 @@ fn type_array_null_never_widens_a_schema_that_rejects_null(
     json!({"type": ["object", "null"], "oneOf": [{"$ref": "#/components/schemas/A"}, {"type": "null"}]}),
     Some(true)
 )]
-#[case::one_of_without_null_branch(
-    json!({"type": ["object", "null"], "oneOf": [{"$ref": "#/components/schemas/A"}]}),
-    None
-)]
 #[case::not_of_non_null_type(json!({"type": ["string", "null"], "not": {"type": "integer"}}), Some(true))]
 #[case::not_of_enum_without_null(json!({"type": ["string", "null"], "not": {"enum": ["x"]}}), Some(true))]
 #[case::not_of_enum_with_null(json!({"type": ["string", "null"], "not": {"enum": ["x", null]}}), None)]
@@ -158,16 +154,8 @@ fn type_array_null_never_widens_a_schema_that_rejects_null(
     None
 )]
 #[case::not_of_null_type(json!({"type": ["string", "null"], "not": {"type": "null"}}), None)]
-#[case::not_of_ref(
-    json!({"type": ["string", "null"], "not": {"$ref": "#/components/schemas/B"}}),
-    None
-)]
 #[case::not_of_empty(json!({"type": ["string", "null"], "not": {}}), None)]
 #[case::all_of_only_null(json!({"type": ["object", "null"], "allOf": [{"type": "null"}]}), Some(true))]
-#[case::all_of_mixed(
-    json!({"type": ["object", "null"], "allOf": [{"type": "null"}, {"$ref": "#/components/schemas/A"}]}),
-    None
-)]
 // Round 14: a member admits `null` when it is nullable or type-less, not only
 // when it is exactly `{type: null}`.
 #[case::all_of_nullable_member(
@@ -176,10 +164,6 @@ fn type_array_null_never_widens_a_schema_that_rejects_null(
 )]
 #[case::all_of_typeless_member(json!({"type": ["integer", "null"], "allOf": [{"description": "d"}]}), Some(true))]
 #[case::all_of_typeless_enum_without_null(json!({"type": ["string", "null"], "allOf": [{"enum": ["a"]}]}), None)]
-#[case::all_of_typeless_rejecting_composition(
-    json!({"type": ["string", "null"], "allOf": [{"allOf": [{"$ref": "#/components/schemas/A"}]}]}),
-    None
-)]
 #[case::any_of_nullable_member(
     json!({"type": ["string", "null"], "anyOf": [{"type": ["string", "null"]}]}),
     Some(true)
@@ -211,17 +195,63 @@ fn type_array_null_kept_when_the_composition_admits_null(
 /// Round 13: a `$ref` next to `type: [T, "null"]` (or an explicit 3.0
 /// `nullable` next to `$ref` plus `type` / `anyOf`) used to deserialize into
 /// a nullable `$ref` with a sibling `type` / `anyOf`, which serialization
-/// rejects — the loaded document could not be written back.  The type
-/// array's `null` is dropped (the `$ref` is ANDed with it, like `allOf`);
-/// the explicit `nullable` keeps widening through `anyOf [.., {type: null}]`.
+/// rejects — the loaded document could not be written back.  A type array
+/// whose `null` cannot be proven rejected (a `$ref`, sibling or inside
+/// `allOf` / `oneOf` / `not`) is kept as the equivalent
+/// `anyOf: [{type: T}, {type: null}]`, so the `$ref` stays ANDed with `T` or
+/// `null` as written; the explicit `nullable` keeps widening through
+/// `anyOf [.., {type: null}]`.
 #[rstest]
 #[case::ref_with_type_array_null(
     json!({"$ref": "#/components/schemas/User", "type": ["object", "null"]}),
-    json!({"$ref": "#/components/schemas/User", "type": "object"})
+    json!({"$ref": "#/components/schemas/User", "anyOf": [{"type": "object"}, {"type": "null"}]})
 )]
 #[case::type_array_null_before_ref(
     json!({"type": ["object", "null"], "$ref": "#/components/schemas/User"}),
-    json!({"$ref": "#/components/schemas/User", "type": "object"})
+    json!({"$ref": "#/components/schemas/User", "anyOf": [{"type": "object"}, {"type": "null"}]})
+)]
+#[case::ref_type_array_null_with_any_of(
+    json!({"$ref": "#/components/schemas/User", "type": ["object", "null"], "anyOf": [{"type": "object"}]}),
+    json!({
+        "$ref": "#/components/schemas/User",
+        "anyOf": [{"type": "object"}],
+        "allOf": [{"anyOf": [{"type": "object"}, {"type": "null"}]}]
+    })
+)]
+#[case::all_of_ref_type_array_null(
+    json!({"type": ["object", "null"], "allOf": [{"$ref": "#/components/schemas/A"}]}),
+    json!({
+        "allOf": [{"$ref": "#/components/schemas/A"}],
+        "anyOf": [{"type": "object"}, {"type": "null"}]
+    })
+)]
+#[case::one_of_ref_type_array_null(
+    json!({"type": ["object", "null"], "oneOf": [{"$ref": "#/components/schemas/A"}]}),
+    json!({
+        "oneOf": [{"$ref": "#/components/schemas/A"}],
+        "anyOf": [{"type": "object"}, {"type": "null"}]
+    })
+)]
+#[case::not_ref_type_array_null(
+    json!({"type": ["string", "null"], "not": {"$ref": "#/components/schemas/B"}}),
+    json!({
+        "not": {"$ref": "#/components/schemas/B"},
+        "anyOf": [{"type": "string"}, {"type": "null"}]
+    })
+)]
+#[case::all_of_null_and_ref_type_array_null(
+    json!({"type": ["object", "null"], "allOf": [{"type": "null"}, {"$ref": "#/components/schemas/A"}]}),
+    json!({
+        "allOf": [{"type": "null"}, {"$ref": "#/components/schemas/A"}],
+        "anyOf": [{"type": "object"}, {"type": "null"}]
+    })
+)]
+#[case::nested_all_of_ref_type_array_null(
+    json!({"type": ["string", "null"], "allOf": [{"allOf": [{"$ref": "#/components/schemas/A"}]}]}),
+    json!({
+        "allOf": [{"allOf": [{"$ref": "#/components/schemas/A"}]}],
+        "anyOf": [{"type": "string"}, {"type": "null"}]
+    })
 )]
 #[case::explicit_nullable_with_type(
     json!({"$ref": "#/components/schemas/User", "nullable": true, "type": "object"}),

@@ -53,11 +53,14 @@ pub struct Schema {
     /// Schema reference (`$ref`).
     ///
     /// A *pure* reference should be expressed as [`SchemaRef::Ref`].
-    /// This field exists only for the one legitimate mixed form OpenAPI
-    /// 3.1 permits — a **nullable reference** (`$ref` + `nullable`) —
-    /// which is best built through [`Schema::nullable_reference`] rather
-    /// than by hand, to avoid accidentally mixing `$ref` with unrelated
-    /// inline constraints (the invalid state flagged by CORE-03).
+    /// A nullable reference (`$ref` + `nullable`) is best built through
+    /// [`Schema::nullable_reference`] rather than by hand, to avoid
+    /// accidentally mixing `$ref` with unrelated inline constraints (the
+    /// invalid state flagged by CORE-03).  A loaded document may also carry
+    /// a `$ref` with sibling keywords (`description`, `type`, `allOf`, ...):
+    /// deserialization keeps such a schema inline with `ref_path` set and
+    /// the siblings alongside it, rather than wrapping it.  Only the nullable
+    /// form is built through `nullable_reference`.
     pub ref_path: Option<String>,
     /// Schema type
     pub schema_type: Option<SchemaType>,

@@ -554,6 +554,32 @@ impl Schema {
                 .is_none_or(|members| members.iter().all(admits_null))
             && self.not.as_ref().is_none_or(rejects_null)
     }
+
+    /// Whether a `$ref` sits in this schema's own composition keywords, at
+    /// any depth (`allOf` / `anyOf` / `oneOf` / `not`, nested or not).  Such a
+    /// `$ref` cannot be resolved here, so [`composition_admits_null`] is not
+    /// provable for it.
+    pub(super) fn composition_mentions_ref(&self) -> bool {
+        [
+            self.any_of.as_deref(),
+            self.one_of.as_deref(),
+            self.all_of.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .flatten()
+        .chain(self.not.as_ref())
+        .any(member_mentions_ref)
+    }
+}
+
+/// Whether `member` is a `$ref`, or an inline schema that is one or holds
+/// one in its composition keywords.
+fn member_mentions_ref(member: &SchemaRef) -> bool {
+    match member {
+        SchemaRef::Ref(_) => true,
+        SchemaRef::Inline(schema) => schema.ref_path.is_some() || schema.composition_mentions_ref(),
+    }
 }
 
 /// Whether the composition member `member` admits `null`: an inline

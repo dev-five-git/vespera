@@ -129,8 +129,25 @@ impl PendingFlags {
         // to `nullable` would widen them on re-serialization (`null` appended
         // to the enum / an `anyOf [.., {type:null}]` wrapper), so the type
         // array's `null` is dropped there instead — the same accepted set.
-        // A sibling `$ref` is ANDed with the `type` array in 3.1 (like an
-        // `allOf` member), so its `null` is dropped there too.
+        // A `$ref` (a sibling `$ref`, or one in `allOf` / `oneOf` / `not`) is
+        // not resolvable here, so whether it admits `null` is unknown.  Such a
+        // `type` array is re-expressed as the equivalent `anyOf: [{type: T},
+        // {type: null}]` (`type_array_as_any_of`): the `$ref` stays ANDed with
+        // `T` or `null`, exactly as the loaded document says.  Narrowing it to
+        // `type: T` could drop a `null` the document accepts.
+        let type_kept = self.type_nullable
+            && (schema.ref_path.is_some()
+                || (schema.composition_mentions_ref() && !schema.composition_admits_null()));
+        if type_kept {
+            type_array_as_any_of(schema);
+        }
+        // Otherwise the type array's `null` is kept only when no sibling
+        // keyword rejects it (`{type:[T,"null"], enum:[a,b]}` or
+        // `{type:[T,"null"], allOf:[{type:T}]}` reject `null`; a `oneOf` /
+        // `anyOf` with a `{type:null}` branch admits it).  Mapping the rejecting
+        // cases to `nullable` would widen them on re-serialization (`null`
+        // appended to the enum / an `anyOf [.., {type:null}]` wrapper), so the
+        // `null` is dropped there instead, the same accepted set.
         // An explicit 3.0 `nullable` keeps its widening meaning on purpose:
         // 3.0.3 narrowed it (no effect without an explicit `type`, and an
         // `enum` without `null` still rejects `null`), but 3.0.0-3.0.2 and
@@ -139,7 +156,7 @@ impl PendingFlags {
         // vespera's own `Option<T>`.  Narrowing would make such documents
         // reject `null` they were written to accept.
         let type_admits_null = self.type_nullable
-            && schema.ref_path.is_none()
+            && !type_kept
             && schema
                 .r#enum
                 .as_ref()
@@ -575,6 +592,39 @@ impl<'de> Deserialize<'de> for AdditionalProperties {
         D: serde::Deserializer<'de>,
     {
         deserializer.deserialize_any(AdditionalPropertiesVisitor)
+    }
+}
+
+/// Re-expresses the `type: T` of a loaded `type: [T, "null"]` as the
+/// equivalent `anyOf: [{type: T}, {type: null}]`, for a schema whose `$ref`
+/// keeps the `null` from being provable.  With no `anyOf` yet the choice is
+/// set on the schema itself; an existing `anyOf` is left alone and the choice
+/// goes into an `allOf` member instead (both are ANDed with the schema).
+/// `type` is always `Some` here: a `type` array naming `null` with no other
+/// type collapses to `type: "null"` before this runs.
+fn type_array_as_any_of(schema: &mut Schema) {
+    let typed = Schema {
+        schema_type: schema.schema_type.take(),
+        ..Schema::default()
+    };
+    let null = Schema {
+        schema_type: Some(SchemaType::Null),
+        ..Schema::default()
+    };
+    let choice = vec![
+        SchemaRef::Inline(Box::new(typed)),
+        SchemaRef::Inline(Box::new(null)),
+    ];
+    if schema.any_of.is_none() {
+        schema.any_of = Some(choice);
+    } else {
+        schema
+            .all_of
+            .get_or_insert_with(Vec::new)
+            .push(SchemaRef::Inline(Box::new(Schema {
+                any_of: Some(choice),
+                ..Schema::default()
+            })));
     }
 }
 
