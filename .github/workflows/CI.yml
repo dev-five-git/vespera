@@ -743,9 +743,10 @@ jobs:
       attest: ${{ steps.release.outputs.any }}
 
   # Provenance + SBOM attestations of what the changepacks job published. A
-  # separate job so that ONLY GitHub's own attest actions run with
-  # `id-token: write` / `attestations: write` (no checkout, no repository or
-  # third-party code). Runs even when the changepacks job failed after a
+  # separate job so that only this job gets `id-token: write` /
+  # `attestations: write` (no checkout, no repository or third-party code).
+  # Besides GitHub's attest actions it runs two shell steps: a validated read
+  # of the manifest, and a best-effort SBOM upload to the GitHub releases. Runs even when the changepacks job failed after a
   # partial publish; "Re-run failed jobs" re-attests from the uploaded files
   # (e.g. after a Sigstore outage) without publishing anything again.
   # Users verify with `gh attestation verify` (see SECURITY.md).
@@ -770,11 +771,26 @@ jobs:
       - name: Read the manifest
         id: release
         # One output pair per collected package: `<id>=<artifact>` and
-        # `<id>_sbom=<sbom>` (see scripts/release-artifacts.sh).
+        # `<id>_sbom=<sbom>` (see scripts/release-artifacts.sh). The manifest
+        # comes from the release job, so every row is validated FIRST and a bad
+        # row fails the job before anything is attested or uploaded: the paths
+        # must be the file names that script writes (a `.crate` or `.jar` under
+        # artifacts/, a `.json` under sbom/), with no `..` and no absolute path.
         run: |
           dir="$RUNNER_TEMP/release"
+          check() { # <regex> <value> <field>
+            [[ $2 =~ $1 && $2 != *..* ]] || { echo "::error::bad manifest $3 '$2'"; exit 1; }
+          }
+          while IFS=$'\t' read -r path version id artifact sbom; do
+            check '^(crates/[a-z_]+/Cargo\.toml|libs/[a-z-]+/build\.gradle\.kts)$' "$path" path
+            check '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$' "$version" version
+            check '^[a-z_]+$' "$id" id
+            check '^artifacts/[A-Za-z0-9][A-Za-z0-9._+-]*\.(crate|jar)$' "$artifact" artifact
+            check '^sbom/[A-Za-z0-9][A-Za-z0-9._+-]*\.json$' "$sbom" sbom
+            [ -f "$dir/$artifact" ] && [ -f "$dir/$sbom" ] ||
+              { echo "::error::manifest row $id: $artifact or $sbom was not downloaded"; exit 1; }
+          done <"$dir/manifest.tsv"
           while IFS=$'\t' read -r _path _version id artifact sbom; do
-            [[ $id =~ ^[a-z_]+$ ]] || { echo "::error::bad manifest id '$id'"; exit 1; }
             echo "$id=$dir/$artifact"
             echo "${id}_sbom=$dir/$sbom"
           done <"$dir/manifest.tsv" >>"$GITHUB_OUTPUT"
