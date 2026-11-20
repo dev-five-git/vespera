@@ -250,12 +250,12 @@ fn measure_once(target: &str, pass: &str, vespera_dir: Option<&CacheDir>) -> Opt
     // validation and OpenAPI generation (the code macro changes touch).
     // Every directory is attempted (no short circuit): one surviving cache
     // drops the run.
-    let mut cleared = true;
+    let mut caches_gone = true;
     for dir in vespera_dir.map_or_else(Vec::new, CacheDir::dirs) {
         let result = fs::remove_dir_all(&dir);
-        cleared &= cache_cleared(&dir, result);
+        caches_gone &= cache_cleared(&dir, result);
     }
-    if !cleared {
+    if !caches_gone {
         return None;
     }
     let out = cargo()
