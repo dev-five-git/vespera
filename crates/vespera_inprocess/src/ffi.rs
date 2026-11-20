@@ -555,6 +555,18 @@ mod tests {
                 ),
                 VESPERA_ERR_INVALID_ARGUMENT
             );
+            // A NULL `out` with a sub-minimum but non-zero capacity is still
+            // an argument error (check 1 runs before the size rule).
+            assert_eq!(
+                vespera_dispatch_into(
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null_mut(),
+                    512,
+                    &raw mut written
+                ),
+                VESPERA_ERR_INVALID_ARGUMENT
+            );
             assert_eq!(
                 vespera_dispatch_into(
                     std::ptr::null(),

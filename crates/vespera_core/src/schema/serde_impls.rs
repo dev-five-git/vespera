@@ -195,6 +195,14 @@ impl<'de> serde::de::Visitor<'de> for WireVisitor {
         while let Some(name) = seq.next_element::<SchemaTypeName>()? {
             types.push(name.0);
         }
+        // 2020-12 (OpenAPI 3.1) gives the `type` array `minItems: 1`; an empty
+        // one would otherwise collapse to an unconstrained schema.
+        if types.is_empty() {
+            return Err(serde::de::Error::invalid_length(
+                0,
+                &"at least one type name",
+            ));
+        }
         Ok(SchemaTypeWire::Multiple(types))
     }
 }

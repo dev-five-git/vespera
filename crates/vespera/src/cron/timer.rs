@@ -47,9 +47,10 @@ struct Queue {
     /// Whether the timer thread has been started.  A failed start leaves it
     /// `false`, so the next [`Timer::ensure_running`] retries it.
     running: bool,
-    /// Whether a failed start was already logged.  It stays set until the
-    /// thread starts, so every poll of a waiting sleep does not write another
-    /// diagnostic.
+    /// Whether a failed start was already logged.  It is set by the first
+    /// failed start and never cleared: the thread, once started, never stops,
+    /// so the latch is never consulted again.  While the thread is down, it
+    /// keeps every poll of a waiting sleep from writing another diagnostic.
     start_reported: bool,
 }
 
@@ -315,7 +316,8 @@ mod tests {
     }
 
     /// Repeated failed starts latch the diagnostic: the flag is set by the
-    /// first one and stays set until the thread starts (no per-poll log line).
+    /// first one and, once set, is never cleared, not even by a later
+    /// successful start (no per-poll log line).
     #[test]
     fn a_failed_start_latches_its_diagnostic_until_the_thread_starts() {
         let timer: &'static Timer = Box::leak(Box::default());
@@ -325,6 +327,9 @@ mod tests {
         }
         assert!(timer.queue.lock().unwrap().start_reported);
         assert!(!timer.queue.lock().unwrap().running);
+        assert!(timer.ensure_running(|_| Ok(())));
+        assert!(timer.queue.lock().unwrap().start_reported);
+        assert!(timer.queue.lock().unwrap().running);
     }
 
     /// Sleeps that resolve while the thread is down leave no entry behind, so

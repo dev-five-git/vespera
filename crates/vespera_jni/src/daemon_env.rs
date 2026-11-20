@@ -192,9 +192,10 @@ where
 /// pending-exception scrub and panic handling are preserved identically;
 /// only the local frame is dropped.
 ///
-/// Callbacks that DO create local refs (e.g. `byte_array_from_slice` in
-/// `complete_future` / `call_header_consumer`) MUST keep using
-/// [`with_cached_daemon_env`] so those refs are reclaimed per call.
+/// Callbacks that DO create local refs must either open their own local frame
+/// (as `call_header_consumer` does, run through this function) or run under
+/// [`with_cached_daemon_env`] (as `complete_future` does), so those refs are
+/// reclaimed per call.
 pub fn with_cached_daemon_env_no_frame<F, T, E>(
     jvm: &jni::JavaVM,
     callback: F,
