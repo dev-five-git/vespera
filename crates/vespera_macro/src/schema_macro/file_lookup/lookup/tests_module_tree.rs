@@ -733,3 +733,64 @@ fn bare_lookup_follows_imports_and_reexports(
     assert!(metadata.definition.contains(&format!("struct {name}")));
     assert_eq!(module_path.join("::"), module);
 }
+
+/// R32-SM1-L1 / R32-SM3-L1: a struct twin the compiler drops through
+/// `cfg_attr(p, cfg(q))` is not the definition, in either declaration order
+/// (the disabled one first is the one the first-wins lookup used to take).
+#[rstest]
+#[case::pg_enabled("--cfg\nfeature=\"pg\"", "pub big")]
+#[case::pg_disabled("--cfg\nfeature=\"other\"", "pub small")]
+fn cfg_attr_inactive_structs_are_skipped(#[case] cfg: &str, #[case] expected: &str) {
+    let dir = TempDir::new().unwrap();
+    let user = dir.path().join("src/models/user.rs");
+    std::fs::create_dir_all(user.parent().unwrap()).unwrap();
+    std::fs::write(
+        &user,
+        "#[cfg_attr(feature = \"pg\", cfg(any()))] pub struct User { pub small: i32 }\n\
+         #[cfg_attr(not(feature = \"pg\"), cfg(any()))] pub struct User { pub big: i64 }\n",
+    )
+    .unwrap();
+    let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    let _args = crate::env_access::test_env::set_var(
+        crate::env_access::COMPILER_ARGS_KEY,
+        format!("rustc\n--crate-name\napp\n{cfg}"),
+    );
+    bump_epoch();
+    let (metadata, _) = lookup("crate::models::user::User", None).unwrap();
+    assert!(
+        metadata.definition.contains(expected),
+        "{}",
+        metadata.definition
+    );
+}
+
+/// R32-SM1-L1: a `#[path]` module declared twice under `cfg_attr` twins is
+/// descended into the one the compiler keeps.
+#[rstest]
+#[case::pg_enabled("--cfg\nfeature=\"pg\"", "pub big")]
+#[case::pg_disabled("--cfg\nfeature=\"other\"", "pub small")]
+fn cfg_attr_inactive_module_twins_are_not_descended(#[case] cfg: &str, #[case] expected: &str) {
+    let dir = TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("lib.rs"),
+        "#[cfg_attr(feature = \"pg\", cfg(any()))]\n#[path = \"old.rs\"]\npub mod models;\n\
+         #[cfg_attr(not(feature = \"pg\"), cfg(any()))]\n#[path = \"new.rs\"]\npub mod models;\n",
+    )
+    .unwrap();
+    std::fs::write(src.join("old.rs"), "pub struct User { pub small: i32 }\n").unwrap();
+    std::fs::write(src.join("new.rs"), "pub struct User { pub big: i64 }\n").unwrap();
+    let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    let _args = crate::env_access::test_env::set_var(
+        crate::env_access::COMPILER_ARGS_KEY,
+        format!("rustc\n--crate-name\napp\n{cfg}"),
+    );
+    bump_epoch();
+    let (metadata, _) = lookup("crate::models::User", None).unwrap();
+    assert!(
+        metadata.definition.contains(expected),
+        "{}",
+        metadata.definition
+    );
+}

@@ -21,7 +21,7 @@ fn page_count_default(source: &str, chain: &[&str]) -> Option<serde_json::Value>
             .find_map(|item| match item {
                 syn::Item::Mod(module)
                     if module.ident == segment
-                        && !crate::schema_macro::cfg_eval::statically_inactive(&module.attrs) =>
+                        && !crate::schema_macro::cfg_eval::compiled_out(&module.attrs) =>
                 {
                     module.content.map(|(_, inner)| inner)
                 }
@@ -66,6 +66,34 @@ fn page_count_default(source: &str, chain: &[&str]) -> Option<serde_json::Value>
     &["inner"],
     Some(serde_json::json!(10))
 )]
+/// R32-SM0-L1: the same twin pairs gated by `cfg_attr(all(), cfg(any()))`, which
+/// rustc drops; a plain `#[cfg]` scan used to take the first (disabled) one.
+#[case::top_level_cfg_attr_disabled_twin_first(
+    "#[cfg_attr(all(), cfg(any()))]
+fn limit() -> i64 { 100 }
+fn limit() -> i64 { 10 }
+     pub struct Page { #[serde(default = \"limit\")] count: i64 }",
+    &[],
+    Some(serde_json::json!(10))
+)]
+#[case::inline_module_cfg_attr_disabled_twin_first(
+    "mod inner {
+#[cfg_attr(all(), cfg(any()))]
+fn limit() -> i64 { 100 }
+fn limit() -> i64 { 10 }
+     pub struct Page { #[serde(default = \"limit\")] count: i64 }
+}",
+    &["inner"],
+    Some(serde_json::json!(10))
+)]
+#[case::inherent_block_cfg_attr_disabled_twin_first(
+    "pub struct Page { #[serde(default = \"Page::limit\")] count: i64 }
+     #[cfg_attr(all(), cfg(any()))]
+impl Page { fn limit() -> i64 { 100 } }
+impl Page { fn limit() -> i64 { 10 } }",
+    &[],
+    Some(serde_json::json!(10))
+)]
 #[case::inherent_method_disabled_twin_first(
     "pub struct Page { #[serde(default = \"Page::limit\")] count: i64 }\n\
      impl Page {\n#[cfg(any())]\nfn limit() -> i64 { 100 }\nfn limit() -> i64 { 10 }\n}",
@@ -84,6 +112,26 @@ fn cfg_disabled_default_fn_twin_is_ignored(
     #[case] expected: Option<serde_json::Value>,
 ) {
     assert_eq!(page_count_default(source, chain), expected);
+}
+
+/// R32-SM0-L1: the `cfg_attr(p, cfg(q))` twin the compiler keeps follows the
+/// feature set of the build: with `legacy` on, the second `limit` is the default.
+#[test]
+fn cfg_attr_default_fn_twin_follows_the_compiled_feature() {
+    let _args = crate::env_access::test_env::set_var(
+        crate::env_access::COMPILER_ARGS_KEY,
+        "rustc
+--crate-name
+app
+--cfg
+feature=\"legacy\"",
+    );
+    let source = "#[cfg_attr(feature = \"legacy\", cfg(any()))]
+fn limit() -> i64 { 100 }
+                  #[cfg(feature = \"legacy\")]
+fn limit() -> i64 { 10 }
+                  pub struct Page { #[serde(default = \"limit\")] count: i64 }";
+    assert_eq!(page_count_default(source, &[]), Some(serde_json::json!(10)));
 }
 
 /// R23-SM3: a platform twin pair (`unix` / `windows`) is left to the

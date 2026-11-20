@@ -90,7 +90,7 @@ fn descend(cursor: Cursor, segment: &str) -> Option<Cursor> {
     let module = cursor.items.iter().find_map(|item| match item {
         syn::Item::Mod(module)
             if ident_name(&module.ident) == segment
-                && !super::cfg_eval::statically_inactive(&module.attrs) =>
+                && !super::cfg_eval::compiled_out(&module.attrs) =>
         {
             Some(module)
         }
@@ -238,8 +238,7 @@ fn descend_all(mut cursor: Cursor, segments: &[String]) -> Option<Cursor> {
 pub fn struct_in_items(items: &[syn::Item], name: &str) -> Option<String> {
     items.iter().find_map(|item| match item {
         syn::Item::Struct(item)
-            if ident_name(&item.ident) == name
-                && !super::cfg_eval::statically_inactive(&item.attrs) =>
+            if ident_name(&item.ident) == name && !super::cfg_eval::compiled_out(&item.attrs) =>
         {
             Some(quote!(#item).to_string())
         }
@@ -419,11 +418,11 @@ pub fn unique_nested_struct(items: &[syn::Item], name: &str) -> Option<(String, 
             match item {
                 syn::Item::Struct(item)
                     if ident_name(&item.ident) == name
-                        && !super::cfg_eval::statically_inactive(&item.attrs) =>
+                        && !super::cfg_eval::compiled_out(&item.attrs) =>
                 {
                     found.push((quote!(#item).to_string(), chain.clone()));
                 }
-                syn::Item::Mod(module) if !super::cfg_eval::statically_inactive(&module.attrs) => {
+                syn::Item::Mod(module) if !super::cfg_eval::compiled_out(&module.attrs) => {
                     if let Some((_, inner)) = &module.content {
                         chain.push(ident_name(&module.ident));
                         walk(inner, name, chain, found);
@@ -492,7 +491,7 @@ impl ModuleScope {
         // Items and imports the compiler drops by `#[cfg]` name nothing.
         let items: Vec<&syn::Item> = items
             .iter()
-            .filter(|item| !super::cfg_eval::statically_inactive(item_attrs(item)))
+            .filter(|item| !super::cfg_eval::compiled_out(item_attrs(item)))
             .collect();
         for (ident, vis) in items.iter().filter_map(|item| item_ident(item)) {
             let name = ident_name(ident);

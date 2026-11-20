@@ -112,7 +112,7 @@ pub(super) fn generate_sea_orm_default_attrs_in(
             // the literal is not advertised either: an OpenAPI default for a
             // field serde still requires (a missing key is a 422) was a lie
             // (R20-L1, round 20).
-            if !is_parseable_type(original_ty) {
+            if !is_parseable_type(original_ty, source_module) {
                 return (quote! {}, quote! {});
             }
 
@@ -247,10 +247,10 @@ fn unraw(ident: &syn::Ident) -> String {
     crate::parser::strip_raw_prefix_owned(ident.to_string())
 }
 
-/// The SQL-default type names whose default expression is a chrono or uuid
-/// value (see [`sql_function_default_for_type`]); a user type of one of these
-/// names must not get that expression.
-const CHRONO_OR_UUID_DEFAULT_NAMES: &[&str] = &[
+/// The default type names whose default expression (a chrono / uuid value, or
+/// a `Decimal` literal) needs an ecosystem crate; a user type of one of these
+/// names must not get that expression (`Decimal` is R32-SM1-L2).
+const ECOSYSTEM_DEFAULT_NAMES: &[&str] = &[
     "DateTimeWithTimeZone",
     "DateTimeUtc",
     "DateTimeLocal",
@@ -261,6 +261,7 @@ const CHRONO_OR_UUID_DEFAULT_NAMES: &[&str] = &[
     "NaiveTime",
     "Time",
     "Uuid",
+    "Decimal",
 ];
 
 /// Whether a SQL-default type named like a chrono / uuid type (`Date`,
@@ -280,13 +281,13 @@ pub(super) fn default_alias_is_external(type_path: &syn::TypePath, module: &[Str
         .map(|segment| segment.ident.to_string())
         .collect();
     let name = segments.last().cloned().unwrap_or_default();
-    if !CHRONO_OR_UUID_DEFAULT_NAMES.contains(&name.as_str()) {
+    if !ECOSYSTEM_DEFAULT_NAMES.contains(&name.as_str()) {
         return true;
     }
     let external = |path: &[String]| {
         matches!(
             path.first().map(String::as_str),
-            Some("chrono" | "uuid" | "sea_orm")
+            Some("chrono" | "uuid" | "sea_orm" | "rust_decimal")
         )
     };
     match crate::schema_macro::module_scope::resolve_name(&segments, module) {
@@ -362,9 +363,11 @@ fn sql_function_default_for_type(original_ty: &syn::Type) -> Option<(TokenStream
 
 /// Check if a type is known to implement `FromStr` and can use `.parse().unwrap()`.
 ///
-/// Returns true for primitive types, String, and Decimal.
+/// Returns true for primitive types, String, and Decimal (judged through the
+/// source module, see [`default_alias_is_external`]: a user `Decimal` has no
+/// `FromStr` to rely on, R32-SM1-L2).
 /// Returns false for enums and unknown custom types.
-pub(super) fn is_parseable_type(ty: &syn::Type) -> bool {
+pub(super) fn is_parseable_type(ty: &syn::Type, module: &[String]) -> bool {
     let syn::Type::Path(type_path) = ty else {
         return false;
     };
@@ -372,6 +375,7 @@ pub(super) fn is_parseable_type(ty: &syn::Type) -> bool {
         return false;
     };
     type_utils::PRIMITIVE_TYPE_NAMES.contains(&segment.ident.to_string().as_str())
+        && default_alias_is_external(type_path, module)
 }
 
 /// Validate a literal `default_value` against the field's type **at

@@ -138,6 +138,12 @@ pub fn crate_layout() -> Option<CrateLayout> {
 
 /// The layout for a crate in `manifest_dir` whose macro call site is
 /// `call_site` (`None`: the library / main binary layout).
+///
+/// Limit (R32-SM1-L3): a custom target root is only recognised from the
+/// compiler's positional `.rs` input ([`compiler_root_layout`]). Outside a
+/// rustc run (or when that input is not among the compiler arguments), a
+/// custom `[[bin]]` / `[[test]]` / `[[example]]` file under `src/` is taken
+/// as a module of the library `src/lib.rs`.
 pub fn layout_for(manifest_dir: &Path, call_site: Option<&Path>) -> CrateLayout {
     let src = manifest_dir.join("src");
     let relative = call_site.and_then(|file| relative_to(file, manifest_dir));
@@ -169,10 +175,12 @@ pub fn layout_for(manifest_dir: &Path, call_site: Option<&Path>) -> CrateLayout 
     }
     // A custom `[[test]]` / `[[bench]]` / `[[example]]` / `[[bin]]` `path` outside
     // the default directories (R28-SM1-L1) is rooted at the file rustc compiles.
+    // Under `src/` (R32-SM1-L3) the same holds unless that file is the library
+    // or main root, which the library layout below already covers.
     if custom_target
         && let Some(call_site) = call_site
-        && relative_to(call_site, &src).is_none()
         && let Some(layout) = compiler_root_layout(call_site)
+        && (relative_to(call_site, &src).is_none() || !is_default_src_root(&layout.roots, &src))
     {
         return layout;
     }
@@ -202,6 +210,14 @@ fn compiler_root_layout(call_site: &Path) -> Option<CrateLayout> {
         module_dir,
         roots: vec![root],
     })
+}
+
+/// Whether `roots` is the library's or main binary's root (`src/lib.rs`,
+/// `src/main.rs`).
+fn is_default_src_root(roots: &[PathBuf], src: &Path) -> bool {
+    roots
+        .iter()
+        .any(|root| same_path(root, &src.join("lib.rs")) || same_path(root, &src.join("main.rs")))
 }
 
 fn crate_var(name: &str) -> Option<String> {
@@ -503,6 +519,49 @@ mod tests {
                 .join("::"),
             "crate"
         );
+    }
+
+    /// R32-SM1-L3: a custom `[[bin]] path = "src/tools/cli.rs"` under `src/` is
+    /// rooted at that file (its `crate::` modules are `src/tools/..`), while
+    /// the library's own modules keep the library layout.
+    #[rstest]
+    #[case::module_of_custom_root_under_src(
+        "src/tools/models/user.rs",
+        "src/tools",
+        "src/tools/cli.rs",
+        "crate::models::user"
+    )]
+    #[case::library_module_beside_it(
+        "src/models/user.rs",
+        "src",
+        "src/lib.rs",
+        "crate::models::user"
+    )]
+    fn custom_target_root_under_src(
+        #[case] call_site: &str,
+        #[case] module_dir: &str,
+        #[case] root: &str,
+        #[case] module: &str,
+    ) {
+        let dir = temp_crate();
+        std::fs::create_dir_all(dir.path().join("src/tools/models")).unwrap();
+        std::fs::write(dir.path().join("src/tools/cli.rs"), "").unwrap();
+        std::fs::write(dir.path().join("src/tools/models/user.rs"), "").unwrap();
+        let _args = crate::env_access::test_env::set_var(
+            crate::env_access::COMPILER_ARGS_KEY,
+            format!("rustc\n{}", dir.path().join("src/tools/cli.rs").display()),
+        );
+        let file = dir.path().join(call_site);
+        let layout = layout_for(dir.path(), Some(&file));
+        assert!(
+            same_path(&layout.module_dir, &dir.path().join(module_dir)),
+            "{layout:?}"
+        );
+        assert!(
+            same_path(&layout.roots[0], &dir.path().join(root)),
+            "{layout:?}"
+        );
+        assert_eq!(layout.module_path_of(&file).join("::"), module);
     }
 
     /// A cwd-relative call-site path (what rustc reports for workspace

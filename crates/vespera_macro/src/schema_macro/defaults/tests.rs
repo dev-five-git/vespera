@@ -546,7 +546,7 @@ fn test_is_parseable_type_empty_segments() {
             segments: syn::punctuated::Punctuated::new(),
         },
     });
-    assert!(!is_parseable_type(&ty));
+    assert!(!is_parseable_type(&ty, &[]));
 }
 
 #[test]

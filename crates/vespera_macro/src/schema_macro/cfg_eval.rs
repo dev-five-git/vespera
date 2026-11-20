@@ -74,6 +74,12 @@ pub fn statically_active(predicate: &Predicate) -> bool {
     eval(predicate, memoized_features().as_ref().as_deref()) == Some(true)
 }
 
+/// Whether `predicate` is known to fail (the mirror of [`statically_active`];
+/// an unknown predicate is neither).
+pub fn statically_inactive_predicate(predicate: &Predicate) -> bool {
+    eval(predicate, memoized_features().as_ref().as_deref()) == Some(false)
+}
+
 /// Whether `predicate` is known to be false (`any()`, `false`, a disabled
 /// `feature = ".."` inside rustc); unknown counts as not false.
 pub fn statically_false(predicate: &Predicate) -> bool {

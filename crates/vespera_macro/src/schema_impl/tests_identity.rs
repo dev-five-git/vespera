@@ -122,6 +122,10 @@ fn moved_item_replacement(#[case] source: &str, #[case] replaced: bool) {
     "#[cfg(any())] mod a { struct X; } #[cfg(all())] mod b { struct X; }",
     1
 )]
+// R32-SM0-L1: a `cfg_attr(p, cfg(q))` the compiler drops is not counted either.
+#[case::inactive_cfg_attr_twin("#[cfg_attr(all(), cfg(any()))] struct X; struct X;", 1)]
+#[case::inactive_cfg_attr_module("#[cfg_attr(all(), cfg(any()))] mod a { struct X; } struct X;", 1)]
+#[case::active_cfg_attr_twin("#[cfg_attr(any(), cfg(any()))] struct X; struct X;", 2)]
 // S20-0-2 (round 20): a `#[cfg]` that is false on a fn / impl / trait /
 // const / static hides the items declared inside its body too.
 // An active trait is walked too (its default method body holds an item).

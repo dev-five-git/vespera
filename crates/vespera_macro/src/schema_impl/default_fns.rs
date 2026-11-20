@@ -14,7 +14,7 @@
 use std::path::Path;
 
 use crate::parser::strip_raw_prefix_owned;
-use crate::schema_macro::cfg_eval::statically_inactive;
+use crate::schema_macro::cfg_eval::compiled_out;
 use crate::schema_macro::{file_cache, module_scope};
 
 fn ident_name(ident: &syn::Ident) -> String {
@@ -97,7 +97,7 @@ fn associated_fn_value(
             syn::Item::Impl(block)
                 if block.trait_.is_none()
                     && impl_owner_is(&block.self_ty, owner)
-                    && !statically_inactive(&block.attrs) =>
+                    && !compiled_out(&block.attrs) =>
             {
                 Some(block.items.iter().filter_map(|item| match item {
                     syn::ImplItem::Fn(func) if ident_name(&func.sig.ident) == fn_name => Some(func),
@@ -253,7 +253,7 @@ fn default_fn_value(items: &[syn::Item], fn_name: &str) -> Option<serde_json::Va
 pub(super) fn unique_active<'a, T: HasAttrs + 'a>(
     candidates: impl Iterator<Item = &'a T>,
 ) -> Option<&'a T> {
-    let mut active = candidates.filter(|candidate| !statically_inactive(candidate.attrs()));
+    let mut active = candidates.filter(|candidate| !compiled_out(candidate.attrs()));
     let only = active.next()?;
     active.next().is_none().then_some(only)
 }

@@ -447,20 +447,16 @@ pub fn extract_source_field_names(parsed_struct: &syn::ItemStruct) -> HashSet<St
 
 /// The entries the "Available fields" listing shows: the named fields a
 /// statically false `#[cfg]` (or `feature` predicate) removes are left out
-/// (R28-SM4-L1). A field whose serde JSON name differs from its Rust
-/// identifier shows both (`user_name (userName)`), since `pick` / `omit`
-/// accept either spelling. Only the listing; validation uses
-/// [`extract_source_field_names`].
+/// (R28-SM4-L1), and so are the fields serde does not serialize (`pick` /
+/// `omit` refuse them, R32-SM5-L1). A field whose serde JSON name differs from
+/// its Rust identifier is listed under both spellings as separate entries
+/// (R32-SM5-L2), since `pick` / `omit` accept either one on its own. Only the
+/// listing; validation uses [`extract_source_field_names`].
 fn listed_source_field_names(parsed_struct: &syn::ItemStruct) -> HashSet<String> {
     source_fields(parsed_struct)
         .into_iter()
-        .map(|field| {
-            if field.json == field.rust {
-                field.rust
-            } else {
-                format!("{} ({})", field.rust, field.json)
-            }
-        })
+        .filter(|field| field.serialized)
+        .flat_map(|field| [field.rust, field.json])
         .collect()
 }
 
@@ -731,8 +727,9 @@ mod tests {
         assert!(!err.contains("gone"), "{err}");
     }
 
-    /// R31-SM5-L3: a field whose serde JSON name differs from its Rust identifier
-    /// is listed with both, because `pick` / `omit` accept either spelling.
+    /// R31-SM5-L3 / R32-SM5-L2: a field whose serde JSON name differs from its
+    /// Rust identifier is listed under both spellings, each one a valid entry
+    /// on its own (`user_name (userName)` was not accepted verbatim).
     #[test]
     fn listing_shows_the_json_name_where_it_differs() {
         let struct_def: syn::ItemStruct = syn::parse_str(
@@ -745,9 +742,31 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            err.contains("Available fields: [\"id\", \"user_name (userName)\"]"),
+            err.contains("Available fields: [\"id\", \"userName\", \"user_name\"]"),
             "{err}"
         );
+    }
+
+    /// R32-SM5-L1: the listing leaves out a field serde does not serialize,
+    /// since `pick` / `omit` refuse its name (`serde does not serialize it`).
+    #[test]
+    fn listing_leaves_out_serde_skipped_fields() {
+        let struct_def: syn::ItemStruct = syn::parse_str(
+            "#[derive(serde::Serialize)] pub struct S { id: i32, #[serde(skip)] hidden: i32, #[serde(skip_serializing)] quiet: i32 }",
+        )
+        .unwrap();
+        let ty: syn::Type = syn::parse2(quote!(S)).unwrap();
+        let omit = Some(vec!["nope".to_string()]);
+        let err = resolve_filter_names("omit", omit.as_ref(), &struct_def, "S", &ty)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Available fields: [\"id\"]"), "{err}");
+        // The skipped name is still refused with its own diagnostic.
+        let hidden = Some(vec!["hidden".to_string()]);
+        let err = resolve_filter_names("omit", hidden.as_ref(), &struct_def, "S", &ty)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("serde does not serialize it"), "{err}");
     }
 
     /// R28-SM4-L2 (decided: accepted). A `rename` / `partial` / adapter name of
