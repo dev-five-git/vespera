@@ -924,4 +924,12 @@ mod tests {
             ["any(not(feature=\"beta\"),unix)"]
         );
     }
+
+    #[test]
+    fn lexical_normalize_folds_current_and_parent_dirs() {
+        assert_eq!(
+            lexical_normalize(Path::new("src/./routes/../api/x.rs")),
+            Path::new("src/api/x.rs")
+        );
+    }
 }
