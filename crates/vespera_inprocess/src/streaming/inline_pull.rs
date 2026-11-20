@@ -48,7 +48,9 @@
 //!
 //! Backpressure is trivially preserved (a pull happens only when the
 //! handler asks for a frame), the [`crate::max_streaming_request_bytes`]
-//! cap is enforced on the same running total, and a pull that reports
+//! cap is enforced on the same running total, an inline chunk larger than
+//! [`crate::streaming_chunk_bytes`] is delivered in pieces of that size (the
+//! producer's per-frame bound, the rest kept in `inline_pending`), and a pull that reports
 //! [`RequestChunk::Error`] — or panics — fails the body with
 //! [`StreamAbort`] exactly like the producer would.
 
@@ -86,6 +88,11 @@ impl ChannelBody {
     /// Returns `None` when the producer must take over; otherwise the
     /// frame for `poll_frame` to return.
     pub(super) fn poll_inline(&mut self) -> InlineFrame {
+        // The rest of an oversized inline chunk goes out first: the host is
+        // not pulled again until every split piece was delivered.
+        if !self.inline_pending.is_empty() {
+            return Some(Some(Ok(Frame::data(split_piece(&mut self.inline_pending)))));
+        }
         while self.inline_pull_allowed() {
             self.inline_budget -= 1;
             self.inline.touched.store(true, Ordering::Release);
@@ -135,7 +142,24 @@ impl ChannelBody {
             self.failed = true;
             return Err(StreamAbort);
         }
-        Ok(Frame::data(Bytes::from(data)))
+        // Same per-frame bound as the producer: an oversized host chunk is
+        // split, the remainder waits in `inline_pending`.
+        let mut bytes = Bytes::from(data);
+        let piece = split_piece(&mut bytes);
+        self.inline_pending = bytes;
+        Ok(Frame::data(piece))
+    }
+}
+
+/// Take the next frame of an inline chunk: at most `streaming_chunk_bytes`
+/// bytes, the bound the producer enforces on every queued frame. `split_to`
+/// and `mem::take` move `Bytes` handles only, so no bytes are copied.
+fn split_piece(bytes: &mut Bytes) -> Bytes {
+    let max_chunk = crate::config::streaming_chunk_bytes();
+    if bytes.len() > max_chunk {
+        bytes.split_to(max_chunk)
+    } else {
+        std::mem::take(bytes)
     }
 }
 

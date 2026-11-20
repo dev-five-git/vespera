@@ -38,6 +38,7 @@ fn ensure() {
             .route("/echo", post(|body: Bytes| async move { body }))
             .route("/ignore", post(|| async { "ignored" }))
             .route("/first_frame", post(first_frame))
+            .route("/frame_sizes", post(frame_sizes))
             .route("/stream_echo", post(|body: Body| async move { body }))
     });
 }
@@ -50,6 +51,23 @@ async fn first_frame(mut body: Body) -> String {
         .and_then(|f| f.into_data().ok())
         .map_or(0, |d| d.len())
         .to_string()
+}
+
+/// Reads the whole upload frame by frame and reports each frame's length
+/// and whether every byte is the `x` the test pulls send.
+async fn frame_sizes(mut body: Body) -> String {
+    let mut sizes = Vec::new();
+    let mut intact = true;
+    while let Some(frame) = body.frame().await {
+        let Ok(frame) = frame else {
+            return "aborted".to_owned();
+        };
+        if let Ok(data) = frame.into_data() {
+            intact &= data.iter().all(|b| *b == b'x');
+            sizes.push(data.len());
+        }
+    }
+    format!("{intact}:{sizes:?}")
 }
 
 /// One scripted pull.
@@ -386,4 +404,27 @@ async fn inline_pull_may_use_tokio_blocking_apis() {
         .filter(|t| **t == caller)
         .count();
     assert_eq!(inline, 2, "both pulls ran inline on the block_on thread");
+}
+
+/// An inline pull delivers an oversized host chunk in frames of at most the
+/// streaming chunk size, like the producer: one `2 * CHUNK + 10` byte pull
+/// reaches the handler as `CHUNK`, `CHUNK`, `10` bytes, every byte intact,
+/// and the host is pulled again only after the remainder went out (once more,
+/// for the `End`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inline_chunk_is_split_to_the_streaming_chunk_size() {
+    ensure();
+    let probe = Probe::default();
+    let (got_status, body) = run(
+        "/frame_sizes",
+        &[Pull::Data(2 * CHUNK + 10), Pull::End],
+        &probe,
+    )
+    .await;
+    assert_eq!(got_status, 200);
+    assert_eq!(
+        String::from_utf8(body).unwrap(),
+        format!("true:[{CHUNK}, {CHUNK}, 10]")
+    );
+    assert_eq!(probe.pulls(), 2, "pull count");
 }

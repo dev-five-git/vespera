@@ -14,6 +14,12 @@ pub struct RequestEnvelope {
     pub path: String,
     #[serde(default)]
     pub query: String,
+    /// Header values use the same byte mapping as the binary wire API
+    /// (`header_latin1.rs`), not a UTF-8 pass-through: a value whose chars
+    /// are all `<= U+00FF` maps one `char` to one byte, so `café` sent as
+    /// UTF-8 text arrives as the bytes `63 61 66 E9`, not `63 61 66 C3 A9`.
+    /// A value with a `char` above `U+00FF` keeps its UTF-8 bytes. Send
+    /// ASCII header values when the exact bytes matter.
     #[serde(default)]
     pub headers: HashMap<String, String>,
     #[serde(default)]
@@ -64,6 +70,11 @@ impl ResponseMetadata {
 #[derive(Debug, Serialize)]
 pub struct ResponseEnvelope {
     pub status: u16,
+    /// Header values use the wire Latin-1 mapping (`header_latin1.rs`): ASCII
+    /// is unchanged, and every other value byte becomes one `char` with the
+    /// same code point (`U+0000..=U+00FF`). A UTF-8 value therefore shows as
+    /// mojibake: `résumé.pdf` arrives as `rÃ©sumÃ©.pdf`. Use the binary wire
+    /// API when the exact header bytes matter.
     pub headers: BTreeMap<String, HeaderValue>,
     /// UTF-8 text body. Empty when the upstream response body is not
     /// valid UTF-8 (binary responses).  Use the binary wire path for

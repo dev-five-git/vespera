@@ -25,6 +25,13 @@
 //!    prefer [`dispatch_owned`] over [`dispatch()`] / [`dispatch_typed`]
 //!    to avoid cloning the request envelope.
 //!
+//!    Header values on this path are plain Rust strings, but they follow
+//!    the binary wire header's Latin-1 mapping, not a UTF-8 pass-through.
+//!    A request value whose chars are all `<= U+00FF` maps one `char` to
+//!    one byte (`"café"` arrives as `63 61 66 E9`); a value with a wider
+//!    `char` keeps its UTF-8 bytes. A response value byte `>= 0x80` becomes
+//!    one `char` (UTF-8 `résumé` appears as `rÃ©sumÃ©`). ASCII is unaffected.
+//!
 //! 2. **Binary wire API** — [`dispatch_from_bytes`] is the
 //!    zero-overhead FFI entry point.  Wire format (request and
 //!    response use the same layout):
