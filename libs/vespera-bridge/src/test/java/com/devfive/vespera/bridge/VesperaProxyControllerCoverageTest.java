@@ -97,40 +97,13 @@ class VesperaProxyControllerCoverageTest {
     }
 
     @Test
-    void hardBufferedBodyLimitHasAnAllocationFreeDecisionSeam() {
-        long maxBufferedBody = Integer.MAX_VALUE - 8L;
-
-        ResponseStatusException exception = assertThrows(
-                ResponseStatusException.class,
-                () -> VesperaProxyController.rejectAtBufferedBodyLimit(
-                        maxBufferedBody, maxBufferedBody));
-
-        assertEquals(413, exception.getStatusCode().value());
-        assertEquals("buffered request body exceeds the built-in " + maxBufferedBody
-                + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes="
-                + maxBufferedBody + "; at least " + maxBufferedBody + " bytes)", exception.getReason());
-        VesperaProxyController.rejectAtBufferedBodyLimit(maxBufferedBody - 1, maxBufferedBody);
-        VesperaProxyController.rejectAtBufferedBodyLimit(maxBufferedBody, maxBufferedBody - 1);
-    }
-
-    @Test
-    void bufferedBodyLimitNamesTheConfiguredCapNotTheBound() {
-        long maxBufferedBody = Integer.MAX_VALUE - 8L;
-        long configured = 4_294_967_296L;
-
-        ResponseStatusException above = assertThrows(
-                ResponseStatusException.class,
-                () -> VesperaProxyController.rejectAtBufferedBodyLimit(maxBufferedBody, configured));
-        assertEquals("buffered request body exceeds the built-in " + maxBufferedBody
-                + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes="
-                + configured + "; at least " + maxBufferedBody + " bytes)", above.getReason());
-
-        ResponseStatusException unlimited = assertThrows(
-                ResponseStatusException.class,
-                () -> VesperaProxyController.rejectAtBufferedBodyLimit(maxBufferedBody, 0));
-        assertEquals("buffered request body exceeds the built-in " + maxBufferedBody
-                + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes=0; at least "
-                + maxBufferedBody + " bytes)", unlimited.getReason());
+    void knownLengthAboveTheFixedBoundIsReadExactlyWhenUncapped() throws Exception {
+        // cap=0 and a declared length above the 64 MiB fixed bound: the exact read
+        // of what the body holds, never a 413 (readBody refuses anything above the
+        // frame bound before this read, so the array always fits).
+        long declared = 64L * 1024 * 1024 + 1;
+        assertEquals(10, VesperaProxyController.readBufferedBody(
+                new java.io.ByteArrayInputStream(new byte[10]), declared, 0).length);
     }
 
     @Test
@@ -544,22 +517,25 @@ class VesperaProxyControllerCoverageTest {
             assertEquals(AppTags.UNKNOWN, tags.tag("nosuch-app", 404, false, false),
                     "and nothing was learned from it");
 
-            java.util.List<ch.qos.logback.classic.spi.ILoggingEvent> causes = logged.list.stream()
-                    .filter(event -> event.getThrowableProxy() != null).toList();
-            assertEquals(1, causes.size(), "the failure is logged once, with its cause");
-            assertEquals("vespera async request failed", causes.get(0).getFormattedMessage());
-            assertEquals("boom", causes.get(0).getThrowableProxy().getMessage());
-            assertEquals("rid-7", causes.get(0).getMDCPropertyMap()
+            // Exactly one WARN for the failure, and it carries the cause.
+            java.util.List<ch.qos.logback.classic.spi.ILoggingEvent> warns = logged.list.stream()
+                    .filter(event -> event.getLevel() == ch.qos.logback.classic.Level.WARN).toList();
+            assertEquals(1, warns.size(), "the failure is logged once, not twice");
+            assertTrue(warns.get(0).getFormattedMessage().startsWith("vespera server error on GET"));
+            assertTrue(warns.get(0).getFormattedMessage().contains("status=500"));
+            assertTrue(warns.get(0).getFormattedMessage().endsWith("requestId=rid-7"));
+            assertEquals("boom", warns.get(0).getThrowableProxy().getMessage());
+            assertEquals("rid-7", warns.get(0).getMDCPropertyMap()
                     .get(VesperaProxyController.MDC_REQUEST_ID));
 
-            // A client disconnect is not a server error: no WARN with a cause.
+            // A client disconnect is not a server error: no WARN at all.
             ProxyExchange gone = new ProxyExchange(logger, java.util.List.of(seen::add), tags, "GET", "rid-8");
             AsyncProxyResponses.reportAsyncError(gone,
                     new IllegalStateException(new IOException("Broken pipe")), false);
             assertEquals(499, seen.get(1).status());
             assertEquals(1, logged.list.stream()
-                    .filter(event -> event.getThrowableProxy() != null).count(),
-                    "no cause logged for a disconnect");
+                    .filter(event -> event.getLevel() == ch.qos.logback.classic.Level.WARN).count(),
+                    "no WARN for a disconnect");
         } finally {
             logback.detachAppender(logged);
         }

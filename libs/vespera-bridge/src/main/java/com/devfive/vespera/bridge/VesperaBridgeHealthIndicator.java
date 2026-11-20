@@ -14,11 +14,12 @@ public class VesperaBridgeHealthIndicator implements HealthIndicator {
 
     @Override
     public Health health() {
-        Health.Builder builder = switch (VesperaBridgeHealth.status()) {
+        VesperaBridgeHealth.Status status = VesperaBridgeHealth.status();
+        Health.Builder builder = switch (status) {
             case UP -> Health.up();
             case DOWN -> Health.down();
             case OUT_OF_SERVICE -> Health.outOfService();
         };
-        return builder.withDetails(VesperaBridgeHealth.details()).build();
+        return builder.withDetails(VesperaBridgeHealth.details(status)).build();
     }
 }

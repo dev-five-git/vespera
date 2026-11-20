@@ -509,17 +509,6 @@ public class VesperaProxyController {
     private static final int MAX_FIXED_BODY = 64 * 1024 * 1024;
 
     /**
-     * Largest body that can be materialised into a single Java {@code byte[]}
-     * (the JVM array-length ceiling is just under {@link Integer#MAX_VALUE}).
-     * A buffered request body is limited further, to {@link
-     * VesperaWireCodec#MAX_FRAME_BODY} (the bound that leaves room for the wire
-     * header); a request above that is rejected with 413 rather than read, and
-     * such requests must go through {@code BIDIRECTIONAL_STREAMING}.
-     * This ceiling only bounds the known-length reads of a cap-less request.
-     */
-    private static final long MAX_BUFFERED_BODY = Integer.MAX_VALUE - 8L;
-
-    /**
      * 413 as a raw status code: {@code HttpStatus.CONTENT_TOO_LARGE} only exists
      * in Spring Framework 7 (6.x calls it {@code PAYLOAD_TOO_LARGE}), so naming
      * either constant would break the other supported Spring Boot line.
@@ -627,14 +616,17 @@ public class VesperaProxyController {
             }
             return body;
         }
-        if (contentLength > 0 && (cap > 0 || contentLength <= MAX_FIXED_BODY)) {
-            // Known, bounded length: one exact allocation filled in
+        if (contentLength > 0) {
+            // Known length, cap or not: one exact allocation filled in
             // place, skipping readAllBytes()'s grow-by-doubling and
             // its final trim copy.  readNBytes blocks until the
             // buffer is full or EOF; the servlet container caps the
             // stream at Content-Length, so a well-formed request
             // returns exactly contentLength bytes (a short read
-            // yields a correctly-sized smaller array).
+            // yields a correctly-sized smaller array). readBody has
+            // already refused a length above MAX_FRAME_BODY, so the
+            // array always fits. With cap=0 and a length above
+            // MAX_FIXED_BODY this is the documented unlimited read.
             return in.readNBytes((int) contentLength);
         }
         // Unknown length (-1, or a Content-Length of 0 on a request that is
@@ -646,38 +638,11 @@ public class VesperaProxyController {
         // (mis)configured resolver feeding a runaway chunked upload into a
         // buffered mode cannot grow the JVM heap toward OOM. Reading one
         // byte past the bound distinguishes "exactly at the bound" from
-        // "over". Known-length bodies keep the documented `cap=0`
-        // "unlimited" behaviour below.
-        if (contentLength <= 0) {
-            byte[] body = in.readNBytes(MAX_FIXED_BODY + 1);
-            rejectAboveDefaultBufferedLimit(body.length);
-            return body;
-        }
-        // Oversized KNOWN length with no explicit cap (cap=0,
-        // contentLength > MAX_FIXED_BODY): the caller opted into unlimited
-        // buffering for a SIZED body, so honour it up to the single-array
-        // ceiling (the actual read stops at the known Content-Length).
-        byte[] body = in.readNBytes((int) MAX_BUFFERED_BODY);
-        rejectAtBufferedBodyLimit(body.length, cap);
+        // "over". Known-length bodies returned above (the documented `cap=0`
+        // "unlimited" reads are exact too), so only an undeclared body is here.
+        byte[] body = in.readNBytes(MAX_FIXED_BODY + 1);
+        rejectAboveDefaultBufferedLimit(body.length);
         return body;
-    }
-
-    /**
-     * {@code 413} when a read bounded by the single-array ceiling stopped at
-     * it ({@code cap} unlimited ({@code <= 0}) or at least the ceiling). Names
-     * the built-in bound and the cap as configured, never the bound as if it
-     * were the property's value.
-     */
-    static void rejectAtBufferedBodyLimit(long bodyLength, long cap) {
-        if (bodyLength == MAX_BUFFERED_BODY && (cap <= 0 || cap >= MAX_BUFFERED_BODY)) {
-            // The read stopped at the single-array ceiling: the body is at
-            // least that large, its real size is not known.
-            throw new ResponseStatusException(
-                    CONTENT_TOO_LARGE,
-                    "buffered request body exceeds the built-in " + MAX_BUFFERED_BODY
-                            + "-byte single-array bound (vespera.bridge.max-buffered-request-bytes="
-                            + cap + "; at least " + bodyLength + " bytes)");
-        }
     }
 
     static void rejectAboveDefaultBufferedLimit(long bodyLength) {

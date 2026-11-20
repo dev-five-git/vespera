@@ -33,6 +33,15 @@ public final class VesperaBridgeHealth {
 
     /** {@code bridgeVersion}, {@code nativeVersion} (when known) and a {@code reason} unless UP. */
     public static Map<String, Object> details() {
+        return details(status());
+    }
+
+    /**
+     * The details for {@code status}, which the caller read once: a second
+     * {@link #status()} read could land across an init or shutdown and pair a
+     * DOWN status with no reason.
+     */
+    static Map<String, Object> details(Status status) {
         Map<String, Object> details = new LinkedHashMap<>();
         String bridge = VesperaVersions.bridgeVersion();
         if (bridge != null) {
@@ -42,7 +51,7 @@ public final class VesperaBridgeHealth {
         if (nativeVersion != null) {
             details.put("nativeVersion", nativeVersion);
         }
-        switch (status()) {
+        switch (status) {
             case DOWN -> details.put("reason", "native library not initialized");
             case OUT_OF_SERVICE -> details.put("reason", "native runtime shut down");
             default -> { }
