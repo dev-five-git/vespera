@@ -488,8 +488,9 @@ fn inline_less_stored_job_of_same_named_sibling_modules_is_rejected_honestly() {
 }
 
 /// Jobs in modules rustc expands after `vespera!` are recovered from the
-/// module tree (`#[path]` modules included); storage-known, gated, private,
-/// non-literal and unreachable ones are not.
+/// module tree (`#[path]` modules included); storage-known, private,
+/// non-literal and unreachable ones are not. A gated one is recovered too,
+/// under its gate (see `tests_gate.rs`).
 #[test]
 fn scan_recovers_unexpanded_jobs_from_the_module_tree() {
     let krate = crate_with(&[
@@ -550,33 +551,15 @@ fn scan_recovers_unexpanded_jobs_from_the_module_tree() {
     let jobs = discover(&[stored("early_job", Some(early))], Some(&src), None);
     assert_eq!(
         summary(&jobs),
-        vec![
-            (
-                "early".to_owned(),
-                "early_job".to_owned(),
-                "0 0 0 * * *".to_owned()
-            ),
-            (
-                "inline".to_owned(),
-                "inline_job".to_owned(),
-                "0 0 * * * *".to_owned()
-            ),
-            (
-                "late".to_owned(),
-                "late_job".to_owned(),
-                "2 * * * * *".to_owned()
-            ),
-            (
-                "late::deeper".to_owned(),
-                "deep_job".to_owned(),
-                "5 * * * * *".to_owned()
-            ),
-            (
-                "pathed".to_owned(),
-                "pathed".to_owned(),
-                "7 * * * * *".to_owned()
-            ),
-        ]
+        rows(&[
+            ("early", "early_job", "0 0 0 * * *"),
+            ("gated", "gated", "6 * * * * *"),
+            ("inline", "inline_job", "0 0 * * * *"),
+            ("late", "gated_job", "4 * * * * *"),
+            ("late", "late_job", "2 * * * * *"),
+            ("late::deeper", "deep_job", "5 * * * * *"),
+            ("pathed", "pathed", "7 * * * * *"),
+        ])
     );
     // Scanned jobs keep their `tz` / `overlap` arguments.
     let late = jobs

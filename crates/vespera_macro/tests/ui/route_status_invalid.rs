@@ -1,5 +1,5 @@
 //! `status` is the SUCCESS status and must be 2xx; `error_status` entries must
-//! be integer literals naming an HTTP status code (100-599).
+//! be integer literals naming an HTTP error status code (400-599).
 use vespera_macro::route;
 
 #[route(post, status = 404)]

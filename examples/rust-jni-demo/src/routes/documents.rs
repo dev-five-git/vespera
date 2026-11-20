@@ -58,8 +58,10 @@ pub struct DocumentMetadata {
     pub word_count: usize,
     pub char_count: usize,
     pub estimated_pages: usize,
-    pub classification_level: u8,
-    pub retention_years: u32,
+    /// `None` for an unrecognised classification (it has no level).
+    pub classification_level: Option<u8>,
+    /// `None` exactly when `classification_level` is (no retention is known).
+    pub retention_years: Option<u32>,
 }
 
 /// Register request — `#[schema]` rules drive both the OpenAPI spec and the
@@ -156,9 +158,9 @@ fn validate_document(req: &ValidateDocumentRequest) -> ValidationResult {
             ),
         });
     }
-    let level = level.unwrap_or(0);
-
-    if level >= 2 {
+    // An unrecognised classification is not known to be public, so it gets the
+    // stricter rules of a classified document (author and department).
+    if level.is_none_or(|level| level >= 2) {
         if req.author.trim().is_empty() {
             errors.push(ValidationError {
                 code: "AUTHOR_REQUIRED_FOR_CLASSIFIED".into(),
@@ -214,7 +216,7 @@ fn validate_document(req: &ValidateDocumentRequest) -> ValidationResult {
         });
     }
 
-    if req.document_type == "regulation" && level < 1 {
+    if req.document_type == "regulation" && level == Some(0) {
         warnings.push(ValidationWarning {
             code: "REGULATION_PUBLIC".into(),
             field: "classification".into(),
@@ -235,7 +237,7 @@ fn validate_document(req: &ValidateDocumentRequest) -> ValidationResult {
             char_count,
             estimated_pages,
             classification_level: level,
-            retention_years: retention_for_level(level),
+            retention_years: level.map(retention_for_level),
         },
     }
 }
@@ -395,5 +397,65 @@ mod tests {
             title_errors("\u{AC00}".repeat(MAX_TITLE_LEN + 1)),
             ["Title exceeds 200 characters (got 201)"]
         );
+    }
+
+    fn validation(document_type: &str, classification: &str, author: &str) -> ValidationResult {
+        validate_document(&ValidateDocumentRequest {
+            document_type: document_type.into(),
+            title: "Title".into(),
+            content: "one two three four five six seven eight nine ten".into(),
+            author: author.into(),
+            department: String::new(),
+            classification: classification.into(),
+            effective_date: "2026-01-01".into(),
+            expiry_date: None,
+        })
+    }
+
+    /// An unrecognised classification has no level and no retention, is not
+    /// reported as a public regulation, and gets the author / department rules
+    /// of a classified document (it used to count as level 0 throughout).
+    #[test]
+    fn unknown_classification_has_no_level_and_gets_the_classified_rules() {
+        let result = validation("regulation", "top-secret-ish", "");
+        let codes: Vec<&str> = result.errors.iter().map(|e| e.code.as_str()).collect();
+        assert!(codes.contains(&"CLASSIFICATION_INVALID"), "{codes:?}");
+        assert!(
+            codes.contains(&"AUTHOR_REQUIRED_FOR_CLASSIFIED"),
+            "{codes:?}"
+        );
+        assert!(codes.contains(&"DEPT_REQUIRED_FOR_CLASSIFIED"), "{codes:?}");
+        assert!(
+            result
+                .warnings
+                .iter()
+                .all(|w| w.code != "REGULATION_PUBLIC")
+        );
+        assert_eq!(result.metadata.classification_level, None);
+        assert_eq!(result.metadata.retention_years, None);
+    }
+
+    /// A public regulation is still warned about, and a known level carries
+    /// its level and retention.
+    #[test]
+    fn known_classification_keeps_its_level_and_retention() {
+        let public = validation("regulation", "public", "Kim");
+        assert!(
+            public
+                .warnings
+                .iter()
+                .any(|w| w.code == "REGULATION_PUBLIC")
+        );
+        assert_eq!(public.metadata.classification_level, Some(0));
+        assert_eq!(public.metadata.retention_years, Some(1));
+        let secret = validation("memo", "secret", "Kim");
+        assert!(
+            secret
+                .warnings
+                .iter()
+                .all(|w| w.code != "REGULATION_PUBLIC")
+        );
+        assert_eq!(secret.metadata.classification_level, Some(3));
+        assert_eq!(secret.metadata.retention_years, Some(30));
     }
 }

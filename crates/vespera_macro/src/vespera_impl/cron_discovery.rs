@@ -18,11 +18,14 @@
 //! neither the crate root (`src/lib.rs` / `src/main.rs` are `crate`, not
 //! `crate::lib`) nor inline `mod name { … }` blocks.
 //!
-//! The scan only follows modules the compiler would also see: `#[cfg]`-gated
-//! modules / functions are skipped, `#[path = "…"]` modules are followed the
-//! way rustc resolves them, and only the module
-//! tree that contains the `vespera!` call site is used, so stray files never
-//! produce a `crate::…` path that does not resolve.  A cheap text pre-filter
+//! The scan follows the modules the compiler would also see: `#[path = "…"]`
+//! modules are followed the way rustc resolves them, and only the module tree
+//! that contains the `vespera!` call site is used, so stray files never
+//! produce a `crate::…` path that does not resolve. A `#[cfg]`-gated module or
+//! function is followed too: its job is registered under the predicates that
+//! gate it (all of them, nested gates included; see [`CronMetadata::cfg`]),
+//! and one that is statically false (`#[cfg(any())]`) is never compiled, so
+//! it is dropped. A cheap text pre-filter
 //! (the name `cron` anywhere under `src/`) keeps the common case — no cron jobs at
 //! all — free of any parsing.
 
@@ -36,7 +39,7 @@ use syn::punctuated::Punctuated;
 
 use crate::cron_impl::{CronArgs, StoredCronInfo, validate_cron_fn};
 use crate::metadata::CronMetadata;
-use crate::schema_macro::cfg_eval::{Predicate, statically_active, statically_false};
+use crate::schema_macro::cfg_eval::{Predicate, compiled_out, statically_active, statically_false};
 use crate::schema_macro::field_attrs::field_cfgs;
 use crate::schema_macro::file_cache;
 
@@ -350,7 +353,8 @@ fn crate_roots(src_dir: &Path, with_binaries: bool) -> Vec<PathBuf> {
 #[derive(Default)]
 struct ModuleTree {
     files: HashSet<String>,
-    /// Schedulable jobs outside `#[cfg]`-gated items — the scan result.
+    /// Schedulable jobs (a statically dead `#[cfg]` one is dropped) — the scan
+    /// result.
     jobs: Vec<CronMetadata>,
     /// (canonical file, function name) → module path of every function
     /// carrying a cron attribute, `#[cfg]`-gated ones included (rustc may
@@ -384,8 +388,8 @@ struct Scope<'a> {
     file: &'a str,
     /// Inline-module path inside `file` (`""` = file level).
     inline: &'a str,
-    /// Inside a `#[cfg]`-gated module: indexed, never scanned.
-    gated: bool,
+    /// The `#[cfg]` predicates of the enclosing modules (all must hold).
+    gate: CfgGate,
     /// The enclosing module's bare `cron` is another crate's (see
     /// [`CronImports::foreign`]); `false` at the crate root.
     inherited_foreign: bool,
@@ -394,7 +398,7 @@ struct Scope<'a> {
 impl ModuleTree {
     fn from_root(root: &Path, src_dir: &Path) -> Self {
         let mut tree = Self::default();
-        tree.walk(root, src_dir, "", false, false);
+        tree.walk(root, src_dir, "", &CfgGate::default(), false);
         tree
     }
 
@@ -406,7 +410,7 @@ impl ModuleTree {
         file: &Path,
         mod_dir: &Path,
         module_path: &str,
-        gated: bool,
+        gate: &CfgGate,
         inherited_foreign: bool,
     ) {
         let display = canonical_display(file);
@@ -425,7 +429,7 @@ impl ModuleTree {
                 module_path,
                 file: &display,
                 inline: "",
-                gated,
+                gate: gate.clone(),
                 inherited_foreign,
             };
             self.visit(&summary.module, &scope);
@@ -439,12 +443,12 @@ impl ModuleTree {
             match item {
                 ItemSummary::Mod {
                     name,
-                    cfg_gated,
+                    gate,
                     path,
                     inline,
                 } => {
                     let child_path = join_module(scope.module_path, name);
-                    let gated = scope.gated || *cfg_gated;
+                    let gate = gate.inside(&scope.gate);
                     if let Some(inner) = inline {
                         // rustc: `#[path = "dir"] mod m { .. }` resolves the
                         // block's file modules under `dir`, not `m`.
@@ -455,7 +459,7 @@ impl ModuleTree {
                             module_path: &child_path,
                             file: scope.file,
                             inline: &inline,
-                            gated,
+                            gate,
                             inherited_foreign: foreign,
                         };
                         self.visit(inner, &child);
@@ -473,7 +477,7 @@ impl ModuleTree {
                         let child = fold_parent_dirs(&base.join(path));
                         if child.is_file() {
                             let dir = child.parent().unwrap_or(base).to_path_buf();
-                            self.walk(&child, &dir, &child_path, gated, foreign);
+                            self.walk(&child, &dir, &child_path, &gate, foreign);
                         }
                     } else {
                         let child_dir = scope.mod_dir.join(name);
@@ -484,18 +488,18 @@ impl ModuleTree {
                         .into_iter()
                         .find(|candidate| candidate.is_file())
                         {
-                            self.walk(&child, &child_dir, &child_path, gated, foreign);
+                            self.walk(&child, &child_dir, &child_path, &gate, foreign);
                         }
                     }
                 }
-                ItemSummary::Cron { name, attrs } => {
+                ItemSummary::Cron { name, gate, attrs } => {
                     // The job is the first attribute the module's imports
                     // leave vespera's (a foreign bare `#[cron]` is skipped).
                     let job = attrs
                         .iter()
                         .find(|attr| !(foreign && attr.bare))
                         .and_then(|attr| attr.job.as_ref());
-                    self.add_cron_fn(name, job, scope);
+                    self.add_cron_fn(name, job, &gate.inside(&scope.gate), scope);
                 }
             }
         }
@@ -537,8 +541,15 @@ impl ModuleTree {
     }
 
     /// Index a function carrying a cron attribute and, when it is
-    /// schedulable and not `#[cfg]`-gated, record it as a scanned job.
-    fn add_cron_fn(&mut self, function_name: &str, job: Option<&CronJob>, scope: &Scope<'_>) {
+    /// schedulable and `gate` (the function's and its modules' `#[cfg]`s) is
+    /// not statically false, record it as a scanned job under `gate`.
+    fn add_cron_fn(
+        &mut self,
+        function_name: &str,
+        job: Option<&CronJob>,
+        gate: &CfgGate,
+        scope: &Scope<'_>,
+    ) {
         let key = (scope.file.to_owned(), function_name.to_owned());
         match self.cron_fns.get(&key) {
             Some(first) if first != scope.module_path => {
@@ -564,7 +575,7 @@ impl ModuleTree {
                     .insert(scoped_key, scope.module_path.to_owned());
             }
         }
-        if !scope.gated
+        if !gate.dead
             && let Some((expression, options, cfg)) = job
         {
             self.jobs.push(CronMetadata {
@@ -573,8 +584,48 @@ impl ModuleTree {
                 module_path: scope.module_path.to_owned(),
                 file_path: scope.file.to_owned(),
                 options: options.clone(),
-                cfg: cfg.clone(),
+                cfg: gate.predicates.iter().chain(cfg).cloned().collect(),
             });
+        }
+    }
+}
+
+/// The `#[cfg]` gate of an item the scan reads, as [`CronMetadata::cfg`]
+/// needs it: `dead` when a predicate is statically false (rustc never compiles
+/// the item), else the predicates still undecided (a statically true one holds
+/// and is dropped). Nested gates combine with [`CfgGate::inside`].
+#[derive(Clone, Default)]
+struct CfgGate {
+    dead: bool,
+    /// Token text of each undecided predicate, outermost first.
+    predicates: Vec<String>,
+}
+
+impl CfgGate {
+    fn of(attrs: &[syn::Attribute]) -> Self {
+        let predicates = field_cfgs(attrs)
+            .iter()
+            .filter_map(|attr| attr.parse_args::<Predicate>().ok())
+            .filter(|predicate| !statically_active(predicate))
+            .map(|predicate| predicate.to_token_stream().to_string())
+            .collect();
+        Self {
+            dead: compiled_out(attrs),
+            predicates,
+        }
+    }
+
+    /// This item's gate inside `outer`, the gate of the enclosing module: both
+    /// must hold, so the job is dead if either is.
+    fn inside(&self, outer: &Self) -> Self {
+        Self {
+            dead: self.dead || outer.dead,
+            predicates: outer
+                .predicates
+                .iter()
+                .chain(&self.predicates)
+                .cloned()
+                .collect(),
         }
     }
 }
@@ -603,8 +654,8 @@ enum ItemSummary {
     Mod {
         /// Unraw name.
         name: String,
-        /// Carries a `#[cfg]`.
-        cfg_gated: bool,
+        /// Its `#[cfg]` gate.
+        gate: CfgGate,
         /// Its `#[path = "…"]`.
         path: Option<String>,
         /// The items of an inline `mod m { .. }`.
@@ -613,6 +664,8 @@ enum ItemSummary {
     Cron {
         /// Unraw name.
         name: String,
+        /// Its `#[cfg]` gate.
+        gate: CfgGate,
         /// The `#[cron]` attributes of a schedulable fn, in source order
         /// (empty when the fn is not schedulable, see [`cron_attrs`]).
         attrs: Vec<CronAttr>,
@@ -658,7 +711,7 @@ fn summarize(items: &[syn::Item], collect_jobs: bool) -> ModuleSummary {
             .filter_map(|item| match item {
                 syn::Item::Mod(module) => Some(ItemSummary::Mod {
                     name: module.ident.unraw().to_string(),
-                    cfg_gated: is_cfg_gated(&module.attrs),
+                    gate: CfgGate::of(&module.attrs),
                     path: path_attr(&module.attrs),
                     inline: module
                         .content
@@ -674,6 +727,7 @@ fn summarize(items: &[syn::Item], collect_jobs: bool) -> ModuleSummary {
                 {
                     Some(ItemSummary::Cron {
                         name: function.sig.ident.unraw().to_string(),
+                        gate: CfgGate::of(&function.attrs),
                         attrs: cron_attrs(function),
                     })
                 }
@@ -688,7 +742,7 @@ fn summarize(items: &[syn::Item], collect_jobs: bool) -> ModuleSummary {
 /// reports malformed ones itself). Which of them is the job depends on the
 /// module's cron imports, so it is picked at walk time ([`CronAttr`]).
 fn cron_attrs(function: &syn::ItemFn) -> Vec<CronAttr> {
-    if validate_cron_fn(function).is_err() || is_cfg_gated(&function.attrs) {
+    if validate_cron_fn(function).is_err() {
         return Vec::new();
     }
     function.attrs.iter().flat_map(cron_entries).collect()
@@ -850,12 +904,6 @@ fn path_attr(attrs: &[syn::Attribute]) -> Option<String> {
         }) if path.is_ident("path") => Some(value.value()),
         _ => None,
     })
-}
-
-/// Whether `attrs` carry a `cfg`, plain or inside a `cfg_attr(p, ..)`: such an
-/// item is never scanned, as a plain `#[cfg]` item is not.
-fn is_cfg_gated(attrs: &[syn::Attribute]) -> bool {
-    !field_cfgs(attrs).is_empty()
 }
 
 /// `path` with its `.` segments dropped and each `..` popping the segment

@@ -241,3 +241,21 @@ fn non_finite_bound_is_a_compile_error(#[case] field: &str) {
         .expect_err("non-finite bound");
     assert!(err.to_string().contains("must be a finite number"), "{err}");
 }
+
+/// An integer literal wider than `i128` (the literal an alias of `f64` takes)
+/// is not emitted as an `i128` literal, which rustc rejects as out of range:
+/// the documented `f64` bound goes through `RangeBound::min` / `max` instead.
+#[rstest]
+#[case::positive_min(
+    "#[schema(minimum = 200000000000000000000000000000000000000)] f: Ratio",
+    "min"
+)]
+#[case::negative_max(
+    "#[schema(maximum = -200000000000000000000000000000000000000)] f: Ratio",
+    "max"
+)]
+fn literal_wider_than_i128_on_an_alias_uses_the_f64_path(#[case] field: &str, #[case] call: &str) {
+    let out = emit(&format!("struct S {{ {field} }}"));
+    assert!(out.contains(&format!("RangeBound > :: {call} (")), "{out}");
+    assert!(!out.contains("exact_within"), "{out}");
+}

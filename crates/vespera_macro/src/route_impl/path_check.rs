@@ -15,8 +15,9 @@
 //! - `Path<Struct>` (a named-field struct declared once in the handler's own
 //!   module of the route file) with `#[serde(deny_unknown_fields)]` when one of
 //!   the route's own parameters matches no field (by serde name or `alias`).
-//!   Structs with a `#[serde(flatten)]` field, generics, or a container
-//!   `from` / `try_from` are not checked.
+//!   Structs with a `#[serde(flatten)]` field, generics, a container
+//!   `from` / `try_from`, or a container `transparent` (serde ignores
+//!   `deny_unknown_fields` there) are not checked.
 //!
 //! A longer tuple, a scalar on a route with 0 / 1 own parameters, and a
 //! struct field without a matching segment are accepted (a prefix may supply
@@ -30,8 +31,8 @@ use syn::Type;
 
 use crate::parser::schema::{
     SerdeSide, extract_deny_unknown_fields, extract_field_rename_for, extract_flatten,
-    extract_rename_all_for, extract_serde_skip_flags, is_primitive_type, rename_field,
-    strip_raw_prefix_owned, wire_override::container_override_type,
+    extract_rename_all_for, extract_serde_skip_flags, extract_transparent, is_primitive_type,
+    rename_field, strip_raw_prefix_owned, wire_override::container_override_type,
 };
 use crate::parser::{extract_path_parameters, request_extractor};
 use crate::schema_macro::field_attrs::field_cfgs;
@@ -184,9 +185,12 @@ fn struct_mismatch(
     // another type and convert it, so this struct's own `deny_unknown_fields`
     // never runs (and its fields are never read). `container_override_type`
     // also returns a `#[schema(value_type)]` override: treating that as a
-    // serde override only skips the check, which is the safe direction.
+    // serde override only skips the check, which is the safe direction. A
+    // container `transparent` deserializes its one field and ignores
+    // `deny_unknown_fields`, so an unmatched segment is not a failure either.
     if !extract_deny_unknown_fields(&item.attrs)
         || container_override_type(&item.attrs, SerdeSide::Deserialize).is_some()
+        || extract_transparent(&item.attrs)
         || !item.generics.params.is_empty()
         || fields.named.iter().any(|f| extract_flatten(&f.attrs))
     {
@@ -298,6 +302,8 @@ mod tests {
         struct StrictTuple(u32);
         #[serde(deny_unknown_fields)]
         struct StrictSkip { id: u32, #[serde(skip)] x: u8 }
+        #[serde(transparent, deny_unknown_fields)]
+        struct StrictTransparent { id: u32 }
         #[serde(deny_unknown_fields)]
         struct StrictFlat { #[serde(flatten)] rest: Ids }
         #[serde(deny_unknown_fields)]
@@ -357,6 +363,7 @@ mod tests {
     #[case::strict_generic(Some("/{x}"), "p: Path<StrictGeneric<u32>>")]
     #[case::strict_generic_inferred(Some("/{x}"), "p: Path<StrictGeneric>")]
     #[case::strict_tuple_struct(Some("/{x}"), "p: Path<StrictTuple>")]
+    #[case::strict_transparent(Some("/{x}"), "p: Path<StrictTransparent>")]
     #[case::paren_tuple(Some("/{a}/{b}"), "p: Path<((u32, u32))>")]
     #[case::lifetime_argument(Some("/{a}/{b}"), "p: Path<'static>")]
     #[case::receiver(Some("/{a}/{b}"), "&self, p: Path<(u32, u32)>")]

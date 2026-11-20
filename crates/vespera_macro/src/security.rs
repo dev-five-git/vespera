@@ -58,12 +58,19 @@ fn parse_entry(expr: &syn::Expr, owner: &str) -> syn::Result<(String, Vec<String
             .elems
             .iter()
             .map(|scope| {
-                string_lit(scope).ok_or_else(|| {
+                let value = string_lit(scope).ok_or_else(|| {
                     syn::Error::new_spanned(
                         scope,
                         format!("{owner} scopes must be string literals, e.g. `[\"read:users\"]`"),
                     )
-                })
+                })?;
+                if value.is_empty() {
+                    return Err(syn::Error::new_spanned(
+                        scope,
+                        format!("{owner} scope names must not be empty"),
+                    ));
+                }
+                Ok(value)
             })
             .collect::<syn::Result<Vec<_>>>()?;
         return Ok((name, scopes));

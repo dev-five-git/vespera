@@ -129,9 +129,10 @@ enum CacheDir {
 
 impl CacheDir {
     /// The cache directories to clear before a measured run: for a target
-    /// directory, `<target>/vespera` plus every `<target>/<dir>/vespera`
+    /// directory, `<target>/vespera` plus every `<target>/<triple>/vespera`
     /// directory (re-listed each run: a triple directory appears with the
-    /// first build).
+    /// first build). Only target-triple directories are descended into, so
+    /// `<target>/doc/vespera` (rustdoc output) is left alone.
     fn dirs(&self) -> Vec<PathBuf> {
         match self {
             Self::Exact(dir) => vec![dir.clone()],
@@ -140,7 +141,9 @@ impl CacheDir {
                 if let Ok(entries) = fs::read_dir(target) {
                     let mut nested: Vec<PathBuf> = entries
                         .filter_map(Result::ok)
-                        .map(|entry| entry.path().join("vespera"))
+                        .map(|entry| entry.path())
+                        .filter(|path| is_target_triple_dir(path))
+                        .map(|triple| triple.join("vespera"))
                         .filter(|dir| dir.is_dir())
                         .collect();
                     nested.sort();
@@ -150,6 +153,13 @@ impl CacheDir {
             }
         }
     }
+}
+
+/// A target-triple directory (`<target>/<triple>/`) holds the profile
+/// directories cargo builds into. Other directories directly under the target
+/// directory (`doc`, `tmp`, ...) hold no build profile and are not triples.
+fn is_target_triple_dir(path: &std::path::Path) -> bool {
+    path.join("debug").is_dir() || path.join("release").is_dir()
 }
 
 /// [`CacheDir`] of the measured build: `VESPERA_TARGET_DIR` when set, else
@@ -448,7 +458,15 @@ mod tests {
         let _ = fs::remove_dir_all(&target);
         let triple = target.join("x86_64-unknown-linux-gnu");
         fs::create_dir_all(triple.join("vespera")).unwrap();
+        fs::create_dir_all(triple.join("debug")).unwrap();
         fs::create_dir_all(target.join("debug")).unwrap();
+        assert_eq!(
+            CacheDir::UnderTarget(target.clone()).dirs(),
+            [target.join("vespera"), triple.join("vespera")]
+        );
+        // `cargo doc` output is not a triple directory: its `vespera` (the
+        // rustdoc output of this crate) must survive a measured run.
+        fs::create_dir_all(target.join("doc").join("vespera")).unwrap();
         assert_eq!(
             CacheDir::UnderTarget(target.clone()).dirs(),
             [target.join("vespera"), triple.join("vespera")]
@@ -468,6 +486,6 @@ mod tests {
     fn usable_timings_drops_non_finite_and_non_positive_values() {
         let timings = usable_timings([2.5, f64::NAN, 0.0, -1.0, f64::INFINITY, 0.5, 1.0]);
         assert_eq!(timings, [0.5, 1.0, 2.5]);
-        assert!(usable_timings([f64::NAN]).is_empty());
+        assert_eq!(usable_timings([f64::NAN]), Vec::<f64>::new());
     }
 }

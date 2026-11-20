@@ -220,3 +220,15 @@ fn scheme_names_must_be_component_keys(#[case] name: &str, #[case] valid: bool) 
         }
     }
 }
+
+#[test]
+fn empty_oauth2_flow_scope_name_is_rejected() {
+    let error = flows(quote::quote!(= {
+        password = { token_url = "https://t", scopes = { "" = "Nothing" } },
+    }))
+    .expect_err("an empty scope name must be rejected");
+    assert_eq!(
+        error.to_string(),
+        "vespera! macro: OAuth2 scope names must not be empty"
+    );
+}
