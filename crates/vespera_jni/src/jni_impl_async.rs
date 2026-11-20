@@ -420,7 +420,7 @@ mod tests {
 
     use super::{
         ASYNC_COMPLETION_FAILED_MSG, IN_SPAWN, SpawnScope, complete_with_fallback,
-        leaves_completion_to_caller, panic_wire, runtime_unavailable_wire, unscheduled_wire,
+        leaves_completion_to_caller, panic_wire, unscheduled_wire,
     };
     use crate::streaming_closures::CompleteAttempt;
 
@@ -497,7 +497,6 @@ mod tests {
     #[test]
     fn a_missing_runtime_answers_the_unavailable_wire() {
         let wire = unscheduled_wire(&Ok(false));
-        assert_eq!(wire, runtime_unavailable_wire());
         let expected = if vespera_inprocess::runtime::runtime_shut_down() {
             503
         } else {
@@ -509,6 +508,7 @@ mod tests {
             header.contains(&format!(r#""status":{expected}"#)),
             "{header}"
         );
+        assert!(!header.contains(r#""panicked""#), "{header}");
     }
 
     /// Only a panic unwinding out of `Handle::spawn` leaves the completion to

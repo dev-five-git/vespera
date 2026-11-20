@@ -290,6 +290,7 @@ fn property_names_round_trips() {
     json!(["string", 3]),
     "invalid type: integer `3`, expected a JSON Schema type name"
 )]
+#[case::empty_array(json!([]), "invalid length 0, expected at least one type name")]
 fn bad_type_keyword_names_the_expected_shape_and_value(
     #[case] type_keyword: serde_json::Value,
     #[case] expected: &str,

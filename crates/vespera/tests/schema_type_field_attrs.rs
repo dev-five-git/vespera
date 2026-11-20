@@ -142,7 +142,7 @@ fn garde_rules_follow_the_field() {
 }
 
 #[test]
-fn ignored_schema_keeps_serde_defaults_only() {
+fn ignored_schema_serde_defaults_include_sea_orm_literals() {
     let dto: SeededDto = serde_json::from_str(r#"{"note":"n"}"#).unwrap();
     assert_eq!((dto.id, dto.count, dto.note.as_str()), (0, 5, "n"));
     let raw: RawSeeded = serde_json::from_str(r#"{"note":""}"#).unwrap();
