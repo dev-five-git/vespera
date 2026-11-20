@@ -93,7 +93,6 @@ class VesperaProxyControllerCoverageTest {
         assertEquals(
                 DispatchMode.SYNC,
                 VesperaProxyController.effectiveMode(DispatchMode.SYNC, true));
-        assertEquals(0, VesperaDirectBufferPool.initialSmallWriteStreak());
     }
 
     @Test

@@ -96,7 +96,8 @@ final class VesperaOpenApiMerger implements OpenApiCustomizer {
                 }
                 merge(openApi, app, json);
             } catch (Exception failure) {
-                log.warn("vespera OpenAPI document of app '{}' not merged: {}", app, failure.getMessage());
+                log.warn("vespera OpenAPI document of app '{}' not merged: {}", app, failure.getMessage(),
+                        failure);
             }
         }
     }

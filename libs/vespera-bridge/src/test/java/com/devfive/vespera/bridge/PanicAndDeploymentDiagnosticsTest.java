@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.BiConsumer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -58,8 +60,13 @@ class PanicAndDeploymentDiagnosticsTest {
     @Test
     void plainSinksSkipTheMetadataUnchanged() {
         byte[] bytes = PANIC_HEADER.getBytes(StandardCharsets.UTF_8);
-        BiConsumer<String, String> plain = (name, value) -> { };
+        List<String> delivered = new ArrayList<>();
+        BiConsumer<String, String> plain = (name, value) -> delivered.add(name + "=" + value);
         assertEquals(500, WireHeaderReader.apply(bytes, 0, bytes.length, plain));
+        // The real headers reach the sink; the metadata (panicked / version) does not.
+        assertTrue(delivered.contains("content-type=text/plain; charset=utf-8"), delivered.toString());
+        assertFalse(delivered.stream().anyMatch(entry -> entry.startsWith("panicked=")
+                || entry.startsWith("version=")), delivered.toString());
         assertEquals("true", VesperaBridge.decodeResponse(wire(PANIC_HEADER, "boom"))
                 .metadata().get("panicked"));
     }

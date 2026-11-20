@@ -60,7 +60,8 @@ public class VesperaOpenApiDocsController {
         try {
             json = source.openApiJson(app);
         } catch (Exception failure) {
-            log.warn("vespera OpenAPI document of app '{}' is unavailable: {}", app, failure.getMessage());
+            log.warn("vespera OpenAPI document of app '{}' is unavailable: {}", app, failure.getMessage(),
+                    failure);
             return error(HttpStatus.BAD_GATEWAY, "vespera OpenAPI document unavailable");
         }
         if (json == null) {

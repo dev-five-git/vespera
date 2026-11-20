@@ -146,6 +146,11 @@ class ReactiveProxyE2ETest {
      * {@code 0x} / {@code 0X} / {@code #} hexadecimal, else decimal. A leading zero
      * is decimal, unlike {@code Long.decode}, which reads {@code 01000000} as octal
      * and rejects {@code 0524288}. Malformed input throws NumberFormatException.
+     *
+     * <p>This is a copy kept for the E2E assertions; the source of truth is
+     * {@code VesperaNativeConfigParseTest} in {@code libs/vespera-bridge}, which
+     * pins the real {@code VesperaNativeConfig.parseIntegerProperty}. Keep the
+     * two in step.
      */
     static long parseBridgeInteger(String text) {
         String sign = "";
