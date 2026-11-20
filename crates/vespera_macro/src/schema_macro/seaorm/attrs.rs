@@ -224,13 +224,37 @@ pub fn is_sql_function_default(value: &str) -> bool {
         .next()
         .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
-        && args.ends_with(')');
+        && closes_only_at_end(args);
     if !well_formed {
         return false;
     }
     let empty_call = args.trim() == ")";
     let bare = name.rsplit('.').next().unwrap_or(name).to_ascii_lowercase();
     empty_call || (!spaced && SQL_FUNCTION_NAMES.contains(&bare.as_str()))
+}
+
+/// Whether the argument text after a call's `(` is closed by its final `)`
+/// alone (R33-SM4-L1): a depth scan where the call's own `(` is depth 1,
+/// and no `)` outside a single-quoted literal may bring the depth to 0 before
+/// the last character. `now(approx) (estimated)` closes at its first `)`, so
+/// it is a literal, not a call.
+fn closes_only_at_end(args: &str) -> bool {
+    let mut depth = 1_usize;
+    let mut in_quote = false;
+    for (index, c) in args.char_indices() {
+        match c {
+            '\'' => in_quote = !in_quote,
+            '(' if !in_quote => depth += 1,
+            ')' if !in_quote => {
+                depth -= 1;
+                if depth == 0 {
+                    return index + c.len_utf8() == args.len();
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Check if a field is a database-generated primary key, mirroring
@@ -559,6 +583,15 @@ mod tests {
     // column default would plausibly hold. Pinned here so it stays a decision.
     #[case("Draft()", true)]
     #[case("my_default()", true)]
+    // R33-SM4-L1: the call's `)` must be the last character; an earlier one
+    // closes the call and the rest is a literal note.
+    #[case("now(approx) (estimated)", false)]
+    #[case("now() (estimated)", false)]
+    #[case("nextval('a(b)')", true)]
+    #[case("nextval(')')", true)]
+    #[case("nextval(')", false)]
+    #[case("now(a(b))", true)]
+    #[case("now(a(b)) (note)", false)]
     fn test_is_sql_function_default(#[case] value: &str, #[case] expected: bool) {
         assert_eq!(is_sql_function_default(value), expected);
     }

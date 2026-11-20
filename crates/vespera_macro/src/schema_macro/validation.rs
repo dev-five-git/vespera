@@ -34,7 +34,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use super::field_selection::{Refusal, resolve_name, source_fields};
+use super::field_selection::{Refusal, SourceField, resolve_name, source_fields};
 use super::input::ParamSpans;
 
 /// Where a diagnostic about a field name given to a parameter points.
@@ -450,13 +450,34 @@ pub fn extract_source_field_names(parsed_struct: &syn::ItemStruct) -> HashSet<St
 /// (R28-SM4-L1), and so are the fields serde does not serialize (`pick` /
 /// `omit` refuse them, R32-SM5-L1). A field whose serde JSON name differs from
 /// its Rust identifier is listed under both spellings as separate entries
-/// (R32-SM5-L2), since `pick` / `omit` accept either one on its own. Only the
-/// listing; validation uses [`extract_source_field_names`].
+/// (R32-SM5-L2), since `pick` / `omit` accept either one on its own. A JSON
+/// name that another serialized field's Rust identifier shadows is not
+/// selectable (`field_selection::select` picks that identifier's field), so it
+/// is listed marked as shadowed rather than as a plain name that would read as
+/// the other field's spelling (R33-SM5-V1). Only the listing; validation uses
+/// [`extract_source_field_names`].
 fn listed_source_field_names(parsed_struct: &syn::ItemStruct) -> HashSet<String> {
-    source_fields(parsed_struct)
+    let serialized: Vec<SourceField> = source_fields(parsed_struct)
         .into_iter()
         .filter(|field| field.serialized)
-        .flat_map(|field| [field.rust, field.json])
+        .collect();
+    serialized
+        .iter()
+        .flat_map(|field| {
+            let json = serialized
+                .iter()
+                .find(|other| other.index != field.index && other.rust == field.json)
+                .map_or_else(
+                    || field.json.clone(),
+                    |shadow| {
+                        format!(
+                            "{} (JSON name of `{}`, shadowed by field `{}`)",
+                            field.json, field.rust, shadow.rust
+                        )
+                    },
+                );
+            [field.rust.clone(), json]
+        })
         .collect()
 }
 
@@ -767,6 +788,34 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("serde does not serialize it"), "{err}");
+    }
+
+    /// R33-SM5-V1: `a` is serialized as `b`, but `b` names field `b` (the
+    /// Rust identifier wins), so the JSON name `b` of `a` is marked as
+    /// shadowed in the listing instead of reading as a plain `b`. `z` (the
+    /// JSON name of `b`) is an ordinary entry.
+    #[test]
+    fn listing_marks_a_json_name_shadowed_by_another_rust_ident() {
+        let struct_def: syn::ItemStruct = syn::parse_str(
+            "#[derive(serde::Serialize)] pub struct S { #[serde(rename = \"b\")] a: i32, #[serde(rename = \"z\")] b: i32 }",
+        )
+        .unwrap();
+        let ty: syn::Type = syn::parse2(quote!(S)).unwrap();
+        let omit = Some(vec!["nope".to_string()]);
+        let err = resolve_filter_names("omit", omit.as_ref(), &struct_def, "S", &ty)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(
+                "Available fields: [\"a\", \"b\", \"b (JSON name of `a`, shadowed by field `b`)\", \"z\"]"
+            ),
+            "{err}"
+        );
+        // The selection itself is unchanged: `b` is field `b`, `z` is its JSON
+        // name, and `a` (the field the marked entry names) is still `a`.
+        let picked = Some(vec!["b".to_string()]);
+        let rust = resolve_filter_names("pick", picked.as_ref(), &struct_def, "S", &ty).unwrap();
+        assert_eq!(rust, HashSet::from(["b".to_string()]));
     }
 
     /// R28-SM4-L2 (decided: accepted). A `rename` / `partial` / adapter name of

@@ -6,7 +6,7 @@
 use syn::parse::ParseStream;
 use syn::punctuated::Punctuated;
 
-use crate::schema_macro::cfg_eval::{Predicate, statically_inactive_predicate};
+use crate::schema_macro::cfg_eval::{Predicate, statically_false};
 use crate::schema_macro::file_cache;
 
 type DerivePaths = Punctuated<syn::Path, syn::Token![,]>;
@@ -43,7 +43,7 @@ fn cfg_attr_derive_paths(attr: &syn::Attribute) -> Vec<syn::Path> {
     let Ok((predicate, metas)) = attr.parse_args_with(cfg_attr_parts) else {
         return Vec::new();
     };
-    if statically_inactive_predicate(&predicate) {
+    if statically_false(&predicate) {
         return Vec::new();
     }
     metas

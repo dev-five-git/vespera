@@ -15,6 +15,7 @@ use super::transformation::{rebuild_serde_attrs, serde_key};
 use super::type_utils::snake_to_pascal_case;
 use crate::metadata::StructMetadata;
 
+mod adapter_ref;
 mod derives;
 mod unresolved;
 
@@ -265,18 +266,11 @@ fn dto_serde(dto_struct: &syn::ItemStruct) -> DtoSerde {
     serde
 }
 
-/// The OpenAPI component name the adapter DTO is emitted under — its
-/// `#[schema(name = "...")]` override when present, else the struct name.
-fn dto_schema_ref_name(dto_struct: &syn::ItemStruct, dto_name: &str) -> String {
-    crate::schema_impl::extract_schema_name_attr(&dto_struct.attrs)
-        .unwrap_or_else(|| dto_name.to_string())
-}
-
 fn explicit_adapter_struct(
     field_name: &str,
     adapter_name: &syn::Ident,
     schema_storage: &HashMap<String, StructMetadata>,
-) -> syn::Result<(String, syn::ItemStruct)> {
+) -> syn::Result<(String, String, syn::ItemStruct)> {
     let dto_name = adapter_name.to_string();
     let Some(dto_meta) = find_same_file_struct_metadata(&dto_name, schema_storage) else {
         return Err(syn::Error::new_spanned(
@@ -307,6 +301,12 @@ fn explicit_adapter_struct(
             ),
         )
     })?;
+    adapter_ref::reject_generic_adapter(field_name, adapter_name, &dto_struct)?;
+    let schema_ref_name = adapter_ref::schema_ref_name(
+        matches!(dto_meta, Cow::Borrowed(_)).then_some(&*dto_meta),
+        &dto_struct,
+        &dto_name,
+    );
     // A storage-fallback DTO (declared in another module) has its field types
     // and serde function paths copied verbatim into this call-site proxy: a
     // name only the DTO's own module resolves would not compile here
@@ -322,7 +322,7 @@ fn explicit_adapter_struct(
             super::file_lookup::storage_module_path(&dto_meta).as_deref(),
         )?;
     }
-    Ok((dto_name, dto_struct))
+    Ok((dto_name, schema_ref_name, dto_struct))
 }
 
 fn explicit_adapter_model_type(
@@ -409,7 +409,7 @@ pub(super) fn maybe_generate_same_file_relation_override(
     schema_storage: &HashMap<String, StructMetadata>,
     derive_clone: bool,
 ) -> syn::Result<(TokenStream, TokenStream)> {
-    let (dto_name, mut dto_struct) =
+    let (dto_name, schema_ref_name, mut dto_struct) =
         explicit_adapter_struct(field_name, adapter_name, schema_storage)?;
     let dto_ident = adapter_name;
     // The proxy repeats the DTO's serde paths and field types, where `Self`
@@ -426,9 +426,8 @@ pub(super) fn maybe_generate_same_file_relation_override(
         &format!("__Vespera{type_name}{field_pascal}Proxy"),
         proc_macro2::Span::call_site(),
     );
-    // B6: $ref the adapter DTO's own schema component (honoring its
-    // `#[schema(name = ...)]` override), not the base relation schema.
-    let schema_ref_name = dto_schema_ref_name(&dto_struct, &dto_name);
+    // B6: $ref the adapter DTO's own schema component (`schema_ref_name`, see
+    // `adapter_ref`), not the base relation schema.
 
     let dto_doc_attrs: Vec<_> = dto_struct
         .attrs
@@ -601,7 +600,7 @@ mod tests {
             "struct __VesperaStorageOnly { pub value: i32 }",
         )]);
         let ident = syn::Ident::new("__VesperaStorageOnly", proc_macro2::Span::call_site());
-        let (name, dto) = explicit_adapter_struct("author", &ident, &storage).unwrap();
+        let (name, _, dto) = explicit_adapter_struct("author", &ident, &storage).unwrap();
         assert_eq!(name, "__VesperaStorageOnly");
         assert_eq!(dto.ident.to_string(), "__VesperaStorageOnly");
     }
