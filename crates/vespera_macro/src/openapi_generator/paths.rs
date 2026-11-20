@@ -119,6 +119,14 @@ pub(super) fn build_path_items(
     // regardless of which thread produced them.
     let mut parallel_jobs: Vec<(usize, &crate::metadata::RouteMetadata, &str)> = Vec::new();
     let mut ast_jobs: Vec<AstJob<'_>> = Vec::new();
+    // A `(None, name)` storage entry does not name its file, so it is only
+    // trusted for the sole route of its name (see the legacy branch below).
+    let mut routes_per_name: HashMap<&str, usize> = HashMap::new();
+    for route in &metadata.routes {
+        *routes_per_name
+            .entry(route.function_name.as_str())
+            .or_default() += 1;
+    }
     for (idx, route_meta) in metadata.routes.iter().enumerate() {
         // ROUTE_STORAGE first (avoids file_cache dependency for known
         // routes) — same priority order as the previous sequential code.
@@ -154,7 +162,8 @@ pub(super) fn build_path_items(
                 &fn_item.sig,
                 file_by_key.get(&norm_key).copied(),
             ));
-        } else if let Some(fn_sig_str) = storage_fn_sigs.get(&legacy_storage_key).copied().flatten()
+        } else if routes_per_name.get(route_meta.function_name.as_str()) == Some(&1)
+            && let Some(fn_sig_str) = storage_fn_sigs.get(&legacy_storage_key).copied().flatten()
         {
             parallel_jobs.push((idx, route_meta, fn_sig_str));
         }
@@ -582,26 +591,40 @@ fn parallel_filter_map_on<T: Sync, R: Send>(
     // fallback span would make `to_compile_error()` (run in compiler mode)
     // panic with "compiler/fallback mismatch", hiding the worker's message.
     // `run_parallel` drops its guard on return, before this error is built.
-    run_parallel(jobs, f, workers).unwrap_or_else(|message| Err(worker_panic_error(&message)))
+    match run_parallel(jobs, f, workers) {
+        Ok(Ok(results)) => Ok(results),
+        // A worker's error was built under the forced fallback, so its span is
+        // a fallback span. `run_parallel` has dropped its guard by now: rebuild
+        // it on a call-site span that `to_compile_error()` accepts.
+        Ok(Err(error)) => Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            error.to_string(),
+        )),
+        Err(message) => Err(worker_panic_error(&message)),
+    }
 }
 
 /// The parallel section of [`parallel_filter_map`]; runs with the fallback
 /// forced until it returns. `Err` carries a worker's panic message (no span
-/// is created here).
+/// is created here); `Ok(Err)` a worker's own error, still carrying the
+/// fallback span its worker created, for the caller to rebuild after the
+/// guard has dropped.
 fn run_parallel<T: Sync, R: Send>(
     jobs: &[T],
     f: &(dyn Fn(&T) -> syn::Result<Option<R>> + Sync),
     workers: usize,
 ) -> Result<syn::Result<Vec<R>>, String> {
+    // The call-site module is read on the caller's thread BEFORE the fallback
+    // is forced: once forced, `Span::call_site()` is a fallback span with no
+    // file, so a snapshot taken afterwards is always `None` and every worker
+    // would resolve types at the crate root.
+    let call_site = crate::schema_macro::call_site_module_snapshot();
     let _guard = FallbackGuard::force();
     let chunk_size = jobs.len().div_ceil(workers);
     // Workers do not inherit the caller's thread-locals.
     let input_names = request_view::snapshot();
     let test_env = crate::env_access::test_env::snapshot();
     let stored_defaults = super::snapshot_stored_defaults();
-    // The call-site module is read on the caller's thread: a worker's own span
-    // has no file, so `instance_defaults` would resolve types at no module.
-    let call_site = crate::schema_macro::call_site_module_snapshot();
     std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(workers);
         for chunk in jobs.chunks(chunk_size) {

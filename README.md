@@ -846,6 +846,8 @@ parameters have no fallback):
 
 **Priority**: Macro parameter > Environment variable > Default
 
+An environment variable that is set but empty counts as unset (`VESPERA_DOCS_URL=` is the same as not setting it).
+
 Without `servers` the document has no `servers` entry, so clients use the origin that serves it. `info.description` defaults to the crate's `description` from `Cargo.toml`.
 
 ---

@@ -574,10 +574,10 @@ fn route_storage_legacy_none_file_path_never_shadows_a_parsed_handler() {
             other => panic!("{path}: {other:?}"),
         }
     };
-    assert_eq!(
-        schema_type("/users"),
-        Some(vespera_core::schema::SchemaType::String)
-    );
+    // The `(None, "list")` entry names no file, and two routes are named
+    // `list`: it lends its signature to neither (R33-MR3-01), so `users` is
+    // omitted, while `posts` keeps its own parsed `-> i32`.
+    assert!(!doc.paths.contains_key("/users"));
     assert_eq!(
         schema_type("/posts"),
         Some(vespera_core::schema::SchemaType::Integer)
@@ -585,13 +585,16 @@ fn route_storage_legacy_none_file_path_never_shadows_a_parsed_handler() {
 }
 
 /// Neither route has an AST of its own, so the legacy `(None, "list")`
-/// storage slot is consulted: two stored `list` entries without a file path
-/// make it ambiguous (either may be the other file's handler) and neither is
-/// used; a single one is.
+/// storage slot is consulted. It does not name its file, so it is used only
+/// for the sole route of its name: two `list` routes (either may be the other
+/// file's handler) get nothing from one entry, and a single route with a
+/// single entry does.
 #[rstest::rstest]
-#[case::ambiguous(2, None)]
-#[case::unambiguous(1, Some(vespera_core::schema::SchemaType::Boolean))]
+#[case::ambiguous_routes(2, 1, None)]
+#[case::ambiguous_entries(2, 2, None)]
+#[case::sole_route(1, 1, Some(vespera_core::schema::SchemaType::Boolean))]
 fn route_storage_legacy_none_file_path_is_skipped_when_ambiguous(
+    #[case] routes: usize,
     #[case] stored: usize,
     #[case] expected: Option<vespera_core::schema::SchemaType>,
 ) {
@@ -601,11 +604,13 @@ fn route_storage_legacy_none_file_path_is_skipped_when_ambiguous(
     metadata
         .routes
         .push(route_meta("GET", "/users", "list", &users_path));
-    metadata
-        .routes
-        .push(route_meta("GET", "/posts", "list", &posts_path));
-    // Same fn name in two files: operationIds must still be unique.
-    metadata.routes[1].operation_id = Some("list_posts".to_string());
+    if routes == 2 {
+        metadata
+            .routes
+            .push(route_meta("GET", "/posts", "list", &posts_path));
+        // Same fn name in two files: operationIds must still be unique.
+        metadata.routes[1].operation_id = Some("list_posts".to_string());
+    }
 
     let entry = StoredRouteInfo {
         fn_name: "list".to_string(),
@@ -653,13 +658,15 @@ fn route_storage_legacy_none_file_path_is_skipped_when_ambiguous(
         documented,
         "users presence"
     );
-    assert_eq!(
-        doc.paths.contains_key("/posts"),
-        documented,
-        "posts presence"
-    );
     assert_eq!(response_schema_type("/users"), expected);
-    assert_eq!(response_schema_type("/posts"), expected);
+    if routes == 2 {
+        assert_eq!(
+            doc.paths.contains_key("/posts"),
+            documented,
+            "posts presence"
+        );
+        assert_eq!(response_schema_type("/posts"), expected);
+    }
 }
 
 #[test]

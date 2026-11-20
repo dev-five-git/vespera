@@ -11,6 +11,9 @@ pub async fn error_status_not_integer() {}
 #[route(get, error_status = [70000])]
 pub async fn error_status_out_of_range() {}
 
+#[route(get, error_status = [200])]
+pub async fn error_status_success() {}
+
 #[route(get, error_status = [1000])]
 pub async fn error_status_not_http() {}
 

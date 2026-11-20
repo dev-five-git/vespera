@@ -318,9 +318,11 @@ fn duplicate_error(ident: &syn::Ident, name: &str) -> syn::Error {
 }
 
 /// Validate `error_status = [<u16>, ...]`: every element must be an integer
-/// literal naming an HTTP status code (`100..=599`).  A malformed entry is rejected with a
-/// span-attached compile error instead of being silently dropped by the
-/// downstream `filter_map` extraction (which would emit incomplete OpenAPI).
+/// literal naming an HTTP error status code (`400..=599`, the README's "extra
+/// error status codes"). A malformed entry, or a 1xx/2xx/3xx code that is not an
+/// error, is rejected with a span-attached compile error instead of being
+/// silently dropped by the downstream `filter_map` extraction (which would emit
+/// incomplete OpenAPI).
 fn validate_error_status_array(array: &syn::ExprArray) -> syn::Result<()> {
     for elem in &array.elems {
         let syn::Expr::Lit(syn::ExprLit {
@@ -334,9 +336,25 @@ fn validate_error_status_array(array: &syn::ExprArray) -> syn::Result<()> {
                  e.g. `error_status = [400, 404]`.",
             ));
         };
-        parse_http_status(lit_int, "error_status")?;
+        parse_error_status_code(lit_int)?;
     }
     Ok(())
+}
+
+/// An error status code literal: `400..=599` (RFC 9110 sections 15.5 and 15.6).
+/// Success, informational and redirect codes belong in `status` / `responses`,
+/// so they are rejected on their span.
+fn parse_error_status_code(lit_int: &LitInt) -> syn::Result<u16> {
+    lit_int
+        .base10_parse::<u16>()
+        .ok()
+        .filter(|code| (400..=599).contains(code))
+        .ok_or_else(|| {
+            syn::Error::new_spanned(
+                lit_int,
+                "#[route] `error_status` status must be an HTTP error status code (400-599).",
+            )
+        })
 }
 
 /// An HTTP status code literal: `100..=599` (RFC 9110 section 15). Anything

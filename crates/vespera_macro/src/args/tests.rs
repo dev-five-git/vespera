@@ -45,7 +45,16 @@ use super::*;
 #[case("error_status = [1000]", false, None, None, None)] // not an HTTP status
 #[case("error_status = [99]", false, None, None, None)] // below 100
 #[case("error_status = [600]", false, None, None, None)] // above 599
-#[case("error_status = [100, 599]", true, None, None, Some(vec![100, 599]))] // bounds
+#[case("error_status = [400, 599]", true, None, None, Some(vec![400, 599]))]
+// bounds
+// Only error statuses (400..=599) belong in the error set; success, informational
+// and redirect codes are rejected on their span
+#[case("error_status = [100]", false, None, None, None)] // informational
+#[case("error_status = [200]", false, None, None, None)] // success
+#[case("error_status = [204]", false, None, None, None)] // no content
+#[case("error_status = [301]", false, None, None, None)] // redirect
+#[case("error_status = [399]", false, None, None, None)] // just below the error range
+#[case("error_status = [400, 200]", false, None, None, None)] // mixed with a success code
 #[case("error_status = [NotFound]", false, None, None, None)] // path, not int
 #[case("get, invalid", false, None, None, None)]
 #[case("path =", false, None, None, None)]

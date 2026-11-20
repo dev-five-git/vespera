@@ -1,4 +1,13 @@
-import { describe, expect, it } from 'bun:test'
+import { afterAll, describe, expect, it } from 'bun:test'
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   REPO_VERSION_PATTERNS,
@@ -6,6 +15,7 @@ import {
 } from './check-version-alignment'
 import {
   docVersionsFor,
+  rewritableFile,
   rewriteConstants,
   rewriteDocSamples,
 } from './sync-landing-versions'
@@ -133,5 +143,54 @@ describe('repoDocVersions', () => {
       { line: 3, version: '0.7.0' },
       { line: 4, version: '0.6' },
     ])
+  })
+})
+
+describe('rewritableFile', () => {
+  // The checkout is the untrusted PR tree: a symlink (or a link to a directory)
+  // must never redirect the rewrite outside the root.
+  const sandbox = mkdtempSync(join(tmpdir(), 'sync-landing-versions-'))
+  const root = join(sandbox, 'root')
+  const outside = join(sandbox, 'outside')
+  mkdirSync(join(root, 'docs'), { recursive: true })
+  mkdirSync(outside)
+  writeFileSync(join(root, 'docs', 'page.mdx'), '')
+  writeFileSync(join(outside, 'secret.mdx'), '')
+  writeFileSync(join(outside, 'x.mdx'), '')
+  // File symlinks need a privilege some Windows setups lack; directory
+  // junctions do not. Each test is skipped where its own link kind fails.
+  const canLink = (target: string, type?: 'junction', name = 'probe') => {
+    try {
+      symlinkSync(target, join(sandbox, name), type)
+      return true
+    } catch {
+      return false
+    }
+  }
+  const canLinkFile = canLink(join(outside, 'secret.mdx'), undefined, 'probe-file')
+  const canLinkDir = canLink(outside, 'junction', 'probe-dir')
+
+  it('accepts a regular file under the root', () => {
+    expect(rewritableFile(root, 'docs/page.mdx')).toBe(
+      join(root, 'docs', 'page.mdx'),
+    )
+  })
+
+  it.skipIf(!canLinkFile)('refuses a symlink to a file outside the root', () => {
+    symlinkSync(join(outside, 'secret.mdx'), join(root, 'docs', 'link.mdx'))
+    expect(() => rewritableFile(root, 'docs/link.mdx')).toThrow(
+      'is a symbolic link',
+    )
+  })
+
+  it.skipIf(!canLinkDir)('refuses a file reached through a linked directory', () => {
+    symlinkSync(outside, join(root, 'linkdir'), 'junction')
+    expect(() => rewritableFile(root, 'linkdir/x.mdx')).toThrow(
+      'resolves outside the checkout',
+    )
+  })
+
+  afterAll(() => {
+    rmSync(sandbox, { recursive: true, force: true })
   })
 })

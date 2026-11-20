@@ -121,6 +121,14 @@ while IFS= read -r est; do
     changes+=$(awk -v h="$(mean_of "$h")" -v b="$(mean_of "$b")" 'BEGIN{printf "%.6f\n", h/b-1}')$'\n'
   done
   [ -n "$changes" ] || { echo "::notice::$bench exists on one side only; not gated."; continue; }
+  # Every round must contribute a pair: a partial sample (a missing estimate)
+  # would otherwise gate on fewer rounds than the run promised.
+  pairs=$(printf '%s' "$changes" | grep -c .)
+  if [ "$pairs" -ne "$rounds" ]; then
+    echo "::error::${bench} has ${pairs} of ${rounds} paired rounds; refusing to gate a partial sample"
+    fail=1
+    continue
+  fi
   found=1
   sorted=$(printf '%s' "$changes" | sort -g)
   read -r median lower < <(printf '%s\n' "$sorted" | awk '

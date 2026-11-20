@@ -11,8 +11,14 @@
 //
 // Run with `bun scripts/sync-landing-versions.ts` from the repository root.
 // The pure helpers are exported for `sync-landing-versions.test.ts`.
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import {
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs'
+import { join, sep } from 'node:path'
 
 import { DOC_VERSION_PATTERNS } from '../apps/landing/src/constants'
 import {
@@ -94,6 +100,23 @@ function replaceCapture(
   return out + content.slice(last)
 }
 
+// The absolute path of a file the sync may rewrite under `root`. The checkout is
+// the untrusted PR tree, so a symlink is refused rather than followed, and so is
+// a path whose real location leaves the root: writeFileSync would otherwise
+// overwrite whatever file the link names. Throws with the reason.
+export function rewritableFile(root: string, path: string): string {
+  const full = join(root, path)
+  if (lstatSync(full).isSymbolicLink()) {
+    throw new Error(`${path} is a symbolic link; refusing to rewrite it`)
+  }
+  const rootReal = realpathSync(root)
+  const real = realpathSync(full)
+  if (!real.startsWith(rootReal + sep)) {
+    throw new Error(`${path} resolves outside the checkout; refusing to rewrite it`)
+  }
+  return full
+}
+
 function main(): number {
   // VERSION_SYNC_ROOT lets CI run this file from a trusted copy against the
   // checkout it rewrites (see the changepacks job in .github/workflows/CI.yml).
@@ -108,10 +131,11 @@ function main(): number {
   const versions = docVersionsFor(workspace)
   const changed: string[] = []
   const rewrite = (path: string, f: (source: string) => string) => {
-    const before = readFileSync(join(root, path), 'utf8')
+    const full = rewritableFile(root, path)
+    const before = readFileSync(full, 'utf8')
     const after = f(before)
     if (after !== before) {
-      writeFileSync(join(root, path), after)
+      writeFileSync(full, after)
       changed.push(path)
     }
   }
@@ -136,4 +160,13 @@ function main(): number {
   return 0
 }
 
-if (import.meta.main) process.exit(main())
+if (import.meta.main) {
+  try {
+    process.exit(main())
+  } catch (error) {
+    // A refused symlink (or any unreadable path) fails the run instead of
+    // leaving the docs half rewritten without a message.
+    console.error(error instanceof Error ? error.message : error)
+    process.exit(1)
+  }
+}

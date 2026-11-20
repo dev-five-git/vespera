@@ -418,6 +418,8 @@ npx @apidevtools/swagger-cli validate openapi.json
 | `VESPERA_SPEC_URL` | Raw OpenAPI JSON path (`application/json`) | none |
 | `VESPERA_SERVER_URL` | Server URL | none (`servers` omitted → same origin) |
 
+An environment variable that is set but empty counts as unset.
+
 ---
 
 ## schema_type! Macro (RECOMMENDED)

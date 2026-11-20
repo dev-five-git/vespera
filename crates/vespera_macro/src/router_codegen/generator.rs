@@ -196,42 +196,39 @@ fn ungated_claims(
 }
 
 /// Generate the once-per-process cron scheduler start from collected cron metadata.
+///
+/// A job with `cfg` predicates (an undecided `cfg_attr(p, cron(..))`) is pushed
+/// under `#[cfg(all(..))]`, so rustc keeps its registration exactly when it
+/// keeps the attribute. Without such jobs the expansion is the plain array.
 fn generate_cron_scheduler_code(cron_jobs: &[CronMetadata]) -> proc_macro2::TokenStream {
     if cron_jobs.is_empty() {
         return quote!();
     }
-
-    let jobs = cron_jobs.iter().map(|cron| {
-        let expression = &cron.expression;
-        let call_path = match crate_path_to(&cron.module_path, &cron.function_name, &cron.file_path)
-        {
-            Ok(path) => path,
-            Err(error) => return error,
-        };
-        // `module::function` names the job in scheduler logs (panics, skips).
-        let name = if cron.module_path.is_empty() {
-            cron.function_name.clone()
-        } else {
-            format!("{}::{}", cron.module_path, cron.function_name)
-        };
-        // Non-default options only: a plain UTC / overlap-allowed job keeps
-        // the pre-option expansion.
-        let timezone = cron
-            .options
-            .timezone
-            .as_ref()
-            .map(|tz| quote!(.with_timezone(#tz)));
-        let overlap = cron
-            .options
-            .skip_overlap
-            .then(|| quote!(.with_overlap(vespera::cron::Overlap::Skip)));
+    let (gated, ungated): (Vec<&CronMetadata>, Vec<&CronMetadata>) =
+        cron_jobs.iter().partition(|cron| !cron.cfg.is_empty());
+    let start = if gated.is_empty() {
+        let jobs = ungated.iter().map(|cron| cron_job_expr(cron));
         quote! {
-            vespera::cron::CronJob::new(#expression, || ::std::boxed::Box::pin(#call_path()))
-                .with_name(#name)
-                #timezone
-                #overlap
+            vespera::cron::start_once_for_crate(&__VESPERA_CRON_ONCE, ::core::module_path!(), [#(#jobs),*]);
         }
-    });
+    } else {
+        let jobs = ungated.iter().map(|cron| cron_job_expr(cron));
+        let pushes = gated.iter().map(|cron| {
+            let predicates = cron.cfg.iter().map(|predicate| {
+                predicate
+                    .parse::<proc_macro2::TokenStream>()
+                    .unwrap_or_default()
+            });
+            let job = cron_job_expr(cron);
+            quote!(#[cfg(all(#(#predicates),*))] __vespera_cron_jobs.push(#job);)
+        });
+        quote! {
+            let mut __vespera_cron_jobs: ::std::vec::Vec<vespera::cron::CronJob> =
+                ::std::vec![#(#jobs),*];
+            #(#pushes)*
+            vespera::cron::start_once_for_crate(&__VESPERA_CRON_ONCE, ::core::module_path!(), __vespera_cron_jobs);
+        }
+    };
 
     // One guard per `vespera!` invocation: re-building the router (tests,
     // `jni_app!`, repeated `create_app()` calls) never stacks a second set of
@@ -243,8 +240,41 @@ fn generate_cron_scheduler_code(cron_jobs: &[CronMetadata]) -> proc_macro2::Toke
     quote! {
         {
             static __VESPERA_CRON_ONCE: ::std::sync::Once = ::std::sync::Once::new();
-            vespera::cron::start_once_for_crate(&__VESPERA_CRON_ONCE, ::core::module_path!(), [#(#jobs),*]);
+            #start
         }
+    }
+}
+
+/// The `CronJob` expression of one scheduled job (or the `compile_error!` a
+/// path that cannot be resolved produces in its place).
+fn cron_job_expr(cron: &CronMetadata) -> proc_macro2::TokenStream {
+    let expression = &cron.expression;
+    let call_path = match crate_path_to(&cron.module_path, &cron.function_name, &cron.file_path) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    // `module::function` names the job in scheduler logs (panics, skips).
+    let name = if cron.module_path.is_empty() {
+        cron.function_name.clone()
+    } else {
+        format!("{}::{}", cron.module_path, cron.function_name)
+    };
+    // Non-default options only: a plain UTC / overlap-allowed job keeps
+    // the pre-option expansion.
+    let timezone = cron
+        .options
+        .timezone
+        .as_ref()
+        .map(|tz| quote!(.with_timezone(#tz)));
+    let overlap = cron
+        .options
+        .skip_overlap
+        .then(|| quote!(.with_overlap(vespera::cron::Overlap::Skip)));
+    quote! {
+        vespera::cron::CronJob::new(#expression, || ::std::boxed::Box::pin(#call_path()))
+            .with_name(#name)
+            #timezone
+            #overlap
     }
 }
 

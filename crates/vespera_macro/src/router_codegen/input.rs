@@ -259,12 +259,15 @@ fn env_server() -> syn::Result<Option<Vec<ServerConfig>>> {
 /// A documentation URL argument, else its env-var fallback, with the label
 /// errors name it by: the argument, or the variable it was read from (the
 /// error points at the whole macro call, so the argument name alone sent
-/// readers looking for an argument they never wrote).
+/// readers looking for an argument they never wrote). An empty variable (a
+/// `VESPERA_DOCS_URL=` export) counts as unset, so it cannot fail the build
+/// with "must start with `/`".
 fn doc_url_or_env(arg: Option<LitStr>, key: &str, var: &str) -> (Option<LitStr>, String) {
     arg.map_or_else(
         || {
             let lit = crate::env_access::var(var)
                 .ok()
+                .filter(|value| !value.is_empty())
                 .map(|value| LitStr::new(&value, Span::call_site()));
             (
                 lit,
