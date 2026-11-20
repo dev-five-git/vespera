@@ -36,7 +36,7 @@ use producer::{ChannelBody, RequestProducerHandle, RequestSourceCloser, join_req
 /// is skipped, not treated as EOF.  While the source keeps answering
 /// empty the producer backs off (a short spin, then sleeps that grow up
 /// to 10 ms); the request body is aborted only after the source has been
-/// silent for 10 s in total.  [`RequestChunk::Error`] terminates
+/// silent for 10 s of that back-off (the clock starts after the spin phase).  [`RequestChunk::Error`] terminates
 /// the request body with a [`StreamAbort`] so axum and the handler see
 /// a failed body rather than a clean EOF — a truncated upload (e.g. the
 /// source `InputStream` threw mid-stream) is never silently accepted as
@@ -608,9 +608,11 @@ where
 ///   `Data(Vec::new())` is treated as "no more data right now, but
 ///   keep the stream open" — rarely useful; most callers should just
 ///   return `End`.  Repeated empty pulls back off (no busy-spin); the
-///   body aborts only after 10 s of nothing but empty pulls.  Return [`RequestChunk::Error`] to abort the
-///   request body (e.g. the source stream threw) so the truncated
-///   upload is rejected rather than seen as complete.
+///   body aborts only after 10 s of back-off sleeps with nothing but
+///   empty pulls (the clock starts after the initial spin phase).  Return
+///   [`RequestChunk::Error`] to abort the request body (e.g. the source
+///   stream threw) so the truncated upload is rejected rather than seen as
+///   complete.
 /// - `on_chunk` receives response body chunks in arrival order, same
 ///   contract as [`dispatch_streaming_async`].
 ///

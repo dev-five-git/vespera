@@ -718,9 +718,10 @@ mod tests {
     }
 
     /// A reflected value far past the bound (axum echoes the whole segment)
-    /// is cut, so the envelope message stays small.
+    /// is cut by `bounded_text` (the envelope message helper), so the
+    /// message stays small.
     #[test]
-    fn an_oversized_reflected_value_is_cut_in_the_envelope() {
+    fn bounded_text_cuts_an_oversized_reflected_value() {
         let value = "a".repeat(70_000);
         let bounded = super::bounded_text(format!("Cannot parse `{value}` to a `u32`"));
         assert!(

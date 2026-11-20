@@ -55,9 +55,13 @@ impl Principal {
     /// the Java bridge forwards unchanged.
     #[must_use]
     pub fn has_scope(&self, scope: &str) -> bool {
-        self.authorities
-            .iter()
-            .any(|a| a == scope || a.strip_prefix(SPRING_SCOPE_PREFIX) == Some(scope))
+        // An empty scope names no permission: a bare `SCOPE_` (or an empty)
+        // authority must not satisfy it.
+        !scope.is_empty()
+            && self
+                .authorities
+                .iter()
+                .any(|a| a == scope || a.strip_prefix(SPRING_SCOPE_PREFIX) == Some(scope))
     }
 
     /// Require every one of `scopes` ([`Self::has_scope`]: `scope` or
@@ -285,6 +289,23 @@ mod tests {
             p.require_scopes(&["write:users"]),
             Err(InsufficientScope {
                 missing: vec!["write:users".to_owned()],
+            })
+        );
+    }
+
+    /// An empty scope is never granted, not even by the bare `SCOPE_` or an
+    /// empty authority a host might forward.
+    #[test]
+    fn an_empty_scope_is_never_granted() {
+        let p = Principal {
+            authorities: vec!["SCOPE_".to_owned(), String::new()],
+            ..alice()
+        };
+        assert!(!p.has_scope(""));
+        assert_eq!(
+            p.require_scopes(&[""]),
+            Err(InsufficientScope {
+                missing: vec![String::new()],
             })
         );
     }

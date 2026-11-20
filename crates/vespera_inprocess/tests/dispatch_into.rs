@@ -363,14 +363,46 @@ fn borrowed_headered_request_matches_byte_path() {
             b"{}",
         ),
     ];
-    for (header, body) in cases {
+    // What `/headers` echoes for each case: the URI line, one `name: value`
+    // line per header value (raw value bytes) and the body.  The header lines
+    // are pinned as substrings: `HeaderMap` iterates distinct names in no
+    // fixed order.
+    let expected_lines: [&[&str]; 5] = [
+        &["/headers\n", "accept: */*\n", "x-a: 1\n"],
+        &[
+            "/headers?q=1\n",
+            "x-esc: a\"bA\n",
+            "x-a: plain\n",
+            "x-l1: r\u{e9}sum\u{e9}\n",
+        ],
+        &["/headers?page=2\n", "x-a: 1\n", "x-a: 2\n"],
+        &[
+            "/headers\n",
+            "content-type: text/plain\n",
+            "x-b: body\n",
+            "payload bytes",
+        ],
+        &["/headers\n", "x-only: 1\n", "{}"],
+    ];
+    for ((header, body), lines) in cases.into_iter().zip(expected_lines) {
         let mut wire = u32::try_from(header.len()).unwrap().to_be_bytes().to_vec();
         wire.extend_from_slice(header.as_bytes());
         wire.extend_from_slice(body);
         let reference = dispatch_from_bytes(wire.clone(), &rt);
         let (meta, echoed) = decode(&reference);
         assert_eq!(meta["status"], 200, "{header}");
-        assert!(echoed.starts_with(b"/headers"), "{header}");
+        for line in lines {
+            // Header values travel as Latin-1 bytes: `é` is the single byte 0xE9.
+            let needle: Vec<u8> = line
+                .chars()
+                .map(|c| u8::try_from(u32::from(c)).expect("Latin-1 text"))
+                .collect();
+            assert!(
+                echoed.windows(needle.len()).any(|w| w == needle.as_slice()),
+                "{header}: {line:?} missing from the echo {:?}",
+                String::from_utf8_lossy(&echoed)
+            );
+        }
         let mut out = vec![0u8; reference.len() + 64];
         let result = rt.block_on(dispatch_into_async_borrowed(&wire, &mut out));
         assert_eq!(

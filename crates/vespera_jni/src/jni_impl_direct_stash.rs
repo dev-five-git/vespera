@@ -27,6 +27,16 @@
 //! (evicting it would make the handler run again).
 //! The byte count covers what an entry holds in memory (its header and the
 //! body bytes already read), not the unread rest of a body.
+//!
+//! # Shutdown
+//!
+//! A shutdown closes the gate first and drains the in-flight dispatches
+//! afterwards, so a DIRECT overflow of a dispatch still running during that
+//! drain is stashed normally (it still holds its lease).  Only the
+//! shutdown's cleanup ([`clear_stash`], run after the drain) closes the
+//! stash: it drops every entry and refuses later ones, so an overflow after
+//! it answers the retryable `503` wire instead of a handle nothing would
+//! release.
 
 use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
@@ -75,6 +85,9 @@ struct Stash {
     entries: BTreeMap<u64, Entry>,
     /// Sum of the byte counts of `entries`.
     held: usize,
+    /// Set by [`clear_stash`] (the shutdown's cleanup): no entry is taken
+    /// after it, so nothing is stored that no cleanup would ever release.
+    closed: bool,
 }
 
 impl Stash {
@@ -134,6 +147,7 @@ static STASH: Mutex<Stash> = Mutex::new(Stash {
     next: 1,
     entries: BTreeMap::new(),
     held: 0,
+    closed: false,
 });
 
 fn lock_stash() -> std::sync::MutexGuard<'static, Stash> {
@@ -143,18 +157,27 @@ fn lock_stash() -> std::sync::MutexGuard<'static, Stash> {
 }
 
 /// Store `pending` under `token` (`None` = a fresh token), evicting expired
-/// and surplus entries.  Evicted responses are dropped AFTER the lock is
-/// released (dropping a body may run arbitrary code).
-fn stash_put(token: Option<u64>, pending: PendingDirectResponse) -> u64 {
+/// and surplus entries.  `None` when the stash is closed (after
+/// [`clear_stash`]): the response is dropped and nothing is stored.  Evicted
+/// responses are dropped AFTER the lock is released (dropping a body may run
+/// arbitrary code).
+fn stash_put(token: Option<u64>, pending: PendingDirectResponse) -> Option<u64> {
     stash_put_within(token, pending, MAX_STASHED_BYTES)
 }
 
 /// [`stash_put`] with an explicit byte budget (tests use a small one).
-fn stash_put_within(token: Option<u64>, pending: PendingDirectResponse, budget: usize) -> u64 {
+fn stash_put_within(
+    token: Option<u64>,
+    pending: PendingDirectResponse,
+    budget: usize,
+) -> Option<u64> {
     let now = Instant::now();
     let mut evicted = Vec::new();
     let token = {
         let mut stash = lock_stash();
+        if stash.closed {
+            return None;
+        }
         let incoming = pending.held_bytes();
         stash.evict(now, Some((incoming, budget)), &mut evicted);
         let token = token.unwrap_or_else(|| {
@@ -166,7 +189,7 @@ fn stash_put_within(token: Option<u64>, pending: PendingDirectResponse, budget: 
         token
     };
     drop(evicted);
-    token
+    Some(token)
 }
 
 /// Remove `token`'s entry (if still live) and sweep expired ones, so an
@@ -188,11 +211,26 @@ pub fn take_stashed(token: jlong) -> Option<PendingDirectResponse> {
     u64::try_from(token).ok().and_then(stash_take)
 }
 
-/// Drop every stashed response (runtime shutdown).
+/// Drop every stashed response and close the stash (the runtime shutdown's
+/// cleanup, run after its drain): later [`stash_put`]s are refused.
 pub fn clear_stash() {
     let drained = {
         let mut stash = lock_stash();
+        stash.closed = true;
         stash.held = 0;
+        std::mem::take(&mut stash.entries)
+    };
+    drop(drained);
+}
+
+/// Empty the stash and reopen it (tests only: several unit tests share the
+/// process-global stash, and the real [`clear_stash`] closes it for good).
+#[cfg(test)]
+pub fn reset_stash() {
+    let drained = {
+        let mut stash = lock_stash();
+        stash.held = 0;
+        stash.closed = false;
         std::mem::take(&mut stash.entries)
     };
     drop(drained);
@@ -241,10 +279,10 @@ fn handle_flags(required: usize, exact: bool, prefers_streaming: bool) -> u8 {
 ///
 /// Called while the dispatch still holds its runtime lease (inside the
 /// `block_on` future), so a shutdown drains it before its `clear_stash`
-/// runs; a shutdown already past that drain (its timeout expired) is caught
-/// by the re-check below — the entry is taken back and the retryable `503`
-/// every other request gets is answered instead of a handle to a response
-/// nothing would ever release.
+/// runs: the stash refuses entries only once that cleanup has closed it (see
+/// the module docs).  An overflow after that, from a dispatch whose drain
+/// timed out, is answered with the retryable `503` every other request gets,
+/// not a handle to a response nothing would ever release.
 pub fn stash_overflow(out: &mut [u8], pending: PendingDirectResponse) -> jint {
     let code = pending_code(&pending);
     let flags = pending_flags(&pending);
@@ -252,11 +290,9 @@ pub fn stash_overflow(out: &mut [u8], pending: PendingDirectResponse) -> jint {
         // No room for a handle: the response cannot be redeemed, drop it.
         return code;
     }
-    let token = stash_put(None, pending);
-    if vespera_inprocess::runtime::runtime_shut_down() {
-        drop(stash_take(token));
+    let Some(token) = stash_put(None, pending) else {
         return write_error_wire(out, &runtime_unavailable_wire());
-    }
+    };
     out[..8].copy_from_slice(&token.to_be_bytes());
     out[8] = flags;
     code
@@ -387,19 +423,14 @@ pub fn fetch_into(token: jlong, out: &mut [u8]) -> jint {
         return DIRECT_UNREPRESENTABLE;
     };
     // Re-stashed inside the future, under the fetch's runtime lease (see
-    // `stash_overflow`), with the same post-insert shutdown re-check.
+    // `stash_overflow`); refused once the stash is closed.
     let fetched = block_on_shared_runtime(async {
         match pending.write_into(&mut *out).await {
             ResumableDirectWrite::Complete(n) => Some(direct_complete_code(n)),
             ResumableDirectWrite::Overflow(pending) => {
                 let code = pending_code(&pending);
                 let key = u64::try_from(token).unwrap_or_default();
-                stash_put(Some(key), pending);
-                if vespera_inprocess::runtime::runtime_shut_down() {
-                    drop(stash_take(key));
-                    return None;
-                }
-                Some(code)
+                stash_put(Some(key), pending).map(|_| code)
             }
         }
     });
@@ -450,6 +481,16 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_DirectStash_discard0<'loc
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`stash_put`] on a stash that is open (the tests reopen it first).
+    fn put(token: Option<u64>, pending: PendingDirectResponse) -> u64 {
+        stash_put(token, pending).expect("the stash is open")
+    }
+
+    /// [`stash_put_within`] on a stash that is open.
+    fn put_within(token: Option<u64>, pending: PendingDirectResponse, budget: usize) -> u64 {
+        stash_put_within(token, pending, budget).expect("the stash is open")
+    }
 
     /// A materialised `400` (malformed wire, no app needed) that overflows
     /// an empty buffer.
@@ -505,53 +546,53 @@ mod tests {
         assert!(lock_stash().entries.is_empty());
 
         // Surplus entries evict the oldest.
-        let first = stash_put(None, pending());
+        let first = put(None, pending());
         for _ in 0..MAX_STASHED {
-            let _ = stash_put(None, pending());
+            let _ = put(None, pending());
         }
         assert!(stash_take(first).is_none(), "the oldest entry was evicted");
         assert_eq!(lock_stash().entries.len(), MAX_STASHED);
-        clear_stash();
+        reset_stash();
         assert!(lock_stash().entries.is_empty());
 
         // Eviction follows the stash time, not the token: a re-stashed
         // (partially fetched) low token outlives newer entries.
-        let resumed = stash_put(None, pending());
-        let newer = stash_put(None, pending());
-        let _ = stash_put(Some(resumed), stash_take(resumed).expect("live"));
+        let resumed = put(None, pending());
+        let newer = put(None, pending());
+        let _ = put(Some(resumed), stash_take(resumed).expect("live"));
         for _ in 0..MAX_STASHED - 1 {
-            let _ = stash_put(None, pending());
+            let _ = put(None, pending());
         }
         assert!(
             stash_take(newer).is_none(),
             "least recently stashed evicted"
         );
         assert!(stash_take(resumed).is_some(), "re-stashed entry kept");
-        clear_stash();
+        reset_stash();
 
         // Expired entries are swept by any access, not only by a put.
         let stale = Instant::now()
             .checked_sub(STASH_TTL + Duration::from_secs(1))
             .expect("monotonic clock far enough from its origin");
-        let expired = stash_put(None, pending());
-        let live = stash_put(None, pending());
+        let expired = put(None, pending());
+        let live = put(None, pending());
         lock_stash().entries.get_mut(&expired).expect("stashed").0 = stale;
         assert!(stash_take(live).is_some());
         assert!(
             lock_stash().entries.is_empty(),
             "expired entry swept by a take"
         );
-        clear_stash();
+        reset_stash();
 
         // Byte budget: the oldest entries go first once the held bytes would
         // exceed it, and every removal releases its bytes.
         let each = pending().held_bytes();
         assert!(each > 0, "a materialised wire holds its bytes");
         let budget = each * 2;
-        let first = stash_put_within(None, pending(), budget);
-        let second = stash_put_within(None, pending(), budget);
+        let first = put_within(None, pending(), budget);
+        let second = put_within(None, pending(), budget);
         assert_eq!(stashed_bytes(), each * 2);
-        let third = stash_put_within(None, pending(), budget);
+        let third = put_within(None, pending(), budget);
         assert!(
             stash_take(first).is_none(),
             "oldest evicted over the budget"
@@ -563,12 +604,28 @@ mod tests {
 
         // A response over the whole budget is kept alone (refusing it would
         // make its handler run again); the entry before it is evicted.
-        let over_first = stash_put_within(None, pending(), 0);
-        let over_second = stash_put_within(None, pending(), 0);
+        let over_first = put_within(None, pending(), 0);
+        let over_second = put_within(None, pending(), 0);
         assert!(stash_take(over_first).is_none());
         assert!(stash_take(over_second).is_some(), "kept alone");
         assert_eq!(stashed_bytes(), 0);
+        reset_stash();
+
+        // Closed by the shutdown's cleanup: nothing is stored (a new entry or a
+        // re-stash), and an overflow answers the retryable 503 wire instead.
         clear_stash();
+        assert!(stash_put(None, pending()).is_none());
+        assert!(stash_put(Some(7), pending()).is_none(), "re-stash refused");
+        let mut out = vec![0u8; 1024];
+        let code = stash_overflow(&mut out, pending());
+        let len = usize::try_from(code).expect("a complete unavailable wire");
+        assert_eq!(
+            &out[..len],
+            runtime_unavailable_wire().as_slice(),
+            "the refused overflow answers the unavailable wire"
+        );
+        assert_eq!(stashed_count(), 0, "nothing stored after the close");
+        reset_stash();
     }
 
     fn wire_status(wire: &[u8]) -> String {
@@ -648,7 +705,7 @@ mod tests {
             1,
             "never re-run"
         );
-        clear_stash();
+        reset_stash();
 
         // An error wire that overflows `out` without a handle: `-(len)`
         // and a zeroed handle area, never `Integer.MIN_VALUE`.

@@ -182,6 +182,12 @@ async fn header_first_streaming_drops_the_body_on_sink_failure(
             2,
             "no write after the failed one"
         );
+    } else {
+        assert_eq!(
+            writes.load(Ordering::SeqCst),
+            1,
+            "the one data chunk, then the failed flush hint stops the body"
+        );
     }
 }
 

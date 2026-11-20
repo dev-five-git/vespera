@@ -534,20 +534,21 @@ impl Schema {
     /// Whether every composition keyword admits `null` — deciding whether a
     /// deserialized `type: [T, "null"]` keeps its `null`: an `anyOf` with a
     /// member that admits `null` (see [`admits_null`]), a `oneOf` with
-    /// exactly one such member (the other branches are taken to reject
-    /// `null`, the shape a nullable composition is written in; two admitting
-    /// branches make `oneOf` reject it), an `allOf` whose every member admits
-    /// `null`, and a `not` whose subschema provably rejects `null` (see
-    /// [`rejects_null`]).  A schema without composition keywords trivially
+    /// exactly one such member and no `$ref` member (the other branches are
+    /// taken to reject `null`, the shape a nullable composition is written
+    /// in; two admitting branches make `oneOf` reject it, and a `$ref` may
+    /// admit `null` too, so it is no proof either), an `allOf` whose every
+    /// member admits `null`, and a `not` whose subschema provably rejects
+    /// `null` (see [`rejects_null`]).  A schema without composition keywords trivially
     /// admits it.
     pub(super) fn composition_admits_null(&self) -> bool {
         self.any_of
             .as_deref()
             .is_none_or(|members| members.iter().any(admits_null))
-            && self
-                .one_of
-                .as_deref()
-                .is_none_or(|members| members.iter().filter(|m| admits_null(m)).count() == 1)
+            && self.one_of.as_deref().is_none_or(|members| {
+                members.iter().filter(|m| admits_null(m)).count() == 1
+                    && !members.iter().any(member_mentions_ref)
+            })
             && self
                 .all_of
                 .as_deref()

@@ -38,6 +38,11 @@ async fn echo_body(body: axum::body::Bytes) -> axum::body::Bytes {
     body
 }
 
+/// Echo the request's query string (the part after `?`) as the body.
+async fn echo_query(uri: axum::http::Uri) -> String {
+    uri.query().unwrap_or_default().to_owned()
+}
+
 /// Echo the raw bytes of the request's `x-name` header back as a
 /// `content-disposition` filename AND as the body, so one dispatch locks both
 /// directions of the Latin-1 header contract.
@@ -64,6 +69,7 @@ fn install_router() {
             Router::new()
                 .route("/contract", get(contract_headers))
                 .route("/users", post(echo_body))
+                .route("/query", get(echo_query))
                 .route("/latin1", get(echo_header_bytes))
         });
     });
@@ -213,6 +219,21 @@ fn cross_language_request_golden_routes() {
     assert!(
         header.contains(r#""status":200"#),
         "cross-language request golden: POST /users must route 200 — got: {header}"
+    );
+
+    // The query really reaches the handler: the same embedded `?page=1`,
+    // echoed back by a route that reads the URI.
+    let query_header = br#"{"v":1,"method":"GET","path":"/query?page=1"}"#;
+    let mut query_wire = u32::try_from(query_header.len())
+        .unwrap()
+        .to_be_bytes()
+        .to_vec();
+    query_wire.extend_from_slice(query_header);
+    let (query_status, query_body) = split_wire(&dispatch_from_bytes(query_wire, &runtime));
+    assert!(query_status.contains(r#""status":200"#), "{query_status}");
+    assert_eq!(
+        query_body, b"page=1",
+        "the embedded query reaches the handler"
     );
 }
 

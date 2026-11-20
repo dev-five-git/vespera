@@ -32,11 +32,17 @@ fn parse_bool_config(var_name: &str, raw: Option<&str>, default: bool) -> bool {
     } else if is(&FALSE_WORDS) {
         false
     } else {
-        eprintln!(
-            "vespera: ignoring invalid {var_name}={s:?} (expected true or false); using the default {default}"
-        );
+        eprintln!("{}", invalid_bool_message(var_name, s, default));
         default
     }
+}
+
+/// The warning for an unrecognised boolean config value, listing every
+/// accepted spelling (see [`parse_bool_config`]).
+fn invalid_bool_message(var_name: &str, raw: &str, default: bool) -> String {
+    format!(
+        "vespera: ignoring invalid {var_name}={raw:?} (expected one of true/false, 1/0, yes/no, or on/off); using the default {default}"
+    )
 }
 
 /// Whether a non-empty request body without a `Content-Type` is given
@@ -76,8 +82,8 @@ pub fn set_default_json_content_type(enabled: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_DEFAULT_JSON_CONTENT_TYPE, default_json_content_type, parse_bool_config,
-        set_default_json_content_type,
+        DEFAULT_DEFAULT_JSON_CONTENT_TYPE, default_json_content_type, invalid_bool_message,
+        parse_bool_config, set_default_json_content_type,
     };
     use rstest::rstest;
 
@@ -149,5 +155,15 @@ mod tests {
     #[test]
     fn invalid_value_falls_back_to_a_false_default_too() {
         assert!(!parse_bool_config("X", Some("maybe"), false));
+    }
+
+    /// The warning names every accepted spelling, so a typo is fixable from
+    /// the message alone.
+    #[test]
+    fn invalid_value_warning_lists_the_accepted_spellings() {
+        assert_eq!(
+            invalid_bool_message("VESPERA_X", "maybe", true),
+            "vespera: ignoring invalid VESPERA_X=\"maybe\" (expected one of true/false, 1/0, yes/no, or on/off); using the default true"
+        );
     }
 }
