@@ -800,6 +800,28 @@ fn array_length_constant_is_rerooted(
     );
 }
 
+/// R34-SM4-L2: a `Decimal` reached through a crate-internal re-export of the
+/// external crate keeps its ecosystem default; a crate-local `Decimal` does not.
+#[rstest]
+#[case::reexported_external("pub use rust_decimal::Decimal;", Some(serde_json::json!("0")))]
+#[case::crate_local("pub struct Decimal(pub i64);", None)]
+fn reexported_ecosystem_name_keeps_its_default(
+    #[case] types: &str,
+    #[case] expected: Option<serde_json::Value>,
+) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod types; pub mod sibling;").unwrap();
+    std::fs::write(src.join("types.rs"), types).unwrap();
+    std::fs::write(src.join("sibling.rs"), "use crate::types::Decimal;").unwrap();
+    let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    crate::schema_macro::file_cache::bump_epoch();
+    let ty: syn::Type = syn::parse_str("Decimal").unwrap();
+    let module = ["crate", "sibling"].map(String::from);
+    assert_eq!(get_type_default(&ty, &module), expected);
+}
+
 /// H1 (round 15): a multi-segment type reached through a `::`-rooted import
 /// (`use ::std::collections;` + `collections::HashMap<..>`) is rendered with
 /// the leading `::` (the empty root segment panicked in `segment_ident`).

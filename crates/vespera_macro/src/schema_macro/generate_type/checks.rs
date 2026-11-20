@@ -27,15 +27,19 @@ pub(super) struct Emitted<'a> {
     pub picked: &'a HashSet<String>,
 }
 
+/// The source names of the emitted fields (`#[cfg]` twins share one).
+pub(super) fn emitted_source_names(field_mappings: &[FieldMapping]) -> HashSet<String> {
+    field_mappings
+        .iter()
+        .map(|mapping| strip_raw_prefix_owned(mapping.source_ident.to_string()))
+        .collect()
+}
+
 /// The dropped names that no emitted field carries. A `#[cfg]` twin dropped by
 /// `omit_default` leaves its sibling twin emitted, so the name is not dropped
 /// (R28-SM2-L1: `rename` / `pick` / `partial` used to reject it).
 fn names_not_emitted(emitted: &Emitted<'_>) -> HashMap<String, &'static str> {
-    let emitted_names: HashSet<String> = emitted
-        .field_mappings
-        .iter()
-        .map(|mapping| strip_raw_prefix_owned(mapping.source_ident.to_string()))
-        .collect();
+    let emitted_names = emitted_source_names(emitted.field_mappings);
     emitted
         .dropped
         .iter()
@@ -107,6 +111,7 @@ pub(super) fn check_emitted(
             (
                 mapping.new_ident.to_string(),
                 mapping.source_ident.to_string(),
+                mapping.cfg_undecided,
             )
         }),
         input.rename.as_ref(),

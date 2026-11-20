@@ -284,7 +284,10 @@ impl HasAttrs for syn::ItemMod {
 /// The items of the inline module `chain` below `items`. A `#[cfg]`-disabled
 /// twin module of the same name is skipped, as the module chain is (R25-SM0-M1):
 /// the struct is resolved in the active twin, so its function must be too.
-fn inline_module_items(items: Vec<syn::Item>, chain: &[String]) -> Option<Vec<syn::Item>> {
+pub(super) fn inline_module_items(
+    items: Vec<syn::Item>,
+    chain: &[String],
+) -> Option<Vec<syn::Item>> {
     // The same `unique_active` rule as the other lookups: two active twins of
     // one module name (`#[cfg(unix)] mod inner` / `#[cfg(windows)] mod inner`)
     // resolve to nothing, not to whichever twin comes first (R27-SM0-L1).

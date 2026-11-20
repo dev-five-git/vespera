@@ -135,3 +135,45 @@ fn variant_of_an_unparseable_file_is_kept() {
     bump_epoch();
     assert!(variants::in_module("VariantBroken", &first_module).is_some());
 }
+
+/// R34-SM-L1: two same-named items in sibling inline modules of ONE file. Deleting
+/// `mod a`'s item leaves `mod b`'s resolving: the staleness of a file's item is
+/// decided per module, not by the name over the whole file.
+#[test]
+fn deleted_item_of_one_module_leaves_its_sibling_resolving() {
+    const SOURCE: &str = "pub mod a {\n    pub struct StaleModuleTwin { pub limit: u32 }\n}\n\
+        pub mod b {\n    pub struct StaleModuleTwin { pub limit: u32 }\n}\n";
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod pair;\n").unwrap();
+    let pair = src.join("pair.rs");
+    std::fs::write(&pair, SOURCE).unwrap();
+    let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    bump_epoch();
+
+    let metadata = |line: usize| {
+        StructMetadata::new(
+            "StaleModuleTwin".to_string(),
+            "pub struct StaleModuleTwin { pub limit: u32 }".to_string(),
+        )
+        .with_source_identity(format!("{}::StaleModuleTwin@{line}:5", pair.display()))
+    };
+    let module_a = ["crate", "pair", "a"].map(String::from);
+    let module_b = ["crate", "pair", "b"].map(String::from);
+    assert!(register_schema("StaleModuleTwin".to_string(), metadata(2)).is_ok());
+    assert!(register_schema("StaleModuleTwin".to_string(), metadata(5)).is_ok());
+    assert!(variants::in_module("StaleModuleTwin", &module_a).is_some());
+    assert!(variants::in_module("StaleModuleTwin", &module_b).is_some());
+
+    // Same line count: `mod a` keeps its braces, its item is gone.
+    std::fs::write(
+        &pair,
+        "pub mod a {\n    // StaleModuleTwin was deleted\n}\n\
+        pub mod b {\n    pub struct StaleModuleTwin { pub limit: u32 }\n}\n",
+    )
+    .unwrap();
+    bump_epoch();
+    assert!(variants::in_module("StaleModuleTwin", &module_a).is_none());
+    assert!(variants::in_module("StaleModuleTwin", &module_b).is_some());
+}

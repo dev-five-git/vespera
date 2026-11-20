@@ -814,13 +814,30 @@ const ECOSYSTEM_DEFAULT_NAMES: &[&str] = &[
 /// `"0"` / `"1970-01-01"` before. Without a known module (`source_module` is
 /// empty) the name is taken as the ecosystem type, as before.
 fn names_ecosystem_type(segments: &[String], source_module: &[String]) -> bool {
-    match super::module_scope::resolve_name(segments, source_module) {
-        super::module_scope::Resolved::Path(path) => matches!(
-            path.first().map(String::as_str),
-            Some("sea_orm" | "chrono" | "rust_decimal" | "uuid" | "time")
-        ),
-        super::module_scope::Resolved::Unknown => true,
+    use super::module_scope::{Resolved, resolve_name};
+    let mut path = match resolve_name(segments, source_module) {
+        Resolved::Path(path) => path,
+        Resolved::Unknown => return true,
+    };
+    // A crate-internal re-export (`pub use rust_decimal::Decimal;` in
+    // `crate::types`, reached through `use crate::types::Decimal;`) names the
+    // external root one module further in: follow the chain (R34-SM4-L2).
+    for _ in 0..8 {
+        let Some((name, module)) = path
+            .split_last()
+            .filter(|(_, module)| module.first().map(String::as_str) == Some("crate"))
+        else {
+            break;
+        };
+        match resolve_name(std::slice::from_ref(name), module) {
+            Resolved::Path(next) if next != path => path = next,
+            _ => break,
+        }
     }
+    matches!(
+        path.first().map(String::as_str),
+        Some("sea_orm" | "chrono" | "rust_decimal" | "uuid" | "time")
+    )
 }
 
 /// Get type-specific default value for simple #[serde(default)].

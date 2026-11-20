@@ -696,6 +696,7 @@ pub fn generate_schema_type_code(
                 wrapped: should_wrap_option,
                 relation,
                 cfg: field_cfg,
+                cfg_undecided: super::cfg_eval::undecided_cfg(&field.attrs),
             });
             let emitted = field_tokens.last().cloned().unwrap_or_default();
             metadata_field_tokens.push(quote! { #metadata_only #emitted });
@@ -718,9 +719,7 @@ pub fn generate_schema_type_code(
         &at,
         &source_type_name,
     )?;
-    let emitted: HashSet<String> = (field_mappings.iter())
-        .map(|mapping| strip_raw_prefix_owned(mapping.source_ident.to_string()))
-        .collect();
+    let emitted = checks::emitted_source_names(&field_mappings);
     let peer_context = PeerContext {
         source_fields: &source_field_names,
         emitted: &emitted,

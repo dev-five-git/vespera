@@ -18,24 +18,41 @@ struct Types<'a> {
     found: Option<String>,
 }
 
-impl<'ast> syn::visit::Visit<'ast> for Types<'_> {
-    /// A type path is judged by its root: a single name is the type itself, a
+impl Types<'_> {
+    /// Judges the root of `path`: a single name is the item itself, a
     /// multi-segment one (`enums::Status`) names a module the call site must
     /// resolve too (R25-SM3-02). A crate the compiler links is no module of
     /// the DTO's file, so its root is not judged.
-    fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
+    fn judge(&mut self, path: &syn::Path) {
         if self.found.is_none()
-            && ty.qself.is_none()
-            && let Some(root) = ty.path.segments.first()
+            && let Some(root) = path.segments.first()
         {
             let name = root.ident.to_string();
-            let judged = ty.path.segments.len() == 1
+            let judged = path.segments.len() == 1
                 || !crate::schema_macro::file_lookup::is_extern_crate(&name);
             if judged && (self.unresolved)(&name) {
                 self.found = Some(name);
             }
         }
+    }
+}
+
+impl<'ast> syn::visit::Visit<'ast> for Types<'_> {
+    fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
+        if ty.qself.is_none() {
+            self.judge(&ty.path);
+        }
         syn::visit::visit_type_path(self, ty);
+    }
+
+    /// A const expression (an array length `[u8; HASH_LEN]`, a const generic
+    /// argument `Digest<{ HASH_LEN }>`) names a const the call site must resolve
+    /// too, judged by its root like a type path (R34-SM4-L1).
+    fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
+        if expr.qself.is_none() {
+            self.judge(&expr.path);
+        }
+        syn::visit::visit_expr_path(self, expr);
     }
 }
 
@@ -409,6 +426,13 @@ mod tests {
     // R29-SM4-01: `Decimal` is no prelude name, so the call site must resolve
     // it like any other imported name.
     #[case::decimal_is_judged("struct D { total: Decimal }", Some("Decimal"))]
+    // R34-SM4-L1: an array length and a const generic argument name a const
+    // the call site must resolve, judged by its root.
+    #[case::array_length_const("struct D { digest: [u8; HASH_LEN] }", Some("HASH_LEN"))]
+    #[case::const_generic_argument(
+        "struct D { digest: std::marker::PhantomData<{ HASH_LEN }> }",
+        Some("HASH_LEN")
+    )]
     // A serde value that is no string literal is no copied path.
     #[case::non_string_value("struct D { #[serde(with = codec)] id: i32 }", None)]
     // R30-SM3-L4: a compiled-out field's type and serde path are not copied.

@@ -12,6 +12,9 @@
 //! not "gone": it may still hold the item, so it keeps the strict error and
 //! the variant. An unchanged file — every file of a
 //! `cargo build` — keeps the strict duplicate-name error.
+//!
+//! Staleness is decided per module (R34-SM-L1): a same-named item of a sibling
+//! inline `mod` in the same file does not keep a deleted item alive.
 
 use std::{
     collections::HashMap,
@@ -24,13 +27,25 @@ use crate::schema_macro::file_cache::{
     FileFingerprint, get_file_content, get_file_fingerprint, get_parsed_file,
 };
 
-/// Item key (`file::Ident`) → its file's fingerprint when it was registered.
+/// What a registration recorded about its item's file.
+struct Recorded {
+    /// The identity (`file::Ident@line:column`) the item was registered under.
+    identity: String,
+    /// The inline modules the item sat in at registration, outermost first.
+    chain: Vec<String>,
+    /// The file's fingerprint at registration.
+    fingerprint: Option<FileFingerprint>,
+}
+
+/// Item key (`file::module::Ident`) → what its registration recorded.
 ///
-/// Keyed by the item, not by its `line:column`: an edit that moves an item
-/// re-registers it under its new position, and a position-keyed map would keep
-/// the old entry for ever (R27-SM0-L3). One entry per item bounds the map by
-/// the items the session has seen, not by the edits it has made.
-static FINGERPRINTS: LazyLock<Mutex<HashMap<String, Option<FileFingerprint>>>> =
+/// Keyed by the item and its module, not by its `line:column`: an edit that
+/// moves an item re-registers it under its new position, and a position-keyed
+/// map would keep the old entry for ever (R27-SM0-L3). Two same-named items of
+/// sibling modules of one file get two keys (R34-SM-L1). One entry per item
+/// bounds the map by the items the session has seen, not by the edits it has
+/// made.
+static FINGERPRINTS: LazyLock<Mutex<HashMap<String, Recorded>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// `(file, ident)` of a `file::Ident@line:column` identity.
@@ -39,21 +54,84 @@ fn file_and_ident(identity: &str) -> Option<(&str, &str)> {
     base.rsplit_once("::")
 }
 
-/// The [`FINGERPRINTS`] key of the item `ident` in `file`.
-fn item_key(file: &str, ident: &str) -> String {
-    format!("{file}::{ident}")
+/// The line of a `file::Ident@line:column` identity (`0` when unreadable).
+fn line_of(identity: &str) -> usize {
+    identity
+        .rsplit_once('@')
+        .and_then(|(_, position)| position.split(':').next()?.parse().ok())
+        .unwrap_or_default()
 }
 
-/// Remember the current fingerprint of `identity`'s file.
+/// The inline `mod` chain around `line` in `file`, outermost first: empty at
+/// the file's top level, or when the file cannot be parsed.
+fn module_chain(file: &Path, line: usize) -> Vec<String> {
+    get_parsed_file(file).map_or_else(Vec::new, |parsed| enclosing_modules(&parsed.items, line))
+}
+
+/// The inline modules whose braces span `line` (as the openapi generator's
+/// `nested` finds them).
+fn enclosing_modules(items: &[syn::Item], line: usize) -> Vec<String> {
+    items
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Mod(syn::ItemMod {
+                ident,
+                content: Some((brace, inner)),
+                ..
+            }) if (brace.span.open().start().line..=brace.span.close().end().line)
+                .contains(&line) =>
+            {
+                let mut chain = vec![syn::ext::IdentExt::unraw(ident).to_string()];
+                chain.extend(enclosing_modules(inner, line));
+                Some(chain)
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// The [`FINGERPRINTS`] key of the item `ident` in module `chain` of `file`.
+fn item_key(file: &str, chain: &[String], ident: &str) -> String {
+    chain
+        .iter()
+        .map(String::as_str)
+        .chain([ident])
+        .fold(file.to_string(), |key, segment| format!("{key}::{segment}"))
+}
+
+/// How many `ident` items `items` declares directly in the inline module
+/// `chain`. Child inline modules are other modules and do not count, so a
+/// same-named item of a sibling module never keeps this one alive.
+fn declared_in_module(items: &[syn::Item], chain: &[String], ident: &str) -> usize {
+    super::default_fns::inline_module_items(items.to_vec(), chain).map_or(0, |module| {
+        module
+            .iter()
+            .filter(|item| !matches!(item, syn::Item::Mod(_)))
+            .map(|item| super::count_items_named(std::slice::from_ref(item), ident))
+            .sum()
+    })
+}
+
+/// Remember the current fingerprint of `identity`'s file and item module.
 pub(super) fn record(identity: Option<&str>) {
-    let Some((file, ident)) = identity.and_then(file_and_ident) else {
+    let Some(identity) = identity else {
         return;
     };
-    let fingerprint = get_file_fingerprint(Path::new(file));
+    let Some((file, ident)) = file_and_ident(identity) else {
+        return;
+    };
+    let path = Path::new(file);
+    let chain = module_chain(path, line_of(identity));
+    let key = item_key(file, &chain, ident);
+    let recorded = Recorded {
+        identity: identity.to_string(),
+        chain,
+        fingerprint: get_file_fingerprint(path),
+    };
     FINGERPRINTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(item_key(file, ident), fingerprint);
+        .insert(key, recorded);
 }
 
 /// Whether the stored `existing` entry's item has left its file since it was
@@ -65,16 +143,19 @@ pub(super) fn left_its_file(existing: &StructMetadata) -> bool {
     let Some((file, ident)) = file_and_ident(identity) else {
         return false;
     };
+    // The registration's own record: its module chain and fingerprint. The
+    // stored identity names the registration, so the record is found by it.
     let recorded = FINGERPRINTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&item_key(file, ident))
-        .copied();
+        .values()
+        .find(|recorded| recorded.identity == identity)
+        .map(|recorded| (recorded.chain.clone(), recorded.fingerprint));
     let path = Path::new(file);
     match recorded {
-        Some(fingerprint) if fingerprint != get_file_fingerprint(path) => {
+        Some((chain, fingerprint)) if fingerprint != get_file_fingerprint(path) => {
             match get_parsed_file(path) {
-                Some(parsed) => super::count_items_named(&parsed.items, ident) == 0,
+                Some(parsed) => declared_in_module(&parsed.items, &chain, ident) == 0,
                 // Unparseable mid-edit but present: the item may still be in it
                 // (R26-SM-L1), so only a file that is gone counts as left.
                 None => get_file_content(path).is_none(),

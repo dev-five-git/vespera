@@ -278,8 +278,14 @@ pub fn validate_add_field_idents(
 /// generated ident, without naming the argument at fault.  Two kept source
 /// fields of one source name (`#[cfg]` twins, renamed or not) are not this
 /// argument's doing and stay allowed.
+///
+/// `kept` entries are `(emitted, source, undecided)`: `undecided` marks a field
+/// whose `#[cfg]` is neither known true nor known false. The compiler may drop
+/// it, so a rename target equal to its name is not refused here (R34-SM5-2):
+/// a real duplicate in the build that keeps both is rustc's E0124 on the
+/// emitted field. It still counts as a name for `add`.
 pub fn validate_unique_field_names(
-    kept: impl IntoIterator<Item = (String, String)>,
+    kept: impl IntoIterator<Item = (String, String, bool)>,
     rename_pairs: Option<&Vec<(String, String)>>,
     add: Option<&Vec<(String, syn::Type)>>,
     at: &impl ErrorAt,
@@ -291,9 +297,14 @@ pub fn validate_unique_field_names(
         .map(|(_, to)| (unraw(to), to))
         .collect();
     let mut sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for (name, source) in kept {
+    let mut seen: HashSet<String> = HashSet::new();
+    for (name, source, undecided) in kept {
         let name = unraw(&name);
         let source = unraw(&source);
+        seen.insert(name.clone());
+        if undecided {
+            continue;
+        }
         if let Some(previous) = sources.insert(name.clone(), source.clone())
             && previous != source
             && let Some(written) = renamed.get(&name)
@@ -305,7 +316,6 @@ pub fn validate_unique_field_names(
             ));
         }
     }
-    let mut seen: HashSet<String> = sources.into_keys().collect();
     let mut written_before: Vec<&String> = Vec::new();
     for (written, _) in add.into_iter().flatten() {
         let name = unraw(written);
@@ -466,7 +476,13 @@ fn listed_source_field_names(parsed_struct: &syn::ItemStruct) -> HashSet<String>
         .flat_map(|field| {
             let json = serialized
                 .iter()
-                .find(|other| other.index != field.index && other.rust == field.json)
+                // A `#[cfg]` twin shares the Rust ident, so its JSON name is no
+                // other field's spelling (R34-SM5-1).
+                .find(|other| {
+                    other.index != field.index
+                        && other.rust != field.rust
+                        && other.rust == field.json
+                })
                 .map_or_else(
                     || field.json.clone(),
                     |shadow| {
@@ -878,7 +894,7 @@ mod tests {
             .collect();
         let result = validate_unique_field_names(
             kept.iter()
-                .map(|(name, source)| ((*name).to_string(), (*source).to_string())),
+                .map(|(name, source)| ((*name).to_string(), (*source).to_string(), false)),
             Some(&renames),
             Some(&add),
             &ty,
@@ -890,5 +906,41 @@ mod tests {
                 assert!(err.contains(message), "{err}");
             }
         }
+    }
+
+    /// R34-SM5-2: a rename target that only an undecided `#[cfg]` field also
+    /// emits is not refused here (the build keeping both gets rustc's E0124); a
+    /// definite collision still is.
+    #[rstest::rstest]
+    #[case::undecided_cfg_field(&[("id", "a", false), ("id", "id", true)], true)]
+    #[case::definite_collision(&[("id", "a", false), ("id", "id", false)], false)]
+    fn rename_target_of_an_undecided_field(
+        #[case] kept: &[(&str, &str, bool)],
+        #[case] accepted: bool,
+    ) {
+        let ty: syn::Type = syn::parse2(quote!(User)).unwrap();
+        let renames = vec![("a".to_string(), "id".to_string())];
+        let result = validate_unique_field_names(
+            kept.iter().map(|(name, source, undecided)| {
+                ((*name).to_string(), (*source).to_string(), *undecided)
+            }),
+            Some(&renames),
+            None,
+            &ty,
+        );
+        assert_eq!(result.is_ok(), accepted);
+    }
+
+    /// R34-SM5-1: a `#[cfg]` twin's JSON name (its own Rust ident) is listed
+    /// plainly, not as shadowed by its sibling twin.
+    #[test]
+    fn cfg_twin_is_not_listed_as_shadowed() {
+        let parsed: syn::ItemStruct =
+            syn::parse_str("struct User { #[cfg(unix)] id: i32, #[cfg(windows)] id: i64 }")
+                .unwrap();
+        assert_eq!(
+            listed_source_field_names(&parsed),
+            HashSet::from(["id".to_string()])
+        );
     }
 }

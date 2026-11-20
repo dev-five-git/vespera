@@ -24,6 +24,9 @@ pub struct FieldMapping {
     /// The source field's `#[cfg(..)]` attributes, repeated on everything
     /// that touches it.
     pub cfg: TokenStream,
+    /// The source field's `#[cfg]` is neither known true nor known false: the
+    /// compiler may drop the emitted field (R34-SM5-2).
+    pub cfg_undecided: bool,
 }
 
 /// A parameter of the generated `from_model`, named so no relation field
