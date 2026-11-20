@@ -67,6 +67,8 @@ class VesperaBridgeInitTest {
         boolean prevNative = nativeField.getBoolean(null);
         Object prevName = nameField.get(null);
         try {
+            // Start from the precondition this test needs, not whatever an earlier test left.
+            loadedField.setBoolean(null, false);
             AtomicInteger applied = new AtomicInteger();
             VesperaBridge.completeLoad("libA", () -> {
                 // A concurrent dispatcher gating on isInitialized() must not

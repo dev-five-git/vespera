@@ -28,7 +28,10 @@ import org.springframework.web.bind.annotation.RestController;
 @ExtendWith(NativeConfigReset.class)
 class VesperaSpringdocAutoConfigurationTest {
 
-    static final String DEFAULT_SPEC = "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Rust\",\"version\":\"1\"},"
+    /** One client for the class: every request reuses it, none leaks a client per call. */
+    private static final HttpClient HTTP = HttpClient.newHttpClient();
+
+    static final String DEFAULT_SPEC ="{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Rust\",\"version\":\"1\"},"
             + "\"paths\":{\"/rust/items\":{\"get\":{\"operationId\":\"listItems\","
             + "\"responses\":{\"200\":{\"description\":\"ok\"}}}}}}";
     static final String ADMIN_SPEC = "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Admin\",\"version\":\"1\"},"
@@ -67,7 +70,7 @@ class VesperaSpringdocAutoConfigurationTest {
 
     private static HttpResponse<String> get(ConfigurableApplicationContext ctx, String path) throws Exception {
         String port = ctx.getEnvironment().getProperty("local.server.port");
-        return HttpClient.newHttpClient().send(
+        return HTTP.send(
                 HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path)).build(),
                 HttpResponse.BodyHandlers.ofString());
     }

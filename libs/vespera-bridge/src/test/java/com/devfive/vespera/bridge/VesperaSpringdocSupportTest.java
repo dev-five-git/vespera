@@ -165,8 +165,9 @@ class VesperaSpringdocSupportTest {
                 wire -> responseWire(500, "x".repeat(500)));
         IllegalStateException serverError = assertThrows(IllegalStateException.class,
                 () -> failing.openApiJson("_default"));
-        assertTrue(serverError.getMessage().contains("500: xxx"), serverError.getMessage());
-        assertTrue(serverError.getMessage().endsWith("..."), serverError.getMessage());
+        // The body is cut at exactly InProcessOpenApiSource.MAX_ERROR_BODY_CHARS (200) chars, then "...".
+        assertEquals("GET /openapi.json on vespera app '_default' answered 500: "
+                + "x".repeat(200) + "...", serverError.getMessage());
     }
 
     private static byte[] assertDoesNotThrowValue(VesperaOpenApiSource source) {

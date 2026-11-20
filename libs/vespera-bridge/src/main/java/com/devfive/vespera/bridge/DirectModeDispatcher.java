@@ -32,9 +32,24 @@ final class DirectModeDispatcher {
     // so it is created directly rather than injected.
     private final DirectOverflowMemory overflowMemory = new DirectOverflowMemory();
     private final boolean retryOnOverflow;
+    private final PooledDispatch pooled;
+
+    /** The pooled native dispatch, a seam so tests can stand in for the native call. */
+    @FunctionalInterface
+    interface PooledDispatch {
+        ByteBuffer dispatch(
+                String appName, String method, String path, String query,
+                VesperaBridge.HeaderSource headers, byte[] body,
+                boolean retryOnOverflow, boolean currentThreadIsVirtual);
+    }
 
     DirectModeDispatcher(boolean retryOnOverflow) {
+        this(retryOnOverflow, DirectModeDispatcher::dispatchPooled);
+    }
+
+    DirectModeDispatcher(boolean retryOnOverflow, PooledDispatch pooled) {
         this.retryOnOverflow = retryOnOverflow;
+        this.pooled = pooled;
     }
 
     /**
@@ -77,7 +92,7 @@ final class DirectModeDispatcher {
         try {
             // Encodes straight into the pooled direct buffer — no
             // intermediate wire-sized byte[].
-            wireResp = dispatchPooled(
+            wireResp = pooled.dispatch(
                     appName, method, path, query, headers, body, retry,
                     currentThreadIsVirtual == null
                             ? VesperaDirectBufferPool.currentThreadIsVirtual()
@@ -88,6 +103,7 @@ final class DirectModeDispatcher {
             // instead of re-running the handler, and stream this route up
             // front next time.
             overflowMemory.recordOverflow(appName, method, path, query);
+            ProxyExchange.servedAs(exchange, DispatchMode.STREAMING);
             WireResponseWriter.BodyPermittingOutputStream bodyOut =
                     new WireResponseWriter.BodyPermittingOutputStream(response.getOutputStream(), method);
             streamHeaderFirst(response, () -> stashed.streamTo(

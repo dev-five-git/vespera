@@ -93,8 +93,9 @@ class StreamingRobustnessHttpTest extends AbstractVesperaHttpIntegrationTest {
         // No streaming Accept: smart routes the bodyless GET to DIRECT; the
         // native side sees text/event-stream and hands it over for streaming.
         assertIncremental(eventArrivals(null));
-        assertEquals(DispatchMode.DIRECT, recorder.eventFor(lastEventsRequestId).mode(),
-                "served by DIRECT, then handed over");
+        // The event is recorded as the path that ran: the stash is streamed.
+        assertEquals(DispatchMode.STREAMING, recorder.eventFor(lastEventsRequestId).mode(),
+                "handed over from DIRECT and streamed");
     }
 
     private int[] runs() {
@@ -113,11 +114,10 @@ class StreamingRobustnessHttpTest extends AbstractVesperaHttpIntegrationTest {
         ResponseEntity<byte[]> huge = exchange(HttpMethod.GET, "/stream/huge", null, null);
         assertEquals(HttpStatus.OK, huge.getStatusCode());
         assertEquals(5 * 1024 * 1024, requireBody(huge).length);
-        // First request for this route: DIRECT, fetched from the overflow stash.
-        // Only this class requests /stream/huge, so the controller has no
-        // overflow memory for it yet; a route that already overflowed beyond
-        // the pool cap would be streamed up front instead (STREAMING).
-        assertEquals(DispatchMode.DIRECT, recorder.modeOf(huge), "overflow fetched from the stash");
+        // 5 MiB is beyond the 4 MiB pool cap: the finished response stays in
+        // the overflow stash and is streamed from there, so the recorded mode
+        // is STREAMING (ProxyExchange.servedAs), not DIRECT.
+        assertEquals(DispatchMode.STREAMING, recorder.modeOf(huge), "overflow streamed from the stash");
         int[] after = runs();
         assertEquals(before[0] + 1, after[0], "200 KiB handler ran once");
         assertEquals(before[1] + 1, after[1], "5 MiB handler ran once");

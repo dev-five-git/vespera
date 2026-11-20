@@ -108,13 +108,15 @@ class JsonEncodingSurrogateTest {
     void everyShortControlEscapeAndTwoByteUtf8EncodingIsExact() {
         byte[] wire = VesperaBridge.encodeRequest(
                 null, "GET", "/x", null,
-                Map.of("x-control", "\b\f\r", "x-two-byte", "é"), null);
+                Map.of("x-control", "\b\f\r\n\t\"\\", "x-two-byte", "é"), null);
         String json = headerJson(wire);
 
-        assertTrue(json.contains("\\b\\f\\r"), json);
+        assertTrue(json.contains("\\b\\f\\r\\n\\t\\\"\\\\"), json);
         assertTrue(json.contains("é"), json);
         assertEquals(-1, json.indexOf('\b'));
         assertEquals(-1, json.indexOf('\f'));
         assertEquals(-1, json.indexOf('\r'));
+        assertEquals(-1, json.indexOf('\n'));
+        assertEquals(-1, json.indexOf('\t'));
     }
 }

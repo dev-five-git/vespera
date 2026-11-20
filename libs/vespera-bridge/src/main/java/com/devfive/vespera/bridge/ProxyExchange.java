@@ -36,9 +36,10 @@ final class ProxyExchange {
     volatile boolean reachedRust;
     /**
      * Whether Rust answered: a streamed response header was applied, or a
-     * buffered wire response arrived. Decides the app tag of a client cancel
-     * ({@link #completeCancelled}), where {@link #reachedRust} alone would
-     * also count a request still pending at the cancel.
+     * buffered wire response arrived. Set only by the WebFlux handler
+     * ({@code VesperaReactiveProxyHandler}); it decides the app tag of a
+     * client cancel ({@link #completeCancelled}), where {@link #reachedRust}
+     * alone would also count a request still pending at the cancel.
      */
     volatile boolean rustAnswered;
     private final AtomicBoolean completed = new AtomicBoolean();
@@ -74,10 +75,11 @@ final class ProxyExchange {
     }
 
     /**
-     * The client went away before the request ended: report {@code status}
-     * with the app tag learned only from a Rust answer that already arrived
-     * ({@link #rustAnswered}). A buffered request still pending at the cancel
-     * never teaches the client-selected name.
+     * The WebFlux client went away before the request ended: report
+     * {@code status} with the app tag learned only from a Rust answer that
+     * already arrived ({@link #rustAnswered}, set only on the WebFlux path).
+     * A buffered request still pending at the cancel never teaches the
+     * client-selected name. Only the WebFlux handler calls this.
      */
     void completeCancelled(int status, boolean panicked) {
         reachedRust = rustAnswered;

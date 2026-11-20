@@ -31,8 +31,9 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
  *
  * <p>The streaming JNI entries
  * ({@code Java_..._dispatchFullStreamingWithHeader} and friends in
- * {@code crates/vespera_jni/src/jni_impl.rs}) allocate the Java byte[] chunk
- * buffers via {@code env.new_byte_array(...)} on the <em>JNI entry thread</em>
+ * {@code crates/vespera_jni/src/jni_impl_streaming_header.rs}; the pooled chunk
+ * buffer lives in {@code crates/vespera_jni/src/jni_impl_streaming_buffer.rs})
+ * allocate the Java byte[] chunk buffers via {@code env.new_byte_array(...)} on the <em>JNI entry thread</em>
  * — i.e. the calling thread. Same for {@code set_region} / {@code get_region}
  * on those arrays. Before TLS pooling those landed as fresh JVM allocations
  * per dispatch; after pooling the same {@code GlobalRef<JByteArray>} is
