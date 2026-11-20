@@ -183,6 +183,8 @@ mod tests {
         "Dto"
     )]
     #[case::other_cfg_attr("#[cfg_attr(all(), derive(Debug))] struct Dto { id: i32 }", "Dto")]
+    // A malformed `cfg_attr` (no comma after the predicate) sets nothing.
+    #[case::malformed_cfg_attr("#[cfg_attr(unix)] struct Dto { id: i32 }", "Dto")]
     fn cfg_attr_schema_name_follows_its_predicate(#[case] source: &str, #[case] expected: &str) {
         let dto_struct: syn::ItemStruct = syn::parse_str(source).unwrap();
         assert_eq!(schema_ref_name(None, &dto_struct, "Dto"), expected);
