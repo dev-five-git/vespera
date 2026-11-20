@@ -304,3 +304,29 @@ fn request_only_generic_instance_keeps_its_name() {
         json!(["value"])
     );
 }
+
+/// A field typed by a user `type` alias is not resolved anywhere (no alias
+/// registry reaches the schema or the view code), so `ttl: Ttl` documents as
+/// the unresolved any-value `{}` in both views. The needle pre-filter and
+/// `request_view::type_view_differs` are alias-blind alike, so no `TimedInput`
+/// is built and the request body is `Timed` itself. The request schema is
+/// consistent with the documented `{}`; it is less precise than the direct
+/// `std::time::Duration` field, not wrong.
+#[test]
+fn alias_field_builds_no_request_view_like_its_unresolved_type() {
+    let doc = doc_for(
+        &[("Timed", "pub struct Timed { pub ttl: Ttl }")],
+        &[(
+            "/t",
+            "post_t",
+            "async fn post_t(Json(body): Json<Timed>) -> String",
+        )],
+    );
+    let names = component_names(&doc);
+    assert!(!names.contains(&"TimedInput"), "{names:?}");
+    assert_eq!(
+        doc["components"]["schemas"]["Timed"]["properties"]["ttl"],
+        json!({})
+    );
+    assert_eq!(request_ref(&doc, "/t"), &schema_ref("Timed"));
+}

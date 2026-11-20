@@ -9,7 +9,7 @@ use proc_macro2::TokenStream;
 use quote::ToTokens;
 
 use super::type_utils::resolve_type_with_params;
-use crate::parser::schema::{parameter_traits, substitute_type_with_traits};
+use crate::parser::schema::{parameter_bounds, substitute_checked};
 
 /// One type parameter's value.
 enum Arg {
@@ -25,9 +25,10 @@ enum Arg {
 pub struct Bindings {
     names: Vec<String>,
     args: Vec<Arg>,
-    /// Each parameter's trait bound (`parameter_traits`): qualifies a
-    /// projection of the parameter (`T::Target` → `<Box<Foo> as Deref>::Target`).
-    traits: Vec<Option<syn::Path>>,
+    /// Each parameter's trait bounds (`parameter_bounds`): a projection of the
+    /// parameter is qualified by the bound declaring it (`T::Target` with
+    /// `Clone + Deref` → `<Box<Foo> as Deref>::Target`).
+    bounds: Vec<Vec<syn::Path>>,
 }
 
 impl Bindings {
@@ -43,7 +44,7 @@ impl Bindings {
                 Arg::Default(ty) => substitute(
                     &default(ty, earlier),
                     earlier,
-                    &self.traits[..index],
+                    &self.bounds[..index],
                     &values,
                 ),
             });
@@ -59,7 +60,7 @@ impl Bindings {
     pub fn field_type(&self, raw: &syn::Type, source_module: &[String]) -> TokenStream {
         let values = self.values(|ty, earlier| resolve(ty, source_module, earlier));
         let resolved = resolve(raw, source_module, &self.names);
-        substitute(&resolved, &self.names, &self.traits, &values).into_token_stream()
+        substitute(&resolved, &self.names, &self.bounds, &values).into_token_stream()
     }
 }
 
@@ -85,14 +86,29 @@ fn resolve(ty: &syn::Type, module: &[String], params: &[String]) -> syn::Type {
     syn::parse2(resolve_type_with_params(ty, module, params)).unwrap_or_else(|_| ty.clone())
 }
 
+/// `ty` with the `names` parameters replaced by `concrete`, and each of their
+/// projections qualified by the bound declaring it. Also returns the ambiguity
+/// error of the first projection no bound can qualify.
+fn checked(
+    ty: &syn::Type,
+    names: &[String],
+    bounds: &[Vec<syn::Path>],
+    concrete: &[syn::Type],
+) -> (syn::Type, Option<syn::Error>) {
+    let concrete: Vec<&syn::Type> = concrete.iter().collect();
+    substitute_checked(ty, names, &concrete, bounds)
+}
+
+/// [`checked`] without the error: an ambiguous projection is left as written.
+/// Only called once `instantiate_with_bindings` has rejected every ambiguity
+/// (the ambiguity depends on the source's bounds alone, not on the arguments).
 fn substitute(
     ty: &syn::Type,
     names: &[String],
-    traits: &[Option<syn::Path>],
+    bounds: &[Vec<syn::Path>],
     concrete: &[syn::Type],
 ) -> syn::Type {
-    let concrete: Vec<&syn::Type> = concrete.iter().collect();
-    substitute_type_with_traits(ty, names, &concrete, traits)
+    checked(ty, names, bounds, concrete).0
 }
 
 /// `item` with its type parameters replaced by the type arguments of `ty`'s
@@ -162,13 +178,30 @@ pub fn instantiate_with_bindings(
     let bindings = Bindings {
         names: params.iter().map(|param| param.ident.to_string()).collect(),
         args,
-        traits: parameter_traits(&item.generics),
+        bounds: parameter_bounds(&item.generics),
     };
     let concrete = bindings.values(|ty, _| ty.clone());
+    // An ambiguous projection (`T::Item` under two bounds declaring `Item`) is
+    // reported here, spanned at the call-site type. It depends only on the
+    // bounds, so checking every field type and default covers every later
+    // substitution.
+    let defaults = bindings.args.iter().filter_map(|arg| match arg {
+        Arg::Default(ty) => Some(ty),
+        Arg::CallSite(_) => None,
+    });
+    let ambiguous = item
+        .fields
+        .iter()
+        .map(|field| &field.ty)
+        .chain(defaults)
+        .find_map(|ty| checked(ty, &bindings.names, &bindings.bounds, &concrete).1);
+    if let Some(ambiguous) = ambiguous {
+        return Err(error(ambiguous.to_string()));
+    }
     let mut instance = item.clone();
     instance.generics = syn::Generics::default();
     for field in &mut instance.fields {
-        field.ty = substitute(&field.ty, &bindings.names, &bindings.traits, &concrete);
+        field.ty = substitute(&field.ty, &bindings.names, &bindings.bounds, &concrete);
     }
     Ok((instance, Some(bindings)))
 }
@@ -259,6 +292,12 @@ mod tests {
         "P<User>",
         "pub struct P { pub item : User , pub meta : Vec < User > }"
     )]
+    // A projection is qualified by the bound declaring it, not the first one.
+    #[case::projection_qualified_by_declaring_bound(
+        "pub struct Wrap<T: Clone + Deref> { pub x: T::Target }",
+        "Wrap<Box<Foo>>",
+        "pub struct Wrap { pub x : < Box < Foo > as Deref > :: Target }"
+    )]
     fn instantiates(#[case] item: &str, #[case] ty: &str, #[case] expected: &str) {
         let item: syn::ItemStruct = syn::parse_str(item).unwrap();
         let ty: syn::Type = syn::parse_str(ty).unwrap();
@@ -307,6 +346,11 @@ mod tests {
         "pub struct S<T> { pub a: T }",
         "S<3>",
         "schema!: only type arguments are supported for `S`"
+    )]
+    #[case::ambiguous_projection(
+        "pub struct W<T: Iterator + IntoIterator> { pub x: T::Item }",
+        "W<Vec<u8>>",
+        "schema!: `T::Item` is ambiguous: `T` is bounded by `Iterator + IntoIterator`, so write the qualified form `<T as Trait>::Item` naming the trait"
     )]
     fn rejects(#[case] item: &str, #[case] ty: &str, #[case] expected: &str) {
         let item: syn::ItemStruct = syn::parse_str(item).unwrap();

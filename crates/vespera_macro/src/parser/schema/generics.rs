@@ -64,18 +64,6 @@ pub fn parameter_bounds(generics: &syn::Generics) -> Vec<Vec<syn::Path>> {
         .collect()
 }
 
-/// The first trait bound each type parameter of `generics` carries (see
-/// [`parameter_bounds`]); `None` when it has none. Only right when the
-/// parameter has at most one bound, or a projection names no other bound:
-/// [`substitute_type_with_traits`] takes one entry per parameter, so a
-/// projection that several bounds could declare needs [`parameter_bounds`].
-pub fn parameter_traits(generics: &syn::Generics) -> Vec<Option<syn::Path>> {
-    parameter_bounds(generics)
-        .into_iter()
-        .map(|bounds| bounds.into_iter().next())
-        .collect()
-}
-
 /// The associated type names of the std traits a projection of a type
 /// parameter is looked up in (`T::Target` with `Deref`). Traits not listed here
 /// declare no projection this table knows.
@@ -402,7 +390,8 @@ impl Subst<'_> {
 /// type parameters (like `T`, `U`) with their corresponding concrete types.
 ///
 /// A projection of a parameter (`T::Out`) is left as written: its trait is
-/// unknown here. Use [`substitute_type_with_traits`] to qualify it.
+/// unknown here. Use [`substitute_checked`] with [`parameter_bounds`] to
+/// qualify it.
 ///
 /// # Arguments
 /// * `ty` - The type to transform
@@ -413,14 +402,17 @@ impl Subst<'_> {
 /// Given `Vec<T>` with params `["T"]` and concrete types `[String]`,
 /// returns `Vec<String>`.
 pub fn substitute_type(ty: &Type, generic_params: &[String], concrete_types: &[&Type]) -> Type {
-    substitute_type_with_traits(ty, generic_params, concrete_types, &[])
+    substitute_checked(ty, generic_params, concrete_types, &[]).0
 }
 
 /// Substitution of `ty` with `bounds` (one list per parameter, from
 /// [`parameter_bounds`]) qualifying each projection of a parameter by the
-/// bound that declares it, plus the first ambiguous projection's error (see
-/// [`bound_of_projection`]; an ambiguous projection is left as written).
-fn substitute_checked(
+/// bound that declares it: `T::Target` with `T` = `Box<Foo>` and `Deref`
+/// among its bounds becomes `<Box<Foo> as Deref>::Target`. A projection whose
+/// parameter has no bound is left as written. Also returns the first
+/// ambiguous projection's error (see [`bound_of_projection`]); an ambiguous
+/// projection is left as written.
+pub fn substitute_checked(
     ty: &Type,
     generic_params: &[String],
     concrete_types: &[&Type],
@@ -436,24 +428,6 @@ fn substitute_checked(
     (ty, subst.ambiguous.into_inner())
 }
 
-/// [`substitute_type`], with `traits` (one entry per parameter, from
-/// [`parameter_traits`]) qualifying a projection of a parameter: `T::Out`
-/// with `T` = `Box<Foo>` and trait `Deref` becomes `<Box<Foo> as Deref>::Out`.
-/// A projection whose parameter has no trait is left as written. One trait
-/// per parameter is never ambiguous, so no error can arise here.
-pub fn substitute_type_with_traits(
-    ty: &Type,
-    generic_params: &[String],
-    concrete_types: &[&Type],
-    traits: &[Option<syn::Path>],
-) -> Type {
-    let bounds: Vec<Vec<syn::Path>> = traits
-        .iter()
-        .map(|trait_path| trait_path.iter().cloned().collect())
-        .collect();
-    substitute_checked(ty, generic_params, concrete_types, &bounds).0
-}
-
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
@@ -466,7 +440,7 @@ mod tests {
 
     /// A projection and an associated-type binding carry the parameter too:
     /// `<T as Tr>::Out`, `Source<Item = T>`, and `T::Out` (the parameter's
-    /// trait qualifies it, see [`parameter_traits`]).
+    /// trait qualifies it, see [`parameter_bounds`]).
     #[rstest]
     #[case::qualified_self("<T as Tr>::Out", "Foo", None, "<Foo as Tr>::Out")]
     #[case::assoc_binding("Source<Item = T>", "Foo", None, "Source<Item = Foo>")]
@@ -498,16 +472,21 @@ mod tests {
     ) {
         let ty: Type = syn::parse_str(ty).unwrap();
         let concrete: Type = syn::parse_str(concrete).unwrap();
-        let traits: Vec<Option<syn::Path>> =
-            vec![trait_path.map(|path| syn::parse_str(path).unwrap())];
-        let substituted =
-            substitute_type_with_traits(&ty, &["T".to_string()], &[&concrete], &traits);
+        let bounds: Vec<Vec<syn::Path>> = vec![
+            trait_path
+                .map(|path| syn::parse_str(path).unwrap())
+                .into_iter()
+                .collect(),
+        ];
+        let (substituted, error) =
+            substitute_checked(&ty, &["T".to_string()], &[&concrete], &bounds);
+        assert!(error.is_none(), "{error:?}");
         let expected: Type = syn::parse_str(expected).unwrap();
         assert_eq!(tokens(&substituted), tokens(&expected));
     }
 
     #[test]
-    fn parameter_traits_reads_inline_and_where_bounds() {
+    fn parameter_bounds_reads_inline_and_where_bounds() {
         // A lifetime bound before the trait, a `?Sized` bound, and a where
         // predicate on a non-parameter type are skipped.
         let item: syn::ItemStruct = syn::parse_quote! {
@@ -520,17 +499,17 @@ mod tests {
                 a: A,
             }
         };
-        let traits: Vec<Option<String>> = parameter_traits(&item.generics)
+        let bounds: Vec<Vec<String>> = parameter_bounds(&item.generics)
             .iter()
-            .map(|path| path.as_ref().map(tokens))
+            .map(|bounds| bounds.iter().map(tokens).collect())
             .collect();
         assert_eq!(
-            traits,
+            bounds,
             vec![
-                Some("Iterator".to_string()),
-                Some("std :: ops :: Deref".to_string()),
-                None,
-                Some("Clone".to_string()),
+                vec!["Iterator".to_string()],
+                vec!["std :: ops :: Deref".to_string()],
+                vec![],
+                vec!["Clone".to_string(), "Send".to_string()],
             ]
         );
     }

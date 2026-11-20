@@ -146,11 +146,12 @@ fn module_steps(folder_path: &Path, segments: &[String]) -> Vec<ModuleStep> {
     let mut index = 0;
     while index < segments.len() {
         let remaining = &segments[index..];
-        let mut declared = Vec::new();
-        for declarer in [parent.join("mod.rs"), sibling_rs_file(&parent)] {
+        let mut declared: Vec<LevelMod> = Vec::new();
+        for (declarer, declarer_dir) in declarers_of(&parent) {
             declared.extend(
                 declared_mods(&declarer)
                     .into_iter()
+                    .filter_map(|module| module.loaded_under(&declarer_dir, &parent))
                     .filter(|module| remaining.starts_with(&module.segments)),
             );
         }
@@ -159,7 +160,7 @@ fn module_steps(folder_path: &Path, segments: &[String]) -> Vec<ModuleStep> {
             .map(|module| module.segments.len())
             .max()
             .unwrap_or(1);
-        let group: Vec<DeclaredMod> = declared
+        let group: Vec<LevelMod> = declared
             .into_iter()
             .filter(|module| module.segments.len() == consumed)
             .collect();
@@ -214,10 +215,32 @@ pub(super) fn declared_module_segments(folder_path: &Path, segments: &[String]) 
         .collect()
 }
 
-/// One `mod` a declarer makes: the route-file segments it loads (relative to
-/// the declarer's directory), its Rust name and its `#[cfg(..)]` predicates.
+/// The declarers of the modules one level below `parent`, each with the
+/// directory its `#[path]` attributes are relative to. `parent/mod.rs`
+/// declares them from `parent`; `parent.rs` (the non-`mod.rs` layout) sits
+/// beside `parent`, so rustc resolves its `#[path]`s from `parent`'s parent.
+fn declarers_of(parent: &Path) -> [(std::path::PathBuf, std::path::PathBuf); 2] {
+    let grandparent = parent.parent().unwrap_or(parent);
+    [
+        (parent.join("mod.rs"), parent.to_path_buf()),
+        (sibling_rs_file(parent), grandparent.to_path_buf()),
+    ]
+}
+
+/// One `mod` a declarer makes: the Rust name it is declared under, its
+/// `#[path]` literal (`None` without one) and its `#[cfg(..)]` predicates.
+/// [`DeclaredMod::loaded_under`] turns it into the route-file segments it
+/// loads.
 #[derive(Clone)]
 struct DeclaredMod {
+    name: String,
+    path: Option<String>,
+    cfgs: Vec<String>,
+}
+
+/// A declared `mod` placed at its level: `segments` are the route-file
+/// segments it loads, relative to the level's folder.
+struct LevelMod {
     segments: Vec<String>,
     name: String,
     cfgs: Vec<String>,
@@ -238,10 +261,10 @@ fn declared_mods(declarer: &Path) -> Vec<DeclaredMod> {
                         .iter()
                         .filter_map(|item| match item {
                             Item::Mod(module) => Some(DeclaredMod {
-                                segments: declared_segments(module),
                                 name: crate::parser::strip_raw_prefix_owned(
                                     module.ident.to_string(),
                                 ),
+                                path: declared_path(module),
                                 cfgs: cfg_predicates(&module.attrs),
                             }),
                             _ => None,
@@ -255,19 +278,50 @@ fn declared_mods(declarer: &Path) -> Vec<DeclaredMod> {
     .unwrap_or_default()
 }
 
-/// The route-file segments a `mod` declaration loads, relative to its
-/// declarer's directory. A `#[path = ".."]` module loads the file its path
-/// names, split into its directories (`#[path = "beside/support.rs"]` loads
-/// `["beside", "support"]`; `#[path = "x/admin/mod.rs"]` loads
-/// `["x", "admin"]`), otherwise the module's own (unraw) name. `pub mod
-/// r#type;` declares the `type` segment.
-fn declared_segments(module: &syn::ItemMod) -> Vec<String> {
-    let own = || {
-        vec![crate::parser::strip_raw_prefix_owned(
-            module.ident.to_string(),
-        )]
-    };
-    let path = module
+impl DeclaredMod {
+    /// The route-file segments this `mod` loads relative to `parent`, the
+    /// folder of the level it is declared on, or `None` when it loads a file
+    /// outside `parent` (never a walked route file). An unnamed module
+    /// (`#[path = ""]` or no literal path) loads its own (unraw) name. A
+    /// `#[path]` is relative to `declarer_dir`, the directory of the declaring
+    /// file; `pub mod r#type;` declares the `type` segment.
+    fn loaded_under(self, declarer_dir: &Path, parent: &Path) -> Option<LevelMod> {
+        let own = || vec![self.name.clone()];
+        let segments = match self.path.as_deref() {
+            None | Some("") => own(),
+            Some(path) => {
+                let target = lexical_normalize(&declarer_dir.join(path));
+                let relative = target.strip_prefix(parent).ok()?;
+                let segments = file_to_segments(relative, Path::new(""));
+                if segments.is_empty() { own() } else { segments }
+            }
+        };
+        Some(LevelMod {
+            segments,
+            name: self.name,
+            cfgs: self.cfgs,
+        })
+    }
+}
+
+/// `path` with its `.` and `..` components folded away (no filesystem access).
+fn lexical_normalize(path: &Path) -> std::path::PathBuf {
+    let mut folded = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                folded.pop();
+            }
+            other => folded.push(other),
+        }
+    }
+    folded
+}
+
+/// The literal `#[path = ".."]` of a `mod` declaration, if it has one.
+fn declared_path(module: &syn::ItemMod) -> Option<String> {
+    module
         .attrs
         .iter()
         .find(|attr| attr.path().is_ident("path"))
@@ -278,15 +332,7 @@ fn declared_segments(module: &syn::ItemMod) -> Vec<String> {
                 ..
             }) => Some(value.value()),
             _ => None,
-        });
-    let Some(path) = path else {
-        return own();
-    };
-    let segments: Vec<String> = file_to_segments(Path::new(&path), Path::new(""))
-        .into_iter()
-        .filter(|segment| segment != ".")
-        .collect();
-    if segments.is_empty() { own() } else { segments }
+        })
 }
 
 /// `<dir>.rs`: the file declaring the module `dir`, appended (not
@@ -621,6 +667,68 @@ mod tests {
         );
         assert_eq!(
             module_cfg_predicates(&routes, &segments[..1]),
+            Vec::<String>::new()
+        );
+    }
+
+    /// A `#[path]` on a `mod` in `src/routes.rs` (not `routes/mod.rs`) is
+    /// relative to `src/`, the directory of that file: `routes/admin_impl.rs`
+    /// is the route file `src/routes/admin_impl.rs`, loaded as `routes::admin`.
+    #[test]
+    fn path_attribute_in_sibling_file_is_relative_to_its_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let routes = dir.path().join("routes");
+        std::fs::create_dir_all(&routes).unwrap();
+        std::fs::write(
+            dir.path().join("routes.rs"),
+            "#[cfg(feature = \"admin\")] #[path = \"routes/admin_impl.rs\"] mod admin;",
+        )
+        .unwrap();
+        file_cache::bump_epoch();
+        let segments = ["admin_impl".to_string()];
+        assert_eq!(declared_module_segments(&routes, &segments), ["admin"]);
+        assert_eq!(
+            module_cfg_predicates(&routes, &segments),
+            ["feature = \"admin\""]
+        );
+    }
+
+    /// `#[path]` components fold lexically: `routes/../routes/x.rs` from
+    /// `src/` is `src/routes/x.rs`.
+    #[test]
+    fn path_attribute_in_sibling_file_folds_parent_components() {
+        let dir = tempfile::tempdir().unwrap();
+        let routes = dir.path().join("routes");
+        std::fs::create_dir_all(&routes).unwrap();
+        std::fs::write(
+            dir.path().join("routes.rs"),
+            "#[cfg(unix)] #[path = \"routes/../routes/x.rs\"] mod m;",
+        )
+        .unwrap();
+        file_cache::bump_epoch();
+        let segments = ["x".to_string()];
+        assert_eq!(declared_module_segments(&routes, &segments), ["m"]);
+        assert_eq!(module_cfg_predicates(&routes, &segments), ["unix"]);
+    }
+
+    /// `#[path = "x.rs"]` in `src/routes.rs` loads `src/x.rs`, outside the
+    /// route folder: it never gates the walked `routes/x.rs`.
+    #[test]
+    fn path_attribute_in_sibling_file_outside_folder_gates_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let routes = dir.path().join("routes");
+        std::fs::create_dir_all(&routes).unwrap();
+        std::fs::write(routes.join("x.rs"), "").unwrap();
+        std::fs::write(
+            dir.path().join("routes.rs"),
+            "#[cfg(unix)] #[path = \"x.rs\"] mod m;",
+        )
+        .unwrap();
+        file_cache::bump_epoch();
+        let segments = ["x".to_string()];
+        assert_eq!(declared_module_segments(&routes, &segments), ["x"]);
+        assert_eq!(
+            module_cfg_predicates(&routes, &segments),
             Vec::<String>::new()
         );
     }
