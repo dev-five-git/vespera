@@ -1,4 +1,3 @@
-import { afterAll, describe, expect, it } from 'bun:test'
 import {
   mkdirSync,
   mkdtempSync,
@@ -8,6 +7,8 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+import { afterAll, describe, expect, it } from 'bun:test'
 
 import {
   REPO_VERSION_PATTERNS,
@@ -167,7 +168,11 @@ describe('rewritableFile', () => {
       return false
     }
   }
-  const canLinkFile = canLink(join(outside, 'secret.mdx'), undefined, 'probe-file')
+  const canLinkFile = canLink(
+    join(outside, 'secret.mdx'),
+    undefined,
+    'probe-file',
+  )
   const canLinkDir = canLink(outside, 'junction', 'probe-dir')
 
   it('accepts a regular file under the root', () => {
@@ -176,19 +181,25 @@ describe('rewritableFile', () => {
     )
   })
 
-  it.skipIf(!canLinkFile)('refuses a symlink to a file outside the root', () => {
-    symlinkSync(join(outside, 'secret.mdx'), join(root, 'docs', 'link.mdx'))
-    expect(() => rewritableFile(root, 'docs/link.mdx')).toThrow(
-      'is a symbolic link',
-    )
-  })
+  it.skipIf(!canLinkFile)(
+    'refuses a symlink to a file outside the root',
+    () => {
+      symlinkSync(join(outside, 'secret.mdx'), join(root, 'docs', 'link.mdx'))
+      expect(() => rewritableFile(root, 'docs/link.mdx')).toThrow(
+        'is a symbolic link',
+      )
+    },
+  )
 
-  it.skipIf(!canLinkDir)('refuses a file reached through a linked directory', () => {
-    symlinkSync(outside, join(root, 'linkdir'), 'junction')
-    expect(() => rewritableFile(root, 'linkdir/x.mdx')).toThrow(
-      'resolves outside the checkout',
-    )
-  })
+  it.skipIf(!canLinkDir)(
+    'refuses a file reached through a linked directory',
+    () => {
+      symlinkSync(outside, join(root, 'linkdir'), 'junction')
+      expect(() => rewritableFile(root, 'linkdir/x.mdx')).toThrow(
+        'resolves outside the checkout',
+      )
+    },
+  )
 
   afterAll(() => {
     rmSync(sandbox, { recursive: true, force: true })

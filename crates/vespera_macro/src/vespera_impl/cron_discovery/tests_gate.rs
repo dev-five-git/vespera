@@ -23,6 +23,9 @@ fn fold_parent_dirs_drops_dots_and_pops_before_the_child() {
         Path::new("/").join("b.rs")
     );
     assert_eq!(fold_parent_dirs(Path::new("/./a.rs")), Path::new("/a.rs"));
+    // `components()` keeps a `.` only in leading position (and under a
+    // verbatim prefix on Windows), so this is the portable `CurDir` case.
+    assert_eq!(fold_parent_dirs(Path::new("./a.rs")), Path::new("a.rs"));
 }
 
 /// A `cfg_attr(p, cron(..))` the scan cannot decide keeps its `p` as the job's

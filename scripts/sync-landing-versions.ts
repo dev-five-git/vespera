@@ -112,7 +112,9 @@ export function rewritableFile(root: string, path: string): string {
   const rootReal = realpathSync(root)
   const real = realpathSync(full)
   if (!real.startsWith(rootReal + sep)) {
-    throw new Error(`${path} resolves outside the checkout; refusing to rewrite it`)
+    throw new Error(
+      `${path} resolves outside the checkout; refusing to rewrite it`,
+    )
   }
   return full
 }
