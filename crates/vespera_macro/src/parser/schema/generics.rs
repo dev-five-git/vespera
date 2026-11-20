@@ -3,6 +3,9 @@
 //! This module handles the substitution of generic type parameters with concrete types
 //! when generating schemas for generic structs like `Wrapper<T>`.
 
+use std::cell::RefCell;
+
+use quote::ToTokens;
 use syn::{Type, punctuated::Punctuated};
 
 /// The index of the generic parameter `segment` names: `T` with no arguments.
@@ -20,15 +23,16 @@ fn is_parameter_type(ty: &Type, ident: &syn::Ident) -> bool {
     matches!(ty, Type::Path(type_path) if type_path.qself.is_none() && type_path.path.is_ident(ident))
 }
 
-/// The trait each type parameter of `generics` is bounded by: its first
-/// non-`?` trait bound, inline (`T: Deref`) or in a `where` clause (`where
-/// T: Deref`). One entry per type parameter, in declaration order; `None`
-/// when it has no trait bound.
+/// The trait bounds each type parameter of `generics` carries: every non-`?`
+/// trait bound, inline (`T: Clone + Deref`) or in a `where` clause (`where
+/// T: Deref`), in that order. One entry per type parameter, in declaration
+/// order; empty when it has no trait bound.
 ///
-/// A projection of a parameter (`T::Target`) names its trait through this:
-/// [`substitute_type_with_traits`] writes it as `<Concrete as Deref>::Target`,
-/// the only form that names an associated type of a concrete type.
-pub fn parameter_traits(generics: &syn::Generics) -> Vec<Option<syn::Path>> {
+/// A projection of a parameter (`T::Target`) names its trait through these:
+/// the substitution picks the bound that declares the projection and writes it
+/// as `<Concrete as Deref>::Target`, the only form that names an associated
+/// type of a concrete type.
+pub fn parameter_bounds(generics: &syn::Generics) -> Vec<Vec<syn::Path>> {
     generics
         .type_params()
         .map(|param| {
@@ -49,26 +53,139 @@ pub fn parameter_traits(generics: &syn::Generics) -> Vec<Option<syn::Path>> {
                 .bounds
                 .iter()
                 .chain(clause_bounds)
-                .find_map(|bound| match bound {
+                .filter_map(|bound| match bound {
                     syn::TypeParamBound::Trait(trait_bound) if trait_bound.maybe.is_none() => {
                         Some(trait_bound.path.clone())
                     }
                     _ => None,
                 })
+                .collect()
         })
         .collect()
 }
 
+/// The first trait bound each type parameter of `generics` carries (see
+/// [`parameter_bounds`]); `None` when it has none. Only right when the
+/// parameter has at most one bound, or a projection names no other bound:
+/// [`substitute_type_with_traits`] takes one entry per parameter, so a
+/// projection that several bounds could declare needs [`parameter_bounds`].
+pub fn parameter_traits(generics: &syn::Generics) -> Vec<Option<syn::Path>> {
+    parameter_bounds(generics)
+        .into_iter()
+        .map(|bounds| bounds.into_iter().next())
+        .collect()
+}
+
+/// The associated type names of the std traits a projection of a type
+/// parameter is looked up in (`T::Target` with `Deref`). Traits not listed here
+/// declare no projection this table knows.
+const KNOWN_PROJECTIONS: &[(&str, &[&str])] = &[
+    ("Deref", &["Target"]),
+    ("DerefMut", &["Target"]),
+    ("Iterator", &["Item"]),
+    ("IntoIterator", &["Item", "IntoIter"]),
+    ("Future", &["Output"]),
+    ("IntoFuture", &["Output", "IntoFuture"]),
+    ("FnOnce", &["Output"]),
+    ("FnMut", &["Output"]),
+    ("Fn", &["Output"]),
+    ("ToOwned", &["Owned"]),
+    ("FromStr", &["Err"]),
+    ("TryFrom", &["Error"]),
+    ("TryInto", &["Error"]),
+    ("Index", &["Output"]),
+    ("Add", &["Output"]),
+    ("Sub", &["Output"]),
+    ("Mul", &["Output"]),
+    ("Div", &["Output"]),
+    ("Rem", &["Output"]),
+    ("Neg", &["Output"]),
+    ("Not", &["Output"]),
+    ("BitAnd", &["Output"]),
+    ("BitOr", &["Output"]),
+    ("BitXor", &["Output"]),
+    ("Shl", &["Output"]),
+    ("Shr", &["Output"]),
+];
+
+/// Whether `bound` is a std trait of [`KNOWN_PROJECTIONS`] declaring the
+/// associated type `projection`.
+fn declares_projection(bound: &syn::Path, projection: &syn::Ident) -> bool {
+    bound.segments.last().is_some_and(|trait_segment| {
+        KNOWN_PROJECTIONS.iter().any(|(name, projections)| {
+            trait_segment.ident == *name && projections.iter().any(|p| projection == *p)
+        })
+    })
+}
+
+/// The bound a projection `param::projection` is qualified by, out of the
+/// `bounds` of `param`: the only bound when there is one, else the only bound
+/// declaring `projection` (see [`KNOWN_PROJECTIONS`]). `Ok(None)` without any
+/// bound; an error when several bounds could declare it, asking for the
+/// qualified form.
+fn bound_of_projection<'a>(
+    bounds: &'a [syn::Path],
+    param: &syn::Ident,
+    projection: &syn::Ident,
+) -> syn::Result<Option<&'a syn::Path>> {
+    match bounds {
+        [] => Ok(None),
+        [only] => Ok(Some(only)),
+        _ => {
+            let mut declaring = bounds
+                .iter()
+                .filter(|bound| declares_projection(bound, projection));
+            let first = declaring.next();
+            if let (Some(bound), None) = (first, declaring.next()) {
+                return Ok(Some(bound));
+            }
+            let traits = bounds
+                .iter()
+                .map(|bound| bound.to_token_stream().to_string())
+                .collect::<Vec<_>>()
+                .join(" + ");
+            Err(syn::Error::new(
+                projection.span(),
+                format!(
+                    "`{param}::{projection}` is ambiguous: `{param}` is bounded by \
+                     `{traits}`, so write the qualified form \
+                     `<{param} as Trait>::{projection}` naming the trait"
+                ),
+            ))
+        }
+    }
+}
+
 /// One substitution: the parameters `params` replaced by `concrete` (same
-/// order), with `traits` (one entry per parameter, see [`parameter_traits`])
+/// order), with `bounds` (one entry per parameter, see [`parameter_bounds`])
 /// resolving a projection of a parameter.
 struct Subst<'a> {
     params: &'a [String],
     concrete: &'a [&'a Type],
-    traits: &'a [Option<syn::Path>],
+    bounds: &'a [Vec<syn::Path>],
+    /// The first projection no bound could be picked for (see
+    /// [`bound_of_projection`]); the projection is left as written.
+    ambiguous: RefCell<Option<syn::Error>>,
 }
 
 impl Subst<'_> {
+    /// The trait a projection `param::projection` is qualified by.
+    fn projection_trait(
+        &self,
+        index: usize,
+        param: &syn::Ident,
+        projection: &syn::Ident,
+    ) -> Option<&syn::Path> {
+        let bounds = self.bounds.get(index)?;
+        match bound_of_projection(bounds, param, projection) {
+            Ok(bound) => bound,
+            Err(error) => {
+                self.ambiguous.borrow_mut().get_or_insert(error);
+                None
+            }
+        }
+    }
+
     /// Walks one `syn::Type` shape by shape.
     fn ty(&self, ty: &Type) -> Type {
         match ty {
@@ -149,7 +266,8 @@ impl Subst<'_> {
             && type_path.qself.is_none()
             && let Some(index) = parameter_index(&path.segments[0], self.params)
             && let Some(concrete) = self.concrete.get(index)
-            && let Some(Some(trait_path)) = self.traits.get(index)
+            && let Some(trait_path) =
+                self.projection_trait(index, &path.segments[0].ident, &path.segments[1].ident)
         {
             // `<Concrete as Trait>::Out`: the trait's segments, then the
             // projection's own (`Out`, `Out::Inner`).
@@ -298,22 +416,42 @@ pub fn substitute_type(ty: &Type, generic_params: &[String], concrete_types: &[&
     substitute_type_with_traits(ty, generic_params, concrete_types, &[])
 }
 
+/// Substitution of `ty` with `bounds` (one list per parameter, from
+/// [`parameter_bounds`]) qualifying each projection of a parameter by the
+/// bound that declares it, plus the first ambiguous projection's error (see
+/// [`bound_of_projection`]; an ambiguous projection is left as written).
+fn substitute_checked(
+    ty: &Type,
+    generic_params: &[String],
+    concrete_types: &[&Type],
+    bounds: &[Vec<syn::Path>],
+) -> (Type, Option<syn::Error>) {
+    let subst = Subst {
+        params: generic_params,
+        concrete: concrete_types,
+        bounds,
+        ambiguous: RefCell::new(None),
+    };
+    let ty = subst.ty(ty);
+    (ty, subst.ambiguous.into_inner())
+}
+
 /// [`substitute_type`], with `traits` (one entry per parameter, from
 /// [`parameter_traits`]) qualifying a projection of a parameter: `T::Out`
 /// with `T` = `Box<Foo>` and trait `Deref` becomes `<Box<Foo> as Deref>::Out`.
-/// A projection whose parameter has no trait is left as written.
+/// A projection whose parameter has no trait is left as written. One trait
+/// per parameter is never ambiguous, so no error can arise here.
 pub fn substitute_type_with_traits(
     ty: &Type,
     generic_params: &[String],
     concrete_types: &[&Type],
     traits: &[Option<syn::Path>],
 ) -> Type {
-    Subst {
-        params: generic_params,
-        concrete: concrete_types,
-        traits,
-    }
-    .ty(ty)
+    let bounds: Vec<Vec<syn::Path>> = traits
+        .iter()
+        .map(|trait_path| trait_path.iter().cloned().collect())
+        .collect();
+    substitute_checked(ty, generic_params, concrete_types, &bounds).0
 }
 
 #[cfg(test)]
@@ -394,6 +532,96 @@ mod tests {
                 None,
                 Some("Clone".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn parameter_bounds_keeps_every_trait_bound() {
+        let item: syn::ItemStruct = syn::parse_quote! {
+            struct S<T: 'static + Clone + Deref + ?Sized> where T: Iterator { a: T }
+        };
+        let bounds: Vec<Vec<String>> = parameter_bounds(&item.generics)
+            .iter()
+            .map(|bounds| bounds.iter().map(tokens).collect())
+            .collect();
+        assert_eq!(
+            bounds,
+            vec![vec![
+                "Clone".to_string(),
+                "Deref".to_string(),
+                "Iterator".to_string(),
+            ]]
+        );
+    }
+
+    /// A projection with several bounds on its parameter is qualified by the
+    /// one bound declaring it (`T::Target` by `Deref` next to `Clone`, `T::Item`
+    /// by `Iterator` from a `where` clause).
+    #[rstest]
+    #[case::deref_next_to_clone(
+        "struct Wrap<T: Clone + Deref> { x: T::Target }",
+        "T::Target",
+        "Box<Foo>",
+        "<Box<Foo> as Deref>::Target"
+    )]
+    #[case::iterator_from_where_clause(
+        "struct Wrap<T: Clone> where T: Iterator { x: T::Item }",
+        "T::Item",
+        "Vec<u8>",
+        "<Vec<u8> as Iterator>::Item"
+    )]
+    #[case::second_bound_declares(
+        "struct Wrap<T: Clone + Iterator + Send> { x: T::Item }",
+        "T::Item",
+        "Vec<u8>",
+        "<Vec<u8> as Iterator>::Item"
+    )]
+    fn projection_is_qualified_by_the_bound_declaring_it(
+        #[case] src: &str,
+        #[case] projection: &str,
+        #[case] concrete: &str,
+        #[case] expected: &str,
+    ) {
+        let item: syn::ItemStruct = syn::parse_str(src).unwrap();
+        let ty: Type = syn::parse_str(projection).unwrap();
+        let concrete: Type = syn::parse_str(concrete).unwrap();
+        let (substituted, error) = substitute_checked(
+            &ty,
+            &["T".to_string()],
+            &[&concrete],
+            &parameter_bounds(&item.generics),
+        );
+        assert!(error.is_none(), "{error:?}");
+        let expected: Type = syn::parse_str(expected).unwrap();
+        assert_eq!(tokens(&substituted), tokens(&expected));
+    }
+
+    /// A projection that no bound declares, or that several bounds could
+    /// declare, is an error asking for the qualified form, spanned at the
+    /// projection; the projection itself is not guessed at.
+    #[rstest]
+    #[case::no_bound_declares("struct Wrap<T: Clone + Deref> { x: T::Out }", "T::Out")]
+    #[case::several_declare("struct Wrap<T: Iterator + IntoIterator> { x: T::Item }", "T::Item")]
+    fn ambiguous_projection_asks_for_the_qualified_form(
+        #[case] src: &str,
+        #[case] projection: &str,
+    ) {
+        let item: syn::ItemStruct = syn::parse_str(src).unwrap();
+        let ty: Type = syn::parse_str(projection).unwrap();
+        let concrete: Type = syn::parse_str("Foo").unwrap();
+        let (substituted, error) = substitute_checked(
+            &ty,
+            &["T".to_string()],
+            &[&concrete],
+            &parameter_bounds(&item.generics),
+        );
+        // The projection is left as written, and the error names the qualified form.
+        assert_eq!(tokens(&substituted), tokens(&ty));
+        let error = error.expect(projection).to_string();
+        let name = projection.rsplit("::").next().unwrap();
+        assert!(
+            error.contains("ambiguous") && error.contains(&format!("<T as Trait>::{name}")),
+            "{error}"
         );
     }
 

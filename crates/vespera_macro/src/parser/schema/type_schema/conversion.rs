@@ -10,7 +10,7 @@ use std::{
     hash::Hash,
 };
 
-use syn::Type;
+use syn::{Type, ext::IdentExt};
 use vespera_core::schema::{AdditionalProperties, Reference, Schema, SchemaRef, SchemaType};
 
 /// Maximum recursion depth for type-to-schema conversion.
@@ -251,7 +251,7 @@ fn parse_type_impl(
             let Some(segment) = path.segments.last() else {
                 return SchemaRef::Inline(Box::default());
             };
-            let ident_str = segment.ident.to_string();
+            let ident_str = segment.ident.unraw().to_string();
             // A user `#[derive(Schema)]` type named like a builtin (`Date`,
             // `Decimal`, `StatusCode`, `Ipv4Addr`, ...) keeps its `$ref`,
             // unless the path is qualified with the external crate

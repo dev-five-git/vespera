@@ -32,7 +32,7 @@ use std::{
 
 use proc_macro2::{TokenStream, TokenTree};
 use quote::ToTokens;
-use syn::Type;
+use syn::{Type, ext::IdentExt};
 use vespera_core::schema::{Reference, Schema, SchemaRef};
 
 use crate::parser::schema::substitute_type;
@@ -198,7 +198,7 @@ fn path_spelling(path: &syn::Path, component: &dyn Fn(&syn::Path) -> Option<Stri
     path.segments
         .iter()
         .skip(skip)
-        .map(|segment| escape_name(&segment.ident.to_string()))
+        .map(|segment| escape_name(&segment.ident.unraw().to_string()))
         .collect::<Vec<_>>()
         .join(".p")
 }
@@ -332,8 +332,8 @@ pub fn with_definition<R>(
             syn::parse_quote!(#ident)
         })
         .collect();
-    let component =
-        crate::schema_impl::extract_schema_name_attr(attrs).unwrap_or_else(|| ident.to_string());
+    let component = crate::schema_impl::extract_schema_name_attr(attrs)
+        .unwrap_or_else(|| ident.unraw().to_string());
     // A self-reference may omit a defaulted parameter (`Tree<T>` inside
     // `Tree<T, M = Meta>` means `Tree<T, Meta>`): it names the same component
     // as the parameters spelled out (`Tree<T, M>`). The same holds for a
@@ -442,7 +442,7 @@ fn token_identifiers(tokens: TokenStream, idents: &mut BTreeSet<String>) {
     for tree in tokens {
         match tree {
             TokenTree::Ident(ident) => {
-                idents.insert(ident.to_string());
+                idents.insert(ident.unraw().to_string());
             }
             TokenTree::Group(group) => token_identifiers(group.stream(), idents),
             TokenTree::Punct(_) | TokenTree::Literal(_) => {}

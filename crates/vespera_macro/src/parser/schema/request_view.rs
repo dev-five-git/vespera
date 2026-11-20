@@ -576,9 +576,14 @@ impl FlatKinds {
 
     fn type_kind(&self, ty: &syn::Type) -> Option<FlatKind> {
         // serde reads an `Option` through the buffer too (`visit_some` on the
-        // flat deserializer), so `Option<X>` reads what `X` reads.
+        // flat deserializer), so `Option<X>` reads what `X` reads. Wrappers and
+        // options nest (`Box<Option<Box<X>>>`, `Option<Option<X>>`), so both
+        // are peeled to a fixpoint.
+        let mut ty = ty;
+        while let Some(inner) = option_inner(peel(ty)) {
+            ty = inner;
+        }
         let ty = peel(ty);
-        let ty = option_inner(ty).unwrap_or(ty);
         if is_map_type(ty) {
             return Some(FlatKind::Map);
         }
