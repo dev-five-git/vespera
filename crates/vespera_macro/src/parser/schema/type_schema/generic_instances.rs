@@ -27,9 +27,11 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
 };
 
+use proc_macro2::{TokenStream, TokenTree};
+use quote::ToTokens;
 use syn::Type;
 use vespera_core::schema::{Reference, Schema, SchemaRef};
 
@@ -40,13 +42,25 @@ thread_local! {
     static IN_PROGRESS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// Instantiations that were reached from inside themselves.
     static CYCLIC: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
-    /// Generic definitions being built: `(instance name, component)`, e.g.
-    /// `("Tree_T", "Tree")` while the `Tree<T>` component itself is built.
-    static DEFINITIONS: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+    /// Generic definitions whose bodies are being built, innermost last.
+    static DEFINITIONS: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
+    /// The identifiers the next definition built writes itself (see
+    /// [`inline_or_reference`]).
+    static PENDING_LITERALS: RefCell<Option<BTreeSet<String>>> = const { RefCell::new(None) };
     /// Materialised components, by name.
     static MATERIALIZED: RefCell<BTreeMap<String, Schema>> = const { RefCell::new(BTreeMap::new()) };
     /// Instances built since the current top-level instance started.
     static BUILT: Cell<usize> = const { Cell::new(0) };
+}
+
+/// A definition whose body is being built: the instances it names for itself
+/// (`Tree_T` while the `Tree<T>` component itself is built), its component
+/// (`Tree`), and the identifiers its body writes itself rather than through a
+/// parameter (see [`body_literals`]).
+struct Frame {
+    instances: Vec<String>,
+    component: String,
+    literals: BTreeSet<String>,
 }
 
 /// How many generic instances one top-level instance may build inline before
@@ -214,20 +228,33 @@ fn push_array_len(name: &mut String, len: &syn::Expr) {
 
 /// Inline the generic instantiation `name`, built by `build`, unless that
 /// would recurse forever — then a `$ref` to the materialised component.
-pub fn inline_or_reference(name: &str, build: impl FnOnce() -> Schema) -> SchemaRef {
+/// `args` are the identifiers the instance's arguments spell
+/// ([`argument_identifiers`]) and `literals` the identifiers the definition's
+/// body writes itself ([`body_literals`]).
+pub fn inline_or_reference(
+    name: &str,
+    args: &BTreeSet<String>,
+    literals: BTreeSet<String>,
+    build: impl FnOnce() -> Schema,
+) -> SchemaRef {
     // In the request view the instantiation carries a `.Input` suffix when
     // the definition has an input view; it then refers to that input.
     let request = super::super::request_view::in_request_view();
-    let definition = DEFINITIONS.with(|stack| {
-        stack
-            .borrow()
-            .iter()
-            .rev()
-            .find(|(instance, _)| {
+    let definition = DEFINITIONS.with(|frames| {
+        let frames = frames.borrow();
+        frames.iter().enumerate().rev().find_map(|(depth, frame)| {
+            let named = frame.instances.iter().any(|instance| {
                 instance == name
                     || (request && name.strip_suffix(".Input") == Some(instance.as_str()))
-            })
-            .map(|(_, component)| component.clone())
+            });
+            // A body inlined inside this definition's body that writes one of
+            // the arguments itself (`Holder<T> { fixed: Buf<T, N> }` with a
+            // global `N`) spells another item: not this definition's instance.
+            let shadowed = frames[depth + 1..]
+                .iter()
+                .any(|deeper| !deeper.literals.is_disjoint(args));
+            (named && !shadowed).then(|| frame.component.clone())
+        })
     });
     if let Some(component) = definition {
         let component =
@@ -250,7 +277,10 @@ pub fn inline_or_reference(name: &str, build: impl FnOnce() -> Schema) -> Schema
         return SchemaRef::Inline(Box::default());
     }
     IN_PROGRESS.with(|stack| stack.borrow_mut().push(name.to_string()));
+    // The definition `build` inlines takes these in `with_definition`.
+    PENDING_LITERALS.with(|pending| *pending.borrow_mut() = Some(literals));
     let schema = build();
+    PENDING_LITERALS.with(|pending| *pending.borrow_mut() = None);
     IN_PROGRESS.with(|stack| stack.borrow_mut().pop());
     if CYCLIC.with(|cyclic| cyclic.borrow_mut().remove(name)) {
         MATERIALIZED.with(|map| map.borrow_mut().insert(name.to_string(), schema));
@@ -266,19 +296,26 @@ pub fn inline_or_reference(name: &str, build: impl FnOnce() -> Schema) -> Schema
 /// instantiation inside it (`Tree<T>`, `Node<N>`, `Buf<T, N>`) refers back to
 /// its component (`Tree`) instead of materialising `Tree_T` / `Node_Const.N`.
 ///
-/// The names are visible only in this definition's own body. A name is just
-/// the spelling of its arguments, so inside ANOTHER definition's body
-/// (`Holder<T> { fixed: Buf<T, N> }` built while `Buf` is, with a global
-/// `const N`) the same spelling may denote an outer item: those inlined bodies
-/// see none of the enclosing definition's names. The limit: a self-reference
-/// reached through another definition (`Tree<T>` -> `Wrap<Tree<T>>` -> `Tree<T>`)
-/// is materialised as a component of its own instead of a `$ref` to `Tree`.
+/// The names stay visible inside the bodies inlined in this one, so
+/// `Tree<T> -> Wrap<Tree<T>> -> Tree<T>` refers back to `Tree`. A name is only
+/// the spelling of its arguments, though: inside a body that writes an
+/// identifier itself (`Holder<T> { fixed: Buf<T, N> }` inlined while `Buf` is
+/// built, with a global `const N`), the same spelling may denote another item.
+/// The identifiers a body writes itself come with it ([`inline_or_reference`]),
+/// and an instance whose arguments spell one of them is not an outer
+/// self-reference. The limit: when an argument identifier is both written by a
+/// deeper body and passed in as an argument of the outer instance (a global
+/// `T` in a body that also receives `T`), that instance is inlined rather
+/// than referenced, since the two cannot be told apart by name.
 pub fn with_definition<R>(
     ident: &syn::Ident,
     generics: &syn::Generics,
     attrs: &[syn::Attribute],
     build: impl FnOnce() -> R,
 ) -> R {
+    let literals = PENDING_LITERALS
+        .with(|pending| pending.borrow_mut().take())
+        .unwrap_or_default();
     let params: Vec<Type> = generics
         .type_params()
         .map(|param| {
@@ -313,7 +350,7 @@ pub fn with_definition<R>(
         );
         vec![as_written, defaults_filled]
     };
-    with_self_instances(&instances, &component, build)
+    with_self_instances(&instances, &component, literals, build)
 }
 
 /// The name of `component` instantiated with the type arguments `types`
@@ -348,25 +385,69 @@ fn default_filled_params(generics: &syn::Generics, params: &[Type]) -> Vec<Type>
 }
 
 /// Run `build` (the schema of a generic definition such as `Tree<T>`) with
-/// its own instantiations `instances` (`Tree_T`, ...) referring to `component`.
-/// The enclosing definitions' instances are hidden meanwhile (see
-/// [`with_definition`]).
+/// its own instantiations `instances` (`Tree_T`, ...) referring to `component`,
+/// and `literals` the identifiers its body writes itself.
 pub fn with_self_instances<R>(
     instances: &[String],
     component: &str,
+    literals: BTreeSet<String>,
     build: impl FnOnce() -> R,
 ) -> R {
-    let outer = DEFINITIONS.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-    DEFINITIONS.with(|stack| {
-        stack.borrow_mut().extend(
-            instances
-                .iter()
-                .map(|instance| (instance.clone(), component.to_string())),
-        );
+    let depth = DEFINITIONS.with(|frames| frames.borrow().len());
+    DEFINITIONS.with(|frames| {
+        frames.borrow_mut().push(Frame {
+            instances: instances.to_vec(),
+            component: component.to_string(),
+            literals,
+        });
     });
     let result = build();
-    DEFINITIONS.with(|stack| *stack.borrow_mut() = outer);
+    DEFINITIONS.with(|frames| frames.borrow_mut().truncate(depth));
     result
+}
+
+/// The identifiers the field types `types` of a definition write themselves,
+/// minus its own generic parameters `scope` (those are substituted by the
+/// caller's arguments, so they are not written in the body).
+pub fn body_literals<'a>(
+    types: impl IntoIterator<Item = &'a Type>,
+    scope: &[String],
+) -> BTreeSet<String> {
+    let mut idents = BTreeSet::new();
+    for ty in types {
+        idents.extend(identifiers_of(ty));
+    }
+    idents.retain(|ident| !scope.contains(ident));
+    idents
+}
+
+/// The identifiers the instance arguments spell: the substituted type
+/// arguments and the const argument expressions.
+pub fn argument_identifiers(types: &[&Type], consts: &[(String, syn::Expr)]) -> BTreeSet<String> {
+    types
+        .iter()
+        .flat_map(|ty| identifiers_of(*ty))
+        .chain(consts.iter().flat_map(|(_, expr)| identifiers_of(expr)))
+        .collect()
+}
+
+/// Every identifier `item` (a type or a const expression) spells.
+pub fn identifiers_of<T: ToTokens + ?Sized>(item: &T) -> BTreeSet<String> {
+    let mut idents = BTreeSet::new();
+    token_identifiers(item.to_token_stream(), &mut idents);
+    idents
+}
+
+fn token_identifiers(tokens: TokenStream, idents: &mut BTreeSet<String>) {
+    for tree in tokens {
+        match tree {
+            TokenTree::Ident(ident) => {
+                idents.insert(ident.to_string());
+            }
+            TokenTree::Group(group) => token_identifiers(group.stream(), idents),
+            TokenTree::Punct(_) | TokenTree::Literal(_) => {}
+        }
+    }
 }
 
 /// The const parameters of `generics`, each defaulted one replaced by its
@@ -522,8 +603,8 @@ mod tests {
     fn recursion_is_materialised_and_reused() {
         take_materialized();
         let object = || Schema::new(SchemaType::Object);
-        let outer = inline_or_reference("Tree_i32", || {
-            let inner = inline_or_reference("Tree_i32", object);
+        let outer = inline_or_reference("Tree_i32", &BTreeSet::new(), BTreeSet::new(), || {
+            let inner = inline_or_reference("Tree_i32", &BTreeSet::new(), BTreeSet::new(), object);
             assert!(matches!(inner, SchemaRef::Ref(_)));
             object()
         });
@@ -531,11 +612,16 @@ mod tests {
             matches!(outer, SchemaRef::Ref(ref r) if r.ref_path == "#/components/schemas/Tree_i32")
         );
         // Already materialised: referenced without rebuilding.
-        let again = inline_or_reference("Tree_i32", || unreachable!());
+        let again = inline_or_reference(
+            "Tree_i32",
+            &BTreeSet::new(),
+            BTreeSet::new(),
+            || unreachable!(),
+        );
         assert!(matches!(again, SchemaRef::Ref(_)));
         // Non-recursive instantiations stay inline.
         assert!(matches!(
-            inline_or_reference("Page_u8", object),
+            inline_or_reference("Page_u8", &BTreeSet::new(), BTreeSet::new(), object),
             SchemaRef::Inline(_)
         ));
 

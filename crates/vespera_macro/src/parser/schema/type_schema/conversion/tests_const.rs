@@ -308,3 +308,34 @@ fn same_spelled_const_in_another_definition_is_not_a_self_reference() {
         "the global-N instance is inlined, not $ref Buf: {fixed:?}"
     );
 }
+
+/// R32-P4-02 refinement: `Tree<T>` reaches itself through the generic wrapper
+/// `Wrap<U>`, whose body writes no identifier of its own. The inner `Tree<T>` is
+/// the `Tree` component (a `$ref`), not a second materialised `Tree_T`.
+#[test]
+fn self_reference_through_a_wrapper_refers_to_its_component() {
+    take_materialized();
+    let tree = "struct Tree<T> { kids: Vec<Wrap<Tree<T>>> }";
+    let item: syn::ItemStruct = syn::parse_str(tree).unwrap();
+    let known: HashSet<String> = ["Tree", "Wrap"].into_iter().map(String::from).collect();
+    let defs = HashMap::from([
+        ("Tree".to_string(), tree.to_string()),
+        (
+            "Wrap".to_string(),
+            "struct Wrap<U> { inner: U }".to_string(),
+        ),
+    ]);
+    let schema = crate::parser::schema::parse_struct_to_schema(&item, &known, &defs);
+    let properties = schema.properties.expect("the struct's fields");
+    let SchemaRef::Inline(kids) = &properties["kids"] else {
+        panic!("the vector is inline");
+    };
+    let SchemaRef::Inline(wrap) = kids.items.clone().expect("the vector's items") else {
+        panic!("Wrap<Tree<T>> is inlined");
+    };
+    let inner = wrap.properties.as_ref().expect("Wrap's fields")["inner"].clone();
+    assert_eq!(reference(inner), Reference::schema("Tree").ref_path);
+    let materialized = take_materialized();
+    let keys: Vec<&String> = materialized.keys().collect();
+    assert!(!keys.iter().any(|key| key.as_str() == "Tree_T"), "{keys:?}");
+}
