@@ -156,12 +156,25 @@ class ObservabilityAutoConfigurationTest {
         loaded.setAccessible(true);
         Field nativeLoaded = VesperaBridge.class.getDeclaredField("nativeLoaded");
         nativeLoaded.setAccessible(true);
+        Field loadedName = VesperaBridge.class.getDeclaredField("loadedLibraryName");
+        loadedName.setAccessible(true);
         boolean previous = loaded.getBoolean(null);
         boolean previousNative = nativeLoaded.getBoolean(null);
+        Object previousName = loadedName.get(null);
         try {
             loaded.setBoolean(null, true);
+            nativeLoaded.setBoolean(null, true);
+            loadedName.set(null, "demo");
             assertTrue(VesperaBridge.isInitialized());
-            assertFalse(VesperaBridgeAutoConfiguration.autoInit("demo"));
+            assertFalse(VesperaBridgeAutoConfiguration.autoInit("demo"),
+                    "the same library the application loaded is a no-op");
+            // A different library is refused exactly as VesperaBridge.init refuses it,
+            // instead of being silently ignored (the app would dispatch to the wrong cdylib).
+            IllegalStateException refused = org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalStateException.class,
+                    () -> VesperaBridgeAutoConfiguration.autoInit("other"));
+            assertTrue(refused.getMessage().contains("'demo'"), refused.getMessage());
+            assertTrue(refused.getMessage().contains("'other'"), refused.getMessage());
             // No cdylib in the unit suite: with the library marked loaded,
             // shutdown0 is unlinked and reported as false.
             nativeLoaded.setBoolean(null, true);
@@ -170,6 +183,7 @@ class ObservabilityAutoConfigurationTest {
         } finally {
             nativeLoaded.setBoolean(null, previousNative);
             loaded.setBoolean(null, previous);
+            loadedName.set(null, previousName);
         }
         assertFalse(VesperaBridge.shutdown(Duration.ofSeconds(1)), "not loaded: no-op");
     }

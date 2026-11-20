@@ -34,6 +34,13 @@ final class ProxyExchange {
     String path;
     /** Whether the request was handed to the native dispatch. */
     volatile boolean reachedRust;
+    /**
+     * Whether Rust answered: a streamed response header was applied, or a
+     * buffered wire response arrived. Decides the app tag of a client cancel
+     * ({@link #completeCancelled}), where {@link #reachedRust} alone would
+     * also count a request still pending at the cancel.
+     */
+    volatile boolean rustAnswered;
     private final AtomicBoolean completed = new AtomicBoolean();
 
     ProxyExchange(Logger log, List<DispatchObserver> observers, String method, String requestId) {
@@ -64,6 +71,17 @@ final class ProxyExchange {
     /** Whether {@link #complete} already ran. */
     boolean isCompleted() {
         return completed.get();
+    }
+
+    /**
+     * The client went away before the request ended: report {@code status}
+     * with the app tag learned only from a Rust answer that already arrived
+     * ({@link #rustAnswered}). A buffered request still pending at the cancel
+     * never teaches the client-selected name.
+     */
+    void completeCancelled(int status, boolean panicked) {
+        reachedRust = rustAnswered;
+        complete(status, panicked);
     }
 
     /** Report the outcome; only the first call counts. */

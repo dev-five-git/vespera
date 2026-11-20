@@ -42,11 +42,11 @@ public final class VesperaBridgeNativeSettings {
             return false;
         }
         synchronized (VesperaBridge.class) {
-            if (VesperaBridge.isInitialized()) {
-                return false;
-            }
+            // Already loaded by the application: init is a no-op for the same
+            // library and refuses a different one (IllegalStateException).
+            boolean loadedHere = !VesperaBridge.isInitialized();
             VesperaBridge.init(libraryName.trim());
-            return true;
+            return loadedHere;
         }
     }
 }

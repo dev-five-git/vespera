@@ -1,7 +1,5 @@
 package com.devfive.vespera.bridge;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.context.request.async.DeferredResult;
@@ -22,9 +20,6 @@ import java.util.concurrent.RejectedExecutionException;
  * each is unit-testable without a live JNI dispatch.
  */
 final class AsyncProxyResponses {
-
-    /** The controller's logger: async failures log under the proxy's name. */
-    private static final Logger log = LoggerFactory.getLogger(VesperaProxyController.class);
 
     private AsyncProxyResponses() {}
 
@@ -103,13 +98,29 @@ final class AsyncProxyResponses {
                 .body(entity.getBody());
     }
 
+    /**
+     * Settle the ASYNC result with the native outcome: {@code built} on
+     * success, else the mapped failure. The result is set once, and only the
+     * call that set it completes the exchange (a timeout or a container error
+     * completed it already); a failure's cause rides along as the exchange's
+     * one WARN line, never as a second log line of its own.
+     */
+    static void settle(DeferredResult<ResponseEntity<?>> result, ProxyExchange exchange,
+            ProxyServletResponse response, ResponseEntity<?> built, Throwable failure) {
+        ResponseEntity<?> entity = failure == null
+                ? built : asyncFailureToResponse(failure, response);
+        if (result.setResult(entity)) {
+            exchange.complete(entity.getStatusCode().value(), response.panicked(),
+                    failure == null ? null : unwrapCompletion(failure));
+        }
+    }
+
     static ResponseEntity<?> asyncFailureToResponse(Throwable ex) {
         if (isRejectedExecution(ex)) {
             return ProxyErrors.entity(HttpStatus.SERVICE_UNAVAILABLE.value(),
                     "vespera: async response executor saturated");
         }
-        Throwable cause = ex instanceof CompletionException && ex.getCause() != null
-                ? ex.getCause() : ex;
+        Throwable cause = unwrapCompletion(ex);
         if (cause instanceof CancellationException) {
             // The request already ended (timeout / disconnect) and cancelled
             // the native dispatch; this entity is never sent.
@@ -119,8 +130,12 @@ final class AsyncProxyResponses {
         if (cause instanceof ResponseStatusException rejected) {
             return ProxyErrors.entity(rejected.getStatusCode().value(), rejected.getReason());
         }
-        log.warn("vespera async dispatch failed", cause);
         return ProxyErrors.entity(500, ProxyErrors.describe(cause));
+    }
+
+    /** The failure behind a {@link CompletionException} wrapper (the throwable itself otherwise). */
+    static Throwable unwrapCompletion(Throwable ex) {
+        return ex instanceof CompletionException && ex.getCause() != null ? ex.getCause() : ex;
     }
 
     /** Whether {@code ex} (or any cause in its chain) is a rejected submission. */

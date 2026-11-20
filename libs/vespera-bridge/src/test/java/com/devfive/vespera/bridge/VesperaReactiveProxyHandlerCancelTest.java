@@ -74,9 +74,13 @@ class VesperaReactiveProxyHandlerCancelTest {
         }
     }
 
-    /** A buffered request cancelled while Rust still computes: the same rule, the native call was made. */
+    /**
+     * A buffered request cancelled while Rust still computes: no wire response
+     * arrived, so the client-selected name is not learned (the reported app is
+     * {@code UNKNOWN}), even though the native call was made.
+     */
     @Test
-    void bufferedCancelledWhileRustRunsKeepsTheAppTag() throws Exception {
+    void bufferedCancelledWhileRustRunsDoesNotLearnTheAppTag() throws Exception {
         transport.pending = new CompletableFuture<>();
         Disposable running = handler().handle(MockServerWebExchange.from(MockServerHttpRequest.get("/orders")
                 .header(HttpHeaders.ACCEPT, "application/json")
@@ -85,6 +89,6 @@ class VesperaReactiveProxyHandlerCancelTest {
         running.dispose();
         DispatchEvent event = awaitEvent("/orders");
         assertEquals(VesperaReactiveProxyHandler.CLIENT_CLOSED_REQUEST, event.status());
-        assertEquals("orders", event.app());
+        assertEquals(AppTags.UNKNOWN, event.app(), "no answer arrived: the name is not learned");
     }
 }
