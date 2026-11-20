@@ -1,5 +1,5 @@
 ---
-source: crates/vespera_macro/src/schema_macro/same_file_override.rs
+source: crates/vespera_macro/src/schema_macro/same_file_override/tests.rs
 expression: "prettyplease::unparse(&file)"
 ---
 #[derive(serde::Serialize, vespera::Schema)]

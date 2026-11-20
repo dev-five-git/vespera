@@ -9,7 +9,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::{
-    field_attrs::carried_field_attrs,
+    field_attrs::{carried_field_attrs, reroot_schema_attr},
     file_cache::{get_circular_analysis, get_module_path_from_schema_path},
     file_lookup::{call_site_module, find_model_from_schema_path},
     generate_type::assignments::readable_from,
@@ -246,6 +246,13 @@ fn generate_inline_type_core(
             let mut kept_attrs: Vec<syn::Attribute> =
                 reroot_serde_paths(&field.attrs, effective_module_path)
                     .into_iter()
+                    .map(|attr| {
+                        if attr.path().is_ident("schema") {
+                            reroot_schema_attr(&attr, effective_module_path)
+                        } else {
+                            attr
+                        }
+                    })
                     .filter(|attr| {
                         let path = attr.path();
                         ["serde", "schema", "doc", "cfg"]

@@ -7,10 +7,16 @@
 //! refused with a spanned error instead of E0107 in the generated code
 //! (R33-SM3-L1).
 
+use syn::parse::ParseStream;
 use syn::punctuated::Punctuated;
 
 use crate::metadata::StructMetadata;
-use crate::schema_macro::cfg_eval::{Predicate, statically_active};
+use crate::schema_macro::cfg_eval::{Predicate, statically_active, statically_false};
+use crate::schema_macro::transformation::serde_key;
+
+/// The serde keys a wrapper honours from a container: the conversions and the
+/// container default (`same_file_override::dto_serde`).
+const CONVERSION_SERDE_KEYS: &[&str] = &["from", "try_from", "into", "default"];
 
 /// The component name the wrapper's `$ref` names: the DTO's `#[schema(name =
 /// ..)]` override when it has one (a `cfg_attr` one only when its predicate is
@@ -58,6 +64,67 @@ fn active_cfg_attr_schema_name(attrs: &[syn::Attribute]) -> Option<String> {
         .map(|meta| syn::parse_quote!(#[#meta]))
         .collect();
     crate::schema_impl::extract_schema_name_attr(&schema)
+}
+
+/// Refuses an adapter whose container `cfg_attr` sets its component name
+/// (`schema(name = ..)`) or a serde conversion key ([`CONVERSION_SERDE_KEYS`])
+/// under a predicate that is neither known true nor known false. The build
+/// may or may not keep it, so the wrapper's `$ref` or conversion could differ
+/// from the derive's (SM35-3-L2, R35-SM4-L1): a spanned error asks for a
+/// statically known predicate instead.
+pub(super) fn reject_undecided_cfg_attr(
+    field_name: &str,
+    adapter_name: &syn::Ident,
+    dto_struct: &syn::ItemStruct,
+) -> syn::Result<()> {
+    let undecided_sets_name_or_conversion = dto_struct
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("cfg_attr"))
+        .filter_map(|attr| attr.parse_args_with(cfg_attr_items).ok())
+        .any(|(predicate, metas)| {
+            !statically_active(&predicate)
+                && !statically_false(&predicate)
+                && metas.iter().any(sets_name_or_conversion)
+        });
+    if !undecided_sets_name_or_conversion {
+        return Ok(());
+    }
+    Err(syn::Error::new_spanned(
+        adapter_name,
+        format!(
+            "schema_type!: relation field `{field_name}` explicitly requested adapter `{adapter_name}`, whose `cfg_attr` sets a schema name or a serde conversion (`from` / `try_from` / `into` / `default`) under a predicate that is neither known true nor known false; use a statically known predicate or move the item out of the `cfg_attr`"
+        ),
+    ))
+}
+
+/// The `(predicate, items)` of a `cfg_attr(predicate, items..)`.
+pub(super) fn cfg_attr_items(
+    input: ParseStream<'_>,
+) -> syn::Result<(Predicate, Punctuated<syn::Meta, syn::Token![,]>)> {
+    let predicate: Predicate = input.parse()?;
+    input.parse::<syn::Token![,]>()?;
+    Ok((
+        predicate,
+        Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated(input)?,
+    ))
+}
+
+/// Whether one `cfg_attr` item sets the component name or a conversion key.
+fn sets_name_or_conversion(meta: &syn::Meta) -> bool {
+    if meta.path().is_ident("schema") {
+        let attr: syn::Attribute = syn::parse_quote!(#[#meta]);
+        return crate::schema_impl::extract_schema_name_attr(&[attr]).is_some();
+    }
+    meta.path().is_ident("serde")
+        && meta.require_list().is_ok_and(|list| {
+            list.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+                .is_ok_and(|items| {
+                    items
+                        .iter()
+                        .any(|item| CONVERSION_SERDE_KEYS.contains(&serde_key(item).as_str()))
+                })
+        })
 }
 
 /// Refuses an adapter DTO with type or lifetime parameters: the wrapper names
@@ -188,6 +255,65 @@ mod tests {
     fn cfg_attr_schema_name_follows_its_predicate(#[case] source: &str, #[case] expected: &str) {
         let dto_struct: syn::ItemStruct = syn::parse_str(source).unwrap();
         assert_eq!(schema_ref_name(None, &dto_struct, "Dto"), expected);
+    }
+
+    /// SM35-3-L2 / R35-SM4-L1: a container `cfg_attr` that sets the component
+    /// name or a conversion key under an undecided predicate is refused; a
+    /// statically known or harmless one passes.
+    #[rstest::rstest]
+    #[case::undecided_schema_name(
+        "#[cfg_attr(unix, schema(name = \"Renamed\"))] struct Dto { id: i32 }",
+        true
+    )]
+    #[case::undecided_from(
+        "#[cfg_attr(unix, serde(from = \"String\"))] struct Dto { id: i32 }",
+        true
+    )]
+    #[case::undecided_try_from(
+        "#[cfg_attr(unix, serde(try_from = \"String\"))] struct Dto { id: i32 }",
+        true
+    )]
+    #[case::undecided_into(
+        "#[cfg_attr(unix, serde(into = \"String\"))] struct Dto { id: i32 }",
+        true
+    )]
+    #[case::undecided_default(
+        "#[cfg_attr(unix, serde(default = \"make\"))] struct Dto { id: i32 }",
+        true
+    )]
+    #[case::undecided_rename_only(
+        "#[cfg_attr(unix, serde(rename = \"x\"))] struct Dto { id: i32 }",
+        false
+    )]
+    #[case::active_conversion(
+        "#[cfg_attr(all(), serde(from = \"String\"))] struct Dto { id: i32 }",
+        false
+    )]
+    #[case::false_conversion(
+        "#[cfg_attr(any(), serde(from = \"String\"))] struct Dto { id: i32 }",
+        false
+    )]
+    #[case::plain_serde("#[serde(from = \"String\")] struct Dto { id: i32 }", false)]
+    #[case::undecided_other_attribute(
+        "#[cfg_attr(unix, derive(Debug))] struct Dto { id: i32 }",
+        false
+    )]
+    fn undecided_cfg_attr_naming_a_conversion_is_refused(
+        #[case] source: &str,
+        #[case] refused: bool,
+    ) {
+        let dto_struct: syn::ItemStruct = syn::parse_str(source).unwrap();
+        let ident = syn::Ident::new("Dto", proc_macro2::Span::call_site());
+        let result = reject_undecided_cfg_attr("author", &ident, &dto_struct);
+        assert_eq!(result.is_err(), refused, "{result:?}");
+        if let Err(error) = result {
+            assert!(
+                error
+                    .to_string()
+                    .contains("neither known true nor known false"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

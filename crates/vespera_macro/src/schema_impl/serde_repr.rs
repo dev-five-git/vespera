@@ -92,7 +92,12 @@ pub(super) fn with_multipart_vec_defaults(
             && crate::parser::extract_default(&field.attrs).is_none()
             && !crate::multipart_impl::has_form_data_default(&field.attrs)
     }) {
-        field.attrs.push(syn::parse_quote!(#[form_data(default)]));
+        // Inserted first: the first `default` key wins, so an explicit
+        // `#[form_data(default = false)]` (R35-SM-L1) cannot keep the field
+        // required while the derive never requires a `Vec` part.
+        field
+            .attrs
+            .insert(0, syn::parse_quote!(#[form_data(default)]));
         changed = true;
     }
     changed.then(|| syn::DeriveInput {
@@ -577,6 +582,11 @@ mod tests {
         None
     )]
     #[case::other_struct("#[derive(Multipart)] struct V { files: Vec<u8> }", None)]
+    // R35-SM-L1: an explicit `default = false` does not make a `Vec` required.
+    #[case::explicit_false_default(
+        "#[derive(Multipart)] struct U { #[form_data(default = false)] files: Vec<u8> }",
+        Some(vec!["files"])
+    )]
     fn multipart_vec_fields_get_a_form_data_default(
         #[case] source: &str,
         #[case] expected: Option<Vec<&str>>,
@@ -611,7 +621,7 @@ mod tests {
                 .filter(|field| {
                     field
                         .attrs
-                        .last()
+                        .first()
                         .is_some_and(|attr| attr.path().is_ident("form_data"))
                         && crate::multipart_impl::has_form_data_default(&field.attrs)
                         && field.ident.as_ref().is_some_and(|ident| ident != "kept")

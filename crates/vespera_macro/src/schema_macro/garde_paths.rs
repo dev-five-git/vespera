@@ -116,6 +116,25 @@ pub fn reroot_garde_attr(attr: &syn::Attribute, module_path: &[String]) -> syn::
     syn::parse_quote!(#[#meta])
 }
 
+/// `ty` with every path it names (its own and its generic arguments') re-rooted
+/// at `module_path`: a `value_type = Vec<Wire>` of the source module names
+/// `Wire` where the call site cannot see it (SM35-3-M1).
+pub fn reroot_type(ty: &mut syn::Type, module_path: &[String]) {
+    syn::visit_mut::VisitMut::visit_type_mut(&mut RerootType(module_path), ty);
+}
+
+/// The [`reroot_type`] walker.
+struct RerootType<'a>(&'a [String]);
+
+impl syn::visit_mut::VisitMut for RerootType<'_> {
+    fn visit_type_path_mut(&mut self, node: &mut syn::TypePath) {
+        if node.qself.is_none() {
+            reroot_syn_path(&mut node.path, self.0);
+        }
+        syn::visit_mut::visit_type_path_mut(self, node);
+    }
+}
+
 /// A rule list re-rooted (`None` when it is not one).
 fn reroot_rules(tokens: TokenStream, module_path: &[String]) -> Option<TokenStream> {
     let rules = syn::parse::Parser::parse2(Rules::parse_terminated, tokens).ok()?;
