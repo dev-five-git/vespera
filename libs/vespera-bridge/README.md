@@ -63,7 +63,7 @@ The plugin bundles the host build by default. To ship one jar for several platfo
 ```kotlin
 vespera {
     // ...
-    autoBuildCargo.set(true)                 // cargoBuild runs one `cargo build --target <triple>` per entry
+    autoBuildCargo.set(true)                 // cargoBuild runs one `cargo build --target <triple>` per entry, plus the host build unless a target bundles into the host folder
     targets.put("linux-aarch64", "aarch64-unknown-linux-gnu")
     targets.put("macos-aarch64", "aarch64-apple-darwin")
     extraNativeLibs.set(layout.projectDirectory.dir("prebuilt")) // prebuilt/native/<os>-<arch>/<lib>
@@ -1334,7 +1334,7 @@ An incoming id (1–128 visible ASCII characters) is reused, otherwise a random 
 
 ### Errors written by the proxy
 
-Errors the proxy produces itself (unknown app 404, buffered body too large 413, buffered response too large 500, async backpressure 503, WebFlux streaming capacity exhausted 503, native library not initialized 503, DIRECT overflow, unexpected failures 500) are written directly as `text/plain; charset=utf-8` with the message as body, the same shape as the Rust `error_wire` responses, instead of going through Spring's `/error` page (whose shape depends on `Accept`). An unexpected exception is answered with the fixed body `vespera dispatch failed` — its message and stack trace go only to the WARN log, tagged with the request id the response echoes — so internals (hosts, paths, SQL) never reach clients. Writing such an error discards the buffered body and only the headers the proxy itself set; headers servlet filters set before the proxy ran (CORS, security headers, cookies) are kept.
+Errors the proxy produces itself (unknown app 404, buffered body too large 413, buffered response too large 500, async backpressure 503, WebFlux streaming capacity exhausted 503, native library not initialized 503) are written directly as `text/plain; charset=utf-8` with the message as body, the same shape as the Rust `error_wire` responses, instead of going through Spring's `/error` page (whose shape depends on `Accept`). An unexpected exception, and a DIRECT overflow with `direct-retry-on-overflow=false`, is answered with the fixed body `vespera dispatch failed` — its message and stack trace (for an overflow: the required size and the BIDIRECTIONAL_STREAMING hint) go only to the WARN log, tagged with the request id the response echoes — so internals (hosts, paths, SQL) never reach clients. Writing such an error discards the buffered body and only the headers the proxy itself set; headers servlet filters set before the proxy ran (CORS, security headers, cookies) are kept.
 
 If the native library was never loaded (`VesperaBridge.init` not called, or it failed), every proxied request is answered `503 vespera native library is not initialized` instead of escaping as an `UnsatisfiedLinkError` (whitelabel 500), and a WARN is logged once at startup.
 
