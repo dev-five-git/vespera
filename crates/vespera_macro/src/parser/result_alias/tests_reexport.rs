@@ -118,12 +118,14 @@ fn expands_in_crate(files: &[(&str, &str)], handler: &str, ret: &str) -> bool {
     "v2::ApiResponse<User>",
     false
 )]
-// A glob of `super` may bring the struct in from a module this lookup cannot
-// follow (`pub use super::*;`): the struct is nominal, not the crate alias.
+// A glob of `super` in a file module may bring the struct in from a module
+// this lookup cannot follow (`pub use super::*;`): the struct is nominal, not
+// the crate alias. The qualifier is `crate::`: a bare `v2::` is not a crate
+// module to the expansion.
 #[case::super_glob_reexport_is_nominal(
-    &[("lib.rs", "pub struct ApiResponse<T>(pub T); mod routes; pub mod v2 { pub use super::*; }"), ROUTES],
+    &[("lib.rs", "pub struct ApiResponse<T>(pub T); mod routes; pub mod v2;"), ("v2.rs", "pub use super::*;"), ROUTES],
     "pub fn h() {}",
-    "v2::ApiResponse<User>",
+    "crate::v2::ApiResponse<User>",
     false
 )]
 #[case::reexport_cycle(

@@ -334,6 +334,8 @@ fn inline_qualified_route_types_are_flagged(#[case] handler: &str) {
 #[case::external_crate("pub fn handler(Json(b): Json<serde_json::Bar>) {}", &[])]
 #[case::leading_colon("pub fn handler(Json(b): Json<::routes::other::Bar>) {}", &[])]
 #[case::self_path_into_a_child_module("pub fn handler(Json(b): Json<self::other::Bar>) {}", &[])]
+// A type the walk does not descend into (a fn pointer) names no document type.
+#[case::fn_pointer_is_not_a_document_type("pub fn handler(Json(b): Json<fn(crate::routes::other::Bar)>) {}", &[])]
 #[case::super_chain_leaves_routes("pub fn handler(Json(b): Json<super::super::other::Bar>) {}", &[])]
 #[case::super_chain_above_root("pub fn handler(Json(b): Json<super::super::super::other::Bar>) {}", &[])]
 fn inline_qualified_paths_outside_non_schema_route_types_are_ok(
