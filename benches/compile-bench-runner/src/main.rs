@@ -218,14 +218,45 @@ fn metadata_path(metadata: &str, field: &str) -> Option<PathBuf> {
     None
 }
 
+/// Whether a `remove_dir_all` outcome leaves the route cache gone: a missing
+/// directory is the goal already reached; any other error means the cache
+/// survives, so the run would be a cache hit and its sample is unusable.
+fn cache_cleared(dir: &std::path::Path, result: std::io::Result<()>) -> bool {
+    match result {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "[warn] could not clear route cache `{}`: {err}",
+                dir.display()
+            );
+            false
+        }
+        _ => true,
+    }
+}
+
 fn measure_once(target: &str, pass: &str, vespera_dir: Option<&CacheDir>) -> Option<f64> {
-    // Force a full re-expansion of the fixture lib (deps stay built).
-    let _ = cargo().args(["clean", "-p", target]).status();
+    // Force a full re-expansion of the fixture lib (deps stay built). A failed
+    // clean leaves the fixture's expansion cached: no valid sample.
+    let cleaned = cargo()
+        .args(["clean", "-p", target])
+        .status()
+        .is_ok_and(|status| status.success());
+    if !cleaned {
+        eprintln!("[warn] `cargo clean -p {target}` failed; dropping this run");
+        return None;
+    }
     // `cargo clean -p` keeps `<target>/vespera/`: its route cache would turn
     // every measured run into a cache hit that skips route collection,
     // validation and OpenAPI generation (the code macro changes touch).
+    // Every directory is attempted (no short circuit): one surviving cache
+    // drops the run.
+    let mut cleared = true;
     for dir in vespera_dir.map_or_else(Vec::new, CacheDir::dirs) {
-        let _ = fs::remove_dir_all(dir);
+        let result = fs::remove_dir_all(&dir);
+        cleared &= cache_cleared(&dir, result);
+    }
+    if !cleared {
+        return None;
     }
     let out = cargo()
         .args([
@@ -321,7 +352,7 @@ fn main() {
                 samples.push(t);
             }
             None => eprintln!(
-                "  run {:>2}: pass `{}` not found in output",
+                "  run {:>2}: no sample (pass `{}` not found, or a cache or clean step failed)",
                 i + 1,
                 args.pass
             ),
@@ -478,6 +509,22 @@ mod tests {
             CacheDir::UnderTarget(target.clone()).dirs(),
             [target.join("vespera")]
         );
+    }
+
+    /// Only a missing cache directory counts as cleared: any other removal
+    /// error keeps the cache, so the run is dropped (and warned about).
+    #[test]
+    fn cache_removal_errors_other_than_not_found_drop_the_run() {
+        let dir = std::path::Path::new("vespera");
+        assert!(cache_cleared(dir, Ok(())));
+        assert!(cache_cleared(
+            dir,
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        ));
+        assert!(!cache_cleared(
+            dir,
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        ));
     }
 
     /// A NaN or infinite timing (a malformed line) is dropped rather than

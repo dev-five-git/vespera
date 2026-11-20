@@ -596,6 +596,23 @@ fn int_literal_value(int: &syn::LitInt) -> Option<serde_json::Value> {
     }
 }
 
+/// The value of a float literal. An `f32` suffix makes it the `f32` Rust reads
+/// (`16777217.0f32` is `16777216.0`), written as its shortest decimal form so
+/// the document states `0.1` for `0.1f32`, not the widened binary value.
+fn float_literal_value(float: &syn::LitFloat) -> Option<serde_json::Value> {
+    let value = if float.suffix() == "f32" {
+        float
+            .base10_parse::<f32>()
+            .ok()?
+            .to_string()
+            .parse::<f64>()
+            .ok()?
+    } else {
+        float.base10_parse::<f64>().ok()?
+    };
+    serde_json::Number::from_f64(value).map(serde_json::Value::Number)
+}
+
 /// `1.5f32` (possibly parenthesized or negated).
 fn is_f32_literal(expr: &syn::Expr) -> bool {
     match expr {
@@ -623,11 +640,7 @@ pub(super) fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Va
         Expr::Lit(ExprLit { lit, .. }) => match lit {
             Lit::Str(s) => Some(serde_json::Value::String(s.value())),
             Lit::Int(i) => int_literal_value(i),
-            Lit::Float(f) => f
-                .base10_parse::<f64>()
-                .ok()
-                .and_then(serde_json::Number::from_f64)
-                .map(serde_json::Value::Number),
+            Lit::Float(f) => float_literal_value(f),
             Lit::Bool(b) => Some(serde_json::Value::Bool(b.value)),
             _ => None,
         },

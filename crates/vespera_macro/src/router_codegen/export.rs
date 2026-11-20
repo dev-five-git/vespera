@@ -274,7 +274,7 @@ const DATA_KEYS: [&str; 5] = ["example", "examples", "default", "enum", "const"]
 /// Keys whose object maps names (property names, component names, status
 /// codes, paths) to schemas or objects: its own keys are never data keywords,
 /// so a property named `example` or a `default` response is still walked.
-const NAME_MAP_KEYS: [&str; 8] = [
+const NAME_MAP_KEYS: [&str; 14] = [
     "properties",
     "patternProperties",
     "$defs",
@@ -283,6 +283,14 @@ const NAME_MAP_KEYS: [&str; 8] = [
     "schemas",
     "responses",
     "paths",
+    // The other component maps: a component named `default` / `example` /
+    // `enum` is a name, not data.
+    "parameters",
+    "requestBodies",
+    "headers",
+    "callbacks",
+    "links",
+    "pathItems",
 ];
 
 /// Point every `#/components/schemas/{old}` `$ref` in a schema position inside
@@ -779,6 +787,48 @@ mod tests {
             &value["paths"]["/x"]["get"]["responses"]["default"]["content"]["application/json"];
         assert_eq!(media["schema"]["$ref"], "#/components/schemas/MediaItem");
         assert_eq!(media["example"]["$ref"], "#/components/schemas/Item");
+    }
+
+    /// A component named like a data keyword (`default`, `example`, `enum`,
+    /// ...) is namespaced in every component map, not only `schemas`.
+    #[test]
+    fn component_names_in_every_component_map_are_namespaced() {
+        let item = |name: &str| serde_json::json!({ name: { "schema": { "$ref": "#/components/schemas/Item" } } });
+        let mut value = serde_json::json!({
+            "components": {
+                "schemas": { "Item": { "type": "object" } },
+                "parameters": item("default"),
+                "requestBodies": item("example"),
+                "headers": item("enum"),
+                "callbacks": { "const": { "{$request.body#/url}": { "post": {
+                    "requestBody": { "content": { "application/json": {
+                        "schema": { "$ref": "#/components/schemas/Item" }
+                    } } }
+                } } } },
+                "links": item("examples"),
+                "pathItems": item("default")
+            }
+        });
+        let renames = BTreeMap::from([("Item".to_string(), "MediaItem".to_string())]);
+
+        rewrite_schema_refs(&mut value, &renames);
+
+        let media = "#/components/schemas/MediaItem";
+        let components = &value["components"];
+        assert_eq!(components["parameters"]["default"]["schema"]["$ref"], media);
+        assert_eq!(
+            components["requestBodies"]["example"]["schema"]["$ref"],
+            media
+        );
+        assert_eq!(components["headers"]["enum"]["schema"]["$ref"], media);
+        assert_eq!(components["links"]["examples"]["schema"]["$ref"], media);
+        assert_eq!(components["pathItems"]["default"]["schema"]["$ref"], media);
+        assert_eq!(
+            components["callbacks"]["const"]["{$request.body#/url}"]["post"]["requestBody"]["content"]
+                ["application/json"]["schema"]["$ref"],
+            media,
+            "{value:#}"
+        );
     }
 
     #[test]

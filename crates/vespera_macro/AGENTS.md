@@ -39,8 +39,10 @@ vespera_macro/
 ```
 
 Unit tests live **inline** (`#[cfg(test)] mod tests`) next to the code they
-cover, per the repo-wide convention; `tests/` holds only the trybuild
-compile-failure suite.
+cover, per the repo-wide convention. When code and tests would exceed the
+1000-line cap, the tests move to a sidecar child module instead (for example
+`args/tests.rs`, `collector/tests.rs`, `garde_emit/tests_wire.rs`); `tests/`
+holds only the trybuild compile-failure suite.
 
 ## WHERE TO LOOK
 

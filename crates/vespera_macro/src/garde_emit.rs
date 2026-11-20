@@ -376,17 +376,21 @@ fn emit_rule_blocks(
         // An aliased field's fractional bound saturates into its type's range
         // (`minimum = 300.5` on `type Small = u8` would admit `255`); reject a
         // bound no value of the type reaches before the range rule runs.
-        let fractional = |value: Option<f64>, exact: Option<ExactInt>| match value {
-            Some(v) if numeric_kind.is_none() && exact.is_none() => {
+        // A literal wider than `i128` takes the `f64` path too, so it is
+        // checked here as well: `minimum = 2e38` on `type Small = u8` would
+        // otherwise saturate to `255`.
+        let min_literal = exact.minimum.as_ref().is_some_and(alias_literal_used);
+        let max_literal = exact.maximum.as_ref().is_some_and(alias_literal_used);
+        let fractional = |value: Option<f64>, literal: bool| match value {
+            Some(v) if numeric_kind.is_none() && !literal => {
                 quote!(::std::option::Option::Some(#v))
             }
             _ => quote!(::std::option::Option::None),
         };
-        let unreachable_min = fractional(c.minimum, exact.minimum);
-        let unreachable_max = fractional(c.maximum, exact.maximum);
+        let unreachable_min = fractional(c.minimum, min_literal);
+        let unreachable_max = fractional(c.maximum, max_literal);
         let has_fractional = numeric_kind.is_none()
-            && (exact.minimum.is_none() && c.minimum.is_some()
-                || exact.maximum.is_none() && c.maximum.is_some());
+            && (!min_literal && c.minimum.is_some() || !max_literal && c.maximum.is_some());
         let guard = if has_fractional {
             quote! { if let ::std::option::Option::Some(__garde_error) = ::vespera::__validation::range_unsatisfiable(__garde_binding, #unreachable_min, #unreachable_max) { __garde_report.append(__garde_path(), __garde_error); } else }
         } else {
@@ -752,6 +756,19 @@ fn float_some(kind: &str, v: f64, bound: Bound) -> TokenStream {
     quote! { ::std::option::Option::Some({ let __garde_bound = #v as f32; #inward }) }
 }
 
+/// Whether an alias bound's integer literal is emitted as an `i128` literal
+/// (`i128::MIN`'s magnitude for a negative one); a wider one takes the `f64`
+/// path instead, which the range check in `emit_garde_validate` then covers.
+#[cfg(feature = "validation")]
+fn alias_literal_used(exact: &ExactInt) -> bool {
+    let limit = if exact.negative {
+        i128::MIN.unsigned_abs()
+    } else {
+        i128::MAX.unsigned_abs()
+    };
+    exact.magnitude <= limit
+}
+
 /// Render one `range` bound in the field's own type.
 ///
 /// Integer fields get a range-checked, suffixed integer literal (a bound the
@@ -787,12 +804,7 @@ fn numeric_some(
         // A literal wider than `i128` cannot be the `i128` literal a float
         // alias takes (rustc: "literal out of range for i128"); such a bound
         // goes through the documented `f64` like a fractional one does.
-        let limit = if exact.as_ref().is_some_and(|exact| exact.negative) {
-            i128::MIN.unsigned_abs()
-        } else {
-            i128::MAX.unsigned_abs()
-        };
-        if let Some(exact) = exact.filter(|exact| exact.magnitude <= limit) {
+        if let Some(exact) = exact.filter(alias_literal_used) {
             // The documented `f64` travels with the literal, so the validator
             // loosens to it exactly like a known integer type does.
             let literal: TokenStream = exact
