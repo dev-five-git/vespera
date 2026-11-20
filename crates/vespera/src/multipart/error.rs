@@ -264,8 +264,8 @@ impl TypedMultipartError {
     }
 
     /// Build a wrong-type error for a client `value` that could not be parsed
-    /// as `wanted`.  The `source` quotes the client value as "invalid value:
-    /// <value>" (in backticks), bounded like [`Self::invalid_enum_value`]'s, so
+    /// as `wanted`.  The `source` quotes the client value in backticks after
+    /// `"invalid value: "`, bounded like [`Self::invalid_enum_value`]'s, so
     /// a caller never has to bound it by hand.  Use the `WrongFieldType`
     /// variant directly only for a message that does not quote the value.
     #[must_use]
