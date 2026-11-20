@@ -11,7 +11,8 @@
 //!    a struct / enum / union of that name, imports one from the module
 //!    that declares it, or renames another item of this crate to it: `use
 //!    crate::models::Envelope as ApiResponse;`: then the name is that item,
-//!    not an alias), then
+//!    not an alias; a rename of an alias, `use crate::error::Result as
+//!    AppResult;`, is followed under the original name, `Result`), then
 //! 2. a single, unambiguous `type` item anywhere in the handler's file or
 //!    under the crate's `src/` (two different definitions with the same name
 //!    are left unexpanded).
@@ -383,6 +384,16 @@ fn find_alias<'a>(
         if declares_nominal(items, name) {
             return None;
         }
+        // `use crate::error::Result as AppResult;` imports `Result`: the lookup
+        // follows that import under the original name, so an alias stays
+        // expandable while a struct / enum there is the return type itself
+        // (`use crate::models::Envelope as ApiResponse;`).
+        if let Some((original, parent)) =
+            renamed_import(items, name).filter(|_| import_kind(items, name) == Some(Import::Local))
+        {
+            return parent
+                .and_then(|parent| find_alias(&original, Some(&parent), Some(scope), src_dir));
+        }
         match import_kind(items, name) {
             // `use axum::response::Result;` — the name is another crate's
             // item, so a same-named alias elsewhere in this crate is
@@ -394,10 +405,6 @@ fn find_alias<'a>(
             {
                 return None;
             }
-            // `use crate::models::Envelope as ApiResponse;` — the name is
-            // another item of this crate, so a same-named alias elsewhere is
-            // unrelated.
-            Some(Import::Local) if renames_to(items, name) => return None,
             Some(Import::Local) => imported = import_parent(items, name),
             // `use crate::models::*;` / `use super::*;` brings a same-named
             // struct / enum into scope just as a named import does.
@@ -638,6 +645,16 @@ fn import_qualifier(parent: &syn::Ident, nested: bool) -> Option<Qualifier> {
 /// models::*` → `models`, `super::*` → the parent, `crate::*` → the root).
 /// A glob of another crate, or of `self`, names no module of this crate.
 fn glob_parents(items: &[syn::Item]) -> Vec<Qualifier> {
+    glob_parent_entries(items)
+        .into_iter()
+        .map(|(parent, _)| parent)
+        .collect()
+}
+
+/// [`glob_parents`], each with whether its `use` is a re-export (`pub` or
+/// `pub(..)`). A private `use super::*;` brings the parent's names into this
+/// module only: nothing it names is re-exported from it.
+fn glob_parent_entries(items: &[syn::Item]) -> Vec<(Qualifier, bool)> {
     fn walk(
         tree: &syn::UseTree,
         root: Option<&syn::Ident>,
@@ -674,10 +691,45 @@ fn glob_parents(items: &[syn::Item]) -> Vec<Qualifier> {
     let mut out = Vec::new();
     for item in items {
         if let syn::Item::Use(item_use) = item {
-            walk(&item_use.tree, None, None, false, items, &mut out);
+            let mut parents = Vec::new();
+            walk(&item_use.tree, None, None, false, items, &mut parents);
+            let public = !matches!(item_use.vis, syn::Visibility::Inherited);
+            out.extend(parents.into_iter().map(|parent| (parent, public)));
         }
     }
     out
+}
+
+/// The item a `use` among `items` imports under another name (`use
+/// crate::error::Result as AppResult;` → `Result`, from `crate::error`), with
+/// the module it comes from (`None` for `self`). `None` without such a rename
+/// (`X as X` is none).
+fn renamed_import(items: &[syn::Item], name: &str) -> Option<(String, Option<Qualifier>)> {
+    fn walk(
+        tree: &syn::UseTree,
+        parent: Option<&syn::Ident>,
+        nested: bool,
+        name: &str,
+    ) -> Option<(String, Option<Qualifier>)> {
+        match tree {
+            syn::UseTree::Path(path) => walk(&path.tree, Some(&path.ident), parent.is_some(), name),
+            syn::UseTree::Rename(rename) if rename.rename == name && rename.ident != name => {
+                Some((
+                    rename.ident.to_string(),
+                    parent.and_then(|parent| import_qualifier(parent, nested)),
+                ))
+            }
+            syn::UseTree::Group(group) => group
+                .items
+                .iter()
+                .find_map(|tree| walk(tree, parent, nested, name)),
+            syn::UseTree::Rename(_) | syn::UseTree::Name(_) | syn::UseTree::Glob(_) => None,
+        }
+    }
+    items.iter().find_map(|item| match item {
+        syn::Item::Use(item_use) => walk(&item_use.tree, None, false, name),
+        _ => None,
+    })
 }
 
 /// Where a plain `use` among `items` imports `name` from: the module

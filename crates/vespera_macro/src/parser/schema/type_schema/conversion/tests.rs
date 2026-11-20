@@ -628,6 +628,8 @@ fn user_generic_named_like_result_with_two_arguments_keeps_ref() {
     r#"{"type":"string","format":"decimal"}"#
 )]
 #[case("Uuid", "uuid::Uuid", r#"{"type":"string","format":"uuid"}"#)]
+// A raw identifier names the same crate (`r#uuid` is `uuid`).
+#[case("Uuid", "r#uuid::Uuid", r#"{"type":"string","format":"uuid"}"#)]
 #[case("StatusCode", "http::StatusCode", r#"{"type":"integer"}"#)]
 #[case("Url", "url::Url", r#"{"type":"string","format":"uri"}"#)]
 fn external_crate_path_keeps_builtin_mapping(
@@ -679,6 +681,7 @@ fn date_time_formats_require_an_offset(#[case] ty_src: &str, #[case] format: Opt
 #[case::primitive("PrimitiveDateTime", true)]
 #[case::time_date("time::Date", true)]
 #[case::time_time("time::macros::Time", true)]
+#[case::raw_time_date("r#time::Date", true)]
 #[case::bare_date("Date", false)]
 #[case::bare_time("Time", false)]
 #[case::chrono_date("chrono::NaiveDate", false)]
@@ -913,4 +916,47 @@ fn decimal_request_view_also_reads_numbers() {
     assert_eq!(string.format.as_deref(), Some("decimal"));
     assert_eq!(string.schema_type, Some(SchemaType::String));
     assert_eq!(number.schema_type, Some(SchemaType::Number));
+}
+
+/// `<module>::Schema` names the component of that module, through a raw
+/// module identifier (`r#user`) too.
+#[rstest::rstest]
+#[case::plain("crate::models::user::Schema")]
+#[case::raw_module("crate::models::r#user::Schema")]
+fn module_schema_path_names_its_component(#[case] ty_src: &str) {
+    let known = HashSet::from(["UserSchema"]);
+    let ty: Type = syn::parse_str(ty_src).unwrap();
+    let schema_ref = parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions());
+    let SchemaRef::Ref(reference) = schema_ref else {
+        panic!("a $ref for {ty_src}");
+    };
+    assert_eq!(reference.ref_path, "#/components/schemas/UserSchema");
+}
+
+/// A relation's entity is referenced through its input view in a request
+/// body (`$ref UserInput`, also the items of a `HasMany`); the response view
+/// keeps the response component.
+#[rstest::rstest]
+#[case::belongs_to("BelongsTo<user::Entity>")]
+#[case::has_many("HasMany<user::Entity>")]
+fn relation_target_references_its_input_in_requests(#[case] ty_src: &str) {
+    let known = HashSet::from(["User"]);
+    let ty: Type = syn::parse_str(ty_src).unwrap();
+    let defs = empty_struct_definitions();
+    request_view::install(std::sync::Arc::new(
+        std::collections::BTreeMap::from([("User".to_string(), "UserInput".to_string())]).into(),
+    ));
+    let request = request_view::with_request_view(|| parse_type_to_schema_ref(&ty, &known, &defs));
+    let response = parse_type_to_schema_ref(&ty, &known, &defs);
+    request_view::install(std::sync::Arc::default());
+    let request = serde_json::to_string(&request).unwrap();
+    let response = serde_json::to_string(&response).unwrap();
+    assert!(
+        request.contains("#/components/schemas/UserInput\""),
+        "{request}"
+    );
+    assert!(
+        response.contains("#/components/schemas/User\""),
+        "{response}"
+    );
 }

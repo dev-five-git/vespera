@@ -339,8 +339,10 @@ const RESPONSE_IDENTS: [&str; 13] = [
 /// True for a named body type whose shape vespera cannot resolve: not a
 /// builtin, not a response wrapper, and not a known `Schema` type (an
 /// unexpanded alias, a custom `IntoResponse` without `#[derive(Schema)]`).
-/// Its wire shape is unknown, so it is documented by description only
-/// instead of claiming a generic JSON object.
+/// Its wire shape is unknown, so a bare such body is documented by description
+/// only instead of claiming a generic JSON object. `Json<Unknown>` is not
+/// one: `Json` is the wrapper, so it keeps `application/json` with the
+/// unresolved payload's schema (`{}`, any value).
 fn is_unresolved_named_type(
     ty: &Type,
     known_schemas: &HashSet<&str>,

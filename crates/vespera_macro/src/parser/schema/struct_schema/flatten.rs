@@ -46,7 +46,10 @@
 //! key). Members whose keys are known are therefore MERGED into one object,
 //! except a plain struct member with no flattened map and no closed sibling,
 //! which stays a `$ref` `allOf` member so its component is reused (see
-//! `assemble`). Only members whose keys cannot be known (a flattened enum, an
+//! `assemble`). A `deny_unknown_fields` container, or any member that is a
+//! flattened map or a closed object, merges EVERY known member: the outer
+//! closing applies to the whole object, which an `allOf` member cannot see.
+//! Only members whose keys cannot be known (a flattened enum, an
 //! unresolvable type) stay `allOf` members — and they keep the merged object
 //! open, except in the request view of a `deny_unknown_fields` object when
 //! the member leaves its keys (serde rejects them, so they do not open it;

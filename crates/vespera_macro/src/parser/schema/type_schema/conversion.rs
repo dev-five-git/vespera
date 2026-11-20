@@ -161,7 +161,7 @@ fn is_external_crate_path(path: &syn::Path) -> bool {
     path.segments.len() > 1
         && path.segments.first().is_some_and(|root| {
             matches!(
-                root.ident.to_string().as_str(),
+                root.ident.unraw().to_string().as_str(),
                 "std"
                     | "core"
                     | "alloc"
@@ -333,6 +333,7 @@ fn parse_type_impl(
                         {
                             return SchemaRef::Inline(Box::new(match target {
                                 EntityTarget::Component(name) => {
+                                    let name = request_view::input_component(&name).unwrap_or(name);
                                     Schema::nullable_reference(Reference::schema(&name).ref_path)
                                 }
                                 EntityTarget::Unknown => Schema::default(),
@@ -358,6 +359,7 @@ fn parse_type_impl(
                         // entity without a known component).
                         let items = match target {
                             Some(EntityTarget::Component(name)) => {
+                                let name = request_view::input_component(&name).unwrap_or(name);
                                 SchemaRef::Ref(Reference::schema(&name))
                             }
                             Some(EntityTarget::Unknown) => SchemaRef::Inline(Box::default()),
@@ -561,7 +563,7 @@ fn parse_type_impl(
             let resolved_name = if type_name == "Schema" && path.segments.len() > 1 {
                 // Get the parent module name (e.g., "user" from "crate::models::user::Schema")
                 let parent_segment = &path.segments[path.segments.len() - 2];
-                let parent_name = parent_segment.ident.to_string();
+                let parent_name = parent_segment.ident.unraw().to_string();
 
                 // Try PascalCase version: "user" -> "UserSchema"
                 // Rust identifiers are guaranteed non-empty
@@ -868,7 +870,7 @@ fn time_crate_schema() -> SchemaRef {
 
 /// `time::<..>::Ident` — a path rooted at the `time` crate.
 fn is_time_crate_path(path: &syn::Path) -> bool {
-    path.segments.len() > 1 && path.segments[0].ident == "time"
+    path.segments.len() > 1 && path.segments[0].ident.unraw() == "time"
 }
 
 /// `rust_decimal::Decimal`: a `decimal` string; in the request view also a

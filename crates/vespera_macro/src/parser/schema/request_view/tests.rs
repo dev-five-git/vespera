@@ -852,3 +852,32 @@ fn leaving_enum_before_map_is_rejected_by_serde() {
     }
     assert!(serde_json::from_str::<Outer>(r#"{"t":"A","a":1}"#).is_err());
 }
+
+/// A relation to a type with an input view makes the parent's request view
+/// differ too: its request body references that input. A relation to a type
+/// without one (or an `Option` entity of one) decides nothing.
+#[rstest]
+#[case::belongs_to("struct Post { id: u8, author: BelongsTo<user::Entity> }", true)]
+#[case::optional_belongs_to("struct Post { author: BelongsTo<Option<user::Entity>> }", true)]
+#[case::has_many("struct Post { comments: HasMany<user::Entity> }", true)]
+#[case::other_entity("struct Post { id: u8, comments: HasMany<comment::Entity> }", false)]
+#[case::not_a_relation("struct Post { user: Wrapper<user::Entity> }", false)]
+fn relation_targets_make_the_parent_differ(#[case] post_src: &str, #[case] differs: bool) {
+    let result = names(
+        &[
+            (
+                "User",
+                None,
+                "struct User { #[serde(default)] name: String }",
+            ),
+            ("Comment", None, "struct Comment { body: String }"),
+            ("Post", None, post_src),
+        ],
+        &[],
+    );
+    assert_eq!(
+        result.iter().any(|(component, _)| component == "Post"),
+        differs,
+        "{result:?}"
+    );
+}

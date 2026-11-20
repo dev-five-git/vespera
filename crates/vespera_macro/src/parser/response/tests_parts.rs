@@ -55,6 +55,8 @@ fn responses_json(return_type: &str) -> String {
 #[case::err_unresolved("err_unresolved", "-> Result<Json<User>, AppError>")]
 #[case::ok_unresolved("ok_unresolved", "-> Result<CustomBody, String>")]
 #[case::err_status_unresolved("err_status_unresolved", "-> Result<User, (StatusCode, AppError)>")]
+// `Json<AppError>` is not description-only: `Json` is the wrapper, so the
+// error keeps `application/json` with the unresolved payload's `{}` schema.
 #[case::err_json_unknown("err_json_unknown", "-> Result<User, Json<AppError>>")]
 // 13: the error side is keyed like the success one (`Redirect` → `3XX`,
 // `NoContent` → `204`, labelled by that status: "Redirect" / "Successful
