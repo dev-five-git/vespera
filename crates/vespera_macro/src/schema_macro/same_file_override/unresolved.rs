@@ -6,7 +6,10 @@
 use syn::parse::Parser;
 use syn::punctuated::Punctuated;
 
+use crate::schema_macro::cfg_eval::{Predicate, statically_active};
 use crate::schema_macro::generate_type::assignments::readable_from;
+
+use super::adapter_ref::cfg_attr_items;
 
 /// Whether a name the copied text uses is one the call site cannot resolve.
 type Judge<'a> = &'a dyn Fn(&str) -> bool;
@@ -110,8 +113,13 @@ fn metas(tokens: proc_macro2::TokenStream) -> Vec<syn::Meta> {
 }
 
 /// The `serde(..)` items of `attrs`: a plain `serde(..)` and the ones a
-/// `cfg_attr(predicate, serde(..))` adds (the predicate is not one).
-fn serde_metas(attrs: &[syn::Attribute]) -> Vec<syn::Meta> {
+/// `cfg_attr(predicate, serde(..))` adds whose predicate `keep_cfg` accepts.
+/// The container judges only the statically active ones (the proxy honours
+/// nothing else, R35-SM4-L1); a field's items are all judged.
+pub(super) fn serde_metas(
+    attrs: &[syn::Attribute],
+    keep_cfg: &dyn Fn(&Predicate) -> bool,
+) -> Vec<syn::Meta> {
     attrs
         .iter()
         .flat_map(|attr| {
@@ -121,12 +129,14 @@ fn serde_metas(attrs: &[syn::Attribute]) -> Vec<syn::Meta> {
                     .map(|list| metas(list.tokens.clone()))
                     .unwrap_or_default()
             } else if attr.path().is_ident("cfg_attr") {
-                attr.meta
-                    .require_list()
-                    .map(|list| metas(list.tokens.clone()))
-                    .unwrap_or_default()
+                let Ok((predicate, items)) = attr.parse_args_with(cfg_attr_items) else {
+                    return Vec::new();
+                };
+                if !keep_cfg(&predicate) {
+                    return Vec::new();
+                }
+                items
                     .into_iter()
-                    .skip(1)
                     .filter_map(|meta| match meta {
                         syn::Meta::List(list) if list.path.is_ident("serde") => {
                             Some(metas(list.tokens))
@@ -234,8 +244,8 @@ pub(super) fn unresolved_at_call_site(
     for field in live_fields() {
         syn::visit::Visit::visit_type(&mut types, &field.ty);
     }
-    let serde_check = |attrs: &[syn::Attribute]| {
-        string_items(&serde_metas(attrs))
+    let serde_check = |items: Vec<syn::Meta>| {
+        string_items(&items)
             .into_iter()
             .find_map(|(key, value)| match key.as_str() {
                 "from" | "try_from" => type_is_unresolved(&value, &unresolved),
@@ -249,8 +259,10 @@ pub(super) fn unresolved_at_call_site(
     };
     types
         .found
-        .or_else(|| serde_check(&dto.attrs))
-        .or_else(|| live_fields().find_map(|field| serde_check(&field.attrs)))
+        .or_else(|| serde_check(serde_metas(&dto.attrs, &statically_active)))
+        .or_else(|| {
+            live_fields().find_map(|field| serde_check(serde_metas(&field.attrs, &|_| true)))
+        })
 }
 
 /// Whether the compiler drops `field` under its statically false `cfg`s

@@ -11,6 +11,7 @@ use syn::punctuated::Punctuated;
 use super::cfg_eval::Predicate;
 use super::garde_paths::{
     garde_meta_pins_rules, option_wrap_garde_meta, reroot_garde_attr, reroot_garde_meta,
+    reroot_type,
 };
 use super::transformation::{reroot_serde_metas, serde_key};
 
@@ -64,7 +65,7 @@ pub fn carried_field_attrs(
         let path = attr.path();
         if path.is_ident("schema") {
             carried.schema_default |= schema_has_default(attr);
-            carried.schema.push(attr.clone());
+            carried.schema.push(reroot_schema_attr(attr, module_path));
         } else if path.is_ident("garde") {
             carried.garde = true;
             carried.other.push(reroot_garde_attr(attr, module_path));
@@ -146,7 +147,7 @@ fn filtered_cfg_items(
         if path.is_ident("serde") {
             carried_cfg_serde(predicate, meta, (keep_rename, module_path), carried);
         } else if path.is_ident("schema") {
-            let attr: syn::Attribute = syn::parse_quote! { #[#meta] };
+            let attr = reroot_schema_attr(&syn::parse_quote! { #[#meta] }, module_path);
             // Gates the SeaORM-derived default of the emitted field only
             // (the metadata reads no `cfg_attr`).
             if schema_derived && schema_has_default(&attr) {
@@ -188,6 +189,28 @@ fn carried_cfg_serde(
     if !items.is_empty() {
         carried.cfg_serde.push((predicate.clone(), items));
     }
+}
+
+/// A `#[schema(..)]` attribute whose `value_type = T` type is re-rooted at the
+/// source module `module_path` (SM35-3-M1): the generated DTO and its inline
+/// relation types sit at the call site, where a module-local `use` of the
+/// source does not resolve. An attribute without `value_type`, or one that
+/// does not parse, is kept as written.
+pub fn reroot_schema_attr(attr: &syn::Attribute, module_path: &[String]) -> syn::Attribute {
+    let Some(items) = schema_items(attr) else {
+        return attr.clone();
+    };
+    if items.iter().all(|item| item.value_type.is_none()) {
+        return attr.clone();
+    }
+    let items = items.into_iter().map(|item| match item.value_type {
+        Some(mut ty) => {
+            reroot_type(&mut ty, module_path);
+            quote! { value_type = #ty }
+        }
+        None => item.tokens,
+    });
+    syn::parse_quote! { #[schema(#(#items),*)] }
 }
 
 /// One item of a `#[schema(..)]` list: its key and its tokens (a
@@ -513,6 +536,36 @@ mod tests {
         )
         .unwrap();
         field.attrs
+    }
+
+    /// SM35-3-M1: a `value_type` naming a module-local type is re-rooted at the
+    /// source module, its generic arguments too (the DTO is emitted elsewhere).
+    #[test]
+    fn schema_value_type_is_rerooted_at_the_source_module() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(src.join("models")).unwrap();
+        std::fs::write(src.join("lib.rs"), "pub mod models;").unwrap();
+        std::fs::write(src.join("models.rs"), "pub mod user;").unwrap();
+        std::fs::write(src.join("models").join("user.rs"), "pub enum Wire { A }").unwrap();
+        let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        crate::schema_macro::file_cache::bump_epoch();
+        let module = ["crate", "models", "user"].map(String::from);
+        let attrs = field(quote!(#[schema(value_type = Vec<Wire>, nullable)]));
+        let carried = carried_field_attrs(&attrs, true, &module, false);
+        assert_eq!(
+            render(&carried),
+            "# [schema (value_type = Vec < crate :: models :: user :: Wire > , nullable)]"
+        );
+    }
+
+    /// A `#[schema(..)]` that does not parse is carried as written (nothing to
+    /// re-root), and so is one without `value_type`.
+    #[test]
+    fn schema_without_a_value_type_is_carried_unchanged() {
+        let attrs = field(quote!(#[schema = 1] #[schema(nullable)]));
+        let carried = carried_field_attrs(&attrs, true, &[], false);
+        assert_eq!(render(&carried), "# [schema = 1] # [schema (nullable)]");
     }
 
     fn render(carried: &CarriedAttrs) -> String {

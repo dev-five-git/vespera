@@ -1,5 +1,5 @@
 ---
-source: crates/vespera_macro/src/schema_macro/same_file_override.rs
+source: crates/vespera_macro/src/schema_macro/same_file_override/tests.rs
 expression: "prettyplease::unparse(&file)"
 ---
 #[derive(serde::Serialize, vespera::Schema)]
@@ -13,8 +13,7 @@ impl Clone for __VesperaArticleResponseUserRelation {
                 .0
                 .as_ref()
                 .map(|dto| UserInArticle {
-                    name: dto.name.clone(),
-                    next: dto.next.clone(),
+                    id: dto.id.clone(),
                 }),
         )
     }
@@ -27,17 +26,12 @@ impl Default for __VesperaArticleResponseUserRelation {
 #[derive(serde::Deserialize)]
 #[serde(default)]
 struct __VesperaArticleResponseUserProxy {
-    #[serde(default = "UserInArticle::default_name")]
-    name: String,
-    next: Option<Box<UserInArticle>>,
+    id: i32,
 }
 impl ::core::default::Default for __VesperaArticleResponseUserProxy {
     fn default() -> Self {
-        let dto: UserInArticle = UserInArticle::make();
-        Self {
-            name: dto.name,
-            next: dto.next,
-        }
+        let dto: UserInArticle = UserInArticle::fallback();
+        Self { id: dto.id }
     }
 }
 impl<'de> serde::Deserialize<'de> for __VesperaArticleResponseUserRelation {
@@ -48,15 +42,7 @@ impl<'de> serde::Deserialize<'de> for __VesperaArticleResponseUserRelation {
         let proxy = <Option<
             __VesperaArticleResponseUserProxy,
         > as serde::Deserialize>::deserialize(deserializer)?;
-        Ok(
-            Self(
-                proxy
-                    .map(|proxy| UserInArticle {
-                        name: proxy.name,
-                        next: proxy.next,
-                    }),
-            ),
-        )
+        Ok(Self(proxy.map(|proxy| UserInArticle { id: proxy.id })))
     }
 }
 impl From<Option<crate::models::user::Model>> for __VesperaArticleResponseUserRelation {
@@ -64,8 +50,7 @@ impl From<Option<crate::models::user::Model>> for __VesperaArticleResponseUserRe
         Self(
             source
                 .map(|source| UserInArticle {
-                    name: source.name.clone(),
-                    next: source.next.clone(),
+                    id: source.id.clone(),
                 }),
         )
     }

@@ -1,5 +1,5 @@
 ---
-source: crates/vespera_macro/src/schema_macro/same_file_override.rs
+source: crates/vespera_macro/src/schema_macro/same_file_override/tests.rs
 expression: "prettyplease::unparse(&file)"
 ---
 #[derive(serde::Serialize, vespera::Schema)]
@@ -23,26 +23,17 @@ impl Default for __VesperaArticleResponseUserRelation {
         Self(None)
     }
 }
-#[derive(serde::Deserialize)]
-#[serde(default)]
-struct __VesperaArticleResponseUserProxy {
-    id: i32,
-}
-impl ::core::default::Default for __VesperaArticleResponseUserProxy {
-    fn default() -> Self {
-        let dto: UserInArticle = UserInArticle::fallback();
-        Self { id: dto.id }
-    }
-}
 impl<'de> serde::Deserialize<'de> for __VesperaArticleResponseUserRelation {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let proxy = <Option<
-            __VesperaArticleResponseUserProxy,
-        > as serde::Deserialize>::deserialize(deserializer)?;
-        Ok(Self(proxy.map(|proxy| UserInArticle { id: proxy.id })))
+        let value = <Option<String> as serde::Deserialize>::deserialize(deserializer)?;
+        value
+            .map(<UserInArticle as ::core::convert::TryFrom<String>>::try_from)
+            .transpose()
+            .map(Self)
+            .map_err(serde::de::Error::custom)
     }
 }
 impl From<Option<crate::models::user::Model>> for __VesperaArticleResponseUserRelation {

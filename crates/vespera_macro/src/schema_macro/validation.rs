@@ -281,9 +281,10 @@ pub fn validate_add_field_idents(
 ///
 /// `kept` entries are `(emitted, source, undecided)`: `undecided` marks a field
 /// whose `#[cfg]` is neither known true nor known false. The compiler may drop
-/// it, so a rename target equal to its name is not refused here (R34-SM5-2):
-/// a real duplicate in the build that keeps both is rustc's E0124 on the
-/// emitted field. It still counts as a name for `add`.
+/// it, so neither a rename target nor an `add` field equal to its name is
+/// refused here (R34-SM5-2, R35-VAL-1): a real duplicate in the build that
+/// keeps both is rustc's E0124 on the emitted field, and refusing it on every
+/// platform would reject a rename the build without the field accepts.
 pub fn validate_unique_field_names(
     kept: impl IntoIterator<Item = (String, String, bool)>,
     rename_pairs: Option<&Vec<(String, String)>>,
@@ -299,12 +300,12 @@ pub fn validate_unique_field_names(
     let mut sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut seen: HashSet<String> = HashSet::new();
     for (name, source, undecided) in kept {
-        let name = unraw(&name);
-        let source = unraw(&source);
-        seen.insert(name.clone());
         if undecided {
             continue;
         }
+        let name = unraw(&name);
+        let source = unraw(&source);
+        seen.insert(name.clone());
         if let Some(previous) = sources.insert(name.clone(), source.clone())
             && previous != source
             && let Some(written) = renamed.get(&name)
@@ -906,6 +907,24 @@ mod tests {
                 assert!(err.contains(message), "{err}");
             }
         }
+    }
+
+    /// R35-VAL-1: an `add` field named like an undecided `#[cfg]` field is
+    /// accepted (the build keeping both gets E0124 from rustc); a decided one
+    /// is refused.
+    #[rstest::rstest]
+    #[case::undecided_cfg_field(true, true)]
+    #[case::decided_field(false, false)]
+    fn add_name_of_an_undecided_field(#[case] undecided: bool, #[case] accepted: bool) {
+        let ty: syn::Type = syn::parse2(quote!(User)).unwrap();
+        let add = vec![("x".to_string(), syn::parse_quote!(i64))];
+        let result = validate_unique_field_names(
+            [("x".to_string(), "x".to_string(), undecided)],
+            None,
+            Some(&add),
+            &ty,
+        );
+        assert_eq!(result.is_ok(), accepted);
     }
 
     /// R34-SM5-2: a rename target that only an undecided `#[cfg]` field also

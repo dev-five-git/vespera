@@ -24,7 +24,7 @@ use std::{
 
 use crate::metadata::StructMetadata;
 use crate::schema_macro::file_cache::{
-    FileFingerprint, get_file_content, get_file_fingerprint, get_parsed_file,
+    FileFingerprint, get_file_content, get_file_fingerprint, with_fallback_parse,
 };
 
 /// What a registration recorded about its item's file.
@@ -63,9 +63,15 @@ fn line_of(identity: &str) -> usize {
 }
 
 /// The inline `mod` chain around `line` in `file`, outermost first: empty at
-/// the file's top level, or when the file cannot be parsed.
+/// the file's top level, or when the file cannot be parsed. The file is parsed
+/// under the fallback (R35-SM-M1): inside rustc the compiler's spans would
+/// place every brace on the call-site line, so the chain would be wrong.
 fn module_chain(file: &Path, line: usize) -> Vec<String> {
-    get_parsed_file(file).map_or_else(Vec::new, |parsed| enclosing_modules(&parsed.items, line))
+    get_file_content(file)
+        .and_then(|content| {
+            with_fallback_parse(&content, |parsed| enclosing_modules(&parsed.items, line))
+        })
+        .unwrap_or_default()
 }
 
 /// The inline modules whose braces span `line` (as the openapi generator's
@@ -154,12 +160,14 @@ pub(super) fn left_its_file(existing: &StructMetadata) -> bool {
     let path = Path::new(file);
     match recorded {
         Some((chain, fingerprint)) if fingerprint != get_file_fingerprint(path) => {
-            match get_parsed_file(path) {
-                Some(parsed) => declared_in_module(&parsed.items, &chain, ident) == 0,
-                // Unparseable mid-edit but present: the item may still be in it
-                // (R26-SM-L1), so only a file that is gone counts as left.
-                None => get_file_content(path).is_none(),
-            }
+            // Unparseable mid-edit but present: the item may still be in it
+            // (R26-SM-L1), so only a file that is gone counts as left.
+            get_file_content(path).is_none_or(|content| {
+                with_fallback_parse(&content, |parsed| {
+                    declared_in_module(&parsed.items, &chain, ident) == 0
+                })
+                .unwrap_or(false)
+            })
         }
         _ => false,
     }
@@ -175,6 +183,33 @@ mod tests {
     #[case::no_file("User@1:7", None)]
     fn identity_parts(#[case] identity: &str, #[case] expected: Option<(&str, &str)>) {
         assert_eq!(file_and_ident(identity), expected);
+    }
+
+    /// R35-SM-M1: the chain comes from the braces of the parsed file, so two
+    /// same-named items of sibling inline modules get their own module.
+    #[test]
+    fn module_chain_follows_the_braces_of_sibling_modules() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("pages.rs");
+        std::fs::write(
+            &file,
+            "pub mod first {
+    pub struct Page {}
+}
+pub mod second {
+    pub struct Page {}
+}
+pub struct Top {}
+",
+        )
+        .unwrap();
+        assert_eq!(module_chain(&file, 2), ["first"]);
+        assert_eq!(module_chain(&file, 5), ["second"]);
+        assert_eq!(module_chain(&file, 7), Vec::<String>::new());
+        assert_eq!(
+            module_chain(&dir.path().join("missing.rs"), 2),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

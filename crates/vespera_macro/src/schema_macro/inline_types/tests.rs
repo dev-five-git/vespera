@@ -508,6 +508,50 @@ fn raw_paths_reroot_and_cfg() {
     );
 }
 
+/// SM35-3-M1: a `schema(value_type = T)` naming a type local to the source
+/// model is re-rooted at that module, so the inline type (emitted at the
+/// call site) resolves it.
+#[test]
+fn schema_value_type_reroots_in_the_inline_type() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let models_dir = temp_dir.path().join("src").join("models");
+    std::fs::create_dir_all(&models_dir).unwrap();
+    std::fs::write(
+        models_dir.join("type.rs"),
+        r"
+    pub struct Wire;
+    pub struct Model {
+        pub id: i32,
+        #[schema(value_type = Wire, nullable)]
+        pub code: Wire,
+        pub memo: BelongsTo<super::memo::Entity>,
+    }
+    ",
+    )
+    .unwrap();
+
+    let result = with_manifest_dir(temp_dir.path(), || {
+        generate_inline_relation_type(
+            &syn::Ident::new_raw("Memo", proc_macro2::Span::call_site()),
+            &rel("kind", "BelongsTo", quote!(crate::models::r#type::Schema)),
+            &module_path(&MEMO_MODULE),
+            None,
+        )
+    })
+    .expect("circular reference through the raw module path");
+
+    let code = result
+        .fields
+        .iter()
+        .find(|field| field.name == "code")
+        .expect("the `code` field is carried");
+    let attrs = &code.attrs;
+    assert_eq!(
+        quote!(#(#attrs)*).to_string(),
+        "# [schema (value_type = crate :: models :: r#type :: Wire , nullable)]"
+    );
+}
+
 #[test]
 fn file_lookup_no_relations_strips_relations() {
     let temp_dir = tempfile::TempDir::new().unwrap();

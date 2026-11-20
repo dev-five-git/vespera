@@ -1,5 +1,5 @@
 ---
-source: crates/vespera_macro/src/schema_macro/same_file_override.rs
+source: crates/vespera_macro/src/schema_macro/same_file_override/tests.rs
 expression: "prettyplease::unparse(&file)"
 ---
 #[derive(serde::Serialize, vespera::Schema)]
@@ -13,9 +13,8 @@ impl Clone for __VesperaArticleResponseUserRelation {
                 .0
                 .as_ref()
                 .map(|dto| UserInArticle {
-                    id: dto.id.clone(),
-                    #[cfg(test)]
                     name: dto.name.clone(),
+                    next: dto.next.clone(),
                 }),
         )
     }
@@ -26,20 +25,18 @@ impl Default for __VesperaArticleResponseUserRelation {
     }
 }
 #[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
 #[serde(default)]
 struct __VesperaArticleResponseUserProxy {
-    id: i32,
-    #[cfg(test)]
+    #[serde(default = "UserInArticle::default_name")]
     name: String,
+    next: Option<Box<UserInArticle>>,
 }
 impl ::core::default::Default for __VesperaArticleResponseUserProxy {
     fn default() -> Self {
-        let dto: UserInArticle = <UserInArticle as ::core::default::Default>::default();
+        let dto: UserInArticle = UserInArticle::make();
         Self {
-            id: dto.id,
-            #[cfg(test)]
             name: dto.name,
+            next: dto.next,
         }
     }
 }
@@ -55,9 +52,8 @@ impl<'de> serde::Deserialize<'de> for __VesperaArticleResponseUserRelation {
             Self(
                 proxy
                     .map(|proxy| UserInArticle {
-                        id: proxy.id,
-                        #[cfg(test)]
                         name: proxy.name,
+                        next: proxy.next,
                     }),
             ),
         )
@@ -68,9 +64,8 @@ impl From<Option<crate::models::user::Model>> for __VesperaArticleResponseUserRe
         Self(
             source
                 .map(|source| UserInArticle {
-                    id: source.id.clone(),
-                    #[cfg(test)]
                     name: source.name.clone(),
+                    next: source.next.clone(),
                 }),
         )
     }

@@ -1,5 +1,6 @@
 ---
-source: crates/vespera_macro/src/schema_macro/same_file_override.rs
+source: crates/vespera_macro/src/schema_macro/same_file_override/tests.rs
+assertion_line: 546
 expression: "prettyplease::unparse(&file)"
 ---
 #[derive(serde::Serialize, vespera::Schema)]
@@ -14,6 +15,7 @@ impl Clone for __VesperaArticleResponseUserRelation {
                 .as_ref()
                 .map(|dto| UserInArticle {
                     id: dto.id.clone(),
+                    #[cfg(any(not(feature = "a"), feature = "b"))]
                     name: dto.name.clone(),
                 }),
         )
@@ -27,6 +29,8 @@ impl Default for __VesperaArticleResponseUserRelation {
 #[derive(serde::Deserialize)]
 struct __VesperaArticleResponseUserProxy {
     id: i32,
+    #[cfg(any(not(feature = "a"), feature = "b"))]
+    #[cfg_attr(feature = "a", serde(rename = "n"))]
     name: String,
 }
 impl<'de> serde::Deserialize<'de> for __VesperaArticleResponseUserRelation {
@@ -42,6 +46,7 @@ impl<'de> serde::Deserialize<'de> for __VesperaArticleResponseUserRelation {
                 proxy
                     .map(|proxy| UserInArticle {
                         id: proxy.id,
+                        #[cfg(any(not(feature = "a"), feature = "b"))]
                         name: proxy.name,
                     }),
             ),
@@ -54,6 +59,7 @@ impl From<Option<crate::models::user::Model>> for __VesperaArticleResponseUserRe
             source
                 .map(|source| UserInArticle {
                     id: source.id.clone(),
+                    #[cfg(any(not(feature = "a"), feature = "b"))]
                     name: source.name.clone(),
                 }),
         )
