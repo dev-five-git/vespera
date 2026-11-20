@@ -128,6 +128,23 @@ fn expands_in_crate(files: &[(&str, &str)], handler: &str, ret: &str) -> bool {
     "crate::v2::ApiResponse<User>",
     false
 )]
+// A glob of an unresolved chain (`super::super::*`, deeper than one module
+// level) may bring the struct in from a module this lookup cannot follow: the
+// struct is nominal, not the crate alias.
+#[case::unresolved_super_chain_glob_is_nominal(
+    &[("lib.rs", "mod routes; pub mod v2;"), ("v2.rs", "pub use super::super::*;"), ROUTES],
+    "pub fn h() {}",
+    "crate::v2::ApiResponse<User>",
+    false
+)]
+// A grouped re-export of a renamed struct (`use crate::{m::X as Y};`) names
+// that struct too, so the same-named alias elsewhere is unrelated.
+#[case::grouped_renamed_reexport_is_nominal(
+    &[("lib.rs", "mod models; mod routes; pub use crate::{models::Envelope as ApiResponse};"), MODELS, ROUTES],
+    "pub fn h() {}",
+    "crate::ApiResponse<User>",
+    false
+)]
 #[case::reexport_cycle(
     &[
         ("lib.rs", "mod a; mod b; mod routes; pub use crate::a::ApiResponse;"),
