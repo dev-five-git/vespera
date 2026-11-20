@@ -764,7 +764,7 @@ fn validate_serde_default_values(
         let error = syn::Error::new_spanned(
             field,
             format!(
-                "cannot statically determine the OpenAPI default for field `{field_name}` which has `#[serde(default)]`; add an explicit `#[schema(default = \"...\")]`"
+                "cannot statically determine the OpenAPI default for field `{field_name}` which has `#[serde(default = ...)]` (or bare `#[serde(default)]`); add an explicit `#[schema(default = \"...\")]`"
             ),
         );
         if let Some(existing) = &mut errors {

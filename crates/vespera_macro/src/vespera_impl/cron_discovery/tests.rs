@@ -906,3 +906,88 @@ fn cfg_twins_of_a_job_in_one_module_are_not_ambiguous() {
         )]
     );
 }
+
+/// A `#[cfg_attr(p, cfg(q))]` gates a module or fn like a plain `#[cfg]`: the
+/// scan does not read it as a live job.
+#[test]
+fn cfg_attr_gated_module_and_function_are_not_scanned() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "#[cfg_attr(all(), cfg(any()))]\nmod jobs;\nmod kept;\n",
+        ),
+        (
+            "jobs.rs",
+            r#"#[cron("1 * * * * *")] pub async fn tick() {}"#,
+        ),
+        (
+            "kept.rs",
+            r#"#[cfg_attr(all(), cfg(any()))] #[cron("2 * * * * *")] pub async fn gated() {}
+            #[cron("3 * * * * *")] pub async fn live() {}"#,
+        ),
+    ]);
+    crate::schema_macro::file_cache::bump_epoch();
+    let src = krate.path().join("src");
+    assert_eq!(
+        summary(&discover(&[], Some(&src), Some(&src.join("lib.rs")))),
+        rows(&[("kept", "live", "3 * * * * *")])
+    );
+}
+
+/// `#[cfg_attr(p, cron(..))]` is a job unless `p` is statically false (the
+/// compiler drops the attribute then); an unknown `p` keeps it.
+#[rstest]
+#[case::statically_true("all()", true)]
+#[case::unknown("unix", true)]
+#[case::statically_false("any()", false)]
+fn cfg_attr_cron_is_a_job_unless_its_predicate_is_statically_false(
+    #[case] predicate: &str,
+    #[case] is_job: bool,
+) {
+    let live =
+        format!("#[cfg_attr({predicate}, cron(\"1 * * * * *\"))]\npub async fn tick() {{}}\n");
+    let krate = crate_with(&[("lib.rs", "mod live;\n"), ("live.rs", live.as_str())]);
+    crate::schema_macro::file_cache::bump_epoch();
+    let src = krate.path().join("src");
+    let expected = if is_job {
+        rows(&[("live", "tick", "1 * * * * *")])
+    } else {
+        rows(&[])
+    };
+    assert_eq!(
+        summary(&discover(&[], Some(&src), Some(&src.join("lib.rs")))),
+        expected
+    );
+}
+
+/// The `..` of a `#[path]` child is folded before the file check, under a
+/// verbatim-prefixed base too (where the filesystem leaves it unnormalised).
+#[test]
+fn fold_parent_dirs_drops_dots_and_pops_before_the_child() {
+    let base = Path::new("//?/C:/proj/src");
+    assert_eq!(
+        fold_parent_dirs(&base.join("../shared/./jobs.rs")),
+        Path::new("//?/C:/proj/shared/jobs.rs")
+    );
+    assert_eq!(
+        fold_parent_dirs(Path::new("a/../../b.rs")),
+        Path::new("b.rs")
+    );
+    assert_eq!(fold_parent_dirs(Path::new("./a.rs")), Path::new("a.rs"));
+}
+
+/// A `cfg_attr` the compiler could not parse is no `cron` attribute, but it
+/// does not hide the plain `#[cron]` beside it.
+#[test]
+fn malformed_cfg_attr_beside_a_plain_cron_still_scans_the_job() {
+    let krate = crate_with(&[(
+        "lib.rs",
+        "#[cfg_attr(unix)]\n#[cron(\"1 * * * * *\")]\npub async fn tick() {}\n",
+    )]);
+    crate::schema_macro::file_cache::bump_epoch();
+    let src = krate.path().join("src");
+    assert_eq!(
+        summary(&discover(&[], Some(&src), Some(&src.join("lib.rs")))),
+        rows(&[("", "tick", "1 * * * * *")])
+    );
+}

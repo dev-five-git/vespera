@@ -1,8 +1,7 @@
 #![allow(dead_code)]
-//! Target of the SeaORM 2.0 relation shapes `cake` / `listing` exercise:
-//! an optional `BelongsTo<Option<Entity>>`, `HasOne` + `via_rel`, a key
-//! that is not the primary key (`code`), and relation fields named like the
-//! generated `from_model`'s own parameters (`model`, `db`).
+//! Target of the SeaORM 2.0 relation shapes `cake` exercises: a `HasOne`
+//! selected through `via_rel` (`flagship`), a unique non-primary-key column
+//! (`code`), and the `HasMany` back-reference (`cakes`).
 use sea_orm::entity::prelude::*;
 
 #[sea_orm::model]

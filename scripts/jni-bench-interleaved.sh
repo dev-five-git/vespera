@@ -49,6 +49,9 @@ else
   work=$(mktemp -d)
   owned_work=$work
 fi
+# A caller-supplied WORK_DIR may hold an earlier run's rounds: clear them so the
+# compare step cannot pair stale base-N / head-N files with this run's.
+rm -rf "$work/results"
 mkdir -p "$work/results"
 base_tree="$work/base-tree"
 

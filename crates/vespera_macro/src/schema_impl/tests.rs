@@ -815,8 +815,8 @@ fn process_derive_schema_returns_all_unresolved_serde_default_errors() {
     assert_eq!(
         messages,
         vec![
-            "cannot statically determine the OpenAPI default for field `first` which has `#[serde(default)]`; add an explicit `#[schema(default = \"...\")]`",
-            "cannot statically determine the OpenAPI default for field `second` which has `#[serde(default)]`; add an explicit `#[schema(default = \"...\")]`",
+            "cannot statically determine the OpenAPI default for field `first` which has `#[serde(default = ...)]` (or bare `#[serde(default)]`); add an explicit `#[schema(default = \"...\")]`",
+            "cannot statically determine the OpenAPI default for field `second` which has `#[serde(default = ...)]` (or bare `#[serde(default)]`); add an explicit `#[schema(default = \"...\")]`",
         ]
     );
 }

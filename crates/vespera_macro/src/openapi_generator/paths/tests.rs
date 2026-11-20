@@ -9,6 +9,7 @@ use crate::{
     route_impl::StoredRouteInfo,
 };
 
+mod tests_parallel;
 mod tests_twins;
 
 fn create_temp_file(dir: &TempDir, filename: &str, content: &str) -> PathBuf {

@@ -34,6 +34,7 @@ use crate::parser::schema::{
     strip_raw_prefix_owned, wire_override::container_override_type,
 };
 use crate::parser::{extract_path_parameters, request_extractor};
+use crate::schema_macro::field_attrs::field_cfgs;
 
 /// Check every `Path<T>` / `Validated<Path<T>>` argument of `sig` against
 /// the `{params}` of the `#[route(path)]` (none without a `path`). Structs
@@ -77,8 +78,9 @@ fn struct_in_module(items: Vec<syn::Item>, scope: &str, name: &str) -> Option<sy
     let found = structs.next()?;
     // A `#[cfg]`-gated struct may be the one a cfg-off build does not define:
     // the name then means whatever else it resolves to (a `use`), so the
-    // fields are unknown and the check is skipped.
-    let gated = found.attrs.iter().any(|attr| attr.path().is_ident("cfg"));
+    // fields are unknown and the check is skipped. A `cfg_attr(p, cfg(q))`
+    // gates it the same way (`field_cfgs` yields its `cfg(q)`).
+    let gated = !field_cfgs(&found.attrs).is_empty();
     (!gated && structs.next().is_none()).then_some(found)
 }
 
@@ -263,12 +265,18 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn cfg_gated_struct_is_not_taken_as_the_definition() {
-        let gated = syn::parse_file(r#"#[cfg(feature = "legacy")] pub struct Params { id: u32 }"#)
-            .unwrap()
-            .items;
+    #[rstest]
+    #[case::cfg(r#"#[cfg(feature = "legacy")]"#)]
+    #[case::cfg_attr_statically_false("#[cfg_attr(all(), cfg(any()))]")]
+    #[case::cfg_attr_unknown("#[cfg_attr(unix, cfg(all()))]")]
+    fn cfg_gated_struct_is_not_taken_as_the_definition(#[case] attr: &str) {
+        let source = format!("{attr} pub struct Params {{ id: u32 }}");
+        let gated = syn::parse_file(&source).unwrap().items;
         assert!(struct_in_module(gated, "", "Params").is_none());
+    }
+
+    #[test]
+    fn ungated_struct_is_taken_as_the_definition() {
         let plain = syn::parse_file("pub struct Params { id: u32 }")
             .unwrap()
             .items;

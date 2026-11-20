@@ -670,40 +670,52 @@ jobs:
         # PR shows no checks at all. Best effort: never blocks publish. Runs
         # whenever changepacks itself succeeded, so a failed artifact
         # collection never skips it.
+        #
+        # Credentials: the checkout persists the job token in .git/config
+        # (http.https://github.com/.extraheader), and the bun / cargo below
+        # read configuration from the changepacks/main tree. The step
+        # therefore removes that persisted header BEFORE any tree-controlled
+        # code runs, and the write token is written only into the two final
+        # commands (push, workflow dispatch), never into this step's env. The
+        # changepacks action above keeps the persisted credentials it always
+        # had; only this step loses them. The fetch that precedes the removal
+        # runs no tree code.
+        #
+        # Tree isolation: cargo and bun run with their working directory in a
+        # trusted directory outside the checkout, so no .cargo/config.toml,
+        # rust-toolchain or bunfig.toml of the branch is read. The copied sync
+        # script and its imports come from main (the trusted copy below), and
+        # the tree is passed as the root through VERSION_SYNC_ROOT and
+        # --manifest-path.
         if: ${{ !cancelled() && steps.changepacks.outcome == 'success' }}
         continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if ! git fetch --depth 1 origin changepacks/main 2>/dev/null; then
             echo "no version PR branch"; exit 0
           fi
           # The sync script and the modules it imports are copied from this
-          # (main) checkout first, so the code that runs is main's; the copy
-          # rewrites the branch checkout through VERSION_SYNC_ROOT.
+          # (main) checkout first, so the code that runs is main's.
+          tree="$PWD"
           trusted="$RUNNER_TEMP/version-sync"
           mkdir -p "$trusted/scripts" "$trusted/apps/landing/src/constants"
           cp scripts/sync-landing-versions.ts scripts/check-version-alignment.ts "$trusted/scripts/"
           cp apps/landing/src/constants/index.ts "$trusted/apps/landing/src/constants/"
           git checkout -B changepacks/main FETCH_HEAD
-          # GH_TOKEN (the write token) is removed from the environment of
-          # cargo and bun, which read configuration from the checkout
-          # (`.cargo/config.toml`, bun config) and so run tree-controlled
-          # settings. The copy above covers only the sync script and its
-          # imports. git and gh keep the token: gh needs it, and git pushes
-          # with the checkout's own credentials.
+          git config --local --unset-all 'http.https://github.com/.extraheader' || true
           # cargo update only resolves the manifests and Cargo.lock: it runs no
           # build.rs, proc macro or workspace code (verified with a path
           # dependency carrying a build script and a proc-macro crate).
-          env -u GH_TOKEN cargo update --workspace
-          env -u GH_TOKEN VERSION_SYNC_ROOT="$PWD" bun "$trusted/scripts/sync-landing-versions.ts"
+          (cd "$trusted" && cargo update --workspace --manifest-path "$tree/Cargo.toml")
+          (cd "$trusted" && VERSION_SYNC_ROOT="$tree" bun "$trusted/scripts/sync-landing-versions.ts")
+          cd "$tree"
           if ! git diff --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit -am "Sync Cargo.lock and the landing docs with the bumped versions"
-            git push origin HEAD:changepacks/main
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' '${{ secrets.GITHUB_TOKEN }}' | base64 | tr -d '\n')" \
+              push origin HEAD:changepacks/main
           fi
-          gh workflow run CI.yml --repo "$GITHUB_REPOSITORY" --ref changepacks/main
+          GH_TOKEN='${{ secrets.GITHUB_TOKEN }}' gh workflow run CI.yml --repo "$GITHUB_REPOSITORY" --ref changepacks/main
     outputs:
       changepacks: ${{ steps.changepacks.outputs.changepacks }}
       release_assets_urls: ${{ steps.changepacks.outputs.release_assets_urls }}

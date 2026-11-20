@@ -1239,7 +1239,8 @@ once in a fall-back overlap (at the first 01:30).
 
 By default every tick starts a run, so a job that takes longer than its
 interval overlaps itself (`overlap = "allow"`). With `overlap = "skip"`, a tick
-is skipped — and logged to stderr — while the previous run of the same job is
+is skipped — and logged (stderr, or a WARN event on target `vespera::cron` with the
+`tracing` feature) — while the previous run of the same job is
 still going:
 
 ```rust
@@ -1250,7 +1251,7 @@ pub async fn reindex() {}
 ### Panics and Shutdown
 
 - Every run is supervised: a panicking job is logged to stderr
-  (`vespera: cron job `module::function` panicked: …`) and its schedule keeps
+  (``vespera: cron job `module::function` panicked: …``) and its schedule keeps
   going. With the `tracing` feature, cron diagnostics are `tracing` events on
   target `vespera::cron` instead (panic / unschedulable job at ERROR, overlap
   skip and a job with no further occurrence at WARN).
@@ -1341,6 +1342,11 @@ This automatically:
 - Merges all routes from child apps into the parent router
 - Combines OpenAPI specs (paths, schemas, tags) into a single spec
 - Makes Swagger UI show all routes from all apps
+
+Overlap checks see only a child's ungated routes. A `#[cfg]`-gated route of a
+child is mounted when its feature is on, but the child's exported spec leaves
+it out, so a parent route that overlaps it is not reported at compile time:
+the overlap panics when the merged router is built (a documented limit).
 
 ---
 

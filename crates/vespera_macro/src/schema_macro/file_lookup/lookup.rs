@@ -669,10 +669,31 @@ pub fn call_site_module() -> Option<Vec<String>> {
     if let Some(module) = TEST_CALL_SITE_MODULE.with(|module| module.borrow().clone()) {
         return Some(module);
     }
+    if let Some(module) = INHERITED_CALL_SITE_MODULE.with(|module| module.borrow().clone()) {
+        return Some(module);
+    }
     let call_site = proc_macro2::Span::call_site().local_file();
     call_site
         .zip(crate::schema_macro::crate_layout::crate_layout())
         .map(|(file, layout)| call_site_module_of(&layout, &file, call_site_line()))
+}
+
+thread_local! {
+    /// The caller's [`call_site_module`], handed to a parallel worker (its own
+    /// `Span::call_site()` is a fallback span with no file).
+    static INHERITED_CALL_SITE_MODULE: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// [`call_site_module`] as the calling thread sees it, for [`install_call_site_module`].
+pub fn call_site_module_snapshot() -> Option<Vec<String>> {
+    call_site_module()
+}
+
+/// Make `module` this worker thread's call-site module (a parallel worker
+/// reads the module its caller captured with [`call_site_module_snapshot`]).
+pub fn install_call_site_module(module: Option<Vec<String>>) {
+    INHERITED_CALL_SITE_MODULE.with(|current| *current.borrow_mut() = module);
 }
 
 #[cfg(test)]

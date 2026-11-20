@@ -11,6 +11,11 @@
 //! — and reads only the children's exported spec sidecars (an absent /
 //! unreadable one is skipped here; the spec merge reports it when a document
 //! is generated).
+//!
+//! Known limit: a merged child's `#[cfg]`-gated routes are not in its exported
+//! sidecar (only its ungated routes are), so they are not claimed here. A
+//! child feature that mounts a route overlapping the parent's panics when the
+//! merged router is built instead of failing the expansion.
 
 use syn::spanned::Spanned;
 
@@ -115,7 +120,9 @@ pub(super) fn check_merge_route_conflicts(
 
 /// `#[cfg(all(..))] compile_error!(..);` for every gated route that `own`
 /// (the app's ungated and documentation routes) accepts but `all` (those plus
-/// the merged children's routes) rejects.
+/// the merged children's routes) rejects. Only the app's own gated routes are
+/// checked: a merged child's gated routes are outside `all` (see the module
+/// doc's known limit).
 fn gated_child_conflicts(
     metadata: &CollectedMetadata,
     own: &RouteClaims,

@@ -307,9 +307,17 @@ mod tests {
     // ========== Tests for find_workspace_root ==========
 
     #[test]
-    fn test_find_workspace_root_no_workspace() {
-        // Test fallback to manifest dir's target
+    fn test_find_workspace_root_uses_the_workspace_manifest_dir() {
+        // The temp dir is its own workspace root: an ancestor of the temp dir
+        // (a checkout with a Cargo.lock, a parent `[workspace]`) must not
+        // decide the answer, so the root marker is written here.
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            "[workspace]
+",
+        )
+        .expect("write workspace manifest");
         let manifest_path = temp_dir.path();
         let result = find_workspace_root(manifest_path);
         assert_eq!(result, manifest_path);
@@ -459,6 +467,13 @@ mod tests {
         let _vespera = crate::env_access::test_env::remove_var("VESPERA_TARGET_DIR");
         let _cargo = crate::env_access::test_env::remove_var("CARGO_TARGET_DIR");
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        // A workspace root of its own: the answer does not depend on ancestors.
+        fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            "[workspace]
+",
+        )
+        .expect("write workspace manifest");
         assert_eq!(
             find_target_dir(temp_dir.path()),
             temp_dir.path().join("target")
@@ -507,9 +522,7 @@ mod tests {
         let result = find_folder_path("routes").unwrap();
 
         // Should return the src/routes path since it exists
-        assert!(
-            result.to_string_lossy().contains("src") && result.to_string_lossy().contains("routes")
-        );
+        assert_eq!(result, temp_dir.path().join("src").join("routes"));
     }
 
     /// A binary named differently from its package gets its own tag; the

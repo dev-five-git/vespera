@@ -9,7 +9,7 @@ mod circular;
 mod codegen;
 mod crate_layout;
 mod defaults;
-mod field_attrs;
+pub mod field_attrs;
 mod field_selection;
 pub mod file_cache;
 mod file_lookup;
@@ -32,7 +32,10 @@ mod validation;
 pub use file_cache::print_profile_summary;
 #[cfg(test)]
 pub use file_lookup::set_test_call_site_module;
-pub use file_lookup::{call_site_module, is_extern_crate, reexported_item, storage_module_path};
+pub use file_lookup::{
+    call_site_module, call_site_module_snapshot, install_call_site_module, is_extern_crate,
+    reexported_item, storage_module_path,
+};
 pub use generate_type::generate_schema_type_code;
 pub use input::{SchemaInput, SchemaTypeInput};
 
