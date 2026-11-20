@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 use syn::{Item, punctuated::Punctuated};
 
-use super::module_scope::sibling_rs_file;
+use super::module_scope::{cfg_predicates, sibling_rs_file};
 use crate::{metadata::CollectedMetadata, schema_macro::file_cache};
 
 mod path_tree;
@@ -55,13 +55,12 @@ fn meta_test_only(meta: &syn::Meta) -> bool {
     }
 }
 
-/// Whether `attrs` hold a test-only `#[cfg(..)]`.
+/// Whether `attrs` hold a test-only `#[cfg(..)]`, directly or through a
+/// `cfg_attr` (`#[cfg_attr(all(), cfg(test))]`).
 pub fn attrs_test_only(attrs: &[syn::Attribute]) -> bool {
-    attrs
+    cfg_predicates(attrs)
         .iter()
-        .filter(|attr| attr.path().is_ident("cfg"))
-        .filter_map(|attr| attr.meta.require_list().ok())
-        .any(|list| is_test_only_predicate(&list.tokens.to_string()))
+        .any(|predicate| is_test_only_predicate(predicate))
 }
 
 /// Whether `attrs` derive `Schema` only under a test-only `cfg_attr`
@@ -528,9 +527,6 @@ fn module_segments(src_dir: &Path, file: &Path) -> Option<Vec<String>> {
     Some(segments)
 }
 
-/// The HTTP methods a `#[route(..)]` argument can name.
-const ROUTE_METHODS: [&str; 7] = ["get", "post", "put", "patch", "delete", "head", "options"];
-
 /// A top-level fn of a route file, with what tells the `#[route]` storage
 /// entry of one apart from a same-named fn behind another `cfg`.
 #[derive(Clone)]
@@ -570,10 +566,12 @@ fn method_of_meta(meta: &syn::Meta) -> Option<String> {
         syn::Meta::NameValue(named) => vec![string_literal(&named.value)?],
         syn::Meta::Path(_) => return None,
     };
+    // The method set is `HttpMethod::ALL` (via `is_http_method`), so `trace`
+    // is named like the others.
     candidates
-        .iter()
+        .into_iter()
         .map(|method| method.to_ascii_lowercase())
-        .find(|method| ROUTE_METHODS.contains(&method.as_str()))
+        .find(|method| crate::http::is_http_method(method))
 }
 
 /// The top-level fns of `file` (kept while the file is unchanged; empty when
@@ -890,6 +888,9 @@ mod tests;
 
 #[cfg(test)]
 mod tests_inline_path;
+
+#[cfg(test)]
+mod tests_cfg_attr;
 
 #[cfg(test)]
 mod tests_route_method;

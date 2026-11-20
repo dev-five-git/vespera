@@ -20,23 +20,95 @@
 
 use std::path::Path;
 
-use syn::Item;
+use quote::ToTokens;
+use syn::{Item, punctuated::Punctuated};
 
-use crate::{route::extract_route_info, schema_macro::file_cache};
+use crate::{
+    route::extract_route_info,
+    schema_macro::{
+        cfg_eval::{Predicate, statically_active, statically_false},
+        file_cache,
+    },
+};
 
-/// Whether `attrs` contain a `#[cfg(..)]`.
+/// Whether `attrs` gate the item by a `#[cfg(..)]`, directly or through a
+/// `cfg_attr` (see [`cfg_predicates`]).
 pub(super) fn is_cfg_gated(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| attr.path().is_ident("cfg"))
+    !cfg_predicates(attrs).is_empty()
 }
 
-/// The predicates of the `#[cfg(..)]` attributes in `attrs`, as token text.
+/// The predicates (token text) under which an item carrying `attrs` is
+/// compiled: its `#[cfg(..)]`s, and the `cfg(q)`s of its `cfg_attr(p, ..)`s
+/// as `any(not(p), q)` (the compiler keeps the item under that; a statically
+/// true `p` leaves `q`, a statically false one contributes nothing). A
+/// `cfg_attr` without a `cfg` (`cfg_attr(p, derive(..))`) gates nothing.
 pub(super) fn cfg_predicates(attrs: &[syn::Attribute]) -> Vec<String> {
-    attrs
-        .iter()
-        .filter(|attr| attr.path().is_ident("cfg"))
-        .filter_map(|attr| attr.meta.require_list().ok())
-        .map(|list| list.tokens.to_string())
-        .collect()
+    let mut predicates = Vec::new();
+    for attr in attrs {
+        if attr.path().is_ident("cfg") {
+            if let Ok(list) = attr.meta.require_list() {
+                predicates.push(list.tokens.to_string());
+            }
+        } else if attr.path().is_ident("cfg_attr")
+            && let Ok((predicate, metas)) = attr
+                .meta
+                .require_list()
+                .and_then(|list| list.parse_args_with(parse_cfg_attr_args))
+        {
+            cfg_attr_predicates(&predicate, &metas, &mut predicates);
+        }
+    }
+    predicates
+}
+
+/// The `(predicate, metas)` of a `cfg_attr(predicate, meta, ..)` argument list.
+fn parse_cfg_attr_args(
+    input: syn::parse::ParseStream<'_>,
+) -> syn::Result<(Predicate, Punctuated<syn::Meta, syn::Token![,]>)> {
+    let predicate = input.parse()?;
+    input.parse::<syn::Token![,]>()?;
+    let metas = Punctuated::parse_terminated(input)?;
+    Ok((predicate, metas))
+}
+
+/// Pushes the `cfg(q)` predicates of `cfg_attr(predicate, metas..)` into
+/// `out`, nested `cfg_attr(inner, ..)`s included (under `all(predicate,
+/// inner)`).
+fn cfg_attr_predicates(
+    predicate: &Predicate,
+    metas: &Punctuated<syn::Meta, syn::Token![,]>,
+    out: &mut Vec<String>,
+) {
+    if statically_false(predicate) {
+        return;
+    }
+    for meta in metas {
+        let syn::Meta::List(list) = meta else {
+            continue;
+        };
+        if list.path.is_ident("cfg") {
+            if let Ok(condition) = list.parse_args::<Predicate>() {
+                out.push(gate_under(predicate, &condition));
+            }
+        } else if list.path.is_ident("cfg_attr")
+            && let Ok((inner, inner_metas)) = list.parse_args_with(parse_cfg_attr_args)
+        {
+            let combined: Predicate = syn::parse_quote!(all(#predicate, #inner));
+            cfg_attr_predicates(&combined, &inner_metas, out);
+        }
+    }
+}
+
+/// `condition` as the predicate the item is compiled under when
+/// `predicate` gates it: `condition` itself when `predicate` always holds,
+/// else `any(not(predicate), condition)`.
+fn gate_under(predicate: &Predicate, condition: &Predicate) -> String {
+    if statically_active(predicate) {
+        condition.to_token_stream().to_string()
+    } else {
+        let gate: Predicate = syn::parse_quote!(any(not(#predicate), #condition));
+        gate.to_token_stream().to_string()
+    }
 }
 
 /// The `#[cfg(..)]` predicates on the `mod` declarations that make the route
@@ -608,5 +680,85 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("change the route to `/v2`"), "{message}");
+    }
+
+    /// The `cfg_predicates` of `source` (outer attributes only), without
+    /// spaces so the expectations do not depend on token-printing spacing.
+    fn attr_cfgs(source: &str) -> Vec<String> {
+        let attrs = syn::parse::Parser::parse_str(syn::Attribute::parse_outer, source).unwrap();
+        cfg_predicates(&attrs)
+            .into_iter()
+            .map(|predicate| predicate.replace(' ', ""))
+            .collect()
+    }
+
+    /// A `cfg_attr(p, cfg(q))` gates a handler (round-32 macrorest-1): rustc
+    /// keeps it under `any(not(p), q)`, folded to `q` when `p` always holds,
+    /// and dropped when `p` never does. Other `cfg_attr` metas gate nothing.
+    #[rstest]
+    #[case::cfg_attr_wrapped(
+        "#[cfg_attr(feature = \"beta\", cfg(unix))] #[route(post)]",
+        &["any(not(feature=\"beta\"),unix)"]
+    )]
+    #[case::statically_true_folds("#[cfg_attr(all(), cfg(test))]", &["test"])]
+    #[case::literal_true_folds("#[cfg_attr(true, cfg(unix))]", &["unix"])]
+    #[case::statically_false_drops("#[cfg_attr(false, cfg(unix))]", &[])]
+    #[case::cfg_attr_without_cfg("#[cfg_attr(unix, derive(Debug))]", &[])]
+    #[case::non_list_meta("#[cfg_attr(feature = \"x\", must_use)]", &[])]
+    #[case::unparseable_cfg("#[cfg_attr(unix, cfg(= 1))]", &[])]
+    #[case::unparseable_cfg_attr("#[cfg_attr(= 1)]", &[])]
+    #[case::nested_cfg_attr(
+        "#[cfg_attr(unix, cfg_attr(test, cfg(feature = \"x\")))]",
+        &["any(not(all(unix,test)),feature=\"x\")"]
+    )]
+    #[case::direct_cfg_kept("#[cfg(unix)] #[cfg_attr(feature = \"x\", cfg(test))]", &["unix", "any(not(feature=\"x\"),test)"])]
+    fn cfg_attr_gates_items(#[case] source: &str, #[case] expected: &[&str]) {
+        assert_eq!(attr_cfgs(source), expected);
+        assert_eq!(is_cfg_gated_source(source), !expected.is_empty());
+    }
+
+    fn is_cfg_gated_source(source: &str) -> bool {
+        let attrs = syn::parse::Parser::parse_str(syn::Attribute::parse_outer, source).unwrap();
+        is_cfg_gated(&attrs)
+    }
+
+    /// A `cfg_attr`-wrapped `mod` declaration gates the module it loads
+    /// (round-32 macrorest-1), and the module-chain helper reports it.
+    #[rstest]
+    #[case::wrapped(
+        "#[cfg_attr(feature = \"admin\", cfg(unix))] pub mod admin;",
+        &["any(not(feature=\"admin\"),unix)"]
+    )]
+    #[case::statically_false("#[cfg_attr(any(), cfg(unix))] pub mod admin;", &[])]
+    fn cfg_attr_module_declaration_cfg(#[case] mod_rs: &str, #[case] expected: &[&str]) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mod.rs"), mod_rs).unwrap();
+        file_cache::bump_epoch();
+        let predicates: Vec<String> = module_cfg_predicates(dir.path(), &["admin".to_string()])
+            .into_iter()
+            .map(|predicate| predicate.replace(' ', ""))
+            .collect();
+        assert_eq!(predicates, expected);
+    }
+
+    /// A handler wrapped by `cfg_attr` reaches the collector's `cfg_routes`
+    /// through `cfg_predicates` (the call site in `collector.rs`).
+    #[test]
+    fn cfg_attr_wrapped_handler_is_gated() {
+        let file: syn::File = syn::parse_str(
+            "#[cfg_attr(feature = \"beta\", cfg(unix))] #[route(post)] pub async fn beta() {}",
+        )
+        .unwrap();
+        let Item::Fn(handler) = &file.items[0] else {
+            panic!("expected a fn item");
+        };
+        assert!(extract_route_info(&handler.attrs).is_some());
+        assert_eq!(
+            cfg_predicates(&handler.attrs)
+                .into_iter()
+                .map(|predicate| predicate.replace(' ', ""))
+                .collect::<Vec<_>>(),
+            ["any(not(feature=\"beta\"),unix)"]
+        );
     }
 }
