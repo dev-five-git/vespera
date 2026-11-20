@@ -495,3 +495,30 @@ fn container_cfg_attr_serde_is_judged_only_while_active() {
         syn::parse_str("#[cfg_attr(unix)] struct Dto { id: i32 }").unwrap();
     assert_eq!(unresolved::unresolved_at_call_site(&malformed, None), None);
 }
+
+/// R35-SM4-L1: the `cfg_attr` serde items a predicate keeps are the ones read
+/// (and judged); the others never are. A field's `cfg_attr` serde is judged
+/// whatever its predicate.
+#[test]
+fn kept_cfg_attr_serde_items_are_read_and_judged() {
+    let dto: syn::ItemStruct = syn::parse_str(
+        "#[cfg_attr(all(), serde(try_from = \"Unresolvable\"))] #[cfg_attr(unix, serde(rename = \"x\"))] struct Dto { id: i32 }",
+    )
+    .unwrap();
+    let statically =
+        unresolved::serde_metas(&dto.attrs, crate::schema_macro::cfg_eval::statically_active);
+    assert_eq!(statically.len(), 1);
+    assert_eq!(unresolved::serde_metas(&dto.attrs, |_| true).len(), 2);
+    assert_eq!(
+        unresolved::unresolved_at_call_site(&dto, None).as_deref(),
+        Some("Unresolvable")
+    );
+
+    let field: syn::ItemStruct =
+        syn::parse_str("struct Dto { #[cfg_attr(unix, serde(default = \"nowhere_fn\"))] id: i32 }")
+            .unwrap();
+    assert_eq!(
+        unresolved::unresolved_at_call_site(&field, None).as_deref(),
+        Some("nowhere_fn")
+    );
+}

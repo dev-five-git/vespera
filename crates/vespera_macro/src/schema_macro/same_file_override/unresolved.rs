@@ -116,7 +116,10 @@ fn metas(tokens: proc_macro2::TokenStream) -> Vec<syn::Meta> {
 /// `cfg_attr(predicate, serde(..))` adds whose predicate `keep_cfg` accepts.
 /// The container judges only the statically active ones (the proxy honours
 /// nothing else, R35-SM4-L1); a field's items are all judged.
-fn serde_metas(attrs: &[syn::Attribute], keep_cfg: impl Fn(&Predicate) -> bool) -> Vec<syn::Meta> {
+pub(super) fn serde_metas(
+    attrs: &[syn::Attribute],
+    keep_cfg: impl Fn(&Predicate) -> bool,
+) -> Vec<syn::Meta> {
     attrs
         .iter()
         .flat_map(|attr| {
