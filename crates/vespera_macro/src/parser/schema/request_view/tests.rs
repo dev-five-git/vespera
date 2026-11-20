@@ -332,10 +332,25 @@ fn scoped_names(
     "struct A { id: u8, #[serde(flatten, skip_deserializing)] p: Option<Page> }",
     true
 )]
+// R32-P2-1: a newtype whose only field is skipped is a unit variant (serde's
+// `effective_style`), so it is not a data variant that mixes with the units.
+#[case::skipped_field_newtype_is_unit("enum E { W, V(#[serde(skip)] u8) }", false)]
+#[case::skip_serializing_newtype_differs("enum E { W, V(#[serde(skip_serializing)] u8) }", true)]
+#[case::adjacent_skipped_option_newtype_is_unit(
+    r#"#[serde(tag = "t", content = "c")] enum E { V(#[serde(skip)] Option<u8>), W }"#,
+    false
+)]
+// R32-P2-2: serde reads an `Option` through the flat buffer, so an `Option`
+// inside a flattened newtype around a map reads every key too.
+#[case::deny_flatten_option_newtype_map(
+    "#[serde(deny_unknown_fields)] struct A { id: u8, #[serde(flatten)] o: OptMap }",
+    true
+)]
 fn direct_differences(#[case] src: &str, #[case] expected: bool) {
     let items: Vec<syn::Item> = [
         "struct HasMap { #[serde(flatten)] m: HashMap<String, u8> }",
         "struct Attrs { #[serde(flatten)] m: BTreeMap<String, String> }",
+        "struct OptMap(Option<HashMap<String, u8>>);",
         "struct Leaving { #[serde(flatten)] p: Page }",
         r#"#[serde(tag = "t")] enum LeavingEnum { A }"#,
     ]
@@ -386,6 +401,7 @@ fn flat_kinds_are_transitive() {
         "struct Plain { #[serde(flatten)] p: Page, m: HashMap<String, u8> }",
         "struct Tuple(HashMap<String, u8>);",
         "struct WrapsWrapper(Tuple);",
+        "struct OptNewtype(Option<HashMap<String, u8>>);",
         "#[serde(transparent)] struct Clear { #[serde(skip)] marker: (), m: HashMap<String, u8> }",
         "#[serde(transparent)] struct Skipped { #[serde(skip)] marker: () }",
         "struct Pair(HashMap<String, u8>, u8);",
@@ -413,6 +429,7 @@ fn flat_kinds_are_transitive() {
             ("HasMap".to_string(), FlatKind::Map),
             ("Internal".to_string(), leaves(false)),
             ("NewInternal".to_string(), leaves(false)),
+            ("OptNewtype".to_string(), FlatKind::Map),
             ("Outer".to_string(), FlatKind::Map),
             ("Plain".to_string(), leaves(true)),
             ("Tuple".to_string(), FlatKind::Map),

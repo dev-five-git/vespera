@@ -683,6 +683,7 @@ fn parse_type_impl(
                             // Consts first: a concrete type argument spelled
                             // like a const parameter (`Buf<N, 4>` with a user
                             // type `N`) must not be rewritten by the const.
+                            let literals = parsed.body_literals(&generic_params);
                             parsed.substitute_consts(&const_exprs);
                             parsed.substitute(&generic_params, &concrete_types);
 
@@ -727,29 +728,38 @@ fn parse_type_impl(
                             {
                                 name.push_str(".Input");
                             }
-                            return super::generic_instances::inline_or_reference(&name, || {
-                                match &parsed {
-                                    SchemaDef::Struct(item) => {
-                                        let mut schema = parse_struct_to_schema(
+                            let arg_idents = super::generic_instances::argument_identifiers(
+                                &concrete_types,
+                                &const_exprs,
+                            );
+                            return super::generic_instances::inline_or_reference(
+                                &name,
+                                &arg_idents,
+                                literals,
+                                || {
+                                    match &parsed {
+                                        SchemaDef::Struct(item) => {
+                                            let mut schema = parse_struct_to_schema(
+                                                item,
+                                                known_schemas,
+                                                struct_definitions,
+                                            );
+                                            // The generic component's field defaults.
+                                            crate::openapi_generator::instance_defaults(
+                                                &base,
+                                                item,
+                                                &mut schema,
+                                            );
+                                            schema
+                                        }
+                                        SchemaDef::Enum(item) => parse_enum_to_schema(
                                             item,
                                             known_schemas,
                                             struct_definitions,
-                                        );
-                                        // The generic component's field defaults.
-                                        crate::openapi_generator::instance_defaults(
-                                            &base,
-                                            item,
-                                            &mut schema,
-                                        );
-                                        schema
+                                        ),
                                     }
-                                    SchemaDef::Enum(item) => parse_enum_to_schema(
-                                        item,
-                                        known_schemas,
-                                        struct_definitions,
-                                    ),
-                                }
-                            });
+                                },
+                            );
                         }
                     }
                 }

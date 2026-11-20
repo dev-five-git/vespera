@@ -1,6 +1,8 @@
 //! A known schema's parsed definition, and the generic substitution applied
 //! to it before a concrete instantiation (`Page<User>`) is inlined.
 
+use std::collections::BTreeSet;
+
 use proc_macro2::{TokenStream, TokenTree};
 use syn::Type;
 
@@ -222,6 +224,31 @@ impl SchemaDef {
             Self::Struct(item) => &mut item.generics,
             Self::Enum(item) => &mut item.generics,
         }
+    }
+
+    /// Every field type the definition declares (every variant's for an enum),
+    /// before any substitution.
+    pub(super) fn field_types(&self) -> Vec<&syn::Type> {
+        match self {
+            Self::Struct(item) => item.fields.iter().map(|field| &field.ty).collect(),
+            Self::Enum(item) => item
+                .variants
+                .iter()
+                .flat_map(|variant| variant.fields.iter().map(|field| &field.ty))
+                .collect(),
+        }
+    }
+
+    /// The identifiers the body writes itself, before the substitution: its
+    /// field types, minus its own parameters (`type_params` and the const ones).
+    pub(super) fn body_literals(&mut self, type_params: &[String]) -> BTreeSet<String> {
+        let mut scope = type_params.to_vec();
+        scope.extend(
+            self.generics_mut()
+                .const_params()
+                .map(|param| param.ident.to_string()),
+        );
+        super::super::generic_instances::body_literals(self.field_types(), &scope)
     }
 
     /// Replace the generic parameters `params` by `concrete` in every field

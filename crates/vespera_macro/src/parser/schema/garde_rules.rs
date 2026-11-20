@@ -40,7 +40,7 @@
 //! Unparseable `#[garde]` attributes are ignored — garde's own derive reports
 //! them.
 
-use syn::{Attribute, Expr, ExprLit, Lit, Type, meta::ParseNestedMeta};
+use syn::{Attribute, Expr, ExprLit, ExprUnary, Lit, Type, meta::ParseNestedMeta};
 use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
 use super::schema_attrs::{SchemaConstraints, expr_to_f64};
@@ -190,13 +190,30 @@ fn parse_length_arg(length: &mut LengthRule, arg: &ParseNestedMeta<'_>) -> syn::
     Ok(())
 }
 
+/// `expr` with the parentheses and invisible groups around a literal removed
+/// (`(2)`, and a `$n:expr` that `macro_rules!` passes as a `None`-delimited
+/// group), so the bound reads the same as the bare literal. `-$n` keeps its
+/// negation. Only the garde readers call this: `#[schema(minimum = ..)]`
+/// keeps rejecting a group with a spanned error.
+fn strip_groups(expr: Expr) -> Expr {
+    match expr {
+        Expr::Group(group) => strip_groups(*group.expr),
+        Expr::Paren(paren) => strip_groups(*paren.expr),
+        Expr::Unary(unary) => Expr::Unary(ExprUnary {
+            expr: Box::new(strip_groups(*unary.expr)),
+            ..unary
+        }),
+        other => other,
+    }
+}
+
 fn parse_range_arg(rules: &mut GardeRules, arg: &ParseNestedMeta<'_>) -> syn::Result<()> {
     let is_min = arg.path.is_ident("min");
     let is_max = arg.path.is_ident("max");
     let is_equal = arg.path.is_ident("equal");
     // A bound that is not a finite literal (`1e999` overflows to infinity)
     // is never documented: a non-finite number cannot be serialized.
-    let value = expr_to_f64(arg.value()?.parse()?)
+    let value = expr_to_f64(strip_groups(arg.value()?.parse()?))
         .ok()
         .filter(|value| value.is_finite());
     // Garde applies every `range` rule (each is a separate check), so the
@@ -217,7 +234,7 @@ fn parse_range_arg(rules: &mut GardeRules, arg: &ParseNestedMeta<'_>) -> syn::Re
 /// `= <int literal>`; a non-literal (a const) has no static value → `None`.
 fn usize_arg(arg: &ParseNestedMeta<'_>) -> syn::Result<Option<usize>> {
     let expr: Expr = arg.value()?.parse()?;
-    Ok(match expr {
+    Ok(match strip_groups(expr) {
         Expr::Lit(ExprLit {
             lit: Lit::Int(int), ..
         }) => int.base10_parse().ok(),
@@ -552,7 +569,9 @@ fn ecma_escape(
         '^' | '$' | '\\' | '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|'
         | '/' | 'd' | 'D' | 'w' | 'W' | 's' | 'S' | 'B' | 'n' | 'r' | 't' | 'f' | 'v' => true,
         '-' => in_class,
-        // Rust's `\b{start}` / `\x{41}` / `\u{41}` (ECMA-262: no braces).
+        // Rust's `\b{start}` / `\x{41}` / `\u{41}`. ECMA-262 has no `\b{..}` or
+        // `\x{..}`, and accepts `\u{..}` only in `u`-mode, so the brace forms are
+        // skipped here: conservative, nothing is documented that might not match.
         'b' | 'x' | 'u' => !brace,
         'p' | 'P' if brace => {
             chars.next();

@@ -72,7 +72,7 @@ use std::{
 use quote::ToTokens;
 
 use super::{
-    enum_schema::derives_serde_repr,
+    enum_schema::{derives_serde_repr, is_skipped_newtype},
     schema_attrs::extract_schema_constraints,
     scoped_ident::lookup_key,
     serde_attrs::{
@@ -86,7 +86,7 @@ use super::{
     struct_schema::{flattened_member, peel},
     wire_override::{container_override_type, documented_tokens},
 };
-use crate::schema_macro::type_utils::is_option_type;
+use crate::schema_macro::type_utils::{is_option_type, option_inner};
 
 /// The input components of the documented types.
 ///
@@ -575,7 +575,10 @@ impl FlatKinds {
     }
 
     fn type_kind(&self, ty: &syn::Type) -> Option<FlatKind> {
+        // serde reads an `Option` through the buffer too (`visit_some` on the
+        // flat deserializer), so `Option<X>` reads what `X` reads.
         let ty = peel(ty);
+        let ty = option_inner(ty).unwrap_or(ty);
         if is_map_type(ty) {
             return Some(FlatKind::Map);
         }
@@ -873,11 +876,13 @@ fn enum_differs(item: &syn::ItemEnum, flat: &FlatKinds) -> bool {
                             )
                     }
                     syn::Fields::Unnamed(fields) => {
+                        // A newtype skipped on input is a unit there: no content key.
                         tuple_differs(fields, false)
                             || (adjacently_tagged
                                 && fields.unnamed.len() == 1
                                 && is_option_type(&fields.unnamed[0].ty)
-                                && !extract_field_codec(&variant.attrs).deserialize)
+                                && !extract_field_codec(&variant.attrs).deserialize
+                                && !is_skipped_newtype(variant, SerdeSide::Deserialize))
                     }
                     // A content key a unit variant with a `deserialize_with` may omit.
                     syn::Fields::Unit => {
@@ -900,8 +905,10 @@ fn mixes_unit_and_data(item: &syn::ItemEnum) -> bool {
         if skip.skip || skip.skip_deserializing || extract_untagged(&variant.attrs) {
             continue;
         }
-        // A unit variant with a `deserialize_with` is read as a newtype.
-        if matches!(variant.fields, syn::Fields::Unit)
+        // A unit variant with a `deserialize_with` is read as a newtype, and a
+        // newtype skipped on input is read as a unit (serde's `effective_style`).
+        if (matches!(variant.fields, syn::Fields::Unit)
+            || is_skipped_newtype(variant, SerdeSide::Deserialize))
             && !extract_field_codec(&variant.attrs).deserialize
         {
             unit = true;

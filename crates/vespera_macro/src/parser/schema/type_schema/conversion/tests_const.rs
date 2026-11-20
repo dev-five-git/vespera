@@ -249,3 +249,93 @@ fn definition_self_reference_refers_to_its_component(#[case] name: &str, #[case]
     let keys: Vec<&String> = materialized.keys().collect();
     assert!(keys.iter().all(|key| !key.contains("_Const.N")), "{keys:?}");
 }
+
+/// R32-P4-01: an omitted defaulted const is filled with its default, so `Buf<T>`
+/// inside `Buf<T, const N: usize = 4>` names `Buf` itself, not a materialised
+/// `Buf_T_Const.4` (which would repeat the body with `T` unresolved).
+#[test]
+fn defaulted_const_self_reference_refers_to_its_component() {
+    take_materialized();
+    let src = "struct Buf<T, const N: usize = 4> { items: Vec<T>, kids: Vec<Buf<T>> }";
+    let item: syn::ItemStruct = syn::parse_str(src).unwrap();
+    let known: HashSet<String> = HashSet::from(["Buf".to_string()]);
+    let defs = HashMap::from([("Buf".to_string(), src.to_string())]);
+    let schema = crate::parser::schema::parse_struct_to_schema(&item, &known, &defs);
+    let properties = schema.properties.expect("the struct's fields");
+    let SchemaRef::Inline(kids) = &properties["kids"] else {
+        panic!("the vector is inline");
+    };
+    assert_eq!(
+        reference(kids.items.clone().expect("the vector's items")),
+        Reference::schema("Buf").ref_path
+    );
+    let materialized = take_materialized();
+    let keys: Vec<&String> = materialized.keys().collect();
+    assert!(keys.iter().all(|key| !key.contains("_Const.4")), "{keys:?}");
+}
+
+/// R32-P4-02: `Holder<T>` is inlined while `Buf<T, const N: usize>` is being
+/// built, and its `Buf<T, N>` names the GLOBAL `N`, not `Buf`'s parameter. The
+/// two spell the same instance name (`Buf_T_Const.N`), so the self-reference
+/// must not match: the field is the `Buf` instance inlined, not a `$ref` to the
+/// generic component (whose array length is unpinned).
+#[test]
+fn same_spelled_const_in_another_definition_is_not_a_self_reference() {
+    take_materialized();
+    let buf = "struct Buf<T, const N: usize> { items: Vec<T>, holder: Holder<T> }";
+    let holder = "struct Holder<T> { fixed: Buf<T, N> }";
+    let item: syn::ItemStruct = syn::parse_str(buf).unwrap();
+    let known: HashSet<String> = ["Buf", "Holder"].into_iter().map(String::from).collect();
+    let defs = HashMap::from([
+        ("Buf".to_string(), buf.to_string()),
+        ("Holder".to_string(), holder.to_string()),
+    ]);
+    let schema = crate::parser::schema::parse_struct_to_schema(&item, &known, &defs);
+    let properties = schema.properties.expect("the struct's fields");
+    // `Holder<T>` reaches itself through `Buf`, so it is a materialised component.
+    let holder = match &properties["holder"] {
+        SchemaRef::Inline(holder) => (**holder).clone(),
+        SchemaRef::Ref(reference) => {
+            let name = reference.ref_path.rsplit('/').next().unwrap();
+            take_materialized()
+                .remove(name)
+                .unwrap_or_else(|| panic!("materialised {name}"))
+        }
+    };
+    let fixed = holder.properties.as_ref().expect("Holder's fields")["fixed"].clone();
+    assert!(
+        matches!(fixed, SchemaRef::Inline(_)),
+        "the global-N instance is inlined, not $ref Buf: {fixed:?}"
+    );
+}
+
+/// R32-P4-02 refinement: `Tree<T>` reaches itself through the generic wrapper
+/// `Wrap<U>`, whose body writes no identifier of its own. The inner `Tree<T>` is
+/// the `Tree` component (a `$ref`), not a second materialised `Tree_T`.
+#[test]
+fn self_reference_through_a_wrapper_refers_to_its_component() {
+    take_materialized();
+    let tree = "struct Tree<T> { kids: Vec<Wrap<Tree<T>>> }";
+    let item: syn::ItemStruct = syn::parse_str(tree).unwrap();
+    let known: HashSet<String> = ["Tree", "Wrap"].into_iter().map(String::from).collect();
+    let defs = HashMap::from([
+        ("Tree".to_string(), tree.to_string()),
+        (
+            "Wrap".to_string(),
+            "struct Wrap<U> { inner: U }".to_string(),
+        ),
+    ]);
+    let schema = crate::parser::schema::parse_struct_to_schema(&item, &known, &defs);
+    let properties = schema.properties.expect("the struct's fields");
+    let SchemaRef::Inline(kids) = &properties["kids"] else {
+        panic!("the vector is inline");
+    };
+    let SchemaRef::Inline(wrap) = kids.items.clone().expect("the vector's items") else {
+        panic!("Wrap<Tree<T>> is inlined");
+    };
+    let inner = wrap.properties.as_ref().expect("Wrap's fields")["inner"].clone();
+    assert_eq!(reference(inner), Reference::schema("Tree").ref_path);
+    let materialized = take_materialized();
+    let keys: Vec<&String> = materialized.keys().collect();
+    assert!(!keys.iter().any(|key| key.as_str() == "Tree_T"), "{keys:?}");
+}

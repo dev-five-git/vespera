@@ -8,7 +8,9 @@ use vespera_core::schema::{Schema, SchemaRef};
 
 use super::super::{
     request_view::current_side,
-    serde_attrs::{extract_field_codec, extract_rename_all_for, extract_serde_skip_flags},
+    serde_attrs::{
+        SerdeSide, extract_field_codec, extract_rename_all_for, extract_serde_skip_flags,
+    },
     struct_schema::{
         NamedFields, collect_named_fields, positional_field_schema, tuple_fields_schema,
     },
@@ -80,11 +82,38 @@ pub(super) fn variant_codec_schema(variant: &syn::Variant) -> Option<SchemaRef> 
         })
 }
 
-/// `true` for a unit variant that is a unit on the wire on the current side
+/// `true` for a single-field tuple variant whose field is skipped on `side`
+/// (`skip`, or `skip_serializing` for the response / `skip_deserializing` for
+/// the request). serde_derive's `effective_style` writes and reads such a
+/// newtype as a unit variant, in every representation.
+pub(in crate::parser::schema) fn is_skipped_newtype(
+    variant: &syn::Variant,
+    side: SerdeSide,
+) -> bool {
+    match &variant.fields {
+        syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+            let flags = extract_serde_skip_flags(&fields.unnamed[0].attrs);
+            flags.skip
+                || match side {
+                    SerdeSide::Serialize => flags.skip_serializing,
+                    SerdeSide::Deserialize => flags.skip_deserializing,
+                }
+        }
+        _ => false,
+    }
+}
+
+/// `true` when serde writes and reads the variant as a unit variant on the
+/// current side: a unit variant, or a skipped newtype (see
+/// [`is_skipped_newtype`]). A variant-level codec is checked before this.
+pub(super) fn has_unit_style(variant: &syn::Variant) -> bool {
+    matches!(variant.fields, syn::Fields::Unit) || is_skipped_newtype(variant, current_side())
+}
+
+/// `true` for a variant that is a unit on the wire on the current side
 /// (no variant-level codec there, see [`variant_codec_schema`]).
 pub(super) fn is_wire_unit(variant: &syn::Variant) -> bool {
-    matches!(variant.fields, syn::Fields::Unit)
-        && !extract_field_codec(&variant.attrs).custom_for(current_side())
+    has_unit_style(variant) && !extract_field_codec(&variant.attrs).custom_for(current_side())
 }
 
 /// Schema of the single field of a newtype variant on the current side, its
@@ -110,6 +139,8 @@ pub(super) fn build_variant_data_schema(
     }
     match &variant.fields {
         syn::Fields::Unit => None,
+        // A skipped newtype is a unit variant on this side (no payload).
+        syn::Fields::Unnamed(_) if is_skipped_newtype(variant, current_side()) => None,
         // Single field tuple variant - just the inner type
         syn::Fields::Unnamed(fields_unnamed) if fields_unnamed.unnamed.len() == 1 => {
             Some(newtype_field_schema(
@@ -194,5 +225,34 @@ mod tests {
     ) {
         assert_eq!(is_variant_omitted(&variant), omitted);
         assert_eq!(is_other_variant(&variant), other);
+    }
+
+    /// R32-P2-1: only a single-field tuple variant whose field is skipped on
+    /// the given side is a skipped newtype there (serde's `effective_style`).
+    #[rstest::rstest]
+    #[case::skip_serialize(syn::parse_quote!(V(#[serde(skip)] u8)), SerdeSide::Serialize, true)]
+    #[case::skip_deserialize(syn::parse_quote!(V(#[serde(skip)] u8)), SerdeSide::Deserialize, true)]
+    #[case::skip_serializing_on_serialize(
+        syn::parse_quote!(V(#[serde(skip_serializing)] u8)), SerdeSide::Serialize, true
+    )]
+    #[case::skip_serializing_on_deserialize(
+        syn::parse_quote!(V(#[serde(skip_serializing)] u8)), SerdeSide::Deserialize, false
+    )]
+    #[case::skip_deserializing_on_serialize(
+        syn::parse_quote!(V(#[serde(skip_deserializing)] u8)), SerdeSide::Serialize, false
+    )]
+    #[case::skip_deserializing_on_deserialize(
+        syn::parse_quote!(V(#[serde(skip_deserializing)] u8)), SerdeSide::Deserialize, true
+    )]
+    #[case::unskipped_newtype(syn::parse_quote!(V(u8)), SerdeSide::Serialize, false)]
+    #[case::unit(syn::parse_quote!(V), SerdeSide::Deserialize, false)]
+    #[case::multi_field(syn::parse_quote!(V(#[serde(skip)] u8, u8)), SerdeSide::Serialize, false)]
+    #[case::struct_variant(syn::parse_quote!(V { #[serde(skip)] x: u8 }), SerdeSide::Serialize, false)]
+    fn skipped_newtype_per_side(
+        #[case] variant: syn::Variant,
+        #[case] side: SerdeSide,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(is_skipped_newtype(&variant, side), expected);
     }
 }
