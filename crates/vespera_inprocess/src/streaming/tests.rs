@@ -216,6 +216,7 @@ async fn channel_body_without_a_producer_is_clean_eof() {
         slots: Some(Arc::new(tokio::sync::Semaphore::new(1))),
         permit_wait: None,
         inline_budget: 0,
+        inline_pending: Bytes::new(),
         inline: InlineState::new(false),
         failed: false,
     };
@@ -310,6 +311,7 @@ async fn channel_close_is_eof_only_after_a_clean_end(
         slots: Some(Arc::new(tokio::sync::Semaphore::new(1))),
         permit_wait: None,
         inline_budget: 0,
+        inline_pending: Bytes::new(),
         inline: InlineState::new(false),
         failed: false,
     };

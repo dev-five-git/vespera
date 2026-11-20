@@ -206,6 +206,10 @@ pub struct ChannelBody {
     /// Inline pulls left before the producer takes over (see
     /// `inline_pull.rs`).
     pub(super) inline_budget: u8,
+    /// Rest of an inline host chunk that was larger than the streaming chunk
+    /// size, split like the producer splits it (`inline_pull.rs`). Drained
+    /// before the next pull; empty in every other case.
+    pub(super) inline_pending: Bytes,
     /// Inline-pull gate + "source touched" flag, shared with the
     /// dispatcher and the [`RequestSourceCloser`].
     pub(super) inline: Arc<InlineState>,
@@ -240,6 +244,7 @@ impl ChannelBody {
             slots: None,
             permit_wait: None,
             inline_budget: super::inline_pull::INLINE_PULL_BUDGET,
+            inline_pending: Bytes::new(),
             inline,
             failed: false,
         }
