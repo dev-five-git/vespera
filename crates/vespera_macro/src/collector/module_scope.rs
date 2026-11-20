@@ -24,6 +24,7 @@ use quote::ToTokens;
 use syn::{Item, punctuated::Punctuated};
 
 use crate::{
+    file_utils::file_to_segments,
     route::extract_route_info,
     schema_macro::{
         cfg_eval::{Predicate, statically_active, statically_false},
@@ -116,28 +117,65 @@ fn gate_under(predicate: &Predicate, condition: &Predicate) -> String {
 ///
 /// `segments == ["admin", "users"]` reads `mod admin;` (declared in
 /// `<folder>/mod.rs` or `<folder>.rs`) and `mod users;` (declared in
-/// `<folder>/admin/mod.rs` or `<folder>/admin.rs`).
-///
-/// Each declarer's `mod` list is read once per file version (`file_cache::
-/// derived`), not once per route file below it.
+/// `<folder>/admin/mod.rs` or `<folder>/admin.rs`). See [`module_steps`].
 pub(super) fn module_cfg_predicates(folder_path: &Path, segments: &[String]) -> Vec<String> {
+    module_steps(folder_path, segments)
+        .iter()
+        .flat_map(|step| declared_cfg(&step.declarations))
+        .collect()
+}
+
+/// One module on the way to a route file: the Rust name it is declared under
+/// and the `#[cfg(..)]` predicates of each declaration that loads it
+/// (cfg-disjoint twins give several).
+struct ModuleStep {
+    name: String,
+    declarations: Vec<Vec<String>>,
+}
+
+/// The modules a route file with `segments` passes through, walked down the
+/// `mod` declarations from `folder_path`. At each level the declaration whose
+/// loaded segments match the longest run of the remaining segments wins, so
+/// `#[path = "beside/support.rs"] mod support;` is one module that loads
+/// `["beside", "support"]`. A segment no declarer names is a module of its own
+/// name with no predicates. Each declarer's `mod` list is read once per file
+/// version (`file_cache::derived`), not once per route file below it.
+fn module_steps(folder_path: &Path, segments: &[String]) -> Vec<ModuleStep> {
     let mut parent = folder_path.to_path_buf();
-    let mut predicates = Vec::new();
-    for segment in segments {
-        let declarations: Vec<Vec<String>> = [parent.join("mod.rs"), sibling_rs_file(&parent)]
+    let mut steps = Vec::new();
+    let mut index = 0;
+    while index < segments.len() {
+        let remaining = &segments[index..];
+        let mut declared = Vec::new();
+        for declarer in [parent.join("mod.rs"), sibling_rs_file(&parent)] {
+            declared.extend(
+                declared_mods(&declarer)
+                    .into_iter()
+                    .filter(|module| remaining.starts_with(&module.segments)),
+            );
+        }
+        let consumed = declared
             .iter()
-            .flat_map(|declarer| {
-                declared_mods(declarer)
-                    .iter()
-                    .filter(|module| &module.segment == segment)
-                    .map(|module| module.cfgs.clone())
-                    .collect::<Vec<_>>()
-            })
+            .map(|module| module.segments.len())
+            .max()
+            .unwrap_or(1);
+        let group: Vec<DeclaredMod> = declared
+            .into_iter()
+            .filter(|module| module.segments.len() == consumed)
             .collect();
-        predicates.extend(declared_cfg(&declarations));
-        parent.push(segment);
+        let name = group
+            .first()
+            .map_or_else(|| remaining[0].clone(), |module| module.name.clone());
+        for segment in &remaining[..consumed] {
+            parent.push(segment);
+        }
+        steps.push(ModuleStep {
+            name,
+            declarations: group.into_iter().map(|module| module.cfgs).collect(),
+        });
+        index += consumed;
     }
-    predicates
+    steps
 }
 
 /// The predicates under which the `mod` declarations of one module load it
@@ -170,27 +208,17 @@ fn declared_cfg(declarations: &[Vec<String>]) -> Vec<String> {
 /// `admin_impl`), so the call path the router emits resolves. A segment no
 /// declarer names keeps the file's own name.
 pub(super) fn declared_module_segments(folder_path: &Path, segments: &[String]) -> Vec<String> {
-    let mut parent = folder_path.to_path_buf();
-    let mut names = Vec::with_capacity(segments.len());
-    for segment in segments {
-        let declared = [parent.join("mod.rs"), sibling_rs_file(&parent)]
-            .iter()
-            .find_map(|declarer| {
-                declared_mods(declarer)
-                    .into_iter()
-                    .find(|module| &module.segment == segment)
-            });
-        names.push(declared.map_or_else(|| segment.clone(), |module| module.name));
-        parent.push(segment);
-    }
-    names
+    module_steps(folder_path, segments)
+        .into_iter()
+        .map(|step| step.name)
+        .collect()
 }
 
-/// One `mod` a declarer makes: the route-file segment it loads, its Rust
-/// name and its `#[cfg(..)]` predicates.
+/// One `mod` a declarer makes: the route-file segments it loads (relative to
+/// the declarer's directory), its Rust name and its `#[cfg(..)]` predicates.
 #[derive(Clone)]
 struct DeclaredMod {
-    segment: String,
+    segments: Vec<String>,
     name: String,
     cfgs: Vec<String>,
 }
@@ -210,7 +238,7 @@ fn declared_mods(declarer: &Path) -> Vec<DeclaredMod> {
                         .iter()
                         .filter_map(|item| match item {
                             Item::Mod(module) => Some(DeclaredMod {
-                                segment: declared_segment(module),
+                                segments: declared_segments(module),
                                 name: crate::parser::strip_raw_prefix_owned(
                                     module.ident.to_string(),
                                 ),
@@ -227,13 +255,18 @@ fn declared_mods(declarer: &Path) -> Vec<DeclaredMod> {
     .unwrap_or_default()
 }
 
-/// The route-file segment a `mod` declaration loads. A `#[path = ".."]`
-/// module loads the file its path names (`mod admin` with `#[path =
-/// "admin_impl.rs"]` loads `admin_impl`; a `mod.rs` path is named after its
-/// directory), otherwise the module's own (unraw) name. `pub mod r#type;`
-/// declares the `type.rs` segment.
-fn declared_segment(module: &syn::ItemMod) -> String {
-    let own = || crate::parser::strip_raw_prefix_owned(module.ident.to_string());
+/// The route-file segments a `mod` declaration loads, relative to its
+/// declarer's directory. A `#[path = ".."]` module loads the file its path
+/// names, split into its directories (`#[path = "beside/support.rs"]` loads
+/// `["beside", "support"]`; `#[path = "x/admin/mod.rs"]` loads
+/// `["x", "admin"]`), otherwise the module's own (unraw) name. `pub mod
+/// r#type;` declares the `type` segment.
+fn declared_segments(module: &syn::ItemMod) -> Vec<String> {
+    let own = || {
+        vec![crate::parser::strip_raw_prefix_owned(
+            module.ident.to_string(),
+        )]
+    };
     let path = module
         .attrs
         .iter()
@@ -249,16 +282,11 @@ fn declared_segment(module: &syn::ItemMod) -> String {
     let Some(path) = path else {
         return own();
     };
-    let path = Path::new(&path);
-    match path.file_stem().and_then(|stem| stem.to_str()) {
-        Some("mod") => path
-            .parent()
-            .and_then(Path::file_name)
-            .and_then(|name| name.to_str())
-            .map_or_else(own, str::to_owned),
-        Some(stem) => stem.to_owned(),
-        None => own(),
-    }
+    let segments: Vec<String> = file_to_segments(Path::new(&path), Path::new(""))
+        .into_iter()
+        .filter(|segment| segment != ".")
+        .collect();
+    if segments.is_empty() { own() } else { segments }
 }
 
 /// `<dir>.rs`: the file declaring the module `dir`, appended (not
@@ -483,6 +511,25 @@ mod tests {
     #[case::path_without_stem("#[cfg(unix)] #[path = \"\"] mod admin;", &["admin"], &["unix"])]
     #[case::non_literal_path("#[cfg(unix)] #[path = concat!(\"a\", \".rs\")] mod admin;", &["admin"], &["unix"])]
     #[case::undeclared_module("mod other;", &["admin"], &[])]
+    // A `#[path]` file in a subdirectory is one module loading both
+    // directories (round-33 R33-M1), so its gate applies at the root.
+    #[case::path_subdirectory(
+        "#[cfg(feature = \"admin\")] #[path = \"beside/support.rs\"] pub mod support;",
+        &["beside", "support"],
+        &["feature = \"admin\""]
+    )]
+    #[case::path_mod_rs_subdirectory(
+        "#[cfg(unix)] #[path = \"x/admin/mod.rs\"] pub mod nested;",
+        &["x", "admin"],
+        &["unix"]
+    )]
+    // The declaration loading the longest run of segments wins over a `mod`
+    // of the first segment alone.
+    #[case::longest_declaration_wins(
+        "#[cfg(unix)] pub mod beside;\n#[cfg(feature = \"x\")] #[path = \"beside/support.rs\"] pub mod support;",
+        &["beside", "support"],
+        &["feature = \"x\""]
+    )]
     // Cfg-disjoint twins load the module under either predicate (round-30 M1):
     // ANDing them would never load it.
     #[case::cfg_twins(
@@ -515,11 +562,19 @@ mod tests {
     #[case::path_module(&["admin_impl"], &["admin"])]
     #[case::own_name(&["users"], &["users"])]
     #[case::undeclared(&["stray"], &["stray"])]
+    #[case::path_subdirectory(&["beside", "support"], &["support"])]
+    #[case::path_mod_rs_subdirectory(&["x", "admin"], &["nested"])]
+    #[case::dot_prefixed_path(&["dot", "item"], &["dotted"])]
+    #[case::empty_path_keeps_own_name(&["empty"], &["empty"])]
     fn declared_module_names(#[case] segments: &[&str], #[case] expected: &[&str]) {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("mod.rs"),
-            "#[path = \"admin_impl.rs\"] pub mod admin; pub mod users;",
+            "#[path = \"admin_impl.rs\"] pub mod admin; pub mod users;\n\
+             #[path = \"beside/support.rs\"] pub mod support;\n\
+             #[path = \"x/admin/mod.rs\"] pub mod nested;\n\
+             #[path = \"./dot/item.rs\"] pub mod dotted;\n\
+             #[path = \"\"] pub mod empty;",
         )
         .unwrap();
         file_cache::bump_epoch();

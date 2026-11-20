@@ -928,3 +928,46 @@ fn path_loaded_route_file_is_called_through_its_declared_module() {
     assert_eq!(modules, ["routes::admin"]);
     assert_eq!(metadata.routes[0].path, "/admin-impl");
 }
+
+/// A `#[path]` route file in a subdirectory (`beside/support.rs`) behind a
+/// `#[cfg]` gate (round-33 R33-M1): its module is `routes::support` (the
+/// declared name, not `routes::beside::support`), and the declaration's gate
+/// reaches the route, so it is mounted only under that predicate.
+#[test]
+fn cfg_gated_path_loaded_route_file_in_subdirectory_is_called_through_its_declared_module() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    create_temp_file(
+        &temp_dir,
+        "mod.rs",
+        "#[cfg(feature = \"admin\")]\n#[path = \"beside/support.rs\"]\npub mod support;\n",
+    );
+    create_temp_file(
+        &temp_dir,
+        "beside/support.rs",
+        "#[route(get)] pub async fn panel() {}\n",
+    );
+    crate::schema_macro::file_cache::bump_epoch();
+
+    let (metadata, _) = collect_metadata(temp_dir.path(), "routes", &[]).unwrap();
+
+    assert!(metadata.routes.is_empty());
+    let gated: Vec<(&str, &str, &[String])> = metadata
+        .cfg_routes
+        .iter()
+        .map(|route| {
+            (
+                route.module_path.as_str(),
+                route.path.as_str(),
+                route.cfg.as_slice(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        gated,
+        [(
+            "routes::support",
+            "/beside/support",
+            &["feature = \"admin\"".to_string()][..]
+        )]
+    );
+}
