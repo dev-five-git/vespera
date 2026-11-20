@@ -19,6 +19,7 @@ mod variant;
 
 pub(super) use representations::{single_entry_enum, without_other_map, without_single_key_bounds};
 pub(super) use unit::derives_serde_repr;
+pub(super) use variant::is_skipped_newtype;
 
 /// The two serde renaming rules an enum container can carry.
 #[derive(Clone, Copy)]
@@ -230,7 +231,13 @@ pub fn validate_enum_for_schema(enum_item: &syn::ItemEnum) -> syn::Result<()> {
         // variant only one direction skips still reaches the other view (and
         // serde would fail on it there), so only a variant left out of both
         // is exempt.
-        if variant::is_variant_omitted_both_ways(variant) || extract_untagged(&variant.attrs) {
+        // A variant skipped on both sides has no payload to tag, and so does a
+        // newtype whose field is skipped on both sides (serde writes it as a unit).
+        if variant::is_variant_omitted_both_ways(variant)
+            || extract_untagged(&variant.attrs)
+            || (is_skipped_newtype(variant, SerdeSide::Serialize)
+                && is_skipped_newtype(variant, SerdeSide::Deserialize))
+        {
             continue;
         }
         let syn::Fields::Unnamed(fields) = &variant.fields else {

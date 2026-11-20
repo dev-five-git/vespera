@@ -177,3 +177,22 @@ fn serde_converts_an_overridden_internally_tagged_enum() {
     assert_eq!(serde_json::to_string(&E::A(3)).unwrap(), r#""3""#);
     assert!(matches!(serde_json::from_str::<E>(r#""4""#), Ok(E::A(4))));
 }
+
+/// A newtype whose field is skipped on both sides is a unit variant (serde_derive's
+/// `effective_style`): it has no payload to tag. One side only still leaves the
+/// payload on the other side, so it is validated as before.
+#[rstest]
+#[case::field_skip_both_ways("Data(#[serde(skip)] String)", false)]
+#[case::field_skip_serializing_only("Data(#[serde(skip_serializing)] String)", true)]
+#[case::field_skip_deserializing_only("Data(#[serde(skip_deserializing)] String)", true)]
+fn skipped_newtype_payload_is_validated_per_side(#[case] variant: &str, #[case] is_error: bool) {
+    let enum_item: syn::ItemEnum = syn::parse_str(&format!(
+        r#"#[serde(tag = "type")] enum Event {{ Ping, {variant} }}"#
+    ))
+    .unwrap();
+    assert_eq!(
+        validate_enum_for_schema(&enum_item).is_err(),
+        is_error,
+        "{variant}"
+    );
+}

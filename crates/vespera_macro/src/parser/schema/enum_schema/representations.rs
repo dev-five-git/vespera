@@ -20,7 +20,7 @@ use super::{
     EnumRenames,
     unit::{other_tag_schema, variant_keys},
     variant::{
-        build_struct_variant_fields, build_variant_data_schema, is_other_variant,
+        build_struct_variant_fields, build_variant_data_schema, has_unit_style, is_other_variant,
         is_variant_omitted, newtype_field_schema, variant_codec_schema,
     },
 };
@@ -383,6 +383,10 @@ pub(super) fn parse_internally_tagged_enum(
             (Some(codec), _) => tag_and(codec, variant_description),
             // Unit variant: {"tag": "VariantName"}
             (None, syn::Fields::Unit) => tag_object(variant_description),
+            // A skipped newtype is a unit on this side: the tag alone.
+            (None, syn::Fields::Unnamed(_)) if has_unit_style(variant) => {
+                tag_object(variant_description)
+            }
             (None, syn::Fields::Named(fields_named)) => {
                 // Struct variant: {"tag": "VariantName", field1: type1, ...}
                 let mut fields = build_struct_variant_fields(
@@ -551,7 +555,7 @@ pub(super) fn parse_adjacently_tagged_enum(
             if !absent_is_none {
                 required.push(content_string.clone());
             }
-        } else if matches!(variant.fields, syn::Fields::Unit) {
+        } else if has_unit_style(variant) {
             // serde reads a unit variant's content key when present — even
             // in an open container it is the content, never an ignored key —
             // and accepts only `null` (`UntaggedUnitVisitor`), so it is
@@ -620,6 +624,12 @@ pub(super) fn parse_untagged_enum(
                     ..Default::default()
                 }
             }
+            // A skipped newtype is a unit on this side: serde writes `null`.
+            (None, syn::Fields::Unnamed(_)) if has_unit_style(variant) => Schema {
+                description: variant_description,
+                schema_type: Some(SchemaType::Null),
+                ..Default::default()
+            },
             (None, syn::Fields::Unnamed(fields_unnamed)) if fields_unnamed.unnamed.len() == 1 => {
                 // Single field tuple variant - just the inner type; a variant
                 // doc comment overrides the inner schema's own description.

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use proc_macro2::{Delimiter, Group, TokenTree};
 use rstest::rstest;
 use vespera_core::schema::Schema;
 
@@ -391,4 +392,75 @@ fn repeated_format_rules_are_all_documented(
 ) {
     let property: serde_json::Value = serde_json::from_str(&field_json(field_src)).unwrap();
     assert_eq!(property, expected);
+}
+
+/// `(min_length, minimum)` of the `value` property of `item`.
+fn length_and_minimum(item: &syn::ItemStruct) -> (Option<usize>, Option<f64>) {
+    let schema = parse_struct_to_schema(
+        item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
+    let SchemaRef::Inline(property) = &schema.properties.as_ref().unwrap()["value"] else {
+        panic!("inline property");
+    };
+    (property.min_length, property.minimum)
+}
+
+/// A parenthesised garde bound documents the same value as the bare literal.
+#[rstest]
+#[case::length_paren("#[garde(length(chars, min = (2)))] value: String", (Some(2), None))]
+#[case::length_double_paren("#[garde(length(chars, min = ((2))))] value: String", (Some(2), None))]
+#[case::range_paren("#[garde(range(min = (2)))] value: i32", (None, Some(2.0)))]
+#[case::range_negated_paren("#[garde(range(min = -(2)))] value: i32", (None, Some(-2.0)))]
+fn parenthesised_garde_bounds_are_documented(
+    #[case] field_src: &str,
+    #[case] expected: (Option<usize>, Option<f64>),
+) {
+    let item: syn::ItemStruct = syn::parse_str(&format!("struct S {{ {field_src} }}")).unwrap();
+    assert_eq!(length_and_minimum(&item), expected);
+}
+
+/// A `None`-delimited group holding `inner`: the shape `macro_rules!` gives a
+/// `$n:expr` argument.
+fn invisible_group(inner: &str) -> TokenTree {
+    TokenTree::Group(Group::new(Delimiter::None, inner.parse().unwrap()))
+}
+
+/// A `macro_rules!` `$n:expr` (an invisible group) is documented like its
+/// literal: garde enforces the bound at runtime, so the schema must state it.
+#[test]
+fn invisible_group_length_bound_is_documented() {
+    let group = invisible_group("2");
+    let item: syn::ItemStruct = syn::parse_quote!(
+        struct S {
+            #[garde(length(chars, min = #group))]
+            value: String,
+        }
+    );
+    assert_eq!(length_and_minimum(&item), (Some(2), None));
+}
+
+#[test]
+fn invisible_group_range_bound_is_documented() {
+    let group = invisible_group("2");
+    let item: syn::ItemStruct = syn::parse_quote!(
+        struct S {
+            #[garde(range(min = #group))]
+            value: i32,
+        }
+    );
+    assert_eq!(length_and_minimum(&item), (None, Some(2.0)));
+}
+
+#[test]
+fn invisible_group_negated_range_bound_is_documented() {
+    let group = invisible_group("2");
+    let item: syn::ItemStruct = syn::parse_quote!(
+        struct S {
+            #[garde(range(min = -#group))]
+            value: i32,
+        }
+    );
+    assert_eq!(length_and_minimum(&item), (None, Some(-2.0)));
 }

@@ -236,3 +236,82 @@ fn both_views(src: &str) -> String {
 fn enum_views(#[case] name: &str, #[case] src: &str) {
     insta::assert_snapshot!(format!("enum_views_{name}"), both_views(src));
 }
+
+/// `(response, request)` schema of `src` as JSON.
+fn view_pair(src: &str) -> (serde_json::Value, serde_json::Value) {
+    let item: syn::ItemEnum = syn::parse_str(src).unwrap();
+    let known = HashSet::<String>::new();
+    let definitions = HashMap::<String, String>::new();
+    let response = parse_enum_to_schema(&item, &known, &definitions);
+    let request = with_request_view(|| parse_enum_to_schema(&item, &known, &definitions));
+    (
+        serde_json::to_value(response).unwrap(),
+        serde_json::to_value(request).unwrap(),
+    )
+}
+
+/// R32-P2-1: a single-field tuple variant whose field is skipped on a side is
+/// a unit variant on that side (serde_derive writes and reads `"V"`, `{"t":"V"}`,
+/// `null`), and the plain newtype on the other side. Each case names the
+/// plain source that the response (`response_as`) and the request
+/// (`request_as`) must match.
+#[rstest]
+#[case::external_skip_both(
+    "enum E { V(#[serde(skip)] u8), W }",
+    "enum E { V, W }",
+    "enum E { V, W }"
+)]
+#[case::external_mixed_skip_both(
+    "enum E { V(#[serde(skip)] u8), W(u8) }",
+    "enum E { V, W(u8) }",
+    "enum E { V, W(u8) }"
+)]
+#[case::internal_skip_both(
+    r#"#[serde(tag = "t")] enum E { V(#[serde(skip)] u8), W }"#,
+    r#"#[serde(tag = "t")] enum E { V, W }"#,
+    r#"#[serde(tag = "t")] enum E { V, W }"#
+)]
+#[case::adjacent_skip_both(
+    r#"#[serde(tag = "t", content = "c")] enum E { V(#[serde(skip)] u8), W }"#,
+    r#"#[serde(tag = "t", content = "c")] enum E { V, W }"#,
+    r#"#[serde(tag = "t", content = "c")] enum E { V, W }"#
+)]
+#[case::untagged_skip_both(
+    "#[serde(untagged)] enum E { V(#[serde(skip)] u8), W(u8) }",
+    "#[serde(untagged)] enum E { V, W(u8) }",
+    "#[serde(untagged)] enum E { V, W(u8) }"
+)]
+#[case::external_skip_serializing(
+    "enum E { V(#[serde(skip_serializing)] u8), W }",
+    "enum E { V, W }",
+    "enum E { V(u8), W }"
+)]
+#[case::internal_skip_serializing(
+    r#"#[serde(tag = "t")] enum E { V(#[serde(skip_serializing)] u8), W }"#,
+    r#"#[serde(tag = "t")] enum E { V, W }"#,
+    r#"#[serde(tag = "t")] enum E { V(u8), W }"#
+)]
+#[case::untagged_skip_serializing(
+    "#[serde(untagged)] enum E { V(#[serde(skip_serializing)] u8), W(u8) }",
+    "#[serde(untagged)] enum E { V, W(u8) }",
+    "#[serde(untagged)] enum E { V(u8), W(u8) }"
+)]
+#[case::external_skip_deserializing(
+    "enum E { V(#[serde(skip_deserializing)] u8), W }",
+    "enum E { V(u8), W }",
+    "enum E { V, W }"
+)]
+#[case::internal_skip_deserializing(
+    r#"#[serde(tag = "t")] enum E { V(#[serde(skip_deserializing)] u8), W }"#,
+    r#"#[serde(tag = "t")] enum E { V(u8), W }"#,
+    r#"#[serde(tag = "t")] enum E { V, W }"#
+)]
+fn skipped_newtype_views(
+    #[case] skipped: &str,
+    #[case] response_as: &str,
+    #[case] request_as: &str,
+) {
+    let (response, request) = view_pair(skipped);
+    assert_eq!(response, view_pair(response_as).0, "response of {skipped}");
+    assert_eq!(request, view_pair(request_as).1, "request of {skipped}");
+}

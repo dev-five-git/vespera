@@ -265,6 +265,14 @@ pub fn inline_or_reference(name: &str, build: impl FnOnce() -> Schema) -> Schema
 /// `Tree<T>` (or `Node<const N: usize>`, or `Buf<T, const N: usize>`), its own
 /// instantiation inside it (`Tree<T>`, `Node<N>`, `Buf<T, N>`) refers back to
 /// its component (`Tree`) instead of materialising `Tree_T` / `Node_Const.N`.
+///
+/// The names are visible only in this definition's own body. A name is just
+/// the spelling of its arguments, so inside ANOTHER definition's body
+/// (`Holder<T> { fixed: Buf<T, N> }` built while `Buf` is, with a global
+/// `const N`) the same spelling may denote an outer item: those inlined bodies
+/// see none of the enclosing definition's names. The limit: a self-reference
+/// reached through another definition (`Tree<T>` -> `Wrap<Tree<T>>` -> `Tree<T>`)
+/// is materialised as a component of its own instead of a `$ref` to `Tree`.
 pub fn with_definition<R>(
     ident: &syn::Ident,
     generics: &syn::Generics,
@@ -287,21 +295,24 @@ pub fn with_definition<R>(
             syn::parse_quote!(#ident)
         })
         .collect();
-    if params.is_empty() && consts.is_empty() {
-        return build();
-    }
     let component =
         crate::schema_impl::extract_schema_name_attr(attrs).unwrap_or_else(|| ident.to_string());
     // A self-reference may omit a defaulted parameter (`Tree<T>` inside
     // `Tree<T, M = Meta>` means `Tree<T, Meta>`): it names the same component
-    // as the parameters spelled out (`Tree<T, M>`).
-    let as_written = definition_instance(&component, &params, &consts);
-    let defaults_filled = definition_instance(
-        &component,
-        &default_filled_params(generics, &params),
-        &consts,
-    );
-    let instances = [as_written, defaults_filled];
+    // as the parameters spelled out (`Tree<T, M>`). The same holds for a
+    // defaulted const (`Buf<T>` inside `Buf<T, const N: usize = 4>`).
+    let instances = if params.is_empty() && consts.is_empty() {
+        // A non-generic definition has no instance of its own to name.
+        Vec::new()
+    } else {
+        let as_written = definition_instance(&component, &params, &consts);
+        let defaults_filled = definition_instance(
+            &component,
+            &default_filled_params(generics, &params),
+            &default_filled_consts(generics),
+        );
+        vec![as_written, defaults_filled]
+    };
     with_self_instances(&instances, &component, build)
 }
 
@@ -338,12 +349,14 @@ fn default_filled_params(generics: &syn::Generics, params: &[Type]) -> Vec<Type>
 
 /// Run `build` (the schema of a generic definition such as `Tree<T>`) with
 /// its own instantiations `instances` (`Tree_T`, ...) referring to `component`.
+/// The enclosing definitions' instances are hidden meanwhile (see
+/// [`with_definition`]).
 pub fn with_self_instances<R>(
     instances: &[String],
     component: &str,
     build: impl FnOnce() -> R,
 ) -> R {
-    let depth = DEFINITIONS.with(|stack| stack.borrow().len());
+    let outer = DEFINITIONS.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
     DEFINITIONS.with(|stack| {
         stack.borrow_mut().extend(
             instances
@@ -352,8 +365,24 @@ pub fn with_self_instances<R>(
         );
     });
     let result = build();
-    DEFINITIONS.with(|stack| stack.borrow_mut().truncate(depth));
+    DEFINITIONS.with(|stack| *stack.borrow_mut() = outer);
     result
+}
+
+/// The const parameters of `generics`, each defaulted one replaced by its
+/// default: the argument an omitted const takes at a use site
+/// (`const_argument_exprs`), so `Buf<T>` names `Buf<T, 4>`.
+fn default_filled_consts(generics: &syn::Generics) -> Vec<syn::Expr> {
+    generics
+        .const_params()
+        .map(|param| {
+            if let Some((_, default)) = &param.default {
+                return default.clone();
+            }
+            let ident = &param.ident;
+            syn::parse_quote!(#ident)
+        })
+        .collect()
 }
 
 /// The component materialised on this thread under `name`, if any.
