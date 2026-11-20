@@ -123,8 +123,9 @@ pub fn set_runtime_max_blocking_threads(threads: usize) -> bool {
 /// Multi-threaded Tokio runtime shared by ALL host dispatches — sync,
 /// direct, async and streaming alike.
 ///
-/// Dispatch only ever uses the cloned [`Handle`](tokio::runtime::Handle);
-/// the owning [`Runtime`](tokio::runtime::Runtime) sits behind a `Mutex` so
+/// Dispatch only ever borrows the shared [`Handle`](tokio::runtime::Handle)
+/// (a `'static` reference carried by each [`RuntimeLease`]); the owning
+/// [`Runtime`](tokio::runtime::Runtime) sits behind a `Mutex` so
 /// [`shutdown_runtime`] can take it out and shut it down gracefully.  The
 /// hot path never touches the mutex.
 static RUNTIME: OnceLock<Option<SharedRuntime>> = OnceLock::new();

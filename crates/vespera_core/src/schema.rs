@@ -48,6 +48,8 @@ fn is_empty_required(value: &Option<Vec<String>>) -> bool {
 }
 
 /// JSON Schema definition
+///
+/// `x-*` extension keys are dropped on load (see the `extensions` module docs).
 #[derive(Debug, Clone, Default)]
 pub struct Schema {
     /// Schema reference (`$ref`).
@@ -292,6 +294,8 @@ fn schema_parse_failure_sentinel(error: &serde_json::Error) -> Schema {
 }
 
 /// External documentation reference
+///
+/// `x-*` extension keys are dropped on load (see the `extensions` module docs).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalDocumentation {

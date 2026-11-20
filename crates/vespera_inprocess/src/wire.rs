@@ -104,6 +104,9 @@ pub struct WireRequestHeader<'a> {
     /// `axum::extract::ConnectInfo<SocketAddr>` request extension, so
     /// `ConnectInfo` handlers work in-process as they do behind
     /// `into_make_service_with_connect_info`.  Unparseable values are ignored.
+    /// The extension is inserted only with the `connect-info` feature (on in
+    /// `vespera`, off by default for `vespera_inprocess` itself); without it
+    /// the field is parsed but not applied.
     #[cfg_attr(
         any(test, feature = "bench-support"),
         serde(default, borrow, deserialize_with = "de_opt_cow")

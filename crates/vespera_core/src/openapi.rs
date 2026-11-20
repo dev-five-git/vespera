@@ -64,6 +64,8 @@ impl From<OpenApiVersionWire> for OpenApiVersion {
 }
 
 /// Contact information
+///
+/// `x-*` extension keys are dropped on load (see the `extensions` module docs).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Contact {
@@ -79,6 +81,8 @@ pub struct Contact {
 }
 
 /// License information
+///
+/// `x-*` extension keys are dropped on load (see the `extensions` module docs).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct License {
@@ -128,6 +132,8 @@ pub struct Info {
 }
 
 /// Server variable
+///
+/// `x-*` extension keys are dropped on load (see the `extensions` module docs).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerVariable {
@@ -142,6 +148,8 @@ pub struct ServerVariable {
 }
 
 /// Server information
+///
+/// `x-*` extension keys are dropped on load (see the `extensions` module docs).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Server {
@@ -160,6 +168,8 @@ pub struct Server {
 }
 
 /// Tag definition
+///
+/// `x-*` extension keys are dropped on load (see the `extensions` module docs).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tag {

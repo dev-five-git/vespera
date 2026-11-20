@@ -228,3 +228,79 @@ fn overflow_after_shutdown_is_not_stashed() {
     let (header, _) = status_and_body(&out[..len]);
     assert!(header.contains(r#""status":503"#), "{header}");
 }
+
+/// A DIRECT overflow during the shutdown's drain is stashed: the dispatch
+/// still holds its lease, and the stash closes only in the cleanup that runs
+/// after the drain.  Once that cleanup has run, an overflow answers the
+/// retryable `503` instead of a handle.  Runs in a CHILD process: the runtime
+/// and the stash are process-global.
+#[test]
+fn overflow_during_the_drain_is_stashed_until_the_clear() {
+    if !in_isolated_child(
+        "jni_impl::shutdown_tests::overflow_during_the_drain_is_stashed_until_the_clear",
+    ) {
+        return;
+    }
+    let (leased_tx, leased_rx) = std::sync::mpsc::channel::<()>();
+    // The dispatch leases the runtime and overflows only once the gate is
+    // closed, i.e. while the shutdown is draining it.
+    let holder = std::thread::spawn(move || {
+        block_on_shared_runtime(async move {
+            leased_tx
+                .send(())
+                .expect("the test thread waits for the lease");
+            while !vespera_inprocess::runtime::runtime_shut_down() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            let pending = match vespera_inprocess::dispatch_into_async_borrowed_resumable(
+                &[0, 0, 0, 1, b'{'],
+                &mut [],
+            )
+            .await
+            {
+                vespera_inprocess::ResumableDirectWrite::Overflow(pending) => pending,
+                vespera_inprocess::ResumableDirectWrite::Complete(_) => {
+                    panic!("an empty out overflows")
+                }
+            };
+            let mut out = vec![0u8; 1024];
+            let code = super::direct::stash::stash_overflow(&mut out, pending);
+            (code, out)
+        })
+    });
+    leased_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the dispatch holds its lease");
+    let shutdown = std::thread::spawn(|| shutdown_runtime(Duration::from_secs(30)));
+    let (code, out) = holder
+        .join()
+        .expect("holder thread")
+        .expect("leased before the shutdown");
+    assert!(code < 0, "an overflow: {code}");
+    let token = u64::from_be_bytes(out[..8].try_into().unwrap());
+    assert_ne!(token, 0, "a handle while the shutdown drains");
+    assert!(shutdown.join().expect("shutdown thread"));
+    assert_eq!(
+        super::direct::stash::stashed_count(),
+        0,
+        "the clear after the drain drops the stashed response"
+    );
+
+    // After the clear the stash is closed: the same overflow is a 503.
+    let pending = match tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime")
+        .block_on(vespera_inprocess::dispatch_into_async_borrowed_resumable(
+            &[0, 0, 0, 1, b'{'],
+            &mut [],
+        )) {
+        vespera_inprocess::ResumableDirectWrite::Overflow(pending) => pending,
+        vespera_inprocess::ResumableDirectWrite::Complete(_) => panic!("an empty out overflows"),
+    };
+    let mut after = vec![0u8; 1024];
+    let code = super::direct::stash::stash_overflow(&mut after, pending);
+    let len = usize::try_from(code).expect("a complete 503 wire");
+    let (header, _) = status_and_body(&after[..len]);
+    assert!(header.contains(r#""status":503"#), "{header}");
+    assert_eq!(super::direct::stash::stashed_count(), 0);
+}

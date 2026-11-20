@@ -195,6 +195,8 @@ pub struct RequestBody {
 }
 
 /// Media type definition
+///
+/// `x-*` extension keys are dropped on load (see the `extensions` module docs).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaType {

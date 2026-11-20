@@ -5,7 +5,8 @@
 //! thread; after that the producer sleeps with a doubling delay (capped at
 //! [`MAX_BACKOFF`]) so a source that is slow to produce does not peg a
 //! blocking-pool core. The body is aborted only as a last resort, once the
-//! source has produced nothing for [`MAX_EMPTY_WAIT`] in total.
+//! source has stayed silent for [`MAX_EMPTY_WAIT`] of back-off: the clock
+//! starts at the first sleep, after the [`SPIN_PULLS`] yields.
 
 use std::time::{Duration, Instant};
 
@@ -15,8 +16,10 @@ pub(super) const SPIN_PULLS: u32 = 1024;
 const MIN_BACKOFF: Duration = Duration::from_millis(1);
 /// Longest single sleep between two empty pulls.
 const MAX_BACKOFF: Duration = Duration::from_millis(10);
-/// Total wall time a source may stay silent (empty pulls only) before the
-/// request body is aborted with a `StreamAbort`.
+/// Wall time a source may stay silent (empty pulls only) once the back-off
+/// sleeps have started, before the request body is aborted with a
+/// `StreamAbort`.  The clock starts at the first sleep, not the first empty
+/// pull (the spin phase before it is not counted).
 pub(super) const MAX_EMPTY_WAIT: Duration = Duration::from_secs(10);
 
 /// Per-body state of the empty-pull back-off.

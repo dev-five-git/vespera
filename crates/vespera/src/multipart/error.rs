@@ -263,6 +263,20 @@ impl TypedMultipartError {
         }
     }
 
+    /// Build a wrong-type error for a client `value` that could not be parsed
+    /// as `wanted`.  The `source` quotes the client value in backticks after
+    /// `"invalid value: "`, bounded like [`Self::invalid_enum_value`]'s, so
+    /// a caller never has to bound it by hand.  Use the `WrongFieldType`
+    /// variant directly only for a message that does not quote the value.
+    #[must_use]
+    pub fn wrong_field_type_value(field_name: String, wanted: &'static str, value: &str) -> Self {
+        Self::WrongFieldType {
+            field_name,
+            wanted: Cow::Borrowed(wanted),
+            source: format!("invalid value: `{}`", truncate_reflected_value(value)),
+        }
+    }
+
     /// The offending field name when the error carries one — used as the
     /// `path` in the JSON error envelope.
     fn field_name(&self) -> Option<&str> {
@@ -408,5 +422,36 @@ impl From<MultipartError> for TypedMultipartError {
 impl From<MultipartRejection> for TypedMultipartError {
     fn from(source: MultipartRejection) -> Self {
         Self::InvalidRequest { source }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TypedMultipartError;
+
+    /// A client value far past the bound is cut in the quoted `source`, so
+    /// both the `Display` (`to_string`) and the 4xx envelope stay small.
+    #[test]
+    fn wrong_field_type_value_bounds_the_quoted_value_in_display_and_envelope() {
+        let value = "a".repeat(70_000);
+        let error = TypedMultipartError::wrong_field_type_value("flag".to_owned(), "bool", &value);
+        let display = error.to_string();
+        assert!(display.len() < 512, "display is {} bytes", display.len());
+        assert!(display.contains("(truncated)"), "{display}");
+        let body = error.error_body();
+        assert!(body.len() < 1024, "envelope is {} bytes", body.len());
+        let text = String::from_utf8(body).expect("UTF-8 envelope");
+        assert!(text.contains("(truncated)"), "{text}");
+        assert!(text.contains("Wrong type for field `flag`"), "{text}");
+    }
+
+    /// A short value is quoted in full.
+    #[test]
+    fn wrong_field_type_value_quotes_a_short_value_verbatim() {
+        let error = TypedMultipartError::wrong_field_type_value("n".to_owned(), "u32", "x1");
+        assert_eq!(
+            error.to_string(),
+            "Wrong type for field `n` (expected u32): invalid value: `x1`"
+        );
     }
 }

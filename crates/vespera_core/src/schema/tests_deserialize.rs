@@ -142,10 +142,6 @@ fn type_array_null_never_widens_a_schema_that_rejects_null(
 /// the `anyOf [.., {type: null}]` wrapper, the same accepted set); it used
 /// to be dropped for every `oneOf` / `allOf` / `not`, narrowing the schema.
 #[rstest]
-#[case::one_of_with_null_branch(
-    json!({"type": ["object", "null"], "oneOf": [{"$ref": "#/components/schemas/A"}, {"type": "null"}]}),
-    Some(true)
-)]
 #[case::not_of_non_null_type(json!({"type": ["string", "null"], "not": {"type": "integer"}}), Some(true))]
 #[case::not_of_enum_without_null(json!({"type": ["string", "null"], "not": {"enum": ["x"]}}), Some(true))]
 #[case::not_of_enum_with_null(json!({"type": ["string", "null"], "not": {"enum": ["x", null]}}), None)]
@@ -251,6 +247,16 @@ fn type_array_null_kept_when_the_composition_admits_null(
     json!({
         "allOf": [{"allOf": [{"$ref": "#/components/schemas/A"}]}],
         "anyOf": [{"type": "string"}, {"type": "null"}]
+    })
+)]
+// Round 34: the `{type: null}` branch of a `oneOf` next to a `$ref` member is
+// not proof of null admission (the `$ref` may admit it too), so the `null`
+// is re-expressed as an `anyOf` next to the `oneOf`, not kept as `nullable`.
+#[case::one_of_ref_and_null_branch_type_array_null(
+    json!({"type": ["object", "null"], "oneOf": [{"$ref": "#/components/schemas/A"}, {"type": "null"}]}),
+    json!({
+        "oneOf": [{"$ref": "#/components/schemas/A"}, {"type": "null"}],
+        "anyOf": [{"type": "object"}, {"type": "null"}]
     })
 )]
 #[case::explicit_nullable_with_type(
