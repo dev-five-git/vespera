@@ -166,12 +166,21 @@ pub fn current_side() -> SerdeSide {
     }
 }
 
+/// Restores the request-view mode it was created with when dropped, so a panic
+/// inside [`with_request_view`] cannot leave request-view mode on for the
+/// schemas built later on this thread.
+struct RequestViewGuard(bool);
+
+impl Drop for RequestViewGuard {
+    fn drop(&mut self) {
+        REQUEST_VIEW.with(|mode| mode.set(self.0));
+    }
+}
+
 /// Run `build` producing the request view (restores the previous mode).
 pub fn with_request_view<R>(build: impl FnOnce() -> R) -> R {
-    let previous = REQUEST_VIEW.with(|mode| mode.replace(true));
-    let result = build();
-    REQUEST_VIEW.with(|mode| mode.set(previous));
-    result
+    let _restore = RequestViewGuard(REQUEST_VIEW.with(|mode| mode.replace(true)));
+    build()
 }
 
 /// The input component for `component` while building a request view.

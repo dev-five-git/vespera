@@ -668,6 +668,15 @@ fn view_mode_and_installed_names() {
     assert!(!has_input("A"));
 }
 
+/// A panic inside the request-view build must not leave the mode on: the
+/// guard restores it while unwinding.
+#[test]
+fn panic_inside_request_view_restores_mode() {
+    let panicked = std::panic::catch_unwind(|| with_request_view::<()>(|| panic!("boom")));
+    assert!(panicked.is_err());
+    assert!(!in_request_view());
+}
+
 #[rstest]
 #[case::field_value_type(
         "struct A { #[schema(value_type = Vec<W>)] x: u8 }",

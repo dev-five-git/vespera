@@ -18,9 +18,10 @@ use super::{
 
 /// Whether `items` declare `mod name` (inline or file module).
 pub(super) fn declares_mod(items: &[syn::Item], name: &str) -> bool {
-    items
-        .iter()
-        .any(|item| matches!(item, syn::Item::Mod(module) if module.ident == name))
+    items.iter().any(|item| match item {
+        syn::Item::Mod(module) => module.ident == name && !attrs_test_only(&module.attrs),
+        _ => false,
+    })
 }
 
 /// Whether a local glob of `scope` (`use crate::models::*;`, `use super::*;`)

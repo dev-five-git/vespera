@@ -36,14 +36,14 @@ pub fn parse_function_parameter(
             if let Some(parameters) = header::parse_typed_header(ty) {
                 return Some(parameters);
             }
-            // The name is only needed for the scalar / header fallbacks below.
-            let param_name = extract_param_name(pat.as_ref())?;
-
+            // `Path<T>` is named after the path segments, so `_: Path<T>` works too.
             if let Some(parameters) =
                 path::parse_path_extractor(ty, path_params, known_schemas, struct_definitions)
             {
                 return Some(parameters);
             }
+            // The name is only needed for the scalar / header fallbacks below.
+            let param_name = extract_param_name(pat.as_ref())?;
             if let Some(parameters) =
                 query::parse_query_extractor(&param_name, ty, known_schemas, struct_definitions)
             {
@@ -223,6 +223,39 @@ mod tests {
                 "Expected None at arg index {idx}, func: {func_src}, got: {result:?}"
             );
         }
+    }
+
+    /// A `Path<T>` argument documents its path parameters whatever its pattern:
+    /// `_: Path<T>` is not a name, so it used to be skipped.
+    #[test]
+    fn wildcard_path_pattern_still_documents_path_parameters() {
+        let func: syn::ItemFn =
+            syn::parse_str("fn test(_: Path<(u64, String)>, Path(_): Path<i32>) {}").unwrap();
+        let path_params = vec!["user_id".to_string(), "slug".to_string()];
+        let path_param_set: HashSet<&str> = path_params.iter().map(String::as_str).collect();
+        let (known_schemas, struct_definitions) = (HashSet::new(), HashMap::new());
+        let mut args = func.sig.inputs.iter();
+        let tuple = parse_function_parameter(
+            args.next().unwrap(),
+            &path_params,
+            &path_param_set,
+            &known_schemas,
+            &struct_definitions,
+        )
+        .expect("`_: Path<T>` documents the path parameters");
+        let names: Vec<&str> = tuple.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["user_id", "slug"]);
+        assert!(tuple.iter().all(|p| p.r#in == ParameterLocation::Path));
+        let single = parse_function_parameter(
+            args.next().unwrap(),
+            &["id".to_string()],
+            &HashSet::from(["id"]),
+            &known_schemas,
+            &struct_definitions,
+        )
+        .expect("`Path(_): Path<T>` documents the path parameter");
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].name, "id");
     }
 }
 
