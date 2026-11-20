@@ -18,7 +18,8 @@
 //!    [`is_builtin_openapi_type`]), NOT `serde_json::Value`, NOT a
 //!    generic type parameter of the current struct, NOT `PhantomData` (std's;
 //!    see the exemptions of `emit_field_assertions`), and NOT marked
-//!    with `#[schema(any)]`, this module emits a const block:
+//!    with `#[schema(any)]` and no `value_type` (a `value_type` on an `any`
+//!    field is still asserted), this module emits a const block:
 //!
 //!    ```ignore
 //!    const _: () = {
@@ -95,7 +96,8 @@ fn emit_marker_impl(input: &syn::DeriveInput) -> TokenStream {
 /// Emit a `const _: () = { ... };` block per non-exempt leaf type of every
 /// type the schema documents.  Exemptions:
 ///
-/// - Field is marked `#[schema(any)]` (entire field is skipped).
+/// - Field is marked `#[schema(any)]` with no `value_type` (entire field is
+///   skipped; with a `value_type` the field is asserted as usual).
 /// - Field has `#[schema(value_type = T)]`: `T`'s leaves are asserted
 ///   instead of the field type's.
 /// - Field is converted by serde `with` (or both `serialize_with` and

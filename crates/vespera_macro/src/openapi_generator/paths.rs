@@ -599,16 +599,21 @@ fn run_parallel<T: Sync, R: Send>(
     let input_names = request_view::snapshot();
     let test_env = crate::env_access::test_env::snapshot();
     let stored_defaults = super::snapshot_stored_defaults();
+    // The call-site module is read on the caller's thread: a worker's own span
+    // has no file, so `instance_defaults` would resolve types at no module.
+    let call_site = crate::schema_macro::call_site_module_snapshot();
     std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(workers);
         for chunk in jobs.chunks(chunk_size) {
             let input_names = std::sync::Arc::clone(&input_names);
             let test_env = std::sync::Arc::clone(&test_env);
             let stored_defaults = std::sync::Arc::clone(&stored_defaults);
+            let call_site = call_site.clone();
             handles.push(scope.spawn(move || {
                 request_view::install(input_names);
                 crate::env_access::test_env::install(test_env);
                 super::install_stored_defaults(stored_defaults);
+                crate::schema_macro::install_call_site_module(call_site);
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let results: syn::Result<Vec<R>> =
                         chunk.iter().filter_map(|job| f(job).transpose()).collect();

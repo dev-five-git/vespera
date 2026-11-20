@@ -293,7 +293,9 @@ pub fn rewrite_schema_refs(value: &mut serde_json::Value, renames: &BTreeMap<Str
 }
 
 /// [`rewrite_schema_refs`]; `names` says `value` is a name map (its keys are
-/// names, not keywords), which the root and each NAME_MAP_KEYS value are.
+/// names, not keywords). The root is one; below it, only the NAME_MAP_KEYS
+/// values of a schema-level object are (a root-level `paths` is walked as a
+/// document object).
 fn rewrite_refs(value: &mut serde_json::Value, renames: &BTreeMap<String, String>, names: bool) {
     match value {
         serde_json::Value::Object(object) => {

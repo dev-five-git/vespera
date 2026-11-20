@@ -178,8 +178,9 @@ pub async fn runs(Path(key): Path<String>) -> String {
     count(&key).to_string()
 }
 
-/// `dispatchAsync` calls currently holding an in-flight slot (JNI builds
-/// only; `0` in the standalone server).
+/// Async dispatches holding an in-flight slot: JNI `dispatchAsync` and the C
+/// ABI `vespera_dispatch_async` share one counter (`0` in the standalone
+/// server, which has neither).
 #[allow(clippy::unused_async)]
 #[vespera::route(get, path = "/async-in-flight", tags = ["diag"])]
 pub async fn async_in_flight() -> String {

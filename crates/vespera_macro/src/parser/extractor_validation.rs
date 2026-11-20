@@ -217,9 +217,6 @@ fn is_test_only(metadata: &CollectedMetadata, route: &crate::metadata::RouteMeta
     })
 }
 
-/// The HTTP methods a `#[route(..)]` argument can name (the collector's list).
-const ROUTE_METHODS: [&str; 7] = ["get", "post", "put", "patch", "delete", "head", "options"];
-
 /// The top-level fn `route` is registered from: among the same-named fns of
 /// `ast`, the one not gated by a test-only `cfg` whose `#[route(<method>)]`
 /// is the route's method. A `#[cfg(test)]` twin, or a same-named fn of
@@ -279,7 +276,7 @@ fn route_attr_method(attr: &syn::Attribute) -> String {
         .flatten()
         .find_map(|meta| {
             let method = meta.path().get_ident()?.to_string().to_ascii_lowercase();
-            ROUTE_METHODS.contains(&method.as_str()).then_some(method)
+            crate::http::is_http_method(&method).then_some(method)
         })
         .unwrap_or_else(|| "get".to_owned())
 }
@@ -552,8 +549,12 @@ mod tests {
     }
 
     fn run(src: &str, fn_name: &str, structs: &[&str]) -> syn::Result<()> {
+        run_route(src, route(fn_name, "f.rs"), structs)
+    }
+
+    fn run_route(src: &str, route: RouteMetadata, structs: &[&str]) -> syn::Result<()> {
         let mut metadata = CollectedMetadata::new();
-        metadata.routes.push(route(fn_name, "f.rs"));
+        metadata.routes.push(route);
         for name in structs {
             metadata
                 .structs
@@ -576,6 +577,29 @@ mod tests {
         assert!(msg.contains("Local"), "got: {msg}");
         assert!(msg.contains("Query<Local>"), "got: {msg}");
         assert!(msg.contains("does not derive `Schema`"), "got: {msg}");
+    }
+
+    #[rstest::rstest]
+    #[case::get("get", "#[route(get)]")]
+    #[case::trace("trace", "#[route(trace)]")]
+    #[case::trace_name_value("trace", "#[route = \"trace\"]")]
+    fn non_schema_extractor_is_checked_for_every_route_method(
+        #[case] method: &str,
+        #[case] attr: &str,
+    ) {
+        // `trace` is a `HttpMethod::ALL` method: its handler is found and the
+        // non-`Schema` body type is flagged like any other method.
+        let src = format!(
+            "{attr} pub fn handler(Json(b): Json<Local>) -> String {{ String::new() }}
+             pub struct Local {{ pub a: i32 }}"
+        );
+        let mut route = route("handler", "f.rs");
+        route.method = method.to_string();
+        let err = run_route(&src, route, &[]).expect_err("should error");
+        assert!(
+            err.to_string().contains("does not derive `Schema`"),
+            "got: {err}"
+        );
     }
 
     #[test]

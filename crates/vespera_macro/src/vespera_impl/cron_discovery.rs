@@ -27,12 +27,16 @@
 //! all — free of any parsing.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use syn::ext::IdentExt;
+use syn::parse::ParseStream;
+use syn::punctuated::Punctuated;
 
 use crate::cron_impl::{CronArgs, StoredCronInfo, validate_cron_fn};
 use crate::metadata::CronMetadata;
+use crate::schema_macro::cfg_eval::{Predicate, statically_false};
+use crate::schema_macro::field_attrs::field_cfgs;
 use crate::schema_macro::file_cache;
 
 /// Substring every `#[cron(..)]` / `#[vespera::cron(..)]` attribute contains.
@@ -460,7 +464,9 @@ impl ModuleTree {
                         } else {
                             scope.mod_dir
                         };
-                        let child = base.join(path);
+                        // `..` is folded lexically: a verbatim-prefixed base is not
+                        // normalised by the filesystem, so `is_file` would miss it.
+                        let child = fold_parent_dirs(&base.join(path));
                         if child.is_file() {
                             let dir = child.parent().unwrap_or(base).to_path_buf();
                             self.walk(&child, &dir, &child_path, gated, foreign);
@@ -654,7 +660,11 @@ fn summarize(items: &[syn::Item], collect_jobs: bool) -> ModuleSummary {
                         .map(|(_, inner)| summarize(inner, collect_jobs)),
                 }),
                 syn::Item::Fn(function)
-                    if collect_jobs && function.attrs.iter().any(|a| is_cron_path(a.path())) =>
+                    if collect_jobs
+                        && function
+                            .attrs
+                            .iter()
+                            .any(|attr| !cron_entries(attr).is_empty()) =>
                 {
                     Some(ItemSummary::Cron {
                         name: function.sig.ident.unraw().to_string(),
@@ -675,18 +685,54 @@ fn cron_attrs(function: &syn::ItemFn) -> Vec<CronAttr> {
     if validate_cron_fn(function).is_err() || is_cfg_gated(&function.attrs) {
         return Vec::new();
     }
-    function
-        .attrs
+    function.attrs.iter().flat_map(cron_entries).collect()
+}
+
+/// The [`CronAttr`]s one attribute of a fn carries: a `#[cron]` itself, or the
+/// `cron` of a `cfg_attr(p, ..)`. The compiler keeps the latter unless `p` is
+/// statically false, and then the scan reads it as a job the same way (an
+/// unknown `p` keeps it, as an unknown `cfg` keeps an item).
+fn cron_entries(attr: &syn::Attribute) -> Vec<CronAttr> {
+    if is_cron_path(attr.path()) {
+        return vec![cron_attr(attr.path(), attr.parse_args::<CronArgs>())];
+    }
+    if !attr.path().is_ident("cfg_attr") {
+        return Vec::new();
+    }
+    let Ok((predicate, metas)) = attr.parse_args_with(cfg_attr_parts) else {
+        return Vec::new();
+    };
+    if statically_false(&predicate) {
+        return Vec::new();
+    }
+    metas
         .iter()
-        .filter(|attr| is_cron_path(attr.path()))
-        .map(|attr| CronAttr {
-            bare: attr.path().segments.len() == 1,
-            job: attr
-                .parse_args::<CronArgs>()
-                .ok()
-                .map(|args| (args.expression.value(), args.options())),
+        .filter(|meta| is_cron_path(meta.path()))
+        .map(|meta| {
+            let args = meta
+                .require_list()
+                .and_then(syn::MetaList::parse_args::<CronArgs>);
+            cron_attr(meta.path(), args)
         })
         .collect()
+}
+
+/// `cfg_attr(predicate, a, b, ..)`: the predicate and the attributes it adds.
+fn cfg_attr_parts(
+    input: ParseStream<'_>,
+) -> syn::Result<(Predicate, Punctuated<syn::Meta, syn::Token![,]>)> {
+    let predicate: Predicate = input.parse()?;
+    input.parse::<syn::Token![,]>()?;
+    Ok((predicate, Punctuated::parse_terminated(input)?))
+}
+
+fn cron_attr(path: &syn::Path, args: syn::Result<CronArgs>) -> CronAttr {
+    CronAttr {
+        bare: path.segments.len() == 1,
+        job: args
+            .ok()
+            .map(|args| (args.expression.value(), args.options())),
+    }
 }
 
 /// `cron` or `vespera::cron`.
@@ -793,8 +839,26 @@ fn path_attr(attrs: &[syn::Attribute]) -> Option<String> {
     })
 }
 
+/// Whether `attrs` carry a `cfg`, plain or inside a `cfg_attr(p, ..)`: such an
+/// item is never scanned, as a plain `#[cfg]` item is not.
 fn is_cfg_gated(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| attr.path().is_ident("cfg"))
+    !field_cfgs(attrs).is_empty()
+}
+
+/// `path` with its `.` segments dropped and each `..` popping the segment
+/// before it (lexical: the file need not exist).
+fn fold_parent_dirs(path: &Path) -> PathBuf {
+    let mut folded = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                folded.pop();
+            }
+            other => folded.push(other),
+        }
+    }
+    folded
 }
 
 fn join_module(parent: &str, name: &str) -> String {

@@ -7,9 +7,10 @@ pub use fk::find_fk_column_from_target_entity;
 pub use lookup::LookupError;
 pub use lookup::is_extern_crate;
 pub use lookup::{
-    call_site_definition, call_site_module, collect_rs_files_recursive,
+    call_site_definition, call_site_module, call_site_module_snapshot, collect_rs_files_recursive,
     find_model_from_schema_path, find_struct_from_path_detailed, find_struct_from_schema_path,
-    reexported_item, reexported_module, requested_module_path, storage_module_path,
+    install_call_site_module, reexported_item, reexported_module, requested_module_path,
+    storage_module_path,
 };
 #[cfg(test)]
 pub use lookup::{find_struct_from_path, set_test_call_site_module};

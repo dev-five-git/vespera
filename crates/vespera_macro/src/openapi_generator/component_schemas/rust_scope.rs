@@ -10,6 +10,8 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+use crate::schema_macro::cfg_eval::statically_inactive;
+
 /// The crate-relative module path and Rust ident of the type a derive source
 /// identity (`file::Ident@line:column`) names.
 ///
@@ -158,17 +160,28 @@ pub(super) fn default_scope<'a>(
     Some(Cow::Owned(scoped))
 }
 
-/// The items of the inline module `chain` names under `items`.
+/// The items of the inline module `chain` names under `items`. A module of
+/// that name is picked the way `schema_impl`'s derive-side lookup picks it:
+/// among the statically active twins, exactly one (two active twins, or none,
+/// resolve to nothing), so a cfg-off twin is never the one read.
 fn nested_items<'a>(items: &'a [syn::Item], chain: &[String]) -> Option<&'a [syn::Item]> {
     let Some((first, rest)) = chain.split_first() else {
         return Some(items);
     };
-    let inner = items.iter().find_map(|item| match item {
-        syn::Item::Mod(module) if syn::ext::IdentExt::unraw(&module.ident) == first.as_str() => {
-            module.content.as_ref().map(|(_, inner)| inner.as_slice())
+    let mut modules = items.iter().filter_map(|item| match item {
+        syn::Item::Mod(module)
+            if syn::ext::IdentExt::unraw(&module.ident) == first.as_str()
+                && !statically_inactive(&module.attrs) =>
+        {
+            Some(module)
         }
         _ => None,
-    })?;
+    });
+    let module = modules.next()?;
+    if modules.next().is_some() {
+        return None;
+    }
+    let (_, inner) = module.content.as_ref()?;
     nested_items(inner, rest)
 }
 
@@ -221,6 +234,39 @@ mod tests {
     #[case::after_module(8, &[])]
     fn inline_module_chain_by_line(#[case] line: usize, #[case] expected: &[&str]) {
         assert_eq!(inline_modules(SOURCE, line).unwrap(), expected);
+    }
+
+    /// A platform twin pair of one inline module: the active twin's functions
+    /// are the scope, and a pair with both twins active resolves to nothing.
+    #[rstest]
+    #[case::cfg_off_twin_first(
+        "#[cfg(any())] mod platform { fn off() {} } #[cfg(all())] mod platform { fn on() {} }",
+        Some("on")
+    )]
+    #[case::cfg_off_twin_last(
+        "#[cfg(all())] mod platform { fn on() {} } #[cfg(any())] mod platform { fn off() {} }",
+        Some("on")
+    )]
+    #[case::two_active_twins(
+        "#[cfg(all())] mod platform { fn a() {} } #[cfg(all())] mod platform { fn b() {} }",
+        None
+    )]
+    fn inline_module_twin_resolves_to_its_active_side(
+        #[case] source: &str,
+        #[case] expected: Option<&str>,
+    ) {
+        let items = syn::parse_file(source).unwrap().items;
+        let chain = ["platform".to_string()];
+        let found = nested_items(&items, &chain).map(|items| {
+            items
+                .iter()
+                .filter_map(|item| match item {
+                    syn::Item::Fn(func) => Some(func.sig.ident.to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(found, expected.map(|name| vec![name.to_string()]));
     }
 
     #[test]
