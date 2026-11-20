@@ -43,6 +43,25 @@ fn malformed_requirements_are_rejected(#[case] case: &str, #[case] arr: syn::Exp
     );
 }
 
+#[test]
+fn empty_scope_name_is_rejected_at_the_route_security() {
+    let error = parse(&syn::parse_quote!([("oauth2", [""])])).expect_err("empty scope rejected");
+    assert_eq!(
+        error.to_string(),
+        "#[route] `security` scope names must not be empty"
+    );
+}
+
+#[test]
+fn empty_scope_name_in_an_and_group_is_rejected() {
+    let arr: syn::ExprArray = syn::parse_quote!([["apiKey", ("oauth2", ["read", ""])]]);
+    let error = parse(&arr).expect_err("empty scope rejected");
+    assert_eq!(
+        error.to_string(),
+        "#[route] `security` scope names must not be empty"
+    );
+}
+
 fn scheme(r#type: SecuritySchemeType, flows: Option<OAuthFlows>) -> SecurityScheme {
     SecurityScheme {
         r#type,

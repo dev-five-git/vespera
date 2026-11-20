@@ -190,39 +190,28 @@ impl Parse for AutoRouterInput {
             None => None,
         };
 
-        let dir = dir.or_else(|| {
-            crate::env_access::var("VESPERA_DIR")
-                .map(|f| LitStr::new(&f, Span::call_site()))
-                .ok()
-        });
+        let dir_from_env = dir.is_none();
+        let dir = dir.or_else(|| env_lit("VESPERA_DIR"));
         if let Some(dir) = &dir {
-            super::validate_route_dir(&dir.value(), "vespera!", dir.span())?;
+            super::validate_route_dir(&dir.value(), "vespera!", dir.span()).map_err(|err| {
+                if dir_from_env {
+                    crate::env_access::env_error(&err, "VESPERA_DIR")
+                } else {
+                    err
+                }
+            })?;
         }
 
         Ok(Self {
             literal_hash,
             dir,
-            openapi: openapi.or_else(|| {
-                crate::env_access::var("VESPERA_OPENAPI")
-                    .map(|f| vec![LitStr::new(&f, Span::call_site())])
-                    .ok()
-            }),
-            title: title.or_else(|| {
-                crate::env_access::var("VESPERA_TITLE")
+            openapi: openapi.or_else(|| env_lit("VESPERA_OPENAPI").map(|f| vec![f])),
+            title: title.or_else(|| env_lit("VESPERA_TITLE")),
+            version: version.or_else(|| env_lit("VESPERA_VERSION")).or_else(|| {
+                crate::env_access::var("CARGO_PKG_VERSION")
                     .map(|f| LitStr::new(&f, Span::call_site()))
                     .ok()
             }),
-            version: version
-                .or_else(|| {
-                    crate::env_access::var("VESPERA_VERSION")
-                        .map(|f| LitStr::new(&f, Span::call_site()))
-                        .ok()
-                })
-                .or_else(|| {
-                    crate::env_access::var("CARGO_PKG_VERSION")
-                        .map(|f| LitStr::new(&f, Span::call_site()))
-                        .ok()
-                }),
             docs_url,
             redoc_url,
             spec_url,
@@ -243,17 +232,18 @@ impl Parse for AutoRouterInput {
 /// server, validated like a `servers = ...` argument: an invalid value is a
 /// compile error naming the variable, never silently dropped.
 fn env_server() -> syn::Result<Option<Vec<ServerConfig>>> {
-    let Ok(url) = crate::env_access::var("VESPERA_SERVER_URL") else {
+    let Some(url) = env_lit("VESPERA_SERVER_URL") else {
         return Ok(None);
     };
-    let url = validate_server_url(&LitStr::new(&url, Span::call_site())).map_err(|err| {
-        syn::Error::new(
-            err.span(),
-            format!("{err} (from the `VESPERA_SERVER_URL` environment variable)"),
-        )
-    })?;
-    let description = crate::env_access::var("VESPERA_SERVER_DESCRIPTION").ok();
+    let url = validate_server_url(&url)
+        .map_err(|err| crate::env_access::env_error(&err, "VESPERA_SERVER_URL"))?;
+    let description = crate::env_access::non_empty_var("VESPERA_SERVER_DESCRIPTION");
     Ok(Some(vec![ServerConfig { url, description }]))
+}
+
+/// The `VESPERA_*` variable `key` as a string literal, when set and not empty.
+fn env_lit(key: &str) -> Option<LitStr> {
+    crate::env_access::non_empty_var(key).map(|value| LitStr::new(&value, Span::call_site()))
 }
 
 /// A documentation URL argument, else its env-var fallback, with the label
@@ -265,10 +255,7 @@ fn env_server() -> syn::Result<Option<Vec<ServerConfig>>> {
 fn doc_url_or_env(arg: Option<LitStr>, key: &str, var: &str) -> (Option<LitStr>, String) {
     arg.map_or_else(
         || {
-            let lit = crate::env_access::var(var)
-                .ok()
-                .filter(|value| !value.is_empty())
-                .map(|value| LitStr::new(&value, Span::call_site()));
+            let lit = env_lit(var);
             (
                 lit,
                 format!("`{key}` (from the `{var}` environment variable)"),
@@ -996,3 +983,7 @@ mod doc_url_tests;
 #[cfg(test)]
 #[path = "input_tests_security.rs"]
 mod security_tests;
+
+#[cfg(test)]
+#[path = "input_tests_env.rs"]
+mod env_tests;

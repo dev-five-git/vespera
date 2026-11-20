@@ -60,3 +60,55 @@ fn plain_cron_has_no_registration_gate() {
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].cfg, Vec::<String>::new());
 }
+
+/// A `#[cfg]`-gated module or fn is scanned: its job is registered under the
+/// predicates of every item around it (`featured` gates `f` with `unix`), a
+/// statically true gate drops out, and a statically false one (`any()`) is
+/// never compiled, so its job is dropped.
+#[test]
+fn cfg_gated_modules_and_functions_register_their_jobs_under_their_gates() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "#[cfg(unix)]\nmod unixy;\n#[cfg(all())]\nmod always;\n#[cfg(any())]\nmod never;\n\
+             #[cfg(feature = \"x\")]\nmod featured;\n",
+        ),
+        ("unixy.rs", r#"#[cron("1 * * * * *")] pub async fn u() {}"#),
+        (
+            "always.rs",
+            r#"#[cron("2 * * * * *")] pub async fn a() {}
+            #[cfg(any())] #[cron("5 * * * * *")] pub async fn dead() {}"#,
+        ),
+        ("never.rs", r#"#[cron("3 * * * * *")] pub async fn n() {}"#),
+        (
+            "featured.rs",
+            r#"#[cfg(unix)] #[cron("4 * * * * *")] pub async fn f() {}"#,
+        ),
+    ]);
+    crate::schema_macro::file_cache::bump_epoch();
+    let src = krate.path().join("src");
+    let jobs = discover(&[], Some(&src), Some(&src.join("lib.rs")));
+    let mut found: Vec<(String, String, Vec<String>)> = jobs
+        .iter()
+        .map(|job| {
+            (
+                job.module_path.clone(),
+                job.function_name.clone(),
+                job.cfg.clone(),
+            )
+        })
+        .collect();
+    found.sort();
+    assert_eq!(
+        found,
+        vec![
+            ("always".to_owned(), "a".to_owned(), Vec::new()),
+            (
+                "featured".to_owned(),
+                "f".to_owned(),
+                vec!["feature = \"x\"".to_owned(), "unix".to_owned()]
+            ),
+            ("unixy".to_owned(), "u".to_owned(), vec!["unix".to_owned()]),
+        ]
+    );
+}

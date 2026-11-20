@@ -281,9 +281,11 @@ fn declares_workspace(cargo_toml: &str) -> bool {
 
 /// The code of one TOML line with multi-line string contents (`"""` / `'''`)
 /// removed: a `[workspace]` line inside such a string is text, not a table.
-/// `open` carries an unterminated delimiter across lines; a delimiter after a
-/// `#` opens nothing (it is a comment).
+/// `open` carries an unterminated delimiter across lines. A delimiter opens
+/// nothing inside a single-line string (`"..."` / `'...'`) or after a `#` (a
+/// comment): `description = "don't '''"` does not open a string.
 fn code_of_line(line: &str, open: &mut Option<&'static str>) -> String {
+    const MULTI_LINE: [&str; 2] = ["\"\"\"", "'''"];
     let mut code = String::new();
     let mut rest = line;
     loop {
@@ -295,19 +297,45 @@ fn code_of_line(line: &str, open: &mut Option<&'static str>) -> String {
             rest = &rest[end + 3..];
             continue;
         }
-        let limit = rest.find('#').unwrap_or(rest.len());
-        let opening = ["\"\"\"", "'''"]
-            .into_iter()
-            .filter_map(|delim| rest[..limit].find(delim).map(|at| (at, delim)))
-            .min();
-        let Some((at, delim)) = opening else {
+        let Some(at) = rest.find(['#', '"', '\'']) else {
             code.push_str(rest);
             return code;
         };
         code.push_str(&rest[..at]);
-        *open = Some(delim);
-        rest = &rest[at + 3..];
+        let tail = &rest[at..];
+        if tail.starts_with('#') {
+            return code;
+        }
+        if let Some(delim) = MULTI_LINE
+            .into_iter()
+            .find(|delim| tail.starts_with(*delim))
+        {
+            *open = Some(delim);
+            rest = &tail[3..];
+            continue;
+        }
+        let after = after_single_line_string(tail);
+        code.push_str(&tail[..tail.len() - after.len()]);
+        rest = after;
     }
+}
+
+/// The text after the single-line string at the start of `text`: a `"..."`
+/// basic string (a `\` escapes the next character) or a `'...'` literal. An
+/// unterminated string runs to the end of the line.
+fn after_single_line_string(text: &str) -> &str {
+    let basic = text.starts_with('"');
+    let close = if basic { '"' } else { '\'' };
+    let mut chars = text.char_indices().skip(1);
+    while let Some((index, ch)) = chars.next() {
+        if ch == close {
+            return &text[index + ch.len_utf8()..];
+        }
+        if basic && ch == '\\' {
+            chars.next();
+        }
+    }
+    ""
 }
 
 #[cfg(test)]
@@ -483,6 +511,10 @@ mod tests {
     #[case::table_after_multiline_string("d = \"\"\"\nx\n\"\"\"\n[workspace]", true)]
     #[case::one_line_multiline_string("d = \"\"\"x\"\"\"\n[workspace]", true)]
     #[case::delimiter_in_comment("# \"\"\" not a string\n[workspace]", true)]
+    #[case::delimiter_in_basic_string("[package]\ndescription = \"don't '''\"\n[workspace]", true)]
+    #[case::delimiter_in_literal_string("[package]\nd = '\"\"\"'\n[workspace]", true)]
+    #[case::escaped_quote_in_basic_string("d = \"a \\\" '''\"\n[workspace]", true)]
+    #[case::unterminated_basic_string_is_one_line("d = \"x '''\n[workspace]", true)]
     #[case::empty("", false)]
     fn declares_workspace_is_line_anchored(#[case] toml: &str, #[case] expected: bool) {
         assert_eq!(declares_workspace(toml), expected);

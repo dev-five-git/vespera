@@ -784,7 +784,15 @@ fn numeric_some(
         // for an integer target (an `as _` cast truncated `minimum = 0.5` on
         // `type Count = u32` to 0). A non-numeric field type is a compiler
         // error at the field.
-        if let Some(exact) = exact {
+        // A literal wider than `i128` cannot be the `i128` literal a float
+        // alias takes (rustc: "literal out of range for i128"); such a bound
+        // goes through the documented `f64` like a fractional one does.
+        let limit = if exact.as_ref().is_some_and(|exact| exact.negative) {
+            i128::MIN.unsigned_abs()
+        } else {
+            i128::MAX.unsigned_abs()
+        };
+        if let Some(exact) = exact.filter(|exact| exact.magnitude <= limit) {
             // The documented `f64` travels with the literal, so the validator
             // loosens to it exactly like a known integer type does.
             let literal: TokenStream = exact

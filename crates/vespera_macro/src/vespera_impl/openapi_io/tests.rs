@@ -547,14 +547,27 @@ fn test_ensure_openapi_files_from_cache_skip_unchanged() {
     let output_path = temp_dir.path().join("api.json");
     let spec = r#"{"openapi":"3.1.0"}"#;
 
-    // Write file first with same content
+    // Write file first with same content, aged so that a rewrite would show
+    // up as a fresh modification time.
     fs::write(&output_path, spec).unwrap();
+    let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60);
+    fs::File::options()
+        .write(true)
+        .open(&output_path)
+        .unwrap()
+        .set_modified(hour_ago)
+        .unwrap();
 
     let result =
         ensure_openapi_files_from_cache(&[output_path.to_string_lossy().to_string()], Some(spec));
     assert!(result.is_ok());
     // File should still contain same content (no unnecessary write)
     assert_eq!(fs::read_to_string(&output_path).unwrap(), spec);
+    let modified = fs::metadata(&output_path).unwrap().modified().unwrap();
+    assert!(
+        modified < std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 60),
+        "an unchanged file was rewritten: modified at {modified:?}"
+    );
 }
 
 #[test]

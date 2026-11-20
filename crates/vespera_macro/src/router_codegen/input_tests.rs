@@ -836,7 +836,6 @@ fn empty_doc_url_env_fallbacks_are_unset() {
     assert!(input.redoc_url.is_none());
     assert!(input.spec_url.is_none());
 }
-
 #[test]
 fn unknown_field_error_lists_spec_url() {
     let error = syn::parse2::<AutoRouterInput>(quote::quote!(spec = "/openapi.json"))

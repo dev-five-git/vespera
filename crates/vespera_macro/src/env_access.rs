@@ -46,6 +46,22 @@ pub fn var(key: &str) -> Result<String, VarError> {
     })
 }
 
+/// The value of an optional setting read by [`var`], where a set-but-empty
+/// variable (`VESPERA_DIR=`) counts as unset, as the README documents for
+/// every `VESPERA_*` fallback.
+pub fn non_empty_var(key: &str) -> Option<String> {
+    var(key).ok().filter(|value| !value.is_empty())
+}
+
+/// `err`, naming the environment variable its value was read from: the error
+/// points at the macro call, so the variable name is the only pointer to it.
+pub fn env_error(err: &syn::Error, key: &str) -> syn::Error {
+    syn::Error::new(
+        err.span(),
+        format!("{err} (from the `{key}` environment variable)"),
+    )
+}
+
 /// Test-override key for [`compiler_args`] (newline-separated arguments);
 /// not a valid environment variable name, so it never shadows a real one.
 pub const COMPILER_ARGS_KEY: &str = "\u{0}vespera:compiler-args";

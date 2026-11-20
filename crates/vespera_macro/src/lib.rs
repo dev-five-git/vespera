@@ -451,11 +451,17 @@ pub fn export_app(input: TokenStream) -> TokenStream {
     let folder_span = dir
         .as_ref()
         .map_or_else(proc_macro2::Span::call_site, syn::LitStr::span);
+    let dir_from_env = dir.is_none();
     let folder_name = dir
         .map(|d| d.value())
-        .or_else(|| crate::env_access::var("VESPERA_DIR").ok())
+        .or_else(|| crate::env_access::non_empty_var("VESPERA_DIR"))
         .unwrap_or_else(|| "routes".to_string());
     if let Err(err) = router_codegen::validate_route_dir(&folder_name, "export_app!", folder_span) {
+        let err = if dir_from_env {
+            crate::env_access::env_error(&err, "VESPERA_DIR")
+        } else {
+            err
+        };
         return err.to_compile_error().into();
     }
     let prefix = prefix.map_or_else(String::new, |value| value.value());

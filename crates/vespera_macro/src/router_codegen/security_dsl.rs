@@ -252,6 +252,12 @@ fn parse_scopes(input: ParseStream) -> syn::Result<BTreeMap<String, String>> {
     let mut scopes = BTreeMap::new();
     while !content.is_empty() {
         let scope: LitStr = content.parse()?;
+        if scope.value().is_empty() {
+            return Err(syn::Error::new(
+                scope.span(),
+                "vespera! macro: OAuth2 scope names must not be empty",
+            ));
+        }
         content.parse::<syn::Token![=]>()?;
         let description: LitStr = content.parse()?;
         if scopes.insert(scope.value(), description.value()).is_some() {
