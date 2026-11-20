@@ -502,13 +502,15 @@ fn container_cfg_attr_serde_is_judged_only_while_active() {
 #[test]
 fn kept_cfg_attr_serde_items_are_read_and_judged() {
     let dto: syn::ItemStruct = syn::parse_str(
-        "#[cfg_attr(all(), serde(try_from = \"Unresolvable\"))] #[cfg_attr(unix, serde(rename = \"x\"))] struct Dto { id: i32 }",
+        "#[allow(dead_code)] #[cfg_attr(all(), serde(try_from = \"Unresolvable\"))] #[cfg_attr(unix, serde(rename = \"x\"))] struct Dto { id: i32 }",
     )
     .unwrap();
-    let statically =
-        unresolved::serde_metas(&dto.attrs, crate::schema_macro::cfg_eval::statically_active);
+    let statically = unresolved::serde_metas(
+        &dto.attrs,
+        &crate::schema_macro::cfg_eval::statically_active,
+    );
     assert_eq!(statically.len(), 1);
-    assert_eq!(unresolved::serde_metas(&dto.attrs, |_| true).len(), 2);
+    assert_eq!(unresolved::serde_metas(&dto.attrs, &|_| true).len(), 2);
     assert_eq!(
         unresolved::unresolved_at_call_site(&dto, None).as_deref(),
         Some("Unresolvable")

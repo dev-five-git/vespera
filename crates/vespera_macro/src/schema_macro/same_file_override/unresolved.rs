@@ -118,7 +118,7 @@ fn metas(tokens: proc_macro2::TokenStream) -> Vec<syn::Meta> {
 /// nothing else, R35-SM4-L1); a field's items are all judged.
 pub(super) fn serde_metas(
     attrs: &[syn::Attribute],
-    keep_cfg: impl Fn(&Predicate) -> bool,
+    keep_cfg: &dyn Fn(&Predicate) -> bool,
 ) -> Vec<syn::Meta> {
     attrs
         .iter()
@@ -259,9 +259,9 @@ pub(super) fn unresolved_at_call_site(
     };
     types
         .found
-        .or_else(|| serde_check(serde_metas(&dto.attrs, statically_active)))
+        .or_else(|| serde_check(serde_metas(&dto.attrs, &statically_active)))
         .or_else(|| {
-            live_fields().find_map(|field| serde_check(serde_metas(&field.attrs, |_| true)))
+            live_fields().find_map(|field| serde_check(serde_metas(&field.attrs, &|_| true)))
         })
 }
 
