@@ -569,7 +569,7 @@ fn ensure_struct_definitions(cache: &mut FileCache, path: &Path) -> Option<Struc
     let mut defs = HashMap::new();
     for item in &file_ast.items {
         if let syn::Item::Struct(struct_item) = item
-            && !super::cfg_eval::statically_inactive(&struct_item.attrs)
+            && !super::cfg_eval::compiled_out(&struct_item.attrs)
         {
             let name = struct_item.ident.to_string();
             defs.entry(name)

@@ -15,6 +15,7 @@ use super::transformation::{rebuild_serde_attrs, serde_key};
 use super::type_utils::snake_to_pascal_case;
 use crate::metadata::StructMetadata;
 
+mod derives;
 mod unresolved;
 
 #[cfg(test)]
@@ -59,33 +60,13 @@ fn choose_same_file<'a>(
     stored: Option<&'a StructMetadata>,
 ) -> Option<Cow<'a, StructMetadata>> {
     match file_definition {
-        Some(definition) if stored.is_none() || derives_schema(&definition) => Some(Cow::Owned(
-            StructMetadata::new(struct_name.to_string(), definition),
-        )),
+        Some(definition) if stored.is_none() || derives::derives_schema(&definition) => Some(
+            Cow::Owned(StructMetadata::new(struct_name.to_string(), definition)),
+        ),
         // Cache hit: hand back a borrow so the (potentially large) struct
         // definition string is not cloned per lookup.
         _ => stored.map(Cow::Borrowed),
     }
-}
-
-/// Whether the struct `definition` has `Schema` in one of its `derive`s.
-fn derives_schema(definition: &str) -> bool {
-    let Ok(item) = file_cache::parse_struct_cached(definition) else {
-        return false;
-    };
-    item.attrs
-        .iter()
-        .filter(|attr| attr.path().is_ident("derive"))
-        .any(|attr| {
-            attr.parse_args_with(
-                syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
-            )
-            .is_ok_and(|paths| {
-                paths
-                    .iter()
-                    .any(|path| path.segments.last().is_some_and(|s| s.ident == "Schema"))
-            })
-        })
 }
 
 /// The definition of `struct_name` in the macro call-site file.

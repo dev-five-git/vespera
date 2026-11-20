@@ -251,26 +251,26 @@ fn is_same_item_moved(existing: Option<&str>, incoming: Option<&str>) -> bool {
 /// `#[cfg]` is known to be false are not counted (L5, round 18: an inactive
 /// cfg twin hid a move or a stale entry).
 fn count_items_named(items: &[syn::Item], ident: &str) -> usize {
-    use crate::schema_macro::cfg_eval::statically_inactive;
+    use crate::schema_macro::cfg_eval::compiled_out;
     struct Counter<'a> {
         ident: &'a str,
         count: usize,
     }
     impl<'ast> syn::visit::Visit<'ast> for Counter<'_> {
         fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
-            if !statically_inactive(&item.attrs) {
+            if !compiled_out(&item.attrs) {
                 self.count += usize::from(item.ident == self.ident);
                 syn::visit::visit_item_struct(self, item);
             }
         }
         fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
-            if !statically_inactive(&item.attrs) {
+            if !compiled_out(&item.attrs) {
                 self.count += usize::from(item.ident == self.ident);
                 syn::visit::visit_item_enum(self, item);
             }
         }
         fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
-            if !statically_inactive(&item.attrs) {
+            if !compiled_out(&item.attrs) {
                 syn::visit::visit_item_mod(self, item);
             }
         }
@@ -278,27 +278,27 @@ fn count_items_named(items: &[syn::Item], ident: &str) -> usize {
         // `#[cfg]` that is false on the fn / impl / trait / const / static
         // hides everything inside it too.
         fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
-            if !statically_inactive(&item.attrs) {
+            if !compiled_out(&item.attrs) {
                 syn::visit::visit_item_fn(self, item);
             }
         }
         fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
-            if !statically_inactive(&item.attrs) {
+            if !compiled_out(&item.attrs) {
                 syn::visit::visit_item_impl(self, item);
             }
         }
         fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
-            if !statically_inactive(&item.attrs) {
+            if !compiled_out(&item.attrs) {
                 syn::visit::visit_item_trait(self, item);
             }
         }
         fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
-            if !statically_inactive(&item.attrs) {
+            if !compiled_out(&item.attrs) {
                 syn::visit::visit_item_const(self, item);
             }
         }
         fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
-            if !statically_inactive(&item.attrs) {
+            if !compiled_out(&item.attrs) {
                 syn::visit::visit_item_static(self, item);
             }
         }
@@ -306,22 +306,22 @@ fn count_items_named(items: &[syn::Item], ident: &str) -> usize {
         // a false `#[cfg]` on a method or associated const hides what its body
         // declares, like a free fn does.
         fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
-            if !statically_inactive(&item.attrs) {
+            if !compiled_out(&item.attrs) {
                 syn::visit::visit_impl_item_fn(self, item);
             }
         }
         fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
-            if !statically_inactive(&item.attrs) {
+            if !compiled_out(&item.attrs) {
                 syn::visit::visit_trait_item_fn(self, item);
             }
         }
         fn visit_impl_item_const(&mut self, item: &'ast syn::ImplItemConst) {
-            if !statically_inactive(&item.attrs) {
+            if !compiled_out(&item.attrs) {
                 syn::visit::visit_impl_item_const(self, item);
             }
         }
         fn visit_trait_item_const(&mut self, item: &'ast syn::TraitItemConst) {
-            if !statically_inactive(&item.attrs) {
+            if !compiled_out(&item.attrs) {
                 syn::visit::visit_trait_item_const(self, item);
             }
         }
@@ -835,9 +835,7 @@ fn extract_default_functions_from_file(
         .items
         .iter()
         .filter_map(|item| match item {
-            syn::Item::Fn(func)
-                if !crate::schema_macro::cfg_eval::statically_inactive(&func.attrs) =>
-            {
+            syn::Item::Fn(func) if !crate::schema_macro::cfg_eval::compiled_out(&func.attrs) => {
                 Some(func)
             }
             _ => None,

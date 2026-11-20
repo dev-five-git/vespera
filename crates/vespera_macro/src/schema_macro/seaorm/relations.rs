@@ -231,7 +231,7 @@ fn local_alias_target(path: &[String]) -> Option<(Vec<String>, Vec<String>)> {
     items.iter().find_map(|item| match item {
         syn::Item::Type(alias)
             if alias.ident == name.as_str()
-                && !crate::schema_macro::cfg_eval::statically_inactive(&alias.attrs) =>
+                && !crate::schema_macro::cfg_eval::compiled_out(&alias.attrs) =>
         {
             let syn::Type::Path(target) = alias.ty.as_ref() else {
                 return None;
@@ -858,6 +858,47 @@ mod tests {
         assert_eq!(
             schema_path_tokens(&path, &segs("crate::models::cake")).to_string(),
             ":: entities :: bakery :: Schema"
+        );
+    }
+
+    /// R32-SM4-L1: a `type` alias gated only by a `cfg_attr` the compiler drops
+    /// is not the alias: the live one names the entity.
+    #[test]
+    fn local_alias_skips_a_cfg_attr_disabled_twin() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(src.join("models")).unwrap();
+        std::fs::write(
+            src.join("lib.rs"),
+            "pub mod models;
+",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("models/mod.rs"),
+            "pub mod category;
+",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("models/category.rs"),
+            "#[cfg_attr(all(), cfg(any()))]
+pub type LocalEntity = super::old::Entity;
+             pub type LocalEntity = super::user::Entity;
+",
+        )
+        .unwrap();
+        let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        crate::schema_macro::file_cache::bump_epoch();
+        let path = segs("crate::models::category::LocalEntity");
+        let (segments, _) = local_alias_target(&path).expect("the live alias");
+        assert!(
+            segments.iter().any(|segment| segment == "user"),
+            "{segments:?}"
+        );
+        assert!(
+            !segments.iter().any(|segment| segment == "old"),
+            "{segments:?}"
         );
     }
 }

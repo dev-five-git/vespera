@@ -689,19 +689,19 @@ mod tests {
             "f32", "f64", "bool", "String", "Decimal",
         ] {
             let ty: syn::Type = syn::parse_str(ty_str).unwrap();
-            assert!(is_parseable_type(&ty), "{ty_str} should be parseable");
+            assert!(is_parseable_type(&ty, &[]), "{ty_str} should be parseable");
         }
     }
 
     #[test]
     fn test_is_parseable_type_non_parseable() {
         let ty: syn::Type = syn::parse_str("MyEnum").unwrap();
-        assert!(!is_parseable_type(&ty));
+        assert!(!is_parseable_type(&ty, &[]));
     }
 
     #[test]
     fn test_is_parseable_type_non_path() {
         let ty: syn::Type = syn::parse_str("&str").unwrap();
-        assert!(!is_parseable_type(&ty));
+        assert!(!is_parseable_type(&ty, &[]));
     }
 }
