@@ -186,6 +186,80 @@ fn expands_in_crate(files: &[(&str, &str)], handler: &str, ret: &str) -> bool {
     "Api<User>",
     false
 )]
+// Round 35: a `pub` rename of an ALIAS re-exports that alias, so it expands
+// under the new name, from a qualified path or through a handler's import.
+#[case::renamed_alias_reexport_is_followed(
+    &[("lib.rs", "mod error; pub use error::AppResult as ApiResponse;"), ("error.rs", "pub type AppResult<T> = Result<Json<T>, AppErr>;")],
+    "pub fn h() {}",
+    "crate::ApiResponse<User>",
+    true
+)]
+#[case::handler_imports_renamed_alias_reexport(
+    &[("lib.rs", "mod error; pub use error::AppResult as ApiResponse;"), ("error.rs", "pub type AppResult<T> = Result<Json<T>, AppErr>;")],
+    "use crate::ApiResponse; pub fn h() {}",
+    "ApiResponse<User>",
+    true
+)]
+// Round 35: a PRIVATE `use super::X;` is no re-export (like the private
+// `use super::*;` above): it brings the parent's alias into its module only.
+#[case::private_named_super_keeps_the_parent_alias(
+    &[("lib.rs", "")],
+    "pub type ApiResponse<T> = Result<Json<T>, UsersErr>; pub mod users { use super::ApiResponse; pub fn h() {} }",
+    "crate::users::ApiResponse<User>",
+    true
+)]
+// The `pub` form re-exports the parent's name: it stays nominal.
+#[case::pub_named_super_reexport_stays_nominal(
+    &[("lib.rs", "")],
+    "pub type ApiResponse<T> = Result<Json<T>, UsersErr>; pub mod users { pub use super::ApiResponse; pub fn h() {} }",
+    "crate::users::ApiResponse<User>",
+    false
+)]
+// Round 35: a `pub` import of the parent's name in any form (a group, an
+// `X as X` self rename) is a re-export, so it stays nominal.
+#[case::pub_group_named_super_reexport_stays_nominal(
+    &[("lib.rs", "")],
+    "pub type ApiResponse<T> = Result<Json<T>, UsersErr>; pub mod users { pub use super::{ApiResponse}; pub fn h() {} }",
+    "crate::users::ApiResponse<User>",
+    false
+)]
+#[case::pub_self_renamed_super_reexport_stays_nominal(
+    &[("lib.rs", "")],
+    "pub type ApiResponse<T> = Result<Json<T>, UsersErr>; pub mod users { pub use super::ApiResponse as ApiResponse; pub fn h() {} }",
+    "crate::users::ApiResponse<User>",
+    false
+)]
+// Round 35: a private named `use super::X;` decides nothing even beside a
+// public glob, which names no single item.
+#[case::private_named_super_beside_a_public_glob(
+    &[("lib.rs", "")],
+    "pub type ApiResponse<T> = Result<Json<T>, UsersErr>; pub mod users { pub use super::*; use super::ApiResponse; pub fn h() {} }",
+    "crate::users::ApiResponse<User>",
+    true
+)]
+// A `pub` rename of an item another crate provides stays nominal (no alias
+// of this crate is followed under that name).
+#[case::external_renamed_reexport_is_nominal(
+    &[("lib.rs", "mod routes; pub use axum_extra::Envelope as ApiResponse;"), ROUTES],
+    "pub fn h() {}",
+    "crate::ApiResponse<User>",
+    false
+)]
+// Round 35: a `pub` rename from `super` names an item this lookup cannot
+// follow, so it stays nominal.
+#[case::pub_super_renamed_reexport_stays_nominal(
+    &[("lib.rs", "")],
+    "pub type ApiResponse<T> = Result<Json<T>, UsersErr>; pub mod users { pub use super::Envelope as ApiResponse; pub fn h() {} }",
+    "crate::users::ApiResponse<User>",
+    false
+)]
+// A named re-export through an unresolved `super::super` chain stays nominal.
+#[case::unresolved_super_chain_named_is_nominal(
+    &[("lib.rs", "mod routes; pub mod v2;"), ("v2.rs", "pub use super::super::ApiResponse;"), ROUTES],
+    "pub fn h() {}",
+    "crate::v2::ApiResponse<User>",
+    false
+)]
 fn reexports_decide_the_nominal_lookup(
     #[case] files: &[(&str, &str)],
     #[case] handler: &str,

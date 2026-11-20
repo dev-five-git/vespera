@@ -14,14 +14,14 @@ use crate::schema_macro::type_utils::option_inner;
 
 /// Every type ident named by the item's fields (generic arguments included),
 /// their `#[schema(value_type = ..)]` types, the entity components of their
-/// relations, and the container's `value_type` / `into` / `from` / `try_from`
-/// types.
-pub(super) fn referenced_idents(item: &syn::Item) -> BTreeSet<String> {
+/// relations (see [`add_relation_targets`]), and the container's `value_type` /
+/// `into` / `from` / `try_from` types. `known` holds every component name.
+pub(super) fn referenced_idents(item: &syn::Item, known: &BTreeSet<String>) -> BTreeSet<String> {
     let mut idents = BTreeSet::new();
     let mut add_fields = |fields: &syn::Fields| {
         for field in fields {
             collect_idents(&field.ty, &mut idents);
-            add_relation_targets(&field.ty, &mut idents);
+            add_relation_targets(&field.ty, known, &mut idents);
             if let Some(value_type) = extract_schema_constraints(&field.attrs).value_type {
                 collect_idents(&value_type.0, &mut idents);
             }
@@ -66,11 +66,13 @@ pub(super) fn collect_idents(ty: &syn::Type, idents: &mut BTreeSet<String>) {
     syn::visit::Visit::visit_type(&mut Visitor(idents), ty);
 }
 
-/// The component names a `HasOne` / `BelongsTo` / `HasMany` field resolves
-/// its `<module>::Entity` to (see `entity_candidates`): the request view of
-/// the type with that relation differs when its target's does (the target's
-/// input is referenced from the parent's request view).
-fn add_relation_targets(ty: &syn::Type, idents: &mut BTreeSet<String>) {
+/// The component a `HasOne` / `BelongsTo` / `HasMany` field documents its
+/// `<module>::Entity` as: the first candidate that is a known component (see
+/// `entity_target`, which emits the same `$ref`). The request view of the type
+/// with that relation differs when its target's does (the target's input is
+/// referenced from the parent's request view). Other candidates are not
+/// referenced: `$ref` never names them.
+fn add_relation_targets(ty: &syn::Type, known: &BTreeSet<String>, idents: &mut BTreeSet<String>) {
     if let syn::Type::Path(type_path) = ty
         && let Some(segment) = type_path.path.segments.last()
         && matches!(
@@ -79,8 +81,9 @@ fn add_relation_targets(ty: &syn::Type, idents: &mut BTreeSet<String>) {
         )
         && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
         && let Some(syn::GenericArgument::Type(entity)) = args.args.first()
-        && let Some(names) = entity_candidates(option_inner(entity).unwrap_or(entity))
+        && let Some(target) = entity_candidates(option_inner(entity).unwrap_or(entity))
+            .and_then(|names| names.into_iter().find(|name| known.contains(name)))
     {
-        idents.extend(names);
+        idents.insert(target);
     }
 }

@@ -3,7 +3,7 @@
 //! lookups [`super::is_external_path`] and [`super::find_alias`] need. A child
 //! of `result_alias` (its helpers are reached through `super`).
 
-use std::path::Path;
+use std::{cell::RefCell, path::Path};
 
 use crate::{
     collector::test_scope::{TestScope, attrs_test_only},
@@ -12,7 +12,8 @@ use crate::{
 
 use super::{
     Import, MAX_ALIAS_DEPTH, Qualifier, Scope, alias_item, declares_nominal, file_module,
-    glob_parent_entries, glob_parents, import_kind, import_parent, parse_items, renames_to,
+    glob_parent_entries, glob_parents, import_kind, import_parent, parse_items, renamed_import,
+    renames_to,
 };
 
 /// Whether `items` declare `mod name` (inline or file module).
@@ -93,16 +94,28 @@ fn reexports_nominal(
     if items.iter().any(|item| alias_item(item, name).is_some()) {
         return false;
     }
+    // A rename of a crate-root / named-module item is nominal unless it names
+    // an alias that module declares (see `reexported_alias`): only then is the
+    // alias expandable under the new name. Anything else stays nominal.
+    if let Some((original, parent)) = renamed_source(items, name) {
+        return !declares_alias(&parent, &original, scope, src_dir);
+    }
     if renames_to(items, name) {
         return true;
     }
     match import_kind(items, name) {
         Some(Import::External) => true,
-        // Only a crate-root / named-module source can be followed; any other
-        // local import (`super`, `self`, an unresolved chain) stays nominal.
-        Some(Import::Local) => import_parent(items, name).is_none_or(|parent| {
-            !matches!(parent, Qualifier::CrateRoot | Qualifier::Module(_))
-                || nominal_in(name, &parent, scope, src_dir, depth + 1)
+        // Only a crate-root / named-module source can be followed. A private
+        // `use super::X;` brings the parent's `X` into this module only, like
+        // a private `use super::*;` (see the glob arm): it is no re-export, so
+        // it decides nothing. A `pub` one stays nominal (its source is unknown
+        // here). An unresolved chain (`self`, `super::super`) stays nominal.
+        Some(Import::Local) => import_parent(items, name).is_none_or(|parent| match parent {
+            Qualifier::CrateRoot | Qualifier::Module(_) => {
+                nominal_in(name, &parent, scope, src_dir, depth + 1)
+            }
+            Qualifier::Super => named_use_is_public(items, name),
+            Qualifier::Unresolved => true,
         }),
         // A glob of an unresolved chain may bring a struct in from a module
         // this lookup cannot follow, so it counts as nominal. A `pub` glob of
@@ -201,4 +214,70 @@ fn module_items(
                     })
             })
         })
+}
+
+/// The local rename `name` is among `items`: the item it renames and the
+/// crate-root / named module it comes from (`pub use crate::error::AppResult
+/// as ApiResponse;` -> `AppResult`, `error`). `None` for another crate, a
+/// `super` / `self` source, or no such rename.
+pub(super) fn renamed_source(items: &[syn::Item], name: &str) -> Option<(String, Qualifier)> {
+    renamed_import(items, name)
+        .filter(|_| import_kind(items, name) == Some(Import::Local))
+        .and_then(|(original, parent)| match parent? {
+            parent @ (Qualifier::CrateRoot | Qualifier::Module(_)) => Some((original, parent)),
+            _ => None,
+        })
+}
+
+/// The alias a re-export under another name stands for: the module `qualifier`
+/// names renames `name` to an item (see [`renamed_source`]) that the module it
+/// comes from declares as an alias (`pub use error::AppResult as ApiResponse;`
+/// with `error` declaring `AppResult`). One hop only: a rename of a rename is
+/// not followed here, so it keeps its nominal fallback.
+pub(super) fn reexported_alias(
+    qualifier: &Qualifier,
+    name: &str,
+    scope: &Scope<'_>,
+    src_dir: Option<&Path>,
+) -> Option<(String, Qualifier)> {
+    let rename = RefCell::new(None);
+    any_module_items(qualifier, scope, src_dir, &|items| {
+        *rename.borrow_mut() = renamed_source(items, name);
+        rename.borrow().is_some()
+    });
+    let (original, parent) = rename.into_inner()?;
+    declares_alias(&parent, &original, scope, src_dir).then_some((original, parent))
+}
+
+/// Whether the module `parent` names declares a `type` alias called `name`.
+fn declares_alias(
+    parent: &Qualifier,
+    name: &str,
+    scope: &Scope<'_>,
+    src_dir: Option<&Path>,
+) -> bool {
+    any_module_items(parent, scope, src_dir, &|items| {
+        items.iter().any(|item| alias_item(item, name).is_some())
+    })
+}
+
+/// Whether a `pub` / `pub(..)` `use` among `items` brings `name` into scope.
+fn named_use_is_public(items: &[syn::Item], name: &str) -> bool {
+    items.iter().any(|item| {
+        matches!(item, syn::Item::Use(item_use)
+            if !matches!(item_use.vis, syn::Visibility::Inherited)
+                && use_binds(&item_use.tree, name))
+    })
+}
+
+/// Whether `tree` brings `name` into scope under that name (`a::name`,
+/// `a::b as name`, in a group); a glob names no single item.
+fn use_binds(tree: &syn::UseTree, name: &str) -> bool {
+    match tree {
+        syn::UseTree::Path(path) => use_binds(&path.tree, name),
+        syn::UseTree::Name(used) => used.ident == name,
+        syn::UseTree::Rename(rename) => rename.rename == name,
+        syn::UseTree::Group(group) => group.items.iter().any(|tree| use_binds(tree, name)),
+        syn::UseTree::Glob(_) => false,
+    }
 }

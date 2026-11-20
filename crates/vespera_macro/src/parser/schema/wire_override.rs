@@ -55,6 +55,15 @@ Add `#[schema(value_type = T)]` to document it.";
 ///
 /// Each `_option` variant also accepts `null`. `serde_bytes` writes a byte
 /// buffer as an array of integers `0..=255`, which is what `serde_json` emits.
+///
+/// Known limit: the table cannot see what a name resolves to. A BARE
+/// single-segment entry (`serde_bytes`, `humantime_serde`) is trusted as the
+/// external crate, so a crate-local module imported under the same bare name
+/// (`use codecs::serde_bytes;`) is documented with the table's shape even
+/// when the codec is different. Spell a crate-local codec with its path
+/// (`crate::codecs::serde_bytes`, which no entry matches) or document it with
+/// `#[schema(value_type = ..)]`. The bare names keep the table's shape: no
+/// behaviour change.
 pub const CODEC_TABLE: &[(&str, &str)] = &[
     ("chrono::serde::ts_seconds", "i64"),
     ("chrono::serde::ts_seconds_option", "Option<i64>"),
