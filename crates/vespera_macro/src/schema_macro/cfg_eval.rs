@@ -81,6 +81,15 @@ pub fn statically_false(predicate: &Predicate) -> bool {
     eval(predicate, memoized_features().as_ref().as_deref()) == Some(false)
 }
 
+/// Whether `attrs` carry a `#[cfg]` predicate that is neither known true nor
+/// known false: the item is kept here, but the compiler may drop it (R34-SM5-2).
+pub fn undecided_cfg(attrs: &[syn::Attribute]) -> bool {
+    field_cfgs(attrs).iter().any(|attr| {
+        attr.parse_args::<Predicate>()
+            .is_ok_and(|predicate| !statically_active(&predicate) && !statically_false(&predicate))
+    })
+}
+
 /// [`enabled_features`], computed once per process (the compiler's command
 /// line cannot change); a per-thread test override of the arguments is read
 /// afresh.
@@ -185,6 +194,18 @@ mod tests {
             predicate.replace(' ', "")
         );
         assert_eq!(eval(&parsed, Some(&["pg".to_string()])), expected);
+    }
+
+    /// R34-SM5-2: only a `#[cfg]` the macro cannot decide counts as undecided.
+    #[rstest]
+    #[case::unknown("#[cfg(unix)]", true)]
+    #[case::active("#[cfg(all())]", false)]
+    #[case::inactive("#[cfg(any())]", false)]
+    #[case::unknown_cfg_attr("#[cfg_attr(all(), cfg(unix))]", true)]
+    #[case::no_cfg("#[derive(Debug)]", false)]
+    fn undecided_cfg_is_only_an_unknown_predicate(#[case] attrs: &str, #[case] expected: bool) {
+        let attrs = syn::parse::Parser::parse_str(syn::Attribute::parse_outer, attrs).unwrap();
+        assert_eq!(undecided_cfg(&attrs), expected);
     }
 
     #[rstest]

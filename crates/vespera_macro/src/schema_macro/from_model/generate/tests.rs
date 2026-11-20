@@ -34,6 +34,7 @@ fn mappings(rows: &[MappingRow], relations: &[RelationFieldInfo]) -> Vec<FieldMa
                     .unwrap_or(usize::MAX)
             }),
             cfg: TokenStream::new(),
+            cfg_undecided: false,
         })
         .collect()
 }
@@ -551,6 +552,7 @@ fn cfg_twin_relations_and_via_rel_to_column() {
         wrapped: false,
         relation,
         cfg,
+        cfg_undecided: false,
     };
     let mappings = [
         mapping("id", None, TokenStream::new()),

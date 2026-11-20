@@ -83,6 +83,7 @@ pub fn generate_from_model_with_relations(
                 wrapped,
                 relation,
                 cfg,
+                ..
             } = mapping;
             let value = match relation {
                 Some(index) => relation_fields.get(*index).map_or_else(

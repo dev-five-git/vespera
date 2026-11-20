@@ -152,7 +152,7 @@ fn proxy_fields(fields: &[&syn::Field]) -> Vec<TokenStream> {
                 path.is_ident("serde") || path.is_ident("doc")
             });
             let cfgs = field_cfgs(&field.attrs);
-            let cfg_serde = cfg_attr_serde(&field.attrs, |_| true);
+            let cfg_serde = cfg_attr_serde(&field.attrs, |_, _| true);
             Some(quote! {
                 #(#cfgs)*
                 #(#attrs)*
@@ -166,7 +166,10 @@ fn proxy_fields(fields: &[&syn::Field]) -> Vec<TokenStream> {
 /// `#[cfg_attr(pred, serde(..), ..)]` of `attrs` reduced to the `serde`
 /// items `keep` accepts (`rename_all` / `rename` must reach the proxy: it
 /// otherwise reads other names than the DTO writes).
-fn cfg_attr_serde(attrs: &[syn::Attribute], keep: impl Fn(&syn::Meta) -> bool) -> Vec<TokenStream> {
+fn cfg_attr_serde(
+    attrs: &[syn::Attribute],
+    mut keep: impl FnMut(&super::cfg_eval::Predicate, &syn::Meta) -> bool,
+) -> Vec<TokenStream> {
     use syn::punctuated::Punctuated;
     attrs
         .iter()
@@ -192,7 +195,7 @@ fn cfg_attr_serde(attrs: &[syn::Attribute], keep: impl Fn(&syn::Meta) -> bool) -
                         .ok()
                 })
                 .flatten()
-                .filter(|item| keep(item))
+                .filter(|item| keep(&predicate, item))
                 .collect();
             (!items.is_empty()).then(|| quote! { #[cfg_attr(#predicate, serde(#(#items),*))] })
         })
@@ -235,35 +238,50 @@ struct DtoSerde {
 /// are dropped.
 fn dto_serde(dto_struct: &syn::ItemStruct) -> DtoSerde {
     let mut serde = DtoSerde::default();
-    let attrs = rebuild_serde_attrs(&dto_struct.attrs, |meta| match serde_key(meta).as_str() {
+    let dto_ident = &dto_struct.ident;
+    let attrs = rebuild_serde_attrs(&dto_struct.attrs, |meta| {
+        !take_conversion_key(&mut serde, dto_ident, meta)
+            && !matches!(serde_key(meta).as_str(), "into" | "bound" | "remote")
+    });
+    serde.proxy_attrs = attrs;
+    // A `cfg_attr` conversion key is honoured when its predicate is statically
+    // active (R34-SM3-L2); an undecided predicate cannot honour it, so it is
+    // dropped with the proxy-only keys.
+    let cfg_serde = cfg_attr_serde(&dto_struct.attrs, |predicate, meta| {
+        if super::cfg_eval::statically_active(predicate)
+            && take_conversion_key(&mut serde, dto_ident, meta)
+        {
+            return false;
+        }
+        !matches!(
+            serde_key(meta).as_str(),
+            "from" | "try_from" | "default" | "into" | "bound" | "remote"
+        )
+    });
+    serde.proxy_attrs.extend(cfg_serde);
+    serde
+}
+
+/// Honours the conversion key `meta` names (`from` / `try_from` / `default`)
+/// into `serde`: `true` when `meta` is one of them, whose code then replaces
+/// the proxy's own.
+fn take_conversion_key(serde: &mut DtoSerde, dto_ident: &syn::Ident, meta: &syn::Meta) -> bool {
+    match serde_key(meta).as_str() {
         key @ ("from" | "try_from") => {
             if let Some(ty) = serde_value::<syn::Type>(meta) {
                 serde.convert_from = Some((key == "try_from", ty));
             }
-            false
+            true
         }
         "default" => {
-            let dto_ident = &dto_struct.ident;
             serde.default = Some(serde_value::<syn::ExprPath>(meta).map_or_else(
                 || quote! { <#dto_ident as ::core::default::Default>::default() },
                 |path| quote! { #path() },
             ));
-            false
+            true
         }
-        "into" | "bound" | "remote" => false,
-        _ => true,
-    });
-    serde.proxy_attrs = attrs;
-    // A cfg-gated conversion key cannot be honoured conditionally: dropped.
-    serde
-        .proxy_attrs
-        .extend(cfg_attr_serde(&dto_struct.attrs, |meta| {
-            !matches!(
-                serde_key(meta).as_str(),
-                "from" | "try_from" | "default" | "into" | "bound" | "remote"
-            )
-        }));
-    serde
+        _ => false,
+    }
 }
 
 fn explicit_adapter_struct(
@@ -284,7 +302,12 @@ fn explicit_adapter_struct(
     // stored `Schema` supplies the fields instead of a plain call-site struct
     // of that name, the expansion does not compile (E0560): say what to fix
     // (R21-SM3-02, round 21).
-    if same_file_definition(&dto_name).is_some_and(|file| file != dto_meta.definition) {
+    // An underived call-site struct (chosen because the storage is empty) has no
+    // component to `$ref`: the wrapper would dangle (R34-SM3-M1).
+    let underived =
+        matches!(dto_meta, Cow::Owned(_)) && !derives::derives_schema(&dto_meta.definition);
+    if underived || same_file_definition(&dto_name).is_some_and(|file| file != dto_meta.definition)
+    {
         return Err(syn::Error::new_spanned(
             adapter_name,
             format!(

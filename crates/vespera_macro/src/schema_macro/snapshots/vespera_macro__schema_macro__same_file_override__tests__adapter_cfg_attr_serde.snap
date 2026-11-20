@@ -26,10 +26,20 @@ impl Default for __VesperaArticleResponseUserRelation {
 }
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "x", serde(rename_all = "camelCase"))]
+#[serde(default)]
 struct __VesperaArticleResponseUserProxy {
     #[cfg_attr(feature = "x", serde(rename = "uid"))]
     user_id: i32,
     other: i32,
+}
+impl ::core::default::Default for __VesperaArticleResponseUserProxy {
+    fn default() -> Self {
+        let dto: UserInArticle = <UserInArticle as ::core::default::Default>::default();
+        Self {
+            user_id: dto.user_id,
+            other: dto.other,
+        }
+    }
 }
 impl<'de> serde::Deserialize<'de> for __VesperaArticleResponseUserRelation {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
