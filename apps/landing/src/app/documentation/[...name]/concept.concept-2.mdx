@@ -171,11 +171,15 @@ No `Input` component is emitted when both views are identical or no request body
       <TableCell>`string` with `format: date`</TableCell>
     </TableRow>
     <TableRow>
-      <TableCell>`NaiveTime`, `NaiveDateTime`, `PrimitiveDateTime`, `time::Time`, sea-orm `DateTime`</TableCell>
+      <TableCell>`NaiveTime`, `NaiveDateTime`, bare sea-orm `DateTime` / `Time`</TableCell>
       <TableCell>`string` (no offset, so no `time` / `date-time` format)</TableCell>
     </TableRow>
     <TableRow>
-      <TableCell>`DateTime<Tz>`, `DateTimeWithTimeZone`, `DateTimeUtc`, `OffsetDateTime`</TableCell>
+      <TableCell>`PrimitiveDateTime`, `OffsetDateTime`, `time::Date`, `time::Time`</TableCell>
+      <TableCell>`string` with no `format` (the `time` crate's own encoding, not RFC 3339)</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`DateTime<Tz>`, `DateTimeWithTimeZone`, `DateTimeUtc`, `DateTimeLocal`</TableCell>
       <TableCell>`string` with `format: date-time`</TableCell>
     </TableRow>
     <TableRow>

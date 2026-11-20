@@ -201,6 +201,7 @@ impl MultipartForm {
 
     #[must_use]
     pub fn add_part(mut self, name: &str, part: Part) -> Self {
+        assert_quotable("field name", name);
         self.parts.push((name.to_owned(), part));
         self
     }
@@ -241,14 +242,54 @@ impl Part {
 
     #[must_use]
     pub fn file_name(mut self, file_name: &str) -> Self {
+        assert_quotable("file name", file_name);
         self.file_name = Some(file_name.to_owned());
         self
     }
 }
 
+/// Panics when `value` cannot sit inside a quoted `Content-Disposition`
+/// parameter. The testkit does not escape, so a quote, backslash or line
+/// break would produce a malformed header.
+fn assert_quotable(what: &str, value: &str) {
+    assert!(
+        !value.contains(['"', '\\', '\r', '\n']),
+        "multipart {what} {value:?} must not contain a quote, backslash or line break",
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multipart_encodes_quoted_names_for_plain_names() {
+        let body = MultipartForm::new()
+            .add_text("title", "hi")
+            .add_part("upload", Part::bytes("data").file_name("a b.txt"))
+            .encode();
+        let text = String::from_utf8(body).expect("utf-8 body");
+        assert!(text.contains("Content-Disposition: form-data; name=\"title\"\r\n\r\nhi"));
+        assert!(text.contains("name=\"upload\"; filename=\"a b.txt\"\r\n\r\ndata"));
+    }
+
+    #[test]
+    #[should_panic(expected = "multipart field name")]
+    fn multipart_field_name_with_a_quote_is_rejected() {
+        let _ = MultipartForm::new().add_text("a\"b", "x");
+    }
+
+    #[test]
+    #[should_panic(expected = "multipart field name")]
+    fn multipart_field_name_with_a_backslash_is_rejected() {
+        let _ = MultipartForm::new().add_text("a\\b", "x");
+    }
+
+    #[test]
+    #[should_panic(expected = "multipart file name")]
+    fn multipart_file_name_with_a_line_break_is_rejected() {
+        let _ = Part::bytes("x").file_name("a\r\nb");
+    }
 
     #[test]
     fn add_header_keeps_every_value_and_content_type_replaces() {

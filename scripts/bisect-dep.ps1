@@ -62,7 +62,9 @@ if ($all.Count -eq 0) {
 }
 $lo = [array]::IndexOf($all, [version]$Good)
 $hi = [array]::IndexOf($all, [version]$Bad)
-if ($lo -lt 0 -or $hi -lt 0 -or $lo -ge $hi) {
+if ($lo -lt 0) { throw "'$Good' is not a published non-yanked release of $Crate." }
+if ($hi -lt 0) { throw "'$Bad' is not a published non-yanked release of $Crate." }
+if ($lo -ge $hi) {
     throw "Good ($Good) must be an older published release than Bad ($Bad) for '$Crate'."
 }
 

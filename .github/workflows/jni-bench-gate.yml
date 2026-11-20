@@ -38,6 +38,11 @@ on:
       # not part of the measurement.
       - 'examples/rust-jni-demo/src/**'
       - 'examples/rust-jni-demo/Cargo.toml'
+      # Build configuration (.cargo/config.toml rustflags, rust-toolchain*)
+      # changes the measured binary the same way; the same paths trigger
+      # bench.yml.
+      - '.cargo/**'
+      - 'rust-toolchain*'
       # Dependency versions and profiles (fat LTO) change the measured code as
       # much as a source edit does. The toolchain is set inline in the workflow
       # steps (the repository has no rust-toolchain file), so only a change to

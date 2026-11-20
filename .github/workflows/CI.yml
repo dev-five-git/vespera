@@ -703,7 +703,18 @@ jobs:
           cp scripts/sync-landing-versions.ts scripts/check-version-alignment.ts "$trusted/scripts/"
           cp apps/landing/src/constants/index.ts "$trusted/apps/landing/src/constants/"
           git checkout -B changepacks/main FETCH_HEAD
-          git config --local --unset-all 'http.https://github.com/.extraheader' || true
+          # Exit 5 = the key is absent (already removed): tolerated. Any other
+          # failure is fatal, and the key must be gone before tree code runs.
+          unset_rc=0
+          git config --local --unset-all 'http.https://github.com/.extraheader' || unset_rc=$?
+          if [ "$unset_rc" -ne 0 ] && [ "$unset_rc" -ne 5 ]; then
+            echo "::error::could not remove the persisted git credential header (exit $unset_rc)" >&2
+            exit 1
+          fi
+          if git config --local --get-all 'http.https://github.com/.extraheader' >/dev/null 2>&1; then
+            echo "::error::the persisted git credential header is still set" >&2
+            exit 1
+          fi
           # cargo update only resolves the manifests and Cargo.lock: it runs no
           # build.rs, proc macro or workspace code (verified with a path
           # dependency carrying a build script and a proc-macro crate).

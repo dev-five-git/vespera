@@ -62,7 +62,15 @@ index_of() {
 }
 lo=$(index_of "$good")
 hi=$(index_of "$bad")
-if [ "$lo" -lt 0 ] || [ "$hi" -lt 0 ] || [ "$lo" -ge "$hi" ]; then
+if [ "$lo" -lt 0 ]; then
+  echo "'$good' is not a published non-yanked release of $crate" >&2
+  exit 2
+fi
+if [ "$hi" -lt 0 ]; then
+  echo "'$bad' is not a published non-yanked release of $crate" >&2
+  exit 2
+fi
+if [ "$lo" -ge "$hi" ]; then
   echo "good ($good) must be an older published release than bad ($bad) for '$crate'" >&2
   exit 2
 fi

@@ -70,10 +70,12 @@ Output:
 ### Step 2: Publish the vespera-bridge JAR and Gradle plugin to mavenLocal
 
 The demo dogfoods the bridge and the `kr.devfive.vespera-bridge` Gradle plugin
-built from this repository: `java/settings.gradle.kts` resolves both from
-`mavenLocal()` first, at the versions read from
-`libs/vespera-bridge/build.gradle.kts` and
-`libs/vespera-bridge-gradle-plugin/build.gradle.kts` (the same steps CI runs):
+built from this repository. `java/settings.gradle.kts` resolves the plugin from
+`mavenLocal()` first, at the version read from
+`libs/vespera-bridge-gradle-plugin/build.gradle.kts`. `java/demo-app/build.gradle.kts`
+reads the bridge version from `libs/vespera-bridge/build.gradle.kts` for the
+`kr.devfive:vespera-bridge` dependency. Both steps below publish the matching
+artifacts (the same steps CI runs):
 
 ```bash
 (cd libs/vespera-bridge-gradle-plugin && ./gradlew publishToMavenLocal)
