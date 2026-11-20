@@ -393,3 +393,43 @@ fn skipped_identifier_does_not_shadow_a_json_name(
     assert!(output.contains(kept), "{output}");
     assert!(!output.contains(dropped), "{output}");
 }
+
+/// A projection of a generic source's parameter is qualified by the bound that
+/// declares it, not the first bound: `T::Target` with `Clone + Deref` is
+/// `<Box<Foo> as Deref>::Target` in the generated DTO field.
+#[test]
+fn generic_projection_is_qualified_by_the_bound_declaring_it() {
+    let storage = to_storage(vec![create_test_struct_metadata(
+        "Wrap",
+        "pub struct Wrap<T: Clone + Deref> { pub x: T::Target }",
+    )]);
+    let input: SchemaTypeInput = syn::parse2(quote!(Dto from Wrap<Box<Foo>>)).unwrap();
+
+    let (tokens, _) = generate_schema_type_code(&input, &storage).unwrap();
+    let output = tokens.to_string();
+    assert!(
+        output.contains("pub x : < Box < Foo > as Deref > :: Target"),
+        "{output}"
+    );
+    assert!(!output.contains("as Clone"), "{output}");
+}
+
+/// A projection that two bounds of the generic source could declare is a
+/// spanned `schema_type!` error asking for the qualified form, not a guess.
+#[test]
+fn ambiguous_generic_projection_is_a_schema_type_error() {
+    let storage = to_storage(vec![create_test_struct_metadata(
+        "Wrap",
+        "pub struct Wrap<T: Iterator + IntoIterator> { pub x: T::Item }",
+    )]);
+    let input: SchemaTypeInput = syn::parse2(quote!(Dto from Wrap<Vec<u8>>)).unwrap();
+
+    let error = generate_schema_type_code(&input, &storage)
+        .expect_err("an ambiguous projection must be diagnosed");
+    assert!(
+        error.to_string().starts_with(
+            "schema_type!: `T::Item` is ambiguous: `T` is bounded by `Iterator + IntoIterator`"
+        ),
+        "{error}"
+    );
+}
