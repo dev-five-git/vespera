@@ -106,7 +106,8 @@ impl std::error::Error for StreamAbort {}
 /// an oversized one is streamed unhoisted).
 ///
 /// A failure **after** body bytes were already delivered through
-/// `on_chunk` (body error or sink stop) returns a `5xx` error header — the
+/// `on_chunk` (body error or sink stop) returns a complete `5xx` error
+/// response (length-prefixed header, then a short plain-text body) — the
 /// delivered body is truncated.  [`crate::dispatch_timeout`] bounds only the
 /// time to the response header here (an expired deadline answers `504`
 /// before any body byte); once the header is committed the body drains
@@ -135,8 +136,9 @@ where
 /// * [`StreamOutcome::BodyError`] / [`StreamOutcome::SinkStopped`] — the
 ///   failure happened AFTER at least one
 ///   `on_chunk` call: the delivered body is truncated and the host must
-///   abort its transport.  `header_bytes` is a `5xx` error header kept for
-///   callers that still want one.
+///   abort its transport.  `header_bytes` is then a complete `5xx` error
+///   response (the wire header, then a short plain-text body); read the
+///   header by its length prefix.
 pub async fn dispatch_streaming_with_outcome_async<F>(
     input: Vec<u8>,
     on_chunk: F,
@@ -712,8 +714,9 @@ where
         // The response body errored or the chunk sink stopped AFTER the
         // success header was captured into `header_bytes` —
         // the delivered body is truncated.  Replace the captured success
-        // header with a 5xx so a truncated bidirectional response is never
-        // returned as a clean success (mirrors `dispatch_streaming_async`).
+        // header with a complete 5xx error response (header + plain-text
+        // body) so a truncated bidirectional response is never returned as
+        // a clean success (mirrors `dispatch_streaming_async`).
         failed => failed.error_wire(),
     }
 }

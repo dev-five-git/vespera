@@ -34,8 +34,9 @@ const MAX_APP_NAME_LEN: usize = 64;
 /// go through copy-on-write [`ArcSwap::rcu`]: clone the (small) map,
 /// `entry().or_insert` the new router, and atomically publish the new
 /// snapshot.  Factory closures are invoked **outside** the update, so a
-/// factory panic cannot corrupt the registry; there is no lock to
-/// poison.
+/// factory panic cannot corrupt the registry.  The read path holds no
+/// lock; the write path's [`REGISTER_LOCK`] can be poisoned by a factory
+/// panic and is recovered by the next registration.
 static APP_ROUTERS: LazyLock<ArcSwap<HashMap<String, StoredApp>>> =
     LazyLock::new(|| ArcSwap::from_pointee(HashMap::new()));
 
