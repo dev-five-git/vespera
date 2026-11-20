@@ -13,6 +13,8 @@ Both streaming knobs are fixed for the process lifetime once the first dispatch 
 |---------|----------------|---------|---------|-------|
 | Chunk buffer size | `vespera.streaming.chunkBytes` | `VESPERA_STREAMING_CHUNK_BYTES` | 256 KiB | 4 KiB – 8 MiB |
 | Request channel slots | `vespera.streaming.channelCapacity` | `VESPERA_STREAMING_CHANNEL_CAPACITY` | 16 | 1 – 1024 |
+
+The effective slot count is also capped so that `chunkBytes * slots <= 64 MiB`, with a floor of 1 slot. A large chunk size therefore gets fewer slots, and peak buffered request memory per stream stays bounded.
 | Tokio worker threads | `vespera.runtime.workerThreads` | `VESPERA_RUNTIME_WORKERS` | logical CPUs | 1 – 1024 |
 
 ### Java API

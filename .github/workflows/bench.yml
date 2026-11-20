@@ -8,8 +8,8 @@ name: Bench
 #   on this one runner: 5 rounds alternating base,head / head,base / ... with
 #   per-side CRITERION_HOME. The job FAILS when a bench's median PAIRED change
 #   (head/base - 1 within a round) exceeds +30% AND every one of the 5 paired
-#   rounds exceeds +20% (min of N paired samples = the sign-test lower
-#   confidence limit of the median, 93.75% for N=5). See the header of
+#   rounds exceeds +20% (min of N paired samples = the one-sided sign-test
+#   lower confidence limit of the median, 96.875% for N=5). See the header of
 #   scripts/bench-interleaved.sh for the full method and why a shared/prebuilt
 #   target dir would silently benchmark one binary against itself.
 # - Cargo.toml / Cargo.lock remain triggers so dependency/profile changes are
@@ -52,6 +52,8 @@ on:
   pull_request:
     paths:
       - 'crates/**'
+      - '.cargo/**'
+      - 'rust-toolchain*'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/bench.yml'
@@ -96,7 +98,7 @@ jobs:
           should_run=false
           while IFS= read -r path; do
             case "$path" in
-              crates/*|.cargo/*|.github/workflows/bench.yml|scripts/bench-interleaved.sh)
+              crates/*|.cargo/*|rust-toolchain*|.github/workflows/bench.yml|scripts/bench-interleaved.sh)
                 should_run=true
                 ;;
             esac

@@ -289,7 +289,11 @@ module, the final fn segment removed):
 
 The table matches from the first segment naming a table crate, so a re-export
 prefix is skipped: `vespera::chrono::serde::ts_seconds` matches like
-`chrono::serde::ts_seconds`. A path that does not end in a table entry needs
+`chrono::serde::ts_seconds`. A bare single-segment name such as `serde_bytes` or
+`humantime_serde` in `#[serde(with = "...")]` is trusted as the external crate: a
+crate-local module with the same bare name gets the table's shape too. Spell a
+local module with a path (`crate::codecs::serde_bytes`), or document the field
+with `#[schema(value_type = ..)]`. A path that does not end in a table entry needs
 `value_type`.
 
 The derive's `Schema` assertion checks `T` instead of the field type, and
@@ -1053,12 +1057,12 @@ schema_type!(
     add = [("article_review_users": Vec<ArticleReviewUserInArticle>)]
 );
 
-// Existing handler code stays valid.
+// Existing handler code stays valid. The remaining ArticleResponse fields are
+// set exactly as the handler already sets them; this example omits them.
 Ok(ArticleResponse {
     user: user.into(),
     category: category.into(),
     article_review_users,
-    ..
 })
 ```
 
@@ -1363,18 +1367,20 @@ the overlap panics when the merged router is built (a documented limit).
 | `Vec<T>` | `array` with items |
 | `Option<T>` | nullable T |
 | `HashMap<K, V>` | `object` with additionalProperties |
-| `BTreeSet<T>`, `HashSet<T>` | `array` with `uniqueItems: true` |
+| `BTreeSet<T>`, `HashSet<T>` | `array`; `uniqueItems: true` in responses only (request views omit it) |
 | `Uuid` | `string` with `format: uuid` |
 | `Decimal` | `string` with `format: decimal` |
 | `NaiveDate` | `string` with `format: date` |
-| `NaiveTime`, `NaiveDateTime`, `PrimitiveDateTime`, `time::Time`, sea-orm `DateTime` | `string` (no offset, so no `time` / `date-time` format) |
-| `DateTime<Tz>`, `DateTimeWithTimeZone`, `DateTimeUtc`, `OffsetDateTime` | `string` with `format: date-time` |
+| `NaiveTime`, `NaiveDateTime`, bare sea-orm `DateTime` / `Time` | `string` (no offset, so no `time` / `date-time` format) |
+| `PrimitiveDateTime`, `OffsetDateTime`, `time::Date`, `time::Time` | `string` with no `format` (the `time` crate's own encoding, not RFC 3339; the description says so) |
+| `DateTime<Tz>`, `DateTimeWithTimeZone`, `DateTimeUtc`, `DateTimeLocal` | `string` with `format: date-time` |
 | `FieldData<NamedTempFile>` | `string` with `format: binary` |
 | `Ipv4Addr` / `Ipv6Addr` | `string` with `format: ipv4` / `ipv6` |
 | `IpAddr`, `SocketAddr` (`V4` / `V6`), `PathBuf` | `string` |
 | `url::Url` | `string` with `format: uri` |
 | `serde_json::Value` | `{}` (any JSON value) |
-| `std::time::Duration` (bare `Duration`, `std::time::` / `core::time::`) | `object` `{secs, nanos}` (serde's std shape) |
+| `std::time::Duration` / `core::time::Duration` | `object` `{secs, nanos}` (serde's std shape) |
+| bare `Duration` (no crate path; could be std's or `time`'s) | `{}` with a description — write the full path or add `#[schema(value_type = T)]` |
 | other qualified `Duration` (`time::`, `chrono::`) | `{}` — no single serde shape; annotate explicitly |
 | Custom struct | `$ref` to components/schemas |
 
