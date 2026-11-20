@@ -98,7 +98,6 @@ fn leaf_of_smart_pointers_and_collections_unwraps_inner(#[case] src: &str) {
 #[case::socket_addr_v4("SocketAddrV4")]
 #[case::socket_addr_v6("SocketAddrV6")]
 #[case::path_buf("std::path::PathBuf")]
-#[case::url("Option<url::Url>")]
 #[case::duration("std::time::Duration")]
 fn builtin_wrapped_leaves_need_no_assertion(#[case] src: &str) {
     for (_, ident) in collect_leaf_custom_types(&parse_ty(src)) {
@@ -641,6 +640,7 @@ const LINKED_CRATES: [&str; 9] = [
 #[case::bare_builtin_names("struct S { a: Header, b: Decimal }", &[])]
 #[case::user_json_value_alias("struct S { a: models::JsonValue }", &["models::JsonValue"])]
 #[case::external_json_value_aliases("struct S { a: sea_orm::JsonValue, b: serde_json::Value }", &[])]
+#[case::wrapped_linked_url("struct S { a: Option<url::Url> }", &[])]
 fn builtin_named_leaves_follow_their_path(#[case] src: &str, #[case] expected: &[&str]) {
     let _externs = with_externs(&LINKED_CRATES);
     assert_eq!(asserted_leaves(src), expected);

@@ -244,7 +244,9 @@ fn non_finite_bound_is_a_compile_error(#[case] field: &str) {
 
 /// An integer literal wider than `i128` (the literal an alias of `f64` takes)
 /// is not emitted as an `i128` literal, which rustc rejects as out of range:
-/// the documented `f64` bound goes through `RangeBound::min` / `max` instead.
+/// the documented `f64` bound goes through `RangeBound::min` / `max` instead,
+/// and is checked by `range_unsatisfiable` like a fractional one (`minimum =
+/// 2e38` on a `u8` alias would otherwise saturate to an admitted `255`).
 #[rstest]
 #[case::positive_min(
     "#[schema(minimum = 200000000000000000000000000000000000000)] f: Ratio",
@@ -258,4 +260,24 @@ fn literal_wider_than_i128_on_an_alias_uses_the_f64_path(#[case] field: &str, #[
     let out = emit(&format!("struct S {{ {field} }}"));
     assert!(out.contains(&format!("RangeBound > :: {call} (")), "{out}");
     assert!(!out.contains("exact_within"), "{out}");
+    assert!(out.contains("range_unsatisfiable"), "{out}");
+}
+
+/// The unsatisfiable check is emitted only when a bound takes the `f64` path:
+/// an `i128`-sized literal bound keeps its exact literal and no check, so a
+/// pair of exact literals emits none and a wide literal on either side emits
+/// one guard for the field.
+#[rstest]
+#[case::both_exact("#[schema(minimum = 5, maximum = 7)] f: Ratio", 0)]
+#[case::wide_min(
+    "#[schema(minimum = 200000000000000000000000000000000000000, maximum = 5)] f: Ratio",
+    1
+)]
+#[case::wide_max(
+    "#[schema(minimum = 5, maximum = -200000000000000000000000000000000000000)] f: Ratio",
+    1
+)]
+fn only_the_f64_path_bound_is_range_checked(#[case] field: &str, #[case] checks: usize) {
+    let out = emit(&format!("struct S {{ {field} }}"));
+    assert_eq!(out.matches("range_unsatisfiable").count(), checks, "{out}");
 }

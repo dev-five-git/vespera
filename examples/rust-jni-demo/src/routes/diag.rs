@@ -8,6 +8,10 @@
 //! [`MAX_TRACKED_KEYS`] distinct keys of at most [`MAX_KEY_BYTES`] bytes each
 //! (suffix included) are recorded, so the map's memory stays bounded on the
 //! standalone server.
+//!
+//! These routes are test helpers for the JNI E2E suite, not an API meant for
+//! exposure: the standalone binary binds them to loopback only
+//! (`127.0.0.1:3000`, see `main.rs`) and a deployment must not route them out.
 
 use std::{
     collections::HashMap,

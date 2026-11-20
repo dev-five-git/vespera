@@ -103,6 +103,27 @@ fn module_cycle_is_walked_once() {
     assert_eq!(summary(&jobs), rows(&[("", "tick", "1 * * * * *")]));
 }
 
+/// A `#[path]` module that loads a job from outside `src/` is scanned even
+/// though no `.rs` file under `src/` mentions `cron`: the pre-filter sees the
+/// `#[path]` declaration instead.
+#[test]
+fn path_module_outside_src_with_a_job_is_scanned() {
+    let krate = crate_with(&[(
+        "lib.rs",
+        r#"#[path = "../shared/jobs.rs"] mod jobs; pub fn create_app() {}"#,
+    )]);
+    fs::create_dir_all(krate.path().join("shared")).unwrap();
+    fs::write(
+        krate.path().join("shared").join("jobs.rs"),
+        r#"#[cron("1 * * * * *")] pub async fn tick() {}"#,
+    )
+    .unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    let src = krate.path().join("src");
+    let jobs = discover(&[], Some(&src), Some(&src.join("lib.rs")));
+    assert_eq!(summary(&jobs), rows(&[("jobs", "tick", "1 * * * * *")]));
+}
+
 /// A stored job whose file is neither under `src/` nor next to the call
 /// site has no module path: a compile error, not an absolute-path module.
 #[test]

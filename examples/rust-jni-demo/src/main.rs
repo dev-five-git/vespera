@@ -21,5 +21,7 @@ async fn main() -> std::io::Result<()> {
     println!("  POST /echo");
     println!("  POST /documents/validate");
 
-    create_app().serve("0.0.0.0:3000").await
+    // Loopback only: the `/diag/*` routes (routes/diag.rs) are test helpers
+    // for the JNI E2E suite, not an API to expose on a network interface.
+    create_app().serve("127.0.0.1:3000").await
 }

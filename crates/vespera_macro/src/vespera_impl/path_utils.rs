@@ -271,12 +271,29 @@ fn declares_workspace(cargo_toml: &str) -> bool {
         } else if top_level
             && line
                 .split_once('=')
-                .is_some_and(|(key, _)| key.trim() == "workspace")
+                .is_some_and(|(key, _)| top_level_key_is_workspace(key))
         {
             return true;
         }
     }
     false
+}
+
+/// Whether a top-level key names the `workspace` table: `workspace`, a dotted
+/// key under it (`workspace.members`, `workspace . members`), or a quoted
+/// `"workspace"`. `workspace-foo` and `"workspace.x"` are other keys.
+fn top_level_key_is_workspace(key: &str) -> bool {
+    let first = key.trim().split('.').next().unwrap_or_default().trim();
+    let unquoted = first
+        .strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .or_else(|| {
+            first
+                .strip_prefix('\'')
+                .and_then(|inner| inner.strip_suffix('\''))
+        })
+        .unwrap_or(first);
+    unquoted == "workspace"
 }
 
 /// The code of one TOML line with multi-line string contents (`"""` / `'''`)
@@ -501,6 +518,11 @@ mod tests {
     #[case::sub_table_only("[workspace.package]\nversion = \"1\"", true)]
     #[case::trailing_comment("[workspace] # root", true)]
     #[case::inline_key("workspace = { members = [] }\n[package]", true)]
+    #[case::dotted_key("workspace.members = []\n[package]", true)]
+    #[case::spaced_dotted_key("workspace . members = []", true)]
+    #[case::quoted_key("\"workspace\" = { members = [] }", true)]
+    #[case::hyphenated_key("workspace-foo = 1\n[package]", false)]
+    #[case::quoted_dotted_key_is_one_key("\"workspace.x\" = 1", false)]
     #[case::member_pointer("[package]\nname = \"a\"\nworkspace = \"..\"", false)]
     #[case::commented_out("# [workspace]\n[package]", false)]
     #[case::string_value("[package]\ndescription = \"[workspace]\"", false)]

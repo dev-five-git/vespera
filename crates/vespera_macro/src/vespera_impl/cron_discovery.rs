@@ -64,7 +64,7 @@ pub(super) fn discover_cron_jobs(
     let tree = src_dir
         .filter(|src_dir| {
             !storage.is_empty()
-                || has_cron_attribute(src_dir)
+                || has_scan_marker(src_dir)
                 || call_site.is_some_and(|call_site| outside_src_has_cron(src_dir, call_site))
         })
         .and_then(|src_dir| crate_tree(src_dir, call_site));
@@ -255,21 +255,34 @@ fn derived_module_path(
     }
 }
 
-/// Whether any `.rs` file under `src/` contains a cron attribute.
-fn has_cron_attribute(src_dir: &Path) -> bool {
+/// Whether any `.rs` file under `src/` contains a cron attribute or declares a
+/// `#[path]` module. A `#[path]` module may load a job from outside `src/`
+/// (`#[path = "../shared/jobs.rs"] mod jobs;`), which only the tree walk reads.
+fn has_scan_marker(src_dir: &Path) -> bool {
     file_cache::list_rs_files(src_dir).iter().any(|path| {
-        file_cache::get_file_content(path).is_some_and(|content| content.contains(CRON_ATTR_MARKER))
+        file_cache::get_file_content(path).is_some_and(|content| {
+            content.contains(CRON_ATTR_MARKER) || declares_path_attribute(&content)
+        })
     })
 }
 
+/// Whether some `#[` attribute in `content` is `path` (`#[path = ...]`, or
+/// spaced like `#[ path = ...]`). A false positive (`#[pathological]`) only
+/// costs a tree walk.
+fn declares_path_attribute(content: &str) -> bool {
+    content
+        .match_indices("#[")
+        .any(|(at, _)| content[at + 2..].trim_start().starts_with("path"))
+}
+
 /// Whether `call_site` lies outside `src_dir` (`examples/demo/main.rs`) and
-/// the name `cron` occurs in its directory: the call-site file itself or
+/// its directory has a scan marker (the name `cron` or a `#[path]` module): the call-site file itself or
 /// a module it declares (`examples/demo/jobs.rs`), which the `src/` check
 /// never reads.
 fn outside_src_has_cron(src_dir: &Path, call_site: &Path) -> bool {
     let src_prefix = format!("{}/", canonical_display(src_dir));
     !canonical_display(call_site).starts_with(&src_prefix)
-        && call_site.parent().is_some_and(has_cron_attribute)
+        && call_site.parent().is_some_and(has_scan_marker)
 }
 
 /// The module tree that contains the `vespera!` call site; without call-site
