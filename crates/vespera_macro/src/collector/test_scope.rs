@@ -220,8 +220,11 @@ impl TestScope {
                 // a gated twin next to it does not make it test-only. A
                 // deeper ungated declaration cannot cancel this link, and an
                 // ungated `#[path]` module naming the file loads it as well.
+                // An ungated inline twin chain (`#[cfg(not(test))] mod a { mod b; }`
+                // beside `#[cfg(test)] mod a;`) loads the file too: `open_chain_loads`.
                 return !self.ungated_twin_loads(&declarers, &gated_here)
-                    && !self.open_path_loads(file);
+                    && !self.open_path_loads(file)
+                    && !self.open_chain_loads(&src_dir, &segments);
             }
             parent.push(segment);
         }
@@ -894,3 +897,6 @@ mod tests_cfg_attr;
 
 #[cfg(test)]
 mod tests_route_method;
+
+#[cfg(test)]
+mod tests_cfg_twin;
