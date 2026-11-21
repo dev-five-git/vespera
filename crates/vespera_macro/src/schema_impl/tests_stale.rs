@@ -177,3 +177,146 @@ fn deleted_item_of_one_module_leaves_its_sibling_resolving() {
     assert!(variants::in_module("StaleModuleTwin", &module_a).is_none());
     assert!(variants::in_module("StaleModuleTwin", &module_b).is_some());
 }
+
+/// SM0-L1 (IDE-only): `mod a { struct User }` moved to the file's top level,
+/// with a new `mod b { struct User }` beside it, is a duplicate name. The
+/// stored entry's own module no longer declares `User`, but the file does, so
+/// the entry has not left its file and the strict error is raised.
+#[test]
+fn item_moved_out_of_its_module_beside_a_same_named_twin_is_a_duplicate() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("moved_twin.rs");
+    std::fs::write(
+        &file,
+        "pub mod a {\n    pub struct MovedTwin { id: i32 }\n}\n",
+    )
+    .unwrap();
+    let identity = format!("{}::MovedTwin@2:15", file.display());
+    remove("MovedTwin");
+    bump_epoch();
+    assert!(
+        register_schema(
+            "MovedTwin".to_string(),
+            StructMetadata::new(
+                "MovedTwin".to_string(),
+                "struct MovedTwin { id: i32 }".to_string()
+            )
+            .with_source_identity(identity),
+        )
+        .is_ok()
+    );
+
+    std::fs::write(
+        &file,
+        "pub struct MovedTwin { id: i32 }\npub mod b {\n    pub struct MovedTwin { name: String }\n}\n",
+    )
+    .unwrap();
+    bump_epoch();
+    let result = register_schema(
+        "MovedTwin".to_string(),
+        StructMetadata::new(
+            "MovedTwin".to_string(),
+            "struct MovedTwin { name: String }".to_string(),
+        )
+        .with_source_identity(format!("{}::MovedTwin@1:11", file.display())),
+    );
+    remove("MovedTwin");
+    assert!(result.is_err());
+}
+
+/// SM0-L2 (IDE-only): a `schema_type!`-generated DTO has no textual declaration.
+/// It has left its file only when the invocation that names it at its recorded
+/// position is gone, not after every edit of the file.
+#[test]
+fn schema_type_entry_is_left_only_when_its_invocation_is_gone() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("dto.rs");
+    std::fs::write(&file, "schema_type!(UserDto from Model);\n").unwrap();
+    bump_epoch();
+    let identity = format!("{}::UserDto@1:14", file.display());
+    super::stale::record(Some(&identity));
+    let stored = StructMetadata {
+        source_identity: Some(identity),
+        ..StructMetadata::new("UserDto".to_string(), String::new())
+    };
+
+    std::fs::write(
+        &file,
+        "schema_type!(UserDto from Model, omit = [\"id\"]);\n",
+    )
+    .unwrap();
+    bump_epoch();
+    assert!(!super::stale::left_its_file(&stored));
+
+    std::fs::write(
+        &file,
+        "// UserDto moved\n\nschema_type!(UserDto from Model);\n",
+    )
+    .unwrap();
+    bump_epoch();
+    assert!(super::stale::left_its_file(&stored));
+
+    std::fs::write(&file, "// UserDto was removed\n").unwrap();
+    bump_epoch();
+    assert!(super::stale::left_its_file(&stored));
+}
+
+/// SM0-L2 (IDE-only): every re-expansion of a moved `schema_type!` replaces its
+/// record, so the fingerprint map holds one entry for the DTO, not one per edit.
+#[test]
+fn moved_schema_type_invocation_keeps_one_record() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("grow.rs");
+    for line in [1, 2, 3] {
+        let source = format!(
+            "{}schema_type!(GrowDto from Model);\n",
+            "\n".repeat(line - 1)
+        );
+        std::fs::write(&file, source).unwrap();
+        bump_epoch();
+        super::stale::record(Some(&format!("{}::GrowDto@{line}:14", file.display())));
+    }
+    let entries = super::stale::FINGERPRINTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .keys()
+        .filter(|key| key.starts_with(&format!("{}::GrowDto", file.display())))
+        .count();
+    assert_eq!(entries, 1);
+}
+
+/// A deleted `#[derive(Schema)]` keeps its record (it is not a generated
+/// entry), so a `schema_type!` of the same name registered later at another
+/// line does not turn the deleted derive into a duplicate.
+#[test]
+fn deleted_derive_is_left_when_a_generated_twin_takes_its_name() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("guard.rs");
+    std::fs::write(&file, "pub struct GuardDto { id: i32 }\n").unwrap();
+    remove("GuardDto");
+    bump_epoch();
+    assert!(
+        register_schema(
+            "GuardDto".to_string(),
+            StructMetadata::new(
+                "GuardDto".to_string(),
+                "struct GuardDto { id: i32 }".to_string()
+            )
+            .with_source_identity(format!("{}::GuardDto@1:12", file.display())),
+        )
+        .is_ok()
+    );
+
+    std::fs::write(&file, "\nschema_type!(GuardDto from Model);\n").unwrap();
+    bump_epoch();
+    let result = register_schema(
+        "GuardDto".to_string(),
+        StructMetadata::new(
+            "GuardDto".to_string(),
+            "struct GuardDto { name: String }".to_string(),
+        )
+        .with_source_identity(format!("{}::GuardDto@2:14", file.display())),
+    );
+    remove("GuardDto");
+    assert!(result.is_ok());
+}

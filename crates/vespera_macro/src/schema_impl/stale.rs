@@ -13,8 +13,16 @@
 //! the variant. An unchanged file — every file of a
 //! `cargo build` — keeps the strict duplicate-name error.
 //!
-//! Staleness is decided per module (R34-SM-L1): a same-named item of a sibling
-//! inline `mod` in the same file does not keep a deleted item alive.
+//! Staleness is judged in two scopes. A duplicate-name check ([`left_its_file`])
+//! asks the whole file: a name still declared anywhere in it is a duplicate
+//! (SM0-L1), so an item moved out of its module beside a same-named twin is
+//! not "left". A variant ([`left_its_module`], R34-SM-L1) asks its own inline
+//! module only: a same-named item of a sibling `mod` does not keep a deleted
+//! item alive.
+//!
+//! A `schema_type!`-generated DTO has no textual declaration. It has left its
+//! file only when the invocation naming it at its recorded position is gone
+//! (SM0-L2), and its records are pruned by the same test.
 
 use std::{
     collections::HashMap,
@@ -28,11 +36,22 @@ use crate::schema_macro::file_cache::{
 };
 
 /// What a registration recorded about its item's file.
-struct Recorded {
+pub(super) struct Recorded {
     /// The inline modules the item sat in at registration, outermost first.
     chain: Vec<String>,
     /// The file's fingerprint at registration.
     fingerprint: Option<FileFingerprint>,
+    /// No textual declaration at registration: a `schema_type!`-generated DTO.
+    generated: bool,
+}
+
+/// Where a stored item must still be declared to count as present.
+#[derive(Clone, Copy)]
+enum Scope {
+    /// Anywhere in the file (the duplicate-name check).
+    File,
+    /// In its own inline module (a variant).
+    Module,
 }
 
 /// Registration identity (`file::Ident@line:column`) → what it recorded.
@@ -44,7 +63,7 @@ struct Recorded {
 /// (SM0-L1). A moved item's record at its old position is dropped by [`record`]
 /// (R27-SM0-L3), so the map is bounded by the items the session has seen, not
 /// by the edits it has made.
-static FINGERPRINTS: LazyLock<Mutex<HashMap<String, Recorded>>> =
+pub(super) static FINGERPRINTS: LazyLock<Mutex<HashMap<String, Recorded>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// `(file, ident)` of a `file::Ident@line:column` identity.
@@ -84,12 +103,81 @@ fn declared_in_module(items: &[syn::Item], chain: &[String], ident: &str) -> usi
     })
 }
 
+/// The lines of `ident` tokens in a `schema_type!` invocation's tokens (groups
+/// included): the position the generated DTO's identity records.
+fn ident_lines(tokens: proc_macro2::TokenStream, ident: &str, lines: &mut Vec<usize>) {
+    for tree in tokens {
+        match tree {
+            proc_macro2::TokenTree::Ident(token) if token == ident => {
+                lines.push(token.span().start().line);
+            }
+            proc_macro2::TokenTree::Group(group) => ident_lines(group.stream(), ident, lines),
+            _ => {}
+        }
+    }
+}
+
+/// The lines where a `schema_type!` invocation of `items` names `ident`.
+fn schema_type_lines(items: &[syn::Item], ident: &str) -> Vec<usize> {
+    struct Invocations<'a> {
+        ident: &'a str,
+        lines: Vec<usize>,
+    }
+    impl<'ast> syn::visit::Visit<'ast> for Invocations<'_> {
+        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+            if mac
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "schema_type")
+            {
+                ident_lines(mac.tokens.clone(), self.ident, &mut self.lines);
+            }
+            syn::visit::visit_macro(self, mac);
+        }
+    }
+    let mut found = Invocations {
+        ident,
+        lines: Vec::new(),
+    };
+    for item in items {
+        syn::visit::Visit::visit_item(&mut found, item);
+    }
+    found.lines
+}
+
+/// [`schema_type_lines`] of the file at `path`; `None` when it is unreadable
+/// or does not parse (then nothing is pruned).
+fn schema_type_lines_of(path: &Path, ident: &str) -> Option<Vec<usize>> {
+    let content = get_file_content(path)?;
+    with_fallback_parse(&content, |parsed| schema_type_lines(&parsed.items, ident))
+}
+
+/// Whether `ident` is still declared in the given scope of `items`, or a
+/// `schema_type!` invocation names it at `line`.
+fn still_declared(
+    items: &[syn::Item],
+    chain: &[String],
+    ident: &str,
+    line: usize,
+    scope: Scope,
+) -> bool {
+    let textual = match scope {
+        Scope::File => super::count_items_named(items, ident),
+        Scope::Module => declared_in_module(items, chain, ident),
+    };
+    textual > 0 || schema_type_lines(items, ident).contains(&line)
+}
+
 /// Remember the current fingerprint of `identity`'s file and item module.
 ///
 /// A record of the same name in the same module on another line is a moved
 /// item's old position (R27-SM0-L3): dropped, but only while the file still
 /// declares that name in that module (an item whose file lost it keeps its
-/// record, so [`left_its_file`] can still tell it left).
+/// record, so [`left_its_file`] can still tell it left). A generated DTO has
+/// no declaration to check, so its older generated records are dropped only
+/// once the invocation that named them at that position is gone (SM0-L2); a
+/// deleted derive keeps its record, since it was never generated.
 pub(super) fn record(identity: Option<&str>) {
     let Some(identity) = identity else {
         return;
@@ -103,27 +191,50 @@ pub(super) fn record(identity: Option<&str>) {
     let mut records = FINGERPRINTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(lines) = crate::schema_macro::module_scope::item_lines_in_chain(path, ident, &chain)
-        .filter(|lines| !lines.is_empty())
-    {
-        records.retain(|old, recorded| {
+    let lines = crate::schema_macro::module_scope::item_lines_in_chain(path, ident, &chain)
+        .filter(|lines| !lines.is_empty());
+    let generated = lines.is_none();
+    match lines {
+        Some(lines) => records.retain(|old, recorded| {
             file_and_ident(old) != Some((file, ident))
                 || recorded.chain != chain
                 || lines.contains(&line_of(old))
-        });
+        }),
+        None => {
+            if let Some(invoked) = schema_type_lines_of(path, ident) {
+                records.retain(|old, recorded| {
+                    file_and_ident(old) != Some((file, ident))
+                        || !recorded.generated
+                        || recorded.chain != chain
+                        || invoked.contains(&line_of(old))
+                });
+            }
+        }
     }
     records.insert(
         identity.to_string(),
         Recorded {
             chain,
             fingerprint: get_file_fingerprint(path),
+            generated,
         },
     );
 }
 
-/// Whether the stored `existing` entry's item has left its file since it was
-/// registered (see the module docs).
+/// Whether the stored `existing` duplicate-name entry's item has left its file
+/// since it was registered: its name is declared nowhere in the file (SM0-L1),
+/// and a generated DTO's invocation at its position is gone (SM0-L2).
 pub(super) fn left_its_file(existing: &StructMetadata) -> bool {
+    left(existing, Scope::File)
+}
+
+/// Whether the stored variant `existing` has left its own inline module (see
+/// the module docs, R34-SM-L1).
+pub(super) fn left_its_module(existing: &StructMetadata) -> bool {
+    left(existing, Scope::Module)
+}
+
+fn left(existing: &StructMetadata, scope: Scope) -> bool {
     let Some(identity) = existing.source_identity.as_deref() else {
         return false;
     };
@@ -138,13 +249,14 @@ pub(super) fn left_its_file(existing: &StructMetadata) -> bool {
         .get(identity)
         .map(|recorded| (recorded.chain.clone(), recorded.fingerprint));
     let path = Path::new(file);
+    let line = line_of(identity);
     match recorded {
         Some((chain, fingerprint)) if fingerprint != get_file_fingerprint(path) => {
             // Unparseable mid-edit but present: the item may still be in it
             // (R26-SM-L1), so only a file that is gone counts as left.
             get_file_content(path).is_none_or(|content| {
                 with_fallback_parse(&content, |parsed| {
-                    declared_in_module(&parsed.items, &chain, ident) == 0
+                    !still_declared(&parsed.items, &chain, ident, line, scope)
                 })
                 .unwrap_or(false)
             })

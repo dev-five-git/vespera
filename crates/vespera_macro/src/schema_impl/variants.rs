@@ -118,7 +118,7 @@ pub fn in_module(name: &str, module: &[String]) -> Option<StructMetadata> {
         .iter()
         .find(|(defined_in, _)| defined_in == module)
         .map(|(_, metadata)| metadata.clone())?;
-    (!super::stale::left_its_file(&found)).then_some(found)
+    (!super::stale::left_its_module(&found)).then_some(found)
 }
 
 #[cfg(test)]
