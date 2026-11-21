@@ -215,16 +215,14 @@ fn test_generate_router_code_single_route(
         "Code should contain path: {expected_path}, got: {code}"
     );
 
-    // Check function path (quote! adds spaces, so we check for parts)
-    let function_parts: Vec<&str> = expected_function_path.split("::").collect();
-    for part in &function_parts {
-        if !part.is_empty() {
-            assert!(
-                code.contains(part),
-                "Code should contain function part: {part}, got: {code}"
-            );
-        }
-    }
+    // The whole handler path, whitespace-stripped (quote! spaces the tokens):
+    // a segment alone also matches elsewhere (`api` in `"/api/users"`).
+    let compact: String = code.split_whitespace().collect();
+    let function_path = format!("crate::{expected_function_path}");
+    assert!(
+        compact.contains(&function_path),
+        "Code should contain function path: {function_path}, got: {code}"
+    );
 
     drop(temp_dir);
 }

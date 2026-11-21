@@ -235,6 +235,9 @@ impl Parse for AutoRouterInput {
 /// The `VESPERA_SERVER_URL` (+ `VESPERA_SERVER_DESCRIPTION`) fallback
 /// server, validated like a `servers = ...` argument: an invalid value is a
 /// compile error naming the variable, never silently dropped.
+///
+/// `VESPERA_SERVER_DESCRIPTION` is read only together with a URL: without
+/// `VESPERA_SERVER_URL` it is ignored (no server is emitted, no error).
 fn env_server() -> syn::Result<Option<Vec<ServerConfig>>> {
     let Some(url) = env_lit("VESPERA_SERVER_URL")? else {
         return Ok(None);

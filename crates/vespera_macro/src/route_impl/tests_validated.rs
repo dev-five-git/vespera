@@ -71,6 +71,27 @@ fn route_emits_validated_payload_assertions(
     );
 }
 
+/// A generic handler skips only the payload naming its own type parameter; a
+/// concrete payload beside it is still asserted (round-38 MR3-02).
+#[test]
+fn generic_handler_still_asserts_its_concrete_payloads() {
+    let sig: syn::Signature = syn::parse_quote!(
+        fn generic<T>(
+            Validated(Json(first)): Validated<Json<T>>,
+            Validated(Json(second)): Validated<Json<Other>>,
+        ) -> String
+    );
+    let output = validated_payload_assertions(&sig).to_string();
+    assert!(
+        output.contains("__vespera_assert_validate :: < Other >"),
+        "{output}"
+    );
+    assert!(
+        !output.contains("__vespera_assert_validate :: < T >"),
+        "{output}"
+    );
+}
+
 /// A receiver argument names no extractor (route handlers are free
 /// functions; `validate_route_fn` does not run here).
 #[test]

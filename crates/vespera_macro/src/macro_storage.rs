@@ -271,6 +271,14 @@ fn collect_fn_modules(items: &[syn::Item], module: &str, name: &str, found: &mut
     }
 }
 
+/// Reserved words that take a `!` without being a macro name (`if!(x)`,
+/// `match!(x)`): an invocation's name is never one of them.
+const RUST_KEYWORDS: &[&str] = &[
+    "as", "async", "await", "break", "const", "continue", "dyn", "else", "enum", "extern", "fn",
+    "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
+    "return", "static", "struct", "trait", "type", "unsafe", "use", "where", "while", "yield",
+];
+
 /// Whether a macro invocation of `content` names `name` (`h!(list);` may
 /// generate `list` from `macro_rules! h`): such a handler / job has no
 /// literal `fn name` in its file, so its entry is kept. A name a
@@ -288,8 +296,9 @@ fn may_come_from_macro(content: &str, name: &str) -> bool {
         .join("\n");
     code.match_indices('!').any(|(bang, _)| {
         // `ident!(`: the `!` follows a name, so `if !(x)` and `a != (b)`
-        // are not invocations.
-        let follows_name = code[..bang].chars().next_back().is_some_and(is_ident_char);
+        // are not invocations, and neither is a keyword's `if!(x)`.
+        let word = &code[code[..bang].trim_end_matches(is_ident_char).len()..bang];
+        let follows_name = !word.is_empty() && !RUST_KEYWORDS.contains(&word);
         let rest = code[bang + 1..].trim_start();
         follows_name
             && rest.starts_with(['(', '[', '{'])
@@ -581,6 +590,12 @@ mod tests {
     #[case::bang_after_space("if ! (list()) {}", false)]
     #[case::group_over_several_lines("gen!(\n    list,\n);", true)]
     #[case::call_after_multi_line_group("gen!(\n    x,\n); list();", false)]
+    #[case::keyword_if_no_space("if!(list());", false)]
+    #[case::keyword_while("while!(list());", false)]
+    #[case::keyword_match("match!(list);", false)]
+    #[case::keyword_return("return!(list);", false)]
+    #[case::keyword_in("in!(list);", false)]
+    #[case::name_ending_in_keyword("gen_if!(list);", true)]
     fn may_come_from_macro_names_only_invocation_arguments(
         #[case] line: &str,
         #[case] expected: bool,

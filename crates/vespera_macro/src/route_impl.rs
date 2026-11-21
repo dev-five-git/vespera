@@ -38,6 +38,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use crate::macro_storage::{CrateStorage, SourceIdentified};
 use crate::{args, metadata::HeaderParam};
 
+mod generic_scope;
 mod item_error;
 mod path_check;
 
@@ -446,13 +447,13 @@ pub fn process_route_attribute(
     register_route(stored);
 
     // A generic handler's response types may name its type parameters, which
-    // are not in scope for an item emitted beside it (the payload assertions
-    // below skip generic handlers for the same reason).
+    // are not in scope for an item emitted beside it: those entries are
+    // skipped, the others are still asserted.
+    let generics = generic_scope::param_names(&item_fn.sig.generics);
     let assertions = route_args
         .responses
         .as_ref()
-        .filter(|_| item_fn.sig.generics.params.is_empty())
-        .map(typed_response_assertions)
+        .map(|arr| typed_response_assertions(arr, &generics))
         .unwrap_or_default();
     let mut output = item;
     output.extend(assertions);
@@ -471,13 +472,12 @@ pub fn process_route_attribute(
 /// the router. The bound goes through `vespera`'s own `AssertValidate`, whose
 /// `#[diagnostic::on_unimplemented]` explains the fix at the argument.
 ///
-/// Generic handlers are skipped: their payload may name a type parameter that
-/// is out of scope for an item emitted next to the function.
+/// A payload that names one of a generic handler's own parameters is skipped:
+/// that type is out of scope for an item emitted next to the function. Any
+/// other payload of such a handler is still asserted.
 #[cfg(feature = "validation")]
 fn validated_payload_assertions(sig: &syn::Signature) -> proc_macro2::TokenStream {
-    if !sig.generics.params.is_empty() {
-        return proc_macro2::TokenStream::new();
-    }
+    let generics = generic_scope::param_names(&sig.generics);
     let assertions = sig
         .inputs
         .iter()
@@ -485,6 +485,7 @@ fn validated_payload_assertions(sig: &syn::Signature) -> proc_macro2::TokenStrea
             syn::FnArg::Typed(pat_type) => crate::parser::validated_payload_type(&pat_type.ty),
             syn::FnArg::Receiver(_) => None,
         })
+        .filter(|payload| !generic_scope::mentions(*payload, &generics))
         .map(|payload| {
             quote::quote_spanned! { syn::spanned::Spanned::span(payload) =>
                 const _: () = {
@@ -502,10 +503,15 @@ fn validated_payload_assertions(sig: &syn::Signature) -> proc_macro2::TokenStrea
 /// The OpenAPI document references each type as a component schema; a type
 /// without `#[derive(Schema)]` (or a typo) would otherwise emit a dangling
 /// `$ref`. With the assertion it is a compile error pointing at the type.
-fn typed_response_assertions(arr: &syn::ExprArray) -> proc_macro2::TokenStream {
+/// An entry naming one of `generics` (a generic handler's own parameter) is
+/// skipped.
+fn typed_response_assertions(
+    arr: &syn::ExprArray,
+    generics: &[String],
+) -> proc_macro2::TokenStream {
     let assertions = arr.elems.iter().filter_map(|elem| match elem {
         syn::Expr::Tuple(tuple) => match tuple.elems.get(1) {
-            Some(syn::Expr::Path(path)) => {
+            Some(syn::Expr::Path(path)) if !generic_scope::mentions(&path.path, generics) => {
                 let path = &path.path;
                 Some(quote::quote_spanned! { syn::spanned::Spanned::span(path) =>
                     const _: () = {
@@ -608,7 +614,7 @@ mod tests {
 
         // Non-path entries (rejected by the argument parser) emit nothing.
         let array: syn::ExprArray = syn::parse_quote!([(404, 1), 2]);
-        assert!(typed_response_assertions(&array).is_empty());
+        assert!(typed_response_assertions(&array, &[]).is_empty());
     }
 
     #[test]
