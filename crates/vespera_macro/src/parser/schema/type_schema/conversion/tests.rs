@@ -694,7 +694,7 @@ fn time_crate_types_are_described(#[case] ty_src: &str, #[case] described: bool)
     };
     assert_eq!(schema.schema_type, Some(SchemaType::String), "{ty_src}");
     assert_eq!(
-        schema.description.as_deref() == Some(TIME_CRATE_DESCRIPTION),
+        schema.description.as_deref() == Some(super::time_schemas::TIME_CRATE_DESCRIPTION),
         described,
         "{ty_src}"
     );

@@ -395,6 +395,7 @@ fn import_kinds(#[case] file_src: &str, #[case] expected: Option<Import>) {
 #[case::nested("mod a { mod error {} }", false)]
 #[case::declared("mod error;", true)]
 #[case::other("mod a; struct error;", false)]
+#[case::test_only("#[cfg(test)] mod error;", false)]
 fn module_declarations(#[case] file_src: &str, #[case] expected: bool) {
     let file: syn::File = syn::parse_str(file_src).unwrap();
     assert_eq!(declares_mod(&file.items, "error"), expected);
