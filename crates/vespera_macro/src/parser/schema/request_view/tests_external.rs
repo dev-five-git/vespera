@@ -4,6 +4,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use rstest::rstest;
+
 use super::tests::{kinds_by_ident, scoped_names};
 use super::*;
 
@@ -70,5 +72,20 @@ fn external_flattened_type_is_not_a_local_item() {
         kinds.get("Outer"),
         Some(&FlatKind::Leaves { known_keys: true }),
         "{kinds:?}"
+    );
+}
+
+/// A module-qualified type names its registry key only: its module segments
+/// (`other`, `user`, `crate`) name no type, so a component called `user` is
+/// no dependency of a field typed `other::user::Thing`.
+#[rstest]
+#[case::module_path("struct A { x: other::user::Thing }", &["other::user::Thing"])]
+#[case::anchored_path("struct A { x: crate::models::User }", &["crate::models::User"])]
+fn module_segments_are_not_referenced_idents(#[case] src: &str, #[case] expected: &[&str]) {
+    let item: syn::Item = syn::parse_str(src).unwrap();
+    let found = referenced_idents(&item, &BTreeSet::new());
+    assert_eq!(
+        found.iter().map(String::as_str).collect::<Vec<_>>(),
+        expected
     );
 }

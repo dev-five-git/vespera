@@ -47,7 +47,7 @@ pub use enum_schema::{
 };
 pub use generics::substitute_type;
 pub use generics::{parameter_bounds, substitute_checked};
-pub use scoped_ident::{definition_key, registry_keys};
+pub use scoped_ident::{definition_key, lookup_key, registry_keys};
 pub use serde_attrs::{
     SerdeSide, derives_serialize, extract_aliases, extract_default, extract_deny_unknown_fields,
     extract_doc_comment, extract_field_codec, extract_field_rename_for, extract_field_rename_owned,

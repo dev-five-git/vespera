@@ -933,6 +933,38 @@ fn module_schema_path_names_its_component(#[case] ty_src: &str) {
     assert_eq!(reference.ref_path, "#/components/schemas/UserSchema");
 }
 
+/// `models/user.rs` renames its `Schema` to `UserDto` (`schema_type!`), so the
+/// `Schema` of `models/post.rs` (the bare `Schema` component) is another
+/// module's. `crate::models::user::Schema` names `UserDto` through its
+/// module-scoped key, never the bare `Schema`, whether `PostDto` or `Schema`
+/// is the other component.
+#[rstest::rstest]
+#[case::bare_schema_is_another_module("Schema")]
+#[case::bare_schema_unknown("PostDto")]
+fn module_schema_path_names_its_renamed_component(#[case] other: &str) {
+    let known = HashSet::from([
+        "crate::models::user::Schema",
+        "crate::models::post::Schema",
+        other,
+    ]);
+    let defs = HashMap::from([
+        (
+            "crate::models::user::Schema".to_string(),
+            r#"#[schema(name = "UserDto")] struct Schema { id: u8 }"#.to_string(),
+        ),
+        (
+            "crate::models::post::Schema".to_string(),
+            r#"#[schema(name = "PostDto")] struct Schema { id: u8 }"#.to_string(),
+        ),
+    ]);
+    let ty: Type = syn::parse_str("crate::models::user::Schema").unwrap();
+    let schema_ref = parse_type_to_schema_ref(&ty, &known, &defs);
+    let SchemaRef::Ref(reference) = schema_ref else {
+        panic!("a $ref for the renamed user schema: {schema_ref:?}");
+    };
+    assert_eq!(reference.ref_path, "#/components/schemas/UserDto");
+}
+
 /// A relation's entity is referenced through its input view in a request
 /// body (`$ref UserInput`, also the items of a `HasMany`); the response view
 /// keeps the response component.

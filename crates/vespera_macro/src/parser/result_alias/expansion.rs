@@ -5,7 +5,10 @@ use super::{
     Cow, DefinitionKey, MAX_ALIAS_DEPTH, NextScope, Path, ReturnType, Scope, Type, alias_candidate,
     alias_qualifier, definition_key, find_alias, fn_module, is_external_path, source_key,
 };
-use crate::{parser::schema::substitute_type, schema_macro::type_utils::last_path_segment};
+use crate::{
+    parser::schema::{is_builtin_openapi_type, substitute_type},
+    schema_macro::type_utils::last_path_segment,
+};
 
 /// The prefix of the placeholder idents an alias body's parameters stand for
 /// while the body is expanded (see [`expand_alias`]).
@@ -183,7 +186,11 @@ fn expand_alias(
         return None;
     }
     let qualifier = alias_qualifier(ty);
-    let (alias, alias_scope) = find_alias(&name, qualifier.as_ref(), here.as_ref(), src_dir)?;
+    // A builtin OpenAPI name is looked up in the handler's own file only (the
+    // crate-wide scan would run for every `String` / `u8` position), except
+    // `Result<T>`, the error alias a crate usually declares once in its src.
+    let crate_src = src_dir.filter(|_| name == "Result" || !is_builtin_openapi_type(&name));
+    let (alias, alias_scope) = find_alias(&name, qualifier.as_ref(), here.as_ref(), crate_src)?;
     let key = definition_key(&alias, &alias_scope);
     if active.contains(&key) {
         return None;

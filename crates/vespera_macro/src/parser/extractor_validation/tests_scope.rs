@@ -345,3 +345,17 @@ fn inline_qualified_paths_outside_non_schema_route_types_are_ok(
     };
     assert!(check_with_sibling(handler, sibling).is_ok(), "{handler}");
 }
+
+/// A handler's own generic parameter shadows a same-named non-`Schema` struct
+/// of its module: `Body` is the generic (no document type), while a `Body` the
+/// signature does not declare as a parameter is still the flagged struct.
+#[rstest]
+#[case::type_param("fn handler<Body: Tr>(Json(b): Json<Body>) {}", true)]
+#[case::where_clause("fn handler<Body>(Json(b): Json<Body>) where Body: Tr {}", true)]
+#[case::nested_param("fn handler<Body: Tr>(Path(b): Path<Wrap<Body>>) {}", true)]
+#[case::const_param("fn handler<const Body: usize>(Path(b): Path<Wrap<Body>>) {}", true)]
+#[case::undeclared_name("fn handler<Other: Tr>(Json(b): Json<Body>) {}", false)]
+fn generic_parameters_shadow_module_items(#[case] handler: &str, #[case] ok: bool) {
+    let src = format!("pub struct Body {{ pub a: i32 }} {handler}");
+    assert_eq!(run(&src).is_ok(), ok, "{handler}");
+}
