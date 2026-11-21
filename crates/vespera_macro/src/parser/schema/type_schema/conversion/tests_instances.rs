@@ -1,6 +1,8 @@
 //! Component names of recursive generic instantiations (sidecar module;
 //! `use super::*` semantics preserved).
 
+use rstest::rstest;
+
 use super::*;
 use crate::parser::schema::{
     generic_instances::take_materialized, request_view::with_request_view,
@@ -156,6 +158,50 @@ fn self_reference_omitting_a_defaulted_parameter_is_the_component() {
     assert!(
         take_materialized().is_empty(),
         "no second component for the defaulted instance"
+    );
+}
+
+/// A defaulted parameter whose default is a module-scoped path
+/// (`M = crate::meta::Meta`) is named alike at the definition and at the use
+/// site, whatever spelling the path has: the self-reference `Tree<T>` is the
+/// component `Tree`, and no `Tree_*` component is materialised.
+#[rstest]
+#[case::crate_anchored("crate::meta::Meta", &["crate::meta::Meta", "meta::Meta"])]
+#[case::crate_relative("meta::Meta", &["meta::Meta"])]
+#[case::super_path("super::meta::Meta", &["meta::Meta"])]
+#[case::self_path("self::meta::Meta", &["meta::Meta"])]
+#[case::crate_root("crate::Meta", &["Meta"])]
+fn scoped_default_self_reference_is_the_component(
+    #[case] default: &str,
+    #[case] registered: &[&str],
+) {
+    take_materialized();
+    let src = format!("struct Tree<T, M = {default}> {{ value: T, kids: Vec<Tree<T>> }}");
+    let item: syn::ItemStruct = syn::parse_str(&src).unwrap();
+    let known: HashSet<String> = registered
+        .iter()
+        .map(|key| (*key).to_string())
+        .chain(["Tree".to_string()])
+        .collect();
+    let defs: HashMap<String, String> = registered
+        .iter()
+        .map(|key| ((*key).to_string(), "struct Meta { x: u8 }".to_string()))
+        .chain([("Tree".to_string(), src.clone())])
+        .collect();
+    let schema = crate::parser::schema::parse_struct_to_schema(&item, &known, &defs);
+    let kids = schema
+        .properties
+        .as_ref()
+        .and_then(|props| props.get("kids"))
+        .expect("kids property");
+    let SchemaRef::Inline(kids) = kids else {
+        panic!("kids is an inline array: {kids:?}");
+    };
+    let items = kids.items.clone().expect("array items");
+    assert_eq!(reference(items), "#/components/schemas/Tree");
+    assert!(
+        take_materialized().is_empty(),
+        "no component for the defaulted instance of {default}"
     );
 }
 

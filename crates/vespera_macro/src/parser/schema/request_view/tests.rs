@@ -346,6 +346,17 @@ pub(super) fn scoped_names(
     "#[serde(deny_unknown_fields)] struct A { id: u8, #[serde(flatten)] o: OptMap }",
     true
 )]
+// A variant skipped in both directions is in neither view, so its one-sided
+// rename or alias does not make the enum differ (a variant skipped on one side
+// still does, see `skip_serializing_newtype_differs`).
+#[case::both_skipped_variant_rename(
+    r#"enum E { W, #[serde(skip_serializing, skip_deserializing, rename(serialize = "x"))] V { a: u8 } }"#,
+    false
+)]
+#[case::both_skipped_variant_alias(
+    r#"enum E { #[serde(skip_serializing, skip_deserializing, alias = "x")] V { a: u8 } }"#,
+    false
+)]
 fn direct_differences(#[case] src: &str, #[case] expected: bool) {
     let items: Vec<syn::Item> = [
         "struct HasMap { #[serde(flatten)] m: HashMap<String, u8> }",
@@ -390,6 +401,24 @@ fn generic_newtype_reads_like_its_argument() {
         kinds.get("Keeps"),
         Some(&FlatKind::Leaves { known_keys: true })
     );
+}
+
+/// A const parameter takes a position too: `W<N, HashMap<..>>` over
+/// `struct W<const N: usize, T>` reads the map (`T` is the second argument),
+/// not the const argument `N` that comes first.
+#[test]
+fn const_parameter_keeps_argument_positions() {
+    let items: Vec<syn::Item> = [
+        "struct W<const N: usize, T>(T);",
+        "struct Holds { #[serde(flatten)] w: W<N, std::collections::HashMap<String, u8>> }",
+        "struct Literal { #[serde(flatten)] w: W<3, std::collections::HashMap<String, u8>> }",
+    ]
+    .iter()
+    .map(|src| syn::parse_str(src).unwrap())
+    .collect();
+    let kinds = kinds_by_ident(&items);
+    assert_eq!(kinds.get("Holds"), Some(&FlatKind::Map));
+    assert_eq!(kinds.get("Literal"), Some(&FlatKind::Map));
 }
 
 #[test]

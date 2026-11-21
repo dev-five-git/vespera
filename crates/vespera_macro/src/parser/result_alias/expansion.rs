@@ -11,16 +11,70 @@ use crate::{parser::schema::substitute_type, schema_macro::type_utils::last_path
 /// while the body is expanded (see [`expand_alias`]).
 const PARAM_PREFIX: &str = "__vespera_alias_param_";
 
+/// Whether an alias can apply to `ty` or to a response position nested in it
+/// (a tuple element, a `Result` argument or a `Json` body, as
+/// [`expand_position`] walks them).
+pub(super) fn has_alias_position(ty: &Type) -> bool {
+    if alias_candidate(ty).is_some() {
+        return true;
+    }
+    match ty {
+        Type::Tuple(tuple) => tuple.elems.iter().any(has_alias_position),
+        Type::Path(type_path) => type_path
+            .path
+            .segments
+            .last()
+            .is_some_and(nested_args_have_alias),
+        _ => false,
+    }
+}
+
+/// Whether one of the response positions of `segment` (see
+/// [`response_positions`]) has an alias position.
+fn nested_args_have_alias(segment: &syn::PathSegment) -> bool {
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return false;
+    };
+    args.args
+        .iter()
+        .filter_map(|arg| {
+            if let syn::GenericArgument::Type(inner) = arg {
+                Some(inner)
+            } else {
+                None
+            }
+        })
+        .take(response_positions(segment))
+        .any(has_alias_position)
+}
+
+/// How many leading type arguments of `segment` are response positions an
+/// alias can name: every argument of a `Result`, the body of a `Json` (its
+/// first argument, the body axum documents), none for any other path. Other
+/// wrappers (`Html`, `Sse`, `Bytes`, `Response`, ...) carry no schema of their
+/// own, so an alias inside them documents nothing.
+fn response_positions(segment: &syn::PathSegment) -> usize {
+    if segment.ident == "Json" {
+        1
+    } else if segment.ident == "Result" {
+        usize::MAX
+    } else {
+        0
+    }
+}
+
 /// Expand the return type of `sig` in place through the aliases found in
 /// `same_file` (the handler's file) and (if given) the crate source
 /// directory `src_dir`.
 ///
 /// The top-level type is expanded, and so are the positions a response is
-/// built from: the elements of a tuple and the arguments of a `Result`
+/// built from: the elements of a tuple, the arguments of a `Result`
 /// (`Result<Created<User>, AppError>` with `type Created<T> = (StatusCode,
-/// Json<T>)` documents the `Json<User>` body). Each nested position is looked
-/// up in the scope its type is written in, so the names of an alias defined
-/// in another file resolve there. The nesting is bounded by
+/// Json<T>)` documents the `Json<User>` body) and the body of a `Json`
+/// (`Json<UserList>` with `type UserList = Vec<User>` documents the array).
+/// Request bodies are not expanded: this function only sees the return type.
+/// Each nested position is looked up in the scope its type is written in, so
+/// the names of an alias defined in another file resolve there. The nesting is bounded by
 /// [`MAX_ALIAS_DEPTH`], and an alias that is already being expanded is not
 /// applied again, so a cyclic alias cannot recurse forever.
 ///
@@ -74,13 +128,19 @@ fn expand_position(
         }
         Type::Path(type_path) => {
             if let Some(segment) = type_path.path.segments.last_mut()
-                && segment.ident == "Result"
+                && let limit = response_positions(segment)
+                && limit > 0
                 && let syn::PathArguments::AngleBracketed(args) = &mut segment.arguments
             {
-                for arg in &mut args.args {
+                let types = args.args.iter_mut().filter_map(|arg| {
                     if let syn::GenericArgument::Type(inner) = arg {
-                        expand_position(inner, scope, src_dir, depth + 1, active);
+                        Some(inner)
+                    } else {
+                        None
                     }
+                });
+                for inner in types.take(limit) {
+                    expand_position(inner, scope, src_dir, depth + 1, active);
                 }
             }
         }

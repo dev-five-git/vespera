@@ -10,7 +10,7 @@
 //! The component name is the base schema name followed by every type
 //! argument, flattened and joined with `_`: `Tree<i32>` → `Tree_i32`,
 //! `Tree<Vec<User>>` → `Tree_Vec_User`, `Pair<A, Option<B>>` →
-//! `Pair_A_Option_B` (see [`instance_name`] for how `_` in identifiers,
+//! `Pair_A_Option_B` (see [`instance_name_with`] for how `_` in identifiers,
 //! arrays, slices and tuples are spelled so that different types never share
 //! a name). Non-recursive generics stay inline.
 //!
@@ -67,14 +67,9 @@ struct Frame {
 /// a polymorphically recursive expansion is cut (see the module docs).
 const MAX_INSTANCES_PER_ROOT: usize = 4096;
 
-/// The component name of `base<args..>`.
-pub fn instance_name<'a>(base: &str, args: impl IntoIterator<Item = &'a Type>) -> String {
-    instance_name_with(base, args, &|_| None)
-}
-
-/// [`instance_name`] where a path argument `component` resolves to a
-/// component name of its own (`a::Foo` / `b::Foo` renamed apart) is spelled
-/// by that name instead of its last ident.
+/// The component name of `base<args..>`. A path argument that `component`
+/// resolves to a component name of its own (`a::Foo` / `b::Foo` renamed apart)
+/// is spelled by that name instead of its last ident.
 pub fn instance_name_with<'a>(
     base: &str,
     args: impl IntoIterator<Item = &'a Type>,
@@ -307,10 +302,15 @@ pub fn inline_or_reference(
 /// deeper body and passed in as an argument of the outer instance (a global
 /// `T` in a body that also receives `T`), that instance is inlined rather
 /// than referenced, since the two cannot be told apart by name.
+///
+/// `scoped` spells a module-scoped path argument the way the use sites of the
+/// instances do (`conversion`'s `scoped_component`), so a defaulted argument
+/// such as `M = crate::meta::Meta` is named alike at both ends.
 pub fn with_definition<R>(
     ident: &syn::Ident,
     generics: &syn::Generics,
     attrs: &[syn::Attribute],
+    scoped: &dyn Fn(&syn::Path) -> Option<String>,
     build: impl FnOnce() -> R,
 ) -> R {
     let literals = PENDING_LITERALS
@@ -342,11 +342,12 @@ pub fn with_definition<R>(
         // A non-generic definition has no instance of its own to name.
         Vec::new()
     } else {
-        let as_written = definition_instance(&component, &params, &consts);
+        let as_written = definition_instance(&component, &params, &consts, scoped);
         let defaults_filled = definition_instance(
             &component,
             &default_filled_params(generics, &params),
             &default_filled_consts(generics),
+            scoped,
         );
         vec![as_written, defaults_filled]
     };
@@ -356,8 +357,13 @@ pub fn with_definition<R>(
 /// The name of `component` instantiated with the type arguments `types`
 /// followed by the const arguments `consts`: the order an instantiation is
 /// spelled in (`conversion` appends the const segments after the types).
-fn definition_instance(component: &str, types: &[Type], consts: &[syn::Expr]) -> String {
-    let mut name = instance_name(component, types);
+fn definition_instance(
+    component: &str,
+    types: &[Type],
+    consts: &[syn::Expr],
+    scoped: &dyn Fn(&syn::Path) -> Option<String>,
+) -> String {
+    let mut name = instance_name_with(component, types, scoped);
     push_const_segments(&mut name, consts.iter());
     name
 }
@@ -511,6 +517,11 @@ mod tests {
     use vespera_core::schema::SchemaType;
 
     use super::*;
+
+    /// [`instance_name_with`] without module-scoped arguments.
+    fn instance_name<'a>(base: &str, args: impl IntoIterator<Item = &'a Type>) -> String {
+        instance_name_with(base, args, &|_| None)
+    }
 
     #[rstest]
     #[case::scalar("Tree", &["i32"], "Tree_i32")]

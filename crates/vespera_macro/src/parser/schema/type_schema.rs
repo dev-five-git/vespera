@@ -7,7 +7,7 @@ pub mod nullable;
 pub use conversion::{
     is_builtin_openapi_type, is_primitive_type, is_std_duration_path, parse_type_to_schema_ref,
 };
-pub(super) use conversion::{is_external_crate_path, is_external_crate_root};
+pub(super) use conversion::{is_external_crate_path, is_external_crate_root, scoped_component};
 
 #[cfg(test)]
 mod tests {
