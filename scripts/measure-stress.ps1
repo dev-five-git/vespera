@@ -150,7 +150,8 @@ $rows | Format-Table -AutoSize
 "|--:|--:|--:|--:|--:|--:|--:|--:|"
 foreach ($r in $rows) { "| $($r.N) | $($r.WallS) | $($r.MacroExpandS) / $($r.MacroExpandMinS) | $($r.PeakRustcMB) | $($r.RssAfterExpandMB) | $($r.IncrWallS) | $($r.CacheHitExpandS) | $($r.OpenapiKB) |" }
 if ($rows.Count -ge 2) {
-  $a = $rows[0]; $b = $rows[-1]
+  $sorted = @($rows | Sort-Object N)
+  $a = $sorted[0]; $b = $sorted[-1]
   $slope = [Math]::Log($b.MacroExpandMinS / $a.MacroExpandMinS) / [Math]::Log($b.N / $a.N)
   $slopeW = [Math]::Log($b.WallS / $a.WallS) / [Math]::Log($b.N / $a.N)
   "log-log slope N=$($a.N)->$($b.N): macro_expand_crate = {0:N2}, wall = {1:N2} (1.0 linear)" -f $slope, $slopeW

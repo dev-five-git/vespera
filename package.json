@@ -26,7 +26,7 @@
     "test": "bun test",
     "posttest": "cargo test --workspace --doc && cargo tarpaulin --out xml --out stdout --out html --all-targets",
     "dev": "bun run --workspaces --if-present dev",
-    "api": "cargo run",
+    "api": "cargo run -p axum-example",
     "prepare": "husky",
     "changepacks": "bunx @changepacks/cli"
   }
