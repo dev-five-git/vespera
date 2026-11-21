@@ -69,12 +69,17 @@ impl ModuleTable {
     }
 
     /// The two call paths (`a::b`) of the route file `segments` when its
-    /// cfg-disjoint declarations name it differently: `#[cfg(unix)]
+    /// cfg-gated declarations name it differently: `#[cfg(unix)]
     /// #[path = "users_impl.rs"] mod users;` beside `#[cfg(not(unix))] mod
     /// users_impl;` loads one file under two names, and no single call path is
-    /// right on both platforms.
+    /// right on both platforms. An ungated declaration loads the file in every
+    /// build under its own name, so it is the call path and nothing conflicts
+    /// (`pub mod shared;` beside an ungated `#[path]` twin).
     pub(super) fn name_conflict(&self, segments: &[String]) -> Option<(String, String)> {
         let (_, chains) = self.loaded_chains(segments)?;
+        if chains.iter().any(|chain| ungated(chain)) {
+            return None;
+        }
         let call_path = |chain: &[Step]| {
             chain
                 .iter()
@@ -129,7 +134,13 @@ impl ModuleTable {
         let Some((depth, chains)) = self.loaded_chains(segments) else {
             return (segments.to_vec(), Vec::new());
         };
-        let mut names: Vec<String> = chains[0].iter().map(|step| step.name.clone()).collect();
+        // The call path is an ungated chain's name when one exists (it loads
+        // the file in every build), else the first chain's.
+        let chain = chains
+            .iter()
+            .find(|chain| ungated(chain))
+            .unwrap_or(&chains[0]);
+        let mut names: Vec<String> = chain.iter().map(|step| step.name.clone()).collect();
         names.extend_from_slice(&segments[depth..]);
         let per_chain: Vec<Vec<String>> = chains
             .iter()
@@ -230,6 +241,11 @@ impl Walk<'_> {
             .ok()
             .map(|relative| file_to_segments(relative, Path::new("")))
     }
+}
+
+/// A chain no `#[cfg(..)]` gates: it loads the file in every build.
+fn ungated(chain: &[Step]) -> bool {
+    chain.iter().all(|step| step.cfgs.is_empty())
 }
 
 /// The predicates under which the `mod` declarations of one module load it,
@@ -661,6 +677,75 @@ mod tests {
         )]);
         let table = ModuleTable::new(&same.path().join("routes"));
         assert_eq!(table.name_conflict(&segs(&["admin"])), None);
+    }
+
+    /// An ungated declaration loads the route file in every build, so a
+    /// differently named ungated twin (a route-free helper loaded twice) is no
+    /// conflict and the first ungated name is the call path, in either order
+    /// (round-37 MR0-M1).
+    #[rstest]
+    #[case::plain_first(
+        "pub mod shared;
+#[path = \"shared.rs\"] pub mod shared_alias;",
+        "shared"
+    )]
+    #[case::path_first(
+        "#[path = \"shared.rs\"] pub mod shared_alias;
+pub mod shared;",
+        "shared_alias"
+    )]
+    fn ungated_twins_are_not_a_conflict(#[case] mod_rs: &str, #[case] call_name: &str) {
+        let dir = tree(&[("routes/mod.rs", mod_rs), ("routes/shared.rs", "")]);
+        let table = ModuleTable::new(&dir.path().join("routes"));
+        assert_eq!(table.name_conflict(&segs(&["shared"])), None);
+        assert_eq!(table.declared_segments(&segs(&["shared"])), [call_name]);
+        assert_eq!(
+            table.cfg_predicates(&segs(&["shared"])),
+            Vec::<String>::new()
+        );
+    }
+
+    /// A gated twin beside an ungated module: the ungated name is the call path
+    /// whichever is declared first, and the file is not gated by the twin
+    /// (round-37 MR1-M1).
+    #[rstest]
+    #[case::gated_twin_first(
+        "#[cfg(test)] #[path = \"admin.rs\"] mod admin_twin;
+pub mod admin;"
+    )]
+    #[case::gated_twin_last(
+        "pub mod admin;
+#[cfg(test)] #[path = \"admin.rs\"] mod admin_twin;"
+    )]
+    fn gated_twin_beside_ungated_module_keeps_the_ungated_name(#[case] mod_rs: &str) {
+        let dir = tree(&[("routes/mod.rs", mod_rs), ("routes/admin.rs", "")]);
+        let table = ModuleTable::new(&dir.path().join("routes"));
+        assert_eq!(table.name_conflict(&segs(&["admin"])), None);
+        assert_eq!(table.declared_segments(&segs(&["admin"])), ["admin"]);
+        assert_eq!(
+            table.cfg_predicates(&segs(&["admin"])),
+            Vec::<String>::new()
+        );
+    }
+
+    /// Only genuinely gated differing names conflict: the twin under
+    /// `#[cfg(test)]` beside the same file under `#[cfg(not(test))]` (round-37
+    /// MR1-M1, the disjoint pair keeps erroring).
+    #[test]
+    fn gated_differing_names_without_an_ungated_chain_still_conflict() {
+        let dir = tree(&[
+            (
+                "routes/mod.rs",
+                "#[cfg(test)] #[path = \"admin.rs\"] pub mod admin_twin;
+#[cfg(not(test))] pub mod admin;",
+            ),
+            ("routes/admin.rs", ""),
+        ]);
+        let table = ModuleTable::new(&dir.path().join("routes"));
+        assert_eq!(
+            table.name_conflict(&segs(&["admin"])),
+            Some(("admin_twin".to_string(), "admin".to_string()))
+        );
     }
 
     /// The collector refuses such a folder with an error naming both paths,

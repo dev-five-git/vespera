@@ -370,11 +370,16 @@ struct ModuleTree {
     /// Schedulable jobs (a statically dead `#[cfg]` one is dropped) — the scan
     /// result.
     jobs: Vec<CronMetadata>,
-    /// (canonical file, function name) → module path of every function
-    /// carrying a cron attribute, `#[cfg]`-gated ones included (rustc may
-    /// have expanded those): places the stored jobs.  The first declaration
-    /// wins.
+    /// (canonical file, function name) → module path of every file-level
+    /// function carrying a cron attribute, `#[cfg]`-gated ones included
+    /// (rustc may have expanded those): places the stored jobs that record no
+    /// inline module.  The first declaration wins.  A statically dead
+    /// declaration is never indexed (see `index`).
     cron_fns: HashMap<(String, String), String>,
+    /// The same for functions in an inline module, keyed like `cron_fns`: a
+    /// stored job that records no inline module falls back to it when the
+    /// file itself declares no such function.
+    inline_cron_fns: HashMap<(String, String), String>,
     /// (canonical file, inline-module path inside it, function name) →
     /// module path: places stored jobs that recorded their inline module,
     /// so same-named jobs in different inline modules of one file stay apart.
@@ -385,6 +390,8 @@ struct ModuleTree {
     /// A stored job of it that does not record its inline module cannot name
     /// one module.
     ambiguous_cron_fns: HashSet<(String, String)>,
+    /// The same for `inline_cron_fns`.
+    ambiguous_inline_cron_fns: HashSet<(String, String)>,
     /// The same, keyed like `scoped_cron_fns`.
     ambiguous_scoped_cron_fns: HashSet<(String, String, String)>,
     /// The files on the current walk, outermost first: a module cycle is a
@@ -516,90 +523,6 @@ impl ModuleTree {
                     self.add_cron_fn(name, job, &gate.inside(&scope.gate), scope);
                 }
             }
-        }
-    }
-
-    /// Module path of the cron function `fn_name` declared in `file` — in
-    /// the inline module `inline` when known, else its first declaration.
-    fn module_of(&self, file: &str, inline: Option<&str>, fn_name: &str) -> Option<String> {
-        inline
-            .map_or_else(
-                || self.cron_fns.get(&(file.to_owned(), fn_name.to_owned())),
-                |inline| {
-                    self.scoped_cron_fns.get(&(
-                        file.to_owned(),
-                        inline.to_owned(),
-                        fn_name.to_owned(),
-                    ))
-                },
-            )
-            .cloned()
-    }
-
-    /// Whether the cron function `fn_name` of `file` (in the inline module
-    /// `inline` when known) is reached under two module paths.
-    fn is_ambiguous(&self, file: &str, inline: Option<&str>, fn_name: &str) -> bool {
-        inline.map_or_else(
-            || {
-                self.ambiguous_cron_fns
-                    .contains(&(file.to_owned(), fn_name.to_owned()))
-            },
-            |inline| {
-                self.ambiguous_scoped_cron_fns.contains(&(
-                    file.to_owned(),
-                    inline.to_owned(),
-                    fn_name.to_owned(),
-                ))
-            },
-        )
-    }
-
-    /// Index a function carrying a cron attribute and, when it is
-    /// schedulable and `gate` (the function's and its modules' `#[cfg]`s) is
-    /// not statically false, record it as a scanned job under `gate`.
-    fn add_cron_fn(
-        &mut self,
-        function_name: &str,
-        job: Option<&CronJob>,
-        gate: &CfgGate,
-        scope: &Scope<'_>,
-    ) {
-        let key = (scope.file.to_owned(), function_name.to_owned());
-        match self.cron_fns.get(&key) {
-            Some(first) if first != scope.module_path => {
-                self.ambiguous_cron_fns.insert(key);
-            }
-            Some(_) => {}
-            None => {
-                self.cron_fns.insert(key, scope.module_path.to_owned());
-            }
-        }
-        let scoped_key = (
-            scope.file.to_owned(),
-            scope.inline.to_owned(),
-            function_name.to_owned(),
-        );
-        match self.scoped_cron_fns.get(&scoped_key) {
-            Some(first) if first != scope.module_path => {
-                self.ambiguous_scoped_cron_fns.insert(scoped_key);
-            }
-            Some(_) => {}
-            None => {
-                self.scoped_cron_fns
-                    .insert(scoped_key, scope.module_path.to_owned());
-            }
-        }
-        if !gate.dead
-            && let Some((expression, options, cfg)) = job
-        {
-            self.jobs.push(CronMetadata {
-                expression: expression.clone(),
-                function_name: function_name.to_owned(),
-                module_path: scope.module_path.to_owned(),
-                file_path: scope.file.to_owned(),
-                options: options.clone(),
-                cfg: gate.predicates.iter().chain(cfg).cloned().collect(),
-            });
         }
     }
 }
@@ -987,7 +910,10 @@ fn cron_module_path(relative: &str) -> String {
     module_path
 }
 
+mod index;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_gate;
+#[cfg(test)]
+mod tests_index;

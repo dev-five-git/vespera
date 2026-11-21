@@ -473,3 +473,5 @@ pub fn collect_metadata_from_files<'a>(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_twins;

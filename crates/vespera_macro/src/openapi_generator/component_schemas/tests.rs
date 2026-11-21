@@ -869,9 +869,11 @@ fn response_property_named_like_a_request_key_does_not_reach_input() {
             serde_json::from_value::<vespera_core::route::PathItem>(value).unwrap(),
         )])
     };
+    // The response references the request view by name (FilterInput) under
+    // the operation-key property names: only a request key may reach it.
     let response_body = json!({"type": "object", "properties": {
-        "parameters": {"$ref": "#/components/schemas/Filter"},
-        "requestBody": {"$ref": "#/components/schemas/Filter"}
+        "parameters": {"$ref": "#/components/schemas/FilterInput"},
+        "requestBody": {"$ref": "#/components/schemas/FilterInput"}
     }});
     let mut schemas = base();
     let paths = path(json!({"get": {"responses": {"200": {"description": "ok",

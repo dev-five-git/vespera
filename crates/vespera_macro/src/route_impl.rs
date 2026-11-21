@@ -445,9 +445,13 @@ pub fn process_route_attribute(
     };
     register_route(stored);
 
+    // A generic handler's response types may name its type parameters, which
+    // are not in scope for an item emitted beside it (the payload assertions
+    // below skip generic handlers for the same reason).
     let assertions = route_args
         .responses
         .as_ref()
+        .filter(|_| item_fn.sig.generics.params.is_empty())
         .map(typed_response_assertions)
         .unwrap_or_default();
     let mut output = item;
@@ -961,5 +965,7 @@ mod tests_extractors;
 #[cfg(test)]
 mod tests_item;
 
+#[cfg(test)]
+mod tests_responses;
 #[cfg(test)]
 mod tests_scope;

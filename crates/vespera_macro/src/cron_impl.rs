@@ -298,6 +298,12 @@ fn nested_fns(items: &mut dyn Iterator<Item = &syn::Item>) -> HashSet<(String, L
         fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
             self.nested(|this| syn::visit::visit_item_static(this, item));
         }
+        fn visit_impl_item_const(&mut self, item: &'ast syn::ImplItemConst) {
+            self.nested(|this| syn::visit::visit_impl_item_const(this, item));
+        }
+        fn visit_trait_item_const(&mut self, item: &'ast syn::TraitItemConst) {
+            self.nested(|this| syn::visit::visit_trait_item_const(this, item));
+        }
     }
 
     let mut finder = Finder::default();

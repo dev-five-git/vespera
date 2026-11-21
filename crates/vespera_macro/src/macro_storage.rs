@@ -18,6 +18,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
+use syn::ext::IdentExt;
+
 /// Type of a per-crate metadata storage static.
 ///
 /// Keyed by [`crate::schema_impl::current_crate_key`]; each bucket is an
@@ -200,8 +202,12 @@ fn retain_declared_if<T: Clone + SourceIdentified>(
         item.file_path().is_none_or(|file| {
             crate::schema_macro::file_cache::get_file_content(std::path::Path::new(file))
                 .is_none_or(|content| {
-                    declares_fn(&content, item.fn_name())
-                        || may_come_from_macro(&content, item.fn_name())
+                    let moved = item
+                        .scope()
+                        .is_some_and(|scope| moved_away(&content, item.fn_name(), scope));
+                    !moved
+                        && (declares_fn(&content, item.fn_name())
+                            || may_come_from_macro(&content, item.fn_name()))
                 })
         })
     };
@@ -215,6 +221,53 @@ fn retain_declared_if<T: Clone + SourceIdentified>(
                 .cloned()
                 .collect(),
         )
+    }
+}
+
+/// Whether `content` declares `name` exactly once, at a module other than
+/// `scope`: an entry of `scope` is then a stale view of the function (it moved
+/// between inline modules in the IDE buffer). A name declared twice, or one
+/// whose module is unknown, never counts as moved (round-37 MR2-L3).
+fn moved_away(content: &str, name: &str, scope: &str) -> bool {
+    count_fn_declarations(content, name) == 1
+        && declaring_module(content, name).is_some_and(|module| module != scope)
+}
+
+/// The inline-module path (`a::b`, `""` at the top level) of the one
+/// module-level `fn name` of `content`; `None` when there is not exactly one
+/// or the text does not parse.
+fn declaring_module(content: &str, name: &str) -> Option<String> {
+    let file = syn::parse_file(content).ok()?;
+    let mut found = Vec::new();
+    collect_fn_modules(&file.items, "", name, &mut found);
+    let [module] = found.as_slice() else {
+        return None;
+    };
+    Some(module.clone())
+}
+
+/// Pushes the inline-module path of every module-level `fn name` under
+/// `items` (`module` is the path of `items`' own module).
+fn collect_fn_modules(items: &[syn::Item], module: &str, name: &str, found: &mut Vec<String>) {
+    for item in items {
+        match item {
+            syn::Item::Fn(function) if function.sig.ident.unraw() == name => {
+                found.push(module.to_owned());
+            }
+            syn::Item::Mod(syn::ItemMod {
+                ident,
+                content: Some((_, inner)),
+                ..
+            }) => {
+                let path = if module.is_empty() {
+                    ident.unraw().to_string()
+                } else {
+                    format!("{module}::{}", ident.unraw())
+                };
+                collect_fn_modules(inner, &path, name, found);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -725,6 +778,80 @@ mod tests {
             located("rustc_list", &path, Some(""), "known"),
         );
         assert_eq!(payloads_for("rustc_list"), vec!["unknown", "known"]);
+    }
+
+    /// A handler moved from inline module `a` to `b` in the IDE buffer: the
+    /// entry of the module it left is a stale view once the file declares the
+    /// name once, in `b`; the entry of `b` stays (round-37 MR2-L3).
+    #[test]
+    fn ide_entry_of_the_module_a_handler_left_is_dropped() {
+        let (_temp, path) = write_source("ide_moved.rs", "mod b { pub async fn moved_list() {} }");
+        let _ide = test_ide::force();
+        register(
+            &TEST_STORAGE,
+            located("moved_list", &path, Some("a"), "old"),
+        );
+        register(
+            &TEST_STORAGE,
+            located("moved_list", &path, Some("b"), "new"),
+        );
+        let items = current_crate_items(&TEST_STORAGE);
+        let kept: Vec<&str> = retain_declared(items.as_slice())
+            .iter()
+            .filter(|found| found.fn_name == "moved_list")
+            .map(|found| found.payload)
+            .collect();
+        assert_eq!(kept, vec!["new"]);
+    }
+
+    /// The same name declared in two modules is not a move: both known scopes
+    /// stay, and so does a top-level entry of a top-level declaration.
+    #[test]
+    fn ide_known_scopes_stay_when_the_name_is_declared_twice() {
+        let (_temp, path) = write_source(
+            "ide_moved_twice.rs",
+            "mod b { pub async fn twice_moved() {} }\nmod c { pub async fn twice_moved() {} }\npub async fn top_once() {}",
+        );
+        let _ide = test_ide::force();
+        register(
+            &TEST_STORAGE,
+            located("twice_moved", &path, Some("a"), "old"),
+        );
+        register(
+            &TEST_STORAGE,
+            located("twice_moved", &path, Some("b"), "new"),
+        );
+        register(&TEST_STORAGE, located("top_once", &path, Some(""), "top"));
+        let items = current_crate_items(&TEST_STORAGE);
+        let kept = retain_declared(items.as_slice());
+        let payloads = |name: &str| -> Vec<&str> {
+            kept.iter()
+                .filter(|found| found.fn_name == name)
+                .map(|found| found.payload)
+                .collect()
+        };
+        assert_eq!(payloads("twice_moved"), vec!["old", "new"]);
+        assert_eq!(payloads("top_once"), vec!["top"]);
+    }
+
+    /// A name the file declares once, but not as a module-level function, or
+    /// a text that does not parse, names no module: the known-scope entry is
+    /// kept (round-37 MR2-L3).
+    #[rstest::rstest]
+    #[case::nested_in_a_body("fn host() { pub async fn nested_moved() {} }")]
+    #[case::unparsable("pub async fn broken_moved( {")]
+    fn ide_entry_is_kept_when_the_declaring_module_is_unknown(#[case] text: &str) {
+        let name = if text.contains("nested_moved") {
+            "nested_moved"
+        } else {
+            "broken_moved"
+        };
+        let (_temp, path) = write_source(&format!("{name}.rs"), text);
+        let _ide = test_ide::force();
+        register(&TEST_STORAGE, located(name, &path, Some("a"), "known"));
+        let items = current_crate_items(&TEST_STORAGE);
+        let kept = retain_declared(items.as_slice());
+        assert!(kept.iter().any(|found| found.fn_name == name), "{name}");
     }
 
     #[test]

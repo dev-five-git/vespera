@@ -118,6 +118,37 @@ fn float_bound_at_the_integer_edge_is_max_only(
     }
 }
 
+/// An `f32` bound beyond the `f32` range casts to an infinity, which would
+/// reject every finite value (or accept every one): a compile error in the
+/// integer path's "does not fit" wording, for either bound (round-37 MR2-L2).
+#[rstest]
+#[case::minimum_beyond_f32_max(1e300, Bound::Min, "minimum")]
+#[case::maximum_below_f32_min(-1e300, Bound::Max, "maximum")]
+fn f32_bound_beyond_its_range_does_not_fit(
+    #[case] value: f64,
+    #[case] bound: Bound,
+    #[case] key: &str,
+) {
+    let err = numeric_some(Some(value), None, bound, Some("f32")).unwrap_err();
+    assert!(err.starts_with(&format!("`{key} = ")), "{err}");
+    assert!(
+        err.ends_with(&format!(
+            "does not fit the field type `f32` (range {}..={})",
+            f32::MIN,
+            f32::MAX
+        )),
+        "{err}"
+    );
+}
+
+/// The largest finite `f32` bound still emits (only the overflow is refused).
+#[test]
+fn f32_bound_at_f32_max_still_emits() {
+    let tokens = numeric_some(Some(f64::from(f32::MAX)), None, Bound::Max, Some("f32"))
+        .expect("f32::MAX fits the field type");
+    assert!(tokens.to_string().contains("f32"), "{tokens}");
+}
+
 /// A generic struct whose only runtime rule sits on a skipped field gets the
 /// empty impl with its generics (round-27 macrorest-1 L2), not the
 /// "generic types" compile error: serde never reads that field.

@@ -129,6 +129,9 @@ fn test_validate_cron_fn_rejects_uncallable_signatures(
 // Two `tick`s on one line: only the second is nested (round-27 macrorest-1 L4).
 #[case::same_line_top_level(31, 0, true)]
 #[case::same_line_nested(31, 1, false)]
+// Associated `const` initialisers are function-local scopes too (round-37 MR1-L1).
+#[case::impl_const_initialiser(32, 0, false)]
+#[case::trait_const_initialiser(33, 0, false)]
 fn test_check_free_function(#[case] line: usize, #[case] nth: usize, #[case] free: bool) {
     let dir = tempfile::TempDir::new().unwrap();
     let file = dir.path().join("jobs.rs");
@@ -145,7 +148,7 @@ fn test_check_free_function(#[case] line: usize, #[case] nth: usize, #[case] fre
 
 /// The fixture of [`test_check_free_function`]; `tick` is declared on the
 /// lines the cases name.
-const FREE_FN_FILE: &str = "\npub async fn tick() {}\nmod a { pub async fn tick() {} }\nimpl S {\n    pub async fn tick() {}\n}\ntrait T {\n    async fn tick() {}\n}\npub fn outer() {\n    let _x = 1; pub async fn tick() {}\n}\nimpl S {\n    pub fn method() {\n        pub async fn tick() {}\n    }\n}\ntrait U {\n    fn provided() {\n        pub async fn tick() {}\n    }\n    fn required();\n}\npub struct S;\nconst _: () = { pub async fn tick() {} };\nstatic X: () = { pub async fn tick() {} };\npub fn closure() { let _c = || { pub async fn tick() {} }; }\npub fn blocky() { { pub async fn tick() {} } }\npub fn asyncb() { let _f = async { pub async fn tick() {} }; }\nmod late { pub async fn tick() {} }\npub async fn tick() {} pub fn one_line() { pub async fn tick() {} }\n";
+const FREE_FN_FILE: &str = "\npub async fn tick() {}\nmod a { pub async fn tick() {} }\nimpl S {\n    pub async fn tick() {}\n}\ntrait T {\n    async fn tick() {}\n}\npub fn outer() {\n    let _x = 1; pub async fn tick() {}\n}\nimpl S {\n    pub fn method() {\n        pub async fn tick() {}\n    }\n}\ntrait U {\n    fn provided() {\n        pub async fn tick() {}\n    }\n    fn required();\n}\npub struct S;\nconst _: () = { pub async fn tick() {} };\nstatic X: () = { pub async fn tick() {} };\npub fn closure() { let _c = || { pub async fn tick() {} }; }\npub fn blocky() { { pub async fn tick() {} } }\npub fn asyncb() { let _f = async { pub async fn tick() {} }; }\nmod late { pub async fn tick() {} }\npub async fn tick() {} pub fn one_line() { pub async fn tick() {} }\nimpl S { const X: () = { pub async fn tick() {} }; }\ntrait W { const Y: () = { pub async fn tick() {} }; }\n";
 
 /// Position of the `nth` occurrence of `name` on the 1-based `line` of
 /// `content`: the position `proc_macro2` reports for that name token.
