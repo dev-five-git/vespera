@@ -76,8 +76,15 @@ try {
         Write-Host "==> probing $Crate $candidate (good<=$($all[$lo]), bad>=$($all[$hi]))"
         cargo update --manifest-path (Join-Path $root 'Cargo.toml') -p $Crate --precise $candidate
         if ($LASTEXITCODE -ne 0) { throw "cargo update to $candidate failed; widen the version requirement." }
+        # -Command re-parses the probe text: on Windows PowerShell 5.1 it drops
+        # embedded double quotes and collapses runs of spaces, and a probe that
+        # then fails to parse exits non-zero (read as "bad"). Pass the text
+        # base64-encoded (UTF-16LE) instead, with progress output silenced so
+        # the child's stderr stays clean.
+        $probe = '$ProgressPreference = ''SilentlyContinue''; ' + $Command
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
         Push-Location $root
-        try { powershell -NoProfile -Command $Command; $rc = $LASTEXITCODE } finally { Pop-Location }
+        try { powershell -NoProfile -EncodedCommand $encoded; $rc = $LASTEXITCODE } finally { Pop-Location }
         if ($rc -eq 0) { $lo = $mid } else { $hi = $mid }
     }
     Write-Host "RESULT: last good $Crate $($all[$lo]); first bad $Crate $($all[$hi])"

@@ -124,7 +124,8 @@ libs/
 └── vespera-bridge/         # Java JAR (com.devfive.vespera.bridge)
 
 examples/rust-jni-demo/
-├── Cargo.toml              # depends on vespera only: features = ["jni", "ffi"]
+├── Cargo.toml              # vespera (features = ["jni", "ffi"]) + serde, serde_json,
+│                           # futures-util, tokio; no axum / vespera_jni / vespera_inprocess
 ├── src/
 │   ├── lib.rs              # create_app() + admin_app(), registered by
 │   │                       # vespera::jni_apps! { .. } and vespera::ffi_apps! { .. }
