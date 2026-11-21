@@ -165,7 +165,9 @@ pub struct SchemaTypeInput {
     /// Whether to generate a multipart/form-data struct (derives `Multipart` instead of serde)
     /// Use `multipart` bare keyword to set this to true.
     pub multipart: bool,
-    /// Whether to omit fields that have database defaults (sea_orm `default_value` or `primary_key`).
+    /// Whether to omit fields that have database defaults: a sea_orm
+    /// `default_value` or `default_expr`, or the single-column auto-increment
+    /// primary key.
     /// Use `omit_default` bare keyword to set this to true.
     pub omit_default: bool,
     /// Where each field name of the field-list parameters was written, so
@@ -181,9 +183,23 @@ pub struct ParamSpans {
     fields: Vec<(&'static str, String, proc_macro2::Span)>,
 }
 
+/// A source field name as the macro reads it: `r#type` names the field
+/// `type`, so the leading `r#` is dropped before the name is compared with the
+/// struct's field names (which are stored unraw).
+fn source_field_name(lit: &LitStr) -> String {
+    crate::parser::strip_raw_prefix_owned(lit.value())
+}
+
 impl ParamSpans {
     fn record(&mut self, param: &'static str, lit: &LitStr) {
         self.fields.push((param, lit.value(), lit.span()));
+    }
+
+    /// [`record`](Self::record) for a source field name, keyed by the unraw
+    /// spelling [`source_field_name`] gives the parsed name.
+    fn record_source(&mut self, param: &'static str, lit: &LitStr) {
+        self.fields
+            .push((param, source_field_name(lit), lit.span()));
     }
 
     /// The span of `name` as written in `param` (`None` when it was not).
@@ -356,13 +372,13 @@ impl Parse for SchemaTypeInput {
                     let pairs: Punctuated<RenamePair, Token![,]> =
                         content.parse_terminated(RenamePair::parse, Token![,])?;
                     for pair in &pairs {
-                        spans.record("rename", &pair.from);
+                        spans.record_source("rename", &pair.from);
                         spans.record("rename_to", &pair.to);
                     }
                     rename = Some(
                         pairs
                             .into_iter()
-                            .map(|p| (p.from.value(), p.to.value()))
+                            .map(|p| (source_field_name(&p.from), p.to.value()))
                             .collect(),
                     );
                 }
@@ -373,11 +389,11 @@ impl Parse for SchemaTypeInput {
                     let pairs: Punctuated<RelationAdapterPair, Token![,]> =
                         content.parse_terminated(RelationAdapterPair::parse, Token![,])?;
                     for pair in &pairs {
-                        spans.record("relation_adapters", &pair.field_name);
+                        spans.record_source("relation_adapters", &pair.field_name);
                     }
                     relation_adapters = pairs
                         .into_iter()
-                        .map(|p| (p.field_name.value(), p.adapter))
+                        .map(|p| (source_field_name(&p.field_name), p.adapter))
                         .collect();
                 }
                 "add" => {
@@ -410,10 +426,10 @@ impl Parse for SchemaTypeInput {
                             Token![,],
                         )?;
                         for lit in &fields {
-                            spans.record("partial", lit);
+                            spans.record_source("partial", lit);
                         }
                         partial = Some(PartialMode::Fields(
-                            fields.into_iter().map(|s| s.value()).collect(),
+                            fields.iter().map(source_field_name).collect(),
                         ));
                     } else {
                         // bare `partial` - all fields

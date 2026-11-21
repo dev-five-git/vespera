@@ -321,7 +321,9 @@ pub(super) fn default_fn_call(ident: &syn::Ident, fn_path: &str) -> TokenStream 
 /// Vec<String>`): `fields`' bare `default = ".."` names plus the container's
 /// `container_fn`. Their locals are renamed ([`local_ident`]) so the
 /// function path is emitted as written (`self::tags` did not resolve for a
-/// struct declared inside a function body).
+/// struct declared inside a function body). So are the `__`-prefixed fields
+/// (`__state__`, `__multipart__`, ...): their locals would shadow the derive's
+/// own bindings of those names (E0308 in the generated parse fn).
 pub(super) fn shadowed_locals<'a>(
     fields: impl Iterator<Item = &'a syn::Field> + Clone,
     container_fn: Option<&str>,
@@ -342,7 +344,7 @@ pub(super) fn shadowed_locals<'a>(
                 .as_ref()
                 .map(|ident| crate::parser::strip_raw_prefix_owned(ident.to_string()))
         })
-        .filter(|name| bare.contains(name))
+        .filter(|name| bare.contains(name) || name.starts_with("__"))
         .collect()
 }
 
@@ -654,5 +656,36 @@ mod tests {
         let code = quote::quote!(#(#post_loop)* Self { #(#idents),* }).to_string();
         assert!(code.contains("(tags) ()"), "{code}");
         assert!(code.contains("__vespera_local_tags"), "{code}");
+    }
+
+    /// SM0-L1: a field named like one of the derive's own bindings
+    /// (`__state__`, `__field__`, ...) gets a renamed local, so it does not
+    /// shadow that binding in the generated parse fn (E0308).
+    #[test]
+    fn dunder_field_local_does_not_shadow_derive_bindings() {
+        let input = parse_fields_from(
+            "struct T {
+                pub __state__: String,
+                pub __field__: String,
+                pub name: String,
+            }",
+        );
+        let fields = get_named_fields(&input);
+        let shadowed = shadowed_locals(fields.iter(), None);
+        assert!(shadowed.contains("__state__"), "{shadowed:?}");
+        assert!(shadowed.contains("__field__"), "{shadowed:?}");
+        assert!(!shadowed.contains("name"), "{shadowed:?}");
+        let cg = process_fields(fields.iter(), None, false, false, &shadowed);
+        let (declarations, idents) = (&cg.declarations, &cg.idents);
+        let code = quote::quote!(#(#declarations)* Self { #(#idents),* }).to_string();
+        assert!(
+            code.contains("__state__ : __vespera_local___state__"),
+            "{code}"
+        );
+        assert!(
+            code.contains("__field__ : __vespera_local___field__"),
+            "{code}"
+        );
+        assert!(!code.contains("let mut __state__"), "{code}");
     }
 }

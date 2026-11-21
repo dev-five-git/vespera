@@ -14,12 +14,19 @@
 //! - [`resolve_filter_names`] - Resolve every pick / omit name to a field (Rust
 //!   identifier, then serde JSON name; see `field_selection`), refusing an
 //!   unknown, skipped or ambiguous one
-//! - [`validate_rename_fields`] - Ensure all rename source fields exist
+//! - [`validate_rename_fields`] - Ensure all rename source fields exist and
+//!   every rename target is a legal Rust identifier
 //! - [`validate_partial_fields`] - Ensure all partial fields exist
 //! - [`validate_relation_adapters`] - Ensure every adapter names a distinct
 //!   source field
+//! - [`validate_add_field_idents`] - Ensure every `add` field name is a legal
+//!   Rust identifier
+//! - [`validate_unique_field_names`] - Refuse a rename target or `add` field
+//!   that reuses another field's name in the generated type
 //! - [`validate_included`] - Ensure `rename` / `partial` /
 //!   `relation_adapters` name fields the DTO keeps
+//! - [`validate_emitted`] - Ensure `rename` / `partial` /
+//!   `relation_adapters` name fields the DTO emits
 //! - [`extract_source_field_names`] - Extract all field names from a struct
 //!
 //! # Example
@@ -967,12 +974,13 @@ mod tests {
     }
 
     /// R34-SM5-1: a `#[cfg]` twin's JSON name (its own Rust ident) is listed
-    /// plainly, not as shadowed by its sibling twin.
+    /// plainly, not as shadowed by its sibling twin. Both twins are active
+    /// here, so the `other.rust != field.rust` guard is what keeps `id` from
+    /// reading as shadowed.
     #[test]
     fn cfg_twin_is_not_listed_as_shadowed() {
         let parsed: syn::ItemStruct =
-            syn::parse_str("struct User { #[cfg(unix)] id: i32, #[cfg(windows)] id: i64 }")
-                .unwrap();
+            syn::parse_str("struct User { #[cfg(all())] id: i32, #[cfg(all())] id: i64 }").unwrap();
         assert_eq!(
             listed_source_field_names(&parsed),
             HashSet::from(["id".to_string()])

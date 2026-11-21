@@ -619,7 +619,10 @@ impl TypeResolver<'_> {
                 let ident = syn::Ident::new(name, proc_macro2::Span::call_site());
                 quote! { vespera::chrono::#ident }
             }
-            "Json" | "JsonValue" | "Value" if bare => quote! { vespera::serde_json::Value },
+            "Json" | "JsonValue" if bare => quote! { vespera::serde_json::Value },
+            // Under a SeaORM glob a bare `Value` is sea_query's `Value` (the
+            // prelude's), not `serde_json::Value`.
+            "Value" if bare && !sea_orm_scope => quote! { vespera::serde_json::Value },
             "FieldData" => {
                 let args = self.args(args);
                 quote! { vespera::multipart::FieldData #args }

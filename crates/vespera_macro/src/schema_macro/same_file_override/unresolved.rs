@@ -25,7 +25,9 @@ impl Types<'_> {
     /// Judges the root of `path`: a single name is the item itself, a
     /// multi-segment one (`enums::Status`) names a module the call site must
     /// resolve too (R25-SM3-02). A crate the compiler links is no module of
-    /// the DTO's file, so its root is not judged.
+    /// the DTO's file, so its root is not judged. A `self` / `super` root
+    /// names the DTO's module, which the call site never has, so it is refused
+    /// whatever the DTO's module resolves (as `path_is_unresolved` does).
     fn judge(&mut self, path: &syn::Path) {
         if self.found.is_none()
             && let Some(root) = path.segments.first()
@@ -33,7 +35,8 @@ impl Types<'_> {
             let name = root.ident.to_string();
             let judged = path.segments.len() == 1
                 || !crate::schema_macro::file_lookup::is_extern_crate(&name);
-            if judged && (self.unresolved)(&name) {
+            let relative = matches!(name.as_str(), "self" | "super");
+            if judged && (relative || (self.unresolved)(&name)) {
                 self.found = Some(name);
             }
         }
@@ -41,9 +44,25 @@ impl Types<'_> {
 }
 
 impl<'ast> syn::visit::Visit<'ast> for Types<'_> {
+    /// A qualified-self path `<T as keys::Trait>::Out` names its trait path
+    /// (the first `position` segments) the call site must resolve too; the
+    /// self type `T` is visited by the default walk.
     fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
-        if ty.qself.is_none() {
-            self.judge(&ty.path);
+        match &ty.qself {
+            None => self.judge(&ty.path),
+            Some(qself) => {
+                let trait_path = syn::Path {
+                    leading_colon: ty.path.leading_colon,
+                    segments: ty
+                        .path
+                        .segments
+                        .iter()
+                        .take(qself.position)
+                        .cloned()
+                        .collect(),
+                };
+                self.judge(&trait_path);
+            }
         }
         syn::visit::visit_type_path(self, ty);
     }
@@ -436,6 +455,14 @@ mod tests {
     #[case::container_from("#[serde(from = \"Wire\")] struct D { id: i32 }", Some("Wire"))]
     // A `Self::` root is a prelude-like name the call site always has.
     #[case::self_root("struct D { #[serde(with = \"Self::codec\")] id: i32 }", None)]
+    // A `self::` / `super::` root names the DTO's module, which the call site
+    // lacks: refused even with no DTO module to compare (`None` here).
+    #[case::lowercase_self_root("struct D { id: self::Status }", Some("self"))]
+    #[case::super_root("struct D { id: super::Status }", Some("super"))]
+    // A qualified-self trait path is a path the call site must resolve too
+    // (the self type `i32` is a prelude name and is not judged).
+    #[case::qself_trait_path("struct D { id: <i32 as keys::Keyed>::Out }", Some("keys"))]
+    #[case::qself_without_trait("struct D { id: <i32>::Out }", None)]
     // R25-SM3-02: a multi-segment type is judged by its root.
     #[case::multi_segment_from(
         "#[serde(try_from = \"codec::Wire\")] struct D { id: i32 }",

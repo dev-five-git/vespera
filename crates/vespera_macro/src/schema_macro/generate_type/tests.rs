@@ -342,7 +342,10 @@ fn naming_a_dropped_field_is_an_error(#[case] input: &str, #[case] expected: &st
     "pub key"
 )]
 #[case::pick("Dto from Model, omit_default, pick = [\"id\"]", "pub id")]
-#[case::partial("Dto from Model, omit_default, partial = [\"id\"]", "Option")]
+#[case::partial(
+    "Dto from Model, omit_default, partial = [\"id\"]",
+    "pub id : Option < i64 >"
+)]
 fn cfg_twin_dropped_by_omit_default_keeps_the_name(#[case] input: &str, #[case] expected: &str) {
     let storage = to_storage(vec![create_test_struct_metadata(
         "Model",
