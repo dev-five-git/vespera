@@ -5,7 +5,23 @@ import {
   checkChangepackLog,
   checkDocumentedVersions,
   minorOf,
+  parseChangepackLog,
 } from './check-version-alignment'
+
+describe('parseChangepackLog', () => {
+  it('returns the parsed log for valid JSON', () => {
+    expect(parseChangepackLog('a.json', '{"note":"fix"}')).toEqual({
+      log: { note: 'fix' },
+    })
+  })
+
+  it('names the file when the text is not JSON', () => {
+    const file = 'changepack_log_x.json'
+    expect(parseChangepackLog(file, '{"changes":')).toEqual({
+      error: `${file}: not valid JSON`,
+    })
+  })
+})
 
 describe('checkChangepackLog', () => {
   const valid = {

@@ -418,6 +418,8 @@ npx @apidevtools/swagger-cli validate openapi.json
 | `VESPERA_REDOC_URL` | ReDoc path | none |
 | `VESPERA_SPEC_URL` | Raw OpenAPI JSON path (`application/json`) | none |
 | `VESPERA_SERVER_URL` | Server URL | none (`servers` omitted → same origin) |
+| `VESPERA_SERVER_DESCRIPTION` | Description of the `VESPERA_SERVER_URL` server (ignored without it) | none |
+| `VESPERA_TARGET_DIR` | Override the directory of vespera's build cache (relative: against the workspace root) | the target directory of the running cargo build |
 
 Every variable in this table treats a value that is set but empty as unset.
 
