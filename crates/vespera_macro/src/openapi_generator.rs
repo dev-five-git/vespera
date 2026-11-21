@@ -175,12 +175,29 @@ pub fn try_generate_openapi_doc_with_metadata(
         route_storage,
     )?;
     stage("path items");
+    // `.Input` is the suffix of the generated request-view instances. A user
+    // component of that name is rejected: a `$ref` to it resolves to the bare
+    // name (the request view's), so the document would dangle or rename it.
+    if let Some(name) = schemas.keys().find(|name| name.ends_with(".Input")) {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!(
+                "vespera! macro: the schema name `{name}` ends in `.Input`, the suffix of generated request-view instances. Rename it (`#[schema(name = \"..\")]`)."
+            ),
+        ));
+    }
     crate::parser::schema::generic_instances::drain_materialized_into(&mut schemas)?;
     let input_names = crate::parser::schema::request_view::snapshot();
+    let generated = component_schemas::generated_request_views(&input_names, &schemas);
     crate::parser::schema::request_view::install(std::sync::Arc::default());
     install_stored_defaults(std::sync::Arc::default());
-    component_schemas::prune_unreferenced_inputs(&mut schemas, &paths, &input_names);
-    component_schemas::collapse_request_only_inputs(&mut schemas, &mut paths, &input_names)?;
+    component_schemas::prune_unreferenced_inputs(&mut schemas, &paths, &generated);
+    component_schemas::collapse_request_only_inputs(
+        &mut schemas,
+        &mut paths,
+        &input_names,
+        &generated,
+    )?;
     component_schemas::reject_internally_tagged_in_document(&schemas, &paths)?;
     let security_config = security_config.unwrap_or_default();
     let tags = build_tags(all_tags, security_config.tag_descriptions.as_ref());

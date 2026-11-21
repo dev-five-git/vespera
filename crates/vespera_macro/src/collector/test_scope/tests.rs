@@ -652,6 +652,13 @@ fn gated_scopes_nest_test_only_schemas() {
         "    { struct OpenBlock {} }",
         "    #[cfg(test)] { struct TailBlock {} }",
         "}",
+        "fn stmts(x: u8) {",
+        "    #[cfg(test)] if x > 0 { struct InIf {} }",
+        "    #[cfg(test)] match x { _ => { struct InMatch {} } }",
+        "    #[cfg(test)] loop { struct InLoop {} }",
+        "    #[cfg(test)] drop({ struct InCall {} });",
+        "    if x > 0 { struct OpenIf {} }",
+        "}",
     ]
     .join("\n");
     let krate = crate_with(&[("lib.rs", &source)]);
@@ -675,6 +682,10 @@ fn gated_scopes_nest_test_only_schemas() {
         ("InImplTest", 34),
         ("ExprBlock", 37),
         ("TailBlock", 39),
+        ("InIf", 42),
+        ("InMatch", 43),
+        ("InLoop", 44),
+        ("InCall", 45),
     ] {
         let at = position_of(&source, ident);
         assert_eq!(at.0, line, "{ident} is on line {line}");
@@ -687,6 +698,7 @@ fn gated_scopes_nest_test_only_schemas() {
         ("After", 31),
         ("OpenAttr", 35),
         ("OpenBlock", 38),
+        ("OpenIf", 46),
     ] {
         let at = position_of(&source, ident);
         assert_eq!(at.0, line, "{ident} is on line {line}");

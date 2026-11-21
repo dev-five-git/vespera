@@ -57,6 +57,36 @@ fn skipped_runtime_rule_only_struct_emits_an_empty_impl() {
     assert!(!out.contains("\"a\""), "{out}");
 }
 
+/// An integer field whose declared interval holds no value (`minimum` above
+/// `maximum`, a fractional pair rounding inward) is a compile error, not a
+/// range rule that rejects every value (round-39 MR2-L3).
+#[rstest]
+#[case::integer_literals(
+    "struct S { #[schema(minimum = 5, maximum = 3)] n: i32 }",
+    "`minimum` (5) is above `maximum` (3)"
+)]
+#[case::rounded_fractions(
+    "struct S { #[schema(minimum = 2.5, maximum = 2.7)] n: i32 }",
+    "`minimum` (3) is above `maximum` (2)"
+)]
+fn empty_integer_range_is_a_compile_error(#[case] src: &str, #[case] message: &str) {
+    let out = emit(src);
+    assert!(
+        out.contains("compile_error") && out.contains(message),
+        "{out}"
+    );
+}
+
+/// Satisfiable declarations stay quiet: an equal pair, and a fractional pair
+/// that still leaves an integer (`2.5..3.5` is `3..=3`).
+#[rstest]
+#[case::equal_literals("struct S { #[schema(minimum = 3, maximum = 3)] n: i32 }")]
+#[case::fractions_leave_an_integer("struct S { #[schema(minimum = 2.5, maximum = 3.5)] n: i32 }")]
+fn satisfiable_integer_ranges_emit_no_error(#[case] src: &str) {
+    let out = emit(src);
+    assert!(!out.contains("compile_error"), "{out}");
+}
+
 /// A direct `f32` bound rounds inward (round-27 coordinator item): the nearest
 /// `f32` to `16777217` is `16777216`, which would admit a value the bound
 /// forbids, so the minimum steps up and the maximum steps down. `f64` keeps

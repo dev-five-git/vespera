@@ -275,11 +275,16 @@ pub fn module_table_hash(folder_path: &Path) -> u64 {
 ///
 /// When `route_storage` contains entries with `file_path`, files covered by
 /// `ROUTE_STORAGE` skip route discovery parsing — route metadata is built
-/// directly from the stored data (test-scope checks reuse the file cache). Default values for `serde(default = "fn")`
-/// are already extracted by `#[derive(Schema)]` into `SCHEMA_STORAGE.field_defaults`.
+/// directly from the stored data (test-scope checks reuse the file cache).
+/// Default values for `serde(default = "fn")` are already extracted by
+/// `#[derive(Schema)]` into `SCHEMA_STORAGE.field_defaults`.
 ///
-/// Returns the metadata AND the parsed file ASTs, so downstream consumers
-/// (e.g., `openapi_generator`) can reuse them without re-reading files from disk.
+/// Returns the metadata AND the parsed ASTs of the slow-path files only (a
+/// file with a `ROUTE_STORAGE` entry is absent from the map). The map is the
+/// `file_cache` argument of `openapi_generator` (fed by
+/// `vespera_impl::openapi_io`) and of
+/// `parser::validate_schema_backed_extractors_with_cache`; both fall back to
+/// the file cache for an absent file, so no file is parsed twice.
 // Test-only convenience wrapper: `vespera!` / `export_app!` reach the collector
 // through `collect_metadata_from_files` (which reuses the cache's single
 // directory walk), so this folder-walking variant exists purely for the unit

@@ -65,7 +65,8 @@ fn same_source<T: SourceIdentified>(left: &T, right: &T) -> bool {
         }
 }
 
-/// Whether the IDE's current file text declares `info`'s function exactly
+/// Whether the saved on-disk text of `info`'s file (read through the
+/// fingerprint-validated `file_cache`) declares `info`'s function exactly
 /// once. Only the long-lived server keeps entries of edited-away text, so
 /// rustc never asks.
 fn single_declaration_in_ide<T: SourceIdentified>(info: &T) -> bool {
@@ -85,8 +86,8 @@ fn single_declaration_in_ide<T: SourceIdentified>(info: &T) -> bool {
 ///
 /// An entry whose scope is unknown next to a known-scope entry of the same
 /// function and file is a stale view of that function (an IDE expansion of
-/// the unsaved buffer). Inside the IDE, when the file declares the function
-/// once, the unknown entry is not kept beside the known one: a later save
+/// the unsaved buffer). Inside the IDE, when the saved file declares the
+/// function once, the unknown entry is not kept beside the known one: a later save
 /// registers the known scope and would otherwise leave the stale entry behind
 /// as a twin, so `vespera!` would mount the function twice. A file declaring
 /// the name more than once, and rustc, keep both (a `macro_rules!`
@@ -136,8 +137,9 @@ pub fn current_crate_items<T>(storage: &CrateStorage<T>) -> Arc<Vec<T>> {
 /// again, so in a long-lived rust-analyzer proc-macro server a renamed or
 /// deleted handler / job leaves its old entry behind — and `vespera!` would
 /// mount a function that no longer exists.  Inside that server, entries are
-/// checked against the current file text (the fingerprint-validated
-/// `file_cache`, so a file is read once per change); one without a file path
+/// checked against the saved on-disk text (the fingerprint-validated
+/// `file_cache`, so a file is read once per change; an unsaved buffer is not
+/// seen); one without a file path
 /// or whose file cannot be read is kept.  Under rustc the storage only ever
 /// holds the current compilation, so nothing is filtered: a handler / job a
 /// `macro_rules!` macro generates (`h!(list)`) has no literal `fn list` in
@@ -207,7 +209,8 @@ fn retain_declared_if<T: Clone + SourceIdentified>(
                         .is_some_and(|scope| moved_away(&content, item.fn_name(), scope));
                     !moved
                         && (declares_fn(&content, item.fn_name())
-                            || may_come_from_macro(&content, item.fn_name()))
+                            || may_come_from_macro(&content, item.fn_name())
+                            || builds_names_from_fragments(&content))
                 })
         })
     };
@@ -269,6 +272,16 @@ fn collect_fn_modules(items: &[syn::Item], module: &str, name: &str, found: &mut
             _ => {}
         }
     }
+}
+
+/// Whether `content` builds item names from fragments (`paste!` with
+/// `[<get_ $x>]`, `concat_idents!`): such a handler / job has no literal
+/// `fn name` text, so the file cannot show whether it still exists, and its
+/// entries are kept (IDE filter only; rustc never filters).
+fn builds_names_from_fragments(content: &str) -> bool {
+    content.contains("[<")
+        || contains_ident(content, "paste")
+        || contains_ident(content, "concat_idents")
 }
 
 /// Reserved words that take a `!` without being a macro name (`if!(x)`,
@@ -571,6 +584,28 @@ mod tests {
         crate::schema_macro::file_cache::bump_epoch();
         let path = file.display().to_string();
         let items = vec![entry("list", &path, "generated")];
+        assert_eq!(retain_declared_if(&items, true).len(), 1);
+    }
+
+    /// A handler named by a `paste!` / `concat_idents!` fragment has no
+    /// literal `fn` text, so the IDE filter keeps its entry (round-39 MR2-L2).
+    #[rstest::rstest]
+    #[case::paste_fragment("paste::paste! { pub async fn [<get_ $x>]() {} }")]
+    #[case::concat_idents("concat_idents!(get_, list)")]
+    fn retain_declared_keeps_entries_a_fragment_built_name_may_have(#[case] source: &str) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let file = temp.path().join("pasted_routes.rs");
+        std::fs::write(
+            &file,
+            format!(
+                "{source}
+"
+            ),
+        )
+        .unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let path = file.display().to_string();
+        let items = vec![entry("get_list", &path, "pasted")];
         assert_eq!(retain_declared_if(&items, true).len(), 1);
     }
 

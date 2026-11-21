@@ -97,23 +97,38 @@ pub(super) fn without_identical_inputs(
     ))
 }
 
-/// Drop the `{Name}Input` components no request body reaches: a type that
-/// only ever appears in responses keeps a single component.  The request-view
-/// generic instances materialised while building them (`Tree_i32.Input`,
-/// never in `input_names`; no other component name holds a `.`) are pruned
-/// the same way.
+/// The request-view components the generator built (`generated`, see
+/// [`generated_request_views`]) that no request body reaches are dropped: a
+/// type that only ever appears in responses keeps a single component. A user
+/// component is never in `generated`, so a `#[schema(name = "Pet.Input")]`
+/// response-only type stays documented.
 pub(super) fn prune_unreferenced_inputs(
     schemas: &mut BTreeMap<String, vespera_core::schema::Schema>,
     paths: &BTreeMap<String, vespera_core::route::PathItem>,
-    input_names: &request_view::InputNames,
+    generated: &BTreeSet<String>,
 ) {
-    let inputs: BTreeSet<&str> = input_names.values().map(String::as_str).collect();
-    let prunable = |name: &str| inputs.contains(name) || name.ends_with(".Input");
+    let prunable = |name: &str| generated.contains(name);
     if !schemas.keys().any(|name| prunable(name)) {
         return;
     }
     let reached = reach(schemas, path_refs(paths).request);
     schemas.retain(|name, _| !prunable(name) || reached.contains(name));
+}
+
+/// The request-view components built for this document: the `{Name}Input`
+/// views of `input_names` and the `.Input` instances `generic_instances`
+/// materialised (`Tree_i32.Input`). The user components never end in `.Input`
+/// (`vespera!` rejects such a name before the materialised ones are added), so
+/// the suffix of a `schemas` key identifies a materialised view.
+pub(super) fn generated_request_views(
+    input_names: &request_view::InputNames,
+    schemas: &BTreeMap<String, vespera_core::schema::Schema>,
+) -> BTreeSet<String> {
+    let materialized = schemas
+        .keys()
+        .filter(|name| name.ends_with(".Input"))
+        .cloned();
+    input_names.values().cloned().chain(materialized).collect()
 }
 
 /// Give a request-only type its own name back: when a request body reaches
@@ -131,11 +146,13 @@ pub(super) fn prune_unreferenced_inputs(
 /// request body gives `CreateOrder` and `LineItem`.
 ///
 /// Runs after [`prune_unreferenced_inputs`] (every remaining input is
-/// reached by a request).
+/// reached by a request). Only `generated` request views are renamed: a user
+/// component named `X.Input` keeps its name.
 pub(super) fn collapse_request_only_inputs(
     schemas: &mut BTreeMap<String, vespera_core::schema::Schema>,
     paths: &mut BTreeMap<String, vespera_core::route::PathItem>,
     input_names: &request_view::InputNames,
+    generated: &BTreeSet<String>,
 ) -> syn::Result<()> {
     // Input component → the component whose request view it is.
     let mut inputs: BTreeMap<&str, &str> = input_names
@@ -146,8 +163,8 @@ pub(super) fn collapse_request_only_inputs(
         .map(|(component, input)| (input.as_str(), component.as_str()))
         .collect();
     inputs.extend(
-        schemas
-            .keys()
+        generated
+            .iter()
             .filter_map(|name| Some((name.as_str(), name.strip_suffix(".Input")?))),
     );
     if inputs.is_empty() {

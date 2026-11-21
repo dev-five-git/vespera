@@ -22,13 +22,26 @@ pub(super) fn param_names(generics: &syn::Generics) -> Vec<String> {
 }
 
 /// Whether `tokens` spells one of `names` as a whole ident, at any group depth
-/// (`Vec<T>` mentions `T`, `Tree` does not mention `T`).
+/// (`Vec<T>` mentions `T`, `Tree` does not mention `T`). An ident after `::`
+/// is a path segment, not the parameter (`api::Error` does not mention a
+/// generic `Error`), while the head of `T::Assoc` still does.
 pub(super) fn mentions(tokens: &impl ToTokens, names: &[String]) -> bool {
     fn walk(stream: TokenStream, names: &[String]) -> bool {
-        stream.into_iter().any(|tree| match tree {
-            TokenTree::Ident(ident) => names.iter().any(|name| ident == name.as_str()),
-            TokenTree::Group(group) => walk(group.stream(), names),
-            TokenTree::Punct(_) | TokenTree::Literal(_) => false,
+        // Consecutive `:` puncts directly before the current token.
+        let mut colons = 0_u8;
+        stream.into_iter().any(|tree| {
+            let path_segment = colons >= 2;
+            colons = match &tree {
+                TokenTree::Punct(punct) if punct.as_char() == ':' => colons.saturating_add(1),
+                _ => 0,
+            };
+            match tree {
+                TokenTree::Ident(ident) => {
+                    !path_segment && names.iter().any(|name| ident == name.as_str())
+                }
+                TokenTree::Group(group) => walk(group.stream(), names),
+                TokenTree::Punct(_) | TokenTree::Literal(_) => false,
+            }
         })
     }
     walk(tokens.to_token_stream(), names)
@@ -53,6 +66,8 @@ mod tests {
     #[case::nested_group("Option<(u8, Vec<T>)>", &["T"], true)]
     #[case::concrete("NotFound", &["T"], false)]
     #[case::longer_ident_is_not_a_match("Tree", &["T"], false)]
+    #[case::qualified_tail("api::T", &["T"], false)]
+    #[case::qualified_head("T::Assoc", &["T"], true)]
     #[case::no_params("Vec<u8>", &[], false)]
     fn mentions_matches_whole_idents(
         #[case] ty: &str,

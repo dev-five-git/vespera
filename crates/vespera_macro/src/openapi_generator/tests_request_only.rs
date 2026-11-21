@@ -4,8 +4,10 @@
 
 use serde_json::{Value, json};
 
-use super::tests_accuracy::{generate, post, schema, stored_post};
-use crate::metadata::CollectedMetadata;
+use super::tests_accuracy::{generate, post, renamed, schema, stored_post};
+use crate::{
+    metadata::CollectedMetadata, openapi_generator::try_generate_openapi_doc_with_metadata,
+};
 
 /// The document for `structs` and one POST route per `(path, fn, sig)`, as
 /// JSON.
@@ -352,4 +354,29 @@ fn alias_field_builds_no_request_view_like_its_unresolved_type() {
         json!({})
     );
     assert_eq!(request_ref(&doc, "/t"), &schema_ref("Timed"));
+}
+
+/// A user component named `Pet.Input` (`#[schema(name = ...)]`) is rejected
+/// with a spanned error, on a response-only type (where the bare `$ref` would
+/// dangle once the component is pruned) and on a request-only one (where it
+/// would be silently renamed to `Pet`): round-39 MR2-M1.
+#[rstest::rstest]
+#[case::response_only("get_pet", "async fn get_pet() -> Json<Pet>")]
+#[case::request_only("create_pet", "async fn create_pet(Json(pet): Json<Pet>) -> String")]
+fn explicit_input_schema_name_is_rejected(#[case] fn_name: &str, #[case] sig: &str) {
+    let mut metadata = CollectedMetadata::new();
+    metadata.structs.push(renamed(
+        "Pet.Input",
+        "Pet",
+        "pub struct Pet { pub name: String }",
+    ));
+    metadata.routes.push(post("/pet", fn_name));
+    let storage = vec![stored_post(fn_name, sig)];
+    let err =
+        try_generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &storage)
+            .unwrap_err();
+    assert!(
+        err.to_string().contains("`Pet.Input` ends in `.Input`"),
+        "{err}"
+    );
 }
