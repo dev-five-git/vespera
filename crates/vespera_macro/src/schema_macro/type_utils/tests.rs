@@ -730,6 +730,34 @@ fn json_aliases_resolve_to_public_value_path(#[case] src: &str, #[case] expected
     );
 }
 
+/// Under a SeaORM prelude glob a bare `Value` is the prelude's (sea_query's)
+/// `Value`, not `serde_json::Value`; `Json` is still `serde_json::Value`.
+#[test]
+fn sea_orm_prelude_value_is_not_serde_json_value() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod sea;").unwrap();
+    std::fs::write(
+        src.join("sea.rs"),
+        "use sea_orm::prelude::*;\npub struct Holder { pub v: Value, pub j: Json }\n",
+    )
+    .unwrap();
+    let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    crate::schema_macro::file_cache::bump_epoch();
+    let module = ["crate", "sea"].map(String::from);
+    let value: syn::Type = syn::parse_quote!(Value);
+    let json: syn::Type = syn::parse_quote!(Json);
+    assert_ne!(
+        resolve_type_to_absolute_path(&value, &module).to_string(),
+        "vespera :: serde_json :: Value"
+    );
+    assert_eq!(
+        resolve_type_to_absolute_path(&json, &module).to_string(),
+        "vespera :: serde_json :: Value"
+    );
+}
+
 /// chrono names map to `vespera::chrono` only bare; with arguments they are
 /// not the chrono re-export and are kept as written.
 #[rstest]
@@ -746,10 +774,6 @@ fn chrono_names_resolve_bare_only(#[case] src: &str, #[case] expected: &str) {
     );
 }
 
-/// L5 (round 14): an array length naming a constant of the source module is
-/// re-rooted like the element type (`[u8; HASH_LEN]` was copied as written:
-/// E0425 at the call site); literals, const generic parameters, unknown and
-/// `::`-rooted names stay as written.
 /// R36-SM4-L2: a qualified-self path re-roots its self type and its trait
 /// path; the associated segments stay as written, and a path without a trait
 /// (`<T>::X`) re-roots only its self type.
@@ -787,6 +811,10 @@ pub struct Id;",
     );
 }
 
+/// L5 (round 14): an array length naming a constant of the source module is
+/// re-rooted like the element type (`[u8; HASH_LEN]` was copied as written:
+/// E0425 at the call site); literals, const generic parameters, unknown and
+/// `::`-rooted names stay as written.
 #[rstest]
 #[case::local_const("[u8; HASH_LEN]", &[], "[u8 ; crate :: models :: file :: HASH_LEN]")]
 #[case::imported_const("[u8; SHARED_LEN]", &[], "[u8 ; crate :: consts :: SHARED_LEN]")]

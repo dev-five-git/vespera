@@ -255,6 +255,29 @@ fn test_parse_schema_type_input_with_partial_fields() {
     }
 }
 
+/// `r#type` names the field `type`: the source names of `rename` / `partial`
+/// are kept unraw (so the field lookup and the span lookup both find them),
+/// while the `rename` target keeps its spelling.
+#[test]
+fn test_parse_schema_type_input_strips_raw_prefix_from_source_names() {
+    let tokens = quote::quote!(
+        UpdateUser from User,
+        rename = [("r#type", "r#kind")],
+        partial = ["r#type"]
+    );
+    let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+    assert_eq!(
+        input.rename.unwrap(),
+        vec![("type".to_string(), "r#kind".to_string())]
+    );
+    match input.partial {
+        Some(PartialMode::Fields(fields)) => assert_eq!(fields, vec!["type"]),
+        _ => panic!("Expected PartialMode::Fields"),
+    }
+    assert!(input.spans.field("partial", "type").is_some());
+    assert!(input.spans.field("rename", "type").is_some());
+}
+
 #[test]
 fn test_parse_schema_type_input_with_pick_and_partial() {
     let tokens = quote::quote!(UpdateUser from User, pick = ["name", "email"], partial);

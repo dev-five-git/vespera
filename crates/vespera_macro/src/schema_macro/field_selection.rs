@@ -99,6 +99,8 @@ pub enum Refusal {
 /// The Rust identifier `name` selects among the schema fields of
 /// `struct_item` (the serialized, `cfg`-active ones), or why it is refused.
 pub fn resolve_name(struct_item: &syn::ItemStruct, name: &str) -> Result<String, Refusal> {
+    // `r#type` names the field `type`: the fields are compared unraw.
+    let name = name.strip_prefix("r#").unwrap_or(name);
     let (serialized, skipped): (Vec<SourceField>, Vec<SourceField>) = source_fields(struct_item)
         .into_iter()
         .partition(|field| field.serialized);
@@ -149,6 +151,9 @@ mod tests {
         "b",
         Ok("b")
     )]
+    // A keyword field is named `r#type` in source and `type` in the listing:
+    // the raw prefix does not change which field a name selects.
+    #[case::raw_prefix_names_the_same_field("struct S { r#type: String }", "r#type", Ok("type"))]
     #[case::json_name_of_renamed(
         "struct S { #[serde(rename = \"b\")] a: i32, c: i32 }",
         "b",
