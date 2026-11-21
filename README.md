@@ -801,8 +801,10 @@ with `/` and they must not share a path (both are compile errors).
 | `response_example` | Operation-level `200` response example as a JSON string; invalid JSON is emitted as a JSON string value |
 | `deprecated` | Bare flag marking the OpenAPI operation as deprecated |
 
-Argument names and HTTP method names are matched case-insensitively (`GET`
-is accepted as `get`), but the lowercase spelling is the documented one.
+Argument names are matched case-sensitively and must be lowercase
+(`summary = "..."`; `Summary = "..."` is an unknown-argument error). Only HTTP
+method names are case-insensitive (`GET` is accepted as `get`), and the
+lowercase spelling is the documented one.
 
 ## `export_app!` Macro Reference
 

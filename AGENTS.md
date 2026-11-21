@@ -189,7 +189,7 @@ vespera_jni (JNI glue — thin layer)
   ├── jni
   └── tokio (rt-multi-thread — for LazyLock<Runtime>)
 
-rust-jni-demo (example — depends on vespera ONLY)
+rust-jni-demo (example — depends on vespera (features jni, ffi) plus serde, serde_json, futures-util, tokio; no axum / vespera_jni / vespera_inprocess)
   └── vespera = { features = ["jni"] }
 ```
 
@@ -434,7 +434,7 @@ Vespera is a **hybrid monorepo** with two workspaces co-located at the repo root
 
 `bun run ...` operates on the Node side; `cargo ...` on the Rust side. Many root
 scripts deliberately cross the boundary — e.g., `prelint` runs `cargo
-clippy/fmt/check` **before** oxlint touches JS.
+clippy/fmt --check` **before** oxlint touches JS (clippy also type-checks, so no separate `cargo check`).
 
 ### Common Commands
 
@@ -447,7 +447,7 @@ cargo test --test <name> -- <filter>  # Single integration test
 cargo tarpaulin --out stdout          # Coverage (via `bun run posttest`)
 
 # --- Lint / format (order matters — `prelint` runs Rust FIRST) ---
-bun run lint                          # oxlint (after `cargo clippy + fmt --check + check`)
+bun run lint                          # oxlint (after `cargo clippy` x2 + `cargo fmt --check`)
 bun run lint:fix                      # oxlint --fix (after `cargo clippy --fix && cargo fmt`)
 
 # --- Front-end workspace ---
