@@ -88,7 +88,11 @@ where
     callbacks
         .into_iter()
         .map(|(name, callback)| {
-            without_extensions::<PathItem, D::Error>(callback).map(|callback| (name, callback))
+            // Name the callback as well as the runtime expression that
+            // without_extensions prefixes: `onEvent: {$url}: ...`.
+            without_extensions::<PathItem, D::Error>(callback)
+                .map_err(|err| D::Error::custom(format_args!("{name}: {err}")))
+                .map(|callback| (name, callback))
         })
         .collect::<Result<_, _>>()
         .map(Some)

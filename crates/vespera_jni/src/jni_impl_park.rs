@@ -50,6 +50,7 @@ use jni::EnvUnowned;
 use jni::objects::{JByteArray, JClass, JObject};
 use jni::sys::jbyteArray;
 
+use super::async_dispatch::SpawnScope;
 use super::{
     AsyncCompletion, async_overloaded_wire, clear_pending_exception, guard_byte_array_symbol,
     panic_wire, read_request_byte_array, runtime, runtime_unavailable_wire,
@@ -145,6 +146,7 @@ fn poll_first(
         future: Some(future),
     };
     let handle = runtime.handle();
+    let _spawning = SpawnScope::enter();
     handle.spawn(async move {
         // Lease held until the completion so `shutdown_runtime` drains it;
         // the permit is released just before, as in `dispatchAsync`.

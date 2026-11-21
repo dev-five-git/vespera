@@ -1,4 +1,5 @@
 use super::*;
+use crate::schema::SecurityScheme;
 use rstest::rstest;
 
 #[test]
@@ -443,6 +444,8 @@ fn rejection<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> String
 #[case::request_body(rejection::<RequestBody>, serde_json::json!({"$ref": "#/components/requestBodies/Body", "content": {}}), "RequestBody")]
 #[case::parameter(rejection::<Parameter>, serde_json::json!({"$ref": "#/components/parameters/Id"}), "Parameter")]
 #[case::parameter_with_fields(rejection::<Parameter>, serde_json::json!({"$ref": "#/components/parameters/Id", "name": "id", "in": "path"}), "Parameter")]
+#[case::security_scheme(rejection::<SecurityScheme>, serde_json::json!({"$ref": "#/components/securitySchemes/Auth"}), "SecurityScheme")]
+#[case::security_scheme_with_type(rejection::<SecurityScheme>, serde_json::json!({"$ref": "#/components/securitySchemes/Auth", "type": "http", "scheme": "bearer"}), "SecurityScheme")]
 fn reference_object_in_an_inline_only_position_is_rejected(
     #[case] reject: fn(serde_json::Value) -> String,
     #[case] value: serde_json::Value,
@@ -480,4 +483,11 @@ fn callback_reference_object_is_refused_on_load() {
         "callbacks": { "onEvent": { "$ref": "#/components/callbacks/OnEvent" } }
     }));
     assert!(result.is_err(), "a Callback $ref must be refused");
+}
+
+#[test]
+fn inline_security_scheme_without_a_reference_still_loads() {
+    let json = serde_json::json!({"type": "http", "scheme": "bearer"});
+    let scheme: SecurityScheme = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&scheme).unwrap(), json);
 }

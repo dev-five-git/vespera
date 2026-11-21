@@ -32,10 +32,10 @@ thread_local! {
 /// Marks the `Handle::spawn` call on this thread: a panic unwinding out of
 /// the spawn drops the task (and its [`AsyncCompletion`]) before the caller
 /// can answer, so that drop must stay silent (see `AsyncCompletion::drop`).
-struct SpawnScope;
+pub(super) struct SpawnScope;
 
 impl SpawnScope {
-    fn enter() -> Self {
+    pub(super) fn enter() -> Self {
         IN_SPAWN.set(true);
         Self
     }
