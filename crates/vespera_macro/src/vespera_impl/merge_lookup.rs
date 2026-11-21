@@ -672,21 +672,14 @@ child=/t/libchild.rlib",
         );
     }
 
-    /// A local path that re-exports an extern crate's app (a root
-    /// `pub mod routes { pub use child::ChildApp; }`, or `crate::ChildApp`)
-    /// has no export of its own: the only other exporter is taken, and an app
-    /// nobody else exports stays the current crate's.
+    /// A local path naming an app that no local item exports (`routes::ChildApp`
+    /// or `crate::ChildApp`, re-exporting `child::ChildApp`) resolves to the
+    /// only other exporter; an app nobody else exports stays the current
+    /// crate's. The lookup never reads the crate's sources (no fixture).
     #[test]
-    fn local_re_exports_resolve_to_the_crate_that_exports_the_app() {
+    fn unexported_local_paths_fall_back_to_the_only_other_exporter() {
         let temp = TempDir::new().unwrap();
         let manifest = TempDir::new().unwrap();
-        fs::create_dir_all(manifest.path().join("src")).unwrap();
-        fs::write(
-            manifest.path().join("src").join("lib.rs"),
-            "pub mod routes { pub use child::ChildApp; }
-",
-        )
-        .unwrap();
         let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", manifest.path());
         let _crate = crate::env_access::test_env::set_var("CARGO_CRATE_NAME", "parent");
         let _args = crate::env_access::test_env::set_var(

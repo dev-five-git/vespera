@@ -446,14 +446,14 @@ pub fn process_route_attribute(
     };
     register_route(stored);
 
-    // A generic handler's response types may name its type parameters, which
-    // are not in scope for an item emitted beside it: those entries are
-    // skipped, the others are still asserted.
+    // A generic handler's response types may not name its type parameters
+    // (rejected in `typed_response_assertions`); its other types are asserted.
     let generics = generic_scope::param_names(&item_fn.sig.generics);
     let assertions = route_args
         .responses
         .as_ref()
         .map(|arr| typed_response_assertions(arr, &generics))
+        .transpose()?
         .unwrap_or_default();
     let mut output = item;
     output.extend(assertions);
@@ -503,28 +503,41 @@ fn validated_payload_assertions(sig: &syn::Signature) -> proc_macro2::TokenStrea
 /// The OpenAPI document references each type as a component schema; a type
 /// without `#[derive(Schema)]` (or a typo) would otherwise emit a dangling
 /// `$ref`. With the assertion it is a compile error pointing at the type.
-/// An entry naming one of `generics` (a generic handler's own parameter) is
-/// skipped.
+///
+/// An entry naming one of `generics` (a generic handler's own type or const
+/// parameter) is a spanned error: the response type is only known per
+/// instantiation, so no schema can be asserted or referenced beside the
+/// handler (the spec would carry a dangling `$ref` to the parameter).
 fn typed_response_assertions(
     arr: &syn::ExprArray,
     generics: &[String],
-) -> proc_macro2::TokenStream {
-    let assertions = arr.elems.iter().filter_map(|elem| match elem {
-        syn::Expr::Tuple(tuple) => match tuple.elems.get(1) {
-            Some(syn::Expr::Path(path)) if !generic_scope::mentions(&path.path, generics) => {
-                let path = &path.path;
-                Some(quote::quote_spanned! { syn::spanned::Spanned::span(path) =>
-                    const _: () = {
-                        const fn __vespera_assert_schema<T: ::vespera::Schema + ?Sized>() {}
-                        let _ = __vespera_assert_schema::<#path>;
-                    };
-                })
-            }
+) -> syn::Result<proc_macro2::TokenStream> {
+    let assertions = arr
+        .elems
+        .iter()
+        .filter_map(|elem| match elem {
+            syn::Expr::Tuple(tuple) => match tuple.elems.get(1) {
+                Some(syn::Expr::Path(path)) => Some(&path.path),
+                _ => None,
+            },
             _ => None,
-        },
-        _ => None,
-    });
-    quote::quote! { #(#assertions)* }
+        })
+        .map(|path| {
+            if generic_scope::mentions(path, generics) {
+                return Err(syn::Error::new_spanned(
+                    path,
+                    "a generic handler's type or const parameter cannot be a `responses` type:                      its schema is only known per instantiation, so the spec would reference                      the parameter as a dangling `$ref`",
+                ));
+            }
+            Ok(quote::quote_spanned! { syn::spanned::Spanned::span(path) =>
+                const _: () = {
+                    const fn __vespera_assert_schema<T: ::vespera::Schema + ?Sized>() {}
+                    let _ = __vespera_assert_schema::<#path>;
+                };
+            })
+        })
+        .collect::<syn::Result<Vec<_>>>()?;
+    Ok(quote::quote! { #(#assertions)* })
 }
 
 #[cfg(test)]
@@ -614,7 +627,7 @@ mod tests {
 
         // Non-path entries (rejected by the argument parser) emit nothing.
         let array: syn::ExprArray = syn::parse_quote!([(404, 1), 2]);
-        assert!(typed_response_assertions(&array, &[]).is_empty());
+        assert!(typed_response_assertions(&array, &[]).unwrap().is_empty());
     }
 
     #[test]

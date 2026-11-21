@@ -39,3 +39,31 @@ fn file_under_a_gated_module_with_an_unrelated_inline_twin_stays_test_only() {
     let mut scope = TestScope::new(Some(&src));
     assert!(scope.file_test_only(&src.join("a/b.rs")));
 }
+
+/// A test-only inline module with a child `mod` beside an ungated `mod a;`
+/// twin (round-39 MR1-M1, the reversed twin): `a/b.rs` is loaded only by
+/// `cfg(test)` builds, while `a.rs` is the production module.
+#[test]
+fn gated_inline_parent_keeps_its_child_test_only_beside_an_ungated_twin() {
+    let krate = crate_with(&[
+        (
+            "lib.rs",
+            "#[cfg(test)] mod a { mod b; }
+#[cfg(not(test))] mod a;",
+        ),
+        ("a.rs", ""),
+        ("a/b.rs", ""),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(scope.file_test_only(&src.join("a/b.rs")));
+    assert!(!scope.file_test_only(&src.join("a.rs")));
+}
+
+/// A verbatim expression has no attributes to read (the wildcard arm of
+/// `expr_attrs`), and every other statement expression reads its own.
+#[test]
+fn expr_attrs_of_a_verbatim_expression_is_empty() {
+    let expr = syn::Expr::Verbatim(proc_macro2::TokenStream::default());
+    assert_eq!(expr_attrs(&expr), &[]);
+}
