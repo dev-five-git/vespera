@@ -23,7 +23,7 @@ use axum::extract::{FromRequest, Request};
 mod error;
 pub use error::TypedMultipartError;
 // Re-export the truncation helper so sibling modules (`scalar_parsers`, the
-// inline test module) keep their existing `super::truncate_reflected_value`
+// `tests` sidecar module) keep their existing `super::truncate_reflected_value`
 // path — the helper logically belongs with the error type that bounds it.
 use error::truncate_reflected_value;
 

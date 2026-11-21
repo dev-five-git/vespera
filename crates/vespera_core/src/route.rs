@@ -5,12 +5,15 @@
 //! Only schema positions ([`SchemaRef`]) and Path Item objects
 //! ([`PathItem::ref_path`]) accept an OpenAPI Reference Object
 //! (`{"$ref": ...}`). [`Parameter`], [`RequestBody`], [`Response`],
-//! [`Header`] and [`Example`] are always inline: vespera never emits a
-//! reference there, and a document that does (e.g. an external spec with
-//! `"200": {"$ref": "#/components/responses/Ok"}`) is rejected when it is
-//! deserialized, with or without siblings such as `description`: the `$ref`
-//! key is refused rather than silently dropped or read as an empty object.
-//! Inline those references before loading such a document into
+//! [`Header`] and [`Example`] are always inline, and so is a [`Callback`]
+//! (the value of [`Operation::callbacks`] and of
+//! `Components::callbacks`): vespera never emits a reference there, and a
+//! document that does (e.g. an external spec with
+//! `"200": {"$ref": "#/components/responses/Ok"}`, or a callback written as
+//! `"onEvent": {"$ref": "#/components/callbacks/OnEvent"}`) is rejected when
+//! it is deserialized, with or without siblings such as `description`: the
+//! `$ref` key is refused rather than silently dropped or read as an empty
+//! object.  Inline those references before loading such a document into
 //! [`crate::openapi::OpenApi`]. Accepting them would need a `RefOr<T>` in
 //! every such field, a breaking change of these public types.
 //! ([`Link`] is raw JSON, so a referenced link round-trips.)
