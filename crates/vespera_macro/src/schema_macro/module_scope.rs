@@ -258,8 +258,9 @@ pub fn item_module_chain(items: &[syn::Item], name: &str, line: usize) -> Vec<St
 /// [`item_module_chain`] for `file`, read off its cached line index: a
 /// repeated name is told apart by line, which only a parse with
 /// proc-macro2's fallback forced reports (inside the compiler every token of
-/// re-parsed text carries the call site's span).  `None` when `file` cannot
-/// be read or parsed.
+/// re-parsed text carries the call site's span).  Items inside fn bodies
+/// count (SM0-L3), with the inline modules around the fn. `None` when `file`
+/// cannot be read or parsed.
 pub fn item_module_chain_cached(file: &Path, name: &str, line: usize) -> Option<Vec<String>> {
     let lines = file_lines(file)?;
     let found = lines
@@ -269,6 +270,22 @@ pub fn item_module_chain_cached(file: &Path, name: &str, line: usize) -> Option<
         .map(|(_, at, chain)| (*at, chain.clone()))
         .collect();
     Some(pick_chain(found, line))
+}
+
+/// The lines the struct / enum `name` is declared on in the inline module
+/// `chain` of `file`, read off the same cached index as
+/// [`item_module_chain_cached`] (fn bodies included). `None` when `file`
+/// cannot be read or parsed.
+pub fn item_lines_in_chain(file: &Path, name: &str, chain: &[String]) -> Option<Vec<usize>> {
+    let lines = file_lines(file)?;
+    Some(
+        lines
+            .items
+            .iter()
+            .filter(|(item, _, item_chain)| item == name && item_chain == chain)
+            .map(|(_, at, _)| *at)
+            .collect(),
+    )
 }
 
 /// Line-accurate plain data of one file, read off a parse with
@@ -346,7 +363,8 @@ pub fn inline_chain_at(file: &Path, line: usize) -> Vec<String> {
     chain
 }
 
-/// The only candidate's chain, or (several) the one whose ident is at `line`.
+/// The only candidate's chain, or (several) the one whose ident is at `line`;
+/// empty (the file's top level) when no candidate is left.
 fn pick_chain(mut found: Vec<(usize, Vec<String>)>, line: usize) -> Vec<String> {
     if found.len() > 1 {
         found.retain(|(found_line, _)| *found_line == line);
@@ -379,8 +397,9 @@ fn all_chain_candidates(items: &[syn::Item]) -> Vec<(String, usize, Vec<String>)
     found
 }
 
-/// Visit every struct / enum ident of `items` (inline modules included, in
-/// source order) with its inline `mod` chain.
+/// Visit every struct / enum ident of `items` (inline modules and fn bodies
+/// included, in source order) with its inline `mod` chain. A fn body's items
+/// take the chain of the module the fn sits in (SM0-L3).
 fn walk_chains(
     items: &[syn::Item],
     chain: &mut Vec<String>,
@@ -398,9 +417,26 @@ fn walk_chains(
                 }
                 continue;
             }
+            syn::Item::Fn(function) => {
+                let mut body = BodyItems(Vec::new());
+                syn::visit::Visit::visit_block(&mut body, &function.block);
+                walk_chains(&body.0, chain, visit);
+                continue;
+            }
             _ => continue,
         };
         visit(ident, chain);
+    }
+}
+
+/// The items a block declares, at any depth of its statements. Each item is
+/// taken whole (not descended into): [`walk_chains`] visits its own nested
+/// items.
+struct BodyItems(Vec<syn::Item>);
+
+impl<'ast> syn::visit::Visit<'ast> for BodyItems {
+    fn visit_item(&mut self, item: &'ast syn::Item) {
+        self.0.push(item.clone());
     }
 }
 

@@ -154,6 +154,45 @@ fn default_fn_is_resolved_from_the_struct_module(
     );
 }
 
+/// A file whose fn `build` declares a struct in its body inside `mod admin`:
+/// the struct's bare `role` default is `admin`'s, not the top level's.
+const FN_BODY_DEFAULTS: &str = r#"
+fn role() -> String { "top".to_string() }
+mod admin {
+    fn role() -> String { "admin".to_string() }
+    fn build() {
+        struct Built { #[serde(default = "role")] role: String }
+    }
+}
+"#;
+
+/// SM0-L3 (round 38): a `#[derive(Schema)]` struct inside a fn inside a
+/// module resolves its default from that module. A struct the file does not
+/// declare (a `schema_type!` DTO) keeps the file's top-level lookup.
+#[rstest]
+#[case::declared_in_a_fn_body("Built", Some("admin"))]
+#[case::not_declared_in_the_file("Ghost", Some("top"))]
+fn default_fn_of_a_struct_in_a_fn_body_is_resolved_from_its_module(
+    #[case] name: &str,
+    #[case] expected: Option<&str>,
+) {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("fn_body.rs");
+    std::fs::write(&file_path, FN_BODY_DEFAULTS).unwrap();
+    crate::schema_macro::file_cache::bump_epoch();
+    let input: syn::DeriveInput = syn::parse_str(&format!(
+        "struct {name} {{ #[serde(default = \"role\")] role: String }}"
+    ))
+    .unwrap();
+    let defaults = extract_field_defaults_from_path(&input, &file_path);
+    assert_eq!(
+        defaults.get("role"),
+        expected
+            .map(|value| serde_json::Value::String(value.to_string()))
+            .as_ref()
+    );
+}
+
 /// A `crate::..` path — what `schema_type!` re-roots a source field's
 /// `default = "fn"` to — is looked up in that module, so the generated DTO's
 /// `#[derive(Schema)]` resolves the default instead of rejecting the field.

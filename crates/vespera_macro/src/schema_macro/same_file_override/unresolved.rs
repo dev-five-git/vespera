@@ -110,6 +110,13 @@ fn is_std_resolved(name: &str) -> bool {
             | "None"
             | "Ok"
             | "Err"
+            // The std prelude's const fns since Rust 1.80 (the MSRV is 1.88):
+            // `[u8; size_of::<u64>()]` names nothing the call site must import
+            // (SM4-L2, round 38).
+            | "size_of"
+            | "size_of_val"
+            | "align_of"
+            | "align_of_val"
     )
 }
 
@@ -238,18 +245,23 @@ fn type_is_unresolved(text: &str, unresolved: Judge) -> Option<String> {
 /// too, since the proxy would name the call-site item (R24-SM3-02).
 /// A multi-segment type path is judged by its root, as a serde path is
 /// (R25-SM3-02); a root the compiler links (an `--extern` crate) and the std
-/// crates and prelude names are never judged (R25-SM3-01).
+/// crates and prelude names are never judged (R25-SM3-01). With no call-site
+/// module (no call-site file) there is nothing to judge a name against, so
+/// none is refused (SM4-L1, round 38), as `adapter_names_other_item` does.
 pub(super) fn unresolved_at_call_site(
     dto: &syn::ItemStruct,
     dto_module: Option<&[String]>,
 ) -> Option<String> {
     use crate::schema_macro::module_scope::{Resolved, resolve_name};
-    let call_site = crate::schema_macro::call_site_module().unwrap_or_default();
+    let call_site = crate::schema_macro::call_site_module();
     let unresolved = |name: &str| {
         if crate::schema_macro::type_utils::is_prelude_name(name) || is_std_resolved(name) {
             return false;
         }
-        match resolve_name(&[name.to_string()], &call_site) {
+        let Some(call_site) = call_site.as_deref() else {
+            return false;
+        };
+        match resolve_name(&[name.to_string()], call_site) {
             Resolved::Unknown => true,
             // The DTO module must resolve the name to the same item. `Unknown`
             // there (a non-crate glob such as `sea_orm::prelude::*`) is a

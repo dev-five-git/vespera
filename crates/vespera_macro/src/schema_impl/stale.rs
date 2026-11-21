@@ -29,22 +29,21 @@ use crate::schema_macro::file_cache::{
 
 /// What a registration recorded about its item's file.
 struct Recorded {
-    /// The identity (`file::Ident@line:column`) the item was registered under.
-    identity: String,
     /// The inline modules the item sat in at registration, outermost first.
     chain: Vec<String>,
     /// The file's fingerprint at registration.
     fingerprint: Option<FileFingerprint>,
 }
 
-/// Item key (`file::module::Ident`) → what its registration recorded.
+/// Registration identity (`file::Ident@line:column`) → what it recorded.
 ///
-/// Keyed by the item and its module, not by its `line:column`: an edit that
-/// moves an item re-registers it under its new position, and a position-keyed
-/// map would keep the old entry for ever (R27-SM0-L3). Two same-named items of
-/// sibling modules of one file get two keys (R34-SM-L1). One entry per item
-/// bounds the map by the items the session has seen, not by the edits it has
-/// made.
+/// Keyed by the full identity, so two same-named items of one file never share
+/// a record: a `struct User` in each of two fn bodies (SM0-L2), or two sibling
+/// modules (R34-SM-L1), keep their own. An item moved under the same identity
+/// into another module replaces its record instead of leaving a second one
+/// (SM0-L1). A moved item's record at its old position is dropped by [`record`]
+/// (R27-SM0-L3), so the map is bounded by the items the session has seen, not
+/// by the edits it has made.
 static FINGERPRINTS: LazyLock<Mutex<HashMap<String, Recorded>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -72,15 +71,6 @@ fn module_chain(file: &Path, line: usize) -> Vec<String> {
     crate::schema_macro::module_scope::inline_chain_at(file, line)
 }
 
-/// The [`FINGERPRINTS`] key of the item `ident` in module `chain` of `file`.
-fn item_key(file: &str, chain: &[String], ident: &str) -> String {
-    chain
-        .iter()
-        .map(String::as_str)
-        .chain([ident])
-        .fold(file.to_string(), |key, segment| format!("{key}::{segment}"))
-}
-
 /// How many `ident` items `items` declares directly in the inline module
 /// `chain`. Child inline modules are other modules and do not count, so a
 /// same-named item of a sibling module never keeps this one alive.
@@ -95,6 +85,11 @@ fn declared_in_module(items: &[syn::Item], chain: &[String], ident: &str) -> usi
 }
 
 /// Remember the current fingerprint of `identity`'s file and item module.
+///
+/// A record of the same name in the same module on another line is a moved
+/// item's old position (R27-SM0-L3): dropped, but only while the file still
+/// declares that name in that module (an item whose file lost it keeps its
+/// record, so [`left_its_file`] can still tell it left).
 pub(super) fn record(identity: Option<&str>) {
     let Some(identity) = identity else {
         return;
@@ -103,17 +98,27 @@ pub(super) fn record(identity: Option<&str>) {
         return;
     };
     let path = Path::new(file);
-    let chain = module_chain(path, line_of(identity));
-    let key = item_key(file, &chain, ident);
-    let recorded = Recorded {
-        identity: identity.to_string(),
-        chain,
-        fingerprint: get_file_fingerprint(path),
-    };
-    FINGERPRINTS
+    let line = line_of(identity);
+    let chain = module_chain(path, line);
+    let mut records = FINGERPRINTS
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(key, recorded);
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(lines) = crate::schema_macro::module_scope::item_lines_in_chain(path, ident, &chain)
+        .filter(|lines| !lines.is_empty())
+    {
+        records.retain(|old, recorded| {
+            file_and_ident(old) != Some((file, ident))
+                || recorded.chain != chain
+                || lines.contains(&line_of(old))
+        });
+    }
+    records.insert(
+        identity.to_string(),
+        Recorded {
+            chain,
+            fingerprint: get_file_fingerprint(path),
+        },
+    );
 }
 
 /// Whether the stored `existing` entry's item has left its file since it was
@@ -125,13 +130,12 @@ pub(super) fn left_its_file(existing: &StructMetadata) -> bool {
     let Some((file, ident)) = file_and_ident(identity) else {
         return false;
     };
-    // The registration's own record: its module chain and fingerprint. The
-    // stored identity names the registration, so the record is found by it.
+    // The registration's own record: its module chain and fingerprint, found by
+    // the stored identity that names the registration.
     let recorded = FINGERPRINTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .values()
-        .find(|recorded| recorded.identity == identity)
+        .get(identity)
         .map(|recorded| (recorded.chain.clone(), recorded.fingerprint));
     let path = Path::new(file);
     match recorded {
@@ -231,15 +235,74 @@ pub struct Top {}
     /// per position it was registered at.
     #[test]
     fn moved_item_keeps_one_fingerprint_entry() {
-        record(Some("growth/moved.rs::Stable@1:1"));
-        record(Some("growth/moved.rs::Stable@2:1"));
-        record(Some("growth/moved.rs::Stable@9:4"));
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("moved.rs");
+        for line in [1, 2, 9] {
+            let source = format!("{}pub struct Stable {{}}\n", "\n".repeat(line - 1));
+            std::fs::write(&file, source).unwrap();
+            crate::schema_macro::file_cache::bump_epoch();
+            record(Some(&format!("{}::Stable@{line}:11", file.display())));
+        }
         let entries = FINGERPRINTS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .keys()
-            .filter(|key| key.starts_with("growth/moved.rs::Stable"))
+            .filter(|key| key.starts_with(&format!("{}::Stable", file.display())))
             .count();
         assert_eq!(entries, 1);
+    }
+
+    /// SM0-L1 (IDE-only): an item moved into an inline module at the SAME
+    /// `line:column` leaves one record for its identity, under its new module
+    /// chain. Two records under one identity made `left_its_file` pick one by
+    /// hash-map order.
+    #[test]
+    fn item_moved_into_a_module_at_the_same_position_has_one_record() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("sl1.rs");
+        let identity = format!("{}::Relocated@1:11", file.display());
+        std::fs::write(&file, "pub struct Relocated {}\n").unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        record(Some(&identity));
+        std::fs::write(&file, "pub mod inner { pub struct Relocated {} }\n").unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        record(Some(&identity));
+        let records = FINGERPRINTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let chains: Vec<&Vec<String>> = records
+            .iter()
+            .filter(|(key, _)| key.as_str() == identity)
+            .map(|(_, recorded)| &recorded.chain)
+            .collect();
+        assert_eq!(chains, [&vec!["inner".to_string()]]);
+    }
+
+    /// SM0-L2 (IDE-only): two same-named items in two fn bodies of one module
+    /// keep their own records. With one shared record for the name, deleting
+    /// both items left the first one's record gone and a false duplicate-name
+    /// error followed.
+    #[test]
+    fn same_named_items_of_two_fn_bodies_keep_their_own_records() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("bodies.rs");
+        std::fs::write(
+            &file,
+            "fn one() {\n    struct Twin { a: i32 }\n}\nfn two() {\n    struct Twin { b: i32 }\n}\n",
+        )
+        .unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let first = format!("{}::Twin@2:11", file.display());
+        let second = format!("{}::Twin@5:11", file.display());
+        record(Some(&first));
+        record(Some(&second));
+        std::fs::write(&file, "fn one() {}\nfn two() {}\n").unwrap();
+        crate::schema_macro::file_cache::bump_epoch();
+        let stored = |identity: &str| StructMetadata {
+            source_identity: Some(identity.to_string()),
+            ..StructMetadata::new("Twin".to_string(), String::new())
+        };
+        assert!(left_its_file(&stored(&first)));
+        assert!(left_its_file(&stored(&second)));
     }
 }

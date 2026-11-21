@@ -587,6 +587,31 @@ mod tests {
         assert_eq!(result.err().map(|e| e.to_string()).as_deref(), expected);
     }
 
+    /// SM1-M1 (round 38): `omit` / `pick` name a raw identifier by its unraw
+    /// spelling as parsed, so `r#type` removes (or keeps) the `type` field
+    /// rather than matching nothing (an omit that did nothing; a pick that
+    /// dropped every field).
+    #[rstest::rstest]
+    #[case::omit_raw(r#"S, omit = ["r#type"]"#, &["other", "userName"])]
+    #[case::pick_raw(r#"S, pick = ["r#type"]"#, &["type"])]
+    fn raw_identifier_filter_names_select_their_field(
+        #[case] input: &str,
+        #[case] expected: &[&str],
+    ) {
+        let item = parse(
+            r#"#[serde(rename_all = "camelCase")] pub struct S { pub user_name: String, pub r#type: i32, pub other: i32 }"#,
+        );
+        let input = pick_input(input);
+        assert!(validate_filter_names(&item, &input, "S").is_ok());
+        let omit: HashSet<String> = input.omit.unwrap_or_default().into_iter().collect();
+        let pick: HashSet<String> = input.pick.unwrap_or_default().into_iter().collect();
+        let schema = build_filtered_schema(&item, &omit, &pick, &empty_storage());
+        assert_eq!(
+            schema.properties.unwrap().keys().collect::<Vec<_>>(),
+            expected
+        );
+    }
+
     fn kept_fields(filtered: &syn::ItemStruct) -> Vec<String> {
         filtered
             .fields

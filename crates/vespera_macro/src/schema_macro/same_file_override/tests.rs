@@ -8,7 +8,7 @@ use quote::quote;
 use super::*;
 use crate::metadata::StructMetadata;
 use crate::schema_macro::seaorm::RelationFieldInfo;
-use crate::schema_macro::{SchemaTypeInput, generate_schema_type_code};
+use crate::schema_macro::{SchemaTypeInput, generate_schema_type_code, set_test_call_site_module};
 
 fn create_test_struct_metadata(name: &str, definition: &str) -> StructMetadata {
     StructMetadata::new(name.to_string(), definition.to_string())
@@ -106,6 +106,7 @@ fn explicit_adapter_falls_back_to_storage_when_the_file_lacks_it() {
 /// field stays accepted (the test above).
 #[test]
 fn explicit_adapter_refuses_a_field_type_only_its_module_resolves() {
+    let _call_site = set_test_call_site_module("crate");
     let storage = to_storage(vec![create_test_struct_metadata(
         "__VesperaKindOwner",
         "struct __VesperaKindOwner { kind: Kind }",
@@ -121,6 +122,7 @@ fn explicit_adapter_refuses_a_field_type_only_its_module_resolves() {
 /// the same kind of path (a bare name the call site may not see).
 #[test]
 fn explicit_adapter_refuses_a_serde_default_only_its_module_resolves() {
+    let _call_site = set_test_call_site_module("crate");
     let storage = to_storage(vec![create_test_struct_metadata(
         "__VesperaDefaultOwner",
         "struct __VesperaDefaultOwner { #[serde(default = \"make_value\")] value: i32 }",
@@ -477,6 +479,7 @@ fn override_ref_honors_dto_schema_name_attribute() {
 /// names nothing the call site must resolve.
 #[test]
 fn container_cfg_attr_serde_is_judged_only_while_active() {
+    let _call_site = set_test_call_site_module("crate");
     let inactive: syn::ItemStruct = syn::parse_str(
         "#[cfg_attr(any(), serde(default = \"nowhere_fn\"))] struct Dto { id: i32 }",
     )
@@ -501,6 +504,7 @@ fn container_cfg_attr_serde_is_judged_only_while_active() {
 /// dropped when either is false.
 #[test]
 fn nested_cfg_attr_serde_items_are_read_under_the_combined_predicate() {
+    let _call_site = set_test_call_site_module("crate");
     let dto: syn::ItemStruct = syn::parse_str(concat!(
         "#[cfg_attr(all(), cfg_attr(all(), serde(try_from = \"Unresolvable\")))] ",
         "#[cfg_attr(all(), cfg_attr(any(), serde(rename = \"x\")))] ",
@@ -527,6 +531,7 @@ fn nested_cfg_attr_serde_items_are_read_under_the_combined_predicate() {
 /// whatever its predicate.
 #[test]
 fn kept_cfg_attr_serde_items_are_read_and_judged() {
+    let _call_site = set_test_call_site_module("crate");
     let dto: syn::ItemStruct = syn::parse_str(
         "#[allow(dead_code)] #[cfg_attr(all(), serde(try_from = \"Unresolvable\"))] #[cfg_attr(unix, serde(rename = \"x\"))] struct Dto { id: i32 }",
     )
@@ -549,4 +554,32 @@ fn kept_cfg_attr_serde_items_are_read_and_judged() {
         unresolved::unresolved_at_call_site(&field, None).as_deref(),
         Some("nowhere_fn")
     );
+}
+
+/// SM4-L1 (round 38): with no call-site module (no call-site file) nothing is
+/// judged against the call site, so a DTO's own non-prelude names are not
+/// refused. The unknown module used to refuse every one of them.
+#[test]
+fn unknown_call_site_module_judges_no_name() {
+    let dto: syn::ItemStruct =
+        syn::parse_str("struct Dto { value: Opaque, #[serde(default = \"make\")] id: i32 }")
+            .unwrap();
+    assert_eq!(unresolved::unresolved_at_call_site(&dto, None), None);
+    assert_eq!(
+        unresolved::unresolved_at_call_site(&dto, Some(&["crate".to_string()])),
+        None
+    );
+}
+
+/// SM4-L2 (round 38): the std prelude's `size_of` / `align_of` (const fns
+/// since 1.80) name nothing the call site must import, so an array length
+/// built from them is not refused.
+#[test]
+fn std_prelude_size_and_align_fns_are_not_judged() {
+    let _call_site = set_test_call_site_module("crate");
+    let dto: syn::ItemStruct = syn::parse_str(
+        "struct Dto { bytes: [u8; size_of::<u64>()], align: [u8; align_of::<u64>()] }",
+    )
+    .unwrap();
+    assert_eq!(unresolved::unresolved_at_call_site(&dto, None), None);
 }

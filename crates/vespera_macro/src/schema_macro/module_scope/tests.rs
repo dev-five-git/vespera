@@ -566,12 +566,18 @@ fn item_module_chain_walks_inline_modules(
 
 /// `item_module_chain_cached` reads real line positions off the file's
 /// fallback-parsed line index (a compiler parse puts every re-parsed token on
-/// the call site's line), so a repeated name is told apart by line.
+/// the call site's line), so a repeated name is told apart by line. A name
+/// the file does not place, or cannot tell apart, takes the top level (a
+/// `schema_type!` DTO is not written in the file at all). An item inside a fn
+/// body takes its fn's module chain (SM0-L3).
 #[rstest]
 #[case::repeated_name("Dup", 5, true, Some(&["b2"][..]))]
 #[case::repeated_name_other_line("Dup", 6, true, Some(&["b3"][..]))]
 #[case::repeated_name_no_line("Dup", 0, true, Some(&[][..]))]
 #[case::unique_name("Kind", 0, true, Some(&["a"][..]))]
+#[case::fn_body_item_of_a_module("Inner", 0, true, Some(&["a"][..]))]
+#[case::fn_body_item_at_top_level("TopInner", 0, true, Some(&[][..]))]
+#[case::not_declared("Nope", 0, true, Some(&[][..]))]
 #[case::unreadable_file("Dup", 5, false, None)]
 fn item_module_chain_cached_tells_repeated_names_apart(
     #[case] name: &str,
@@ -579,7 +585,7 @@ fn item_module_chain_cached_tells_repeated_names_apart(
     #[case] write: bool,
     #[case] expected: Option<&[&str]>,
 ) {
-    let source = "mod a {\n    pub enum Kind { A }\n}\n\nmod b2 { pub struct Dup; }\nmod b3 { pub struct Dup; }\n";
+    let source = "mod a {\n    pub enum Kind { A } fn make() { struct Inner; }\n}\n\nmod b2 { pub struct Dup; }\nmod b3 { pub struct Dup; }\nfn top() { struct TopInner; }\n";
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("lib.rs");
     if write {

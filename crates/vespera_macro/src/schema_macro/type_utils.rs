@@ -230,9 +230,11 @@ pub fn is_primitive_or_known_type(name: &str) -> bool {
 /// - generic arguments are resolved recursively (`Option<Vec<T>>`,
 ///   `HashMap<K, V>`, references, tuples, arrays);
 /// - SeaORM / chrono aliases become `vespera::chrono` types and the
-///   `serde_json::Value` aliases (`Json`, `JsonValue`, `Value`) become
+///   `serde_json::Value` aliases (`Json`, `JsonValue`) become
 ///   `vespera::serde_json::Value` — unless the module defines or imports a
-///   type of that name itself.
+///   type of that name itself. A bare `Value` under a SeaORM glob import
+///   (`use sea_orm::prelude::*;`) is the prelude's `Value`, written as
+///   `sea_orm::prelude::Value`, not `serde_json::Value` (SM4-M1).
 pub fn resolve_type_to_absolute_path(ty: &Type, source_module_path: &[String]) -> TokenStream {
     resolve_type_with_params(ty, source_module_path, &[])
 }
@@ -540,7 +542,10 @@ impl TypeResolver<'_> {
             let base = path_tokens(glob);
             return quote! { #base :: #ident };
         }
-        if is_primitive_or_known_type(&name) {
+        // A bare name the SeaORM prelude exports (`Value`) is the prelude's,
+        // not the std / serde_json name the shortcut below would give it
+        // (SM4-M1, round 38): the glob path comes first for those.
+        if is_primitive_or_known_type(&name) && !sea_orm_prelude_name {
             return quote! { #ident #args };
         }
         // Any other name the module neither defines nor imports comes from
