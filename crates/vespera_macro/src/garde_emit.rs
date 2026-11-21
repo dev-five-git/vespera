@@ -728,22 +728,32 @@ const fn integer_range(kind: &str) -> Option<(i128, u128)> {
 /// past it (`16777217.0` rounds to `16777216.0`, which would admit a value the
 /// schema forbids), so a minimum steps up and a maximum steps down when the
 /// rounded value overshoots. `f32::next_up` / `next_down` are stable from Rust
-/// 1.86 (MSRV 1.88).
+/// 1.86 (MSRV 1.88). A bound past the `f32` range is an error (`Err`).
 #[cfg(feature = "validation")]
-fn float_some(kind: &str, v: f64, bound: Bound) -> TokenStream {
+fn float_some(kind: &str, v: f64, bound: Bound, key: &str) -> Result<TokenStream, String> {
     if kind != "f32" {
         let ty_ident = syn::Ident::new(kind, Span::call_site());
-        return quote! { ::std::option::Option::Some(#v as #ty_ident) };
+        return Ok(quote! { ::std::option::Option::Some(#v as #ty_ident) });
     }
     #[allow(clippy::cast_possible_truncation)]
     let nearest = v as f32;
+    // A bound past `f32::MAX` (or below `f32::MIN`) casts to an infinity: the
+    // validator would then reject every finite value, so it is refused with
+    // the integer path's "does not fit" wording.
+    if !nearest.is_finite() {
+        return Err(format!(
+            "`{key} = {v}` does not fit the field type `f32` (range {}..={})",
+            f32::MIN,
+            f32::MAX
+        ));
+    }
     #[allow(clippy::float_cmp)]
     let round_trips = format!("{nearest}").parse::<f64>() == Ok(v);
     if round_trips {
         let literal: TokenStream = format!("{nearest}f32")
             .parse()
             .expect("a float literal with an f32 suffix is a valid token stream");
-        return quote! { ::std::option::Option::Some(#literal) };
+        return Ok(quote! { ::std::option::Option::Some(#literal) });
     }
     let inward = match bound {
         Bound::Min => {
@@ -753,7 +763,7 @@ fn float_some(kind: &str, v: f64, bound: Bound) -> TokenStream {
             quote! { if f64::from(__garde_bound) > #v { __garde_bound.next_down() } else { __garde_bound } }
         }
     };
-    quote! { ::std::option::Option::Some({ let __garde_bound = #v as f32; #inward }) }
+    Ok(quote! { ::std::option::Option::Some({ let __garde_bound = #v as f32; #inward }) })
 }
 
 /// Whether an alias bound's integer literal is emitted as an `i128` literal
@@ -825,7 +835,7 @@ fn numeric_some(
         );
     };
     let Some((type_min, type_max)) = integer_range(kind) else {
-        return Ok(float_some(kind, v, bound));
+        return float_some(kind, v, bound, key);
     };
     if let Some(exact) = exact {
         // An integer literal bound keeps every digit: the `f64` copy loses

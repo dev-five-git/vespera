@@ -44,7 +44,10 @@ pub fn is_info_field(name: &str) -> bool {
 }
 
 /// Whether `value` is an absolute `http(s)` URL: the scheme, then a non-empty
-/// host-and-path with no whitespace (OpenAPI types these URLs `format: uri`).
+/// host-and-path with no whitespace or backslash (OpenAPI types these URLs
+/// `format: uri`; a backslash reads as `/` to WHATWG parsers, so
+/// `https://host\@other` would name `host` to a browser and `other` to a
+/// reader that splits on `@`).
 /// Shared by the `info` URLs, the absolute `servers` form and the OAuth2 / OIDC
 /// URLs (`security_dsl::require_absolute_url`), so they agree.
 pub(super) fn is_absolute_http_url(value: &str) -> bool {
@@ -53,7 +56,8 @@ pub(super) fn is_absolute_http_url(value: &str) -> bool {
         .is_some_and(|rest| {
             // The authority (up to a path, query or fragment) names a host.
             let host = rest.split(['/', '?', '#']).next();
-            host.is_some_and(|host| !host.is_empty()) && !rest.contains(char::is_whitespace)
+            host.is_some_and(|host| !host.is_empty())
+                && !rest.contains(|c: char| c.is_whitespace() || c == '\\')
         })
 }
 
@@ -218,6 +222,13 @@ mod tests {
     #[case::other_scheme("ftp://example.com", false)]
     #[case::scheme_only("HTTPS://", false)]
     #[case::non_ascii_head("ht\u{e9}ps://example.com", false)]
+    // WHATWG reads `\` as `/` in a special scheme: `api.example.com\@attacker`
+    // has the host `api.example.com`, so a backslash anywhere is refused
+    // (round-37 MR4-L1).
+    #[case::backslash_before_userinfo("https://api.example.com\\@attacker.test", false)]
+    #[case::backslash_in_path("https://example.com/a\\b", false)]
+    #[case::backslash_in_query("https://example.com?x=\\", false)]
+    #[case::plain_path_with_slashes("https://example.com/a/b?c=d#e", true)]
     fn absolute_url_scheme_is_case_insensitive(#[case] url: &str, #[case] expected: bool) {
         assert_eq!(is_absolute_http_url(url), expected);
     }

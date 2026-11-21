@@ -569,3 +569,25 @@ fn unknown_route_argument_lists_the_accepted_keys(#[case] name: &str, #[case] in
     };
     insta::assert_snapshot!(name, err.to_string());
 }
+
+/// Route keys match exactly (the key list in the error is lowercase), while
+/// HTTP method names fold case (round-37 MR0-L1).
+#[rstest]
+#[case::summary_capitalised("get, Summary = \"List users\"")]
+#[case::path_capitalised("Path = \"/x\"")]
+#[case::deprecated_capitalised("get, DEPRECATED")]
+#[case::mixed_case_key("Operation_Id = \"list\"")]
+fn route_keys_are_case_sensitive(#[case] input: &str) {
+    let Err(err) = syn::parse_str::<RouteArgs>(input) else {
+        panic!("`{input}` must be rejected: keys are lowercase");
+    };
+    assert!(err.to_string().starts_with("unknown #[route] argument"));
+}
+
+#[rstest]
+#[case::upper_method("GET", "GET")]
+#[case::mixed_method("Post, summary = \"x\"", "Post")]
+fn http_method_names_fold_case(#[case] input: &str, #[case] expected: &str) {
+    let route_args = syn::parse_str::<RouteArgs>(input).expect("method parses");
+    assert_eq!(route_args.method.expect("method").to_string(), expected);
+}

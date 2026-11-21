@@ -31,8 +31,7 @@ impl syn::parse::Parse for RouteArgs {
             if lookahead.peek(syn::Ident) {
                 // Try to parse as method identifier (get, post, etc.)
                 let ident: syn::Ident = input.parse()?;
-                let ident_str = ident.to_string().to_lowercase();
-                args.parse_ident(input, &ident, &ident_str)?;
+                args.parse_ident(input, &ident)?;
 
                 // Check if there's a comma
                 if input.peek(syn::Token![,]) {
@@ -101,16 +100,18 @@ fn unknown_argument(ident: &syn::Ident) -> syn::Error {
 }
 
 impl RouteArgsBuilder {
+    /// Keys match exactly (`path`, `summary`, ...: `Summary = ..` is an unknown
+    /// argument); only the HTTP method names fold case (`GET`, `get`).
     fn parse_ident(
         &mut self,
         input: syn::parse::ParseStream,
         ident: &syn::Ident,
-        ident_str: &str,
     ) -> syn::Result<()> {
-        if is_http_method(ident_str) {
+        let key = ident.to_string();
+        if is_http_method(&key) {
             return self.parse_method(ident);
         }
-        match ident_str {
+        match key.as_str() {
             "path" => self.parse_path(input, ident),
             "error_status" => self.parse_error_status(input, ident),
             "responses" => self.parse_responses(input, ident),
