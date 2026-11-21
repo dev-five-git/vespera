@@ -346,10 +346,11 @@ async fn dispatch_streaming_async_large_binary_body() {
 #[test]
 fn wire_response_bytes_are_deterministic_across_dispatches() {
     // Identical requests MUST produce byte-identical wire responses
-    // (golden-file / SHA-comparison safety).  `http::HeaderMap` iterates in
-    // insertion order, so repeating a dispatch is deterministic even without
-    // the writer's key sort; the handler therefore inserts its headers in
-    // reverse name order and the raw header JSON must still list them sorted.
+    // (golden-file / SHA-comparison safety).  `http::HeaderMap` documents an
+    // arbitrary but consistent iteration order, so repeating a dispatch
+    // yields the same bytes even without the writer's key sort.  The handler
+    // inserts its headers in reverse name order, which exercises the writer's
+    // sort: the raw header JSON must still list them sorted.
     install_router();
     let runtime = Builder::new_current_thread()
         .enable_all()

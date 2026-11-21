@@ -71,11 +71,12 @@ pub enum SecuritySchemeType {
     OpenIdConnect,
 }
 
-/// Security scheme definition
+/// Security scheme definition (inline only: a `$ref` key is refused, see
+/// [`crate::route`]'s Reference Objects note).
 ///
 /// `x-*` extension keys are dropped on load (see the `extensions` module docs).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", remote = "Self")]
 pub struct SecurityScheme {
     /// Security scheme type
     pub r#type: SecuritySchemeType,
@@ -101,6 +102,8 @@ pub struct SecurityScheme {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub open_id_connect_url: Option<String>,
 }
+
+crate::route::inline_only_serde!(SecurityScheme);
 
 /// OAuth2 flow definitions for OpenAPI security schemes.
 ///

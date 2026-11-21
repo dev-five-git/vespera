@@ -12,8 +12,9 @@ use bytes::Bytes;
 use crate::envelope::ResponseMetadata;
 use crate::internal::{ConnectionInfo, HEADER_TOO_LARGE_MSG, ResponseParts};
 
-/// Hand-rolled request-header parser (byte-compatible replacement for
-/// the `serde_json` derive path; the serde version is retained as
+/// Hand-rolled request-header parser (replacement for the `serde_json`
+/// derive path: identical on known fields, stricter inside unknown values;
+/// the serde version is retained as
 /// `bench_serde::parse_wire_header_serde` for the criterion A/B).
 mod header_read;
 pub use header_read::{MAX_PRINCIPAL_ENTRIES, MAX_REQUEST_HEADERS, TOO_MANY_HEADERS_MSG};
@@ -711,11 +712,12 @@ pub fn split_wire_borrowed(input: &[u8]) -> Result<(&[u8], &[u8]), String> {
 /// Deserialize the wire request header, borrowing every string from
 /// `header_json` where possible (see [`WireRequestHeader`]).
 ///
-/// Uses the hand-rolled [`header_read`] parser — byte-behaviour-identical
-/// to the previous `serde_json` derive path (retained as
-/// `bench_serde::parse_wire_header_serde` for the criterion A/B): any key
-/// order, unknown keys ignored, plain strings borrowed / escaped strings
-/// owned.
+/// Uses the hand-rolled [`header_read`] parser. On known fields it accepts
+/// and rejects exactly what the previous `serde_json` derive path did
+/// (retained as `bench_serde::parse_wire_header_serde` for the criterion
+/// A/B): any key order, unknown keys ignored, plain strings borrowed /
+/// escaped strings owned. Inside the value of an unknown key it is stricter
+/// (it validates UTF-8 and `\u` surrogate pairs, which `IgnoredAny` skips).
 #[inline]
 pub fn parse_wire_header(header_json: &[u8]) -> Result<WireRequestHeader<'_>, String> {
     header_read::parse(header_json).map_err(|e| format!("wire header JSON parse error: {e}"))

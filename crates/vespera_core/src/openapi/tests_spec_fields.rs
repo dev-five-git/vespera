@@ -244,3 +244,20 @@ fn map_objects_still_reject_non_maps() {
     );
     assert!(serde_json::from_value::<crate::route::Operation>(json!({"callbacks": 5})).is_err());
 }
+
+/// A malformed Path Item under a callback names the callback and the runtime
+/// expression (`onEvent: {$request.body#/url}: ...`), not only the expression.
+#[test]
+fn callback_entry_error_names_the_callback_and_the_expression() {
+    let error = serde_json::from_value::<OpenApi>(json!({
+        "openapi": "3.1.0",
+        "info": {"title": "t", "version": "1"},
+        "paths": {"/users": {"post": {
+            "responses": {"200": {"description": "ok"}},
+            "callbacks": {"onEvent": {"{$request.body#/url}": {"post": 5}}}
+        }}}
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("onEvent: {$request.body#/url}: "), "{error}");
+}

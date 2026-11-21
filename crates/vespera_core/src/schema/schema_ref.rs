@@ -17,8 +17,9 @@ use serde::{
 /// **any** object carrying a `$ref` key and silently dropped its
 /// siblings (e.g. a nullable reference's `"nullable": true`).  The
 /// custom impl treats only a *pure* `{"$ref": <string>}` object as a
-/// reference; a `$ref` accompanied by any sibling keyword
-/// (`nullable`, `description`, …) is an inline [`Schema`], so those
+/// reference; a `$ref` with no sibling keyword (`x-*` extensions do not
+/// count) is a reference, while one with a sibling keyword (`nullable`,
+/// `description`, …) is an inline [`Schema`], so those
 /// siblings survive the round-trip instead of being discarded.
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
@@ -485,8 +486,8 @@ pub fn escape_schema_name(name: &str) -> String {
 }
 
 /// Inverse of [`escape_schema_name`]: percent-decode, then undo the JSON
-/// Pointer escaping. Input that was not produced by it (a `%` not followed
-/// by two hex digits, a lone `~`) is kept as written.
+/// Pointer escaping. A `%` not followed by two hex digits, or a `~` that is
+/// not part of `~0` / `~1`, is kept as written.
 #[must_use]
 pub fn unescape_schema_name(segment: &str) -> String {
     let percent_decoded = percent_decode(segment.as_bytes());
@@ -546,11 +547,13 @@ const fn hex_value(digit: u8) -> Option<u8> {
 
 /// The component name a `$ref` points at, when `ref_path` is a
 /// `#/components/schemas/` reference (decoded with [`unescape_schema_name`]).
+/// A JSON Pointer suffix after the name (`/properties/b`) is not part of the
+/// name: the escaped name never holds a raw `/`, so the first `/` ends it.
 #[must_use]
 pub fn schema_name_of_ref(ref_path: &str) -> Option<String> {
-    ref_path
-        .strip_prefix(SCHEMA_REF_PREFIX)
-        .map(unescape_schema_name)
+    let segment = ref_path.strip_prefix(SCHEMA_REF_PREFIX)?;
+    let name = segment.split_once('/').map_or(segment, |(name, _)| name);
+    Some(unescape_schema_name(name))
 }
 
 impl Reference {
@@ -822,6 +825,12 @@ mod escape_tests {
 
     #[rstest]
     #[case::hex_lower("a%2fb", "a/b")]
+    #[case::hex_upper("a%2Fb", "a/b")]
+    fn unescape_decodes_percent_hex_in_either_case(#[case] segment: &str, #[case] name: &str) {
+        assert_eq!(unescape_schema_name(segment), name);
+    }
+
+    #[rstest]
     #[case::bad_hex("100%zz", "100%zz")]
     #[case::sign_is_not_hex("%+1", "%+1")]
     #[case::truncated_percent("end%2", "end%2")]
@@ -856,5 +865,17 @@ mod escape_tests {
             Some("Pet/Dog~v2")
         );
         assert_eq!(schema_name_of_ref("#/components/pathItems/Pet"), None);
+    }
+
+    #[rstest]
+    #[case::plain_pointer("#/components/schemas/A/properties/b", Some("A"))]
+    #[case::escaped_slash_pointer("#/components/schemas/Pet~1Dog/items", Some("Pet/Dog"))]
+    #[case::bare_name("#/components/schemas/A", Some("A"))]
+    #[case::not_a_schema("#/components/parameters/A/x", None)]
+    fn schema_name_of_ref_drops_the_pointer_suffix(
+        #[case] ref_path: &str,
+        #[case] name: Option<&str>,
+    ) {
+        assert_eq!(schema_name_of_ref(ref_path).as_deref(), name);
     }
 }

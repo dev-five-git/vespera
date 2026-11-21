@@ -662,9 +662,6 @@ mod tests {
         reset_stash();
     }
 
-    /// `Stash::insert` hands the displaced entry back (the caller drops it
-    /// outside the lock) and keeps the held-byte count exact.  Uses a local
-    /// `Stash`, so it does not race the process-global one.
     /// Round 38 (CJ3-01).  Re-stashing a live token at the cap must displace
     /// only that token's entry: the eviction pass counts the entries that
     /// stay, so no unrelated oldest entry is evicted for the re-put.  Uses a
@@ -697,6 +694,9 @@ mod tests {
         }
     }
 
+    /// `Stash::insert` hands the displaced entry back (the caller drops it
+    /// outside the lock) and keeps the held-byte count exact.  Uses a local
+    /// `Stash`, so it does not race the process-global one.
     #[test]
     fn insert_returns_the_displaced_entry() {
         let mut stash = Stash {

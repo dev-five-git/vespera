@@ -5,7 +5,8 @@
 //! Only schema positions ([`SchemaRef`]) and Path Item objects
 //! ([`PathItem::ref_path`]) accept an OpenAPI Reference Object
 //! (`{"$ref": ...}`). [`Parameter`], [`RequestBody`], [`Response`],
-//! [`Header`] and [`Example`] are always inline, and so is a [`Callback`]
+//! [`Header`], [`Example`] and [`SecurityScheme`](crate::schema::SecurityScheme)
+//! are always inline, and so is a [`Callback`]
 //! (the value of [`Operation::callbacks`] and of
 //! `Components::callbacks`): vespera never emits a reference there, and a
 //! document that does (e.g. an external spec with
@@ -328,6 +329,8 @@ inline_only_serde!(Header);
 inline_only_serde!(Parameter);
 inline_only_serde!(RequestBody);
 inline_only_serde!(Response);
+// Re-exported for `schema::components` (SecurityScheme is inline-only too).
+pub(crate) use inline_only_serde;
 
 /// A Link Object (or a Reference Object to one), kept as raw JSON:
 /// vespera never generates links, it only preserves them on round trip.
