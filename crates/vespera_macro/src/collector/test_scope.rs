@@ -781,6 +781,7 @@ impl<'ast> syn::visit::Visit<'ast> for GatedCollector<'_> {
         let attrs: &[syn::Attribute] = match stmt {
             syn::Stmt::Macro(stmt) => &stmt.attrs,
             syn::Stmt::Local(stmt) => &stmt.attrs,
+            syn::Stmt::Expr(syn::Expr::Block(block), _) => &block.attrs,
             _ => &[],
         };
         self.scoped(attrs, stmt, |this| syn::visit::visit_stmt(this, stmt));

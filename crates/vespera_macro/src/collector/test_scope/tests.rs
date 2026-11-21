@@ -647,6 +647,11 @@ fn gated_scopes_nest_test_only_schemas() {
         "#[tokio::test] async fn top_async() { struct InTokioTest {} }",
         "impl S { #[test] fn h() { struct InImplTest {} } }",
         "#[inline] fn attested() { struct OpenAttr {} }",
+        "fn blocks() {",
+        "    #[cfg(test)] { struct ExprBlock {} }",
+        "    { struct OpenBlock {} }",
+        "    #[cfg(test)] { struct TailBlock {} }",
+        "}",
     ]
     .join("\n");
     let krate = crate_with(&[("lib.rs", &source)]);
@@ -668,6 +673,8 @@ fn gated_scopes_nest_test_only_schemas() {
         ("InTestFn", 32),
         ("InTokioTest", 33),
         ("InImplTest", 34),
+        ("ExprBlock", 37),
+        ("TailBlock", 39),
     ] {
         let at = position_of(&source, ident);
         assert_eq!(at.0, line, "{ident} is on line {line}");
@@ -679,6 +686,7 @@ fn gated_scopes_nest_test_only_schemas() {
         ("OpenImplFn", 20),
         ("After", 31),
         ("OpenAttr", 35),
+        ("OpenBlock", 38),
     ] {
         let at = position_of(&source, ident);
         assert_eq!(at.0, line, "{ident} is on line {line}");

@@ -127,15 +127,10 @@ fn gated_route_statements(
     cfg_routes
         .iter()
         .map(|route| {
-            let predicates: Vec<proc_macro2::TokenStream> = route
-                .cfg
-                .iter()
-                .map(|predicate| {
-                    predicate
-                        .parse::<proc_macro2::TokenStream>()
-                        .unwrap_or_default()
-                })
-                .collect();
+            let predicates = match parse_cfg_predicates(&route.cfg) {
+                Ok(predicates) => predicates,
+                Err(error) => return error,
+            };
             let handler = handler_display(&route.module_path, &route.function_name);
             if let Err(conflict) = ungated.clone().claim(&route.method, &route.path, &handler) {
                 let message = format!(
@@ -159,6 +154,27 @@ fn gated_route_statements(
                 // The error is compiled in only with the route's module.
                 Err(error) => quote!(#[cfg(all(#(#predicates),*))] #error),
             }
+        })
+        .collect()
+}
+
+/// The predicates of a `#[cfg(all(..))]` gate, re-parsed from their text. A
+/// predicate that does not re-parse is a `compile_error!` (`Err`), never
+/// dropped: an empty `all()` is true, so the item would compile in under every
+/// cfg.
+fn parse_cfg_predicates(
+    cfg: &[String],
+) -> Result<Vec<proc_macro2::TokenStream>, proc_macro2::TokenStream> {
+    cfg.iter()
+        .map(|predicate| {
+            predicate
+                .parse::<proc_macro2::TokenStream>()
+                .map_err(|error| {
+                    let message = format!(
+                        "vespera! macro: cannot re-parse the cfg predicate `{predicate}`: {error}"
+                    );
+                    quote!(::core::compile_error!(#message);)
+                })
         })
         .collect()
 }
@@ -214,11 +230,10 @@ fn generate_cron_scheduler_code(cron_jobs: &[CronMetadata]) -> proc_macro2::Toke
     } else {
         let jobs = ungated.iter().map(|cron| cron_job_expr(cron));
         let pushes = gated.iter().map(|cron| {
-            let predicates = cron.cfg.iter().map(|predicate| {
-                predicate
-                    .parse::<proc_macro2::TokenStream>()
-                    .unwrap_or_default()
-            });
+            let predicates = match parse_cfg_predicates(&cron.cfg) {
+                Ok(predicates) => predicates,
+                Err(error) => return error,
+            };
             let job = cron_job_expr(cron);
             quote!(#[cfg(all(#(#predicates),*))] __vespera_cron_jobs.push(#job);)
         });

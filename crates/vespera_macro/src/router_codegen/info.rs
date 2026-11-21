@@ -54,9 +54,15 @@ pub(super) fn is_absolute_http_url(value: &str) -> bool {
     scheme_rest(value, "https://")
         .or_else(|| scheme_rest(value, "http://"))
         .is_some_and(|rest| {
-            // The authority (up to a path, query or fragment) names a host.
-            let host = rest.split(['/', '?', '#']).next();
-            host.is_some_and(|host| !host.is_empty())
+            // The authority (up to a path, query or fragment) names a host
+            // after its userinfo: `https://user@`, `https://@/x` and
+            // `https://:443` name none.
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+            let host = authority
+                .rsplit_once('@')
+                .map_or(authority, |(_, host)| host);
+            !host.is_empty()
+                && !host.starts_with(':')
                 && !rest.contains(|c: char| c.is_whitespace() || c == '\\')
         })
 }
@@ -229,6 +235,12 @@ mod tests {
     #[case::backslash_in_path("https://example.com/a\\b", false)]
     #[case::backslash_in_query("https://example.com?x=\\", false)]
     #[case::plain_path_with_slashes("https://example.com/a/b?c=d#e", true)]
+    // Userinfo or a port alone names no host (round-38 MR4-L3).
+    #[case::userinfo_without_host("https://user@", false)]
+    #[case::empty_userinfo_host("https://@/terms", false)]
+    #[case::port_only("https://:443", false)]
+    #[case::userinfo_then_port_only("https://user@:443/terms", false)]
+    #[case::userinfo_with_host("https://user@example.com:443/terms", true)]
     fn absolute_url_scheme_is_case_insensitive(#[case] url: &str, #[case] expected: bool) {
         assert_eq!(is_absolute_http_url(url), expected);
     }

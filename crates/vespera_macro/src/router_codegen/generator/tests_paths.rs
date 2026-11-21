@@ -260,3 +260,33 @@ fn cron_job_in_non_identifier_file_is_a_compile_error() {
         "{code}"
     );
 }
+
+/// A cfg predicate that does not re-parse is a `compile_error!` on the route
+/// and on the cron job, never an empty `all()` (true under every cfg).
+#[test]
+fn unparsable_cfg_predicate_fails_closed() {
+    let mut metadata = CollectedMetadata::new();
+    metadata
+        .cfg_routes
+        .push(cfg_route(&["all("], "get", "/t", "routes::t", "t"));
+    let code = generate_router_code(&metadata, None, None, None, None, &[], &[]).to_string();
+    assert!(
+        code.contains("cannot re-parse the cfg predicate `all(`"),
+        "{code}"
+    );
+    assert!(!code.contains("cfg (all ())"), "{code}");
+
+    let cron_jobs = [CronMetadata {
+        expression: "0 * * * * *".to_string(),
+        function_name: "tick".to_string(),
+        module_path: "cron".to_string(),
+        file_path: "src/cron.rs".to_string(),
+        cfg: vec!["all(".to_string()],
+        options: CronOptions::default(),
+    }];
+    let code = generate_cron_scheduler_code(&cron_jobs).to_string();
+    assert!(
+        code.contains("cannot re-parse the cfg predicate `all(`"),
+        "{code}"
+    );
+}

@@ -12,10 +12,11 @@
 //! * **content addressing** — `include_str!` targets carry the content hash in
 //!   their name, so each expansion embeds exactly the bytes it generated.
 //!   Superseded files are pruned once they have been superseded for long
-//!   enough that no in-flight compilation can still be about to read them
-//!   (the grace period runs from the moment the selection moved to the file
-//!   that superseded them, kept in a `<stem>.selected` marker, not from their
-//!   own creation or from a reselection of an unchanged file);
+//!   enough that no in-flight compilation can still be about to read them.
+//!   The grace period of each file runs from the selection move that
+//!   superseded it, which a `<stem>.selected` marker records per file (see
+//!   `record_selection`); a later move does not postpone it, and a file
+//!   reselected without a move keeps its time;
 //! * **per-variant names** — the library, a binary, the `--test` harness and
 //!   rust-analyzer get their own file stems (`path_utils::target_variant`),
 //!   so pruning only ever removes an older file of the SAME build variant.
@@ -28,15 +29,23 @@
 //! build start makes cargo rebuild the crate on every invocation.
 
 use std::{
+    collections::HashMap,
+    fmt::Write as _,
     io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, SystemTime},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 /// How long a superseded content-addressed file is kept for a parallel
 /// compilation that may still `include_str!` it.
 const PRUNE_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// Most supersession records a `<stem>.selected` marker keeps. The oldest go
+/// first; a file without a record is dated by the marker's mtime (the latest
+/// move), which is never too early, so the log stays bounded without a
+/// premature prune.
+const SUPERSESSION_LOG_LIMIT: usize = 64;
 
 /// Replace `path` with `content` atomically, skipping the write when it
 /// already holds exactly that.
@@ -80,35 +89,83 @@ pub(super) fn prune_superseded(keep: &Path, stem: &str) {
     prune_superseded_older_than(keep, stem, PRUNE_AFTER);
 }
 
-/// The `<stem>.selected` marker: it names the file `stem` last selected, and
-/// its mtime is when the selection last moved there. `None` when the marker
-/// could not be brought up to date: its old mtime would then date the
-/// supersession too early, so the caller prunes nothing this round.
+/// The `<stem>.selected` marker. Its first line names the file `stem` last
+/// selected. Each later line `<file> <unix secs>` records when `<file>` was
+/// superseded by a selection move. A marker holding only a name (the format
+/// before the log) has no such lines.
+///
+/// A move to `keep` appends the superseded file's record and drops the records
+/// of `keep` itself (it is selected now). Rewritten only when the selection
+/// moves: a kept file reselected without a move keeps the time it was
+/// superseded at, not the reselection.
+///
+/// `None` when the marker could not be brought up to date: the supersession
+/// times would then be unknown, so the caller prunes nothing this round.
 fn record_selection(dir: &Path, stem: &str, keep: &Path) -> Option<PathBuf> {
     let marker = dir.join(format!("{stem}.selected"));
     let name = keep
         .file_name()
         .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-    // Rewritten only when the selection moves: a kept file reselected without
-    // a rewrite keeps the time it was superseded from, not the reselection.
-    let current = std::fs::read_to_string(&marker).is_ok_and(|current| current == name);
-    (current || std::fs::write(&marker, name).is_ok()).then_some(marker)
+    let previous = std::fs::read_to_string(&marker).unwrap_or_default();
+    let mut lines = previous.lines();
+    let current = lines.next().unwrap_or_default();
+    if current == name {
+        return Some(marker);
+    }
+    let now = unix_secs(SystemTime::now());
+    let mut log: Vec<(String, u64)> = lines.filter_map(parse_record).collect();
+    log.retain(|(file, _)| *file != name && file != current);
+    if !current.is_empty() {
+        log.push((current.to_owned(), now));
+    }
+    let excess = log.len().saturating_sub(SUPERSESSION_LOG_LIMIT);
+    log.drain(..excess);
+    let mut text = format!("{name}\n");
+    for (file, secs) in &log {
+        let _ = writeln!(text, "{file} {secs}");
+    }
+    std::fs::write(&marker, text).ok().map(|()| marker)
+}
+
+/// One `<file> <unix secs>` line of a marker's supersession log.
+fn parse_record(line: &str) -> Option<(String, u64)> {
+    let (file, secs) = line.rsplit_once(' ')?;
+    Some((file.to_owned(), secs.parse().ok()?))
+}
+
+/// When each file in the marker's supersession log was superseded.
+fn supersession_times(marker: &Path) -> HashMap<String, SystemTime> {
+    std::fs::read_to_string(marker)
+        .unwrap_or_default()
+        .lines()
+        .skip(1)
+        .filter_map(parse_record)
+        .map(|(file, secs)| (file, UNIX_EPOCH + Duration::from_secs(secs)))
+        .collect()
+}
+
+fn unix_secs(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn prune_superseded_older_than(keep: &Path, stem: &str, age: Duration) {
-    let Some(dir) = keep.parent() else {
-        return;
-    };
-    let (Some(marker), Ok(entries)) = (record_selection(dir, stem, keep), std::fs::read_dir(dir))
-    else {
+    let Some((marker, entries)) = keep.parent().and_then(|dir| {
+        Some((
+            record_selection(dir, stem, keep)?,
+            std::fs::read_dir(dir).ok()?,
+        ))
+    }) else {
         return;
     };
     let prefix = format!("{stem}-");
     let now = SystemTime::now();
-    // A superseded file was superseded when the selection last moved to the
-    // kept file (the marker's mtime). The kept file's own mtime is not used:
-    // it is not refreshed when the file is selected again.
-    let selected_at = std::fs::metadata(&marker)
+    let times = supersession_times(&marker);
+    // A file the log does not name (an old marker, or a record dropped past
+    // the limit) is dated by the marker's mtime, the latest move, or by its
+    // own mtime when that is later: never too early.
+    let last_move = std::fs::metadata(&marker)
         .and_then(|meta| meta.modified())
         .ok();
     for entry in entries.flatten() {
@@ -126,12 +183,10 @@ fn prune_superseded_older_than(keep: &Path, stem: &str, age: Duration) {
                 .is_some_and(|hash| {
                     hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit())
                 });
-            is_sibling
-                && modified.is_some_and(|modified| {
-                    let superseded_at =
-                        selected_at.map_or(modified, |selected| selected.max(modified));
-                    now.duration_since(superseded_at).unwrap_or_default() >= age
-                })
+            is_sibling && {
+                let superseded_at = times.get(&name).copied().or(last_move.max(modified));
+                superseded_at.is_some_and(|at| now.duration_since(at).unwrap_or_default() >= age)
+            }
         };
         if stale && path != keep {
             let _ = std::fs::remove_file(path);
@@ -231,9 +286,13 @@ mod tests {
         assert!(other_stem.exists());
         assert!(dir.join("vespera_spec-app-short.json").exists());
 
-        // A missing directory / root path is a no-op.
+        // A missing directory is a no-op, and so is a lone file with no
+        // superseded siblings.
         prune_superseded(&dir.join("missing").join("x.json"), "x");
-        prune_superseded(Path::new("/"), "x");
+        let lone = content_addressed(dir, "lone", 9);
+        fs::write(&lone, "{}").unwrap();
+        prune_superseded(&lone, "lone");
+        assert!(lone.exists());
     }
 
     /// A temp file a process left behind (killed between the write and the
@@ -271,6 +330,25 @@ mod tests {
             .unwrap();
     }
 
+    /// Sets when `file` was superseded, in the marker's log, to `ago` before
+    /// now (a test's clock).
+    fn age_record(marker: &Path, file: &Path, ago: Duration) {
+        let name = file.file_name().unwrap().to_string_lossy().into_owned();
+        let at = unix_secs(SystemTime::now() - ago);
+        let mut text = String::new();
+        for line in fs::read_to_string(marker).unwrap().lines() {
+            match parse_record(line) {
+                Some((record, _)) if record == name => {
+                    let _ = writeln!(text, "{record} {at}");
+                }
+                _ => {
+                    let _ = writeln!(text, "{line}");
+                }
+            }
+        }
+        fs::write(marker, text).unwrap();
+    }
+
     /// The grace period of a superseded file runs from the selection that
     /// superseded it, not from its own creation: a file written an hour ago,
     /// superseded just now, is kept.
@@ -299,7 +377,7 @@ mod tests {
 
     /// Reselecting a kept file without rewriting it moves the supersession
     /// time of the file it replaced: `b` superseded by `a`'s reselection just
-    /// now survives its grace period, though `b` and `a` were both written
+    /// now survives its grace period, though `b` and `a` were both selected
     /// long ago.
     #[test]
     fn reselecting_an_unchanged_file_restarts_the_grace_of_the_one_it_replaced() {
@@ -312,23 +390,130 @@ mod tests {
         let grace = Duration::from_secs(10 * 60);
         fs::write(&a, "{}").unwrap();
         fs::write(&b, "{}").unwrap();
-        set_age(&a, Duration::from_secs(30 * 60));
-        set_age(&b, Duration::from_secs(29 * 60));
 
-        // `a` selected 30 minutes ago, `b` selected a minute later.
+        // `a` selected, then `b` selected (`a` superseded 30 minutes ago).
         prune_superseded_older_than(&a, stem, Duration::MAX);
-        set_age(&marker, Duration::from_secs(30 * 60));
         prune_superseded_older_than(&b, stem, Duration::MAX);
-        set_age(&marker, Duration::from_secs(29 * 60));
-        // `a` is reselected without a rewrite, 2 minutes ago.
+        age_record(&marker, &a, Duration::from_secs(30 * 60));
+        // `a` is reselected, which supersedes `b` just now.
         prune_superseded_older_than(&a, stem, Duration::MAX);
-        set_age(&marker, Duration::from_secs(2 * 60));
+        age_record(&marker, &b, Duration::from_secs(2 * 60));
         prune_superseded_older_than(&a, stem, grace);
         assert!(b.exists(), "superseded just now, inside its grace period");
 
-        set_age(&marker, Duration::from_secs(20 * 60));
+        age_record(&marker, &b, Duration::from_secs(20 * 60));
         prune_superseded_older_than(&a, stem, grace);
         assert!(!b.exists());
         assert!(a.exists());
+    }
+
+    /// Several selection moves inside one grace window: each superseded file
+    /// keeps its own record, so the marker's refreshed mtime (the latest move)
+    /// does not postpone a file superseded longer ago.
+    #[test]
+    fn quick_moves_do_not_postpone_each_superseded_file() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let stem = "vespera_spec-app";
+        let (a, b, c) = (
+            content_addressed(dir, stem, 1),
+            content_addressed(dir, stem, 2),
+            content_addressed(dir, stem, 3),
+        );
+        let marker = dir.join("vespera_spec-app.selected");
+        for file in [&a, &b, &c] {
+            fs::write(file, "{}").unwrap();
+            prune_superseded_older_than(file, stem, Duration::MAX);
+        }
+        age_record(&marker, &a, Duration::from_secs(30 * 60));
+        age_record(&marker, &b, Duration::from_secs(5 * 60));
+        let grace = Duration::from_secs(10 * 60);
+
+        prune_superseded_older_than(&c, stem, grace);
+        assert!(!a.exists(), "superseded 30 minutes ago");
+        assert!(b.exists(), "superseded 5 minutes ago");
+        assert!(c.exists());
+
+        age_record(&marker, &b, Duration::from_secs(11 * 60));
+        prune_superseded_older_than(&c, stem, grace);
+        assert!(!b.exists());
+        assert!(c.exists());
+    }
+
+    /// The log keeps at most [`SUPERSESSION_LOG_LIMIT`] records, the newest.
+    #[test]
+    fn supersession_log_stays_bounded() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let stem = "vespera_spec-app";
+        let marker = dir.join("vespera_spec-app.selected");
+        let moves = u64::try_from(SUPERSESSION_LOG_LIMIT + 10).unwrap();
+        for hash in 1..=moves {
+            let file = content_addressed(dir, stem, hash);
+            fs::write(&file, "{}").unwrap();
+            prune_superseded_older_than(&file, stem, Duration::MAX);
+        }
+        let text = fs::read_to_string(&marker).unwrap();
+        assert_eq!(text.lines().count(), SUPERSESSION_LOG_LIMIT + 1, "{text}");
+        let oldest = content_addressed(dir, stem, 1);
+        let oldest = oldest.file_name().unwrap().to_string_lossy();
+        assert!(!text.contains(oldest.as_ref()), "{text}");
+    }
+
+    /// A marker from before the log (one name, no newline) still selects: its
+    /// superseded file is dated by the marker's mtime, and log lines that do
+    /// not parse are dropped on the next move.
+    #[test]
+    fn old_single_line_marker_still_parses() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let stem = "vespera_spec-app";
+        let keep = content_addressed(dir, stem, 1);
+        let old = content_addressed(dir, stem, 2);
+        let marker = dir.join("vespera_spec-app.selected");
+        fs::write(&keep, "{}").unwrap();
+        fs::write(&old, "{}").unwrap();
+        fs::write(
+            &marker,
+            keep.file_name().unwrap().to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        set_age(&marker, Duration::from_secs(60 * 60));
+        set_age(&old, Duration::from_secs(2 * 60 * 60));
+
+        prune_superseded_older_than(&keep, stem, Duration::from_secs(10 * 60));
+        assert!(!old.exists());
+        assert!(keep.exists());
+    }
+
+    #[test]
+    fn log_lines_that_are_not_records_are_dropped() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let stem = "vespera_spec-app";
+        let keep = content_addressed(dir, stem, 1);
+        let next = content_addressed(dir, stem, 2);
+        let marker = dir.join("vespera_spec-app.selected");
+        fs::write(&keep, "{}").unwrap();
+        fs::write(&marker, "stale\nnot a record\n\nfile-x 12x\n").unwrap();
+
+        prune_superseded_older_than(&next, stem, Duration::MAX);
+        let text = fs::read_to_string(&marker).unwrap();
+        assert_eq!(text.lines().count(), 2, "{text}");
+        assert!(text.contains("stale "), "{text}");
+    }
+
+    /// A prune in a directory that has no marker yet creates it, naming `keep`.
+    #[test]
+    fn first_selection_writes_the_marker() {
+        let temp = TempDir::new().unwrap();
+        let keep = content_addressed(temp.path(), "vespera_spec-app", 1);
+        fs::write(&keep, "{}").unwrap();
+        prune_superseded(&keep, "vespera_spec-app");
+        let text = fs::read_to_string(temp.path().join("vespera_spec-app.selected")).unwrap();
+        assert_eq!(
+            text,
+            format!("{}\n", keep.file_name().unwrap().to_string_lossy())
+        );
     }
 }
