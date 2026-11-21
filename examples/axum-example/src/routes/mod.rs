@@ -172,7 +172,7 @@ pub async fn mod_file_with_test_struct(Query(query): Query<TestStruct>) -> Json<
     Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize, vespera::Schema,
 )]
 #[serde(rename_all = "camelCase")]
-#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "terms_terms_type")]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "terms_type")]
 pub enum TermsType {
     #[sea_orm(string_value = "terms")]
     Terms,
