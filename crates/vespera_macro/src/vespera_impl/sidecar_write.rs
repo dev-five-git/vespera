@@ -151,11 +151,12 @@ fn unix_secs(time: SystemTime) -> u64 {
 }
 
 fn prune_superseded_older_than(keep: &Path, stem: &str, age: Duration) {
-    let Some(dir) = keep.parent() else {
-        return;
-    };
-    let (Some(marker), Ok(entries)) = (record_selection(dir, stem, keep), std::fs::read_dir(dir))
-    else {
+    let Some((marker, entries)) = keep.parent().and_then(|dir| {
+        Some((
+            record_selection(dir, stem, keep)?,
+            std::fs::read_dir(dir).ok()?,
+        ))
+    }) else {
         return;
     };
     let prefix = format!("{stem}-");
