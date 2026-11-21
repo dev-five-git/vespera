@@ -28,7 +28,7 @@ fn sources_of(items: &[syn::Item]) -> Vec<ViewSource<'_>> {
 
 /// The [`FlatKind`] of each of `items` that has one, by Rust ident (the test
 /// items declare distinct idents).
-fn kinds_by_ident(items: &[syn::Item]) -> BTreeMap<String, FlatKind> {
+pub(super) fn kinds_by_ident(items: &[syn::Item]) -> BTreeMap<String, FlatKind> {
     let flat = FlatKinds::of(&sources_of(items));
     items
         .iter()
@@ -38,7 +38,7 @@ fn kinds_by_ident(items: &[syn::Item]) -> BTreeMap<String, FlatKind> {
 }
 
 /// `names` with a `module::Ident` key per source.
-fn scoped_names(
+pub(super) fn scoped_names(
     sources: &[(&str, Option<&str>, Option<&str>, &str)],
     taken: &[&str],
 ) -> Vec<(String, String)> {

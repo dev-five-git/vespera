@@ -4,10 +4,10 @@ mod conversion;
 pub mod generic_instances;
 pub mod nullable;
 
-pub(super) use conversion::is_external_crate_path;
 pub use conversion::{
     is_builtin_openapi_type, is_primitive_type, is_std_duration_path, parse_type_to_schema_ref,
 };
+pub(super) use conversion::{is_external_crate_path, is_external_crate_root};
 
 #[cfg(test)]
 mod tests {

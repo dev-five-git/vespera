@@ -19,7 +19,7 @@ fn extract_ok_payload_and_headers(
         known_schemas: &known_schemas,
         struct_definitions: &struct_definitions,
     };
-    let payload = body_element(ok_ty, shadows).map(|body| unwrap_json(body).clone());
+    let payload = body_element(ok_ty, shadows).map(|body| unwrap_json(body, shadows).clone());
     (payload, has_header_map(ok_ty, shadows).then(BTreeMap::new))
 }
 
@@ -399,19 +399,51 @@ fn test_extract_result_types_with_reference() {
     assert_eq!(quote::quote!(#err_ty).to_string(), "i32");
 }
 
+/// `unwrap_json` with no user types in scope.
+fn unwrap_plain(ty: &Type) -> &Type {
+    let known_schemas: HashSet<&str> = HashSet::new();
+    let struct_definitions: HashMap<&str, &str> = HashMap::new();
+    unwrap_json(
+        ty,
+        Shadows {
+            known_schemas: &known_schemas,
+            struct_definitions: &struct_definitions,
+        },
+    )
+}
+
 #[test]
 fn test_unwrap_json_non_json() {
     // Test unwrap_json with non-Json type returns original
     let ty: syn::Type = syn::parse_str("String").unwrap();
     // The very same type, not a rebuilt one.
-    assert!(std::ptr::eq(unwrap_json(&ty), &raw const ty));
+    assert!(std::ptr::eq(unwrap_plain(&ty), &raw const ty));
+}
+
+/// Round 37: a user type named `Json` is the body as written, not its payload;
+/// the axum wrapper (also through `vespera::`) still unwraps.
+#[test]
+fn user_type_named_json_is_not_unwrapped() {
+    let known_schemas: HashSet<&str> = HashSet::from(["Json"]);
+    let struct_definitions: HashMap<&str, &str> = HashMap::new();
+    let shadows = Shadows {
+        known_schemas: &known_schemas,
+        struct_definitions: &struct_definitions,
+    };
+    let user: Type = syn::parse_str("Json<Input>").unwrap();
+    assert!(std::ptr::eq(unwrap_json(&user, shadows), &raw const user));
+    let axum: Type = syn::parse_str("vespera::axum::Json<Input>").unwrap();
+    let Type::Path(payload) = unwrap_json(&axum, shadows) else {
+        panic!("the payload is a path")
+    };
+    assert_eq!(payload.path.segments.last().unwrap().ident, "Input");
 }
 
 #[test]
 fn test_unwrap_json_with_json() {
     // Test unwrap_json with Json<T>
     let ty: syn::Type = syn::parse_str("Json<String>").unwrap();
-    let unwrapped = unwrap_json(&ty);
+    let unwrapped = unwrap_plain(&ty);
     // Should unwrap to String
     if let syn::Type::Path(type_path) = unwrapped {
         assert_eq!(
@@ -589,7 +621,7 @@ fn plain_tuple_return_with_struct_body_references_schema() {
 fn test_unwrap_json_qualified_path() {
     // vespera::axum::Json<String> → should unwrap to String via last-segment matching
     let ty: syn::Type = syn::parse_str("vespera::axum::Json<String>").unwrap();
-    let unwrapped = unwrap_json(&ty);
+    let unwrapped = unwrap_plain(&ty);
     if let syn::Type::Path(type_path) = unwrapped {
         assert_eq!(
             type_path.path.segments.last().unwrap().ident.to_string(),
@@ -604,7 +636,7 @@ fn test_unwrap_json_qualified_path() {
 fn test_unwrap_json_non_generic_path() {
     // Type with segments but no angle brackets → returns original
     let ty: syn::Type = syn::parse_str("std::string::String").unwrap();
-    assert!(std::ptr::eq(unwrap_json(&ty), &raw const ty));
+    assert!(std::ptr::eq(unwrap_plain(&ty), &raw const ty));
 }
 
 #[test]

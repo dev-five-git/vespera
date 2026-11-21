@@ -20,7 +20,6 @@ pub(super) fn collect_qualified_route_types(
     current_module: &str,
     route_module_files: &HashMap<&str, &str>,
     file_cache: &dyn AstLookup,
-    known: &HashSet<&str>,
     out: &mut Vec<String>,
 ) {
     match ty {
@@ -31,7 +30,6 @@ pub(super) fn collect_qualified_route_types(
                     current_module,
                     route_module_files,
                     file_cache,
-                    known,
                 )
             {
                 out.push(ident);
@@ -46,7 +44,6 @@ pub(super) fn collect_qualified_route_types(
                             current_module,
                             route_module_files,
                             file_cache,
-                            known,
                             out,
                         );
                     }
@@ -57,14 +54,15 @@ pub(super) fn collect_qualified_route_types(
         | Type::Array(syn::TypeArray { elem, .. })
         | Type::Slice(syn::TypeSlice { elem, .. })
         | Type::Paren(syn::TypeParen { elem, .. })
-        | Type::Group(syn::TypeGroup { elem, .. }) => collect_qualified_route_types(
-            elem,
-            current_module,
-            route_module_files,
-            file_cache,
-            known,
-            out,
-        ),
+        | Type::Group(syn::TypeGroup { elem, .. }) => {
+            collect_qualified_route_types(
+                elem,
+                current_module,
+                route_module_files,
+                file_cache,
+                out,
+            );
+        }
         Type::Tuple(tuple) => {
             for elem in &tuple.elems {
                 collect_qualified_route_types(
@@ -72,7 +70,6 @@ pub(super) fn collect_qualified_route_types(
                     current_module,
                     route_module_files,
                     file_cache,
-                    known,
                     out,
                 );
             }
@@ -89,7 +86,6 @@ fn qualified_route_type(
     current_module: &str,
     route_module_files: &HashMap<&str, &str>,
     file_cache: &dyn AstLookup,
-    known: &HashSet<&str>,
 ) -> Option<String> {
     if path.leading_colon.is_some() {
         return None;
@@ -104,7 +100,6 @@ fn qualified_route_type(
         last,
         route_module_files,
         file_cache,
-        known,
         &mut found,
     );
     found.into_iter().next()

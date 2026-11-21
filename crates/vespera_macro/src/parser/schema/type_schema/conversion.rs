@@ -162,28 +162,36 @@ fn unsigned_integer(format: &str, maximum: Option<f64>) -> SchemaRef {
 /// `--extern` list is no substitute: it is empty outside rustc).
 pub(in crate::parser::schema) fn is_external_crate_path(path: &syn::Path) -> bool {
     path.segments.len() > 1
-        && path.segments.first().is_some_and(|root| {
-            matches!(
-                root.ident.unraw().to_string().as_str(),
-                "std"
-                    | "core"
-                    | "alloc"
-                    | "chrono"
-                    | "time"
-                    | "sea_orm"
-                    | "rust_decimal"
-                    | "bigdecimal"
-                    | "uuid"
-                    | "url"
-                    | "http"
-                    | "axum"
-                    | "axum_extra"
-                    | "headers"
-                    | "serde_json"
-                    | "tempfile"
-                    | "vespera"
-            )
-        })
+        && path
+            .segments
+            .first()
+            .is_some_and(|root| is_external_crate_root(&root.ident.unraw().to_string()))
+}
+
+/// Whether `root` (the first segment of a module-qualified path) names one of
+/// the external crates [`is_external_crate_path`] recognizes. Also used on
+/// string keys (`serde_json::Value`), where no `syn::Path` exists.
+pub(in crate::parser::schema) fn is_external_crate_root(root: &str) -> bool {
+    matches!(
+        root,
+        "std"
+            | "core"
+            | "alloc"
+            | "chrono"
+            | "time"
+            | "sea_orm"
+            | "rust_decimal"
+            | "bigdecimal"
+            | "uuid"
+            | "url"
+            | "http"
+            | "axum"
+            | "axum_extra"
+            | "headers"
+            | "serde_json"
+            | "tempfile"
+            | "vespera"
+    )
 }
 
 /// Whether a documented component claims the name `path` names: its last

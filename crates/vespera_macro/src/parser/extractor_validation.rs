@@ -13,14 +13,20 @@
 //! This pass turns that silent footgun into a hard compile error, scoped to the
 //! cases the macro can prove: a struct or enum **declared in the handler's own
 //! file**, or one imported (`crate::` / `self::` / `super::` path, `as` renames
-//! included) from **another route file** that declares it, that is absent from
-//! `known_schema_names`. Primitives, containers, maps, types outside the route
-//! folder, and `Schema`-deriving types are never flagged — the macro cannot
-//! prove `Schema` for types it cannot name-resolve, and a false positive there
-//! would be worse than the residual false negative (e.g. a type declared in a
-//! route-folder file with no `#[route]` handler). Test-only routes
+//! included) from **another route file** that declares it, whose own
+//! declaration does not derive `Schema` (read from its attributes, see
+//! [`declaration`]; a `Schema` type of the same name elsewhere does not count).
+//! Primitives, containers, maps, types outside the route folder, and
+//! `Schema`-deriving types are never flagged — the macro cannot prove `Schema`
+//! for types it cannot name-resolve, and a false positive there would be worse
+//! than the residual false negative (e.g. a type declared in a route-folder file
+//! with no `#[route]` handler). Test-only routes
 //! (`CollectedMetadata::test_only_routes`) are never documented, so they are
 //! not checked either.
+//!
+//! Explicit limit: a glob import (`use crate::routes::other::*;`) brings route
+//! types into scope without naming them, so its types are not checked. Globs
+//! stay lenient on purpose; name the type in the `use` to have it checked.
 
 use std::collections::{HashMap, HashSet};
 
@@ -32,8 +38,10 @@ use crate::collector::test_scope::attrs_test_only;
 use crate::metadata::CollectedMetadata;
 use crate::schema_macro::type_utils::option_inner;
 
+mod declaration;
 mod qualified;
 
+use declaration::non_schema_type_names;
 use qualified::collect_qualified_route_types;
 
 /// Request/query extractors whose generic argument must be a documented type.
@@ -104,13 +112,6 @@ impl AstLookup for Both<'_> {
 }
 
 fn check_extractors(metadata: &CollectedMetadata, file_cache: &dyn AstLookup) -> syn::Result<()> {
-    // Renamed schemas (`#[schema(name = "X")] struct Foo`) are known under
-    // their Rust ident too — that is the name a handler signature uses.
-    let known: HashSet<&str> = metadata
-        .structs
-        .iter()
-        .flat_map(|s| std::iter::once(s.name.as_str()).chain(s.rust_ident.as_deref()))
-        .collect();
     // Map each route file's module path → its file path so an absolute
     // `crate::<route-module>::Type` import can be resolved back to the route file
     // and checked: a path that resolves *inside* the route folder names a route
@@ -144,16 +145,8 @@ fn check_extractors(metadata: &CollectedMetadata, file_cache: &dyn AstLookup) ->
         let (local_types, imported_route_types) = &*file_analysis
             .entry(route.file_path.as_str())
             .or_insert_with(|| {
-                // Types physically declared in this route file (structs + enums).
-                let local_types: HashSet<String> = ast
-                    .items
-                    .iter()
-                    .filter_map(|item| match item {
-                        syn::Item::Struct(s) => Some(s.ident.to_string()),
-                        syn::Item::Enum(e) => Some(e.ident.to_string()),
-                        _ => None,
-                    })
-                    .collect();
+                // Non-`Schema` types physically declared in this route file.
+                let local_types = non_schema_type_names(ast);
                 // Non-`Schema` types imported from another route file via a
                 // `crate`/`self`/`super` path (resolved against this file's module).
                 let mut imported_route_types = HashSet::new();
@@ -162,7 +155,6 @@ fn check_extractors(metadata: &CollectedMetadata, file_cache: &dyn AstLookup) ->
                     &route.module_path,
                     &route_module_files,
                     file_cache,
-                    &known,
                     &mut imported_route_types,
                 );
                 (local_types, imported_route_types)
@@ -186,9 +178,7 @@ fn check_extractors(metadata: &CollectedMetadata, file_cache: &dyn AstLookup) ->
             let mut idents = Vec::new();
             collect_custom_type_idents(inner, &route.module_path, &mut idents);
             for ident in idents {
-                let local_without_schema =
-                    local_types.contains(&ident) && !known.contains(ident.as_str());
-                if local_without_schema || imported_route_types.contains(&ident) {
+                if local_types.contains(&ident) || imported_route_types.contains(&ident) {
                     return Err(non_schema_extractor_error(
                         &route.function_name,
                         extractor,
@@ -203,7 +193,6 @@ fn check_extractors(metadata: &CollectedMetadata, file_cache: &dyn AstLookup) ->
                 &route.module_path,
                 &route_module_files,
                 file_cache,
-                &known,
                 &mut qualified,
             );
             if let Some(ident) = qualified.first() {
@@ -403,7 +392,6 @@ fn collect_imported_route_types(
     current_module: &str,
     route_module_files: &HashMap<&str, &str>,
     file_cache: &dyn AstLookup,
-    known: &HashSet<&str>,
     out: &mut HashSet<String>,
 ) {
     let current: Vec<&str> = current_module.split("::").collect();
@@ -411,7 +399,7 @@ fn collect_imported_route_types(
         if let syn::Item::Use(item_use) = item
             && let Some((mut base, rest)) = resolve_use_prefix(&item_use.tree, &current)
         {
-            walk_module_path(rest, &mut base, route_module_files, file_cache, known, out);
+            walk_module_path(rest, &mut base, route_module_files, file_cache, out);
         }
     }
 }
@@ -460,7 +448,6 @@ fn walk_module_path(
     module_segments: &mut Vec<String>,
     route_module_files: &HashMap<&str, &str>,
     file_cache: &dyn AstLookup,
-    known: &HashSet<&str>,
     out: &mut HashSet<String>,
 ) {
     match tree {
@@ -471,7 +458,6 @@ fn walk_module_path(
                 module_segments,
                 route_module_files,
                 file_cache,
-                known,
                 out,
             );
             module_segments.pop();
@@ -483,7 +469,6 @@ fn walk_module_path(
                 &name.ident,
                 route_module_files,
                 file_cache,
-                known,
                 out,
             );
         }
@@ -497,20 +482,12 @@ fn walk_module_path(
                 &rename.rename,
                 route_module_files,
                 file_cache,
-                known,
                 out,
             );
         }
         syn::UseTree::Group(group) => {
             for item in &group.items {
-                walk_module_path(
-                    item,
-                    module_segments,
-                    route_module_files,
-                    file_cache,
-                    known,
-                    out,
-                );
+                walk_module_path(item, module_segments, route_module_files, file_cache, out);
             }
         }
         syn::UseTree::Glob(_) => {}
@@ -527,28 +504,15 @@ fn record_route_type(
     bound: &syn::Ident,
     route_module_files: &HashMap<&str, &str>,
     file_cache: &dyn AstLookup,
-    known: &HashSet<&str>,
     out: &mut HashSet<String>,
 ) {
-    if known.contains(declared.to_string().as_str()) {
-        return;
-    }
     let module = module_segments.join("::");
     if let Some(&file_path) = route_module_files.get(module.as_str())
         && let Some(file_ast) = file_cache.ast(file_path)
-        && file_declares_type(file_ast, declared)
+        && non_schema_type_names(file_ast).contains(&declared.to_string())
     {
         out.insert(bound.to_string());
     }
-}
-
-/// Whether `ast` declares a struct or enum named `ident`.
-fn file_declares_type(ast: &syn::File, ident: &syn::Ident) -> bool {
-    ast.items.iter().any(|item| match item {
-        syn::Item::Struct(s) => s.ident == *ident,
-        syn::Item::Enum(e) => e.ident == *ident,
-        _ => false,
-    })
 }
 
 #[cfg(test)]
@@ -578,18 +542,13 @@ mod tests {
         }
     }
 
-    fn run(src: &str, fn_name: &str, structs: &[&str]) -> syn::Result<()> {
-        run_route(src, route(fn_name, "f.rs"), structs)
+    fn run(src: &str, fn_name: &str) -> syn::Result<()> {
+        run_route(src, route(fn_name, "f.rs"))
     }
 
-    fn run_route(src: &str, route: RouteMetadata, structs: &[&str]) -> syn::Result<()> {
+    fn run_route(src: &str, route: RouteMetadata) -> syn::Result<()> {
         let mut metadata = CollectedMetadata::new();
         metadata.routes.push(route);
-        for name in structs {
-            metadata
-                .structs
-                .push(StructMetadata::new((*name).to_string(), String::new()));
-        }
         let ast: syn::File = syn::parse_str(src).expect("source parses");
         let mut file_cache = HashMap::new();
         file_cache.insert("f.rs".to_string(), ast);
@@ -602,7 +561,7 @@ mod tests {
             pub struct Local { pub a: i32 }
             pub fn handler(Query(q): Query<Local>) -> String { String::new() }
         ";
-        let err = run(src, "handler", &[]).expect_err("should error");
+        let err = run(src, "handler").expect_err("should error");
         let msg = err.to_string();
         assert!(msg.contains("Local"), "got: {msg}");
         assert!(msg.contains("Query<Local>"), "got: {msg}");
@@ -625,7 +584,7 @@ mod tests {
         );
         let mut route = route("handler", "f.rs");
         route.method = method.to_string();
-        let err = run_route(&src, route, &[]).expect_err("should error");
+        let err = run_route(&src, route).expect_err("should error");
         assert!(
             err.to_string().contains("does not derive `Schema`"),
             "got: {err}"
@@ -634,12 +593,12 @@ mod tests {
 
     #[test]
     fn local_struct_with_schema_is_ok() {
-        // `Local` present in metadata.structs ⇒ it derived Schema.
+        // `Local` derives Schema in its own declaration ⇒ not flagged.
         let src = r"
-            pub struct Local { pub a: i32 }
+            #[derive(Schema)] pub struct Local { pub a: i32 }
             pub fn handler(Query(q): Query<Local>) -> String { String::new() }
         ";
-        assert!(run(src, "handler", &["Local"]).is_ok());
+        assert!(run(src, "handler").is_ok());
     }
 
     #[test]
@@ -648,7 +607,7 @@ mod tests {
         let src = r"
             pub fn handler(Query(q): Query<External>) -> String { String::new() }
         ";
-        assert!(run(src, "handler", &[]).is_ok());
+        assert!(run(src, "handler").is_ok());
     }
 
     #[test]
@@ -657,7 +616,7 @@ mod tests {
             pub struct Local { pub a: i32 }
             pub fn handler(Validated(Json(b)): Validated<Json<Local>>) -> String { String::new() }
         ";
-        let err = run(src, "handler", &[]).expect_err("should error");
+        let err = run(src, "handler").expect_err("should error");
         assert!(err.to_string().contains("Json<Local>"), "{err}");
     }
 
@@ -673,7 +632,7 @@ mod tests {
             let src = format!(
                 "pub struct Local {{ pub a: i32 }} pub fn handler({arg}) -> String {{ String::new() }}"
             );
-            let err = run(&src, "handler", &[]).expect_err(arg);
+            let err = run(&src, "handler").expect_err(arg);
             assert!(err.to_string().contains("<Local>"), "{arg}: {err}");
         }
     }
@@ -684,7 +643,7 @@ mod tests {
             pub struct Local { pub a: i32 }
             pub fn handler(Json(b): Json<Vec<Local>>) -> String { String::new() }
         ";
-        assert!(run(src, "handler", &[]).is_err());
+        assert!(run(src, "handler").is_err());
     }
 
     #[test]
@@ -692,7 +651,7 @@ mod tests {
         let src = r"
             pub fn handler(Query(q): Query<String>) -> String { String::new() }
         ";
-        assert!(run(src, "handler", &[]).is_ok());
+        assert!(run(src, "handler").is_ok());
     }
 
     #[test]
@@ -703,7 +662,7 @@ mod tests {
             pub enum Kind { A, B }
             pub fn handler(Json(b): Json<Kind>) -> String { String::new() }
         ";
-        let err = run(src, "handler", &[]).expect_err("should error");
+        let err = run(src, "handler").expect_err("should error");
         assert!(err.to_string().contains("Kind"), "{err}");
     }
 
@@ -715,7 +674,6 @@ mod tests {
             "use super::other::Bar; pub fn handler(Json(b): Json<Bar>) -> String { String::new() }",
             "routes::other",
             "pub struct Bar { pub a: i32 }",
-            &[],
         )
         .expect_err("should flag relative route import");
         assert!(err.to_string().contains("Bar"), "{err}");
@@ -723,13 +681,12 @@ mod tests {
 
     #[test]
     fn relative_super_import_schema_type_is_ok() {
-        // Same relative import, but `Bar` derives Schema (∈ known) ⇒ not flagged.
+        // Same relative import, but `Bar` derives Schema in its declaration ⇒ not flagged.
         assert!(
             run_with_route_sibling(
                 "use super::other::Bar; pub fn handler(Json(b): Json<Bar>) -> String { String::new() }",
                 "routes::other",
-                "pub struct Bar { pub a: i32 }",
-                &["Bar"],
+                "#[derive(Schema)] pub struct Bar { pub a: i32 }",
             )
             .is_ok()
         );
@@ -743,7 +700,7 @@ mod tests {
             use crate::models::Bar;
             pub fn handler(Json(b): Json<Bar>) -> String { String::new() }
         ";
-        assert!(run(src, "handler", &[]).is_ok());
+        assert!(run(src, "handler").is_ok());
     }
 
     /// Two-file metadata: a `handler` route plus a sibling route module `other`.
@@ -751,7 +708,19 @@ mod tests {
         handler_src: &str,
         sibling_module: &str,
         sibling_src: &str,
-        known: &[&str],
+    ) -> syn::Result<()> {
+        check_siblings(handler_src, sibling_module, sibling_src, &[])
+    }
+
+    /// [`run_with_route_sibling`] plus `crate_schema_names`: `Schema` structs the
+    /// crate documents elsewhere (a `models` file, say). They are registered in
+    /// the metadata, and must not change the verdict for the sibling's own
+    /// declaration of the same name.
+    fn check_siblings(
+        handler_src: &str,
+        sibling_module: &str,
+        sibling_src: &str,
+        crate_schema_names: &[&str],
     ) -> syn::Result<()> {
         let mut metadata = CollectedMetadata::new();
         let mut handler = route("handler", "handler.rs");
@@ -761,7 +730,7 @@ mod tests {
         let mut sibling = route("sibling", &sibling_file);
         sibling.module_path = sibling_module.to_string();
         metadata.routes.push(sibling);
-        for name in known {
+        for name in crate_schema_names {
             metadata
                 .structs
                 .push(StructMetadata::new((*name).to_string(), String::new()));
@@ -786,7 +755,6 @@ mod tests {
             "use crate::routes::other::Bar; pub fn handler(Json(b): Json<Bar>) -> String { String::new() }",
             "routes::other",
             "pub struct Bar { pub a: i32 }",
-            &[],
         )
         .expect_err("should flag absolute route import");
         assert!(err.to_string().contains("Bar"), "{err}");
@@ -794,13 +762,12 @@ mod tests {
 
     #[test]
     fn absolute_crate_import_into_routes_with_schema_is_ok() {
-        // Same absolute import, but `Bar` derives Schema (∈ known) → not flagged.
+        // Same absolute import, but `Bar` derives Schema in its declaration → not flagged.
         assert!(
             run_with_route_sibling(
                 "use crate::routes::other::Bar; pub fn handler(Json(b): Json<Bar>) -> String { String::new() }",
                 "routes::other",
-                "pub struct Bar { pub a: i32 }",
-                &["Bar"],
+                "#[derive(Schema)] pub struct Bar { pub a: i32 }",
             )
             .is_ok()
         );
@@ -809,13 +776,12 @@ mod tests {
     #[test]
     fn absolute_crate_import_to_non_type_is_not_flagged() {
         // The sibling route module exists but declares no `Bar` type (only a
-        // re-export / fn) → `file_declares_type` is false → not flagged.
+        // re-export / fn) → no non-`Schema` declaration of `Bar` → not flagged.
         assert!(
             run_with_route_sibling(
                 "use crate::routes::other::Bar; pub fn handler(Json(b): Json<Bar>) -> String { String::new() }",
                 "routes::other",
                 "pub fn helper() {}",
-                &[],
             )
             .is_ok()
         );
@@ -830,8 +796,7 @@ mod tests {
             run_with_route_sibling(
                 "use crate::routes::other::Bar as B; pub fn handler(Query(q): Query<B>) -> String { String::new() }",
                 "routes::other",
-                "pub struct Bar { pub a: i32 }",
-                &["Bar"],
+                "#[derive(Schema)] pub struct Bar { pub a: i32 }",
             )
             .is_ok()
         );
@@ -844,7 +809,6 @@ mod tests {
             "use crate::routes::other::Bar as B; pub fn handler(Query(q): Query<B>) -> String { String::new() }",
             "routes::other",
             "pub struct Bar { pub a: i32 }",
-            &[],
         )
         .expect_err("should flag aliased non-Schema import");
         assert!(err.to_string().contains("`Query<B>`"), "{err}");
@@ -887,7 +851,7 @@ mod tests {
             use super::super::models::Bar;
             pub fn handler(Json(b): Json<Bar>) -> String { String::new() }
         ";
-        assert!(run(src, "handler", &[]).is_ok());
+        assert!(run(src, "handler").is_ok());
     }
 
     #[test]
@@ -897,7 +861,7 @@ mod tests {
         assert!(check_extractors(&metadata, &HashMap::new()).is_ok());
 
         let src = "struct Local; fn handler(&self, value: Local) {}";
-        assert!(run(src, "handler", &[]).is_ok());
+        assert!(run(src, "handler").is_ok());
     }
 
     #[test]
@@ -961,7 +925,6 @@ mod tests {
             "routes::handler",
             &route_module_files,
             &file_cache,
-            &HashSet::new(),
             &mut out,
         );
         assert_eq!(out, HashSet::from(["Bar".to_string(), "B".to_string()]));
@@ -981,7 +944,6 @@ mod tests {
             "routes::handler",
             &route_module_files,
             &file_cache,
-            &HashSet::new(),
             &mut out,
         );
 
@@ -989,10 +951,17 @@ mod tests {
     }
 
     #[test]
-    fn file_declares_type_accepts_enums_and_ignores_other_items() {
-        let ast: syn::File = syn::parse_quote! { enum Kind { A } fn helper() {} };
-        assert!(file_declares_type(&ast, &syn::parse_quote!(Kind)));
-        assert!(!file_declares_type(&ast, &syn::parse_quote!(helper)));
+    fn schema_type_of_the_same_name_elsewhere_does_not_hide_an_import() {
+        // `models` documents a `Schema` `Bar`, but the route file `other` declares
+        // its own non-`Schema` `Bar`, which the handler imports: still flagged.
+        let err = check_siblings(
+            "use crate::routes::other::Bar; pub fn handler(Json(b): Json<Bar>) -> String { String::new() }",
+            "routes::other",
+            "pub struct Bar { pub a: i32 }",
+            &["Bar"],
+        )
+        .expect_err("a crate-wide `Schema` `Bar` must not hide the non-`Schema` import");
+        assert!(err.to_string().contains("Bar"), "{err}");
     }
 }
 
