@@ -91,13 +91,21 @@ struct Stash {
 }
 
 impl Stash {
-    /// Insert `pending` under `token`, counting its held bytes.
-    fn insert(&mut self, token: u64, at: Instant, pending: PendingDirectResponse) {
+    /// Insert `pending` under `token`, counting its held bytes.  The entry
+    /// it displaces (a re-stash over a live token) is returned, not dropped:
+    /// the caller drops it after the lock is released.
+    fn insert(
+        &mut self,
+        token: u64,
+        at: Instant,
+        pending: PendingDirectResponse,
+    ) -> Option<(Instant, PendingDirectResponse)> {
         let bytes = pending.held_bytes();
         self.held += bytes;
-        if let Some((_, _, replaced)) = self.entries.insert(token, (at, pending, bytes)) {
-            self.held -= replaced;
-        }
+        let (displaced_at, displaced, replaced) =
+            self.entries.insert(token, (at, pending, bytes))?;
+        self.held -= replaced;
+        Some((displaced_at, displaced))
     }
 
     /// Remove `token`'s entry, releasing its counted bytes.
@@ -185,7 +193,9 @@ fn stash_put_within(
             stash.next = stash.next.wrapping_add(1).max(1);
             token
         });
-        stash.insert(token, now, pending);
+        if let Some(displaced) = stash.insert(token, now, pending) {
+            evicted.push(displaced);
+        }
         token
     };
     drop(evicted);
@@ -602,6 +612,14 @@ mod tests {
         assert!(stash_take(third).is_some());
         assert_eq!(stashed_bytes(), 0, "removals release their bytes");
 
+        // A re-stash over a live token displaces that entry: it leaves the
+        // stash and its bytes are released (it is dropped after the lock).
+        let live = put(None, pending());
+        let _ = put(Some(live), pending());
+        assert_eq!(stashed_count(), 1, "the displaced entry left the stash");
+        assert_eq!(stashed_bytes(), each, "its bytes were released");
+        reset_stash();
+
         // A response over the whole budget is kept alone (refusing it would
         // make its handler run again); the entry before it is evicted.
         let over_first = put_within(None, pending(), 0);
@@ -626,6 +644,26 @@ mod tests {
         );
         assert_eq!(stashed_count(), 0, "nothing stored after the close");
         reset_stash();
+    }
+
+    /// `Stash::insert` hands the displaced entry back (the caller drops it
+    /// outside the lock) and keeps the held-byte count exact.  Uses a local
+    /// `Stash`, so it does not race the process-global one.
+    #[test]
+    fn insert_returns_the_displaced_entry() {
+        let mut stash = Stash {
+            next: 1,
+            entries: BTreeMap::new(),
+            held: 0,
+            closed: false,
+        };
+        let now = Instant::now();
+        let each = pending().held_bytes();
+        assert!(stash.insert(5, now, pending()).is_none(), "fresh token");
+        let displaced = stash.insert(5, now, pending());
+        assert!(displaced.is_some(), "the entry at token 5 is returned");
+        assert_eq!(stash.held, each, "the displaced bytes are released");
+        assert_eq!(stash.entries.len(), 1);
     }
 
     fn wire_status(wire: &[u8]) -> String {
