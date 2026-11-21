@@ -105,12 +105,19 @@ fn body_for_type(
         // Check the last segment (handles both Json<T> and vespera::axum::Json<T>)
         let segment = type_path.path.segments.last()?;
         let ident = &segment.ident;
+        // A user type named like an axum wrapper is not the wrapper (an
+        // external-rooted path such as `axum::body::Body` still is).
+        let shadows = Shadows {
+            known_schemas,
+            struct_definitions,
+        };
 
         // Json<T> / Form<T> / TypedMultipart<T> → single media-type request body
         if let Some(media_type) = GENERIC_BODY_EXTRACTORS
             .iter()
             .find_map(|(name, media_type)| (ident == name).then_some(*media_type))
             && let Some(inner_ty) = first_generic_type(segment)
+            && !shadows.names_user_type(ty)
         {
             // Request view: types whose deserialized shape differs reference
             // their `{Name}Input` component (see `schema::request_view`).
@@ -119,13 +126,6 @@ fn body_for_type(
             });
             return Some(single_content_body(media_type, schema));
         }
-
-        // A user type named like an axum wrapper is not the wrapper (an
-        // external-rooted path such as `axum::body::Body` still is).
-        let shadows = Shadows {
-            known_schemas,
-            struct_definitions,
-        };
 
         // Raw Multipart extractor (untyped) → multipart/form-data with generic object schema
         if ident == "Multipart"
@@ -273,6 +273,32 @@ mod tests {
             &defs,
         );
         assert!(external.is_some());
+    }
+
+    /// Round 37: a user `Json<T>` / `Form<T>` is not axum's wrapper, so it does
+    /// not document the wrapper's media type; the qualified axum path still does.
+    #[rstest]
+    #[case::json("Json", "application/json")]
+    #[case::form("Form", "application/x-www-form-urlencoded")]
+    fn user_type_named_like_a_generic_body_extractor_is_not_the_wrapper(
+        #[case] name: &str,
+        #[case] media_type: &str,
+    ) {
+        let definition = format!("pub struct {name}<T> {{ pub inner: T }}");
+        let defs = HashMap::from([(name, definition.as_str())]);
+        let bare: syn::ItemFn =
+            syn::parse_str(&format!("fn test(body: {name}<Input>) {{}}")).unwrap();
+        let qualified: syn::ItemFn =
+            syn::parse_str(&format!("fn test(body: axum::{name}<Input>) {{}}")).unwrap();
+        let shadowed = parse_request_body(bare.sig.inputs.first().unwrap(), &HashSet::new(), &defs);
+        assert!(shadowed.is_none(), "{name}");
+        let external = parse_request_body(
+            qualified.sig.inputs.first().unwrap(),
+            &HashSet::new(),
+            &defs,
+        )
+        .expect("the axum wrapper is a body");
+        assert!(external.content.contains_key(media_type), "{name}");
     }
 
     #[test]

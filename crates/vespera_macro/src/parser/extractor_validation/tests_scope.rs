@@ -6,7 +6,7 @@
 use rstest::rstest;
 
 use super::*;
-use crate::metadata::{CollectedMetadata, RouteMetadata, StructMetadata};
+use crate::metadata::{CollectedMetadata, RouteMetadata};
 
 fn run(src: &str) -> syn::Result<()> {
     run_with_test_only(src, &[])
@@ -204,11 +204,7 @@ fn test_only_twin_must_match_the_route_method(#[case] twin_method: &str, #[case]
 fn production_twin_is_checked_not_the_cfg_test_twin() {
     let mut metadata = CollectedMetadata::new();
     metadata.routes.push(handler_route("post"));
-    metadata.structs.push(crate::metadata::StructMetadata::new(
-        "Body".to_string(),
-        String::new(),
-    ));
-    let src = "pub struct Fixture { pub a: i32 } pub struct Body { pub a: i32 } \
+    let src = "pub struct Fixture { pub a: i32 } #[derive(Schema)] pub struct Body { pub a: i32 } \
                #[cfg(test)] #[route(get)] pub fn handler(Query(q): Query<Fixture>) {} \
                #[route(post)] pub fn handler(Json(b): Json<Body>) {}";
     assert!(check_with(&metadata, src).is_ok());
@@ -221,11 +217,7 @@ fn production_twin_is_checked_not_the_cfg_test_twin() {
 fn production_twin_non_schema_extractor_is_flagged() {
     let mut metadata = CollectedMetadata::new();
     metadata.routes.push(handler_route("post"));
-    metadata.structs.push(crate::metadata::StructMetadata::new(
-        "Body".to_string(),
-        String::new(),
-    ));
-    let src = "pub struct Local { pub a: i32 } pub struct Body { pub a: i32 } \
+    let src = "pub struct Local { pub a: i32 } #[derive(Schema)] pub struct Body { pub a: i32 } \
                #[cfg(test)] #[route(get)] pub fn handler(Json(b): Json<Body>) {} \
                #[route(post)] pub fn handler(Json(l): Json<Local>) {}";
     let message = check_with(&metadata, src)
@@ -272,8 +264,8 @@ fn route_attribute_spellings_pick_the_handler(
 }
 
 /// Two route files: the handler `x.rs` (`routes::x`) and the sibling `other.rs`
-/// (`routes::other`) with `sibling_src`; `known` are the `Schema` type names.
-fn check_with_sibling(handler_src: &str, sibling_src: &str, known: &[&str]) -> syn::Result<()> {
+/// (`routes::other`) with `sibling_src`.
+fn check_with_sibling(handler_src: &str, sibling_src: &str) -> syn::Result<()> {
     let mut metadata = CollectedMetadata::new();
     metadata.routes.push(handler_route("get"));
     let mut sibling = handler_route("get");
@@ -281,11 +273,6 @@ fn check_with_sibling(handler_src: &str, sibling_src: &str, known: &[&str]) -> s
     sibling.module_path = "routes::other".to_string();
     sibling.file_path = "other.rs".to_string();
     metadata.routes.push(sibling);
-    for name in known {
-        metadata
-            .structs
-            .push(StructMetadata::new((*name).to_string(), String::new()));
-    }
     let file_cache = HashMap::from([
         (
             "x.rs".to_string(),
@@ -317,7 +304,7 @@ fn check_with_sibling(handler_src: &str, sibling_src: &str, known: &[&str]) -> s
 #[case::optional_extractor("pub fn handler(v: Option<Query<crate::routes::other::Bar>>) {}")]
 fn inline_qualified_route_types_are_flagged(#[case] handler: &str) {
     let sibling = "pub struct Bar { pub a: i32 }";
-    let message = check_with_sibling(handler, sibling, &[])
+    let message = check_with_sibling(handler, sibling)
         .expect_err(handler)
         .to_string();
     assert!(message.contains("`Bar`"), "{message}");
@@ -329,22 +316,32 @@ fn inline_qualified_route_types_are_flagged(#[case] handler: &str) {
 /// file, a `super` chain that lands outside the route folder, and a `super`
 /// chain that climbs above the crate root.
 #[rstest]
-#[case::schema_declared("pub fn handler(Json(b): Json<crate::routes::other::Bar>) {}", &["Bar"])]
-#[case::other_module("pub fn handler(Json(b): Json<crate::models::Bar>) {}", &[])]
-#[case::external_crate("pub fn handler(Json(b): Json<serde_json::Bar>) {}", &[])]
-#[case::leading_colon("pub fn handler(Json(b): Json<::routes::other::Bar>) {}", &[])]
-#[case::self_path_into_a_child_module("pub fn handler(Json(b): Json<self::other::Bar>) {}", &[])]
+#[case::schema_declared("pub fn handler(Json(b): Json<crate::routes::other::Bar>) {}", true)]
+#[case::other_module("pub fn handler(Json(b): Json<crate::models::Bar>) {}", false)]
+#[case::external_crate("pub fn handler(Json(b): Json<serde_json::Bar>) {}", false)]
+#[case::leading_colon("pub fn handler(Json(b): Json<::routes::other::Bar>) {}", false)]
+#[case::self_path_into_a_child_module("pub fn handler(Json(b): Json<self::other::Bar>) {}", false)]
 // A type the walk does not descend into (a fn pointer) names no document type.
-#[case::fn_pointer_is_not_a_document_type("pub fn handler(Json(b): Json<fn(crate::routes::other::Bar)>) {}", &[])]
-#[case::super_chain_leaves_routes("pub fn handler(Json(b): Json<super::super::other::Bar>) {}", &[])]
-#[case::super_chain_above_root("pub fn handler(Json(b): Json<super::super::super::other::Bar>) {}", &[])]
+#[case::fn_pointer_is_not_a_document_type(
+    "pub fn handler(Json(b): Json<fn(crate::routes::other::Bar)>) {}",
+    false
+)]
+#[case::super_chain_leaves_routes(
+    "pub fn handler(Json(b): Json<super::super::other::Bar>) {}",
+    false
+)]
+#[case::super_chain_above_root(
+    "pub fn handler(Json(b): Json<super::super::super::other::Bar>) {}",
+    false
+)]
 fn inline_qualified_paths_outside_non_schema_route_types_are_ok(
     #[case] handler: &str,
-    #[case] known: &[&str],
+    #[case] sibling_derives_schema: bool,
 ) {
-    let sibling = "pub struct Bar { pub a: i32 }";
-    assert!(
-        check_with_sibling(handler, sibling, known).is_ok(),
-        "{handler}"
-    );
+    let sibling = if sibling_derives_schema {
+        "#[derive(Schema)] pub struct Bar { pub a: i32 }"
+    } else {
+        "pub struct Bar { pub a: i32 }"
+    };
+    assert!(check_with_sibling(handler, sibling).is_ok(), "{handler}");
 }

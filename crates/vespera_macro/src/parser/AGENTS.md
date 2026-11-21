@@ -23,7 +23,7 @@ parser/
 ├── path.rs                         # Path parameter extraction
 ├── extractors.rs                   # Validated<T> / Result / WithRejection / Cached unwrapping
 ├── extractor_validation.rs + extractor_validation/ # Compile-time Schema-backed extractor check
-│                                   #   (extractor_validation/tests_scope.rs)
+│                                   #   (extractor_validation/{declaration,qualified,tests_scope}.rs)
 ├── is_keyword_type.rs              # Response keyword types (HeaderMap / StatusCode / CookieJar / Result; used by response.rs)
 └── snapshots/                      # insta test snapshots
 ```
@@ -33,7 +33,7 @@ parser/schema/
 ├── mod.rs                          # Re-exports the schema public API
 ├── type_schema.rs + type_schema/   # Type → SchemaRef
 │                                   #   type_schema/{conversion.rs + conversion/{schema_def,tests,
-│                                   #   tests_instances}.rs, generic_instances.rs, nullable.rs}
+│                                   #   tests_instances,time_schemas}.rs, generic_instances.rs, nullable.rs}
 ├── struct_schema.rs + struct_schema/ # Struct → JSON Schema
 │                                   #   struct_schema/{flatten,tests,tests_serde_fidelity,
 │                                   #   tests_transparent,tests_wire_names,tests_wire_override}.rs

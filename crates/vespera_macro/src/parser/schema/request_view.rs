@@ -89,7 +89,16 @@ use super::{
 };
 use crate::schema_macro::type_utils::{is_option_type, option_inner};
 
-use super::type_schema::is_external_crate_path;
+use super::type_schema::{is_external_crate_path, is_external_crate_root};
+
+/// The bare ident a module-qualified registry key falls back to (`b::Foo` →
+/// `Foo`). `None` for a path under an external crate: `serde_json::Value` is not
+/// a crate-local `Value`, so the bare name must not decide its view.
+fn bare_fallback(key: &str) -> Option<&str> {
+    let (module, bare) = key.rsplit_once("::")?;
+    let root = module.split("::").next()?;
+    (!is_external_crate_root(root)).then_some(bare)
+}
 
 /// The input components of the documented types.
 ///
@@ -213,9 +222,7 @@ pub fn mentions_input<'a>(types: impl IntoIterator<Item = &'a syn::Type>) -> boo
         let names = names.borrow();
         idents.iter().any(|ident| {
             names.contains_key(ident)
-                || ident
-                    .rsplit_once("::")
-                    .is_some_and(|(_, bare)| names.contains_key(bare))
+                || bare_fallback(ident).is_some_and(|bare| names.contains_key(bare))
         })
     })
 }
@@ -260,13 +267,12 @@ pub fn compute_input_names(sources: &[ViewSource<'_>], taken: &BTreeSet<String>)
         }
     }
     // `b::Foo` resolves through its scoped key when one is registered, else
-    // through the bare ident (as `definition_key` does).
+    // through the bare ident (as `definition_key` does), but never for an
+    // external-crate path (see `bare_fallback`).
     let owner = |ident: &str| {
-        component_of.get(ident).or_else(|| {
-            ident
-                .rsplit_once("::")
-                .and_then(|(_, bare)| component_of.get(bare))
-        })
+        component_of
+            .get(ident)
+            .or_else(|| bare_fallback(ident).and_then(|bare| component_of.get(bare)))
     };
     let flat = FlatKinds::of(sources);
     let mut differs: BTreeSet<&str> = sources
@@ -549,10 +555,14 @@ impl FlatKinds {
         }
     }
 
-    /// The item a type path names (see the type docs).
+    /// The item a type path names (see the type docs). The bare ident is not
+    /// consulted for an external-crate path (as [`Self::claims`] does).
     fn resolve(&self, path: &syn::Path) -> Option<usize> {
         let scoped = lookup_key(path).and_then(|key| self.scoped.get(&key).copied().flatten());
         scoped.or_else(|| {
+            if is_external_crate_path(path) {
+                return None;
+            }
             let ident = path.segments.last()?.ident.to_string();
             self.bare.get(&ident).copied().flatten()
         })
@@ -972,3 +982,5 @@ use idents::{collect_idents, referenced_idents};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_external;

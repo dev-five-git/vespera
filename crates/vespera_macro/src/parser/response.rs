@@ -8,14 +8,16 @@ use super::schema::{is_builtin_openapi_type, parse_type_to_schema_ref};
 use crate::parser::is_keyword_type::{KeywordType, is_keyword_type, is_keyword_type_by_type_path};
 
 /// Unwrap Json<T> to get T
-/// Handles both Json<T> and `vespera::axum::Json`<T> by checking the last segment
-fn unwrap_json(ty: &Type) -> &Type {
+/// Handles both Json<T> and `vespera::axum::Json`<T> by checking the last segment.
+/// A user type named `Json` is not the wrapper and is returned as written.
+fn unwrap_json<'a>(ty: &'a Type, shadows: Shadows<'_>) -> &'a Type {
     // Check the last segment (handles both `Json<T>` and
     // `vespera::axum::Json<T>`). `segments.last()` is `None` for an empty
     // path, so the let-chain replaces the prior `is_empty()` guard + `unwrap()`.
     if let Type::Path(type_path) = ty
         && let Some(segment) = type_path.path.segments.last()
         && segment.ident == "Json"
+        && !shadows.names_user_type(ty)
         && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
         && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
     {
@@ -403,7 +405,7 @@ fn response_content(
         return None;
     }
     content_for_type(
-        unwrap_json(body),
+        unwrap_json(body, shadows),
         body_content_type(body, shadows),
         known_schemas,
         struct_definitions,

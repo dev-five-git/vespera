@@ -16,7 +16,8 @@ use super::{
     renames_to,
 };
 
-/// Whether `items` declare `mod name` (inline or file module).
+/// Whether `items` declare `mod name` (inline or file module). A `#[cfg(test)]`
+/// declaration does not count: the module is absent from a non-test build.
 pub(super) fn declares_mod(items: &[syn::Item], name: &str) -> bool {
     items.iter().any(|item| match item {
         syn::Item::Mod(module) => module.ident == name && !attrs_test_only(&module.attrs),

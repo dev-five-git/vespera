@@ -530,6 +530,10 @@ pub(super) fn collect_named_fields(
         } else {
             skip_flags.skip_serializing_if
         };
+        // Syntactic: only a written `Option<..>` (or a path ending in it) counts.
+        // A type alias of `Option` (`type Nick = Option<String>`) is not
+        // resolved, so its field stays listed as required although serde
+        // accepts it missing (a documented limit, not a spec-accuracy promise).
         let absent_is_none =
             request && is_option_type(&field.ty) && !extract_field_codec(&field.attrs).deserialize;
 
