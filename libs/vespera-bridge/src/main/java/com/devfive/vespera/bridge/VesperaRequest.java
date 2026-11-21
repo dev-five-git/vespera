@@ -341,6 +341,9 @@ public final class VesperaRequest {
      *
      * @throws VesperaClientException on a transport failure (library not
      *         initialised, malformed wire response, streamed body failure)
+     * @throws IllegalArgumentException when the encoded request cannot be
+     *         buffered: a wire past 2 GiB, or a header block past 64 MiB (the
+     *         cases {@link #sendAsync()} completes its future with)
      */
     public VesperaResponse send() {
         if (bodyStream != null) {

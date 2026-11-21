@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.params.ParameterizedTest
@@ -334,7 +335,10 @@ class NativePlatformTest {
         assertEquals("linux-x86_64-musl", NativePlatform.platformKey("linux", "x86_64", true))
         assertEquals("linux-x86_64", NativePlatform.platformKey("linux", "x86_64", false))
         assertEquals("macos-aarch64", NativePlatform.platformKey("macos", "aarch64", true))
-        // The real host probe never throws and yields a valid key.
+        // The real host probe yields a valid key on windows / macos / linux hosts; other
+        // hosts (FreeBSD, Solaris, AIX) get an <os>-<arch> key that PLATFORM_KEY rejects.
+        val hostOs = NativePlatform.detectOs(System.getProperty("os.name", ""))
+        assumeTrue(hostOs in setOf("windows", "macos", "linux"), "host OS $hostOs has no bridge platform key")
         NativePlatform.osOfPlatformKey(NativePlatform.hostPlatform())
     }
 
