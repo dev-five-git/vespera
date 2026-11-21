@@ -202,6 +202,35 @@ public class VesperaSpringdocProperties {
         return key.toString();
     }
 
+    /**
+     * Startup warnings for {@link #specPaths} keys that unbracketed binding
+     * would share with another name. A group is the documented apps plus the
+     * spec-paths keys that have the same {@link #boundMapKey}; it is reported
+     * when it has more than one distinct name and one of them is a key already
+     * in bound form (so it could have come from an unbracketed entry, e.g.
+     * {@code _default} binding as {@code default}). The app without an exact
+     * key of its own then falls back to that key's path. A bracketed key that
+     * is not in bound form (e.g. {@code [_default]}) is never reported.
+     */
+    List<String> specPathCollisions(List<String> documented) {
+        Set<String> names = new LinkedHashSet<>(documented);
+        names.addAll(specPaths.keySet());
+        Map<String, Set<String>> byBoundKey = new LinkedHashMap<>();
+        for (String name : names) {
+            byBoundKey.computeIfAbsent(boundMapKey(name), key -> new LinkedHashSet<>()).add(name);
+        }
+        List<String> warnings = new ArrayList<>();
+        byBoundKey.forEach((boundKey, group) -> {
+            if (group.size() > 1 && group.stream().anyMatch(name -> specPaths.containsKey(name)
+                    && name.equals(boundKey))) {
+                warnings.add("vespera.bridge.springdoc.spec-paths key '" + boundKey + "' is the bound form of apps "
+                        + group + ": an app without its own key may be served that path; key each app as"
+                        + " spec-paths.\"[<app>]\" (e.g. spec-paths.\"[_default]\")");
+            }
+        });
+        return warnings;
+    }
+
     /** {@link #docsPath} without a trailing slash, always starting with {@code /}. */
     String normalizedDocsPath() {
         String path = docsPath == null || docsPath.isBlank() ? "/v3/api-docs/vespera" : docsPath.trim();

@@ -275,9 +275,10 @@ public class VesperaReactiveProxyHandler implements WebHandler {
         }
         return flow
                 .onErrorResume(failure -> fail(out, px, failure))
-                // The client went away. Only a Rust answer that already arrived keeps
-                // its app tag (an answered stream does); a request still queued,
-                // unread or pending in a buffered dispatch does not.
+                // The client went away. Only a Rust answer that already arrived can
+                // teach its app tag (an answered stream does); a request still queued,
+                // unread or pending in a buffered dispatch cannot, so a name that is
+                // not allowlisted is tagged UNKNOWN.
                 .doOnCancel(() -> px.completeCancelled(CLIENT_CLOSED_REQUEST, out.panicked()));
     }
 

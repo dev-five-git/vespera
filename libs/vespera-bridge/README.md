@@ -624,12 +624,14 @@ vespera:
       spec-paths:
         admin: /admin/openapi.json # per-app override
         "[my_app]": /my/openapi.json # recommended for a name with `_` (unbracketed it binds as "myapp")
+        "[_default]": /root.json     # the default app: bracket it too (unbracketed it binds as "default")
       apps: [_default, admin]      # default: _default + vespera.bridge.exposed-apps
       docs-path: /v3/api-docs/vespera # group mode: documents served at <docs-path>/<app> (trailing / ignored; "/" or a pattern fails the startup)
       display-name: vespera        # group mode: Swagger UI label (named apps: "vespera (admin)")
 ```
 
 - **Multi-app (`jni_apps!`):** every documented app gets its own definition (`group`) or is merged with the app header parameter (`merge`). Only `_default` and `vespera.bridge.exposed-apps` are documented by default; `<docs-path>/<app>` answers `404` for any other app, `503` while the native library is not loaded and `502` when the Rust route fails (e.g. no `spec_url` — the reason is logged).
+- **Spec-path keys.** Spring Boot binds an unbracketed map key with `_` and upper-case letters removed (`_default` becomes `default`, `my_app` becomes `myapp`), so `spec-paths._default` would also serve an app named `default`. Write every key that is not plain lower-case letters, digits and `-` in brackets (`"[_default]"`, `"[my_app]"`). A key that is still in bound form and shares its bound name with another documented app is reported by a startup WARN.
 - In `group` mode "Try it out" on a named app's definition does not send `X-Vespera-App` (the Rust document does not know about it); use `merge` mode, or a gateway that selects the app.
 - The documents live under springdoc's `/v3/api-docs/**`, so an existing Spring Security rule for the API docs covers them.
 - The proxy's catch-all `/**` mapping is hidden from springdoc's document whenever springdoc is present.

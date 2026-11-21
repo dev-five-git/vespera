@@ -6,14 +6,11 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalNotFoundException;
-import java.util.List;
 import java.util.Locale;
-import java.util.Objects;
 
 /**
  * "The current OS user" for the ownership checks of
@@ -34,16 +31,13 @@ import java.util.Objects;
  *       other user can replace it);</li>
  *   <li>{@code user.name} looked up by the file system's principal lookup
  *       service;</li>
- *   <li>last resort, only when all of the above are unavailable (no procfs,
- *       no usable {@code java.io.tmpdir} — read-only root file system
- *       containers — and no resolvable {@code user.name}): a probe file in
- *       the directory being verified, and only while that directory is a
- *       real directory that is not group/other-writable, before and after the
- *       probe, with the same file key.</li>
  * </ol>
- * Answers from sources 1–3 are cached for the JVM; the last-resort answer is
- * never cached, so one unverified directory cannot decide the identity used
- * for every later check.
+ * When none of them answers (no procfs, no usable {@code java.io.tmpdir} —
+ * read-only root file system containers — and no resolvable {@code user.name}),
+ * the lookup fails closed with an {@link IOException} that points at
+ * {@code -Dvespera.native.dir}. The directory being verified is never probed:
+ * a probe file in a directory another user controls can be re-owned or
+ * swapped while it is read. Answers are cached for the JVM.
  */
 final class CurrentUser {
 
@@ -57,9 +51,6 @@ final class CurrentUser {
 
         /** {@code user.name} resolved to a principal, or {@code null}. */
         UserPrincipal userNameLookup() throws IOException;
-
-        /** Owner of a probe file created in {@code dir}. */
-        UserPrincipal probeOwnerIn(Path dir) throws IOException;
     }
 
     static final Sources SYSTEM = new Sources() {
@@ -106,11 +97,6 @@ final class CurrentUser {
                 return null;
             }
         }
-
-        @Override
-        public UserPrincipal probeOwnerIn(Path dir) throws IOException {
-            return ownerOfProbe(Files.createTempFile(dir, "vespera-owner-", ".probe"));
-        }
     };
 
     static volatile Sources sources = SYSTEM;
@@ -124,25 +110,26 @@ final class CurrentUser {
         cached = null;
     }
 
-    /** The current user; {@code dirBeingVerified} is consulted only as the guarded last resort. */
-    static UserPrincipal of(Path dirBeingVerified) throws IOException {
+    /**
+     * The current user, from a trusted source only. Fails closed (an
+     * {@link IOException} naming {@code -Dvespera.native.dir}) when none is
+     * available; the directory being verified is never consulted.
+     */
+    static UserPrincipal of() throws IOException {
         UserPrincipal known = cached;
         if (known != null) {
             return known;
         }
-        Sources s = sources;
-        IOException failures = new IOException("cannot determine the current user");
-        UserPrincipal trusted = firstTrusted(s, failures);
-        if (trusted != null) {
-            cached = trusted;
-            return trusted;
-        }
-        try {
-            return guardedProbe(s, dirBeingVerified);
-        } catch (IOException | SecurityException | UnsupportedOperationException inDir) {
-            failures.addSuppressed(inDir);
+        IOException failures = new IOException("cannot determine the current user without probing"
+                + " the extraction directory (no procfs owner, no usable java.io.tmpdir, no resolvable"
+                + " user.name); point -D" + VesperaNativeLoader.NATIVE_DIR_PROPERTY + " or "
+                + VesperaNativeLoader.NATIVE_DIR_ENV + " at a directory only this user can write to");
+        UserPrincipal trusted = firstTrusted(sources, failures);
+        if (trusted == null) {
             throw failures;
         }
+        cached = trusted;
+        return trusted;
     }
 
     private static UserPrincipal firstTrusted(Sources s, IOException failures) {
@@ -170,48 +157,6 @@ final class CurrentUser {
             failures.addSuppressed(e);
         }
         return null;
-    }
-
-    private static UserPrincipal guardedProbe(Sources s, Path dir) throws IOException {
-        Object before = requireProbeable(dir);
-        UserPrincipal owner = s.probeOwnerIn(dir);
-        if (!Objects.equals(before, requireProbeable(dir))) {
-            throw new VesperaNativeLoader.UnsafeDirectoryException(
-                    dir + " changed while probing the current user");
-        }
-        return owner;
-    }
-
-    /**
-     * A real directory nobody but its owner may write to (POSIX), else
-     * {@link VesperaNativeLoader.UnsafeDirectoryException}; returns its file
-     * key (or path) and, on POSIX, its owner, so a swapped or re-owned
-     * directory is detected.
-     */
-    private static Object requireProbeable(Path dir) throws IOException {
-        if (VesperaNativeLoader.posixSupported(dir)) {
-            PosixFileAttributes attrs =
-                    Files.readAttributes(dir, PosixFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-            if (attrs.isSymbolicLink() || !attrs.isDirectory()
-                    || attrs.permissions().contains(PosixFilePermission.GROUP_WRITE)
-                    || attrs.permissions().contains(PosixFilePermission.OTHERS_WRITE)) {
-                throw new VesperaNativeLoader.UnsafeDirectoryException(dir
-                        + " is a link, not a directory or group/other-writable: not probed");
-            }
-            return List.of(key(attrs, dir), attrs.owner());
-        }
-        BasicFileAttributes attrs =
-                Files.readAttributes(dir, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-        if (attrs.isSymbolicLink() || attrs.isOther() || !attrs.isDirectory()) {
-            throw new VesperaNativeLoader.UnsafeDirectoryException(
-                    dir + " is a link/junction or not a directory: not probed");
-        }
-        return key(attrs, dir);
-    }
-
-    private static Object key(BasicFileAttributes attrs, Path dir) {
-        Object key = attrs.fileKey();
-        return key != null ? key : dir.toAbsolutePath();
     }
 
     /**

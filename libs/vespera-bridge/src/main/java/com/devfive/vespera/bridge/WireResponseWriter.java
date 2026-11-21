@@ -24,7 +24,7 @@ import java.util.Objects;
  * <ul>
  *   <li>applying the wire header (status + filtered headers) through
  *       {@link HeaderPolicy.ResponseHeaderAccumulator};</li>
- *   <li>the body-permission gate (no body for {@code 1xx}/{@code 204}/{@code 304}
+ *   <li>the body-permission gate (no body for {@code 1xx}/{@code 204}/{@code 205}/{@code 304}
  *       statuses or {@code HEAD} requests);</li>
  *   <li>the proxy-owned {@code Content-Length}: the exact body length written
  *       for buffered GET-like responses, and — for {@code HEAD} — the
@@ -46,7 +46,8 @@ final class WireResponseWriter {
     // ── Body-permission + Content-Length policy ───────────────────────────
 
     static boolean responseStatusPermitsBody(int status) {
-        return (status < 100 || status >= 200) && status != 204 && status != 304;
+        // 205 Reset Content: the server MUST NOT generate content (RFC 9110 15.3.6).
+        return (status < 100 || status >= 200) && status != 204 && status != 205 && status != 304;
     }
 
     static boolean requestMethodPermitsBody(String method) {
@@ -66,8 +67,8 @@ final class WireResponseWriter {
      * advertises, or {@link #NO_CONTENT_LENGTH} to leave it unset.
      *
      * <ul>
-     *   <li>No-body status ({@code 1xx}/{@code 204}/{@code 304}) → unset: a
-     *       {@code 1xx}/{@code 204} must not carry {@code Content-Length},
+     *   <li>No-body status ({@code 1xx}/{@code 204}/{@code 205}/{@code 304}) → unset: a
+     *       {@code 1xx}/{@code 204}/{@code 205} must not carry {@code Content-Length},
      *       and a {@code 304}'s would describe the selected representation,
      *       not the (empty) message body, so a synthesised {@code 0} is
      *       wrong for all of them (RFC 9110 §8.6).</li>
@@ -272,7 +273,7 @@ final class WireResponseWriter {
         boolean rawContentType = !parsableContentType(head.headers.getFirst(HttpHeaders.CONTENT_TYPE));
         if (!responseStatusPermitsBody(head.status.value())) {
             // No body object at all: a message converter would otherwise
-            // add `Content-Length: 0` to a 1xx / 204 / 304. (No advice runs
+            // add `Content-Length: 0` to a 1xx / 204 / 205 / 304. (No advice runs
             // without a body: an unparsable Content-Type of a bodiless
             // status is dropped.)
             return ResponseEntity.status(head.status)

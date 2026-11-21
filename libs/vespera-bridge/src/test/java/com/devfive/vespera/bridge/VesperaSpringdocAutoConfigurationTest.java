@@ -16,6 +16,8 @@ import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -25,7 +27,7 @@ import org.springframework.web.bind.annotation.RestController;
  * Boot 4, 2.x in the {@code testBoot3} run) with a fake
  * {@link VesperaOpenApiSource} standing in for the native spec route.
  */
-@ExtendWith(NativeConfigReset.class)
+@ExtendWith({NativeConfigReset.class, OutputCaptureExtension.class})
 class VesperaSpringdocAutoConfigurationTest {
 
     /** One client for the class: every request reuses it, none leaks a client per call. */
@@ -172,6 +174,18 @@ class VesperaSpringdocAutoConfigurationTest {
             }
             assertTrue(mentioned, path + ": " + failure);
         }
+    }
+
+    @Test
+    void anUnbracketedSpecPathKeyThatSharesAnAppNameIsWarnedAboutOnce(CapturedOutput output) throws Exception {
+        // `spec-paths.default` is the bound form of `_default` (and of an app named default).
+        try (ConfigurableApplicationContext ctx = start("--vespera.bridge.springdoc.apps=_default,default",
+                "--vespera.bridge.springdoc.spec-paths.default=/root.json")) {
+            assertEquals(200, get(ctx, "/v3/api-docs/vespera/default").statusCode());
+        }
+        String out = output.getAll();
+        assertEquals(1, out.split("is the bound form of apps", -1).length - 1, out);
+        assertTrue(out.contains("[_default, default]"), out);
     }
 
     @Test

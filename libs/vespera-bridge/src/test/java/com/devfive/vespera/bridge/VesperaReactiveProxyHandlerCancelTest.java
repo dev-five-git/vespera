@@ -20,7 +20,9 @@ import reactor.core.Disposable;
  * Client disconnects on the WebFlux proxy and the app tag they leave behind:
  * a request whose wire response reached the proxy keeps the app the client
  * selected; one cancelled before any response (buffered, still computing, or
- * queued) reports {@link AppTags#UNKNOWN} (see {@link VesperaReactiveProxyHandlerTest}
+ * queued) reports {@link AppTags#UNKNOWN} unless its app name is one the
+ * tags know without a Rust answer (the default app or an allowlisted name,
+ * reported as itself) (see {@link VesperaReactiveProxyHandlerTest}
  * for the rest of the handler's behaviour).
  */
 class VesperaReactiveProxyHandlerCancelTest {

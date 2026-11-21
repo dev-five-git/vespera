@@ -16,8 +16,6 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.attribute.UserPrincipal;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
@@ -38,10 +36,7 @@ class CurrentUserTest {
         UserPrincipal process;
         UserPrincipal tmpdir;
         UserPrincipal userName;
-        final List<Path> dirProbes = new ArrayList<>();
-        final List<UserPrincipal> dirAnswers = new ArrayList<>();
         final AtomicInteger trustedCalls = new AtomicInteger();
-        Runnable duringDirProbe = () -> {};
 
         @Override
         public UserPrincipal processOwner() {
@@ -63,13 +58,6 @@ class CurrentUserTest {
                 throw new UnsupportedOperationException("no principal lookup");
             }
             return userName;
-        }
-
-        @Override
-        public UserPrincipal probeOwnerIn(Path dir) {
-            dirProbes.add(dir);
-            duringDirProbe.run();
-            return dirAnswers.get(Math.min(dirProbes.size(), dirAnswers.size()) - 1);
         }
     }
 
@@ -108,11 +96,9 @@ class CurrentUserTest {
         UserPrincipal me = () -> "me";
         Scripted s = install(new Scripted());
         s.process = me;
-        s.dirAnswers.add(MALLORY);
-        assertSame(me, CurrentUser.of(dir));
-        assertSame(me, CurrentUser.of(dir));
+        assertSame(me, CurrentUser.of());
+        assertSame(me, CurrentUser.of());
         assertEquals(1, s.trustedCalls.get(), "cached after the first answer");
-        assertTrue(s.dirProbes.isEmpty(), "the directory being verified is never probed");
     }
 
     @Test
@@ -120,15 +106,12 @@ class CurrentUserTest {
         UserPrincipal me = () -> "me";
         Scripted s = install(new Scripted());
         s.tmpdir = me;
-        s.dirAnswers.add(MALLORY);
-        assertSame(me, CurrentUser.of(dir));
+        assertSame(me, CurrentUser.of());
 
         CurrentUser.resetCache();
         Scripted lookup = install(new Scripted());
         lookup.userName = me;
-        lookup.dirAnswers.add(MALLORY);
-        assertSame(me, CurrentUser.of(dir));
-        assertTrue(s.dirProbes.isEmpty() && lookup.dirProbes.isEmpty());
+        assertSame(me, CurrentUser.of());
     }
 
     @Test
@@ -142,83 +125,29 @@ class CurrentUserTest {
             }
         });
         s.userName = me;
-        s.dirAnswers.add(MALLORY);
-        assertSame(me, CurrentUser.of(dir));
-        assertTrue(s.dirProbes.isEmpty(), "the directory being verified is never probed");
+        assertSame(me, CurrentUser.of());
+    }
+
+    /**
+     * No trusted source (no procfs owner, no usable temp directory, no
+     * resolvable {@code user.name}): the lookup fails closed and never probes
+     * the directory being verified, so the loader cannot accept a directory
+     * on an answer that directory supplied.
+     */
+    @Test
+    void withoutATrustedSourceTheLookupFailsClosedWithTheDirectoryAdvice() {
+        install(new Scripted());
+        IOException e = assertThrows(IOException.class, CurrentUser::of);
+        assertTrue(e.getMessage().contains("-Dvespera.native.dir"), e.getMessage());
+        assertThrows(IOException.class, CurrentUser::of, "a failed answer is not cached");
     }
 
     @Test
-    void directoryProbeIsTheLastResortAndNeverCached() throws Exception {
-        UserPrincipal first = () -> "first";
-        UserPrincipal second = () -> "second";
-        Scripted s = install(new Scripted());
-        s.dirAnswers.add(first);
-        s.dirAnswers.add(second);
-        assertSame(first, CurrentUser.of(dir));
-        assertSame(second, CurrentUser.of(dir), "an unverified directory's answer is not cached");
-        assertEquals(List.of(dir, dir), s.dirProbes);
-    }
-
-    @Test
-    void lastResortRefusesAGroupOrOtherWritableDirectory() throws Exception {
+    void anOwnershipCheckFailsClosedWithoutATrustedSource() {
         assumeTrue(posix(), "POSIX file permissions required");
-        Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("rwxrwxrwx"));
-        Scripted s = install(new Scripted());
-        s.dirAnswers.add(MALLORY);
-        IOException e = assertThrows(IOException.class, () -> CurrentUser.of(dir));
-        assertTrue(s.dirProbes.isEmpty(), "not probed");
-        assertTrue(List.of(e.getSuppressed()).stream()
-                .anyMatch(x -> x instanceof VesperaNativeLoader.UnsafeDirectoryException), e.toString());
-    }
-
-    @Test
-    void lastResortRejectsADirectoryWhoseModeChangesDuringTheProbe() throws Exception {
-        assumeTrue(posix(), "POSIX file permissions required");
-        Scripted s = install(new Scripted());
-        s.dirAnswers.add(MALLORY);
-        s.duringDirProbe = () -> {
-            try {
-                Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("rwxrwxrwx"));
-            } catch (IOException e) {
-                throw new AssertionError(e);
-            }
-        };
-        assertThrows(IOException.class, () -> CurrentUser.of(dir));
-    }
-
-    @Test
-    void lastResortRejectsADirectorySwappedDuringTheProbe() throws Exception {
-        assumeTrue(posix(), "POSIX file permissions required");
-        Scripted s = install(new Scripted());
-        s.dirAnswers.add(MALLORY);
-        s.duringDirProbe = () -> {
-            try {
-                Path aside = Files.createTempDirectory("vespera-current-user-aside-");
-                Files.delete(dir);
-                Files.move(aside, dir);
-                Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("rwx------"));
-            } catch (IOException e) {
-                throw new AssertionError(e);
-            }
-        };
-        IOException e = assertThrows(IOException.class, () -> CurrentUser.of(dir));
-        assertTrue(List.of(e.getSuppressed()).stream()
-                .anyMatch(x -> String.valueOf(x.getMessage()).contains("changed while probing")), e.toString());
-    }
-
-    @Test
-    void lastResortRefusesASymbolicLink() throws Exception {
-        assumeTrue(posix(), "POSIX file permissions required");
-        Path link = dir.resolveSibling(dir.getFileName() + "-link");
-        Files.createSymbolicLink(link, dir);
-        try {
-            Scripted s = install(new Scripted());
-            s.dirAnswers.add(MALLORY);
-            assertThrows(IOException.class, () -> CurrentUser.of(link));
-            assertTrue(s.dirProbes.isEmpty());
-        } finally {
-            Files.deleteIfExists(link);
-        }
+        install(new Scripted());
+        assertThrows(IOException.class, () -> VesperaNativeLoader.requirePrivateDirectory(dir),
+                "the directory being verified is not accepted on its own answer");
     }
 
     /**
@@ -232,9 +161,7 @@ class CurrentUserTest {
         UserPrincipal owner = Files.getOwner(dir, LinkOption.NOFOLLOW_LINKS);
         Scripted s = install(new Scripted());
         s.process = owner;
-        s.dirAnswers.add(MALLORY);
         VesperaNativeLoader.requirePrivateDirectory(dir);
-        assertTrue(s.dirProbes.isEmpty());
 
         CurrentUser.resetCache();
         Scripted attacked = install(new Scripted());
@@ -249,11 +176,9 @@ class CurrentUserTest {
         assumeTrue(posix(), "POSIX file permissions required");
         Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("rwxrwx---"));
         Scripted s = install(new Scripted());
-        s.dirAnswers.add(MALLORY);
         assertThrows(VesperaNativeLoader.UnsafeDirectoryException.class,
                 () -> VesperaNativeLoader.requirePrivateDirectory(dir));
         assertEquals(0, s.trustedCalls.get());
-        assertTrue(s.dirProbes.isEmpty());
     }
 
     @Test
@@ -272,12 +197,8 @@ class CurrentUserTest {
             assertNull(process);
         }
         assertEquals(fileOwner, CurrentUser.SYSTEM.tmpdirProbeOwner());
-        assertEquals(fileOwner, CurrentUser.SYSTEM.probeOwnerIn(dir));
-        try (var listing = Files.list(dir)) {
-            assertEquals(0, listing.count(), "probe files are deleted");
-        }
         CurrentUser.resetCache();
-        assertEquals(fileOwner, VesperaNativeLoader.currentUser(dir));
+        assertEquals(fileOwner, VesperaNativeLoader.currentUser());
     }
 
     @Test
