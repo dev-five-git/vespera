@@ -632,17 +632,20 @@ impl FlatKinds {
             let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
                 return None;
             };
+            // A const argument (`3`, or an identifier parsed as a type) still
+            // takes a position: only lifetimes are left out of the list.
             let argument = args
                 .args
                 .iter()
-                .filter_map(|arg| {
+                .filter(|arg| !matches!(arg, syn::GenericArgument::Lifetime(_)))
+                .nth(position)
+                .and_then(|arg| {
                     if let syn::GenericArgument::Type(ty) = arg {
                         Some(ty)
                     } else {
                         None
                     }
-                })
-                .nth(position)?;
+                })?;
             return self.type_kind(argument);
         }
         self.kinds.get(index).copied().flatten()
@@ -740,16 +743,20 @@ fn flatten_differs(
     })
 }
 
-/// The position of the type parameter `ty` names (`T` in `<A, T>` is 1), if
-/// `ty` is one of `generics`' type parameters.
+/// The position of the type parameter `ty` names (`T` in `<A, T>` is 1, and in
+/// `<const N: usize, T>` it is 1 too), if `ty` is one of `generics`' type
+/// parameters. Positions count every type and const parameter, as the
+/// use-site arguments do (lifetimes are not arguments of the list).
 fn type_param_index(ty: &syn::Type, generics: &syn::Generics) -> Option<usize> {
     let syn::Type::Path(path) = peel(ty) else {
         return None;
     };
     let ident = path.path.get_ident()?;
     generics
-        .type_params()
-        .position(|param| param.ident == *ident)
+        .params
+        .iter()
+        .filter(|param| !matches!(param, syn::GenericParam::Lifetime(_)))
+        .position(|param| matches!(param, syn::GenericParam::Type(param) if param.ident == *ident))
 }
 
 /// `ty` is one of `generics`' type parameters (`T`).
@@ -911,7 +918,9 @@ fn enum_differs(item: &syn::ItemEnum, flat: &FlatKinds) -> bool {
     }
     item.variants.iter().any(|variant| {
         let skip = extract_serde_skip_flags(&variant.attrs);
-        !skip.skip
+        // A variant skipped in both directions is in neither view: its renames,
+        // aliases and fields cannot make the enum differ.
+        !skip.fully_skipped()
             && (skip.skip_serializing != skip.skip_deserializing
                 || skip.other
                 || !extract_aliases(&variant.attrs).is_empty()

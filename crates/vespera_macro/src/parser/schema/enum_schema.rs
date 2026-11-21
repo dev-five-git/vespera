@@ -46,6 +46,9 @@ pub fn parse_enum_to_schema(
         &enum_item.ident,
         &enum_item.generics,
         &enum_item.attrs,
+        &|path: &syn::Path| {
+            super::type_schema::scoped_component(path, known_schemas, struct_definitions)
+        },
         || parse_enum_body(enum_item, known_schemas, struct_definitions),
     )
 }

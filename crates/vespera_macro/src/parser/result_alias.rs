@@ -27,6 +27,12 @@
 //! crate::api::v2::ApiResult;` in the handler's module counts as that
 //! qualifier (`v2`). A path-less `use anyhow;` imports another crate.
 //!
+//! The response positions nested in the return type are expanded as well:
+//! tuple elements, `Result` arguments and the body of a `Json` (`Json<UserList>`
+//! with `type UserList = Vec<User>`). Request bodies are not: the expansion
+//! only ever sees the return type, so `Json<UserList>` in a parameter is
+//! documented as written.
+//!
 //! Test-only code (`#[cfg(test)]` modules, items and files) never defines a
 //! handler's alias. Generic parameters (including defaults such as `type R<T,
 //! E = AppError>`) are substituted, and an alias of an alias is followed a few
@@ -78,33 +84,6 @@ const NON_ALIAS_IDENTS: [&str; 11] = [
 /// worth reading the source file).
 pub fn needs_alias_expansion(sig: &syn::Signature) -> bool {
     matches!(&sig.output, ReturnType::Type(_, ty) if has_alias_position(ty))
-}
-
-/// Whether an alias can apply to `ty` or to a response position nested in it
-/// (a tuple element or a `Result` argument, as [`expand_position`] walks them).
-fn has_alias_position(ty: &Type) -> bool {
-    if alias_candidate(ty).is_some() {
-        return true;
-    }
-    match ty {
-        Type::Tuple(tuple) => tuple.elems.iter().any(has_alias_position),
-        Type::Path(type_path) => type_path
-            .path
-            .segments
-            .last()
-            .is_some_and(|segment| segment.ident == "Result" && result_has_alias_arg(segment)),
-        _ => false,
-    }
-}
-
-/// Whether a `Result` path segment has a type argument with an alias position.
-fn result_has_alias_arg(segment: &syn::PathSegment) -> bool {
-    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
-        return false;
-    };
-    args.args
-        .iter()
-        .any(|arg| matches!(arg, syn::GenericArgument::Type(inner) if has_alias_position(inner)))
 }
 
 /// Where a name is resolved: a parsed file and the inline module path of the
@@ -176,6 +155,7 @@ fn fn_module(items: &[syn::Item], name: &syn::Ident) -> Option<Vec<String>> {
 mod expansion;
 mod imports;
 pub use expansion::expand_return_type_alias;
+use expansion::has_alias_position;
 use imports::{declares_mod, glob_declares_module, imported_nominal, reexported_alias};
 
 /// Identifies one alias definition: its tokens, its file (`None` for the
@@ -921,16 +901,28 @@ fn parsed_declaring_type(path: &Path, name: &str) -> Option<syn::File> {
         .and_then(|_| parse_items(path))
 }
 
-/// Whether `content` may declare `type <name>`: the name is preceded by the
-/// keyword `type` and any whitespace (rustfmt never writes more than one
-/// space, but `pub type\nName<T>` and `type  Name` are valid Rust). A false
-/// positive only costs a parse, so the check errs on the side of matching.
+/// Whether `content` may declare `type <name>`: the ident `type` directly
+/// followed by the ident `name` in the token stream, so any spacing and
+/// comments between them match (`pub type\nName<T>`, `type  Name`,
+/// `type /* c */ Name`), at any module depth, while a string or a comment
+/// that merely mentions the pair does not. Content the lexer rejects is
+/// parsed (`true`), and the parse decides.
 fn declares_type_named(content: &str, name: &str) -> bool {
-    content.match_indices(name).any(|(at, _)| {
-        content[..at]
-            .trim_end()
-            .strip_suffix("type")
-            .is_some_and(|before| !before.ends_with(|c: char| c.is_alphanumeric() || c == '_'))
+    let Ok(tokens) = content.parse::<proc_macro2::TokenStream>() else {
+        return true;
+    };
+    has_type_then_name(tokens, name)
+}
+
+/// Whether `tokens`, or a group inside them, holds `type` followed by `name`.
+fn has_type_then_name(tokens: proc_macro2::TokenStream, name: &str) -> bool {
+    use proc_macro2::TokenTree;
+    let mut after_type = false;
+    tokens.into_iter().any(|tree| {
+        let found = after_type && matches!(&tree, TokenTree::Ident(ident) if ident == name);
+        after_type = matches!(&tree, TokenTree::Ident(ident) if ident == "type");
+        found
+            || matches!(&tree, TokenTree::Group(group) if has_type_then_name(group.stream(), name))
     })
 }
 
@@ -981,7 +973,13 @@ fn same_tokens(a: &syn::ItemType, b: &syn::ItemType) -> bool {
 mod tests;
 
 #[cfg(test)]
+mod tests_body;
+
+#[cfg(test)]
 mod tests_gate;
+
+#[cfg(test)]
+mod tests_scan;
 
 #[cfg(test)]
 mod tests_glob;

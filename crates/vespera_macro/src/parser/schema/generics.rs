@@ -18,6 +18,32 @@ fn parameter_index(segment: &syn::PathSegment, generic_params: &[String]) -> Opt
         .position(|param| segment.ident == *param)
 }
 
+/// A segment of a qualified path's trait (`<T as Trait<..>>::Out`) without its
+/// associated-type bindings (`Item = u8`, `Item: Bound`): those belong to the
+/// bound, and a qualified path rejects them (E0229).
+fn without_bindings(segment: &syn::PathSegment) -> syn::PathSegment {
+    let mut segment = segment.clone();
+    if let syn::PathArguments::AngleBracketed(args) = &mut segment.arguments {
+        args.args = args
+            .args
+            .iter()
+            .filter(|arg| {
+                !matches!(
+                    arg,
+                    syn::GenericArgument::AssocType(_)
+                        | syn::GenericArgument::AssocConst(_)
+                        | syn::GenericArgument::Constraint(_)
+                )
+            })
+            .cloned()
+            .collect();
+        if args.args.is_empty() {
+            segment.arguments = syn::PathArguments::None;
+        }
+    }
+    segment
+}
+
 /// Whether `ty` is the plain path `ident` (a type parameter's name).
 fn is_parameter_type(ty: &Type, ident: &syn::Ident) -> bool {
     matches!(ty, Type::Path(type_path) if type_path.qself.is_none() && type_path.path.is_ident(ident))
@@ -260,7 +286,8 @@ impl Subst<'_> {
             // `<Concrete as Trait>::Out`: the trait's segments, then the
             // projection's own (`Out`, `Out::Inner`).
             let trait_path = self.path(trait_path);
-            let mut segments = trait_path.segments.clone();
+            let mut segments: Punctuated<syn::PathSegment, syn::token::PathSep> =
+                trait_path.segments.iter().map(without_bindings).collect();
             for segment in path.segments.iter().skip(1) {
                 segments.push(self.segment(segment));
             }
@@ -464,6 +491,20 @@ mod tests {
     #[case::leading_with_arguments("Wrap<u8>::Out", "Foo", Some("Tr"), "Wrap<u8>::Out")]
     // Any concrete type can be qualified (`<&Foo as Tr>::Out`).
     #[case::leading_reference_concrete("T::Out", "&Foo", Some("Tr"), "<&Foo as Tr>::Out")]
+    // The bound's associated-type bindings stay on the bound, not on the
+    // qualified trait (`<Vec<u8> as IntoIterator>::Item`, E0229 otherwise).
+    #[case::leading_param_drops_binding(
+        "T::Item",
+        "Vec<u8>",
+        Some("IntoIterator<Item = u8>"),
+        "<Vec<u8> as IntoIterator>::Item"
+    )]
+    #[case::leading_param_keeps_trait_arguments(
+        "T::Out",
+        "Foo",
+        Some("Tr<u8, Out: Clone>"),
+        "<Foo as Tr<u8>>::Out"
+    )]
     fn substitutes_projections_and_bindings(
         #[case] ty: &str,
         #[case] concrete: &str,

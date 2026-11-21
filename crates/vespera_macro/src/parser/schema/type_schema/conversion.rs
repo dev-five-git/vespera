@@ -726,12 +726,7 @@ fn parse_type_impl(
                             // A module-scoped argument (`b::Foo`, renamed
                             // apart from `a::Foo`) is spelled by its component.
                             let scoped = |path: &syn::Path| {
-                                let key = crate::parser::schema::definition_key(path, |key| {
-                                    known_schemas.contains(key)
-                                })
-                                .filter(|key| key.contains("::"))?;
-                                let def = struct_definitions.get(key.as_str()).map(AsRef::as_ref);
-                                Some(component_name(&key, def))
+                                scoped_component(path, known_schemas, struct_definitions)
                             };
                             let mut name = super::generic_instances::instance_name_with(
                                 &base,
@@ -850,6 +845,24 @@ fn parse_type_impl(
         // shape of their own → any value.
         _ => SchemaRef::Inline(Box::default()),
     }
+}
+
+/// The component a module-scoped path names (`b::Foo`, `crate::b::Foo`, and
+/// `super::` / `self::` forms once resolved to a registered key): the
+/// [`component_name`] of that key, when the key contains a module separator.
+/// `None` for a bare ident or an unregistered path, which is spelled as
+/// written. Instances are named through this on both sides: the use site
+/// (here) and the defaults a definition fills in
+/// (`generic_instances::with_definition`), so the two spell one component.
+pub(in crate::parser::schema) fn scoped_component(
+    path: &syn::Path,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
+) -> Option<String> {
+    let key = crate::parser::schema::definition_key(path, |key| known_schemas.contains(key))
+        .filter(|key| key.contains("::"))?;
+    let def = struct_definitions.get(key.as_str()).map(AsRef::as_ref);
+    Some(component_name(&key, def))
 }
 
 /// The component name of the known type `ident` (a Rust ident or a module-path

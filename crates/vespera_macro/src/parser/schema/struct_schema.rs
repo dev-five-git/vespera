@@ -65,6 +65,9 @@ pub fn parse_struct_to_schema(
         &struct_item.ident,
         &struct_item.generics,
         &struct_item.attrs,
+        &|path: &syn::Path| {
+            super::type_schema::scoped_component(path, known_schemas, struct_definitions)
+        },
         || parse_struct_body(struct_item, known_schemas, struct_definitions),
     )
 }
