@@ -28,13 +28,14 @@ impl Types<'_> {
     /// the DTO's file, so its root is not judged. A `self` / `super` root
     /// names the DTO's module, which the call site never has, so it is refused
     /// whatever the DTO's module resolves (as `path_is_unresolved` does).
-    fn judge(&mut self, path: &syn::Path) {
+    /// Only the first `len` segments are the path judged (fewer for the
+    /// trait path of a qualified-self type).
+    fn judge(&mut self, path: &syn::Path, len: usize) {
         if self.found.is_none()
-            && let Some(root) = path.segments.first()
+            && let Some(root) = path.segments.first().filter(|_| len > 0)
         {
             let name = root.ident.to_string();
-            let judged = path.segments.len() == 1
-                || !crate::schema_macro::file_lookup::is_extern_crate(&name);
+            let judged = len == 1 || !crate::schema_macro::file_lookup::is_extern_crate(&name);
             let relative = matches!(name.as_str(), "self" | "super");
             if judged && (relative || (self.unresolved)(&name)) {
                 self.found = Some(name);
@@ -48,22 +49,11 @@ impl<'ast> syn::visit::Visit<'ast> for Types<'_> {
     /// (the first `position` segments) the call site must resolve too; the
     /// self type `T` is visited by the default walk.
     fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
-        match &ty.qself {
-            None => self.judge(&ty.path),
-            Some(qself) => {
-                let trait_path = syn::Path {
-                    leading_colon: ty.path.leading_colon,
-                    segments: ty
-                        .path
-                        .segments
-                        .iter()
-                        .take(qself.position)
-                        .cloned()
-                        .collect(),
-                };
-                self.judge(&trait_path);
-            }
-        }
+        let len = ty
+            .qself
+            .as_ref()
+            .map_or(ty.path.segments.len(), |qself| qself.position);
+        self.judge(&ty.path, len);
         syn::visit::visit_type_path(self, ty);
     }
 
@@ -72,7 +62,7 @@ impl<'ast> syn::visit::Visit<'ast> for Types<'_> {
     /// too, judged by its root like a type path (R34-SM4-L1).
     fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
         if expr.qself.is_none() {
-            self.judge(&expr.path);
+            self.judge(&expr.path, expr.path.segments.len());
         }
         syn::visit::visit_expr_path(self, expr);
     }
