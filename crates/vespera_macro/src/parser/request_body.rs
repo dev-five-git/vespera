@@ -257,6 +257,26 @@ mod tests {
         assert!(external.is_some());
     }
 
+    /// A `bytes::Bytes` body is the raw bytes extractor even when this crate
+    /// defines a `Bytes` struct; the crate's own `models::Bytes` is the struct
+    /// (no raw body).
+    #[test]
+    fn module_qualified_bytes_follow_the_module_not_the_ident() {
+        let crate_bytes = HashMap::from([("Bytes", "pub struct Bytes { pub len: u32 }")]);
+        let external: syn::ItemFn = syn::parse_str("fn test(body: bytes::Bytes) {}").unwrap();
+        let raw = parse_request_body(
+            external.sig.inputs.first().unwrap(),
+            &HashSet::new(),
+            &crate_bytes,
+        );
+        assert!(raw.is_some_and(|body| body.content.contains_key("application/octet-stream")));
+        let own = HashMap::from([("models::Bytes", "pub struct Bytes { pub len: u32 }")]);
+        let own_fn: syn::ItemFn = syn::parse_str("fn test(body: models::Bytes) {}").unwrap();
+        let shadowed =
+            parse_request_body(own_fn.sig.inputs.first().unwrap(), &HashSet::new(), &own);
+        assert!(shadowed.is_none());
+    }
+
     /// Round 31: a user type named `Multipart` is not axum's raw extractor
     /// (no `multipart/form-data` body); the qualified axum path still is.
     #[test]

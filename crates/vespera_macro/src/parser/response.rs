@@ -4,7 +4,7 @@ use syn::{ReturnType, Type};
 use vespera_core::route::{MediaType, Response};
 use vespera_core::schema::{Schema, SchemaRef};
 
-use super::schema::{is_builtin_openapi_type, parse_type_to_schema_ref};
+use super::schema::{is_builtin_openapi_type, lookup_key, parse_type_to_schema_ref};
 use crate::parser::is_keyword_type::{KeywordType, is_keyword_type, is_keyword_type_by_type_path};
 
 /// Unwrap Json<T> to get T
@@ -58,13 +58,10 @@ const RESPONSE_PART_IDENTS: [&str; 6] = [
     "SignedCookieJar",
 ];
 
-/// Path roots naming an external crate (or the `vespera` re-export of axum): a
-/// path rooted there cannot name one of this crate's own types.
-const EXTERNAL_ROOTS: [&str; 6] = ["axum", "axum_extra", "http", "std", "core", "vespera"];
-
 /// The types this crate defines (known `Schema` types and struct definitions).
 /// A user type named like an axum wrapper shadows the wrapper by ident, so the
-/// wrapper checks consult these, except for paths rooted at an external crate.
+/// wrapper checks consult these, except for a module-qualified path that is not
+/// one of this crate's types (see [`Shadows::names_user_type`]).
 #[derive(Clone, Copy)]
 pub(super) struct Shadows<'a> {
     pub(super) known_schemas: &'a HashSet<&'a str>,
@@ -72,23 +69,29 @@ pub(super) struct Shadows<'a> {
 }
 
 impl Shadows<'_> {
-    /// Whether `ty`'s last path segment names a type this crate defines (a
-    /// known `Schema` type or a struct definition). A path whose first segment
-    /// is an external root (`axum::response::Redirect`) names the external type.
+    /// Whether `ty` names a type this crate defines (a known `Schema` type or a
+    /// struct definition). A bare or `crate` / `self` / `super` path counts by
+    /// its last segment. Any other module-qualified path (`axum::response::
+    /// Redirect`, `bytes::Bytes`) is this crate's type only under its
+    /// module-scoped key (`models::Bytes`, a module the crate declares); a path
+    /// rooted at another module is the external type.
     pub(super) fn names_user_type(self, ty: &Type) -> bool {
         let Type::Path(type_path) = ty else {
             return false;
         };
+        let names_crate_type = |name: &str| {
+            self.known_schemas.contains(name) || self.struct_definitions.contains_key(name)
+        };
         let segments = &type_path.path.segments;
-        let external = segments
-            .first()
-            .is_some_and(|first| EXTERNAL_ROOTS.contains(&first.ident.to_string().as_str()));
-        !external
-            && segments.last().is_some_and(|segment| {
-                let ident = segment.ident.to_string();
-                self.known_schemas.contains(ident.as_str())
-                    || self.struct_definitions.contains_key(ident.as_str())
-            })
+        let crate_relative = segments.first().is_some_and(|first| {
+            matches!(first.ident.to_string().as_str(), "crate" | "self" | "super")
+        });
+        if segments.len() > 1 && !crate_relative {
+            return lookup_key(&type_path.path).is_some_and(|key| names_crate_type(&key));
+        }
+        segments
+            .last()
+            .is_some_and(|segment| names_crate_type(&segment.ident.to_string()))
     }
 }
 

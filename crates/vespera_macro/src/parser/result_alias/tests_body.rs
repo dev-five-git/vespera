@@ -62,7 +62,7 @@ fn expands_aliases_inside_json_bodies(
 #[rstest]
 #[case::json_body("-> Json<UserList>", true)]
 #[case::json_in_result("-> Result<Json<UserList>, AppError>", true)]
-#[case::json_of_builtin("-> Json<u8>", false)]
+#[case::json_of_builtin("-> Json<u8>", true)]
 #[case::html_body("-> Html<Page>", false)]
 fn gate_follows_json_bodies(#[case] ret: &str, #[case] expected: bool) {
     let sig: syn::Signature = syn::parse_str(&format!("fn handler() {ret}")).unwrap();
@@ -85,4 +85,24 @@ fn crate_wide_lookup_expands_a_json_body_alias() {
         quote::quote!(#output).to_string(),
         "-> Json < Vec < User > >"
     );
+}
+
+/// A builtin OpenAPI name is an alias like any other when a `type` item in the
+/// handler's file defines it: the bare `Date` means the crate's `AppDate`, not
+/// a date string. An imported builtin name is another crate's, so a same-named
+/// alias elsewhere in the crate is unrelated.
+#[rstest]
+#[case::body_alias("pub type Date = AppDate;", "-> Json<Date>", "-> Json < AppDate >")]
+#[case::return_alias("pub type Uuid<T> = Envelope<T>;", "-> Uuid<u8>", "-> Envelope < u8 >")]
+#[case::imported_name_is_not_an_alias(
+    "use chrono::Date; mod other { pub type Date = AppDate; }",
+    "-> Json<Date>",
+    "-> Json < Date >"
+)]
+fn builtin_named_aliases_follow_the_handler_file(
+    #[case] file_src: &str,
+    #[case] ret: &str,
+    #[case] expected: &str,
+) {
+    assert_eq!(expand_return(file_src, ret), expected);
 }

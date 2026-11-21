@@ -583,8 +583,16 @@ fn parse_type_impl(
             // outer match — MOVE it into `type_name` (was `ident_str.clone()`).
             let type_name = ident_str;
 
+            // `b::Foo` names the `Foo` declared in module `b` (two
+            // `#[schema(name)]` renames may share the ident): its module-scoped
+            // registry key, when one is registered.
+            let scoped_key = || {
+                crate::parser::schema::definition_key(path, |key| known_schemas.contains(key))
+                    .filter(|key| key.contains("::"))
+            };
             // For paths like `module::Schema`, try to find the schema name
-            // by checking if there's a schema named `ModuleSchema` or `ModuleNameSchema`
+            // by checking if there's a schema named `ModuleSchema` or `ModuleNameSchema`,
+            // then the module-scoped key (a renamed `Schema` names no `ModuleSchema`).
             let resolved_name = if type_name == "Schema" && path.segments.len() > 1 {
                 // Get the parent module name (e.g., "user" from "crate::models::user::Schema")
                 let parent_segment = &path.segments[path.segments.len() - 2];
@@ -602,15 +610,11 @@ fn parse_type_impl(
                     if known_schemas.contains(lower_name.as_str()) {
                         lower_name
                     } else {
-                        type_name
+                        scoped_key().unwrap_or(type_name)
                     }
                 }
             } else {
-                // `b::Foo` names the `Foo` declared in module `b` (two
-                // `#[schema(name)]` renames may share the ident).
-                crate::parser::schema::definition_key(path, |key| known_schemas.contains(key))
-                    .filter(|key| key.contains("::"))
-                    .unwrap_or(type_name)
+                scoped_key().unwrap_or(type_name)
             };
 
             if known_schemas.contains(resolved_name.as_str()) {
@@ -738,9 +742,11 @@ fn parse_type_impl(
                                 const_exprs.iter().map(|(_, expr)| expr),
                             );
                             // A request-view instantiation differs from the
-                            // response one when it names an input type: `.Input`
-                            // (no identifier holds a `.`, so `Tree<User>` never
-                            // shares a name with `Tree<UserInput>`).
+                            // response one when it names an input type: the
+                            // `.Input` suffix keeps `Tree<User>` apart from
+                            // `Tree<UserInput>`. A `#[schema(name)]` value may
+                            // itself end in `.Input`, so the suffix separates
+                            // names by convention, not by construction.
                             if request_view::in_request_view()
                                 && (request_view::has_input(&base)
                                     || request_view::mentions_input(concrete_types.iter().copied())

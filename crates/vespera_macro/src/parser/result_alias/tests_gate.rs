@@ -36,8 +36,10 @@ fn nesting_at_the_depth_bound(#[case] wrappers: usize, #[case] expanded: bool) {
 #[case::result_error("-> Result<u8, Created<User>>", true)]
 #[case::tuple_element("-> (StatusCode, ApiResult<User>)", true)]
 #[case::nested_tuple_in_result("-> Result<(StatusCode, Created<User>), AppError>", true)]
-#[case::plain_result("-> Result<u8, u16>", false)]
-#[case::plain_tuple("-> (u8, String)", false)]
+// A builtin-named position is a candidate too (a `type u8` in the handler's own
+// file is what that name means), so the file is read for it.
+#[case::plain_result("-> Result<u8, u16>", true)]
+#[case::plain_tuple("-> (u8, String)", true)]
 #[case::reference("-> &'static str", false)]
 #[case::bare_result("-> Result", false)]
 #[case::no_return("", false)]

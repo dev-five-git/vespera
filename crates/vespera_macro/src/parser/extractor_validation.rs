@@ -163,6 +163,19 @@ fn check_extractors(metadata: &CollectedMetadata, file_cache: &dyn AstLookup) ->
         let Some(fn_item) = handler_fn(ast, route) else {
             continue;
         };
+        let generics: HashSet<String> = fn_item
+            .sig
+            .generics
+            .type_params()
+            .map(|param| param.ident.to_string())
+            .chain(
+                fn_item
+                    .sig
+                    .generics
+                    .const_params()
+                    .map(|param| param.ident.to_string()),
+            )
+            .collect();
 
         for input in &fn_item.sig.inputs {
             let syn::FnArg::Typed(syn::PatType { ty, .. }) = input else {
@@ -177,6 +190,9 @@ fn check_extractors(metadata: &CollectedMetadata, file_cache: &dyn AstLookup) ->
 
             let mut idents = Vec::new();
             collect_custom_type_idents(inner, &route.module_path, &mut idents);
+            // A generic parameter of the handler shadows a same-named item of
+            // its module (`fn create<Body: DeserializeOwned>(Json(b): Json<Body>)`).
+            idents.retain(|ident| !generics.contains(ident));
             for ident in idents {
                 if local_types.contains(&ident) || imported_route_types.contains(&ident) {
                     return Err(non_schema_extractor_error(

@@ -49,16 +49,14 @@ pub(super) fn referenced_idents(item: &syn::Item, known: &BTreeSet<String>) -> B
 pub(super) fn collect_idents(ty: &syn::Type, idents: &mut BTreeSet<String>) {
     struct Visitor<'a>(&'a mut BTreeSet<String>);
     impl<'ast> syn::visit::Visit<'ast> for Visitor<'_> {
-        /// Every segment ident; a module-qualified type (`b::Foo`) as its
+        /// Every path's type ident: a module-qualified type (`b::Foo`) as its
         /// registry key instead of the bare ident, so it resolves to the
-        /// declaration its path names.
+        /// declaration its path names. Its module segments (`b`, `crate`) name
+        /// no type and are not inserted.
         fn visit_path(&mut self, path: &'ast syn::Path) {
             if let Some(last) = path.segments.last() {
                 self.0
                     .insert(lookup_key(path).unwrap_or_else(|| last.ident.to_string()));
-            }
-            for segment in path.segments.iter().rev().skip(1) {
-                self.0.insert(segment.ident.to_string());
             }
             syn::visit::visit_path(self, path);
         }

@@ -56,7 +56,6 @@ use syn::{ReturnType, Type};
 use crate::{
     collector::test_scope::{TestScope, attrs_test_only},
     file_utils::normalize_path_key,
-    parser::schema::is_builtin_openapi_type,
     schema_macro::file_cache,
 };
 
@@ -194,7 +193,11 @@ fn alias_candidate(ty: &Type) -> Option<String> {
             .count();
         return (type_args == 1).then_some(ident);
     }
-    if is_builtin_openapi_type(&ident) || NON_ALIAS_IDENTS.contains(&ident.as_str()) {
+    // A builtin OpenAPI name (`Date`, `Uuid`, `Path`) is a candidate too: a
+    // `type Date = AppDate;` in scope is what the bare name means (looked up in
+    // the handler's own file only, see `expand_alias`). A builtin imported from
+    // another crate is kept by the import checks.
+    if NON_ALIAS_IDENTS.contains(&ident.as_str()) {
         return None;
     }
     Some(ident)

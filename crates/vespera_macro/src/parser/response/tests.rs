@@ -896,6 +896,37 @@ fn result_args_ignores_non_result_types(#[case] ty: &str) {
     assert!(result_args(&ty).is_none());
 }
 
+/// `bytes::Bytes` is raw bytes even when this crate defines a `Bytes` struct;
+/// the crate's own `models::Bytes` (a module-scoped key) is the struct.
+#[test]
+fn module_qualified_bytes_follow_the_module_not_the_ident() {
+    let known_schemas: HashSet<&str> = HashSet::from(["Bytes"]);
+    let struct_definitions: HashMap<&str, &str> =
+        HashMap::from([("Bytes", "pub struct Bytes { pub len: u32 }")]);
+    let external = parse_return_type(
+        &parse_return_type_str("-> bytes::Bytes"),
+        &known_schemas,
+        &struct_definitions,
+    );
+    assert_eq!(external.keys().collect::<Vec<_>>(), vec!["200"]);
+    let content = external["200"].content.as_ref().expect("raw bytes body");
+    assert_eq!(
+        content.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["application/octet-stream"]
+    );
+
+    let known_schemas: HashSet<&str> = HashSet::from(["models::Bytes"]);
+    let struct_definitions: HashMap<&str, &str> =
+        HashMap::from([("models::Bytes", "pub struct Bytes { pub len: u32 }")]);
+    let own = parse_return_type(
+        &parse_return_type_str("-> models::Bytes"),
+        &known_schemas,
+        &struct_definitions,
+    );
+    let content = own["200"].content.as_ref().expect("the struct body");
+    assert!(content.contains_key("application/json"), "{content:?}");
+}
+
 /// A body type with no known JSON shape (a bare `Result`, a fn pointer) is
 /// documented as any value (`{}`), not `{type: object}`.
 #[rstest]
