@@ -673,9 +673,10 @@ where
 /// [`dispatch_bidirectional_streaming`] variant that takes a
 /// `request_close` callback.
 ///
-/// `request_close` is invoked once, **only if** the request source was read
-/// (the handler read at least one body chunk — through the producer or the
-/// inline small-body fast path).  It runs when the dispatch finishes: after
+/// `request_close` is invoked once, **only if** the request source was pulled
+/// at least once (a chunk, the end of the body, or an error — through the
+/// producer or the inline small-body fast path).  It runs when the dispatch
+/// finishes: after
 /// the response body is fully drained, right before a pre-header error (a
 /// `504` deadline, a `413` for an over-cap request body, a dispatch error) is
 /// delivered, or when the dispatch future is dropped mid-response.  The

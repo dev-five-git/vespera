@@ -204,13 +204,11 @@ pub struct OpenApi {
     /// consumers, keyed by a unique webhook name.
     ///
     /// `vespera!` never fills this; it exists so a post-processed document
-    /// can declare webhooks and so specs that carry them round-trip. Like the
-    /// Paths Object, its `x-*` extension keys are skipped on deserialize.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "crate::extensions::skip_optional_extension_keys"
-    )]
+    /// can declare webhooks and so specs that carry them round-trip. Unlike
+    /// the Paths Object, the Webhooks Object has no `x-*` exemption in OAS
+    /// 3.1 (its keys are arbitrary webhook names), so every key is kept,
+    /// `x-` prefix included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webhooks: Option<BTreeMap<String, PathItem>>,
     /// Components (reusable components)
     #[serde(skip_serializing_if = "is_empty_components")]

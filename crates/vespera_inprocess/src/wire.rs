@@ -249,16 +249,16 @@ pub fn header_capacity_with_floor(headers: &http::HeaderMap, metadata: &Response
     header_capacity_estimate(headers, metadata).max(WIRE_HEADER_RESERVE)
 }
 
-/// Cheap upper-ish estimate of the serialized `validation_errors` JSON
-/// array byte length, added to the response-`Vec` capacity **only on the
-/// 422 path** (`validation_errors` is `None` for every other status, so the
-/// hot success path pays nothing).  Each item renders as
+/// Cheap estimate of the serialized `validation_errors` JSON array byte
+/// length, added to the response-`Vec` capacity **only on the 422 path**
+/// (`validation_errors` is `None` for every other status, so the hot success
+/// path pays nothing).  Each item renders as
 /// `{"path":"…","code":"…","message":"…"},` inside the
 /// `,"validation_errors":[…]` wrapper — count the field bytes plus a fixed
-/// per-item scaffold.  A safe over-estimate (absent `code`/`message` only
-/// shrink the real output), so it only ever prevents the mid-serialize
-/// realloc the hoisted errors would otherwise force; it never changes the
-/// emitted bytes.
+/// per-item scaffold.  Absent `code`/`message` only shrink the real output,
+/// but escape-heavy values (quotes, backslashes, control characters, which
+/// grow when escaped) can exceed the estimate (rare → one growth); this only
+/// sets capacity, never the emitted bytes.
 fn validation_errors_capacity_estimate(items: &[ValidationErrorItem<'_>]) -> usize {
     // `,"validation_errors":[]` wrapper, plus per item the
     // `{"path":"","code":"","message":""},` scaffold — both sized via

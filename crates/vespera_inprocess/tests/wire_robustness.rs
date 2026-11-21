@@ -88,12 +88,13 @@ fn assert_robust(rt: &Runtime, wire: &[u8]) {
     );
     let header: serde_json::Value = serde_json::from_slice(&resp[4..4 + header_len])
         .expect("response header must be valid JSON");
+    let status = header
+        .get("status")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|status| u16::try_from(status).ok());
     assert!(
-        header
-            .get("status")
-            .and_then(serde_json::Value::as_u64)
-            .is_some(),
-        "response header must carry a numeric status: {header}"
+        status.is_some_and(|status| (100..=599).contains(&status)),
+        "response header must carry an HTTP status (100..=599): {header}"
     );
 }
 

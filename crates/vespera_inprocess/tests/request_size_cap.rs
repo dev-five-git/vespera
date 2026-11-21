@@ -2,8 +2,8 @@
 //!
 //! Runs in its own test binary so the process-global `OnceLock` cap is
 //! isolated from the other integration tests (which rely on the default
-//! 64 MiB cap, far above anything they send).  Both tests pin the same cap so they are
-//! order-independent under the parallel test runner.
+//! 64 MiB cap, far above anything they send).  Every test pins the same cap,
+//! so they are order-independent under the parallel test runner.
 
 use std::cell::{Cell, RefCell};
 use std::ops::ControlFlow;

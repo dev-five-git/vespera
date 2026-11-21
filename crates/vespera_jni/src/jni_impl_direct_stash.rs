@@ -108,6 +108,32 @@ impl Stash {
         Some((displaced_at, displaced))
     }
 
+    /// Store `pending` under `token` (`None` = a fresh token), evicting the
+    /// expired entries and the least recently stashed ones that make room
+    /// within `budget`.  Every entry that leaves goes to `evicted`.
+    fn put(
+        &mut self,
+        token: Option<u64>,
+        now: Instant,
+        pending: PendingDirectResponse,
+        budget: usize,
+        evicted: &mut Vec<(Instant, PendingDirectResponse)>,
+    ) -> u64 {
+        let incoming = pending.held_bytes();
+        let token = token.unwrap_or_else(|| {
+            let token = self.next;
+            self.next = self.next.wrapping_add(1).max(1);
+            token
+        });
+        // A re-put displaces its live entry, so take that entry out BEFORE the
+        // eviction pass: the surplus check then counts only the entries that
+        // stay, and an unrelated oldest entry is not evicted for nothing.
+        evicted.extend(self.remove(token));
+        self.evict(now, Some((incoming, budget)), evicted);
+        evicted.extend(self.insert(token, now, pending));
+        token
+    }
+
     /// Remove `token`'s entry, releasing its counted bytes.
     fn remove(&mut self, token: u64) -> Option<(Instant, PendingDirectResponse)> {
         let (at, pending, bytes) = self.entries.remove(&token)?;
@@ -186,17 +212,7 @@ fn stash_put_within(
         if stash.closed {
             return None;
         }
-        let incoming = pending.held_bytes();
-        stash.evict(now, Some((incoming, budget)), &mut evicted);
-        let token = token.unwrap_or_else(|| {
-            let token = stash.next;
-            stash.next = stash.next.wrapping_add(1).max(1);
-            token
-        });
-        if let Some(displaced) = stash.insert(token, now, pending) {
-            evicted.push(displaced);
-        }
-        token
+        stash.put(token, now, pending, budget, &mut evicted)
     };
     drop(evicted);
     Some(token)
@@ -649,6 +665,38 @@ mod tests {
     /// `Stash::insert` hands the displaced entry back (the caller drops it
     /// outside the lock) and keeps the held-byte count exact.  Uses a local
     /// `Stash`, so it does not race the process-global one.
+    /// Round 38 (CJ3-01).  Re-stashing a live token at the cap must displace
+    /// only that token's entry: the eviction pass counts the entries that
+    /// stay, so no unrelated oldest entry is evicted for the re-put.  Uses a
+    /// local `Stash`, so it does not race the process-global one.
+    #[test]
+    fn re_put_at_the_cap_keeps_every_other_entry() {
+        let mut stash = Stash {
+            next: 1,
+            entries: BTreeMap::new(),
+            held: 0,
+            closed: false,
+        };
+        let now = Instant::now();
+        let mut evicted = Vec::new();
+        let tokens: Vec<u64> = (0..MAX_STASHED)
+            .map(|_| stash.put(None, now, pending(), MAX_STASHED_BYTES, &mut evicted))
+            .collect();
+        assert!(evicted.is_empty(), "filling to the cap evicts nothing");
+
+        let live = *tokens.last().expect("the cap is not empty");
+        let token = stash.put(Some(live), now, pending(), MAX_STASHED_BYTES, &mut evicted);
+        assert_eq!(token, live, "the re-put keeps its token");
+        assert_eq!(evicted.len(), 1, "only the displaced live entry leaves");
+        assert_eq!(stash.entries.len(), MAX_STASHED, "no entry was lost");
+        for token in &tokens {
+            assert!(
+                stash.entries.contains_key(token),
+                "an unrelated entry was evicted by the re-put"
+            );
+        }
+    }
+
     #[test]
     fn insert_returns_the_displaced_entry() {
         let mut stash = Stash {

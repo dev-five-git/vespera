@@ -317,10 +317,14 @@ fn operation_and_path_item_optional_openapi_fields_serialize_when_present() {
     };
 
     let json = serde_json::to_string(&path_item).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
 
-    assert!(json.contains("\"$ref\":\"#/paths/~1users\""));
-    assert!(json.contains("callbacks"));
-    assert!(json.contains("servers"));
+    assert_eq!(value["$ref"], "#/paths/~1users");
+    // The Operation's own `servers` and the PathItem's `servers` are distinct
+    // fields; a lost one must fail here, so assert each by its location.
+    assert_eq!(value["servers"][0]["url"], "https://path.example.com");
+    assert_eq!(value["get"]["servers"][0]["url"], "https://api.example.com");
+    assert!(value["get"]["callbacks"]["onEvent"].is_object(), "{value}");
 }
 
 /// `callbacks` is name → (runtime expression → Path Item), as in the
@@ -465,4 +469,15 @@ fn inline_header_and_example_round_trip() {
     let error =
         serde_json::from_value::<Header>(serde_json::json!({"required": "yes"})).unwrap_err();
     assert!(error.to_string().contains("invalid type"), "{error}");
+}
+
+/// Round 38 (CJ1-2): a Callback position takes no Reference Object, so a
+/// `$ref` there is refused on load (the route module docs say so).
+#[test]
+fn callback_reference_object_is_refused_on_load() {
+    let result = serde_json::from_value::<Operation>(serde_json::json!({
+        "responses": { "200": { "description": "ok" } },
+        "callbacks": { "onEvent": { "$ref": "#/components/callbacks/OnEvent" } }
+    }));
+    assert!(result.is_err(), "a Callback $ref must be refused");
 }

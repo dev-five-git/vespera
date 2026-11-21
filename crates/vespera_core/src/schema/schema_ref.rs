@@ -88,6 +88,11 @@ impl<'de> serde::de::Visitor<'de> for SchemaRefVisitor {
                 }
                 // `_` (not a binding): a binding pattern on its own line gets
                 // no coverage region on current rustc.
+                // Dropped like an unknown key, but it leaves `pure_ref` alone:
+                // `{"$ref": .., "x-foo": 1}` still loads as a reference.
+                SchemaField::Extension => {
+                    let _ = access.next_value::<IgnoredAny>()?;
+                }
                 _ => {
                     if let Some(path) = ref_path.take() {
                         schema.ref_path = Some(path);
@@ -297,6 +302,9 @@ enum SchemaField {
     Defs,
     DynamicAnchor,
     DynamicRef,
+    /// An `x-*` specification extension: dropped on load, and (unlike a
+    /// keyword) it does not turn a `$ref` object into an inline schema.
+    Extension,
     Unknown,
 }
 
@@ -364,6 +372,7 @@ impl serde::de::Visitor<'_> for SchemaFieldVisitor {
             "$defs" => SchemaField::Defs,
             "$dynamicAnchor" => SchemaField::DynamicAnchor,
             "$dynamicRef" => SchemaField::DynamicRef,
+            _ if value.starts_with("x-") => SchemaField::Extension,
             _ => SchemaField::Unknown,
         })
     }
@@ -428,7 +437,7 @@ where
         SchemaField::Defs => schema.defs = Some(access.next_value()?),
         SchemaField::DynamicAnchor => schema.dynamic_anchor = Some(access.next_value()?),
         SchemaField::DynamicRef => schema.dynamic_ref = Some(access.next_value()?),
-        SchemaField::Unknown => {
+        SchemaField::Unknown | SchemaField::Extension => {
             let _ = access.next_value::<IgnoredAny>()?;
         }
     }
@@ -743,6 +752,37 @@ mod tests {
                 assert_eq!(schema.ref_path.as_deref(), Some("#/components/schemas/New"));
             }
             SchemaRef::Ref(_) => panic!("duplicate $ref keys must not deserialize as a pure ref"),
+        }
+    }
+
+    #[test]
+    fn extension_siblings_keep_a_reference_pure() {
+        for json in [
+            r##"{"$ref":"#/components/schemas/A","x-foo":1}"##,
+            r##"{"x-foo":{"nested":true},"$ref":"#/components/schemas/A"}"##,
+        ] {
+            match serde_json::from_str::<SchemaRef>(json).unwrap() {
+                SchemaRef::Ref(reference) => {
+                    assert_eq!(reference.ref_path, "#/components/schemas/A");
+                }
+                SchemaRef::Inline(_) => panic!("an x-* sibling must not make {json} inline"),
+            }
+        }
+    }
+
+    #[test]
+    fn keyword_siblings_still_make_a_reference_inline() {
+        for json in [
+            r##"{"$ref":"#/components/schemas/A","nullable":true}"##,
+            r##"{"$ref":"#/components/schemas/A","unknownKeyword":1}"##,
+            r##"{"$ref":"#/components/schemas/A","x-foo":1,"description":"d"}"##,
+        ] {
+            match serde_json::from_str::<SchemaRef>(json).unwrap() {
+                SchemaRef::Inline(schema) => {
+                    assert_eq!(schema.ref_path.as_deref(), Some("#/components/schemas/A"));
+                }
+                SchemaRef::Ref(_) => panic!("a keyword sibling must keep {json} inline"),
+            }
         }
     }
 

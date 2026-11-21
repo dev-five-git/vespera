@@ -183,25 +183,34 @@ fn extension_keys_of_map_objects_are_skipped() {
     assert!(out["paths"].get("x-meta").is_none(), "{out}");
 }
 
-/// The Webhooks Object allows `x-*` keys like the Paths Object: they are
-/// skipped on deserialize instead of being read as Path Items.
+/// The Webhooks Object has no `x-*` exemption in OAS 3.1 (its schema is a
+/// plain `additionalProperties` over Path Items), so a webhook named
+/// `x-events` is a webhook: it must load, survive a round trip, and not be
+/// mistaken for an extension.  The Paths Object still skips `x-*` keys.
 #[test]
-fn webhooks_skip_extension_keys() {
+fn webhooks_keep_x_prefixed_names_round_trip() {
     let doc: OpenApi = serde_json::from_value(json!({
         "openapi": "3.1.0",
         "info": {"title": "t", "version": "1"},
         "webhooks": {
-            "x-note": true,
-            "x-meta": {"a": 1},
+            "x-events": {"post": {"responses": {"200": {"description": "ok"}}}},
             "newPet": {"post": {"responses": {"200": {"description": "ok"}}}}
         }
     }))
     .unwrap();
     let hooks = doc.webhooks.as_ref().unwrap();
-    assert_eq!(hooks.keys().collect::<Vec<_>>(), ["newPet"]);
+    assert_eq!(hooks.keys().collect::<Vec<_>>(), ["newPet", "x-events"]);
+    assert!(hooks["x-events"].post.is_some());
+
     let out = serde_json::to_value(&doc).unwrap();
-    assert!(out["webhooks"].get("x-note").is_none(), "{out}");
-    assert!(out["webhooks"].get("newPet").is_some(), "{out}");
+    assert!(out["webhooks"].get("x-events").is_some(), "{out}");
+    let reparsed: OpenApi = serde_json::from_value(out).unwrap();
+    let reparsed_hooks = reparsed.webhooks.as_ref().unwrap();
+    assert_eq!(
+        reparsed_hooks.keys().collect::<Vec<_>>(),
+        ["newPet", "x-events"]
+    );
+    assert!(reparsed_hooks["x-events"].post.is_some());
 
     let absent: OpenApi = serde_json::from_value(json!({
         "openapi": "3.1.0",

@@ -60,20 +60,6 @@ where
     without_extensions(Extensions::deserialize(deserializer)?)
 }
 
-/// [`skip_extension_keys`] for an optional map (e.g. `webhooks`): an absent
-/// or `null` value stays `None`, a present map has its `x-*` keys dropped.
-pub fn skip_optional_extension_keys<'de, D, V>(
-    deserializer: D,
-) -> Result<Option<BTreeMap<String, V>>, D::Error>
-where
-    D: Deserializer<'de>,
-    V: DeserializeOwned,
-{
-    Option::<Extensions>::deserialize(deserializer)?
-        .map(without_extensions::<V, D::Error>)
-        .transpose()
-}
-
 fn without_extensions<V: DeserializeOwned, E: Error>(
     raw: Extensions,
 ) -> Result<BTreeMap<String, V>, E> {
