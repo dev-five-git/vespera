@@ -1,6 +1,7 @@
 package com.devfive.vespera.bridge;
 
 import java.util.List;
+import org.slf4j.LoggerFactory;
 import org.springdoc.core.customizers.OpenApiCustomizer;
 import org.springdoc.core.models.GroupedOpenApi;
 import org.springdoc.core.properties.SpringDocConfigProperties;
@@ -66,6 +67,16 @@ public class VesperaSpringdocAutoConfiguration {
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnProperty(prefix = "vespera.bridge.springdoc", name = "enabled", matchIfMissing = true)
     static class Integration {
+
+        /** Warns once at startup about spec-paths keys that unbracketed binding would share. */
+        @Bean
+        SmartInitializingSingleton vesperaSpecPathCollisionWarning(VesperaBridgeProperties props) {
+            return () -> {
+                for (String warning : props.getSpringdoc().specPathCollisions(documentedApps(props))) {
+                    LoggerFactory.getLogger(VesperaSpringdocAutoConfiguration.class).warn(warning);
+                }
+            };
+        }
 
         @Bean
         @ConditionalOnMissingBean

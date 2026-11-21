@@ -83,6 +83,27 @@ class VesperaSpringdocSupportTest {
     }
 
     @Test
+    void specPathCollisionsNameTheAppsThatShareAnUnbracketedKey() {
+        VesperaSpringdocProperties props = new VesperaSpringdocProperties();
+        // `spec-paths._default` binds as "default": the key is in bound form and
+        // the default app shares it with an app named default.
+        props.setSpecPaths(Map.of("default", "/root.json"));
+        List<String> warnings = props.specPathCollisions(List.of("_default", "default"));
+        assertEquals(1, warnings.size(), warnings.toString());
+        assertTrue(warnings.get(0).contains("[_default, default]"), warnings.get(0));
+        // The unbracketed my_app / myapp pair: the bound key of my_app is myapp.
+        props.setSpecPaths(Map.of("myapp", "/m.json"));
+        assertEquals(1, props.specPathCollisions(List.of("_default", "my_app")).size());
+        // A bracketed key keeps its name verbatim, so it cannot be the bound form of another app.
+        props.setSpecPaths(Map.of("_default", "/root.json"));
+        assertEquals(List.of(), props.specPathCollisions(List.of("_default", "default")));
+        props.setSpecPaths(Map.of("admin", "/admin.json"));
+        assertEquals(List.of(), props.specPathCollisions(List.of("_default", "admin")));
+        props.setSpecPaths(null);
+        assertEquals(List.of(), props.specPathCollisions(List.of("_default", "default")));
+    }
+
+    @Test
     void specPathsDocsPathAndDisplayNamesAreNormalized() {
         VesperaSpringdocProperties props = new VesperaSpringdocProperties();
         assertEquals("/openapi.json", props.specPathFor("_default"));

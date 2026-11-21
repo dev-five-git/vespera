@@ -484,7 +484,7 @@ final class VesperaNativeLoader {
             throw new UnsafeDirectoryException(dir + " is a link/junction or not a directory");
         }
         UserPrincipal owner = Files.getOwner(dir, LinkOption.NOFOLLOW_LINKS);
-        UserPrincipal me = currentUser(dir);
+        UserPrincipal me = currentUser();
         if (!owner.equals(me)) {
             throw new UnsafeDirectoryException(
                     dir + " is owned by " + owner.getName() + ", not " + me.getName());
@@ -591,7 +591,7 @@ final class VesperaNativeLoader {
             throw new UnsafeDirectoryException(dir + " is group/other-writable ("
                     + PosixFilePermissions.toString(perms) + ")");
         }
-        UserPrincipal me = currentUser(dir);
+        UserPrincipal me = currentUser();
         if (!attrs.owner().equals(me)) {
             throw new UnsafeDirectoryException(
                     dir + " is owned by " + attrs.owner().getName() + ", not " + me.getName());
@@ -609,7 +609,7 @@ final class VesperaNativeLoader {
      * for its owner in turn).
      */
     static void requireSafeAncestors(Path baseDir) throws IOException {
-        UserPrincipal me = currentUser(baseDir);
+        UserPrincipal me = currentUser();
         for (Path dir = baseDir.toRealPath().getParent(); dir != null; dir = dir.getParent()) {
             PosixFileAttributes attrs =
                     Files.readAttributes(dir, PosixFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
@@ -638,9 +638,9 @@ final class VesperaNativeLoader {
         }
     }
 
-    /** The current OS user, never decided by the unverified {@code dir} alone (see {@link CurrentUser}). */
-    static UserPrincipal currentUser(Path dir) throws IOException {
-        return CurrentUser.of(dir);
+    /** The current OS user from a trusted source only; fails closed (see {@link CurrentUser}). */
+    static UserPrincipal currentUser() throws IOException {
+        return CurrentUser.of();
     }
 
     /**

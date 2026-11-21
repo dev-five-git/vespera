@@ -628,13 +628,17 @@ class ProxyControllerBodyHeaderTest {
 
     @Test
     void headWithInvalidOrConflictingDeclaredLengthIsIgnored() {
+        // The sibling x-visible header proves the header was applied (the status and
+        // the other headers are kept), so dropping it here would fail the test.
         for (String header : new String[] {
-                "{\"status\":200,\"headers\":{\"content-length\":\"-5\"}}",
-                "{\"status\":200,\"headers\":{\"content-length\":\"12abc\"}}",
-                "{\"status\":200,\"headers\":{\"content-length\":[\"5\",\"6\"]}}"}) {
+                "{\"status\":201,\"headers\":{\"content-length\":\"-5\",\"x-visible\":\"ok\"}}",
+                "{\"status\":201,\"headers\":{\"content-length\":\"12abc\",\"x-visible\":\"ok\"}}",
+                "{\"status\":201,\"headers\":{\"content-length\":[\"5\",\"6\"],\"x-visible\":\"ok\"}}"}) {
             MockHttpServletResponse response = new MockHttpServletResponse();
             WireResponseWriter.applyDecodedHeader(heapWire(header, ""), response, "HEAD");
             assertFalse(response.containsHeader("Content-Length"), header);
+            assertEquals(201, response.getStatus(), header);
+            assertEquals("ok", response.getHeader("x-visible"), header);
         }
     }
 
@@ -643,7 +647,7 @@ class ProxyControllerBodyHeaderTest {
         // RFC 9110: a 1xx / 204 must not carry Content-Length, and a 304's
         // Content-Length describes the selected representation, so a
         // synthesised 0 would be wrong for both.
-        for (int status : new int[] {103, 204, 304}) {
+        for (int status : new int[] {103, 204, 205, 304}) {
             for (String method : new String[] {"GET", "HEAD"}) {
                 String header = "{\"status\":" + status + ",\"headers\":{\"content-length\":\"17\"}}";
                 MockHttpServletResponse sync = new MockHttpServletResponse();
@@ -662,6 +666,37 @@ class ProxyControllerBodyHeaderTest {
                 assertEquals(WireResponseWriter.NO_CONTENT_LENGTH,
                         WireResponseWriter.bufferedContentLength(status, method, 0, 17));
             }
+        }
+    }
+
+    @Test
+    void resetContentNeverCarriesABodyOrAContentLength() throws IOException {
+        // RFC 9110 15.3.6: a 205 must not carry content, whatever the Rust side wrote.
+        String header = "{\"status\":205,\"headers\":{\"content-length\":\"5\"}}";
+        for (String method : new String[] {"GET", "HEAD"}) {
+            MockHttpServletResponse sync = new MockHttpServletResponse();
+            WireResponseWriter.writeWireResponse(heapWire(header, "hello"), sync, method);
+            assertEquals(205, sync.getStatus(), method);
+            assertFalse(sync.containsHeader("Content-Length"), method);
+            assertEquals(0, sync.getContentAsByteArray().length, method);
+
+            MockHttpServletResponse direct = new MockHttpServletResponse();
+            int directBody = WireResponseWriter.applyDirectHeaderAndPositionBody(
+                    directWire(header, "hello"), direct, method);
+            assertEquals(0, directBody, method);
+            assertFalse(direct.containsHeader("Content-Length"), method);
+
+            MockHttpServletResponse streaming = new MockHttpServletResponse();
+            boolean permits = WireResponseWriter.applyDecodedHeader(
+                    heapWire(header, "hello"), streaming, method);
+            assertFalse(permits, method);
+            assertFalse(streaming.containsHeader("Content-Length"), method);
+
+            ResponseEntity<?> entity = WireResponseWriter.buildAsyncResponseEntityFromWire(
+                    heapWire(header, "hello"), method, null);
+            assertEquals(205, entity.getStatusCode().value(), method);
+            assertNull(entity.getBody(), method);
+            assertEquals(-1, entity.getHeaders().getContentLength(), method);
         }
     }
 
