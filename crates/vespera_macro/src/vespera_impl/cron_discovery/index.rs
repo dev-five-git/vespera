@@ -124,13 +124,9 @@ fn index_first<K: Eq + Hash>(
     key: K,
     module_path: &str,
 ) {
-    match index.get(&key) {
-        Some(first) if first != module_path => {
-            ambiguous.insert(key);
-        }
-        Some(_) => {}
-        None => {
-            index.insert(key, module_path.to_owned());
-        }
+    if index.get(&key).is_some_and(|first| first != module_path) {
+        ambiguous.insert(key);
+    } else {
+        index.entry(key).or_insert_with(|| module_path.to_owned());
     }
 }
