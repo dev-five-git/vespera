@@ -113,6 +113,21 @@ class BridgeHardeningTest {
     }
 
     @Test
+    void blankNativeCapEnvIsAbsentSoTheBridgeCapIsStillAligned() throws Exception {
+        long bridgeCap = VesperaProxyController.DEFAULT_MAX_BUFFERED_RESPONSE_BYTES;
+        for (String env : new String[] {null, "", "   "}) {
+            clearPendingResponseCap();
+            new VesperaBridgeProperties.Native().apply(bridgeCap,
+                    name -> "VESPERA_MAX_BUFFERED_RESPONSE_BYTES".equals(name) ? env : null);
+            assertEquals(bridgeCap, pendingResponseCap(), "VESPERA_MAX_BUFFERED_RESPONSE_BYTES=" + env);
+        }
+        clearPendingResponseCap();
+        new VesperaBridgeProperties.Native().apply(bridgeCap,
+                name -> "VESPERA_MAX_BUFFERED_RESPONSE_BYTES".equals(name) ? "1048576" : null);
+        assertNull(pendingResponseCap(), "an explicit native environment value is left alone");
+    }
+
+    @Test
     void javaPostCheckIsDroppedOnceTheNativeCapIsAtLeastAsStrict() {
         VesperaNativeConfig.Knob knob = VesperaNativeConfig.MAX_BUFFERED_RESPONSE_BYTES;
         assertEquals(64L, VesperaProxyController.javaResponseCap(64), "unknown native cap: keep checking");

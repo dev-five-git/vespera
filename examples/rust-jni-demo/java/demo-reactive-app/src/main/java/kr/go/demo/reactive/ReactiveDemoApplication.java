@@ -11,8 +11,11 @@ import reactor.core.publisher.Mono;
  * cdylib as demo-app. Nothing vespera-specific is written here: the native
  * library is loaded by {@code vespera.bridge.library-name}
  * (application.yml) and {@code VesperaBridgeReactiveAutoConfiguration}
- * proxies every path no WebFlux endpoint claims to the Rust router through
- * the non-blocking {@code dispatchAsync} symbol.
+ * proxies every path no WebFlux endpoint claims to the Rust router. Buffered
+ * requests go through the non-blocking {@code dispatchAsync} symbol;
+ * {@code text/event-stream} / NDJSON requests and bodyless GETs with no or a
+ * wildcard {@code Accept} stream through {@code dispatchStreamingWithHeader}
+ * on {@code VesperaStreamingExecutor}.
  */
 @SpringBootApplication
 public class ReactiveDemoApplication {

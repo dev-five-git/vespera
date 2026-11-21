@@ -582,28 +582,57 @@ class ProxyOperabilityTest {
 
     @Test
     void exchangeCompletesOnceAndLogsServerErrors() {
-        RecordingObserver observer = new RecordingObserver();
-        ProxyExchange exchange = new ProxyExchange(
-                LoggerFactory.getLogger(ProxyOperabilityTest.class), List.of(observer), "PUT", null);
-        exchange.app = "public";
-        exchange.mode = DispatchMode.SYNC;
-        exchange.path = "/p";
-        exchange.reachedRust = true;
-        exchange.complete(500, true);
-        exchange.complete(200, false);
-        assertEquals(1, observer.events.size());
-        DispatchEvent event = observer.events.get(0);
-        assertEquals("public", event.app());
-        assertEquals(DispatchMode.SYNC, event.mode());
-        assertEquals("/p", event.path());
-        assertTrue(event.panicked());
-        assertNull(event.requestId());
+        ch.qos.logback.classic.Logger logger = (ch.qos.logback.classic.Logger)
+                LoggerFactory.getLogger(ProxyOperabilityTest.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> logged =
+                new ch.qos.logback.core.read.ListAppender<>();
+        logged.start();
+        logger.addAppender(logged);
+        try {
+            RecordingObserver observer = new RecordingObserver();
+            ProxyExchange exchange = new ProxyExchange(
+                    LoggerFactory.getLogger(ProxyOperabilityTest.class), List.of(observer), "PUT", null);
+            exchange.app = "public";
+            exchange.mode = DispatchMode.SYNC;
+            exchange.path = "/p";
+            exchange.reachedRust = true;
+            exchange.complete(500, true);
+            exchange.complete(200, false);
+            assertEquals(1, observer.events.size());
+            DispatchEvent event = observer.events.get(0);
+            assertEquals("public", event.app());
+            assertEquals(DispatchMode.SYNC, event.mode());
+            assertEquals("/p", event.path());
+            assertTrue(event.panicked());
+            assertNull(event.requestId());
 
-        ProxyExchange silent = new ProxyExchange(
-                LoggerFactory.getLogger(ProxyOperabilityTest.class), List.of(), "GET", "r");
-        silent.complete(503, false);
-        silent.complete(200, false);
-        assertTrue(silent.isCompleted());
+            // Only the 5xx (non-panic) completion logs the "server error on" WARN; the
+            // successful one logs nothing and the panic above has its own message.
+            logged.list.clear();
+            ProxyExchange failed = new ProxyExchange(
+                    LoggerFactory.getLogger(ProxyOperabilityTest.class), List.of(), "GET", null);
+            failed.path = "/fail";
+            failed.complete(500, false);
+            ProxyExchange succeeded = new ProxyExchange(
+                    LoggerFactory.getLogger(ProxyOperabilityTest.class), List.of(), "GET", null);
+            succeeded.path = "/ok";
+            succeeded.complete(200, false);
+            List<String> warnings = logged.list.stream()
+                    .filter(e -> e.getLevel() == ch.qos.logback.classic.Level.WARN)
+                    .map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
+                    .toList();
+            assertEquals(1, warnings.size(), warnings.toString());
+            assertTrue(warnings.get(0).startsWith("vespera server error on GET /fail "),
+                    warnings.get(0));
+
+            ProxyExchange silent = new ProxyExchange(
+                    LoggerFactory.getLogger(ProxyOperabilityTest.class), List.of(), "GET", "r");
+            silent.complete(503, false);
+            silent.complete(200, false);
+            assertTrue(silent.isCompleted());
+        } finally {
+            logger.detachAppender(logged);
+        }
     }
 
     @Test

@@ -6,6 +6,7 @@ import org.springframework.boot.context.properties.NestedConfigurationProperty;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.UnaryOperator;
 
 /**
  * Properties for the autoconfigured vespera-bridge defaults.
@@ -781,12 +782,19 @@ public class VesperaBridgeProperties {
          * {@code VESPERA_MAX_BUFFERED_RESPONSE_BYTES} or a programmatic
          * {@code configureLimits}, before or after {@code init}, including a
          * value an earlier context already forwarded): Rust then stops collecting an oversized
-         * SYNC / ASYNC response before it is allocated on either heap.
+         * SYNC / ASYNC response before it is allocated on either heap. A
+         * blank environment value counts as absent, as it does on the Rust side.
          */
         void apply(long bridgeResponseCap) {
+            apply(bridgeResponseCap, System::getenv);
+        }
+
+        /** {@link #apply(long)} with the environment read through {@code env} (tests). */
+        void apply(long bridgeResponseCap, UnaryOperator<String> env) {
+            String nativeCapEnv = env.apply("VESPERA_MAX_BUFFERED_RESPONSE_BYTES");
             if (maxBufferedResponseBytes == null && bridgeResponseCap >= 0
                     && !VesperaNativeConfig.MAX_BUFFERED_RESPONSE_BYTES.explicitlyConfigured()
-                    && System.getenv("VESPERA_MAX_BUFFERED_RESPONSE_BYTES") == null) {
+                    && (nativeCapEnv == null || nativeCapEnv.isBlank())) {
                 VesperaBridge.configureLimits(-1, -1, bridgeResponseCap);
             }
             if (workerThreads != null || maxBlockingThreads != null) {

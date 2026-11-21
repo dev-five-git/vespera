@@ -122,7 +122,9 @@ abstract class VesperaBridgeExtension @Inject constructor(objects: ObjectFactory
      * `targets.put("linux-aarch64", "aarch64-unknown-linux-gnu")`. Each entry
      * is built with `cargo build --target <triple>` (when `autoBuildCargo`
      * is on, in addition to the host build), read from
-     * `<targetDir>/<triple>/<profile>/` and bundled under
+     * `<targetDir>/<triple>/<profile output dir>/` (see `cargoProfile` for
+     * the profile-to-directory mapping: `dev` / `test` → `debug`, `bench` →
+     * `release`, any other profile → its own name) and bundled under
      * `native/<os>-<arch>/` with that platform's library file name. A
      * `*-linux-musl*` triple is bundled under `native/linux-<arch>-musl/`
      * (keys may also name `linux-<arch>-musl` directly), where the bridge

@@ -336,6 +336,15 @@ class ReactiveProxyE2ETest {
         try (BufferedReader lines = new BufferedReader(
                 new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
             assertEquals("data: event-0", lines.readLine());
+            // Same timing check as eventStreamArrivesIncrementally: a buffered response
+            // would deliver all three events together (the handler spaces them 300 ms apart).
+            long firstEvent = System.nanoTime();
+            assertEquals("", lines.readLine());
+            assertEquals("data: event-1", lines.readLine());
+            assertEquals("", lines.readLine());
+            assertEquals("data: event-2", lines.readLine());
+            long spreadMillis = Duration.ofNanos(System.nanoTime() - firstEvent).toMillis();
+            assertTrue(spreadMillis >= 300, "events arrived together (" + spreadMillis + " ms apart)");
         }
 
         // An ordinary response of such a GET is held back and keeps its Content-Length.
